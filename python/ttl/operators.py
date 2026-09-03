@@ -63,9 +63,19 @@ def call_extern_func(
         callee: External C++ function name.
         template_args: Static values and explicit DFB wrappers emitted as C++
             template arguments.
-        func_args: Values emitted as C++ function arguments. Repeated opaque
-            DFBs are valid. Summarized occurrences must use distinct parameters
-            of a composed operation.
+        func_args: Scalars, DFBs, base tensors, or explicit raw tensor
+            addresses emitted as C++ function arguments. A base tensor becomes
+            a data-movement `TensorAccessor` for device DRAM or SRAM, or a
+            compute-local `LocalTensorAccessor<uint8_t>` for sharded SRAM.
+            `L1` and `L1Small` retain the corresponding TTNN buffer-type names;
+            `L1Small` requires sharded storage. TILE supports FLOAT32, BFLOAT16,
+            BFLOAT8_B, BFLOAT4_B,
+            INT32, UINT32, UINT16, and UINT8. ROW_MAJOR supports FLOAT32,
+            BFLOAT16, INT32, UINT32, UINT16, and UINT8. External functions must
+            accept the accessor by `const&` and must not retain it after the
+            enclosing kernel returns. Repeated opaque DFBs are valid.
+            Summarized occurrences must use distinct parameters of a composed
+            operation.
         dfb_dependencies: DFBs accessed by external C++ without adding C++
             arguments. Entries must identify distinct source occurrences and
             must not repeat an automatic dependency source in ``func_args`` or

@@ -231,12 +231,13 @@ def TTL_TensorMemoryLayout_SingleBank   : I32EnumAttrCase<"SingleBank",   1, "si
 def TTL_TensorMemoryLayout_HeightSharded : I32EnumAttrCase<"HeightSharded", 2, "height_sharded">;
 def TTL_TensorMemoryLayout_WidthSharded  : I32EnumAttrCase<"WidthSharded",  3, "width_sharded">;
 def TTL_TensorMemoryLayout_BlockSharded  : I32EnumAttrCase<"BlockSharded",  4, "block_sharded">;
+def TTL_TensorMemoryLayout_NdSharded     : I32EnumAttrCase<"NdSharded",     5, "nd_sharded">;
 
 def TTL_TensorMemoryLayout : I32EnumAttr<
     "TensorMemoryLayout", "TTL tensor memory layout",
     [TTL_TensorMemoryLayout_Interleaved, TTL_TensorMemoryLayout_SingleBank,
      TTL_TensorMemoryLayout_HeightSharded, TTL_TensorMemoryLayout_WidthSharded,
-     TTL_TensorMemoryLayout_BlockSharded]> {
+     TTL_TensorMemoryLayout_BlockSharded, TTL_TensorMemoryLayout_NdSharded]> {
   let cppNamespace = "::mlir::tt::ttl";
 }
 
