@@ -740,6 +740,28 @@ def test_factory_boolean_specialization_respects_nested_parameter():
     assert "'live'" in selected_operation._spec.source
 
 
+def test_factory_boolean_specialization_preserves_empty_function_syntax():
+    """A fully disabled operation retains a valid empty body."""
+    enabled = False
+
+    @ttl.operation()
+    def disabled_operation():
+        if enabled:
+            ttl.call_extern_func(
+                "dead.hpp",
+                "dead",
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+
+    assert disabled_operation._spec.source.endswith("    pass")
+    result = split_function_body(
+        disabled_operation._spec.fn_ast,
+        dfb_param_names=set(),
+        selector_scope=disabled_operation._spec.frozen_scope,
+    )
+    assert result.kernels == ()
+
+
 def test_repeated_composition_reuses_callee_logical_kernel():
     """Sequential calls to one helper share its declared logical kernel."""
     reader = Kernel(KernelKind.DATA_MOVEMENT)
