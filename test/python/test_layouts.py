@@ -41,6 +41,7 @@ class _FakeTTNN:
         HEIGHT_SHARDED = object()
         WIDTH_SHARDED = object()
         BLOCK_SHARDED = object()
+        ND_SHARDED = object()
 
 
 class _FakeTensor:
@@ -114,6 +115,10 @@ def test_supported_dtype_layout_table_is_exact():
         (
             _FakeTTNN.TensorMemoryLayout.BLOCK_SHARDED,
             layouts.TENSOR_MEMORY_LAYOUT_BLOCK_SHARDED,
+        ),
+        (
+            _FakeTTNN.TensorMemoryLayout.ND_SHARDED,
+            layouts.TENSOR_MEMORY_LAYOUT_ND_SHARDED,
         ),
     ],
 )

@@ -113,7 +113,18 @@ func.func @unsupported_row_major_dtype(%arg0: tensor<1x32xf16, #layout>)
 #layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
                       buffer = l1, grid = [1, 1], memory = interleaved>
 func.func @interleaved_compute_tensor(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-  // expected-error @below {{'ttl.opaque_call' op tensor operand 0 in a compute kernel uses a non-sharded memory layout; compute tensor accessors require height-, width-, or block-sharded SRAM}}
+  // expected-error @below {{'ttl.opaque_call' op tensor operand 0 in a compute kernel uses an unsupported memory layout; compute tensor accessors require height-, width-, or block-sharded SRAM}}
+  ttl.opaque_call "foo" (%arg0) {header = "h.hpp"} : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) -> ()
+  return
+}
+
+// -----
+
+// Test: ND sharding uses distributed TensorAccessor metadata, not a local bank base.
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, f32>,
+                      buffer = l1, grid = [1, 1], memory = nd_sharded>
+func.func @nd_sharded_compute_tensor(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  // expected-error @below {{'ttl.opaque_call' op tensor operand 0 in a compute kernel uses an unsupported memory layout; compute tensor accessors require height-, width-, or block-sharded SRAM}}
   ttl.opaque_call "foo" (%arg0) {header = "h.hpp"} : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) -> ()
   return
 }
@@ -135,7 +146,7 @@ func.func @host_data_movement_tensor(%arg0: tensor<1x32xbf16, #layout>) attribut
 #layout = #ttl.layout<shape = [1, 32], element_type = ui8,
                       buffer = l1_small, grid = [1, 1], memory = interleaved>
 func.func @interleaved_l1_small_data_movement_tensor(%arg0: tensor<1x32xui8, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-  // expected-error @below {{'ttl.opaque_call' op tensor operand 0 in a data movement kernel uses non-sharded SRAM with L1Small buffer type; L1Small requires height-, width-, or block-sharded storage}}
+  // expected-error @below {{'ttl.opaque_call' op tensor operand 0 in a data movement kernel uses non-sharded SRAM with L1Small buffer type; L1Small requires sharded storage}}
   ttl.opaque_call "foo" (%arg0) {header = "h.hpp"} : (tensor<1x32xui8, #layout>) -> ()
   return
 }
