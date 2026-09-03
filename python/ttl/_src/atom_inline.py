@@ -720,6 +720,7 @@ def _add_dfb_reconfiguration_bindings(
                     (
                         selected_kernels[id(participant)]
                         if isinstance(participant, Kernel)
+                        and _selector_implicit_role(participant) is None
                         else participant
                     )
                     for participant in boundary.participants
