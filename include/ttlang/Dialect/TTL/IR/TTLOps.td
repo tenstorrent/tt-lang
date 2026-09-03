@@ -1808,15 +1808,14 @@ def TTL_MatmulOp : TTL_ComputePrimitiveOp<"matmul", "Matmul", [Pure,
     DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]> {
   let summary = "Matrix multiply two tensors of tiles";
   let description = [{
-    Block-level matrix multiply: result[i, j] = sum_k(lhs[i, k] * rhs[k, j]).
-    Both inputs must be rank-2 tensors of tiles. The inner (K) dimensions
-    must match: lhs.shape[1] == rhs.shape[0]. Result shape is
-    [lhs.shape[0], rhs.shape[1]].
+    Block-level matrix multiply over the innermost two dimensions:
+    result[..., i, j] = sum_k(lhs[..., i, k] * rhs[..., k, j]). Both inputs
+    must be tensors of tiles with equal rank at least 2 and identical leading
+    batch dimensions. The result preserves the leading dimensions and replaces
+    the trailing [M, K] and [K, N] dimensions with [M, N].
 
-    When the optional `transpose_rhs` unit attribute is set, `rhs` is the
-    transpose of B and stored as [N, K]: result[i, j] = sum_k(lhs[i, k] *
-    rhs[j, k]). The inner (K) dimensions then match as lhs.shape[1] ==
-    rhs.shape[1], and the result shape is [lhs.shape[0], rhs.shape[0]].
+    When the optional `transpose_rhs` unit attribute is set, `rhs` is stored as
+    [..., N, K]: result[..., i, j] = sum_k(lhs[..., i, k] * rhs[..., j, k]).
 
     Operand tile dimensions follow the same matrix relation. Without
     `transpose_rhs`, `lhs.tile.width == rhs.tile.height` and the result tile is

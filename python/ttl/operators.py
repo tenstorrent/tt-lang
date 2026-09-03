@@ -1270,28 +1270,37 @@ def _resolve_transpose_flag(val) -> bool:
 def _build_matmul(lhs: TensorBlock, rhs: TensorBlock, *, transpose_rhs: bool):
     """Build a ttl.matmul op, computing the result shape from the operands.
 
-    For the non-transposed form ``rhs`` is ``[K, N]``; for the transposed
-    form (``transpose_rhs``) ``rhs`` is ``[N, K]`` and the matmul computes
-    ``C[M, N] = A[M, K] * B[N, K]^T``.
+    For the non-transposed form ``rhs`` is ``[..., K, N]``; for the
+    transposed form (``transpose_rhs``) ``rhs`` is ``[..., N, K]`` and the
+    matmul computes ``C[..., M, N] = A[..., M, K] * B[..., N, K]^T``.
     """
     transpose = _resolve_transpose_flag(transpose_rhs)
     lhs_type = lhs.type
     rhs_type = rhs.type
     lhs_shape = list(lhs_type.shape)
     rhs_shape = list(rhs_type.shape)
-    if len(lhs_shape) != 2 or len(rhs_shape) != 2:
+    if len(lhs_shape) < 2 or len(rhs_shape) < 2:
         raise ValueError(
-            f"matmul requires rank-2 operands, got lhs rank {len(lhs_shape)} "
+            "matmul requires operands of rank 2 or greater, got "
+            f"lhs rank {len(lhs_shape)} and rhs rank {len(rhs_shape)}"
+        )
+    if len(lhs_shape) != len(rhs_shape):
+        raise ValueError(
+            f"matmul operand ranks must match, got lhs rank {len(lhs_shape)} "
             f"and rhs rank {len(rhs_shape)}"
         )
-
-    # K is lhs columns. For transposed rhs [N, K], K is rhs.shape[1] and N is
-    # rhs.shape[0]; otherwise rhs is [K, N], so K is rhs.shape[0] and N is
-    # rhs.shape[1].
-    rhs_k = rhs_shape[1] if transpose else rhs_shape[0]
-    if lhs_shape[1] != rhs_k:
+    if lhs_shape[:-2] != rhs_shape[:-2]:
         raise ValueError(
-            f"matmul K dimension mismatch: lhs has {lhs_shape[1]} columns but "
+            "matmul batch dimensions must match, got "
+            f"lhs {lhs_shape[:-2]} and rhs {rhs_shape[:-2]}"
+        )
+
+    # K is the final lhs dimension. Transpose selects which of the final two
+    # rhs dimensions is K; the other is N.
+    rhs_k = rhs_shape[-1] if transpose else rhs_shape[-2]
+    if lhs_shape[-1] != rhs_k:
+        raise ValueError(
+            f"matmul K dimension mismatch: lhs has {lhs_shape[-1]} columns but "
             f"rhs has {rhs_k} {'columns' if transpose else 'rows'}"
         )
 
@@ -1327,8 +1336,8 @@ def _build_matmul(lhs: TensorBlock, rhs: TensorBlock, *, transpose_rhs: bool):
             f"{'width' if transpose else 'height'} {rhs_tile_k}"
         )
 
-    n = rhs_shape[0] if transpose else rhs_shape[1]
-    result_shape = [lhs_shape[0], n]
+    n = rhs_shape[-2] if transpose else rhs_shape[-1]
+    result_shape = [*lhs_shape[:-2], lhs_shape[-2], n]
     result_tile_width = rhs_tile_height if transpose else rhs_tile_width
     result_tile = ttcore.ir.TileType.get(
         lhs_type.context, lhs_tile_height, result_tile_width, lhs_dtype
@@ -1343,9 +1352,9 @@ def _build_matmul(lhs: TensorBlock, rhs: TensorBlock, *, transpose_rhs: bool):
 def matmul(lhs: TensorBlock, rhs: TensorBlock, *, transpose_rhs=False) -> TensorBlock:
     """Matrix multiply two CB-attached tensors of tiles.
 
-    Computes ``C[M, N] = A[M, K] * B[K, N]``. When ``transpose_rhs`` is set,
-    ``rhs`` is provided as ``[N, K]`` and the matmul computes
-    ``C[M, N] = A[M, K] * B[N, K]^T`` using the hardware transpose path.
+    Computes ``C[..., M, N] = A[..., M, K] * B[..., K, N]``. Leading batch
+    dimensions must match. When ``transpose_rhs`` is set, ``rhs`` is provided
+    as ``[..., N, K]`` and the hardware transpose path is used.
     """
     return _build_matmul(lhs, rhs, transpose_rhs=transpose_rhs)
 
