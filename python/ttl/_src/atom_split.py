@@ -222,7 +222,7 @@ class _KernelSelectorResolver:
         selector = _kernel_keyword(call)
         if selector is None:
             if len(inferred_kernels) == 1:
-                self._validate_fabric_manager_effects(call, inferred_kernels)
+                self._validate_external_metadata(call, inferred_kernels)
                 return inferred_kernels
             raise _split_error(
                 call,
@@ -238,8 +238,74 @@ class _KernelSelectorResolver:
                 f"({_format_kernels(selected)}) conflicts with inferred "
                 f"selection ({_format_kernels(inferred_kernels)})",
             )
-        self._validate_fabric_manager_effects(call, selected)
+        self._validate_external_metadata(call, selected)
         return selected
+
+    def _validate_external_metadata(
+        self, call: ast.Call, selected: FrozenSet[KernelSelector]
+    ) -> None:
+        self._validate_fabric_manager_effects(call, selected)
+        effects = _keyword_value(call, "dfb_effects")
+        if not isinstance(effects, ast.Dict):
+            return
+        if not effects.keys:
+            raise _split_error(
+                effects,
+                "call_extern_func kernel-specific dfb_effects must not be empty",
+            )
+        effect_kernels: Set[KernelSelector] = set()
+        for selector_node, sequence in zip(effects.keys, effects.values):
+            if selector_node is None:
+                raise _split_error(
+                    effects,
+                    "call_extern_func kernel-specific dfb_effects does not "
+                    "support dictionary expansion",
+                )
+            selector = self._resolve_selector(selector_node)
+            if selector not in selected:
+                raise _split_error(
+                    selector_node,
+                    "call_extern_func dfb_effects selects a kernel excluded "
+                    "by the call's kernel selection",
+                )
+            if selector in effect_kernels:
+                raise _split_error(
+                    selector_node,
+                    "call_extern_func dfb_effects contains a duplicate kernel "
+                    "selector",
+                )
+            if not isinstance(sequence, ast.List) or not sequence.elts:
+                raise _split_error(
+                    sequence,
+                    "each call_extern_func kernel-specific dfb_effects value "
+                    "must be a nonempty list",
+                )
+            effect_kernels.add(selector)
+
+    def select_external_dfb_effects(
+        self, call: ast.Call, kernel: KernelSelector
+    ) -> None:
+        effects = _keyword_value(call, "dfb_effects")
+        if not isinstance(effects, ast.Dict):
+            return
+        selected_sequence = next(
+            (
+                sequence
+                for selector_node, sequence in zip(effects.keys, effects.values)
+                if selector_node is not None
+                and self._resolve_selector(selector_node) == kernel
+            ),
+            None,
+        )
+        if selected_sequence is None:
+            call.keywords = [
+                keyword for keyword in call.keywords if keyword.arg != "dfb_effects"
+            ]
+            return
+        for keyword in call.keywords:
+            if keyword.arg == "dfb_effects":
+                keyword.value = selected_sequence
+                return
 
     def _validate_fabric_manager_effects(
         self, call: ast.Call, selected: FrozenSet[KernelSelector]
@@ -627,7 +693,9 @@ def split_function_body(
         target_capacities=target_capacities,
     )
     bodies = {
-        kernel: _apply_split_plan(fn_def.body, kernel, plan)
+        kernel: _apply_split_plan(
+            fn_def.body, kernel, plan, selector_resolver
+        )
         for kernel in ordered_kernels
     }
     return SplitResult(
@@ -1381,8 +1449,15 @@ class _ScalarLivenessPlanner:
 
 
 class _KernelKeywordStripper(ast.NodeTransformer):
-    def __init__(self, block_names: Set[str]):
+    def __init__(
+        self,
+        block_names: Set[str],
+        kernel: KernelSelector,
+        selector_resolver: _KernelSelectorResolver,
+    ):
         self.block_names = block_names
+        self.kernel = kernel
+        self.selector_resolver = selector_resolver
 
     def visit_Call(self, node: ast.Call):
         node = self.generic_visit(node)
@@ -1392,6 +1467,8 @@ class _KernelKeywordStripper(ast.NodeTransformer):
             and node.func.value.id in self.block_names
             and node.func.attr in _DFB_RELEASE_METHODS
         )
+        if _is_external_call(node):
+            self.selector_resolver.select_external_dfb_effects(node, self.kernel)
         if _is_external_call(node) or is_release:
             node.keywords = [
                 keyword for keyword in node.keywords if keyword.arg != _KERNEL_KEYWORD
@@ -1441,6 +1518,7 @@ def _apply_split_plan(
     body: List[ast.stmt],
     kernel: KernelSelector,
     plan: SplitPlan,
+    selector_resolver: _KernelSelectorResolver,
 ) -> List[ast.stmt]:
     memo: Dict[int, object] = {}
     copy.deepcopy(body, memo)
@@ -1449,7 +1527,9 @@ def _apply_split_plan(
     }
     cloned = _prune_statement_list(body, kernel, selections, memo, insert_pass=True)
     stripper = _KernelKeywordStripper(
-        {transaction.block_name for transaction in plan.transactions}
+        {transaction.block_name for transaction in plan.transactions},
+        kernel,
+        selector_resolver,
     )
     return [
         ast.fix_missing_locations(stripper.visit(statement)) for statement in cloned
