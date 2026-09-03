@@ -107,7 +107,7 @@ def _make_tree_reduce(fp32):
             node_x, node_y = ttl.node(dims=2)
             if node_x == root_x and node_y == root_y:
                 with output_dfb.wait() as output_block:
-                    ttl.copy(output_block, output[0, 0]).wait()
+                    ttl.copy(output_block, output[0:1, 0:OUTPUT_ROWS]).wait()
 
     return tree_reduce
 
