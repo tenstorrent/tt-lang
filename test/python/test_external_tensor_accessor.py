@@ -821,7 +821,7 @@ def test_external_compute_tensor_accessor_rejects_interleaved_l1(
     )
     with pytest.raises(
         RuntimeError,
-        match="compute kernel uses a non-sharded memory layout.*require height-, width-, or block-sharded SRAM",
+        match="compute kernel uses an unsupported memory layout.*require height-, width-, or block-sharded SRAM",
     ):
         repeated_compute_tensor_accessor(tensor, tensor)
 
