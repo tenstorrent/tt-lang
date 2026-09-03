@@ -17,7 +17,7 @@ from ttl.dfb_allocation_group import DFBAllocationGroup
 from ttl.dfb_reset import DFBReset
 from ttl.dfb_reconfiguration import DFBReconfiguration
 from ttl.fabric import FabricManagerClaim
-from ttl.kernel import Kernel, KernelKind
+from ttl.kernel import Kernel, KernelKind, _selector_implicit_role
 from ttl.scalar import ScalarType
 from ttl.template_argument import UInt32TemplateArgument
 
@@ -730,6 +730,17 @@ def _add_allocation_group_bindings(
         bindings[name] = ast.Name(id=existing_name, ctx=ast.Load())
 
 
+def _remap_composed_synchronization_participant(
+    participant: Kernel | KernelKind,
+    selected_kernels: Dict[int, Kernel],
+) -> Kernel | KernelKind:
+    if not isinstance(participant, Kernel):
+        return participant
+    if _selector_implicit_role(participant) is not None:
+        return participant
+    return selected_kernels[id(participant)]
+
+
 def _add_dfb_reset_bindings(
     spec,
     bindings: Dict[str, ast.expr],
@@ -750,10 +761,8 @@ def _add_dfb_reset_bindings(
             # within that call retain one identity across all participants.
             reset_instance = DFBReset(
                 participants=tuple(
-                    (
-                        selected_kernels[id(participant)]
-                        if isinstance(participant, Kernel)
-                        else participant
+                    _remap_composed_synchronization_participant(
+                        participant, selected_kernels
                     )
                     for participant in reset.participants
                 ),
@@ -785,10 +794,8 @@ def _add_dfb_reconfiguration_bindings(
             # within that call retain one identity across all participants.
             boundary_instance = DFBReconfiguration(
                 participants=tuple(
-                    (
-                        selected_kernels[id(participant)]
-                        if isinstance(participant, Kernel)
-                        else participant
+                    _remap_composed_synchronization_participant(
+                        participant, selected_kernels
                     )
                     for participant in boundary.participants
                 ),
