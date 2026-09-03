@@ -8,10 +8,41 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 
 #include "mlir/IR/Dominance.h"
+#include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
 
 namespace mlir::tt::ttl {
+
+static bool isSingletonDimensionShapeView(RankedTensorType inputType,
+                                          RankedTensorType resultType) {
+  auto isNotSingleton = [](int64_t extent) { return extent != 1; };
+  return llvm::equal(
+      llvm::make_filter_range(inputType.getShape(), isNotSingleton),
+      llvm::make_filter_range(resultType.getShape(), isNotSingleton));
+}
+
+Value getDFBMaterializationStoreSource(Value intermediate) {
+  Value source = intermediate;
+  while (auto cast = source.getDefiningOp<UnrealizedConversionCastOp>()) {
+    if (cast.getInputs().size() != 1 || cast.getOutputs().size() != 1) {
+      break;
+    }
+
+    auto inputType = dyn_cast<RankedTensorType>(cast.getInputs()[0].getType());
+    auto resultType =
+        dyn_cast<RankedTensorType>(cast.getOutputs()[0].getType());
+    if (!inputType || !resultType || !inputType.hasStaticShape() ||
+        !resultType.hasStaticShape() ||
+        inputType.getElementType() != resultType.getElementType() ||
+        inputType.getEncoding() != resultType.getEncoding() ||
+        !isSingletonDimensionShapeView(inputType, resultType)) {
+      break;
+    }
+    source = cast.getInputs()[0];
+  }
+  return source;
+}
 
 /// Return a provisional index unique within `kernel`.
 ///
@@ -68,13 +99,18 @@ BindCBOp createCompilerAllocatedDFB(RankedTensorType tensorType, Location loc,
   return bindDFB;
 }
 
-StoreOp createDFBStore(Value tensor, Value dfb, OpBuilder &builder) {
+static StoreOp createDFBStore(Value tensor, Value dfb, IntegerAttr numTiles,
+                              OpBuilder &builder) {
   auto tensorType = cast<RankedTensorType>(tensor.getType());
   Location loc = tensor.getLoc();
 
-  auto reserve = CBReserveOp::create(builder, loc, tensorType, dfb);
+  auto reserve = CBReserveOp::create(builder, loc, tensorType, dfb, numTiles);
   return StoreOp::create(builder, loc, tensor, reserve.getResult(),
                          /*accumulate=*/nullptr);
+}
+
+StoreOp createDFBStore(Value tensor, Value dfb, OpBuilder &builder) {
+  return createDFBStore(tensor, dfb, /*numTiles=*/nullptr, builder);
 }
 
 AttachCBOp createDFBWaitAndAttach(Value dfb, RankedTensorType tensorType,
@@ -103,7 +139,13 @@ Value materializeToDFB(Value intermediate, Operation *insertionAnchor,
       createCompilerAllocatedDFB(tensorType, loc, kernel, builder);
 
   builder.setInsertionPointAfter(insertionAnchor);
-  createDFBStore(intermediate, bindDFB.getResult(), builder);
+  Value storeSource = getDFBMaterializationStoreSource(intermediate);
+  IntegerAttr numTiles;
+  if (storeSource != intermediate) {
+    auto storeType = cast<RankedTensorType>(storeSource.getType());
+    numTiles = builder.getI64IntegerAttr(storeType.getNumElements());
+  }
+  createDFBStore(storeSource, bindDFB.getResult(), numTiles, builder);
 
   return createDFBWaitAndAttach(bindDFB.getResult(), tensorType, loc, builder)
       .getResult();

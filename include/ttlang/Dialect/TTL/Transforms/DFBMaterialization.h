@@ -17,6 +17,13 @@
 
 namespace mlir::tt::ttl {
 
+/// Returns the value whose tiles must be published when `intermediate` is
+/// materialized. Unrealized tensor casts that only insert or remove singleton
+/// dimensions are zero-copy block-shape views, so their input can be stored
+/// through a reserve view with the input rank while consumers retain the
+/// original attached tensor type.
+Value getDFBMaterializationStoreSource(Value intermediate);
+
 /// Allocates a fresh compiler-managed dataflow buffer and emits its `bind_cb`
 /// at kernel entry, where finalization can assign physical indices
 /// consistently. The provisional index is unique within the kernel;

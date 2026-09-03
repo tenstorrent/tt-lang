@@ -82,8 +82,11 @@ apply the validated kernel plan:
 Intermediate DFB insertion uses the same separation. It computes a monotone
 fixed point of exact consumer operands requiring storage, groups those
 requirements by producer, and applies the complete materialization plan only
-after analysis terminates. The final conversion analyzes the modified kernel
-again; plans are never reused after mutation.
+after analysis terminates. The fixed point also closes over the producer
+expressions of planned materializations, so fusion boundaries exposed by one
+materialization are planned without mutating and re-analyzing the kernel. The
+final conversion analyzes the modified kernel again; plans are never reused
+after mutation.
 
 ## Terminology
 
@@ -567,6 +570,13 @@ This rule is not specific to typecast or reduce. Every
 attached storage may be released before the consumer. With compiler DFBs
 disabled, either condition produces a diagnostic instead of changing the
 lifetime result.
+
+Singleton-rank `squeeze` and `unsqueeze` operations lower to zero-copy
+`unrealized_conversion_cast` shape views. A direct store of a computed shape
+view cannot become a tile recipe because the view itself performs no compute.
+Intermediate DFB planning therefore materializes the computed input. The
+producer reserves and stores the same number of tiles through its original-rank
+view; consumers attach the published DFB using the requested result rank.
 
 ## Plan Application
 
