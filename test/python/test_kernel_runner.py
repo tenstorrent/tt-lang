@@ -7812,6 +7812,9 @@ def test_emit_runner_source_preserves_positional_options():
         3,
         4,
         123,
+        [(0, 0)],
+        None,
+        [],
         False,
         None,
     )
@@ -7819,6 +7822,9 @@ def test_emit_runner_source_preserves_positional_options():
     assert '"""Auto-generated runner for legacy_kernel."""' in source
     assert "PROGRAM_HASH = 123" in source
     assert "TENSOR_CONFIGURATIONS = None" in source
+    assert "MESH_PROGRAM_PLACEMENTS = [" in source
+    assert "    (0, 0)," in source
+    assert "KERNEL_FABRIC_ROUTES = []" in source
     assert "NUM_PIPE_SYNC_SEMAPHORES = 2" in source
     assert "PIPE_SRAM_SCRATCH_BYTES = 64" in source
     assert "NUM_PIPE_GLOBAL_SEMAPHORES = 3" in source
@@ -7841,6 +7847,9 @@ def test_emit_runner_file_preserves_positional_options(tmp_path):
         3,
         4,
         123,
+        [(0, 0)],
+        None,
+        [],
         False,
         None,
     )
@@ -7850,6 +7859,9 @@ def test_emit_runner_file_preserves_positional_options(tmp_path):
     assert '"""Auto-generated runner for legacy_kernel."""' in source
     assert "PROGRAM_HASH = 123" in source
     assert "TENSOR_CONFIGURATIONS = None" in source
+    assert "MESH_PROGRAM_PLACEMENTS = [" in source
+    assert "    (0, 0)," in source
+    assert "KERNEL_FABRIC_ROUTES = []" in source
     assert "NUM_PIPE_SYNC_SEMAPHORES = 2" in source
     assert "PIPE_SRAM_SCRATCH_BYTES = 64" in source
     assert "NUM_PIPE_GLOBAL_SEMAPHORES = 3" in source

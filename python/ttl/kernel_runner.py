@@ -4476,12 +4476,12 @@ def emit_runner_source(
     num_pipe_global_semaphores: int = 0,
     num_dfb_resets: int = 0,
     program_hash: Optional[int] = None,
-    requires_runtime_resource_factory: bool = False,
-    dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
-    tensor_configurations: Optional[Sequence[tuple]] = None,
     mesh_program_placements: Optional[List[Any]] = None,
     device_domain: Optional[Any] = None,
     kernel_fabric_routes: Optional[List[List[FabricRouteSpec]]] = None,
+    requires_runtime_resource_factory: bool = False,
+    dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
+    tensor_configurations: Optional[Sequence[tuple]] = None,
 ) -> str:
     """
     Emit Python source code for a standalone runner that invokes ttnn.generic_op.
@@ -4494,9 +4494,8 @@ def emit_runner_source(
     emitted runner's tt-metal program-cache key.
     mesh_program_placements, if provided, selects the device ranges that run
     the emitted program.
-    tensor_configurations records
-    the compilation inputs so the fixed cache key cannot be reused with
-    incompatible tensors.
+    tensor_configurations records the compilation inputs so the fixed cache key
+    cannot be reused with incompatible tensors.
     """
     if tensor_configurations is not None and len(tensor_configurations) != num_tensors:
         raise ValueError(
@@ -4808,12 +4807,12 @@ def emit_runner_file(
     num_pipe_global_semaphores: int = 0,
     num_dfb_resets: int = 0,
     program_hash: Optional[int] = None,
-    requires_runtime_resource_factory: bool = False,
-    dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
-    tensor_configurations: Optional[Sequence[tuple]] = None,
     mesh_program_placements: Optional[List[Any]] = None,
     device_domain: Optional[Any] = None,
     kernel_fabric_routes: Optional[List[List[FabricRouteSpec]]] = None,
+    requires_runtime_resource_factory: bool = False,
+    dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
+    tensor_configurations: Optional[Sequence[tuple]] = None,
 ) -> str:
     """
     Emit a Python runner file for the compiled kernel.
