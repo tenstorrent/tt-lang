@@ -365,7 +365,7 @@ LogicalResult translateKernelFuncToCpp(func::FuncOp entry,
   if (failed(kernelModule)) {
     return failure();
   }
-  auto moduleCleanup = llvm::make_scope_exit([&]() { kernelModule->erase(); });
+  auto moduleCleanup = llvm::scope_exit([&]() { kernelModule->erase(); });
   return emitc::translateToCpp(*kernelModule, os);
 }
 
