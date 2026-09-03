@@ -13,11 +13,9 @@
 template <typename Descriptor>
 inline void inspect_dfb() {
 #if defined(COMPILE_FOR_TRISC)
-  using namespace ckernel;
-
   uint32_t readPointer = 0;
   UNPACK(({
-    readPointer = get_local_cb_interface(Descriptor::index).fifo_rd_ptr;
+    readPointer = ::get_local_cb_interface(Descriptor::index).fifo_rd_ptr;
   }));
   (void)readPointer;
 #endif

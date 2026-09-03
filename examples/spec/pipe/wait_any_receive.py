@@ -15,10 +15,10 @@ import ttl
 import ttnn
 
 
-@ttl.operation(grid=(3, 1))
+@ttl.operation(grid=(1, 1))
 def select_completed_receive(input_tensor, output_tensor):
-    first_pipe = ttl.Pipe(src=(0, 0), dst=(2, 0))
-    second_pipe = ttl.Pipe(src=(1, 0), dst=(2, 0))
+    first_pipe = ttl.Pipe(src=(0, 0), dst=(0, 0))
+    second_pipe = ttl.Pipe(src=(0, 0), dst=(0, 0))
     first_net = ttl.PipeNet([first_pipe])
     second_net = ttl.PipeNet([second_pipe])
 
@@ -41,59 +41,46 @@ def select_completed_receive(input_tensor, output_tensor):
 
     @ttl.datamovement()
     def receive_and_select():
-        if first_net.is_src():
-            with first_input_dfb.wait() as first_input:
-                ttl.copy(first_input, first_pipe).wait()
+        if first_net.is_active():
+            pass
+        if second_net.is_active():
+            pass
 
-        if second_net.is_src():
-            with second_input_dfb.wait() as second_input:
-                ttl.copy(second_input, second_pipe).wait()
+        # spec:begin
+        # Both receives are posted before either one is awaited.
+        first_block = first_landing_dfb.reserve()
+        second_block = second_landing_dfb.reserve()
+        first_request = ttl.copy(first_pipe, first_block)
+        second_request = ttl.copy(second_pipe, second_block)
 
-        if first_net.is_dst():
-            if second_net.is_dst():
-                next_index = 1
+        with first_input_dfb.wait() as first_input:
+            ttl.copy(first_input, first_pipe).wait()
+        with second_input_dfb.wait() as second_input:
+            ttl.copy(second_input, second_pipe).wait()
 
-                # spec:begin
-                # Both receives are posted before either one is awaited. Waiting
-                # on first_request directly would block this thread even if
-                # second_request had already completed.
-                first_block = first_landing_dfb.reserve()
-                second_block = second_landing_dfb.reserve()
-                first_request = ttl.copy(first_pipe, first_block)
-                second_request = ttl.copy(second_pipe, second_block)
+        completed = ttl.wait_any((first_request, second_request), start=1)
+        selected = completed.index()
 
-                completed = ttl.wait_any(
-                    (first_request, second_request), start=next_index
-                )
-                selected = completed.index()
+        first_request.wait()
+        first_block.push()
+        second_request.wait()
+        second_block.push()
 
-                if selected == 0:
-                    first_block.push()
-                    with first_landing_dfb.wait() as first_result:
-                        ttl.copy(first_result, output_tensor[0, 0]).wait()
-
-                    # The nonselected request remains pending until it is awaited.
-                    second_request.wait()
-                    second_block.push()
-
-                if selected == 1:
-                    second_block.push()
-                    with second_landing_dfb.wait() as second_result:
-                        ttl.copy(second_result, output_tensor[0, 0]).wait()
-
-                    first_request.wait()
-                    first_block.push()
-                # spec:end
+        if selected == 0:
+            with first_landing_dfb.wait() as first_result:
+                ttl.copy(first_result, output_tensor[0, 0]).wait()
+        elif selected == 1:
+            with second_landing_dfb.wait() as second_result:
+                ttl.copy(second_result, output_tensor[0, 0]).wait()
+        # spec:end
 
     @ttl.datamovement()
     def load_input():
-        if first_net.is_src():
-            with first_input_dfb.reserve() as first_input:
-                ttl.copy(input_tensor[0, 0], first_input).wait()
+        with first_input_dfb.reserve() as first_input:
+            ttl.copy(input_tensor[0, 0], first_input).wait()
 
-        if second_net.is_src():
-            with second_input_dfb.reserve() as second_input:
-                ttl.copy(input_tensor[0, 1], second_input).wait()
+        with second_input_dfb.reserve() as second_input:
+            ttl.copy(input_tensor[0, 1], second_input).wait()
 
 
 torch.manual_seed(42)

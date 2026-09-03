@@ -10,6 +10,7 @@
 * [Grid](#grid)
     * [Grid size function](#grid-size-function)
     * [Node function](#node-function)
+    * [Device domain](#device-domain)
 * [Dataflow buffer](#dataflow-buffer)
 * [Block](#block)
     * [Block states](#block-states)
@@ -54,7 +55,7 @@
 | 0.18 | 06/16/2026 | Add `ttl.raw_element_read` and `ttl.raw_element_write` |
 | 0.19 | 06/15/2026 | Unified-body `ttl.operation` with thread assignment and composition; add multi-kernel operation with explicit kernels |
 | 0.20 | 06/23/2026 | Add `ttl.exp` hardware flags and scaled exponential canonicalization |
-| 0.21 | 09/03/2026 | Add `ttl.read_index`, `ttl.wait_any`, dataflow-buffer allocation groups, waited-block replacement, and external-call inspection contracts |
+| 0.21 | 09/03/2026 | Add `ttl.read_index`, `ttl.wait_any`, dataflow-buffer allocation groups, waited-block replacement, external-call inspection contracts, logical device domains, and multidevice PipeNets |
 
 
 ## Introduction
@@ -202,7 +203,7 @@ finally:
 
 ## Grid
 
-A *grid* defines a space of nodes to which the TT-Lang operation is submitted for execution. A node corresponds to a single Tensix Core and is a minimal unit capable of executing a TT-Lang program. In a single-chip case where node-to-node communication is conducted over Network-on-Chip (NoC), the grid is two dimensional. In a multi-chip case where chip-to-chip communication is conduced over TT-Fabric, the grid has additional mesh dimensions representing different levels of connectivity (same card, same host, same rack etc). There is also Single-Program-Multiple-Data (SPMD) mode in which the grid remains two dimensional while the TT-Lang operation is submitted for execution on multiple chips. In SPMD mode TT-Lang operation instances have the same behaviour on different chips while working on different partitions of data, which significantly simplifies reasoning about it. The SPMD functionality is based on [TT-NN Mesh Devices](https://github.com/tenstorrent/tt-metal/blob/main/tech_reports/Programming_Mesh_of_Devices/Programming_Mesh_of_Devices_with_TT-NN.md).
+A *grid* defines the nodes on one device that execute a TT-Lang operation. A node corresponds to one Tensix Core and is the minimal unit capable of executing a TT-Lang program. Node-to-node communication within the grid uses Network-on-Chip (NoC). For multidevice execution, the same grid is instantiated on each selected device; a [device domain](#device-domain) separately defines the logical device coordinates. `ttl.grid_size` and `ttl.node` therefore describe nodes within one device and do not expose physical fabric topology.
 
 
 ### Grid size function
@@ -219,13 +220,13 @@ The `ttl.grid_size` function returns the size of the grid. The function takes an
 #### Grid size example
 
 ```py
-# for (8, 8) single chip or SPMD grid gets x_size = 64
+# flattening grid (8, 8) to one dimension gives x_size = 64
 x_size = ttl.grid_size(dims=1)
 
-# for (8, 8, 8) multi-chip grid gets x_size = 8, y_size = 64
+# preserving both grid dimensions gives x_size = 8, y_size = 8
 x_size, y_size = ttl.grid_size(dims=2)
 
-# for (8, 8) single-chip or SPMD grid gets x_size = 8, y_size = 8, z_size = 1
+# requesting a third dimension pads it with z_size = 1
 x_size, y_size, z_size = ttl.grid_size(dims=3)
 ```
 
@@ -244,15 +245,32 @@ The `ttl.node` function returns *node coordinates* of the current node. Node coo
 #### Node example
 
 ```py
-# for (8, 8) single chip or SPMD grid gets x = [0, 64)
+# flattening grid (8, 8) gives x = [0, 64)
 x = ttl.node(dims=1)
 
-# for (8, 8, 8) multi-chip grid gets x = [0, 8), y = [0, 64)
+# preserving both grid dimensions gives x = [0, 8), y = [0, 8)
 x, y = ttl.node(dims=2)
 
-# for (8, 8) single-chip or SPMD grid gets x = [0, 8), y = [0, 8), z = 0
+# requesting a third dimension pads it with z = 0
 x, y, z = ttl.node(dims=3)
 ```
+
+
+### Device domain
+
+A *device domain* is a logical rectangular index set of devices. It is independent of physical placement and fabric topology. A domain may contain one named component or a product of named components. A *device reference* identifies one member by its component coordinates. Device references use zero-based coordinates, and `current_index()` assigns them a zero-based row-major order across all component dimensions.
+
+An operation declares multidevice execution with the `device_domain=` argument to `ttl.operation`. The operation's grid executes on every device in the domain. `DeviceDomain.is_current()` and `DeviceDomain.current_index()` provide logical-device predicates and indexing within kernels. At execution, the flattened domain extent must match the logical extent of the TT-NN mesh device. The runtime maps logical coordinates to that mesh arrangement; physical route selection is not part of the device-domain semantics.
+
+| Type/Function | Description |
+| :---- | :---- |
+| `ttl.DeviceDomain(extent: Sequence[int], *, name: str = "device")` | Constructs one named rectangular logical device domain. |
+| `ttl.DeviceDomain.product(**components)` | Constructs a product of named rectangular domains or extents. |
+| `ttl.DeviceRef(*coordinates, **named_coordinates)` | Identifies one logical device by positional or named component coordinates. |
+| `ttl.DeviceRange(lo: ttl.DeviceRef, hi: ttl.DeviceRef)` | Describes a half-open rectangular range of logical devices. |
+| `ttl.DeviceDomain.current_index(self) -> int` | Returns the current logical device's row-major index within a kernel. |
+| `ttl.DeviceDomain.is_current(self, device) -> bool` | Tests whether the kernel executes on the specified logical device. |
+| `ttl.DeviceDomain.index_order(self, device) -> int` | Returns a device reference's row-major index at operation construction time. |
 
 
 ## Dataflow buffer
@@ -353,10 +371,10 @@ A compute thread may replace a block acquired by `wait` after reading its
 original contents. Replacement does not change queue occupancy or advance the
 read or write pointer; the matching `pop` releases the block. The compiler
 accepts this only for a DFB with `block_count=1` when the `wait` acquires its
-complete capacity as the compute kernel's first DFB access, exactly one store
-whose expression reads the original contents executes in straight-line code,
-no other access overlaps the replacement, and every use of the replacement
-completes before the matching `pop`.
+complete capacity as that compute kernel's first access to the DFB, exactly one
+store whose expression reads the original contents executes in straight-line
+code, no other access overlaps the replacement, and every use of the
+replacement completes before the matching `pop`.
 
 #### Waited block replacement example
 
@@ -377,11 +395,11 @@ page formats and storage kinds, and their uses must not require incompatible
 compute-kernel configuration. Their accesses must not overlap on any node, each
 access must complete before another member uses the allocation, and queue
 transactions must preserve compatible read and write pointer positions at every
-handoff. Scratch members may have different
-block shapes and counts; their shared allocation uses the greatest required
-byte capacity. Tensor-backed members must use the same tensor byte range, block
-shape, block count, element type, and tile format. An allocation group does not
-synchronize execution or reset DFB state.
+handoff. Scratch members may have different block shapes and counts; their
+shared allocation uses the greatest required byte capacity. Tensor-backed
+members must use the same tensor byte range, block shape, block count, element
+type, and tile format. An allocation group does not synchronize execution or
+reset DFB state.
 
 #### Dataflow buffer allocation group example
 
@@ -407,9 +425,10 @@ may declare synchronous, read-only DFB access with
 `dfb_accesses=[ttl.DFBAccess.inspect(dfb)]`. The callee may read the named DFB's
 descriptor or contents, but it must not publish or consume data, change the DFB,
 or retain access after returning. The compiler does not inspect the C++ body;
-the declaration is its access contract. The annotation adds no C++ argument and
-provides no synchronization. If the compiler cannot determine an external
-call's DFB effects, it conservatively prevents overlapping physical reuse.
+the declaration is its access contract. The annotation adds neither a C++
+argument nor DFB synchronization. An incomplete access summary prevents
+physical reuse across the call unless the affected DFBs execute on disjoint
+nodes or a following synchronized reset proves completion.
 
 #### External DFB inspection example
 
@@ -875,19 +894,32 @@ Condition body function is invoked for each pipe in case of `if_src` if the curr
 
 A pipe net is constructed either in the scope of an operation function or in an enclosing scope and captured by the operation function. It can only be used with its `if_src` and `if_dst` functions and is executed on a data movement thread. The corresponding  `ttl.copy` where a pipe is a source or a destination can be called only inside of a condition body function. Calls into `if_src` and `if_dst` can be nested within condition functions for different pipe nets.
 
+A pipe net constructed from a `TransferGraph` applies the same protocol across logical devices. For every device edge, each node in the operation grid communicates with the node having the same coordinates on the destination device. The source and destination callback identities expose the remote device's row-major index. All graph-based pipe nets in one operation use the same device domain; `ttl.operation` infers that domain when `device_domain=` is omitted.
+
+A transfer graph contains either explicit edges or one structured relation. `axis_neighbor` and `stencil` optionally wrap at domain boundaries. `gather`, `scatter`, and `all_to_all` operate within one named component for each fixed combination of the other component coordinates. The `component=` argument is required for a product domain and optional for a single-component domain. Graph PipeNets currently support point-to-point device edges; `DeviceRange` destinations require multicast lowering and are not supported.
+
 The *active set* of an operation is the union, over every pipe in every pipe net in scope of the operation (constructed in its body or captured from an enclosing scope), of the pipe's source coordinate and its destination coordinate or range. The *role domain* of a pipe net is its per-net active set; `pipe_net.is_src()`, `pipe_net.is_dst()`, and `pipe_net.is_active()` are predicates that evaluate to `True` on the source role, destination role, and their union, respectively.
 The active predicates are only required for code that includes pipe-coupled computations. Any non-pipe-related code segment can execute on all nodes of the operation's grid or have its own guards that are independent of pipes.
 
 | Function | Description |
 | :---- | :---- |
 | `ttl.PipeNet[DstT](pipes: List[ttl.Pipe[DstT]]) -> ttl.PipeNet[DstT]` | Constructs pipe net. |
+| `ttl.PipeNet(*, graph: ttl.TransferGraph) -> ttl.PipeNet` | Constructs a multidevice pipe net from a transfer graph. |
+| `ttl.TransferGraph.edges(domain, edges)` | Constructs an explicit logical device-edge relation. |
+| `ttl.TransferGraph.axis_neighbor(domain, *, component=None, axis=0, offset=1, wrap=False)` | Constructs positive-offset neighbor edges along one component axis. |
+| `ttl.TransferGraph.stencil(domain, *, offsets, component=None, wrap=False)` | Constructs the union of the specified nonzero component-coordinate offsets. |
+| `ttl.TransferGraph.gather(domain, root, *, component=None)` | Constructs edges from every non-root device to the root while holding other component coordinates fixed. |
+| `ttl.TransferGraph.scatter(domain, source, *, component=None)` | Constructs edges from the source to every other device while holding other component coordinates fixed. |
+| `ttl.TransferGraph.all_to_all(domain, *, component=None)` | Constructs every ordered pair of distinct devices while holding other component coordinates fixed. |
 | `ttl.PipeNet[DstT].if_src(self, cond_fun: Callable[[ttl.SrcPipeIdentity[DstT]], None])` | Call condition function for each pipe in the pipe net that is a source. |
 | `ttl.PipeNet[DstT].if_dst(self, cond_fun: Callable[[ttl.DstPipeIdentity], None])` | Call condition function for each pipe in the pipe net that is a destination. |
 | `ttl.PipeNet[DstT].is_src(self) -> bool` | Predicate: `True` on the current node if and only if it is a source coordinate of any pipe in the pipe net. |
 | `ttl.PipeNet[DstT].is_dst(self) -> bool` | Predicate: `True` on the current node if and only if it is in the destination range of any pipe in the pipe net. |
 | `ttl.PipeNet[DstT].is_active(self) -> bool` | Predicate: `True` on the current node if and only if `is_src()` or `is_dst()` is `True`. |
 | `@property ttl.SrcPipeIdentity[DstT].dst(self) -> DstT` | Get destination node or node range for pipe in `if_src`. |
+| `@property ttl.SrcPipeIdentity.destination_device_index(self) -> int` | Get the destination device's row-major domain index for a graph-based pipe net. |
 | `@property ttl.DstPipeIdentity.src(self) -> ttl.NodeCoord` | Get source node for pipe in `if_dst`. |
+| `@property ttl.DstPipeIdentity.source_device_index(self) -> int` | Get the source device's row-major domain index for a graph-based pipe net. |
 
 ![ttl.PipeIdentity diagram](ttl-pipe-identity.png)
 
@@ -1165,44 +1197,40 @@ The `ttl.copy` function expresses data movement between a source and destination
 
 ### Selecting among completed receives
 
-A receiver can have several outstanding PipeNet receives. Waiting for one specific request delays work when another completes first. `ttl.wait_any` permits the receiver to process an available request and rotate priority when several are complete.
+A receiver can have several outstanding PipeNet receives. Waiting for one specific request delays selection when another completes first. `ttl.wait_any` identifies an available request and rotates priority when several are complete.
 
 The caller supplies a nonempty ordered tuple of distinct receive requests and a starting index. The starting index is normalized modulo the tuple length. Candidates are inspected in cyclic tuple order beginning at that index, and the first completed candidate in that order is selected. If no candidate has completed, `ttl.wait_any` blocks and repeats the inspection. `ReadyReceive.index()` returns the selected tuple index.
 
-The returned value establishes completion only for the selected request. Nonselected requests remain pending with their destination DFB reservations and may be included in a later `ttl.wait_any` call or awaited directly. A destination block may be accessed or published only in control flow that proves its request was selected. Starting the next selection after the previous index provides rotating priority. PipeNet completion resources remain compiler-owned and are not exposed by the source language.
+The returned value establishes completion only for the selected request. Nonselected requests remain pending with their destination DFB reservations and may be included in a later `ttl.wait_any` call or awaited directly. Current compiler completion analysis requires an explicit `ReceiveRequest.wait()` before publishing any candidate destination block. Starting the next selection after the previous index provides rotating priority. PipeNet completion resources remain compiler-owned and are not exposed by the source language.
 
 #### Receive selection example
 
 ```py
-# Both receives are posted before either one is awaited. Waiting
-# on first_request directly would block this thread even if
-# second_request had already completed.
+# Both receives are posted before either one is awaited.
 first_block = first_landing_dfb.reserve()
 second_block = second_landing_dfb.reserve()
 first_request = ttl.copy(first_pipe, first_block)
 second_request = ttl.copy(second_pipe, second_block)
 
-completed = ttl.wait_any(
-    (first_request, second_request), start=next_index
-)
+with first_input_dfb.wait() as first_input:
+    ttl.copy(first_input, first_pipe).wait()
+with second_input_dfb.wait() as second_input:
+    ttl.copy(second_input, second_pipe).wait()
+
+completed = ttl.wait_any((first_request, second_request), start=1)
 selected = completed.index()
 
+first_request.wait()
+first_block.push()
+second_request.wait()
+second_block.push()
+
 if selected == 0:
-    first_block.push()
     with first_landing_dfb.wait() as first_result:
         ttl.copy(first_result, output_tensor[0, 0]).wait()
-
-    # The nonselected request remains pending until it is awaited.
-    second_request.wait()
-    second_block.push()
-
-if selected == 1:
-    second_block.push()
+elif selected == 1:
     with second_landing_dfb.wait() as second_result:
         ttl.copy(second_result, output_tensor[0, 0]).wait()
-
-    first_request.wait()
-    first_block.push()
 ```
 
 
@@ -1275,13 +1303,13 @@ def writer():
 
 | Function | Description |
 | :---- | :---- |
-| `ttl.copy(src: ttl.Block, dst: ttl.TensorSlice) -> ttl.Transfer`<br><br>`ttl.copy(src: ttl.TensorSlice, dst: ttl.Block) -> ttl.Transfer`<br><br>`ttl.copy(src: ttl.Block, dst: ttl.PipeIdentity) -> ttl.Transfer` | Copy data between a block and a tensor slice, or send a block through a pipe. **This function is non-blocking.** The compiler statically checks if the shape of block and tensor slice are compatible and if the shape of block sent to a pipe is compatible with the shape of block received from the same pipe. When a pipe is used as a destination there must be a corresponding `ttl.copy` where the same pipe is used as source. Furthermore, `ttl.copy` with pipe must be guarded by the pipe net's `if_src` where this pipe is the source. |
+| `ttl.copy(src: ttl.Block, dst: ttl.TensorSlice) -> ttl.CopyTransferHandler`<br><br>`ttl.copy(src: ttl.TensorSlice, dst: ttl.Block) -> ttl.CopyTransferHandler`<br><br>`ttl.copy(src: ttl.Block, dst: ttl.PipeIdentity) -> ttl.CopyTransferHandler` | Copy data between a block and a tensor slice, or send a block through a pipe. **This function is non-blocking.** The compiler statically checks if the shape of block and tensor slice are compatible and if the shape of block sent to a pipe is compatible with the shape of block received from the same pipe. When a pipe is used as a destination there must be a corresponding `ttl.copy` where the same pipe is used as source. Furthermore, `ttl.copy` with pipe must be guarded by the pipe net's `if_src` where this pipe is the source. |
 | `ttl.copy(src: ttl.PipeIdentity, dst: ttl.Block) -> ttl.ReceiveRequest` | Post a receive from a pipe into a reserved destination block. **This function is non-blocking.** There must be a corresponding pipe send, and the receive must be guarded by the pipe net's `if_dst` where this pipe is the destination. |
-| `ttl.Transfer.wait()` | Wait for data transfer to complete. Transfer handle cannot be used after this function is called.  **This function is blocking.** |
+| `ttl.CopyTransferHandler.wait()` | Wait for data transfer to complete. Transfer handle cannot be used after this function is called. **This function is blocking.** |
 | `ttl.ReceiveRequest.wait()` | Wait for this receive to complete. The destination block is safe to access or publish when the function returns. **This function is blocking.** |
-| `ttl.wait_any(requests: Tuple[ttl.ReceiveRequest, ...], start: ttl.Index = 0) -> ttl.ReadyReceive` | Wait until at least one request completes, then select the first completed request in cyclic tuple order beginning at `start`. The tuple must be nonempty and contain distinct requests. **This function is blocking.** |
+| `ttl.wait_any(requests: Tuple[ttl.ReceiveRequest, ...], start: int \| ttl.Index = 0) -> ttl.ReadyReceive` | Wait until at least one request completes, then select the first completed request in cyclic tuple order beginning at `start`. The tuple must be nonempty and contain distinct requests. **This function is blocking.** |
 | `ttl.ReadyReceive.index() -> ttl.Index` | Return the zero-based tuple index selected by `ttl.wait_any`. |
-| `ttl.GroupTransfer.add(xf: ttl.Transfer)` | Add transfer handle to a group. This function cannot be called after `ttl.GroupTransfer.wait_all` was called. |
+| `ttl.GroupTransfer.add(xf: ttl.CopyTransferHandler)` | Add transfer handle to a group. This function cannot be called after `ttl.GroupTransfer.wait_all` was called. |
 | `ttl.GroupTransfer.wait_all()` | Wait for all data transfers in group to complete. Group transfer cannot be used after this function is called. **This function is blocking.** |
 
 
@@ -1505,8 +1533,11 @@ def matmul_read():
 | *Compute kernel function* | A kernel function that encapsulates compute behavior. |
 | *TT-NN tensor* | Tensor representation in TT-NN environment. Encapsulates key meta information such as shape, data type, layout, storage and memory configuration. |
 | *Node* | A minimal unit capable of executing a TT-Lang program. |
-| *Grid* | A multidimensional space of nodes. A single chip is represented by a 2D grid. A multichip system is represented by 3D and higher dimensional grids. |
+| *Grid* | A multidimensional space of nodes on one device. The same grid is instantiated on each device during multidevice execution. |
 | *Node coordinates* | Coordinates of a given node within a grid. Each dimension is zero based and contiguous, which corresponds to logical indexing. |
+| *Device domain* | A logical rectangular index set of devices, independent of physical placement and fabric topology. |
+| *Device reference* | Coordinates identifying one member of a device domain. |
+| *Transfer graph* | An explicit or structured relation describing directed transfers between logical devices. |
 | *Dataflow buffer* | A communication primitive for synchronizing the passing of data between threads on the same node. Maintains memory space that is written by a producer and read by a consumer as well as synchronization mechanism necessary to communicate between producer and consumer to avoid data races. |
 | *Dataflow buffer’s shape* | A shape of a block of memory acquired from a dataflow buffer to be either written by the producer or read by the consumer. |
 | *Dataflow buffer’s shape unit* | A unit in which dataflow buffer shape is expressed. When a dataflow buffer is created in likeness of tiled TT-NN Tensor the unit is a tile. If it is created in likeness of row-major TT-NN the unit is a scalar element. |
@@ -1517,7 +1548,7 @@ def matmul_read():
 | *Block* | A block of memory acquired from a dataflow buffer. On a compute thread a block can participate in an expression as input, and also be used to store the expression's result. On a data movement thread a block can participate in copy operation as a source or destination. |
 | *Block expression* | A block expression is a Python expression using built-in Python operators as well as TT-Lang math functions where operands are either blocks or block expressions. |
 | *Pipe* | A pipe is a communication primitive for organizing the passing of data between data movement threads on different nodes. |
-| *Pipe net* | A pipe net is a communication primitive that groups pipes into a network. While a single pipe is capable of representing the passing of data from a single node, a network of pipes generalizes to a data passing pattern over the entire grid. A pipe net is constructed from the list of pipes, which is typically created by Python list comprehension over one or more aspects of a grid. |
+| *Pipe net* | A communication primitive that groups node pipes or applies the pipe protocol to a logical device transfer graph. |
 | *Pipe net’s condition body function* | A Python function passed to be executed conditionally if the current node is a source, a destination, or both in the given pipe net. A condition function can be called multiple times sequentially if the current node participates in multiple pipes. |
 | *Tensor slice* | A Python slice expression used with TT-NN tensor to specify a view to be used as a source or a destination in a copy operation. |
 | *Transfer handle* | A handle to an asynchronous copy operation. A transfer handle is used as a barrier to ensure that operation is finished and the corresponding source or destination block is safe to use. |
@@ -1679,7 +1710,7 @@ number of SFPU lane iterations and defaults to 8.
 | :---- | :---- | :---- |
 | Single-device grid `ttl.grid_size` and `ttl.node` with `dims=2`| 0.1.7 | 0.1.7 |
 | Single-device grid `ttl.grid_size` and `ttl.node` with any `dims` | 0.1.7 | N/S |
-| Multidevice grid `ttl.grid_size` and `ttl.node` | N/S | N/S |
+| `ttl.DeviceDomain`, `ttl.DeviceRef`, and `ttl.TransferGraph` | N/S | 1.0.0 |
 | [TT-NN Mesh Devices](https://github.com/tenstorrent/tt-metal/blob/main/tech_reports/Programming_Mesh_of_Devices/Programming_Mesh_of_Devices_with_TT-NN.md) | 0.1.8 | 0.1.8 |
 | [TT-NN L1 Sharded Tensors](https://github.com/tenstorrent/tt-metal/blob/main/tech_reports/tensor_sharding/tensor_sharding.md) | 0.1.8 | 0.1.8 |
 | `ttl.make_dataflow_buffer_like` with higher than two-dimensional `shape` | 0.1.7 | 0.1.7 |
@@ -1692,13 +1723,13 @@ number of SFPU lane iterations and defaults to 8.
 | Waited-block replacement with `ttl.Block.store` | 1.0.0 | 1.0.0 |
 | External DFB inspection with `ttl.DFBAccess.inspect` | N/S | 1.0.0 |
 | Overwriting and accumulation through summation (`+=`) for block expressions | 0.1.7 | 1.0.0 |
-| `ttl.copy` and `ttl.Transfer` | 0.1.7 | 0.1.7 |
+| `ttl.copy` and `ttl.CopyTransferHandler` | 0.1.7 | 0.1.7 |
 | `ttl.ReceiveRequest`, `ttl.ReadyReceive`, and `ttl.wait_any` | 1.0.0 | 1.0.0 |
 | `ttl.GroupTransfer` | 1.0.0 | N/S |
 | `ttl.Semaphore` on 2D grid | N/S | N/S |
 | `ttl.Semaphore` on 4D grid | N/S | N/S |
 | `ttl.PipeNet` and `ttl.Pipe` on single-device grid | 0.1.7 | 1.0.0 |
-| `ttl.PipeNet` and `ttl.Pipe` on multidevice grid | N/S | N/S |
+| Graph-based `ttl.PipeNet` with point-to-point device edges | N/S | 1.0.0 |
 | `ttl.signpost` (ignored in simulator) | 0.1.7 | 0.1.7 |
 | Debug printing with `print` | 0.1.7 | 0.1.7 |
 | Built-in unary math operators: `-`, `abs` | 0.1.7 | 0.1.7 |
