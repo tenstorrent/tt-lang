@@ -4806,27 +4806,6 @@ def TTKernel_TensorAccessorArgsOp : TTKernel_Op<"TensorAccessorArgs",
       `prev_args.next_compile_time_args_offset()` (for CTA) or
       `prev_args.next_common_runtime_args_offset()` (for CRTA).
     3. Otherwise, use cta_base/crta_base integer constants.
-
-    Examples:
-    ```mlir
-    // Literal offsets
-    %c0 = arith.constant 0 : i32
-    %args = ttkernel.TensorAccessorArgs(%c0, %c0) : (i32, i32) -> !ttkernel.TensorAccessorArgs
-    // Generates: TensorAccessorArgs<0, 0>()
-
-    // CTA+CRTA chaining (common pattern)
-    %args_src = ttkernel.TensorAccessorArgs(%c0, %c0) : (i32, i32) -> !ttkernel.TensorAccessorArgs
-    %args_dst = ttkernel.TensorAccessorArgs(prev = %args_src) : (!ttkernel.TensorAccessorArgs) -> !ttkernel.TensorAccessorArgs
-    // Generates: TensorAccessorArgs<args_src.next_compile_time_args_offset(), args_src.next_common_runtime_args_offset()>()
-
-    // Selective override: chain CTA from prev, use literal CRTA
-    %args_custom = ttkernel.TensorAccessorArgs(prev = %args_src) {crta_expr = "0"} : (!ttkernel.TensorAccessorArgs) -> !ttkernel.TensorAccessorArgs
-    // Generates: TensorAccessorArgs<args_src.next_compile_time_args_offset(), 0>()
-
-    // Constexpr expression (no chaining)
-    %args_expr = ttkernel.TensorAccessorArgs(%c0, %c0) {cta_expr = "get_offset()"} : (i32, i32) -> !ttkernel.TensorAccessorArgs
-    // Generates: TensorAccessorArgs<get_offset(), 0>()
-    ```
   }];
 
   let arguments = (ins
@@ -4843,16 +4822,38 @@ def TTKernel_TensorAccessorArgsOp : TTKernel_Op<"TensorAccessorArgs",
 }
 
 def TTKernel_TensorAccessorOp : TTKernel_Op<"TensorAccessor", [Pure]> {
-  let summary = "MakeTensorAccessorFromArgs";
+  let summary = "Construct a distributed tensor accessor";
   let description = [{
-    TensorAccessor constructor.
+    Constructs a tensor accessor from its compile-time and runtime argument
+    descriptor and buffer address. When `page_size_in` is omitted, the
+    descriptor's aligned page size determines the accessor page size. An
+    explicit page size overrides the descriptor value.
   }];
 
-  let arguments = (ins TTKernel_TensorAccessorArgs:$args, I32:$bank_base_address_in, I32:$page_size_in);
+  let arguments = (ins TTKernel_TensorAccessorArgs:$args,
+                       I32:$bank_base_address_in,
+                       Optional<I32>:$page_size_in);
   let results = (outs TTKernel_TensorAccessor:$result);
 
   let assemblyFormat = [{
-    `(` $args `,` $bank_base_address_in `,` $page_size_in `)` attr-dict `:` functional-type(operands, results)
+    `(` $args `,` $bank_base_address_in (`,` $page_size_in^)? `)` attr-dict
+        `:` functional-type(operands, results)
+  }];
+}
+
+def TTKernel_LocalTensorAccessorOp
+    : TTKernel_Op<"LocalTensorAccessor", [Pure]> {
+  let summary = "Construct a local SRAM byte accessor";
+  let description = [{
+    Constructs `LocalTensorAccessor<uint8_t>` from the base address of a tensor
+    in the executing core's local SRAM. The byte element type preserves
+    the tensor's raw storage independently of logical dtype and layout.
+  }];
+  let arguments = (ins I32:$bank_base_address_in);
+  let results = (outs TTKernel_LocalTensorAccessor:$result);
+  let assemblyFormat = [{
+    `(` $bank_base_address_in `)` attr-dict
+        `:` functional-type(operands, results)
   }];
 }
 

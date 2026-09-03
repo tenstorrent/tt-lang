@@ -73,6 +73,10 @@ void populateTTKernelModule(nb::module_ &m) {
   tt_type_class<tt::ttkernel::TensorAccessorType>(m, "TensorAccessorType")
       .def_static("get", &ttlangTTKernelTensorAccessorTypeGet);
 
+  tt_type_class<tt::ttkernel::LocalTensorAccessorType>(
+      m, "LocalTensorAccessorType")
+      .def_static("get", &ttlangTTKernelLocalTensorAccessorTypeGet);
+
   tt_type_class<tt::ttkernel::TensorAccessorPageMappingType>(
       m, "TensorAccessorPageMappingType")
       .def_static("get", &ttlangTTKernelTensorAccessorPageMappingTypeGet);

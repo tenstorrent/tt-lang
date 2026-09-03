@@ -447,9 +447,9 @@ struct DPrintLowering : OpConversionPattern<DPrintOp> {
 
         auto parentFunc = op->getParentOfType<func::FuncOp>();
         auto baseCTAAttr =
-            parentFunc->getAttrOfType<IntegerAttr>("ttl.base_cta_index");
+            parentFunc->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttrName);
         auto crtaIndicesAttr =
-            parentFunc->getAttrOfType<ArrayAttr>("ttl.crta_indices");
+            parentFunc->getAttrOfType<ArrayAttr>(kCRTAIndicesAttrName);
         if (!baseCTAAttr || !crtaIndicesAttr) {
           return op.emitError(
               "tensor accessor print requires ttl.base_cta_index and "

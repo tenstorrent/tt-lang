@@ -113,7 +113,6 @@ from .ttl_api import (
     _build_pipenet_graph,
     _canonical_tensor_args,
     _default_mesh_program_placements_with_domain,
-    _detect_memory_space_from_tensor,
     _lower_program_to_kernel,
     _make_operation_wrapper,
     _run_thread_compiler,
@@ -750,14 +749,6 @@ def _compile_atom(
     for idx, (pname, val) in enumerate(bound_arguments.items()):
         if is_ttnn_tensor(val):
             register_tensor_name(val, pname, index=idx)
-
-    # Detect L1 vs DRAM addressing from the first tensor (matching
-    # @ttl.operation), since the tensor accessor type depends on it.
-    first_tensor = next(
-        (v for v in bound_arguments.values() if is_ttnn_tensor(v)), None
-    )
-    if first_tensor is not None:
-        memory_space = _detect_memory_space_from_tensor(first_tensor, memory_space)
 
     _reset_cb_counter()
     _set_current_grid(grid)

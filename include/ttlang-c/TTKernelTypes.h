@@ -41,6 +41,9 @@ MLIR_CAPI_EXPORTED MlirType
 ttlangTTKernelTensorAccessorTypeGet(MlirContext ctx);
 
 MLIR_CAPI_EXPORTED MlirType
+ttlangTTKernelLocalTensorAccessorTypeGet(MlirContext ctx);
+
+MLIR_CAPI_EXPORTED MlirType
 ttlangTTKernelTensorAccessorPageMappingTypeGet(MlirContext ctx);
 
 MLIR_CAPI_EXPORTED MlirAttribute ttlangTTKernelArgAttrGet(MlirContext ctx,

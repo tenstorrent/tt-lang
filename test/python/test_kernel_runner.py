@@ -19,6 +19,7 @@ from typing import NamedTuple
 import weakref
 
 import pytest
+import ttl.layouts as ttl_layouts
 
 from ttl import (
     CoreRuntimeArgs,
@@ -2145,6 +2146,138 @@ def test_build_kernel_descriptors_materializes_planned_resources(monkeypatch):
     assert descriptors[0].defines == [("MODE", "planned")]
     assert len(descriptors[0].runtime_args) == 1
     assert descriptors[0].runtime_args[1][0] == [4, 5]
+
+
+def _local_tensor_test_environment():
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.TensorMemoryLayout = SimpleNamespace(
+        HEIGHT_SHARDED="height",
+        WIDTH_SHARDED="width",
+        BLOCK_SHARDED="block",
+    )
+    fake_ttnn.BufferType = SimpleNamespace(L1="l1", L1_SMALL="l1-small", DRAM="dram")
+    return fake_ttnn
+
+
+class _LocalTensorTestDouble:
+    def __init__(self, buffer_type, memory_layout, shard_grid):
+        self._memory_config = SimpleNamespace(
+            buffer_type=buffer_type,
+            memory_layout=memory_layout,
+            shard_spec=(
+                None if shard_grid is None else SimpleNamespace(grid=shard_grid)
+            ),
+        )
+
+    def memory_config(self):
+        return self._memory_config
+
+    @staticmethod
+    def buffer_address():
+        return 0x2000
+
+
+def test_build_kernel_descriptors_accepts_complete_local_tensor_shards(monkeypatch):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    tensor = _LocalTensorTestDouble("l1-small", "block", full_grid)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="compute",
+        tensor_indices=[0],
+        local_tensor_indices=[0],
+        config=object(),
+    )
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        tensor_accessor_args=[],
+        core_ranges=full_grid,
+        grid_cols=2,
+        grid_rows=1,
+        num_cbs=0,
+    )
+
+    assert descriptors[0].common_runtime_args == [0x2000]
+
+
+def test_local_tensor_access_requires_runtime_address_metadata(monkeypatch):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    tensor = _LocalTensorTestDouble("l1", "height", full_grid)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="compute",
+        tensor_indices=[],
+        local_tensor_indices=[0],
+        config=object(),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="local tensor indices must also appear in tensor runtime arguments",
+    ):
+        kernel_runner._validate_local_tensor_access(spec, [tensor], full_grid)
+
+
+def test_local_tensor_access_rejects_out_of_range_tensor_index(monkeypatch):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    tensor = _LocalTensorTestDouble("l1", "height", full_grid)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="compute",
+        tensor_indices=[1],
+        local_tensor_indices=[1],
+        config=object(),
+    )
+
+    with pytest.raises(ValueError, match="local tensor index 1 is outside"):
+        kernel_runner._validate_local_tensor_access(spec, [tensor], full_grid)
+
+
+@pytest.mark.parametrize(
+    ("buffer_type", "memory_layout", "shard_grid", "message"),
+    [
+        ("dram", "height", _FakeExplicitCoreRanges((0, 0), (1, 0)), "sharded SRAM"),
+        (
+            "l1",
+            "interleaved",
+            _FakeExplicitCoreRanges((0, 0), (1, 0)),
+            "height-, width-, or block-sharded",
+        ),
+        ("l1", "height", None, "has no shard specification"),
+        (
+            "l1",
+            "height",
+            _FakeExplicitCoreRanges((0, 0), (0, 0)),
+            "no shard on executing cores.*\\(1, 0\\)",
+        ),
+    ],
+    ids=["dram", "interleaved", "missing-spec", "missing-core"],
+)
+def test_local_tensor_access_rejects_invalid_runtime_storage(
+    monkeypatch, buffer_type, memory_layout, shard_grid, message
+):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    tensor = _LocalTensorTestDouble(buffer_type, memory_layout, shard_grid)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="compute",
+        tensor_indices=[0],
+        local_tensor_indices=[0],
+        config=object(),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        kernel_runner._validate_local_tensor_access(
+            spec, [tensor], _FakeExplicitCoreRanges((0, 0), (1, 0))
+        )
 
 
 # Reconfiguration addresses follow caller runtime arguments without renumbering them.
@@ -7212,6 +7345,55 @@ def test_emit_runner_source_uses_shared_pipe_resource_helpers(monkeypatch):
     assert "ttnn.create_global_semaphore(device, core_ranges, 0)" not in source
 
 
+def test_emit_runner_source_validates_tensor_configurations(monkeypatch):
+    expected_configuration = ((32, 32), "bfloat16", "l1-height-sharded")
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[],
+        cb_configs=[],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+        tensor_configurations=(expected_configuration,),
+    )
+    calls = []
+
+    def record_run(**kwargs):
+        calls.append(kwargs)
+        return "executed"
+
+    monkeypatch.setattr(
+        ttl_layouts,
+        "get_tensor_configuration",
+        lambda tensor: tensor.configuration,
+    )
+    emitted_runner = _load_emitted_runner(monkeypatch, source, record_run)
+
+    with pytest.raises(ValueError, match="Expected 1 tensor arguments, got 0"):
+        emitted_runner["run"]([], device=object())
+
+    matching_tensor = SimpleNamespace(configuration=expected_configuration)
+    assert emitted_runner["run"]([matching_tensor], device=object()) == "executed"
+    assert len(calls) == 1
+
+    mismatched_tensor = SimpleNamespace(
+        configuration=((32, 32), "bfloat16", "l1-width-sharded")
+    )
+    with pytest.raises(ValueError, match=r"mismatch at indices \[0\]"):
+        emitted_runner["run"]([mismatched_tensor], device=object())
+
+
+def test_emit_runner_source_rejects_wrong_tensor_configuration_count():
+    with pytest.raises(ValueError, match="expected 2, got 1"):
+        kernel_runner.emit_runner_source(
+            kernel_specs=[],
+            cb_configs=[],
+            grid_cols=1,
+            grid_rows=1,
+            num_tensors=2,
+            tensor_configurations=(("first",),),
+        )
+
+
 def test_emitted_runner_without_resources_executes_shared_runner(monkeypatch):
     calls = []
 
@@ -7628,13 +7810,25 @@ def test_emit_runner_source_preserves_positional_options():
         2,
         64,
         3,
+        4,
+        123,
+        [(0, 0)],
+        None,
+        [],
+        False,
+        None,
     )
 
     assert '"""Auto-generated runner for legacy_kernel."""' in source
-    assert "PROGRAM_HASH = None" in source
+    assert "PROGRAM_HASH = 123" in source
+    assert "TENSOR_CONFIGURATIONS = None" in source
+    assert "MESH_PROGRAM_PLACEMENTS = [" in source
+    assert "    (0, 0)," in source
+    assert "KERNEL_FABRIC_ROUTES = []" in source
     assert "NUM_PIPE_SYNC_SEMAPHORES = 2" in source
     assert "PIPE_SRAM_SCRATCH_BYTES = 64" in source
     assert "NUM_PIPE_GLOBAL_SEMAPHORES = 3" in source
+    assert "NUM_DFB_RESETS = 4" in source
 
 
 def test_emit_runner_file_preserves_positional_options(tmp_path):
@@ -7651,15 +7845,27 @@ def test_emit_runner_file_preserves_positional_options(tmp_path):
         2,
         64,
         3,
+        4,
+        123,
+        [(0, 0)],
+        None,
+        [],
+        False,
+        None,
     )
 
     assert result_path == str(output_path)
     source = output_path.read_text()
     assert '"""Auto-generated runner for legacy_kernel."""' in source
-    assert "PROGRAM_HASH = None" in source
+    assert "PROGRAM_HASH = 123" in source
+    assert "TENSOR_CONFIGURATIONS = None" in source
+    assert "MESH_PROGRAM_PLACEMENTS = [" in source
+    assert "    (0, 0)," in source
+    assert "KERNEL_FABRIC_ROUTES = []" in source
     assert "NUM_PIPE_SYNC_SEMAPHORES = 2" in source
     assert "PIPE_SRAM_SCRATCH_BYTES = 64" in source
     assert "NUM_PIPE_GLOBAL_SEMAPHORES = 3" in source
+    assert "NUM_DFB_RESETS = 4" in source
 
 
 def test_emit_runner_source_with_mesh_program_placements():
