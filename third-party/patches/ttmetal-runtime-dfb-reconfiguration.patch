@@ -327,17 +327,17 @@ index 1699a25e64d..f67ea368ceb 100644
 +    }
 +}
 +
- // METAL 2.0 only:
- // This is only invoked for Metal 2.0 kernels created via the new ProgramSpec host APIs.
- // Legacy kernels (created via CreateKernel) do not get kernel_bindings_generated.h.
-@@ -403,6 +421,7 @@ void jit_build_genfiles_triscs_src(
+ // Writes the named compile-time-arg map header, which build.cpp force-includes (-include) in place
+ // of a -DKERNEL_COMPILE_TIME_ARG_MAP define; see NAMED_CT_ARG_MAP_HEADER for why the map cannot ride
+ // on the command line. Emitted for any kernel with named CT args, Metal 2.0 or legacy, blaze or not.
+@@ -590,6 +608,7 @@ void jit_build_genfiles_triscs_src(
          write_kernel_bindings_generated_header(out_dir, settings);
          write_kernel_args_generated_header(out_dir, settings);
      }
 +    write_runtime_dfb_reconfiguration_header(out_dir, settings);
- 
-     const string unpack_cpp = out_dir + "chlkc_unpack.cpp";
-     const string math_cpp = out_dir + "chlkc_math.cpp";
+     // No prolog #include: force-included by the compile recipe instead, so the map is defined ahead
+     // of any header that reads it (api/compile_time_args.h).
+     write_named_ct_arg_map_header(out_dir, settings);
 @@ -523,8 +542,8 @@ void emit_unpack_data_formats(
      // DataFormat values fit in a byte (Invalid==255); emit as uint8_t to save 3B/entry of LDM (the
      // .data region shares the TRISC's 2KB local memory with the stack). Matches pack_src/dst_format
@@ -440,9 +440,8 @@ index 1699a25e64d..f67ea368ceb 100644
             "#if defined(UCK_CHLKC_MATH)\n"
             "#include \"llk_defs.h\"\n";
      emit_math_scalar_descriptors(out, desc);
-@@ -818,14 +858,15 @@ void generate_all_descriptors(const JitBuildEnv& env, const JitBuildOptions& opt
+@@ -818,13 +858,14 @@ void generate_all_descriptors(const JitBuildEnv& env, const JitBuildOptions& opt
      // if the original input format is 8-bit (Int8, UInt8, Fp8_e4m3, Lf8) since those formats
-     // do not require the tilize workaround. This is needed to determine whether to skip the workaround in llk_pack_init.
      out << "#if defined(UCK_CHLKC_PACK)\n";
 -    emit_formats_array(out, "constexpr uint8_t", "unpack_src_format", max_cbs, fmts.unpack_src);
 -    out << "#endif\n";   // if pack

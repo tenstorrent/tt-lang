@@ -95,9 +95,10 @@ class _FakeExplicitCoreRanges:
 
 
 class _FakePerCoreDeviceTensor:
-    def __init__(self, grid, addresses):
+    def __init__(self, grid, addresses, device_coordinate=(0, 0)):
         self._grid = grid
         self._addresses = dict(addresses)
+        self._device_coordinate = device_coordinate
 
     @staticmethod
     def is_per_core_allocated():
@@ -106,7 +107,11 @@ class _FakePerCoreDeviceTensor:
     def memory_config(self):
         return SimpleNamespace(shard_spec=SimpleNamespace(grid=self._grid))
 
-    def experimental_per_core_buffer_address(self, core):
+    def device_coords(self):
+        return [self._device_coordinate]
+
+    def experimental_per_core_buffer_address(self, device_coordinate, core):
+        assert device_coordinate == self._device_coordinate
         return self._addresses[(core.x, core.y)]
 
     @staticmethod
@@ -118,8 +123,8 @@ class _FakePerCoreTensor(_FakePerCoreDeviceTensor):
     def __init__(self, grid, device_addresses):
         super().__init__(grid, device_addresses[0])
         self.device_tensors = [
-            _FakePerCoreDeviceTensor(grid, addresses)
-            for addresses in device_addresses
+            _FakePerCoreDeviceTensor(grid, addresses, (index, 0))
+            for index, addresses in enumerate(device_addresses)
         ]
 
 

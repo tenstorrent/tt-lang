@@ -276,8 +276,16 @@ def _resolve_per_core_tensor_addresses(
             addresses = []
             for device_index, device_tensor in enumerate(device_tensors):
                 try:
+                    device_coordinates = list(device_tensor.device_coords())
+                    if len(device_coordinates) != 1:
+                        raise ValueError(
+                            "device shard must expose exactly one mesh coordinate, "
+                            f"got {device_coordinates}"
+                        )
                     address = int(
-                        device_tensor.experimental_per_core_buffer_address(core)
+                        device_tensor.experimental_per_core_buffer_address(
+                            device_coordinates[0], core
+                        )
                     )
                 except Exception as exc:
                     raise ValueError(
