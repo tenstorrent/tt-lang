@@ -43,6 +43,7 @@ from ._src.atom_inline import (
     _INLINED_OPERATION_STATEMENT,
     _collect_local_names,
     inline_atom_calls,
+    specialize_static_boolean_branches,
 )
 from ._src.atom_rules import (
     defines_kernels_by_spelling,
@@ -291,6 +292,12 @@ def _build_atom_spec(
         )
     fn_def: ast.FunctionDef = module.body[0]
     scope = function_scope(fn)
+    params = _classify_params(fn)
+    local_names = _collect_local_names(fn_def) | {param.name for param in params}
+    static_capture_values = {
+        capture_name: scope[capture_name]
+        for capture_name in (loaded_names_in(fn_def) - local_names) & scope.keys()
+    }
 
     # Inline statement-level calls to other unified operations, then keep
     # the post-inline AST + source.
@@ -303,6 +310,7 @@ def _build_atom_spec(
         inlined_dfb_resets,
         inlined_dfb_reconfigurations,
     ) = inline_atom_calls(fn_def, scope, caller_name=name)
+    specialize_static_boolean_branches(fn_def, static_capture_values)
     _hoist_inlined_resource_declarations(fn_def, scope, name)
     validate_resource_declarations(fn_def, name)
 
@@ -311,7 +319,6 @@ def _build_atom_spec(
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
             loaded_names.add(node.id)
 
-    params = _classify_params(fn)
     local_names = _collect_local_names(fn_def) | {param.name for param in params}
     captured_values = {
         capture_name: scope[capture_name]
