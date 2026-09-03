@@ -138,6 +138,7 @@ from .kernel_runner import (
     emit_runner_file,
     run_kernel_on_device,
 )
+from .layouts import get_tensor_configuration
 from .kernel import (
     Kernel,
     KernelKind,
@@ -297,25 +298,7 @@ def _captured_fabric_manager_claims(
 
 def _get_tensor_cache_info(tensor) -> tuple:
     """Extract tensor properties that affect compilation or DFB descriptors."""
-    shape = tuple(tensor.shape)
-    padded_shape = tuple(getattr(tensor, "padded_shape", tensor.shape))
-    dtype = str(tensor.dtype)
-    mem_config = tensor.memory_config()
-    memory_space = (
-        str(mem_config.buffer_type) if hasattr(mem_config, "buffer_type") else "unknown"
-    )
-    memory_layout = (
-        str(mem_config.memory_layout)
-        if hasattr(mem_config, "memory_layout")
-        else "unknown"
-    )
-    layout = str(tensor.layout) if hasattr(tensor, "layout") else "unknown"
-    tile = (
-        tuple(tensor.get_tile().tile_shape)
-        if "TILE" in layout and hasattr(tensor, "get_tile")
-        else None
-    )
-    return (shape, padded_shape, dtype, memory_space, memory_layout, layout, tile)
+    return get_tensor_configuration(tensor)
 
 
 def _make_cache_key(
@@ -613,18 +596,6 @@ def _default_mesh_program_placements_with_domain(args: tuple, device_domain):
     return tensor_placements
 
 
-def _detect_memory_space_from_tensor(tensor, default: str) -> str:
-    """Detect memory space (L1/DRAM) from a ttnn tensor's buffer type."""
-    mem_config = tensor.memory_config()
-    if hasattr(mem_config, "buffer_type"):
-        buffer_type_str = str(mem_config.buffer_type)
-        if "L1" in buffer_type_str:
-            return "L1"
-        elif "DRAM" in buffer_type_str:
-            return "DRAM"
-    return default
-
-
 def _require_device(args):
     """Extract the device from tensor arguments, raising if none are on-device.
 
@@ -820,6 +791,7 @@ class CompiledTTNNKernel:
         ] = None,
         runtime_resource_cache=None,
         kernel_used_dfb_indices=None,
+        kernel_local_tensor_indices=None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -865,13 +837,28 @@ class CompiledTTNNKernel:
             runtime_resource_cache: Operation-owned persistent L1 resources.
             kernel_used_dfb_indices: Physical DFB indices referenced by each
                 final specialized kernel. None entries are conservative.
+            kernel_local_tensor_indices: Global tensor indices whose local L1
+                shards are accessed directly by each kernel.
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
         self.kernel_arg_specs = kernel_arg_specs
         self.num_tensors = num_tensors
         self.core_ranges = core_ranges
-        self.kernel_tensor_indices = kernel_tensor_indices
+        self.kernel_tensor_indices = list(kernel_tensor_indices)
+        self.kernel_local_tensor_indices = (
+            [[] for _ in kernel_paths]
+            if kernel_local_tensor_indices is None
+            else list(kernel_local_tensor_indices)
+        )
+        if len(self.kernel_tensor_indices) != len(kernel_paths):
+            raise ValueError(
+                "kernel tensor-index metadata count must match kernel count"
+            )
+        if len(self.kernel_local_tensor_indices) != len(kernel_paths):
+            raise ValueError(
+                "kernel local-tensor metadata count must match kernel count"
+            )
         self.kernel_core_ranges = kernel_core_ranges or [None] * len(kernel_paths)
         self.cb_configs = cb_configs or []
         self.dfb_reconfiguration_plan = dfb_reconfiguration_plan
@@ -980,6 +967,7 @@ class CompiledTTNNKernel:
                     kernel_idx
                 ],
                 used_dfb_indices=self.kernel_used_dfb_indices[kernel_idx],
+                local_tensor_indices=self.kernel_local_tensor_indices[kernel_idx],
             )
             kernel_specs.append(spec)
 
@@ -1213,22 +1201,38 @@ def _get_kernel_noc_index(module, kernel_name: str):
     return int(IntegerAttr(attr).value)
 
 
-def _get_kernel_crta_indices(module, kernel_name: str):
-    """Read the `ttl.crta_indices` attribute as a list of global tensor indices.
-
-    Used by the per-core specialization path where clones cannot be aligned
-    positionally with the original thread list. Raises an error if the attribute is missing.
-    """
+def _get_kernel_index_array_attribute(
+    module, kernel_name: str, attribute_name: str, *, required: bool = False
+):
     operation = _lookup_kernel_func_op(module, kernel_name)
-    attr = operation.attributes.get("ttl.crta_indices", None)
-    if attr is None:
-        raise ValueError(f"No CRTA indices found for kernel {kernel_name}")
-    if not isinstance(attr, ArrayAttr):
+    attribute = operation.attributes.get(attribute_name, None)
+    if attribute is None:
+        if required:
+            raise ValueError(
+                f"Required attribute '{attribute_name}' is missing from "
+                f"kernel '{kernel_name}'"
+            )
+        return []
+    if not isinstance(attribute, ArrayAttr):
         raise ValueError(
-            f"Expected ArrayAttr for 'ttl.crta_indices' on kernel "
-            f"'{kernel_name}', got {attr}"
+            f"Expected ArrayAttr for '{attribute_name}' on kernel "
+            f"'{kernel_name}', got {attribute}"
         )
-    return [int(IntegerAttr(idx).value) for idx in attr]
+    return [int(IntegerAttr(index).value) for index in attribute]
+
+
+def _get_kernel_crta_indices(module, kernel_name: str):
+    """Read finalized global tensor indices for one kernel's runtime arguments."""
+    return _get_kernel_index_array_attribute(
+        module, kernel_name, _ttl_ir.CRTA_INDICES_ATTR, required=True
+    )
+
+
+def _get_kernel_local_tensor_indices(module, kernel_name: str):
+    """Read global tensor indices requiring core-local storage."""
+    return _get_kernel_index_array_attribute(
+        module, kernel_name, _ttl_ir.LOCAL_TENSOR_INDICES_ATTR
+    )
 
 
 def _get_kernel_fabric_routes(module, kernel_name: str):
@@ -1324,7 +1328,6 @@ def _compile_ttnn_kernel(
     args,
     grid,
     num_outs,
-    thread_tensor_indices,
     cb_configs=None,
     dfb_reconfiguration_plan=None,
     program_hash=None,
@@ -1378,19 +1381,15 @@ def _compile_ttnn_kernel(
             f"Mixed tensor types would generate extra bounce kernels."
         )
 
-    # Validate TTNN tensors - must be L1 or DRAM and tilized
     for i, arg in enumerate(args):
         if is_ttnn_tensor(arg):
-            mem_space = _detect_memory_space_from_tensor(arg, "unknown")
-            if mem_space not in ("L1", "DRAM"):
-                raise ValueError(
-                    f"TTNN interop requires L1 or DRAM memory space, but tensor {i} is in {mem_space}."
-                )
-            if hasattr(arg, "layout") and "TILE" not in str(arg.layout):
-                raise ValueError(
-                    f"TTNN interop requires tilized tensors, but tensor {i} has layout {arg.layout}. "
-                    f"Use ttnn.to_layout(tensor, ttnn.TILE_LAYOUT) to convert."
-                )
+            from .layouts import detect_buffer_type, detect_tensor_layout
+
+            try:
+                detect_buffer_type(arg)
+                detect_tensor_layout(arg)
+            except ValueError as error:
+                raise ValueError(f"Invalid TTNN tensor {i}: {error}") from error
 
     # Detect the per-core specialization path: ttkernel-specialize-cores tags each
     # clone with ttl.core_coord (the list of coordinates the clone serves).
@@ -1492,10 +1491,11 @@ def _compile_ttnn_kernel(
     kernel_arg_specs = []
     kernel_pipe_computed_address_dfb_indices = []
     kernel_used_dfb_indices = []
-    # Per-kernel single-core ranges (specialization path) and tensor indices
-    # read from ttl.crta_indices. Both stay aligned with kernel_info order.
+    # Read metadata from each final function because specialization changes the
+    # kernel count and order.
+    kernel_tensor_indices = []
+    kernel_local_tensor_indices = []
     kernel_core_ranges = []
-    specialized_tensor_indices = []
     kernel_fabric_routes = []
     kernel_fabric_runtime_arg_base_common_indices = []
     kernel_fabric_manager_intervals = []
@@ -1536,6 +1536,10 @@ def _compile_ttnn_kernel(
         )
         kernel_fabric_runtime_arg_base_common_indices.append(
             _get_kernel_fabric_runtime_arg_base_common_index(module, name)
+        )
+        kernel_tensor_indices.append(_get_kernel_crta_indices(module, name))
+        kernel_local_tensor_indices.append(
+            _get_kernel_local_tensor_indices(module, name)
         )
 
         # The specialized clone's launch coordinates (None on the default,
@@ -1585,13 +1589,6 @@ def _compile_ttnn_kernel(
             )
         else:
             kernel_core_ranges.append(None)
-        # Clones cannot be aligned positionally with the original thread list,
-        # so recover each kernel's global tensor indices from ttl.crta_indices.
-        # Only needed on the specialization path; the default path uses the
-        # positional thread_tensor_indices instead.
-        if specialize_cores:
-            specialized_tensor_indices.append(_get_kernel_crta_indices(module, name))
-
         # Extract runtime args from kernel's arg_spec attribute
         arg_spec = get_ttkernel_arg_spec(module, name)
         if arg_spec is not None:
@@ -1600,13 +1597,6 @@ def _compile_ttnn_kernel(
         else:
             kernel_arg_specs.append([])
 
-    # On the specialization path get_ttkernel_names returns 3*N clones, so the
-    # positional thread_tensor_indices (one entry per original thread) no longer
-    # lines up; use the per-clone indices recovered from ttl.crta_indices.
-    kernel_tensor_indices = (
-        specialized_tensor_indices if specialize_cores else thread_tensor_indices
-    )
-
     compiled_kernel = CompiledTTNNKernel(
         kernel_paths=kernel_paths,
         kernel_configs=kernel_configs,
@@ -1614,6 +1604,7 @@ def _compile_ttnn_kernel(
         num_tensors=len(args),
         core_ranges=core_ranges,
         kernel_tensor_indices=kernel_tensor_indices,
+        kernel_local_tensor_indices=kernel_local_tensor_indices,
         kernel_core_ranges=kernel_core_ranges,
         cb_configs=cb_configs,
         dfb_reconfiguration_plan=dfb_reconfiguration_plan,
@@ -1667,6 +1658,7 @@ def _compile_ttnn_kernel(
                 logical_kernel=kernel_logical_selectors[kernel_idx],
                 fabric_manager_intervals=kernel_fabric_manager_intervals[kernel_idx],
                 used_dfb_indices=kernel_used_dfb_indices[kernel_idx],
+                local_tensor_indices=kernel_local_tensor_indices[kernel_idx],
             )
             kernel_specs_for_emit.append(spec)
 
@@ -1684,6 +1676,7 @@ def _compile_ttnn_kernel(
             num_tensors=len(args),
             output_path=runner_path,
             program_hash=program_hash,
+            tensor_configurations=tuple(get_tensor_configuration(arg) for arg in args),
             kernel_name=operation_name,
             num_pipe_sync_semaphores=num_pipe_sync_semaphores,
             num_dfb_resets=num_dfb_resets,
@@ -2479,17 +2472,6 @@ def _compile_kernel(
     has_ttnn_tensors = any(is_ttnn_tensor(arg) for arg in args)
 
     compile_args = args
-    # For TTNN tensors, detect memory space from tensor's buffer type.
-    # L1 tensors use simple NOC addressing, DRAM uses bank-aware addressing.
-    # TODO: Check all tensors and handle mixed memory spaces.
-    if has_ttnn_tensors:
-        first_ttnn_tensor = next((arg for arg in args if is_ttnn_tensor(arg)), None)
-        if first_ttnn_tensor is not None:
-            memory_space = _detect_memory_space_from_tensor(
-                first_ttnn_tensor, memory_space
-            )
-            print(f"[TTNN interop] Detected {memory_space} memory space")
-
     for idx, (param_name, arg) in enumerate(zip(f_params, compile_args)):
         register_tensor_name(arg, param_name, index=idx)
 
@@ -2621,8 +2603,6 @@ def _lower_program_to_kernel(
     loc = Location.unknown(ctx)
     with ctx, loc:
         compiled_threads = []
-        # Track which global tensor indices each thread uses (for building common_runtime_args)
-        thread_tensor_indices = []
         # Collect source info for error formatting
         all_source_lines = {}
         all_source_files = {}
@@ -2644,8 +2624,6 @@ def _lower_program_to_kernel(
                 )
                 raise type(e)(formatted) from None
             compiled_threads.append(ct)
-            thread_tensor_indices.append(ct._tensor_accessor_global_indices)
-
             # Set TensorAccessor indexing attributes for C++ lowering
             base_cta = get_cb_count()
             ct.func_entry.attributes["ttl.base_cta_index"] = IntegerAttr.get(
@@ -2901,6 +2879,13 @@ def _lower_program_to_kernel(
         pipeline_passes += [
             "canonicalize",
             "cse",
+        ]
+        if not compiler_options.specialize_cores:
+            pipeline_passes += [
+                "ttkernel-finalize-tensor-runtime-args",
+                "canonicalize",
+            ]
+        pipeline_passes += [
             "lower-affine",
             "ttl-lower-signpost-to-emitc",
         ]
@@ -2994,7 +2979,6 @@ def _lower_program_to_kernel(
             args,
             launch_grid,
             num_outs,
-            thread_tensor_indices,
             cb_configs,
             dfb_reconfiguration_plan=dfb_reconfiguration_plan,
             program_hash=program_hash,
