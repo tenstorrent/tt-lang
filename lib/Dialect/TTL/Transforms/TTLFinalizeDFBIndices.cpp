@@ -130,8 +130,8 @@ struct LogicalDFB {
 
 enum class ResetControlFlow { Linear, Cyclic };
 
-constexpr llvm::StringLiteral kDFBResetPreservedIndicesAttrName(
-    "ttl.dfb_reset_preserved_indices");
+constexpr llvm::StringLiteral
+    kDFBResetPreservedIndicesAttrName("ttl.dfb_reset_preserved_indices");
 
 enum class HardwareDataFormat : int64_t {
   Float32 = 0,
@@ -450,8 +450,7 @@ struct TTLFinalizeDFBIndicesPass
 
     SmallVector<SmallVector<int64_t>> preservedByResetOrdinal(
         resetCount.value_or(0));
-    SmallVector<bool> initializedPreserveOrdinal(resetCount.value_or(0),
-                                                 false);
+    SmallVector<bool> initializedPreserveOrdinal(resetCount.value_or(0), false);
     llvm::DenseSet<int64_t> preservedLogicalIndices;
     for (func::FuncOp func : moduleOp.getOps<func::FuncOp>()) {
       auto callsIt = resetCallsByFunction.find(func.getOperation());
@@ -463,8 +462,7 @@ struct TTLFinalizeDFBIndicesPass
         SmallVector<int64_t> preserved;
         for (Value operand : call.getArgOperands()) {
           if (!isa<CircularBufferType>(operand.getType())) {
-            call.emitError(
-                "preserve operands must be dataflow buffers");
+            call.emitError("preserve operands must be dataflow buffers");
             invalidResetContract = true;
             continue;
           }
@@ -878,8 +876,8 @@ struct TTLFinalizeDFBIndicesPass
     llvm::DenseSet<int64_t> unpackToDestFp32DFBs;
     bool fp32DestAcc = false;
     moduleOp->walk([&](func::FuncOp func) {
-      auto thread = func->getAttrOfType<ttkernel::ThreadTypeAttr>(
-          kKernelThreadAttrName);
+      auto thread =
+          func->getAttrOfType<ttkernel::ThreadTypeAttr>(kKernelThreadAttrName);
       if (!thread || thread.getValue() != ttkernel::ThreadType::Compute) {
         return;
       }
@@ -1009,8 +1007,8 @@ struct TTLFinalizeDFBIndicesPass
           return lhs < rhs;
         });
         usedIndices.erase(llvm::unique(usedIndices), usedIndices.end());
-        maxEpochLocalSlots = std::max(
-            maxEpochLocalSlots, static_cast<int64_t>(usedIndices.size()));
+        maxEpochLocalSlots = std::max(maxEpochLocalSlots,
+                                      static_cast<int64_t>(usedIndices.size()));
         DenseMap<int64_t, int64_t> rank;
         for (auto [i, index] : llvm::enumerate(usedIndices)) {
           rank[index] = static_cast<int64_t>(i);
@@ -1029,8 +1027,7 @@ struct TTLFinalizeDFBIndicesPass
         return lhs->origIndex < rhs->origIndex;
       });
       for (auto [ordinal, dfb] : llvm::enumerate(pinnedDFBs)) {
-        dfb->finalIndex =
-            maxEpochLocalSlots + static_cast<int64_t>(ordinal);
+        dfb->finalIndex = maxEpochLocalSlots + static_cast<int64_t>(ordinal);
       }
     } else {
       // Compact to a dense index space (the runtime builds one CB descriptor
@@ -1077,12 +1074,12 @@ struct TTLFinalizeDFBIndicesPass
           builder.getNamedAttr(
               "physical_index",
               builder.getI32IntegerAttr(static_cast<int32_t>(dfb.finalIndex))),
-          builder.getNamedAttr(
-              "epoch", builder.getI32IntegerAttr(
-                           static_cast<int32_t>(dfb.firstUseEpoch))),
-          builder.getNamedAttr(
-              "num_pages", builder.getI32IntegerAttr(
-                               static_cast<int32_t>(dfb.totalPages()))),
+          builder.getNamedAttr("epoch",
+                               builder.getI32IntegerAttr(
+                                   static_cast<int32_t>(dfb.firstUseEpoch))),
+          builder.getNamedAttr("num_pages",
+                               builder.getI32IntegerAttr(
+                                   static_cast<int32_t>(dfb.totalPages()))),
           builder.getNamedAttr("element_type", TypeAttr::get(dfb.elemType)),
           builder.getNamedAttr(
               "unpack_to_dest_fp32",
@@ -1093,10 +1090,9 @@ struct TTLFinalizeDFBIndicesPass
           builder.getNamedAttr(
               "block_count",
               builder.getI32IntegerAttr(static_cast<int32_t>(dfb.blockCount))),
-          builder.getNamedAttr(
-              "elems_per_block",
-              builder.getI32IntegerAttr(
-                  static_cast<int32_t>(dfb.elemsPerBlock)))};
+          builder.getNamedAttr("elems_per_block",
+                               builder.getI32IntegerAttr(
+                                   static_cast<int32_t>(dfb.elemsPerBlock)))};
       if (dfb.addressScope) {
         attrs.push_back(
             builder.getNamedAttr("address_scope", dfb.addressScope));
@@ -1167,8 +1163,7 @@ struct TTLFinalizeDFBIndicesPass
           auto [it, inserted] =
               configs.try_emplace(logicalDFB->finalIndex, logicalDFB);
           if (!inserted) {
-            auto currentTileType =
-                cast<ttcore::TileType>(it->second->elemType);
+            auto currentTileType = cast<ttcore::TileType>(it->second->elemType);
             int64_t currentBytes =
                 it->second->totalPages() * currentTileType.getSizeBytes();
             int64_t candidateBytes =
@@ -1196,8 +1191,7 @@ struct TTLFinalizeDFBIndicesPass
       int64_t physicalSlotCount = 0;
       for (const auto &[idx, dfb] : dfbs) {
         (void)idx;
-        physicalSlotCount =
-            std::max(physicalSlotCount, dfb.finalIndex + 1);
+        physicalSlotCount = std::max(physicalSlotCount, dfb.finalIndex + 1);
       }
       SmallVector<Attribute> physicalConfigs;
       for (int64_t physicalIndex = 0; physicalIndex < physicalSlotCount;
@@ -1323,9 +1317,9 @@ struct TTLFinalizeDFBIndicesPass
       for (auto &[funcOperation, calls] : resetCallsByFunction) {
         if (hasCyclicResetDataflowBuffers) {
           for (auto [ordinal, call] : llvm::enumerate(calls)) {
-            appendConfiguration(call, (static_cast<int64_t>(ordinal) + 1) %
-                                          epochCount,
-                                preservedPhysicalByResetOrdinal[ordinal]);
+            appendConfiguration(
+                call, (static_cast<int64_t>(ordinal) + 1) % epochCount,
+                preservedPhysicalByResetOrdinal[ordinal]);
           }
         } else {
           for (auto [ordinal, call] : llvm::enumerate(calls)) {
