@@ -19,6 +19,7 @@
 #include "ttlang/Target/TTKernel/LLKs/experimental_semaphore_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_tilize_llks_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_untilize_llks_generated.h"
+#include "ttlang/Target/TTKernel/LLKs/risc_barrier_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers_generated.h"
 #include "ttlang/Target/TTKernel/TTKernelIncludesMap.h"
 
@@ -129,6 +130,7 @@ public:
                 experimental_semaphore_generated_len);
       }
       if (isResetDataflowBuffers) {
+        emitLlk(risc_barrier_generated, risc_barrier_generated_len);
         emitLlk(reset_dataflow_buffers_generated,
                 reset_dataflow_buffers_generated_len);
       }

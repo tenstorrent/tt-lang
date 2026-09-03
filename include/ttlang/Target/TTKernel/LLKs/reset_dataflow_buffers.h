@@ -6,8 +6,6 @@
 
 #include <cstdint>
 
-#include "ttlang/Target/TTKernel/LLKs/risc_barrier.h"
-
 #if defined(COMPILE_FOR_BRISC) || defined(COMPILE_FOR_NCRISC) ||               \
     defined(COMPILE_FOR_DM)
 #include "api/dataflow/dataflow_api.h"
