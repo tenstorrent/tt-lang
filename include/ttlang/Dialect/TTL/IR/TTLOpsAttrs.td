@@ -112,9 +112,12 @@ def TTL_DFBReconfigurationAttr
   let description = [{
     Identifies one worker-local DFB configuration-epoch boundary site and
     the complete set of logical kernels that participate on each active worker.
-    Every site executes zero or one dynamic instance per dispatch and launch
-    node. Every participant executes the same instances in the same order, and
-    every boundary site in one module declares the same participant set.
+    A site may execute at most once per dispatch and launch node, or once in
+    every iteration of nested sequential loops with compile-time-known trip
+    counts. A repeated sequence requires at least two boundary sites. Every site
+    in the sequence uses the same loop trip-count sequence, and every participant
+    executes the same instances and boundary order. Every boundary site in one
+    module declares the same participant set.
     DFB-interface work ordered before the boundary completes before the runtime
     installs the next epoch's configuration. DFB-interface work ordered after
     the boundary begins after installation. Independent math and SFPU work may
@@ -128,8 +131,9 @@ def TTL_DFBReconfigurationAttr
 
     The ordinal is module-local and has no runtime meaning. Equal attributes
     reference the same boundary site. Distinct ordinals identify distinct
-    boundary sites. Participant order is canonical and otherwise
-    semantically insignificant.
+    boundary sites. When a boundary sequence repeats, the final site restores
+    every initial configuration required by the next loop iteration.
+    Participant order is canonical and otherwise semantically insignificant.
   }];
   let parameters = (ins
     "int64_t":$ordinal,

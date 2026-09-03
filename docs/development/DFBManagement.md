@@ -284,11 +284,14 @@ outstanding commands. Runtime lowering is currently restricted to Blackhole.
 
 A `DFBReconfiguration` declares one compute kernel and two data-movement
 kernels that execute one worker-local configuration boundary. Every boundary
-site executes zero or one dynamic instance per dispatch and launch node. All
-sites in one module declare the same participant set, and every active
-participant executes the same boundary instances in the same dynamic order.
-Structured conditional execution is supported only when the participant
-conditions are equivalent. Runtime execution is restricted to Blackhole.
+site may execute at most once per dispatch and launch node. A boundary may
+instead execute once in every iteration of nested sequential loops with
+compile-time-known trip counts when the program contains at least two ordered
+boundary sites. Every site in that repeated sequence uses the same loop
+trip-count sequence and appears in the same order in each participant. All
+sites in one module declare the same participant set. Conditional execution is
+supported only for non-repeated boundaries whose participant conditions are
+equivalent. Runtime execution is restricted to Blackhole.
 
 The declaration captures the participating logical kernels. Each participant
 calls `ttl.reconfigure_dfbs` at the corresponding point between two DFB
@@ -363,11 +366,13 @@ outer DFB geometry, block count, and storage. Tensor-backed ranges are checked
 against the complete set of descriptors installed initially and after each
 boundary, in proven execution order.
 
-Finalization emits the initial descriptor for every physical index and one
-entry configuration for every lifecycle that begins at a boundary. Live
-continuations have no entry update, so their FIFO pointers, occupancy, and
-payload are preserved. The runtime plan records boundary order explicitly and
-does not infer it by sorting ordinals.
+Finalization emits the initial descriptor for every physical index and the
+descriptor required after each boundary. Live continuations have no update, so
+their FIFO pointers, occupancy, and payload are preserved. The allocator also
+prevents another lifecycle installed at that boundary from using the same
+physical index. In a repeated sequence, the final boundary restores the
+initial descriptors required by the next loop iteration. The runtime plan
+records boundary order explicitly and does not infer it by sorting ordinals.
 
 Each boundary owns a per-core configuration tensor containing 64 four-word DFB
 interface records, two update masks, synchronization state, and padding. The

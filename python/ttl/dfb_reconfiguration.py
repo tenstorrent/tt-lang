@@ -21,10 +21,13 @@ class DFBReconfiguration:
     A ``KernelKind`` names the operation's canonical logical kernel of that
     kind. A ``Kernel`` handle names a specific logical kernel captured by the
     enclosing operation. Every participant executes the same dynamic boundary
-    instances in the same order. Each boundary executes zero or one dynamic
-    instance per dispatch and launch node. DFB-interface work ordered before the
-    boundary completes before the next epoch's compiler-derived configuration
-    is installed. Independent math and SFPU work may overlap the boundary.
+    instances in the same order. A boundary may execute at most once per
+    dispatch and launch node, or once in every iteration of nested sequential
+    loops with compile-time-known trip counts. Repeated boundaries require at
+    least two boundary sites with the same loop trip-count sequence and order in
+    every participant. DFB-interface work ordered before the boundary completes
+    before the next epoch's compiler-derived configuration is installed.
+    Independent math and SFPU work may overlap the boundary.
     """
 
     participants: tuple[KernelSelector, ...]
