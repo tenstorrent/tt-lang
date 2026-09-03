@@ -79,6 +79,11 @@ class _FakeTensor:
         return self._storage_type
 
 
+class _FakePipeRuntimeResources:
+    def __init__(self, global_semaphore_count):
+        self.global_semaphores = [object() for _ in range(global_semaphore_count)]
+
+
 class _RecordingCompiledKernel(ttl_api.CompiledTTNNKernel):
     execution_kernels = []
 
@@ -107,6 +112,11 @@ class _RecordingCompiledKernel(ttl_api.CompiledTTNNKernel):
     def __call__(self, *runtime_args):
         self.runtime_args.append(runtime_args)
         self.execution_kernels.append(self)
+        if self.num_pipe_global_semaphores > 0:
+            self._runtime_resource_cache.device = runtime_args[0].device()
+            self._runtime_resource_cache.pipe_resources = _FakePipeRuntimeResources(
+                self.num_pipe_global_semaphores
+            )
         return self.program_hash
 
 
@@ -996,13 +1006,73 @@ def test_operation_cache_accepts_post_semaphore_allocation_budget(monkeypatch):
     def copy_kernel(input_tensor, output_tensor):
         pass
 
-    input_tensor = _FakeTensor()
-    output_tensor = _FakeTensor()
+    device = _FakeDevice()
+    input_tensor = _FakeTensor(device=device)
+    output_tensor = _FakeTensor(device=device)
     first_result = copy_kernel(input_tensor, output_tensor)
     second_result = copy_kernel(input_tensor, output_tensor)
 
     assert len(compile_calls) == 1
     assert first_result == second_result
+
+
+def test_post_semaphore_budget_cache_does_not_cross_devices(monkeypatch):
+    """A post-allocation budget is valid only for its retained resources."""
+    compile_calls = _install_recording_compile(
+        monkeypatch, num_pipe_global_semaphores=2
+    )
+    budgets = iter((98304, 73760, 73760, 49152))
+    monkeypatch.setattr(
+        ttl_api,
+        "_resolve_l1_budget",
+        lambda runtime_args, compiler_options, runtime_resource_cache: next(budgets),
+    )
+
+    @ttl_api.operation(grid=(1, 1))
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    first_device = _FakeDevice()
+    second_device = _FakeDevice()
+    first_result = copy_kernel(
+        _FakeTensor(device=first_device), _FakeTensor(device=first_device)
+    )
+    second_result = copy_kernel(
+        _FakeTensor(device=second_device), _FakeTensor(device=second_device)
+    )
+
+    assert len(compile_calls) == 2
+    assert first_result != second_result
+
+
+def test_post_semaphore_budget_cache_requires_retained_resources(monkeypatch):
+    """Replacing runtime resources invalidates their adjusted budget."""
+    compile_calls = _install_recording_compile(
+        monkeypatch, num_pipe_global_semaphores=2
+    )
+    budgets = iter((98304, 73760, 73760, 49152))
+    monkeypatch.setattr(
+        ttl_api,
+        "_resolve_l1_budget",
+        lambda runtime_args, compiler_options, runtime_resource_cache: next(budgets),
+    )
+
+    @ttl_api.operation(grid=(1, 1))
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    device = _FakeDevice()
+    input_tensor = _FakeTensor(device=device)
+    output_tensor = _FakeTensor(device=device)
+    first_result = copy_kernel(input_tensor, output_tensor)
+    runtime_resource_cache = compile_calls[0]["compile_options"][
+        "runtime_resource_cache"
+    ]
+    runtime_resource_cache.pipe_resources = _FakePipeRuntimeResources(2)
+    second_result = copy_kernel(input_tensor, output_tensor)
+
+    assert len(compile_calls) == 2
+    assert first_result != second_result
 
 
 def _make_scaled_kernel(scale):

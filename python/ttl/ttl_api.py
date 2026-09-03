@@ -14,6 +14,7 @@ import os
 import random
 import sys
 import threading
+import weakref
 from collections.abc import Hashable, MutableMapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -127,6 +128,7 @@ from .dtype_utils import (
 from .kernel_runner import (
     _FabricRouteCache,
     _detect_device_arch,
+    _device_identity,
     _same_device,
     attach_runtime_resource_finalizer,
     FabricManagerIntervalKind,
@@ -1046,6 +1048,63 @@ class _CompiledTTNNKernelTemplate:
 class _FactoryCacheSlot:
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
     template: Optional[_CompiledTTNNKernelTemplate] = None
+
+
+@dataclass(frozen=True)
+class _PostSemaphoreCacheEntry:
+    cache_key: tuple
+    compiled_kernel: CompiledTTNNKernel
+    device_identity: object
+    pipe_resources_ref: weakref.ReferenceType
+
+
+def _matches_post_semaphore_cache_entry(
+    entry: _PostSemaphoreCacheEntry,
+    cache_key: tuple,
+    runtime_args: tuple,
+    runtime_resource_cache: KernelRuntimeResourceCache,
+) -> bool:
+    if entry.cache_key != cache_key:
+        return False
+    try:
+        device = _require_device(runtime_args)
+    except ValueError:
+        return False
+    with runtime_resource_cache.lock:
+        pipe_resources = runtime_resource_cache.pipe_resources
+        return (
+            entry.device_identity == _device_identity(device)
+            and _same_device(runtime_resource_cache.device, device)
+            and pipe_resources is not None
+            and entry.pipe_resources_ref() is pipe_resources
+        )
+
+
+def _make_post_semaphore_cache_entry(
+    cache_key: tuple,
+    compiled_kernel: CompiledTTNNKernel,
+    runtime_args: tuple,
+    runtime_resource_cache: KernelRuntimeResourceCache,
+) -> Optional[_PostSemaphoreCacheEntry]:
+    try:
+        device = _require_device(runtime_args)
+    except ValueError:
+        return None
+    with runtime_resource_cache.lock:
+        pipe_resources = runtime_resource_cache.pipe_resources
+        if (
+            not _same_device(runtime_resource_cache.device, device)
+            or pipe_resources is None
+            or len(pipe_resources.global_semaphores)
+            != compiled_kernel.num_pipe_global_semaphores
+        ):
+            return None
+        return _PostSemaphoreCacheEntry(
+            cache_key,
+            compiled_kernel,
+            _device_identity(device),
+            weakref.ref(pipe_resources),
+        )
 
 
 def _get_factory_cache_slot(
@@ -3140,9 +3199,11 @@ def _make_operation_wrapper(
     cache: Dict[tuple, CompiledTTNNKernel] = {}
     cache_lock = threading.RLock()
     runtime_resource_cache = KernelRuntimeResourceCache()
+    post_semaphore_cache_entry: Optional[_PostSemaphoreCacheEntry] = None
 
     @functools.wraps(function)
     def _wrapper(*args, **kwargs):
+        nonlocal post_semaphore_cache_entry
         kwargs = dict(kwargs)
         opts_str = kwargs.pop("options", options)
         runtime_args = args
@@ -3178,6 +3239,17 @@ def _make_operation_wrapper(
             )
             cache_key = make_cache_key(l1_budget_override)
             compiled_kernel = cache.get(cache_key)
+            if (
+                compiled_kernel is None
+                and post_semaphore_cache_entry is not None
+                and _matches_post_semaphore_cache_entry(
+                    post_semaphore_cache_entry,
+                    cache_key,
+                    runtime_args,
+                    runtime_resource_cache,
+                )
+            ):
+                compiled_kernel = post_semaphore_cache_entry.compiled_kernel
             if compiled_kernel is None:
                 if factory_cache is None:
                     compiled_kernel = compile_callback(
@@ -3229,10 +3301,14 @@ def _make_operation_wrapper(
             post_allocation_budget = _resolve_l1_budget(
                 runtime_args, compiler_options, runtime_resource_cache
             )
+            post_semaphore_entry = _make_post_semaphore_cache_entry(
+                make_cache_key(post_allocation_budget),
+                compiled_kernel,
+                runtime_args,
+                runtime_resource_cache,
+            )
             with cache_lock:
-                cache.setdefault(
-                    make_cache_key(post_allocation_budget), compiled_kernel
-                )
+                post_semaphore_cache_entry = post_semaphore_entry
 
         if is_auto_profile_enabled() and compiled_kernel.all_source_lines:
             _run_profiling_pipeline(
