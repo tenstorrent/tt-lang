@@ -16,9 +16,7 @@
 #include "mlir/Interfaces/InferIntRangeInterface.h"
 #include "llvm/ADT/STLExtras.h"
 
-#include <algorithm>
 #include <cstdint>
-#include <functional>
 #include <limits>
 #include <optional>
 
@@ -738,8 +736,7 @@ void UnpackStallOnPackOp::getCanonicalizationPatterns(
                       [](int32_t index) { return index >= 0; })) {
       return emitOpError("DFB resource indices must be nonnegative");
     }
-    if (std::adjacent_find(resourceIndices->begin(), resourceIndices->end(),
-                           std::greater_equal<>()) != resourceIndices->end()) {
+    if (!mlir::tt::utils::areIndicesStrictlyIncreasing(*resourceIndices)) {
       return emitOpError(
           "DFB resource indices must be strictly increasing without "
           "duplicates");
