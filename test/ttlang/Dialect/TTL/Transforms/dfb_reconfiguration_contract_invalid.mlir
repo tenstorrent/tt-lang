@@ -30,6 +30,51 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 
 // -----
 
+// Exact repeated execution outside a sequential loop is rejected.
+#compute = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "operation">
+#reader = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "operation">
+#writer = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "operation">
+#boundary = #ttl.dfb_reconfiguration<0, participants[#compute, #reader, #writer]>
+#records = #ttl.pipenet_records<net 0 name "gather" pipes [
+  #ttl.pipe_record<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0, dstEndX = 0, dstEndY = 0>,
+  #ttl.pipe_record<srcX = 1, srcY = 0, dstStartX = 0, dstStartY = 0, dstEndX = 0, dstEndY = 0>
+]>
+
+module attributes {ttl.launch_grid = [2, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
+  func.func @compute() attributes {
+    ttl.kernel_thread = #ttkernel.thread<compute>,
+    ttl.logical_kernel = #compute
+  } {
+    ttl.dfb_reconfiguration #boundary
+    return
+  }
+
+  func.func @read() attributes {
+    ttl.kernel_thread = #ttkernel.thread<noc>,
+    ttl.logical_kernel = #reader,
+    ttl.noc_index = 0 : i32
+  } {
+    ttl.pipenet_foreach_dst attributes {records = #records} {
+    ^bb0(%pipe: !ttl.selected_pipe_dst):
+      // expected-error @below {{repeated DFB reconfiguration with exact count 2 must execute once in every iteration of nested sequential loops with compile-time-known trip counts}}
+      ttl.dfb_reconfiguration #boundary
+      ttl.yield
+    }
+    return
+  }
+
+  func.func @write() attributes {
+    ttl.kernel_thread = #ttkernel.thread<noc>,
+    ttl.logical_kernel = #writer,
+    ttl.noc_index = 1 : i32
+  } {
+    ttl.dfb_reconfiguration #boundary
+    return
+  }
+}
+
+// -----
+
 #compute = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "operation">
 #reader = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "operation">
 #writer = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "operation">
