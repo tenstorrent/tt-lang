@@ -2504,10 +2504,7 @@ static void addDFBReconfigurationAccessEdges(
         if (!localBoundary) {
           continue;
         }
-        auto executionCountIt = executionCounts.find(&access);
-        auto runIt = executionCountIt == executionCounts.end()
-                         ? accessRuns.end()
-                         : accessRuns.find(&access);
+        auto runIt = accessRuns.find(&access);
         bool matchingRepeatedDomain =
             reconfiguration.executionCount > 1 && runIt != accessRuns.end() &&
             runIt->second.executionCount % reconfiguration.executionCount ==
