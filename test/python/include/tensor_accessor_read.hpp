@@ -11,7 +11,7 @@
 #include "api/tensor/noc_traits.h"
 
 template <typename Destination, typename SourceAccessor>
-inline void tensor_accessor_read(SourceAccessor source) {
+inline void tensor_accessor_read(const SourceAccessor &source) {
   static_assert(Destination::page_size_bytes > 0);
   CircularBuffer destination(get_compile_time_arg_val(Destination::index));
   Noc noc0(0);
@@ -23,7 +23,7 @@ inline void tensor_accessor_read(SourceAccessor source) {
 }
 
 template <typename Destination, uint32_t PageId, typename SourceAccessor>
-inline void tensor_accessor_read_page(SourceAccessor source) {
+inline void tensor_accessor_read_page(const SourceAccessor &source) {
   static_assert(Destination::pages_per_block == 1);
   CircularBuffer destination(get_compile_time_arg_val(Destination::index));
   Noc noc0(0);
@@ -36,8 +36,9 @@ inline void tensor_accessor_read_page(SourceAccessor source) {
 
 template <typename FirstDestination, typename SecondDestination,
           typename FirstSourceAccessor, typename SecondSourceAccessor>
-inline void tensor_accessor_pair_read(FirstSourceAccessor firstSource,
-                                      SecondSourceAccessor secondSource) {
+inline void
+tensor_accessor_pair_read(const FirstSourceAccessor &firstSource,
+                          const SecondSourceAccessor &secondSource) {
   CircularBuffer firstDestination(
       get_compile_time_arg_val(FirstDestination::index));
   CircularBuffer secondDestination(
@@ -54,4 +55,16 @@ inline void tensor_accessor_pair_read(FirstSourceAccessor firstSource,
   noc0.async_read_barrier();
   firstDestination.push_back(FirstDestination::pages_per_block);
   secondDestination.push_back(SecondDestination::pages_per_block);
+}
+
+template <typename Source, typename DestinationAccessor>
+inline void tensor_accessor_write_page(const DestinationAccessor &destination) {
+  static_assert(Source::pages_per_block == 1);
+  CircularBuffer source(get_compile_time_arg_val(Source::index));
+  Noc noc0(0);
+  source.wait_front(1);
+  noc0.async_write(source, destination, destination.get_aligned_page_size(), {},
+                   {.page_id = 0});
+  noc0.async_write_barrier();
+  source.pop_front(1);
 }

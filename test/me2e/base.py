@@ -159,6 +159,7 @@ class ME2ETestBase:
             # Get metadata for this kernel (includes tensor_indices).
             kernel_meta = metadata.get(name, {})
             tensor_indices = kernel_meta.get("tensor_indices", [])
+            local_tensor_indices = kernel_meta.get("local_tensor_indices", [])
 
             # Determine thread type from metadata or name fallback.
             thread_type_str = kernel_meta.get("thread_type", "")
@@ -183,6 +184,7 @@ class ME2ETestBase:
                     thread_type=ThreadType.COMPUTE,
                     source=source,
                     tensor_indices=tensor_indices,
+                    local_tensor_indices=local_tensor_indices,
                     fp32_dest_acc_en=kernel_meta["fp32_dest_acc_en"],
                     dst_full_sync_en=kernel_meta["dst_full_sync_en"],
                     unpack_to_dest_fp32=kernel_meta["unpack_to_dest_fp32"],
@@ -194,6 +196,7 @@ class ME2ETestBase:
                         thread_type=ThreadType.NOC,
                         source=source,
                         tensor_indices=tensor_indices,
+                        local_tensor_indices=local_tensor_indices,
                     )
                 )
 

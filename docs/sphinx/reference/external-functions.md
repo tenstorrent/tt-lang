@@ -255,12 +255,25 @@ addresses.
 | --- | --- | --- |
 | Scalar value | Scalar parameter | Uses the kernel runtime-argument convention. |
 | DFB | Physical DFB index parameter | Declares a direct dependency on that DFB. |
-| Base tensor | `TensorAccessor` parameter | Supported in data-movement kernels for tiled BF16 and FP32 tensors. |
+| Base tensor | Typed tensor accessor | Data movement accepts device DRAM or SRAM; compute accepts sharded SRAM. |
 | `ttl.raw_addr(tensor)` | `uint32_t` buffer address | Supported in compute and data-movement kernels. |
 
 Tensor slices, views, and computed tensor values are not valid external
-arguments. `ttl.raw_addr` provides no layout, view offset, page size, alignment,
-or bounds metadata.
+arguments. `ttl.raw_addr` provides no tensor identity, layout, view offset, page
+size, alignment, or bounds metadata.
+
+Data-movement base tensors become `const TensorAccessor<DistributionSpec>&`.
+TTL buffer types `L1` and `L1Small` both select worker SRAM; `L1Small` matches
+TTNN `L1_SMALL` and selects a separately reserved region that requires sharded
+allocation. Compute base tensors become
+`const LocalTensorAccessor<uint8_t>&` and must use height-, width-, or block-
+sharded SRAM. Each executing core must have a tensor shard. TILE accepts
+FLOAT32, BFLOAT16, BFLOAT8_B, BFLOAT4_B, INT32, UINT32,
+UINT16, and UINT8. ROW_MAJOR accepts FLOAT32, BFLOAT16, INT32, UINT32, UINT16,
+and UINT8. Repeated occurrences of one tensor reuse one generated accessor
+while retaining their argument order. The generated object is local to the
+kernel function; an external function must not retain its address or reference
+after that function returns.
 
 When an external function consumes `ttl.get_dfb_id(dfb)`, the same DFB must be
 a dependency through `func_args`, `ttl.dfb_descriptor(dfb)`, or

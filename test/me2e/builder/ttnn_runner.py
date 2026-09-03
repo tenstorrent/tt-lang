@@ -18,7 +18,7 @@ import ttnn
 
 # Import test_helpers from test/python.
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / "python"))
-from ttlang_test_utils import to_dram
+from ttlang_test_utils import to_dram, to_l1, to_l1_sharded
 
 # Import shared kernel runner from ttl package.
 from ttl.kernel_runner import (
@@ -28,6 +28,7 @@ from ttl.kernel_runner import (
 from ttl.dataflow_buffer import PhysicalDFBConfig
 
 from .kernels import KernelSpec
+from ..config import BufferType, E2EConfig, MemoryLayout
 
 # Tile dimensions.
 TILE_HEIGHT = 32
@@ -54,6 +55,7 @@ def run_binary_op(
     input_a: torch.Tensor,
     input_b: torch.Tensor,
     kernel_dir: Path,
+    config: E2EConfig | None = None,
 ) -> torch.Tensor:
     """
     Run a binary operation on device.
@@ -65,6 +67,7 @@ def run_binary_op(
         input_a: First input tensor.
         input_b: Second input tensor.
         kernel_dir: Directory containing kernel C++ files.
+        config: Tensor storage and distribution used for execution.
     Returns:
         Output tensor as torch tensor.
     """
@@ -74,6 +77,7 @@ def run_binary_op(
         compute_kernel=compute_kernel,
         inputs=[input_a, input_b],
         kernel_dir=kernel_dir,
+        config=config or E2EConfig(),
     )
 
 
@@ -83,6 +87,7 @@ def run_unary_op(
     compute_kernel: KernelSpec,
     input_a: torch.Tensor,
     kernel_dir: Path,
+    config: E2EConfig | None = None,
 ) -> torch.Tensor:
     """
     Run a unary operation on device.
@@ -93,6 +98,7 @@ def run_unary_op(
         compute_kernel: Compute kernel spec.
         input_a: Input tensor.
         kernel_dir: Directory containing kernel C++ files.
+        config: Tensor storage and distribution used for execution.
     Returns:
         Output tensor as torch tensor.
     """
@@ -102,6 +108,7 @@ def run_unary_op(
         compute_kernel=compute_kernel,
         inputs=[input_a],
         kernel_dir=kernel_dir,
+        config=config or E2EConfig(),
     )
 
 
@@ -127,6 +134,7 @@ def _run_op(
     compute_kernel: KernelSpec,
     inputs: List[torch.Tensor],
     kernel_dir: Path,
+    config: E2EConfig,
 ) -> torch.Tensor:
     """
     Run an operation on device using shared kernel_runner infrastructure.
@@ -148,15 +156,24 @@ def _run_op(
     if any(input_tensor.dtype != dtype for input_tensor in inputs[1:]):
         raise ValueError("ME2E runner requires all input tensors to have one dtype")
 
-    # Create device tensors using to_dram (respects tensor dtype).
-    device_inputs = []
-    for inp in inputs:
-        device_inp = to_dram(inp, device)
-        device_inputs.append(device_inp)
+    def to_configured_tensor(tensor):
+        if config.buffer_type == BufferType.DRAM:
+            if config.memory_layout != MemoryLayout.INTERLEAVED:
+                raise ValueError("ME2E DRAM tensors require interleaved memory")
+            return to_dram(tensor, device)
+        if config.memory_layout == MemoryLayout.INTERLEAVED:
+            return to_l1(tensor, device)
+        shard_layout = {
+            MemoryLayout.HEIGHT_SHARDED: "height",
+            MemoryLayout.WIDTH_SHARDED: "width",
+            MemoryLayout.BLOCK_SHARDED: "block",
+        }[config.memory_layout]
+        return to_l1_sharded(tensor, device, layout=shard_layout)
 
-    # Create output tensor in DRAM.
+    device_inputs = [to_configured_tensor(tensor) for tensor in inputs]
+
     output_torch = torch.zeros(shape, dtype=dtype)
-    output_tensor = to_dram(output_torch, device)
+    output_tensor = to_configured_tensor(output_torch)
 
     io_tensors = device_inputs + [output_tensor]
 
@@ -179,24 +196,26 @@ def _run_op(
     # Build kernel specs for kernel_runner.
     # Reader accesses input tensors (indices 0..num_inputs-1).
     # Writer accesses output tensor (index num_inputs).
-    # Compute has no tensor indices (only uses CBs).
     runner_specs = [
         RunnerKernelSpec(
             path=str(kernel_dir / f"{reader_kernel.name}.cpp"),
             thread_type="noc",
             tensor_indices=reader_kernel.tensor_indices,
+            local_tensor_indices=reader_kernel.local_tensor_indices,
             config=ttnn.ReaderConfigDescriptor(),
         ),
         RunnerKernelSpec(
             path=str(kernel_dir / f"{writer_kernel.name}.cpp"),
             thread_type="noc",
             tensor_indices=writer_kernel.tensor_indices,
+            local_tensor_indices=writer_kernel.local_tensor_indices,
             config=ttnn.WriterConfigDescriptor(),
         ),
         RunnerKernelSpec(
             path=str(kernel_dir / f"{compute_kernel.name}.cpp"),
             thread_type="compute",
-            tensor_indices=[],  # Compute kernels don't access tensors directly.
+            tensor_indices=compute_kernel.tensor_indices,
+            local_tensor_indices=compute_kernel.local_tensor_indices,
             config=_get_compute_config(compute_kernel),
         ),
     ]
