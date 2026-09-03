@@ -411,7 +411,7 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
         identity_captures.update(
             (name, value)
             for name, value in referenced_values.items()
-            if isinstance(value, Kernel)
+            if isinstance(value, (Kernel, KernelKind))
             or callable(getattr(value, "_operation_identity_capture", None))
         )
         bound_conditions = _bind_dispatch_conditions(
