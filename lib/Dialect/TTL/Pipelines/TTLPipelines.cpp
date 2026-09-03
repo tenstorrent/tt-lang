@@ -125,6 +125,9 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   pm.addPass(createCSEPass());
   if (options.specializeCores) {
     buildTTKernelSpecializationPipeline(pm);
+  } else {
+    pm.addPass(createTTKernelFinalizeTensorRuntimeArgs());
+    pm.addPass(createCanonicalizerPass());
   }
   if (options.lowerToEmitC) {
     pm.addPass(createLowerAffinePass());
@@ -148,6 +151,8 @@ void buildTTKernelSpecializationPipeline(OpPassManager &pm) {
   pm.addPass(createTTKernelSpecializeCores());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
+  pm.addPass(createTTKernelFinalizeTensorRuntimeArgs());
+  pm.addPass(createCanonicalizerPass());
   pm.addPass(createTTKernelAnnotateDFBUse());
 }
 
@@ -166,8 +171,9 @@ void registerTTLPipelines() {
                              buildTTLAutoSyncPipeline);
   PassPipelineRegistration<>(
       "ttkernel-specialize-and-annotate-dfb-use",
-      "Specialize kernels per launch coordinate, fold unused branches, and "
-      "record surviving DFB compile-time argument indices.",
+      "Specialize kernels per launch coordinate, fold unused branches, "
+      "compact tensor runtime arguments, and record surviving DFB "
+      "compile-time argument indices.",
       buildTTKernelSpecializationPipeline);
 }
 
