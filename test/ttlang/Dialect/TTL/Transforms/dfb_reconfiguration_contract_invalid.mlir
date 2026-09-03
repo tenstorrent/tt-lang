@@ -165,7 +165,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
     %upper = arith.constant 2 : index
     %step = arith.constant 1 : index
     scf.for %iteration = %lower to %upper step %step {
-      // expected-error @below {{repeated DFB reconfiguration requires at least two ordered boundary sites in the loop}}
+      // expected-error @below {{repeated DFB reconfiguration requires at least two ordered reconfiguration calls in the loop}}
       ttl.dfb_reconfiguration #boundary
     }
     return
@@ -555,7 +555,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
       ttl.dfb_reconfiguration #boundary_a
     }
     scf.for %second_iteration = %lower to %upper step %step {
-      // expected-error @below {{repeated DFB reconfiguration requires every boundary on the launch node to use the same enclosing loop nest in each participant}}
+      // expected-error @below {{repeated DFB reconfiguration requires every reconfiguration call on the launch node to use the same enclosing loop nest in each participant}}
       ttl.dfb_reconfiguration #boundary_b
     }
     return

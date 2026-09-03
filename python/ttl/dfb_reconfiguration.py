@@ -16,20 +16,19 @@ from .kernel import Kernel, KernelKind, KernelSelector
 
 @dataclass(frozen=True, eq=False)
 class DFBReconfiguration:
-    """One worker-local synchronized DFB configuration-epoch boundary.
+    """One worker-local synchronized DFB descriptor update.
 
     A ``KernelKind`` names the operation's canonical logical kernel of that
     kind. A ``Kernel`` handle names a specific logical kernel captured by the
-    enclosing operation. Every participant executes the same dynamic boundary
-    instances in the same order. A boundary may execute at most once per
-    dispatch and launch node, or once in every iteration of nested sequential
-    loops with compile-time-known trip counts. Repeated boundaries require at
-    least two boundary sites in the same enclosing loop nest and order in every
-    participant. Corresponding participant loop nests must have the same
-    compile-time trip-count sequence. DFB-interface work ordered before the
-    boundary completes before the next epoch's compiler-derived configuration
-    is installed.
-    Independent math and SFPU work may overlap the boundary.
+    enclosing operation. Every participant executes the same reconfiguration
+    calls in the same order. A call may execute at most once per dispatch and
+    launch node, or once in every iteration of nested sequential loops with
+    compile-time-known trip counts. Repeated execution requires at least two
+    calls in equivalent loop nests and in the same order in every participant.
+    At each call, the runtime waits for prior DFB-interface work to complete,
+    installs the next compiler-derived descriptors, and then allows following
+    DFB-interface work to begin. Independent math and SFPU work may overlap the
+    descriptor update.
     """
 
     participants: tuple[KernelSelector, ...]

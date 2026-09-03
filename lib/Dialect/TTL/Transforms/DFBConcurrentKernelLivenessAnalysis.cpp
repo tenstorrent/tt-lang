@@ -446,7 +446,7 @@ static bool hasEquivalentIterationSequence(const StaticIterationDomain &lhs,
 }
 
 // Inner loops may multiply an access count, but its outer iterations must
-// match the repeated boundary before per-iteration normalization is valid.
+// match the repeated reconfiguration before per-iteration normalization.
 static bool startsWithIterationDomain(const StaticIterationDomain &domain,
                                       const StaticIterationDomain &prefix) {
   return domain.loops.size() >= prefix.loops.size() &&
@@ -1907,8 +1907,8 @@ static LogicalResult validateDFBReconfigurationsAtNode(
       if (!sameRepeatedSequence) {
         analysisFailure.set(
             boundary.participantOperations.front(),
-            "repeated DFB reconfiguration requires every boundary on the "
-            "launch node to use the same enclosing loop nest in each "
+            "repeated DFB reconfiguration requires every reconfiguration call "
+            "on the launch node to use the same enclosing loop nest in each "
             "participant");
         return failure();
       }
@@ -1917,7 +1917,7 @@ static LogicalResult validateDFBReconfigurationsAtNode(
       analysisFailure.set(
           repeatedReference->participantOperations.front(),
           "repeated DFB reconfiguration requires at least two ordered "
-          "boundary sites in the loop");
+          "reconfiguration calls in the loop");
       return failure();
     }
   }
@@ -4033,7 +4033,7 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
 }
 
 // Loop identities are function-local, so compare an access only with the
-// boundary participant for the same logical kernel.
+// reconfiguration participant for the same logical kernel.
 template <typename CollectiveBoundary>
 static std::optional<std::pair<Operation *, const StaticIterationDomain *>>
 getParticipantIteration(const CollectiveBoundary &boundary,
@@ -4587,7 +4587,7 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
     epoch.completionProof = proof;
     epoch.inspectionOnly = epochLifetime.inspectionOnly;
     assert(firstBoundaryInterval &&
-           "active lifecycle must have a first boundary interval");
+           "active lifecycle must have a first reconfiguration interval");
     const OrderedLifecycleBoundary *entryBoundary = nullptr;
     for (unsigned boundaryIndex = 0; boundaryIndex < *firstBoundaryInterval;
          ++boundaryIndex) {

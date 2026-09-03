@@ -275,8 +275,8 @@ getDescriptorInstallationEpochs(const DFBLifecycleEpoch &lifecycleEpoch) {
   return ArrayRef(lifecycleEpoch.entryReconfigurationOrdinal);
 }
 
-// An installation conflicts when another lifecycle remains active at that
-// boundary without owning the descriptor update.
+// One lifecycle cannot replace a physical interface descriptor while another
+// lifecycle using that interface remains active.
 static bool
 isLiveAcrossDescriptorInstallation(const DFBLifecycleEpoch &lifecycleEpoch,
                                    std::optional<int64_t> installationEpoch) {
