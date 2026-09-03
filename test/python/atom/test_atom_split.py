@@ -1883,6 +1883,29 @@ def test_composition_remaps_equivalent_reconfiguration_participants():
     assert _kind_src(result, KernelKind.COMPUTE).count("ttl.reconfigure_dfbs(") == 2
 
 
+def test_composition_preserves_implicit_reconfiguration_participant():
+    """Composition retains the compiler-owned PipeNet source kernel."""
+    boundary = ttl.DFBReconfiguration(
+        participants=(
+            ttl.KernelKind.COMPUTE,
+            ttl.KernelKind.DATA_MOVEMENT,
+            ttl.PIPE_SOURCE_KERNEL,
+        )
+    )
+
+    @ttl.operation()
+    def reconfiguration_helper():
+        ttl.reconfigure_dfbs(boundary)
+
+    @ttl.operation()
+    def composed_reconfiguration():
+        reconfiguration_helper()
+
+    spec = composed_reconfiguration._spec
+    composed_boundary = next(iter(spec.dfb_reconfigurations.values()))
+    assert composed_boundary.participants == boundary.participants
+
+
 def test_control_header_anchor_is_retained_only_in_selected_logical_kernel():
     """Control selection includes logical-kernel anchors in the condition."""
     writer = Kernel(KernelKind.DATA_MOVEMENT)
