@@ -24,9 +24,11 @@ class DFBReconfiguration:
     instances in the same order. A boundary may execute at most once per
     dispatch and launch node, or once in every iteration of nested sequential
     loops with compile-time-known trip counts. Repeated boundaries require at
-    least two boundary sites with the same loop trip-count sequence and order in
-    every participant. DFB-interface work ordered before the boundary completes
-    before the next epoch's compiler-derived configuration is installed.
+    least two boundary sites in the same enclosing loop nest and order in every
+    participant. Corresponding participant loop nests must have the same
+    compile-time trip-count sequence. DFB-interface work ordered before the
+    boundary completes before the next epoch's compiler-derived configuration
+    is installed.
     Independent math and SFPU work may overlap the boundary.
     """
 

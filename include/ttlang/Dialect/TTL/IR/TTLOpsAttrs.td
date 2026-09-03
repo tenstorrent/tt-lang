@@ -114,10 +114,11 @@ def TTL_DFBReconfigurationAttr
     the complete set of logical kernels that participate on each active worker.
     A site may execute at most once per dispatch and launch node, or once in
     every iteration of nested sequential loops with compile-time-known trip
-    counts. A repeated sequence requires at least two boundary sites. Every site
-    in the sequence uses the same loop trip-count sequence, and every participant
-    executes the same instances and boundary order. Every boundary site in one
-    module declares the same participant set.
+    counts. A repeated sequence requires at least two boundary sites. All sites
+    use the same enclosing loop nest in each participant. Corresponding
+    participant loop nests have the same compile-time trip-count sequence, and
+    every participant executes the same boundary order. Every boundary site in
+    one module declares the same participant set.
     DFB-interface work ordered before the boundary completes before the runtime
     installs the next epoch's configuration. DFB-interface work ordered after
     the boundary begins after installation. Independent math and SFPU work may

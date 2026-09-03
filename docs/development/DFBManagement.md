@@ -287,11 +287,12 @@ kernels that execute one worker-local configuration boundary. Every boundary
 site may execute at most once per dispatch and launch node. A boundary may
 instead execute once in every iteration of nested sequential loops with
 compile-time-known trip counts when the program contains at least two ordered
-boundary sites. Every site in that repeated sequence uses the same loop
-trip-count sequence and appears in the same order in each participant. All
-sites in one module declare the same participant set. Conditional execution is
-supported only for non-repeated boundaries whose participant conditions are
-equivalent. Runtime execution is restricted to Blackhole.
+boundary sites. Every site in that repeated sequence uses the same enclosing
+loop nest in each participant and appears in the same order. Corresponding
+participant loop nests have the same trip-count sequence. All sites in one
+module declare the same participant set. Conditional execution is supported
+only for non-repeated boundaries whose participant conditions are equivalent.
+Runtime execution is restricted to Blackhole.
 
 The declaration captures the participating logical kernels. Each participant
 calls `ttl.reconfigure_dfbs` at the corresponding point between two DFB
