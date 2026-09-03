@@ -42,6 +42,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLCoalesceDFBAcquires.cpp
   TTLDumpCBFlowGraph.cpp
   TTLFinalizeDFBIndices.cpp
+  TTKernelFinalizeTensorRuntimeArgs.cpp
   TTLFormAccumulationScopes.cpp
   TTLFormPipeTransports.cpp
   TTLValidateCBBudget.cpp

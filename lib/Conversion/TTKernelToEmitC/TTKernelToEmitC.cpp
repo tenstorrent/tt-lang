@@ -517,6 +517,10 @@ public:
       return emitc::OpaqueType::get(ctx, "TensorAccessor");
     });
     addConversion(
+        [ctx](mlir::tt::ttkernel::LocalTensorAccessorType type) -> Type {
+          return emitc::OpaqueType::get(ctx, "LocalTensorAccessor<uint8_t>");
+        });
+    addConversion(
         [ctx](mlir::tt::ttkernel::TensorAccessorPageMappingType type) -> Type {
           return emitc::OpaqueType::get(ctx, "PageMapping");
         });
@@ -972,6 +976,12 @@ public:
       template_args.push_back(
           emitc::OpaqueAttr::get(op.getContext(), "true")); // default to DRAM
       return ArrayAttr::get(op.getContext(), template_args);
+    } else if constexpr (std::is_same_v<SourceOp,
+                                        ttkernel::LocalTensorAccessorOp>) {
+      SmallVector<Attribute, 1> templateArgs;
+      templateArgs.push_back(
+          emitc::OpaqueAttr::get(op.getContext(), "uint8_t"));
+      return ArrayAttr::get(op.getContext(), templateArgs);
     } else if constexpr (std::is_same_v<SourceOp, ttkernel::PackTileOp> ||
                          std::is_same_v<SourceOp, ttkernel::PackWaitedTileOp>) {
       SmallVector<Attribute, 1> template_args;
@@ -3404,7 +3414,8 @@ public:
         TTKernelToEmitCOpaqueRewriter<ttkernel::GetTileSizeOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::GetNocAddrFromBankIDOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::GetDataFormatOp>,
-        TTKernelToEmitCOpaqueRewriter<ttkernel::TensorAccessorOp>>(
+        TTKernelToEmitCOpaqueRewriter<ttkernel::TensorAccessorOp>,
+        TTKernelToEmitCOpaqueRewriter<ttkernel::LocalTensorAccessorOp>>(
         typeConverter, context);
 
     patterns.add<TTKernelToEmitCOpaqueRewriter<ttkernel::PackWaitedTileOp>>(
