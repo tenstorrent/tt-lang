@@ -445,6 +445,8 @@ static bool hasEquivalentIterationSequence(const StaticIterationDomain &lhs,
   return lhs.tripCounts == rhs.tripCounts;
 }
 
+// Inner loops may multiply an access count, but its outer iterations must
+// match the repeated boundary before per-iteration normalization is valid.
 static bool startsWithIterationDomain(const StaticIterationDomain &domain,
                                       const StaticIterationDomain &prefix) {
   return domain.loops.size() >= prefix.loops.size() &&
@@ -4030,6 +4032,8 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
   return {};
 }
 
+// Loop identities are function-local, so compare an access only with the
+// boundary participant for the same logical kernel.
 template <typename CollectiveBoundary>
 static std::optional<std::pair<Operation *, const StaticIterationDomain *>>
 getParticipantIteration(const CollectiveBoundary &boundary,

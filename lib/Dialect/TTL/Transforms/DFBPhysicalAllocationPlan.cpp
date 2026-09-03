@@ -265,6 +265,8 @@ static void appendActiveConfigurationEpochs(
   }
 }
 
+// Single-execution epochs use the entry ordinal; repeated epochs record every
+// descriptor installation needed to close the loop.
 static ArrayRef<std::optional<int64_t>>
 getDescriptorInstallationEpochs(const DFBLifecycleEpoch &lifecycleEpoch) {
   if (!lifecycleEpoch.descriptorInstallationEpochs.empty()) {
@@ -273,6 +275,8 @@ getDescriptorInstallationEpochs(const DFBLifecycleEpoch &lifecycleEpoch) {
   return ArrayRef(lifecycleEpoch.entryReconfigurationOrdinal);
 }
 
+// An installation conflicts when another lifecycle remains active at that
+// boundary without owning the descriptor update.
 static bool
 isLiveAcrossDescriptorInstallation(const DFBLifecycleEpoch &lifecycleEpoch,
                                    std::optional<int64_t> installationEpoch) {
@@ -283,6 +287,8 @@ isLiveAcrossDescriptorInstallation(const DFBLifecycleEpoch &lifecycleEpoch,
                              installationEpoch);
 }
 
+// A shared physical index cannot accept one lifecycle's descriptor write while
+// another lifecycle still uses the installed interface.
 static bool descriptorInstallationOverlapsLiveState(
     const DFBPerNodeLifetime &installingLifetime,
     const DFBPerNodeLifetime &liveLifetime) {

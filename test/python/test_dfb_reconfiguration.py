@@ -103,6 +103,8 @@ def _make_reconfiguration_operation(data_format, grid_cols):
     return reconfiguration_operation
 
 
+# Builds alternating DFB lifecycles while one payload remains live across the
+# first boundary.
 def _make_repeated_reconfiguration_operation(data_format, iterations, grid_cols):
     compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
     reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
@@ -906,6 +908,8 @@ def test_reconfiguration_composes_varying_caller_runtime_args(device):
     )
 
 
+# Repeated boundaries preserve a live payload, reuse physical indices, and
+# restore the initial descriptors for the next iteration.
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
 @pytest.mark.parametrize("grid_cols", [1, 2], ids=["one-core", "two-core"])
 @pytest.mark.parametrize(
