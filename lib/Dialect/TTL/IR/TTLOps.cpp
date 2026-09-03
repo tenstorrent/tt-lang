@@ -74,6 +74,45 @@ static auto getLogicalKernelSortKey(LogicalKernelAttr participant) {
                          valueOrEmpty(participant.getRole()));
 }
 
+// Tiled layouts encode their data format in TileType. Scalar layouts use the
+// exact element types accepted by TTNN row-major tensors.
+static bool isSupportedLayoutElementType(Type elementType) {
+  if (isa<ttcore::TileType>(elementType)) {
+    return true;
+  }
+  if (isa<Float32Type, BFloat16Type>(elementType)) {
+    return true;
+  }
+  auto integerType = dyn_cast<IntegerType>(elementType);
+  if (!integerType) {
+    return false;
+  }
+  if (integerType.isSigned()) {
+    return integerType.getWidth() == 32;
+  }
+  if (!integerType.isUnsigned()) {
+    return false;
+  }
+  return integerType.getWidth() == 8 || integerType.getWidth() == 16 ||
+         integerType.getWidth() == 32;
+}
+
+// These layouts carry TTNN shard metadata over a core grid.
+static bool isShardedMemoryLayout(TensorMemoryLayout memoryLayout) {
+  return memoryLayout == TensorMemoryLayout::HeightSharded ||
+         memoryLayout == TensorMemoryLayout::WidthSharded ||
+         memoryLayout == TensorMemoryLayout::BlockSharded ||
+         memoryLayout == TensorMemoryLayout::NdSharded;
+}
+
+// LocalTensorAccessor represents one core-local bank base. ND sharding requires
+// the distributed metadata represented by TensorAccessor.
+static bool isComputeLocalMemoryLayout(TensorMemoryLayout memoryLayout) {
+  return memoryLayout == TensorMemoryLayout::HeightSharded ||
+         memoryLayout == TensorMemoryLayout::WidthSharded ||
+         memoryLayout == TensorMemoryLayout::BlockSharded;
+}
+
 static bool hasRequiredDFBSynchronizationParticipants(
     ArrayRef<LogicalKernelAttr> participants) {
   unsigned computeParticipants =
@@ -567,6 +606,11 @@ LayoutAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                    ArrayRef<int64_t> shape, Type elementType,
                    BufferType bufferType, ArrayRef<int64_t> grid,
                    TensorMemoryLayout memoryLayout) {
+  if (!isSupportedLayoutElementType(elementType)) {
+    return emitError() << "layout element type must be a ttcore tile or one of "
+                          "f32, bf16, si32, ui32, ui16, or ui8, got "
+                       << elementType;
+  }
   if (shape.empty()) {
     return emitError() << "layout shape must not be empty";
   }
@@ -3163,14 +3207,9 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
           getOperation(), getUnsignedArgIndices(), getArgOperands()))) {
     return failure();
   }
-  if (!isNocKernelThread(getOperation()) &&
-      llvm::any_of(getArgOperands(), [](Value operand) {
-        return isa<RankedTensorType>(operand.getType());
-      })) {
-    return emitOpError(
-        "tensor function arguments require a data movement (noc) thread");
-  }
-  for (Value operand : getArgOperands()) {
+  std::optional<ttkernel::ThreadType> kernelThread =
+      getKernelThreadType(getEnclosingKernelThread(getOperation()));
+  for (auto [operandIndex, operand] : llvm::enumerate(getArgOperands())) {
     auto tensorType = mlir::dyn_cast<RankedTensorType>(operand.getType());
     if (!tensorType) {
       continue;
@@ -3181,13 +3220,43 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
                          "slices/views are not supported");
     }
     auto layout = mlir::cast<tt::ttl::LayoutAttr>(tensorType.getEncoding());
-    auto tileType =
-        mlir::dyn_cast<tt::ttcore::TileType>(layout.getElementType());
-    if (!tileType ||
-        (tileType.getDataType() != tt::ttcore::DataType::BFloat16 &&
-         tileType.getDataType() != tt::ttcore::DataType::Float32)) {
-      return emitOpError(
-          "TensorAccessor operands support only bf16 and f32 tile types");
+    if (!kernelThread || (*kernelThread != ttkernel::ThreadType::Noc &&
+                          *kernelThread != ttkernel::ThreadType::Compute)) {
+      return emitOpError("tensor operands require a compute or data movement "
+                         "kernel");
+    }
+    BufferType bufferType = layout.getBufferType();
+    TensorMemoryLayout memoryLayout = layout.getMemoryLayout();
+    if (*kernelThread == ttkernel::ThreadType::Noc) {
+      if (bufferType == BufferType::SystemMemory) {
+        return emitOpError("tensor operand ")
+               << operandIndex
+               << " in a data movement kernel uses SystemMemory storage; "
+                  "data movement tensor accessors require device DRAM or "
+                  "SRAM";
+      }
+      if (bufferType == BufferType::L1Small &&
+          !isShardedMemoryLayout(memoryLayout)) {
+        return emitOpError("tensor operand ")
+               << operandIndex
+               << " in a data movement kernel uses non-sharded SRAM with "
+                  "L1Small buffer type; L1Small requires sharded storage";
+      }
+      continue;
+    }
+    if (bufferType != BufferType::L1 && bufferType != BufferType::L1Small) {
+      return emitOpError("tensor operand ")
+             << operandIndex << " in a compute kernel uses "
+             << (bufferType == BufferType::DRAM ? "DRAM" : "SystemMemory")
+             << " storage; compute tensor accessors require sharded SRAM "
+                "(L1 or L1Small buffer type)";
+    }
+    if (!isComputeLocalMemoryLayout(memoryLayout)) {
+      return emitOpError("tensor operand ")
+             << operandIndex
+             << " in a compute kernel uses an unsupported memory layout; "
+                "compute tensor accessors require height-, width-, or "
+                "block-sharded SRAM";
     }
   }
   std::optional<ArrayAttr> templateArgs = getTemplateArgs();

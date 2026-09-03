@@ -346,6 +346,8 @@ class KernelSpec:
         used_dfb_indices: Physical DFB slots referenced by the final kernel body.
             None means metadata is unavailable and conservatively uses every DFB;
             an empty list means this kernel uses no DFBs.
+        local_tensor_indices: Global tensor indices whose local SRAM shards are
+            accessed directly by this kernel.
     """
 
     path: str
@@ -360,6 +362,7 @@ class KernelSpec:
     logical_kernel: Optional[KernelSelector] = None
     fabric_manager_intervals: Tuple[FabricManagerIntervalSpec, ...] = ()
     used_dfb_indices: Optional[List[int]] = None
+    local_tensor_indices: List[int] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -1596,6 +1599,61 @@ def _build_reconfiguration_descriptor_variants(
     return descriptor_variants
 
 
+def _validate_local_tensor_access(
+    spec: KernelSpec, tensors: List[Any], kernel_ranges: Any
+) -> None:
+    """Require a local tensor shard on every core that executes the kernel."""
+    if not spec.local_tensor_indices:
+        return
+
+    missing_runtime_addresses = sorted(
+        set(spec.local_tensor_indices) - set(spec.tensor_indices)
+    )
+    if missing_runtime_addresses:
+        raise ValueError(
+            "local tensor indices must also appear in tensor runtime arguments; "
+            f"missing {missing_runtime_addresses}"
+        )
+
+    executing_cores = _core_range_coordinates(
+        kernel_ranges, label=f"{spec.thread_type} kernel core ranges"
+    )
+    sharded_layouts = {
+        ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+        ttnn.TensorMemoryLayout.WIDTH_SHARDED,
+        ttnn.TensorMemoryLayout.BLOCK_SHARDED,
+    }
+    local_buffer_types = {ttnn.BufferType.L1, ttnn.BufferType.L1_SMALL}
+    for tensor_index in spec.local_tensor_indices:
+        if tensor_index < 0 or tensor_index >= len(tensors):
+            raise ValueError(
+                f"local tensor index {tensor_index} is outside the tensor list"
+            )
+        memory_config = tensors[tensor_index].memory_config()
+        if memory_config.buffer_type not in local_buffer_types:
+            raise ValueError(
+                f"local tensor {tensor_index} for {spec.thread_type} kernel "
+                "must use sharded SRAM (L1 or L1Small buffer type)"
+            )
+        if memory_config.memory_layout not in sharded_layouts:
+            raise ValueError(
+                f"local tensor {tensor_index} for {spec.thread_type} kernel "
+                "must use height-, width-, or block-sharded memory"
+            )
+        shard_spec = memory_config.shard_spec
+        if shard_spec is None:
+            raise ValueError(f"local tensor {tensor_index} has no shard specification")
+        shard_cores = _core_range_coordinates(
+            shard_spec.grid, label=f"local tensor {tensor_index} shard grid"
+        )
+        missing_cores = sorted(executing_cores - shard_cores)
+        if missing_cores:
+            raise ValueError(
+                f"local tensor {tensor_index} has no shard on executing cores "
+                f"{missing_cores}"
+            )
+
+
 def build_kernel_descriptors(
     kernel_specs: List[KernelSpec],
     tensors: List[Any],
@@ -1670,6 +1728,11 @@ def build_kernel_descriptors(
         )
 
     for kernel_spec_index, spec in enumerate(kernel_specs):
+        kernel_ranges = (
+            spec.core_ranges if spec.core_ranges is not None else core_ranges
+        )
+        _validate_local_tensor_access(spec, tensors, kernel_ranges)
+
         # Build common_runtime_args using tensor_indices.
         # C++ indexes by function-local position, we provide addresses in that order.
         common_runtime_args = [
@@ -1697,11 +1760,6 @@ def build_kernel_descriptors(
         common_runtime_args.extend(device_coordinates or [])
         common_runtime_args.extend(spec.extra_common_runtime_args or [])
 
-        # Prefer per-kernel core_ranges (specialize-cores clones); otherwise
-        # fall back to the whole-grid core_ranges.
-        kernel_ranges = (
-            spec.core_ranges if spec.core_ranges is not None else core_ranges
-        )
         runtime_args = []
         defines = []
         if descriptor_resource_plans is not None:
@@ -4423,6 +4481,7 @@ def emit_runner_source(
     kernel_fabric_routes: Optional[List[List[FabricRouteSpec]]] = None,
     requires_runtime_resource_factory: bool = False,
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
+    tensor_configurations: Optional[Sequence[tuple]] = None,
 ) -> str:
     """
     Emit Python source code for a standalone runner that invokes ttnn.generic_op.
@@ -4435,7 +4494,15 @@ def emit_runner_source(
     emitted runner's tt-metal program-cache key.
     mesh_program_placements, if provided, selects the device ranges that run
     the emitted program.
+    tensor_configurations records the compilation inputs so the fixed cache key
+    cannot be reused with incompatible tensors.
     """
+    if tensor_configurations is not None and len(tensor_configurations) != num_tensors:
+        raise ValueError(
+            "tensor_configurations must contain one entry per tensor: "
+            f"expected {num_tensors}, got {len(tensor_configurations)}"
+        )
+
     lines = []
 
     lines.append("# SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC")
@@ -4451,6 +4518,7 @@ def emit_runner_source(
     lines.append("from ttl.dataflow_buffer import PhysicalDFBConfig")
     lines.append("from ttl.domains import DeviceDomain")
     lines.append("from ttl.kernel import Kernel, KernelKind")
+    lines.append("from ttl.layouts import get_tensor_configuration")
     lines.append("from ttl.kernel_runner import (")
     lines.append("    FabricManagerIntervalKind,")
     lines.append("    FabricManagerIntervalSpec,")
@@ -4468,6 +4536,7 @@ def emit_runner_source(
     lines.append(f"NUM_TENSORS = {num_tensors}")
     lines.append(f"OPERATION_NAME = {kernel_name!r}")
     lines.append(f"PROGRAM_HASH = {normalize_program_hash(program_hash)!r}")
+    lines.append(f"TENSOR_CONFIGURATIONS = {tensor_configurations!r}")
     lines.append(f"NUM_PIPE_SYNC_SEMAPHORES = {num_pipe_sync_semaphores}")
     lines.append(f"NUM_DFB_RESETS = {num_dfb_resets}")
     lines.append(f"PIPE_SRAM_SCRATCH_BYTES = {pipe_sram_scratch_bytes}")
@@ -4509,6 +4578,12 @@ def emit_runner_source(
     lines.append("KERNEL_TENSOR_INDICES = [")
     for spec in kernel_specs:
         lines.append(f"    {spec.tensor_indices!r},  # {spec.thread_type}")
+    lines.append("]")
+    lines.append("")
+
+    lines.append("KERNEL_LOCAL_TENSOR_INDICES = [")
+    for spec in kernel_specs:
+        lines.append(f"    {spec.local_tensor_indices!r},  # {spec.thread_type}")
     lines.append("]")
     lines.append("")
 
@@ -4578,9 +4653,30 @@ def emit_runner_source(
     else:
         lines.append("def run(tensors, device=None):")
     lines.append(f'    """Run the {kernel_name} on device."""')
+    lines.append(f"    if len(tensors) != {num_tensors}:")
     lines.append(
-        f"    assert len(tensors) == {num_tensors}, f'Expected {num_tensors} tensors, got {{len(tensors)}}'"
+        f"        raise ValueError(f'Expected {num_tensors} tensor arguments, got {{len(tensors)}}')"
     )
+    lines.append("    if TENSOR_CONFIGURATIONS is not None:")
+    lines.append("        actual_configurations = tuple(")
+    lines.append("            get_tensor_configuration(tensor) for tensor in tensors")
+    lines.append("        )")
+    lines.append("        if actual_configurations != tuple(TENSOR_CONFIGURATIONS):")
+    lines.append("            mismatched_indices = [")
+    lines.append("                tensor_index")
+    lines.append("                for tensor_index, (actual, expected) in enumerate(")
+    lines.append(
+        "                    zip(actual_configurations, TENSOR_CONFIGURATIONS)"
+    )
+    lines.append("                )")
+    lines.append("                if actual != expected")
+    lines.append("            ]")
+    lines.append("            raise ValueError(")
+    lines.append(
+        "                f'Emitted runner tensor configuration mismatch at indices '"
+    )
+    lines.append("                f'{mismatched_indices}'")
+    lines.append("            )")
     if requires_runtime_resource_factory:
         lines.append("    if runtime_resource_factory is None:")
         lines.append(
@@ -4637,6 +4733,9 @@ def emit_runner_source(
     lines.append("                path=kernel_path,")
     lines.append("                thread_type=thread_type,")
     lines.append("                tensor_indices=KERNEL_TENSOR_INDICES[kernel_idx],")
+    lines.append(
+        "                local_tensor_indices=KERNEL_LOCAL_TENSOR_INDICES[kernel_idx],"
+    )
     lines.append("                config=config,")
     lines.append(
         "                pipe_computed_address_dfb_indices=KERNEL_PIPE_COMPUTED_ADDRESS_DFB_INDICES[kernel_idx],"
@@ -4713,6 +4812,7 @@ def emit_runner_file(
     kernel_fabric_routes: Optional[List[List[FabricRouteSpec]]] = None,
     requires_runtime_resource_factory: bool = False,
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
+    tensor_configurations: Optional[Sequence[tuple]] = None,
 ) -> str:
     """
     Emit a Python runner file for the compiled kernel.
@@ -4721,6 +4821,8 @@ def emit_runner_file(
     normalized tt-metal program-cache key.
     mesh_program_placements, if provided, is forwarded as the emitted
     program's device ranges.
+    tensor_configurations is forwarded so the emitted runner
+    can validate tensors before using its fixed tt-metal program-cache key.
 
     Returns the output path.
     """
@@ -4733,6 +4835,7 @@ def emit_runner_file(
         grid_rows=grid_rows,
         num_tensors=num_tensors,
         program_hash=program_hash,
+        tensor_configurations=tensor_configurations,
         kernel_name=kernel_name,
         num_pipe_sync_semaphores=num_pipe_sync_semaphores,
         num_dfb_resets=num_dfb_resets,

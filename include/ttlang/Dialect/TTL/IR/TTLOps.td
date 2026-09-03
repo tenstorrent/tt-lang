@@ -2181,7 +2181,8 @@ def TTL_RawAddrOp : TTL_Op<"raw_addr", [Pure]> {
     Every kernel that references the tensor receives its buffer base as a common
     runtime argument. Unlike a tensor operand to `ttl.opaque_call`, this op does
     not materialize a `TensorAccessor` or require its compile-time arguments.
-    Slice/view operands are unsupported.
+    The result carries no tensor layout, distribution, page size, alignment,
+    extent, or identity metadata. Slice/view operands are unsupported.
   }];
   let arguments = (ins TTLLayoutTensor:$tensor);
   let results = (outs I32:$result);
@@ -2300,6 +2301,18 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     dependency-only operand. Operand adaptation may map distinct occurrences to
     the same DFB without merging them.
 
+    A base tensor argument is converted according to the enclosing logical
+    kernel and its `ttl.layout`. Data-movement kernels receive a
+    `TensorAccessor` for device DRAM or SRAM, including ND-sharded storage.
+    `L1` and `L1Small` identify the corresponding TTNN SRAM buffer types;
+    `L1Small` requires sharded storage.
+    Compute kernels receive a byte-addressable `LocalTensorAccessor<uint8_t>`
+    only for height-, width-, or block-sharded SRAM. Tensor slices and views are
+    invalid. Repeated occurrences of one tensor share one accessor object while
+    remaining distinct positional C++ arguments. The callee
+    accepts the accessor by `const&` and must not retain its address or
+    reference after the enclosing kernel function returns.
+
     The ordered `dfb_effects` list describes reserve, push, wait, and pop
     actions completed synchronously before the external call returns. Each
     effect's dependency index identifies an element returned by
@@ -2357,7 +2370,6 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     access a DFB, declare DFB effects or non-transactional accesses, or declare
     unknown DFB access because condition evaluation is stable and repeat-safe
     rather than stateful.
-
     `fabric_manager_effects` declares ownership effects for external fabric
     connection managers. The enclosing operation binds each claim to one
     logical kernel. Nonlocal verification requires balanced ownership and

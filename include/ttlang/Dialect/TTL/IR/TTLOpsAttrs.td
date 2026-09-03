@@ -417,7 +417,8 @@ def TTL_LayoutAttr : TTL_Attr<"Layout", "layout"> {
     This replaces the dependency on TTNNLayoutAttr from the TTNN dialect,
     providing the minimal layout information needed by the tt-lang compiler:
     - Logical tensor shape
-    - Tile element type
+    - Tile or scalar element type, which distinguishes tiled from row-major
+      storage
     - Buffer type (L1, DRAM, etc.)
     - Grid shape for distribution
     - Memory layout (interleaved, sharded, etc.)
