@@ -194,6 +194,79 @@ def inline_atom_calls(
     )
 
 
+def _static_boolean_value(
+    expression: ast.expr,
+    static_booleans: Dict[str, bool],
+) -> Optional[bool]:
+    if isinstance(expression, ast.Constant) and type(expression.value) is bool:
+        return expression.value
+    if isinstance(expression, ast.Name):
+        return static_booleans.get(expression.id)
+    if isinstance(expression, ast.UnaryOp) and isinstance(expression.op, ast.Not):
+        operand = _static_boolean_value(expression.operand, static_booleans)
+        return None if operand is None else not operand
+    if isinstance(expression, ast.BoolOp):
+        operands = [
+            _static_boolean_value(value, static_booleans) for value in expression.values
+        ]
+        if any(operand is None for operand in operands):
+            return None
+        if isinstance(expression.op, ast.And):
+            return all(operands)
+        if isinstance(expression.op, ast.Or):
+            return any(operands)
+    return None
+
+
+class _StaticBooleanBranchSpecializer(ast.NodeTransformer):
+    def __init__(self, captured_values: Dict[str, object]):
+        self.static_booleans = {
+            name: value
+            for name, value in captured_values.items()
+            if type(value) is bool
+        }
+
+    def _visit_function(self, node):
+        enclosing_booleans = self.static_booleans
+        self.static_booleans = {
+            name: value
+            for name, value in enclosing_booleans.items()
+            if name not in _nested_binding_names(node)
+        }
+        try:
+            return self.generic_visit(node)
+        finally:
+            self.static_booleans = enclosing_booleans
+
+    def visit_FunctionDef(self, node):
+        return self._visit_function(node)
+
+    def visit_AsyncFunctionDef(self, node):
+        return self._visit_function(node)
+
+    def visit_If(self, node):
+        condition = _static_boolean_value(node.test, self.static_booleans)
+        if condition is None:
+            return self.generic_visit(node)
+        selected = node.body if condition else node.orelse
+        specialized = []
+        for statement in selected:
+            replacement = self.visit(statement)
+            if isinstance(replacement, list):
+                specialized.extend(replacement)
+            elif replacement is not None:
+                specialized.append(replacement)
+        return specialized
+
+
+def specialize_static_boolean_branches(
+    fn_def: ast.FunctionDef,
+    captured_values: Dict[str, object],
+) -> None:
+    """Remove branches selected by captured or inlined boolean literals."""
+    _StaticBooleanBranchSpecializer(captured_values).visit(fn_def)
+
+
 def _inline_statements(
     statements: List[ast.stmt],
     scope: Dict[str, object],

@@ -672,6 +672,74 @@ def test_composition_preserves_captured_kernel_handle():
     assert result.kernels == (reader,)
 
 
+def test_composition_removes_inactive_factory_boolean_branch():
+    """Dead factory branches cannot add kernels or invalid literals."""
+    enabled = False
+    absent_offset = None
+
+    @ttl.operation()
+    def selected_callee():
+        if not enabled:
+            ttl.call_extern_func(
+                "live.hpp",
+                "live",
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+        if enabled:
+            ttl.call_extern_func(
+                "dead.hpp",
+                "dead",
+                template_args=[absent_offset],
+                kernel=ttl.KernelKind.DATA_MOVEMENT,
+            )
+
+    @ttl.operation(grid=(1, 1))
+    def selected_caller():
+        selected_callee()
+
+    for spec in (selected_callee._spec, selected_caller._spec):
+        assert "if " not in spec.source
+        assert "'live'" in spec.source
+        assert "'dead'" not in spec.source
+        assert "None" not in spec.source
+
+    result = split_function_body(
+        selected_caller._spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=selected_caller._spec.logical_kernels,
+        selector_scope=selected_caller._spec.frozen_scope,
+        kernel_capacities=_backend_kernel_capacities(),
+    )
+    assert result.kernels == (KernelKind.COMPUTE,)
+
+
+def test_factory_boolean_specialization_respects_nested_parameter():
+    """Nested parameters shadow same-named factory captures."""
+    enabled = False
+
+    @ttl.operation()
+    def selected_operation():
+        if enabled:
+            ttl.call_extern_func(
+                "dead.hpp",
+                "dead",
+                kernel=ttl.KernelKind.DATA_MOVEMENT,
+            )
+
+        def selected_callback(enabled):
+            if enabled:
+                ttl.call_extern_func(
+                    "live.hpp",
+                    "live",
+                    kernel=ttl.KernelKind.COMPUTE,
+                )
+
+    assert "'dead'" not in selected_operation._spec.source
+    assert "def selected_callback(enabled):" in selected_operation._spec.source
+    assert "if enabled:" in selected_operation._spec.source
+    assert "'live'" in selected_operation._spec.source
+
+
 def test_repeated_composition_reuses_callee_logical_kernel():
     """Sequential calls to one helper share its declared logical kernel."""
     reader = Kernel(KernelKind.DATA_MOVEMENT)
