@@ -264,8 +264,8 @@ size, alignment, or bounds metadata.
 
 Data-movement base tensors become `const TensorAccessor<DistributionSpec>&`.
 TTL buffer types `L1` and `L1Small` both select worker SRAM; `L1Small` matches
-TTNN `L1_SMALL` and selects a separately reserved region that requires height-,
-width-, or block-sharded allocation. Compute base tensors become
+TTNN `L1_SMALL` and selects a separately reserved region that requires sharded
+allocation. Compute base tensors become
 `const LocalTensorAccessor<uint8_t>&` and must use height-, width-, or block-
 sharded SRAM. Each executing core must have a tensor shard. TILE accepts
 FLOAT32, BFLOAT16, BFLOAT8_B, BFLOAT4_B, INT32, UINT32,

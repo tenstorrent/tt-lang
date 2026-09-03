@@ -98,6 +98,13 @@ static bool isSupportedLayoutElementType(Type elementType) {
 static bool isShardedMemoryLayout(TensorMemoryLayout memoryLayout) {
   return memoryLayout == TensorMemoryLayout::HeightSharded ||
          memoryLayout == TensorMemoryLayout::WidthSharded ||
+         memoryLayout == TensorMemoryLayout::BlockSharded ||
+         memoryLayout == TensorMemoryLayout::NdSharded;
+}
+
+static bool isComputeLocalMemoryLayout(TensorMemoryLayout memoryLayout) {
+  return memoryLayout == TensorMemoryLayout::HeightSharded ||
+         memoryLayout == TensorMemoryLayout::WidthSharded ||
          memoryLayout == TensorMemoryLayout::BlockSharded;
 }
 
@@ -3228,8 +3235,7 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
         return emitOpError("tensor operand ")
                << operandIndex
                << " in a data movement kernel uses non-sharded SRAM with "
-                  "L1Small buffer type; L1Small requires height-, width-, or "
-                  "block-sharded storage";
+                  "L1Small buffer type; L1Small requires sharded storage";
       }
       continue;
     }
@@ -3240,10 +3246,10 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
              << " storage; compute tensor accessors require sharded SRAM "
                 "(L1 or L1Small buffer type)";
     }
-    if (!isShardedMemoryLayout(memoryLayout)) {
+    if (!isComputeLocalMemoryLayout(memoryLayout)) {
       return emitOpError("tensor operand ")
              << operandIndex
-             << " in a compute kernel uses a non-sharded memory layout; "
+             << " in a compute kernel uses an unsupported memory layout; "
                 "compute tensor accessors require height-, width-, or "
                 "block-sharded SRAM";
     }

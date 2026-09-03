@@ -61,9 +61,9 @@ COMPUTE_MEMORY_CONFIGS = [
 DATA_MOVEMENT_MEMORY_CONFIGS = [
     pytest.param(storage, distribution, id=f"{storage}-{distribution}")
     for storage, distributions in (
-        ("dram", ("interleaved", "height", "width", "block")),
-        ("l1", ("interleaved", "height", "width", "block")),
-        ("l1-small", ("height", "width", "block")),
+        ("dram", ("interleaved", "height", "width", "block", "nd")),
+        ("l1", ("interleaved", "height", "width", "block", "nd")),
+        ("l1-small", ("height", "width", "block", "nd")),
     )
     for distribution in distributions
 ]
@@ -125,12 +125,23 @@ def _make_memory_config(storage, distribution, tensor_shape, *, core_x=0):
         "height": ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
         "width": ttnn.TensorMemoryLayout.WIDTH_SHARDED,
         "block": ttnn.TensorMemoryLayout.BLOCK_SHARDED,
+        "nd": ttnn.TensorMemoryLayout.ND_SHARDED,
     }[distribution]
     if distribution == "interleaved":
         return ttnn.MemoryConfig(memory_layout, buffer_type)
     worker_core = ttnn.CoreCoord(core_x, 0)
+    core_grid = ttnn.CoreRangeSet({ttnn.CoreRange(worker_core, worker_core)})
+    if distribution == "nd":
+        return ttnn.MemoryConfig(
+            buffer_type,
+            ttnn.NdShardSpec(
+                tensor_shape,
+                core_grid,
+                orientation=ttnn.ShardOrientation.ROW_MAJOR,
+            ),
+        )
     shard_spec = ttnn.ShardSpec(
-        ttnn.CoreRangeSet({ttnn.CoreRange(worker_core, worker_core)}),
+        core_grid,
         tensor_shape,
         ttnn.ShardOrientation.ROW_MAJOR,
     )
@@ -810,7 +821,7 @@ def test_external_compute_tensor_accessor_rejects_interleaved_l1(
     )
     with pytest.raises(
         RuntimeError,
-        match="compute kernel uses a non-sharded memory layout.*require height-, width-, or block-sharded SRAM",
+        match="compute kernel uses an unsupported memory layout.*require height-, width-, or block-sharded SRAM",
     ):
         repeated_compute_tensor_accessor(tensor, tensor)
 

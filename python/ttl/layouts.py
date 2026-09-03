@@ -26,6 +26,7 @@ TENSOR_MEMORY_LAYOUT_SINGLE_BANK = ttl_dialect.TensorMemoryLayout.SingleBank
 TENSOR_MEMORY_LAYOUT_HEIGHT_SHARDED = ttl_dialect.TensorMemoryLayout.HeightSharded
 TENSOR_MEMORY_LAYOUT_WIDTH_SHARDED = ttl_dialect.TensorMemoryLayout.WidthSharded
 TENSOR_MEMORY_LAYOUT_BLOCK_SHARDED = ttl_dialect.TensorMemoryLayout.BlockSharded
+TENSOR_MEMORY_LAYOUT_ND_SHARDED = ttl_dialect.TensorMemoryLayout.NdSharded
 
 TENSOR_LAYOUT_TILE = "tile"
 TENSOR_LAYOUT_ROW_MAJOR = "row_major"
@@ -58,6 +59,7 @@ def detect_memory_layout(tensor) -> int:
         ttnn.TensorMemoryLayout.HEIGHT_SHARDED: TENSOR_MEMORY_LAYOUT_HEIGHT_SHARDED,
         ttnn.TensorMemoryLayout.WIDTH_SHARDED: TENSOR_MEMORY_LAYOUT_WIDTH_SHARDED,
         ttnn.TensorMemoryLayout.BLOCK_SHARDED: TENSOR_MEMORY_LAYOUT_BLOCK_SHARDED,
+        ttnn.TensorMemoryLayout.ND_SHARDED: TENSOR_MEMORY_LAYOUT_ND_SHARDED,
     }
     if memory_layout in supported_layouts:
         return supported_layouts[memory_layout]

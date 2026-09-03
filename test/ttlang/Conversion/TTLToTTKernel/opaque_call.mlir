@@ -131,6 +131,23 @@ func.func @call_with_tensor_func_arg(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>,
 
 // -----
 
+#layout = #ttl.layout<shape = [1, 1], element_type = !ttcore.tile<32x32, bfp_bf8>,
+                      buffer = dram, grid = [1, 1], memory = nd_sharded>
+
+// ND-sharded device tensors use the distributed TensorAccessor interface.
+// CHECK-LABEL: func.func @call_with_nd_sharded_tensor_func_arg
+// CHECK-DAG: %[[C0_IDX:.*]] = arith.constant 0 : index
+// CHECK-DAG: %[[BANK_BASE:.*]] = ttkernel.get_common_arg_val(%[[C0_IDX]]) : (index) -> i32
+// CHECK-DAG: %[[ACC_ARGS:.*]] = ttkernel.TensorAccessorArgs(
+// CHECK-DAG: %[[ACC:.*]] = ttkernel.TensorAccessor(%[[ACC_ARGS]], %[[BANK_BASE]]) : (!ttkernel.TensorAccessorArgs, i32) -> !ttkernel.TensorAccessor
+// CHECK: ttkernel.opaque_call "use_tensor"(%[[ACC]]) {header = "use_tensor.hpp"} : (!ttkernel.TensorAccessor) -> ()
+func.func @call_with_nd_sharded_tensor_func_arg(%arg0: tensor<1x1x!ttcore.tile<32x32, bfp_bf8>, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
+  ttl.opaque_call "use_tensor" (%arg0) {header = "use_tensor.hpp"} : (tensor<1x1x!ttcore.tile<32x32, bfp_bf8>, #layout>) -> ()
+  return
+}
+
+// -----
+
 #layout_f32 = #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, f32>, buffer = dram, grid = [1, 1], memory = interleaved>
 #layout_f16 = #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, f16>, buffer = dram, grid = [1, 1], memory = interleaved>
 #layout_bf16 = #ttl.layout<shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>, buffer = dram, grid = [1, 1], memory = interleaved>
