@@ -112,6 +112,16 @@ def TTKernel_TensorAccessor : TTKernel_Type<"TensorAccessor", "TensorAccessor"> 
   let description = "Accessor that encapsulates logic to access tensor information";
 }
 
+def TTKernel_LocalTensorAccessor
+    : TTKernel_Type<"LocalTensorAccessor", "LocalTensorAccessor"> {
+  let summary = "LocalTensorAccessor byte-storage type";
+  let description = [{
+    Typed view of a tensor whose storage is directly addressable in the local
+    core's SRAM. The element type is fixed to bytes so accessor formation
+    is independent of the tensor's logical dtype and layout.
+  }];
+}
+
 def TTKernel_TensorAccessorPageMapping : TTKernel_Type<"TensorAccessorPageMapping", "PageMapping"> {
   let summary = "TensorAccessor PageMapping struct";
   let description = "TensorAccessor struct that holds bank_id and bank_page_offset";
