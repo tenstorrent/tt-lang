@@ -1900,14 +1900,14 @@ static LogicalResult validateDFBReconfigurationsAtNode(
       bool sameRepeatedSequence =
           !boundary.conditionalExecution &&
           boundary.executionCount == repeatedReference->executionCount &&
-          llvm::equal(boundary.participantIterationDomains,
-                      repeatedReference->participantIterationDomains,
-                      hasEquivalentIterationSequence);
+          boundary.participantIterationDomains ==
+              repeatedReference->participantIterationDomains;
       if (!sameRepeatedSequence) {
         analysisFailure.set(
             boundary.participantOperations.front(),
             "repeated DFB reconfiguration requires every boundary on the "
-            "launch node to use the same nested loop trip-count sequence");
+            "launch node to use the same enclosing loop nest in each "
+            "participant");
         return failure();
       }
     }
