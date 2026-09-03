@@ -1,20 +1,6 @@
 // Invalid control-flow and lifetime contracts for ttl-finalize-dfb-indices.
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-finalize-dfb-indices)'
 
-// A single cyclic cut restores phase zero on every loop backedge.
-func.func @one_cyclic_cut()
-    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
-  %c0 = arith.constant 0 : index
-  %c1 = arith.constant 1 : index
-  %c4 = arith.constant 4 : index
-  scf.for %i = %c0 to %c4 step %c1 {
-    ttl.opaque_call "ttlang::reset_dataflow_buffers"() {header = "ttlang/Target/TTKernel/LLKs/reset_dataflow_buffers.h"} : () -> ()
-  }
-  return
-}
-
-// -----
-
 // A reset under conditional control flow cannot define one static phase order.
 
 func.func @conditional_reset(%condition: i1)
