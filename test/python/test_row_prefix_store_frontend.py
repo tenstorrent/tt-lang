@@ -8,14 +8,13 @@
 
 """Frontend contract coverage for compact row-prefix stores."""
 
-import os
+import subprocess
+import sys
 
 import pytest
 
-os.environ["TTLANG_COMPILE_ONLY"] = "1"
-
-import ttl  # noqa: E402
-from ttl.diagnostics import TTLangCompileError  # noqa: E402
+import ttl
+from ttl.diagnostics import TTLangCompileError
 
 
 def _make_valid_row_prefix_operation(data_format):
@@ -177,6 +176,7 @@ INVALID_ROW_PREFIX_CASES = [
 def test_row_prefix_methods_emit_expected_store_attributes(
     data_format, tmp_path, monkeypatch
 ):
+    monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
     initial_mlir = tmp_path / f"row_prefix_{data_format}.mlir"
     monkeypatch.setenv("TTLANG_INITIAL_MLIR", str(initial_mlir))
 
@@ -191,6 +191,25 @@ def test_row_prefix_methods_emit_expected_store_attributes(
 
 
 @pytest.mark.parametrize(("operation", "diagnostic"), INVALID_ROW_PREFIX_CASES)
-def test_row_prefix_methods_reject_invalid_frontend_calls(operation, diagnostic):
+def test_row_prefix_methods_reject_invalid_frontend_calls(
+    operation, diagnostic, monkeypatch
+):
+    monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
     with pytest.raises(TTLangCompileError, match=diagnostic):
         operation()
+
+
+def test_frontend_module_import_preserves_compile_only_mode():
+    import_probe = """
+import os
+import runpy
+import sys
+
+os.environ["TTLANG_COMPILE_ONLY"] = "sentinel"
+runpy.run_path(sys.argv[1])
+assert os.environ["TTLANG_COMPILE_ONLY"] == "sentinel"
+"""
+    subprocess.run(
+        [sys.executable, "-c", import_probe, __file__],
+        check=True,
+    )
