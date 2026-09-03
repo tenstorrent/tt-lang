@@ -372,7 +372,6 @@ static bool
 canReconfigureDescriptorAcrossEpochs(const DFBLogicalLifecycle &lhs,
                                      const DFBLogicalLifecycle &rhs) {
   return haveIdenticalPageFormat(lhs.type, rhs.type) &&
-         !lhs.hasOpaqueExternalAccess && !rhs.hasOpaqueExternalAccess &&
          haveDisjointConfigurationEpochs(lhs, rhs);
 }
 

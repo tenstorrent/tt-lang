@@ -185,7 +185,8 @@ void populateTTLModule(nb::module_ &m) {
       .def_static(
           "get",
           [](MlirContext context, int64_t ordinal,
-             const std::vector<MlirAttribute> &participants) {
+             const std::vector<MlirAttribute> &participants,
+             bool discardDfbState) {
             MLIRContext *cppContext = unwrap(context);
             SmallVector<LogicalKernelAttr> participantAttrs;
             participantAttrs.reserve(participants.size());
@@ -196,14 +197,17 @@ void populateTTLModule(nb::module_ &m) {
             DFBReconfigurationAttr attribute =
                 DFBReconfigurationAttr::getCheckedInstance(
                     UnknownLoc::get(cppContext), cppContext, ordinal,
-                    participantAttrs);
+                    participantAttrs, discardDfbState);
             if (!attribute) {
               throw nb::value_error("invalid DFB reconfiguration");
             }
             return wrap(attribute);
           },
-          nb::arg("context"), nb::arg("ordinal"), nb::arg("participants"))
+          nb::arg("context"), nb::arg("ordinal"), nb::arg("participants"),
+          nb::arg("discard_dfb_state") = false)
       .def_prop_ro("ordinal", &DFBReconfigurationAttr::getOrdinal)
+      .def_prop_ro("discard_dfb_state",
+                   &DFBReconfigurationAttr::getDiscardDfbState)
       .def_prop_ro("participants", [](DFBReconfigurationAttr attribute) {
         std::vector<MlirAttribute> participants;
         participants.reserve(attribute.getParticipants().size());

@@ -2256,7 +2256,9 @@ def TTL_DFBReconfigurationOp : TTL_Op<"dfb_reconfiguration",
     interfaces that change. Allocation analysis derives the configuration for
     each epoch from logical DFB lifetimes. Live protocol state retains its
     physical index, storage, and interface configuration across the boundary;
-    reassignment requires a complete protocol and synchronization proof.
+    reassignment requires a complete protocol and synchronization proof unless
+    the boundary declares that unread producer payload and opaque external
+    protocol state may be discarded.
 
     Runtime execution is currently supported only on Blackhole. Compilation
     rejects a resolved non-Blackhole target. Shared-L1 synchronization state

@@ -27,3 +27,10 @@ inline void write_reconfiguration_runtime_value() {
   }
   outputDfb.push_back(1);
 }
+
+template <typename OutputDFB>
+inline void publish_unread_tile() {
+  CircularBuffer outputDfb(OutputDFB::index);
+  outputDfb.reserve_back(1);
+  outputDfb.push_back(1);
+}

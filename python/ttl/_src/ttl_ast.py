@@ -2768,7 +2768,10 @@ class TTLGenericCompiler(TTCompilerBase):
             for participant in sorted(boundary.participants, key=_selector_sort_key)
         ]
         boundary_attr = ttl.ir.DFBReconfigurationAttr.get(
-            self.ctx, boundary.ordinal, participant_attrs
+            self.ctx,
+            boundary.ordinal,
+            participant_attrs,
+            boundary.discard_dfb_state,
         )
         return ttl.dfb_reconfiguration(boundary_attr)
 

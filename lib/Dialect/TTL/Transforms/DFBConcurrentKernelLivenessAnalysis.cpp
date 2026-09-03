@@ -4319,6 +4319,11 @@ struct OrderedLifecycleBoundary {
                  : reconfiguration->conditionalExecution;
   }
 
+  bool discardsDFBState() const {
+    return reset ||
+           (reconfiguration && reconfiguration->boundary.getDiscardDfbState());
+  }
+
   Operation *getEvidenceOperation() const {
     return reset ? reset->participantOperations.front()
                  : reconfiguration->participantOperations.front();
@@ -4344,9 +4349,9 @@ static Operation *findConditionalExecutionMismatch(
   return nullptr;
 }
 
-// Proves complete protocol intervals between lifecycle boundaries. A reset may
-// discard unread blocks. An incomplete protocol crosses reconfiguration
-// unchanged and remains active in every configuration epoch that it spans.
+// Proves complete protocol intervals between lifecycle boundaries. A state-
+// discarding boundary may discard unread blocks or opaque external protocol
+// state. Other incomplete protocols cross reconfiguration unchanged.
 static DFBLifecycleCompletionProof computePerNodeLifetime(
     DFBLogicalLifecycle &logicalDFB, unsigned logicalIndex,
     LaunchNodeCoord node, SmallVectorImpl<DFBPerNodeLifetime> &lifetimes,
@@ -4542,7 +4547,7 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
   }
 
   for (const OrderedLifecycleBoundary &boundary : boundaries) {
-    if (!boundary.reset) {
+    if (!boundary.discardsDFBState()) {
       continue;
     }
     Operation *conditionalMismatch = nullptr;
@@ -4574,7 +4579,8 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
     const OrderedLifecycleBoundary *terminalBoundary =
         boundaryInterval < boundaries.size() ? &boundaries[boundaryInterval]
                                              : nullptr;
-    bool resetTerminated = terminalBoundary && terminalBoundary->reset;
+    bool discardsDFBState =
+        terminalBoundary && terminalBoundary->discardsDFBState();
     SmallVector<DFBPerNodeLifetime, 0> epochLifetimes;
     SmallVector<DFBPerNodeLifetimeDiagnostics, 0> epochDiagnostics;
     DFBLifecycleCompletionProof proof = computeProtocolLifetime(
@@ -4582,7 +4588,7 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
         diagnostics ? &epochDiagnostics : nullptr, graph, structuralOrder,
         operationEvents, accessEvents, executionCounts, accessRuns, domainState,
         includeUnknownDomains, lifecycleAccesses,
-        /*hasCanonicalResetTerminator=*/resetTerminated,
+        /*hasCanonicalResetTerminator=*/discardsDFBState,
         /*selectedExecutionDivisor=*/repeatedReconfigurationCount);
     assert(epochLifetimes.size() == 1 &&
            "one selected epoch must produce one protocol lifetime");
