@@ -666,6 +666,17 @@ def _add_allocation_group_bindings(
         bindings[name] = ast.Name(id=existing_name, ctx=ast.Load())
 
 
+def _remap_composed_synchronization_participant(
+    participant: Kernel | KernelKind,
+    selected_kernels: Dict[int, Kernel],
+) -> Kernel | KernelKind:
+    if not isinstance(participant, Kernel):
+        return participant
+    if _selector_implicit_role(participant) is not None:
+        return participant
+    return selected_kernels[id(participant)]
+
+
 def _add_dfb_reset_bindings(
     spec,
     bindings: Dict[str, ast.expr],
@@ -686,7 +697,9 @@ def _add_dfb_reset_bindings(
             # within that call retain one identity across all participants.
             reset_instance = DFBReset(
                 participants=tuple(
-                    selected_kernels[id(participant)]
+                    _remap_composed_synchronization_participant(
+                        participant, selected_kernels
+                    )
                     for participant in reset.participants
                 ),
             )
@@ -717,11 +730,8 @@ def _add_dfb_reconfiguration_bindings(
             # within that call retain one identity across all participants.
             boundary_instance = DFBReconfiguration(
                 participants=tuple(
-                    (
-                        selected_kernels[id(participant)]
-                        if isinstance(participant, Kernel)
-                        and _selector_implicit_role(participant) is None
-                        else participant
+                    _remap_composed_synchronization_participant(
+                        participant, selected_kernels
                     )
                     for participant in boundary.participants
                 ),
