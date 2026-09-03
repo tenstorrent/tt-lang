@@ -189,6 +189,54 @@ module {
   }
 }
 
+// -----
+
+// bind_cb cb_index must be non-negative.
+module {
+  func.func @bind_cb_negative_cb_index() {
+    // expected-error @below {{cb_index must be non-negative}}
+    %cb = ttl.bind_cb {cb_index = -1, block_count = 2}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    return
+  }
+}
+
+// -----
+
+// bind_cb block_count must be positive.
+module {
+  func.func @bind_cb_non_positive_block_count() {
+    // expected-error @below {{block_count must be > 0}}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 0}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    return
+  }
+}
+
+// -----
+
+// bind_cb block_count attribute must match the result type's block count.
+module {
+  func.func @bind_cb_block_count_mismatch() {
+    // expected-error @below {{block_count must match result type block count (2)}}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 3}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    return
+  }
+}
+
+// -----
+
+// attach_cb result type must equal the tensor operand type.
+module {
+  func.func @attach_cb_result_type_mismatch(%t: tensor<2x2xf32>, %cb: !ttl.cb<[2, 2], f32, 2>) {
+    // expected-error @below {{result type must equal tensor operand type}}
+    %r = ttl.attach_cb %t, %cb
+        : (tensor<2x2xf32>, !ttl.cb<[2, 2], f32, 2>) -> tensor<4x4xf32>
+    return
+  }
+}
+
 // tile_store tests moved to tile_store_invalid.mlir
 
 // -----
