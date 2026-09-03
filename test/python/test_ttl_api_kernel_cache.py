@@ -17,6 +17,12 @@ import ttl.kernel_runner as kernel_runner
 import ttl.ttl_api as ttl_api
 
 
+@pytest.fixture(autouse=True)
+def _execute_recording_kernels(monkeypatch):
+    """Execute recording stubs even when conftest enables compile-only mode."""
+    monkeypatch.setattr(ttl_api, "_should_execute", lambda: True)
+
+
 class _FakeMemoryConfig:
     def __init__(self, memory_space, memory_layout):
         self.buffer_type = memory_space
@@ -64,18 +70,50 @@ class _FakeTensor:
         return self._device
 
 
-class _RecordingCompiledKernel:
-    def __init__(self, program_hash):
+class _FakePipeRuntimeResources:
+    def __init__(self, global_semaphore_count):
+        self.global_semaphores = [object() for _ in range(global_semaphore_count)]
+
+
+class _RecordingCompiledKernel(ttl_api.CompiledTTNNKernel):
+    execution_kernels = []
+
+    def __init__(
+        self,
+        program_hash,
+        num_pipe_global_semaphores=0,
+        runtime_resource_factory=None,
+        runtime_resource_cache=None,
+    ):
+        super().__init__(
+            kernel_paths=[],
+            kernel_configs=[],
+            kernel_arg_specs=[],
+            num_tensors=0,
+            core_ranges=None,
+            kernel_tensor_indices=[],
+            program_hash=program_hash,
+            num_pipe_global_semaphores=num_pipe_global_semaphores,
+            runtime_resource_factory=runtime_resource_factory,
+            runtime_resource_cache=runtime_resource_cache,
+        )
         self.program_hash = program_hash
         self.runtime_args = []
 
     def __call__(self, *runtime_args):
         self.runtime_args.append(runtime_args)
+        self.execution_kernels.append(self)
+        if self.num_pipe_global_semaphores > 0:
+            self._runtime_resource_cache.device = runtime_args[0].device()
+            self._runtime_resource_cache.pipe_resources = _FakePipeRuntimeResources(
+                self.num_pipe_global_semaphores
+            )
         return self.program_hash
 
 
-def _install_recording_compile(monkeypatch):
+def _install_recording_compile(monkeypatch, num_pipe_global_semaphores=0):
     compile_calls = []
+    _RecordingCompiledKernel.execution_kernels.clear()
     kernel_id_counter = itertools.count(1)
     hash_values = {}
 
@@ -102,7 +140,12 @@ def _install_recording_compile(monkeypatch):
         program_hash,
         **compile_options,
     ):
-        compiled_kernel = _RecordingCompiledKernel(program_hash)
+        compiled_kernel = _RecordingCompiledKernel(
+            program_hash,
+            num_pipe_global_semaphores=num_pipe_global_semaphores,
+            runtime_resource_factory=compile_options.get("runtime_resource_factory"),
+            runtime_resource_cache=compile_options.get("runtime_resource_cache"),
+        )
         compile_calls.append(
             {
                 "kernel_function": kernel_function,
@@ -144,6 +187,205 @@ def test_operation_cache_reuses_compiled_kernel_for_same_tensor_config(monkeypat
         (first_input, first_output),
         (second_input, second_output),
     ]
+
+
+def test_factory_cache_reuses_artifacts_with_independent_runtime_resources(
+    monkeypatch,
+):
+    """Shared artifacts retain operation-local runtime-resource owners."""
+    compile_calls = _install_recording_compile(monkeypatch)
+    factory_cache = {}
+
+    def first_resource_factory(**_kwargs):
+        return None
+
+    def second_resource_factory(**_kwargs):
+        return None
+
+    def make_operation(runtime_resource_factory, factory_cache_key):
+        @ttl_api.operation(
+            grid=(1, 1),
+            runtime_resource_factory=runtime_resource_factory,
+            factory_cache=factory_cache,
+            factory_cache_key=factory_cache_key,
+        )
+        def copy_kernel(input_tensor, output_tensor):
+            pass
+
+        return copy_kernel
+
+    first_operation = make_operation(first_resource_factory, ("copy", 1))
+    repeated_operation = make_operation(second_resource_factory, ("copy", 1))
+    different_operation = make_operation(second_resource_factory, ("copy", 2))
+
+    first_result = first_operation(_FakeTensor(), _FakeTensor())
+    repeated_result = repeated_operation(_FakeTensor(), _FakeTensor())
+    different_result = different_operation(_FakeTensor(), _FakeTensor())
+
+    assert len(compile_calls) == 2
+    assert first_result == repeated_result
+    assert different_result != first_result
+
+    first_kernel, repeated_kernel, different_kernel = (
+        _RecordingCompiledKernel.execution_kernels
+    )
+    assert first_kernel is not repeated_kernel
+    assert (
+        first_kernel._runtime_resource_cache
+        is not repeated_kernel._runtime_resource_cache
+    )
+    assert first_kernel._fabric_route_cache is not repeated_kernel._fabric_route_cache
+    assert first_kernel.runtime_resource_factory is first_resource_factory
+    assert repeated_kernel.runtime_resource_factory is second_resource_factory
+    assert different_kernel.runtime_resource_factory is second_resource_factory
+
+    templates = [slot.template.compiled_kernel for slot in factory_cache.values()]
+    assert len(templates) == 2
+    assert all(template._runtime_resource_cache is None for template in templates)
+    assert all(template.runtime_resource_factory is None for template in templates)
+
+
+def test_factory_cache_compilation_is_single_flight_across_wrappers(monkeypatch):
+    """Concurrent wrappers compile one shared cache entry once."""
+    compile_started = threading.Event()
+    release_compile = threading.Event()
+    compilation_count = 0
+    factory_cache = {}
+
+    def compile_kernel(
+        _kernel_function,
+        _runtime_args,
+        _runtime_kwargs,
+        _grid,
+        _indexing_maps,
+        _iterator_types,
+        _num_outs,
+        _memory_space,
+        _tiled,
+        program_hash,
+        **compile_options,
+    ):
+        nonlocal compilation_count
+        compilation_count += 1
+        compile_started.set()
+        assert release_compile.wait(timeout=5)
+        return _RecordingCompiledKernel(
+            program_hash,
+            runtime_resource_factory=compile_options.get("runtime_resource_factory"),
+            runtime_resource_cache=compile_options.get("runtime_resource_cache"),
+        )
+
+    monkeypatch.setattr(
+        ttl_api, "is_ttnn_tensor", lambda arg: isinstance(arg, _FakeTensor)
+    )
+    monkeypatch.setattr(ttl_api, "_compile_kernel", compile_kernel)
+
+    def make_operation():
+        @ttl_api.operation(
+            grid=(1, 1),
+            factory_cache=factory_cache,
+            factory_cache_key=("copy", 1),
+        )
+        def copy_kernel(input_tensor, output_tensor):
+            pass
+
+        return copy_kernel
+
+    first_operation = make_operation()
+    second_operation = make_operation()
+    first_thread = threading.Thread(
+        target=first_operation, args=(_FakeTensor(), _FakeTensor())
+    )
+    second_thread = threading.Thread(
+        target=second_operation, args=(_FakeTensor(), _FakeTensor())
+    )
+
+    first_thread.start()
+    assert compile_started.wait(timeout=5)
+    second_thread.start()
+    release_compile.set()
+    first_thread.join(timeout=5)
+    second_thread.join(timeout=5)
+
+    assert not first_thread.is_alive()
+    assert not second_thread.is_alive()
+    assert compilation_count == 1
+
+
+def test_factory_cache_separates_operation_and_runtime_resource_contracts(
+    monkeypatch,
+):
+    """Operation code and resource-aware emission separate shared entries."""
+    compile_calls = _install_recording_compile(monkeypatch)
+    factory_cache = {}
+
+    def make_resources(**_kwargs):
+        return None
+
+    def make_copy_operation(runtime_resource_factory):
+        @ttl_api.operation(
+            grid=(1, 1),
+            runtime_resource_factory=runtime_resource_factory,
+            factory_cache=factory_cache,
+            factory_cache_key=("shared", 1),
+        )
+        def copy_kernel(input_tensor, output_tensor):
+            pass
+
+        return copy_kernel
+
+    without_resources = make_copy_operation(None)
+    with_resources = make_copy_operation(make_resources)
+
+    @ttl_api.operation(
+        grid=(1, 1),
+        factory_cache=factory_cache,
+        factory_cache_key=("shared", 1),
+    )
+    def distinct_kernel(input_tensor, output_tensor):
+        pass
+
+    without_resources(_FakeTensor(), _FakeTensor())
+    with_resources(_FakeTensor(), _FakeTensor())
+    distinct_kernel(_FakeTensor(), _FakeTensor())
+
+    assert len(compile_calls) == 3
+
+
+@pytest.mark.parametrize(
+    ("factory_cache", "factory_cache_key"),
+    (({}, None), (None, ("copy", 1))),
+)
+def test_factory_cache_requires_mapping_and_key_together(
+    factory_cache, factory_cache_key
+):
+    """The shared mapping and its user identity form one API contract."""
+    with pytest.raises(ValueError, match="must be supplied together"):
+        ttl_api.operation(
+            grid=(1, 1),
+            factory_cache=factory_cache,
+            factory_cache_key=factory_cache_key,
+        )(lambda input_tensor, output_tensor: None)
+
+
+def test_factory_cache_requires_mutable_mapping():
+    """Factory compilation reuse requires writable shared storage."""
+    with pytest.raises(TypeError, match="must be a mutable mapping"):
+        ttl_api.operation(
+            grid=(1, 1),
+            factory_cache=(),
+            factory_cache_key=("copy", 1),
+        )(lambda input_tensor, output_tensor: None)
+
+
+def test_factory_cache_requires_hashable_key():
+    """Factory capture identity must support deterministic mapping lookup."""
+    with pytest.raises(TypeError, match="must be hashable"):
+        ttl_api.operation(
+            grid=(1, 1),
+            factory_cache={},
+            factory_cache_key=["copy", 1],
+        )(lambda input_tensor, output_tensor: None)
 
 
 def test_operation_propagates_math_fidelity(monkeypatch):
@@ -329,6 +571,7 @@ def test_operation_cache_compilation_is_single_flight(monkeypatch):
 
     class SerializedCompiledKernel:
         all_source_lines = {}
+        num_pipe_global_semaphores = 0
 
         def __init__(self, runtime_resource_cache):
             self.runtime_resource_cache = runtime_resource_cache
@@ -391,6 +634,7 @@ def test_operation_cache_synchronizes_before_owner_destruction(monkeypatch):
 
     class ResourceCompiledKernel:
         all_source_lines = {}
+        num_pipe_global_semaphores = 0
 
         def __init__(self, runtime_resource_cache):
             self.runtime_resource_cache = runtime_resource_cache
@@ -711,6 +955,90 @@ def test_operation_cache_separates_device_derived_budget_contracts(monkeypatch):
     assert len(compile_calls) == 2
     assert compile_calls[0]["compile_options"]["l1_budget_override"] == 98304
     assert compile_calls[1]["compile_options"]["l1_budget_override"] == 73760
+
+
+def test_operation_cache_accepts_post_semaphore_allocation_budget(monkeypatch):
+    compile_calls = _install_recording_compile(
+        monkeypatch, num_pipe_global_semaphores=2
+    )
+    budgets = iter((98304, 73760, 73760, 73760))
+    monkeypatch.setattr(
+        ttl_api,
+        "_resolve_l1_budget",
+        lambda runtime_args, compiler_options, runtime_resource_cache: next(budgets),
+    )
+
+    @ttl_api.operation(grid=(1, 1))
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    device = _FakeDevice()
+    input_tensor = _FakeTensor(device=device)
+    output_tensor = _FakeTensor(device=device)
+    first_result = copy_kernel(input_tensor, output_tensor)
+    second_result = copy_kernel(input_tensor, output_tensor)
+
+    assert len(compile_calls) == 1
+    assert first_result == second_result
+
+
+def test_post_semaphore_budget_cache_does_not_cross_devices(monkeypatch):
+    """A post-allocation budget is valid only for its retained resources."""
+    compile_calls = _install_recording_compile(
+        monkeypatch, num_pipe_global_semaphores=2
+    )
+    budgets = iter((98304, 73760, 73760, 49152))
+    monkeypatch.setattr(
+        ttl_api,
+        "_resolve_l1_budget",
+        lambda runtime_args, compiler_options, runtime_resource_cache: next(budgets),
+    )
+
+    @ttl_api.operation(grid=(1, 1))
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    first_device = _FakeDevice()
+    second_device = _FakeDevice()
+    first_result = copy_kernel(
+        _FakeTensor(device=first_device), _FakeTensor(device=first_device)
+    )
+    second_result = copy_kernel(
+        _FakeTensor(device=second_device), _FakeTensor(device=second_device)
+    )
+
+    assert len(compile_calls) == 2
+    assert first_result != second_result
+
+
+def test_post_semaphore_budget_cache_requires_retained_resources(monkeypatch):
+    """Replacing runtime resources invalidates their adjusted budget."""
+    compile_calls = _install_recording_compile(
+        monkeypatch, num_pipe_global_semaphores=2
+    )
+    budgets = iter((98304, 73760, 73760, 49152))
+    monkeypatch.setattr(
+        ttl_api,
+        "_resolve_l1_budget",
+        lambda runtime_args, compiler_options, runtime_resource_cache: next(budgets),
+    )
+
+    @ttl_api.operation(grid=(1, 1))
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    device = _FakeDevice()
+    input_tensor = _FakeTensor(device=device)
+    output_tensor = _FakeTensor(device=device)
+    first_result = copy_kernel(input_tensor, output_tensor)
+    runtime_resource_cache = compile_calls[0]["compile_options"][
+        "runtime_resource_cache"
+    ]
+    runtime_resource_cache.pipe_resources = _FakePipeRuntimeResources(2)
+    second_result = copy_kernel(input_tensor, output_tensor)
+
+    assert len(compile_calls) == 2
+    assert first_result != second_result
 
 
 def _make_scaled_kernel(scale):
