@@ -179,6 +179,27 @@ def test_captured_kernel_selectors_preserve_global_roles():
         assert spec.frozen_scope["kernel_selector"] is kernel_selector
         assert result.kernels == (kernel_selector,)
 
+        @ttl.operation()
+        def selector_helper():
+            ttl.call_extern_func(
+                "source.hpp",
+                "source",
+                kernel=kernel_selector,
+            )
+
+        @ttl.operation(grid=(1, 1))
+        def composed_operation():
+            selector_helper()
+
+        composed_result = split_function_body(
+            composed_operation._spec.fn_ast,
+            dfb_param_names=set(),
+            logical_kernels=composed_operation._spec.logical_kernels,
+            selector_scope=composed_operation._spec.frozen_scope,
+            kernel_capacities=_backend_kernel_capacities(),
+        )
+        assert composed_result.kernels == (kernel_selector,)
+
     canonical_spec = make_spec(ttl.KernelKind.DATA_MOVEMENT)
     pipe_source_spec = make_spec(ttl.PIPE_SOURCE_KERNEL)
     assert canonical_spec.operation_identity != pipe_source_spec.operation_identity
