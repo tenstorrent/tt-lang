@@ -5152,6 +5152,11 @@ def TTKernel_OpaqueCallOp : TTKernel_Op<"opaque_call",
       `unsigned_arg_indices` preserves unsigned address semantics when an
       earlier signless i32 value reaches the C++ call boundary.
 
+      `dfb_resource_indices` lists finalized physical DFB indices whose
+      descriptors must remain available while the call executes. It adds no
+      C++ arguments. The indices are strictly increasing and contain no
+      duplicates.
+
       Example:
       ```
       ttkernel.opaque_call "my_func" template_args [1 : si32]
@@ -5163,7 +5168,8 @@ def TTKernel_OpaqueCallOp : TTKernel_Op<"opaque_call",
       StrAttr:$header,
       Variadic<AnyType>:$arg_operands,
       OptionalAttr<ArrayAttr>:$template_args,
-      OptionalAttr<DenseI32ArrayAttr>:$unsigned_arg_indices
+      OptionalAttr<DenseI32ArrayAttr>:$unsigned_arg_indices,
+      OptionalAttr<DenseI32ArrayAttr>:$dfb_resource_indices
     );
     let results = (outs Variadic<AnyType>);
     let assemblyFormat = [{
