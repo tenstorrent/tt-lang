@@ -96,6 +96,7 @@ enum class DFBConflictReason {
   PointerOwnerMismatch,
   ConcurrentLifetime,
   ResetDomainWrite,
+  ReconfigurationInterfaceWrite,
   StaticConfigurationMismatch,
 };
 
