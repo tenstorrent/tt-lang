@@ -725,6 +725,8 @@ getBoundaryParticipantIteration(const CollectiveBoundary &boundary,
   return std::nullopt;
 }
 
+// Requires an exact, unconditional access count relative to the boundary
+// participant in the same logical kernel.
 static bool hasFixedAccessCountForReconfiguration(
     const DFBAccessOccurrence &access,
     const ValidatedDFBReconfiguration &reconfiguration,
@@ -1709,10 +1711,8 @@ static AccessRuns collectAccessRuns(
   return runs;
 }
 
-// Adds maximum counts and loop domains for accesses performed by external
-// calls bounded by repeated state-discarding reconfigurations. These runs
-// establish event placement; protocol validation uses the exact runs from
-// collectAccessRuns.
+// Substitutes structural envelopes so graph construction can order conditional
+// external calls relative to repeated state-discarding reconfigurations.
 static AccessRuns collectProgramOrderAccessRuns(
     ArrayRef<DFBLogicalLifecycle> logicalDFBs,
     ArrayRef<ValidatedDFBReconfiguration> reconfigurations,
@@ -4486,6 +4486,8 @@ struct OrderedLifecycleBoundary {
                  : reconfiguration->conditionalExecution;
   }
 
+  // Resets always restore interface state; reconfiguration may discard prior
+  // logical state only when its declaration permits it.
   bool discardsDFBState() const {
     return reset ||
            (reconfiguration && reconfiguration->boundary.getDiscardDfbState());
@@ -4549,6 +4551,8 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
   // lifecycles in every loop iteration. Reject accesses that cannot be reduced
   // from dispatch-wide execution counts to a fixed per-iteration count.
   std::optional<std::uint64_t> repeatedReconfigurationCount;
+  // Structural bounds are sufficient only when no boundary must preserve the
+  // possibly executed state for its successor configuration.
   bool everyReconfigurationDiscardsState =
       !reconfigurations.empty() &&
       llvm::all_of(reconfigurations, [](const auto &reconfiguration) {

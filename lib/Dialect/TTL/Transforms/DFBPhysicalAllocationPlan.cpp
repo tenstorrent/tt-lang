@@ -371,6 +371,8 @@ static bool canUseCapacityEnvelope(const DFBLogicalLifecycle &lhs,
 static bool
 canReconfigureDescriptorAcrossEpochs(const DFBLogicalLifecycle &lhs,
                                      const DFBLogicalLifecycle &rhs) {
+  // Opaque external access reaches disjoint epochs only after lifecycle
+  // analysis proves that a state-discarding boundary terminates it.
   return haveIdenticalPageFormat(lhs.type, rhs.type) &&
          haveDisjointConfigurationEpochs(lhs, rhs);
 }
