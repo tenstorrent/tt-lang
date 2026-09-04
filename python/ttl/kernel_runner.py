@@ -28,6 +28,9 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tupl
 ttnn = None  # Lazy-loaded via _ensure_ttnn()
 
 _STATIC_DFB_PACKING_SEARCH_STATE_LIMIT = 1_000_000
+# Beyond this count, exact subset search can exhaust the state limit before it
+# proves that no unsplit descriptor order fits.
+_STATIC_DFB_PACKING_EXACT_PLAN_LIMIT = 20
 
 
 def _ensure_ttnn():
@@ -109,6 +112,7 @@ class _DFBDescriptorPlan:
     total_size: int
     nodes: Tuple[Tuple[int, int], ...]
     has_static_storage: bool
+    format_descriptors: Tuple[Any, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -3096,6 +3100,8 @@ def _cb_format_descriptor(cb_index: int, allocation: _DFBAllocation) -> Any:
 def _order_static_dfb_descriptor_plans(
     descriptor_plans: List[_DFBDescriptorPlan],
     remaining_bytes_by_core: Dict[Tuple[int, int], int],
+    *,
+    search_unsplit_orders: bool = True,
 ) -> List[_DFBDescriptorPlan]:
     """Order static descriptors to fit TT-Metal's per-core L1 allocators."""
     static_plan_indices = tuple(
@@ -3212,6 +3218,75 @@ def _order_static_dfb_descriptor_plans(
         )
     current_score, current_order, current_result = min(evaluated_candidates)
 
+    def apply_order(order: Tuple[int, ...]) -> List[_DFBDescriptorPlan]:
+        ordered_plans = list(descriptor_plans)
+        for destination_index, source_index in zip(static_plan_indices, order):
+            ordered_plans[destination_index] = descriptor_plans[source_index]
+        return ordered_plans
+
+    def split_overflow_core_or_raise(
+        result: _StaticDFBPackingResult,
+        order: Tuple[int, ...],
+        search_limit_reached: bool = False,
+    ) -> List[_DFBDescriptorPlan]:
+        overflow_core = result.overflow_core
+        assert overflow_core is not None
+        ordered_plans = apply_order(order)
+        splittable_plan_indices = {
+            plan_index
+            for plan_index, plan in enumerate(ordered_plans)
+            if plan.has_static_storage
+            and overflow_core in plan.nodes
+            and len(plan.nodes) > 1
+        }
+        if splittable_plan_indices:
+            split_plans = []
+            for plan_index, plan in enumerate(ordered_plans):
+                if plan_index not in splittable_plan_indices:
+                    split_plans.append(plan)
+                    continue
+                assert plan.format_descriptors
+                remaining_nodes = tuple(
+                    node for node in plan.nodes if node != overflow_core
+                )
+                for nodes in (remaining_nodes, (overflow_core,)):
+                    descriptor = ttnn.CBDescriptor(
+                        total_size=plan.total_size,
+                        core_ranges=_make_singleton_core_ranges(nodes),
+                        format_descriptors=list(plan.format_descriptors),
+                    )
+                    split_plans.append(
+                        replace(plan, descriptor=descriptor, nodes=nodes)
+                    )
+            return _order_static_dfb_descriptor_plans(
+                split_plans,
+                remaining_bytes_by_core,
+                search_unsplit_orders=False,
+            )
+
+        required_bytes = result.required_bytes_on_overflow_core
+        available_bytes = remaining_bytes_by_core[overflow_core]
+        search_context = (
+            "Static DFB descriptor packing reached its "
+            f"{_STATIC_DFB_PACKING_SEARCH_STATE_LIMIT}-state search limit;"
+            if search_limit_reached
+            else "No static DFB descriptor order fits;"
+        )
+        raise ValueError(
+            f"{search_context} the best candidate requires {required_bytes} bytes "
+            f"on core {overflow_core}, where {available_bytes} bytes remain, and "
+            f"exceeds the L1 budget by {required_bytes - available_bytes} bytes"
+        )
+
+    if (
+        current_score[0] > 0
+        and (
+            not search_unsplit_orders
+            or len(static_plan_indices) > _STATIC_DFB_PACKING_EXACT_PLAN_LIMIT
+        )
+    ):
+        return split_overflow_core_or_raise(current_result, current_order)
+
     while current_score[0] > 0:
         next_candidate = None
         for first_position in range(len(current_order)):
@@ -3259,12 +3334,6 @@ def _order_static_dfb_descriptor_plans(
         if next_candidate is None:
             break
         current_score, current_order, current_result = next_candidate
-
-    def apply_order(order: Tuple[int, ...]) -> List[_DFBDescriptorPlan]:
-        ordered_plans = list(descriptor_plans)
-        for destination_index, source_index in zip(static_plan_indices, order):
-            ordered_plans[destination_index] = descriptor_plans[source_index]
-        return ordered_plans
 
     if current_score[0] == 0:
         return apply_order(current_order)
@@ -3401,20 +3470,8 @@ def _order_static_dfb_descriptor_plans(
     if fitting_order is not None:
         return apply_order(fitting_order)
 
-    overflow_core = current_result.overflow_core
-    assert overflow_core is not None
-    required_bytes = current_result.required_bytes_on_overflow_core
-    available_bytes = remaining_bytes_by_core[overflow_core]
-    search_context = (
-        "Static DFB descriptor packing reached its "
-        f"{_STATIC_DFB_PACKING_SEARCH_STATE_LIMIT}-state search limit;"
-        if search_limit_reached
-        else "No static DFB descriptor order fits;"
-    )
-    raise ValueError(
-        f"{search_context} the best candidate requires {required_bytes} bytes "
-        f"on core {overflow_core}, where {available_bytes} bytes remain, and "
-        f"exceeds the L1 budget by {required_bytes - available_bytes} bytes"
+    return split_overflow_core_or_raise(
+        current_result, current_order, search_limit_reached
     )
 
 
@@ -3660,13 +3717,14 @@ def _build_dfb_descriptors(
             cores_by_layout.items()
         ):
             source_cores = tuple(sorted(source_core_set))
+            format_descriptors = tuple(
+                _cb_format_descriptor(index, allocations[index])
+                for index in member_indices
+            )
             descriptor = ttnn.CBDescriptor(
                 total_size=total_size,
                 core_ranges=_make_singleton_core_ranges(source_cores),
-                format_descriptors=[
-                    _cb_format_descriptor(index, allocations[index])
-                    for index in member_indices
-                ],
+                format_descriptors=list(format_descriptors),
             )
             descriptor_plans.append(
                 _DFBDescriptorPlan(
@@ -3675,6 +3733,7 @@ def _build_dfb_descriptors(
                     total_size=total_size,
                     nodes=source_cores,
                     has_static_storage=True,
+                    format_descriptors=format_descriptors,
                 )
             )
     descriptor_plans = _order_static_dfb_descriptor_plans(
