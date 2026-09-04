@@ -1,4 +1,6 @@
-// RUN: ttlang-opt %s -ttkernel-annotate-dfb-use --verify-diagnostics
+// Verify that DFB resource metadata cannot reference descriptors outside the
+// enclosing function's compile-time DFB argument range.
+// RUN: ttlang-opt %s -ttkernel-annotate-dfb-use --verify-diagnostics --split-input-file
 
 module {
   func.func @invalid_resource_index() attributes {

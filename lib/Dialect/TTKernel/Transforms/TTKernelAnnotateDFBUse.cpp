@@ -236,7 +236,6 @@ struct TTKernelAnnotateDFBUsePass
     ModuleOp module = getOperation();
     llvm::DenseMap<Operation *, DFBSet> usedDFBs;
     llvm::SmallDenseSet<Operation *> conservative;
-    // Largest per-function DFB count in the module.
     int64_t maxDFBCount = 0;
 
     for (func::FuncOp func : module.getOps<func::FuncOp>()) {
