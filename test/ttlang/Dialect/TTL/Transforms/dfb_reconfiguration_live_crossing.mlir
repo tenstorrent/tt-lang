@@ -24,7 +24,7 @@
 // DEBUG-SAME: entry_reconfiguration=initial
 // DEBUG-SAME: active_configurations=[initial, 0, 1]
 // DEBUG-SAME: terminal_reconfiguration=none
-// DEBUG: DFB conflict lhs=0 rhs=3 reason=concurrent-lifetime
+// DEBUG: DFB conflict lhs=0 rhs=3 reason=reconfiguration-interface-write
 // DEBUG: Total DFB count: 2
 // DEBUG: DFB assignment: logical DFB 0 -> physical index 0 storage index 1 (bounded)
 // DEBUG: DFB assignment: logical DFB 1 -> physical index 1 storage index 0 (bounded)
