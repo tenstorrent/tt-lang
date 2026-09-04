@@ -9,7 +9,7 @@
 // CHECK-NEXT: func.func @helper() attributes {ttl.base_cta_index = 3 : i32} {
 
 // CHECK-LABEL: func.func @calls_helper()
-// CHECK-SAME: ttl.used_dfb_indices = array<i32: 1, 2>
+// CHECK-SAME: ttl.used_dfb_indices = array<i32: 0, 1, 2>
 
 // CHECK-LABEL: func.func @calls_unknown()
 // CHECK-SAME: ttl.used_dfb_indices = array<i32: 0, 1>
@@ -34,6 +34,7 @@ module {
     %effective_pages = arith.addi %scalar_dfb_id, %pages : i32
     ttkernel.cb_wait_front(%dfb, %effective_pages)
         : (!ttkernel.cb<3, !ttcore.tile<32x32, bf16>>, i32) -> ()
+    ttkernel.opaque_call "inspect"() {dfb_resource_indices = array<i32: 0>, header = "inspect.hpp"} : () -> ()
     return
   }
 
