@@ -514,9 +514,9 @@ static bool hasFixedAccessCountPerReconfigurationIteration(
       reconfigurationIterationDomain);
 }
 
-// Conservative graph-construction envelope; it does not prove that a
-// conditional operation executes or performs a protocol transaction.
-struct StructuralIterationDomain {
+// Maximum executions and enclosing static loops available without assuming
+// that a conditional region executes or performs a protocol transaction.
+struct AccessRunUpperBound {
   std::uint64_t maximumExecutionCount = 0;
   StaticIterationDomain iterationDomain;
 };
@@ -627,10 +627,8 @@ static std::optional<StaticIterationDomain> getUniformStaticIterationDomain(
   return domain;
 }
 
-// Returns an upper execution bound and enclosing static loops without assuming
-// that any conditional region executes.
-static std::optional<StructuralIterationDomain>
-getStructuralIterationDomain(Operation *operation) {
+static std::optional<AccessRunUpperBound>
+getAccessRunUpperBound(Operation *operation) {
   func::FuncOp function = operation->getParentOfType<func::FuncOp>();
   if (!function || function.getBody().empty() ||
       !function.getBody().hasOneBlock()) {
@@ -680,16 +678,15 @@ getStructuralIterationDomain(Operation *operation) {
   std::reverse(iterationDomain.loops.begin(), iterationDomain.loops.end());
   std::reverse(iterationDomain.tripCounts.begin(),
                iterationDomain.tripCounts.end());
-  return StructuralIterationDomain{maximumExecutionCount,
-                                   std::move(iterationDomain)};
+  return AccessRunUpperBound{maximumExecutionCount, std::move(iterationDomain)};
 }
 
 // Proves an unresolved access cannot repeat. Treating the access as present
 // once preserves the conditional lifetime without assuming it executes.
 static bool structurallyExecutesAtMostOnce(Operation *operation) {
-  std::optional<StructuralIterationDomain> iterationDomain =
-      getStructuralIterationDomain(operation);
-  return iterationDomain && iterationDomain->maximumExecutionCount == 1;
+  std::optional<AccessRunUpperBound> runUpperBound =
+      getAccessRunUpperBound(operation);
+  return runUpperBound && runUpperBound->maximumExecutionCount == 1;
 }
 
 // External-call occurrences share the call's control structure for graph
@@ -1711,8 +1708,8 @@ static AccessRuns collectAccessRuns(
   return runs;
 }
 
-// Substitutes structural envelopes so graph construction can order conditional
-// external calls relative to repeated state-discarding reconfigurations.
+// Conditional external calls may lack exact execution counts. Their static
+// loop bounds provide event ordering only; protocol proof retains exact runs.
 static AccessRuns collectProgramOrderAccessRuns(
     ArrayRef<DFBLogicalLifecycle> logicalDFBs,
     ArrayRef<ValidatedDFBReconfiguration> reconfigurations,
@@ -1742,16 +1739,16 @@ static AccessRuns collectProgramOrderAccessRuns(
       if (exactRunMatchesEveryBoundary) {
         continue;
       }
-      std::optional<StructuralIterationDomain> structuralDomain =
-          getStructuralIterationDomain(access.operation);
-      if (!structuralDomain) {
+      std::optional<AccessRunUpperBound> runUpperBound =
+          getAccessRunUpperBound(access.operation);
+      if (!runUpperBound) {
         continue;
       }
       auto executionCountIt = executionCounts.find(&access);
       assert(executionCountIt != executionCounts.end() &&
              "active DFB access must have an execution-count fact");
       if (executionCountIt->second &&
-          *executionCountIt->second > structuralDomain->maximumExecutionCount) {
+          *executionCountIt->second > runUpperBound->maximumExecutionCount) {
         continue;
       }
       bool matchesEveryBoundary =
@@ -1761,16 +1758,16 @@ static AccessRuns collectProgramOrderAccessRuns(
                                                 access.operation);
             return participant &&
                    canPartitionRunPerReconfigurationIteration(
-                       structuralDomain->maximumExecutionCount,
-                       structuralDomain->iterationDomain,
+                       runUpperBound->maximumExecutionCount,
+                       runUpperBound->iterationDomain,
                        reconfiguration.executionCount, *participant->domain);
           });
       if (!matchesEveryBoundary) {
         continue;
       }
       programOrderRuns[&access] =
-          AccessRun{&access, structuralDomain->maximumExecutionCount,
-                    std::move(structuralDomain->iterationDomain), true};
+          AccessRun{&access, runUpperBound->maximumExecutionCount,
+                    std::move(runUpperBound->iterationDomain), true};
     }
   }
   return programOrderRuns;
@@ -2684,7 +2681,8 @@ static void addDFBReconfigurationAccessEdges(
     const DenseMap<Operation *, EventPair> &operationEvents,
     const DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents,
     const ReconfigurationBoundaryEvents &reconfigurationBoundaryEvents,
-    const AccessExecutionCounts &executionCounts, const AccessRuns &accessRuns,
+    const AccessExecutionCounts &executionCounts,
+    const AccessRuns &programOrderAccessRuns,
     const StructuralOperationOrder &structuralOrder,
     bool includeUnknownDomains) {
   for (const ValidatedDFBReconfiguration &reconfiguration : reconfigurations) {
@@ -2705,31 +2703,22 @@ static void addDFBReconfigurationAccessEdges(
         if (!events) {
           continue;
         }
-        Operation *accessFunction =
-            structuralOrder.getFunction(access.operation);
-        Operation *localBoundary = nullptr;
-        const StaticIterationDomain *localBoundaryDomain = nullptr;
-        for (auto [participantIndex, participant] :
-             llvm::enumerate(reconfiguration.participantOperations)) {
-          if (structuralOrder.getFunction(participant) == accessFunction) {
-            localBoundary = participant;
-            localBoundaryDomain =
-                &reconfiguration.participantIterationDomains[participantIndex];
-            break;
-          }
-        }
-        if (!localBoundary) {
+        std::optional<BoundaryParticipantIteration> localParticipant =
+            getBoundaryParticipantIteration(reconfiguration, access.operation);
+        if (!localParticipant) {
           continue;
         }
+        // Graph-only upper bounds are valid here because lifetime proof uses
+        // the separate exact-run map.
         bool canOrderEachIteration =
             reconfiguration.executionCount > 1 &&
-            hasFixedAccessCountPerReconfigurationIteration(
-                access, reconfiguration.executionCount, *localBoundaryDomain,
-                accessRuns);
+            hasPartitionableProgramOrderRun(
+                access, reconfiguration, programOrderAccessRuns);
         if (canOrderEachIteration) {
-          if (structuralOrder.precedes(access.operation, localBoundary)) {
+          if (structuralOrder.precedes(access.operation,
+                                       localParticipant->operation)) {
             addPerIterationSpanOrder(graph, *events, boundaryEvents);
-          } else if (structuralOrder.precedes(localBoundary,
+          } else if (structuralOrder.precedes(localParticipant->operation,
                                               access.operation)) {
             addPerIterationSpanOrder(graph, boundaryEvents, *events);
           }
@@ -2738,9 +2727,11 @@ static void addDFBReconfigurationAccessEdges(
         if (reconfiguration.executionCount > 1) {
           continue;
         }
-        if (structuralOrder.precedes(access.operation, localBoundary)) {
+        if (structuralOrder.precedes(access.operation,
+                                     localParticipant->operation)) {
           graph.addEdge(events->last.completion, boundaryEvents.first.entry);
-        } else if (structuralOrder.precedes(localBoundary, access.operation)) {
+        } else if (structuralOrder.precedes(localParticipant->operation,
+                                            access.operation)) {
           graph.addEdge(boundaryEvents.last.completion, events->first.entry);
         }
       }
