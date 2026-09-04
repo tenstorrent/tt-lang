@@ -474,6 +474,32 @@ struct AccessRun {
 
 using AccessRuns = DenseMap<const DFBAccessOccurrence *, AccessRun>;
 
+// Per-iteration lifetime normalization and graph edges are sound only when each
+// reconfiguration-loop iteration contains the same fixed number of
+// unconditional access executions.
+static bool hasFixedAccessCountPerReconfigurationIteration(
+    const DFBAccessOccurrence &access,
+    std::uint64_t reconfigurationExecutionCount,
+    const StaticIterationDomain &reconfigurationIterationDomain,
+    const AccessRuns &accessRuns) {
+  assert(reconfigurationExecutionCount > 1 &&
+         "repeated reconfiguration must execute more than once");
+  auto runIt = accessRuns.find(&access);
+  if (runIt == accessRuns.end()) {
+    return false;
+  }
+  const AccessRun &accessRun = runIt->second;
+  // TODO(#1010): Prove per-iteration conditional equivalence.
+  if (accessRun.conditionalExecution) {
+    return false;
+  }
+  if (!startsWithIterationDomain(accessRun.iterationDomain,
+                                 reconfigurationIterationDomain)) {
+    return false;
+  }
+  return accessRun.executionCount % reconfigurationExecutionCount == 0;
+}
+
 // The listed operations execute each nested region at most once per
 // invocation, so only enclosing loops can repeat an access.
 static bool executesRegionsAtMostOnce(Operation *operation) {
@@ -2506,14 +2532,12 @@ static void addDFBReconfigurationAccessEdges(
         if (!localBoundary) {
           continue;
         }
-        auto runIt = accessRuns.find(&access);
-        bool matchingRepeatedDomain =
-            reconfiguration.executionCount > 1 && runIt != accessRuns.end() &&
-            runIt->second.executionCount % reconfiguration.executionCount ==
-                0 &&
-            startsWithIterationDomain(runIt->second.iterationDomain,
-                                      *localBoundaryDomain);
-        if (matchingRepeatedDomain) {
+        bool canOrderEachIteration =
+            reconfiguration.executionCount > 1 &&
+            hasFixedAccessCountPerReconfigurationIteration(
+                access, reconfiguration.executionCount, *localBoundaryDomain,
+                accessRuns);
+        if (canOrderEachIteration) {
           if (structuralOrder.precedes(access.operation, localBoundary)) {
             addPerIterationSpanOrder(graph, *events, boundaryEvents);
           } else if (structuralOrder.precedes(localBoundary,
@@ -4348,6 +4372,9 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
     return *repeatedResetProof;
   }
 
+  // Repeated reconfiguration reuses physical interfaces for successive DFB
+  // lifecycles in every loop iteration. Reject accesses that cannot be reduced
+  // from dispatch-wide execution counts to a fixed per-iteration count.
   std::optional<std::uint64_t> repeatedReconfigurationCount;
   if (!reconfigurations.empty() &&
       reconfigurations.front().executionCount > 1) {
@@ -4372,15 +4399,14 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
       if (executionCountIt->second && *executionCountIt->second == 0) {
         continue;
       }
-      auto runIt = accessRuns.find(&access);
-      std::optional<std::pair<Operation *, const StaticIterationDomain *>>
-          participant = getParticipantIteration(reconfigurations.front(),
-                                                access.operation);
-      if (runIt == accessRuns.end() || !participant ||
-          runIt->second.conditionalExecution ||
-          runIt->second.executionCount % *repeatedReconfigurationCount != 0 ||
-          !startsWithIterationDomain(runIt->second.iterationDomain,
-                                     *participant->second)) {
+      auto participantIteration =
+          getParticipantIteration(reconfigurations.front(), access.operation);
+      bool hasProvableIterationPattern =
+          participantIteration &&
+          hasFixedAccessCountPerReconfigurationIteration(
+              access, *repeatedReconfigurationCount,
+              *participantIteration->second, accessRuns);
+      if (!hasProvableIterationPattern) {
         DFBPerNodeLifetime &lifetime = lifetimes.emplace_back();
         lifetime.node = node;
         if (lifetimeDiagnostics) {
