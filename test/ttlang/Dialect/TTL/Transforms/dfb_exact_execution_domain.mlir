@@ -49,6 +49,54 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
+// A coordinate-dependent loop may have a known launch domain but execute zero
+// times at a specific node. Its DFB is inactive at that node and may reuse the
+// physical index assigned to an active compatible DFB.
+
+// REUSE-LABEL: func.func @exact_zero_at_known_node
+// REUSE: %[[INACTIVE:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 32 : index}
+// REUSE-NEXT: %[[ACTIVE:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 33 : index}
+
+// REPORT: DFB logical_id=32 bounded=1 compiler_created=0
+// REPORT-SAME: access_completion_proven=1
+// REPORT-SAME: domain={(0,0)}
+// REPORT: node (0,0) lifecycle_completion=complete
+// REPORT-SAME: occurrences=[0:0]
+// REPORT-SAME: earliest_accesses=[] terminal_accesses=[]
+// REPORT: DFB logical_id=33 bounded=1 compiler_created=0
+// REPORT: DFB assignment: logical DFB 32 -> physical index 0 storage index 0 (bounded)
+// REPORT-NEXT: DFB assignment: logical DFB 33 -> physical index 0 storage index 0 (bounded)
+
+module attributes {ttl.launch_grid = array<i64: 1, 1>} {
+  func.func @exact_zero_at_known_node()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %inactive = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {dfb_id = 32 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %active = ttl.bind_cb {cb_index = 1, block_count = 2}
+        {dfb_id = 33 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %zero = arith.constant 0 : index
+    %step = arith.constant 1 : index
+    %core_x = ttl.core_x : index
+    scf.for %inactive_iteration = %zero to %core_x step %step {
+      ttl.opaque_call "inactive" (%inactive) {header = "access.hpp"}
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> ()
+    }
+    ttl.opaque_call "active" dfb_dependencies(
+        %active : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>,
+                     #ttl.dfb_protocol_effect<push, 0, 1>,
+                     #ttl.dfb_protocol_effect<wait, 0, 1>,
+                     #ttl.dfb_protocol_effect<pop, 0, 1>]
+        () {header = "access.hpp"} : () -> ()
+    return
+  }
+}
+
+// -----
+
 // Zero executions on only part of the launch grid do not establish an empty
 // domain. Both unknown DFBs remain distinct.
 

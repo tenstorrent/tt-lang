@@ -364,16 +364,17 @@ for that dependency. A dependency occurrence with neither a listed effect nor a
 non-transactional access is an opaque storage access beginning at call entry,
 including when operand adaptation aliases multiple occurrences to the same SSA
 DFB. Every aliased occurrence requires its own explicit contract or matching
-reset-completion proof.
+state-discarding boundary.
 
 A named opaque dependency may retain protocol and asynchronous interface work
-after the call. A synchronized reset ordered after the call through the same
-participating logical kernel terminates that access and canonicalizes protocol
-state. Without that boundary, the incomplete contract prevents reuse with
-another logical DFB on a shared launch node. Exact disjoint launch-node domains
-remain eligible for physical-index sharing. The reset implementation must
-complete earlier interface work before publishing arrival. This does not
-validate the external function's internal queue protocol.
+after the call. A synchronized reset or a reconfiguration declared with
+`discard_dfb_state=True`, ordered after the call through the same participating
+logical kernel, terminates that access and establishes empty protocol state.
+Without such a boundary, the incomplete contract prevents reuse with another
+logical DFB on a shared launch node. Exact disjoint launch-node domains remain
+eligible for physical-index sharing. The boundary implementation must complete
+earlier interface work before publishing arrival. This does not validate the
+external function's internal queue protocol.
 
 `dfb_accesses` is an ordered list of synchronous, non-transactional access
 summaries. `ttl.DFBAccess.inspect(dfb)` states that the external function may
@@ -411,10 +412,10 @@ Listed dependencies and effects remain available to other verification.
 Every listed effect or non-transactional access is complete when the external
 function returns. Associated interface work may remain active while the
 declared protocol retains ownership; it must complete before the terminal
-consumer release or a synchronized reset. Effects describe external behavior;
-they do not emit reserve, push, wait, or pop calls. Dependency-only operands,
-protocol effects, and non-transactional access metadata leave the generated
-C++ call signature unchanged.
+consumer release or a state-discarding boundary. Effects describe external
+behavior; they do not emit reserve, push, wait, or pop calls. Dependency-only
+operands, protocol effects, and non-transactional access metadata leave the
+generated C++ call signature unchanged.
 
 The IR stores each effect as a generated enum and a typed attribute. Its
 dependency index identifies an element of the value sequence returned by the
@@ -443,10 +444,11 @@ ttl.call_extern_func(
 
 Every `dfb_effects` action must complete before the external call returns. Its
 associated interface work must complete before the terminal consumer release or
-a synchronized reset. The compiler does not infer reserve, wait, push, or pop
-operations from the C++ body; the `dfb_effects` contract supplies those facts
-when required. A named dependency without effects remains opaque and requires a
-synchronized reset before storage reuse.
+a synchronized reset or state-discarding reconfiguration. The compiler does not
+infer reserve, wait, push, or pop operations from the C++ body; the
+`dfb_effects` contract supplies those facts when required. A named dependency
+without effects remains opaque and requires one of those boundaries before
+storage reuse.
 
 `TensorBlock.push` and `TensorBlock.pop` accept one `kernel=` selector when a
 DFB transaction has no other use from which ownership can be inferred.
