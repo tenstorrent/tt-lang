@@ -387,11 +387,11 @@ the original does not leave dangling `SymbolRefAttr`s; unrelated functions in
 the module are still specialized. Each clone replaces coordinate reads with
 `arith.constant`s and is tagged with `ttl.core_coord` for runtime dispatch.
 Downstream `canonicalize` / `cse` fold the now-constant branches.
-`ttkernel-annotate-dfb-use` then records surviving DFB compile-time
-argument indices on each specialized function. Debug prints of a DFB
-remain only on cores that still have a non-print use of that DFB; a
-print whose DFB was folded away is dropped rather than keeping the
-descriptor alive for debugging.
+`ttkernel-annotate-dfb-use` then records surviving DFB compile-time arguments,
+synchronized resets, and external-call dependencies on each specialized
+function. Debug prints of a DFB remain only on cores that still have a
+non-print use of that DFB; a print whose DFB was folded away is dropped rather
+than keeping the descriptor alive for debugging.
 
 This pass is off by default. Enable it through the pipeline option
 `specialize-cores` (Python: `--ttl-specialize-cores`), which runs the
