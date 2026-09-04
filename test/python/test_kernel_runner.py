@@ -2969,7 +2969,7 @@ def test_reconfiguration_static_storage_uses_per_core_epoch_capacity(monkeypatch
     physical_config = replace(
         initial,
         storage_segments=(),
-        allocation_nodes=((0, 0), (1, 0)),
+        allocation_nodes=((0, 0), (1, 0), (2, 0)),
     )
     plan = DFBReconfigurationPlan(
         boundary_ordinals=(7,),
@@ -2984,14 +2984,81 @@ def test_reconfiguration_static_storage_uses_per_core_epoch_capacity(monkeypatch
     descriptors = kernel_runner.build_cb_descriptors(
         tensors=[],
         cb_configs=[physical_config],
-        core_ranges=_FakeExplicitCoreRanges((0, 0), (1, 0)),
+        core_ranges=_FakeExplicitCoreRanges((0, 0), (2, 0)),
         dfb_reconfiguration_plan=plan,
     )
 
     assert sorted(
         (descriptor.total_size, _descriptor_cores(descriptor))
         for descriptor in descriptors
-    ) == [(2048, {(0, 0)}), (4096, {(1, 0)})]
+    ) == [(2048, {(0, 0), (2, 0)}), (4096, {(1, 0)})]
+
+
+def test_reconfiguration_shared_storage_uses_available_epoch_capacity(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    initial = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (DFBStorageSegment(nodes=((0, 0),)),),
+        storage_index=4,
+    )
+    larger = replace(
+        initial,
+        data_format="float32",
+        page_size=4096,
+        storage_segments=(DFBStorageSegment(nodes=((1, 0),)),),
+    )
+    physical_config = replace(
+        initial,
+        storage_segments=(),
+        allocation_nodes=((0, 0), (1, 0), (2, 0)),
+    )
+    shared_physical_config = PhysicalDFBConfig(
+        1,
+        4,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (),
+        allocation_nodes=((0, 0),),
+        storage_index=4,
+    )
+    shared_epoch = replace(
+        shared_physical_config,
+        storage_segments=(DFBStorageSegment(nodes=((1, 0),)),),
+        allocation_nodes=None,
+    )
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (
+                DFBConfigurationEpoch(None, initial),
+                DFBConfigurationEpoch(7, larger),
+            ),
+            (DFBConfigurationEpoch(None, shared_epoch),),
+        ),
+    )
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[],
+        cb_configs=[physical_config, shared_physical_config],
+        core_ranges=_FakeExplicitCoreRanges((0, 0), (2, 0)),
+        dfb_reconfiguration_plan=plan,
+    )
+
+    assert sorted(
+        (descriptor.total_size, tuple(sorted(_descriptor_cores(descriptor))))
+        for descriptor in descriptors
+    ) == [
+        (2048, ((0, 0),)),
+        (2048, ((2, 0),)),
+        (4096, ((1, 0),)),
+    ]
 
 
 def test_reconfiguration_runtime_storage_supports_tensor_epochs(monkeypatch):

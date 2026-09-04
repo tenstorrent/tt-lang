@@ -3435,17 +3435,31 @@ def _shared_static_storage_size(
 
 def _static_storage_bytes_by_core(
     cb_configs: Sequence[PhysicalDFBConfig],
-    placements: Sequence[Dict[Tuple[int, int], Tuple[str, Optional[int]]]],
+    static_members_by_storage_by_core: Dict[
+        int, Dict[Tuple[int, int], set[int]]
+    ],
     reconfiguration_plan: Optional[DFBReconfigurationPlan],
 ) -> Dict[int, Dict[Tuple[int, int], int]]:
     """Return each compiler-managed storage allocation's required capacity."""
     layouts_by_storage_by_core = {}
-    for dfb_index, placement in enumerate(placements):
-        static_cores = {
-            core
-            for core, (storage_kind, _) in placement.items()
-            if storage_kind == "static"
-        }
+    static_cores_by_dfb = [set() for _ in cb_configs]
+    for members_by_core in static_members_by_storage_by_core.values():
+        for core, member_indices in members_by_core.items():
+            for dfb_index in member_indices:
+                static_cores_by_dfb[dfb_index].add(core)
+
+    def record_layout(
+        layouts_by_core: Dict[Tuple[int, int], Tuple[int, int]],
+        core: Tuple[int, int],
+        allocation: _DFBAllocation,
+    ) -> None:
+        current_size, current_alignment = layouts_by_core.get(core, (0, 1))
+        layouts_by_core[core] = (
+            max(current_size, allocation.total_size),
+            math.lcm(current_alignment, allocation.page_size),
+        )
+
+    for dfb_index, static_cores in enumerate(static_cores_by_dfb):
         if not static_cores:
             continue
         configurations = (cb_configs[dfb_index],)
@@ -3466,10 +3480,19 @@ def _static_storage_bytes_by_core(
                     for core in segment.nodes
                 }
             for core in static_cores.intersection(configuration_cores):
-                current_size, current_alignment = layouts_by_core.get(core, (0, 1))
-                layouts_by_core[core] = (
-                    max(current_size, allocation.total_size),
-                    math.lcm(current_alignment, allocation.page_size),
+                record_layout(layouts_by_core, core, allocation)
+
+    # A storage allocation absent from every epoch still needs physical capacity.
+    for storage_index, members_by_core in static_members_by_storage_by_core.items():
+        layouts_by_core = layouts_by_storage_by_core.setdefault(storage_index, {})
+        for core, member_indices in members_by_core.items():
+            if core in layouts_by_core:
+                continue
+            for dfb_index in member_indices:
+                record_layout(
+                    layouts_by_core,
+                    core,
+                    _get_dfb_allocation(cb_configs[dfb_index]),
                 )
     return {
         storage_index: {
@@ -3623,7 +3646,7 @@ def _build_dfb_descriptors(
             )
 
     static_bytes_by_core_by_storage = _static_storage_bytes_by_core(
-        cb_configs, placements, reconfiguration_plan
+        cb_configs, static_members_by_storage_by_core, reconfiguration_plan
     )
     for storage_index, members_by_core in sorted(
         static_members_by_storage_by_core.items()
