@@ -687,10 +687,10 @@ requires either a compiler-visible push or uncontracted external access that
 may contain one. Finalized DFB identity, physical-index, and launch-grid
 preconditions remain mandatory. PipeNet endpoint guards, transfer
 correspondence, and synchronization schedules also remain mandatory. The
-program must enforce exactly one producer and one consumer on each active
-launch node and must ensure that the selected producer publishes the pages
-required by every wait. The variable is unset by default, so all checks run
-unless the user sets it.
+program must ensure that at most one producer and at most one consumer controls
+the DFB on each active launch node. Every wait must still have a producer that
+publishes the required pages. The variable is unset by default, so all checks
+run unless the user sets it.
 
 See `test/ttlang/Dialect/TTL/Transforms/verify_dfb_spsc_invalid.mlir` and
 `verify_dfb_spsc_missing_producer_invalid.mlir` and
