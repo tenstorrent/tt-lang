@@ -727,6 +727,24 @@ void UnpackStallOnPackOp::getCanonicalizationPatterns(
           getOperation(), getUnsignedArgIndices(), getArgOperands()))) {
     return failure();
   }
+  // Absence represents no descriptor requirement. A canonical nonnegative set
+  // lets downstream annotation merge physical DFB indices without normalizing.
+  if (std::optional<ArrayRef<int32_t>> requiredPhysicalDFBIndices =
+          getDfbResourceIndices()) {
+    if (requiredPhysicalDFBIndices->empty()) {
+      return emitOpError("DFB resource indices must not be empty");
+    }
+    if (!llvm::all_of(*requiredPhysicalDFBIndices,
+                      [](int32_t index) { return index >= 0; })) {
+      return emitOpError("DFB resource indices must be nonnegative");
+    }
+    if (!mlir::tt::utils::areIndicesStrictlyIncreasing(
+            *requiredPhysicalDFBIndices)) {
+      return emitOpError(
+          "DFB resource indices must be strictly increasing without "
+          "duplicates");
+    }
+  }
   std::optional<ArrayAttr> templateArgs = getTemplateArgs();
   if (!templateArgs) {
     return success();
