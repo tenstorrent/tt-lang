@@ -3736,6 +3736,7 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
     }
   }
 
+  // A DFB with no executing access at this node cannot retain protocol state.
   if (activeAccesses.empty()) {
     lifetime.mayBeActive = false;
     return {};
@@ -4856,6 +4857,7 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
   }
 
   if (!hasActiveEpoch) {
+    // Reconfiguration boundaries alone do not create a DFB lifecycle.
     lifetime.mayBeActive = false;
     return {};
   }
