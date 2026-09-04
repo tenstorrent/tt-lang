@@ -5,7 +5,7 @@
 """Python-only tests for ttl.kernel_runner resource allocation helpers."""
 
 from collections import defaultdict
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 import gc
 import os
 from pathlib import Path
@@ -2990,6 +2990,7 @@ def test_reconfiguration_static_storage_preserves_shared_storage(monkeypatch):
         cb_configs=[unchanged, reconfigured],
         core_ranges=_FakeCoreRanges(),
         dfb_reconfiguration_scratch_segments=resources.scratch_segments_by_index,
+        dfb_reconfiguration_plan=plan,
     )
 
     assert resources.scratch_tensors == []
@@ -3065,6 +3066,7 @@ def test_reconfiguration_static_storage_preserves_per_core_capacity(monkeypatch)
         cb_configs=[small, large],
         core_ranges=_FakeExplicitCoreRanges((0, 0), (1, 0)),
         dfb_reconfiguration_scratch_segments=resources.scratch_segments_by_index,
+        dfb_reconfiguration_plan=plan,
     )
 
     assert resources.scratch_tensors == []
@@ -3073,6 +3075,56 @@ def test_reconfiguration_static_storage_preserves_per_core_capacity(monkeypatch)
     assert [
         descriptor.format_descriptors[0].buffer_index for descriptor in descriptors
     ] == [0, 1]
+
+
+def test_reconfiguration_static_storage_uses_per_core_epoch_capacity(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    initial = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (DFBStorageSegment(nodes=((0, 0),)),),
+        storage_index=4,
+    )
+    larger = PhysicalDFBConfig(
+        0,
+        1,
+        "float32",
+        1,
+        4096,
+        (32, 32),
+        (DFBStorageSegment(nodes=((1, 0),)),),
+        storage_index=4,
+    )
+    physical_config = replace(
+        initial,
+        storage_segments=(),
+        allocation_nodes=((0, 0), (1, 0)),
+    )
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (
+                DFBConfigurationEpoch(None, initial),
+                DFBConfigurationEpoch(7, larger),
+            ),
+        ),
+    )
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[],
+        cb_configs=[physical_config],
+        core_ranges=_FakeExplicitCoreRanges((0, 0), (1, 0)),
+        dfb_reconfiguration_plan=plan,
+    )
+
+    assert sorted(
+        (descriptor.total_size, _descriptor_cores(descriptor))
+        for descriptor in descriptors
+    ) == [(2048, {(0, 0)}), (4096, {(1, 0)})]
 
 
 def test_reconfiguration_runtime_storage_supports_tensor_epochs(monkeypatch):
@@ -6484,13 +6536,13 @@ def test_remaining_l1_uses_lowest_live_tensor_address(monkeypatch):
     assert kernel_runner.get_min_remaining_l1_for_device(device) == 0x900
 
 
-# Multi-device and opaque wrappers use one conservative global L1 floor.
+# Per-core reports remain exact for multi-device and opaque wrappers.
 @pytest.mark.parametrize(
     "device",
     [SimpleNamespace(get_num_devices=lambda: 32), object()],
     ids=["multiple-devices", "unknown-device-type"],
 )
-def test_global_remaining_l1_uses_reference_allocator_floor(monkeypatch, device):
+def test_remaining_l1_preserves_reference_allocator_per_core(monkeypatch, device):
     l1_buffer_type = object()
     device_info = SimpleNamespace(cb_limit=0x1000)
     buffer_pages = [
@@ -6528,8 +6580,8 @@ def test_global_remaining_l1_uses_reference_allocator_floor(monkeypatch, device)
 
     assert remaining_by_core == {
         (0, 0): 0x900,
-        (1, 0): 0x900,
-        (2, 0): 0x900,
+        (1, 0): 0xC00,
+        (2, 0): 0x1000,
     }
 
 

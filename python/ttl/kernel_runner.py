@@ -297,25 +297,11 @@ def get_min_remaining_l1_for_device(
     return minimum_remaining_bytes
 
 
-def _requires_global_l1_floor(device) -> bool:
-    get_num_devices = getattr(device, "get_num_devices", None)
-    return get_num_devices is None or int(get_num_devices()) != 1
-
-
 def _get_remaining_l1_by_core_for_device(
     device, cores: set[tuple[int, int]]
 ) -> dict[tuple[int, int], int]:
-    """Return safe static DFB budgets for the requested logical cores."""
-    minimum_remaining_bytes, remaining_bytes = _get_l1_remaining_bytes(device, cores)
-
-    # Mesh and unrecognized device wrappers cannot prove that one reported
-    # allocator covers every worker. Common allocation addresses make the
-    # reference allocator's lowest live page safe for every worker.
-    if _requires_global_l1_floor(device):
-        remaining_bytes = {
-            core: min(core_remaining_bytes, minimum_remaining_bytes)
-            for core, core_remaining_bytes in remaining_bytes.items()
-        }
+    """Return the lowest reported L1 limit for each logical worker core."""
+    _, remaining_bytes = _get_l1_remaining_bytes(device, cores)
     return remaining_bytes
 
 
@@ -3505,6 +3491,53 @@ def _shared_static_storage_size(
     return _align_up(maximum_size, page_alignment)
 
 
+def _static_storage_bytes_by_core(
+    cb_configs: Sequence[PhysicalDFBConfig],
+    placements: Sequence[Dict[Tuple[int, int], Tuple[str, Optional[int]]]],
+    reconfiguration_plan: Optional[DFBReconfigurationPlan],
+) -> Dict[int, Dict[Tuple[int, int], int]]:
+    """Return each compiler-managed storage allocation's required capacity."""
+    layouts_by_storage_by_core = {}
+    for dfb_index, placement in enumerate(placements):
+        static_cores = {
+            core
+            for core, (storage_kind, _) in placement.items()
+            if storage_kind == "static"
+        }
+        if not static_cores:
+            continue
+        configurations = (cb_configs[dfb_index],)
+        if reconfiguration_plan is not None:
+            configurations = tuple(
+                epoch.config for epoch in reconfiguration_plan.dfb_epochs[dfb_index]
+            )
+        storage_index = _physical_dfb_storage_index(cb_configs[dfb_index])
+        layouts_by_core = layouts_by_storage_by_core.setdefault(storage_index, {})
+        for config in configurations:
+            allocation = _get_dfb_allocation(config)
+            configuration_cores = static_cores
+            if config.storage_segments:
+                configuration_cores = {
+                    core
+                    for segment in config.storage_segments
+                    if not segment.is_tensor_backed
+                    for core in segment.nodes
+                }
+            for core in static_cores.intersection(configuration_cores):
+                current_size, current_alignment = layouts_by_core.get(core, (0, 1))
+                layouts_by_core[core] = (
+                    max(current_size, allocation.total_size),
+                    math.lcm(current_alignment, allocation.page_size),
+                )
+    return {
+        storage_index: {
+            core: _align_up(required_size, required_alignment)
+            for core, (required_size, required_alignment) in layouts_by_core.items()
+        }
+        for storage_index, layouts_by_core in layouts_by_storage_by_core.items()
+    }
+
+
 def _build_dfb_descriptors(
     tensors: List[Any],
     cb_configs: List[PhysicalDFBConfig],
@@ -3515,6 +3548,7 @@ def _build_dfb_descriptors(
         int, Tuple[_DFBReconfigurationScratchSegment, ...]
     ],
     remaining_bytes_by_core: Dict[Tuple[int, int], int],
+    reconfiguration_plan: Optional[DFBReconfigurationPlan],
 ) -> List[Any]:
     """Build exact-source descriptors and order their static L1 storage."""
 
@@ -3646,14 +3680,21 @@ def _build_dfb_descriptors(
                 )
             )
 
-    for _, members_by_core in sorted(static_members_by_storage_by_core.items()):
-        cores_by_member_indices: Dict[Tuple[int, ...], set[Tuple[int, int]]] = {}
+    static_bytes_by_core_by_storage = _static_storage_bytes_by_core(
+        cb_configs, placements, reconfiguration_plan
+    )
+    for storage_index, members_by_core in sorted(
+        static_members_by_storage_by_core.items()
+    ):
+        cores_by_layout: Dict[Tuple[Tuple[int, ...], int], set[Tuple[int, int]]] = {}
         for core, member_set in members_by_core.items():
             member_indices = tuple(sorted(member_set))
-            cores_by_member_indices.setdefault(member_indices, set()).add(core)
-        for member_indices, source_core_set in sorted(cores_by_member_indices.items()):
+            total_size = static_bytes_by_core_by_storage[storage_index][core]
+            cores_by_layout.setdefault((member_indices, total_size), set()).add(core)
+        for (member_indices, total_size), source_core_set in sorted(
+            cores_by_layout.items()
+        ):
             source_cores = tuple(sorted(source_core_set))
-            total_size = _shared_static_storage_size(member_indices, allocations)
             descriptor = ttnn.CBDescriptor(
                 total_size=total_size,
                 core_ranges=_make_singleton_core_ranges(source_cores),
@@ -3759,6 +3800,7 @@ def build_cb_descriptors(
     dfb_reconfiguration_scratch_segments: Optional[
         Dict[int, Tuple[_DFBReconfigurationScratchSegment, ...]]
     ] = None,
+    dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
 ) -> List[Any]:
     """
     Build circular buffer descriptors for ttnn.generic_op.
@@ -3774,6 +3816,8 @@ def build_cb_descriptors(
         kernel_specs: Final per-kernel launch ranges and surviving DFB-use sets.
         dfb_reconfiguration_scratch_segments: Shared backing tensors and exact
             launch nodes retained across configuration epochs.
+        dfb_reconfiguration_plan: Finalized configurations used to size static
+            backing for every epoch.
 
     Returns:
         List of ttnn.CBDescriptor objects. A configuration with storage
@@ -3888,6 +3932,7 @@ def build_cb_descriptors(
             backing_tensors,
             reconfiguration_scratch_segments,
             remaining_bytes_by_core,
+            dfb_reconfiguration_plan,
         )
 
     remaining_bytes = (
@@ -4292,6 +4337,7 @@ def _run_kernel_on_device_impl(
         dfb_reconfiguration_scratch_segments=(
             reconfiguration_resources.scratch_segments_by_index
         ),
+        dfb_reconfiguration_plan=dfb_reconfiguration_plan,
     )
 
     if resource_plan is not None:
