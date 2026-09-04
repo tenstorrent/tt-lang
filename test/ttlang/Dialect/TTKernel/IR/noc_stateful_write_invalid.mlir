@@ -74,3 +74,25 @@ func.func @conditional_intervening_setup(
       : (i32, i32, i8) -> ()
   func.return
 }
+
+// -----
+
+// Distinct dynamic selectors may identify the same NoC at runtime.
+func.func @dynamic_intervening_noc_may_alias(
+    %initial_noc: i8, %intervening_noc: i8,
+    %initial_state_address: !ttkernel.noc_addr,
+    %intervening_state_address: !ttkernel.noc_addr, %source_address: i32,
+    %destination_address: i32, %size: i32) {
+  ttkernel.noc_async_write_one_packet_set_state(
+      %initial_state_address, %size, noc %initial_noc)
+      : (!ttkernel.noc_addr, i32, i8) -> ()
+  // expected-note @below {{this setup may replace the selected state before a later issue}}
+  ttkernel.noc_async_write_one_packet_set_state(
+      %intervening_state_address, %size, noc %intervening_noc) posted true
+      : (!ttkernel.noc_addr, i32, i8) -> ()
+  // expected-error @below {{'ttkernel.noc_async_write_one_packet_with_state' op cannot identify one preceding write state setup for every execution}}
+  ttkernel.noc_async_write_one_packet_with_state(
+      %source_address, %destination_address, noc %initial_noc)
+      : (i32, i32, i8) -> ()
+  func.return
+}

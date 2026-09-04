@@ -521,7 +521,7 @@ static bool structurallyPrecedes(Operation *before, Operation *after) {
   return false;
 }
 
-static bool haveSameNocSelector(Value lhs, Value rhs) {
+static bool haveProvablySameNocSelector(Value lhs, Value rhs) {
   if (!lhs || !rhs) {
     return !lhs && !rhs;
   }
@@ -531,6 +531,19 @@ static bool haveSameNocSelector(Value lhs, Value rhs) {
   std::optional<int64_t> lhsConstant = getConstantIntValue(lhs);
   std::optional<int64_t> rhsConstant = getConstantIntValue(rhs);
   return lhsConstant && rhsConstant && *lhsConstant == *rhsConstant;
+}
+
+/// Return false only when two explicit constant selectors are distinct.
+static bool nocSelectorsMayAlias(Value lhs, Value rhs) {
+  if (lhs == rhs) {
+    return true;
+  }
+  if (!lhs || !rhs) {
+    return true;
+  }
+  std::optional<int64_t> lhsConstant = getConstantIntValue(lhs);
+  std::optional<int64_t> rhsConstant = getConstantIntValue(rhs);
+  return !lhsConstant || !rhsConstant || *lhsConstant == *rhsConstant;
 }
 
 /// Find the last state setup proven to execute before every execution of
@@ -544,7 +557,7 @@ findReachingWriteStateSetup(NocAsyncWriteOnePacketWithStateOp use) {
 
   NocAsyncWriteOnePacketSetStateOp reachingSetup;
   function.walk([&](NocAsyncWriteOnePacketSetStateOp setup) {
-    if (!haveSameNocSelector(setup.getNoc(), use.getNoc()) ||
+    if (!haveProvablySameNocSelector(setup.getNoc(), use.getNoc()) ||
         !setupLoopExecutionsReachUse(setup, use) ||
         !useExecutionImpliesSetupExecution(setup, use) ||
         !structurallyPrecedes(setup, use)) {
@@ -566,7 +579,7 @@ static NocAsyncWriteOnePacketSetStateOp findInterveningWriteStateSetup(
   NocAsyncWriteOnePacketSetStateOp interveningSetup;
   function.walk([&](NocAsyncWriteOnePacketSetStateOp setup) {
     if (setup == reachingSetup ||
-        !haveSameNocSelector(setup.getNoc(), use.getNoc()) ||
+        !nocSelectorsMayAlias(setup.getNoc(), use.getNoc()) ||
         !executionsMayOverlap(setup, use)) {
       return;
     }
