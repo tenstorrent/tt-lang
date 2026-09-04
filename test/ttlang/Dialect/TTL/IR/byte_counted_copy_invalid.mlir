@@ -255,6 +255,21 @@ func.func @byte_count_must_be_positive() {
 
 // -----
 
+func.func @byte_count_must_fit_noc_size() {
+  %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[2097153, 1], !ttcore.tile<32x32, bf16>, 1>
+  %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+      : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  // expected-error @below {{'ttl.copy' op attribute 'byte_count' failed to satisfy constraint: 64-bit signless integer attribute whose value is positive whose maximum value is 4294967295}}
+  %send = ttl.copy %src_dfb, %pipe {byte_count = 4294967296 : i64}
+      : (!ttl.cb<[2097153, 1], !ttcore.tile<32x32, bf16>, 1>,
+         !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+      -> !ttl.transfer_handle<write>
+  func.return
+}
+
+// -----
+
 func.func @pipe_source_capacity_required() {
   %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>

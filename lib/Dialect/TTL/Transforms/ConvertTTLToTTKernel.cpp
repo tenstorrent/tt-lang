@@ -1214,11 +1214,6 @@ static LogicalResult lowerDFBBlockCopy(CopyOp op,
   }
 
   uint64_t byteCount = static_cast<uint64_t>(byteCountAttr.getInt());
-  if (byteCount > std::numeric_limits<uint32_t>::max()) {
-    return rewriter.notifyMatchFailure(
-        op, "DFB block copy byte_count exceeds the TTKernel size operand");
-  }
-
   Location loc = op.getLoc();
   FailureOr<Value> srcCB =
       utils::convertTTLCBToTTKernel(srcDFB, rewriter, loc, &typeConverter);

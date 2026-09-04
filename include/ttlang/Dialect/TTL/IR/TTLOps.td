@@ -164,8 +164,8 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     Pipe copies may also specify `byte_count` to transfer a valid prefix of one
     source block. Byte-counted pipe transfers require a one-block transfer
     span. The sender and every receiver must specify the same count, and the
-    count must fit both endpoint blocks. Omitting `byte_count` preserves the
-    complete-block transfer contract.
+    count must fit both endpoint blocks and the unsigned 32-bit NoC transfer
+    size. Omitting `byte_count` preserves the complete-block transfer contract.
 
     TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
     TTKernel NOC ops are available. Issue: #87.
@@ -190,7 +190,8 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
   let arguments = (ins
     AnyType:$src,
     AnyType:$dst,
-    ConfinedAttr<OptionalAttr<I64Attr>, [IntPositive]>:$byte_count
+    ConfinedAttr<OptionalAttr<I64Attr>,
+                 [IntPositive, IntMaxValue<4294967295>]>:$byte_count
   );
   // The verifier selects the result type from the transfer direction.
   let results = (outs AnyType:$xf);
@@ -982,7 +983,8 @@ def TTL_PipeTransferPostOp : TTL_Op<"pipe_transfer.post",
   let arguments = (ins
     TTL_PipeTransfer:$transfer,
     AnyType:$dst,
-    ConfinedAttr<OptionalAttr<I64Attr>, [IntPositive]>:$byte_count
+    ConfinedAttr<OptionalAttr<I64Attr>,
+                 [IntPositive, IntMaxValue<4294967295>]>:$byte_count
   );
   let results = (outs TTL_PipeToken:$token);
   let assemblyFormat = "$transfer `,` $dst attr-dict `:` functional-type(operands, results)";
@@ -1001,7 +1003,8 @@ def TTL_PipeTransferSendOp : TTL_Op<"pipe_transfer.send",
   let arguments = (ins
     TTL_PipeTransfer:$transfer,
     TTL_CircularBuffer:$src,
-    ConfinedAttr<OptionalAttr<I64Attr>, [IntPositive]>:$byte_count
+    ConfinedAttr<OptionalAttr<I64Attr>,
+                 [IntPositive, IntMaxValue<4294967295>]>:$byte_count
   );
   let results = (outs TTL_TransferHandle:$xf);
   let assemblyFormat = "$transfer `,` $src attr-dict `:` functional-type(operands, results)";
