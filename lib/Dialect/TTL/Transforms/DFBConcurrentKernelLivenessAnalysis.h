@@ -189,6 +189,8 @@ struct DFBLifecycleEpoch {
   std::optional<DFBPointerOwner> terminalReadPointerOwner;
   /// Configuration epochs in which storage retains this lifecycle's state.
   SmallVector<std::optional<int64_t>> activeConfigurationEpochs;
+  /// Configuration epochs that install this lifecycle's physical descriptor.
+  SmallVector<std::optional<int64_t>> descriptorInstallationEpochs;
   std::optional<int64_t> entryReconfigurationOrdinal;
   std::optional<int64_t> terminalResetOrdinal;
   std::optional<int64_t> terminalReconfigurationOrdinal;
