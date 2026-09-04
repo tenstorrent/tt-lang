@@ -16,7 +16,9 @@
 
 namespace mlir::tt::ttl {
 
-static FailureOr<int64_t> getDeviceCount(DeviceDomainAttr domain) {
+// Planner table indices are int64_t, so domain products must fit that type.
+static FailureOr<int64_t>
+getRepresentableDeviceCount(DeviceDomainAttr domain) {
   std::uint64_t deviceCount = 1;
   for (DeviceDomainComponentAttr component : domain.getComponents()) {
     for (int64_t extent : component.getExtent().asArrayRef()) {
@@ -99,7 +101,8 @@ buildDevicePipeNetParticipantPlan(PipeNetRecordsAttr records, PipeRole role,
   if (!firstTransfer) {
     return failure();
   }
-  FailureOr<int64_t> deviceCount = getDeviceCount(firstTransfer.getDomain());
+  FailureOr<int64_t> deviceCount =
+      getRepresentableDeviceCount(firstTransfer.getDomain());
   std::optional<int64_t> maybeGridArea = llvm::checkedMul(gridX, gridY);
   if (failed(deviceCount) || !maybeGridArea ||
       records.getPipes().size() % *maybeGridArea != 0 ||

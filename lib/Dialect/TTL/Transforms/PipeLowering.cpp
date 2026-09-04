@@ -3843,6 +3843,7 @@ struct IfDstLowering : OpConversionPattern<IfDstOp> {
   }
 };
 
+// Parallel arrays map each record field to the constant-table lookup primitive.
 struct DevicePipeRoleTables {
   SmallVector<int64_t> minX;
   SmallVector<int64_t> minY;
@@ -3853,6 +3854,7 @@ struct DevicePipeRoleTables {
   std::size_t size() const { return minX.size(); }
 };
 
+// Predicates collapse duplicates; counts retain one entry per callback.
 static DevicePipeRoleTables
 buildDevicePipeRoleTables(PipeNetRecordsAttr records, PipeRole role,
                           bool deduplicateRecords) {
@@ -3886,6 +3888,7 @@ buildDevicePipeRoleTables(PipeNetRecordsAttr records, PipeRole role,
   return tables;
 }
 
+// Keep boolean predicates and counts on identical record-selection semantics.
 static Value lowerDeviceRoleQuery(
     Operation *op, PipeNetRecordsAttr records, PipeRole role,
     bool deduplicateRecords, Value initialValue,
@@ -3952,6 +3955,7 @@ static Value lowerSelectedRolePredicate(Operation *op,
       rewriter);
 }
 
+// Irregular graph records require matching each record at runtime.
 static Value
 lowerDeviceDestinationCountByRecord(Operation *op, PipeNetRecordsAttr records,
                                     ConversionPatternRewriter &rewriter) {
@@ -3972,6 +3976,7 @@ lowerDeviceDestinationCountByRecord(Operation *op, PipeNetRecordsAttr records,
       rewriter);
 }
 
+// Dense grid-major records permit one device-indexed count-table lookup.
 static FailureOr<Value>
 lowerPlannedDeviceDestinationCount(Operation *op, PipeNetRecordsAttr records,
                                    ConversionPatternRewriter &rewriter) {
@@ -3996,6 +4001,7 @@ lowerPlannedDeviceDestinationCount(Operation *op, PipeNetRecordsAttr records,
       rewriter, loc, participantPlan->recordCountsByDevice, currentDevice);
 }
 
+// Local records permit one launch-node-indexed count-table lookup.
 static FailureOr<Value>
 lowerLocalDestinationCount(Operation *op, PipeNetRecordsAttr records,
                            ConversionPatternRewriter &rewriter) {
@@ -4108,6 +4114,8 @@ struct PipeNetDestinationCountLowering
   matchAndRewrite(PipeNetDestinationCountOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
     PipeNetRecordsAttr records = op.getRecords();
+    // Prefer static tables for regular records and retain exact matching for
+    // every representation the participant planners reject.
     if (records.getPipes().front().getDeviceTransfer()) {
       FailureOr<Value> plannedCount =
           lowerPlannedDeviceDestinationCount(op, records, rewriter);

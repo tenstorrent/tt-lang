@@ -252,6 +252,7 @@ def _make_point_to_point_operation(
 
 
 def _make_graph_destination_count_operation(mesh_shape: tuple[int, ...]):
+    """Build a gather whose root consumes every expanded destination record."""
     device_count = prod(mesh_shape)
     maximum_destination_count = device_count - 1
     device_domain = ttl.DeviceDomain(mesh_shape)
@@ -931,6 +932,7 @@ def test_point_to_point(
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
 
 
+# Graph counts must select every record received by the gather root.
 @pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
 def test_graph_destination_count(
     fabric_mesh_shape,

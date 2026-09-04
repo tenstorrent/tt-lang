@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for sim PipeNet predicates: is_active, is_src, is_dst."""
+"""Tests for simulated PipeNet role predicates and destination counts."""
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ _NET_OF_ANOTHER_OPERATION = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(0, 1))])
 class TestPipeNetQueries:
     """PipeNet role predicates and destination counts use ttl.node()."""
 
+    # Counts preserve callback multiplicity for unicast, ranges, and duplicates.
     @pytest.mark.parametrize(
         ("pipes", "expected_counts"),
         [

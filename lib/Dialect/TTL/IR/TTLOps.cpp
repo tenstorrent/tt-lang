@@ -3189,6 +3189,7 @@ mlir::LogicalResult mlir::tt::ttl::RawAddrOp::verify() {
 // PipeNetPredicateOpInterface implementations.
 //===----------------------------------------------------------------------===//
 
+// The ID and expanded records redundantly identify one PipeNet and must agree.
 template <typename PipeNetReferenceOp>
 static mlir::LogicalResult verifyPipeNetRecordIdentity(PipeNetReferenceOp op) {
   mlir::tt::ttl::PipeNetRecordsAttr records = op.getRecordsAttr();

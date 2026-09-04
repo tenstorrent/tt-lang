@@ -1136,6 +1136,7 @@ class TTLGenericCompiler(TTCompilerBase):
     }
 
     def _is_pipenet_query_call(self, node):
+        """Return whether node calls a supported query on a bound PipeNet."""
         if not isinstance(node.func, ast.Attribute):
             return False
         if node.func.attr not in self._PIPENET_QUERY_OPS:
@@ -1150,6 +1151,7 @@ class TTLGenericCompiler(TTCompilerBase):
         return isinstance(tbl[node.func.value.id], PipeNet)
 
     def _handle_pipenet_query(self, node):
+        """Lower a zero-argument PipeNet query with its static record table."""
         from ..pipe import PipeNet
 
         method = node.func.attr

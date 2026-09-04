@@ -20,6 +20,7 @@ GRID_X = 4
 MAX_RECEIVES = 3
 
 
+# The receive loop uses the same record multiplicity as the PipeNet callbacks.
 @ttl.operation(grid=(GRID_X, 1))
 def destination_count_gather(inp, out):
     net = ttl.PipeNet(
@@ -66,6 +67,7 @@ def destination_count_gather(inp, out):
         pass
 
 
+# Destination counts must bound every receive across supported tensor storage.
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
 def test_destination_count_matches_receive_records(device, dtype, to_device):

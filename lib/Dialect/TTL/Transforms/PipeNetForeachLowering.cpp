@@ -241,6 +241,8 @@ tryLowerGridMajorPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
   if (failed(tables)) {
     return false;
   }
+  // Retain direct matching when the dense table is not smaller than the
+  // original record list.
   if (tables->recordCountsByDevice.size() >= records.getPipes().size()) {
     return false;
   }

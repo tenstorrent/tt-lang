@@ -24,6 +24,7 @@ GATHER_NET = ttl.PipeNet(
 )
 
 
+# A positional argument must be rejected at its source call.
 @ttl.operation(grid=(3, 1))
 def positional_argument():
     @ttl.datamovement()
@@ -31,6 +32,7 @@ def positional_argument():
         GATHER_NET.destination_count(0)
 
 
+# A keyword argument must receive the same source diagnostic.
 @ttl.operation(grid=(3, 1))
 def keyword_argument():
     @ttl.datamovement()

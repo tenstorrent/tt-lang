@@ -5755,6 +5755,7 @@ def test_storage_group_partitions_disjoint_residency_signatures(
     assert _descriptor_cores(descriptors_by_index[1]) == {(1, 0)}
 
 
+# An unspecialized kernel still restricts a segmented descriptor to its nodes.
 def test_allocation_nodes_scope_unspecialized_segmented_dfb_descriptor(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))

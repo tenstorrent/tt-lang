@@ -575,6 +575,7 @@ static std::optional<bool> evaluatePipeNetPredicateAtLaunchLocation(
   return selected;
 }
 
+// Return no result unless every record's role is known at this location.
 static std::optional<std::uint64_t>
 evaluatePipeNetRoleRecordCountAtLaunchLocation(
     PipeNetRecordsAttr records, PipeRole role,
@@ -1571,6 +1572,7 @@ getBranchLaunchNodeDomains(Value condition, const LaunchNodeDomain &current,
   return getBranchDomainsImpl(condition, current, state, coordCache);
 }
 
+// Narrow only when every candidate node has an exact static trip count.
 static std::optional<LaunchNodeDomain>
 getSCFForLaunchNodeDomain(scf::ForOp forOp, const LaunchNodeDomain &current,
                           const LaunchNodeDomainState &state) {
