@@ -143,7 +143,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
     ttl.logical_kernel = #compute
   } {
     ttl.dfb_reconfiguration #boundary_a
-    // expected-error @below {{all DFB reconfiguration boundaries must declare the same participant set}}
+    // expected-error @below {{all DFB reconfiguration declarations must use the same participant set}}
     ttl.dfb_reconfiguration #boundary_b
     return
   }
@@ -454,7 +454,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
     ttl.logical_kernel = #reader,
     ttl.noc_index = 0 : i32
   } {
-    // expected-error @below {{DFB reconfiguration participants execute boundaries in different orders}}
+    // expected-error @below {{DFB reconfiguration participants execute operations in different orders}}
     ttl.dfb_reconfiguration #boundary_b
     ttl.dfb_reconfiguration #boundary_a
     return
@@ -488,7 +488,7 @@ module attributes {ttl.launch_grid = [2, 1], ttl.target_arch = #ttcore.arch<blac
     %zero = arith.constant 0 : index
     %first_node = arith.cmpi eq, %node_x, %zero : index
     scf.if %first_node {
-      // expected-error @below {{DFB reconfiguration boundaries execute in different orders across launch nodes}}
+      // expected-error @below {{DFB reconfiguration operations execute in different orders across launch nodes}}
       ttl.dfb_reconfiguration #boundary_a
       ttl.dfb_reconfiguration #boundary_b
     } else {
