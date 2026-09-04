@@ -483,10 +483,8 @@ static bool useExecutionImpliesSetupExecution(Operation *setup,
 }
 
 static bool executionsMayOverlap(Operation *lhs, Operation *rhs) {
-  SmallVector<ConditionAssignment> lhsConditions =
-      getEnclosingConditions(lhs);
-  SmallVector<ConditionAssignment> rhsConditions =
-      getEnclosingConditions(rhs);
+  SmallVector<ConditionAssignment> lhsConditions = getEnclosingConditions(lhs);
+  SmallVector<ConditionAssignment> rhsConditions = getEnclosingConditions(rhs);
   return llvm::none_of(lhsConditions, [&](ConditionAssignment lhsCondition) {
     return llvm::is_contained(
         rhsConditions,
@@ -572,9 +570,9 @@ findReachingWriteStateSetup(NocAsyncWriteOnePacketWithStateOp use) {
 
 /// Return a state setup that may replace `reachingSetup` on only a subset of
 /// the executions that reach `use`.
-static NocAsyncWriteOnePacketSetStateOp findInterveningWriteStateSetup(
-    NocAsyncWriteOnePacketSetStateOp reachingSetup,
-    NocAsyncWriteOnePacketWithStateOp use) {
+static NocAsyncWriteOnePacketSetStateOp
+findInterveningWriteStateSetup(NocAsyncWriteOnePacketSetStateOp reachingSetup,
+                               NocAsyncWriteOnePacketWithStateOp use) {
   func::FuncOp function = use->getParentOfType<func::FuncOp>();
   NocAsyncWriteOnePacketSetStateOp interveningSetup;
   function.walk([&](NocAsyncWriteOnePacketSetStateOp setup) {
