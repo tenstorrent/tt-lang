@@ -39,6 +39,7 @@ from .pipe import (
 )
 from .trace import TRACE, get_pipe_name, trace
 from .ttnnsim import (
+    TILE_LAYOUT,
     Tensor,
     check_count_match,
     tile_count_from_shape,
@@ -214,7 +215,34 @@ def _validate_byte_count_for_tensor(
         )
 
 
-def _validate_byte_copy_tensors(src: Tensor, dst: Tensor, byte_count: int) -> None:
+def _get_dfb_block_payload_spec(block: Block, endpoint: str) -> Tensor:
+    if block.dfb is None:
+        raise ValueError(
+            f"byte-counted {endpoint} block must be acquired from a dataflow buffer"
+        )
+    payload_spec = block.dfb.likeness_tensor
+    if payload_spec.layout != TILE_LAYOUT:
+        raise ValueError(
+            f"byte-counted {endpoint} dataflow-buffer block must use TILE layout"
+        )
+    return payload_spec
+
+
+def _validate_byte_count_for_block(
+    block: Block, byte_count: int, endpoint: str
+) -> None:
+    _get_dfb_block_payload_spec(block, endpoint)
+    assert block.dfb is not None
+    capacity = block.dfb.capacity_bytes // block.dfb.block_count
+    if byte_count > capacity:
+        raise ValueError(
+            f"byte_count {byte_count} exceeds {endpoint} capacity {capacity}"
+        )
+    if not _is_dry_run():
+        _validate_byte_count_for_tensor(block.raw_tensor, byte_count, endpoint)
+
+
+def _validate_byte_copy_formats(src: Tensor, dst: Tensor) -> None:
     if src.layout != dst.layout:
         raise ValueError(
             "byte-counted copy requires matching layouts; got "
@@ -225,6 +253,10 @@ def _validate_byte_copy_tensors(src: Tensor, dst: Tensor, byte_count: int) -> No
             "byte-counted copy requires matching data types; got "
             f"source {src.dtype} and destination {dst.dtype}"
         )
+
+
+def _validate_byte_copy_tensors(src: Tensor, dst: Tensor, byte_count: int) -> None:
+    _validate_byte_copy_formats(src, dst)
     _validate_byte_count_for_tensor(src, byte_count, "source")
     _validate_byte_count_for_tensor(dst, byte_count, "destination")
 
@@ -286,7 +318,7 @@ class BlockToPipeHandler:
         """Validate the pipe send payload."""
         del dst
         if byte_count is not None:
-            _validate_byte_count_for_tensor(src.raw_tensor, byte_count, "source")
+            _validate_byte_count_for_block(src, byte_count, "source")
 
     def transfer(
         self, src: Block, dst: AnyPipe, byte_count: Optional[int] = None
@@ -303,6 +335,11 @@ class BlockToPipeHandler:
             grid_shape=src.shape,
             data=None if _is_dry_run() else src.raw_tensor,
             byte_count=byte_count,
+            payload_spec=(
+                _get_dfb_block_payload_spec(src, "source")
+                if byte_count is not None
+                else None
+            ),
         )
 
         # Get or create pipe entry atomically
@@ -433,7 +470,12 @@ class BlockToBlockHandler:
             raise ValueError(
                 "Block-to-block copy requires distinct source and destination DFBs"
             )
-        _validate_byte_copy_tensors(src.raw_tensor, dst.raw_tensor, byte_count)
+        _validate_byte_copy_formats(
+            _get_dfb_block_payload_spec(src, "source"),
+            _get_dfb_block_payload_spec(dst, "destination"),
+        )
+        _validate_byte_count_for_block(src, byte_count, "source")
+        _validate_byte_count_for_block(dst, byte_count, "destination")
 
     def transfer(
         self, src: Block, dst: Block, byte_count: Optional[int] = None
@@ -459,7 +501,7 @@ class PipeToBlockHandler:
         """Validate the receiver's declared payload capacity."""
         del src
         if byte_count is not None:
-            _validate_byte_count_for_tensor(dst.raw_tensor, byte_count, "destination")
+            _validate_byte_count_for_block(dst, byte_count, "destination")
 
     def can_wait(
         self, src: AnyPipe, dst: Block, byte_count: Optional[int] = None
@@ -514,6 +556,12 @@ class PipeToBlockHandler:
                     raise ValueError(
                         "Pipe sender and receiver must use the same byte_count; "
                         f"got sender {message.byte_count} and receiver {byte_count}"
+                    )
+                if byte_count is not None:
+                    assert message.payload_spec is not None
+                    _validate_byte_copy_formats(
+                        message.payload_spec,
+                        _get_dfb_block_payload_spec(dst, "destination"),
                     )
                 if byte_count is None and message.grid_shape != dst.shape:
                     raise ValueError(

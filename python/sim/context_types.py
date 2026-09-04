@@ -56,13 +56,14 @@ class PipeMessage:
 
     ``grid_shape`` (the tile-grid shape of the sent block) is always populated
     so the destination shape check runs identically in dry-run and normal mode.
-    ``data`` holds the backing tile tensor, or is ``None`` in dry-run mode where
-    the payload bytes are not moved.
+    ``payload_spec`` preserves the source DFB data format and layout when
+    ``data`` is ``None`` in dry-run mode.
     """
 
     grid_shape: Shape
     data: Optional[Tensor] = None
     byte_count: Optional[int] = None
+    payload_spec: Optional[Tensor] = None
 
 
 class PipeEntry(TypedDict):
