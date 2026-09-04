@@ -1538,6 +1538,7 @@ _DFB_RECONFIGURATION_LOW_MASK_WORD = (
 _DFB_RECONFIGURATION_HIGH_MASK_WORD = _DFB_RECONFIGURATION_LOW_MASK_WORD + 1
 _DFB_RECONFIGURATION_SYNCHRONIZATION_WORD = _DFB_RECONFIGURATION_HIGH_MASK_WORD + 1
 _DFB_RECONFIGURATION_WORDS_PER_CORE = _DFB_RECONFIGURATION_SYNCHRONIZATION_WORD + 6
+_DFB_RECONFIGURATION_PRESERVE_ADDRESS = 0
 
 
 def build_tensor_accessor_args(tensors: List[Any]) -> List[int]:
@@ -2418,7 +2419,7 @@ def build_dfb_reconfiguration_runtime_resources(
     existing_backing_allocation_bytes: Optional[Dict[int, int]] = None,
     device: Optional[Any] = None,
 ) -> DFBReconfigurationRuntimeResources:
-    """Allocate scratch storage and one shared L1 configuration per boundary."""
+    """Build storage and configuration resources for DFB reconfiguration."""
     if plan is None:
         return DFBReconfigurationRuntimeResources([], {}, [], {}, device)
 
@@ -2446,6 +2447,7 @@ def build_dfb_reconfiguration_runtime_resources(
     storage_index_by_dfb = {}
     scratch_layout_by_core_by_dfb = {}
     reconfigured_storage_indices = set()
+    tensor_backed_storage_indices = set()
     for dfb_index, epochs in enumerate(plan.dfb_epochs):
         storage_indices = {
             _physical_dfb_storage_index(epoch.config) for epoch in epochs
@@ -2465,6 +2467,7 @@ def build_dfb_reconfiguration_runtime_resources(
             )
             for segment in segments:
                 if segment.is_tensor_backed:
+                    tensor_backed_storage_indices.add(storage_index)
                     continue
                 outside_nodes = set(segment.nodes).difference(core_rows)
                 if outside_nodes:
@@ -2487,10 +2490,18 @@ def build_dfb_reconfiguration_runtime_resources(
         ):
             reconfigured_storage_indices.add(storage_index)
 
+    runtime_backed_storage_indices = set(tensor_backed_storage_indices)
+    runtime_backed_storage_indices.update(
+        storage_index_by_dfb[dfb_index]
+        for dfb_index in reusable_backing_tensors
+        if dfb_index in storage_index_by_dfb
+    )
+    runtime_backed_storage_indices.intersection_update(reconfigured_storage_indices)
+
     required_layout_by_core_by_storage = {}
     for dfb_index, scratch_layout_by_core in scratch_layout_by_core_by_dfb.items():
         storage_index = storage_index_by_dfb[dfb_index]
-        if storage_index not in reconfigured_storage_indices:
+        if storage_index not in runtime_backed_storage_indices:
             continue
         required_layout_by_core = required_layout_by_core_by_storage.setdefault(
             storage_index, {}
@@ -2521,7 +2532,7 @@ def build_dfb_reconfiguration_runtime_resources(
                 f"existing DFB backing references invalid DFB index {dfb_index}"
             )
         storage_index = storage_index_by_dfb[dfb_index]
-        if storage_index not in reconfigured_storage_indices:
+        if storage_index not in runtime_backed_storage_indices:
             continue
         tensor_identity = id(existing_tensor)
         addresses_by_core = tensor_addresses_by_identity.get(tensor_identity)
@@ -2605,7 +2616,7 @@ def build_dfb_reconfiguration_runtime_resources(
     for dfb_index, scratch_layout_by_core in scratch_layout_by_core_by_dfb.items():
         storage_index = storage_index_by_dfb[dfb_index]
         if (
-            storage_index not in reconfigured_storage_indices
+            storage_index not in runtime_backed_storage_indices
             or not scratch_layout_by_core
         ):
             continue
@@ -2643,7 +2654,7 @@ def build_dfb_reconfiguration_runtime_resources(
         scratch_addresses_by_index[dfb_index] = addresses_by_core
 
     for dfb_index, scratch_layout_by_core in scratch_layout_by_core_by_dfb.items():
-        if storage_index_by_dfb[dfb_index] not in reconfigured_storage_indices:
+        if storage_index_by_dfb[dfb_index] not in runtime_backed_storage_indices:
             continue
         missing_nodes = set(scratch_layout_by_core).difference(
             scratch_addresses_by_index[dfb_index]
@@ -2705,22 +2716,22 @@ def build_dfb_reconfiguration_runtime_resources(
                     addresses_by_core = tensor_addresses_by_core[tensor_index]
                 else:
                     addresses_by_core = scratch_addresses_by_index.get(dfb_index)
-                    if addresses_by_core is None:
-                        raise ValueError(
-                            f"DFB[{dfb_index}] configuration requires scratch storage"
-                        )
                 for node in segment.nodes:
                     if node not in core_rows:
                         raise ValueError(
                             f"DFB[{dfb_index}] configuration references launch "
                             f"node {node} outside the kernel grid"
                         )
-                    if node not in addresses_by_core:
+                    if addresses_by_core is not None and node not in addresses_by_core:
                         raise RuntimeError(
                             f"DFB[{dfb_index}] storage has no L1 address for "
                             f"launch node {node}"
                         )
-                    address = addresses_by_core[node] + int(segment.byte_offset)
+                    address = (
+                        _DFB_RECONFIGURATION_PRESERVE_ADDRESS
+                        if addresses_by_core is None
+                        else addresses_by_core[node] + int(segment.byte_offset)
+                    )
                     records_by_core[node] = (
                         address,
                         allocation.total_size,
