@@ -401,8 +401,8 @@ struct ValidatedSynchronizedReset {
   bool isModeledLifetimeBoundary() const { return executionCount == 1; }
 };
 
-// One static occurrence of a DFB configuration-epoch boundary before
-// launch-node participation is validated.
+// One static `ttl.dfb_reconfiguration` occurrence before launch-node
+// participation is validated.
 struct DFBReconfigurationOccurrence {
   Operation *operation = nullptr;
   DFBReconfigurationAttr boundary;
@@ -410,7 +410,8 @@ struct DFBReconfigurationOccurrence {
   LaunchNodeDomain launchDomain = LaunchNodeDomain::unknown();
 };
 
-// One proved boundary instance or uniform boundary run on one launch node.
+// Shared execution facts for all participant occurrences of one
+// reconfiguration declaration on one launch node.
 struct ValidatedDFBReconfiguration {
   DFBReconfigurationAttr boundary;
   SmallVector<Operation *> participantOperations;
@@ -446,7 +447,7 @@ static bool hasEquivalentIterationSequence(const StaticIterationDomain &lhs,
 }
 
 // Inner loops may multiply an access count, but its outer iterations must
-// match the repeated reconfiguration before per-iteration normalization.
+// match the repeated reconfiguration before dividing by its execution count.
 static bool startsWithIterationDomain(const StaticIterationDomain &domain,
                                       const StaticIterationDomain &prefix) {
   return domain.loops.size() >= prefix.loops.size() &&
@@ -457,7 +458,8 @@ static bool startsWithIterationDomain(const StaticIterationDomain &domain,
              prefix.tripCounts);
 }
 
-// One statically counted run of an access occurrence.
+// One access occurrence's exact execution count, or a structural upper bound
+// when conditionalExecution is true.
 struct AccessRun {
   const DFBAccessOccurrence *access = nullptr;
   std::uint64_t executionCount = 0;
@@ -474,10 +476,23 @@ struct AccessRun {
 
 using AccessRuns = DenseMap<const DFBAccessOccurrence *, AccessRun>;
 
-// Per-iteration lifetime normalization and graph edges are sound only when each
-// reconfiguration-loop iteration contains the same fixed number of
-// unconditional access executions.
-static bool hasFixedAccessCountPerReconfigurationIteration(
+// Divide an access run among repeated reconfiguration executions only when the
+// access is nested under the same participant loops and divides evenly.
+static bool canPartitionAccessRunAcrossReconfigurationExecutions(
+    std::uint64_t accessExecutionCount,
+    const StaticIterationDomain &accessIterationDomain,
+    std::uint64_t reconfigurationExecutionCount,
+    const StaticIterationDomain &reconfigurationIterationDomain) {
+  assert(reconfigurationExecutionCount > 1 &&
+         "repeated reconfiguration must execute more than once");
+  return startsWithIterationDomain(accessIterationDomain,
+                                   reconfigurationIterationDomain) &&
+         accessExecutionCount % reconfigurationExecutionCount == 0;
+}
+
+// Lifetime normalization and graph edges are sound only when every
+// reconfiguration execution has the same unconditional access count.
+static bool hasFixedAccessCountPerReconfigurationExecution(
     const DFBAccessOccurrence &access,
     std::uint64_t reconfigurationExecutionCount,
     const StaticIterationDomain &reconfigurationIterationDomain,
@@ -489,16 +504,22 @@ static bool hasFixedAccessCountPerReconfigurationIteration(
     return false;
   }
   const AccessRun &accessRun = runIt->second;
-  // TODO(#1010): Prove per-iteration conditional equivalence.
+  // TODO(#1010): Prove equivalent conditions at every reconfiguration
+  // execution.
   if (accessRun.conditionalExecution) {
     return false;
   }
-  if (!startsWithIterationDomain(accessRun.iterationDomain,
-                                 reconfigurationIterationDomain)) {
-    return false;
-  }
-  return accessRun.executionCount % reconfigurationExecutionCount == 0;
+  return canPartitionAccessRunAcrossReconfigurationExecutions(
+      accessRun.executionCount, accessRun.iterationDomain,
+      reconfigurationExecutionCount, reconfigurationIterationDomain);
 }
+
+// Maximum executions when every enclosing at-most-once region is selected,
+// together with the enclosing loops that contribute to that maximum.
+struct AccessRunUpperBound {
+  std::uint64_t maximumExecutionCount = 0;
+  StaticIterationDomain iterationDomain;
+};
 
 // The listed operations execute each nested region at most once per
 // invocation, so only enclosing loops can repeat an access.
@@ -528,26 +549,20 @@ static AccessDomain refineUnknownAccessDomainFromExecutionCounts(
   return {std::move(exactDomain), nullptr};
 }
 
-// Proves that an access executes once in every iteration of one immutable
-// structured loop nest. At-most-once regions must be selected on every
-// enclosing-loop invocation.
-static std::optional<StaticIterationDomain> getUniformStaticIterationDomain(
-    Operation *operation, std::uint64_t executionCount, LaunchNodeCoord node,
-    const LaunchNodeDomainState &domainState) {
+// Computes a static execution-count upper bound inside a single-block function
+// and nested single-block affine/scf loops or at-most-once regions. CFGs, other
+// region operations, and loops without positive static trip counts have no
+// structural bound.
+static std::optional<AccessRunUpperBound>
+getAccessRunUpperBound(Operation *operation) {
   func::FuncOp function = operation->getParentOfType<func::FuncOp>();
   if (!function || function.getBody().empty() ||
       !function.getBody().hasOneBlock()) {
     return std::nullopt;
   }
 
-  // Exact count-one accesses retain the existing event-graph proof. Only
-  // repeated accesses require a uniform structured iteration domain.
-  if (executionCount == 1) {
-    return StaticIterationDomain{};
-  }
-
-  StaticIterationDomain domain;
-  std::uint64_t nestedExecutionCount = executionCount;
+  std::uint64_t maximumExecutionCount = 1;
+  StaticIterationDomain iterationDomain;
   Operation *nestedOperation = operation;
   while (nestedOperation->getParentRegion() != &function.getBody()) {
     Region *region = nestedOperation->getParentRegion();
@@ -557,76 +572,153 @@ static std::optional<StaticIterationDomain> getUniformStaticIterationDomain(
         nestedOperation->getBlock() != &region->front()) {
       return std::nullopt;
     }
-    if (loop && !isa<affine::AffineForOp, scf::ForOp>(parent)) {
-      return std::nullopt;
-    }
     if (!loop) {
-      std::optional<std::uint64_t> parentExecutionCount =
-          getExactExecutionCountAtLaunchNode(parent, node, domainState);
-      // Equality proves that an at-most-once region was selected for every
-      // parent invocation, including each enclosing-loop iteration.
-      if (!executesRegionsAtMostOnce(parent) || !parentExecutionCount ||
-          *parentExecutionCount != nestedExecutionCount) {
+      if (!executesRegionsAtMostOnce(parent)) {
         return std::nullopt;
       }
       nestedOperation = parent;
       continue;
     }
+    if (!isa<affine::AffineForOp, scf::ForOp>(parent)) {
+      return std::nullopt;
+    }
     SmallVector<Region *> loopRegions = loop.getLoopRegions();
-    if (loopRegions.size() != 1 || loopRegions.front() != region) {
-      return std::nullopt;
-    }
     std::optional<std::uint64_t> tripCount = tt::getLoopTripCount(loop);
-    if (!tripCount || *tripCount == 0) {
+    if (loopRegions.size() != 1 || loopRegions.front() != region ||
+        !tripCount || *tripCount == 0) {
       return std::nullopt;
     }
-    std::optional<std::uint64_t> parentExecutionCount =
-        getExactExecutionCountAtLaunchNode(parent, node, domainState);
-    if (!parentExecutionCount) {
+    std::optional<std::uint64_t> updatedMaximum =
+        llvm::checkedMulUnsigned(maximumExecutionCount, *tripCount);
+    if (!updatedMaximum) {
       return std::nullopt;
     }
-    std::optional<std::uint64_t> loopBodyExecutionCount =
-        llvm::checkedMulUnsigned(*parentExecutionCount, *tripCount);
-    if (!loopBodyExecutionCount ||
-        *loopBodyExecutionCount != nestedExecutionCount) {
-      return std::nullopt;
-    }
-    domain.loops.push_back(parent);
-    domain.tripCounts.push_back(*tripCount);
-    nestedExecutionCount = *parentExecutionCount;
+    maximumExecutionCount = *updatedMaximum;
+    iterationDomain.loops.push_back(parent);
+    iterationDomain.tripCounts.push_back(*tripCount);
     nestedOperation = parent;
   }
-
-  if (nestedOperation->getBlock() != &function.getBody().front() ||
-      nestedExecutionCount != 1) {
+  if (nestedOperation->getBlock() != &function.getBody().front()) {
     return std::nullopt;
   }
-  std::reverse(domain.loops.begin(), domain.loops.end());
-  std::reverse(domain.tripCounts.begin(), domain.tripCounts.end());
-  return domain;
+  std::reverse(iterationDomain.loops.begin(), iterationDomain.loops.end());
+  std::reverse(iterationDomain.tripCounts.begin(),
+               iterationDomain.tripCounts.end());
+  return AccessRunUpperBound{maximumExecutionCount, std::move(iterationDomain)};
+}
+
+// Equality with the structural upper bound proves that every at-most-once
+// region executes in every enclosing-loop iteration.
+static std::optional<StaticIterationDomain>
+getUniformStaticIterationDomain(Operation *operation,
+                                std::uint64_t executionCount) {
+  // Exact count-one accesses retain the existing event-graph proof. Only
+  // repeated accesses require a uniform structured iteration domain.
+  if (executionCount == 1) {
+    return StaticIterationDomain{};
+  }
+  std::optional<AccessRunUpperBound> runUpperBound =
+      getAccessRunUpperBound(operation);
+  if (!runUpperBound ||
+      runUpperBound->maximumExecutionCount != executionCount) {
+    return std::nullopt;
+  }
+  return std::move(runUpperBound->iterationDomain);
 }
 
 // Proves an unresolved access cannot repeat. Treating the access as present
 // once preserves the conditional lifetime without assuming it executes.
 static bool structurallyExecutesAtMostOnce(Operation *operation) {
-  func::FuncOp function = operation->getParentOfType<func::FuncOp>();
-  if (!function || function.getBody().empty() ||
-      !function.getBody().hasOneBlock()) {
-    return false;
-  }
+  std::optional<AccessRunUpperBound> runUpperBound =
+      getAccessRunUpperBound(operation);
+  return runUpperBound && runUpperBound->maximumExecutionCount == 1;
+}
 
-  Operation *nestedOperation = operation;
-  while (nestedOperation->getParentRegion() != &function.getBody()) {
-    Region *region = nestedOperation->getParentRegion();
-    Operation *parent = region ? region->getParentOp() : nullptr;
-    if (!parent || !region->hasOneBlock() ||
-        nestedOperation->getBlock() != &region->front() ||
-        !executesRegionsAtMostOnce(parent)) {
+// External-call occurrences may use structural bounds only for event ordering
+// and producer capacity before state discard.
+static bool isExternalCallAccess(const DFBAccessOccurrence &access) {
+  return isa<OpaqueCallOp>(access.operation);
+}
+
+// Recognizes an opaque-call-only reserve/push protocol. A structural upper
+// bound proves capacity before state discard because no consumer wait can
+// block.
+static bool
+isExternalProducerOnlyProtocol(ArrayRef<const DFBAccessOccurrence *> accesses) {
+  bool hasReserve = false;
+  bool hasPush = false;
+  for (const DFBAccessOccurrence *access : accesses) {
+    if (!isExternalCallAccess(*access) || !access->getProtocolEffect()) {
       return false;
     }
-    nestedOperation = parent;
+    switch (*access->getProtocolEffect()) {
+    case DFBProtocolEffectKind::Reserve:
+      hasReserve = true;
+      break;
+    case DFBProtocolEffectKind::Push:
+      hasPush = true;
+      break;
+    case DFBProtocolEffectKind::Wait:
+    case DFBProtocolEffectKind::Pop:
+      return false;
+    }
   }
-  return nestedOperation->getBlock() == &function.getBody().front();
+  return hasReserve && hasPush;
+}
+
+struct BoundaryParticipantIteration {
+  Operation *operation = nullptr;
+  const StaticIterationDomain *domain = nullptr;
+};
+
+// Loop identities are function-local, so compare an access only with the
+// boundary participant for the same logical kernel.
+template <typename CollectiveBoundary>
+static std::optional<BoundaryParticipantIteration>
+getBoundaryParticipantIteration(const CollectiveBoundary &boundary,
+                                Operation *accessOperation) {
+  func::FuncOp accessFunction =
+      accessOperation->getParentOfType<func::FuncOp>();
+  if (!accessFunction) {
+    return std::nullopt;
+  }
+  for (auto [participant, iterationDomain] :
+       llvm::zip_equal(boundary.participantOperations,
+                       boundary.participantIterationDomains)) {
+    if (participant && participant->template getParentOfType<func::FuncOp>() ==
+                           accessFunction) {
+      return BoundaryParticipantIteration{participant, &iterationDomain};
+    }
+  }
+  return std::nullopt;
+}
+
+// Requires an exact, unconditional access count relative to the boundary
+// participant in the same logical kernel.
+static bool hasFixedAccessCountForReconfiguration(
+    const DFBAccessOccurrence &access,
+    const ValidatedDFBReconfiguration &reconfiguration,
+    const AccessRuns &accessRuns) {
+  std::optional<BoundaryParticipantIteration> participant =
+      getBoundaryParticipantIteration(reconfiguration, access.operation);
+  return participant && hasFixedAccessCountPerReconfigurationExecution(
+                            access, reconfiguration.executionCount,
+                            *participant->domain, accessRuns);
+}
+
+// This predicate establishes event placement for each reconfiguration
+// execution; protocol completion requires separate effect-specific checks.
+static bool hasPartitionableExternalAccessBound(
+    const DFBAccessOccurrence &access,
+    const ValidatedDFBReconfiguration &reconfiguration,
+    const AccessRuns &boundedExternalAccessRuns) {
+  auto runIt = boundedExternalAccessRuns.find(&access);
+  std::optional<BoundaryParticipantIteration> participant =
+      getBoundaryParticipantIteration(reconfiguration, access.operation);
+  return runIt != boundedExternalAccessRuns.end() && participant &&
+         canPartitionAccessRunAcrossReconfigurationExecutions(
+             runIt->second.executionCount, runIt->second.iterationDomain,
+             reconfiguration.executionCount, *participant->domain);
 }
 
 // Possible-domain analysis includes unknown membership while exact-domain
@@ -1552,7 +1644,6 @@ collectAccessExecutionCounts(ArrayRef<DFBLogicalLifecycle> logicalDFBs,
 
 static AccessRuns collectAccessRuns(
     ArrayRef<DFBLogicalLifecycle> logicalDFBs, LaunchNodeCoord node,
-    const LaunchNodeDomainState &domainState,
     const AccessExecutionCounts &executionCounts, bool includeUnknownDomains) {
   AccessRuns runs;
   for (const DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
@@ -1575,8 +1666,7 @@ static AccessRuns collectAccessRuns(
         continue;
       }
       std::optional<StaticIterationDomain> domain =
-          getUniformStaticIterationDomain(access.operation, *countIt->second,
-                                          node, domainState);
+          getUniformStaticIterationDomain(access.operation, *countIt->second);
       if (!domain) {
         continue;
       }
@@ -1585,6 +1675,72 @@ static AccessRuns collectAccessRuns(
     }
   }
   return runs;
+}
+
+// Adds structural upper bounds for conditional opaque calls only when every
+// repeated reconfiguration discards DFB state. These bounds support event
+// ordering and producer capacity; other protocol proofs retain exact runs.
+static AccessRuns collectBoundedExternalAccessRuns(
+    ArrayRef<DFBLogicalLifecycle> logicalDFBs,
+    ArrayRef<ValidatedDFBReconfiguration> reconfigurations,
+    LaunchNodeCoord node, const AccessExecutionCounts &executionCounts,
+    const AccessRuns &exactAccessRuns, bool includeUnknownDomains) {
+  AccessRuns boundedRuns = exactAccessRuns;
+  if (reconfigurations.empty() ||
+      reconfigurations.front().executionCount <= 1 ||
+      !llvm::all_of(reconfigurations, [](const auto &reconfiguration) {
+        return reconfiguration.boundary.getDiscardDfbState();
+      })) {
+    return boundedRuns;
+  }
+
+  for (const DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
+    for (const DFBAccessOccurrence &access : logicalDFB.accesses) {
+      if (!isExternalCallAccess(access) ||
+          !mayAccessLaunchNode(access, node, executionCounts,
+                               includeUnknownDomains)) {
+        continue;
+      }
+      bool exactRunMatchesEveryBoundary =
+          llvm::all_of(reconfigurations, [&](const auto &reconfiguration) {
+            return hasFixedAccessCountForReconfiguration(
+                access, reconfiguration, exactAccessRuns);
+          });
+      if (exactRunMatchesEveryBoundary) {
+        continue;
+      }
+      std::optional<AccessRunUpperBound> runUpperBound =
+          getAccessRunUpperBound(access.operation);
+      if (!runUpperBound) {
+        continue;
+      }
+      auto executionCountIt = executionCounts.find(&access);
+      assert(executionCountIt != executionCounts.end() &&
+             "active DFB access must have an execution-count fact");
+      if (executionCountIt->second &&
+          *executionCountIt->second > runUpperBound->maximumExecutionCount) {
+        continue;
+      }
+      bool matchesEveryBoundary =
+          llvm::all_of(reconfigurations, [&](const auto &reconfiguration) {
+            std::optional<BoundaryParticipantIteration> participant =
+                getBoundaryParticipantIteration(reconfiguration,
+                                                access.operation);
+            return participant &&
+                   canPartitionAccessRunAcrossReconfigurationExecutions(
+                       runUpperBound->maximumExecutionCount,
+                       runUpperBound->iterationDomain,
+                       reconfiguration.executionCount, *participant->domain);
+          });
+      if (!matchesEveryBoundary) {
+        continue;
+      }
+      boundedRuns[&access] =
+          AccessRun{&access, runUpperBound->maximumExecutionCount,
+                    std::move(runUpperBound->iterationDomain), true};
+    }
+  }
+  return boundedRuns;
 }
 
 struct ProgramOrderTopologyAccess {
@@ -1745,7 +1901,7 @@ static LogicalResult validateDFBReconfigurationDeclarations(
                occurrence.boundary.getParticipants()) {
       analysisFailure.set(
           occurrence.operation,
-          "all DFB reconfiguration boundaries must declare the same "
+          "all DFB reconfiguration declarations must use the same "
           "participant set");
       return failure();
     }
@@ -1848,8 +2004,8 @@ static LogicalResult validateDFBReconfigurationsAtNode(
       if (executionCount) {
         if (*executionCount > 1) {
           std::optional<StaticIterationDomain> uniformDomain =
-              getUniformStaticIterationDomain(
-                  participantOperation, *executionCount, node, domainState);
+              getUniformStaticIterationDomain(participantOperation,
+                                              *executionCount);
           if (!uniformDomain || uniformDomain->loops.empty()) {
             analysisFailure.set(
                 participantOperation,
@@ -1964,7 +2120,7 @@ static LogicalResult validateDFBReconfigurationsAtNode(
         if (participantLhsPrecedes == participantRhsPrecedes) {
           analysisFailure.set(
               rhsOperation,
-              "DFB reconfiguration boundaries must have a strict structured "
+              "DFB reconfiguration operations must have a strict structured "
               "order in every participant");
           return failure();
         }
@@ -1973,7 +2129,7 @@ static LogicalResult validateDFBReconfigurationsAtNode(
         } else if (*lhsPrecedes != participantLhsPrecedes) {
           analysisFailure.set(
               rhsOperation,
-              "DFB reconfiguration participants execute boundaries in "
+              "DFB reconfiguration participants execute operations in "
               "different orders");
           return failure();
         }
@@ -2065,8 +2221,8 @@ static LogicalResult validateSynchronizedResetsAtNode(
       if (executionCount) {
         if (*executionCount > 1) {
           std::optional<StaticIterationDomain> uniformDomain =
-              getUniformStaticIterationDomain(
-                  occurrence.operation, *executionCount, node, domainState);
+              getUniformStaticIterationDomain(occurrence.operation,
+                                              *executionCount);
           if (!uniformDomain || uniformDomain->loops.empty()) {
             analysisFailure.set(
                 occurrence.operation,
@@ -2495,7 +2651,8 @@ static void addDFBReconfigurationAccessEdges(
     const DenseMap<Operation *, EventPair> &operationEvents,
     const DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents,
     const ReconfigurationBoundaryEvents &reconfigurationBoundaryEvents,
-    const AccessExecutionCounts &executionCounts, const AccessRuns &accessRuns,
+    const AccessExecutionCounts &executionCounts,
+    const AccessRuns &boundedExternalAccessRuns,
     const StructuralOperationOrder &structuralOrder,
     bool includeUnknownDomains) {
   for (const ValidatedDFBReconfiguration &reconfiguration : reconfigurations) {
@@ -2516,31 +2673,22 @@ static void addDFBReconfigurationAccessEdges(
         if (!events) {
           continue;
         }
-        Operation *accessFunction =
-            structuralOrder.getFunction(access.operation);
-        Operation *localBoundary = nullptr;
-        const StaticIterationDomain *localBoundaryDomain = nullptr;
-        for (auto [participantIndex, participant] :
-             llvm::enumerate(reconfiguration.participantOperations)) {
-          if (structuralOrder.getFunction(participant) == accessFunction) {
-            localBoundary = participant;
-            localBoundaryDomain =
-                &reconfiguration.participantIterationDomains[participantIndex];
-            break;
-          }
-        }
-        if (!localBoundary) {
+        std::optional<BoundaryParticipantIteration> localParticipant =
+            getBoundaryParticipantIteration(reconfiguration, access.operation);
+        if (!localParticipant) {
           continue;
         }
+        // External access bounds establish graph position without asserting
+        // queue protocol completion.
         bool canOrderEachIteration =
             reconfiguration.executionCount > 1 &&
-            hasFixedAccessCountPerReconfigurationIteration(
-                access, reconfiguration.executionCount, *localBoundaryDomain,
-                accessRuns);
+            hasPartitionableExternalAccessBound(access, reconfiguration,
+                                                boundedExternalAccessRuns);
         if (canOrderEachIteration) {
-          if (structuralOrder.precedes(access.operation, localBoundary)) {
+          if (structuralOrder.precedes(access.operation,
+                                       localParticipant->operation)) {
             addPerIterationSpanOrder(graph, *events, boundaryEvents);
-          } else if (structuralOrder.precedes(localBoundary,
+          } else if (structuralOrder.precedes(localParticipant->operation,
                                               access.operation)) {
             addPerIterationSpanOrder(graph, boundaryEvents, *events);
           }
@@ -2549,9 +2697,11 @@ static void addDFBReconfigurationAccessEdges(
         if (reconfiguration.executionCount > 1) {
           continue;
         }
-        if (structuralOrder.precedes(access.operation, localBoundary)) {
+        if (structuralOrder.precedes(access.operation,
+                                     localParticipant->operation)) {
           graph.addEdge(events->last.completion, boundaryEvents.first.entry);
-        } else if (structuralOrder.precedes(localBoundary, access.operation)) {
+        } else if (structuralOrder.precedes(localParticipant->operation,
+                                            access.operation)) {
           graph.addEdge(boundaryEvents.last.completion, events->first.entry);
         }
       }
@@ -2594,11 +2744,15 @@ private:
   std::optional<Entry> entry;
 };
 
-// Conditional runs match only under equivalent structured conditions.
+// Effects on one operation share its execution condition; effects on separate
+// operations require equivalent structured conditions.
 static bool
 proveEquivalentConditionalRuns(const AccessRun &lhs, const AccessRun &rhs,
                                LaunchNodeCoord node,
                                const LaunchNodeDomainState &domainState) {
+  if (lhs.access->operation == rhs.access->operation) {
+    return true;
+  }
   if (!lhs.conditionalExecution && !rhs.conditionalExecution) {
     return true;
   }
@@ -3506,7 +3660,7 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
     const LaunchNodeDomainState &domainState,
     bool includeUnknownDomains = false,
     ArrayRef<const DFBAccessOccurrence *> selectedAccesses = {},
-    bool hasCanonicalResetTerminator = false,
+    bool stateDiscardingTerminator = false,
     std::optional<std::uint64_t> selectedExecutionDivisor = std::nullopt) {
   assert((!selectedExecutionDivisor ||
           (*selectedExecutionDivisor > 0 && !selectedAccesses.empty())) &&
@@ -3588,33 +3742,41 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
     }
   }
 
-  if (includeUnknownDomains && activeAccesses.empty()) {
+  // A DFB with no executing access at this node cannot retain protocol state.
+  if (activeAccesses.empty()) {
     lifetime.mayBeActive = false;
     return {};
   }
 
-  auto recordAccessFrontiers = [&]() -> LogicalResult {
-    lifetime.earliestEntryEvents = findMinimalEntryEvents(
+  auto recordAccessFrontiers =
+      [&](DFBPerNodeLifetime &targetLifetime) -> LogicalResult {
+    SmallVector<unsigned> earliestEntryEvents = findMinimalEntryEvents(
         activeAccesses, graph, operationEvents, accessEvents);
     SmallVector<const DFBAccessOccurrence *> terminalAccesses =
         findMaximalCompletionAccesses(activeAccesses, graph, operationEvents,
                                       accessEvents);
-    if (lifetime.earliestEntryEvents.empty() || terminalAccesses.empty()) {
+    if (earliestEntryEvents.empty() || terminalAccesses.empty()) {
       return failure();
     }
-    recordEntryFrontierEvidence(lifetime, diagnostics, activeAccesses,
-                                logicalDFB, operationEvents, accessEvents);
+    SmallVector<unsigned> terminalCompletionEvents;
     for (const DFBAccessOccurrence *terminalAccess : terminalAccesses) {
       std::optional<AccessEventSpan> events =
           getAccessEventSpan(*terminalAccess, operationEvents, accessEvents);
       if (!events) {
         return failure();
       }
-      if (!llvm::is_contained(lifetime.terminalCompletionEvents,
+      if (!llvm::is_contained(terminalCompletionEvents,
                               events->last.completion)) {
-        lifetime.terminalCompletionEvents.push_back(events->last.completion);
+        terminalCompletionEvents.push_back(events->last.completion);
       }
-      if (diagnostics) {
+    }
+    targetLifetime.earliestEntryEvents = std::move(earliestEntryEvents);
+    targetLifetime.terminalCompletionEvents =
+        std::move(terminalCompletionEvents);
+    recordEntryFrontierEvidence(targetLifetime, diagnostics, activeAccesses,
+                                logicalDFB, operationEvents, accessEvents);
+    if (diagnostics) {
+      for (const DFBAccessOccurrence *terminalAccess : terminalAccesses) {
         diagnostics->terminalAccessOccurrenceIndices.push_back(
             static_cast<unsigned>(terminalAccess - logicalDFB.accesses.data()));
       }
@@ -3627,13 +3789,14 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
         return access->opaqueExternalAccess;
       });
   if (opaqueExternalAccess != activeAccesses.end()) {
-    if (!hasCanonicalResetTerminator) {
+    if (!stateDiscardingTerminator) {
       return {DFBLifecycleCompletionFailureReason::MissingProtocolEffect,
               (*opaqueExternalAccess)->operation};
     }
     auto unscopedOpaqueAccess =
         llvm::find_if(activeAccesses, [](const DFBAccessOccurrence *access) {
           return !access->getProtocolEffect() &&
+                 !access->getNonTransactionalAccess() &&
                  isa<OpaqueCallOp>(access->operation) &&
                  !access->opaqueExternalAccess;
         });
@@ -3642,7 +3805,7 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
               (*unscopedOpaqueAccess)->operation};
     }
 
-    if (failed(recordAccessFrontiers())) {
+    if (failed(recordAccessFrontiers(lifetime))) {
       return {DFBLifecycleCompletionFailureReason::UnsupportedControlFlow,
               activeAccesses.front()->operation};
     }
@@ -3664,7 +3827,7 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
               activeAccesses.empty() ? logicalDFB.declarations.front()
                                      : activeAccesses.front()->operation};
     }
-    if (failed(recordAccessFrontiers())) {
+    if (failed(recordAccessFrontiers(lifetime))) {
       return {DFBLifecycleCompletionFailureReason::UnsupportedControlFlow,
               activeAccesses.front()->operation};
     }
@@ -3673,10 +3836,12 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
     return {};
   }
 
-  bool resetTerminatedProducer = hasCanonicalResetTerminator && hasReserve &&
-                                 hasPush && !hasWait && !hasPop;
+  bool resetTerminatedProducer =
+      stateDiscardingTerminator && hasReserve && hasPush && !hasWait && !hasPop;
+  bool stateDiscardedProtocol =
+      stateDiscardingTerminator && hasReserve && hasPush;
   if ((!hasReserve || !hasPush || !hasWait || !hasPop) &&
-      !resetTerminatedProducer) {
+      !resetTerminatedProducer && !stateDiscardedProtocol) {
     return {DFBLifecycleCompletionFailureReason::MissingProtocolEffect,
             activeAccesses.empty() ? logicalDFB.declarations.front()
                                    : activeAccesses.front()->operation};
@@ -3687,7 +3852,7 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
             unsupportedAccess->operation};
   }
   assert(!reserves.empty() && !pushes.empty() &&
-         (resetTerminatedProducer || (!waits.empty() && !pops.empty())) &&
+         (stateDiscardedProtocol || (!waits.empty() && !pops.empty())) &&
          "supported protocol effects must have access runs");
 
   SmallVector<const AccessRun *> conditionalRuns;
@@ -3751,6 +3916,280 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
       (resetTerminatedProducer ||
        proveAlignedAcquireReleaseRuns(waits, pops, graph, structuralOrder,
                                       operationEvents, accessEvents));
+
+  // State discard permits unread pages and RISC-local wait counters. Producer
+  // capacity and wait progress must still be proven before reconfiguration.
+  if (stateDiscardingTerminator && (!countsMatch || !alignedTransactions)) {
+    DFBPerNodeLifetime candidateLifetime = lifetime;
+    DFBLifecycleCompletionProof stateDiscardedProof =
+        [&]() -> DFBLifecycleCompletionProof {
+      if (!hasReserve || !hasPush || reserves.empty() || pushes.empty() ||
+          reserves.size() != pushes.size() ||
+          !proveAlignedAcquireReleaseRuns(reserves, pushes, graph,
+                                          structuralOrder, operationEvents,
+                                          accessEvents)) {
+        return DFBLifecycleCompletionProof{
+            DFBLifecycleCompletionFailureReason::MismatchedTransaction,
+            activeAccesses.front()->operation};
+      }
+
+      SmallVector<std::pair<const AccessRun *, const AccessRun *>>
+          producerIntervals;
+      SmallVector<Operation *> nativeReserves;
+      for (const DFBAccessOccurrence &access : logicalDFB.accesses) {
+        if (!mayContainLaunchNode(access.launchDomain, node,
+                                  includeUnknownDomains)) {
+          continue;
+        }
+        auto executionCountIt = executionCounts.find(&access);
+        assert(executionCountIt != executionCounts.end() &&
+               "every DFB access must have an execution-count fact");
+        if (executionCountIt->second && *executionCountIt->second == 0) {
+          continue;
+        }
+        if (!access.isProtocolEffect(DFBProtocolEffectKind::Reserve) ||
+            !isa<CBReserveOp>(access.operation)) {
+          continue;
+        }
+        nativeReserves.push_back(access.operation);
+      }
+      std::optional<DFBPointerOwner> writeOwner;
+      std::uint64_t publishedTiles = 0;
+      for (auto [reserve, push] : llvm::zip_equal(reserves, pushes)) {
+        if (reserve->access->numTiles <= 0) {
+          return {DFBLifecycleCompletionFailureReason::MismatchedTransaction,
+                  reserve->access->operation};
+        }
+        if (isa<CBReserveOp>(reserve->access->operation)) {
+          if (!releaseFollowsOwnedUses(reserve->access->operation,
+                                       push->access->operation, nativeReserves,
+                                       structuralOrder)) {
+            return {DFBLifecycleCompletionFailureReason::IncompleteUseOrder,
+                    push->access->operation};
+          }
+        }
+        std::optional<DFBPointerOwner> reserveOwner = getPointerOwner(
+            reserve->access->operation, node, DFBProtocolEffectKind::Reserve);
+        std::optional<DFBPointerOwner> pushOwner = getPointerOwner(
+            push->access->operation, node, DFBProtocolEffectKind::Push);
+        if (!reserveOwner || !pushOwner || *reserveOwner != *pushOwner ||
+            (writeOwner && *writeOwner != *reserveOwner)) {
+          return {DFBLifecycleCompletionFailureReason::UnknownPointerOwner,
+                  reserve->access->operation};
+        }
+        writeOwner = reserveOwner;
+
+        std::uint64_t intervalCount = getIntervalExecutionCount(*reserve);
+        std::optional<std::uint64_t> runTiles = llvm::checkedMulUnsigned(
+            intervalCount,
+            static_cast<std::uint64_t>(reserve->access->numTiles));
+        std::optional<std::uint64_t> nextPublished =
+            runTiles ? llvm::checkedAddUnsigned(publishedTiles, *runTiles)
+                     : std::nullopt;
+        if (!nextPublished ||
+            *nextPublished > static_cast<std::uint64_t>(physicalTileCount)) {
+          return {DFBLifecycleCompletionFailureReason::MismatchedTransaction,
+                  reserve->access->operation};
+        }
+        publishedTiles = *nextPublished;
+        appendTransactionRun(candidateLifetime.writeCursorRuns, intervalCount,
+                             reserve->access->numTiles);
+        producerIntervals.emplace_back(reserve, push);
+      }
+
+      // Another logical kernel can publish while this kernel waits. A
+      // same-kernel publication must precede the wait to avoid self-deadlock.
+      auto producerCanSatisfyWait = [&](const AccessRun &wait,
+                                        std::uint64_t requiredTiles) {
+        std::uint64_t availableTiles = 0;
+        Operation *waitFunction =
+            structuralOrder.getFunction(wait.access->operation);
+        for (auto [reserve, push] : producerIntervals) {
+          bool independentProducer =
+              structuralOrder.getFunction(push->access->operation) !=
+              waitFunction;
+          if (!independentProducer &&
+              !proveRunPrecedes(*push, wait, graph, structuralOrder,
+                                operationEvents, accessEvents)) {
+            continue;
+          }
+          std::optional<std::uint64_t> runTiles = llvm::checkedMulUnsigned(
+              getIntervalExecutionCount(*reserve),
+              static_cast<std::uint64_t>(reserve->access->numTiles));
+          if (!runTiles) {
+            return false;
+          }
+          std::optional<std::uint64_t> nextAvailable =
+              llvm::checkedAddUnsigned(availableTiles, *runTiles);
+          if (!nextAvailable) {
+            return false;
+          }
+          availableTiles = *nextAvailable;
+        }
+        return availableTiles >= requiredTiles;
+      };
+
+      // Pops identify the one RISC that advances the read pointer. Other RISCs
+      // may wait for publication without changing that pointer.
+      std::optional<DFBPointerOwner> readOwner;
+      for (const AccessRun *pop : pops) {
+        std::optional<DFBPointerOwner> popOwner = getPointerOwner(
+            pop->access->operation, node, DFBProtocolEffectKind::Pop);
+        if (!popOwner || (readOwner && *readOwner != *popOwner)) {
+          return {DFBLifecycleCompletionFailureReason::UnknownPointerOwner,
+                  pop->access->operation};
+        }
+        readOwner = popOwner;
+      }
+
+      SmallVector<const AccessRun *> primaryConsumerRuns;
+      SmallVector<const AccessRun *> additionalWaits;
+      for (const AccessRun *wait : waits) {
+        std::optional<DFBPointerOwner> waitOwner = getPointerOwner(
+            wait->access->operation, node, DFBProtocolEffectKind::Wait);
+        if (!waitOwner) {
+          return {DFBLifecycleCompletionFailureReason::UnknownPointerOwner,
+                  wait->access->operation};
+        }
+        if (readOwner && *waitOwner == *readOwner) {
+          primaryConsumerRuns.push_back(wait);
+        } else {
+          additionalWaits.push_back(wait);
+        }
+      }
+      llvm::append_range(primaryConsumerRuns, pops);
+
+      SmallVector<std::pair<const AccessRun *, const AccessRun *>>
+          consumerIntervals;
+      if (readOwner) {
+        if (primaryConsumerRuns.size() == pops.size()) {
+          return {DFBLifecycleCompletionFailureReason::IncompleteUseOrder,
+                  pops.front()->access->operation};
+        }
+        FailureOr<SmallVector<const AccessRun *>> orderedConsumerRuns =
+            orderProtocolRuns(primaryConsumerRuns, graph, structuralOrder,
+                              operationEvents, accessEvents);
+        if (failed(orderedConsumerRuns)) {
+          return {DFBLifecycleCompletionFailureReason::IncompleteUseOrder,
+                  primaryConsumerRuns.front()->access->operation};
+        }
+
+        std::uint64_t poppedTiles = 0;
+        std::optional<std::uint64_t> readinessLimit;
+        SmallVector<const AccessRun *> activeWaits;
+        const AccessRun *lastPop = nullptr;
+        for (const AccessRun *run : *orderedConsumerRuns) {
+          if (getIntervalExecutionCount(*run) != 1 ||
+              run->access->numTiles <= 0) {
+            return {DFBLifecycleCompletionFailureReason::MismatchedTransaction,
+                    run->access->operation};
+          }
+          std::uint64_t tiles =
+              static_cast<std::uint64_t>(run->access->numTiles);
+          if (run->access->isProtocolEffect(DFBProtocolEffectKind::Wait)) {
+            if (!activeWaits.empty() && lastPop) {
+              for (const AccessRun *activeWait : activeWaits) {
+                consumerIntervals.emplace_back(activeWait, lastPop);
+              }
+              activeWaits.clear();
+              lastPop = nullptr;
+            }
+            std::optional<std::uint64_t> requiredTiles =
+                llvm::checkedAddUnsigned(poppedTiles, tiles);
+            if (!requiredTiles || *requiredTiles > publishedTiles ||
+                !producerCanSatisfyWait(*run, *requiredTiles)) {
+              return {
+                  DFBLifecycleCompletionFailureReason::MismatchedTransaction,
+                  run->access->operation};
+            }
+            readinessLimit =
+                std::max(readinessLimit.value_or(0), *requiredTiles);
+            activeWaits.push_back(run);
+            continue;
+          }
+
+          if (activeWaits.empty() || !readinessLimit) {
+            return {DFBLifecycleCompletionFailureReason::IncompleteUseOrder,
+                    run->access->operation};
+          }
+          std::optional<std::uint64_t> nextPopped =
+              llvm::checkedAddUnsigned(poppedTiles, tiles);
+          if (!nextPopped || *nextPopped > *readinessLimit) {
+            return {DFBLifecycleCompletionFailureReason::MismatchedTransaction,
+                    run->access->operation};
+          }
+          poppedTiles = *nextPopped;
+          appendTransactionRun(candidateLifetime.readCursorRuns, 1,
+                               run->access->numTiles);
+          lastPop = run;
+        }
+        if (lastPop) {
+          for (const AccessRun *activeWait : activeWaits) {
+            consumerIntervals.emplace_back(activeWait, lastPop);
+          }
+        }
+      }
+
+      for (const AccessRun *wait : additionalWaits) {
+        if (getIntervalExecutionCount(*wait) != 1 ||
+            wait->access->numTiles <= 0 ||
+            static_cast<std::uint64_t>(wait->access->numTiles) >
+                publishedTiles ||
+            !producerCanSatisfyWait(
+                *wait, static_cast<std::uint64_t>(wait->access->numTiles))) {
+          return {DFBLifecycleCompletionFailureReason::MismatchedTransaction,
+                  wait->access->operation};
+        }
+      }
+
+      for (const DFBAccessOccurrence *activeAccess : activeAccesses) {
+        if (activeAccess->getProtocolEffect() ||
+            activeAccess->getNonTransactionalAccess()) {
+          continue;
+        }
+        const AccessRun &use = accessRuns.at(activeAccess);
+        bool covered = llvm::any_of(producerIntervals, [&](auto interval) {
+          return runIsInsideInterval(use, *interval.first, *interval.second,
+                                     graph, structuralOrder, operationEvents,
+                                     accessEvents);
+        });
+        covered |= llvm::any_of(consumerIntervals, [&](auto interval) {
+          return runIsInsideInterval(use, *interval.first, *interval.second,
+                                     graph, structuralOrder, operationEvents,
+                                     accessEvents);
+        });
+        if (!covered) {
+          return {DFBLifecycleCompletionFailureReason::IncompleteUseOrder,
+                  activeAccess->operation};
+        }
+      }
+
+      if (failed(recordAccessFrontiers(candidateLifetime))) {
+        return DFBLifecycleCompletionProof{
+            DFBLifecycleCompletionFailureReason::UnsupportedControlFlow,
+            activeAccesses.front()->operation};
+      }
+      candidateLifetime.transactionRuns = candidateLifetime.writeCursorRuns;
+      candidateLifetime.writePointerOwner = writeOwner;
+      candidateLifetime.readPointerOwner = readOwner;
+      candidateLifetime.terminalTransactionRuns.assign(
+          candidateLifetime.transactionRuns.begin(),
+          candidateLifetime.transactionRuns.end());
+      candidateLifetime.terminalWriteCursorRuns.assign(
+          candidateLifetime.writeCursorRuns.begin(),
+          candidateLifetime.writeCursorRuns.end());
+      candidateLifetime.terminalReadCursorRuns.assign(
+          candidateLifetime.readCursorRuns.begin(),
+          candidateLifetime.readCursorRuns.end());
+      candidateLifetime.terminalWritePointerOwner = writeOwner;
+      candidateLifetime.terminalReadPointerOwner = readOwner;
+      return DFBLifecycleCompletionProof{};
+    }();
+    if (stateDiscardedProof.proven()) {
+      lifetime = std::move(candidateLifetime);
+      return {};
+    }
+  }
   SmallVector<const AccessRun *> producerProtocolRuns;
   llvm::append_range(producerProtocolRuns, reserves);
   llvm::append_range(producerProtocolRuns, pushes);
@@ -3934,7 +4373,7 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
         if (reserve.access->numTiles != wait.access->numTiles ||
             reserve.access->numTiles <= 0 ||
             reserve.access->numTiles > physicalTileCount ||
-            (!hasCanonicalResetTerminator &&
+            (!stateDiscardingTerminator &&
              physicalTileCount % reserve.access->numTiles != 0)) {
           return {DFBLifecycleCompletionFailureReason::MismatchedTransaction,
                   reserve.access->operation};
@@ -3962,7 +4401,7 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
                 reserves.front()->access->operation};
       }
     }
-    if (hasCanonicalResetTerminator &&
+    if (stateDiscardingTerminator &&
         failed(advanceDFBTransactionCursor(
             lifetime.transactionRuns,
             static_cast<std::uint64_t>(physicalTileCount)))) {
@@ -4056,28 +4495,6 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
   return {};
 }
 
-// Loop identities are function-local, so compare an access only with the
-// reconfiguration participant for the same logical kernel.
-template <typename CollectiveBoundary>
-static std::optional<std::pair<Operation *, const StaticIterationDomain *>>
-getParticipantIteration(const CollectiveBoundary &boundary,
-                        Operation *accessOperation) {
-  func::FuncOp accessFunction =
-      accessOperation->getParentOfType<func::FuncOp>();
-  if (!accessFunction) {
-    return std::nullopt;
-  }
-  for (auto [participant, iterationDomain] :
-       llvm::zip_equal(boundary.participantOperations,
-                       boundary.participantIterationDomains)) {
-    if (participant && participant->template getParentOfType<func::FuncOp>() ==
-                           accessFunction) {
-      return std::make_pair(participant, &iterationDomain);
-    }
-  }
-  return std::nullopt;
-}
-
 // Models one representative interval when every access and its terminating
 // collective reset execute once per iteration of the same sequential loop.
 // The reset restores canonical cursor state, so physical allocation validates
@@ -4129,16 +4546,16 @@ tryComputeRepeatedResetLifetime(
     bool terminatesEveryAccess =
         llvm::all_of(activeAccesses, [&](const DFBAccessOccurrence *access) {
           auto runIt = accessRuns.find(access);
-          std::optional<std::pair<Operation *, const StaticIterationDomain *>>
-              participant = getParticipantIteration(reset, access->operation);
+          std::optional<BoundaryParticipantIteration> participant =
+              getBoundaryParticipantIteration(reset, access->operation);
           std::optional<AccessEventSpan> events =
               getAccessEventSpan(*access, operationEvents, accessEvents);
           if (runIt == accessRuns.end() || !participant || !events ||
               runIt->second.conditionalExecution ||
               runIt->second.executionCount != reset.executionCount ||
-              !(runIt->second.iterationDomain == *participant->second) ||
+              !(runIt->second.iterationDomain == *participant->domain) ||
               !structuralOrder.precedes(access->operation,
-                                        participant->first)) {
+                                        participant->operation)) {
             return false;
           }
           const AccessEventSpan &resetEvents = resetEventsIt->second;
@@ -4263,7 +4680,7 @@ tryComputeRepeatedResetLifetime(
       lifetimeDiagnostics ? &intervalDiagnostics : nullptr, graph,
       structuralOrder, operationEvents, accessEvents, executionCounts,
       accessRuns, domainState, includeUnknownDomains, activeAccesses,
-      /*hasCanonicalResetTerminator=*/true,
+      /*stateDiscardingTerminator=*/true,
       /*selectedExecutionDivisor=*/terminator->executionCount);
   assert(intervalLifetimes.size() == 1 &&
          "one repeated interval must produce one protocol lifetime");
@@ -4319,6 +4736,13 @@ struct OrderedLifecycleBoundary {
                  : reconfiguration->conditionalExecution;
   }
 
+  // Resets always restore interface state; reconfiguration may discard prior
+  // logical state only when its declaration permits it.
+  bool discardsDFBState() const {
+    return reset ||
+           (reconfiguration && reconfiguration->boundary.getDiscardDfbState());
+  }
+
   Operation *getEvidenceOperation() const {
     return reset ? reset->participantOperations.front()
                  : reconfiguration->participantOperations.front();
@@ -4344,9 +4768,9 @@ static Operation *findConditionalExecutionMismatch(
   return nullptr;
 }
 
-// Proves complete protocol intervals between lifecycle boundaries. A reset may
-// discard unread blocks. An incomplete protocol crosses reconfiguration
-// unchanged and remains active in every configuration epoch that it spans.
+// Proves complete protocol intervals between lifecycle boundaries. A state-
+// discarding boundary may discard unread blocks or opaque external protocol
+// state. Other incomplete protocols cross reconfiguration unchanged.
 static DFBLifecycleCompletionProof computePerNodeLifetime(
     DFBLogicalLifecycle &logicalDFB, unsigned logicalIndex,
     LaunchNodeCoord node, SmallVectorImpl<DFBPerNodeLifetime> &lifetimes,
@@ -4360,6 +4784,7 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
     const DenseMap<Operation *, EventPair> &operationEvents,
     const DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents,
     const AccessExecutionCounts &executionCounts, const AccessRuns &accessRuns,
+    const AccessRuns &boundedExternalAccessRuns,
     const LaunchNodeDomainState &domainState,
     bool includeUnknownDomains = false) {
   if (std::optional<DFBLifecycleCompletionProof> repeatedResetProof =
@@ -4374,8 +4799,15 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
 
   // Repeated reconfiguration reuses physical interfaces for successive DFB
   // lifecycles in every loop iteration. Reject accesses that cannot be reduced
-  // from dispatch-wide execution counts to a fixed per-iteration count.
+  // from a dispatch-wide count to a fixed count per reconfiguration execution.
   std::optional<std::uint64_t> repeatedReconfigurationCount;
+  // Structural bounds are sufficient only when no boundary must preserve the
+  // possibly executed state for its successor configuration.
+  bool everyReconfigurationDiscardsState =
+      !reconfigurations.empty() &&
+      llvm::all_of(reconfigurations, [](const auto &reconfiguration) {
+        return reconfiguration.boundary.getDiscardDfbState();
+      });
   if (!reconfigurations.empty() &&
       reconfigurations.front().executionCount > 1) {
     repeatedReconfigurationCount = reconfigurations.front().executionCount;
@@ -4399,14 +4831,13 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
       if (executionCountIt->second && *executionCountIt->second == 0) {
         continue;
       }
-      auto participantIteration =
-          getParticipantIteration(reconfigurations.front(), access.operation);
-      bool hasProvableIterationPattern =
-          participantIteration &&
-          hasFixedAccessCountPerReconfigurationIteration(
-              access, *repeatedReconfigurationCount,
-              *participantIteration->second, accessRuns);
-      if (!hasProvableIterationPattern) {
+      bool exactRunMatches = hasFixedAccessCountForReconfiguration(
+          access, reconfigurations.front(), accessRuns);
+      bool discardedExternalRunMatchesForOrdering =
+          everyReconfigurationDiscardsState && isExternalCallAccess(access) &&
+          hasPartitionableExternalAccessBound(access, reconfigurations.front(),
+                                              boundedExternalAccessRuns);
+      if (!exactRunMatches && !discardedExternalRunMatchesForOrdering) {
         DFBPerNodeLifetime &lifetime = lifetimes.emplace_back();
         lifetime.node = node;
         if (lifetimeDiagnostics) {
@@ -4542,7 +4973,7 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
   }
 
   for (const OrderedLifecycleBoundary &boundary : boundaries) {
-    if (!boundary.reset) {
+    if (!boundary.discardsDFBState()) {
       continue;
     }
     Operation *conditionalMismatch = nullptr;
@@ -4574,15 +5005,21 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
     const OrderedLifecycleBoundary *terminalBoundary =
         boundaryInterval < boundaries.size() ? &boundaries[boundaryInterval]
                                              : nullptr;
-    bool resetTerminated = terminalBoundary && terminalBoundary->reset;
+    bool discardsDFBState =
+        terminalBoundary && terminalBoundary->discardsDFBState();
+    bool useExternalProducerBounds =
+        terminalBoundary && terminalBoundary->reconfiguration &&
+        discardsDFBState && isExternalProducerOnlyProtocol(lifecycleAccesses);
+    const AccessRuns &protocolAccessRuns =
+        useExternalProducerBounds ? boundedExternalAccessRuns : accessRuns;
     SmallVector<DFBPerNodeLifetime, 0> epochLifetimes;
     SmallVector<DFBPerNodeLifetimeDiagnostics, 0> epochDiagnostics;
     DFBLifecycleCompletionProof proof = computeProtocolLifetime(
         logicalDFB, node, epochLifetimes,
         diagnostics ? &epochDiagnostics : nullptr, graph, structuralOrder,
-        operationEvents, accessEvents, executionCounts, accessRuns, domainState,
-        includeUnknownDomains, lifecycleAccesses,
-        /*hasCanonicalResetTerminator=*/resetTerminated,
+        operationEvents, accessEvents, executionCounts, protocolAccessRuns,
+        domainState, includeUnknownDomains, lifecycleAccesses,
+        /*stateDiscardingTerminator=*/discardsDFBState,
         /*selectedExecutionDivisor=*/repeatedReconfigurationCount);
     assert(epochLifetimes.size() == 1 &&
            "one selected epoch must produce one protocol lifetime");
@@ -4710,12 +5147,9 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
   }
 
   if (!hasActiveEpoch) {
-    if (includeUnknownDomains) {
-      lifetime.mayBeActive = false;
-      return {};
-    }
-    return {DFBLifecycleCompletionFailureReason::MissingProtocolEffect,
-            logicalDFB.declarations.front()};
+    // Reconfiguration boundaries alone do not create a DFB lifecycle.
+    lifetime.mayBeActive = false;
+    return {};
   }
   return {};
 }
@@ -5426,25 +5860,34 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     AccessExecutionCounts executionCounts =
         collectAccessExecutionCounts(logicalDFBs, node, domainState);
     AccessRuns accessRuns =
-        collectAccessRuns(logicalDFBs, node, domainState, executionCounts,
+        collectAccessRuns(logicalDFBs, node, executionCounts,
                           /*includeUnknownDomains=*/false);
+    AccessRuns boundedExternalAccessRuns = collectBoundedExternalAccessRuns(
+        logicalDFBs, validatedReconfigurations, node, executionCounts,
+        accessRuns, /*includeUnknownDomains=*/false);
     ProgramOrderTopologyInputs graphTopologyInputs =
         collectProgramOrderTopologyInputs(
             logicalDFBs, validatedResets, validatedReconfigurations, node,
-            executionCounts, accessRuns, structuralOrder,
+            executionCounts, boundedExternalAccessRuns, structuralOrder,
             /*includeUnknownDomains=*/false);
     ProgramOrderGraphState initialGraphState = graphTopologyCache.getOrBuild(
         module, graphTopologyInputs, structuralOrder);
     std::optional<AccessRuns> possibleAccessRuns;
+    std::optional<AccessRuns> possibleBoundedExternalAccessRuns;
     std::optional<ProgramOrderGraphState> possibleGraphState;
     if (hasUnknownDFBLaunchDomain) {
       possibleAccessRuns.emplace(
-          collectAccessRuns(logicalDFBs, node, domainState, executionCounts,
+          collectAccessRuns(logicalDFBs, node, executionCounts,
                             /*includeUnknownDomains=*/true));
+      possibleBoundedExternalAccessRuns.emplace(
+          collectBoundedExternalAccessRuns(
+              logicalDFBs, validatedReconfigurations, node, executionCounts,
+              *possibleAccessRuns, /*includeUnknownDomains=*/true));
       ProgramOrderTopologyInputs possibleGraphTopologyInputs =
           collectProgramOrderTopologyInputs(
               logicalDFBs, validatedResets, validatedReconfigurations, node,
-              executionCounts, *possibleAccessRuns, structuralOrder,
+              executionCounts, *possibleBoundedExternalAccessRuns,
+              structuralOrder,
               /*includeUnknownDomains=*/true);
       bool graphTopologiesMatch =
           graphTopologyInputs == possibleGraphTopologyInputs;
@@ -5484,7 +5927,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     addDFBReconfigurationAccessEdges(
         logicalDFBs, validatedReconfigurations, node, graph, operationEvents,
         accessEvents, reconfigurationBoundaryEvents, executionCounts,
-        accessRuns, structuralOrder, /*includeUnknownDomains=*/false);
+        boundedExternalAccessRuns, structuralOrder,
+        /*includeUnknownDomains=*/false);
     addProtocolSynchronizationEdges(logicalDFBs, graph, operationEvents,
                                     accessEvents, executionCounts, accessRuns,
                                     node, domainState, structuralOrder,
@@ -5512,7 +5956,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
         if (lhsBeforeRhs == rhsBeforeLhs) {
           errorOperation = rhs->participantOperations.front();
           errorMessage =
-              "DFB reconfiguration boundary execution order is not proved";
+              "execution order between DFB reconfiguration operations is not "
+              "proved";
           return;
         }
       }
@@ -5547,7 +5992,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
           validatedResets, resetBoundaryEvents, validatedReconfigurations,
           reconfigurationBoundaryEvents, graph, structuralOrder,
           operationEvents, accessEvents, executionCounts, accessRuns,
-          domainState);
+          boundedExternalAccessRuns, domainState);
       logicalDFB.nodeLifetimes.back().completionProof = proof;
       nodeLifetimes[logicalIndex] = &logicalDFB.nodeLifetimes.back();
     }
@@ -5579,7 +6024,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
       continue;
     }
 
-    assert(possibleAccessRuns && possibleGraphState &&
+    assert(possibleAccessRuns && possibleBoundedExternalAccessRuns &&
+           possibleGraphState &&
            "unknown domains must construct a possible graph");
     HappensBeforeGraph &possibleGraph = possibleGraphState->graph;
     DenseMap<Operation *, EventPair> &possibleOperationEvents =
@@ -5600,7 +6046,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
         logicalDFBs, validatedReconfigurations, node, possibleGraph,
         possibleOperationEvents, possibleAccessEvents,
         possibleReconfigurationBoundaryEvents, executionCounts,
-        *possibleAccessRuns, structuralOrder, /*includeUnknownDomains=*/true);
+        *possibleBoundedExternalAccessRuns, structuralOrder,
+        /*includeUnknownDomains=*/true);
     addProtocolSynchronizationEdges(
         logicalDFBs, possibleGraph, possibleOperationEvents,
         possibleAccessEvents, executionCounts, *possibleAccessRuns, node,
@@ -5622,7 +6069,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
           validatedReconfigurations, possibleReconfigurationBoundaryEvents,
           possibleGraph, structuralOrder, possibleOperationEvents,
           possibleAccessEvents, executionCounts, *possibleAccessRuns,
-          domainState,
+          *possibleBoundedExternalAccessRuns, domainState,
           /*includeUnknownDomains=*/true);
       logicalDFB.possibleNodeLifetimes.back().completionProof = proof;
       possibleNodeLifetimes[logicalIndex] =
@@ -5707,7 +6154,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
         });
     errorOperation = reconfigurationEvidence.lookup(cyclicOrdinal);
     errorMessage =
-        "DFB reconfiguration boundaries execute in different orders across "
+        "DFB reconfiguration operations execute in different orders across "
         "launch nodes";
     return;
   }
