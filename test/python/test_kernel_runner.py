@@ -6505,10 +6505,11 @@ def test_static_dfb_descriptor_exact_search_finds_nonlocal_reordering(monkeypatc
     )
 
 
-# A non-fitting static descriptor set reports the best deterministic order.
-def test_static_dfb_descriptor_order_reports_no_fitting_candidate(monkeypatch):
+# Splitting descriptors removes allocation coupling between sparse core sets.
+def test_static_dfb_descriptors_split_over_budget_core(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 10240)
+    monkeypatch.setattr(kernel_runner, "_STATIC_DFB_PACKING_EXACT_PLAN_LIMIT", 2)
     full_grid = _FakeExplicitCoreRanges((0, 0), (2, 0))
     configs = [
         PhysicalDFBConfig(
@@ -6529,6 +6530,44 @@ def test_static_dfb_descriptor_order_reports_no_fitting_candidate(monkeypatch):
         )
     ]
 
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=configs,
+        core_ranges=full_grid,
+        kernel_specs=[_specialized_spec(full_grid, None)],
+    )
+
+    assert len(descriptors) == 5
+    cores_by_dfb = defaultdict(set)
+    for descriptor in descriptors:
+        cores_by_dfb[descriptor.format_descriptors[0].buffer_index].update(
+            _descriptor_cores(descriptor)
+        )
+    assert cores_by_dfb == {
+        0: {(0, 0), (1, 0)},
+        1: {(1, 0), (2, 0)},
+        2: {(0, 0), (2, 0)},
+    }
+
+
+# Splitting cannot satisfy a core whose own DFB storage exceeds its budget.
+def test_static_dfb_descriptor_order_reports_local_capacity_excess(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 10240)
+    core = _FakeExplicitCoreRanges((0, 0), (0, 0))
+    configs = [
+        PhysicalDFBConfig(
+            physical_index,
+            64,
+            "bfloat16",
+            1,
+            64,
+            (1, 32),
+            allocation_nodes=((0, 0),),
+        )
+        for physical_index in range(3)
+    ]
+
     with pytest.raises(
         ValueError,
         match=(
@@ -6539,8 +6578,8 @@ def test_static_dfb_descriptor_order_reports_no_fitting_candidate(monkeypatch):
         kernel_runner.build_cb_descriptors(
             tensors=[_FakeTensorWithoutDevice()],
             cb_configs=configs,
-            core_ranges=full_grid,
-            kernel_specs=[_specialized_spec(full_grid, None)],
+            core_ranges=core,
+            kernel_specs=[_specialized_spec(core, None)],
         )
 
 
