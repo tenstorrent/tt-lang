@@ -222,8 +222,8 @@ Completing one DFB transaction leaves its hardware read and write pointers at
 their advanced ring positions. A later logical lifecycle cannot assume that a
 reused physical index starts at its descriptor base, even when the earlier
 lifecycle has zero occupancy. This prevents the compiler from assigning the
-same physical index to otherwise disjoint lifecycles that require canonical
-interface state.
+same physical index to otherwise disjoint lifecycles that require zero
+occupancy with both ring pointers at the descriptor base.
 
 `DFBReset` identifies one worker-local synchronization boundary and its logical
 kernel participants. The built-in operations select either explicit DFBs or
@@ -477,17 +477,18 @@ intermediate DFBs, both halves are in the same compute kernel.
 v time
           Producer (write)          Consumer (read)
           ----------------          ---------------
-bind_cb   cb_reserve                cb_wait              L1 buffer held
+bind_cb   cb_reserve                cb_wait              storage allocated
           store                     attach_cb              |
           cb_push ------ slot ----> ... consumer ops       |
-          (slot returned) <-------- cb_pop               L1 buffer free
+          (slot returned) <-------- cb_pop               slot reusable
 ```
 
-`cb_reserve` claims a buffer slot for the packer; `cb_push` releases that slot
-to the unpacker. `cb_wait` blocks until the slot is available; `cb_pop`
-releases it back to the packer. `bind_cb` identifies the hardware binding
-shared by both sides. The launcher provisions either static scratch storage or
-the finalized tensor-backed storage for that binding.
+`cb_reserve` claims one or more free slots for the producer; `cb_push`
+publishes those slots to the consumer. `cb_wait` blocks until the requested
+published slots are available; `cb_pop` returns consumed slots to the producer.
+`bind_cb` identifies the hardware binding shared by both sides. The launcher
+provisions either static scratch storage or the finalized tensor-backed storage
+for that binding.
 
 The hardware-visible occupancy of one DFB is the difference between published
 producer slots and released consumer slots. `cb_push` increases that occupancy
@@ -557,12 +558,13 @@ acquisition and the absence of earlier producer-pointer access prove that the
 consumer read window and pack destination identify the same pages.
 
 After `cb_pop`, the producer may overwrite the released slot because its prior
-contents are no longer live. The DFB's backing storage remains statically
-allocated. Index reuse uses this release to prove that non-overlapping logical
-DFBs can use the same storage. Two logical DFBs may share a physical index only
-when their read- and write-pointer effects execute on the same hardware
-processors on every shared launched node. A happens-before relation proves zero
-occupancy but does not transfer ring-pointer state between processors.
+contents are no longer live. The DFB's backing storage remains allocated. Index
+reuse uses this release to prove that non-overlapping logical DFBs can use the
+same physical interface; backing-storage reuse is analyzed separately. Two
+logical DFBs may share a physical index only when their read- and write-pointer
+effects execute on the same hardware processors on every shared launched node.
+A happens-before relation proves zero occupancy but does not transfer
+ring-pointer state between processors.
 
 ## Single-producer Single-consumer Semantics
 
@@ -586,7 +588,7 @@ The rule is inherited from tt-metal: its CB protocol is not multi-writer safe on
 
 `cb_reserve_back` blocks until `pages_received - pages_acked < block_count`.
 `cb_wait_front` blocks until `pages_received > pages_acked`. The protocol is
-correct only when exactly one thread on a physical node writes each counter;
+correct only when at most one thread on a physical node writes each counter;
 the counters are not atomic with respect to multiple writers and carry no
 per-thread identity.
 
@@ -685,7 +687,10 @@ requires either a compiler-visible push or uncontracted external access that
 may contain one. Finalized DFB identity, physical-index, and launch-grid
 preconditions remain mandatory. PipeNet endpoint guards, transfer
 correspondence, and synchronization schedules also remain mandatory. The
-variable is unset by default, so all checks run unless the user sets it.
+program must enforce exactly one producer and one consumer on each active
+launch node and must ensure that the selected producer publishes the pages
+required by every wait. The variable is unset by default, so all checks run
+unless the user sets it.
 
 See `test/ttlang/Dialect/TTL/Transforms/verify_dfb_spsc_invalid.mlir` and
 `verify_dfb_spsc_missing_producer_invalid.mlir` and
@@ -1269,10 +1274,11 @@ For each acquire `A`, the inserted release `R_A` must satisfy:
 (1) is enforced explicitly by the pass. (2) is enforced *implicitly* when
 tile-SSA consumers appear in declaration order (`use(t1); use(t2); use(t3)`).
 Reordered consumes (`use(t2); use(t1)`) would violate FIFO monotonicity on
-their own, but in the current pipeline `TTLCoalesceDFBAcquires` runs
-immediately after `TTLInsertCBSync` and rewrites N consecutive same-DFB
-acquires into one multi-tile acquire plus per-block `tensor.extract_slice`
-views and a single coalesced release with `num_tiles = N*k`. Per-tile
+their own, but in the current pipeline `TTLCoalesceDFBAcquires` runs after
+`TTLInsertCBSync` and PipeNet transport formation and rewrites N consecutive
+same-DFB acquires into one multi-tile acquire plus per-block
+`tensor.extract_slice` views and a single coalesced release with
+`num_tiles = N*k`. Per-tile
 `src_idx` values fall out of `extract_slice` offsets, so consume order is
 decoupled from release order and (2) is preserved by construction.
 
@@ -1400,9 +1406,9 @@ the concurrent-liveness analysis.
 
 ## DFB Acquire Coalescing
 
-`TTLCoalesceDFBAcquires` runs immediately after `TTLInsertCBSync` and
-rewrites a maximal run of consecutive same-DFB acquires (and their matched
-releases) into a single multi-tile acquire plus per-block
+`TTLCoalesceDFBAcquires` runs after `TTLInsertCBSync` and PipeNet transport
+formation. It rewrites a maximal run of consecutive same-DFB acquires and their
+matched releases into a single multi-tile acquire plus per-block
 `tensor.extract_slice` views, with the matched releases collapsed into one
 release carrying `num_tiles = N*k`.
 
@@ -1477,7 +1483,7 @@ above. Then:
 
 So the only way a release on `c` could appear before the coalesced
 release is via a transitive use of some non-`G` value. Because rule 2
-forbids `G`'s outputs from being inputs to `O`, no fresh dataflow path is
+forbids `G`'s outputs from being inputs to `O`, no new dependency is
 created from `G` into a `c` release. Any release on `c` reachable from
 some unrelated value would have run in the original IR too, at exactly
 the same op-order position, so the coalesced version is no worse.
@@ -1534,8 +1540,8 @@ ttl-coalesce-dfb-acquires))'`) verifies this.
 
 - Non-rank-2 acquire result types are not coalesced. The existing
   `num_tiles` convention (matching `TTLSubblockComputeForDST`) produces
-  `tensor<1, num_tiles, elem>`; the pass conservatively bails on other
-  ranks rather than picking an axis to scale.
+  `tensor<1, num_tiles, elem>`; the pass rejects other ranks rather than
+  selecting an axis to scale.
 - Acquires already carrying `num_tiles` (set by
   `TTLSubblockComputeForDST`) are not extended.
 - Region-bearing ops between members terminate the group, so coalescing
@@ -1554,13 +1560,16 @@ index to logical DFBs whose lifetimes cannot overlap. The default analysis
 considers all kernel functions concurrently, including user-declared DFBs
 shared across data-movement and compute kernels.
 
-Ordinary reuse requires identical `CircularBufferType` values (shape, element
-type, and block count). An explicit allocation group may combine scratch DFBs
-with different block shapes or block counts when their element types and page
-formats are identical. The physical descriptor then uses the largest total
-capacity. Both mechanisms require each lifecycle to complete. Ordinary reuse
-also requires matching write- and read-pointer runs unless a synchronized reset
-or state-discarding reconfiguration establishes empty state with the pointers at
+Without synchronized reconfiguration, ordinary reuse requires identical
+`CircularBufferType` values (shape, element type, and block count). An explicit
+allocation group may combine scratch DFBs with different block shapes or block
+counts when their element types and page formats are identical. The physical
+descriptor then uses the largest total capacity. Synchronized reconfiguration
+may instead replace geometry, block count, and storage between disjoint epochs,
+but the element type and page format must remain identical. Every reuse
+mechanism requires each lifecycle to complete. Ordinary reuse also requires
+matching write- and read-pointer runs unless a synchronized reset or
+state-discarding reconfiguration establishes empty state with the pointers at
 the descriptor base. The matched sequences must remain boundary-safe when
 repeated from their terminal offsets. Allocation groups instead advance
 independent write and read cursors through each ordered member. A terminal
@@ -1572,9 +1581,10 @@ page format, sufficient storage, and legal ring-pointer progression.
 is a pointer comparison.
 
 Physical-index reuse is separate from backing-storage reuse. Each physical
-index retains one descriptor and therefore keeps its own element type, page
-size, capacity, and protocol state. After physical-index assignment, the pass
-colors those descriptors into byte-addressed `storage_index` allocations.
+index has one active descriptor in each configuration epoch and therefore one
+active element type, page size, capacity, and protocol state. After
+physical-index assignment, the pass colors those descriptors into byte-addressed
+`storage_index` allocations.
 Distinct descriptors, including descriptors with different element types and
 page sizes, may share one storage allocation when every use of one descriptor
 completes before any use of the other begins on every launch node where both
@@ -1602,8 +1612,8 @@ expanding the happens-before graph by the trip count. A DFB receives a repeated
 interval lifetime only when every active access executes once per iteration in
 the same local loop nest and completes before that iteration's reset. Protocol
 validation then normalizes each selected access to one representative interval.
-The reset supplies the terminal canonical pointer and occupancy state, and the
-lifecycle epoch records the number of represented intervals.
+The reset establishes zero occupancy with both ring pointers at the descriptor
+base, and the lifecycle epoch records the number of represented intervals.
 
 This representative interval does not create a dispatch-wide allocation
 boundary between unrelated DFB declarations. Accesses outside the matching loop
@@ -1820,8 +1830,11 @@ threshold.
 
 The cumulative proof requires every protocol effect to execute exactly once in
 one ordered external-call sequence. Producer and consumer cursor movement must
-have equal positive totals, each side must have one constant pointer owner, and
-every non-protocol DFB access must remain inside an acquire/release interval.
+have equal positive totals, and each side must have one constant pointer owner.
+Every uncontracted direct storage access must remain inside an acquire/release
+interval. An `inspect` access needs no queue ownership because its contract
+forbids changes to the DFB contents or queue position, but it remains part of
+the lifetime and must complete before the terminal event.
 The analysis relates each wait completion to the first push that publishes its
 required cumulative position. When a reservation exceeds currently available
 capacity, it also relates that reserve completion to the first pop that returns
@@ -1864,7 +1877,9 @@ this preserves reachability among all events queried by the lifetime proof. The
 analysis records:
 
 - `earliestEvents`: the minimal use-entry events under happens-before;
-- `terminalEvents`: the `cb_pop` completion event.
+- `terminalEvents`: the final consumer release for a balanced protocol, the
+  maximal access completion for an inspection-only lifecycle, or the completion
+  of the state-discarding boundary that ends the lifecycle.
 
 `earliestEvents` can contain operations from several kernels. It is an
 antichain: no recorded event strictly precedes another. Requiring the terminal
@@ -1997,19 +2012,21 @@ analyzeConcurrentLifetimes(module, logicalIdentities):
 
     compute transitive graph reachability
 
-    for each logical DFB with a matched lifecycle on the node:
-      uses = project every active runtime use to a top-level operation
-      if every use completion precedes the final pop completion:
-        DFB.nodeLifetime.earliestEvents = minimal entry events in uses
-        DFB.nodeLifetime.terminalEvents = {final pop completion}
-        DFB.nodeLifetime.completionProof = proven
-
     partition DFB accesses at ordered reset and reconfiguration boundaries
     at a state-discarding boundary:
       permit named opaque accesses to end
       permit producer-only protocols whose maximum occupancy fits the DFB
     across a state-preserving reconfiguration:
       retain incomplete protocol state and the current physical descriptor
+
+    for each resulting DFB lifecycle on the node:
+      prove a balanced protocol, an inspection-only access sequence, or a
+          valid state-discarded producer or named opaque access
+      uses = project every active runtime use to a top-level operation
+      if every use completes before the lifecycle's terminal completion:
+        DFB.nodeLifetime.earliestEvents = minimal entry events in uses
+        DFB.nodeLifetime.terminalEvents = terminal completion events
+        DFB.nodeLifetime.completionProof = proven
 
     build a second graph with every unknown access domain treated as possible
     prove conditionally bounded lifetimes only for one complete conditional
@@ -2174,8 +2191,7 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
     add descriptor mismatch unless A.type == B.type, or both types have an
         identical page format and either:
           A and B belong to one scratch allocation group without opaque access
-          A and B occupy disjoint synchronized configuration epochs without
-              opaque access
+          A and B occupy disjoint synchronized configuration epochs
     add unknown-domain conflict unless both unknown domains are conditionally
       bounded
     for each node where A and B both execute:
@@ -2195,16 +2211,17 @@ buildPhysicalAllocationPlan(module, logicalIdentities, perNodeLifetimes):
         add concurrent-lifetime conflict unless A precedes B or B precedes A
 
   for each typed allocation group:
-    validate every member pair with descriptor equality disabled unless either
-        member has opaque external access
+    validate every member pair using exact descriptor equality, a scratch
+        capacity envelope, or disjoint synchronized configuration epochs
     reject incompatible element types or tensor-backed capacity envelopes
     reject any storage, static-configuration, protocol, owner, domain, or
       lifetime conflict
     compute the largest scratch byte capacity required by a member
     for each launch node:
       order every active member epoch by its proven event relation
-      require each adjacent handoff to preserve pointer owners or follow a
-          canonical reset
+      require each adjacent handoff to preserve pointer owners unless the
+          preceding epoch ends with zero occupancy and both pointers at the
+          descriptor base
       advance read and write cursors through every epoch in that order
       reject unequal handoff offsets or a transaction that crosses the envelope
 
@@ -2315,7 +2332,7 @@ reach the boundary, and the boundary establishes empty interface state. The
 owned-use checks prove that neither the producer nor the consumer accesses a
 slot after its corresponding closing operation. Every runtime use is reachable
 from at least one event in the earliest-event antichain and completes no later
-than the terminal pop or state-discarding boundary.
+than the lifecycle's terminal completion event.
 
 Suppose A and B receive the same physical index, with A ordered before B.
 The conflict predicate proves:
@@ -2329,7 +2346,7 @@ The conflict predicate proves:
 3. Within one configuration epoch, their write effects have the same hardware
    pointer owner and their read effects have the same hardware pointer owner on
    every shared launched node.
-4. A's terminal pop completes before every earliest use of B, or their complete
+4. A's terminal completion precedes every earliest use of B, or their complete
    lifecycles occupy different configuration epochs separated by a synchronized
    boundary. Disjoint launch-node domains need no temporal relation.
 
@@ -2562,17 +2579,17 @@ with releases before finalization.
   pointer state between NOC0, NOC1, Pack, and Unpack. Reuse across different
   hardware pointer owners requires an explicit state transfer or reset.
 
-- **Physical-descriptor compatibility.** Automatic physical-index reuse still
-  requires exact `CircularBufferType` equality. Typed allocation groups support
-  a scratch-only capacity envelope across different block shapes and block
-  counts with one exact page format. Different element types, tile formats,
-  tensor-backed capacities, or statically incompatible compute configurations
-  cannot share one physical descriptor. Distinct physical descriptors may
-  share byte-addressed backing storage across different formats when the
-  compiler proves their storage lifetimes are disjoint. Synchronized
-  reconfiguration may change descriptor geometry, block count, and storage in
-  disjoint configuration epochs while retaining one page format per physical
-  descriptor.
+- **Physical-descriptor compatibility.** Within one configuration epoch,
+  automatic physical-index reuse requires exact `CircularBufferType` equality.
+  Typed allocation groups support a scratch-only capacity envelope across
+  different block shapes and block counts with one exact page format. Different
+  element types, tile formats, tensor-backed capacities, or statically
+  incompatible compute configurations cannot share one physical descriptor.
+  Distinct physical descriptors may share byte-addressed backing storage across
+  different formats when the compiler proves their storage lifetimes are
+  disjoint. Synchronized reconfiguration may change descriptor geometry, block
+  count, and storage in disjoint configuration epochs while retaining one page
+  format per physical descriptor.
 
 - **Pressure above the unspilled limits.** Deterministic first-fit is accepted
   when it fits because a smaller assignment would not change acceptance. One
