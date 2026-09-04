@@ -1,4 +1,4 @@
-// Verifies that a conditional external DFB access is bounded by repeated
+// Verifies that a conditional external producer is bounded by repeated
 // state-discarding reconfiguration boundaries.
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true})' | FileCheck %s --check-prefix=IR
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true})' -debug-only=ttl-finalize-dfb-indices -o /dev/null 2>&1 | FileCheck %s --check-prefix=DEBUG
@@ -14,8 +14,7 @@
 // IR-NOT: dfb_index = 1 : i32
 
 // DEBUG: DFB logical_id=0 bounded=1
-// DEBUG-SAME: opaque_external_access=1
-// DEBUG: epochs=[{executions=3,accesses=[0]
+// DEBUG: epochs=[{executions=3,accesses=[0, 1]
 // DEBUG-SAME: terminal_reconfiguration=0
 // DEBUG: DFB logical_id=1 bounded=1
 // DEBUG: Total DFB count: 1
@@ -38,8 +37,8 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
       scf.if %condition {
         ttl.opaque_call "conditional" dfb_dependencies(
             %conditional : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
-            dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>,
-                         #ttl.dfb_protocol_effect<pop, 0, 1>]
+            dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>,
+                         #ttl.dfb_protocol_effect<push, 0, 1>]
             () {header = "access.hpp"} : () -> ()
       }
       ttl.dfb_reconfiguration #entry
@@ -99,7 +98,6 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 // IR-SAME: dfb_index = 1 : i32
 
 // DEBUG: DFB logical_id=0 bounded=0
-// DEBUG-SAME: opaque_external_access=1
 // DEBUG: DFB logical_id=1 bounded=1
 // DEBUG: Total DFB count: 2
 
@@ -121,8 +119,8 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
       scf.if %condition {
         ttl.opaque_call "conditional" dfb_dependencies(
             %conditional : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
-            dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>,
-                         #ttl.dfb_protocol_effect<pop, 0, 1>]
+            dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>,
+                         #ttl.dfb_protocol_effect<push, 0, 1>]
             () {header = "access.hpp"} : () -> ()
       }
       ttl.dfb_reconfiguration #entry

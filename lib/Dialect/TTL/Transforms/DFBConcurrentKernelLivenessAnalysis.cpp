@@ -629,10 +629,35 @@ static bool structurallyExecutesAtMostOnce(Operation *operation) {
   return runUpperBound && runUpperBound->maximumExecutionCount == 1;
 }
 
-// External-call occurrences share the call's control structure for graph
-// placement. Protocol validation still requires their exact queue-effect runs.
+// External-call occurrences may use structural bounds only for event ordering
+// and producer capacity before state discard.
 static bool isExternalCallAccess(const DFBAccessOccurrence &access) {
   return isa<OpaqueCallOp>(access.operation);
+}
+
+// A producer-only upper bound is sufficient before state discard: it proves
+// that reserve cannot exceed capacity, and no consumer wait can block.
+static bool
+isExternalProducerOnlyProtocol(ArrayRef<const DFBAccessOccurrence *> accesses) {
+  bool hasReserve = false;
+  bool hasPush = false;
+  for (const DFBAccessOccurrence *access : accesses) {
+    if (!isExternalCallAccess(*access) || !access->getProtocolEffect()) {
+      return false;
+    }
+    switch (*access->getProtocolEffect()) {
+    case DFBProtocolEffectKind::Reserve:
+      hasReserve = true;
+      break;
+    case DFBProtocolEffectKind::Push:
+      hasPush = true;
+      break;
+    case DFBProtocolEffectKind::Wait:
+    case DFBProtocolEffectKind::Pop:
+      return false;
+    }
+  }
+  return hasReserve && hasPush;
 }
 
 struct BoundaryParticipantIteration {
@@ -675,16 +700,16 @@ static bool hasFixedAccessCountForReconfiguration(
                             *participant->domain, accessRuns);
 }
 
-// Structural runs position conditional external calls in the event graph but
-// do not establish their queue protocol effects.
-static bool hasPartitionableProgramOrderRun(
+// This predicate establishes per-iteration event placement; protocol
+// completion requires separate effect-specific checks.
+static bool hasPartitionableExternalAccessBound(
     const DFBAccessOccurrence &access,
     const ValidatedDFBReconfiguration &reconfiguration,
-    const AccessRuns &programOrderAccessRuns) {
-  auto runIt = programOrderAccessRuns.find(&access);
+    const AccessRuns &boundedExternalAccessRuns) {
+  auto runIt = boundedExternalAccessRuns.find(&access);
   std::optional<BoundaryParticipantIteration> participant =
       getBoundaryParticipantIteration(reconfiguration, access.operation);
-  return runIt != programOrderAccessRuns.end() && participant &&
+  return runIt != boundedExternalAccessRuns.end() && participant &&
          canPartitionRunPerReconfigurationIteration(
              runIt->second.executionCount, runIt->second.iterationDomain,
              reconfiguration.executionCount, *participant->domain);
@@ -1647,19 +1672,20 @@ static AccessRuns collectAccessRuns(
 }
 
 // Conditional external calls may lack exact execution counts. Their static
-// loop bounds provide event ordering only; protocol proof retains exact runs.
-static AccessRuns collectProgramOrderAccessRuns(
+// loop bounds support event ordering and producer-capacity proof before state
+// discard; other protocol proofs retain exact runs.
+static AccessRuns collectBoundedExternalAccessRuns(
     ArrayRef<DFBLogicalLifecycle> logicalDFBs,
     ArrayRef<ValidatedDFBReconfiguration> reconfigurations,
     LaunchNodeCoord node, const AccessExecutionCounts &executionCounts,
     const AccessRuns &exactAccessRuns, bool includeUnknownDomains) {
-  AccessRuns programOrderRuns = exactAccessRuns;
+  AccessRuns boundedRuns = exactAccessRuns;
   if (reconfigurations.empty() ||
       reconfigurations.front().executionCount <= 1 ||
       !llvm::all_of(reconfigurations, [](const auto &reconfiguration) {
         return reconfiguration.boundary.getDiscardDfbState();
       })) {
-    return programOrderRuns;
+    return boundedRuns;
   }
 
   for (const DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
@@ -1703,12 +1729,12 @@ static AccessRuns collectProgramOrderAccessRuns(
       if (!matchesEveryBoundary) {
         continue;
       }
-      programOrderRuns[&access] =
+      boundedRuns[&access] =
           AccessRun{&access, runUpperBound->maximumExecutionCount,
                     std::move(runUpperBound->iterationDomain), true};
     }
   }
-  return programOrderRuns;
+  return boundedRuns;
 }
 
 struct ProgramOrderTopologyAccess {
@@ -2620,7 +2646,7 @@ static void addDFBReconfigurationAccessEdges(
     const DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents,
     const ReconfigurationBoundaryEvents &reconfigurationBoundaryEvents,
     const AccessExecutionCounts &executionCounts,
-    const AccessRuns &programOrderAccessRuns,
+    const AccessRuns &boundedExternalAccessRuns,
     const StructuralOperationOrder &structuralOrder,
     bool includeUnknownDomains) {
   for (const ValidatedDFBReconfiguration &reconfiguration : reconfigurations) {
@@ -2646,12 +2672,12 @@ static void addDFBReconfigurationAccessEdges(
         if (!localParticipant) {
           continue;
         }
-        // Graph-only upper bounds are valid here because lifetime proof uses
-        // the separate exact-run map.
+        // External access bounds establish graph position without asserting
+        // queue protocol completion.
         bool canOrderEachIteration =
             reconfiguration.executionCount > 1 &&
-            hasPartitionableProgramOrderRun(access, reconfiguration,
-                                            programOrderAccessRuns);
+            hasPartitionableExternalAccessBound(access, reconfiguration,
+                                                boundedExternalAccessRuns);
         if (canOrderEachIteration) {
           if (structuralOrder.precedes(access.operation,
                                        localParticipant->operation)) {
@@ -2712,11 +2738,15 @@ private:
   std::optional<Entry> entry;
 };
 
-// Conditional runs match only under equivalent structured conditions.
+// Effects on one operation share its execution condition; effects on separate
+// operations require equivalent structured conditions.
 static bool
 proveEquivalentConditionalRuns(const AccessRun &lhs, const AccessRun &rhs,
                                LaunchNodeCoord node,
                                const LaunchNodeDomainState &domainState) {
+  if (lhs.access->operation == rhs.access->operation) {
+    return true;
+  }
   if (!lhs.conditionalExecution && !rhs.conditionalExecution) {
     return true;
   }
@@ -4463,7 +4493,7 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
     const DenseMap<Operation *, EventPair> &operationEvents,
     const DenseMap<const DFBAccessOccurrence *, AccessEventSpan> &accessEvents,
     const AccessExecutionCounts &executionCounts, const AccessRuns &accessRuns,
-    const AccessRuns &programOrderAccessRuns,
+    const AccessRuns &boundedExternalAccessRuns,
     const LaunchNodeDomainState &domainState,
     bool includeUnknownDomains = false) {
   if (std::optional<DFBLifecycleCompletionProof> repeatedResetProof =
@@ -4514,8 +4544,8 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
           access, reconfigurations.front(), accessRuns);
       bool discardedExternalRunMatchesForOrdering =
           everyReconfigurationDiscardsState && isExternalCallAccess(access) &&
-          hasPartitionableProgramOrderRun(access, reconfigurations.front(),
-                                          programOrderAccessRuns);
+          hasPartitionableExternalAccessBound(access, reconfigurations.front(),
+                                              boundedExternalAccessRuns);
       if (!exactRunMatches && !discardedExternalRunMatchesForOrdering) {
         DFBPerNodeLifetime &lifetime = lifetimes.emplace_back();
         lifetime.node = node;
@@ -4686,13 +4716,18 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
                                              : nullptr;
     bool discardsDFBState =
         terminalBoundary && terminalBoundary->discardsDFBState();
+    bool useExternalProducerBounds =
+        terminalBoundary && terminalBoundary->reconfiguration &&
+        discardsDFBState && isExternalProducerOnlyProtocol(lifecycleAccesses);
+    const AccessRuns &protocolAccessRuns =
+        useExternalProducerBounds ? boundedExternalAccessRuns : accessRuns;
     SmallVector<DFBPerNodeLifetime, 0> epochLifetimes;
     SmallVector<DFBPerNodeLifetimeDiagnostics, 0> epochDiagnostics;
     DFBLifecycleCompletionProof proof = computeProtocolLifetime(
         logicalDFB, node, epochLifetimes,
         diagnostics ? &epochDiagnostics : nullptr, graph, structuralOrder,
-        operationEvents, accessEvents, executionCounts, accessRuns, domainState,
-        includeUnknownDomains, lifecycleAccesses,
+        operationEvents, accessEvents, executionCounts, protocolAccessRuns,
+        domainState, includeUnknownDomains, lifecycleAccesses,
         /*hasCanonicalResetTerminator=*/discardsDFBState,
         /*selectedExecutionDivisor=*/repeatedReconfigurationCount);
     assert(epochLifetimes.size() == 1 &&
@@ -5539,30 +5574,32 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     AccessRuns accessRuns =
         collectAccessRuns(logicalDFBs, node, executionCounts,
                           /*includeUnknownDomains=*/false);
-    AccessRuns programOrderAccessRuns = collectProgramOrderAccessRuns(
+    AccessRuns boundedExternalAccessRuns = collectBoundedExternalAccessRuns(
         logicalDFBs, validatedReconfigurations, node, executionCounts,
         accessRuns, /*includeUnknownDomains=*/false);
     ProgramOrderTopologyInputs graphTopologyInputs =
         collectProgramOrderTopologyInputs(
             logicalDFBs, validatedResets, validatedReconfigurations, node,
-            executionCounts, programOrderAccessRuns, structuralOrder,
+            executionCounts, boundedExternalAccessRuns, structuralOrder,
             /*includeUnknownDomains=*/false);
     ProgramOrderGraphState initialGraphState = graphTopologyCache.getOrBuild(
         module, graphTopologyInputs, structuralOrder);
     std::optional<AccessRuns> possibleAccessRuns;
-    std::optional<AccessRuns> possibleProgramOrderAccessRuns;
+    std::optional<AccessRuns> possibleBoundedExternalAccessRuns;
     std::optional<ProgramOrderGraphState> possibleGraphState;
     if (hasUnknownDFBLaunchDomain) {
       possibleAccessRuns.emplace(
           collectAccessRuns(logicalDFBs, node, executionCounts,
                             /*includeUnknownDomains=*/true));
-      possibleProgramOrderAccessRuns.emplace(collectProgramOrderAccessRuns(
-          logicalDFBs, validatedReconfigurations, node, executionCounts,
-          *possibleAccessRuns, /*includeUnknownDomains=*/true));
+      possibleBoundedExternalAccessRuns.emplace(
+          collectBoundedExternalAccessRuns(
+              logicalDFBs, validatedReconfigurations, node, executionCounts,
+              *possibleAccessRuns, /*includeUnknownDomains=*/true));
       ProgramOrderTopologyInputs possibleGraphTopologyInputs =
           collectProgramOrderTopologyInputs(
               logicalDFBs, validatedResets, validatedReconfigurations, node,
-              executionCounts, *possibleProgramOrderAccessRuns, structuralOrder,
+              executionCounts, *possibleBoundedExternalAccessRuns,
+              structuralOrder,
               /*includeUnknownDomains=*/true);
       bool graphTopologiesMatch =
           graphTopologyInputs == possibleGraphTopologyInputs;
@@ -5602,7 +5639,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     addDFBReconfigurationAccessEdges(
         logicalDFBs, validatedReconfigurations, node, graph, operationEvents,
         accessEvents, reconfigurationBoundaryEvents, executionCounts,
-        programOrderAccessRuns, structuralOrder,
+        boundedExternalAccessRuns, structuralOrder,
         /*includeUnknownDomains=*/false);
     addProtocolSynchronizationEdges(logicalDFBs, graph, operationEvents,
                                     accessEvents, executionCounts, accessRuns,
@@ -5666,7 +5703,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
           validatedResets, resetBoundaryEvents, validatedReconfigurations,
           reconfigurationBoundaryEvents, graph, structuralOrder,
           operationEvents, accessEvents, executionCounts, accessRuns,
-          programOrderAccessRuns, domainState);
+          boundedExternalAccessRuns, domainState);
       logicalDFB.nodeLifetimes.back().completionProof = proof;
       nodeLifetimes[logicalIndex] = &logicalDFB.nodeLifetimes.back();
     }
@@ -5698,7 +5735,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
       continue;
     }
 
-    assert(possibleAccessRuns && possibleProgramOrderAccessRuns &&
+    assert(possibleAccessRuns && possibleBoundedExternalAccessRuns &&
            possibleGraphState &&
            "unknown domains must construct a possible graph");
     HappensBeforeGraph &possibleGraph = possibleGraphState->graph;
@@ -5720,7 +5757,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
         logicalDFBs, validatedReconfigurations, node, possibleGraph,
         possibleOperationEvents, possibleAccessEvents,
         possibleReconfigurationBoundaryEvents, executionCounts,
-        *possibleProgramOrderAccessRuns, structuralOrder,
+        *possibleBoundedExternalAccessRuns, structuralOrder,
         /*includeUnknownDomains=*/true);
     addProtocolSynchronizationEdges(
         logicalDFBs, possibleGraph, possibleOperationEvents,
@@ -5743,7 +5780,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
           validatedReconfigurations, possibleReconfigurationBoundaryEvents,
           possibleGraph, structuralOrder, possibleOperationEvents,
           possibleAccessEvents, executionCounts, *possibleAccessRuns,
-          *possibleProgramOrderAccessRuns, domainState,
+          *possibleBoundedExternalAccessRuns, domainState,
           /*includeUnknownDomains=*/true);
       logicalDFB.possibleNodeLifetimes.back().completionProof = proof;
       possibleNodeLifetimes[logicalIndex] =
