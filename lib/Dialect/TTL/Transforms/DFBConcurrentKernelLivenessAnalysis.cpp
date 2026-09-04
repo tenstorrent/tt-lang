@@ -692,6 +692,12 @@ static bool structurallyExecutesAtMostOnce(Operation *operation) {
   return iterationDomain && iterationDomain->maximumExecutionCount == 1;
 }
 
+// External-call occurrences share the call's control structure for graph
+// placement. Protocol validation still requires their exact queue-effect runs.
+static bool isExternalCallAccess(const DFBAccessOccurrence &access) {
+  return isa<OpaqueCallOp>(access.operation);
+}
+
 // Loop identities are function-local, so compare an access only with the
 // boundary participant for the same logical kernel.
 struct BoundaryParticipantIteration {
@@ -1703,10 +1709,10 @@ static AccessRuns collectAccessRuns(
   return runs;
 }
 
-// Adds source-level execution envelopes only for opaque external accesses
-// bounded by repeated reconfigurations that discard prior DFB state. These
-// runs establish event placement; protocol validation continues to use the
-// exact runs returned by collectAccessRuns.
+// Adds maximum counts and loop domains for accesses performed by external
+// calls bounded by repeated state-discarding reconfigurations. These runs
+// establish event placement; protocol validation uses the exact runs from
+// collectAccessRuns.
 static AccessRuns collectProgramOrderAccessRuns(
     ArrayRef<DFBLogicalLifecycle> logicalDFBs,
     ArrayRef<ValidatedDFBReconfiguration> reconfigurations,
@@ -1723,7 +1729,7 @@ static AccessRuns collectProgramOrderAccessRuns(
 
   for (const DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
     for (const DFBAccessOccurrence &access : logicalDFB.accesses) {
-      if (!access.opaqueExternalAccess ||
+      if (!isExternalCallAccess(access) ||
           !mayAccessLaunchNode(access, node, executionCounts,
                                includeUnknownDomains)) {
         continue;
@@ -4573,11 +4579,11 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
       }
       bool exactRunMatches = hasFixedAccessCountForReconfiguration(
           access, reconfigurations.front(), accessRuns);
-      bool discardedOpaqueRunMatches =
-          everyReconfigurationDiscardsState && access.opaqueExternalAccess &&
+      bool discardedExternalRunMatchesForOrdering =
+          everyReconfigurationDiscardsState && isExternalCallAccess(access) &&
           hasPartitionableProgramOrderRun(
               access, reconfigurations.front(), programOrderAccessRuns);
-      if (!exactRunMatches && !discardedOpaqueRunMatches) {
+      if (!exactRunMatches && !discardedExternalRunMatchesForOrdering) {
         DFBPerNodeLifetime &lifetime = lifetimes.emplace_back();
         lifetime.node = node;
         if (lifetimeDiagnostics) {

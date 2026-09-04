@@ -56,6 +56,10 @@ def _make_repeated_discarded_opaque_state_operation(data_format, iterations, gri
                         DFB_RECONFIGURATION_TEST_HEADER,
                         "publish_unread_tile",
                         template_args=[ttl.dfb_descriptor(unread_dfb)],
+                        dfb_effects=[
+                            ttl.DFBEffect.reserve(unread_dfb, tiles=1),
+                            ttl.DFBEffect.push(unread_dfb, tiles=1),
+                        ],
                     )
                 ttl.reconfigure_dfbs(first_boundary)
                 with copied_dfb.reserve() as destination:

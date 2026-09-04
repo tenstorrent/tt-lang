@@ -38,6 +38,8 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
       scf.if %condition {
         ttl.opaque_call "conditional" dfb_dependencies(
             %conditional : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+            dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>,
+                         #ttl.dfb_protocol_effect<pop, 0, 1>]
             () {header = "access.hpp"} : () -> ()
       }
       ttl.dfb_reconfiguration #entry
@@ -89,7 +91,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 #compute = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "operation">
 #reader = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "operation">
 #writer = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "operation">
-#entry = #ttl.dfb_reconfiguration<0, participants[#compute, #reader, #writer]>
+#entry = #ttl.dfb_reconfiguration<0, participants[#compute, #reader, #writer], discard_dfb_state = true>
 #exit = #ttl.dfb_reconfiguration<1, participants[#compute, #reader, #writer]>
 
 // IR: ttl.dfb_allocations = [
@@ -119,6 +121,8 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
       scf.if %condition {
         ttl.opaque_call "conditional" dfb_dependencies(
             %conditional : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+            dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>,
+                         #ttl.dfb_protocol_effect<pop, 0, 1>]
             () {header = "access.hpp"} : () -> ()
       }
       ttl.dfb_reconfiguration #entry
