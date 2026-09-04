@@ -54,7 +54,7 @@
 | 0.18 | 06/16/2026 | Add `ttl.raw_element_read` and `ttl.raw_element_write` |
 | 0.19 | 06/15/2026 | Unified-body `ttl.operation` with thread assignment and composition; add multi-kernel operation with explicit kernels |
 | 0.20 | 06/23/2026 | Add `ttl.exp` hardware flags and scaled exponential canonicalization |
-| 0.21 | 09/03/2026 | Add `ttl.read_index`, `ttl.wait_any`, dataflow-buffer allocation groups, waited-block replacement, external-call inspection contracts, logical device domains, and multidevice PipeNets |
+| 0.21 | 09/03/2026 | Add `ttl.read_index`, `ttl.wait_any`, dataflow-buffer allocation groups, waited-block replacement, external-call inspection contracts, logical device domains, multidevice PipeNets, and per-node PipeNet destination counts |
 
 
 ## Introduction
@@ -914,6 +914,7 @@ The active predicates are only required for code that includes pipe-coupled comp
 | `ttl.PipeNet[DstT].if_dst(self, cond_fun: Callable[[ttl.DstPipeIdentity], None])` | Call condition function for each pipe in the pipe net that is a destination. |
 | `ttl.PipeNet[DstT].is_src(self) -> bool` | Predicate: `True` on the current node if and only if it is a source coordinate of any pipe in the pipe net. |
 | `ttl.PipeNet[DstT].is_dst(self) -> bool` | Predicate: `True` on the current node if and only if it is in the destination range of any pipe in the pipe net. |
+| `ttl.PipeNet[DstT].destination_count(self) -> int` | Number of pipe records whose destination contains the current node; equal to the number of `if_dst` callback executions on that node. |
 | `ttl.PipeNet[DstT].is_active(self) -> bool` | Predicate: `True` on the current node if and only if `is_src()` or `is_dst()` is `True`. |
 | `@property ttl.SrcPipeIdentity[DstT].dst(self) -> DstT` | Get destination node or node range for pipe in `if_src`. |
 | `@property ttl.SrcPipeIdentity.destination_device_index(self) -> int` | Get the destination device's row-major domain index for a graph-based pipe net. |
