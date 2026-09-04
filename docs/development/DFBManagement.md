@@ -283,12 +283,16 @@ outstanding commands. Runtime lowering is currently restricted to Blackhole.
 ## Synchronized reconfiguration epochs
 
 A `DFBReconfiguration` declares one compute kernel and two data-movement
-kernels that execute one worker-local configuration boundary. Every boundary
-site executes zero or one dynamic instance per dispatch and launch node. All
-sites in one module declare the same participant set, and every active
-participant executes the same boundary instances in the same dynamic order.
-Structured conditional execution is supported only when the participant
-conditions are equivalent. Runtime execution is restricted to Blackhole.
+kernels that must execute the same worker-local descriptor update. Each
+participant calls `ttl.reconfigure_dfbs` for that declaration. A call may
+execute at most once per dispatch and launch node. Repeated execution is
+supported inside nested sequential loops with compile-time-known trip counts
+when each iteration contains at least two ordered reconfiguration calls. The
+corresponding calls in every participant must use equivalent loop nests and
+appear in the same order. All declarations in one module use the same
+participant set. Conditional execution is supported only for non-repeated
+calls whose participant conditions are equivalent. Runtime execution is
+restricted to Blackhole.
 
 The declaration captures the participating logical kernels. Each participant
 calls `ttl.reconfigure_dfbs` at the corresponding point between two DFB
@@ -297,7 +301,7 @@ lifecycles:
 ```python
 reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
 writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
-boundary = ttl.DFBReconfiguration(
+install_second = ttl.DFBReconfiguration(
     participants=(ttl.KernelKind.COMPUTE, reader_kernel, writer_kernel)
 )
 
@@ -314,7 +318,7 @@ def two_stage_copy(first_input, first_output, second_input, second_output):
         with first_source.wait() as source:
             with first_result.reserve() as result:
                 result.store(source)
-        ttl.reconfigure_dfbs(boundary)
+        ttl.reconfigure_dfbs(install_second)
         with second_source.wait() as source:
             with second_result.reserve() as result:
                 result.store(source)
@@ -323,7 +327,7 @@ def two_stage_copy(first_input, first_output, second_input, second_output):
     def read():
         with first_source.reserve() as destination:
             ttl.copy(first_input[0, 0], destination).wait()
-        ttl.reconfigure_dfbs(boundary)
+        ttl.reconfigure_dfbs(install_second)
         with second_source.reserve() as destination:
             ttl.copy(second_input[0:1, 0:2], destination).wait()
 
@@ -331,54 +335,61 @@ def two_stage_copy(first_input, first_output, second_input, second_output):
     def write():
         with first_result.wait() as source:
             ttl.copy(source, first_output[0, 0]).wait()
-        ttl.reconfigure_dfbs(boundary)
+        ttl.reconfigure_dfbs(install_second)
         with second_result.wait() as source:
             ttl.copy(source, second_output[0:1, 0:2]).wait()
 ```
 
-The first and second DFBs may receive the same physical indices because their
-lifecycles are ordered by the boundary. The compiler derives and installs the
-second descriptors; the declaration does not supply descriptor values.
+The first and second DFBs may receive the same physical indices because the
+compiler proves that every first-stage DFB use completes before the
+reconfiguration call and every second-stage use begins afterward. The compiler
+derives and installs the second descriptors; the declaration does not supply
+descriptor values.
 
 Concurrent-kernel liveness builds a happens-before graph for each launch node
-and orders reconfiguration boundaries independently of their numeric ordinals.
-An ordinal identifies a boundary; it does not define execution order. Every
-boundary pair that co-occurs on a launch node must have a strict local order,
-and the union of those local orders must be acyclic. Disjoint boundary domains
-need not contain the same boundary sequence. Unknown execution or ordering
-remains conservative.
+and orders the `ttl.reconfigure_dfbs` calls independently of their numeric
+ordinals. An ordinal identifies the descriptor update; it does not define
+execution order. Every pair of calls that executes on the same launch node must
+have a strict local order, and the union of those local orders must be acyclic.
+Disjoint launch-node domains need not contain the same sequence of calls.
+Unknown execution or ordering remains conservative.
 
-A complete reserve/push/wait/pop lifecycle can end before a boundary and a new
-lifecycle can begin afterward. An incomplete transaction, unread payload, or
-other live protocol state may cross only when the logical DFB retains the same
-physical index, storage, and interface configuration. Such a lifecycle remains
-active in every crossed allocation epoch. A lifecycle beginning under a
-conditional boundary must use the same condition so an inactive boundary
-cannot leave a stale descriptor for unconditional following work.
+A complete reserve/push/wait/pop lifecycle can end before a reconfiguration
+call and a new lifecycle can begin afterward. An incomplete transaction,
+unread payload, or other live protocol state may cross the call only when the
+logical DFB retains the same physical index, storage, and interface
+configuration. Such a lifecycle remains active in every crossed allocation
+epoch. A lifecycle that begins after a conditional reconfiguration call must
+use the same condition so the following work cannot use a descriptor that was
+not installed.
 
 The allocation conflict graph permits two lifecycle epochs to share a physical
 index only when their per-node active epochs are disjoint and their static
 element type and tile descriptor are compatible. Reconfiguration can change
 outer DFB geometry, block count, and storage. Tensor-backed ranges are checked
 against the complete set of descriptors installed initially and after each
-boundary, in proven execution order.
+reconfiguration call, in proven execution order.
 
-Finalization emits the initial descriptor for every physical index and one
-entry configuration for every lifecycle that begins at a boundary. Live
-continuations have no entry update, so their FIFO pointers, occupancy, and
-payload are preserved. The runtime plan records boundary order explicitly and
-does not infer it by sorting ordinals.
+Finalization emits the initial descriptor for every physical index and the
+descriptor required after each reconfiguration call. When a logical DFB remains
+live across a call, finalization emits no update for its descriptor, preserving
+its FIFO pointers, occupancy, and payload. The allocator keeps that physical
+index assigned to the live DFB, so the call cannot install a different
+descriptor into the same interface. In a repeated sequence, the final call
+restores the initial descriptors required by the next loop iteration. The
+runtime plan records call order explicitly and does not infer it by sorting
+ordinals.
 
-Each boundary owns a per-core configuration tensor containing 64 four-word DFB
-interface records, two update masks, synchronization state, and padding. The
-runtime supplies its address to every participating kernel. DM1 coordinates
-DM0, UNPACK, and PACK through separate shared-L1 state words. UNPACK and PACK
-publish entry only after a hardware completion marker proves their prior engine
-work retired. MATH does not access DFB interfaces and does not wait in shared
-L1; normal compute dependencies order it against UNPACK and PACK. The exit
-handshake prevents any interface owner from beginning following DFB work until
-all masked updates complete. Independent math and SFPU work may overlap the
-boundary.
+Each `DFBReconfiguration` owns a per-core configuration tensor containing 64
+four-word DFB interface records, two update masks, synchronization state, and
+padding. The runtime supplies its address to every participating kernel. DM1
+coordinates DM0, UNPACK, and PACK through separate shared-L1 state words.
+UNPACK and PACK publish entry only after a hardware completion marker proves
+their prior engine work retired. MATH does not access DFB interfaces and does
+not wait in shared L1; normal compute dependencies order it against UNPACK and
+PACK. The exit handshake prevents any interface owner from beginning following
+DFB work until all masked updates complete. Independent math and SFPU work may
+overlap the descriptor update.
 
 Caller-defined per-core runtime arguments precede the compiler-owned
 configuration addresses. The compiler reserves one compile-time argument for
@@ -396,14 +407,15 @@ failed synchronization retains ownership.
 Per-core L1 accounting uses target allocation quanta rather than logical byte
 counts. On each launch node it includes one aligned maximum allocation per
 non-tensor-backed storage index resident on that node, allocator-rounded reset
-state, one aligned configuration tensor per boundary, aligned PipeNet scratch,
-and one allocation quantum per GlobalSemaphore. Unknown allocation domains are
-resident on every launch node. Missing finalized residency metadata uses the
-conservative global descriptor sum. Transport formation uses a conservative
-upper bound that includes scalar, grouped, residual, and record-selected
-callback resources. Finalization processes descriptors by decreasing aligned
-size. For each descriptor, it selects the legal storage index with the lowest
-current maximum node allocation, then the lowest global allocation. The budget
+state, one aligned configuration tensor per reconfiguration declaration,
+aligned PipeNet scratch, and one allocation quantum per GlobalSemaphore.
+Unknown allocation domains are resident on every launch node. Missing finalized
+residency metadata uses the conservative global descriptor sum. Transport
+formation uses a conservative upper bound that includes scalar, grouped,
+residual, and record-selected callback resources. Finalization processes
+descriptors by decreasing aligned size. For each descriptor, it selects the
+legal storage index with the lowest current maximum node allocation, then the
+lowest global allocation. The budget
 pass checks finalized storage plus fixed state; conversion performs the
 authoritative combined check from the exact PipeNet plan. Every pass uses the
 same resolved target budget or `l1-budget-override`.

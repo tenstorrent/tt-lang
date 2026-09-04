@@ -329,6 +329,22 @@ static void printLifecycleEpochs(llvm::raw_ostream &output,
         } else {
           output << "none";
         }
+        SmallVector<std::optional<int64_t>, 1> defaultInstallationEpochs{
+            epoch.entryReconfigurationOrdinal};
+        if (!epoch.descriptorInstallationEpochs.empty() &&
+            epoch.descriptorInstallationEpochs != defaultInstallationEpochs) {
+          output << ",descriptor_installations=[";
+          llvm::interleaveComma(
+              epoch.descriptorInstallationEpochs, output,
+              [&](std::optional<int64_t> reconfigurationOrdinal) {
+                if (reconfigurationOrdinal) {
+                  output << *reconfigurationOrdinal;
+                } else {
+                  output << "initial";
+                }
+              });
+          output << ']';
+        }
         output << ",terminal_state="
                << (epoch.terminalStateCanonical ? "canonical" : "protocol")
                << '}';
@@ -355,6 +371,8 @@ static bool hasEqualLifecycleEpochs(ArrayRef<DFBLifecycleEpoch> lhs,
                    rhsEpoch.terminalReadPointerOwner &&
                lhsEpoch.activeConfigurationEpochs ==
                    rhsEpoch.activeConfigurationEpochs &&
+               lhsEpoch.descriptorInstallationEpochs ==
+                   rhsEpoch.descriptorInstallationEpochs &&
                lhsEpoch.entryReconfigurationOrdinal ==
                    rhsEpoch.entryReconfigurationOrdinal &&
                lhsEpoch.terminalResetOrdinal == rhsEpoch.terminalResetOrdinal &&

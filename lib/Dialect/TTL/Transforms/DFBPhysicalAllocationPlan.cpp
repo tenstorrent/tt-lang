@@ -56,6 +56,8 @@ StringRef getDFBConflictReasonName(DFBConflictReason reason) {
     return "concurrent-lifetime";
   case DFBConflictReason::ResetDomainWrite:
     return "reset-domain-write";
+  case DFBConflictReason::ReconfigurationInterfaceWrite:
+    return "reconfiguration-interface-write";
   case DFBConflictReason::StaticConfigurationMismatch:
     return "static-configuration-mismatch";
   }
@@ -263,6 +265,47 @@ static void appendActiveConfigurationEpochs(
   }
 }
 
+// Single-execution epochs use the entry ordinal; repeated epochs record every
+// descriptor installation needed to close the loop.
+static ArrayRef<std::optional<int64_t>>
+getDescriptorInstallationEpochs(const DFBLifecycleEpoch &lifecycleEpoch) {
+  if (!lifecycleEpoch.descriptorInstallationEpochs.empty()) {
+    return lifecycleEpoch.descriptorInstallationEpochs;
+  }
+  return ArrayRef(lifecycleEpoch.entryReconfigurationOrdinal);
+}
+
+// One lifecycle cannot replace a physical interface descriptor while another
+// lifecycle using that interface remains active.
+static bool
+isLiveAcrossDescriptorInstallation(const DFBLifecycleEpoch &lifecycleEpoch,
+                                   std::optional<int64_t> installationEpoch) {
+  return installationEpoch &&
+         llvm::is_contained(lifecycleEpoch.activeConfigurationEpochs,
+                            installationEpoch) &&
+         !llvm::is_contained(getDescriptorInstallationEpochs(lifecycleEpoch),
+                             installationEpoch);
+}
+
+// A shared physical index cannot accept one lifecycle's descriptor write while
+// another lifecycle still uses the installed interface.
+static bool descriptorInstallationOverlapsLiveState(
+    const DFBPerNodeLifetime &installingLifetime,
+    const DFBPerNodeLifetime &liveLifetime) {
+  return llvm::any_of(
+      installingLifetime.epochs, [&](const DFBLifecycleEpoch &installingEpoch) {
+        return llvm::any_of(getDescriptorInstallationEpochs(installingEpoch),
+                            [&](std::optional<int64_t> installationEpoch) {
+                              return llvm::any_of(
+                                  liveLifetime.epochs,
+                                  [&](const DFBLifecycleEpoch &liveEpoch) {
+                                    return isLiveAcrossDescriptorInstallation(
+                                        liveEpoch, installationEpoch);
+                                  });
+                            });
+      });
+}
+
 static SmallVector<std::optional<int64_t>>
 getActiveConfigurationEpochs(const DFBPerNodeLifetime &lifetime) {
   SmallVector<std::optional<int64_t>> configurationEpochs;
@@ -339,7 +382,10 @@ requiresReconfigurationStorage(const DFBLogicalLifecycle &logicalDFB) {
   // also provide static storage for a distinct physical descriptor.
   auto lifetimeRequiresStorage = [](const DFBPerNodeLifetime &lifetime) {
     return llvm::any_of(lifetime.epochs, [](const DFBLifecycleEpoch &epoch) {
-      return epoch.entryReconfigurationOrdinal.has_value();
+      return llvm::any_of(getDescriptorInstallationEpochs(epoch),
+                          [](std::optional<int64_t> configurationEpoch) {
+                            return configurationEpoch.has_value();
+                          });
     });
   };
   return llvm::any_of(logicalDFB.nodeLifetimes, lifetimeRequiresStorage) ||
@@ -586,6 +632,13 @@ private:
                     DFBConflictReason::AccessCompletionNotProven, node,
                     getLifetimeEvidence(lhsLifetime, lhs),
                     getLifetimeEvidence(rhsLifetime, rhs));
+        continue;
+      }
+      if (descriptorInstallationOverlapsLiveState(*lhsLifetime, *rhsLifetime) ||
+          descriptorInstallationOverlapsLiveState(*rhsLifetime, *lhsLifetime)) {
+        addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
+                    DFBConflictReason::ReconfigurationInterfaceWrite, node,
+                    lhs.declarations.front(), rhs.declarations.front());
         continue;
       }
       if (lhs.tensorBacking != rhs.tensorBacking &&
@@ -925,6 +978,7 @@ getAllocationGroupAssumptionReason(DFBConflictReason reason) {
   case DFBConflictReason::DescriptorMismatch:
   case DFBConflictReason::StorageMismatch:
   case DFBConflictReason::ResetDomainWrite:
+  case DFBConflictReason::ReconfigurationInterfaceWrite:
   case DFBConflictReason::StaticConfigurationMismatch:
   case DFBConflictReason::TransactionMismatch:
     return std::nullopt;
@@ -2560,9 +2614,12 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
         for (const DFBLifecycleEpoch &epoch : lifetime.epochs) {
           LaunchNodeDomain nodeDomain;
           nodeDomain.nodes.insert(lifetime.node);
-          if (failed(addConfiguration(
-                  candidate, epoch.entryReconfigurationOrdinal, nodeDomain))) {
-            return failure();
+          for (std::optional<int64_t> configurationEpoch :
+               getDescriptorInstallationEpochs(epoch)) {
+            if (failed(addConfiguration(candidate, configurationEpoch,
+                                        nodeDomain))) {
+              return failure();
+            }
           }
           addedConfigurationEpoch = true;
         }
