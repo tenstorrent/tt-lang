@@ -131,6 +131,8 @@ static func::FuncOp getCallableFunc(CallGraphNode *node) {
   return dyn_cast<func::FuncOp>(node->getCallableRegion()->getParentOp());
 }
 
+// Collects descriptor requirements encoded directly in a function and rejects
+// physical indices outside its descriptor table.
 static LogicalResult collectDirectDFBUses(func::FuncOp func, int64_t dfbCount,
                                           DFBSet &used) {
   func.walk([&](ttk::GetCompileArgValOp op) {
@@ -143,13 +145,17 @@ static LogicalResult collectDirectDFBUses(func::FuncOp func, int64_t dfbCount,
     }
   });
 
+  // TTL lowering removes DFB operands, so each opaque call carries finalized
+  // physical DFB indices whose descriptors must survive core specialization.
+  // The op verifier checks index form; this pass checks each index against the
+  // enclosing function's DFB count.
   WalkResult result = func.walk([&](ttk::OpaqueCallOp call) -> WalkResult {
-    std::optional<ArrayRef<int32_t>> resourceIndices =
+    std::optional<ArrayRef<int32_t>> requiredPhysicalDFBIndices =
         call.getDfbResourceIndices();
-    if (!resourceIndices) {
+    if (!requiredPhysicalDFBIndices) {
       return WalkResult::advance();
     }
-    for (int32_t index : *resourceIndices) {
+    for (int32_t index : *requiredPhysicalDFBIndices) {
       if (index >= dfbCount) {
         call.emitOpError("DFB resource index ")
             << index << " is outside the enclosing function's DFB range [0, "

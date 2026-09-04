@@ -422,6 +422,7 @@ static FailureOr<unsigned> getTensorFuncArgIndex(Value tensor) {
   return blockArg.getArgNumber();
 }
 
+// Resolves a TTL DFB SSA value to its finalized physical descriptor index.
 static FailureOr<int32_t> getValidatedDFBIndex(Value dfb, Operation *op) {
   std::optional<int64_t> dfbIndex = getCBIndex(dfb);
   if (!dfbIndex) {
@@ -436,13 +437,15 @@ static FailureOr<int32_t> getValidatedDFBIndex(Value dfb, Operation *op) {
   return static_cast<int32_t>(*dfbIndex);
 }
 
+// Canonicalizes index sets for TTKernel's strict attribute-ordering invariant.
 static void sortAndDeduplicateDFBIndices(SmallVectorImpl<int32_t> &indices) {
   llvm::sort(indices);
   indices.erase(llvm::unique(indices), indices.end());
 }
 
+// Converts DFB operands into a canonical set of finalized physical indices.
 static FailureOr<SmallVector<int32_t>>
-getValidatedDFBResourceIndices(ValueRange dfbs, Operation *op) {
+getValidatedPhysicalDFBIndices(ValueRange dfbs, Operation *op) {
   SmallVector<int32_t> indices;
   indices.reserve(dfbs.size());
   for (Value dfb : dfbs) {
@@ -456,8 +459,10 @@ getValidatedDFBResourceIndices(ValueRange dfbs, Operation *op) {
   return indices;
 }
 
+// Unknown external calls can name user-managed DFBs by physical index without
+// explicit operands, so collect every such index in the module.
 static FailureOr<SmallVector<int32_t>>
-collectUserManagedDFBResourceIndices(ModuleOp module) {
+collectUserManagedPhysicalDFBIndices(ModuleOp module) {
   SmallVector<int32_t> indices;
   WalkResult result = module.walk([&](BindCBOp bind) -> WalkResult {
     if (bind->hasAttr(kCompilerAllocatedAttrName)) {
@@ -477,7 +482,8 @@ collectUserManagedDFBResourceIndices(ModuleOp module) {
   return indices;
 }
 
-static DenseI32ArrayAttr getDFBResourceIndicesAttr(ArrayRef<int32_t> indices,
+// Absence denotes no descriptor requirement; an explicit empty list is invalid.
+static DenseI32ArrayAttr getRequiredDFBIndicesAttr(ArrayRef<int32_t> indices,
                                                    RewriterBase &rewriter) {
   if (indices.empty()) {
     return {};
@@ -1628,10 +1634,12 @@ static LogicalResult lowerDFBReset(Operation *operation,
       rewriter, location, static_cast<uint32_t>(dfbMask), 32);
   Value highMask = arith::ConstantIntOp::create(
       rewriter, location, static_cast<uint32_t>(dfbMask >> 32), 32);
-  SmallVector<int32_t> resourceIndices;
+  // Lowering removes the reset's DFB operands, so retain every selected index
+  // as a descriptor requirement.
+  SmallVector<int32_t> requiredPhysicalDFBIndices;
   for (unsigned index = 0; index < 64; ++index) {
     if ((dfbMask & (uint64_t{1} << index)) != 0) {
-      resourceIndices.push_back(static_cast<int32_t>(index));
+      requiredPhysicalDFBIndices.push_back(static_cast<int32_t>(index));
     }
   }
   ttk::OpaqueCallOp::create(
@@ -1640,7 +1648,7 @@ static LogicalResult lowerDFBReset(Operation *operation,
       rewriter.getStringAttr("<cstdint>"),
       ValueRange{synchronizationAddress, lowMask, highMask}, ArrayAttr(),
       rewriter.getDenseI32ArrayAttr({0, 1, 2}),
-      getDFBResourceIndicesAttr(resourceIndices, rewriter));
+      getRequiredDFBIndicesAttr(requiredPhysicalDFBIndices, rewriter));
   rewriter.eraseOp(operation);
   return success();
 }
@@ -1766,23 +1774,28 @@ using OpaqueArgumentPlan =
 
 struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
   OpaqueCallLowering(TypeConverter &typeConverter, MLIRContext *context,
-                     ArrayRef<int32_t> userManagedDFBResourceIndices)
+                     ArrayRef<int32_t> userManagedPhysicalDFBIndices)
       : OpConversionPattern(typeConverter, context),
-        userManagedDFBResourceIndices(userManagedDFBResourceIndices) {}
+        userManagedPhysicalDFBIndices(userManagedPhysicalDFBIndices) {}
 
   LogicalResult
   matchAndRewrite(OpaqueCallOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location location = op.getLoc();
 
-    FailureOr<SmallVector<int32_t>> resourceIndices =
-        getValidatedDFBResourceIndices(op.getDFBDependencyOperands(), op);
-    if (failed(resourceIndices)) {
+    // Dependency operands name every descriptor required by a typed external
+    // call, including operands that are absent from the emitted C++ call.
+    FailureOr<SmallVector<int32_t>> requiredPhysicalDFBIndices =
+        getValidatedPhysicalDFBIndices(op.getDFBDependencyOperands(), op);
+    if (failed(requiredPhysicalDFBIndices)) {
       return failure();
     }
     if (op.hasUnknownDFBAccess()) {
-      llvm::append_range(*resourceIndices, userManagedDFBResourceIndices);
-      sortAndDeduplicateDFBIndices(*resourceIndices);
+      // An untyped external call may refer to any user-managed physical DFB
+      // index without listing it as an operand.
+      llvm::append_range(*requiredPhysicalDFBIndices,
+                         userManagedPhysicalDFBIndices);
+      sortAndDeduplicateDFBIndices(*requiredPhysicalDFBIndices);
     }
 
     SmallVector<Attribute> templateArgs;
@@ -1903,13 +1916,13 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
     auto newOp = ttk::OpaqueCallOp::create(
         rewriter, location, resultTypes, op.getCalleeAttr(), op.getHeaderAttr(),
         convertedArgs, templateArgsAttr, op.getUnsignedArgIndicesAttr(),
-        getDFBResourceIndicesAttr(*resourceIndices, rewriter));
+        getRequiredDFBIndicesAttr(*requiredPhysicalDFBIndices, rewriter));
     rewriter.replaceOp(op, newOp->getResults());
     return success();
   }
 
 private:
-  SmallVector<int32_t> userManagedDFBResourceIndices;
+  SmallVector<int32_t> userManagedPhysicalDFBIndices;
 
   /// Resolve DFB metadata before type conversion discards block geometry.
   static FailureOr<Attribute>
@@ -2487,9 +2500,9 @@ static LogicalResult lowerTTLOpsToTTKernel(
     return failure();
   }
 
-  FailureOr<SmallVector<int32_t>> userManagedDFBResourceIndices =
-      collectUserManagedDFBResourceIndices(mod);
-  if (failed(userManagedDFBResourceIndices)) {
+  FailureOr<SmallVector<int32_t>> userManagedPhysicalDFBIndices =
+      collectUserManagedPhysicalDFBIndices(mod);
+  if (failed(userManagedPhysicalDFBIndices)) {
     return failure();
   }
   pipePlanningOptions.enableComputedAddresses = pipeComputedAddresses;
@@ -2600,7 +2613,7 @@ static LogicalResult lowerTTLOpsToTTKernel(
       SelectedPipeSourceCoordinatesLowering,
       SelectedPipeDestinationCoordinatesLowering>(typeConverter, &ctx);
   patterns.add<OpaqueCallLowering>(typeConverter, &ctx,
-                                   *userManagedDFBResourceIndices);
+                                   *userManagedPhysicalDFBIndices);
   patterns.add<CBPopLowering>(typeConverter, &ctx, pipeCapacityPlan,
                               pipeTransportPlan, transportSlotCounters,
                               pipeResourcePlan);

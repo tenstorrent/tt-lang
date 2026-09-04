@@ -19,11 +19,15 @@
 
 namespace mlir::tt::utils {
 
+/// Returns whether `nextIndex` follows `previousIndex` in canonical index
+/// order.
 inline bool isNextIndexStrictlyIncreasing(int32_t previousIndex,
                                           int32_t nextIndex) {
   return previousIndex < nextIndex;
 }
 
+/// Returns whether the indices are sorted in ascending order without
+/// duplicates.
 inline bool areIndicesStrictlyIncreasing(ArrayRef<int32_t> indices) {
   return std::adjacent_find(indices.begin(), indices.end(),
                             [](int32_t previousIndex, int32_t nextIndex) {

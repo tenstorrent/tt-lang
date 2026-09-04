@@ -5152,9 +5152,10 @@ def TTKernel_OpaqueCallOp : TTKernel_Op<"opaque_call",
       `unsigned_arg_indices` preserves unsigned address semantics when an
       earlier signless i32 value reaches the C++ call boundary.
 
-      `dfb_resource_indices` lists physical DFB descriptors that must be
-      available while the call executes. It adds no C++ arguments. The indices
-      are strictly increasing and contain no duplicates.
+      `dfb_resource_indices` lists finalized physical DFB indices whose
+      descriptors must remain available while the call executes. It adds no
+      C++ arguments. The indices are strictly increasing and contain no
+      duplicates.
 
       Example:
       ```

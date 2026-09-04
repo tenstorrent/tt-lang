@@ -727,16 +727,17 @@ void UnpackStallOnPackOp::getCanonicalizationPatterns(
           getOperation(), getUnsignedArgIndices(), getArgOperands()))) {
     return failure();
   }
-  if (std::optional<ArrayRef<int32_t>> resourceIndices =
+  if (std::optional<ArrayRef<int32_t>> requiredPhysicalDFBIndices =
           getDfbResourceIndices()) {
-    if (resourceIndices->empty()) {
+    if (requiredPhysicalDFBIndices->empty()) {
       return emitOpError("DFB resource indices must not be empty");
     }
-    if (!llvm::all_of(*resourceIndices,
+    if (!llvm::all_of(*requiredPhysicalDFBIndices,
                       [](int32_t index) { return index >= 0; })) {
       return emitOpError("DFB resource indices must be nonnegative");
     }
-    if (!mlir::tt::utils::areIndicesStrictlyIncreasing(*resourceIndices)) {
+    if (!mlir::tt::utils::areIndicesStrictlyIncreasing(
+            *requiredPhysicalDFBIndices)) {
       return emitOpError(
           "DFB resource indices must be strictly increasing without "
           "duplicates");
