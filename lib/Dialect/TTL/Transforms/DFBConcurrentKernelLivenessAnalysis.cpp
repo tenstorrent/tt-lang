@@ -3996,6 +3996,8 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
         producerIntervals.emplace_back(reserve, push);
       }
 
+      // Another logical kernel can publish while this kernel waits. A
+      // same-kernel publication must precede the wait to avoid self-deadlock.
       auto producerCanSatisfyWait = [&](const AccessRun &wait,
                                         std::uint64_t requiredTiles) {
         std::uint64_t availableTiles = 0;
@@ -4026,6 +4028,8 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
         return availableTiles >= requiredTiles;
       };
 
+      // Pops identify the one RISC that advances the read pointer. Other RISCs
+      // may wait for publication without changing that pointer.
       std::optional<DFBPointerOwner> readOwner;
       for (const AccessRun *pop : pops) {
         std::optional<DFBPointerOwner> popOwner = getPointerOwner(
