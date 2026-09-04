@@ -3796,6 +3796,7 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
     auto unscopedOpaqueAccess =
         llvm::find_if(activeAccesses, [](const DFBAccessOccurrence *access) {
           return !access->getProtocolEffect() &&
+                 !access->getNonTransactionalAccess() &&
                  isa<OpaqueCallOp>(access->operation) &&
                  !access->opaqueExternalAccess;
         });

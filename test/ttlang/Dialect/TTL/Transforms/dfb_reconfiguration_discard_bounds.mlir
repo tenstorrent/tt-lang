@@ -10,7 +10,8 @@
 #exit = #ttl.dfb_reconfiguration<1, participants[#compute, #reader, #writer], discard_dfb_state = true>
 
 // An untyped conditional external access can end at a state-discarding
-// boundary because the call must return before reaching the boundary.
+// reconfiguration. A typed inspection in the same lifecycle remains explicit
+// non-transactional use rather than being mistaken for an unscoped access.
 // IR: ttl.dfb_allocations = [
 // IR-SAME: dfb_index = 0 : i32
 // IR-NOT: dfb_index = 1 : i32
@@ -36,6 +37,10 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
       scf.if %condition {
         ttl.opaque_call "conditional_unknown" dfb_dependencies(
             %conditional : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+            () {header = "access.hpp"} : () -> ()
+        ttl.opaque_call "conditional_inspection" dfb_dependencies(
+            %conditional : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+            dfb_accesses [#ttl.dfb_non_transactional_access<inspect, 0>]
             () {header = "access.hpp"} : () -> ()
       }
       ttl.dfb_reconfiguration #entry
