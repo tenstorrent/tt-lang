@@ -427,12 +427,12 @@ def _build_atom_spec(
     )
     if reconfiguration_topology:
         encoded_reconfiguration_topology = ";".join(
-            f"{ordinal}:"
+            f"{ordinal}:{int(discard_dfb_state)}:"
             + ",".join(
                 f"{participant_kind}:{participant_identity}"
                 for participant_kind, participant_identity in participants
             )
-            for ordinal, participants in reconfiguration_topology
+            for ordinal, discard_dfb_state, participants in reconfiguration_topology
         )
         reconfiguration_topology_digest = hashlib.sha256(
             encoded_reconfiguration_topology.encode("utf-8")

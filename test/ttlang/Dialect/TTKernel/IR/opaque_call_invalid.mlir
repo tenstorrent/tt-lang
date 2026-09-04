@@ -88,3 +88,35 @@ func.func @unsigned_arg_not_integer(%arg0: f32) {
   ttkernel.opaque_call "foo" (%arg0) {header = "h.hpp", unsigned_arg_indices = array<i32: 0>} : (f32) -> ()
   return
 }
+
+// -----
+
+func.func @empty_dfb_resource_indices() {
+  // expected-error @below {{'ttkernel.opaque_call' op DFB resource indices must not be empty}}
+  ttkernel.opaque_call "foo" () {dfb_resource_indices = array<i32>, header = "h.hpp"} : () -> ()
+  return
+}
+
+// -----
+
+func.func @negative_dfb_resource_index() {
+  // expected-error @below {{'ttkernel.opaque_call' op DFB resource indices must be nonnegative}}
+  ttkernel.opaque_call "foo" () {dfb_resource_indices = array<i32: -1>, header = "h.hpp"} : () -> ()
+  return
+}
+
+// -----
+
+func.func @duplicate_dfb_resource_index() {
+  // expected-error @below {{'ttkernel.opaque_call' op DFB resource indices must be strictly increasing without duplicates}}
+  ttkernel.opaque_call "foo" () {dfb_resource_indices = array<i32: 1, 1>, header = "h.hpp"} : () -> ()
+  return
+}
+
+// -----
+
+func.func @unordered_dfb_resource_indices() {
+  // expected-error @below {{'ttkernel.opaque_call' op DFB resource indices must be strictly increasing without duplicates}}
+  ttkernel.opaque_call "foo" () {dfb_resource_indices = array<i32: 2, 1>, header = "h.hpp"} : () -> ()
+  return
+}

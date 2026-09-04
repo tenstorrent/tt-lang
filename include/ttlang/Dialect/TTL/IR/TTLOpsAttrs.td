@@ -125,10 +125,12 @@ def TTL_DFBReconfigurationAttr
     This attribute identifies where synchronization and compiler-generated
     descriptor installation occur; it does not contain descriptor values.
     Source programs retain logical DFB identities across reconfiguration calls;
-    physical indices and descriptor configurations are compiler-owned. A DFB
-    with live payload or incomplete protocol state cannot cross a
-    reconfiguration call unless its physical index, storage, and complete
-    interface configuration remain unchanged.
+    physical indices and configurations are compiler-owned. Reconfiguration
+    normally preserves a DFB's index, storage, and interface state while it has
+    unread data or an incomplete protocol. Setting `discardDfbState` allows the
+    lifecycle to end when its final access precedes the corresponding
+    `ttl.dfb_reconfiguration` operation. If the index is reused, runtime resets
+    its interface before the next DFB access.
 
     The ordinal is module-local and has no runtime meaning. Equal attributes
     reference the same descriptor update. Distinct ordinals identify distinct
@@ -138,15 +140,17 @@ def TTL_DFBReconfigurationAttr
   }];
   let parameters = (ins
     "int64_t":$ordinal,
-    ArrayRefParameter<"::mlir::tt::ttl::LogicalKernelAttr">:$participants
+    ArrayRefParameter<"::mlir::tt::ttl::LogicalKernelAttr">:$participants,
+    DefaultValuedParameter<"bool", "false">:$discardDfbState
   );
-  let assemblyFormat = "`<` $ordinal `,` `participants` `[` $participants `]` `>`";
+  let assemblyFormat = "`<` $ordinal `,` `participants` `[` $participants `]` (`,` `discard_dfb_state` `=` $discardDfbState^)? `>`";
   let genVerifyDecl = 1;
   let extraClassDeclaration = [{
     static DFBReconfigurationAttr getCheckedInstance(
         ::mlir::Location location, ::mlir::MLIRContext *context,
         int64_t ordinal,
-        ::llvm::ArrayRef<LogicalKernelAttr> participants);
+        ::llvm::ArrayRef<LogicalKernelAttr> participants,
+        bool discardDfbState = false);
   }];
 }
 

@@ -231,7 +231,7 @@ SynchronizedDFBResetAttr SynchronizedDFBResetAttr::getCheckedInstance(
 
 llvm::LogicalResult DFBReconfigurationAttr::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError, int64_t ordinal,
-    ArrayRef<LogicalKernelAttr> participants) {
+    ArrayRef<LogicalKernelAttr> participants, bool) {
   if (ordinal < 0) {
     return emitError() << "DFB reconfiguration ordinal must be nonnegative";
   }
@@ -256,10 +256,10 @@ llvm::LogicalResult DFBReconfigurationAttr::verify(
 
 DFBReconfigurationAttr DFBReconfigurationAttr::getCheckedInstance(
     Location location, MLIRContext *context, int64_t ordinal,
-    ArrayRef<LogicalKernelAttr> participants) {
+    ArrayRef<LogicalKernelAttr> participants, bool discardDfbState) {
   return DFBReconfigurationAttr::getChecked(
       [location]() { return emitError(location); }, context, ordinal,
-      participants);
+      participants, discardDfbState);
 }
 
 void TTLDialect::registerAttributes() {
