@@ -510,12 +510,9 @@ static bool hasFixedAccessCountPerReconfigurationIteration(
   }
   return canPartitionRunPerReconfigurationIteration(
       accessRun.executionCount, accessRun.iterationDomain,
-      reconfigurationExecutionCount,
-      reconfigurationIterationDomain);
+      reconfigurationExecutionCount, reconfigurationIterationDomain);
 }
 
-// Maximum executions and enclosing static loops available without assuming
-// that a conditional region executes or performs a protocol transaction.
 struct AccessRunUpperBound {
   std::uint64_t maximumExecutionCount = 0;
   StaticIterationDomain iterationDomain;
@@ -549,84 +546,8 @@ static AccessDomain refineUnknownAccessDomainFromExecutionCounts(
   return {std::move(exactDomain), nullptr};
 }
 
-// Proves that an access executes once in every iteration of one immutable
-// structured loop nest. At-most-once regions must be selected on every
-// enclosing-loop invocation.
-static std::optional<StaticIterationDomain> getUniformStaticIterationDomain(
-    Operation *operation, std::uint64_t executionCount, LaunchNodeCoord node,
-    const LaunchNodeDomainState &domainState) {
-  func::FuncOp function = operation->getParentOfType<func::FuncOp>();
-  if (!function || function.getBody().empty() ||
-      !function.getBody().hasOneBlock()) {
-    return std::nullopt;
-  }
-
-  // Exact count-one accesses retain the existing event-graph proof. Only
-  // repeated accesses require a uniform structured iteration domain.
-  if (executionCount == 1) {
-    return StaticIterationDomain{};
-  }
-
-  StaticIterationDomain domain;
-  std::uint64_t nestedExecutionCount = executionCount;
-  Operation *nestedOperation = operation;
-  while (nestedOperation->getParentRegion() != &function.getBody()) {
-    Region *region = nestedOperation->getParentRegion();
-    Operation *parent = region ? region->getParentOp() : nullptr;
-    auto loop = dyn_cast_or_null<LoopLikeOpInterface>(parent);
-    if (!parent || !region->hasOneBlock() ||
-        nestedOperation->getBlock() != &region->front()) {
-      return std::nullopt;
-    }
-    if (loop && !isa<affine::AffineForOp, scf::ForOp>(parent)) {
-      return std::nullopt;
-    }
-    if (!loop) {
-      std::optional<std::uint64_t> parentExecutionCount =
-          getExactExecutionCountAtLaunchNode(parent, node, domainState);
-      // Equality proves that an at-most-once region was selected for every
-      // parent invocation, including each enclosing-loop iteration.
-      if (!executesRegionsAtMostOnce(parent) || !parentExecutionCount ||
-          *parentExecutionCount != nestedExecutionCount) {
-        return std::nullopt;
-      }
-      nestedOperation = parent;
-      continue;
-    }
-    SmallVector<Region *> loopRegions = loop.getLoopRegions();
-    if (loopRegions.size() != 1 || loopRegions.front() != region) {
-      return std::nullopt;
-    }
-    std::optional<std::uint64_t> tripCount = tt::getLoopTripCount(loop);
-    if (!tripCount || *tripCount == 0) {
-      return std::nullopt;
-    }
-    std::optional<std::uint64_t> parentExecutionCount =
-        getExactExecutionCountAtLaunchNode(parent, node, domainState);
-    if (!parentExecutionCount) {
-      return std::nullopt;
-    }
-    std::optional<std::uint64_t> loopBodyExecutionCount =
-        llvm::checkedMulUnsigned(*parentExecutionCount, *tripCount);
-    if (!loopBodyExecutionCount ||
-        *loopBodyExecutionCount != nestedExecutionCount) {
-      return std::nullopt;
-    }
-    domain.loops.push_back(parent);
-    domain.tripCounts.push_back(*tripCount);
-    nestedExecutionCount = *parentExecutionCount;
-    nestedOperation = parent;
-  }
-
-  if (nestedOperation->getBlock() != &function.getBody().front() ||
-      nestedExecutionCount != 1) {
-    return std::nullopt;
-  }
-  std::reverse(domain.loops.begin(), domain.loops.end());
-  std::reverse(domain.tripCounts.begin(), domain.tripCounts.end());
-  return domain;
-}
-
+// Computes a static upper bound without assuming that a conditional region
+// executes or performs a protocol transaction.
 static std::optional<AccessRunUpperBound>
 getAccessRunUpperBound(Operation *operation) {
   func::FuncOp function = operation->getParentOfType<func::FuncOp>();
@@ -681,6 +602,25 @@ getAccessRunUpperBound(Operation *operation) {
   return AccessRunUpperBound{maximumExecutionCount, std::move(iterationDomain)};
 }
 
+// Equality with the structural upper bound proves that every at-most-once
+// region executes in every enclosing-loop iteration.
+static std::optional<StaticIterationDomain>
+getUniformStaticIterationDomain(Operation *operation,
+                                std::uint64_t executionCount) {
+  // Exact count-one accesses retain the existing event-graph proof. Only
+  // repeated accesses require a uniform structured iteration domain.
+  if (executionCount == 1) {
+    return StaticIterationDomain{};
+  }
+  std::optional<AccessRunUpperBound> runUpperBound =
+      getAccessRunUpperBound(operation);
+  if (!runUpperBound ||
+      runUpperBound->maximumExecutionCount != executionCount) {
+    return std::nullopt;
+  }
+  return std::move(runUpperBound->iterationDomain);
+}
+
 // Proves an unresolved access cannot repeat. Treating the access as present
 // once preserves the conditional lifetime without assuming it executes.
 static bool structurallyExecutesAtMostOnce(Operation *operation) {
@@ -695,13 +635,13 @@ static bool isExternalCallAccess(const DFBAccessOccurrence &access) {
   return isa<OpaqueCallOp>(access.operation);
 }
 
-// Loop identities are function-local, so compare an access only with the
-// boundary participant for the same logical kernel.
 struct BoundaryParticipantIteration {
   Operation *operation = nullptr;
   const StaticIterationDomain *domain = nullptr;
 };
 
+// Loop identities are function-local, so compare an access only with the
+// boundary participant for the same logical kernel.
 template <typename CollectiveBoundary>
 static std::optional<BoundaryParticipantIteration>
 getBoundaryParticipantIteration(const CollectiveBoundary &boundary,
@@ -1673,7 +1613,6 @@ collectAccessExecutionCounts(ArrayRef<DFBLogicalLifecycle> logicalDFBs,
 
 static AccessRuns collectAccessRuns(
     ArrayRef<DFBLogicalLifecycle> logicalDFBs, LaunchNodeCoord node,
-    const LaunchNodeDomainState &domainState,
     const AccessExecutionCounts &executionCounts, bool includeUnknownDomains) {
   AccessRuns runs;
   for (const DFBLogicalLifecycle &logicalDFB : logicalDFBs) {
@@ -1696,8 +1635,7 @@ static AccessRuns collectAccessRuns(
         continue;
       }
       std::optional<StaticIterationDomain> domain =
-          getUniformStaticIterationDomain(access.operation, *countIt->second,
-                                          node, domainState);
+          getUniformStaticIterationDomain(access.operation, *countIt->second);
       if (!domain) {
         continue;
       }
@@ -2034,8 +1972,8 @@ static LogicalResult validateDFBReconfigurationsAtNode(
       if (executionCount) {
         if (*executionCount > 1) {
           std::optional<StaticIterationDomain> uniformDomain =
-              getUniformStaticIterationDomain(
-                  participantOperation, *executionCount, node, domainState);
+              getUniformStaticIterationDomain(participantOperation,
+                                              *executionCount);
           if (!uniformDomain || uniformDomain->loops.empty()) {
             analysisFailure.set(
                 participantOperation,
@@ -2251,8 +2189,8 @@ static LogicalResult validateSynchronizedResetsAtNode(
       if (executionCount) {
         if (*executionCount > 1) {
           std::optional<StaticIterationDomain> uniformDomain =
-              getUniformStaticIterationDomain(
-                  occurrence.operation, *executionCount, node, domainState);
+              getUniformStaticIterationDomain(occurrence.operation,
+                                              *executionCount);
           if (!uniformDomain || uniformDomain->loops.empty()) {
             analysisFailure.set(
                 occurrence.operation,
@@ -2712,8 +2650,8 @@ static void addDFBReconfigurationAccessEdges(
         // the separate exact-run map.
         bool canOrderEachIteration =
             reconfiguration.executionCount > 1 &&
-            hasPartitionableProgramOrderRun(
-                access, reconfiguration, programOrderAccessRuns);
+            hasPartitionableProgramOrderRun(access, reconfiguration,
+                                            programOrderAccessRuns);
         if (canOrderEachIteration) {
           if (structuralOrder.precedes(access.operation,
                                        localParticipant->operation)) {
@@ -4576,8 +4514,8 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
           access, reconfigurations.front(), accessRuns);
       bool discardedExternalRunMatchesForOrdering =
           everyReconfigurationDiscardsState && isExternalCallAccess(access) &&
-          hasPartitionableProgramOrderRun(
-              access, reconfigurations.front(), programOrderAccessRuns);
+          hasPartitionableProgramOrderRun(access, reconfigurations.front(),
+                                          programOrderAccessRuns);
       if (!exactRunMatches && !discardedExternalRunMatchesForOrdering) {
         DFBPerNodeLifetime &lifetime = lifetimes.emplace_back();
         lifetime.node = node;
@@ -5599,7 +5537,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     AccessExecutionCounts executionCounts =
         collectAccessExecutionCounts(logicalDFBs, node, domainState);
     AccessRuns accessRuns =
-        collectAccessRuns(logicalDFBs, node, domainState, executionCounts,
+        collectAccessRuns(logicalDFBs, node, executionCounts,
                           /*includeUnknownDomains=*/false);
     AccessRuns programOrderAccessRuns = collectProgramOrderAccessRuns(
         logicalDFBs, validatedReconfigurations, node, executionCounts,
@@ -5616,7 +5554,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
     std::optional<ProgramOrderGraphState> possibleGraphState;
     if (hasUnknownDFBLaunchDomain) {
       possibleAccessRuns.emplace(
-          collectAccessRuns(logicalDFBs, node, domainState, executionCounts,
+          collectAccessRuns(logicalDFBs, node, executionCounts,
                             /*includeUnknownDomains=*/true));
       possibleProgramOrderAccessRuns.emplace(collectProgramOrderAccessRuns(
           logicalDFBs, validatedReconfigurations, node, executionCounts,
