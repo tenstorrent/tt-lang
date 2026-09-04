@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttkernel-specialize-and-annotate-dfb-use)' | FileCheck %s
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttkernel-specialize-and-annotate-dfb-use)' --split-input-file | FileCheck %s
 
 // This characterizes the kernel half of per-core specialization. Core (0, 1)
 // retains its direct and opaque-call DFB uses while core (0, 0) has the
@@ -38,6 +38,24 @@ module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
           : (!ttkernel.cb<3, !ttcore.tile<32x32, bf16>>, i32) -> ()
       ttkernel.opaque_call "inspect"() {dfb_resource_indices = array<i32: 1>, header = "inspect.hpp"} : () -> ()
     }
+    return
+  }
+}
+
+// -----
+
+// A single-node launch still records a lowered opaque dependency with no
+// protocol effects even though core specialization performs no cloning.
+// CHECK-LABEL: func.func @single_node_opaque_dependency
+// CHECK-SAME: ttl.used_dfb_indices = array<i32: 0>
+// CHECK: ttkernel.opaque_call "inspect"() {dfb_resource_indices = array<i32: 0>, header = "inspect.hpp"} : () -> ()
+// CHECK-NOT: func.func @single_node_opaque_dependency_c
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @single_node_opaque_dependency() attributes {
+      ttl.base_cta_index = 1 : i32,
+      ttkernel.thread = #ttkernel.thread<noc>} {
+    ttkernel.opaque_call "inspect"() {dfb_resource_indices = array<i32: 0>, header = "inspect.hpp"} : () -> ()
     return
   }
 }

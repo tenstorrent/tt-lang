@@ -727,6 +727,8 @@ void UnpackStallOnPackOp::getCanonicalizationPatterns(
           getOperation(), getUnsignedArgIndices(), getArgOperands()))) {
     return failure();
   }
+  // Absence represents no descriptor requirement. A canonical nonnegative set
+  // lets downstream annotation merge physical DFB indices without normalizing.
   if (std::optional<ArrayRef<int32_t>> requiredPhysicalDFBIndices =
           getDfbResourceIndices()) {
     if (requiredPhysicalDFBIndices->empty()) {
