@@ -446,7 +446,7 @@ static bool hasEquivalentIterationSequence(const StaticIterationDomain &lhs,
 }
 
 // Inner loops may multiply an access count, but its outer iterations must
-// match the repeated reconfiguration before per-iteration normalization.
+// match the repeated reconfiguration before dividing by its execution count.
 static bool startsWithIterationDomain(const StaticIterationDomain &domain,
                                       const StaticIterationDomain &prefix) {
   return domain.loops.size() >= prefix.loops.size() &&
@@ -457,7 +457,8 @@ static bool startsWithIterationDomain(const StaticIterationDomain &domain,
              prefix.tripCounts);
 }
 
-// One statically counted run of an access occurrence.
+// One access occurrence's exact execution count, or a structural upper bound
+// when conditionalExecution is true.
 struct AccessRun {
   const DFBAccessOccurrence *access = nullptr;
   std::uint64_t executionCount = 0;
@@ -474,10 +475,9 @@ struct AccessRun {
 
 using AccessRuns = DenseMap<const DFBAccessOccurrence *, AccessRun>;
 
-// Event spans can be partitioned per reconfiguration iteration only when the
-// access repeats within the participant loop nest and divides evenly across
-// boundary executions.
-static bool canPartitionRunPerReconfigurationIteration(
+// Divide an access run among repeated reconfiguration executions only when the
+// access is nested under the same participant loops and divides evenly.
+static bool canPartitionAccessRunAcrossReconfigurationExecutions(
     std::uint64_t accessExecutionCount,
     const StaticIterationDomain &accessIterationDomain,
     std::uint64_t reconfigurationExecutionCount,
@@ -489,10 +489,9 @@ static bool canPartitionRunPerReconfigurationIteration(
          accessExecutionCount % reconfigurationExecutionCount == 0;
 }
 
-// Per-iteration lifetime normalization and graph edges are sound only when each
-// reconfiguration-loop iteration contains the same fixed number of
-// unconditional access executions.
-static bool hasFixedAccessCountPerReconfigurationIteration(
+// Lifetime normalization and graph edges are sound only when every
+// reconfiguration execution has the same unconditional access count.
+static bool hasFixedAccessCountPerReconfigurationExecution(
     const DFBAccessOccurrence &access,
     std::uint64_t reconfigurationExecutionCount,
     const StaticIterationDomain &reconfigurationIterationDomain,
@@ -504,15 +503,18 @@ static bool hasFixedAccessCountPerReconfigurationIteration(
     return false;
   }
   const AccessRun &accessRun = runIt->second;
-  // TODO(#1010): Prove per-iteration conditional equivalence.
+  // TODO(#1010): Prove equivalent conditions at every reconfiguration
+  // execution.
   if (accessRun.conditionalExecution) {
     return false;
   }
-  return canPartitionRunPerReconfigurationIteration(
+  return canPartitionAccessRunAcrossReconfigurationExecutions(
       accessRun.executionCount, accessRun.iterationDomain,
       reconfigurationExecutionCount, reconfigurationIterationDomain);
 }
 
+// Maximum executions when every enclosing at-most-once region is selected,
+// together with the enclosing loops that contribute to that maximum.
 struct AccessRunUpperBound {
   std::uint64_t maximumExecutionCount = 0;
   StaticIterationDomain iterationDomain;
@@ -546,8 +548,10 @@ static AccessDomain refineUnknownAccessDomainFromExecutionCounts(
   return {std::move(exactDomain), nullptr};
 }
 
-// Computes a static upper bound without assuming that a conditional region
-// executes or performs a protocol transaction.
+// Computes a static execution-count upper bound inside a single-block function
+// and nested single-block affine/scf loops or at-most-once regions. CFGs, other
+// region operations, and loops without positive static trip counts have no
+// structural bound.
 static std::optional<AccessRunUpperBound>
 getAccessRunUpperBound(Operation *operation) {
   func::FuncOp function = operation->getParentOfType<func::FuncOp>();
@@ -635,8 +639,9 @@ static bool isExternalCallAccess(const DFBAccessOccurrence &access) {
   return isa<OpaqueCallOp>(access.operation);
 }
 
-// A producer-only upper bound is sufficient before state discard: it proves
-// that reserve cannot exceed capacity, and no consumer wait can block.
+// Recognizes an opaque-call-only reserve/push protocol. A structural upper
+// bound proves capacity before state discard because no consumer wait can
+// block.
 static bool
 isExternalProducerOnlyProtocol(ArrayRef<const DFBAccessOccurrence *> accesses) {
   bool hasReserve = false;
@@ -695,13 +700,13 @@ static bool hasFixedAccessCountForReconfiguration(
     const AccessRuns &accessRuns) {
   std::optional<BoundaryParticipantIteration> participant =
       getBoundaryParticipantIteration(reconfiguration, access.operation);
-  return participant && hasFixedAccessCountPerReconfigurationIteration(
+  return participant && hasFixedAccessCountPerReconfigurationExecution(
                             access, reconfiguration.executionCount,
                             *participant->domain, accessRuns);
 }
 
-// This predicate establishes per-iteration event placement; protocol
-// completion requires separate effect-specific checks.
+// This predicate establishes event placement for each reconfiguration
+// execution; protocol completion requires separate effect-specific checks.
 static bool hasPartitionableExternalAccessBound(
     const DFBAccessOccurrence &access,
     const ValidatedDFBReconfiguration &reconfiguration,
@@ -710,7 +715,7 @@ static bool hasPartitionableExternalAccessBound(
   std::optional<BoundaryParticipantIteration> participant =
       getBoundaryParticipantIteration(reconfiguration, access.operation);
   return runIt != boundedExternalAccessRuns.end() && participant &&
-         canPartitionRunPerReconfigurationIteration(
+         canPartitionAccessRunAcrossReconfigurationExecutions(
              runIt->second.executionCount, runIt->second.iterationDomain,
              reconfiguration.executionCount, *participant->domain);
 }
@@ -1671,9 +1676,9 @@ static AccessRuns collectAccessRuns(
   return runs;
 }
 
-// Conditional external calls may lack exact execution counts. Their static
-// loop bounds support event ordering and producer-capacity proof before state
-// discard; other protocol proofs retain exact runs.
+// Adds structural upper bounds for conditional opaque calls only when every
+// repeated reconfiguration discards DFB state. These bounds support event
+// ordering and producer capacity; other protocol proofs retain exact runs.
 static AccessRuns collectBoundedExternalAccessRuns(
     ArrayRef<DFBLogicalLifecycle> logicalDFBs,
     ArrayRef<ValidatedDFBReconfiguration> reconfigurations,
@@ -1721,7 +1726,7 @@ static AccessRuns collectBoundedExternalAccessRuns(
                 getBoundaryParticipantIteration(reconfiguration,
                                                 access.operation);
             return participant &&
-                   canPartitionRunPerReconfigurationIteration(
+                   canPartitionAccessRunAcrossReconfigurationExecutions(
                        runUpperBound->maximumExecutionCount,
                        runUpperBound->iterationDomain,
                        reconfiguration.executionCount, *participant->domain);
@@ -4509,7 +4514,7 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
 
   // Repeated reconfiguration reuses physical interfaces for successive DFB
   // lifecycles in every loop iteration. Reject accesses that cannot be reduced
-  // from dispatch-wide execution counts to a fixed per-iteration count.
+  // from a dispatch-wide count to a fixed count per reconfiguration execution.
   std::optional<std::uint64_t> repeatedReconfigurationCount;
   // Structural bounds are sufficient only when no boundary must preserve the
   // possibly executed state for its successor configuration.

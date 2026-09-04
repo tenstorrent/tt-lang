@@ -128,8 +128,9 @@ def TTL_DFBReconfigurationAttr
     physical indices and configurations are compiler-owned. Reconfiguration
     normally preserves a DFB's index, storage, and interface state while it has
     unread data or an incomplete protocol. Setting `discardDfbState` allows the
-    lifecycle to end when its final access precedes the boundary. If the index
-    is reused, runtime resets its interface before the next DFB access.
+    lifecycle to end when its final access precedes the corresponding
+    `ttl.dfb_reconfiguration` operation. If the index is reused, runtime resets
+    its interface before the next DFB access.
 
     The ordinal is module-local and has no runtime meaning. Equal attributes
     reference the same descriptor update. Distinct ordinals identify distinct
