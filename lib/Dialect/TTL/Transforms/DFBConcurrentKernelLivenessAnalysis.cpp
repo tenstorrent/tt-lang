@@ -489,6 +489,7 @@ static bool hasFixedAccessCountPerReconfigurationIteration(
     return false;
   }
   const AccessRun &accessRun = runIt->second;
+  // TODO(#1010): Prove per-iteration conditional equivalence.
   if (accessRun.conditionalExecution) {
     return false;
   }
