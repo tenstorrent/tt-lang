@@ -8,6 +8,10 @@
 # RUN: FileCheck %s --check-prefix=FINAL < %t.final.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP --implicit-check-not=inline_dw_write < %t.output
 # RUN: FileCheck %s --check-prefix=RUNTIME < %t.output
+# RUN: env TTLANG_COMPILER_OPTIONS=--no-ttl-pipe-computed-addresses TTLANG_FINAL_MLIR=%t.published.final.mlir timeout 240 %python %s > %t.published.output 2>&1
+# RUN: FileCheck %s --check-prefix=PUBLISHED-FINAL < %t.published.final.mlir
+# RUN: FileCheck %s --check-prefix=PUBLISHED-CPP < %t.published.output
+# RUN: FileCheck %s --check-prefix=RUNTIME < %t.published.output
 
 """Runtime coverage for liveness-based PipeNet resource allocation.
 
@@ -349,6 +353,16 @@ def make_ksplit_resource_allocation_kernel(grid_dim):
 # CHECK-CPP: noc0.async_write(
 # CHECK-CPP: noc0.async_write_multicast
 # CHECK-CPP: noc_semaphore_inc
+#
+# Disabling computed addresses must retain the address table and receiver-side
+# publication for the same mixed-route schedule.
+# PUBLISHED-FINAL-LABEL: module attributes
+# PUBLISHED-FINAL-DAG: ttl.pipe_sync_semaphore_count = 7 : i64
+# PUBLISHED-FINAL-DAG: ttl.pipe_sram_scratch_bytes = 32 : i64
+# PUBLISHED-FINAL-NOT: ttl.pipe_computed_address_dfb_indices
+# PUBLISHED-CPP-LABEL: === post_receives_and_send kernel written to {{.*}} ===
+# PUBLISHED-CPP: noc0.inline_dw_write<NocOptions::INLINE_L1>
+# PUBLISHED-CPP: noc0.async_write_barrier
 #
 # RUNTIME: PASS: ksplit_resource_allocation result verified
 def make_expected_output(input_torch, grid_dim):
