@@ -401,8 +401,8 @@ struct ValidatedSynchronizedReset {
   bool isModeledLifetimeBoundary() const { return executionCount == 1; }
 };
 
-// One static occurrence of a DFB configuration-epoch boundary before
-// launch-node participation is validated.
+// One static `ttl.dfb_reconfiguration` occurrence before launch-node
+// participation is validated.
 struct DFBReconfigurationOccurrence {
   Operation *operation = nullptr;
   DFBReconfigurationAttr boundary;
@@ -410,7 +410,8 @@ struct DFBReconfigurationOccurrence {
   LaunchNodeDomain launchDomain = LaunchNodeDomain::unknown();
 };
 
-// One proved boundary instance or uniform boundary run on one launch node.
+// Shared execution facts for all participant occurrences of one
+// reconfiguration declaration on one launch node.
 struct ValidatedDFBReconfiguration {
   DFBReconfigurationAttr boundary;
   SmallVector<Operation *> participantOperations;
@@ -1900,7 +1901,7 @@ static LogicalResult validateDFBReconfigurationDeclarations(
                occurrence.boundary.getParticipants()) {
       analysisFailure.set(
           occurrence.operation,
-          "all DFB reconfiguration boundaries must declare the same "
+          "all DFB reconfiguration declarations must use the same "
           "participant set");
       return failure();
     }
@@ -2119,7 +2120,7 @@ static LogicalResult validateDFBReconfigurationsAtNode(
         if (participantLhsPrecedes == participantRhsPrecedes) {
           analysisFailure.set(
               rhsOperation,
-              "DFB reconfiguration boundaries must have a strict structured "
+              "DFB reconfiguration operations must have a strict structured "
               "order in every participant");
           return failure();
         }
@@ -2128,7 +2129,7 @@ static LogicalResult validateDFBReconfigurationsAtNode(
         } else if (*lhsPrecedes != participantLhsPrecedes) {
           analysisFailure.set(
               rhsOperation,
-              "DFB reconfiguration participants execute boundaries in "
+              "DFB reconfiguration participants execute operations in "
               "different orders");
           return failure();
         }
@@ -5671,7 +5672,8 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
         if (lhsBeforeRhs == rhsBeforeLhs) {
           errorOperation = rhs->participantOperations.front();
           errorMessage =
-              "DFB reconfiguration boundary execution order is not proved";
+              "execution order between DFB reconfiguration operations is not "
+              "proved";
           return;
         }
       }
@@ -5868,7 +5870,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
         });
     errorOperation = reconfigurationEvidence.lookup(cyclicOrdinal);
     errorMessage =
-        "DFB reconfiguration boundaries execute in different orders across "
+        "DFB reconfiguration operations execute in different orders across "
         "launch nodes";
     return;
   }
