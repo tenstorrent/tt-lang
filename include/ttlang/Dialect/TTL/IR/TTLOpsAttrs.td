@@ -108,28 +108,33 @@ def TTL_SynchronizedDFBResetAttr
 
 def TTL_DFBReconfigurationAttr
     : TTL_Attr<"DFBReconfiguration", "dfb_reconfiguration"> {
-  let summary = "Worker-local synchronized DFB configuration-epoch boundary";
+  let summary = "Worker-local synchronized DFB descriptor update";
   let description = [{
-    Identifies one worker-local DFB configuration-epoch boundary site and
-    the complete set of logical kernels that participate on each active worker.
-    Every site executes zero or one dynamic instance per dispatch and launch
-    node. Every participant executes the same instances in the same order, and
-    every boundary site in one module declares the same participant set.
-    DFB-interface work ordered before the boundary completes before the runtime
-    installs the next epoch's configuration. DFB-interface work ordered after
-    the boundary begins after installation. Independent math and SFPU work may
-    overlap the boundary.
+    Identifies one synchronized update to worker-local DFB descriptors and the
+    complete set of logical kernels that participate on each active worker.
+    Each reconfiguration call may execute at most once per dispatch and launch
+    node, or once in every iteration of nested sequential loops with
+    compile-time-known trip counts. Repeated execution requires at least two
+    reconfiguration calls. Corresponding calls use equivalent loop nests and
+    appear in the same order in every participant. Every declaration in one
+    module uses the same participant set.
+    At each call, the runtime waits for prior DFB-interface work to complete,
+    installs the next descriptors, and then allows following DFB-interface work
+    to begin. Independent math and SFPU work may overlap the descriptor update.
 
-    This attribute identifies synchronization only. Source programs retain
-    logical DFB identities across boundaries; physical indices and epoch
-    configurations are compiler-owned. A DFB with live payload or incomplete
-    protocol state cannot cross the boundary unless its physical index,
-    storage, and complete interface configuration remain unchanged.
+    This attribute identifies where synchronization and compiler-generated
+    descriptor installation occur; it does not contain descriptor values.
+    Source programs retain logical DFB identities across reconfiguration calls;
+    physical indices and descriptor configurations are compiler-owned. A DFB
+    with live payload or incomplete protocol state cannot cross a
+    reconfiguration call unless its physical index, storage, and complete
+    interface configuration remain unchanged.
 
     The ordinal is module-local and has no runtime meaning. Equal attributes
-    reference the same boundary site. Distinct ordinals identify distinct
-    boundary sites. Participant order is canonical and otherwise
-    semantically insignificant.
+    reference the same descriptor update. Distinct ordinals identify distinct
+    updates. When a reconfiguration sequence repeats, the final call restores
+    every initial descriptor required by the next loop iteration.
+    Participant order is canonical and otherwise semantically insignificant.
   }];
   let parameters = (ins
     "int64_t":$ordinal,
