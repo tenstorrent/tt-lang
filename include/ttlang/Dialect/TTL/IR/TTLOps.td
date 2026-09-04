@@ -2243,20 +2243,23 @@ def TTL_DFBReconfigurationOp : TTL_Op<"dfb_reconfiguration",
     [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Enter the next worker-local DFB configuration epoch";
   let description = [{
-    `ttl.dfb_reconfiguration` is a worker-local synchronization boundary shared
-    by the logical kernels named by `boundary`. Every participant executes the
-    same zero-or-one dynamic boundary instance per dispatch and launch node and
-    executes boundary sites in the same order. Every boundary in one module
-    declares the same participant set. DFB-interface work ordered before the
-    boundary completes before the runtime installs the next epoch's
-    configuration. DFB-interface work ordered after the boundary begins after
-    installation. Independent math and SFPU work may overlap the boundary.
+    `ttl.dfb_reconfiguration` synchronizes the logical kernels named by
+    `boundary` before installing the next DFB configuration. On each launch
+    node, all participants execute the operation under equivalent control flow:
+    either the same static count and loop trip-count sequence or the same
+    conditional execution. Multiple reconfiguration operations execute in the
+    same order and declare the same participant set. DFB-interface work before
+    each execution completes before installation, and DFB-interface work after
+    it begins after installation. Independent math and SFPU work may overlap
+    the operation.
 
     The source operation does not name physical DFB indices or enumerate the
     interfaces that change. Allocation analysis derives the configuration for
     each epoch from logical DFB lifetimes. Live protocol state retains its
-    physical index, storage, and interface configuration across the boundary;
-    reassignment requires a complete protocol and synchronization proof.
+    physical index, storage, and interface configuration across the operation;
+    reassignment requires a complete protocol and synchronization proof unless
+    the operation declares that unread producer payload and opaque external
+    protocol state may be discarded.
 
     Runtime execution is currently supported only on Blackhole. Compilation
     rejects a resolved non-Blackhole target. Shared-L1 synchronization state

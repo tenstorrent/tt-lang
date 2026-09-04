@@ -4,11 +4,17 @@
 
 #pragma once
 
+#if defined(COMPILE_FOR_TRISC)
+#include "api/compute/cb_api.h"
+#include "api/compute/compute_kernel_api.h"
+#elif defined(COMPILE_FOR_NCRISC) || defined(COMPILE_FOR_BRISC)
 #include "api/dataflow/circular_buffer.h"
 #include "api/dataflow/dataflow_api.h"
+#endif
 
 template <typename OutputDFB>
 inline void write_reconfiguration_runtime_value() {
+#if defined(COMPILE_FOR_NCRISC) || defined(COMPILE_FOR_BRISC)
   uint32_t firstValue = get_arg_val<uint32_t>(0);
   uint32_t outputValue = firstValue;
   if (get_absolute_logical_x() != 0) {
@@ -26,4 +32,22 @@ inline void write_reconfiguration_runtime_value() {
     outputWords[wordIndex] = outputValue;
   }
   outputDfb.push_back(1);
+#endif
+}
+
+template <typename OutputDFB>
+inline void publish_unread_tile() {
+#if defined(COMPILE_FOR_NCRISC) || defined(COMPILE_FOR_BRISC)
+  CircularBuffer outputDfb(OutputDFB::index);
+  outputDfb.reserve_back(1);
+  outputDfb.push_back(1);
+#endif
+}
+
+template <typename InputDFB>
+inline void wait_without_pop() {
+#if defined(COMPILE_FOR_TRISC)
+  using namespace ckernel;
+  cb_wait_front(InputDFB::index, 1);
+#endif
 }

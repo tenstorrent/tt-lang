@@ -710,6 +710,7 @@ def _add_dfb_reconfiguration_bindings(
                     )
                     for participant in boundary.participants
                 ),
+                discard_dfb_state=boundary.discard_dfb_state,
             )
             boundary_instances[id(boundary)] = boundary_instance
         fresh_name = _fresh_name(f"{spec.name}__{name}", suffix, reserved_names)
