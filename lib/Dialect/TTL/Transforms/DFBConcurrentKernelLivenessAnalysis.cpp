@@ -3736,7 +3736,7 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
     }
   }
 
-  if (includeUnknownDomains && activeAccesses.empty()) {
+  if (activeAccesses.empty()) {
     lifetime.mayBeActive = false;
     return {};
   }
@@ -4856,12 +4856,8 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
   }
 
   if (!hasActiveEpoch) {
-    if (includeUnknownDomains) {
-      lifetime.mayBeActive = false;
-      return {};
-    }
-    return {DFBLifecycleCompletionFailureReason::MissingProtocolEffect,
-            logicalDFB.declarations.front()};
+    lifetime.mayBeActive = false;
+    return {};
   }
   return {};
 }

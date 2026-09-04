@@ -87,6 +87,92 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 
 // -----
 
+// Exact zero execution means the first DFB has no state to carry into a
+// reconfiguration boundary. The later compatible DFB may use the same index.
+
+#compute = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "operation">
+#reader = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "operation">
+#writer = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "operation">
+#entry = #ttl.dfb_reconfiguration<0, participants[#compute, #reader, #writer], discard_dfb_state = true>
+#exit = #ttl.dfb_reconfiguration<1, participants[#compute, #reader, #writer], discard_dfb_state = true>
+
+// IR: ttl.dfb_allocations = [
+// IR-SAME: dfb_index = 0 : i32
+// IR-NOT: dfb_index = 1 : i32
+
+// DEBUG: DFB logical_id=0 bounded=1
+// DEBUG-SAME: access_completion_proven=1
+// DEBUG: node (0,0) lifecycle_completion=complete
+// DEBUG-SAME: occurrences=[0:0]
+// DEBUG-SAME: earliest_accesses=[] terminal_accesses=[]
+// DEBUG: DFB logical_id=1 bounded=1
+// DEBUG: Total DFB count: 1
+
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
+  func.func @exact_zero_compute() attributes {
+    ttl.kernel_thread = #ttkernel.thread<compute>,
+    ttl.logical_kernel = #compute
+  } {
+    %inactive = ttl.bind_cb {cb_index = 0, block_count = 3} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %later = ttl.bind_cb {cb_index = 1, block_count = 3} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 3 : index
+    %step = arith.constant 1 : index
+    %core_x = ttl.core_x : index
+    scf.for %iteration = %lower to %upper step %step {
+      scf.for %inactive_iteration = %lower to %core_x step %step {
+        ttl.opaque_call "inactive" dfb_dependencies(
+            %inactive : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>)
+            () {header = "access.hpp"} : () -> ()
+      }
+      ttl.dfb_reconfiguration #entry
+      ttl.opaque_call "later" dfb_dependencies(
+          %later : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 3>)
+          dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>,
+                       #ttl.dfb_protocol_effect<push, 0, 1>,
+                       #ttl.dfb_protocol_effect<wait, 0, 1>,
+                       #ttl.dfb_protocol_effect<pop, 0, 1>]
+          () {header = "access.hpp"} : () -> ()
+      ttl.dfb_reconfiguration #exit
+    }
+    return
+  }
+
+  func.func @exact_zero_read() attributes {
+    ttl.kernel_thread = #ttkernel.thread<noc>,
+    ttl.logical_kernel = #reader,
+    ttl.noc_index = 0 : i32
+  } {
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 3 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.dfb_reconfiguration #entry
+      ttl.dfb_reconfiguration #exit
+    }
+    return
+  }
+
+  func.func @exact_zero_write() attributes {
+    ttl.kernel_thread = #ttkernel.thread<noc>,
+    ttl.logical_kernel = #writer,
+    ttl.noc_index = 1 : i32
+  } {
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 3 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.dfb_reconfiguration #entry
+      ttl.dfb_reconfiguration #exit
+    }
+    return
+  }
+}
+
+// -----
+
 #compute = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "operation">
 #reader = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "operation">
 #writer = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "operation">
