@@ -164,6 +164,7 @@ def _dfb_reconfiguration_topology(
     boundaries: Mapping[str, DFBReconfiguration],
     logical_kernels: Mapping[str, Kernel],
 ) -> tuple[tuple[int, bool, tuple[tuple[str, str], ...]], ...]:
+    # State-discard semantics change allocation validity and operation identity.
     bindings = _bind_dfb_reconfigurations(boundaries)
     return tuple(
         (

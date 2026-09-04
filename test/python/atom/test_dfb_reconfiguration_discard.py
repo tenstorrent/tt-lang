@@ -42,3 +42,16 @@ def test_discard_dfb_state_changes_operation_identity():
     discarding = _make_operation(discard_dfb_state=True)
 
     assert preserving._spec.operation_identity != discarding._spec.operation_identity
+
+
+def test_discard_dfb_state_survives_operation_composition():
+    """Composition retains the reconfiguration's state-discarding contract."""
+    nested_operation = _make_operation(discard_dfb_state=True)
+
+    @ttl.operation()
+    def composed_operation():
+        nested_operation()
+
+    boundaries = tuple(composed_operation._spec.dfb_reconfigurations.values())
+    assert len(boundaries) == 1
+    assert boundaries[0].discard_dfb_state
