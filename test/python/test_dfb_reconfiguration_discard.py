@@ -90,12 +90,61 @@ def _make_repeated_discarded_opaque_state_operation(data_format, iterations, gri
     return repeated_discarded_opaque_state_operation
 
 
+def _make_discarded_wait_state_operation(data_format):
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    reconfigure = ttl.DFBReconfiguration(
+        participants=(compute_kernel, reader_kernel, writer_kernel),
+        discard_dfb_state=True,
+    )
+
+    @ttl.operation(grid=(1, 1))
+    def discarded_wait_state_operation(input_tensor, output_tensor):
+        stale_dfb = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=2,
+        )
+        current_dfb = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=2,
+        )
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            ttl.call_extern_func(
+                DFB_RECONFIGURATION_TEST_HEADER,
+                "wait_without_pop",
+                template_args=[ttl.dfb_descriptor(stale_dfb)],
+                dfb_effects=[ttl.DFBEffect.wait(stale_dfb, tiles=1)],
+            )
+            ttl.reconfigure_dfbs(reconfigure)
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            with stale_dfb.reserve() as stale_destination:
+                ttl.copy(input_tensor[0, 0], stale_destination).wait()
+            ttl.reconfigure_dfbs(reconfigure)
+            with current_dfb.reserve() as current_destination:
+                ttl.copy(input_tensor[0, 1], current_destination).wait()
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            ttl.reconfigure_dfbs(reconfigure)
+            with current_dfb.wait() as current_source:
+                ttl.copy(current_source, output_tensor[0, 0]).wait()
+
+    return discarded_wait_state_operation
+
+
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
 @pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
 def test_repeated_reconfiguration_discards_opaque_state_before_reuse(
     device, dtype, to_device, monkeypatch, tmp_path
 ):
-    """A boundary discards state from a conditional external DFB access."""
+    """A synchronized reconfiguration discards conditional external state."""
     if ttl_api._detect_device_arch(device) != "blackhole":
         pytest.skip("requires Blackhole DFB reconfiguration support")
 
@@ -130,6 +179,44 @@ def test_repeated_reconfiguration_discards_opaque_state_before_reuse(
     assert final_mlir.count("experimental::reconfigure_dfb_interfaces") == 6
     actual = ttnn.to_torch(output).float()
     expected = host_input.float()
+    assert_pcc(expected, actual, 0.9999)
+    tolerance = (0.05, 1.0) if dtype == torch.bfloat16 else (1e-5, 1e-6)
+    assert_allclose(actual, expected, rtol=tolerance[0], atol=tolerance[1])
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+@pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
+def test_reconfiguration_discards_wait_state_before_reuse(
+    device, dtype, to_device, monkeypatch, tmp_path
+):
+    """Reconfiguration discards a waited but unconsumed DFB payload."""
+    if ttl_api._detect_device_arch(device) != "blackhole":
+        pytest.skip("requires Blackhole DFB reconfiguration support")
+
+    data_format = "bf16" if dtype == torch.bfloat16 else "float32"
+    operation = _make_discarded_wait_state_operation(data_format)
+    final_mlir_file = tmp_path / "discarded_wait_state.final.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_file))
+    host_input = (
+        torch.arange(2 * 32 * 32, dtype=torch.float32)
+        .reshape(32, 64)
+        .remainder(257)
+        .to(dtype)
+    )
+    output = to_device(torch.zeros((32, 32), dtype=dtype), device)
+
+    operation(
+        to_device(host_input, device),
+        output,
+        options="--ttl-reuse-user-dfbs",
+    )
+
+    allocation_metadata = final_mlir_file.read_text().partition(
+        "ttl.dfb_reconfiguration_plan"
+    )[0]
+    assert allocation_metadata.count("dfb_index = ") == 1
+    actual = ttnn.to_torch(output).float()
+    expected = host_input[:, 32:].float()
     assert_pcc(expected, actual, 0.9999)
     tolerance = (0.05, 1.0) if dtype == torch.bfloat16 else (1e-5, 1e-6)
     assert_allclose(actual, expected, rtol=tolerance[0], atol=tolerance[1])

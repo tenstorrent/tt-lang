@@ -388,12 +388,15 @@ and remains active in every crossed allocation epoch.
 `DFBReconfiguration(..., discard_dfb_state=True)` permits the compiler to end a
 preceding lifecycle at the call even when it contains unread producer payload or
 a named opaque external access. A producer-only lifecycle must have a
-compiler-proven maximum occupancy that does not exceed the DFB capacity. A
-consumer wait still requires exact execution proof because it may block before
-the boundary, and `unknown_dfb_access` remains unbounded because it does not name
-the affected DFBs. The boundary does not clear payload bytes. When the physical
-index is reassigned, descriptor installation resets its occupancy, ring
-pointers, and interface initialization before subsequent DFB work.
+compiler-proven maximum occupancy that does not exceed the DFB capacity. A wait
+without a matching pop is also permitted when the compiler proves that a
+producer can publish the requested pages without requiring consumer progress.
+The later `ttl.reconfigure_dfbs(...)` call cannot resolve a wait that remains
+blocked before that call executes. `unknown_dfb_access` remains unbounded because
+it does not name the affected DFBs. Reconfiguration does not clear payload bytes.
+When the physical index is reassigned, descriptor installation resets its
+occupancy, ring pointers, and interface initialization before subsequent DFB
+work.
 
 For a repeated state-discarding reconfiguration sequence, structured static
 loop bounds may locate a conditional external call between the same two
