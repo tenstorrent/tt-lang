@@ -386,28 +386,33 @@ the same physical index, storage, and interface configuration across the call
 and remains active in every crossed allocation epoch.
 
 `DFBReconfiguration(..., discard_dfb_state=True)` permits the compiler to end a
-preceding lifecycle at the call even when it contains unread producer payload or
-a named opaque external access. A producer-only lifecycle must have a
-compiler-proven maximum occupancy that does not exceed the DFB capacity. A wait
-without a matching pop is also permitted when the compiler proves that a
-producer can publish the requested pages without requiring consumer progress.
-The later `ttl.reconfigure_dfbs(...)` call cannot resolve a wait that remains
-blocked before that call executes. `unknown_dfb_access` remains unbounded because
-it does not name the affected DFBs. Reconfiguration does not clear payload bytes.
-When the physical index is reassigned, descriptor installation resets its
-occupancy, ring pointers, and interface initialization before subsequent DFB
-work.
+preceding lifecycle with residual queue or per-RISC wait state. A producer may
+leave published pages available when their maximum occupancy does not exceed the
+DFB capacity. A reader may wait without popping when preceding publication is
+sufficient for the wait to complete. A named opaque external access may also end
+at the call when its last possible execution is proven to occur earlier.
+`unknown_dfb_access` remains unbounded because it does not identify the affected
+DFBs. Reconfiguration does not clear payload bytes. Reassigning the physical
+index resets its occupancy, ring pointers, and interface initialization before
+subsequent DFB work.
+
+SDPA reduce-to-all uses this contract to share DFB data between its compute
+kernel and a data-movement sender. The sender waits for progressively published
+chunks and transmits them without popping because the compute kernel also reads
+the same pages. Popping before both readers finish could allow the producer to
+overwrite data still in use. Once both readers reach `ttl.reconfigure_dfbs(...)`,
+its synchronization establishes that the reads are complete and its state reset
+makes a separate synchronized pop unnecessary.
 
 For a repeated state-discarding reconfiguration sequence, structured static
 loop bounds may locate a conditional external call between the same two
-boundaries in every iteration. This structural upper bound does not infer
-protocol actions. It can establish capacity for an external producer-only
-reserve/push sequence; any consumer-side protocol still requires exact execution
-counts. Every reconfiguration in the repeated sequence must permit state
-discard. A lifecycle that begins after a conditional non-repeated
-reconfiguration call must use the same condition so it cannot access a
-descriptor that was not installed. Accesses ended by a conditional
-state-discarding call must use that condition as well.
+reconfiguration calls in every iteration. The bounds contribute access ordering
+and maximum execution counts; the normal capacity, wait-progress, pointer
+ownership, and operation-order checks still apply. Every reconfiguration in the
+repeated sequence must permit state discard. A lifecycle that begins after a
+conditional non-repeated reconfiguration call must use the same condition so it
+cannot access a descriptor that was not configured. Accesses ended by a
+conditional state-discarding call must use that condition as well.
 
 The allocation conflict graph permits two lifecycle epochs to share a physical
 index only when their per-node active epochs are disjoint and their static
