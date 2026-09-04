@@ -16,7 +16,7 @@ import sys
 import threading
 import weakref
 from collections.abc import Hashable, MutableMapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Union
 
@@ -2202,6 +2202,8 @@ def _extract_dfb_reconfiguration_plan(module, physical_configs):
             if field not in dfb_entry:
                 raise ValueError(f"{context} is missing '{field}'")
         dfb_index = int(dfb_entry["dfb_index"])
+        if dfb_index < 0 or dfb_index >= len(physical_configs):
+            raise ValueError(f"{context}.dfb_index must reference ttl.dfb_allocations")
         if dfb_index in dfb_epochs_by_index:
             raise ValueError(f"{attribute_name} contains duplicate index {dfb_index}")
         epochs = []
@@ -2220,12 +2222,22 @@ def _extract_dfb_reconfiguration_plan(module, physical_configs):
                     f"{epoch_context}.entry_reconfiguration is not a boundary"
                 )
             seen_entries.add(entry_ordinal)
+            config = _parse_physical_dfb_config(
+                epoch_entry, dfb_index=dfb_index, context=epoch_context
+            )
+            physical_storage_index = physical_configs[dfb_index].storage_index
+            if (
+                config.storage_index is not None
+                and config.storage_index != physical_storage_index
+            ):
+                raise ValueError(
+                    f"{epoch_context}.storage_index does not match "
+                    "ttl.dfb_allocations"
+                )
             epochs.append(
                 DFBConfigurationEpoch(
                     entry_reconfiguration_ordinal=entry_ordinal,
-                    config=_parse_physical_dfb_config(
-                        epoch_entry, dfb_index=dfb_index, context=epoch_context
-                    ),
+                    config=replace(config, storage_index=physical_storage_index),
                 )
             )
         if not epochs:
