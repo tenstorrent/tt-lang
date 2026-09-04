@@ -3871,6 +3871,8 @@ def TTKernel_NocAsyncWriteOnePacketWithStateOp
               /*posted=*/BoolAttr{});
       }]>,
     ];
+
+    let hasVerifier = 1;
 }
 
 def TTKernel_NocAsyncWriteBarrierOp

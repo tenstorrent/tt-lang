@@ -10,15 +10,18 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/InferIntRangeInterface.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "llvm/ADT/STLExtras.h"
 
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <utility>
 
 #define GET_OP_CLASSES
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.cpp.inc"
@@ -442,6 +445,181 @@ static ::mlir::LogicalResult verifyNocAsyncAddressMode(Operation *op,
 ::mlir::LogicalResult NocAsyncWriteOnePacketWithTridOp::verify() {
   return verifyNocAsyncAddressMode(getOperation(), getDstCoreXY(),
                                    getDstBankId());
+}
+
+using ConditionAssignment = std::pair<Value, bool>;
+
+/// Return the branch conditions that must hold for `operation` to execute.
+static SmallVector<ConditionAssignment>
+getEnclosingConditions(Operation *operation) {
+  SmallVector<ConditionAssignment> conditions;
+  for (Operation *ancestor = operation->getParentOp(); ancestor;
+       ancestor = ancestor->getParentOp()) {
+    auto ifOp = dyn_cast<scf::IfOp>(ancestor);
+    if (!ifOp) {
+      continue;
+    }
+    Region *operationRegion = operation->getParentRegion();
+    bool executesInThenRegion =
+        ifOp.getThenRegion().isAncestor(operationRegion);
+    bool executesInElseRegion =
+        ifOp.getElseRegion().isAncestor(operationRegion);
+    assert(executesInThenRegion != executesInElseRegion &&
+           "operation nested in scf.if must belong to exactly one branch");
+    conditions.emplace_back(ifOp.getCondition(), executesInThenRegion);
+  }
+  return conditions;
+}
+
+/// Return whether every execution of `use` also executes `setup`'s guards.
+static bool useExecutionImpliesSetupExecution(Operation *setup,
+                                              Operation *use) {
+  SmallVector<ConditionAssignment> setupConditions =
+      getEnclosingConditions(setup);
+  SmallVector<ConditionAssignment> useConditions = getEnclosingConditions(use);
+  return llvm::all_of(setupConditions, [&](ConditionAssignment setupCondition) {
+    return llvm::is_contained(useConditions, setupCondition);
+  });
+}
+
+static bool executionsMayOverlap(Operation *lhs, Operation *rhs) {
+  SmallVector<ConditionAssignment> lhsConditions =
+      getEnclosingConditions(lhs);
+  SmallVector<ConditionAssignment> rhsConditions =
+      getEnclosingConditions(rhs);
+  return llvm::none_of(lhsConditions, [&](ConditionAssignment lhsCondition) {
+    return llvm::is_contained(
+        rhsConditions,
+        ConditionAssignment{lhsCondition.first, !lhsCondition.second});
+  });
+}
+
+/// Exclude setup operations in loops that do not also contain the state use.
+static bool setupLoopExecutionsReachUse(Operation *setup, Operation *use) {
+  for (Operation *ancestor = setup->getParentOp(); ancestor;
+       ancestor = ancestor->getParentOp()) {
+    if (isa<LoopLikeOpInterface>(ancestor) && !ancestor->isAncestor(use)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/// Compare execution order after projecting nested operations into a common
+/// enclosing block.
+static bool structurallyPrecedes(Operation *before, Operation *after) {
+  for (Operation *ancestor = before; ancestor;
+       ancestor = ancestor->getParentOp()) {
+    if (ancestor->isProperAncestor(after)) {
+      return false;
+    }
+    if (Operation *projectedAfter =
+            ancestor->getBlock()->findAncestorOpInBlock(*after)) {
+      return ancestor->isBeforeInBlock(projectedAfter);
+    }
+  }
+  return false;
+}
+
+static bool haveSameNocSelector(Value lhs, Value rhs) {
+  if (!lhs || !rhs) {
+    return !lhs && !rhs;
+  }
+  if (lhs == rhs) {
+    return true;
+  }
+  std::optional<int64_t> lhsConstant = getConstantIntValue(lhs);
+  std::optional<int64_t> rhsConstant = getConstantIntValue(rhs);
+  return lhsConstant && rhsConstant && *lhsConstant == *rhsConstant;
+}
+
+/// Find the last state setup proven to execute before every execution of
+/// `use` on the same NoC.
+static NocAsyncWriteOnePacketSetStateOp
+findReachingWriteStateSetup(NocAsyncWriteOnePacketWithStateOp use) {
+  func::FuncOp function = use->getParentOfType<func::FuncOp>();
+  if (!function) {
+    return {};
+  }
+
+  NocAsyncWriteOnePacketSetStateOp reachingSetup;
+  function.walk([&](NocAsyncWriteOnePacketSetStateOp setup) {
+    if (!haveSameNocSelector(setup.getNoc(), use.getNoc()) ||
+        !setupLoopExecutionsReachUse(setup, use) ||
+        !useExecutionImpliesSetupExecution(setup, use) ||
+        !structurallyPrecedes(setup, use)) {
+      return;
+    }
+    if (!reachingSetup || structurallyPrecedes(reachingSetup, setup)) {
+      reachingSetup = setup;
+    }
+  });
+  return reachingSetup;
+}
+
+/// Return a state setup that may replace `reachingSetup` on only a subset of
+/// the executions that reach `use`.
+static NocAsyncWriteOnePacketSetStateOp findInterveningWriteStateSetup(
+    NocAsyncWriteOnePacketSetStateOp reachingSetup,
+    NocAsyncWriteOnePacketWithStateOp use) {
+  func::FuncOp function = use->getParentOfType<func::FuncOp>();
+  NocAsyncWriteOnePacketSetStateOp interveningSetup;
+  function.walk([&](NocAsyncWriteOnePacketSetStateOp setup) {
+    if (setup == reachingSetup ||
+        !haveSameNocSelector(setup.getNoc(), use.getNoc()) ||
+        !executionsMayOverlap(setup, use)) {
+      return;
+    }
+
+    bool precedesUse = structurallyPrecedes(setup, use);
+    bool followsReachingSetup = structurallyPrecedes(reachingSetup, setup);
+    if (precedesUse && followsReachingSetup) {
+      interveningSetup = setup;
+      return;
+    }
+
+    // A setup after the use becomes the reaching state on the next iteration
+    // unless that loop also contains the selected setup.
+    if (!structurallyPrecedes(use, setup)) {
+      return;
+    }
+    for (Operation *ancestor = use->getParentOp(); ancestor;
+         ancestor = ancestor->getParentOp()) {
+      if (!isa<LoopLikeOpInterface>(ancestor) ||
+          ancestor->isAncestor(reachingSetup)) {
+        continue;
+      }
+      if (ancestor->isAncestor(setup)) {
+        interveningSetup = setup;
+        return;
+      }
+    }
+  });
+  return interveningSetup;
+}
+
+::mlir::LogicalResult NocAsyncWriteOnePacketWithStateOp::verify() {
+  NocAsyncWriteOnePacketSetStateOp setup = findReachingWriteStateSetup(*this);
+  if (!setup) {
+    return emitOpError(
+        "requires a preceding one-packet write state setup on the same NoC "
+        "whose execution conditions cover this operation");
+  }
+  if (NocAsyncWriteOnePacketSetStateOp interveningSetup =
+          findInterveningWriteStateSetup(setup, *this)) {
+    InFlightDiagnostic diagnostic = emitOpError(
+        "cannot identify one preceding write state setup for every execution");
+    diagnostic.attachNote(interveningSetup.getLoc())
+        << "this setup may replace the selected state before a later issue";
+    return failure();
+  }
+  bool setupIsPosted = setup.getPosted().value_or(false);
+  bool useIsPosted = getPosted().value_or(false);
+  if (setupIsPosted != useIsPosted) {
+    return emitOpError(
+        "posted mode must match the preceding one-packet write state setup");
+  }
+  return success();
 }
 
 ::mlir::LogicalResult TensorAccessorArgsOp::verify() {
