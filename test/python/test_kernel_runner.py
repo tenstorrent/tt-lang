@@ -3145,8 +3145,8 @@ def test_reconfiguration_shares_sufficient_pipe_backing(monkeypatch):
         tensors=[],
         core_ranges=_FakeCoreRanges(),
         plan=plan,
-        existing_backing_tensors={0: backing_tensor},
-        existing_backing_allocation_bytes={0: 8192},
+        existing_backing_tensors={0: backing_tensor, 1: backing_tensor},
+        existing_backing_allocation_bytes={0: 8192, 1: 8192},
         device=device,
     )
     descriptors = kernel_runner.build_cb_descriptors(

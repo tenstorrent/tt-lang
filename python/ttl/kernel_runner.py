@@ -2543,7 +2543,7 @@ def build_dfb_reconfiguration_runtime_resources(
             storage_core = (storage_index, core)
             previous = backing_by_storage_and_core.get(storage_core)
             if previous is not None and (
-                previous[0] is not existing_tensor or previous[1] != allocation_bytes
+                previous[0] is not existing_tensor or previous[1] != required_bytes
             ):
                 raise ValueError(
                     f"storage[{storage_index}] has conflicting PipeNet backing "
