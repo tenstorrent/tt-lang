@@ -1200,6 +1200,44 @@ static LogicalResult lowerTensorCBCopy(
   return success();
 }
 
+// Tile-copy lowering cannot preserve a partial-page byte count or copy between
+// different tile geometries, so direct DFB copies use the raw NoC operation.
+static LogicalResult lowerDFBToDFBCopy(CopyOp op,
+                                       ConversionPatternRewriter &rewriter,
+                                       const TypeConverter &typeConverter) {
+  IntegerAttr byteCountAttr = op.getByteCountAttr();
+  Value srcDFB = getAttachedCB(op.getSrc());
+  Value dstDFB = getAttachedCB(op.getDst());
+  if (!byteCountAttr || !srcDFB || !dstDFB ||
+      !isa<CircularBufferType>(srcDFB.getType()) ||
+      !isa<CircularBufferType>(dstDFB.getType())) {
+    return rewriter.notifyMatchFailure(
+        op, "DFB block copy requires byte_count and two attached DFBs");
+  }
+
+  uint64_t byteCount = static_cast<uint64_t>(byteCountAttr.getInt());
+  Location loc = op.getLoc();
+  FailureOr<Value> srcCB =
+      utils::convertTTLCBToTTKernel(srcDFB, rewriter, loc, &typeConverter);
+  FailureOr<Value> dstCB =
+      utils::convertTTLCBToTTKernel(dstDFB, rewriter, loc, &typeConverter);
+  assert(succeeded(srcCB) && succeeded(dstCB) && "preflight checked DFB types");
+
+  Value srcAddress = ttk::GetReadPtrOp::create(rewriter, loc, *srcCB);
+  Value dstAddress = ttk::GetWritePtrOp::create(rewriter, loc, *dstCB);
+  int64_t nocIndex = getNocIndex(op);
+  Value noc = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
+                                        rewriter.getI8IntegerAttr(nocIndex));
+  Value srcX = ttk::MyXOp::create(rewriter, loc, noc);
+  Value srcY = ttk::MyYOp::create(rewriter, loc, noc);
+  Value size = arith::ConstantIntOp::create(rewriter, loc, byteCount, 32);
+  ttk::NocAsyncReadOp::create(rewriter, loc, ValueRange{srcX, srcY},
+                              ValueRange{}, srcAddress, dstAddress, size, noc);
+
+  rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
+  return success();
+}
+
 struct TensorSliceLowering : OpConversionPattern<TensorSliceOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -1240,6 +1278,7 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     bool srcIsSlice = srcKind == CopyOperandKind::TensorSlice;
     bool srcIsCB = srcKind == CopyOperandKind::CircularBuffer;
     bool srcIsPipe = srcKind == CopyOperandKind::Pipe;
+    bool srcIsDFBAttachedTensor = srcKind == CopyOperandKind::DFBAttachedTensor;
     bool dstIsSlice = dstKind == CopyOperandKind::TensorSlice;
     bool dstIsCB = dstKind == CopyOperandKind::CircularBuffer;
     bool dstIsPipe = dstKind == CopyOperandKind::Pipe;
@@ -1257,6 +1296,10 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     if (srcIsPipe || dstIsPipe) {
       return rewriter.notifyMatchFailure(
           op, "pipe copy requires CB <-> Pipe, got invalid combination");
+    }
+
+    if (srcIsDFBAttachedTensor && dstIsDFBAttachedTensor) {
+      return lowerDFBToDFBCopy(op, rewriter, *typeConverter);
     }
 
     // Non-pipe transfers: validate exactly one TensorSlice and one CB.

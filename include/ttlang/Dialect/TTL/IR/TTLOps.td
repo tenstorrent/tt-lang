@@ -153,6 +153,21 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     remain equal to the block shape. The span must not exceed the dataflow
     buffer's block count.
 
+    An explicit positive `byte_count` copies exactly that many consecutive
+    bytes starting at byte offset zero between two acquired dataflow-buffer
+    blocks with different tile geometry. The source must be the exact block
+    returned by `ttl.cb_wait`, and the destination must be the exact block
+    returned by `ttl.cb_reserve`. Both dataflow buffers must use the same
+    element data format, and the count must fit both acquired blocks. Later
+    destination bytes remain unchanged.
+
+    Pipe copies may also specify `byte_count` to transfer exactly that many
+    consecutive bytes starting at byte offset zero of one source block.
+    Byte-counted pipe transfers require a one-block transfer span. The sender
+    and every receiver must specify the same count, and the count must fit both
+    endpoint blocks and the unsigned 32-bit NoC transfer size. Omitting
+    `byte_count` transfers the entire block.
+
     TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
     TTKernel NOC ops are available. Issue: #87.
 
@@ -175,7 +190,9 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
   }];
   let arguments = (ins
     AnyType:$src,
-    AnyType:$dst
+    AnyType:$dst,
+    ConfinedAttr<OptionalAttr<I64Attr>,
+                 [IntPositive, IntMaxValue<4294967295>]>:$byte_count
   );
   // The verifier selects the result type from the transfer direction.
   let results = (outs AnyType:$xf);
@@ -961,11 +978,16 @@ def TTL_PipeTransferPostOp : TTL_Op<"pipe_transfer.post",
     Registers the receiver-owned destination DFB slot for a pipe transfer and
     returns the token that represents receiver-side completion. The selected
     address and synchronization protocols determine whether lowering publishes
-    the address or signals sender readiness.
+    the address or signals sender readiness. When `byte_count` is present, the
+    matching sender writes exactly that many consecutive bytes starting at byte
+    offset zero of the reserved destination block. Later bytes remain
+    unchanged.
   }];
   let arguments = (ins
     TTL_PipeTransfer:$transfer,
-    AnyType:$dst
+    AnyType:$dst,
+    ConfinedAttr<OptionalAttr<I64Attr>,
+                 [IntPositive, IntMaxValue<4294967295>]>:$byte_count
   );
   let results = (outs TTL_PipeToken:$token);
   let assemblyFormat = "$transfer `,` $dst attr-dict `:` functional-type(operands, results)";
@@ -978,11 +1000,15 @@ def TTL_PipeTransferSendOp : TTL_Op<"pipe_transfer.send",
     Waits until the selected synchronization condition is satisfied, then
     writes the source DFB payload to the receiver-owned destination storage and
     signals receiver completion. The returned write handle preserves the
-    existing `ttl.wait` ordering contract for send-side code.
+    existing `ttl.wait` ordering contract for send-side code. When `byte_count`
+    is present, the send reads exactly that many consecutive bytes starting at
+    byte offset zero of each source block.
   }];
   let arguments = (ins
     TTL_PipeTransfer:$transfer,
-    TTL_CircularBuffer:$src
+    TTL_CircularBuffer:$src,
+    ConfinedAttr<OptionalAttr<I64Attr>,
+                 [IntPositive, IntMaxValue<4294967295>]>:$byte_count
   );
   let results = (outs TTL_TransferHandle:$xf);
   let assemblyFormat = "$transfer `,` $src attr-dict `:` functional-type(operands, results)";
