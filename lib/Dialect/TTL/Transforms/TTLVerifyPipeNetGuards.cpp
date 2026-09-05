@@ -2476,6 +2476,8 @@ struct TTLVerifyPipeNetGuardsPass
     : impl::TTLVerifyPipeNetGuardsBase<TTLVerifyPipeNetGuardsPass> {
   void runOnOperation() override {
     ModuleOp module = getOperation();
+    bool protocolDomainVerificationRelaxed =
+        applyDFBProtocolDomainVerificationRelaxation(module);
 
     const PipeNetLaunchNodeDomainAnalysis &launchNodeAnalysis =
         getAnalysis<PipeNetLaunchNodeDomainAnalysis>();
@@ -2525,7 +2527,7 @@ struct TTLVerifyPipeNetGuardsPass
       }
     });
 
-    if (!isDFBProtocolDomainVerificationRelaxed()) {
+    if (!protocolDomainVerificationRelaxed) {
       verifyCBWaits(state);
     }
     if (state.sawError) {
