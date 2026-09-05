@@ -351,7 +351,7 @@ FailureOr<PipeTransportPlan> buildPipeTransportPlan(
       return failure();
     }
     stream.packetization = PipeTransportPacketization{
-        maybePayload->elementCount, maybePayload->elementSizeBytes,
+        maybePayload->pageCount, maybePayload->pageSizeBytes,
         maybePayload->sizeBytes};
     stream.sourceReuse = PipeTransportSourceReuse::AfterCompletionGroup;
 

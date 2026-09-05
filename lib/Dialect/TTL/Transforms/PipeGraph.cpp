@@ -1100,16 +1100,56 @@ LogicalResult PipeGraph::verifyCollectiveReceiverAddresses() const {
   return success();
 }
 
-/// Verify that every receiver destination can hold the sender's DFB block.
+// A transfer node pairs one send with every receiver, allowing this check to
+// compare byte counts, formats, and capacities across all endpoints.
 static LogicalResult
 verifyTransferPayloadCompatibility(const PipeTransferNode &transferNode) {
   auto sendOp = llvm::cast<PipeTransferSendOp>(transferNode.sendOp);
   auto sourceDFBType =
       mlir::cast<CircularBufferType>(sendOp.getSrc().getType());
   int64_t sourceElementCount = sourceDFBType.getElementsPerBlock();
+  IntegerAttr sendByteCount = sendOp.getByteCountAttr();
 
   for (Operation *postOperation : transferNode.receiverPostOps) {
     auto postOp = llvm::cast<PipeTransferPostOp>(postOperation);
+    IntegerAttr postByteCount = postOp.getByteCountAttr();
+    if (static_cast<bool>(sendByteCount) != static_cast<bool>(postByteCount) ||
+        (sendByteCount && sendByteCount.getInt() != postByteCount.getInt())) {
+      auto diag = postOp.emitError(
+          "pipe sender and receiver must use the same byte_count");
+      diag.attachNote(sendOp.getLoc()) << "corresponding pipe send is here";
+      return failure();
+    }
+
+    if (sendByteCount) {
+      Value destinationDFB = getAttachedCB(postOp.getDst());
+      assert(destinationDFB &&
+             "pipe transfer verifier requires an attached receiver DFB");
+      auto destinationDFBType =
+          cast<CircularBufferType>(destinationDFB.getType());
+      auto sourceTile =
+          dyn_cast<ttcore::TileType>(sourceDFBType.getElementType());
+      auto destinationTile =
+          dyn_cast<ttcore::TileType>(destinationDFBType.getElementType());
+      FailureOr<uint64_t> sourceCapacity =
+          getDFBTransferCapacityBytes(sendOp.getSrc());
+      FailureOr<uint64_t> destinationCapacity =
+          getDFBTransferCapacityBytes(postOp.getDst());
+      uint64_t byteCount = static_cast<uint64_t>(sendByteCount.getInt());
+      if (!sourceTile || !destinationTile ||
+          sourceTile.getDataType() != destinationTile.getDataType() ||
+          failed(sourceCapacity) || failed(destinationCapacity) ||
+          byteCount > *sourceCapacity || byteCount > *destinationCapacity) {
+        auto diag = postOp.emitError()
+                    << "pipe receiver cannot accept the sender's byte-counted "
+                       "payload of "
+                    << byteCount << " byte(s)";
+        diag.attachNote(sendOp.getLoc()) << "corresponding pipe send is here";
+        return failure();
+      }
+      continue;
+    }
+
     auto destinationType =
         mlir::dyn_cast<RankedTensorType>(postOp.getDst().getType());
     if (!destinationType || !destinationType.hasStaticShape()) {
