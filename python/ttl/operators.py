@@ -786,14 +786,27 @@ def _get_pipe_mlir_value(pipe):
     return pipe._mlir_value
 
 
+def _copy_byte_count_attr(byte_count, ctx):
+    """Materialize the static transfer size required by byte-counted lowering."""
+
+    if byte_count is None:
+        return None
+    byte_count_value = _get_constant_int(byte_count)
+    if byte_count_value <= 0:
+        raise ValueError(f"copy() byte_count must be positive, got {byte_count_value}")
+    return IntegerAttr.get(IntegerType.get_signless(64, ctx), byte_count_value)
+
+
 @syntax("copy")
-def copy(src, dst) -> Union[CopyTransferHandler, ReceiveRequest]:
+def copy(src, dst, *, byte_count=None) -> Union[CopyTransferHandler, ReceiveRequest]:
     """
     Initiate an asynchronous data transfer using ttl.copy.
 
     Args:
         src: Source tensor/slice (for reads), block (for writes), or Pipe (for pipe receive)
         dst: Destination block (for reads), tensor/slice (for writes), or Pipe (for pipe send)
+        byte_count: Positive static byte count for DFB block-to-block and pipe
+            transfers. Tensor-slice transfers always copy complete tiles.
 
     Returns:
         ReceiveRequest for a PipeNet receive; CopyTransferHandler otherwise.
@@ -824,7 +837,12 @@ def copy(src, dst) -> Union[CopyTransferHandler, ReceiveRequest]:
             pipe_val = _get_pipe_mlir_value(dst)
             ctx = src_cb.type.context
             xf_type = Type.parse("!ttl.transfer_handle<write>", ctx)
-            return ttl.copy(xf_type, src_cb, pipe_val)
+            return ttl.copy(
+                xf_type,
+                src_cb,
+                pipe_val,
+                byte_count=_copy_byte_count_attr(byte_count, ctx),
+            )
         else:
             # Pipe -> DFB receive. The sender writes into the receiver-owned block.
             if not _is_block(dst):
@@ -834,7 +852,34 @@ def copy(src, dst) -> Union[CopyTransferHandler, ReceiveRequest]:
             pipe_val = _get_pipe_mlir_value(src)
             ctx = dst.type.context
             xf_type = ttl.ReceiveRequestType.get(ctx)
-            return ttl.copy(xf_type, pipe_val, dst)
+            return ttl.copy(
+                xf_type,
+                pipe_val,
+                dst,
+                byte_count=_copy_byte_count_attr(byte_count, ctx),
+            )
+
+    src_is_block = _is_block(src)
+    dst_is_block = _is_block(dst)
+    if src_is_block and dst_is_block:
+        if byte_count is None:
+            raise ValueError(
+                "copy() between dataflow-buffer blocks requires byte_count"
+            )
+        ctx = src.type.context
+        xf_type = Type.parse("!ttl.transfer_handle<read>", ctx)
+        return ttl.copy(
+            xf_type,
+            src,
+            dst,
+            byte_count=_copy_byte_count_attr(byte_count, ctx),
+        )
+
+    if byte_count is not None:
+        raise ValueError(
+            "copy() byte_count is supported only for dataflow-buffer "
+            "block-to-block and pipe transfers"
+        )
 
     # Non-pipe transfers: tensor subscript <-> block
     src_is_subscript = isinstance(src, tuple)
