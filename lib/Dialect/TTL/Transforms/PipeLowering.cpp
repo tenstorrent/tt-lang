@@ -28,6 +28,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/LiveIntervalUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/PipeConstants.h"
+#include "ttlang/Dialect/TTL/Transforms/PipeNetParticipantPlan.h"
 #include "ttlang/Dialect/TTL/Transforms/PipeRecordLoweringUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/PipeTransferAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
@@ -3842,7 +3843,8 @@ struct IfDstLowering : OpConversionPattern<IfDstOp> {
   }
 };
 
-struct PipeRoleTables {
+// Parallel arrays map each record field to the constant-table lookup primitive.
+struct DevicePipeRoleTables {
   SmallVector<int64_t> minX;
   SmallVector<int64_t> minY;
   SmallVector<int64_t> maxX;
@@ -3852,8 +3854,11 @@ struct PipeRoleTables {
   std::size_t size() const { return minX.size(); }
 };
 
-static PipeRoleTables buildPipeRoleTables(PipeNetRecordsAttr records,
-                                          PipeRole role) {
+// Boolean predicates ignore duplicates, while counts retain each record
+// because every matching record executes one destination callback.
+static DevicePipeRoleTables
+buildDevicePipeRoleTables(PipeNetRecordsAttr records, PipeRole role,
+                          bool deduplicateRecords) {
   using PipeRoleRecord =
       std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t>;
   SmallVector<PipeRoleRecord> roleRecords;
@@ -3861,17 +3866,19 @@ static PipeRoleTables buildPipeRoleTables(PipeNetRecordsAttr records,
     for (const PipeRecordRoleFacts &facts :
          getPipeRecordRoleFacts(record, role)) {
       assert(facts.device &&
-             "selected device role requires device transfer records");
+             "device role query requires device transfer records");
       roleRecords.emplace_back(
           facts.minX, facts.minY, facts.maxX, facts.maxY,
           getLogicalDeviceIndex(facts.deviceDomain, facts.device));
     }
   }
   llvm::sort(roleRecords);
-  roleRecords.erase(std::unique(roleRecords.begin(), roleRecords.end()),
-                    roleRecords.end());
+  if (deduplicateRecords) {
+    roleRecords.erase(std::unique(roleRecords.begin(), roleRecords.end()),
+                      roleRecords.end());
+  }
 
-  PipeRoleTables tables;
+  DevicePipeRoleTables tables;
   for (auto [minX, minY, maxX, maxY, deviceIndex] : roleRecords) {
     tables.minX.push_back(minX);
     tables.minY.push_back(minY);
@@ -3882,14 +3889,19 @@ static PipeRoleTables buildPipeRoleTables(PipeNetRecordsAttr records,
   return tables;
 }
 
-static Value lowerSelectedRolePredicate(Operation *op,
-                                        PipeNetRecordsAttr records,
-                                        PipeRole role,
-                                        ConversionPatternRewriter &rewriter) {
+// Share coordinate and device matching between boolean predicates and counts;
+// callers select OR or addition and whether duplicate records contribute.
+static Value lowerDeviceRoleQuery(
+    Operation *op, PipeNetRecordsAttr records, PipeRole role,
+    bool deduplicateRecords, Value initialValue,
+    llvm::function_ref<Value(OpBuilder &, Location, Value, Value)>
+        accumulateRecord,
+    ConversionPatternRewriter &rewriter) {
   Location loc = op->getLoc();
-  PipeRoleTables tables = buildPipeRoleTables(records, role);
+  DevicePipeRoleTables tables =
+      buildDevicePipeRoleTables(records, role, deduplicateRecords);
   DeviceTransferAttr transfer = records.getPipes().front().getDeviceTransfer();
-  assert(transfer && "selected device role requires device transfer records");
+  assert(transfer && "device role query requires device transfer records");
 
   Value nodeX =
       ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
@@ -3900,10 +3912,9 @@ static Value lowerSelectedRolePredicate(Operation *op,
   Value lower = arith::ConstantIndexOp::create(rewriter, loc, 0);
   Value upper = arith::ConstantIndexOp::create(rewriter, loc, tables.size());
   Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
-  Value initialMatch = arith::ConstantIntOp::create(rewriter, loc, 0, 1);
 
   auto loop = scf::ForOp::create(
-      rewriter, loc, lower, upper, step, ValueRange{initialMatch},
+      rewriter, loc, lower, upper, step, ValueRange{initialValue},
       [&](OpBuilder &builder, Location bodyLoc, Value recordIndex,
           ValueRange iterArgs) {
         Value minX = buildConstantIndexTableLookup(builder, bodyLoc,
@@ -3923,11 +3934,102 @@ static Value lowerSelectedRolePredicate(Operation *op,
                                   currentDevice, roleDevice);
         Value recordMatches = arith::AndIOp::create(
             builder, bodyLoc, coordinateMatches, deviceMatches);
-        Value accumulatedMatch = arith::OrIOp::create(
-            builder, bodyLoc, iterArgs.front(), recordMatches);
-        scf::YieldOp::create(builder, bodyLoc, accumulatedMatch);
+        Value accumulatedValue =
+            accumulateRecord(builder, bodyLoc, iterArgs.front(), recordMatches);
+        scf::YieldOp::create(builder, bodyLoc, accumulatedValue);
       });
   return loop.getResult(0);
+}
+
+static Value lowerSelectedRolePredicate(Operation *op,
+                                        PipeNetRecordsAttr records,
+                                        PipeRole role,
+                                        ConversionPatternRewriter &rewriter) {
+  Location loc = op->getLoc();
+  Value initialMatch = arith::ConstantIntOp::create(rewriter, loc, 0, 1);
+  return lowerDeviceRoleQuery(
+      op, records, role, /*deduplicateRecords=*/true, initialMatch,
+      [](OpBuilder &builder, Location bodyLoc, Value accumulatedMatch,
+         Value recordMatches) {
+        return Value(arith::OrIOp::create(builder, bodyLoc, accumulatedMatch,
+                                          recordMatches));
+      },
+      rewriter);
+}
+
+// Irregular graph records require matching each record at runtime.
+static Value
+lowerDeviceDestinationCountByRecord(Operation *op, PipeNetRecordsAttr records,
+                                    ConversionPatternRewriter &rewriter) {
+  Location loc = op->getLoc();
+  Value initialCount = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  return lowerDeviceRoleQuery(
+      op, records, PipeRole::Destination, /*deduplicateRecords=*/false,
+      initialCount,
+      [](OpBuilder &builder, Location bodyLoc, Value accumulatedCount,
+         Value recordMatches) {
+        Value zero = arith::ConstantIndexOp::create(builder, bodyLoc, 0);
+        Value one = arith::ConstantIndexOp::create(builder, bodyLoc, 1);
+        Value increment =
+            arith::SelectOp::create(builder, bodyLoc, recordMatches, one, zero);
+        return Value(arith::AddIOp::create(builder, bodyLoc, accumulatedCount,
+                                           increment));
+      },
+      rewriter);
+}
+
+// Dense grid-major records permit one device-indexed count-table lookup.
+static FailureOr<Value>
+lowerPlannedDeviceDestinationCount(Operation *op, PipeNetRecordsAttr records,
+                                   ConversionPatternRewriter &rewriter) {
+  FailureOr<std::pair<int64_t, int64_t>> launchGrid = getLaunchGrid(op);
+  if (failed(launchGrid)) {
+    return failure();
+  }
+  auto [gridX, gridY] = *launchGrid;
+  FailureOr<DevicePipeNetParticipantPlan> participantPlan =
+      buildDevicePipeNetParticipantPlan(records, PipeRole::Destination, gridX,
+                                        gridY);
+  if (failed(participantPlan)) {
+    return failure();
+  }
+
+  Location loc = op->getLoc();
+  DeviceDomainAttr deviceDomain =
+      records.getPipes().front().getDeviceTransfer().getDomain();
+  Value currentDevice = CurrentDeviceIndexOp::create(
+      rewriter, loc, rewriter.getIndexType(), deviceDomain);
+  return buildConstantIndexTableLookup(
+      rewriter, loc, participantPlan->recordCountsByDevice, currentDevice);
+}
+
+// Local records permit one launch-node-indexed count-table lookup.
+static FailureOr<Value>
+lowerLocalDestinationCount(Operation *op, PipeNetRecordsAttr records,
+                           ConversionPatternRewriter &rewriter) {
+  FailureOr<std::pair<int64_t, int64_t>> launchGrid = getLaunchGrid(op);
+  if (failed(launchGrid)) {
+    return failure();
+  }
+  auto [gridX, gridY] = *launchGrid;
+  FailureOr<LocalPipeNetParticipantPlan> participantPlan =
+      buildLocalPipeNetParticipantPlan(records, PipeRole::Destination, gridX,
+                                       gridY);
+  if (failed(participantPlan)) {
+    return failure();
+  }
+
+  Location loc = op->getLoc();
+  Value nodeX =
+      ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
+  Value nodeY =
+      ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
+  Value gridXValue =
+      arith::ConstantIndexOp::create(rewriter, loc, participantPlan->gridX);
+  Value nodeRowOffset = arith::MulIOp::create(rewriter, loc, nodeY, gridXValue);
+  Value nodeIndex = arith::AddIOp::create(rewriter, loc, nodeRowOffset, nodeX);
+  return buildConstantIndexTableLookup(
+      rewriter, loc, participantPlan->recordCountsByNode, nodeIndex);
 }
 
 // Lower a per-pipe-role predicate op to the OR of per-pipe matches in the
@@ -4003,6 +4105,53 @@ struct IsActiveLowering : IsRoleLoweringBase<IsActiveOp> {
           Value isDst = buildDstMatch(builder, loc, coreX, coreY, pipeType);
           return Value(arith::OrIOp::create(builder, loc, isSrc, isDst));
         });
+  }
+};
+
+struct PipeNetDestinationCountLowering
+    : OpConversionPattern<PipeNetDestinationCountOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(PipeNetDestinationCountOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    PipeNetRecordsAttr records = op.getRecords();
+    // Regular records use one indexed lookup. Irregular records retain exact
+    // per-record matching because they cannot use the participant table.
+    if (records.getPipes().front().getDeviceTransfer()) {
+      FailureOr<Value> plannedCount =
+          lowerPlannedDeviceDestinationCount(op, records, rewriter);
+      rewriter.replaceOp(
+          op, succeeded(plannedCount)
+                  ? *plannedCount
+                  : lowerDeviceDestinationCountByRecord(op, records, rewriter));
+      return success();
+    }
+    FailureOr<Value> localCount =
+        lowerLocalDestinationCount(op, records, rewriter);
+    if (succeeded(localCount)) {
+      rewriter.replaceOp(op, *localCount);
+      return success();
+    }
+
+    Location loc = op.getLoc();
+    Value nodeX =
+        ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
+    Value nodeY =
+        ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
+    Value count = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    for (PipeRecordAttr record : records.getPipes()) {
+      PipeType pipeType = getPipeTypeFromRecord(rewriter.getContext(), record,
+                                                records.getPipeNetId());
+      Value matches = buildDstMatch(rewriter, loc, nodeX, nodeY, pipeType);
+      Value increment =
+          arith::SelectOp::create(rewriter, loc, matches, one, zero);
+      count = arith::AddIOp::create(rewriter, loc, count, increment);
+    }
+    rewriter.replaceOp(op, count);
+    return success();
   }
 };
 
@@ -5167,6 +5316,8 @@ void populatePipeLoweringPatterns(RewritePatternSet &patterns,
       typeConverter, patterns.getContext());
   patterns.add<IsSrcLowering, IsDstLowering, IsActiveLowering>(
       typeConverter, patterns.getContext(), &pipeNetIndex);
+  patterns.add<PipeNetDestinationCountLowering>(typeConverter,
+                                                patterns.getContext());
 }
 
 } // namespace mlir::tt::ttl
