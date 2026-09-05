@@ -449,7 +449,7 @@ static ::mlir::LogicalResult verifyNocAsyncAddressMode(Operation *op,
 
 using ConditionAssignment = std::pair<Value, bool>;
 
-/// Return the branch conditions that must hold for `operation` to execute.
+// Return the branch conditions that must hold for `operation` to execute.
 static SmallVector<ConditionAssignment>
 getEnclosingConditions(Operation *operation) {
   SmallVector<ConditionAssignment> conditions;
@@ -471,7 +471,7 @@ getEnclosingConditions(Operation *operation) {
   return conditions;
 }
 
-/// Return whether every execution of `use` also executes `setup`'s guards.
+// Return whether every execution of `use` also executes `setup`'s guards.
 static bool useExecutionImpliesSetupExecution(Operation *setup,
                                               Operation *use) {
   SmallVector<ConditionAssignment> setupConditions =
@@ -482,6 +482,7 @@ static bool useExecutionImpliesSetupExecution(Operation *setup,
   });
 }
 
+// Return false only when a shared branch condition proves mutual exclusion.
 static bool executionsMayOverlap(Operation *lhs, Operation *rhs) {
   SmallVector<ConditionAssignment> lhsConditions = getEnclosingConditions(lhs);
   SmallVector<ConditionAssignment> rhsConditions = getEnclosingConditions(rhs);
@@ -492,7 +493,7 @@ static bool executionsMayOverlap(Operation *lhs, Operation *rhs) {
   });
 }
 
-/// Exclude setup operations in loops that do not also contain the state use.
+// Exclude setup operations in loops that do not also contain the state use.
 static bool setupLoopExecutionsReachUse(Operation *setup, Operation *use) {
   for (Operation *ancestor = setup->getParentOp(); ancestor;
        ancestor = ancestor->getParentOp()) {
@@ -503,8 +504,8 @@ static bool setupLoopExecutionsReachUse(Operation *setup, Operation *use) {
   return true;
 }
 
-/// Compare execution order after projecting nested operations into a common
-/// enclosing block.
+// Compare execution order after projecting nested operations into a common
+// enclosing block.
 static bool structurallyPrecedes(Operation *before, Operation *after) {
   for (Operation *ancestor = before; ancestor;
        ancestor = ancestor->getParentOp()) {
@@ -519,6 +520,8 @@ static bool structurallyPrecedes(Operation *before, Operation *after) {
   return false;
 }
 
+// Prove selector equality from SSA identity, equal constants, or two omitted
+// selectors that both select the default NoC.
 static bool haveProvablySameNocSelector(Value lhs, Value rhs) {
   if (!lhs || !rhs) {
     return !lhs && !rhs;
@@ -531,7 +534,7 @@ static bool haveProvablySameNocSelector(Value lhs, Value rhs) {
   return lhsConstant && rhsConstant && *lhsConstant == *rhsConstant;
 }
 
-/// Return false only when two explicit constant selectors are distinct.
+// Return false only when two explicit constant selectors are distinct.
 static bool nocSelectorsMayAlias(Value lhs, Value rhs) {
   if (lhs == rhs) {
     return true;
@@ -544,8 +547,8 @@ static bool nocSelectorsMayAlias(Value lhs, Value rhs) {
   return !lhsConstant || !rhsConstant || *lhsConstant == *rhsConstant;
 }
 
-/// Find the last state setup proven to execute before every execution of
-/// `use` on the same NoC.
+// Find the last state setup proven to execute before every execution of `use`
+// on the same NoC.
 static NocAsyncWriteOnePacketSetStateOp
 findReachingWriteStateSetup(NocAsyncWriteOnePacketWithStateOp use) {
   func::FuncOp function = use->getParentOfType<func::FuncOp>();
@@ -568,8 +571,8 @@ findReachingWriteStateSetup(NocAsyncWriteOnePacketWithStateOp use) {
   return reachingSetup;
 }
 
-/// Return a state setup that may replace `reachingSetup` on only a subset of
-/// the executions that reach `use`.
+// Return a state setup that may replace `reachingSetup` on only a subset of the
+// executions that reach `use`.
 static NocAsyncWriteOnePacketSetStateOp
 findInterveningWriteStateSetup(NocAsyncWriteOnePacketSetStateOp reachingSetup,
                                NocAsyncWriteOnePacketWithStateOp use) {
