@@ -1529,13 +1529,15 @@ static FailureOr<ConcurrentAssignmentResult> computeConcurrentAssignments(
               interferenceGraph, vertexWeights, availableIndices,
               selectedColors, remainingSearchStates);
       exactSearchStateCount += minimum.exploredStateCount;
-      if (minimum.isOptimal()) {
+      if (minimum.status !=
+          ExactInterferenceGraphWeightStatus::AllocationWeightOverflow) {
         selectedColors = std::move(minimum.colors);
         colorCount = minimum.colorCount;
         minimumProven = false;
-      } else if (minimum.status ==
-                 ExactInterferenceGraphWeightStatus::SearchLimitReached) {
-        if (allocationByteLimit && allocationBytes > *allocationByteLimit) {
+        if (minimum.status ==
+                ExactInterferenceGraphWeightStatus::SearchLimitReached &&
+            allocationByteLimit &&
+            minimum.allocationWeight > *allocationByteLimit) {
           exactSearchLimitReached = true;
         }
       } else {

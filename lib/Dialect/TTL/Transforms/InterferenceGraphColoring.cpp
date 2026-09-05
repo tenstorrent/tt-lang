@@ -401,17 +401,13 @@ public:
   }
 
   ExactInterferenceGraphWeightColoring solve() {
-    if (bestWeight != 0 &&
+    bool searchLimitReached =
+        bestWeight != 0 &&
         assign(/*assignedCount=*/0, /*usedColorCount=*/0,
                /*currentWeight=*/0) ==
-            FixedColorCountSearchStatus::SearchLimitReached) {
-      return {ExactInterferenceGraphWeightStatus::SearchLimitReached,
-              {},
-              0,
-              0,
-              searchBudget.getExploredStateCount()};
-    }
-    if (!foundRepresentableWeight && !initialWeightRepresentable) {
+            FixedColorCountSearchStatus::SearchLimitReached;
+    if (!searchLimitReached && !foundRepresentableWeight &&
+        !initialWeightRepresentable) {
       return {ExactInterferenceGraphWeightStatus::AllocationWeightOverflow,
               {},
               0,
@@ -422,8 +418,12 @@ public:
     for (unsigned color : bestColors) {
       bestColorCount = std::max(bestColorCount, color + 1);
     }
-    return {ExactInterferenceGraphWeightStatus::Optimal, std::move(bestColors),
-            bestColorCount, bestWeight, searchBudget.getExploredStateCount()};
+    ExactInterferenceGraphWeightStatus status =
+        searchLimitReached
+            ? ExactInterferenceGraphWeightStatus::SearchLimitReached
+            : ExactInterferenceGraphWeightStatus::Optimal;
+    return {status, std::move(bestColors), bestColorCount, bestWeight,
+            searchBudget.getExploredStateCount()};
   }
 
 private:
