@@ -2792,6 +2792,8 @@ static Value incrementPipePostSequence(Location loc, Value sequenceCounter,
   return tokenSequence;
 }
 
+// An absolute completion store requires one remote fixed slot and one update
+// over the counter's complete lifetime.
 static bool hasOneShotRemoteFixedReceiver(const PipeResourceInfo &resource) {
   const PipeKey &pipe = resource.pipe;
   bool hasRemoteSingleReceiver =
@@ -4393,7 +4395,7 @@ struct PipeTransferAllocationUnit {
   /// Completion-counter color; disjoint receiver sets may share one color.
   std::optional<int64_t> maybeCompletionCounterColor;
 
-  /// Whether this unit is the only update to its completion-counter lifetime.
+  // Whether this unit is the only update to its completion-counter lifetime.
   bool hasSingleLifetimeCompletionUpdate = false;
 
   /// Deterministic order used by first-fit interval coloring.
@@ -4727,6 +4729,8 @@ getCompletionCounterLocations(const PipeTransferAllocationUnit &unit,
   return locations;
 }
 
+// A repeated receiver endpoint requires cumulative completion state even when
+// its transfer is the only member of the counter group.
 static bool executesOnceAtEveryReceiver(const PipeTransferAllocationUnit &unit,
                                         const PipeGraph &pipeGraph) {
   return llvm::all_of(pipeGraph.getPipeReceiverEndpoints(unit.transferNodeId),
