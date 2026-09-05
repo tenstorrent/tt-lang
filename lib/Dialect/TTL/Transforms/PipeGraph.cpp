@@ -806,6 +806,8 @@ verifyReceiverReservationSequence(const ReceiverAddressSequenceProof &sequence,
 LogicalResult PipeGraph::assignReceiverAddressSequences(
     ModuleOp mod, const PipeTransferIndex &transferIndex,
     PipeGraphAnalysisState &analysisState) {
+  // Address recurrence and execution count are independent: an invariant
+  // receiver address may still be posted repeatedly.
   struct ReceiverEndpointExecutionInfo {
     LaunchExecutionLocation location;
     std::optional<std::uint64_t> executionCount;

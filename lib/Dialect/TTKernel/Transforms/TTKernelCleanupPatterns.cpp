@@ -233,8 +233,8 @@ static bool mayTransitivelyInterfereWithWriteCommand(
   return interferes;
 }
 
-/// Return whether an operation or one of its nested regions can change or use
-/// write-command state.
+// Return whether an operation or one of its nested regions can change or use
+// write-command state.
 static bool mayOperationTreeInterfereWithWriteCommand(
     Operation *operation,
     DenseMap<Operation *, CallableWriteCommandInterference> &callableEffects) {
@@ -253,8 +253,8 @@ static bool mayOperationTreeInterfereWithWriteCommand(
   return result.wasInterrupted();
 }
 
-/// Collect pure same-block definitions that must precede `anchor`.
-/// Dependencies precede their users in `definitions`.
+// Collect pure same-block definitions that must precede `anchor`.
+// Dependencies precede their users in `definitions`.
 static LogicalResult
 collectValueDefinitionsToMove(Value value, Operation *anchor,
                               SmallPtrSetImpl<Operation *> &visited,
@@ -280,8 +280,8 @@ collectValueDefinitionsToMove(Value value, Operation *anchor,
   return success();
 }
 
-/// Schedule one-packet write-state configuration before a blocking wait so the
-/// NoC command setup overlaps sender synchronization.
+// Schedule one-packet write-state configuration before a blocking wait so the
+// NoC command setup overlaps sender synchronization.
 struct SchedulePostedNocWriteStateBeforeWait
     : OpRewritePattern<NocAsyncWriteOp> {
   using OpRewritePattern<NocAsyncWriteOp>::OpRewritePattern;
