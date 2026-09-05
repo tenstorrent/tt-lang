@@ -1,6 +1,12 @@
-// Summary: Verifies the explicit external DFB domain proof override.
+// Summary: Verifies the explicit external DFB domain-check override.
 
-// RUN: env TTL_RELAX_DFB_SPSC=1 ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices,ttl-verify-dfb-spsc)' -o /dev/null
+// RUN: env TTL_RELAX_DFB_SPSC=1 ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices,ttl-verify-dfb-spsc,ttl-verify-pipenet-guards)' 2>%t.warning | FileCheck %s
+// RUN: FileCheck %s --check-prefix=WARNING < %t.warning
+
+// Both relaxed verifiers record one shared audit marker and warning.
+// CHECK: ttl.relaxed_dfb_protocol_domain_verification
+// WARNING-COUNT-1: warning: `TTL_RELAX_DFB_SPSC` disables per-launch-node DFB producer, consumer, and wait correspondence checks
+// WARNING-NOT: warning: `TTL_RELAX_DFB_SPSC`
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @consumer_all_nodes()
