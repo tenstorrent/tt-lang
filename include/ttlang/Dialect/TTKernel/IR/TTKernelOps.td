@@ -4239,7 +4239,6 @@ def TTKernel_ConstantTableLookupOp
       $index `,` $values attr-dict `:` type($index)
     }];
     let hasCanonicalizer = 1;
-    let hasFolder = 1;
     let hasVerifier = 1;
 }
 
