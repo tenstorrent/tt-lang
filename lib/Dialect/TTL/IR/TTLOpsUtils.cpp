@@ -179,40 +179,38 @@ FailureOr<uint64_t> getDFBPageSizeBytes(CircularBufferType type) {
   return bitWidth / 8;
 }
 
-FailureOr<uint64_t> getDFBBlockSizeBytes(CircularBufferType type) {
-  FailureOr<uint64_t> pagesPerBlock = getDFBPagesPerBlock(type);
-  FailureOr<uint64_t> pageSizeBytes = getDFBPageSizeBytes(type);
-  if (failed(pagesPerBlock) || failed(pageSizeBytes)) {
-    return failure();
+FailureOr<uint64_t> getDFBTransferCapacityBytes(Value endpoint) {
+  auto dfbType = dyn_cast<CircularBufferType>(endpoint.getType());
+  uint64_t pageCount;
+  if (dfbType) {
+    FailureOr<uint64_t> pagesPerBlock = getDFBPagesPerBlock(dfbType);
+    if (failed(pagesPerBlock)) {
+      return failure();
+    }
+    pageCount = *pagesPerBlock;
+  } else {
+    auto viewType = dyn_cast<RankedTensorType>(endpoint.getType());
+    Value dfb = getAttachedCB(endpoint);
+    if (!viewType || !viewType.hasStaticShape() || !dfb ||
+        viewType.getNumElements() < 0) {
+      return failure();
+    }
+    dfbType = dyn_cast<CircularBufferType>(dfb.getType());
+    pageCount = static_cast<uint64_t>(viewType.getNumElements());
   }
-  std::optional<uint64_t> blockSizeBytes =
-      llvm::checkedMulUnsigned(*pagesPerBlock, *pageSizeBytes);
-  if (!blockSizeBytes) {
-    return failure();
-  }
-  return *blockSizeBytes;
-}
-
-FailureOr<uint64_t> getDFBViewSizeBytes(Value view) {
-  auto viewType = dyn_cast<RankedTensorType>(view.getType());
-  Value dfb = getAttachedCB(view);
-  if (!viewType || !viewType.hasStaticShape() || !dfb) {
-    return failure();
-  }
-  auto dfbType = dyn_cast<CircularBufferType>(dfb.getType());
-  if (!dfbType || viewType.getNumElements() < 0) {
+  if (!dfbType) {
     return failure();
   }
   FailureOr<uint64_t> pageSizeBytes = getDFBPageSizeBytes(dfbType);
   if (failed(pageSizeBytes)) {
     return failure();
   }
-  std::optional<uint64_t> viewSizeBytes = llvm::checkedMulUnsigned(
-      static_cast<uint64_t>(viewType.getNumElements()), *pageSizeBytes);
-  if (!viewSizeBytes) {
+  std::optional<uint64_t> capacityBytes =
+      llvm::checkedMulUnsigned(pageCount, *pageSizeBytes);
+  if (!capacityBytes) {
     return failure();
   }
-  return *viewSizeBytes;
+  return *capacityBytes;
 }
 
 LogicalResult verifyDFBOperandIdentities(

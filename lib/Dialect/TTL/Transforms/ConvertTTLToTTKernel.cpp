@@ -1200,7 +1200,9 @@ static LogicalResult lowerTensorCBCopy(
   return success();
 }
 
-static LogicalResult lowerDFBBlockCopy(CopyOp op,
+// Tile-copy lowering cannot preserve a partial-page byte count or copy between
+// different tile geometries, so direct DFB copies use the raw NoC operation.
+static LogicalResult lowerDFBToDFBCopy(CopyOp op,
                                        ConversionPatternRewriter &rewriter,
                                        const TypeConverter &typeConverter) {
   IntegerAttr byteCountAttr = op.getByteCountAttr();
@@ -1297,7 +1299,7 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     }
 
     if (srcIsDFBAttachedTensor && dstIsDFBAttachedTensor) {
-      return lowerDFBBlockCopy(op, rewriter, *typeConverter);
+      return lowerDFBToDFBCopy(op, rewriter, *typeConverter);
     }
 
     // Non-pipe transfers: validate exactly one TensorSlice and one CB.

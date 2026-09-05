@@ -22,7 +22,7 @@ from test_utils import (
 from sim.blockstate import BlockAcquisition
 from sim.context import set_current_kernel_type
 from sim.dfb import Block, DataflowBuffer
-from sim.ttnnsim import Tensor
+from sim.ttnnsim import ROW_MAJOR_LAYOUT, Tensor
 from sim.copy import CopyTransaction, GroupTransfer, copy
 from sim.pipe import Pipe
 from sim.kernel import KernelKind
@@ -40,6 +40,96 @@ def setup_scheduler_context(dm_kernel_context):
 
 class TestCopyTransaction:
     """Test CopyTransaction class functionality."""
+
+    @pytest.mark.parametrize(
+        "byte_count",
+        [
+            pytest.param(0, id="zero"),
+            pytest.param(-1, id="negative"),
+            pytest.param(True, id="boolean"),
+            pytest.param(1.5, id="non-integer"),
+        ],
+    )
+    def test_byte_count_must_be_a_positive_integer(self, byte_count: object) -> None:
+        """Reject values that do not denote a positive byte count."""
+
+        with pytest.raises(ValueError, match="must be a positive int"):
+            CopyTransaction(
+                make_ones_tile(),
+                make_zeros_tile(),
+                byte_count=byte_count,
+            )
+
+    def test_byte_count_must_fit_noc_transfer_size(self) -> None:
+        """Reject counts that the TTKernel NoC size operand cannot represent."""
+
+        with pytest.raises(ValueError, match="unsigned 32-bit NoC transfer size"):
+            CopyTransaction(
+                make_ones_tile(),
+                make_zeros_tile(),
+                byte_count=1 << 32,
+            )
+
+    @pytest.mark.parametrize(
+        ("source_shape", "destination_shape", "endpoint"),
+        [
+            pytest.param((1, 1), (2, 1), "source", id="source"),
+            pytest.param((2, 1), (1, 1), "destination", id="destination"),
+        ],
+    )
+    def test_byte_count_must_fit_each_dfb_block(
+        self,
+        source_shape: tuple[int, int],
+        destination_shape: tuple[int, int],
+        endpoint: str,
+    ) -> None:
+        """Reject a count that exceeds either acquired DFB block."""
+
+        source_tensor = make_element_for_buffer_shape(source_shape)
+        destination_tensor = make_element_for_buffer_shape(destination_shape)
+        source_dfb = DataflowBuffer(
+            likeness_tensor=source_tensor, shape=source_shape, block_count=1
+        )
+        destination_dfb = DataflowBuffer(
+            likeness_tensor=destination_tensor,
+            shape=destination_shape,
+            block_count=1,
+        )
+        source_block = Block(
+            tensor=source_tensor,
+            shape=source_shape,
+            acquisition=BlockAcquisition.WAIT,
+            kernel_type=KernelKind.DATA_MOVEMENT,
+            dfb=source_dfb,
+        )
+        destination_block = Block(
+            tensor=destination_tensor,
+            shape=destination_shape,
+            acquisition=BlockAcquisition.RESERVE,
+            kernel_type=KernelKind.DATA_MOVEMENT,
+            dfb=destination_dfb,
+        )
+
+        with pytest.raises(ValueError, match=f"exceeds {endpoint} capacity"):
+            CopyTransaction(source_block, destination_block, byte_count=2049)
+
+    def test_byte_count_requires_tiled_dfb_blocks(self) -> None:
+        """Reject byte-counted transfers from row-major DFB storage."""
+
+        source_tensor = Tensor(torch.zeros(8, dtype=torch.float32), ROW_MAJOR_LAYOUT)
+        source_dfb = DataflowBuffer(
+            likeness_tensor=source_tensor, shape=(8,), block_count=1
+        )
+        source_block = Block(
+            source_tensor,
+            shape=(8,),
+            acquisition=BlockAcquisition.WAIT,
+            kernel_type=KernelKind.DATA_MOVEMENT,
+            dfb=source_dfb,
+        )
+
+        with pytest.raises(ValueError, match="must use TILE layout"):
+            CopyTransaction(source_block, Pipe(7000, 7001), byte_count=4)
 
     def test_copy_transaction_unsupported_types(self) -> None:
         """Test that unsupported type combinations raise ValueError."""
@@ -364,7 +454,7 @@ class TestCopyWithStateMachine:
                 assert tensors_equal(block_data[i], source[i : i + 1, 0:1])
 
     def test_byte_counted_block_copy_preserves_destination_tail(self) -> None:
-        """Copy only the declared byte prefix between acquired DFB blocks."""
+        """Copy the declared number of bytes from the start of each DFB block."""
         set_current_kernel_type(KernelKind.DATA_MOVEMENT)
 
         source = make_rand_tensor(64, 32)

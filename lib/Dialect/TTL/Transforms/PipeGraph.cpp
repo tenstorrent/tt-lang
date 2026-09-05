@@ -1100,6 +1100,8 @@ LogicalResult PipeGraph::verifyCollectiveReceiverAddresses() const {
   return success();
 }
 
+// A transfer node pairs one send with every receiver, allowing this check to
+// compare byte counts, formats, and capacities across all endpoints.
 static LogicalResult
 verifyTransferPayloadCompatibility(const PipeTransferNode &transferNode) {
   auto sendOp = llvm::cast<PipeTransferSendOp>(transferNode.sendOp);
@@ -1129,9 +1131,10 @@ verifyTransferPayloadCompatibility(const PipeTransferNode &transferNode) {
           dyn_cast<ttcore::TileType>(sourceDFBType.getElementType());
       auto destinationTile =
           dyn_cast<ttcore::TileType>(destinationDFBType.getElementType());
-      FailureOr<uint64_t> sourceCapacity = getDFBBlockSizeBytes(sourceDFBType);
+      FailureOr<uint64_t> sourceCapacity =
+          getDFBTransferCapacityBytes(sendOp.getSrc());
       FailureOr<uint64_t> destinationCapacity =
-          getDFBViewSizeBytes(postOp.getDst());
+          getDFBTransferCapacityBytes(postOp.getDst());
       uint64_t byteCount = static_cast<uint64_t>(sendByteCount.getInt());
       if (!sourceTile || !destinationTile ||
           sourceTile.getDataType() != destinationTile.getDataType() ||

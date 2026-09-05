@@ -27,7 +27,7 @@ from typing import (
 import torch
 
 from .context import get_context
-from .context_types import PipeEntry, PipeMessage
+from .context_types import ByteCopyFormat, PipeEntry, PipeMessage
 from .dfb import Block, BlockAcquisition
 from .pipe import (
     AnySrcPipeIdentity,
@@ -98,7 +98,7 @@ class CopyTransferHandler(Protocol):
         Args:
             src: Source object
             dst: Destination object
-            byte_count: Optional valid-byte prefix for DFB and pipe copies
+            byte_count: Optional byte count for DFB and pipe copies
 
         Raises:
             ValueError: If the transfer is not valid (shape mismatch, etc.)
@@ -112,7 +112,7 @@ class CopyTransferHandler(Protocol):
         Args:
             src: Source object
             dst: Destination object
-            byte_count: Optional valid-byte prefix for DFB and pipe copies
+            byte_count: Optional byte count for DFB and pipe copies
 
         Raises:
             ValueError: If the transfer fails
@@ -126,7 +126,7 @@ class CopyTransferHandler(Protocol):
         Args:
             src: Source object
             dst: Destination object
-            byte_count: Optional valid-byte prefix for DFB and pipe copies
+            byte_count: Optional byte count for DFB and pipe copies
 
         Returns:
             True if the transfer can complete without blocking
@@ -202,6 +202,8 @@ def _validate_block_to_tensor_shapes(
 def _validate_byte_count_for_tensor(
     tensor: Tensor, byte_count: int, endpoint: str
 ) -> None:
+    """Require addressable storage large enough for the requested byte range."""
+
     element_count = math.prod(tensor.padded_shape)
     capacity = tensor.size_in_bytes(element_count)
     if byte_count > capacity:
@@ -215,23 +217,27 @@ def _validate_byte_count_for_tensor(
         )
 
 
-def _get_dfb_block_payload_spec(block: Block, endpoint: str) -> Tensor:
+def _require_dfb_block_format(block: Block, endpoint: str) -> ByteCopyFormat:
+    """Use owning-DFB metadata because dry-run blocks contain sentinel tensors."""
+
     if block.dfb is None:
         raise ValueError(
             f"byte-counted {endpoint} block must be acquired from a dataflow buffer"
         )
-    payload_spec = block.dfb.likeness_tensor
-    if payload_spec.layout != TILE_LAYOUT:
+    likeness = block.dfb.likeness_tensor
+    if likeness.layout != TILE_LAYOUT:
         raise ValueError(
             f"byte-counted {endpoint} dataflow-buffer block must use TILE layout"
         )
-    return payload_spec
+    return ByteCopyFormat(layout=likeness.layout, dtype=likeness.dtype)
 
 
 def _validate_byte_count_for_block(
     block: Block, byte_count: int, endpoint: str
-) -> None:
-    _get_dfb_block_payload_spec(block, endpoint)
+) -> ByteCopyFormat:
+    """Use declared DFB capacity because dry-run storage has zero elements."""
+
+    block_format = _require_dfb_block_format(block, endpoint)
     assert block.dfb is not None
     capacity = block.dfb.capacity_bytes // block.dfb.block_count
     if byte_count > capacity:
@@ -240,9 +246,12 @@ def _validate_byte_count_for_block(
         )
     if not _is_dry_run():
         _validate_byte_count_for_tensor(block.raw_tensor, byte_count, endpoint)
+    return block_format
 
 
-def _validate_byte_copy_formats(src: Tensor, dst: Tensor) -> None:
+def _validate_byte_copy_formats(src: ByteCopyFormat, dst: ByteCopyFormat) -> None:
+    """Allow different tile geometry without reinterpreting payload bytes."""
+
     if src.layout != dst.layout:
         raise ValueError(
             "byte-counted copy requires matching layouts; got "
@@ -256,12 +265,19 @@ def _validate_byte_copy_formats(src: Tensor, dst: Tensor) -> None:
 
 
 def _validate_byte_copy_tensors(src: Tensor, dst: Tensor, byte_count: int) -> None:
-    _validate_byte_copy_formats(src, dst)
+    """Require element-addressable storage before copying individual bytes."""
+
+    _validate_byte_copy_formats(
+        ByteCopyFormat(layout=src.layout, dtype=src.dtype),
+        ByteCopyFormat(layout=dst.layout, dtype=dst.dtype),
+    )
     _validate_byte_count_for_tensor(src, byte_count, "source")
     _validate_byte_count_for_tensor(dst, byte_count, "destination")
 
 
-def _copy_tensor_prefix(src: Tensor, dst: Tensor, byte_count: int) -> None:
+def _copy_initial_tensor_bytes(src: Tensor, dst: Tensor, byte_count: int) -> None:
+    """Copy exactly the initial byte range and preserve all later bytes."""
+
     _validate_byte_copy_tensors(src, dst, byte_count)
     complete_elements, partial_bytes = divmod(byte_count, src.element_size)
     src_values = src.to_torch().reshape(-1)
@@ -335,8 +351,8 @@ class BlockToPipeHandler:
             grid_shape=src.shape,
             data=None if _is_dry_run() else src.raw_tensor,
             byte_count=byte_count,
-            payload_spec=(
-                _get_dfb_block_payload_spec(src, "source")
+            byte_copy_format=(
+                _require_dfb_block_format(src, "source")
                 if byte_count is not None
                 else None
             ),
@@ -470,19 +486,16 @@ class BlockToBlockHandler:
             raise ValueError(
                 "Block-to-block copy requires distinct source and destination DFBs"
             )
-        _validate_byte_copy_formats(
-            _get_dfb_block_payload_spec(src, "source"),
-            _get_dfb_block_payload_spec(dst, "destination"),
-        )
-        _validate_byte_count_for_block(src, byte_count, "source")
-        _validate_byte_count_for_block(dst, byte_count, "destination")
+        src_format = _validate_byte_count_for_block(src, byte_count, "source")
+        dst_format = _validate_byte_count_for_block(dst, byte_count, "destination")
+        _validate_byte_copy_formats(src_format, dst_format)
 
     def transfer(
         self, src: Block, dst: Block, byte_count: Optional[int] = None
     ) -> None:
         assert byte_count is not None
         if not _is_dry_run():
-            _copy_tensor_prefix(src.raw_tensor, dst.raw_tensor, byte_count)
+            _copy_initial_tensor_bytes(src.raw_tensor, dst.raw_tensor, byte_count)
 
     def can_wait(
         self, src: Block, dst: Block, byte_count: Optional[int] = None
@@ -558,10 +571,10 @@ class PipeToBlockHandler:
                         f"got sender {message.byte_count} and receiver {byte_count}"
                     )
                 if byte_count is not None:
-                    assert message.payload_spec is not None
+                    assert message.byte_copy_format is not None
                     _validate_byte_copy_formats(
-                        message.payload_spec,
-                        _get_dfb_block_payload_spec(dst, "destination"),
+                        message.byte_copy_format,
+                        _require_dfb_block_format(dst, "destination"),
                     )
                 if byte_count is None and message.grid_shape != dst.shape:
                     raise ValueError(
@@ -576,7 +589,9 @@ class PipeToBlockHandler:
                     if byte_count is None:
                         dst.copy_as_dest(message.data)
                     else:
-                        _copy_tensor_prefix(message.data, dst.raw_tensor, byte_count)
+                        _copy_initial_tensor_bytes(
+                            message.data, dst.raw_tensor, byte_count
+                        )
 
                 if TRACE.enabled:
                     trace(

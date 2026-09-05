@@ -2,7 +2,7 @@
 
 // Verify that a byte-counted DFB block copy lowers to one local NoC read.
 
-// CHECK-LABEL: func.func @copy_valid_prefix_between_dfb_blocks
+// CHECK-LABEL: func.func @copy_initial_bytes_between_dfb_blocks
 // CHECK-DAG: %[[NOC:.*]] = arith.constant 0 : i8
 // CHECK-DAG: %[[SIZE:.*]] = arith.constant 896 : i32
 // CHECK: %[[SRC_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
@@ -13,7 +13,7 @@
 // CHECK: %[[SRC_Y:.*]] = ttkernel.my_y(%[[NOC]])
 // CHECK: ttkernel.noc_async_read core[%[[SRC_X]], %[[SRC_Y]]], %[[SRC_ADDR]], %[[DST_ADDR]], %[[SIZE]], noc %[[NOC]]
 // CHECK: ttkernel.noc_async_read_barrier(%[[NOC]])
-func.func @copy_valid_prefix_between_dfb_blocks()
+func.func @copy_initial_bytes_between_dfb_blocks()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %compact_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
       : !ttl.cb<[14, 1], !ttcore.tile<1x32, bf16>, 1>

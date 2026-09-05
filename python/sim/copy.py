@@ -14,6 +14,8 @@ import sys
 import types
 from typing import Optional, Sequence, Tuple
 
+from ttl.constants import MAX_NOC_TRANSFER_BYTES
+
 from .context import get_context
 from .copyhandlers import (
     CopyEndpoint,
@@ -108,6 +110,11 @@ class CopyTransaction:
         ):
             raise ValueError(
                 f"copy() byte_count must be a positive int, got {byte_count}"
+            )
+        if byte_count is not None and byte_count > MAX_NOC_TRANSFER_BYTES:
+            raise ValueError(
+                "copy() byte_count must fit the unsigned 32-bit NoC transfer "
+                f"size, got {byte_count}"
             )
         self._byte_count = byte_count
         self._completed = False

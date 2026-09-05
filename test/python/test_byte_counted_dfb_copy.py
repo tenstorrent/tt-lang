@@ -9,7 +9,7 @@
 """Device coverage for byte-counted local and PipeNet DFB copies.
 
 BF16 and FP32 transfer fourteen 1x32 pages through full 32x32 pages. Integer
-formats transfer the equivalent byte prefix between full pages because tile
+formats transfer the same initial byte range between full pages because tile
 shape changes may alter their physical padding and face order. Packed formats
 transfer a complete encoded page because their shared exponents have no host
 byte representation. Every case traverses both a local DFB copy and a two-core
@@ -351,7 +351,7 @@ def test_byte_counted_dfb_round_trip(
         ttnn.to_torch(compact_seed).reshape(compact_shape).to(torch_dtype)
     )
 
-    def replace_byte_prefix(seed):
+    def replace_initial_bytes(seed):
         expected = seed.clone()
         expected_bytes = expected.view(dtype=torch.uint8).reshape(-1)
         input_bytes = input_expected.view(dtype=torch.uint8).reshape(-1)
@@ -373,8 +373,8 @@ def test_byte_counted_dfb_round_trip(
         local_expected = input_expected
         pipe_expected = input_expected
     else:
-        local_expected = replace_byte_prefix(send_seed_expected)
-        pipe_expected = replace_byte_prefix(receive_seed_expected)
+        local_expected = replace_initial_bytes(send_seed_expected)
+        pipe_expected = replace_initial_bytes(receive_seed_expected)
         assert_same_element_bit_multiset(local_result, local_expected)
         assert_same_element_bit_multiset(pipe_result, pipe_expected)
 
@@ -382,7 +382,7 @@ def test_byte_counted_dfb_round_trip(
     compact_expected = (
         input_expected
         if bytes_per_element is None
-        else replace_byte_prefix(compact_seed_expected)
+        else replace_initial_bytes(compact_seed_expected)
     )
     if bytes_per_element is not None and compact_tile == FULL_TILE:
         assert_same_element_bit_multiset(compact_result, compact_expected)

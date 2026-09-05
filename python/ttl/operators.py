@@ -787,6 +787,8 @@ def _get_pipe_mlir_value(pipe):
 
 
 def _copy_byte_count_attr(byte_count, ctx):
+    """Materialize the static transfer size required by byte-counted lowering."""
+
     if byte_count is None:
         return None
     byte_count_value = _get_constant_int(byte_count)

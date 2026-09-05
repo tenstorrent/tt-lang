@@ -2,6 +2,7 @@
 
 // Verify the structural, type, and capacity contracts for byte-counted copies.
 
+// A local DFB-to-DFB copy requires an explicit transfer size.
 func.func @missing_byte_count()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
@@ -32,6 +33,7 @@ func.func @missing_byte_count()
 
 // -----
 
+// A local DFB-to-DFB copy returns a read handle for NoC completion.
 func.func @block_copy_requires_read_handle()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
@@ -62,6 +64,7 @@ func.func @block_copy_requires_read_handle()
 
 // -----
 
+// The source must be the current readable block from the source DFB.
 func.func @source_must_be_wait_view()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
@@ -92,6 +95,7 @@ func.func @source_must_be_wait_view()
 
 // -----
 
+// The destination must be the current writable block from the destination DFB.
 func.func @destination_must_be_reserve_view()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
@@ -122,6 +126,7 @@ func.func @destination_must_be_reserve_view()
 
 // -----
 
+// A raw local copy cannot read and write the same DFB interface.
 func.func @distinct_dataflow_buffers_required()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
@@ -150,6 +155,7 @@ func.func @distinct_dataflow_buffers_required()
 
 // -----
 
+// Raw bytes cannot be reinterpreted as a different data format.
 func.func @matching_data_formats_required()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
@@ -180,6 +186,7 @@ func.func @matching_data_formats_required()
 
 // -----
 
+// The requested bytes must fit the acquired source view.
 func.func @source_view_capacity_required()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
@@ -210,6 +217,7 @@ func.func @source_view_capacity_required()
 
 // -----
 
+// The requested bytes must fit the acquired destination view.
 func.func @destination_view_capacity_required()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
@@ -240,6 +248,7 @@ func.func @destination_view_capacity_required()
 
 // -----
 
+// A zero-byte transfer has no supported asynchronous-copy meaning.
 func.func @byte_count_must_be_positive() {
   %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
@@ -255,6 +264,7 @@ func.func @byte_count_must_be_positive() {
 
 // -----
 
+// The transfer size must fit the unsigned 32-bit TTKernel NoC operand.
 func.func @byte_count_must_fit_noc_size() {
   %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
       : !ttl.cb<[2097153, 1], !ttcore.tile<32x32, bf16>, 1>
@@ -270,6 +280,7 @@ func.func @byte_count_must_fit_noc_size() {
 
 // -----
 
+// A PipeNet send cannot read beyond one source DFB block.
 func.func @pipe_source_capacity_required() {
   %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
@@ -285,6 +296,7 @@ func.func @pipe_source_capacity_required() {
 
 // -----
 
+// A PipeNet receive cannot write beyond its acquired destination view.
 func.func @pipe_receiver_capacity_required() {
   %dst_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
       : !ttl.cb<[14, 1], !ttcore.tile<1x32, bf16>, 1>
@@ -303,6 +315,7 @@ func.func @pipe_receiver_capacity_required() {
 
 // -----
 
+// Byte-counted DFB copies require a tiled DFB data format.
 func.func @block_copy_requires_tiled_elements()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %src_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
@@ -326,6 +339,7 @@ func.func @block_copy_requires_tiled_elements()
 
 // -----
 
+// Ordinary tensor copies continue to use tile counts rather than byte counts.
 func.func @byte_count_rejects_ordinary_tensor_copy() {
   %src = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
   %dst = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>

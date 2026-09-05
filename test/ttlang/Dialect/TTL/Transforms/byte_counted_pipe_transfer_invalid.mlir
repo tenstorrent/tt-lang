@@ -2,6 +2,7 @@
 
 // Verify byte-count agreement, compatibility, and one-block PipeNet transfers.
 
+// Sender and receiver planning requires one exact transfer size.
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @sender_receiver_count_mismatch()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -44,6 +45,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
+// PipeNet endpoints must preserve the source DFB data format.
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @byte_counted_receiver_data_format_mismatch()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -86,6 +88,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
+// A byte-counted transfer represents one DFB block per execution.
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @byte_counted_grouped_transfer()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {

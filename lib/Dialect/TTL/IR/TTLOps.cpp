@@ -803,46 +803,30 @@ mlir::LogicalResult mlir::tt::ttl::TensorSliceOp::verify() {
   return mlir::success();
 }
 
+// A DFB operand denotes one complete block; an acquired view may denote less.
 static mlir::LogicalResult
-verifyByteCountFitsDFBBlock(mlir::Operation *operation, mlir::Value dfb,
-                            uint64_t byteCount, llvm::StringRef endpoint) {
-  auto dfbType =
-      mlir::dyn_cast<mlir::tt::ttl::CircularBufferType>(dfb.getType());
-  if (!dfbType) {
-    return operation->emitOpError()
-           << endpoint << " operand is not a dataflow buffer";
+verifyByteCountFitsDFBEndpoint(mlir::Operation *operation, mlir::Value endpoint,
+                               uint64_t byteCount,
+                               llvm::StringRef endpointName) {
+  const bool isDFBBlock =
+      mlir::isa<mlir::tt::ttl::CircularBufferType>(endpoint.getType());
+  const llvm::StringRef capacityKind =
+      isDFBBlock ? "dataflow-buffer block" : "acquired dataflow-buffer view";
+  mlir::FailureOr<uint64_t> capacityBytes =
+      mlir::tt::ttl::getDFBTransferCapacityBytes(endpoint);
+  if (mlir::failed(capacityBytes)) {
+    return operation->emitOpError() << "cannot determine " << endpointName
+                                    << " " << capacityKind << " size";
   }
-  mlir::FailureOr<uint64_t> blockSizeBytes =
-      mlir::tt::ttl::getDFBBlockSizeBytes(dfbType);
-  if (mlir::failed(blockSizeBytes)) {
+  if (byteCount > *capacityBytes) {
     return operation->emitOpError()
-           << "cannot determine " << endpoint << " dataflow-buffer block size";
-  }
-  if (byteCount > *blockSizeBytes) {
-    return operation->emitOpError()
-           << "byte_count " << byteCount << " exceeds " << endpoint
-           << " dataflow-buffer block capacity " << *blockSizeBytes;
+           << "byte_count " << byteCount << " exceeds " << endpointName << " "
+           << capacityKind << " capacity " << *capacityBytes;
   }
   return mlir::success();
 }
 
-static mlir::LogicalResult
-verifyByteCountFitsAcquiredView(mlir::Operation *operation, mlir::Value view,
-                                uint64_t byteCount, llvm::StringRef endpoint) {
-  mlir::FailureOr<uint64_t> viewSizeBytes =
-      mlir::tt::ttl::getDFBViewSizeBytes(view);
-  if (mlir::failed(viewSizeBytes)) {
-    return operation->emitOpError() << "cannot determine " << endpoint
-                                    << " acquired dataflow-buffer view size";
-  }
-  if (byteCount > *viewSizeBytes) {
-    return operation->emitOpError()
-           << "byte_count " << byteCount << " exceeds " << endpoint
-           << " acquired dataflow-buffer view capacity " << *viewSizeBytes;
-  }
-  return mlir::success();
-}
-
+// Raw byte copies may change tile geometry but cannot reinterpret data formats.
 static mlir::LogicalResult verifyByteCopyDataFormats(mlir::Operation *operation,
                                                      mlir::Value srcDFB,
                                                      mlir::Value dstDFB) {
@@ -920,10 +904,10 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
     }
     if (failed(verifyByteCopyDataFormats(getOperation(), srcAttachedDFB,
                                          dstAttachedDFB)) ||
-        failed(verifyByteCountFitsAcquiredView(getOperation(), getSrc(),
-                                               byteCount, "source")) ||
-        failed(verifyByteCountFitsAcquiredView(getOperation(), getDst(),
-                                               byteCount, "destination"))) {
+        failed(verifyByteCountFitsDFBEndpoint(getOperation(), getSrc(),
+                                              byteCount, "source")) ||
+        failed(verifyByteCountFitsDFBEndpoint(getOperation(), getDst(),
+                                              byteCount, "destination"))) {
       return failure();
     }
     return success();
@@ -951,7 +935,7 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
         return emitOpError()
                << "pipe send requires !ttl.transfer_handle<write> result";
       }
-      return byteCountAttr ? verifyByteCountFitsDFBBlock(
+      return byteCountAttr ? verifyByteCountFitsDFBEndpoint(
                                  getOperation(), getSrc(), byteCount, "source")
                            : success();
     }
@@ -963,8 +947,8 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
              << "pipe receive requires !ttl.receive_request result";
     }
     return byteCountAttr
-               ? verifyByteCountFitsAcquiredView(getOperation(), getDst(),
-                                                 byteCount, "destination")
+               ? verifyByteCountFitsDFBEndpoint(getOperation(), getDst(),
+                                                byteCount, "destination")
                : success();
   }
 
