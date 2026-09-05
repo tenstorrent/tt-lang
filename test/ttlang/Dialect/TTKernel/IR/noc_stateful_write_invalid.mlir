@@ -96,3 +96,30 @@ func.func @dynamic_intervening_noc_may_alias(
       : (i32, i32, i8) -> ()
   func.return
 }
+
+// -----
+
+// State changed after an issue remains changed when the next loop iteration
+// reaches that issue without restoring the selected setup.
+func.func @later_iteration_uses_intervening_state(
+    %initial_state_address: !ttkernel.noc_addr,
+    %later_state_address: !ttkernel.noc_addr, %source_address: i32,
+    %destination_address: i32, %size: i32, %noc: i8) {
+  %lower = arith.constant 0 : index
+  %upper = arith.constant 2 : index
+  %step = arith.constant 1 : index
+  ttkernel.noc_async_write_one_packet_set_state(
+      %initial_state_address, %size, noc %noc)
+      : (!ttkernel.noc_addr, i32, i8) -> ()
+  scf.for %iteration = %lower to %upper step %step {
+    // expected-error @below {{'ttkernel.noc_async_write_one_packet_with_state' op cannot identify one preceding write state setup for every execution}}
+    ttkernel.noc_async_write_one_packet_with_state(
+        %source_address, %destination_address, noc %noc)
+        : (i32, i32, i8) -> ()
+    // expected-note @below {{this setup may replace the selected state before a later issue}}
+    ttkernel.noc_async_write_one_packet_set_state(
+        %later_state_address, %size, noc %noc) posted true
+        : (!ttkernel.noc_addr, i32, i8) -> ()
+  }
+  func.return
+}
