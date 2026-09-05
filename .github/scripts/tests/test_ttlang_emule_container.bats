@@ -24,7 +24,23 @@ case "${1:-}" in
     image)
         exit "${MOCK_DOCKER_IMAGE_STATUS:-0}"
         ;;
-    build|run)
+    build)
+        if [ "${MOCK_DOCKER_REQUIRE_SANITIZED_CONTEXT:-0}" = "1" ]; then
+            source_context=""
+            for argument in "$@"; do
+                case "$argument" in
+                    tt-emule-source=*)
+                        source_context="${argument#tt-emule-source=}"
+                        ;;
+                esac
+            done
+            [ -f "$source_context/tracked-source" ] || exit 97
+            [ ! -e "$source_context/.git" ] || exit 98
+            [ ! -e "$source_context/untracked-secret" ] || exit 99
+        fi
+        exit 0
+        ;;
+    run)
         exit 0
         ;;
     *)
@@ -84,12 +100,21 @@ EOF
     chmod +x "$target_dir/cmake" "$target_dir/nproc" "$target_dir/python"
 }
 
-@test "emule image fetches only the pinned source revisions" {
+@test "emule runtime fetches only the pinned source revisions" {
     run -0 grep -F -- \
-        'fetch --depth 1 origin "$TT_EMULE_COMMIT"' "$DOCKERFILE"
+        'fetch --depth 1 origin "$_TT_EMULE_COMMIT"' "$RUNNER"
     run -0 grep -F -- \
         'fetch --depth 1 origin "$TT_METAL_COMMIT"' "$DOCKERFILE"
-    run -1 grep -F -- "git clone" "$DOCKERFILE"
+    run -1 grep -F -- "git clone" "$RUNNER" "$DOCKERFILE"
+}
+
+@test "emule image receives its source as a credential-free build context" {
+    run -0 grep -F -- \
+        "COPY --from=tt-emule-source . /opt/tt-emule" "$DOCKERFILE"
+    run -0 grep -F -- \
+        'grep -F -x -- "$TT_METAL_COMMIT" /opt/tt-emule/tt-metal-pin.txt' \
+        "$DOCKERFILE"
+    run -1 grep -F -- "github_token" "$DOCKERFILE"
 }
 
 @test "emule image verifies that the built ttnn binding is importable" {
@@ -197,19 +222,71 @@ PY
     refute_log_line "-t"
 }
 
-@test "missing image triggers a pinned image build before the run" {
+@test "missing image exports pinned source before the build" {
+    local emule_source="$BATS_TEST_TMPDIR/external-emule"
+    local emule_commit
+    mkdir -p "$emule_source"
+    git -C "$emule_source" init -q
+    touch "$emule_source/tracked-source"
+    git -C "$emule_source" add tracked-source
+    git -C "$emule_source" \
+        -c user.name=test -c user.email=test@example.com \
+        commit -q -m "Pinned source"
+    touch "$emule_source/untracked-secret"
+    emule_commit="$(git -C "$emule_source" rev-parse HEAD)"
+    emule_source="$(cd "$emule_source" && pwd -P)"
     cd "$TTLANG_REPO_ROOT"
-    MOCK_DOCKER_IMAGE_STATUS=1 TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+    MOCK_DOCKER_IMAGE_STATUS=1 \
+        MOCK_DOCKER_REQUIRE_SANITIZED_CONTEXT=1 \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        TTLANG_EMULE_RUNTIME_SOURCE_DIR="$emule_source" \
+        TTLANG_EMULE_RUNTIME_COMMIT="$emule_commit" \
+        TTLANG_EMULE_RUNTIME_METAL_COMMIT=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
         run -0 "$RUNNER" examples/eltwise_add.py
 
     assert_log_line "build"
     assert_log_contains "Dockerfile.emule"
     assert_log_line \
-        "TT_EMULE_COMMIT=07f1bd8301544403c8bc1faa4038f6cbf69909f1"
+        "TT_EMULE_COMMIT=$emule_commit"
     assert_log_line \
-        "TT_METAL_COMMIT=d48d09dee19de51f694a52fdf75d569950d38ceb"
+        "TT_METAL_COMMIT=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    assert_log_contains "tt-emule-source="
+    refute_log_line "tt-emule-source=$emule_source"
     assert_log_line "${TTLANG_REPO_ROOT}/scripts"
     assert_log_line "run"
+}
+
+@test "an unpinned emulator checkout fails before the image build" {
+    cd "$TTLANG_REPO_ROOT"
+    MOCK_DOCKER_IMAGE_STATUS=1 \
+        TTLANG_EMULE_RUNTIME_SOURCE_DIR="$TTLANG_REPO_ROOT" \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -1 "$RUNNER" examples/eltwise_add.py
+
+    assert_output --partial "emulator source must be at"
+    refute_log_line "build"
+    refute_log_line "run"
+}
+
+@test "a missing emulator source directory fails before the image build" {
+    cd "$TTLANG_REPO_ROOT"
+    MOCK_DOCKER_IMAGE_STATUS=1 \
+        TTLANG_EMULE_RUNTIME_SOURCE_DIR="$BATS_TEST_TMPDIR/missing" \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -1 "$RUNNER" examples/eltwise_add.py
+
+    assert_output --partial "source directory not found"
+    refute_log_line "build"
+    refute_log_line "run"
+}
+
+@test "a symbolic emulator revision is rejected before Docker" {
+    cd "$TTLANG_REPO_ROOT"
+    TTLANG_EMULE_RUNTIME_COMMIT=main TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -2 "$RUNNER" examples/eltwise_add.py
+
+    assert_output --partial "must be full lowercase commit SHAs"
+    [ ! -e "$MOCK_DOCKER_LOG" ]
 }
 
 @test "an unavailable daemon fails before inspecting or building the image" {
