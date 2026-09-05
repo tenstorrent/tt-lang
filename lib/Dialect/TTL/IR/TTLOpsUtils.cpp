@@ -179,6 +179,40 @@ FailureOr<uint64_t> getDFBPageSizeBytes(CircularBufferType type) {
   return bitWidth / 8;
 }
 
+FailureOr<uint64_t> getDFBTransferCapacityBytes(Value endpoint) {
+  auto dfbType = dyn_cast<CircularBufferType>(endpoint.getType());
+  uint64_t pageCount;
+  if (dfbType) {
+    FailureOr<uint64_t> pagesPerBlock = getDFBPagesPerBlock(dfbType);
+    if (failed(pagesPerBlock)) {
+      return failure();
+    }
+    pageCount = *pagesPerBlock;
+  } else {
+    auto viewType = dyn_cast<RankedTensorType>(endpoint.getType());
+    Value dfb = getAttachedCB(endpoint);
+    if (!viewType || !viewType.hasStaticShape() || !dfb ||
+        viewType.getNumElements() < 0) {
+      return failure();
+    }
+    dfbType = dyn_cast<CircularBufferType>(dfb.getType());
+    pageCount = static_cast<uint64_t>(viewType.getNumElements());
+  }
+  if (!dfbType) {
+    return failure();
+  }
+  FailureOr<uint64_t> pageSizeBytes = getDFBPageSizeBytes(dfbType);
+  if (failed(pageSizeBytes)) {
+    return failure();
+  }
+  std::optional<uint64_t> capacityBytes =
+      llvm::checkedMulUnsigned(pageCount, *pageSizeBytes);
+  if (!capacityBytes) {
+    return failure();
+  }
+  return *capacityBytes;
+}
+
 LogicalResult verifyDFBOperandIdentities(
     ModuleOp moduleOp, StringRef consumerPass,
     llvm::function_ref<bool(Operation *)> operationFilter,
