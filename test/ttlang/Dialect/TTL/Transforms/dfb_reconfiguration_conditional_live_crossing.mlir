@@ -13,7 +13,7 @@
 // CHECK-SAME: active_configurations=[initial, 0]
 // CHECK-SAME: terminal_reconfiguration=none
 
-module attributes {ttl.launch_grid = [1, 1]} {
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @compute() attributes {
     ttl.kernel_thread = #ttkernel.thread<compute>,
     ttl.logical_kernel = #compute

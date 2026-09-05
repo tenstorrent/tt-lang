@@ -11,9 +11,30 @@
 // CHECK-NEXT: bounded_unknown = <unknown> within {(0,0), (0,1)}
 // CHECK-NEXT: full_bound_unknown = <unknown> within {(0,0), (0,1), (1,0), (1,1)}
 // CHECK-NEXT: undeclared_pipe = <unknown> within {(0,0), (0,1), (1,0), (1,1)}
+// CHECK-NEXT: destination_count_loop = {(1,0)}
+// CHECK-NEXT: graph_destination_count_loop = {(0,0), (0,1), (1,0), (1,1)}
 // CHECK-NEXT: kernel_argument_condition = equivalent
 // CHECK-NEXT: helper_argument_condition = not-equivalent
 // CHECK-NOT:  =
+
+#destination_records = #ttl.pipenet_records<
+    net 0 name "destination_count" pipes [
+  <srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0,
+   dstEndX = 1, dstEndY = 0>
+]>
+
+#device_domain = #ttl.device_domain<
+    components = <name = "device", extent = [2]>>
+#graph_destination_records = #ttl.pipenet_records<
+    net 1 name "graph_destination_count" pipes [
+  #ttl.pipe_record<
+      srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0,
+      dstEndX = 1, dstEndY = 0,
+      deviceTransfer = <
+        domain = #device_domain,
+        edge = <source = <coordinates = [0]>,
+                destination = <coordinates = [1]>>>>
+]>
 
 module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
   func.func @domains(%runtime: index)
@@ -54,6 +75,22 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
     %undeclared = ttl.is_src {pipe_net_id = 7 : i64}
     scf.if %undeclared {
       "test.observe"() {test.label = "undeclared_pipe"} : () -> ()
+    }
+
+    // A local count removes nodes with no matching destination record.
+    %destination_count = ttl.pipenet_destination_count {
+        pipe_net_id = 0 : i64, records = #destination_records} : index
+    %c1 = arith.constant 1 : index
+    scf.for %iteration = %c0 to %destination_count step %c1 {
+      "test.observe"() {test.label = "destination_count_loop"} : () -> ()
+    }
+
+    // Device identity is unavailable to this node-only analysis. Retaining the
+    // incoming domain prevents an unproven device match from removing nodes.
+    %graph_destination_count = ttl.pipenet_destination_count {
+        pipe_net_id = 1 : i64, records = #graph_destination_records} : index
+    scf.for %iteration = %c0 to %graph_destination_count step %c1 {
+      "test.observe"() {test.label = "graph_destination_count_loop"} : () -> ()
     }
     func.return
   }

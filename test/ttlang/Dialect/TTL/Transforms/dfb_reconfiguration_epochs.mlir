@@ -30,7 +30,7 @@
 // DEBUG: DFB assignment: logical DFB 1 -> physical index 0 storage index 0 (bounded)
 // DEBUG: DFB assignment: logical DFB 2 -> physical index 0 storage index 0 (bounded)
 
-module attributes {ttl.launch_grid = [1, 1]} {
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @compute() attributes {
     ttl.kernel_thread = #ttkernel.thread<compute>,
     ttl.logical_kernel = #compute
