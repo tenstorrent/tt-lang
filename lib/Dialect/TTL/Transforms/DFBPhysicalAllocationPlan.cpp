@@ -386,6 +386,7 @@ struct DFBPairConflictRequirements {
   bool requireMatchingPointerOwners = true;
   bool useAllocationGroupEpochs = false;
   bool allowCapacityEnvelope = false;
+  bool allowEpochSeparatedScratchStorage = false;
 };
 
 class DFBPhysicalConflictModelBuilder {
@@ -476,6 +477,7 @@ public:
         requirements.requireMatchingElementType = false;
         requirements.requireMatchingTransactions = false;
         requirements.requireMatchingPointerOwners = false;
+        requirements.allowEpochSeparatedScratchStorage = true;
         addPairConflicts(model, liveness, lhsIndex, rhsIndex, requirements);
       }
     }
@@ -560,6 +562,13 @@ private:
                     DFBConflictReason::StorageMismatch, std::nullopt,
                     lhs.declarations.front(), rhs.declarations.front());
       }
+      return;
+    }
+    if (requirements.allowEpochSeparatedScratchStorage &&
+        !lhs.tensorBacking && !rhs.tensorBacking &&
+        lhs.accessCompletionProven && rhs.accessCompletionProven &&
+        lhs.lifecycleCompletionProven && rhs.lifecycleCompletionProven &&
+        haveDisjointConfigurationEpochs(lhs, rhs)) {
       return;
     }
     bool useConditionalProof =
