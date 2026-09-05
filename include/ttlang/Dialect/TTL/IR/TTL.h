@@ -165,6 +165,11 @@ constexpr llvm::StringLiteral kDFBAllocationsAttrName("ttl.dfb_allocations");
 constexpr llvm::StringLiteral
     kAssumedDFBAllocationGroupsAttrName("ttl.assumed_dfb_allocation_groups");
 
+/// Module attribute recording that per-launch-node DFB protocol-domain checks
+/// were skipped.
+constexpr llvm::StringLiteral kRelaxedDFBProtocolDomainVerificationAttrName(
+    "ttl.relaxed_dfb_protocol_domain_verification");
+
 /// Module attribute containing physical DFB configuration-epoch metadata.
 constexpr llvm::StringLiteral
     kDFBReconfigurationPlanAttrName("ttl.dfb_reconfiguration_plan");

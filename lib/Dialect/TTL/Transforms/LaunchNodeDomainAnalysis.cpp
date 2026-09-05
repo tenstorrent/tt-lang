@@ -10,6 +10,7 @@
 
 #include "ttlang/Analysis/ExecutionCountAnalysis.h"
 #include "ttlang/Analysis/IntegerExpressionEvaluator.h"
+#include "ttlang/Analysis/LoopIterationUtils.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
@@ -492,6 +493,9 @@ void LaunchNodeDomainState::initialize(ModuleOp module) {
   module.walk([&](PipeNetForeachDstOp op) {
     recordPipeNetRecords(op.getRecords(), op.getLoc());
   });
+  module.walk([&](PipeNetDestinationCountOp op) {
+    recordPipeNetRecords(op.getRecords(), op.getLoc());
+  });
   module.walk([&](SelectPipeSrcOp op) {
     recordPipeNetRecords(op.getRecords(), op.getLoc());
   });
@@ -571,10 +575,35 @@ static std::optional<bool> evaluatePipeNetPredicateAtLaunchLocation(
   return selected;
 }
 
+// Return no result unless every record's role is known at this location.
+static std::optional<std::uint64_t>
+evaluatePipeNetRoleRecordCountAtLaunchLocation(
+    PipeNetRecordsAttr records, PipeRole role,
+    const LaunchExecutionLocation &location) {
+  std::uint64_t count = 0;
+  for (PipeRecordAttr record : records.getPipes()) {
+    std::optional<bool> recordMatches =
+        pipeRecordRoleMatchesAtLaunchLocation(record, role, location);
+    if (!recordMatches) {
+      return std::nullopt;
+    }
+    count += *recordMatches;
+  }
+  return count;
+}
+
 static std::optional<llvm::APInt>
 evaluateLaunchLocationContextValue(Value value,
                                    const LaunchExecutionLocation &location,
                                    const LaunchNodeDomainState *state) {
+  if (auto countOp = value.getDefiningOp<PipeNetDestinationCountOp>()) {
+    std::optional<std::uint64_t> count =
+        evaluatePipeNetRoleRecordCountAtLaunchLocation(
+            countOp.getRecords(), PipeRole::Destination, location);
+    return count ? std::optional<llvm::APInt>(
+                       llvm::APInt(IndexType::kInternalStorageBitWidth, *count))
+                 : std::nullopt;
+  }
   if (auto predicate = value.getDefiningOp<PipeNetPredicateOpInterface>()) {
     if (predicate.getReferencedRecords()) {
       std::optional<bool> selected =
@@ -701,28 +730,12 @@ evaluateRegionInvocationCountAtLaunchLocation(
                : 0;
   }
   if (auto foreachSrcOp = dyn_cast<PipeNetForeachSrcOp>(parent)) {
-    std::uint64_t count = 0;
-    for (PipeRecordAttr record : foreachSrcOp.getRecords().getPipes()) {
-      std::optional<bool> matches = pipeRecordRoleMatchesAtLaunchLocation(
-          record, PipeRole::Source, location);
-      if (!matches) {
-        return std::nullopt;
-      }
-      count += *matches;
-    }
-    return count;
+    return evaluatePipeNetRoleRecordCountAtLaunchLocation(
+        foreachSrcOp.getRecords(), PipeRole::Source, location);
   }
   if (auto foreachDstOp = dyn_cast<PipeNetForeachDstOp>(parent)) {
-    std::uint64_t count = 0;
-    for (PipeRecordAttr record : foreachDstOp.getRecords().getPipes()) {
-      std::optional<bool> matches = pipeRecordRoleMatchesAtLaunchLocation(
-          record, PipeRole::Destination, location);
-      if (!matches) {
-        return std::nullopt;
-      }
-      count += *matches;
-    }
-    return count;
+    return evaluatePipeNetRoleRecordCountAtLaunchLocation(
+        foreachDstOp.getRecords(), PipeRole::Destination, location);
   }
   if (auto affineIfOp = dyn_cast<affine::AffineIfOp>(parent)) {
     LaunchNodeDomainResult trueDomain =
@@ -818,7 +831,8 @@ static bool dependsOnCoord(Value value, llvm::DenseMap<Value, bool> &cache) {
   bool result = false;
   if (op) {
     if (mlir::isa<CoreXOp, CoreYOp, PipeNetPredicateOpInterface,
-                  ttkernel::MyLogicalXOp, ttkernel::MyLogicalYOp>(op)) {
+                  PipeNetDestinationCountOp, ttkernel::MyLogicalXOp,
+                  ttkernel::MyLogicalYOp>(op)) {
       result = true;
     } else {
       for (Value operand : op->getOperands()) {
@@ -1558,6 +1572,34 @@ getBranchLaunchNodeDomains(Value condition, const LaunchNodeDomain &current,
   return getBranchDomainsImpl(condition, current, state, coordCache);
 }
 
+// Narrow only when every candidate node has an exact static trip count.
+static std::optional<LaunchNodeDomain>
+getSCFForLaunchNodeDomain(scf::ForOp forOp, const LaunchNodeDomain &current,
+                          const LaunchNodeDomainState &state) {
+  const std::set<LaunchNodeCoord> *candidateNodes =
+      current.getUpperBoundNodes();
+  if (!candidateNodes) {
+    return std::nullopt;
+  }
+
+  LaunchNodeDomain nonzeroTripCountDomain;
+  LoopInductionBindings emptyBindings;
+  for (LaunchNodeCoord node : *candidateNodes) {
+    std::optional<std::uint64_t> tripCount =
+        tt::getLoopTripCount(forOp, emptyBindings, [node, &state](Value value) {
+          return evaluateLaunchLocationContextValue(
+              value, LaunchExecutionLocation(node), &state);
+        });
+    if (!tripCount) {
+      return std::nullopt;
+    }
+    if (*tripCount > 0) {
+      nonzeroTripCountDomain.nodes.insert(node);
+    }
+  }
+  return current.intersectWith(nonzeroTripCountDomain);
+}
+
 /// Decode the PipeNet role metadata carried by one `ttl.pipenet_scope`.
 static std::optional<PipeNetScopeLaunchNodeDomains>
 getPipeNetScopeLaunchNodeDomains(PipeNetScopeOp scopeOp,
@@ -1713,6 +1755,12 @@ void LaunchNodeDomainAnalysis::visitRegionBranchControlFlowTransfer(
         unanalyzableOp =
             pickEarlierBySourceLoc(unanalyzableOp, domains.unanalyzableOp);
         narrowed = (*regionTo == 0) ? domains.thenDomain : domains.elseDomain;
+      })
+      .Case<scf::ForOp>([&](scf::ForOp forOp) {
+        if (std::optional<LaunchNodeDomain> loopDomain =
+                getSCFForLaunchNodeDomain(forOp, before.getDomain(), state)) {
+          narrowed = std::move(*loopDomain);
+        }
       })
       .Case<affine::AffineIfOp>([&](affine::AffineIfOp ifOp) {
         LaunchNodeDomainResult condDomain =
