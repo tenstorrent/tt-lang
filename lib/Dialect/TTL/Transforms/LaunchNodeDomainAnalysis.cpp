@@ -343,14 +343,14 @@ LaunchNodeDomain getPipeRecordsRoleLaunchNodeDomain(PipeNetRecordsAttr records,
   return result;
 }
 
-/// Device-qualified records require device identity because one launch node
-/// can participate on one logical device and not another.
+// Device-qualified records require device identity because one launch node
+// can participate on one logical device and not another.
 static bool hasDeviceQualifiedPipeNetRecords(PipeNetRecordsAttr records) {
   return records && records.getPipes().front().getDeviceTransfer();
 }
 
-/// Record predicates own their endpoint set; a module-wide PipeNet domain can
-/// include other declarations sharing the same id.
+// Record predicates own their endpoint set; a module-wide PipeNet domain can
+// include other declarations sharing the same id.
 static LaunchNodeDomain
 getPipeNetPredicateRoleLaunchNodeDomain(PipeNetPredicateOpInterface predicate,
                                         const LaunchNodeDomainState &state) {

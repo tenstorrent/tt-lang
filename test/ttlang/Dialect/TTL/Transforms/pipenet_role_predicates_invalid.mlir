@@ -1,5 +1,9 @@
 // RUN: ttlang-opt %s --verify-diagnostics --split-input-file -ttl-verify-pipenet-guards
 
+// Verify diagnostics for malformed PipeNet predicate record metadata.
+
+// A predicate and its record table must identify the same PipeNet.
+
 #records = #ttl.pipenet_records<net 7 name "mismatched" pipes [
   <srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0,
    dstEndX = 1, dstEndY = 0>
@@ -14,6 +18,8 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 }
 
 // -----
+
+// Destination predicates enforce the same PipeNet identity requirement.
 
 #records = #ttl.pipenet_records<net 7 name "mismatched" pipes [
   <srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0,
@@ -30,6 +36,8 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
+// Active predicates enforce the same PipeNet identity requirement.
+
 #records = #ttl.pipenet_records<net 7 name "mismatched" pipes [
   <srcX = 0, srcY = 0, dstStartX = 1, dstStartY = 0,
    dstEndX = 1, dstEndY = 0>
@@ -44,6 +52,8 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 }
 
 // -----
+
+// Predicate record endpoints must belong to the module launch grid.
 
 #records = #ttl.pipenet_records<net 7 name "outside_grid" pipes [
   <srcX = 0, srcY = 0, dstStartX = 2, dstStartY = 0,
