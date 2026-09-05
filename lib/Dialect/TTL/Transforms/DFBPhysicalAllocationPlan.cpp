@@ -377,23 +377,6 @@ canReconfigureDescriptorAcrossEpochs(const DFBLogicalLifecycle &lhs,
          haveDisjointConfigurationEpochs(lhs, rhs);
 }
 
-static bool
-requiresReconfigurationStorage(const DFBLogicalLifecycle &logicalDFB) {
-  // The runtime gives changed descriptors hidden tensor backing, which cannot
-  // also provide static storage for a distinct physical descriptor.
-  auto lifetimeRequiresStorage = [](const DFBPerNodeLifetime &lifetime) {
-    return llvm::any_of(lifetime.epochs, [](const DFBLifecycleEpoch &epoch) {
-      return llvm::any_of(getDescriptorInstallationEpochs(epoch),
-                          [](std::optional<int64_t> configurationEpoch) {
-                            return configurationEpoch.has_value();
-                          });
-    });
-  };
-  return llvm::any_of(logicalDFB.nodeLifetimes, lifetimeRequiresStorage) ||
-         llvm::any_of(logicalDFB.possibleNodeLifetimes,
-                      lifetimeRequiresStorage);
-}
-
 } // namespace
 
 struct DFBPairConflictRequirements {
@@ -403,7 +386,6 @@ struct DFBPairConflictRequirements {
   bool requireMatchingPointerOwners = true;
   bool useAllocationGroupEpochs = false;
   bool allowCapacityEnvelope = false;
-  bool requireStaticStorageOwnership = false;
 };
 
 class DFBPhysicalConflictModelBuilder {
@@ -494,7 +476,6 @@ public:
         requirements.requireMatchingElementType = false;
         requirements.requireMatchingTransactions = false;
         requirements.requireMatchingPointerOwners = false;
-        requirements.requireStaticStorageOwnership = true;
         addPairConflicts(model, liveness, lhsIndex, rhsIndex, requirements);
       }
     }
@@ -601,14 +582,6 @@ private:
       llvm::append_range(sharedNodes, exactSharedNodes.nodes);
     }
     if (sharedNodes.empty()) {
-      return;
-    }
-    if (requirements.requireStaticStorageOwnership &&
-        (requiresReconfigurationStorage(lhs) ||
-         requiresReconfigurationStorage(rhs))) {
-      addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
-                  DFBConflictReason::StorageMismatch, sharedNodes.front(),
-                  lhs.declarations.front(), rhs.declarations.front());
       return;
     }
     if (!lhs.accessCompletionProven || !rhs.accessCompletionProven) {
