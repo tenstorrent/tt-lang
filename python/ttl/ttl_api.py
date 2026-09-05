@@ -1323,6 +1323,28 @@ def _get_kernel_fabric_manager_intervals(module, kernel_name: str):
     return tuple(intervals)
 
 
+def _make_data_movement_config(noc_role: int, dynamic_noc: bool):
+    """Build the TTNN descriptor for a compiler-assigned NOC thread."""
+    if noc_role not in (0, 1):
+        raise ValueError(f"Invalid ttl.noc_index {noc_role}; expected 0 or 1")
+    if not dynamic_noc:
+        if noc_role == 0:
+            return ttnn.ReaderConfigDescriptor()
+        return ttnn.WriterConfigDescriptor()
+
+    if noc_role == 0:
+        processor = ttnn.DataMovementProcessor.RISCV_1
+        noc = ttnn.NOC.RISCV_0_default
+    else:
+        processor = ttnn.DataMovementProcessor.RISCV_0
+        noc = ttnn.NOC.RISCV_1_default
+    return ttnn.DataMovementConfigDescriptor(
+        processor=processor,
+        noc=noc,
+        noc_mode=ttnn.NOC_MODE.DM_DYNAMIC_NOC,
+    )
+
+
 def _compile_ttnn_kernel(
     module,
     args,
@@ -1349,6 +1371,7 @@ def _compile_ttnn_kernel(
     operation_name: str = "<anonymous>",
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
+    dynamic_noc: bool = False,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -1567,11 +1590,10 @@ def _compile_ttnn_kernel(
             thread_to_kernel["TRISC_2"] = name
         elif thread_type == "noc":
             noc_role = _get_kernel_noc_index(module, name)
+            config = _make_data_movement_config(noc_role, dynamic_noc)
             if noc_role == 0:
-                config = ttnn.ReaderConfigDescriptor()
                 thread_to_kernel["NCRISC"] = name  # Reader
             else:
-                config = ttnn.WriterConfigDescriptor()
                 thread_to_kernel["BRISC"] = name  # Writer
         else:
             config = ttnn.ReaderConfigDescriptor()
@@ -2999,6 +3021,7 @@ def _lower_program_to_kernel(
             operation_name=operation_name,
             runtime_resource_factory=runtime_resource_factory,
             runtime_resource_cache=runtime_resource_cache,
+            dynamic_noc=compiler_options.dynamic_noc,
         )
         return compiled_kernel
 
