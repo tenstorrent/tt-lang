@@ -17,8 +17,7 @@
 namespace mlir::tt::ttl {
 
 // Planner table indices are int64_t, so domain products must fit that type.
-static FailureOr<int64_t>
-getRepresentableDeviceCount(DeviceDomainAttr domain) {
+static FailureOr<int64_t> getRepresentableDeviceCount(DeviceDomainAttr domain) {
   std::uint64_t deviceCount = 1;
   for (DeviceDomainComponentAttr component : domain.getComponents()) {
     for (int64_t extent : component.getExtent().asArrayRef()) {
