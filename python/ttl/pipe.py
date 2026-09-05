@@ -401,6 +401,17 @@ class PipeNet:
             "The compiler handles this method specially."
         )
 
+    def destination_count(self) -> int:
+        """Return the number of records targeting the current node.
+
+        The result equals the number of times ``if_dst`` executes its callback
+        on the current node.
+        """
+        raise RuntimeError(
+            "PipeNet.destination_count() should only be called inside a TTL "
+            "kernel. The compiler handles this method specially."
+        )
+
     def is_active(self) -> bool:
         """Boolean predicate: current node is either a source or a
         destination of any pipe in this net. Lowers to `ttl.is_active`."""

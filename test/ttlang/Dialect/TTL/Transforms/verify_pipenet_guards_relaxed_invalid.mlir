@@ -2,6 +2,7 @@
 
 // RUN: env TTL_RELAX_DFB_SPSC=1 ttlang-opt %s --split-input-file --verify-diagnostics -ttl-verify-pipenet-guards
 
+// expected-warning @below {{`TTL_RELAX_DFB_SPSC` disables per-launch-node DFB producer, consumer, and wait correspondence checks}}
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @unguarded_pipe_source()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {

@@ -64,6 +64,14 @@ each launch node executes that body once for every record in which the node has
 the requested source or destination role. Multiple matching records execute in
 PipeNet construction order.
 
+`net.destination_count()` returns the number of records that select the
+current node as a destination. It counts records, including duplicate endpoint
+relations, rather than distinct sources or destination coordinates. The result
+therefore equals the number of `net.if_dst(callback)` executions on that node
+and can be used as a receive-loop bound. It does not perform synchronization.
+Local PipeNets lower the count to one launch-node-indexed constant-table lookup;
+graph PipeNets also match each record's logical destination device.
+
 TTKernel conversion uses two representations:
 
 - For one to four records, conversion emits one static pipe and one coordinate
@@ -1927,7 +1935,8 @@ each region according to the parent op:
 | `ttl.if_src %pipe` body | intersect with `pipe.src` |
 | `ttl.if_dst %pipe` body | intersect with `pipe.dst` |
 | `ttl.pipenet_scope` body | unchanged after checking current domain is contained in declared role union |
-| `scf.for`/`scf.while`/`affine.for`/`scf.execute_region`/`linalg.generic`/multi-block via `cf.cond_br` | unchanged (no predication, framework default) |
+| `scf.for` body | intersect with nodes whose statically evaluated trip count is nonzero; unchanged when any candidate node cannot be evaluated |
+| `scf.while`/`affine.for`/`scf.execute_region`/`linalg.generic`/multi-block via `cf.cond_br` | unchanged (no predication, framework default) |
 
 For `scf.if`, the condition's domain is determined structurally:
 

@@ -698,7 +698,8 @@ correspondence, and synchronization schedules also remain mandatory. The
 program must ensure that at most one producer and at most one consumer controls
 the DFB on each active launch node. Every wait must still have a producer that
 publishes the required pages. The variable is unset by default, so all checks
-run unless the user sets it.
+run unless the user sets it. When set, the compiler emits a warning and records
+`ttl.relaxed_dfb_protocol_domain_verification` on the module.
 
 See `test/ttlang/Dialect/TTL/Transforms/verify_dfb_spsc_invalid.mlir` and
 `verify_dfb_spsc_missing_producer_invalid.mlir` and

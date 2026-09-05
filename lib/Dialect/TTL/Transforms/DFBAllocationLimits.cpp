@@ -132,6 +132,33 @@ FailureOr<uint64_t> getSynchronizedDFBResetStateBytes(ModuleOp module) {
   return *stateBytes;
 }
 
+// Both runtime mechanisms require the same resolved Blackhole architecture;
+// sharing this check prevents their diagnostics and accepted targets diverging.
+static LogicalResult validateBlackholeOnlyDFBTarget(ModuleOp module,
+                                                    Operation *operation,
+                                                    StringRef featureName) {
+  std::string failureReason;
+  FailureOr<std::optional<ttcore::Arch>> targetArch =
+      resolveTargetArch(module, failureReason);
+  if (failed(targetArch)) {
+    module.emitOpError(failureReason);
+    return failure();
+  }
+  if (!*targetArch) {
+    operation->emitOpError()
+        << "requires a resolved target architecture; " << featureName
+        << " is supported only for Blackhole";
+    return failure();
+  }
+  if (**targetArch == ttcore::Arch::Blackhole) {
+    return success();
+  }
+  operation->emitOpError()
+      << "is supported only for Blackhole; selected target is "
+      << ttcore::ArchAttr::get(module.getContext(), **targetArch);
+  return failure();
+}
+
 LogicalResult validateDFBReconfigurationTarget(ModuleOp module) {
   DFBReconfigurationOp firstBoundary;
   module.walk([&](DFBReconfigurationOp boundary) -> WalkResult {
@@ -141,21 +168,8 @@ LogicalResult validateDFBReconfigurationTarget(ModuleOp module) {
   if (!firstBoundary) {
     return success();
   }
-
-  std::string failureReason;
-  FailureOr<std::optional<ttcore::Arch>> targetArch =
-      resolveTargetArch(module, failureReason);
-  if (failed(targetArch)) {
-    module.emitOpError(failureReason);
-    return failure();
-  }
-  if (!*targetArch || **targetArch == ttcore::Arch::Blackhole) {
-    return success();
-  }
-  firstBoundary.emitOpError()
-      << "is supported only for Blackhole; selected target is "
-      << ttcore::ArchAttr::get(module.getContext(), **targetArch);
-  return failure();
+  return validateBlackholeOnlyDFBTarget(module, firstBoundary,
+                                        "DFB reconfiguration");
 }
 
 FailureOr<uint64_t> getDFBReconfigurationStateBytes(ModuleOp module) {
@@ -224,27 +238,8 @@ LogicalResult validateSynchronizedDFBResetTarget(ModuleOp module) {
   if (!firstReset) {
     return success();
   }
-
-  std::string failureReason;
-  FailureOr<std::optional<ttcore::Arch>> targetArch =
-      resolveTargetArch(module, failureReason);
-  if (failed(targetArch)) {
-    module.emitOpError(failureReason);
-    return failure();
-  }
-  if (!*targetArch) {
-    firstReset->emitOpError(
-        "requires a resolved target architecture; synchronized DFB reset is "
-        "supported only for Blackhole");
-    return failure();
-  }
-  if (**targetArch == ttcore::Arch::Blackhole) {
-    return success();
-  }
-  firstReset->emitOpError()
-      << "is supported only for Blackhole; selected target is "
-      << ttcore::ArchAttr::get(module.getContext(), **targetArch);
-  return failure();
+  return validateBlackholeOnlyDFBTarget(module, firstReset,
+                                        "synchronized DFB reset");
 }
 
 FailureOr<uint64_t> getDFBAllocationSizeBytes(CircularBufferType type,

@@ -3189,8 +3189,9 @@ mlir::LogicalResult mlir::tt::ttl::RawAddrOp::verify() {
 // PipeNetPredicateOpInterface implementations.
 //===----------------------------------------------------------------------===//
 
-template <typename PredicateOp>
-static mlir::LogicalResult verifyPipeNetPredicate(PredicateOp op) {
+// The ID and expanded records redundantly identify one PipeNet and must agree.
+template <typename PipeNetReferenceOp>
+static mlir::LogicalResult verifyPipeNetRecordIdentity(PipeNetReferenceOp op) {
   mlir::tt::ttl::PipeNetRecordsAttr records = op.getRecordsAttr();
   int64_t pipeNetId = op.getPipeNetIdAttr().getInt();
   if (records && records.getPipeNetId() != pipeNetId) {
@@ -3198,6 +3199,15 @@ static mlir::LogicalResult verifyPipeNetPredicate(PredicateOp op) {
            << "record table identifies PipeNet " << records.getPipeNetId()
            << ", but pipe_net_id is " << pipeNetId;
   }
+  return mlir::success();
+}
+
+template <typename PredicateOp>
+static mlir::LogicalResult verifyPipeNetPredicate(PredicateOp op) {
+  if (mlir::failed(verifyPipeNetRecordIdentity(op))) {
+    return mlir::failure();
+  }
+  mlir::tt::ttl::PipeNetRecordsAttr records = op.getRecordsAttr();
   if (records && !records.getPipes().front().getDeviceTransfer()) {
     return op.emitOpError()
            << "record table must identify logical-device transfers";
@@ -3211,6 +3221,10 @@ mlir::LogicalResult mlir::tt::ttl::IsSrcOp::verify() {
 
 mlir::LogicalResult mlir::tt::ttl::IsDstOp::verify() {
   return verifyPipeNetPredicate(*this);
+}
+
+mlir::LogicalResult mlir::tt::ttl::PipeNetDestinationCountOp::verify() {
+  return verifyPipeNetRecordIdentity(*this);
 }
 
 mlir::LogicalResult mlir::tt::ttl::IsActiveOp::verify() {

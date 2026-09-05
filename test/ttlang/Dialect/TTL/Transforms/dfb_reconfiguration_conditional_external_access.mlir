@@ -87,8 +87,8 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 
 // -----
 
-// Exact zero execution means the first DFB has no state to carry into a
-// reconfiguration boundary. The later compatible DFB may use the same index.
+// Exact zero execution gives the first DFB an empty access domain. The later
+// compatible DFB may use the same index because they share no launch node.
 
 #compute = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "operation">
 #reader = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "operation">
@@ -100,11 +100,9 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 // IR-SAME: dfb_index = 0 : i32
 // IR-NOT: dfb_index = 1 : i32
 
-// DEBUG: DFB logical_id=0 bounded=1
-// DEBUG-SAME: access_completion_proven=1
-// DEBUG: node (0,0) lifecycle_completion=complete
-// DEBUG-SAME: occurrences=[0:0]
-// DEBUG-SAME: earliest_accesses=[] terminal_accesses=[]
+// DEBUG: DFB logical_id=0 bounded=0
+// DEBUG-SAME: access_completion_proven=0
+// DEBUG-SAME: domain={}
 // DEBUG: DFB logical_id=1 bounded=1
 // DEBUG: Total DFB count: 1
 
