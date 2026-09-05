@@ -1,5 +1,39 @@
 // RUN: ttlang-opt %s --verify-diagnostics --split-input-file
 
+// Summary: Verifies row-prefix stores reject unsupported tensor geometry,
+// data types, and producer ownership.
+
+// Row-prefix stores require a tiled source tensor.
+func.func @source_must_be_tiled(%source: tensor<32x32xbf16>) {
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 14], !ttcore.tile<1x32, bf16>, 1>
+  %view = ttl.cb_reserve %cb
+      : <[1, 14], !ttcore.tile<1x32, bf16>, 1>
+      -> tensor<1x14x!ttcore.tile<1x32, bf16>>
+  // expected-error @below {{'ttl.store' op row_prefix requires tiled source and destination tensors}}
+  ttl.store %source, %view {row_prefix}
+      : tensor<32x32xbf16>, tensor<1x14x!ttcore.tile<1x32, bf16>>
+  func.return
+}
+
+// -----
+
+// Row-prefix stores require a tiled destination tensor.
+func.func @destination_must_be_tiled(
+    %source: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
+      : !ttl.cb<[1, 14], bf16, 1>
+  %view = ttl.cb_reserve %cb
+      : <[1, 14], bf16, 1> -> tensor<1x14xbf16>
+  // expected-error @below {{'ttl.store' op row_prefix requires tiled source and destination tensors}}
+  ttl.store %source, %view {row_prefix}
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x14xbf16>
+  func.return
+}
+
+// -----
+
+// Row-prefix stores require one complete 32x32 source tile.
 func.func @source_tile_must_be_full(
     %source: tensor<1x1x!ttcore.tile<16x32, bf16>>) {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
@@ -15,6 +49,7 @@ func.func @source_tile_must_be_full(
 
 // -----
 
+// Row-prefix stores consume exactly one source tile.
 func.func @source_must_be_one_tile(
     %source: tensor<1x2x!ttcore.tile<32x32, bf16>>) {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
@@ -30,6 +65,7 @@ func.func @source_must_be_one_tile(
 
 // -----
 
+// Source and destination data types must match.
 func.func @data_types_must_match(
     %source: tensor<1x1x!ttcore.tile<32x32, f32>>) {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
@@ -45,6 +81,7 @@ func.func @data_types_must_match(
 
 // -----
 
+// Row-prefix packing supports the native BF16 and FP32 packer formats.
 func.func @unsupported_data_type(
     %source: tensor<1x1x!ttcore.tile<32x32, bfp_bf8>>) {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
@@ -60,6 +97,7 @@ func.func @unsupported_data_type(
 
 // -----
 
+// A high-level row-prefix store writes only into producer-owned storage.
 func.func @view_must_be_reserved(
     %source: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
@@ -75,6 +113,7 @@ func.func @view_must_be_reserved(
 
 // -----
 
+// The compact destination retains the full source row width.
 func.func @destination_width_must_match(
     %source: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
@@ -90,6 +129,7 @@ func.func @destination_width_must_match(
 
 // -----
 
+// A row prefix cannot exceed the complete source tile capacity.
 func.func @destination_must_fit_source(
     %source: tensor<1x1x!ttcore.tile<32x32, bf16>>) {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
@@ -105,6 +145,7 @@ func.func @destination_must_fit_source(
 
 // -----
 
+// A lowered row-prefix tile store requires producer-owned storage.
 func.func @tile_store_view_must_be_reserved(
     %tile: !ttcore.tile<32x32, bf16>) {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
@@ -121,6 +162,7 @@ func.func @tile_store_view_must_be_reserved(
 
 // -----
 
+// An unbacked tensor view cannot prove producer ownership.
 func.func @tile_store_unbacked_view(
     %tile: !ttcore.tile<32x32, bf16>,
     %view: tensor<1x14x!ttcore.tile<1x32, bf16>>) {

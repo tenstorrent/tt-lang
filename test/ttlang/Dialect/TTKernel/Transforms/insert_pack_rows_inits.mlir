@@ -1,9 +1,9 @@
-// Verify row-packer configuration is reused across a compatible loop and
-// remains operation-local when another operation may reconfigure the packer.
+// Summary: Verifies row-packer configuration is reused only while compatible.
 
 // RUN: ttlang-opt %s --ttkernel-insert-inits --split-input-file | FileCheck %s
 // RUN: ttlang-opt %s --ttkernel-insert-inits --ttkernel-insert-l1-accumulation --split-input-file | FileCheck %s --check-prefix=L1
 
+// One setup covers a loop containing only compatible row packs.
 // CHECK-LABEL: func.func @loop_scoped
 // CHECK: ttkernel.pack_rows_init {row_count = 28 : i64}
 // CHECK-NEXT: scf.for
@@ -26,6 +26,7 @@ func.func @loop_scoped() {
 
 // -----
 
+// A full-tile pack requires row-packer setup to remain operation-local.
 // CHECK-LABEL: func.func @operation_scoped
 // CHECK: scf.for
 // CHECK: ttkernel.pack_rows_init {row_count = 28 : i64}
@@ -50,6 +51,7 @@ func.func @operation_scoped() {
 
 // -----
 
+// An opaque call may reconfigure the packer between iterations.
 // CHECK-LABEL: func.func @opaque_call_prevents_hoisting
 // CHECK: scf.for
 // CHECK: ttkernel.opaque_call
@@ -74,6 +76,7 @@ func.func @opaque_call_prevents_hoisting() {
 
 // -----
 
+// A function call may reconfigure the packer between iterations.
 // CHECK-LABEL: func.func @function_call_prevents_hoisting
 // CHECK: scf.for
 // CHECK: func.call @configure_packer()
@@ -99,6 +102,7 @@ func.func private @configure_packer()
 
 // -----
 
+// Compatible L1 accumulation preserves loop-scoped row-packer setup.
 // L1-LABEL: func.func @loop_scoped_l1_accumulate_existing
 // L1: ttkernel.pack_rows_init {row_count = 28 : i64}
 // L1-NEXT: %[[ENABLE:.*]] = arith.constant 1 : i32
@@ -132,6 +136,7 @@ func.func @loop_scoped_l1_accumulate_existing()
 
 // -----
 
+// Incompatible packer work restores L1 accumulation after row-packer setup.
 // L1-LABEL: func.func @operation_scoped_l1_accumulate_existing
 // L1: ttkernel.pack_reconfig_l1_acc
 // L1-NEXT: scf.for

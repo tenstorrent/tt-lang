@@ -60,6 +60,7 @@ func.func @init_state_type_mismatch() {
 
 // -----
 
+// Distinct state and output types require explicit publication in the body.
 func.func @distinct_state_requires_output_publication() {
   %out = tensor.empty() : tensor<1x14x!ttcore.tile<1x32, bf16>>
   %init = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
