@@ -630,19 +630,6 @@ static FailureOr<int64_t> lookupConstantTableValue(int64_t index,
   return values[index];
 }
 
-OpFoldResult ConstantTableLookupOp::fold(FoldAdaptor adaptor) {
-  auto indexAttr = dyn_cast_or_null<IntegerAttr>(adaptor.getIndex());
-  if (!indexAttr) {
-    return {};
-  }
-  FailureOr<int64_t> tableValue =
-      lookupConstantTableValue(indexAttr.getInt(), getValues());
-  if (failed(tableValue)) {
-    return {};
-  }
-  return IntegerAttr::get(getResult().getType(), *tableValue);
-}
-
 void ConstantTableLookupOp::getCanonicalizationPatterns(
     RewritePatternSet &patterns, MLIRContext *) {
   patterns.add(+[](ConstantTableLookupOp lookupOp,
