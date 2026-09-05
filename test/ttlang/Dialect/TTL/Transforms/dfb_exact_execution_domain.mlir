@@ -49,22 +49,18 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
 
 // -----
 
-// A coordinate-dependent loop may have a known launch domain but execute zero
-// times at a specific node. Its DFB is inactive at that node and may reuse the
-// physical index assigned to an active compatible DFB.
+// A coordinate-dependent loop with zero executions has an empty access domain.
+// Its DFB may reuse an active compatible DFB because they share no launch node.
 
 // REUSE-LABEL: func.func @exact_zero_at_known_node
 // REUSE: %[[INACTIVE:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 32 : index}
 // REUSE-NEXT: %[[ACTIVE:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 33 : index}
 
-// REPORT: DFB logical_id=32 bounded=1 compiler_created=0
-// REPORT-SAME: access_completion_proven=1
-// REPORT-SAME: domain={(0,0)}
-// REPORT: node (0,0) lifecycle_completion=complete
-// REPORT-SAME: occurrences=[0:0]
-// REPORT-SAME: earliest_accesses=[] terminal_accesses=[]
+// REPORT: DFB logical_id=32 bounded=0 compiler_created=0
+// REPORT-SAME: access_completion_proven=0
+// REPORT-SAME: domain={}
 // REPORT: DFB logical_id=33 bounded=1 compiler_created=0
-// REPORT: DFB assignment: logical DFB 32 -> physical index 0 storage index 0 (bounded)
+// REPORT: DFB assignment: logical DFB 32 -> physical index 0 storage index 0 (unbounded)
 // REPORT-NEXT: DFB assignment: logical DFB 33 -> physical index 0 storage index 0 (bounded)
 
 module attributes {ttl.launch_grid = array<i64: 1, 1>} {
