@@ -1906,6 +1906,8 @@ static FailureOr<WaitedDFBMutationPlan> buildWaitedDFBMutationPlan(
   return plan;
 }
 
+// Derive one immutable representation per output DFB. Changing the source
+// result type is safe only when output stores consume every result use.
 static FailureOr<SmallVector<ComputeOutputPlan>>
 buildComputeOutputPlans(ComputeOpCreationPlan &creation,
                         std::string &failureReason) {

@@ -189,6 +189,8 @@ static void appendOutputIndexingMaps(const ComputeOpCreationPlan &creation,
   }
 }
 
+// Attach the complete DFB view before selecting its formal compute result;
+// allocation geometry remains complete when publication uses a compact view.
 static Value buildFormalOutput(PatternRewriter &rewriter, Location loc,
                                RankedTensorType attachmentType,
                                RankedTensorType formalType, Value outputDFB,
@@ -242,6 +244,8 @@ addFormalOutputBlockArguments(Block *body, Location loc,
   }
 }
 
+// Type-changing publication absorbs every original result use, so no
+// type-compatible replacement exists or remains necessary.
 static void replaceComputeSource(PatternRewriter &rewriter, Operation *source,
                                  Value computeResult) {
   assert(source->getNumResults() == 1 &&
