@@ -1520,17 +1520,19 @@ def TTKernelAnnotateDFBUse
     Runs after per-core specialization and canonicalization.
     For each `ttkernel.thread` function, records the
     sorted physical DFB indices reached through surviving
-    `ttkernel.get_compile_time_arg_val` operations below
-    `ttl.base_cta_index` in `ttl.used_dfb_indices`. Helpers stay in the
+    `ttkernel.get_compile_time_arg_val` operations in
+    `ttl.used_dfb_indices`. An argument index is a DFB index when it is less
+    than the number of entries in the module's `ttl.dfb_allocations` metadata.
+    Helpers stay in the
     call-graph analysis so their uses propagate to kernel entries.
     Declarations are not annotated. The compile-time ABI places
-    every DFB before tensor-accessor arguments, including DFB ids passed to
-    opaque externs as scalar values.
+    every DFB first, including DFB ids passed to opaque externs as scalar
+    values. Later compiler-defined and tensor-accessor arguments are excluded.
 
     Calls are resolved through the MLIR call graph. Uses are propagated from
     callees to callers in SCC order, including recursive calls. An unknown or
     external callee is handled conservatively by recording every DFB
-    compile-time argument below `ttl.base_cta_index`.
+    compile-time argument.
 
     Print-only `get_compile_time_arg_val` operations (those whose only users
     are `emitc.verbatim` debug prints, through unrealized casts) are excluded

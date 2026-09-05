@@ -10,6 +10,7 @@ add_mlir_library(TTLangAnalysis
   LINK_LIBS PUBLIC
   MLIRAnalysis
   MLIRControlFlowInterfaces
+  MLIREmitCDialect
   MLIRIR
   MLIRLoopLikeInterface
   MLIRSCFDialect

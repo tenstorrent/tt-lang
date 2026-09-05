@@ -259,6 +259,7 @@ struct DFBLogicalLifecycle {
   SmallVector<DFBAccessOccurrence> accesses;
   bool hasOpaqueExternalAccess = false;
   bool accessCompletionProven = true;
+  bool lifecycleCompletionProven = false;
   LaunchNodeDomain launchDomain;
   SmallVector<DFBPerNodeLifetime, 0> nodeLifetimes;
   SmallVector<DFBPerNodeLifetime, 0> possibleNodeLifetimes;

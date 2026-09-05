@@ -70,9 +70,10 @@ def call_extern_func(
             arguments. Entries must identify distinct source occurrences and
             must not repeat an automatic dependency source in ``func_args`` or
             DFB descriptor template arguments.
-        dfb_effects: Optional call-wide sequence of synchronous DFB protocol
-            actions performed on every call execution. A complete summary can
-            permit physical-index reuse and does not emit protocol calls.
+        dfb_effects: Optional sequence of synchronous DFB protocol actions
+            performed on every selected kernel, or a mapping from individual
+            kernel selectors to their respective sequences. A complete summary
+            can permit physical-index reuse and does not emit protocol calls.
         dfb_accesses: Optional synchronous DFB inspections performed by the
             call without publishing, consuming, or changing DFB state.
         unknown_dfb_access: Whether external C++ may access unlisted

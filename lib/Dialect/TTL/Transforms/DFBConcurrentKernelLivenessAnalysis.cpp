@@ -5517,9 +5517,9 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
                        return !lifetime.mayBeActive ||
                               lifetime.completionProof.proven();
                      });
-    bool opaqueExternalAccessesComplete = logicalDFB.launchDomain.known
-                                              ? exactLifecyclesComplete
-                                              : possibleLifecyclesComplete;
+    logicalDFB.lifecycleCompletionProven = logicalDFB.launchDomain.known
+                                               ? exactLifecyclesComplete
+                                               : possibleLifecyclesComplete;
     logicalDFB.accessCompletionProven = llvm::all_of(
         logicalDFB.accesses, [&](const DFBAccessOccurrence &access) {
           if (access.getProtocolEffect() ||
@@ -5527,7 +5527,7 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
             return true;
           }
           if (access.opaqueExternalAccess) {
-            return opaqueExternalAccessesComplete;
+            return logicalDFB.lifecycleCompletionProven;
           }
           // Separate acquire and release operations establish queue ownership
           // for the slot transferred by ttl.copy.
