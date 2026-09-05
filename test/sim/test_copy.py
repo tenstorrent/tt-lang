@@ -22,7 +22,7 @@ from test_utils import (
 from sim.blockstate import BlockAcquisition
 from sim.context import set_current_kernel_type
 from sim.dfb import Block, DataflowBuffer
-from sim.ttnnsim import Tensor
+from sim.ttnnsim import ROW_MAJOR_LAYOUT, Tensor
 from sim.copy import CopyTransaction, GroupTransfer, copy
 from sim.pipe import Pipe
 from sim.kernel import KernelKind
@@ -41,6 +41,96 @@ def setup_scheduler_context(dm_kernel_context):
 class TestCopyTransaction:
     """Test CopyTransaction class functionality."""
 
+    @pytest.mark.parametrize(
+        "byte_count",
+        [
+            pytest.param(0, id="zero"),
+            pytest.param(-1, id="negative"),
+            pytest.param(True, id="boolean"),
+            pytest.param(1.5, id="non-integer"),
+        ],
+    )
+    def test_byte_count_must_be_a_positive_integer(self, byte_count: object) -> None:
+        """Reject values that do not denote a positive byte count."""
+
+        with pytest.raises(ValueError, match="must be a positive int"):
+            CopyTransaction(
+                make_ones_tile(),
+                make_zeros_tile(),
+                byte_count=byte_count,
+            )
+
+    def test_byte_count_must_fit_noc_transfer_size(self) -> None:
+        """Reject counts that the TTKernel NoC size operand cannot represent."""
+
+        with pytest.raises(ValueError, match="unsigned 32-bit NoC transfer size"):
+            CopyTransaction(
+                make_ones_tile(),
+                make_zeros_tile(),
+                byte_count=1 << 32,
+            )
+
+    @pytest.mark.parametrize(
+        ("source_shape", "destination_shape", "endpoint"),
+        [
+            pytest.param((1, 1), (2, 1), "source", id="source"),
+            pytest.param((2, 1), (1, 1), "destination", id="destination"),
+        ],
+    )
+    def test_byte_count_must_fit_each_dfb_block(
+        self,
+        source_shape: tuple[int, int],
+        destination_shape: tuple[int, int],
+        endpoint: str,
+    ) -> None:
+        """Reject a count that exceeds either acquired DFB block."""
+
+        source_tensor = make_element_for_buffer_shape(source_shape)
+        destination_tensor = make_element_for_buffer_shape(destination_shape)
+        source_dfb = DataflowBuffer(
+            likeness_tensor=source_tensor, shape=source_shape, block_count=1
+        )
+        destination_dfb = DataflowBuffer(
+            likeness_tensor=destination_tensor,
+            shape=destination_shape,
+            block_count=1,
+        )
+        source_block = Block(
+            tensor=source_tensor,
+            shape=source_shape,
+            acquisition=BlockAcquisition.WAIT,
+            kernel_type=KernelKind.DATA_MOVEMENT,
+            dfb=source_dfb,
+        )
+        destination_block = Block(
+            tensor=destination_tensor,
+            shape=destination_shape,
+            acquisition=BlockAcquisition.RESERVE,
+            kernel_type=KernelKind.DATA_MOVEMENT,
+            dfb=destination_dfb,
+        )
+
+        with pytest.raises(ValueError, match=f"exceeds {endpoint} capacity"):
+            CopyTransaction(source_block, destination_block, byte_count=2049)
+
+    def test_byte_count_requires_tiled_dfb_blocks(self) -> None:
+        """Reject byte-counted transfers from row-major DFB storage."""
+
+        source_tensor = Tensor(torch.zeros(8, dtype=torch.float32), ROW_MAJOR_LAYOUT)
+        source_dfb = DataflowBuffer(
+            likeness_tensor=source_tensor, shape=(8,), block_count=1
+        )
+        source_block = Block(
+            source_tensor,
+            shape=(8,),
+            acquisition=BlockAcquisition.WAIT,
+            kernel_type=KernelKind.DATA_MOVEMENT,
+            dfb=source_dfb,
+        )
+
+        with pytest.raises(ValueError, match="must use TILE layout"):
+            CopyTransaction(source_block, Pipe(7000, 7001), byte_count=4)
+
     def test_copy_transaction_unsupported_types(self) -> None:
         """Test that unsupported type combinations raise ValueError."""
         tensor1 = make_rand_tensor(32, 32)
@@ -51,24 +141,6 @@ class TestCopyTransaction:
             ValueError, match="No copy handler registered for \\(Tensor, Tensor\\)"
         ):
             CopyTransaction(tensor1, tensor2)
-
-        # Block → Block not supported
-        block1 = Block(
-            make_rand_tensor(64, 32),
-            shape=(2, 1),
-            acquisition=BlockAcquisition.RESERVE,
-            kernel_type=KernelKind.DATA_MOVEMENT,
-        )
-        block2 = Block(
-            make_rand_tensor(64, 32),
-            shape=(2, 1),
-            acquisition=BlockAcquisition.RESERVE,
-            kernel_type=KernelKind.DATA_MOVEMENT,
-        )
-        with pytest.raises(
-            ValueError, match="No copy handler registered for \\(Block, Block\\)"
-        ):
-            CopyTransaction(block1, block2)
 
 
 class TestTensorToBlockCopy:
@@ -380,6 +452,248 @@ class TestCopyWithStateMachine:
             block_data = block.to_list()
             for i in range(4):
                 assert tensors_equal(block_data[i], source[i : i + 1, 0:1])
+
+    def test_byte_counted_block_copy_preserves_destination_tail(self) -> None:
+        """Copy the declared number of bytes from the start of each DFB block."""
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
+
+        source = make_rand_tensor(64, 32)
+        source_dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((2, 1)),
+            shape=(2, 1),
+            block_count=1,
+        )
+        destination_dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((2, 1)),
+            shape=(2, 1),
+            block_count=1,
+        )
+
+        with source_dfb.reserve() as source_block:
+            copy(source, source_block).wait()
+
+        with source_dfb.wait() as source_block:
+            with destination_dfb.reserve() as destination_block:
+                destination_block.raw_tensor.to_torch().fill_(-7.0)
+                bytes_per_tile = source_block.raw_tensor.size_in_bytes(32 * 32)
+                copy(
+                    source_block,
+                    destination_block,
+                    byte_count=bytes_per_tile,
+                ).wait()
+
+                result = destination_block.raw_tensor.to_torch().reshape(-1)
+                expected = source.to_torch().reshape(-1)
+                assert torch.equal(result[: 32 * 32], expected[: 32 * 32])
+                assert torch.all(result[32 * 32 :] == -7.0)
+
+    def test_byte_counted_block_copy_preserves_partial_element_bytes(
+        self,
+    ) -> None:
+        """Model the operation's byte granularity, including partial elements."""
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
+
+        source = make_rand_tensor(32, 32)
+        source_dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((1, 1)),
+            shape=(1, 1),
+            block_count=1,
+        )
+        destination_dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((1, 1)),
+            shape=(1, 1),
+            block_count=1,
+        )
+
+        with source_dfb.reserve() as source_block:
+            copy(source, source_block).wait()
+
+        with source_dfb.wait() as source_block:
+            with destination_dfb.reserve() as destination_block:
+                destination_block.raw_tensor.to_torch().fill_(-7.0)
+                source_values = source_block.raw_tensor.to_torch().reshape(-1)
+                expected = destination_block.raw_tensor.to_torch().reshape(-1).clone()
+                expected[0] = source_values[0]
+                source_partial = source_values[1:2].to(
+                    dtype=source_block.raw_tensor.dtype
+                )
+                expected_partial = expected[1:2].to(
+                    dtype=destination_block.raw_tensor.dtype
+                )
+                source_partial_bytes = source_partial.view(dtype=torch.uint8).reshape(
+                    -1
+                )
+                expected_partial_bytes = expected_partial.view(
+                    dtype=torch.uint8
+                ).reshape(-1)
+                expected_partial_bytes[0] = source_partial_bytes[0]
+                expected[1] = expected_partial.to(
+                    dtype=destination_block.raw_tensor.underlying_dtype
+                ).item()
+
+                copy(source_block, destination_block, byte_count=3).wait()
+
+                destination_after = destination_block.raw_tensor.to_torch().reshape(-1)
+                assert torch.equal(destination_after, expected)
+
+    def test_block_copy_requires_byte_count(self) -> None:
+        """Reject block-to-block copies without an explicit byte count."""
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
+
+        source = make_rand_tensor(32, 32)
+        source_dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((1, 1)),
+            shape=(1, 1),
+            block_count=1,
+        )
+        destination_dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((1, 1)),
+            shape=(1, 1),
+            block_count=1,
+        )
+
+        with source_dfb.reserve() as source_block:
+            copy(source, source_block).wait()
+
+        with source_dfb.wait() as source_block:
+            with destination_dfb.reserve() as destination_block:
+                with pytest.raises(
+                    ValueError, match="Block-to-block copy requires byte_count"
+                ):
+                    copy(source_block, destination_block)
+                copy(source_block, destination_block, byte_count=64).wait()
+
+    @pytest.mark.parametrize(
+        ("source_acquisition", "destination_acquisition", "expected_error"),
+        [
+            pytest.param(
+                BlockAcquisition.RESERVE,
+                BlockAcquisition.RESERVE,
+                "source must come from DFB wait",
+                id="source-not-waited",
+            ),
+            pytest.param(
+                BlockAcquisition.WAIT,
+                BlockAcquisition.WAIT,
+                "destination must come from DFB reserve",
+                id="destination-not-reserved",
+            ),
+        ],
+    )
+    def test_byte_counted_block_copy_requires_acquired_directions(
+        self,
+        source_acquisition,
+        destination_acquisition,
+        expected_error,
+    ) -> None:
+        """Reject block copies that reverse the producer/consumer roles."""
+        source_dfb = DataflowBuffer(
+            likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=1
+        )
+        destination_dfb = DataflowBuffer(
+            likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=1
+        )
+        source_block = Block(
+            make_ones_tile(),
+            shape=(1, 1),
+            acquisition=source_acquisition,
+            kernel_type=KernelKind.DATA_MOVEMENT,
+            dfb=source_dfb,
+        )
+        destination_block = Block(
+            make_zeros_tile(),
+            shape=(1, 1),
+            acquisition=destination_acquisition,
+            kernel_type=KernelKind.DATA_MOVEMENT,
+            dfb=destination_dfb,
+        )
+
+        with pytest.raises(ValueError, match=expected_error):
+            CopyTransaction(source_block, destination_block, byte_count=64)
+
+    def test_byte_counted_block_copy_requires_distinct_dfbs(self) -> None:
+        """Reject local byte copies within one DFB lifecycle."""
+        dfb = DataflowBuffer(
+            likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=2
+        )
+        source_block = Block(
+            make_ones_tile(),
+            shape=(1, 1),
+            acquisition=BlockAcquisition.WAIT,
+            kernel_type=KernelKind.DATA_MOVEMENT,
+            dfb=dfb,
+        )
+        destination_block = Block(
+            make_zeros_tile(),
+            shape=(1, 1),
+            acquisition=BlockAcquisition.RESERVE,
+            kernel_type=KernelKind.DATA_MOVEMENT,
+            dfb=dfb,
+        )
+
+        with pytest.raises(
+            ValueError, match="requires distinct source and destination"
+        ):
+            CopyTransaction(source_block, destination_block, byte_count=64)
+
+    def test_byte_counted_pipe_copy_requires_matching_counts(self) -> None:
+        """Reject a receiver count that differs from the queued send count."""
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
+
+        source_dfb = DataflowBuffer(
+            likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=1
+        )
+        destination_dfb = DataflowBuffer(
+            likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=1
+        )
+        pipe = Pipe(214, 215)
+        with source_dfb.reserve() as source_block:
+            copy(make_ones_tile(), source_block).wait()
+        with source_dfb.wait() as source_block:
+            copy(source_block, pipe, byte_count=64).wait()
+
+        destination_block = Block(
+            make_zeros_tile(),
+            shape=(1, 1),
+            acquisition=BlockAcquisition.RESERVE,
+            kernel_type=KernelKind.DATA_MOVEMENT,
+            dfb=destination_dfb,
+        )
+        transaction = CopyTransaction(pipe, destination_block, byte_count=32)
+        with pytest.raises(ValueError, match="sender and receiver must use the same"):
+            transaction.wait()
+
+    def test_byte_counted_pipe_copy_preserves_destination_tail(self) -> None:
+        """Use the same byte count on pipe send and receive."""
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
+
+        source = make_rand_tensor(64, 32)
+        source_dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((2, 1)),
+            shape=(2, 1),
+            block_count=1,
+        )
+        destination_dfb = DataflowBuffer(
+            likeness_tensor=make_element_for_buffer_shape((2, 1)),
+            shape=(2, 1),
+            block_count=1,
+        )
+        pipe = Pipe(212, 213)
+
+        with source_dfb.reserve() as source_block:
+            copy(source, source_block).wait()
+
+        with source_dfb.wait() as source_block:
+            with destination_dfb.reserve() as destination_block:
+                destination_block.raw_tensor.to_torch().fill_(-11.0)
+                bytes_per_tile = source_block.raw_tensor.size_in_bytes(32 * 32)
+                copy(source_block, pipe, byte_count=bytes_per_tile).wait()
+                copy(pipe, destination_block, byte_count=bytes_per_tile).wait()
+
+                result = destination_block.raw_tensor.to_torch().reshape(-1)
+                expected = source.to_torch().reshape(-1)
+                assert torch.equal(result[: 32 * 32], expected[: 32 * 32])
+                assert torch.all(result[32 * 32 :] == -11.0)
 
     def test_copy_with_pipe_single_tile(self) -> None:
         """Test Block -> Pipe -> Block copy with single tile."""
