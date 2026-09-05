@@ -1,4 +1,4 @@
-// Verifies tensor accumulation scope formation honors the requested strategy.
+// Summary: Verifies tensor accumulation scopes honor the requested strategy.
 //
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes{strategy=l1-pack}, ttl-lower-accumulation-scopes{strategy=l1-pack}))' | FileCheck %s --check-prefix=L1
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-form-accumulation-scopes{strategy=auto}, ttl-lower-accumulation-scopes{strategy=auto}))' | FileCheck %s --check-prefix=AUTO

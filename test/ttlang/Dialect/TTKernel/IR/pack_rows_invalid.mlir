@@ -1,5 +1,8 @@
 // RUN: ttlang-opt %s --verify-diagnostics --split-input-file
 
+// Summary: Verifies row packing rejects unsupported formats and bounds.
+
+// Row packing supports only native BF16 and FP32 packer formats.
 func.func @unsupported_data_type() {
   %c0 = arith.constant 0 : index
   %cb = ttkernel.get_compile_time_arg_val(0)
@@ -12,6 +15,7 @@ func.func @unsupported_data_type() {
 
 // -----
 
+// Row packing requires a tiled output dataflow buffer.
 func.func @output_must_contain_tiles() {
   %c0 = arith.constant 0 : index
   %cb = ttkernel.get_compile_time_arg_val(0)
@@ -24,6 +28,7 @@ func.func @output_must_contain_tiles() {
 
 // -----
 
+// A row pack must contain at least one row.
 func.func @row_count_must_be_positive() {
   %c0 = arith.constant 0 : index
   %cb = ttkernel.get_compile_time_arg_val(0)
@@ -36,6 +41,7 @@ func.func @row_count_must_be_positive() {
 
 // -----
 
+// A row pack cannot exceed the hardware tile height limit.
 func.func @row_count_too_large() {
   %c0 = arith.constant 0 : index
   %cb = ttkernel.get_compile_time_arg_val(0)
@@ -48,6 +54,7 @@ func.func @row_count_too_large() {
 
 // -----
 
+// The destination must have enough capacity for the packed rows.
 func.func @output_capacity_too_small() {
   %c0 = arith.constant 0 : index
   %cb = ttkernel.get_compile_time_arg_val(0)
@@ -60,6 +67,7 @@ func.func @output_capacity_too_small() {
 
 // -----
 
+// Capacity checks account for the starting output page.
 func.func @output_index_leaves_insufficient_capacity() {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
@@ -73,6 +81,7 @@ func.func @output_index_leaves_insufficient_capacity() {
 
 // -----
 
+// Output page indices must be nonnegative.
 func.func @negative_output_index() {
   %c0 = arith.constant 0 : index
   %cm1 = arith.constant -1 : index
@@ -86,6 +95,7 @@ func.func @negative_output_index() {
 
 // -----
 
+// Output page indices must refer to allocated dataflow-buffer storage.
 func.func @output_index_exceeds_capacity() {
   %c0 = arith.constant 0 : index
   %c14 = arith.constant 14 : index

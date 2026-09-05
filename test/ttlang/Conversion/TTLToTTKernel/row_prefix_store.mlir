@@ -1,7 +1,8 @@
-// Verify bf16 and f32 row-prefix stores lower to one hardware row pack.
+// Summary: Verifies BF16 and FP32 row-prefix stores lower to one row pack.
 
 // RUN: ttlang-opt %s --convert-ttl-to-ttkernel --canonicalize -cse | FileCheck %s
 
+// A BF16 row-prefix store preserves the compact destination row count.
 // CHECK-LABEL: func.func @row_prefix_bf16
 // CHECK: %[[BF16_CB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: ttkernel.pack_rows(%{{.*}}, %[[BF16_CB]], %{{.*}}) {row_count = 28 : i64}
@@ -18,6 +19,7 @@ func.func @row_prefix_bf16(%tile: !ttcore.tile<32x32, bf16>)
   func.return
 }
 
+// An FP32 row-prefix store uses the FP32 destination dataflow buffer.
 // CHECK-LABEL: func.func @row_prefix_f32
 // CHECK: %[[F32_CB:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK: ttkernel.pack_rows(%{{.*}}, %[[F32_CB]], %{{.*}}) {row_count = 28 : i64}
