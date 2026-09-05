@@ -89,6 +89,8 @@ EOF
 printf 'emule=%s\n' "${TT_METAL_EMULE_MODE:-}"
 printf 'slow_dispatch=%s\n' "${TT_METAL_SLOW_DISPATCH_MODE:-}"
 printf 'cluster=%s\n' "${TT_METAL_MOCK_CLUSTER_DESC_PATH:-}"
+printf 'allocator_hybrid=%s\n' "${TT_METAL_ALLOCATOR_MODE_HYBRID:-}"
+printf 'fabric8=%s\n' "${EMULE_FABRIC8:-}"
 printf 'emule_cache=%s\n' "${TT_EMULE_JIT_CACHE_DIR:-}"
 printf 'mesh=%s\n' "${MESH_DEVICE:-}"
 printf 'compile_only=%s\n' "${TTLANG_COMPILE_ONLY:-}"
@@ -227,8 +229,12 @@ PY
     local emule_commit
     mkdir -p "$emule_source"
     git -C "$emule_source" init -q
+    mkdir -p "$emule_source/cluster_descriptors"
     touch "$emule_source/tracked-source"
-    git -C "$emule_source" add tracked-source
+    touch \
+        "$emule_source/cluster_descriptors/blackhole_P150_unharvested.yaml"
+    git -C "$emule_source" add \
+        tracked-source cluster_descriptors/blackhole_P150_unharvested.yaml
     git -C "$emule_source" \
         -c user.name=test -c user.email=test@example.com \
         commit -q -m "Pinned source"
@@ -254,6 +260,23 @@ PY
     refute_log_line "tt-emule-source=$emule_source"
     assert_log_line "${TTLANG_REPO_ROOT}/scripts"
     assert_log_line "run"
+}
+
+@test "P150 target rejects an incompatible pinned runtime before Docker build" {
+    local source_commit
+    source_commit="$(git -C "$TTLANG_REPO_ROOT" rev-parse HEAD)"
+    cd "$TTLANG_REPO_ROOT"
+    MOCK_DOCKER_IMAGE_STATUS=1 \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        TTLANG_EMULE_RUNTIME_SOURCE_DIR="$TTLANG_REPO_ROOT" \
+        TTLANG_EMULE_RUNTIME_COMMIT="$source_commit" \
+        TTLANG_EMULE_RUNTIME_METAL_COMMIT=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+        run -1 "$RUNNER" examples/eltwise_add.py
+
+    assert_output --partial "does not provide the required P150 descriptor"
+    assert_output --partial "TTLANG_EMULE_RUNTIME_SOURCE_DIR"
+    refute_log_line "build"
+    refute_log_line "run"
 }
 
 @test "an unpinned emulator checkout fails before the image build" {
@@ -345,7 +368,7 @@ PY
 @test "entrypoint configures, builds, and runs with emule runtime state" {
     local mock_bin="$BATS_TEST_TMPDIR/entrypoint-bin"
     local build_dir="$BATS_TEST_TMPDIR/build"
-    local cluster="$BATS_TEST_TMPDIR/wormhole_N150.yaml"
+    local cluster="$BATS_TEST_TMPDIR/blackhole_P150_unharvested.yaml"
     local program="$BATS_TEST_TMPDIR/program.py"
     MOCK_ENTRYPOINT_LOG="$BATS_TEST_TMPDIR/entrypoint.log"
     export MOCK_ENTRYPOINT_LOG
@@ -364,8 +387,10 @@ PY
     assert_line "emule=1"
     assert_line "slow_dispatch=1"
     assert_line "cluster=$cluster"
+    assert_line "allocator_hybrid=1"
+    assert_line "fabric8=1"
     assert_line "emule_cache=/tt-metal-cache/emule-jit"
-    assert_line "mesh=N150"
+    assert_line "mesh=P150"
     assert_line "compile_only="
     assert_line "sim_only="
     assert_line "python=$program"
@@ -375,6 +400,14 @@ PY
     run -0 grep -F -x -- \
         "cmake=-DTTLANG_EXTERNAL_TT_METAL_DIR=/opt/tt-emule-runtime/tt-metal" \
         "$MOCK_ENTRYPOINT_LOG"
+}
+
+@test "entrypoint defaults to the runtime's full P150 descriptor" {
+    run -0 grep -F -x -- \
+        'readonly CLUSTER_DESCRIPTORS="${TT_EMULE_SOURCE_DIR}/cluster_descriptors"' \
+        "$ENTRYPOINT"
+    run -0 grep -F -- \
+        'blackhole_P150_unharvested.yaml' "$ENTRYPOINT"
 }
 
 @test "entrypoint rejects a missing script argument before configuring" {

@@ -14,6 +14,7 @@ readonly _DEFAULT_TT_METAL_COMMIT="d48d09dee19de51f694a52fdf75d569950d38ceb"
 readonly _TT_EMULE_COMMIT="${TTLANG_EMULE_RUNTIME_COMMIT:-$_DEFAULT_TT_EMULE_COMMIT}"
 readonly _TT_METAL_COMMIT="${TTLANG_EMULE_RUNTIME_METAL_COMMIT:-$_DEFAULT_TT_METAL_COMMIT}"
 readonly _TT_EMULE_SOURCE_URL="${TTLANG_EMULE_RUNTIME_SOURCE_URL:-https://github.com/tenstorrent/tt-emule.git}"
+readonly _REQUIRED_EMULE_FILE="cluster_descriptors/blackhole_P150_unharvested.yaml"
 
 for _COMMIT in "$_TT_EMULE_COMMIT" "$_TT_METAL_COMMIT"; do
     if [ "${#_COMMIT}" -ne 40 ] || [[ "$_COMMIT" == *[!0-9a-f]* ]]; then
@@ -175,6 +176,13 @@ if [ "${TTLANG_EMULE_REBUILD:-0}" = "1" ] || \
     _TEMP_EMULE_CONTEXT="$(mktemp -d "${TMPDIR:-/tmp}/tt-lang-emule-context.XXXXXX")"
     git -C "$_EMULE_SOURCE" archive --format=tar "$_TT_EMULE_COMMIT" |
         tar -xf - -C "$_TEMP_EMULE_CONTEXT"
+    if [ ! -f "${_TEMP_EMULE_CONTEXT}/${_REQUIRED_EMULE_FILE}" ]; then
+        echo "tt-lang-sim: selected emulator does not provide the required P150 descriptor." >&2
+        echo "  missing: ${_REQUIRED_EMULE_FILE}" >&2
+        echo "  Select a compatible pinned runtime with TTLANG_EMULE_RUNTIME_SOURCE_DIR," >&2
+        echo "  TTLANG_EMULE_RUNTIME_COMMIT, and TTLANG_EMULE_RUNTIME_METAL_COMMIT." >&2
+        exit 1
+    fi
     echo "tt-lang-sim: building compiler + tt-emule image ${_IMAGE}" >&2
     "$_DOCKER" build \
         --platform "$_PLATFORM" \
