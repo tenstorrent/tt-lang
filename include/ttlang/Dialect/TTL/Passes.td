@@ -901,7 +901,9 @@ def TTLVerifyPipeNetGuards
     program must enforce that correspondence. The later SPSC verifier still
     rejects a waited DFB with neither a compiler-visible push nor uncontracted
     external access that may contain one. PipeNet endpoint guards, transfer
-    correspondence, and synchronization schedules remain mandatory.
+    correspondence, and synchronization schedules remain mandatory. The
+    compiler emits a warning and records
+    `ttl.relaxed_dfb_protocol_domain_verification` on the module.
   }];
 }
 
@@ -1010,7 +1012,9 @@ def TTLVerifyDFBSPSC
     rejects every waited DFB without a compiler-visible push or uncontracted
     external access that may contain one. Finalized DFB identity,
     physical-index, and launch-grid preconditions remain mandatory. Strict
-    verification is the default.
+    verification is the default. When relaxation is enabled, the compiler
+    emits a warning and records
+    `ttl.relaxed_dfb_protocol_domain_verification` on the module.
   }];
 
   let dependentDialects = [];
