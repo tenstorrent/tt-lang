@@ -526,6 +526,8 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
   return hadError ? failure() : success();
 }
 
+// Calls and TTKernel configuration operations may invalidate row-packer state,
+// so loop-scoped setup requires their absence.
 static bool mayInterfereWithRowPackConfiguration(Operation *operation) {
   return operation->hasTrait<ttk::TTKernelInitOpTrait>() ||
          operation->hasTrait<ttk::TTKernelLayoutOpTrait>() ||
@@ -560,6 +562,8 @@ static ttk::PackRowsOp getHoistablePackRows(scf::ForOp loop) {
   return hasInterference ? ttk::PackRowsOp() : candidate;
 }
 
+// Packs without proven loop-stable configuration restore standard packer state
+// immediately so unrelated operations cannot observe the row-packer setup.
 static void insertPackRowsInits(ModuleOp moduleOp) {
   SmallVector<scf::ForOp> loops;
   moduleOp->walk([&](scf::ForOp loop) { loops.push_back(loop); });

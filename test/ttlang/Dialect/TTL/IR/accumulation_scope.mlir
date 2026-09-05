@@ -37,6 +37,7 @@ func.func @accumulation_scope_init() {
 
 // -----
 
+// Init state may retain a full tile while publication uses a row prefix.
 // CHECK-LABEL: func.func @accumulation_scope_init_with_distinct_output_type
 func.func @accumulation_scope_init_with_distinct_output_type() {
   // CHECK: ttl.accumulation_scope outs(%{{.*}} : tensor<1x14x!ttcore.tile<1x32, bf16>>) inits(%{{.*}} : tensor<1x1x!ttcore.tile<32x32, bf16>>) {

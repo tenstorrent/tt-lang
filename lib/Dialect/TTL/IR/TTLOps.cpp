@@ -2470,6 +2470,8 @@ mlir::LogicalResult mlir::tt::ttl::CBPopOp::verify() {
   return success();
 }
 
+// Tensor-level and tile-level stores share this check so lowering cannot weaken
+// the row-prefix geometry contract.
 static mlir::LogicalResult
 verifyRowPrefixStore(mlir::Operation *operation,
                      mlir::RankedTensorType sourceType,
