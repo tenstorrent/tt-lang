@@ -3854,7 +3854,8 @@ struct DevicePipeRoleTables {
   std::size_t size() const { return minX.size(); }
 };
 
-// Predicates collapse duplicates; counts retain one entry per callback.
+// Boolean predicates ignore duplicates, while counts retain each record
+// because every matching record executes one destination callback.
 static DevicePipeRoleTables
 buildDevicePipeRoleTables(PipeNetRecordsAttr records, PipeRole role,
                           bool deduplicateRecords) {
@@ -3888,7 +3889,8 @@ buildDevicePipeRoleTables(PipeNetRecordsAttr records, PipeRole role,
   return tables;
 }
 
-// Keep boolean predicates and counts on identical record-selection semantics.
+// Share coordinate and device matching between boolean predicates and counts;
+// callers select OR or addition and whether duplicate records contribute.
 static Value lowerDeviceRoleQuery(
     Operation *op, PipeNetRecordsAttr records, PipeRole role,
     bool deduplicateRecords, Value initialValue,
@@ -4114,8 +4116,8 @@ struct PipeNetDestinationCountLowering
   matchAndRewrite(PipeNetDestinationCountOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
     PipeNetRecordsAttr records = op.getRecords();
-    // Prefer static tables for regular records and retain exact matching for
-    // every representation the participant planners reject.
+    // Regular records use one indexed lookup. Irregular records retain exact
+    // per-record matching because they cannot use the participant table.
     if (records.getPipes().front().getDeviceTransfer()) {
       FailureOr<Value> plannedCount =
           lowerPlannedDeviceDestinationCount(op, records, rewriter);

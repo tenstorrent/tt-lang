@@ -6,6 +6,7 @@
    dstEndX = 1, dstEndY = 0>
 ]>
 
+// The operation and record table must identify the same PipeNet.
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @mismatched_pipe_net_id()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {

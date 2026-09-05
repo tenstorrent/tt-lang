@@ -63,6 +63,7 @@ module attributes {ttl.launch_grid = array<i64: 4, 1>} {
                 destination = <coordinates = [1]>>>>
 ]>
 
+// Dense graph records lower to one logical-device-indexed count lookup.
 module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   func.func private @consume(index)
 
@@ -93,6 +94,7 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
                 destination = <coordinates = [3]>>>>
 ]>
 
+// Sparse graph records use per-record matching instead of a large device table.
 module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   func.func private @consume(index)
 
