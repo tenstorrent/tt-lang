@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Deque, Dict, Optional, Set, Tuple, TypedDict
 from .pipe import AnyPipe
-from .typedefs import Count, Shape, BindableTemplate
+from .typedefs import BindableTemplate, Count, IndexType, Shape
 from .kernel import KernelKind
 
 if TYPE_CHECKING:
@@ -51,17 +51,27 @@ class TraceEvent:
 
 
 @dataclass(frozen=True)
+class ByteCopyFormat:
+    """Layout and dtype facts retained when a byte-counted payload is absent."""
+
+    layout: IndexType
+    dtype: Any
+
+
+@dataclass(frozen=True)
 class PipeMessage:
     """A single message queued on a pipe.
 
     ``grid_shape`` (the tile-grid shape of the sent block) is always populated
     so the destination shape check runs identically in dry-run and normal mode.
-    ``data`` holds the backing tile tensor, or is ``None`` in dry-run mode where
-    the payload bytes are not moved.
+    ``byte_copy_format`` preserves the source DFB format when ``data`` is
+    ``None`` in dry-run mode.
     """
 
     grid_shape: Shape
     data: Optional[Tensor] = None
+    byte_count: Optional[int] = None
+    byte_copy_format: Optional[ByteCopyFormat] = None
 
 
 class PipeEntry(TypedDict):
