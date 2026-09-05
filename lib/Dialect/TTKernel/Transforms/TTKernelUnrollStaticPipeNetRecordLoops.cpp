@@ -25,6 +25,8 @@ struct TTKernelUnrollStaticPipeNetRecordLoopsPass
           TTKernelUnrollStaticPipeNetRecordLoopsPass> {
   void runOnOperation() override {
     SmallVector<scf::ForOp> recordLoops;
+    // Unroll inner loops first because unrolling a parent invalidates its
+    // nested operation handles and clones any unprocessed loop markers.
     getOperation().walk<WalkOrder::PostOrder>([&](scf::ForOp loop) {
       if (loop->hasAttr(kPipeNetLocalRecordLoopAttrName)) {
         recordLoops.push_back(loop);
