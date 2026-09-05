@@ -17,15 +17,18 @@ from typing import (
     Dict,
     Final,
     List,
+    Optional,
     Protocol,
     Tuple,
     Type,
     Union,
 )
 
+import torch
+
 from .context import get_context
-from .context_types import PipeEntry, PipeMessage
-from .dfb import Block
+from .context_types import ByteCopyFormat, PipeEntry, PipeMessage
+from .dfb import Block, BlockAcquisition
 from .pipe import (
     AnySrcPipeIdentity,
     AnyDst,
@@ -36,6 +39,7 @@ from .pipe import (
 )
 from .trace import TRACE, get_pipe_name, trace
 from .ttnnsim import (
+    TILE_LAYOUT,
     Tensor,
     check_count_match,
     tile_count_from_shape,
@@ -87,39 +91,42 @@ def _get_or_create_pipe_entry(pipe: AnyPipe) -> PipeEntry:
 class CopyTransferHandler(Protocol):
     """Protocol for copy transfer handlers."""
 
-    def validate(self, src: Any, dst: Any) -> None:
+    def validate(self, src: Any, dst: Any, byte_count: Optional[int] = None) -> None:
         """
         Validate that the transfer can be performed.
 
         Args:
             src: Source object
             dst: Destination object
+            byte_count: Optional byte count for DFB and pipe copies
 
         Raises:
             ValueError: If the transfer is not valid (shape mismatch, etc.)
         """
         ...
 
-    def transfer(self, src: Any, dst: Any) -> None:
+    def transfer(self, src: Any, dst: Any, byte_count: Optional[int] = None) -> None:
         """
         Perform the actual data transfer.
 
         Args:
             src: Source object
             dst: Destination object
+            byte_count: Optional byte count for DFB and pipe copies
 
         Raises:
             ValueError: If the transfer fails
         """
         ...
 
-    def can_wait(self, src: Any, dst: Any) -> bool:
+    def can_wait(self, src: Any, dst: Any, byte_count: Optional[int] = None) -> bool:
         """
         Check if wait() can proceed without blocking.
 
         Args:
             src: Source object
             dst: Destination object
+            byte_count: Optional byte count for DFB and pipe copies
 
         Returns:
             True if the transfer can complete without blocking
@@ -192,6 +199,105 @@ def _validate_block_to_tensor_shapes(
     )
 
 
+def _validate_byte_count_for_tensor(
+    tensor: Tensor, byte_count: int, endpoint: str
+) -> None:
+    """Require addressable storage large enough for the requested byte range."""
+
+    element_count = math.prod(tensor.padded_shape)
+    capacity = tensor.size_in_bytes(element_count)
+    if byte_count > capacity:
+        raise ValueError(
+            f"byte_count {byte_count} exceeds {endpoint} capacity {capacity}"
+        )
+    element_size = tensor.element_size
+    if capacity != element_count * element_size:
+        raise ValueError(
+            "byte-counted simulation requires an element-addressable data type"
+        )
+
+
+def _require_dfb_block_format(block: Block, endpoint: str) -> ByteCopyFormat:
+    """Use owning-DFB metadata because dry-run blocks contain sentinel tensors."""
+
+    if block.dfb is None:
+        raise ValueError(
+            f"byte-counted {endpoint} block must be acquired from a dataflow buffer"
+        )
+    likeness = block.dfb.likeness_tensor
+    if likeness.layout != TILE_LAYOUT:
+        raise ValueError(
+            f"byte-counted {endpoint} dataflow-buffer block must use TILE layout"
+        )
+    return ByteCopyFormat(layout=likeness.layout, dtype=likeness.dtype)
+
+
+def _validate_byte_count_for_block(
+    block: Block, byte_count: int, endpoint: str
+) -> ByteCopyFormat:
+    """Use declared DFB capacity because dry-run storage has zero elements."""
+
+    block_format = _require_dfb_block_format(block, endpoint)
+    assert block.dfb is not None
+    capacity = block.dfb.capacity_bytes // block.dfb.block_count
+    if byte_count > capacity:
+        raise ValueError(
+            f"byte_count {byte_count} exceeds {endpoint} capacity {capacity}"
+        )
+    if not _is_dry_run():
+        _validate_byte_count_for_tensor(block.raw_tensor, byte_count, endpoint)
+    return block_format
+
+
+def _validate_byte_copy_formats(src: ByteCopyFormat, dst: ByteCopyFormat) -> None:
+    """Allow different tile geometry without reinterpreting payload bytes."""
+
+    if src.layout != dst.layout:
+        raise ValueError(
+            "byte-counted copy requires matching layouts; got "
+            f"source {src.layout.name} and destination {dst.layout.name}"
+        )
+    if src.dtype != dst.dtype:
+        raise ValueError(
+            "byte-counted copy requires matching data types; got "
+            f"source {src.dtype} and destination {dst.dtype}"
+        )
+
+
+def _validate_byte_copy_tensors(src: Tensor, dst: Tensor, byte_count: int) -> None:
+    """Require element-addressable storage before copying individual bytes."""
+
+    _validate_byte_copy_formats(
+        ByteCopyFormat(layout=src.layout, dtype=src.dtype),
+        ByteCopyFormat(layout=dst.layout, dtype=dst.dtype),
+    )
+    _validate_byte_count_for_tensor(src, byte_count, "source")
+    _validate_byte_count_for_tensor(dst, byte_count, "destination")
+
+
+def _copy_initial_tensor_bytes(src: Tensor, dst: Tensor, byte_count: int) -> None:
+    """Copy exactly the initial byte range and preserve all later bytes."""
+
+    _validate_byte_copy_tensors(src, dst, byte_count)
+    complete_elements, partial_bytes = divmod(byte_count, src.element_size)
+    src_values = src.to_torch().reshape(-1)
+    dst_values = dst.to_torch().reshape(-1)
+    dst_values[:complete_elements].copy_(src_values[:complete_elements])
+    if partial_bytes == 0:
+        return
+
+    src_partial = src_values[complete_elements : complete_elements + 1].to(
+        dtype=src.dtype
+    )
+    dst_partial = dst_values[complete_elements : complete_elements + 1].to(
+        dtype=dst.dtype
+    )
+    src_partial_bytes = src_partial.view(dtype=torch.uint8).reshape(-1)
+    dst_partial_bytes = dst_partial.view(dtype=torch.uint8).reshape(-1)
+    dst_partial_bytes[:partial_bytes].copy_(src_partial_bytes[:partial_bytes])
+    dst_values[complete_elements] = dst_partial.to(dtype=dst.underlying_dtype).item()
+
+
 def register_copy_handler(src_type: CopyEndpointType, dst_type: CopyEndpointType):
     """
     Decorator to register a copy transfer handler for a specific (src_type, dst_type) pair.
@@ -206,8 +312,8 @@ def register_copy_handler(src_type: CopyEndpointType, dst_type: CopyEndpointType
     Example:
         @register_copy_handler(Tensor, Block)
         class TensorToBlockHandler:
-            def validate(self, src, dst): ...
-            def transfer(self, src, dst): ...
+            def validate(self, src, dst, byte_count=None): ...
+            def transfer(self, src, dst, byte_count=None): ...
     """
 
     def decorator(handler_cls: Type[CopyTransferHandler]):
@@ -222,11 +328,17 @@ def register_copy_handler(src_type: CopyEndpointType, dst_type: CopyEndpointType
 class BlockToPipeHandler:
     """Handler for Block → Pipe (pipe send)."""
 
-    def validate(self, src: Block, dst: AnyPipe) -> None:
-        """Validate pipe send - no specific validation needed."""
-        pass
+    def validate(
+        self, src: Block, dst: AnyPipe, byte_count: Optional[int] = None
+    ) -> None:
+        """Validate the pipe send payload."""
+        del dst
+        if byte_count is not None:
+            _validate_byte_count_for_block(src, byte_count, "source")
 
-    def transfer(self, src: Block, dst: AnyPipe) -> None:
+    def transfer(
+        self, src: Block, dst: AnyPipe, byte_count: Optional[int] = None
+    ) -> None:
         """Pipe send: store data in shared buffer accessible by all nodes.
 
         The queued ``PipeMessage`` always records the sent block's tile-grid
@@ -238,6 +350,12 @@ class BlockToPipeHandler:
         message = PipeMessage(
             grid_shape=src.shape,
             data=None if _is_dry_run() else src.raw_tensor,
+            byte_count=byte_count,
+            byte_copy_format=(
+                _require_dfb_block_format(src, "source")
+                if byte_count is not None
+                else None
+            ),
         )
 
         # Get or create pipe entry atomically
@@ -278,10 +396,14 @@ class BlockToPipeHandler:
                 "pipe_send",
                 pipe=get_pipe_name(dst),
                 tiles=math.prod(message.grid_shape),
+                byte_count=byte_count,
             )
 
-    def can_wait(self, src: Block, dst: AnyPipe) -> bool:
+    def can_wait(
+        self, src: Block, dst: AnyPipe, byte_count: Optional[int] = None
+    ) -> bool:
         """Block to Pipe copy completes immediately on wait()."""
+        del src, dst, byte_count
         return True
 
 
@@ -289,18 +411,28 @@ class BlockToPipeHandler:
 class TensorToBlockHandler:
     """Handler for TTNN.Tensor -> Block transfers using tile-level indexing."""
 
-    def validate(self, src: Tensor, dst: Block) -> None:
+    def validate(
+        self, src: Tensor, dst: Block, byte_count: Optional[int] = None
+    ) -> None:
+        if byte_count is not None:
+            raise ValueError("Tensor-to-block copy does not accept byte_count")
         _validate_tensor_to_block_shapes(
             src.layout, src.padded_shape, dst.layout, dst.shape
         )
 
-    def transfer(self, src: Tensor, dst: Block) -> None:
+    def transfer(
+        self, src: Tensor, dst: Block, byte_count: Optional[int] = None
+    ) -> None:
         """Transfer tensor data into Block."""
+        del byte_count
         if _is_dry_run():
             return
         dst.copy_as_dest(src)
 
-    def can_wait(self, src: Tensor, dst: Block) -> bool:
+    def can_wait(
+        self, src: Tensor, dst: Block, byte_count: Optional[int] = None
+    ) -> bool:
+        del src, dst, byte_count
         return True
 
 
@@ -308,20 +440,67 @@ class TensorToBlockHandler:
 class BlockToTensorHandler:
     """Handler for Block -> TTNN.Tensor transfers using tile-level indexing."""
 
-    def validate(self, src: Block, dst: Tensor) -> None:
+    def validate(
+        self, src: Block, dst: Tensor, byte_count: Optional[int] = None
+    ) -> None:
+        if byte_count is not None:
+            raise ValueError("Block-to-tensor copy does not accept byte_count")
         _validate_block_to_tensor_shapes(
             src.layout, src.shape, dst.layout, dst.padded_shape
         )
 
-    def transfer(self, src: Block, dst: Tensor) -> None:
+    def transfer(
+        self, src: Block, dst: Tensor, byte_count: Optional[int] = None
+    ) -> None:
         """Transfer Block data into tensor."""
+        del byte_count
         if _is_dry_run():
             return
         dst_raw = dst.to_torch()
         src_raw = src.raw_tensor.to_torch()
         dst_raw.copy_(src_raw.reshape(dst_raw.shape))
 
-    def can_wait(self, src: Block, dst: Tensor) -> bool:
+    def can_wait(
+        self, src: Block, dst: Tensor, byte_count: Optional[int] = None
+    ) -> bool:
+        del src, dst, byte_count
+        return True
+
+
+@register_copy_handler(Block, Block)
+class BlockToBlockHandler:
+    """Handler for explicit byte-preserving copies between acquired blocks."""
+
+    def validate(
+        self, src: Block, dst: Block, byte_count: Optional[int] = None
+    ) -> None:
+        if byte_count is None:
+            raise ValueError("Block-to-block copy requires byte_count")
+        if src.acquisition != BlockAcquisition.WAIT:
+            raise ValueError("Block-to-block copy source must come from DFB wait()")
+        if dst.acquisition != BlockAcquisition.RESERVE:
+            raise ValueError(
+                "Block-to-block copy destination must come from DFB reserve()"
+            )
+        if src.dfb is None or dst.dfb is None or src.dfb is dst.dfb:
+            raise ValueError(
+                "Block-to-block copy requires distinct source and destination DFBs"
+            )
+        src_format = _validate_byte_count_for_block(src, byte_count, "source")
+        dst_format = _validate_byte_count_for_block(dst, byte_count, "destination")
+        _validate_byte_copy_formats(src_format, dst_format)
+
+    def transfer(
+        self, src: Block, dst: Block, byte_count: Optional[int] = None
+    ) -> None:
+        assert byte_count is not None
+        if not _is_dry_run():
+            _copy_initial_tensor_bytes(src.raw_tensor, dst.raw_tensor, byte_count)
+
+    def can_wait(
+        self, src: Block, dst: Block, byte_count: Optional[int] = None
+    ) -> bool:
+        del src, dst, byte_count
         return True
 
 
@@ -329,17 +508,24 @@ class BlockToTensorHandler:
 class PipeToBlockHandler:
     """Handler for Pipe → Block (pipe receive)."""
 
-    def validate(self, src: AnyPipe, dst: Block) -> None:
-        """Validate pipe receive - validation happens during transfer when data is available."""
-        pass
+    def validate(
+        self, src: AnyPipe, dst: Block, byte_count: Optional[int] = None
+    ) -> None:
+        """Validate the receiver's declared payload capacity."""
+        del src
+        if byte_count is not None:
+            _validate_byte_count_for_block(dst, byte_count, "destination")
 
-    def can_wait(self, src: AnyPipe, dst: Block) -> bool:
+    def can_wait(
+        self, src: AnyPipe, dst: Block, byte_count: Optional[int] = None
+    ) -> bool:
         """Pipe to Block copy can only proceed when pipe has data for this node.
 
         Returns True only when there is at least one queued message that the
         current node has not yet received.  The greenlet scheduler polls this
         before calling transfer(), so transfer() can assume data is available.
         """
+        del dst, byte_count
         pipe_buffer = get_context().copy_state.pipe_buffer
         entry = pipe_buffer.get(src)
         if entry is None or len(entry["queue"]) == 0:
@@ -355,7 +541,9 @@ class PipeToBlockHandler:
             # Non-kernel context: any queued message is receivable.
             return True
 
-    def transfer(self, src: AnyPipe, dst: Block) -> None:
+    def transfer(
+        self, src: AnyPipe, dst: Block, byte_count: Optional[int] = None
+    ) -> None:
         """Pipe receive: dequeue one message from the pipe buffer.
 
         The greenlet scheduler guarantees can_wait() returned True immediately
@@ -377,7 +565,18 @@ class PipeToBlockHandler:
         # Find the first message this node has not yet received.
         for idx, (message, remaining_recv, msg_id, recv_set) in enumerate(queue):
             if not node_id_available or node_id not in recv_set:
-                if message.grid_shape != dst.shape:
+                if message.byte_count != byte_count:
+                    raise ValueError(
+                        "Pipe sender and receiver must use the same byte_count; "
+                        f"got sender {message.byte_count} and receiver {byte_count}"
+                    )
+                if byte_count is not None:
+                    assert message.byte_copy_format is not None
+                    _validate_byte_copy_formats(
+                        message.byte_copy_format,
+                        _require_dfb_block_format(dst, "destination"),
+                    )
+                if byte_count is None and message.grid_shape != dst.shape:
                     raise ValueError(
                         f"Destination Block shape {dst.shape} "
                         f"does not match pipe data shape {message.grid_shape}"
@@ -387,13 +586,19 @@ class PipeToBlockHandler:
                 # message carries no bytes (data is None) and the copy is skipped
                 # while the queue bookkeeping below still runs.
                 if message.data is not None:
-                    dst.copy_as_dest(message.data)
+                    if byte_count is None:
+                        dst.copy_as_dest(message.data)
+                    else:
+                        _copy_initial_tensor_bytes(
+                            message.data, dst.raw_tensor, byte_count
+                        )
 
                 if TRACE.enabled:
                     trace(
                         "pipe_recv",
                         pipe=get_pipe_name(src),
                         tiles=math.prod(message.grid_shape),
+                        byte_count=byte_count,
                     )
 
                 if node_id_available:
@@ -431,16 +636,29 @@ class BlockToSrcPipeIdentityHandler:
             self._delegate = HANDLER_REGISTRY[(Block, Pipe)]
         return self._delegate
 
-    def validate(self, src: Block, dst: AnySrcPipeIdentity) -> None:
-        # Delegate to the Pipe handler
-        self._get_delegate().validate(src, dst.pipe)
+    def validate(
+        self,
+        src: Block,
+        dst: AnySrcPipeIdentity,
+        byte_count: Optional[int] = None,
+    ) -> None:
+        self._get_delegate().validate(src, dst.pipe, byte_count)
 
-    def transfer(self, src: Block, dst: AnySrcPipeIdentity) -> None:
-        # Delegate to the Pipe handler
-        self._get_delegate().transfer(src, dst.pipe)
+    def transfer(
+        self,
+        src: Block,
+        dst: AnySrcPipeIdentity,
+        byte_count: Optional[int] = None,
+    ) -> None:
+        self._get_delegate().transfer(src, dst.pipe, byte_count)
 
-    def can_wait(self, src: Block, dst: AnySrcPipeIdentity) -> bool:
-        return self._get_delegate().can_wait(src, dst.pipe)
+    def can_wait(
+        self,
+        src: Block,
+        dst: AnySrcPipeIdentity,
+        byte_count: Optional[int] = None,
+    ) -> bool:
+        return self._get_delegate().can_wait(src, dst.pipe, byte_count)
 
 
 @register_copy_handler(DstPipeIdentity, Block)
@@ -456,13 +674,26 @@ class DstPipeIdentityToBlockHandler:
             self._delegate = HANDLER_REGISTRY[(Pipe, Block)]
         return self._delegate
 
-    def validate(self, src: DstPipeIdentity, dst: Block) -> None:
-        # Delegate to the Pipe handler
-        self._get_delegate().validate(src.pipe, dst)
+    def validate(
+        self,
+        src: DstPipeIdentity,
+        dst: Block,
+        byte_count: Optional[int] = None,
+    ) -> None:
+        self._get_delegate().validate(src.pipe, dst, byte_count)
 
-    def transfer(self, src: DstPipeIdentity, dst: Block) -> None:
-        # Delegate to the Pipe handler
-        self._get_delegate().transfer(src.pipe, dst)
+    def transfer(
+        self,
+        src: DstPipeIdentity,
+        dst: Block,
+        byte_count: Optional[int] = None,
+    ) -> None:
+        self._get_delegate().transfer(src.pipe, dst, byte_count)
 
-    def can_wait(self, src: DstPipeIdentity, dst: Block) -> bool:
-        return self._get_delegate().can_wait(src.pipe, dst)
+    def can_wait(
+        self,
+        src: DstPipeIdentity,
+        dst: Block,
+        byte_count: Optional[int] = None,
+    ) -> bool:
+        return self._get_delegate().can_wait(src.pipe, dst, byte_count)

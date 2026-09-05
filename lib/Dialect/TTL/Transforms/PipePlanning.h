@@ -155,10 +155,10 @@ private:
   PipeCounterAllocator counterAllocator;
 };
 
-/// Element count and byte size transferred by one sender operation.
+/// Page decomposition and total byte size transferred by one sender operation.
 struct PipeTransferPayload {
-  int64_t elementCount = 0;
-  int64_t elementSizeBytes = 0;
+  int64_t pageCount = 0;
+  int64_t pageSizeBytes = 0;
   int64_t sizeBytes = 0;
 };
 

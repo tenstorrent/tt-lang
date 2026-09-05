@@ -382,6 +382,10 @@ FailureOr<uint64_t> getDFBPagesPerBlock(CircularBufferType type);
 /// Scalar elements must occupy a positive whole number of bytes.
 FailureOr<uint64_t> getDFBPageSizeBytes(CircularBufferType type);
 
+/// Returns one block's capacity for a DFB operand and the static view capacity
+/// for an acquired DFB block operand.
+FailureOr<uint64_t> getDFBTransferCapacityBytes(Value endpoint);
+
 /// Selects the identity contract diagnosed by verifyDFBOperandIdentities.
 enum class DFBIdentityRequirement {
   /// The caller's analysis can resolve logical identity before finalization.
