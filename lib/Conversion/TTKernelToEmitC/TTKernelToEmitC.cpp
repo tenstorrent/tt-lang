@@ -835,6 +835,7 @@ public:
 } // namespace
 
 namespace {
+// Return whether an optional response-mode attribute selects posted writes.
 template <typename SourceOp>
 static bool usesPostedWriteMode(SourceOp op) {
   auto posted = op.getPosted();
