@@ -1077,7 +1077,7 @@ def TTLFinalizeDFBIndices
     would otherwise capture provisional indices.
 
     `memory-model=compiler-l1` assigns explicit byte ranges instead of Metal
-    descriptor slots. Logical identities retain independent 16-byte control
+    descriptor slots. Logical identities retain independent 8-byte control
     records. Payloads use decreasing-size aligned first-fit placement over the
     concurrent-kernel storage conflict graph; unknown completion prohibits reuse.
     The complete plan is validated before mutation. Runtime metadata supplies
@@ -1599,8 +1599,10 @@ def TTKernelCombinePackTiles
   let description = [{
     Scans for consecutive `ttkernel.pack_tile` ops targeting the same dataflow
     buffer with contiguous DST and CB tile indices, and replaces each run with
-    a single `ttkernel.pack_tile_block`. This reduces the number of hardware
-    pack operations after loop unrolling.
+    a single `ttkernel.pack_tile_block` for the Metal DFB backend. This reduces
+    generated calls after loop unrolling. Compiler-owned storage retains the
+    explicit output indices because its packing interface has no implicit
+    descriptor-owned write cursor.
 
     Only combines runs where both DST indices and CB tile indices step by 1,
     and the first CB tile index is 0 (pack_tile_block always writes to the CB

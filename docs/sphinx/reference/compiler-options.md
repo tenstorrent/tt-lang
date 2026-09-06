@@ -251,10 +251,12 @@ ttlang-opt input.mlir -p 'func.func(ttl-insert-intermediate-dfbs{enable=false})'
 
 `memory-model=compiler-l1` uses deterministic decreasing-size aligned byte
 placement and independent synchronization records. It removes the Metal DFB index
-limit for its supported transfer subset. Unknown access completion prevents reuse.
+limit for supported transfer and compute operations. Unknown access completion
+prevents reuse.
 `reuse-user-dfbs=false` gives every payload separate storage. The arena allocation
 includes control and alignment bytes. Greedy placement failure does not establish
-infeasibility. Compute and PipeNet integration are outside the current POC subset.
+infeasibility. The [backend contract](../../development/L1Allocation.md#contract-and-limits)
+defines supported execution and storage forms.
 
 
 Assign physical indices to logical DFBs and emit the complete runtime

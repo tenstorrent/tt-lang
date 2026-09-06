@@ -1559,7 +1559,11 @@ def _compile_ttnn_kernel(
             elif kernel_config_attrs[name]["dst_full_sync_en"]:
                 config.dst_full_sync_en = True
             unpack_fp32_cbs = kernel_config_attrs[name]["unpack_to_dest_fp32"]
-            if unpack_fp32_cbs:
+            compiler_l1 = any(
+                storage_config.l1_offset is not None
+                for storage_config in (cb_configs or [])
+            )
+            if unpack_fp32_cbs and not compiler_l1:
                 _set_unpack_to_dest_fp32(config, ttnn, unpack_fp32_cbs)
             # Compute kernels run on TRISC threads
             thread_to_kernel["TRISC_0"] = name

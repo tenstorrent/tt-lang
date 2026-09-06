@@ -30,6 +30,14 @@
 
 namespace mlir::tt::ttl {
 
+struct DFBIdentityDomain {
+  int64_t size;
+  std::string description;
+};
+
+/// Returns the valid identity range for the selected storage backend.
+FailureOr<DFBIdentityDomain> getDFBIdentityDomain(Operation *operation);
+
 /// Returns true if an operation has an attribute in the TTL namespace.
 inline bool hasTTLDialectAttribute(mlir::Operation *operation) {
   for (mlir::NamedAttribute attribute : operation->getAttrs()) {

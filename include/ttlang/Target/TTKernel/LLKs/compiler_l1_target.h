@@ -24,6 +24,26 @@ inline void store(uint32_t address, uint32_t value) {
                : [address] "r"(address)
                : "memory");
 }
-inline void complete() { noc_async_full_barrier(); }
+__attribute__((noinline)) inline void complete() {
+#if defined(TRISC_UNPACK)
+  TTI_STALLWAIT(ckernel::p_stall::STALL_TDMA, ckernel::p_stall::UNPACK);
+  ckernel::tensix_sync();
+#elif defined(TRISC_PACK)
+  TTI_STALLWAIT(ckernel::p_stall::STALL_TDMA, ckernel::p_stall::PACK);
+  ckernel::tensix_sync();
+#elif !defined(TRISC_MATH)
+  noc_async_full_barrier();
+#endif
+}
+#if defined(TRISC_UNPACK) || defined(TRISC_MATH)
+inline constexpr bool ownsProducer = false;
+#else
+inline constexpr bool ownsProducer = true;
+#endif
+#if defined(TRISC_PACK) || defined(TRISC_MATH)
+inline constexpr bool ownsConsumer = false;
+#else
+inline constexpr bool ownsConsumer = true;
+#endif
 } // namespace ttlang::l1::target
 #endif

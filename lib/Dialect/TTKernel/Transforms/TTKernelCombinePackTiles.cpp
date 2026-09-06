@@ -64,6 +64,13 @@ struct TTKernelCombinePackTilesPass
   using TTKernelCombinePackTilesBase::TTKernelCombinePackTilesBase;
 
   void runOnOperation() override {
+    auto module = getOperation()->getParentOfType<ModuleOp>();
+    if (auto model = module->getAttrOfType<StringAttr>("ttl.memory_model");
+        model && model.getValue() == "compiler-l1") {
+      // Metal block packing discards the explicit output indices in favor of
+      // its descriptor-owned write cursor.
+      return;
+    }
     getOperation().walk([](Block *block) {
       // pack_tile_block is incompatible with pack_reconfig_l1_acc, which
       // requires individual pack_tile calls.

@@ -17,7 +17,7 @@ the memory and supplies its base address.
 | Limits | L1 capacity and 32 or 64 descriptor indices. | L1 capacity, including control records and alignment. |
 | Reuse | Compatible lifetimes share indices; distinct descriptors can also share backing storage. | Noninterfering payload ranges overlap; control records remain distinct. |
 | Runtime interface | Metal descriptor-indexed pointers, formats, and counters. | Arena-relative addresses, compile-time formats, and L1 control words. |
-| Execution coverage | Existing compute and transfer backend. | Local tiled transfers in this POC. |
+| Execution coverage | Existing compute and transfer backend. | Tiled transfers, arithmetic, matmul, reductions, broadcast, and selected activations. |
 
 Both allocators already use completion-aware lifetime analysis. Storage reuse is
 not new; independence from the Metal descriptor interface is the change.
@@ -60,21 +60,41 @@ clears the complete arena rather than only its control records.
 
 ### Reuse payloads; keep synchronization state distinct
 
-Each logical DFB retains a 16-byte control record for the entire invocation.
+Each logical DFB retains an 8-byte control record for the entire invocation.
 Payload lifetime completion proves that data bytes may be overwritten. It does
 not prove that another DFB can inherit the same counters and ring positions.
 Keeping control records distinct avoids requiring a state-reset and ownership
 handoff whenever payloads share an address.
 
-This imposes a fixed `roundUp(16 * regionCount, alignment)` cost. For 96 one-page
-BF16 regions, simultaneous lifetimes require 196608 payload bytes plus 1536
+This imposes a fixed `roundUp(8 * regionCount, alignment)` cost. For 96 one-page
+BF16 regions, simultaneous lifetimes require 196608 payload bytes plus 768
 control bytes. Sequential lifetimes require only 2048 payload bytes, but retain
-all 1536 control bytes: approximately 43% of that smaller arena is control state.
+all 768 control bytes: approximately 27% of that smaller arena is control state.
 Payload optimization therefore has diminishing benefit for many small regions.
 
 The [DFB protocol](DFBManagement.md#compiler-managed-storage-protocol) defines
 counter ownership, completion, acquisition/release alternation, and wraparound.
 Those semantics are separate from choosing payload offsets.
+
+### Configure compute from operand metadata and addresses
+
+Compute operands carry formats and arena-relative addresses instead of descriptor
+indices. The [target adapter](../../include/ttlang/Target/TTKernel/LLKs/compiler_l1_compute.h)
+invokes existing address-based LLK primitives;
+architecture-specific signatures and address units stay inside that adapter.
+The allocator and Python DSL require no architecture-specific behavior.
+
+A processor-local context initializes compute hardware once per invocation and
+tracks subsequent format changes. Reinitializing DST synchronization for every
+logical DFB would disrupt in-flight compute. Format specialization is separate
+from storage identity, and shared instruction-emission helpers remain out of line
+to bound kernel code size as the number of logical DFBs grows.
+
+UNPACK owns input consumption; PACK owns output publication. MATH uses the existing
+DST synchronization protocol and does not update DFB counters. The completion
+rules are defined in [DFB Management](DFBManagement.md#compiler-managed-storage-protocol).
+Packing retains explicit output tile indices: combining these operations into
+Metal block-packing calls would introduce a descriptor-owned implicit cursor.
 
 ### Place large regions first and reuse compatible gaps
 
@@ -97,7 +117,7 @@ a separate prefix. All intervals below are half-open byte ranges.
 
 ```text
 allocate(regions, interference, alignment, budget, reuseEnabled):
-    controlEnd = roundUp(16 * regionCount, alignment)
+    controlEnd = roundUp(8 * regionCount, alignment)
     placed = empty set
 
     for region in decreasing extent, with declaration-order ties:
@@ -114,7 +134,7 @@ allocate(regions, interference, alignment, budget, reuseEnabled):
 
         reject if candidate + region.extent exceeds budget
         assign region.payload = [candidate, candidate + region.extent)
-        assign region.control = [16 * region.ordinal, 16 * (region.ordinal + 1))
+        assign region.control = [8 * region.ordinal, 8 * (region.ordinal + 1))
         add region to placed
 
     return maximum payload end, or zero when there are no regions
@@ -135,7 +155,7 @@ evidence have separate costs.
 - Storage ownership is static. Declarations of one logical DFB must agree on
   type and capacity. Tensor backing, explicit allocation groups, resets, and
   reconfiguration are rejected before offset assignment.
-- The transfer backend accepts full-block acquisitions with positive capacity
+- The backend accepts full-block acquisitions with positive capacity
   below `2^31` pages and the ownership/alternation contract in DFB Management.
   Operations without an address-based lowering are rejected, including opaque
   pre-lowered C++ effects; there is no Metal-descriptor fallback.
@@ -145,16 +165,25 @@ evidence have separate costs.
 - Launches use one device and a uniform arena. Device-domain placement and
   external runtime resources are rejected. With no regions, no arena is allocated.
 
-Device tests qualify BF16/FP32 tiled transfers with interleaved DRAM/L1 tensors on
-Blackhole. Compiler alignment tests cover both Wormhole and Blackhole. Trace
-replay and independent command queues have no qualification evidence.
+Compute currently accepts 32x32 BF16/FP32 tiles. Device tests on Blackhole cover
+FPU/SFPU addition and multiplication with DRAM/L1 tensors, matmul, row/column
+sum and maximum, broadcast, transpose, exponential, reciprocal, reciprocal square
+root, sigmoid, tanh, and compute-produced intermediate storage. Both DRAM and L1
+tensors are covered. The existing [compute configuration contract](ComputeKernelConfiguration.md)
+requires a compatible unpack mode for every use of a logical DFB. Attention
+publishes distinct reduction and SFPU operands to satisfy that FP32 constraint.
+Compiler alignment tests cover both Wormhole and Blackhole; Wormhole compute, trace replay, and independent command
+queues require separate device qualification.
 
 ## Validation and Implementation References
 
 Validation checks numerical results and allocation safety independently:
 [device tests](../../test/python/test_compiler_l1.py) exercise concurrent and
 sequential lifetimes, mixed extents, multiple cores, repeated launches, and
-protocol wraparound. [Compiler stress tests](../../test/ttlang/Dialect/TTL/Transforms/compiler_l1_stress.py)
+protocol wraparound. [Compute tests](../../test/python/test_compiler_l1_compute.py)
+compare both memory models and exercise 96 simultaneously live inputs, retained
+residuals, normalization with gate/up/down projection, dependent state updates,
+attention, expert merge, and repeated invocations. [Compiler stress tests](../../test/ttlang/Dialect/TTL/Transforms/compiler_l1_stress.py)
 derive conflicts and live-byte lower bounds from generated schedules, then check
 placement, target alignment, determinism, and budget boundaries. These checks do
 not assume the greedy result is optimal.
@@ -169,9 +198,12 @@ binding. Shared terminology is in the
 
 ## Future Work
 
-Compute execution requires address-based unpack, pack, and format-configuration
-adapters behind the common target interface. Storage release must account for
-compute-engine completion as well as transfer completion.
+Broader layer sizes, mixed formats, and performance require additional
+qualification. Consumer-owned in-place replacement requires a PACK-to-UNPACK
+completion handoff before the consumer releases storage; producer publication
+alone does not provide that ordering. Partial-block transactions require a
+protocol extension that preserves capacity accounting and contiguous access
+across wraparound.
 
 Explicit DFB resets require a synchronized transition that restores counters and
 positions after outstanding accesses complete. Supporting that semantic operation

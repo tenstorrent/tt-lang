@@ -7,6 +7,7 @@
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 
 #include "ttlang/Target/TTKernel/DFBDescriptorPrelude_generated.h"
+#include "ttlang/Target/TTKernel/LLKs/compiler_l1_compute_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/compiler_l1_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/compiler_l1_target_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_constant_table_generated.h"
@@ -207,6 +208,12 @@ public:
     region->walk([&](emitc::VerbatimOp verbatimOp) {
       llvm::StringRef value = verbatimOp.getValue();
 
+      if (value.starts_with("ttlang::l1::target::ComputeContext")) {
+        emitLlk(compiler_l1_target_generated, compiler_l1_target_generated_len);
+        emitLlk(compiler_l1_generated, compiler_l1_generated_len);
+        emitLlk(compiler_l1_compute_generated,
+                compiler_l1_compute_generated_len);
+      }
       if (value.starts_with("ttlang::l1::Buffer<")) {
         emitLlk(compiler_l1_target_generated, compiler_l1_target_generated_len);
         emitLlk(compiler_l1_generated, compiler_l1_generated_len);

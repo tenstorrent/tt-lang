@@ -5,12 +5,29 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
+#include "ttlang/Target/TargetInfo.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/raw_ostream.h"
 
 namespace mlir::tt::ttl {
+
+FailureOr<DFBIdentityDomain> getDFBIdentityDomain(Operation *operation) {
+  auto module = operation->getParentOfType<ModuleOp>();
+  auto model = module->getAttrOfType<StringAttr>("ttl.memory_model");
+  if (model && model.getValue() == "compiler-l1") {
+    auto allocations =
+        module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName);
+    if (!allocations) {
+      return failure();
+    }
+    return DFBIdentityDomain{static_cast<int64_t>(allocations.size()),
+                             "the compiler-l1 allocation plan"};
+  }
+  return DFBIdentityDomain{getTargetMaxDFBIndices(operation),
+                           getTargetDFBIndexCapacityDescription(operation)};
+}
 
 std::optional<ReadyReceiveSelection> getReadyReceiveSelection(Value predicate) {
   auto compare = predicate.getDefiningOp<arith::CmpIOp>();
