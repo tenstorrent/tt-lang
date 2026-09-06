@@ -25,10 +25,10 @@ public:
           : Format;
   static constexpr uint32_t pageWords = PageBytes / 16;
   uint32_t readTile(uint32_t tile) const {
-    return this->get_read_ptr() / 16 + tile * pageWords - 1;
+    return target::toLlkTileAddress(this->get_read_ptr(), tile, pageWords);
   }
   uint32_t writeTile(uint32_t tile) const {
-    return this->get_write_ptr() / 16 + tile * pageWords - 1;
+    return target::toLlkTileAddress(this->get_write_ptr(), tile, pageWords);
   }
 };
 
@@ -43,9 +43,7 @@ __attribute__((noinline)) inline void matmulInitShape(uint32_t transpose,
                                       4, 4, false, false)));
   MATH((_llk_math_matmul_init_<MATH_FIDELITY, MM_THROTTLE>(
       32, 32, 32, 32, false, transpose, columns, rows)));
-#if defined(ARCH_BLACKHOLE)
-  MATH((ckernel::throttled_mop_status = 0));
-#endif
+  resetMatmulThrottleState();
 }
 template <ckernel::PoolType Pool, ckernel::ReduceDim Dimension>
 __attribute__((noinline)) inline void reduceInitShape() {
@@ -67,13 +65,7 @@ inline void unaryBcastInit(Source) {
                               Source::directToDestination>(
       0, 0, ckernel::DEFAULT_TENSOR_SHAPE, Source::format,
       Source::unpackFormat)));
-#if defined(ARCH_BLACKHOLE)
-  MATH((_llk_math_eltwise_unary_datacopy_init_<
-        copyType, DST_ACCUM_MODE, Broadcast>(4, Source::unpackFormat, false)));
-#else
-  MATH((_llk_math_eltwise_unary_datacopy_init_<
-        copyType, DST_ACCUM_MODE, Broadcast>(4, Source::unpackFormat)));
-#endif
+  initializeUnaryDataCopy<copyType, Broadcast>(Source::unpackFormat);
 }
 template <ckernel::BroadcastType Broadcast, typename Source>
 inline void unary_bcast(Source source, uint32_t tile, uint32_t destination) {
@@ -113,34 +105,14 @@ public:
       MATH((llk_math_pack_sync_init<DST_ACCUM_MODE>()));
       MATH((_llk_math_hw_configure_<DST_ACCUM_MODE>(SourceAUnpackFormat,
                                                     SourceBUnpackFormat)));
-#if defined(ARCH_BLACKHOLE)
-      PACK((_llk_pack_hw_configure_<DST_ACCUM_MODE, ckernel::PackMode::Default>(
-          OutputFormat, OutputFormat, OutputPageWords, 16, 32, 4, false, 0)));
-      PACK((_llk_pack_init_<ckernel::PackMode::Default>(OutputFormat, 16, 32, 4,
-                                                        1, false)));
-      PACK((_llk_pack_dest_init_<DST_SYNC_MODE, DST_ACCUM_MODE>()));
-#else
-      PACK((_llk_pack_hw_configure_<DST_ACCUM_MODE, ckernel::PackMode::Default>(
-          OutputFormat, OutputFormat, OutputPageWords, 16, 4, false, false,
-          0)));
-      PACK((_llk_pack_init_<ckernel::PackMode::Default>(OutputFormat, 16, 4,
-                                                        false, false, 1)));
-      PACK((_llk_pack_dest_init_<DST_SYNC_MODE, DST_ACCUM_MODE,
-                                 ckernel::PackMode::Default>(16, false)));
-#endif
+      initializePack<OutputFormat, OutputPageWords>();
       initialized = true;
     } else {
       configureInputFormats<SourceAFormat, SourceAUnpackFormat,
                             SourceAPageWords, SourceBFormat,
                             SourceBUnpackFormat, SourceBPageWords>();
       if (outputFormat != OutputFormat) {
-#if defined(ARCH_BLACKHOLE)
-        PACK((_llk_pack_reconfig_data_format_<DST_ACCUM_MODE>(
-            OutputFormat, OutputFormat, OutputPageWords, 32, 4, false)));
-#else
-        PACK((_llk_pack_reconfig_data_format_<DST_ACCUM_MODE>(
-            OutputFormat, OutputFormat, OutputPageWords, 16, 4, false, false)));
-#endif
+        reconfigurePack<OutputFormat, OutputPageWords>();
       }
     }
     sourceAFormat = SourceAFormat;
@@ -244,17 +216,8 @@ __attribute__((noinline)) inline void copyInitFormats() {
       (_llk_unpack_A_init_<ckernel::BroadcastType::NONE, false,
                            ckernel::EltwiseBinaryReuseDestType::NONE, Direct>(
           0, 0, ckernel::DEFAULT_TENSOR_SHAPE, Format, UnpackFormat)));
-#if defined(ARCH_BLACKHOLE)
-  MATH((_llk_math_eltwise_unary_datacopy_init_<ckernel::DataCopyType::A2D,
-                                               DST_ACCUM_MODE,
-                                               ckernel::BroadcastType::NONE>(
-      4, UnpackFormat, false)));
-#else
-  MATH((_llk_math_eltwise_unary_datacopy_init_<ckernel::DataCopyType::A2D,
-                                               DST_ACCUM_MODE,
-                                               ckernel::BroadcastType::NONE>(
-      4, UnpackFormat)));
-#endif
+  initializeUnaryDataCopy<ckernel::DataCopyType::A2D,
+                          ckernel::BroadcastType::NONE>(UnpackFormat);
   MATH((ckernel::math::_configure_unary_preserve_zero_flag_state_()));
 }
 template <uint32_t Format, uint32_t UnpackFormat, bool Direct>
@@ -375,26 +338,7 @@ matmulBlockAtAddresses(uint32_t lhs, uint32_t rhs, uint32_t lhsPageWords,
                        uint32_t inner) {
   UNPACK((_llk_unpack_AB_matmul_(lhs, rhs, 0, 0, lhsPageWords, rhsPageWords,
                                  false, false, columns, rows, inner)));
-#if defined(ARCH_BLACKHOLE) && defined(TRISC_MATH)
-  bool throttled = (*ckernel::throttle_ptr % 2) != 0;
-  if (throttled) {
-    if (ckernel::throttled_mop_status != 1) {
-      _llk_math_matmul_init_<MATH_FIDELITY, MM_THROTTLE_MAX>(
-          32, 32, 32, 32, false, transpose, columns, rows);
-      ckernel::throttled_mop_status = 1;
-    }
-    llk_math_matmul<MATH_FIDELITY, MM_THROTTLE_MAX>(destination, columns, rows);
-  } else {
-    if (ckernel::throttled_mop_status != 0) {
-      _llk_math_matmul_init_<MATH_FIDELITY, MM_THROTTLE>(
-          32, 32, 32, 32, false, transpose, columns, rows);
-      ckernel::throttled_mop_status = 0;
-    }
-    llk_math_matmul<MATH_FIDELITY, MM_THROTTLE>(destination, columns, rows);
-  }
-#elif defined(TRISC_MATH)
-  llk_math_matmul<MATH_FIDELITY, MM_THROTTLE>(destination, columns, rows);
-#endif
+  executeMatmul(destination, transpose, columns, rows);
 }
 template <typename Lhs, typename Rhs>
 inline void matmul_block(Lhs lhs, Rhs rhs, uint32_t lhsTile, uint32_t rhsTile,

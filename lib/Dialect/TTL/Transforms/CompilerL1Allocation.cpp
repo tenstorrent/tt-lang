@@ -5,17 +5,23 @@
 #include "DFBAllocationLimits.h"
 #include "DFBConcurrentKernelLivenessAnalysis.h"
 #include "DFBPhysicalAllocationPlan.h"
-#include "mlir/IR/Builders.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/DFBLogicalIdentityAnalysis.h"
 #include "ttlang/Target/TargetInfo.h"
+
+#include "mlir/IR/Builders.h"
+
 #include "llvm/ADT/MapVector.h"
 #include "llvm/Support/MathExtras.h"
+
 #include <limits>
 #include <tuple>
 
 namespace mlir::tt::ttl {
 namespace {
+constexpr uint64_t kControlWordCount = 2;
+constexpr uint64_t kControlRecordBytes = kControlWordCount * sizeof(uint32_t);
+
 struct L1Region {
   int64_t logicalId;
   CircularBufferType type;
@@ -66,11 +72,8 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     }
     auto found = regions.find(assignment.logicalId);
     if (found != regions.end()) {
-      if (found->second.type != type) {
-        declaration.emitOpError("compiler-l1 requires identical declarations "
-                                "for each logical storage region");
-        return failure();
-      }
+      assert(found->second.type == type &&
+             "logical identity analysis validates declaration types");
       found->second.declarations.push_back(declaration);
       continue;
     }
@@ -119,12 +122,13 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
        llvm::enumerate(liveness.getLogicalDFBLifecycles())) {
     lifecycleIndices[lifecycle.logicalId] = lifecycleIndex;
   }
-  // Control words retain distinct ownership even when payload bytes overlap.
-  uint64_t controlBytes = llvm::alignTo(plan.size() * uint64_t{8}, *alignment);
+  // Payload liveness does not prove that counter state can change ownership.
+  uint64_t controlBytes =
+      llvm::alignTo(plan.size() * kControlRecordBytes, *alignment);
   SmallVector<unsigned> placed;
   for (unsigned regionIndex : placementOrder) {
     L1Region &region = plan[regionIndex];
-    region.stateOffset = regionIndex * uint64_t{8};
+    region.stateOffset = regionIndex * kControlRecordBytes;
     SmallVector<unsigned> interfering;
     for (unsigned previousIndex : placed) {
       assert(lifecycleIndices.contains(region.logicalId) &&
@@ -212,13 +216,16 @@ allocateCompilerL1(ModuleOp module,
                              builder.getI64IntegerAttr(region.allocationBytes)),
     }));
   }
-  module->setAttr("ttl.l1_arena_bytes",
+  module->setAttr(kL1ArenaBytesAttrName,
                   builder.getI64IntegerAttr(plan.arenaBytes));
   module->setAttr(kDFBAllocationsAttrName, builder.getArrayAttr(allocations));
-  module->setAttr("ttl.memory_model", builder.getStringAttr("compiler-l1"));
+  module->setAttr(kMemoryModelAttrName,
+                  builder.getStringAttr(kCompilerL1MemoryModel));
+  int32_t baseCTAIndex = plan.regions.empty() ? 0 : 1;
   for (func::FuncOp kernel : module.getOps<func::FuncOp>()) {
     if (kernel->hasAttr(kBaseCTAIndexAttrName)) {
-      kernel->setAttr(kBaseCTAIndexAttrName, builder.getI32IntegerAttr(1));
+      kernel->setAttr(kBaseCTAIndexAttrName,
+                      builder.getI32IntegerAttr(baseCTAIndex));
     }
   }
   return success();

@@ -306,7 +306,7 @@ struct TTLFinalizeDFBIndicesPass
       signalPassFailure();
       return;
     }
-    if (memoryModel == "compiler-l1") {
+    if (memoryModel == kCompilerL1MemoryModel) {
       const auto &liveness = getAnalysis<DFBConcurrentKernelLivenessAnalysis>();
       if (!liveness.succeeded()) {
         moduleOp.emitOpError() << liveness.getErrorMessage();

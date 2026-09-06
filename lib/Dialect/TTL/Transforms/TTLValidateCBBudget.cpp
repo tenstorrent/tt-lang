@@ -69,10 +69,10 @@ struct TTLValidateCBBudgetPass
 
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
-    if (auto model = moduleOp->getAttrOfType<StringAttr>("ttl.memory_model");
-        model && model.getValue() == "compiler-l1") {
+    if (auto model = moduleOp->getAttrOfType<StringAttr>(kMemoryModelAttrName);
+        model && model.getValue() == kCompilerL1MemoryModel) {
       auto arenaBytes =
-          moduleOp->getAttrOfType<IntegerAttr>("ttl.l1_arena_bytes");
+          moduleOp->getAttrOfType<IntegerAttr>(kL1ArenaBytesAttrName);
       if (!arenaBytes || arenaBytes.getInt() < 0) {
         moduleOp.emitOpError("requires a validated compiler-l1 arena size");
         signalPassFailure();
