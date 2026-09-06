@@ -120,11 +120,11 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     lifecycleIndices[lifecycle.logicalId] = lifecycleIndex;
   }
   // Control words retain distinct ownership even when payload bytes overlap.
-  uint64_t controlBytes = llvm::alignTo(plan.size() * uint64_t{16}, *alignment);
+  uint64_t controlBytes = llvm::alignTo(plan.size() * uint64_t{8}, *alignment);
   SmallVector<unsigned> placed;
   for (unsigned regionIndex : placementOrder) {
     L1Region &region = plan[regionIndex];
-    region.stateOffset = regionIndex * uint64_t{16};
+    region.stateOffset = regionIndex * uint64_t{8};
     SmallVector<unsigned> interfering;
     for (unsigned previousIndex : placed) {
       assert(lifecycleIndices.contains(region.logicalId) &&

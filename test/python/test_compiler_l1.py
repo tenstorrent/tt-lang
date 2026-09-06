@@ -69,7 +69,7 @@ def test_l1_copy(device, dtype, memory_model, allocator, monkeypatch):
         assert len({arena.buffer_address() for arena in arenas}) == 3
         for arena in arenas:
             words = ttnn.to_torch(arena).view(torch.int32).flatten()
-            assert words[:4].tolist() == [7, 7, 1, 1]
+            assert words[:2].tolist() == [1, 1]
 
 
 def _make_many_buffers(tmp_path, count, simultaneous):
@@ -146,30 +146,54 @@ def test_many_buffers(device, dtype, simultaneous, specialize, tmp_path, monkeyp
     assert len(set(offsets)) == (count if simultaneous else 1)
 
 
-@ttl.operation(grid=(1, 1))
-def l1_cross_processor(source, destination):
-    storage = ttl.make_dataflow_buffer_like(source, shape=(1, 1), block_count=3)
+def _make_l1_cross_processor(block_count, pages_per_block):
+    @ttl.operation(grid=(1, 1))
+    def l1_cross_processor(source, destination):
+        storage = ttl.make_dataflow_buffer_like(
+            source, shape=(pages_per_block, 1), block_count=block_count
+        )
 
-    @ttl.compute()
-    def compute():
-        pass
+        @ttl.compute()
+        def compute():
+            pass
 
-    @ttl.datamovement()
-    def producer():
-        for tile_index in range(32):
-            with storage.reserve() as block:
-                ttl.copy(source[tile_index : tile_index + 1, 0:1], block).wait()
+        @ttl.datamovement()
+        def producer():
+            for tile_index in range(32):
+                with storage.reserve() as block:
+                    ttl.copy(
+                        source[
+                            tile_index
+                            * pages_per_block : (tile_index + 1)
+                            * pages_per_block,
+                            0:1,
+                        ],
+                        block,
+                    ).wait()
 
-    @ttl.datamovement()
-    def consumer():
-        for tile_index in range(32):
-            with storage.wait() as block:
-                ttl.copy(block, destination[tile_index : tile_index + 1, 0:1]).wait()
+        @ttl.datamovement()
+        def consumer():
+            for tile_index in range(32):
+                with storage.wait() as block:
+                    ttl.copy(
+                        block,
+                        destination[
+                            tile_index
+                            * pages_per_block : (tile_index + 1)
+                            * pages_per_block,
+                            0:1,
+                        ],
+                    ).wait()
+
+    return l1_cross_processor
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
-def test_l1_cross_processor(device, dtype):
-    expected = torch.randn(32 * 32, 32, dtype=dtype)
+@pytest.mark.parametrize("block_count", [1, 2, 3, 5])
+@pytest.mark.parametrize("pages_per_block", [1, 2])
+def test_l1_cross_processor(device, dtype, block_count, pages_per_block):
+    l1_cross_processor = _make_l1_cross_processor(block_count, pages_per_block)
+    expected = torch.randn(32 * 32 * pages_per_block, 32, dtype=dtype)
     source = to_dram(expected, device)
     destination = to_dram(torch.zeros_like(expected), device)
     for invocation in range(3):
@@ -181,26 +205,28 @@ def test_l1_cross_processor(device, dtype):
         )
 
 
-def test_l1_counter_overflow(device, monkeypatch):
-    expected = torch.randn(32, 32, dtype=torch.bfloat16)
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("initial_sequence", range(6))
+def test_l1_sequence_wrap(device, monkeypatch, dtype, initial_sequence):
+    expected = torch.randn(32, 32, dtype=dtype)
     source = to_dram(expected, device)
     destination = to_dram(torch.zeros_like(expected), device)
     original_from_torch = ttnn.from_torch
     arenas = []
 
-    def initialize_near_overflow(value, **kwargs):
-        # Keep ring positions zero while placing sequence counters near wrap.
+    def initialize_near_wrap(value, **kwargs):
+        # Seven transactions cross the modulo-six boundary from every initial state.
         words = value.view(torch.int32).flatten()
-        words[0:2] = -3
+        words[0:2] = initial_sequence
         arena = original_from_torch(value, **kwargs)
         arenas.append(arena)
         return arena
 
-    monkeypatch.setattr(ttnn, "from_torch", initialize_near_overflow)
+    monkeypatch.setattr(ttnn, "from_torch", initialize_near_wrap)
     l1_copy(source, destination, options="--ttl-memory-model=compiler-l1")
     assert len(arenas) == 1
     words = ttnn.to_torch(arenas[0]).view(torch.int32).flatten()
-    assert words[:4].tolist() == [4, 4, 1, 1]
+    assert words[:2].tolist() == [(initial_sequence + 7) % 6] * 2
     assert_allclose(
         ttnn.to_torch(destination).float(), expected.float(), rtol=0, atol=0
     )
@@ -305,15 +331,15 @@ def test_allocation_stress(device, dtype, schedule, grid, reuse, tmp_path, monke
     states = [int(value) for value in re.findall(r"l1_offset = (\d+)", ir)]
     arena_bytes = int(re.search(r"ttl.l1_arena_bytes = (\d+)", ir).group(1))
     assert len(offsets) == len(pages)
-    assert states == list(range(0, len(pages) * 16, 16))
+    assert states == list(range(0, len(pages) * 8, 8))
     # A 32-byte quantum is common to both supported architectures.
-    assert all(offset % 32 == 0 and offset >= len(pages) * 16 for offset in offsets)
+    assert all(offset % 32 == 0 and offset >= len(pages) * 8 for offset in offsets)
     assert sizes == [
         page_count * capacity * 1024 * expected.element_size()
         for page_count, capacity in zip(pages, capacities)
     ]
     assert arena_bytes == max(offset + size for offset, size in zip(offsets, sizes))
-    assert arena_bytes <= len(pages) * 16 + sum(sizes)
+    assert arena_bytes <= len(pages) * 8 + sum(sizes)
     for first in range(len(pages)):
         for second in range(first + 1, len(pages)):
             if not reuse or (first, second) in conflicts:
