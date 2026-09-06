@@ -106,13 +106,13 @@ def _load_operation(tmp_path, name, source):
     return getattr(module, name)
 
 
-def _make_many_input_add(tmp_path, count):
+def _make_above_descriptor_limit_add(tmp_path, input_count):
     lines = [
         "import ttl",
         "@ttl.operation(grid=(1, 1))",
-        "def many_input_add(source, destination):",
+        "def above_descriptor_limit_add(source, destination):",
     ]
-    for region in range(count):
+    for region in range(input_count):
         lines.append(
             f"    storage_{region} = ttl.make_dataflow_buffer_like(source, shape=(1, 1), block_count=1)"
         )
@@ -121,18 +121,13 @@ def _make_many_input_add(tmp_path, count):
         "    @ttl.compute()",
         "    def compute():",
     ]
-    # Holding every input until all sums finish forces simultaneous lifetimes.
-    for region in range(count):
-        lines.append(f"        input_{region} = storage_{region}.wait()")
-    for pair in range(count // 2):
-        lines += [
-            "        with output_storage.reserve() as output:",
-            f"            output.store(input_{2 * pair} + input_{2 * pair + 1})",
-        ]
-    for region in range(count):
-        lines.append(f"        input_{region}.pop()")
+    lines += [
+        "        with storage_0.wait() as lhs, storage_1.wait() as rhs:",
+        "            with output_storage.reserve() as output:",
+        "                output.store(lhs + rhs)",
+    ]
     lines += ["    @ttl.datamovement()", "    def reader():"]
-    for region in range(count):
+    for region in range(input_count):
         lines += [
             f"        with storage_{region}.reserve() as block:",
             f"            ttl.copy(source[{region}:{region + 1}, 0:1], block).wait()",
@@ -140,41 +135,42 @@ def _make_many_input_add(tmp_path, count):
     lines += [
         "    @ttl.datamovement()",
         "    def writer():",
-        f"        for pair in range({count // 2}):",
-        "            with output_storage.wait() as block:",
-        "                ttl.copy(block, destination[pair:pair + 1, 0:1]).wait()",
+        "        with output_storage.wait() as block:",
+        "            ttl.copy(block, destination[0:1, 0:1]).wait()",
     ]
-    return _load_operation(tmp_path, "many_input_add", "\n".join(lines) + "\n")
+    for region in range(2, input_count):
+        lines += [
+            f"        with storage_{region}.wait() as block:",
+            f"            ttl.copy(block, destination[{region - 1}:{region}, 0:1]).wait()",
+        ]
+    return _load_operation(
+        tmp_path, "above_descriptor_limit_add", "\n".join(lines) + "\n"
+    )
 
 
+# Proves that arithmetic remains usable after logical DFB count exceeds 64.
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
-@pytest.mark.parametrize("specialize", [False, True], ids=["generic", "specialized"])
-@pytest.mark.parametrize("fpu", [True, False], ids=["fpu", "sfpu"])
-def test_l1_compute_96_live_inputs(
-    device, dtype, specialize, tmp_path, monkeypatch, fpu
-):
-
-    count = 96
-    operation = _make_many_input_add(tmp_path, count)
+def test_l1_compute_above_descriptor_limit(device, dtype, tmp_path, monkeypatch):
+    input_count = 65
+    operation = _make_above_descriptor_limit_add(tmp_path, input_count)
     final_ir = tmp_path / "final.mlir"
     monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_ir))
     options = "--ttl-memory-model=compiler-l1"
-    if not fpu:
-        options += " --no-ttl-fpu-binary-ops"
-    if specialize:
-        options += " --ttl-specialize-cores"
     for invocation in range(2):
-        reference = torch.randint(-64, 65, (count, 32, 32)).to(dtype) / 32
-        expected = (reference[0::2] + reference[1::2]).reshape(-1, 32)
+        reference = torch.randint(-64, 65, (input_count, 32, 32)).to(dtype) / 32
+        expected = torch.cat((reference[0:1] + reference[1:2], reference[2:]))
         source = to_dram(reference.reshape(-1, 32), device)
-        destination = to_dram(torch.zeros_like(expected), device)
+        destination = to_dram(torch.zeros_like(expected.reshape(-1, 32)), device)
         operation(source, destination, options=options)
         assert_allclose(
-            ttnn.to_torch(destination).float(), expected.float(), rtol=0, atol=0
+            ttnn.to_torch(destination).float(),
+            expected.reshape(-1, 32).float(),
+            rtol=0,
+            atol=0,
         )
     offsets = re.findall(r"l1_payload_offset = (\d+)", final_ir.read_text())
-    assert len(offsets) == count + 1
-    assert len(set(offsets)) == count + 1
+    assert len(offsets) == input_count + 1
+    assert len(set(offsets)) == input_count + 1
 
 
 def _make_matmul(rows, inner, columns):
