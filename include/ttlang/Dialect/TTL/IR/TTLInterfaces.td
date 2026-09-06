@@ -85,28 +85,28 @@ def TTL_DFBInputOpInterface : OpInterface<"DFBInputOpInterface"> {
 def TTL_PipeNetPredicateOpInterface
     : OpInterface<"PipeNetPredicateOpInterface"> {
   let description = [{
-    Predicate ops (`ttl.is_src`, `ttl.is_dst`, `ttl.is_active`) whose `i1`
-    result evaluates to `true` on a per-PipeNet role-defined execution set.
-    Predicates with records use that table directly. Logical-device records
-    match both the launch node and endpoint device; local records match the
-    launch node alone.
+    PipeNet role-query operations. `ttl.is_src` selects source nodes,
+    `ttl.is_dst` selects destination nodes, and `ttl.is_active` selects their
+    union. When the operation has a `records` attribute, those static transfer
+    records define the selected nodes. Logical-device records match both the
+    launch node and endpoint device; local records match the launch node alone.
   }];
 
   let cppNamespace = "::mlir::tt::ttl";
 
   let methods = [
     InterfaceMethod<
-      /*desc=*/"Return the PipeNet id this predicate references.",
+      /*desc=*/"Return the PipeNet id this role-query operation references.",
       /*retTy=*/"int64_t",
       /*methodName=*/"getReferencedPipeNetId",
       /*args=*/(ins)>,
     InterfaceMethod<
-      /*desc=*/"Return the PipeNet role this predicate selects.",
+      /*desc=*/"Return the PipeNet role this operation queries.",
       /*retTy=*/"::mlir::tt::ttl::PipeRole",
       /*methodName=*/"getReferencedRole",
       /*args=*/(ins)>,
     InterfaceMethod<
-      /*desc=*/"Return the record table when it is carried by the predicate.",
+      /*desc=*/"Return the operation's static PipeNet records, when present.",
       /*retTy=*/"::mlir::tt::ttl::PipeNetRecordsAttr",
       /*methodName=*/"getReferencedRecords",
       /*args=*/(ins),

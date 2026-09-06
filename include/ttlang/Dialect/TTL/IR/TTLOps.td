@@ -1068,14 +1068,14 @@ def TTL_PipeNetScopeOp : TTL_Op<"pipenet_scope",
 
 def TTL_IsSrcOp : TTL_Op<"is_src",
     [Pure, DeclareOpInterfaceMethods<TTL_PipeNetPredicateOpInterface>]> {
-  let summary = "Predicate: current node is a source of any pipe in the PipeNet";
+  let summary = "Return whether the current node is a PipeNet source";
   let description = [{
     Returns `true` on nodes that match the `src` of at least one pipe in the
     named PipeNet, `false` elsewhere. The value-returning sibling of
     `ttl.if_src`; used as the condition of an `scf.if` to guard pipe-coupled
-    work without entering a region. When `records` is present, the predicate
-    uses that table directly; logical-device records also require the current
-    device to match the source endpoint.
+    work without entering a region. When `records` is present, the operation
+    uses those records directly; logical-device records also require the
+    current device to match the source endpoint.
   }];
   let arguments = (ins I64Attr:$pipe_net_id,
                         OptionalAttr<TTL_PipeNetRecordsAttr>:$records);
@@ -1086,12 +1086,12 @@ def TTL_IsSrcOp : TTL_Op<"is_src",
 
 def TTL_IsDstOp : TTL_Op<"is_dst",
     [Pure, DeclareOpInterfaceMethods<TTL_PipeNetPredicateOpInterface>]> {
-  let summary = "Predicate: current node is a destination of any pipe in the PipeNet";
+  let summary = "Return whether the current node is a PipeNet destination";
   let description = [{
     Returns `true` on nodes whose coordinate falls within the `dst` range of
     at least one pipe in the named PipeNet, `false` elsewhere. The
     value-returning sibling of `ttl.if_dst`. When `records` is present, the
-    predicate uses that table directly; logical-device records also require
+    operation uses those records directly; logical-device records also require
     the current device to match the destination endpoint.
   }];
   let arguments = (ins I64Attr:$pipe_net_id,
@@ -1120,11 +1120,11 @@ def TTL_PipeNetDestinationCountOp
 
 def TTL_IsActiveOp : TTL_Op<"is_active",
     [Pure, DeclareOpInterfaceMethods<TTL_PipeNetPredicateOpInterface>]> {
-  let summary = "Predicate: current node is a source or destination in the PipeNet";
+  let summary = "Return whether the current node participates in a PipeNet";
   let description = [{
     Returns `true` on nodes that are either a source or a destination of at
     least one pipe in the named PipeNet (the union of `is_src` and `is_dst`).
-    When `records` is present, the predicate uses that table directly;
+    When `records` is present, the operation uses those records directly;
     logical-device records also require the corresponding endpoint device.
   }];
   let arguments = (ins I64Attr:$pipe_net_id,

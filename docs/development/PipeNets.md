@@ -1951,9 +1951,9 @@ each region according to the parent op:
 
 For `scf.if`, the condition's launch-node domain is determined structurally:
 
-- `PipeNetPredicateOpInterface` (i.e. `ttl.is_src` / `ttl.is_dst` /
-  `ttl.is_active`) -> that PipeNet's role domain via the interface
-  methods `getReferencedPipeNetId` / `getReferencedRole`.
+- A result from `ttl.is_src`, `ttl.is_dst`, or `ttl.is_active` uses the source,
+  destination, or combined role domain identified by the operation's
+  `pipe_net_id` and optional `records` attributes.
 - `arith.andi` / `arith.ori` decompose: each operand contributes its
   own domain (intersection or union). A coord-independent operand
   (loop iv, runtime flag) acts as identity instead of making the branch
