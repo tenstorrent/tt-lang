@@ -7,7 +7,9 @@
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
@@ -26,10 +28,13 @@ struct LocalPipeNetParticipantPlan {
   SmallVector<int64_t> recordIndices;
 };
 
-/// Build local launch-node record slices for `role`.
-FailureOr<LocalPipeNetParticipantPlan>
-buildLocalPipeNetParticipantPlan(PipeNetRecordsAttr records, PipeRole role,
-                                 int64_t gridX, int64_t gridY);
+/// Group `records` by nodes with `role` in the grid (`gridX`, `gridY`).
+/// On failure, report the invalid grid or record through `emitError` if
+/// supplied; callers trying an optional optimization may omit it and use
+/// another lowering.
+FailureOr<LocalPipeNetParticipantPlan> buildLocalPipeNetParticipantPlan(
+    PipeNetRecordsAttr records, PipeRole role, int64_t gridX, int64_t gridY,
+    llvm::function_ref<InFlightDiagnostic()> emitError = {});
 
 /// Record slices for each logical device in a grid-major device PipeNet.
 ///

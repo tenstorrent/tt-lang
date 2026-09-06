@@ -343,14 +343,15 @@ LaunchNodeDomain getPipeRecordsRoleLaunchNodeDomain(PipeNetRecordsAttr records,
   return result;
 }
 
-// Device-qualified records require device identity because one launch node
-// can participate on one logical device and not another.
+// Return true if `records` specifies logical-device transfers, and false for
+// absent or local records. Attribute verification ensures all entries agree.
 static bool hasDeviceQualifiedPipeNetRecords(PipeNetRecordsAttr records) {
   return records && records.getPipes().front().getDeviceTransfer();
 }
 
-// A role query's records define its exact endpoint set; the module-wide domain
-// can include other declarations sharing the same id.
+// Return the source, destination, or combined node coordinates requested by
+// `predicate`. Use its records when present, otherwise the declarations in
+// `state`. The returned coordinate set does not distinguish logical devices.
 static LaunchNodeDomain
 getPipeNetPredicateRoleLaunchNodeDomain(PipeNetPredicateOpInterface predicate,
                                         const LaunchNodeDomainState &state) {
@@ -498,33 +499,28 @@ void LaunchNodeDomainState::initialize(ModuleOp module) {
     baseDomain = getFullLaunchNodeDomain(launchGrid->first, launchGrid->second);
   }
 
-  module.walk([&](CreatePipeOp pipe) {
-    std::optional<StringRef> name;
-    if (auto attr = pipe.getPipeNetNameAttr()) {
-      name = attr.getValue();
-    }
-    recordPipeNet(mlir::cast<PipeType>(pipe.getResult().getType()),
-                  pipe.getLoc(), name);
-  });
-  module.walk([&](PipeNetForeachSrcOp op) {
-    recordPipeNetRecords(op.getRecords(), op.getLoc());
-  });
-  module.walk([&](PipeNetForeachDstOp op) {
-    recordPipeNetRecords(op.getRecords(), op.getLoc());
-  });
-  module.walk([&](PipeNetDestinationCountOp op) {
-    recordPipeNetRecords(op.getRecords(), op.getLoc());
-  });
-  module.walk([&](SelectPipeSrcOp op) {
-    recordPipeNetRecords(op.getRecords(), op.getLoc());
-  });
-  module.walk([&](SelectPipeDstOp op) {
-    recordPipeNetRecords(op.getRecords(), op.getLoc());
-  });
-  module.walk([&](PipeNetPredicateOpInterface predicate) {
-    if (PipeNetRecordsAttr records = predicate.getReferencedRecords()) {
-      recordPipeNetRecords(records, predicate->getLoc());
-    }
+  // Collect all declarations together: their coordinate sets are combined by
+  // union, so no declaration needs to be processed before another.
+  module.walk([&](Operation *op) {
+    llvm::TypeSwitch<Operation *>(op)
+        .Case<CreatePipeOp>([&](CreatePipeOp pipe) {
+          std::optional<StringRef> name;
+          if (auto attr = pipe.getPipeNetNameAttr()) {
+            name = attr.getValue();
+          }
+          recordPipeNet(mlir::cast<PipeType>(pipe.getResult().getType()),
+                        pipe.getLoc(), name);
+        })
+        .Case<PipeNetForeachSrcOp, PipeNetForeachDstOp,
+              PipeNetDestinationCountOp, SelectPipeSrcOp, SelectPipeDstOp>(
+            [&](auto recordsOp) {
+              recordPipeNetRecords(recordsOp.getRecords(), recordsOp.getLoc());
+            })
+        .Case<PipeNetPredicateOpInterface>([&](auto query) {
+          if (PipeNetRecordsAttr records = query.getReferencedRecords()) {
+            recordPipeNetRecords(records, query->getLoc());
+          }
+        });
   });
 }
 
@@ -1539,8 +1535,7 @@ getBranchDomainsImpl(Value condition, const LaunchNodeDomain &current,
     LaunchNodeDomain roleDomain =
         getPipeNetPredicateRoleLaunchNodeDomain(pred, state);
     PipeNetRecordsAttr records = pred.getReferencedRecords();
-    // Device-qualified records require a logical-device location to exclude
-    // the role's launch nodes from the false branch.
+    // Without knowing the device, any node may take the false branch.
     if (hasDeviceQualifiedPipeNetRecords(records)) {
       return {current.intersectWith(roleDomain), current};
     }

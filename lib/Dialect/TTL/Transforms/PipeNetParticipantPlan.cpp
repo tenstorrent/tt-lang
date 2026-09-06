@@ -37,16 +37,27 @@ static FailureOr<int64_t> getRepresentableDeviceCount(DeviceDomainAttr domain) {
   return static_cast<int64_t>(deviceCount);
 }
 
-FailureOr<LocalPipeNetParticipantPlan>
-buildLocalPipeNetParticipantPlan(PipeNetRecordsAttr records, PipeRole role,
-                                 int64_t gridX, int64_t gridY) {
+FailureOr<LocalPipeNetParticipantPlan> buildLocalPipeNetParticipantPlan(
+    PipeNetRecordsAttr records, PipeRole role, int64_t gridX, int64_t gridY,
+    llvm::function_ref<InFlightDiagnostic()> emitError) {
   if (gridX <= 0 || gridY <= 0) {
+    if (emitError) {
+      emitError()
+          << "local PipeNet launch grid (" << gridX << ", " << gridY
+          << ") must have two positive extents; correct the launch grid";
+    }
     return failure();
   }
   std::optional<int64_t> maybeGridArea = llvm::checkedMul(gridX, gridY);
   if (!maybeGridArea ||
       records.getPipes().size() >
           static_cast<std::size_t>(std::numeric_limits<int64_t>::max())) {
+    if (emitError) {
+      emitError() << "local PipeNet table for launch grid (" << gridX << ", "
+                  << gridY << ") and " << records.getPipes().size()
+                  << " records exceeds the signed 64-bit indexing limit; "
+                     "reduce the launch grid or split the PipeNet";
+    }
     return failure();
   }
 
@@ -54,6 +65,12 @@ buildLocalPipeNetParticipantPlan(PipeNetRecordsAttr records, PipeRole role,
       static_cast<std::size_t>(*maybeGridArea));
   for (auto [recordIndex, record] : llvm::enumerate(records.getPipes())) {
     if (record.getDeviceTransfer()) {
+      if (emitError) {
+        emitError()
+            << "PipeNet record " << recordIndex
+            << " specifies a logical-device transfer but local planning "
+               "was requested; use logical-device PipeNet lowering";
+      }
       return failure();
     }
     llvm::SmallDenseSet<int64_t, 4> participantIndices;
@@ -62,6 +79,15 @@ buildLocalPipeNetParticipantPlan(PipeNetRecordsAttr records, PipeRole role,
       if (facts.device || facts.minX < 0 || facts.minY < 0 ||
           facts.minX > facts.maxX || facts.minY > facts.maxY ||
           facts.maxX >= gridX || facts.maxY >= gridY) {
+        if (emitError) {
+          emitError() << "PipeNet record " << recordIndex
+                      << " has endpoint range core_x=" << facts.minX << ".."
+                      << facts.maxX << ", core_y=" << facts.minY << ".."
+                      << facts.maxY << " outside the local launch grid ("
+                      << gridX << ", " << gridY
+                      << "); increase the launch grid or correct the PipeNet "
+                         "endpoint coordinates";
+        }
         return failure();
       }
       for (int64_t nodeY = facts.minY; nodeY <= facts.maxY; ++nodeY) {

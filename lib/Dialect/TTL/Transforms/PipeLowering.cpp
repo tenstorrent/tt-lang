@@ -4003,17 +4003,27 @@ lowerPlannedDeviceDestinationCount(Operation *op, PipeNetRecordsAttr records,
       rewriter, loc, participantPlan->recordCountsByDevice, currentDevice);
 }
 
-// Local records permit one launch-node-indexed count-table lookup.
-static FailureOr<Value>
-lowerLocalRoleRecordCount(Operation *op, PipeNetRecordsAttr records,
-                          PipeRole role, ConversionPatternRewriter &rewriter) {
+// Emit an index value counting entries in `records` for which the current node
+// has `role` (source, destination, or either). Use the launch grid enclosing
+// `op`; fail before emitting IR if that grid or the local records are invalid.
+// If supplied, `emitError` reports the invalid input at the caller's location.
+static FailureOr<Value> lowerLocalRoleRecordCount(
+    Operation *op, PipeNetRecordsAttr records, PipeRole role,
+    ConversionPatternRewriter &rewriter,
+    llvm::function_ref<InFlightDiagnostic()> emitError = {}) {
   FailureOr<std::pair<int64_t, int64_t>> launchGrid = getLaunchGrid(op);
   if (failed(launchGrid)) {
+    if (emitError) {
+      emitError()
+          << "local PipeNet role query requires a valid ttl.launch_grid "
+             "with two positive integer extents; set the operation's "
+             "launch grid to include its PipeNet endpoints";
+    }
     return failure();
   }
   auto [gridX, gridY] = *launchGrid;
   FailureOr<LocalPipeNetParticipantPlan> participantPlan =
-      buildLocalPipeNetParticipantPlan(records, role, gridX, gridY);
+      buildLocalPipeNetParticipantPlan(records, role, gridX, gridY, emitError);
   if (failed(participantPlan)) {
     return failure();
   }
@@ -4031,12 +4041,14 @@ lowerLocalRoleRecordCount(Operation *op, PipeNetRecordsAttr records,
       rewriter, loc, participantPlan->recordCountsByNode, nodeIndex);
 }
 
-// Reuse the count query so duplicate records still produce one boolean match.
+// Emit an i1 that is true when the current node is a source, destination, or
+// either, as requested by `role`, in any entry of the local `records`.
+// Use the launch grid enclosing `op`; propagate failure without emitting IR.
 static FailureOr<Value>
 lowerLocalRolePredicate(Operation *op, PipeNetRecordsAttr records,
                         PipeRole role, ConversionPatternRewriter &rewriter) {
-  FailureOr<Value> recordCount =
-      lowerLocalRoleRecordCount(op, records, role, rewriter);
+  FailureOr<Value> recordCount = lowerLocalRoleRecordCount(
+      op, records, role, rewriter, [&]() { return op->emitError(); });
   if (failed(recordCount)) {
     return failure();
   }
@@ -4046,8 +4058,9 @@ lowerLocalRolePredicate(Operation *op, PipeNetRecordsAttr records,
       .getResult();
 }
 
-// Record attributes define the exact queried endpoints; older recordless
-// operations instead query every pipe declaration with the referenced id.
+// Replace `op` with an i1 testing whether the current node/device has `role` in
+// its records. If `op` has no records, use `pipeNetIndex` to find its pipes and
+// `roleBuilder` to emit each pipe's coordinate test, then OR those results.
 template <typename Op>
 static LogicalResult lowerRolePredicate(
     Op op, ConversionPatternRewriter &rewriter,
@@ -4064,8 +4077,7 @@ static LogicalResult lowerRolePredicate(
     FailureOr<Value> localPredicate =
         lowerLocalRolePredicate(op, records, role, rewriter);
     if (failed(localPredicate)) {
-      return rewriter.notifyMatchFailure(
-          op, "cannot build a local PipeNet participant plan");
+      return failure();
     }
     rewriter.replaceOp(op, *localPredicate);
     return success();

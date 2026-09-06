@@ -2430,16 +2430,14 @@ validatePipeEndpoints(ModuleOp module,
       return;
     }
 
-    PipeNetRecordsAttr records;
-    if (auto predicate = mlir::dyn_cast<PipeNetPredicateOpInterface>(op)) {
-      records = predicate.getReferencedRecords();
-    } else {
-      records = llvm::TypeSwitch<Operation *, PipeNetRecordsAttr>(op)
-                    .Case<PipeNetForeachSrcOp, PipeNetForeachDstOp,
-                          SelectPipeSrcOp, SelectPipeDstOp>(
-                        [](auto recordsOp) { return recordsOp.getRecords(); })
-                    .Default(PipeNetRecordsAttr());
-    }
+    auto records =
+        llvm::TypeSwitch<Operation *, PipeNetRecordsAttr>(op)
+            .Case<PipeNetPredicateOpInterface>(
+                [](auto query) { return query.getReferencedRecords(); })
+            .Case<PipeNetForeachSrcOp, PipeNetForeachDstOp, SelectPipeSrcOp,
+                  SelectPipeDstOp>(
+                [](auto recordsOp) { return recordsOp.getRecords(); })
+            .Default(PipeNetRecordsAttr());
     if (!records || !validatedRecordTables.insert(records).second) {
       return;
     }
