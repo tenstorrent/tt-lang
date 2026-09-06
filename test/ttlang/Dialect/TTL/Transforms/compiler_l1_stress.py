@@ -63,7 +63,7 @@ def run_compiler(modules, reuse):
 def validate(output, events, architecture, reuse, unknown):
     count = len(events) // 2
     quantum = 32 if architecture == "wormhole_b0" else 64
-    control_bytes = (count * 16 + quantum - 1) // quantum * quantum
+    control_bytes = (count * 8 + quantum - 1) // quantum * quantum
     sizes = [
         ((page_bytes * capacity + quantum - 1) // quantum) * quantum
         for _, _, page_bytes, capacity in FORMATS[:count]
@@ -75,7 +75,7 @@ def validate(output, events, architecture, reuse, unknown):
     states = [int(value) for value in re.findall(r"l1_offset = (\d+)", output)]
     arena_bytes = int(re.search(r"ttl.l1_arena_bytes = (\d+)", output).group(1))
     assert actual_sizes == sizes
-    assert states == list(range(0, count * 16, 16))
+    assert states == list(range(0, count * 8, 8))
     assert len(offsets) == count
     assert all(offset >= control_bytes and offset % quantum == 0 for offset in offsets)
     assert arena_bytes == max(offset + size for offset, size in zip(offsets, sizes))

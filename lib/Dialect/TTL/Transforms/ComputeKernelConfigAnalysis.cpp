@@ -75,15 +75,18 @@ getOptionalUnpackConstraint(func::FuncOp function) {
   }
 
   SmallVector<int32_t> dataflowBufferIndices(unpackAttribute.asArrayRef());
-  int32_t targetMaxDFBIndices = getTargetMaxDFBIndices(function);
+  auto domain = getDFBIdentityDomain(function);
+  if (failed(domain)) {
+    return function.emitOpError("requires finalized storage metadata");
+  }
+  int64_t targetMaxDFBIndices = domain->size;
   if (llvm::any_of(dataflowBufferIndices, [&](int32_t index) {
         return index < 0 || index >= targetMaxDFBIndices;
       })) {
     function.emitOpError()
         << kUnpackToDestFp32AttrName
         << " must contain dataflow buffer indices in range [0, "
-        << targetMaxDFBIndices - 1 << "] for "
-        << getTargetDFBIndexCapacityDescription(function);
+        << targetMaxDFBIndices - 1 << "] for " << domain->description;
     return failure();
   }
   llvm::sort(dataflowBufferIndices);
@@ -1084,14 +1087,18 @@ namespace {
 
 LogicalResult
 validateFinalizedDFBIndices(const KernelRequirements &requirements) {
-  auto validateUses = [](ArrayRef<DFBInputUse> uses) {
+  auto validateUses = [](ArrayRef<DFBInputUse> uses) -> LogicalResult {
     for (const DFBInputUse &use : uses) {
-      int32_t targetMaxDFBIndices = getTargetMaxDFBIndices(use.consumer);
+      auto domain = getDFBIdentityDomain(use.consumer);
+      if (failed(domain)) {
+        return use.consumer->emitOpError("requires finalized storage metadata");
+      }
+      int64_t targetMaxDFBIndices = domain->size;
       if (use.dfbIndex < 0 || use.dfbIndex >= targetMaxDFBIndices) {
         use.consumer->emitOpError()
             << "uses dataflow buffer index " << use.dfbIndex
             << " outside the supported range [0, " << targetMaxDFBIndices - 1
-            << "] for " << getTargetDFBIndexCapacityDescription(use.consumer);
+            << "] for " << domain->description;
         return failure();
       }
     }
