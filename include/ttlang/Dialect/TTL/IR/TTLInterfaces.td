@@ -90,8 +90,9 @@ def TTL_PipeNetPredicateOpInterface
     union. When the operation has a `records` attribute, those static transfer
     records define the selected nodes. Logical-device records match both the
     launch node and endpoint device; local records match the launch node alone.
-    Without `records`, `pipe_net_id` refers to the module's `ttl.create_pipe`
-    declarations for that PipeNet.
+    For compatibility with older generated or serialized TTL modules,
+    `records` is optional. Without it, `pipe_net_id` refers to the module's
+    `ttl.create_pipe` declarations for that PipeNet.
   }];
 
   let cppNamespace = "::mlir::tt::ttl";
