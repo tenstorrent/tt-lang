@@ -70,11 +70,13 @@ def _tensor_type_mismatch_message(val_type, ty, operation: str = "operation") ->
 def _cleanup_source_code(f: Callable):
     source_code = inspect.getsource(f)
     source_code = textwrap.dedent(source_code)
-    cleaned = [
-        line for line in source_code.splitlines() if not line.strip().startswith("@")
-    ]
-    source_code = "\n".join(cleaned)
-    return source_code
+    lines = source_code.splitlines()
+    def_line_index = next(
+        index
+        for index, line in enumerate(lines)
+        if line.lstrip().startswith(("def ", "async def "))
+    )
+    return "\n".join(lines[def_line_index:])
 
 
 def _cast(val, ty):

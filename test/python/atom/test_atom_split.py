@@ -13,6 +13,7 @@ compute/data-movement routing."""
 
 import ast
 import copy
+import inspect
 import textwrap
 
 import pytest
@@ -3322,3 +3323,34 @@ def test_kernel_capacity_diagnostic_names_conflicts_at_last_introduction():
     message = str(error.value)
     assert "selected kernels: compute, compute kernel 'extra_compute'" in message
     assert "(line 4)" in message
+
+
+def _passthrough_decorator(**_kwargs):
+    def decorate(fn):
+        return fn
+
+    return decorate
+
+
+@_passthrough_decorator(
+    grid=(1, 1),
+    fp32_dest_acc_en=False,
+    options="--ttl-specialize-cores",
+    runtime_resource_factory=None,
+)
+def _multiline_decorated_operation():
+    pass
+
+
+def test_build_atom_spec_accepts_multiline_decorator():
+    spec = _build_atom_spec(_multiline_decorated_operation)
+
+    source_lines, start_lineno = inspect.getsourcelines(_multiline_decorated_operation)
+    def_line_index = next(
+        index
+        for index, line in enumerate(source_lines)
+        if line.lstrip().startswith("def ")
+    )
+
+    assert spec.fn_ast.name == "_multiline_decorated_operation"
+    assert spec.line_offset == start_lineno + def_line_index - 1
