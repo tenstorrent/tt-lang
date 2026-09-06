@@ -70,6 +70,11 @@ static void warnDroppedPrint(func::FuncOp func, int32_t dfbIndex) {
 }
 
 static int64_t getFuncDFBCount(func::FuncOp func, int64_t maxDFBCount) {
+  auto module = func->getParentOfType<ModuleOp>();
+  if (auto model = module->getAttrOfType<StringAttr>("ttl.memory_model");
+      model && model.getValue() == "compiler-l1") {
+    return module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName).size();
+  }
   if (auto attr = func->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttrName)) {
     return attr.getInt();
   }

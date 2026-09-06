@@ -82,6 +82,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   pm.addNestedPass<func::FuncOp>(createTTLCoalesceDFBAcquires());
   {
     TTLFinalizeDFBIndicesOptions finalizeOptions;
+    finalizeOptions.memoryModel = options.memoryModel;
     finalizeOptions.reuseUserDFBs = options.reuseUserDFBs;
     finalizeOptions.unsafeAssumeAllocationGroups =
         options.unsafeAssumeAllocationGroups;

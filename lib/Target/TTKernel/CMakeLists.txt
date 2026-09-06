@@ -5,6 +5,8 @@ set(LLK_GEN_DIR "${CMAKE_BINARY_DIR}/include/ttlang/Target/TTKernel/LLKs")
 file(MAKE_DIRECTORY "${LLK_GEN_DIR}")
 
 set(LLK_HEADERS
+  compiler_l1
+  compiler_l1_target
   experimental_tilize_llks
   experimental_untilize_llks
   experimental_pack_untilize_llks

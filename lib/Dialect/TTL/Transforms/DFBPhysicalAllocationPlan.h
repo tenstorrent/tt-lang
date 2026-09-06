@@ -24,6 +24,7 @@
 namespace mlir::tt::ttl {
 
 class DFBPhysicalConflictModelBuilder;
+class DFBConcurrentKernelLivenessAnalysis;
 
 /// Physical index selected for one logical DFB.
 struct DFBPhysicalIndexAssignment {
@@ -149,6 +150,9 @@ struct DFBConflictEvidence {
 /// Immutable complete conflict relation used by every allocation policy.
 class DFBPhysicalConflictModel {
 public:
+  /// Builds byte-storage conflicts without descriptor or format restrictions.
+  static DFBPhysicalConflictModel
+  buildStorage(const DFBConcurrentKernelLivenessAnalysis &liveness);
   bool conflicts(unsigned lhsLogicalIndex, unsigned rhsLogicalIndex) const {
     assert(lhsLogicalIndex < adjacency.size() &&
            rhsLogicalIndex < adjacency.size());
