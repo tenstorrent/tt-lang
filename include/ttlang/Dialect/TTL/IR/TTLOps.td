@@ -1653,6 +1653,41 @@ def TTL_TileBcastOp : TTL_TileOp<"tile_bcast", "Broadcast",
   let assemblyFormat = "$input `,` $output $bcast_type `into` `dst` `[` $dst_index `]` attr-dict `:` `(` type($input) `,` type($output) `)` `->` type($result)";
 }
 
+def TTL_TileBinaryBcastOp : TTL_TileOp<"tile_binary_bcast", "Broadcast",
+    [TTL_CBInputTileOpTrait, TTL_DstResultOpTrait,
+     AllTypesMatch<["lhs", "result"]>]> {
+  let summary = "Fused tile-level binary operation with a broadcast operand";
+  let description = [{
+    Computes `lhs <eltwise_binary_type> broadcast(rhs)` in a single FPU pass.
+    Both operands are read from circular buffers and the broadcast is applied
+    to `rhs` along `bcast_type` as it is unpacked, so `rhs` is never
+    materialized into DST. The result is written to DST at `dst_index`.
+
+    Because the hardware only broadcasts the second unpack source, `rhs` is
+    always the broadcast operand. Commutative operations (add, mul) may swap
+    their operands to satisfy this; sub only supports `lhs - broadcast(rhs)`.
+
+    Only `lhs` and `result` are required to match. `rhs` carries the tile
+    geometry the target consults to decide whether the device can broadcast
+    along `bcast_type`, and `output` carries the output CB for init-time PACK
+    configuration, whose data type may differ when a typecast follows.
+
+    Example:
+    ```mlir
+    %r = ttl.tile_binary_bcast %lhs, %rhs, %out 0 : i32 2 : i32 into dst[%c0]
+           : (!ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32>,
+              !ttcore.tile<32x32, f32>)
+             -> !ttcore.tile<32x32, f32>
+    ```
+  }];
+  let arguments = (ins TTL_TileType:$lhs, TTL_TileType:$rhs,
+                       TTL_TileType:$output,
+                       TTL_EltwiseBinaryTypeAttr:$eltwise_binary_type,
+                       TTL_BcastTypeAttr:$bcast_type, Index:$dst_index);
+  let results = (outs TTL_TileType:$result);
+  let assemblyFormat = "$lhs `,` $rhs `,` $output $eltwise_binary_type $bcast_type `into` `dst` `[` $dst_index `]` attr-dict `:` `(` type($lhs) `,` type($rhs) `,` type($output) `)` `->` type($result)";
+}
+
 //===----------------------------------------------------------------------===//
 // Reduce Operation
 //===----------------------------------------------------------------------===//

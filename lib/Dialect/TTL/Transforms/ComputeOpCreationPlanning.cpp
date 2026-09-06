@@ -29,6 +29,11 @@ getComputeOpCreationWarningMessage(ComputeOpCreationWarningKind kind) {
            "folding is disabled because the combined hardware operation "
            "cannot preserve the observation point between ttl.matmul and "
            "ttl.add; the instrumented program uses separate tile operations";
+  case ComputeOpCreationWarningKind::InstrumentationPreventsBinaryBroadcast:
+    return "instrumentation changes code generation: binary-broadcast folding "
+           "is disabled because the combined hardware operation never "
+           "materializes the broadcast result being observed; the instrumented "
+           "program uses separate tile operations";
   }
   llvm_unreachable("unknown ComputeOp creation warning kind");
 }
@@ -436,6 +441,23 @@ static bool hasInterveningComputeSideEffect(Operation *producer,
   return false;
 }
 
+/// Returns the first observation point between `producer` and `consumer`, or
+/// null when folding the pair would not move an observation point.
+static Operation *findInstrumentationBetween(Operation *producer,
+                                             Operation *consumer) {
+  if (producer->getBlock() != consumer->getBlock()) {
+    return nullptr;
+  }
+  for (Operation *operation = producer->getNextNode();
+       operation && operation != consumer;
+       operation = operation->getNextNode()) {
+    if (isRelocatableComputeInstrumentation(operation)) {
+      return operation;
+    }
+  }
+  return nullptr;
+}
+
 static FailureOr<unsigned> findFusedRootInput(const ComputeOpCreationPlan &plan,
                                               Value value,
                                               FusedInputRole role) {
@@ -475,15 +497,8 @@ static LogicalResult buildFusedOperationPlans(ComputeOpCreationPlan &plan,
     }
     Operation *user = *matmul.getResult().getUsers().begin();
     Operation *interveningInstrumentation = nullptr;
-    if (isa<AddOp>(user) && fusedOperations.contains(user) &&
-        matmul->getBlock() == user->getBlock()) {
-      for (Operation *operation = matmul->getNextNode(); operation != user;
-           operation = operation->getNextNode()) {
-        if (isRelocatableComputeInstrumentation(operation)) {
-          interveningInstrumentation = operation;
-          break;
-        }
-      }
+    if (isa<AddOp>(user) && fusedOperations.contains(user)) {
+      interveningInstrumentation = findInstrumentationBetween(matmul, user);
     }
     if (interveningInstrumentation) {
       plan.warnings.push_back({interveningInstrumentation,
@@ -504,6 +519,58 @@ static LogicalResult buildFusedOperationPlans(ComputeOpCreationPlan &plan,
       foldedMatmulByAdd.try_emplace(add, candidates.front());
       deferredMatmuls.insert(candidates.front());
     }
+  }
+
+  // A within-tile broadcast feeding a single add/sub/mul collapses into one
+  // FPU op. The hardware applies the broadcast while unpacking, so this only
+  // works when both operands are still CB-resident: an operand produced by an
+  // earlier fused recipe already lives in DST and has no unpack source.
+  DenseMap<Operation *, BlockBroadcastOp> foldedBroadcastByBinary;
+  DenseSet<Operation *> deferredTileBroadcasts;
+  for (Operation *operation : plan.trace.opsInOrder) {
+    auto broadcast = dyn_cast<BlockBroadcastOp>(operation);
+    if (!broadcast || !broadcast.getResult().hasOneUse()) {
+      continue;
+    }
+    RankedTensorType inputType = getTensorType(broadcast.getInput());
+    if (!inputType ||
+        !getTileBroadcastType(broadcast.getDims(), inputType.getRank())) {
+      continue;
+    }
+
+    Operation *user = *broadcast.getResult().getUsers().begin();
+    if (!isa<AddOp, SubOp, MulOp>(user) || !fusedOperations.contains(user) ||
+        foldedMatmulByAdd.contains(user) ||
+        broadcast->getBlock() != user->getBlock()) {
+      continue;
+    }
+    // sub is not commutative and only the second unpack source is broadcast,
+    // so `broadcast(B) - A` has no fused form.
+    if (isa<SubOp>(user) && user->getOperand(1) != broadcast.getResult()) {
+      continue;
+    }
+
+    Value other = user->getOperand(0) == broadcast.getResult()
+                      ? user->getOperand(1)
+                      : user->getOperand(0);
+    if (!plan.trace.rootInputs.contains(broadcast.getInput()) ||
+        !plan.trace.rootInputs.contains(other)) {
+      continue;
+    }
+
+    // The fused operation never materializes the broadcast result, so any
+    // observation point between the pair would lose the value it observes.
+    Operation *interveningInstrumentation =
+        findInstrumentationBetween(broadcast, user);
+    if (interveningInstrumentation) {
+      plan.warnings.push_back({interveningInstrumentation,
+                               ComputeOpCreationWarningKind::
+                                   InstrumentationPreventsBinaryBroadcast});
+      continue;
+    }
+
+    foldedBroadcastByBinary.try_emplace(user, broadcast);
+    deferredTileBroadcasts.insert(broadcast);
   }
 
   for (Operation *operation : plan.trace.opsInOrder) {
@@ -543,9 +610,29 @@ static LogicalResult buildFusedOperationPlans(ComputeOpCreationPlan &plan,
       }
       operationPlan.tileBroadcast =
           getTileBroadcastType(broadcast.getDims(), inputType.getRank());
-      operationPlan.recipe = operationPlan.tileBroadcast
-                                 ? FusedOperationRecipe::TileBroadcast
-                                 : FusedOperationRecipe::InterTileBroadcast;
+      if (deferredTileBroadcasts.contains(operation)) {
+        operationPlan.recipe = FusedOperationRecipe::DeferredTileBroadcast;
+      } else {
+        operationPlan.recipe = operationPlan.tileBroadcast
+                                   ? FusedOperationRecipe::TileBroadcast
+                                   : FusedOperationRecipe::InterTileBroadcast;
+      }
+    } else if (auto foldedBroadcast =
+                   foldedBroadcastByBinary.lookup(operation)) {
+      Value broadcastResult = foldedBroadcast.getResult();
+      Value data = operation->getOperand(0) == broadcastResult
+                       ? operation->getOperand(1)
+                       : operation->getOperand(0);
+      // The broadcast operand is always second: the FPU broadcasts SRCB.
+      if (failed(addOperand(data, FusedInputRole::Parallel)) ||
+          failed(addOperand(foldedBroadcast.getInput(),
+                            FusedInputRole::Parallel))) {
+        return failure();
+      }
+      RankedTensorType inputType = getTensorType(foldedBroadcast.getInput());
+      operationPlan.tileBroadcast =
+          getTileBroadcastType(foldedBroadcast.getDims(), inputType.getRank());
+      operationPlan.recipe = FusedOperationRecipe::BinaryBroadcast;
     } else if (auto matmul = dyn_cast<MatmulOp>(operation)) {
       if (failed(addOperand(matmul.getLhs(), FusedInputRole::MatmulLeft)) ||
           failed(addOperand(matmul.getRhs(),
@@ -1257,6 +1344,20 @@ resolveTransactionPushes(OutputPublicationPlan plan) {
 }
 
 } // namespace
+
+std::optional<EltwiseBinaryType>
+getFusedEltwiseBinaryType(Operation *operation) {
+  if (isa<AddOp>(operation)) {
+    return EltwiseBinaryType::Add;
+  }
+  if (isa<SubOp>(operation)) {
+    return EltwiseBinaryType::Sub;
+  }
+  if (isa<MulOp>(operation)) {
+    return EltwiseBinaryType::Mul;
+  }
+  return std::nullopt;
+}
 
 PlanningResult<OutputPublicationPlan, OutputPublicationRejection>
 buildOutputPublicationPlan(Operation *source) {

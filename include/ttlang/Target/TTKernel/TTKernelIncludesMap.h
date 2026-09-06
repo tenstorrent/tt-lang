@@ -252,6 +252,8 @@ inline const llvm::StringMap<HeaderRequirement> &getCalleeToHeadersMap() {
         {"trunc_tile",                                     {"api/compute/eltwise_unary/rounding.h", ""}},
         {"typecast_tile",                                  {"api/compute/eltwise_unary/typecast.h", ""}},
         {"typecast_tile_init",                             {"api/compute/eltwise_unary/typecast.h", ""}},
+        {"any_tiles_bcast",                                {"api/compute/bcast.h", ""}},
+        {"init_bcast",                                     {"api/compute/bcast.h", ""}},
         {"unary_bcast",                                    {"api/compute/bcast.h", ""}},
         {"unary_bcast_init",                               {"api/compute/bcast.h", ""}},
         {"untilize_block",                                 {"api/compute/untilize.h", ""}},

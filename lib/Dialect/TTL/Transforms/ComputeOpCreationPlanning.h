@@ -95,6 +95,9 @@ enum class ComputeOpCreationRejectionKind {
 enum class ComputeOpCreationWarningKind {
   /// Instrumentation prevents combining a matmul and its accumulator add.
   InstrumentationPreventsMatmulAccumulator,
+
+  /// Instrumentation prevents folding a broadcast into its binary consumer.
+  InstrumentationPreventsBinaryBroadcast,
 };
 
 /// Warning emitted before applying a legal `ComputeOp` creation plan.
@@ -220,6 +223,13 @@ enum class FusedOperationRecipe {
   /// Emit `ttl.tile_bcast` for a broadcast within one hardware tile.
   TileBroadcast,
 
+  /// Emit no operation because a following binary recipe folds this broadcast.
+  DeferredTileBroadcast,
+
+  /// Emit one `ttl.tile_binary_bcast` for a deferred broadcast and its binary
+  /// consumer, so the broadcast never materializes into DST.
+  BinaryBroadcast,
+
   /// Emit a standalone `ttl.tile_matmul_block`.
   Matmul,
 
@@ -242,6 +252,11 @@ struct FusedOperationOperand {
   /// result produced inside the compute body.
   std::optional<unsigned> rootInputIndex;
 };
+
+/// Return the elementwise binary kind the FPU can fuse with a broadcast
+/// operand, or nullopt when `operation` is not such a binary.
+std::optional<EltwiseBinaryType>
+getFusedEltwiseBinaryType(Operation *operation);
 
 /// Hardware configuration captured for an exp tile recipe.
 struct ExpFlagsPlan {

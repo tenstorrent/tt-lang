@@ -448,6 +448,22 @@ getDefaultTileExecutionInfo(Operation *operation,
     info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
     return info;
   }
+  if (auto broadcast = dyn_cast<TileBinaryBcastOp>(operation)) {
+    switch (broadcast.getBcastType()) {
+    case BcastType::Col:
+      info.primitive = TilePrimitive::BroadcastColumn;
+      break;
+    case BcastType::Row:
+      info.primitive = TilePrimitive::BroadcastRow;
+      break;
+    case BcastType::Scalar:
+      info.primitive = TilePrimitive::BroadcastScalar;
+      break;
+    }
+    info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
+    info.operandRoutes[1] = TileOperandRoute::DataflowBuffer;
+    return info;
+  }
   if (auto reduce = dyn_cast<TileReduceOp>(operation)) {
     info.primitive = TilePrimitive::Reduce;
     info.operandRoutes[0] = TileOperandRoute::DataflowBuffer;
@@ -928,7 +944,7 @@ TileOpCategory classifyTileOp(Operation *op) {
   if (isa<CopyDstOp>(op)) {
     return TileOpCategory::CopyDst;
   }
-  if (isa<TileBcastOp>(op)) {
+  if (isa<TileBcastOp, TileBinaryBcastOp>(op)) {
     return TileOpCategory::Bcast;
   }
   if (isa<TileMatmulBlockOp>(op)) {

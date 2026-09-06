@@ -150,9 +150,10 @@ func.func @fuse_bcast_then_typecast(%a: tensor<1x1x!ttcore.tile<32x32, bf16>>)
 
 // -----
 
-// Test that fusing typecast(block.broadcast(a) + b) keeps both the bcast and
-// add results in their own dtype (bf16) and emits a trailing tile_typecast
-// for the bf16 -> f32 conversion. Combines the bcast and elementwise paths.
+// Test that fusing typecast(block.broadcast(a) + b) keeps the fused
+// binary-broadcast result in its own dtype (bf16) and emits a trailing
+// tile_typecast for the bf16 -> f32 conversion. Combines the bcast and
+// elementwise paths.
 
 // CHECK-LABEL: func.func @fuse_bcast_add_then_typecast
 func.func @fuse_bcast_add_then_typecast(
@@ -176,8 +177,7 @@ func.func @fuse_bcast_add_then_typecast(
   // CHECK-SAME:   ins(%{{.*}}, %{{.*}} : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<2x2x!ttcore.tile<32x32, bf16>>)
   // CHECK-SAME:   outs(%{{.*}} : tensor<2x2x!ttcore.tile<32x32, f32>>)
   // CHECK:      ^bb0(%[[A:.*]]: !ttcore.tile<32x32, bf16>, %[[B:.*]]: !ttcore.tile<32x32, bf16>, %[[OUT:.*]]: !ttcore.tile<32x32, f32>):
-  // CHECK:        %[[BC:.*]] = ttl.tile_bcast %[[A]], %[[OUT]]{{.*}}-> !ttcore.tile<32x32, bf16>
-  // CHECK:        %[[ADD:.*]] = ttl.tile_add %[[BC]], %[[B]]{{.*}}: !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
+  // CHECK:        %[[ADD:.*]] = ttl.tile_binary_bcast %[[B]], %[[A]], %[[OUT]] 0 : i32 3 : i32{{.*}}-> !ttcore.tile<32x32, bf16>
   // CHECK:        %[[C:.*]] = ttl.tile_typecast %[[ADD]]{{.*}}: !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, f32>
   // CHECK:        ttl.tile_store %[[C]], %{{.*}}
   %bc = ttl.block.broadcast %a_cb dims = [-2, -1], shape = [2, 2]
