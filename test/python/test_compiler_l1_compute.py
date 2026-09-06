@@ -28,7 +28,9 @@ def forbid_metal_descriptors(request, monkeypatch):
     monkeypatch.setattr(runner, "build_cb_descriptors", reject_descriptors)
 
 
-def _make_binary(multiply):
+def _make_binary(*, multiply=False, subtract=False):
+    assert not (multiply and subtract)
+
     @ttl.operation(grid=(1, 1))
     def binary(lhs, rhs, output):
         lhs_storage = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), block_count=3)
@@ -47,6 +49,8 @@ def _make_binary(multiply):
                 ):
                     if multiply:
                         output_block.store(lhs_block * rhs_block)
+                    elif subtract:
+                        output_block.store(lhs_block - rhs_block)
                     else:
                         output_block.store(lhs_block + rhs_block)
 
@@ -70,23 +74,29 @@ def _make_binary(multiply):
 
 
 @pytest.mark.parametrize("fpu", [True, False], ids=["fpu", "sfpu"])
-@pytest.mark.parametrize("multiply", [False, True], ids=["add", "multiply"])
+@pytest.mark.parametrize("operation_name", ["add", "subtract", "multiply"])
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "l1"])
 @pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-l1"])
-def test_l1_binary(device, dtype, allocator, memory_model, multiply, fpu):
-    operation = _make_binary(multiply)
+def test_l1_binary(device, dtype, allocator, memory_model, operation_name, fpu):
+    operation = _make_binary(
+        multiply=operation_name == "multiply",
+        subtract=operation_name == "subtract",
+    )
 
     for invocation in range(3):
         # Exact TF32 inputs isolate storage corruption from FPU input rounding.
         lhs_reference = torch.randint(-64, 65, (224, 32)).to(dtype) / 32
         rhs_reference = torch.randint(-64, 65, (224, 32)).to(dtype) / 32
-        if multiply:
+        if operation_name == "multiply":
             # Power-of-two factors also avoid fidelity-dependent product rounding.
             rhs_reference = (2.0 ** torch.randint(-2, 3, (224, 32))).to(dtype)
-        expected = (
-            lhs_reference * rhs_reference if multiply else lhs_reference + rhs_reference
-        )
+        if operation_name == "multiply":
+            expected = lhs_reference * rhs_reference
+        elif operation_name == "subtract":
+            expected = lhs_reference - rhs_reference
+        else:
+            expected = lhs_reference + rhs_reference
         lhs = allocator(lhs_reference, device)
         rhs = allocator(rhs_reference, device)
         output = allocator(torch.zeros_like(expected), device)
@@ -457,7 +467,7 @@ def test_l1_rms_normalization(device, dtype, memory_model, tmp_path, allocator):
 @pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-l1"])
 def test_l1_sfpu_precision(device, multiply, dtype, allocator, memory_model):
     # Full-precision inputs expose accidental TF32 conversion during direct unpack.
-    operation = _make_binary(multiply)
+    operation = _make_binary(multiply=multiply)
     for invocation in range(3):
         lhs_reference = torch.randn((224, 32)).to(dtype)
         rhs_reference = torch.randn((224, 32)).to(dtype)

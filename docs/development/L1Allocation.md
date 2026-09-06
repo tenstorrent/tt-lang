@@ -181,10 +181,10 @@ evidence have separate costs.
   external runtime resources are rejected. With no regions, no arena is allocated.
 
 Compute currently accepts 32x32 BF16/FP32 tiles. Device tests on Blackhole cover
-FPU/SFPU addition and multiplication with DRAM/L1 tensors, matmul, row/column
-sum and maximum, broadcast, transpose, exponential, reciprocal, reciprocal square
-root, sigmoid, tanh, and compute-produced intermediate storage. Both DRAM and L1
-tensors are covered. The existing [compute configuration contract](ComputeKernelConfiguration.md)
+FPU/SFPU addition, subtraction, and multiplication with DRAM/L1 tensors, matmul,
+row/column sum and maximum, broadcast, transpose, exponential, reciprocal,
+reciprocal square root, sigmoid, tanh, and compute-produced intermediate storage.
+Both DRAM and L1 tensors are covered. The existing [compute configuration contract](ComputeKernelConfiguration.md)
 requires a compatible unpack mode for every use of a logical DFB. Attention
 publishes distinct reduction and SFPU operands to satisfy that FP32 constraint.
 Compiler alignment tests cover Wormhole and Blackhole. Device correctness
