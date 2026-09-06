@@ -217,10 +217,15 @@ static LogicalResult addCreationRequirements(
     diagnostic.emplace(outputs.getInvalidIR());
     return failure();
   }
-  if (outputs.isRejected()) {
+  // Planned output storage creates a producer whose inputs also need storage.
+  bool hasPlannedOutput = llvm::any_of(source->getResults(), [&](Value result) {
+    return llvm::any_of(result.getUses(), [&](OpOperand &use) {
+      return state.requiresMaterialization(use);
+    });
+  });
+  if (outputs.isRejected() && !hasPlannedOutput) {
     return success();
   }
-  const OutputPublicationPlan &outputPlan = outputs.getPlan();
 
   FailureOr<SmallVector<Value>> inputs =
       collectComputeOpCreationLifetimeInputs(source, [&](OpOperand &operand) {
@@ -246,6 +251,11 @@ static LogicalResult addCreationRequirements(
     state.requireMaterialization(*failedOperand, std::move(evidence));
     return success();
   }
+
+  if (outputs.isRejected()) {
+    return success();
+  }
+  const OutputPublicationPlan &outputPlan = outputs.getPlan();
 
   FailureOr<SmallVector<ComputeOpCreationInstrumentationBoundary>> boundaries =
       collectComputeOpCreationInstrumentationBoundaries(
