@@ -183,9 +183,10 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="specialize_cores",
         action=argparse.BooleanOptionalAction,
-        help="Clone each kernel that branches on a core coordinate once per "
-        "launch coordinate, const-folding core_x / core_y so dead branches are "
-        "removed (ttkernel-specialize-cores). Opt-in (default: disabled).",
+        help="Clone each kernel whose conditional or loop bounds depend on a "
+        "core coordinate once per launch coordinate, const-folding core_x / "
+        "core_y to resolve that control flow (ttkernel-specialize-cores). "
+        "Opt-in (default: disabled).",
     )
     p.add_argument(
         "--ttl-l1-budget",
