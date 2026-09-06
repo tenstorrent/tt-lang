@@ -7,6 +7,8 @@
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 
 #include "ttlang/Target/TTKernel/DFBDescriptorPrelude_generated.h"
+#include "ttlang/Target/TTKernel/LLKs/compiler_l1_generated.h"
+#include "ttlang/Target/TTKernel/LLKs/compiler_l1_target_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_constant_table_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_coord_translation_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_dfb_reconfiguration_generated.h"
@@ -205,6 +207,10 @@ public:
     region->walk([&](emitc::VerbatimOp verbatimOp) {
       llvm::StringRef value = verbatimOp.getValue();
 
+      if (value.starts_with("ttlang::l1::Buffer<")) {
+        emitLlk(compiler_l1_target_generated, compiler_l1_target_generated_len);
+        emitLlk(compiler_l1_generated, compiler_l1_generated_len);
+      }
       if (value.starts_with("CircularBuffer")) {
         headers.insert("api/dataflow/circular_buffer.h");
       }

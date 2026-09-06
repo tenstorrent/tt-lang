@@ -39,6 +39,13 @@ def _make_parser() -> argparse.ArgumentParser:
     """
     p = argparse.ArgumentParser(add_help=False)
     p.add_argument(
+        "--ttl-memory-model",
+        default=None,
+        dest="memory_model",
+        choices=("metal-cb", "compiler-l1"),
+        help="Select Metal DFB allocation or experimental compiler-owned L1 storage (default: metal-cb).",
+    )
+    p.add_argument(
         "--ttl-maximize-dst",
         default=None,
         dest="maximize_dst",
@@ -253,6 +260,7 @@ class CompilerOptions:
     reduce_full_fp32: bool = True
     matmul_full_fp32: bool = True
     strict_f32_acc: bool = False
+    memory_model: str = "metal-cb"
     compiler_dfbs: bool = True
     pipe_computed_addresses: bool = True
     pipe_capacity_sync: bool = True
@@ -273,6 +281,8 @@ class CompilerOptions:
 
     def __post_init__(self):
         """Validate options that can be constructed without argparse."""
+        if self.memory_model not in ("metal-cb", "compiler-l1"):
+            raise ValueError(f"Invalid memory model {self.memory_model!r}")
         if self.accumulation_strategy not in _ACCUMULATION_STRATEGIES:
             raise ValueError(
                 "Invalid accumulation strategy "

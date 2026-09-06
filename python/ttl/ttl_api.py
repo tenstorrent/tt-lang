@@ -2012,6 +2012,15 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
         storage_segments=tuple(storage_segments),
         allocation_nodes=allocation_nodes,
         storage_index=storage_index,
+        l1_offset=int(entry["l1_offset"]) if "l1_offset" in entry else None,
+        l1_payload_offset=(
+            int(entry["l1_payload_offset"]) if "l1_payload_offset" in entry else None
+        ),
+        l1_allocation_bytes=(
+            int(entry["l1_allocation_bytes"])
+            if "l1_allocation_bytes" in entry
+            else None
+        ),
     )
 
 
@@ -2802,6 +2811,7 @@ def _lower_program_to_kernel(
             pipe_transport_pass,
             "func.func(ttl-coalesce-dfb-acquires)",
             "ttl-finalize-dfb-indices{"
+            f"memory-model={compiler_options.memory_model} "
             f"reuse-user-dfbs={reuse_user_dfbs_flag} "
             "unsafe-assume-allocation-groups="
             f"{unsafe_assume_allocation_groups_flag} "

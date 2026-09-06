@@ -18,6 +18,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Value.h"
@@ -100,6 +101,12 @@ static std::string datatypeToDataformatStr(ttcore::DataType dtype) {
     break;
   }
   return expression;
+}
+
+static bool usesCompilerL1(Operation *operation) {
+  auto module = operation->getParentOfType<ModuleOp>();
+  auto model = module->getAttrOfType<StringAttr>("ttl.memory_model");
+  return model && model.getValue() == "compiler-l1";
 }
 
 static std::string getTTKernelCalleeName(llvm::StringRef opName) {
@@ -234,7 +241,25 @@ static std::string ensureCBDeclaration(Value cb, Operation *useOp,
   OpBuilder::InsertionGuard guard(rewriter);
   setInsertionPointAfterDefOrBlockStart(cb, rewriter);
 
-  std::string cbDecl = "CircularBuffer " + cbName + "({});";
+  std::string bufferType = "CircularBuffer";
+  if (usesCompilerL1(useOp)) {
+    auto index =
+        cb.getDefiningOp()->getAttrOfType<IntegerAttr>("ttkernel.cb_ctarg_idx");
+    assert(index && "compiler-l1 requires statically bound storage");
+    auto entries = useOp->getParentOfType<ModuleOp>()->getAttrOfType<ArrayAttr>(
+        "ttl.dfb_allocations");
+    auto entry = cast<DictionaryAttr>(entries[index.getInt()]);
+    auto pageBytes = cast<IntegerAttr>(entry.get("page_size")).getInt();
+    auto capacity = cast<IntegerAttr>(entry.get("num_tiles")).getInt() *
+                    cast<IntegerAttr>(entry.get("block_count")).getInt();
+    auto displacement =
+        cast<IntegerAttr>(entry.get("l1_payload_offset")).getInt() -
+        cast<IntegerAttr>(entry.get("l1_offset")).getInt();
+    bufferType = (Twine("ttlang::l1::Buffer<") + Twine(pageBytes) + ", " +
+                  Twine(capacity) + ", " + Twine(displacement) + ">")
+                     .str();
+  }
+  std::string cbDecl = bufferType + " " + cbName + "({});";
   rewriter.create<emitc::VerbatimOp>(useOp->getLoc(), cbDecl, ValueRange{cb});
   declarations.insert(cbName);
   return cbName;
@@ -1203,6 +1228,28 @@ public:
       resultTypes.push_back(ct);
     }
 
+    if constexpr (std::is_same_v<SourceOp, ttkernel::GetTileSizeOp> ||
+                  std::is_same_v<SourceOp, ttkernel::GetDataFormatOp>) {
+      if (usesCompilerL1(op)) {
+        auto elementType =
+            cast<ttkernel::CBType>(op.getCb().getType()).getElementType();
+        auto tile = dyn_cast<ttcore::TileType>(elementType);
+        if (!tile) {
+          return rewriter.notifyMatchFailure(
+              op, "compiler-l1 requires tiled storage metadata");
+        }
+        std::string value;
+        if constexpr (std::is_same_v<SourceOp, ttkernel::GetTileSizeOp>) {
+          value = std::to_string(tile.getSizeBytes());
+        } else {
+          value = datatypeToDataformatStr(tile.getDataType());
+        }
+        auto literal = emitc::LiteralOp::create(rewriter, op.getLoc(),
+                                                resultTypes.front(), value);
+        rewriter.replaceOp(op, literal);
+        return success();
+      }
+    }
     rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
         op, resultTypes, getOpName(op), getCallArgs(rewriter, op),
         getTemplateArgs(rewriter, op), adaptor.getOperands());
@@ -1501,10 +1548,22 @@ public:
                        Type resultType,
                        ConversionPatternRewriter &rewriter) const {
     if constexpr (std::is_same_v<SourceOp, ttkernel::GetCompileArgValOp>) {
-      auto literal = rewriter.create<emitc::LiteralOp>(
-          op.getLoc(), resultType,
+      std::string expression =
           (Twine("get_compile_time_arg_val(") + Twine(op.getArgIndex()) + ")")
-              .str());
+              .str();
+      if (usesCompilerL1(op) &&
+          isa<ttkernel::CBType>(op.getResult().getType())) {
+        auto entries =
+            op->template getParentOfType<ModuleOp>()
+                ->template getAttrOfType<ArrayAttr>("ttl.dfb_allocations");
+        auto entry = cast<DictionaryAttr>(entries[op.getArgIndex()]);
+        auto offset = cast<IntegerAttr>(entry.get("l1_offset")).getInt();
+        expression =
+            "get_common_arg_val<uint32_t>(get_compile_time_arg_val(0)) + " +
+            std::to_string(offset);
+      }
+      auto literal = emitc::LiteralOp::create(rewriter, op.getLoc(), resultType,
+                                              expression);
       if (mlir::isa<ttkernel::CBType>(op.getResult().getType())) {
         literal->setAttr("ttkernel.cb_ctarg_idx",
                          rewriter.getI32IntegerAttr(op.getArgIndex()));
@@ -3078,6 +3137,70 @@ public:
 
   void runOnOperation() final {
     ModuleOp module = getOperation();
+    WalkResult sourceOperations = module.walk([](Operation *operation) {
+      return operation->getName().getDialectNamespace() == "ttkernel"
+                 ? WalkResult::interrupt()
+                 : WalkResult::advance();
+    });
+    if (auto model = module->getAttrOfType<StringAttr>("ttl.memory_model");
+        model && model.getValue() == "compiler-l1" &&
+        sourceOperations.wasInterrupted()) {
+      WalkResult validation = module.walk([&](Operation *operation) {
+        if (operation->getName().getDialectNamespace() == "emitc") {
+          operation->emitOpError(
+              "compiler-l1 cannot validate pre-lowered C++ effects");
+          return WalkResult::interrupt();
+        }
+        if (operation->getName().getDialectNamespace() != "ttkernel") {
+          return WalkResult::advance();
+        }
+        bool supported =
+            isa<ttkernel::GetCompileArgValOp, ttkernel::GetArgValOp,
+                ttkernel::GetCommonArgValOp, ttkernel::MyLogicalXOp,
+                ttkernel::MyLogicalYOp, ttkernel::CBReserveBackOp,
+                ttkernel::CBWaitFrontOp, ttkernel::CBPushBackOp,
+                ttkernel::CBPopFrontOp, ttkernel::GetReadPtrOp,
+                ttkernel::GetWritePtrOp, ttkernel::NocAsyncReadTileOp,
+                ttkernel::NocAsyncWriteTileOp, ttkernel::NocAsyncReadBarrierOp,
+                ttkernel::NocAsyncWriteBarrierOp, ttkernel::TensorAccessorOp,
+                ttkernel::TensorAccessorArgsOp, ttkernel::GetTileSizeOp,
+                ttkernel::GetDataFormatOp>(operation);
+        if (!supported) {
+          operation->emitOpError(
+              "has no compiler-l1 lowering; Metal DFB fallback is disabled");
+          return WalkResult::interrupt();
+        }
+        if (isa<ttkernel::CBReserveBackOp, ttkernel::CBWaitFrontOp,
+                ttkernel::CBPushBackOp, ttkernel::CBPopFrontOp>(operation)) {
+          auto identity = resolveDfbIndex(operation->getOperand(0));
+          auto allocations =
+              module->getAttrOfType<ArrayAttr>("ttl.dfb_allocations");
+          llvm::APInt pageCount;
+          if (!identity || !allocations || *identity < 0 ||
+              static_cast<size_t>(*identity) >= allocations.size() ||
+              !matchPattern(operation->getOperand(1),
+                            m_ConstantInt(&pageCount))) {
+            operation->emitOpError("compiler-l1 requires a static storage "
+                                   "identity and page count");
+            return WalkResult::interrupt();
+          }
+          auto descriptor = cast<DictionaryAttr>(allocations[*identity]);
+          int64_t blockPages =
+              cast<IntegerAttr>(descriptor.get("num_tiles")).getInt();
+          if (pageCount.getSExtValue() != blockPages) {
+            operation->emitOpError(
+                "compiler-l1 POC requires full-block synchronization to "
+                "preserve contiguous acquisitions");
+            return WalkResult::interrupt();
+          }
+        }
+        return WalkResult::advance();
+      });
+      if (validation.wasInterrupted()) {
+        signalPassFailure();
+        return;
+      }
+    }
     TTKernelToEmitCConversionState state;
     ConversionPlan config(module.getContext(), state);
     for (func::FuncOp funcOp : module.getOps<func::FuncOp>()) {

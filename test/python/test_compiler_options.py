@@ -248,3 +248,17 @@ class TestEquality:
         a = CompilerOptions()
         b = CompilerOptions.from_string("--ttl-maximize-dst --ttl-fpu-binary-ops")
         assert hash(a) == hash(b)
+
+
+@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-l1"])
+def test_memory_model(memory_model):
+    options = CompilerOptions.from_string(f"--ttl-memory-model={memory_model}")
+    assert options.memory_model == memory_model
+    assert "memory_model" in options._explicit
+    assert CompilerOptions().merge(options).memory_model == memory_model
+
+
+def test_memory_model_cache_identity():
+    assert CompilerOptions() != CompilerOptions(memory_model="compiler-l1")
+    with pytest.raises(ValueError, match="Invalid memory model"):
+        CompilerOptions(memory_model="invalid")
