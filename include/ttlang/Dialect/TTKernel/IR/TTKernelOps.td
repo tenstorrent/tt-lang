@@ -3728,7 +3728,10 @@ def TTKernel_NocAsyncWriteOp
                                  [AttrSizedOperandSegments]> {
     let summary = "NocAsyncWrite";
     let description = [{
-      NocAsyncWrite to either an L1 core coordinate or a DRAM bank.
+      Initiates an asynchronous write from local L1 to either a remote core or
+      a DRAM bank. When `posted` is true, the write does not request a remote
+      acknowledgement. Receiver-visible completion must be established by a
+      separate synchronization operation.
     }];
 
     let arguments = (ins I32:$srcLocalL1Addr,
@@ -3736,11 +3739,22 @@ def TTKernel_NocAsyncWriteOp
                          Variadic<I32>:$dstBankId,
                          I32:$dstAddress,
                          I32:$size,
-                         Optional<I8>:$noc);
+                         Optional<I8>:$noc,
+                         OptionalAttr<BoolAttr>:$posted);
 
     let assemblyFormat = [{
-      $srcLocalL1Addr `,` (`core` `[` $dstCoreXY^ `]`)? (`bank` `[` $dstBankId^ `]`)? `,` $dstAddress `,` $size (`,` `noc` $noc^)? attr-dict `:` functional-type(operands, results)
+      $srcLocalL1Addr `,` (`core` `[` $dstCoreXY^ `]`)? (`bank` `[` $dstBankId^ `]`)? `,` $dstAddress `,` $size (`,` `noc` $noc^)? (`posted` $posted^)? attr-dict `:` functional-type(operands, results)
     }];
+
+    let builders = [
+      OpBuilder<(ins "Value":$srcLocalL1Addr,
+                     "::mlir::ValueRange":$dstCoreXY,
+                     "::mlir::ValueRange":$dstBankId,
+                     "Value":$dstAddress, "Value":$size, "Value":$noc), [{
+        build($_builder, $_state, srcLocalL1Addr, dstCoreXY, dstBankId,
+              dstAddress, size, noc, /*posted=*/BoolAttr{});
+      }]>,
+    ];
 
     let hasVerifier = 1;
 }
@@ -3803,16 +3817,26 @@ def TTKernel_NocAsyncWriteOnePacketSetStateOp
 
       The destination operand is a full NoC address. The companion
       `noc_async_write_one_packet_with_state` operation supplies the source L1
-      address and destination local L1 address that vary per transfer.
+      address and destination local L1 address that vary per transfer. The
+      `posted` setting is part of the command state and must match every
+      companion operation that uses it.
     }];
 
     let arguments = (ins TTKernel_NocAddr:$dstNocAddr,
                          I32:$size,
-                         Optional<I8>:$noc);
+                         Optional<I8>:$noc,
+                         OptionalAttr<BoolAttr>:$posted);
 
     let assemblyFormat = [{
-      `(` $dstNocAddr `,` $size (`,` `noc` $noc^)? `)` attr-dict `:` functional-type(operands, results)
+      `(` $dstNocAddr `,` $size (`,` `noc` $noc^)? `)` (`posted` $posted^)? attr-dict `:` functional-type(operands, results)
     }];
+
+    let builders = [
+      OpBuilder<(ins "Value":$dstNocAddr, "Value":$size, "Value":$noc), [{
+        build($_builder, $_state, dstNocAddr, size, noc,
+              /*posted=*/BoolAttr{});
+      }]>,
+    ];
 }
 
 def TTKernel_NocAsyncWriteOnePacketWithStateOp
@@ -3827,16 +3851,28 @@ def TTKernel_NocAsyncWriteOnePacketWithStateOp
 
       The destination local L1 address must refer to the same destination node
       that was used to set the command state. The transfer size is the size
-      programmed by the set-state operation.
+      programmed by the set-state operation. Its `posted` setting must match
+      the set-state operation.
     }];
 
     let arguments = (ins I32:$srcLocalL1Addr,
                          I32:$dstLocalL1Addr,
-                         Optional<I8>:$noc);
+                         Optional<I8>:$noc,
+                         OptionalAttr<BoolAttr>:$posted);
 
     let assemblyFormat = [{
-      `(` $srcLocalL1Addr `,` $dstLocalL1Addr (`,` `noc` $noc^)? `)` attr-dict `:` functional-type(operands, results)
+      `(` $srcLocalL1Addr `,` $dstLocalL1Addr (`,` `noc` $noc^)? `)` (`posted` $posted^)? attr-dict `:` functional-type(operands, results)
     }];
+
+    let builders = [
+      OpBuilder<(ins "Value":$srcLocalL1Addr, "Value":$dstLocalL1Addr,
+                     "Value":$noc), [{
+        build($_builder, $_state, srcLocalL1Addr, dstLocalL1Addr, noc,
+              /*posted=*/BoolAttr{});
+      }]>,
+    ];
+
+    let hasVerifier = 1;
 }
 
 def TTKernel_NocAsyncWriteBarrierOp
@@ -3846,7 +3882,9 @@ def TTKernel_NocAsyncWriteBarrierOp
            TTKernel_DeviceZoneOpTrait]> {
     let summary = "NocAsyncWriteBarrier";
     let description = [{
-      Waits for all outstanding write transactions on the given NOC.
+      Waits for remote completion of all outstanding non-posted write
+      transactions on the selected NoC. Posted writes are not observed because
+      they do not request remote acknowledgements.
     }];
 
     let arguments = (ins Optional<I8>:$noc);
@@ -3862,6 +3900,36 @@ def TTKernel_NocAsyncWriteBarrierOp
     ];
 
     let hasCanonicalizer = 1;
+}
+
+def TTKernel_NocAsyncWritesFlushedOp
+    : TTKernel_NocWriteCommandOp<
+          "noc_async_writes_flushed",
+          [TTKernel_NocCommandStatePreservingOpTrait,
+           TTKernel_DeviceZoneOpTrait]> {
+    let summary = "NocAsyncWritesFlushed";
+    let description = [{
+      Blocks until outstanding writes of the selected response mode have
+      departed the current core on the selected NoC. This operation does not
+      wait for remote completion. When `posted` is true it observes posted
+      writes; otherwise it observes non-posted writes.
+    }];
+
+    let arguments = (ins Optional<I8>:$noc,
+                         OptionalAttr<BoolAttr>:$posted);
+
+    let assemblyFormat = [{
+      `(` ($noc^)? `)` (`posted` $posted^)? attr-dict `:` functional-type(operands, results)
+    }];
+
+    let builders = [
+      OpBuilder<(ins), [{
+        build($_builder, $_state, /*noc=*/Value{}, /*posted=*/BoolAttr{});
+      }]>,
+      OpBuilder<(ins "Value":$noc), [{
+        build($_builder, $_state, noc, /*posted=*/BoolAttr{});
+      }]>,
+    ];
 }
 
 def TTKernel_NocAsyncAtomicBarrierOp
@@ -3995,26 +4063,37 @@ def TTKernel_RemoteSramWriteU32Op
 
 def TTKernel_NocInlineDwWriteOp
     : TTKernel_NocWriteCommandOp<
-          "noc_inline_dw_write",
-          [TTKernel_NocCommandStatePreservingOpTrait]> {
+          "noc_inline_dw_write"> {
     let summary = "NocInlineDwWrite";
     let description = [{
       Initiates an inline 32-bit NOC write to a remote L1 address. The value is
-      provided as an SSA value, so the operation does not require a local SRAM
-      staging word. The operation uses the dedicated write-at command and does
-      not change resident asynchronous-write state.
+      provided as an SSA value, so callers do not provide a local SRAM staging
+      word. Resident asynchronous-write command state is unspecified after
+      this operation. When `posted` is true, the write does not request a
+      remote acknowledgement.
     }];
 
     let arguments = (ins IndexLike:$dstNocX,
                          IndexLike:$dstNocY,
-                         I32:$dstAddress,
+                         AnyTypeOf<[I32, TTKernel_L1Addr,
+                                    TTKernel_LocalSemaphore]>:$dstAddress,
                          I32:$val,
                          I8:$byte_enable,
-                         Optional<I8>:$noc);
+                         Optional<I8>:$noc,
+                         OptionalAttr<BoolAttr>:$posted);
 
     let assemblyFormat = [{
-      `(` `core` `[` $dstNocX `,` $dstNocY `]` `,` $dstAddress `,` $val `,` $byte_enable (`,` `noc` $noc^)? `)` attr-dict `:` functional-type(operands, results)
+      `(` `core` `[` $dstNocX `,` $dstNocY `]` `,` $dstAddress `,` $val `,` $byte_enable (`,` `noc` $noc^)? `)` (`posted` $posted^)? attr-dict `:` functional-type(operands, results)
     }];
+
+    let builders = [
+      OpBuilder<(ins "Value":$dstNocX, "Value":$dstNocY,
+                     "Value":$dstAddress, "Value":$val,
+                     "Value":$byte_enable, "Value":$noc), [{
+        build($_builder, $_state, dstNocX, dstNocY, dstAddress, val,
+              byte_enable, noc, /*posted=*/BoolAttr{});
+      }]>,
+    ];
 }
 
 def TTKernel_SemaphoreWaitOp : TTKernel_Op<"experimental.semaphore_wait"> {
