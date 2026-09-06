@@ -1,6 +1,7 @@
 name: CI
 
 on:
+  # Base-only retargets emit edited; job conditions exclude title/body edits.
   pull_request:
     branches: ["main"]
     types: [opened, synchronize, reopened, ready_for_review, edited]
@@ -28,6 +29,7 @@ permissions:
   packages: read
 
 concurrency:
+  # Metadata edits must not cancel an in-progress source-validation run.
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}-${{ github.event.action == 'edited' && github.event.changes.base == null && github.run_id || 'code' }}
   cancel-in-progress: true
 
