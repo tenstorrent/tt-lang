@@ -8,6 +8,7 @@
 #include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 
 #include "mlir/Conversion/ArithToEmitC/ArithToEmitC.h"
 #include "mlir/Conversion/MemRefToEmitC/MemRefToEmitC.h"
@@ -18,6 +19,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Value.h"
@@ -100,6 +102,29 @@ static std::string datatypeToDataformatStr(ttcore::DataType dtype) {
     break;
   }
   return expression;
+}
+
+static bool usesCompilerL1(Operation *operation) {
+  auto module = operation->getParentOfType<ModuleOp>();
+  auto model = module->getAttrOfType<StringAttr>(ttl::kMemoryModelAttrName);
+  return model && model.getValue() == ttl::kCompilerL1MemoryModel;
+}
+
+static bool isCompilerL1ComputeOperation(Operation *operation) {
+  return isa<
+      ttkernel::SubTilesInitOp, ttkernel::SubTilesOp, ttkernel::TransposeInitOp,
+      ttkernel::TransposeTileOp, ttkernel::BinaryDestReuseTilesInitOp,
+      ttkernel::BinaryDestReuseTilesOp, ttkernel::UnaryBcastInitOp,
+      ttkernel::UnaryBcastTileOp, ttkernel::ReduceInitOp,
+      ttkernel::ReduceTileOp, ttkernel::ReduceUninitOp, ttkernel::MatmulInitOp,
+      ttkernel::MatmulBlockInitOp, ttkernel::MatmulInitShortOp,
+      ttkernel::MatmulBlockInitShortOp, ttkernel::MatmulTilesOp,
+      ttkernel::MatmulBlockOp, ttkernel::ExperimentalMatmulBlockOp,
+      ttkernel::InitSFPUOp, ttkernel::UnaryOpInitCommonOp,
+      ttkernel::CopyTileInitOp, ttkernel::CopyTileOp,
+      ttkernel::BinaryOpInitCommonOp, ttkernel::AddTilesInitOp,
+      ttkernel::AddTilesOp, ttkernel::MulTilesInitOp, ttkernel::MulTilesOp,
+      ttkernel::PackTileOp>(operation);
 }
 
 static std::string getTTKernelCalleeName(llvm::StringRef opName) {
@@ -234,7 +259,26 @@ static std::string ensureCBDeclaration(Value cb, Operation *useOp,
   OpBuilder::InsertionGuard guard(rewriter);
   setInsertionPointAfterDefOrBlockStart(cb, rewriter);
 
-  std::string cbDecl = "CircularBuffer " + cbName + "({});";
+  std::string bufferType = "CircularBuffer";
+  if (usesCompilerL1(useOp)) {
+    auto index =
+        cb.getDefiningOp()->getAttrOfType<IntegerAttr>("ttkernel.cb_ctarg_idx");
+    assert(index && "compiler-l1 requires statically bound storage");
+    auto entries = useOp->getParentOfType<ModuleOp>()->getAttrOfType<ArrayAttr>(
+        ttl::kDFBAllocationsAttrName);
+    auto entry = cast<DictionaryAttr>(entries[index.getInt()]);
+    auto pageBytes = cast<IntegerAttr>(entry.get("page_size")).getInt();
+    auto pagesPerBlock = cast<IntegerAttr>(entry.get("num_tiles")).getInt();
+    auto blockCount = cast<IntegerAttr>(entry.get("block_count")).getInt();
+    auto displacement =
+        cast<IntegerAttr>(entry.get("l1_payload_offset")).getInt() -
+        cast<IntegerAttr>(entry.get("l1_offset")).getInt();
+    bufferType = (Twine("ttlang::l1::Buffer<") + Twine(pageBytes) + ", " +
+                  Twine(pagesPerBlock) + ", " + Twine(blockCount) + ", " +
+                  Twine(displacement) + ">")
+                     .str();
+  }
+  std::string cbDecl = bufferType + " " + cbName + "({});";
   rewriter.create<emitc::VerbatimOp>(useOp->getLoc(), cbDecl, ValueRange{cb});
   declarations.insert(cbName);
   return cbName;
@@ -835,6 +879,75 @@ public:
 } // namespace
 
 namespace {
+static void emitCompilerL1ComputeCall(Operation *operation,
+                                      ValueRange convertedOperands,
+                                      TypeRange resultTypes,
+                                      StringRef operationName,
+                                      ArrayAttr templateArgs,
+                                      ConversionPatternRewriter &rewriter) {
+  SmallVector<Value> operands;
+  auto entries =
+      operation->getParentOfType<ModuleOp>()->template getAttrOfType<ArrayAttr>(
+          ttl::kDFBAllocationsAttrName);
+  for (auto [source, converted] :
+       llvm::zip(operation->getOperands(), convertedOperands)) {
+    if (!isa<ttkernel::CBType>(source.getType())) {
+      operands.push_back(converted);
+      continue;
+    }
+    auto identity = resolveDfbIndex(source);
+    assert(identity && "validated compiler-l1 operand identity");
+    auto entry = cast<DictionaryAttr>(entries[*identity]);
+    auto integer = [&](StringRef name) {
+      return cast<IntegerAttr>(entry.get(name)).getInt();
+    };
+    auto tile = cast<ttcore::TileType>(
+        cast<ttkernel::CBType>(source.getType()).getElementType());
+    auto directOperands = operation->getParentOfType<func::FuncOp>()
+                              ->template getAttrOfType<DenseI32ArrayAttr>(
+                                  "ttl.unpack_to_dest_fp32");
+    bool directToDestination =
+        directOperands &&
+        llvm::is_contained(directOperands.asArrayRef(), *identity);
+    std::string operandType =
+        (Twine("ttlang::l1::Operand<static_cast<uint32_t>(") +
+         datatypeToDataformatStr(tile.getDataType()) + "), " +
+         Twine(integer("page_size")) + ", " + Twine(integer("num_tiles")) +
+         ", " + Twine(integer("block_count")) + ", " +
+         Twine(integer("l1_payload_offset") - integer("l1_offset")) + ", " +
+         (directToDestination ? "true" : "false") + ">")
+            .str();
+    auto constructor = emitc::CallOpaqueOp::create(
+        rewriter, operation->getLoc(),
+        TypeRange{emitc::OpaqueType::get(operation->getContext(), operandType)},
+        operandType, ArrayAttr(), ArrayAttr(), ValueRange{converted});
+    operands.push_back(constructor.getResult(0));
+  }
+  std::string callee = ("ttlang::l1::target::" + operationName).str();
+  if (isa<ttkernel::BinaryOpInitCommonOp, ttkernel::UnaryOpInitCommonOp,
+          ttkernel::InitSFPUOp>(operation)) {
+    callee = "l1_compute_context.configure";
+  } else if (isa<ttkernel::TransposeInitOp>(operation)) {
+    callee = "l1_compute_context.transposeInit";
+  } else if (isa<ttkernel::UnaryBcastInitOp>(operation)) {
+    callee = "l1_compute_context.broadcastInit";
+  } else if (isa<ttkernel::ReduceInitOp>(operation)) {
+    callee = "l1_compute_context.reduceInit";
+  } else if (isa<ttkernel::MatmulInitOp>(operation)) {
+    callee = "l1_compute_context.matmulInit";
+  } else if (isa<ttkernel::MatmulBlockInitOp>(operation)) {
+    callee = "l1_compute_context.matmulBlockInit";
+  } else if (isa<ttkernel::MatmulInitShortOp>(operation)) {
+    callee = "l1_compute_context.matmulInitShort";
+  } else if (isa<ttkernel::MatmulBlockInitShortOp>(operation)) {
+    callee = "l1_compute_context.matmulBlockInitShort";
+  } else if (isa<ttkernel::ExperimentalMatmulBlockOp>(operation)) {
+    callee = "ttlang::l1::target::matmul_block_strided";
+  }
+  rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+      operation, resultTypes, callee, ArrayAttr(), templateArgs, operands);
+}
+
 template <typename SourceOp, typename Adaptor = typename SourceOp::Adaptor>
 class TTKernelToEmitCOpaqueRewriter : public OpConversionPattern<SourceOp> {
 public:
@@ -1203,6 +1316,34 @@ public:
       resultTypes.push_back(ct);
     }
 
+    if constexpr (std::is_same_v<SourceOp, ttkernel::GetTileSizeOp> ||
+                  std::is_same_v<SourceOp, ttkernel::GetDataFormatOp>) {
+      if (usesCompilerL1(op)) {
+        auto elementType =
+            cast<ttkernel::CBType>(op.getCb().getType()).getElementType();
+        auto tile = dyn_cast<ttcore::TileType>(elementType);
+        if (!tile) {
+          return rewriter.notifyMatchFailure(
+              op, "compiler-l1 requires tiled storage metadata");
+        }
+        std::string value;
+        if constexpr (std::is_same_v<SourceOp, ttkernel::GetTileSizeOp>) {
+          value = std::to_string(tile.getSizeBytes());
+        } else {
+          value = datatypeToDataformatStr(tile.getDataType());
+        }
+        auto literal = emitc::LiteralOp::create(rewriter, op.getLoc(),
+                                                resultTypes.front(), value);
+        rewriter.replaceOp(op, literal);
+        return success();
+      }
+    }
+    if (usesCompilerL1(op) && isCompilerL1ComputeOperation(op)) {
+      emitCompilerL1ComputeCall(op, adaptor.getOperands(), resultTypes,
+                                getOpName(op), getTemplateArgs(rewriter, op),
+                                rewriter);
+      return success();
+    }
     rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
         op, resultTypes, getOpName(op), getCallArgs(rewriter, op),
         getTemplateArgs(rewriter, op), adaptor.getOperands());
@@ -1365,6 +1506,13 @@ public:
   LogicalResult
   matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
+    if (usesCompilerL1(op)) {
+      emitCompilerL1ComputeCall(
+          op, adaptor.getOperands(), TypeRange{},
+          getTTKernelCalleeName(op->getName().getStringRef()), ArrayAttr(),
+          rewriter);
+      return success();
+    }
     ValueRange operands = adaptor.getOperands();
     SmallVector<Attribute, 1> templateArgs;
     templateArgs.push_back(
@@ -1501,10 +1649,22 @@ public:
                        Type resultType,
                        ConversionPatternRewriter &rewriter) const {
     if constexpr (std::is_same_v<SourceOp, ttkernel::GetCompileArgValOp>) {
-      auto literal = rewriter.create<emitc::LiteralOp>(
-          op.getLoc(), resultType,
+      std::string expression =
           (Twine("get_compile_time_arg_val(") + Twine(op.getArgIndex()) + ")")
-              .str());
+              .str();
+      if (usesCompilerL1(op) &&
+          isa<ttkernel::CBType>(op.getResult().getType())) {
+        auto entries = op->template getParentOfType<ModuleOp>()
+                           ->template getAttrOfType<ArrayAttr>(
+                               ttl::kDFBAllocationsAttrName);
+        auto entry = cast<DictionaryAttr>(entries[op.getArgIndex()]);
+        auto offset = cast<IntegerAttr>(entry.get("l1_offset")).getInt();
+        expression =
+            "get_common_arg_val<uint32_t>(get_compile_time_arg_val(0)) + " +
+            std::to_string(offset);
+      }
+      auto literal = emitc::LiteralOp::create(rewriter, op.getLoc(), resultType,
+                                              expression);
       if (mlir::isa<ttkernel::CBType>(op.getResult().getType())) {
         literal->setAttr("ttkernel.cb_ctarg_idx",
                          rewriter.getI32IntegerAttr(op.getArgIndex()));
@@ -3078,11 +3238,141 @@ public:
 
   void runOnOperation() final {
     ModuleOp module = getOperation();
+    WalkResult sourceOperations = module.walk([](Operation *operation) {
+      return operation->getName().getDialectNamespace() == "ttkernel"
+                 ? WalkResult::interrupt()
+                 : WalkResult::advance();
+    });
+    if (auto model =
+            module->getAttrOfType<StringAttr>(ttl::kMemoryModelAttrName);
+        model && model.getValue() == ttl::kCompilerL1MemoryModel &&
+        sourceOperations.wasInterrupted()) {
+      if (!module->getAttrOfType<ArrayAttr>(ttl::kDFBAllocationsAttrName)) {
+        module.emitOpError(
+            "compiler-l1 requires finalized allocation metadata");
+        signalPassFailure();
+        return;
+      }
+      WalkResult validation = module.walk([&](Operation *operation) {
+        if (operation->getName().getDialectNamespace() == "emitc") {
+          operation->emitOpError(
+              "compiler-l1 cannot validate pre-lowered C++ effects");
+          return WalkResult::interrupt();
+        }
+        if (operation->getName().getDialectNamespace() != "ttkernel") {
+          return WalkResult::advance();
+        }
+        bool supported =
+            isa<ttkernel::GetCompileArgValOp, ttkernel::GetArgValOp,
+                ttkernel::GetCommonArgValOp, ttkernel::MyLogicalXOp,
+                ttkernel::MyLogicalYOp, ttkernel::CBReserveBackOp,
+                ttkernel::CBWaitFrontOp, ttkernel::CBPushBackOp,
+                ttkernel::CBPopFrontOp, ttkernel::GetReadPtrOp,
+                ttkernel::GetWritePtrOp, ttkernel::NocAsyncReadTileOp,
+                ttkernel::NocAsyncWriteTileOp, ttkernel::NocAsyncReadBarrierOp,
+                ttkernel::NocAsyncWriteBarrierOp, ttkernel::TensorAccessorOp,
+                ttkernel::TensorAccessorArgsOp, ttkernel::GetTileSizeOp,
+                ttkernel::GetDataFormatOp, ttkernel::TileRegsAcquireOp,
+                ttkernel::TileRegsCommitOp, ttkernel::TileRegsWaitOp,
+                ttkernel::TileRegsReleaseOp, ttkernel::AddBinaryTilesInitOp,
+                ttkernel::AddBinaryTilesOp, ttkernel::MulBinaryTilesInitOp,
+                ttkernel::MulBinaryTilesOp, ttkernel::FillTileOp,
+                ttkernel::FillTileInitOp, ttkernel::BinopWithScalarTileInitOp,
+                ttkernel::MulUnaryTileOp, ttkernel::AddUnaryTileOp,
+                ttkernel::CopyDestValuesInitOp, ttkernel::CopyDestValuesOp,
+                ttkernel::ExpTileInitOp, ttkernel::ExpTileOp,
+                ttkernel::RecipTileInitOp, ttkernel::RecipTileOp,
+                ttkernel::SubBinaryTilesInitOp, ttkernel::SubBinaryTilesOp,
+                ttkernel::RsqrtTileInitOp, ttkernel::RsqrtTileOp,
+                ttkernel::SigmoidTileInitOp, ttkernel::SigmoidTileOp,
+                ttkernel::TanhTileInitOp, ttkernel::TanhTileOp>(operation) ||
+            isCompilerL1ComputeOperation(operation);
+        if (isCompilerL1ComputeOperation(operation)) {
+          for (Value operand : operation->getOperands()) {
+            auto buffer = dyn_cast<ttkernel::CBType>(operand.getType());
+            if (!buffer) {
+              continue;
+            }
+            auto tile = dyn_cast<ttcore::TileType>(buffer.getElementType());
+            if (!tile || tile.getHeight() != 32 || tile.getWidth() != 32 ||
+                (tile.getDataType() != ttcore::DataType::Float32 &&
+                 tile.getDataType() != ttcore::DataType::BFloat16)) {
+              operation->emitOpError(
+                  "compiler-l1 compute requires 32x32 BF16 or FP32 tiles");
+              return WalkResult::interrupt();
+            }
+          }
+          if (auto pack = dyn_cast<ttkernel::PackTileOp>(operation);
+              pack && !pack.getOutOfOrder()) {
+            operation->emitOpError(
+                "compiler-l1 packing requires an explicit tile index");
+            return WalkResult::interrupt();
+          }
+        }
+        if (!supported) {
+          operation->emitOpError()
+              << "has no compiler-l1 lowering for " << operation->getName()
+              << "; Metal DFB fallback is disabled";
+          return WalkResult::interrupt();
+        }
+        if (isa<ttkernel::CBReserveBackOp, ttkernel::CBWaitFrontOp,
+                ttkernel::CBPushBackOp, ttkernel::CBPopFrontOp>(operation)) {
+          auto identity = resolveDfbIndex(operation->getOperand(0));
+          auto allocations =
+              module->getAttrOfType<ArrayAttr>(ttl::kDFBAllocationsAttrName);
+          llvm::APInt pageCount;
+          if (!identity || !allocations || *identity < 0 ||
+              static_cast<size_t>(*identity) >= allocations.size() ||
+              !matchPattern(operation->getOperand(1),
+                            m_ConstantInt(&pageCount))) {
+            operation->emitOpError("compiler-l1 requires a static storage "
+                                   "identity and page count");
+            return WalkResult::interrupt();
+          }
+          auto descriptor = cast<DictionaryAttr>(allocations[*identity]);
+          int64_t blockPages =
+              cast<IntegerAttr>(descriptor.get("num_tiles")).getInt();
+          if (pageCount.getSExtValue() != blockPages) {
+            operation->emitOpError(
+                "compiler-l1 POC requires full-block synchronization to "
+                "preserve contiguous acquisitions");
+            return WalkResult::interrupt();
+          }
+        }
+        return WalkResult::advance();
+      });
+      if (validation.wasInterrupted()) {
+        signalPassFailure();
+        return;
+      }
+    }
     TTKernelToEmitCConversionState state;
     ConversionPlan config(module.getContext(), state);
     for (func::FuncOp funcOp : module.getOps<func::FuncOp>()) {
       if (!funcOp->hasAttr(ttkernel::ThreadTypeAttr::name)) {
         continue;
+      }
+      if (usesCompilerL1(funcOp) &&
+          funcOp
+              .walk([](Operation *operation) {
+                return isa<ttkernel::BinaryOpInitCommonOp,
+                           ttkernel::UnaryOpInitCommonOp, ttkernel::InitSFPUOp,
+                           ttkernel::MatmulInitOp, ttkernel::MatmulBlockInitOp,
+                           ttkernel::MatmulInitShortOp,
+                           ttkernel::MatmulBlockInitShortOp,
+                           ttkernel::TransposeInitOp,
+                           ttkernel::UnaryBcastInitOp, ttkernel::ReduceInitOp>(
+                           operation)
+                           ? WalkResult::interrupt()
+                           : WalkResult::advance();
+              })
+              .wasInterrupted()) {
+        OpBuilder builder(&funcOp.getBody().front(),
+                          funcOp.getBody().front().begin());
+        emitc::VerbatimOp::create(
+            builder, funcOp.getLoc(),
+            "ttlang::l1::target::ComputeContext l1_compute_context;",
+            ValueRange{});
       }
       if (mayHaveRuntimeCBArgs(funcOp)) {
         assignRuntimeCBArgIndices(funcOp);

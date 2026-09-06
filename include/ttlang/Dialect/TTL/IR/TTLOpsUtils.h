@@ -30,6 +30,16 @@
 
 namespace mlir::tt::ttl {
 
+/// Finalized DFB identities form the half-open range [0, count). The bound
+/// description identifies the source of that range in diagnostics.
+struct DFBIdentityRange {
+  int64_t count;
+  std::string boundDescription;
+};
+
+/// Returns the finalized DFB identity range for the selected storage backend.
+FailureOr<DFBIdentityRange> getDFBIdentityRange(Operation *operation);
+
 /// Returns true if an operation has an attribute in the TTL namespace.
 inline bool hasTTLDialectAttribute(mlir::Operation *operation) {
   for (mlir::NamedAttribute attribute : operation->getAttrs()) {

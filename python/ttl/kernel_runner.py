@@ -1668,6 +1668,7 @@ def build_kernel_descriptors(
     device_coordinates: Optional[List[int]] = None,
     descriptor_resource_plans: Optional[Sequence[_KernelDescriptorResourcePlan]] = None,
     dfb_reconfiguration_runtime_args: Optional[Dict[Tuple[int, int], List[int]]] = None,
+    compiler_l1_base_address: Optional[int] = None,
 ) -> List[Any]:
     """
     Build kernel descriptors for ttnn.generic_op.
@@ -1681,7 +1682,8 @@ def build_kernel_descriptors(
         core_ranges: ttnn.CoreRangeSet for kernel execution.
         grid_cols: Number of grid columns (x dimension).
         grid_rows: Number of grid rows (y dimension).
-        num_cbs: Total number of circular buffers (including intermediate CBs).
+        num_cbs: Total number of dataflow buffers. The Metal storage model uses
+            this value as its descriptor count.
         pipe_computed_address_base_addresses: L1 base address by receiver DFB index for
             compiler-selected computed pipe addressing. These addresses are
             passed as common runtime arguments.
@@ -1695,6 +1697,8 @@ def build_kernel_descriptors(
             kernel_specs.
         dfb_reconfiguration_runtime_args: Per-core L1 configuration addresses
             in finalized boundary order.
+        compiler_l1_base_address: Common per-core base address for the
+            compiler-managed L1 arena.
 
     Returns:
         List of ttnn.KernelDescriptor objects.
@@ -1759,6 +1763,9 @@ def build_kernel_descriptors(
             common_runtime_args.append(0)
         common_runtime_args.extend(device_coordinates or [])
         common_runtime_args.extend(spec.extra_common_runtime_args or [])
+        storage_runtime_base = len(common_runtime_args)
+        if compiler_l1_base_address is not None:
+            common_runtime_args.append(compiler_l1_base_address)
 
         runtime_args = []
         defines = []
@@ -1783,7 +1790,11 @@ def build_kernel_descriptors(
 
         descriptor_variants: List[_KernelDescriptorVariant]
         if not reconfiguration_args:
-            kernel_compile_time_args = list(cb_indices)
+            kernel_compile_time_args = (
+                [storage_runtime_base]
+                if compiler_l1_base_address is not None
+                else list(cb_indices)
+            )
             if spec.thread_type != "compute":
                 kernel_compile_time_args.extend(tensor_accessor_args)
             descriptor_variants = [
@@ -1847,7 +1858,11 @@ def _same_device(lhs: Any, rhs: Any) -> bool:
 
 
 def _allocate_l1_sharded_storage_tensor(
-    core_ranges: Any, num_bytes: int, device: Any, *, zero_initialize: bool = False
+    core_ranges: Any,
+    num_bytes: int,
+    device: Any,
+    *,
+    zero_initialize: bool = False,
 ):
     """Allocate row-major L1 storage with one 4-byte element per storage word."""
     aligned_bytes = _align_up(num_bytes, 32)
@@ -1870,6 +1885,26 @@ def _allocate_l1_sharded_storage_tensor(
         layout=ttnn.ROW_MAJOR_LAYOUT,
         device=device,
         memory_config=memory_config,
+    )
+
+
+def _get_compiler_l1_arena_bytes(
+    cb_configs: Sequence[PhysicalDFBConfig],
+) -> Optional[int]:
+    field_presence = [
+        (
+            config.l1_offset is not None,
+            config.l1_payload_offset is not None,
+            config.l1_allocation_bytes is not None,
+        )
+        for config in cb_configs
+    ]
+    if not any(any(fields) for fields in field_presence):
+        return None
+    if not all(all(fields) for fields in field_presence):
+        raise ValueError("mixed compiler-l1 and Metal storage metadata")
+    return max(
+        config.l1_payload_offset + config.l1_allocation_bytes for config in cb_configs
     )
 
 
@@ -3707,6 +3742,7 @@ def build_generic_op_io_tensors(
     pipe_computed_address_dfb_tensors: Optional[Dict[int, Any]] = None,
     dfb_reconfiguration_scratch_tensors: Optional[Dict[int, Any]] = None,
     dfb_reconfiguration_configuration_tensors: Optional[List[Any]] = None,
+    compiler_l1_arena: Optional[Any] = None,
 ) -> List[Any]:
     """Return io_tensors with the user-visible output in the final position."""
     if not tensors:
@@ -3729,6 +3765,7 @@ def build_generic_op_io_tensors(
         + computed_address_dfb_tensors
         + reconfiguration_scratch_tensors
         + list(dfb_reconfiguration_configuration_tensors or [])
+        + ([compiler_l1_arena] if compiler_l1_arena is not None else [])
         + list(tensors)
     )
     if len(io_tensors) < 2:
@@ -4004,16 +4041,51 @@ def _run_kernel_on_device_impl(
         dfb_reconfiguration_plan=dfb_reconfiguration_plan,
     )
 
-    # Build CB descriptors.
-    cb_descriptors = build_cb_descriptors(
-        tensors=tensors,
-        cb_configs=cb_configs,
-        core_ranges=core_ranges,
-        pipe_computed_address_backing_tensors=(
-            pipe_runtime_resources.computed_address_dfb_tensors
-        ),
-        kernel_specs=kernel_specs,
-        dfb_reconfiguration_scratch_tensors=(reconfiguration_resources.scratch_tensors),
+    compiler_l1_arena = None
+    compiler_l1_base_address = None
+    compiler_l1_arena_bytes = _get_compiler_l1_arena_bytes(cb_configs)
+    compiler_l1 = compiler_l1_arena_bytes is not None
+    if compiler_l1:
+        if (
+            device_domain is not None
+            or mesh_program_placements is not None
+            or resource_plan is not None
+        ):
+            raise ValueError(
+                "compiler-l1 POC requires a single-device program without external resources"
+            )
+        if (
+            num_dfb_resets
+            or dfb_reconfiguration_plan
+            or pipe_computed_address_dfb_indices
+            or pipe_sram_scratch_bytes
+        ):
+            raise ValueError(
+                "compiler-l1 POC does not support PipeNet or interface reset/reconfiguration"
+            )
+        compiler_l1_arena = _allocate_l1_sharded_storage_tensor(
+            core_ranges,
+            compiler_l1_arena_bytes,
+            device if device is not None else _first_device(tensors),
+            zero_initialize=True,
+        )
+        compiler_l1_base_address = int(compiler_l1_arena.buffer_address())
+
+    cb_descriptors = (
+        []
+        if compiler_l1
+        else build_cb_descriptors(
+            tensors=tensors,
+            cb_configs=cb_configs,
+            core_ranges=core_ranges,
+            pipe_computed_address_backing_tensors=(
+                pipe_runtime_resources.computed_address_dfb_tensors
+            ),
+            kernel_specs=kernel_specs,
+            dfb_reconfiguration_scratch_tensors=(
+                reconfiguration_resources.scratch_tensors
+            ),
+        )
     )
 
     if resource_plan is not None:
@@ -4035,6 +4107,7 @@ def _run_kernel_on_device_impl(
             grid_cols=grid_cols,
             grid_rows=grid_rows,
             num_cbs=len(cb_configs),
+            compiler_l1_base_address=compiler_l1_base_address,
             pipe_computed_address_base_addresses=(
                 pipe_runtime_resources.computed_address_base_addresses
             ),
@@ -4145,6 +4218,7 @@ def _run_kernel_on_device_impl(
         dfb_reconfiguration_configuration_tensors=(
             reconfiguration_resources.configuration_tensors
         ),
+        compiler_l1_arena=compiler_l1_arena,
     )
 
     portable_resource_lifetimes = (
@@ -4415,6 +4489,10 @@ def _append_physical_dfb_config_source(
     lines.append(f"{indent}    block_count={config.block_count},")
     lines.append(f"{indent}    page_size={config.page_size},")
     lines.append(f"{indent}    tile={config.tile!r},")
+    if config.l1_offset is not None:
+        lines.append(f"{indent}    l1_offset={config.l1_offset},")
+        lines.append(f"{indent}    l1_payload_offset={config.l1_payload_offset},")
+        lines.append(f"{indent}    l1_allocation_bytes={config.l1_allocation_bytes},")
     if config.storage_index is not None:
         lines.append(f"{indent}    storage_index={config.storage_index},")
     if config.allocation_nodes is not None:

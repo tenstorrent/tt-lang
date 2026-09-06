@@ -428,6 +428,18 @@ static FailureOr<int32_t> getValidatedDFBIndex(Value dfb, Operation *op) {
   if (!dfbIndex) {
     return op->emitError("cannot resolve finalized DFB index");
   }
+  auto module = op->getParentOfType<ModuleOp>();
+  auto memoryModel = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
+  if (memoryModel && memoryModel.getValue() == kCompilerL1MemoryModel) {
+    auto allocations =
+        module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName);
+    if (!allocations || *dfbIndex < 0 ||
+        static_cast<uint64_t>(*dfbIndex) >= allocations.size()) {
+      return op->emitError(
+          "storage identity is outside the compiler-l1 allocation plan");
+    }
+    return static_cast<int32_t>(*dfbIndex);
+  }
   int32_t targetMaxDFBIndices = getTargetMaxDFBIndices(op);
   if (*dfbIndex < 0 || *dfbIndex >= targetMaxDFBIndices) {
     return op->emitError("finalized DFB index ")
@@ -569,16 +581,11 @@ struct BindCBLowering : OpConversionPattern<BindCBOp> {
         ttk::CBType::get(ttlCbType.getContext(), ttlCbType.getTotalElements(),
                          ttlCbType.getElementType());
 
-    // Get the CB index from the bind_cb op attribute.
-    int64_t cbIndex = op.getCbIndex().getSExtValue();
-    int32_t targetMaxDFBIndices = getTargetMaxDFBIndices(op);
-    if (cbIndex < 0 || cbIndex >= targetMaxDFBIndices) {
-      return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
-        diag << "cb_index " << cbIndex << " out of valid range [0, "
-             << targetMaxDFBIndices - 1 << "] for "
-             << getTargetDFBIndexCapacityDescription(op);
-      });
+    FailureOr<int32_t> selectedIndex = getValidatedDFBIndex(op.getResult(), op);
+    if (failed(selectedIndex)) {
+      return failure();
     }
+    int32_t cbIndex = *selectedIndex;
 
     // Create ttkernel.get_compile_time_arg_val to get the CB handle.
     auto getArgVal = ttk::GetCompileArgValOp::create(
@@ -1632,6 +1639,9 @@ buildDFBResetLoweringPlan(ModuleOp module) {
         reset, static_cast<int64_t>(resetIndex) * kDFBResetStateBytes);
   }
   plan.scratchBytes = static_cast<int64_t>(*scratchBytes);
+  if (orderedResets.empty()) {
+    return plan;
+  }
 
   WalkResult allocationResult = module.walk([&](BindCBOp bind) -> WalkResult {
     std::optional<int64_t> dfbIndex = getCBIndex(bind.getResult());
@@ -1653,11 +1663,9 @@ buildDFBResetLoweringPlan(ModuleOp module) {
     return failure();
   }
 
-  if (!orderedResets.empty()) {
-    Builder builder(module.getContext());
-    module->setAttr(kDFBResetCountAttrName,
-                    builder.getI64IntegerAttr(orderedResets.size()));
-  }
+  Builder builder(module.getContext());
+  module->setAttr(kDFBResetCountAttrName,
+                  builder.getI64IntegerAttr(orderedResets.size()));
   return plan;
 }
 
@@ -2575,6 +2583,15 @@ static LogicalResult lowerTTLOpsToTTKernel(
   if (failed(allocationBytes)) {
     mod.emitOpError("failed to compute finalized DFB allocation sizes");
     return failure();
+  }
+  if (auto model = mod->getAttrOfType<StringAttr>(kMemoryModelAttrName);
+      model && model.getValue() == kCompilerL1MemoryModel) {
+    auto arenaBytes = mod->getAttrOfType<IntegerAttr>(kL1ArenaBytesAttrName);
+    if (!arenaBytes || arenaBytes.getInt() < 0) {
+      mod.emitOpError("missing validated compiler-l1 arena size");
+      return failure();
+    }
+    allocationBytes = static_cast<uint64_t>(arenaBytes.getInt());
   }
   const PipeResourceRequirements &resourceRequirements =
       pipeModulePlan.getResourceRequirements();

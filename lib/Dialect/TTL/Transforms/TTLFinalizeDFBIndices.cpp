@@ -10,7 +10,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "CompilerL1Allocation.h"
 #include "DFBAllocationLimits.h"
+#include "DFBConcurrentKernelLivenessAnalysis.h"
 #include "DFBPhysicalAllocationPlan.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
@@ -301,6 +303,25 @@ struct TTLFinalizeDFBIndicesPass
       }
       errorOperation->emitOpError()
           << logicalIdentityAnalysis.getErrorMessage();
+      signalPassFailure();
+      return;
+    }
+    if (memoryModel == kCompilerL1MemoryModel) {
+      const auto &liveness = getAnalysis<DFBConcurrentKernelLivenessAnalysis>();
+      if (!liveness.succeeded()) {
+        moduleOp.emitOpError() << liveness.getErrorMessage();
+        signalPassFailure();
+        return;
+      }
+      if (failed(allocateCompilerL1(moduleOp, logicalIdentityAnalysis,
+                                    l1BudgetOverride, reuseUserDFBs,
+                                    liveness))) {
+        signalPassFailure();
+      }
+      return;
+    }
+    if (memoryModel != "metal-cb") {
+      moduleOp.emitOpError("unknown memory model: ") << memoryModel;
       signalPassFailure();
       return;
     }

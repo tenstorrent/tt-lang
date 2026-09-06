@@ -2148,6 +2148,77 @@ def test_build_kernel_descriptors_materializes_planned_resources(monkeypatch):
     assert descriptors[0].runtime_args[1][0] == [4, 5]
 
 
+def test_build_kernel_descriptors_binds_compiler_l1_arena(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    tensor = _FakeTensor(object(), address=0x2000)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/reader.cpp",
+        thread_type="noc",
+        tensor_indices=[0],
+        config=object(),
+        extra_common_runtime_args=[0x3000],
+    )
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        tensor_accessor_args=[0x44, 0x55],
+        core_ranges=object(),
+        grid_cols=1,
+        grid_rows=1,
+        num_cbs=3,
+        compiler_l1_base_address=0x4000,
+    )
+
+    assert descriptors[0].common_runtime_args == [0x2000, 0x3000, 0x4000]
+    assert descriptors[0].compile_time_args == [2, 0x44, 0x55]
+
+
+def test_compiler_l1_arena_size_uses_all_regions():
+    configs = [
+        PhysicalDFBConfig(
+            0,
+            1,
+            "bfloat16",
+            1,
+            2048,
+            None,
+            l1_offset=0,
+            l1_payload_offset=64,
+            l1_allocation_bytes=2048,
+        ),
+        PhysicalDFBConfig(
+            1,
+            1,
+            "float32",
+            1,
+            4096,
+            None,
+            l1_offset=8,
+            l1_payload_offset=2112,
+            l1_allocation_bytes=4096,
+        ),
+    ]
+
+    assert kernel_runner._get_compiler_l1_arena_bytes(configs) == 6208
+
+
+def test_compiler_l1_arena_size_rejects_partial_metadata():
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        l1_payload_offset=64,
+        l1_allocation_bytes=2048,
+    )
+
+    with pytest.raises(ValueError, match="mixed compiler-l1 and Metal"):
+        kernel_runner._get_compiler_l1_arena_bytes([config])
+
+
 def _local_tensor_test_environment():
     fake_ttnn = _FakeTTNN()
     fake_ttnn.TensorMemoryLayout = SimpleNamespace(
@@ -4783,13 +4854,18 @@ def test_run_kernel_reuses_structural_hash_while_updating_invocation_values(
     assert kernel_runner.ttnn.synchronize_calls == [device, device]
 
 
-def test_build_generic_op_io_tensors_duplicates_single_output():
+# The compiler-L1 arena supplies the required input without replacing the output.
+def test_build_generic_op_io_tensors_handles_single_output():
     tensor = _FakeTensorWithoutDevice()
+    arena = object()
 
     assert kernel_runner.build_generic_op_io_tensors([tensor], []) == [
         tensor,
         tensor,
     ]
+    assert kernel_runner.build_generic_op_io_tensors(
+        [tensor], [], compiler_l1_arena=arena
+    ) == [arena, tensor]
 
 
 def test_build_generic_op_io_tensors_keeps_user_output_last():
@@ -4798,14 +4874,23 @@ def test_build_generic_op_io_tensors_keeps_user_output_last():
     scratch = object()
     computed_dfb_1 = object()
     computed_dfb_3 = object()
+    compiler_l1_arena = object()
 
     io_tensors = kernel_runner.build_generic_op_io_tensors(
         [inp, output],
         [scratch],
         {3: computed_dfb_3, 1: computed_dfb_1},
+        compiler_l1_arena=compiler_l1_arena,
     )
 
-    assert io_tensors == [scratch, computed_dfb_1, computed_dfb_3, inp, output]
+    assert io_tensors == [
+        scratch,
+        computed_dfb_1,
+        computed_dfb_3,
+        compiler_l1_arena,
+        inp,
+        output,
+    ]
     assert io_tensors[-1] is output
 
 
@@ -6389,18 +6474,27 @@ def test_computed_address_backing_uses_allocation_nodes(monkeypatch):
 
 def test_l1_sharded_storage_counts_sparse_cores(monkeypatch):
     fake_ttnn = _FakeTTNN()
+    row_major_orientation = object()
+    height_sharded_layout = object()
+    l1_buffer_type = object()
     fake_ttnn.ShardSpec = lambda *args: args
     fake_ttnn.MemoryConfig = lambda *args: args
-    fake_ttnn.ShardOrientation = type("ShardOrientation", (), {"ROW_MAJOR": object()})
-    fake_ttnn.TensorMemoryLayout = type(
-        "TensorMemoryLayout", (), {"HEIGHT_SHARDED": object()}
+    fake_ttnn.ShardOrientation = type(
+        "ShardOrientation", (), {"ROW_MAJOR": row_major_orientation}
     )
-    fake_ttnn.BufferType = type("BufferType", (), {"L1": object()})
+    fake_ttnn.TensorMemoryLayout = type(
+        "TensorMemoryLayout", (), {"HEIGHT_SHARDED": height_sharded_layout}
+    )
+    fake_ttnn.BufferType = type("BufferType", (), {"L1": l1_buffer_type})
     fake_ttnn.float32 = object()
     fake_ttnn.ROW_MAJOR_LAYOUT = object()
     empty_calls = []
+    zero_calls = []
     fake_ttnn.empty = (
         lambda shape, **kwargs: empty_calls.append((shape, kwargs)) or object()
+    )
+    fake_ttnn.zeros = (
+        lambda shape, **kwargs: zero_calls.append((shape, kwargs)) or object()
     )
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     sparse_ranges = _FakeTTNN.CoreRangeSet(
@@ -6413,8 +6507,18 @@ def test_l1_sharded_storage_counts_sparse_cores(monkeypatch):
     kernel_runner._allocate_l1_sharded_storage_tensor(
         sparse_ranges, num_bytes=2048, device=object()
     )
+    kernel_runner._allocate_l1_sharded_storage_tensor(
+        sparse_ranges, num_bytes=2048, device=object(), zero_initialize=True
+    )
 
     assert empty_calls[0][0] == (2, 512)
+    assert zero_calls[0][0] == (2, 512)
+    shard_spec = empty_calls[0][1]["memory_config"][2]
+    assert shard_spec == (sparse_ranges, (1, 512), row_major_orientation)
+    assert empty_calls[0][1]["memory_config"][:2] == (
+        height_sharded_layout,
+        l1_buffer_type,
+    )
 
 
 def test_specialized_dfb_use_intersects_storage_segments(monkeypatch):
