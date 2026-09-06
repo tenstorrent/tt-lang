@@ -1915,19 +1915,25 @@ receiver-authored publication. Collective verification cannot accept an
 unknown or multi-class receiver address partition and reports a user-facing
 error before any lowering mutation.
 
-## Predicate recognition
+## PipeNet role queries
 
-Three predicate ops - `ttl.is_src`, `ttl.is_dst`, `ttl.is_active`
-(the union of source and destination roles) - let user code carry
-per-PipeNet guards that the verifier recognizes structurally. Frontend
-methods `net.is_src()`, `net.is_dst()`, `net.is_active()` lower to
-these ops; coordinate comparisons over `ttl.node(dims=2)` against
-integer constants also work and are evaluated per coord.
+`ttl.is_src` returns whether the current node is the source of at least one
+pipe in a PipeNet. `ttl.is_dst` returns whether the current node is in at least
+one destination range. `ttl.is_active` returns the union of those results.
+Frontend calls to `net.is_src()`, `net.is_dst()`, and `net.is_active()` create
+these operations. An `scf.if` condition may also compare coordinates from
+`ttl.node(dims=2)` with integer constants; launch-node analysis evaluates those
+comparisons for every coordinate.
 
-Frontend predicate ops carry their static PipeNet record table. Local
-predicates reuse the participant plan to load one per-node record count and
-compare it with zero. Logical-device predicates additionally match the current
-device. Predicates without a record table retain PipeNet-index lowering.
+For a local PipeNet, each role-query operation includes a `records` attribute
+containing the PipeNet's static transfer records. Lowering computes the number
+of matching source or destination records for every launch coordinate, indexes
+that table with the current logical X and Y coordinates, and compares the count
+with zero. For a graph PipeNet spanning logical devices, lowering evaluates the
+static records and requires both the launch-node coordinates and logical device
+to match the selected source or destination endpoint. Without a `records`
+attribute, lowering emits coordinate comparisons for the `ttl.create_pipe`
+operations associated with the operation's `pipe_net_id`.
 
 `visitRegionBranchControlFlowTransfer` narrows the lattice on entry to
 each region according to the parent op:
@@ -1943,7 +1949,7 @@ each region according to the parent op:
 | `scf.for` body | intersect with nodes whose statically evaluated trip count is nonzero; unchanged when any candidate node cannot be evaluated |
 | `scf.while`/`affine.for`/`scf.execute_region`/`linalg.generic`/multi-block via `cf.cond_br` | unchanged (no predication, framework default) |
 
-For `scf.if`, the condition's domain is determined structurally:
+For `scf.if`, the condition's launch-node domain is determined structurally:
 
 - `PipeNetPredicateOpInterface` (i.e. `ttl.is_src` / `ttl.is_dst` /
   `ttl.is_active`) -> that PipeNet's role domain via the interface
@@ -2022,8 +2028,8 @@ user code.
 ## `ttl.pipenet_scope`
 
 `ttl.pipenet_scope` is one of the IR additions this feature introduces
-(alongside the `ttl.is_src` / `ttl.is_dst` / `ttl.is_active` predicate
-ops described in [Predicate recognition](#predicate-recognition)). It
+(alongside the `ttl.is_src` / `ttl.is_dst` / `ttl.is_active` role-query
+operations described in [PipeNet role queries](#pipenet-role-queries)). It
 exists only after frontend emission and before the verifier inlines and
 erases it. During that interval, the verifier can recognize user code
 that performs PipeNet role traffic without re-deriving the role
@@ -2034,7 +2040,7 @@ The frontend emits this region op around DFB-context blocks
 (`with cb.reserve()`) whose body contains pipe role work. It carries
 two parallel attributes: `ttl.pipe_net_ids` (`DenseI64ArrayAttr`) and
 `ttl.pipe_net_roles` (`DenseI64ArrayAttr`, one entry per id; 0 =
-Source, 1 = Destination - `Active` is a *predicate* via
+Source, 1 = Destination - `Active` is a runtime condition via
 `ttl.is_active` and is not valid as a scope role). The verifier checks
 that the scope's effective execution domain is a subset of the union
 of declared role domains, then walks its body with the same incoming
@@ -2135,7 +2141,7 @@ and `"full"` as the device compute grid. The compiled kernel launches on
 the resolved launch grid. The simulator filters execution to the union
 of all PipeNet source and destination nodes when PipeNets are present;
 that filter is not a per-operation role check, so user guards
-(`net.is_active()` or coordinate predicates) remain part of the compiler
+(`net.is_active()` or coordinate comparisons) remain part of the compiler
 contract.
 
 ## Example: 2D collective matmul
