@@ -1931,9 +1931,14 @@ of matching source or destination records for every launch coordinate, indexes
 that table with the current logical X and Y coordinates, and compares the count
 with zero. For a graph PipeNet spanning logical devices, lowering evaluates the
 static records and requires both the launch-node coordinates and logical device
-to match the selected source or destination endpoint. Without a `records`
-attribute, lowering emits coordinate comparisons for the `ttl.create_pipe`
-operations associated with the operation's `pipe_net_id`.
+to match the selected source or destination endpoint.
+
+The Python frontend now adds `records` to every `ttl.is_src`, `ttl.is_dst`, and
+`ttl.is_active` operation. The attribute remains optional because requiring it
+would reject TTL modules using the preexisting form, which identifies the
+PipeNet only by `pipe_net_id`. For that form, lowering finds the module's
+`ttl.create_pipe` operations with the same PipeNet id and emits one source or
+destination coordinate comparison per pipe.
 
 `visitRegionBranchControlFlowTransfer` narrows the lattice on entry to
 each region according to the parent op:
