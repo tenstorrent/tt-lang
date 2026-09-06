@@ -3164,6 +3164,79 @@ def test_device_domain_builds_per_device_runtime_coordinates(monkeypatch):
     assert mesh_programs[1][1].kernels[0].common_runtime_args == [0x2000, 0, 1]
 
 
+@pytest.mark.parametrize(
+    ("placements", "expected_coordinates"),
+    [
+        ([(0, 0), (3, 7)], [(0, 0), (3, 7)]),
+        (
+            [kernel_runner.MeshProgramPlacement((1, 2), (2, 3))],
+            [(1, 2), (1, 3), (2, 2), (2, 3)],
+        ),
+    ],
+    ids=("coordinates", "inclusive-range"),
+)
+def test_device_domain_builds_only_explicit_mesh_program_placements(
+    monkeypatch, placements, expected_coordinates
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+    tensor = _FakeTensor(object(), address=0x2000)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[0],
+        config=object(),
+    )
+
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        cb_configs=[],
+        core_ranges=_FakeCoreRanges(),
+        device_domain=DeviceDomain((4, 8)),
+        mesh_program_placements=placements,
+    )
+
+    mesh_programs = result["program"].mesh_programs
+    assert len(mesh_programs) == len(expected_coordinates)
+    assert [
+        tuple(program.kernels[0].common_runtime_args[1:])
+        for _, program in mesh_programs
+    ] == expected_coordinates
+
+
+@pytest.mark.parametrize(
+    "placement, message",
+    [
+        ((0,), "rank must match"),
+        ((-1, 0), "axis 0 must be non-negative"),
+        ((4, 0), "inside the device domain"),
+    ],
+)
+def test_device_domain_rejects_invalid_mesh_program_placement(
+    monkeypatch, placement, message
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+
+    with pytest.raises(ValueError, match=message):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[_FakeTensor(object())],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            device_domain=DeviceDomain((4, 8)),
+            mesh_program_placements=[placement],
+            runtime_resource_factory=lambda **_kwargs: pytest.fail(
+                "invalid placement reached runtime resource planning"
+            ),
+        )
+
+
 def test_routing_plane_runtime_args_are_dense_per_device(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
@@ -4633,6 +4706,33 @@ def test_run_kernel_with_mesh_program_descriptor(monkeypatch):
     assert first_program is second_program
     assert first_program.kernels == []
     assert first_program.custom_program_hash == 5
+
+
+@pytest.mark.parametrize(
+    ("placements", "message"),
+    [
+        ([(-1, 0)], "axis 0 must be non-negative"),
+        ([(0, 0), (0, 0, 0)], "placement 1 has rank 3, expected rank 2"),
+        ([(0, 0), (0, 0)], "indices 0 and 1 must not overlap"),
+    ],
+    ids=("negative", "mixed-rank", "overlap"),
+)
+def test_run_kernel_rejects_invalid_mesh_placements_before_resource_planning(
+    monkeypatch, placements, message
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+
+    with pytest.raises(ValueError, match=message):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            mesh_program_placements=placements,
+            runtime_resource_factory=lambda **_kwargs: pytest.fail(
+                "invalid placement reached runtime resource planning"
+            ),
+        )
 
 
 def test_build_mesh_program_descriptor_rejects_empty_placements(monkeypatch):

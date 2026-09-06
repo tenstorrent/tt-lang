@@ -59,6 +59,32 @@ def test_product_domain_resolves_named_device_refs():
     assert edge.destination.coordinates == ((1,), (2,))
 
 
+@pytest.mark.parametrize(
+    ("domain", "expected_coordinates"),
+    [
+        (DeviceDomain((2, 2)), [(0, 0), (0, 1), (1, 0), (1, 1)]),
+        (
+            DeviceDomain.product(board=(2,), device=(2,)),
+            [(0, 0), (0, 1), (1, 0), (1, 1)],
+        ),
+    ],
+    ids=("regular", "product"),
+)
+def test_domain_iterates_devices_in_runtime_coordinate_order(
+    domain, expected_coordinates
+):
+    assert [
+        domain.flattened_coordinates(device_ref)
+        for device_ref in domain.iter_device_refs()
+    ] == expected_coordinates
+
+
+def test_product_domain_flattens_named_device_ref_in_component_order():
+    domain = DeviceDomain.product(board=(2,), device=(2,))
+
+    assert domain.flattened_coordinates(DeviceRef(device=1, board=0)) == (0, 1)
+
+
 def test_device_ref_identity_ignores_construction_names():
     named = DeviceRef(board=0, device=1)
     positional = DeviceRef((0,), (1,))

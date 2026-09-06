@@ -16,9 +16,9 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass, field
-from typing import Any, Iterable, List, Optional, Set, Tuple, Union
+from typing import Any, FrozenSet, Iterable, List, Optional, Set, Tuple, Union
 
-from ttl.domains import DeviceRange
+from ttl.domains import DeviceRange, DeviceRef, TransferEdge, TransferGraph
 
 
 @dataclass(frozen=True)
@@ -76,8 +76,8 @@ class GraphPipeNetUse:
     """One graph-based PipeNet consumed by one operation invocation."""
 
     pipe_net_id: int
-    edges: Tuple[Any, ...]
-    transfer_graph: Any
+    edges: Tuple[TransferEdge, ...]
+    transfer_graph: TransferGraph
 
 
 @dataclass
@@ -99,7 +99,7 @@ class OperationPipeNets:
         self.pipe_nets.append(use)
         return use
 
-    def add_graph_pipe_net(self, transfer_graph: Any) -> GraphPipeNetUse:
+    def add_graph_pipe_net(self, transfer_graph: TransferGraph) -> GraphPipeNetUse:
         """Append a graph PipeNet with one ordered device-edge record set."""
         edges = tuple(transfer_graph.iter_edges())
         if not edges:
@@ -163,6 +163,16 @@ class OperationPipeNets:
                 "its graph-based PipeNets"
             )
         return operation_domain
+
+    def device_endpoints(self) -> FrozenSet[DeviceRef]:
+        """Return every logical device referenced by graph-based PipeNets."""
+        endpoints: Set[DeviceRef] = set()
+        for pipe_net in self.graph_pipe_nets:
+            for edge in pipe_net.edges:
+                assert isinstance(edge.destination, DeviceRef)
+                endpoints.add(edge.source)
+                endpoints.add(edge.destination)
+        return frozenset(endpoints)
 
 
 def _linearize(coords: Tuple[int, ...], grid: Tuple[int, ...]) -> int:
