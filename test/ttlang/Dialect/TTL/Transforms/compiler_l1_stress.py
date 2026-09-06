@@ -1,12 +1,11 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
-# Exhaustive small schedules and seeded mixed-size schedules check byte-placement
+# Exhaustive three- and four-region mixed-size schedules check byte-placement
 # safety against execution events, independently of the compiler conflict graph.
 # RUN: %python %s
 
 import itertools
-import random
 import re
 import subprocess
 
@@ -116,20 +115,16 @@ def main():
         )
     ]
     assert len(schedules) == 90
-    for seed in range(32):
-        randomizer = random.Random(seed)
-        pending = list(range(4))
-        live = []
-        events = []
-        while pending or live:
-            if pending and (not live or randomizer.random() < 0.6):
-                region = pending.pop(randomizer.randrange(len(pending)))
-                live.append(region)
-                events.append(2 * region)
-            else:
-                region = live.pop(randomizer.randrange(len(live)))
-                events.append(2 * region + 1)
-        schedules.append(tuple(events))
+    four_region_schedules = [
+        events
+        for events in itertools.permutations(range(8))
+        if all(
+            events.index(2 * region) < events.index(2 * region + 1)
+            for region in range(4)
+        )
+    ]
+    assert len(four_region_schedules) == 2520
+    schedules.extend(four_region_schedules)
     cases = [
         (events, architecture, False)
         for architecture in ("wormhole_b0", "blackhole")

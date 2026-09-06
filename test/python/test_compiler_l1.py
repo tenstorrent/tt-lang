@@ -4,7 +4,6 @@
 """Compiler-owned L1 transfer correctness and descriptor independence."""
 import importlib.util
 import re
-import random
 
 import pytest
 import torch
@@ -207,23 +206,32 @@ def test_l1_counter_overflow(device, monkeypatch):
     )
 
 
-def _make_allocation_stress(tmp_path, seed, grid):
-    randomizer = random.Random(seed)
+# Even events acquire a region; the following odd event releases that region.
+ALLOCATION_SCHEDULES = (
+    (6, 2, 12, 14, 0, 15, 4, 10, 8, 1, 9, 3, 13, 11, 7, 5),
+    (14, 15, 6, 10, 12, 2, 4, 0, 8, 3, 9, 1, 11, 5, 7, 13),
+    (2, 14, 3, 6, 0, 15, 7, 1, 12, 10, 4, 8, 11, 5, 9, 13),
+    (10, 8, 4, 12, 0, 11, 9, 6, 5, 1, 2, 14, 15, 13, 7, 3),
+)
+
+
+def _make_allocation_stress(tmp_path, schedule, grid):
     pages = [1, 4, 2, 3, 1, 5, 2, 4]
     capacities = [1, 1, 3, 1, 2, 1, 2, 1]
-    pending = list(range(len(pages)))
-    active = []
+    assert sorted(schedule) == list(range(2 * len(pages)))
+    active = set()
     events = []
     conflicts = set()
-    while pending or active:
-        if pending and (not active or randomizer.random() < 0.6):
-            region = pending.pop(randomizer.randrange(len(pending)))
+    for event in schedule:
+        region, action = divmod(event, 2)
+        if action == 0:
             conflicts.update(tuple(sorted((region, other))) for other in active)
-            active.append(region)
+            active.add(region)
             events.append(("produce", region))
         else:
-            region = active.pop(randomizer.randrange(len(active)))
+            active.remove(region)
             events.append(("consume", region))
+    assert not active
     total_pages = sum(pages)
     lines = [
         "import ttl",
@@ -268,12 +276,16 @@ def _make_allocation_stress(tmp_path, seed, grid):
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
-@pytest.mark.parametrize("seed", [3, 11, 29, 47])
+@pytest.mark.parametrize(
+    "schedule",
+    ALLOCATION_SCHEDULES,
+    ids=["schedule_0", "schedule_1", "schedule_2", "schedule_3"],
+)
 @pytest.mark.parametrize("grid", [(1, 1), (2, 2)], ids=["one_core", "four_cores"])
 @pytest.mark.parametrize("reuse", [False, True], ids=["distinct", "reuse"])
-def test_allocation_stress(device, dtype, seed, grid, reuse, tmp_path, monkeypatch):
+def test_allocation_stress(device, dtype, schedule, grid, reuse, tmp_path, monkeypatch):
     operation, pages, capacities, conflicts = _make_allocation_stress(
-        tmp_path, seed, grid
+        tmp_path, schedule, grid
     )
     expected = torch.randn(sum(pages) * grid[0] * grid[1] * 32, 32, dtype=dtype)
     source = to_dram(expected, device)
