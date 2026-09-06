@@ -4003,18 +4003,19 @@ lowerPlannedDeviceDestinationCount(Operation *op, PipeNetRecordsAttr records,
       rewriter, loc, participantPlan->recordCountsByDevice, currentDevice);
 }
 
-// Local records permit one launch-node-indexed count-table lookup.
+// Emit an index value counting entries in `records` for which the current node
+// has `role` (source, destination, or either). Use the launch grid enclosing
+// `op`; fail before emitting IR if that grid or the local records are invalid.
 static FailureOr<Value>
-lowerLocalDestinationCount(Operation *op, PipeNetRecordsAttr records,
-                           ConversionPatternRewriter &rewriter) {
+lowerLocalRoleRecordCount(Operation *op, PipeNetRecordsAttr records,
+                          PipeRole role, ConversionPatternRewriter &rewriter) {
   FailureOr<std::pair<int64_t, int64_t>> launchGrid = getLaunchGrid(op);
   if (failed(launchGrid)) {
     return failure();
   }
   auto [gridX, gridY] = *launchGrid;
   FailureOr<LocalPipeNetParticipantPlan> participantPlan =
-      buildLocalPipeNetParticipantPlan(records, PipeRole::Destination, gridX,
-                                       gridY);
+      buildLocalPipeNetParticipantPlan(records, role, gridX, gridY);
   if (failed(participantPlan)) {
     return failure();
   }
@@ -4032,8 +4033,26 @@ lowerLocalDestinationCount(Operation *op, PipeNetRecordsAttr records,
       rewriter, loc, participantPlan->recordCountsByNode, nodeIndex);
 }
 
-// Lower a per-pipe-role predicate op to the OR of per-pipe matches in the
-// named PipeNet. `roleBuilder` produces the i1 match for one static pipe.
+// Emit an i1 that is true when the current node is a source, destination, or
+// either, as requested by `role`, in any entry of the local `records`.
+// Use the launch grid enclosing `op`; propagate failure without emitting IR.
+static FailureOr<Value>
+lowerLocalRolePredicate(Operation *op, PipeNetRecordsAttr records,
+                        PipeRole role, ConversionPatternRewriter &rewriter) {
+  FailureOr<Value> recordCount =
+      lowerLocalRoleRecordCount(op, records, role, rewriter);
+  if (failed(recordCount)) {
+    return failure();
+  }
+  Value zero = arith::ConstantIndexOp::create(rewriter, op->getLoc(), 0);
+  return arith::CmpIOp::create(rewriter, op->getLoc(), arith::CmpIPredicate::ne,
+                               *recordCount, zero)
+      .getResult();
+}
+
+// Replace `op` with an i1 testing whether the current node/device has `role` in
+// its records. If `op` has no records, use `pipeNetIndex` to find its pipes and
+// `roleBuilder` to emit each pipe's coordinate test, then OR those results.
 template <typename Op>
 static LogicalResult lowerRolePredicate(
     Op op, ConversionPatternRewriter &rewriter,
@@ -4042,8 +4061,17 @@ static LogicalResult lowerRolePredicate(
         roleBuilder) {
   auto loc = op.getLoc();
   if (PipeNetRecordsAttr records = op.getRecordsAttr()) {
-    rewriter.replaceOp(op,
-                       lowerSelectedRolePredicate(op, records, role, rewriter));
+    if (records.getPipes().front().getDeviceTransfer()) {
+      rewriter.replaceOp(
+          op, lowerSelectedRolePredicate(op, records, role, rewriter));
+      return success();
+    }
+    FailureOr<Value> localPredicate =
+        lowerLocalRolePredicate(op, records, role, rewriter);
+    if (failed(localPredicate)) {
+      return failure();
+    }
+    rewriter.replaceOp(op, *localPredicate);
     return success();
   }
   int64_t netId = op.getPipeNetId();
@@ -4128,7 +4156,7 @@ struct PipeNetDestinationCountLowering
       return success();
     }
     FailureOr<Value> localCount =
-        lowerLocalDestinationCount(op, records, rewriter);
+        lowerLocalRoleRecordCount(op, records, PipeRole::Destination, rewriter);
     if (succeeded(localCount)) {
       rewriter.replaceOp(op, *localCount);
       return success();
@@ -4219,8 +4247,28 @@ LogicalResult buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
   mod.walk([&](PipeNetForeachSrcOp op) { addRecords(op.getRecords()); });
   mod.walk([&](PipeNetForeachDstOp op) { addRecords(op.getRecords()); });
 
+  // Validate role-query inputs before conversion so diagnostics retain the
+  // query's source location instead of the conversion wrapper's module
+  // location.
   WalkResult validation = mod.walk([&](PipeNetPredicateOpInterface predicate) {
-    if (predicate.getReferencedRecords()) {
+    if (PipeNetRecordsAttr records = predicate.getReferencedRecords()) {
+      if (!records.getPipes().front().getDeviceTransfer()) {
+        FailureOr<std::pair<int64_t, int64_t>> launchGrid =
+            getLaunchGrid(predicate);
+        if (failed(launchGrid)) {
+          predicate->emitError()
+              << "local PipeNet role query requires a valid ttl.launch_grid "
+                 "with two positive integer extents; set the operation's "
+                 "launch grid to include its PipeNet endpoints";
+          return WalkResult::interrupt();
+        }
+        if (failed(validateLocalPipeNetParticipantPlanInputs(
+                records, predicate.getReferencedRole(), launchGrid->first,
+                launchGrid->second,
+                [&]() { return predicate->emitError(); }))) {
+          return WalkResult::interrupt();
+        }
+      }
       return WalkResult::advance();
     }
     int64_t pipeNetId = predicate.getReferencedPipeNetId();

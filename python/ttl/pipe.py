@@ -383,19 +383,18 @@ class PipeNet:
         )
 
     def is_src(self) -> bool:
-        """Boolean predicate: current node is a source of any pipe in this net.
+        """Return whether the current node is a source of any pipe in this PipeNet.
 
-        Lowers to `ttl.is_src` and is recognized structurally by the
-        `ttl-verify-pipenet-guards` pass, so it can be used as the condition
-        of an `if` to gate pipe-coupled work."""
+        The compiler recognizes the result as a source-role condition when it
+        verifies guarded PipeNet traffic.
+        """
         raise RuntimeError(
             "PipeNet.is_src() should only be called inside a TTL kernel. "
             "The compiler handles this method specially."
         )
 
     def is_dst(self) -> bool:
-        """Boolean predicate: current node is a destination of any pipe in
-        this net. Lowers to `ttl.is_dst`."""
+        """Return whether the current node is in a destination range in this PipeNet."""
         raise RuntimeError(
             "PipeNet.is_dst() should only be called inside a TTL kernel. "
             "The compiler handles this method specially."
@@ -413,8 +412,7 @@ class PipeNet:
         )
 
     def is_active(self) -> bool:
-        """Boolean predicate: current node is either a source or a
-        destination of any pipe in this net. Lowers to `ttl.is_active`."""
+        """Return whether this node is a source or destination in this PipeNet."""
         raise RuntimeError(
             "PipeNet.is_active() should only be called inside a TTL kernel. "
             "The compiler handles this method specially."

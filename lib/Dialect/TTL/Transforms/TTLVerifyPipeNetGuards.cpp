@@ -2430,8 +2430,10 @@ validatePipeEndpoints(ModuleOp module,
       return;
     }
 
-    PipeNetRecordsAttr records =
+    auto records =
         llvm::TypeSwitch<Operation *, PipeNetRecordsAttr>(op)
+            .Case<PipeNetPredicateOpInterface>(
+                [](auto query) { return query.getReferencedRecords(); })
             .Case<PipeNetForeachSrcOp, PipeNetForeachDstOp, SelectPipeSrcOp,
                   SelectPipeDstOp>(
                 [](auto recordsOp) { return recordsOp.getRecords(); })
