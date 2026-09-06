@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Device coverage for table-planned local PipeNet role predicates."""
+"""Verify local role queries select the correct nodes and exclude inactive nodes."""
 
 import pytest
 import torch

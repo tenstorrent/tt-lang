@@ -21,12 +21,12 @@
 """Frontend-pipeline integration check for the PipeNet verifier.
 
 `net.is_active()` lowers to `ttl.is_active`, which the verifier
-recognizes structurally. After lowering, the table-planned predicate remains
-the runtime guard. A straight-line kernel without any PipeNet must not contain
-the predicate machinery.
+recognizes structurally. Lowering tests whether the current node's record count
+is nonzero. A kernel without any PipeNet requires neither the lookup nor its
+conditional branch.
 """
 
-# Frontend emits the predicate op with the static PipeNet record table.
+# The role query includes the records used to determine active nodes.
 # INITIAL: ttl.is_active
 # INITIAL-SAME: records = #ttl.pipenet_records<
 
@@ -34,7 +34,7 @@ the predicate machinery.
 # LOGICAL: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "<pipe_source>", role = "pipe_source">
 
 # After lowering, the user's guard survives as an emitc.if; the
-# predicate becomes one launch-node-indexed table lookup.
+# role query becomes one launch-node-indexed table lookup.
 # FINAL: experimental::constant_table_lookup
 # FINAL-NOT: emitc.logical_or
 # FINAL: emitc.if

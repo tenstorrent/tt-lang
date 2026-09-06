@@ -349,8 +349,8 @@ static bool hasDeviceQualifiedPipeNetRecords(PipeNetRecordsAttr records) {
   return records && records.getPipes().front().getDeviceTransfer();
 }
 
-// Record predicates own their endpoint set; a module-wide PipeNet domain can
-// include other declarations sharing the same id.
+// A role query's records define its exact endpoint set; the module-wide domain
+// can include other declarations sharing the same id.
 static LaunchNodeDomain
 getPipeNetPredicateRoleLaunchNodeDomain(PipeNetPredicateOpInterface predicate,
                                         const LaunchNodeDomainState &state) {

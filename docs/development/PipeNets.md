@@ -1936,9 +1936,11 @@ to match the selected source or destination endpoint.
 The Python frontend now adds `records` to every `ttl.is_src`, `ttl.is_dst`, and
 `ttl.is_active` operation. The attribute remains optional for compatibility
 with older generated or serialized TTL modules, whose role-query operations
-identify the PipeNet only by `pipe_net_id`. For that form, lowering finds the
-module's `ttl.create_pipe` operations with the same PipeNet id and emits one
-source or destination coordinate comparison per pipe.
+identify the PipeNet only by `pipe_net_id`. For that form, lowering collects
+the pipes declared by `ttl.create_pipe`, `ttl.pipenet_foreach_src`, and
+`ttl.pipenet_foreach_dst` with the same PipeNet id, removes duplicate endpoint
+relations, and emits source or destination coordinate comparisons for each
+remaining pipe.
 
 `visitRegionBranchControlFlowTransfer` narrows the lattice on entry to
 each region according to the parent op:

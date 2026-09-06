@@ -4031,6 +4031,7 @@ lowerLocalRoleRecordCount(Operation *op, PipeNetRecordsAttr records,
       rewriter, loc, participantPlan->recordCountsByNode, nodeIndex);
 }
 
+// Reuse the count query so duplicate records still produce one boolean match.
 static FailureOr<Value>
 lowerLocalRolePredicate(Operation *op, PipeNetRecordsAttr records,
                         PipeRole role, ConversionPatternRewriter &rewriter) {
@@ -4045,6 +4046,8 @@ lowerLocalRolePredicate(Operation *op, PipeNetRecordsAttr records,
       .getResult();
 }
 
+// Record attributes define the exact queried endpoints; older recordless
+// operations instead query every pipe declaration with the referenced id.
 template <typename Op>
 static LogicalResult lowerRolePredicate(
     Op op, ConversionPatternRewriter &rewriter,

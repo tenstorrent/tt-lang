@@ -91,8 +91,9 @@ def TTL_PipeNetPredicateOpInterface
     records define the selected nodes. Logical-device records match both the
     launch node and endpoint device; local records match the launch node alone.
     For compatibility with older generated or serialized TTL modules,
-    `records` is optional. Without it, `pipe_net_id` refers to the module's
-    `ttl.create_pipe` declarations for that PipeNet.
+    `records` is optional. Without it, `pipe_net_id` identifies the pipes
+    declared by `ttl.create_pipe`, `ttl.pipenet_foreach_src`, and
+    `ttl.pipenet_foreach_dst` for that PipeNet.
   }];
 
   let cppNamespace = "::mlir::tt::ttl";
