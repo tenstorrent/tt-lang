@@ -85,27 +85,32 @@ def TTL_DFBInputOpInterface : OpInterface<"DFBInputOpInterface"> {
 def TTL_PipeNetPredicateOpInterface
     : OpInterface<"PipeNetPredicateOpInterface"> {
   let description = [{
-    Predicate ops (`ttl.is_src`, `ttl.is_dst`, `ttl.is_active`) whose `i1`
-    result evaluates to `true` on a per-PipeNet role-defined execution set.
-    Predicates with graph records match both the launch node and logical-device
-    endpoint; predicates without graph records match the launch node alone.
+    PipeNet role-query operations. `ttl.is_src` selects source nodes,
+    `ttl.is_dst` selects destination nodes, and `ttl.is_active` selects their
+    union. When the operation has a `records` attribute, those static transfer
+    records define the selected nodes. Logical-device records match both the
+    launch node and endpoint device; local records match the launch node alone.
+    For compatibility with older generated or serialized TTL modules,
+    `records` is optional. Without it, `pipe_net_id` identifies the pipes
+    declared by `ttl.create_pipe`, `ttl.pipenet_foreach_src`, and
+    `ttl.pipenet_foreach_dst` for that PipeNet.
   }];
 
   let cppNamespace = "::mlir::tt::ttl";
 
   let methods = [
     InterfaceMethod<
-      /*desc=*/"Return the PipeNet id this predicate references.",
+      /*desc=*/"Return the PipeNet id this role-query operation references.",
       /*retTy=*/"int64_t",
       /*methodName=*/"getReferencedPipeNetId",
       /*args=*/(ins)>,
     InterfaceMethod<
-      /*desc=*/"Return the PipeNet role this predicate selects.",
+      /*desc=*/"Return the PipeNet role this operation queries.",
       /*retTy=*/"::mlir::tt::ttl::PipeRole",
       /*methodName=*/"getReferencedRole",
       /*args=*/(ins)>,
     InterfaceMethod<
-      /*desc=*/"Return the graph record table, when the predicate is device-aware.",
+      /*desc=*/"Return the operation's static PipeNet records, when present.",
       /*retTy=*/"::mlir::tt::ttl::PipeNetRecordsAttr",
       /*methodName=*/"getReferencedRecords",
       /*args=*/(ins),

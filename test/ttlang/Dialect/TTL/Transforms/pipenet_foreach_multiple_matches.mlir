@@ -1,6 +1,6 @@
 // Summary: Verifies distinct resources for every matching PipeNet record.
-// RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports,ttl-finalize-dfb-indices,convert-ttl-to-ttkernel)' | FileCheck %s
+// RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s --check-prefixes=CHECK,UNFINALIZED
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-form-pipe-transports,ttl-finalize-dfb-indices,convert-ttl-to-ttkernel)' | FileCheck %s --check-prefixes=CHECK,FINALIZED
 // RUN: ttlang-opt %s -ttl-verify-pipenet-guards
 
 // Verifies that one table-driven protocol operation receives distinct
@@ -8,9 +8,11 @@
 // Running static transport planning before conversion must preserve the same
 // selected-record address and synchronization tables.
 
-// Local selected records retain one receiver-published address table.
+// Local selected records retain distinct synchronization resources without
+// allocating a receiver-published address table.
 // CHECK-NOT: ttl.pipe_conservative_l1_bytes
-// CHECK: ttl.launch_grid = array<i64: 2, 5>, ttl.pipe_sram_scratch_bytes = 32 : i64, ttl.pipe_sync_semaphore_count = 8 : i64
+// CHECK-NOT: ttl.pipe_sram_scratch_bytes
+// CHECK: module attributes {{.*}}ttl.launch_grid = array<i64: 2, 5>, ttl.pipe_sync_semaphore_count = 8 : i64}
 
 module attributes {ttl.launch_grid = array<i64: 2, 5>} {
 
@@ -52,6 +54,9 @@ func.func @gather_receiver()
 }
 
 // CHECK-LABEL: func.func @gather_senders
+// The DFB finalization pass compacts logical index 1 to physical index 0.
+// UNFINALIZED-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
+// FINALIZED-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 0>
 // CHECK: scf.for %[[SLICE_INDEX:.*]] =
 // CHECK: %[[RECORD_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[SLICE_INDEX]], [0, 5, 1, 2, 3, 4] : index
 // CHECK: %[[READY_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD_INDEX]], [6, 6, 6, 6, 6, 7] : index

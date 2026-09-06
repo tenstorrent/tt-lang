@@ -343,6 +343,26 @@ LaunchNodeDomain getPipeRecordsRoleLaunchNodeDomain(PipeNetRecordsAttr records,
   return result;
 }
 
+// Return true if `records` specifies logical-device transfers, and false for
+// absent or local records. Attribute verification ensures all entries agree.
+static bool hasDeviceQualifiedPipeNetRecords(PipeNetRecordsAttr records) {
+  return records && records.getPipes().front().getDeviceTransfer();
+}
+
+// Return the source, destination, or combined node coordinates requested by
+// `predicate`. Use its records when present, otherwise the declarations in
+// `state`. The returned coordinate set does not distinguish logical devices.
+static LaunchNodeDomain
+getPipeNetPredicateRoleLaunchNodeDomain(PipeNetPredicateOpInterface predicate,
+                                        const LaunchNodeDomainState &state) {
+  if (PipeNetRecordsAttr records = predicate.getReferencedRecords()) {
+    return getPipeRecordsRoleLaunchNodeDomain(records,
+                                              predicate.getReferencedRole());
+  }
+  return state.getRoleDomain(predicate.getReferencedPipeNetId(),
+                             predicate.getReferencedRole());
+}
+
 /// Normalize integer-array attributes before verifier-specific interpretation.
 static bool readI64ArrayAttr(Operation *op, llvm::StringLiteral name,
                              SmallVectorImpl<int64_t> &values) {
@@ -479,28 +499,28 @@ void LaunchNodeDomainState::initialize(ModuleOp module) {
     baseDomain = getFullLaunchNodeDomain(launchGrid->first, launchGrid->second);
   }
 
-  module.walk([&](CreatePipeOp pipe) {
-    std::optional<StringRef> name;
-    if (auto attr = pipe.getPipeNetNameAttr()) {
-      name = attr.getValue();
-    }
-    recordPipeNet(mlir::cast<PipeType>(pipe.getResult().getType()),
-                  pipe.getLoc(), name);
-  });
-  module.walk([&](PipeNetForeachSrcOp op) {
-    recordPipeNetRecords(op.getRecords(), op.getLoc());
-  });
-  module.walk([&](PipeNetForeachDstOp op) {
-    recordPipeNetRecords(op.getRecords(), op.getLoc());
-  });
-  module.walk([&](PipeNetDestinationCountOp op) {
-    recordPipeNetRecords(op.getRecords(), op.getLoc());
-  });
-  module.walk([&](SelectPipeSrcOp op) {
-    recordPipeNetRecords(op.getRecords(), op.getLoc());
-  });
-  module.walk([&](SelectPipeDstOp op) {
-    recordPipeNetRecords(op.getRecords(), op.getLoc());
+  // Collect all declarations together: their coordinate sets are combined by
+  // union, so no declaration needs to be processed before another.
+  module.walk([&](Operation *op) {
+    llvm::TypeSwitch<Operation *>(op)
+        .Case<CreatePipeOp>([&](CreatePipeOp pipe) {
+          std::optional<StringRef> name;
+          if (auto attr = pipe.getPipeNetNameAttr()) {
+            name = attr.getValue();
+          }
+          recordPipeNet(mlir::cast<PipeType>(pipe.getResult().getType()),
+                        pipe.getLoc(), name);
+        })
+        .Case<PipeNetForeachSrcOp, PipeNetForeachDstOp,
+              PipeNetDestinationCountOp, SelectPipeSrcOp, SelectPipeDstOp>(
+            [&](auto recordsOp) {
+              recordPipeNetRecords(recordsOp.getRecords(), recordsOp.getLoc());
+            })
+        .Case<PipeNetPredicateOpInterface>([&](auto query) {
+          if (PipeNetRecordsAttr records = query.getReferencedRecords()) {
+            recordPipeNetRecords(records, query->getLoc());
+          }
+        });
   });
 }
 
@@ -517,13 +537,12 @@ evaluateLaunchNodeContextValue(Value value, LaunchNodeCoord coord,
   }
   if (state) {
     if (auto predicate = value.getDefiningOp<PipeNetPredicateOpInterface>()) {
-      if (predicate.getReferencedRecords()) {
+      PipeNetRecordsAttr records = predicate.getReferencedRecords();
+      if (hasDeviceQualifiedPipeNetRecords(records)) {
         return std::nullopt;
       }
       bool selected = knownLaunchNodeDomainContains(
-          state->getRoleDomain(predicate.getReferencedPipeNetId(),
-                               predicate.getReferencedRole()),
-          coord);
+          getPipeNetPredicateRoleLaunchNodeDomain(predicate, *state), coord);
       return llvm::APInt(/*numBits=*/1, selected);
     }
   }
@@ -1513,9 +1532,11 @@ getBranchDomainsImpl(Value condition, const LaunchNodeDomain &current,
                      const LaunchNodeDomainState &state,
                      llvm::DenseMap<Value, bool> &coordCache) {
   if (auto pred = condition.getDefiningOp<PipeNetPredicateOpInterface>()) {
-    LaunchNodeDomain roleDomain = state.getRoleDomain(
-        pred.getReferencedPipeNetId(), pred.getReferencedRole());
-    if (pred.getReferencedRecords()) {
+    LaunchNodeDomain roleDomain =
+        getPipeNetPredicateRoleLaunchNodeDomain(pred, state);
+    PipeNetRecordsAttr records = pred.getReferencedRecords();
+    // Without knowing the device, any node may take the false branch.
+    if (hasDeviceQualifiedPipeNetRecords(records)) {
       return {current.intersectWith(roleDomain), current};
     }
     return exactBranches(roleDomain, current, state.baseDomain);

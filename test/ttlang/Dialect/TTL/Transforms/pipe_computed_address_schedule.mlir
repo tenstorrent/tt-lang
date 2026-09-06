@@ -65,6 +65,96 @@ module attributes {ttl.launch_grid = array<i64: 3, 1>} {
 
 // -----
 
+// Local record predicates fully determine the launch-node branch domains. The
+// outer false branch must exclude sources so receiver reservation sequences do
+// not include an infeasible second post on loopback source nodes.
+
+// CHECK-LABEL: func.func @local_record_predicate_domains
+// CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
+// CHECK-NOT: ttl.pipe_sram_scratch_bytes
+// CHECK-NOT: ttkernel.noc_inline_dw_write
+// CHECK: return
+#local_records = #ttl.pipenet_records<net 7 name "local_collective" pipes [
+  #ttl.pipe_record<
+      srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
+      dstEndX = 0, dstEndY = 0, isCollective = true>,
+  #ttl.pipe_record<
+      srcX = 0, srcY = 1, dstStartX = 0, dstStartY = 1,
+      dstEndX = 1, dstEndY = 1, isCollective = true>
+]>
+
+// Sharing a numeric PipeNet id does not make another table part of this
+// predicate's source domain.
+#unrelated_records = #ttl.pipenet_records<net 7 name "unrelated_table" pipes [
+  #ttl.pipe_record<
+      srcX = 1, srcY = 1, dstStartX = 1, dstStartY = 1,
+      dstEndX = 1, dstEndY = 1>
+]>
+
+module attributes {ttl.launch_grid = array<i64: 2, 2>} {
+  func.func @local_record_predicate_domains()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 3} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 3>
+    %zero = arith.constant 0 : index
+    %three = arith.constant 3 : index
+    %one = arith.constant 1 : index
+    %unrelated_source = ttl.is_src {
+        pipe_net_id = 7 : i64, records = #unrelated_records}
+    scf.for %iteration = %zero to %three step %one {
+      %is_source = ttl.is_src {
+          pipe_net_id = 7 : i64, records = #local_records}
+      scf.if %is_source {
+        %reserved = ttl.cb_reserve %dst
+            : <[1, 1], !ttcore.tile<32x32, f32>, 3>
+            -> tensor<1x1x!ttcore.tile<32x32, f32>>
+        ttl.pipenet_foreach_dst attributes {records = #local_records} {
+        ^bb0(%receive_pipe: !ttl.selected_pipe_dst):
+          %post = ttl.copy %receive_pipe, %reserved
+              : (!ttl.selected_pipe_dst,
+                 tensor<1x1x!ttcore.tile<32x32, f32>>)
+              -> !ttl.receive_request
+          ttl.pipenet_foreach_src attributes {records = #local_records} {
+          ^bb0(%send_pipe: !ttl.selected_pipe_src):
+            %send = ttl.copy %src, %send_pipe
+                : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+                   !ttl.selected_pipe_src)
+                -> !ttl.transfer_handle<write>
+            ttl.wait %send : !ttl.transfer_handle<write>
+            ttl.yield
+          }
+          ttl.wait %post : !ttl.receive_request
+          ttl.yield
+        }
+        ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 3>
+      } else {
+        %is_destination = ttl.is_dst {
+            pipe_net_id = 7 : i64, records = #local_records}
+        scf.if %is_destination {
+          %reserved = ttl.cb_reserve %dst
+              : <[1, 1], !ttcore.tile<32x32, f32>, 3>
+              -> tensor<1x1x!ttcore.tile<32x32, f32>>
+          ttl.pipenet_foreach_dst attributes {records = #local_records} {
+          ^bb0(%receive_pipe: !ttl.selected_pipe_dst):
+            %post = ttl.copy %receive_pipe, %reserved
+                : (!ttl.selected_pipe_dst,
+                   tensor<1x1x!ttcore.tile<32x32, f32>>)
+                -> !ttl.receive_request
+            ttl.wait %post : !ttl.receive_request
+            ttl.yield
+          }
+          ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 3>
+        }
+      }
+    }
+    func.return
+  }
+}
+
+// -----
+
 // Pipe A occurs once and uses slot 0 at every receiver. Receivers 1 and 2 also
 // reserve slot 1 for Pipe B, but that later reservation cannot change Pipe A's
 // one-element address sequence.

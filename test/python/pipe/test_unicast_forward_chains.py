@@ -20,7 +20,7 @@ import ttl
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttlang_test_utils import to_dram
+from ttlang_test_utils import to_dram, to_l1
 from utils.correctness import assert_pcc
 
 TILE = 32
@@ -127,32 +127,36 @@ def row_column_unicast_chains(row_in, col_in, out):
                 ).wait()
 
 
-def test_row_column_unicast_forward_chains(device, monkeypatch, tmp_path):
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
+def test_row_column_unicast_forward_chains(
+    device, monkeypatch, tmp_path, dtype, to_device
+):
     runner_path = tmp_path / "row_column_unicast_chains_runner.py"
     monkeypatch.setenv("TTLANG_EMIT_RUNNER", str(runner_path))
 
     row_in_torch = torch.randn(
-        CHAIN_Y * CHAIN_ITERS * TILE, BLOCK_TILES * TILE, dtype=torch.bfloat16
+        CHAIN_Y * CHAIN_ITERS * TILE, BLOCK_TILES * TILE, dtype=dtype
     )
     col_in_torch = torch.randn(
-        CHAIN_ITERS * TILE, CHAIN_X * BLOCK_TILES * TILE, dtype=torch.bfloat16
+        CHAIN_ITERS * TILE, CHAIN_X * BLOCK_TILES * TILE, dtype=dtype
     )
     out_torch = torch.zeros(
         CHAIN_Y * CHAIN_ITERS * TILE,
         CHAIN_X * BLOCK_TILES * TILE,
-        dtype=torch.bfloat16,
+        dtype=dtype,
     )
 
-    row_in = to_dram(row_in_torch, device)
-    col_in = to_dram(col_in_torch, device)
-    out = to_dram(out_torch, device)
+    row_in = to_device(row_in_torch, device)
+    col_in = to_device(col_in_torch, device)
+    out = to_device(out_torch, device)
 
     row_column_unicast_chains(row_in, col_in, out)
     ttnn.synchronize_device(device)
 
     runner = runpy.run_path(str(runner_path))
     assert runner["NUM_PIPE_SYNC_SEMAPHORES"] == 4
-    assert runner["PIPE_SRAM_SCRATCH_BYTES"] == 32
+    assert runner["PIPE_SRAM_SCRATCH_BYTES"] == 0
     assert runner["NUM_PIPE_GLOBAL_SEMAPHORES"] == 0
 
     data_movement_kernel = next(
@@ -163,6 +167,7 @@ def test_row_column_unicast_forward_chains(device, monkeypatch, tmp_path):
     kernel_source = data_movement_kernel.read_text()
     assert len(kernel_source.encode()) < 24 * 1024
     assert kernel_source.count("noc0.async_write(") == 2
+    assert "inline_dw_write" not in kernel_source
     assert "experimental::constant_table_lookup_word<" in kernel_source
     assert re.search(r"^\s+size_t v\d+\[", kernel_source, re.MULTILINE) is None
 
@@ -183,6 +188,6 @@ def test_row_column_unicast_forward_chains(device, monkeypatch, tmp_path):
                 ].float()
                 expected[row_start:row_end, col_start:col_end] = (
                     row_tile + col_tile
-                ).to(torch.bfloat16)
+                ).to(dtype)
 
     assert_pcc(expected.float(), result.float())
