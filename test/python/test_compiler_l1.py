@@ -61,7 +61,10 @@ def test_l1_copy(device, dtype, memory_model, allocator, monkeypatch):
 
         monkeypatch.setattr(runner, "build_cb_descriptors", reject_descriptors)
     for invocation in range(3):
-        l1_copy(source, destination, options=f"--ttl-memory-model={memory_model}")
+        result = l1_copy(
+            source, destination, options=f"--ttl-memory-model={memory_model}"
+        )
+        assert result.buffer_address() == destination.buffer_address()
         assert_allclose(
             ttnn.to_torch(destination).float(), expected.float(), rtol=0, atol=0
         )

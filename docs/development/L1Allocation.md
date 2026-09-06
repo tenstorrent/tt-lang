@@ -57,8 +57,8 @@ each core; the arena has no tensor-height semantics. Kernels receive the
 core-local arena base address and use constant offsets, so argument count does
 not grow with region count. Metal still allocates the tensor, so its ownership
 and reservation rules remain authoritative. Passing the arena as a `generic_op`
-tensor retains it for execution. A fresh arena separates synchronization state
-across cached launches.
+input retains it for execution while leaving the user output in the final tensor
+position. A fresh arena separates synchronization state across cached launches.
 
 The tradeoff is uniform allocation: every participating core reserves the largest
 required arena, including sparsely active cores. Initialization also currently
@@ -189,12 +189,12 @@ evidence currently covers Blackhole.
 ## Validation and Implementation References
 
 Validation checks numerical results and allocation safety independently:
-[device tests](../../test/python/test_compiler_l1.py) exercise concurrent and
-sequential lifetimes, mixed extents, multiple cores, repeated launches, and
-protocol wraparound. [Compute tests](../../test/python/test_compiler_l1_compute.py)
-compare both memory models and exercise 96 simultaneously live inputs, retained
-residuals, a Kimi-derived SiTU MLP residual, dependent state updates, attention,
-expert merge, and repeated invocations. [Compiler stress tests](../../test/ttlang/Dialect/TTL/Transforms/compiler_l1_stress.py)
+[transfer tests](../../test/python/test_compiler_l1.py) exercise 96 simultaneously
+live DFBs, sequential reuse, mixed extents, multiple cores, repeated launches,
+and protocol wraparound. [Compute tests](../../test/python/test_compiler_l1_compute.py)
+compare both memory models and exercise arithmetic with 66 allocated DFBs,
+retained residuals, a Kimi-derived SiTU MLP residual, dependent state updates,
+attention, expert merge, and repeated invocations. [Compiler stress tests](../../test/ttlang/Dialect/TTL/Transforms/compiler_l1_stress.py)
 derive conflicts and live-byte lower bounds from generated schedules, then check
 placement, target alignment, determinism, and budget boundaries. These checks do
 not assume the greedy result is optimal.
