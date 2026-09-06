@@ -551,7 +551,8 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
              "instrumented matmul must not be folded into its user");
       continue;
     case FusedOperationRecipe::DeferredExpScale:
-      instrumentationEmitter.emitAfter(op);
+      assert(!instrumentationEmitter.hasAfter(op) &&
+             "instrumented exp scale must not be folded into exp");
       continue;
     case FusedOperationRecipe::MatmulAccumulator: {
       assert(operationPlan.foldedMatmul && operationPlan.accumulator &&
