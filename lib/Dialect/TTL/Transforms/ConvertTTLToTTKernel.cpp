@@ -46,6 +46,7 @@
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
 #include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Casting.h"
@@ -65,10 +66,6 @@ namespace {
 using mlir::func::FuncOp;
 namespace ttk = mlir::tt::ttkernel;
 
-// Maps local args to global tensor indices for common runtime args (buffer
-// addresses). CRTA is filtered per-thread, containing only addresses for
-// tensors this thread uses.
-constexpr llvm::StringLiteral kCRTAIndicesAttr = "ttl.crta_indices";
 constexpr llvm::StringLiteral kExpandLinearizeIndexAttr =
     "ttlang.expand_linearize_index";
 // PipeGraph is defined in PipeGraph.h.
@@ -425,6 +422,7 @@ static FailureOr<unsigned> getTensorFuncArgIndex(Value tensor) {
   return blockArg.getArgNumber();
 }
 
+// Resolves a TTL DFB SSA value to its finalized physical descriptor index.
 static FailureOr<int32_t> getValidatedDFBIndex(Value dfb, Operation *op) {
   std::optional<int64_t> dfbIndex = getCBIndex(dfb);
   if (!dfbIndex) {
@@ -437,6 +435,60 @@ static FailureOr<int32_t> getValidatedDFBIndex(Value dfb, Operation *op) {
            << "] for " << getTargetDFBIndexCapacityDescription(op);
   }
   return static_cast<int32_t>(*dfbIndex);
+}
+
+// Canonicalizes index sets for TTKernel's strict attribute-ordering invariant.
+static void sortAndDeduplicateDFBIndices(SmallVectorImpl<int32_t> &indices) {
+  llvm::sort(indices);
+  indices.erase(llvm::unique(indices), indices.end());
+}
+
+// Converts DFB operands into a canonical set of finalized physical indices.
+static FailureOr<SmallVector<int32_t>>
+getValidatedPhysicalDFBIndices(ValueRange dfbs, Operation *op) {
+  SmallVector<int32_t> indices;
+  indices.reserve(dfbs.size());
+  for (Value dfb : dfbs) {
+    FailureOr<int32_t> index = getValidatedDFBIndex(dfb, op);
+    if (failed(index)) {
+      return failure();
+    }
+    indices.push_back(*index);
+  }
+  sortAndDeduplicateDFBIndices(indices);
+  return indices;
+}
+
+// Unknown external calls can name user-managed DFBs by physical index without
+// explicit operands, so collect every such index in the module.
+static FailureOr<SmallVector<int32_t>>
+collectUserManagedPhysicalDFBIndices(ModuleOp module) {
+  SmallVector<int32_t> indices;
+  WalkResult result = module.walk([&](BindCBOp bind) -> WalkResult {
+    if (bind->hasAttr(kCompilerAllocatedAttrName)) {
+      return WalkResult::advance();
+    }
+    FailureOr<int32_t> index = getValidatedDFBIndex(bind.getResult(), bind);
+    if (failed(index)) {
+      return WalkResult::interrupt();
+    }
+    indices.push_back(*index);
+    return WalkResult::advance();
+  });
+  if (result.wasInterrupted()) {
+    return failure();
+  }
+  sortAndDeduplicateDFBIndices(indices);
+  return indices;
+}
+
+// Absence denotes no descriptor requirement; an explicit empty list is invalid.
+static DenseI32ArrayAttr getRequiredDFBIndicesAttr(ArrayRef<int32_t> indices,
+                                                   RewriterBase &rewriter) {
+  if (indices.empty()) {
+    return {};
+  }
+  return rewriter.getDenseI32ArrayAttr(indices);
 }
 
 /// Read one L1 address from the function's common runtime arguments.
@@ -458,7 +510,7 @@ static Value buildTensorAccessor(Location loc,
                                  ConversionPatternRewriter &rewriter,
                                  int32_t baseCTA, int32_t globalTensorIdx,
                                  int32_t crtaIndex, Value bankBase,
-                                 Value pageSize) {
+                                 Value pageSize = Value()) {
   std::string ctaExpr =
       "tensor_accessor::detail::get_tensor_accessor_args_cta_offset<" +
       std::to_string(globalTensorIdx) + ", " + std::to_string(baseCTA) + ">()";
@@ -841,15 +893,16 @@ getBaseCTAAndGlobalTensorIdx(unsigned argIdx, Operation *op) {
            << kBaseCTAIndexAttrName << " attribute";
   }
 
-  auto crtaIndicesAttr = parentFunc->getAttrOfType<ArrayAttr>(kCRTAIndicesAttr);
+  auto crtaIndicesAttr =
+      parentFunc->getAttrOfType<ArrayAttr>(kCRTAIndicesAttrName);
   if (!crtaIndicesAttr) {
     return op->emitError("function missing ")
-           << kCRTAIndicesAttr << " attribute";
+           << kCRTAIndicesAttrName << " attribute";
   }
 
   if (argIdx >= crtaIndicesAttr.size()) {
     return op->emitError("argument index out of range for ")
-           << kCRTAIndicesAttr;
+           << kCRTAIndicesAttrName;
   }
 
   int32_t baseCTA = static_cast<int32_t>(baseCTAAttr.getInt());
@@ -874,7 +927,7 @@ static FailureOr<int64_t> getValidatedPageSize(Value tensor, Operation *op) {
         "materialization; Python layer should reject tensors without layout");
   }
 
-  // TTL layouts are always tiled. Compute page size from tile element type.
+  // Native tensor copies operate on tiles and override the accessor page size.
   auto tileType =
       mlir::dyn_cast<tt::ttcore::TileType>(layoutAttr.getElementType());
   if (!tileType) {
@@ -1147,6 +1200,44 @@ static LogicalResult lowerTensorCBCopy(
   return success();
 }
 
+// Tile-copy lowering cannot preserve a partial-page byte count or copy between
+// different tile geometries, so direct DFB copies use the raw NoC operation.
+static LogicalResult lowerDFBToDFBCopy(CopyOp op,
+                                       ConversionPatternRewriter &rewriter,
+                                       const TypeConverter &typeConverter) {
+  IntegerAttr byteCountAttr = op.getByteCountAttr();
+  Value srcDFB = getAttachedCB(op.getSrc());
+  Value dstDFB = getAttachedCB(op.getDst());
+  if (!byteCountAttr || !srcDFB || !dstDFB ||
+      !isa<CircularBufferType>(srcDFB.getType()) ||
+      !isa<CircularBufferType>(dstDFB.getType())) {
+    return rewriter.notifyMatchFailure(
+        op, "DFB block copy requires byte_count and two attached DFBs");
+  }
+
+  uint64_t byteCount = static_cast<uint64_t>(byteCountAttr.getInt());
+  Location loc = op.getLoc();
+  FailureOr<Value> srcCB =
+      utils::convertTTLCBToTTKernel(srcDFB, rewriter, loc, &typeConverter);
+  FailureOr<Value> dstCB =
+      utils::convertTTLCBToTTKernel(dstDFB, rewriter, loc, &typeConverter);
+  assert(succeeded(srcCB) && succeeded(dstCB) && "preflight checked DFB types");
+
+  Value srcAddress = ttk::GetReadPtrOp::create(rewriter, loc, *srcCB);
+  Value dstAddress = ttk::GetWritePtrOp::create(rewriter, loc, *dstCB);
+  int64_t nocIndex = getNocIndex(op);
+  Value noc = arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
+                                        rewriter.getI8IntegerAttr(nocIndex));
+  Value srcX = ttk::MyXOp::create(rewriter, loc, noc);
+  Value srcY = ttk::MyYOp::create(rewriter, loc, noc);
+  Value size = arith::ConstantIntOp::create(rewriter, loc, byteCount, 32);
+  ttk::NocAsyncReadOp::create(rewriter, loc, ValueRange{srcX, srcY},
+                              ValueRange{}, srcAddress, dstAddress, size, noc);
+
+  rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
+  return success();
+}
+
 struct TensorSliceLowering : OpConversionPattern<TensorSliceOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -1187,6 +1278,7 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     bool srcIsSlice = srcKind == CopyOperandKind::TensorSlice;
     bool srcIsCB = srcKind == CopyOperandKind::CircularBuffer;
     bool srcIsPipe = srcKind == CopyOperandKind::Pipe;
+    bool srcIsDFBAttachedTensor = srcKind == CopyOperandKind::DFBAttachedTensor;
     bool dstIsSlice = dstKind == CopyOperandKind::TensorSlice;
     bool dstIsCB = dstKind == CopyOperandKind::CircularBuffer;
     bool dstIsPipe = dstKind == CopyOperandKind::Pipe;
@@ -1204,6 +1296,10 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
     if (srcIsPipe || dstIsPipe) {
       return rewriter.notifyMatchFailure(
           op, "pipe copy requires CB <-> Pipe, got invalid combination");
+    }
+
+    if (srcIsDFBAttachedTensor && dstIsDFBAttachedTensor) {
+      return lowerDFBToDFBCopy(op, rewriter, *typeConverter);
     }
 
     // Non-pipe transfers: validate exactly one TensorSlice and one CB.
@@ -1581,12 +1677,21 @@ static LogicalResult lowerDFBReset(Operation *operation,
       rewriter, location, static_cast<uint32_t>(dfbMask), 32);
   Value highMask = arith::ConstantIntOp::create(
       rewriter, location, static_cast<uint32_t>(dfbMask >> 32), 32);
+  // Lowering removes the reset's DFB operands, so retain every selected index
+  // as a descriptor requirement.
+  SmallVector<int32_t> requiredPhysicalDFBIndices;
+  for (unsigned index = 0; index < 64; ++index) {
+    if ((dfbMask & (uint64_t{1} << index)) != 0) {
+      requiredPhysicalDFBIndices.push_back(static_cast<int32_t>(index));
+    }
+  }
   ttk::OpaqueCallOp::create(
       rewriter, location, TypeRange{},
       rewriter.getStringAttr("experimental::reset_dfb_interfaces"),
       rewriter.getStringAttr("<cstdint>"),
       ValueRange{synchronizationAddress, lowMask, highMask}, ArrayAttr(),
-      rewriter.getDenseI32ArrayAttr({0, 1, 2}));
+      rewriter.getDenseI32ArrayAttr({0, 1, 2}),
+      getRequiredDFBIndicesAttr(requiredPhysicalDFBIndices, rewriter));
   rewriter.eraseOp(operation);
   return success();
 }
@@ -1683,7 +1788,7 @@ struct DFBReconfigurationLowering : OpConversionPattern<DFBReconfigurationOp> {
         rewriter, op.getLoc(), TypeRange{},
         rewriter.getStringAttr("experimental::reconfigure_dfb_interfaces"),
         rewriter.getStringAttr("<cstdint>"), ValueRange{configurationAddress},
-        ArrayAttr(), rewriter.getDenseI32ArrayAttr({0}));
+        ArrayAttr(), rewriter.getDenseI32ArrayAttr({0}), DenseI32ArrayAttr());
     rewriter.eraseOp(op);
     return success();
   }
@@ -1703,19 +1808,38 @@ struct OpaqueDFBArgument {
 
 struct OpaqueTensorArgument {
   Value tensor;
-  TensorAccessorInfo accessorInfo;
+  unsigned argIdx;
+  std::optional<std::pair<int32_t, int32_t>> ctaInfo;
 };
 
 using OpaqueArgumentPlan =
     std::variant<OpaqueScalarArgument, OpaqueDFBArgument, OpaqueTensorArgument>;
 
 struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
-  using OpConversionPattern::OpConversionPattern;
+  OpaqueCallLowering(TypeConverter &typeConverter, MLIRContext *context,
+                     ArrayRef<int32_t> userManagedPhysicalDFBIndices)
+      : OpConversionPattern(typeConverter, context),
+        userManagedPhysicalDFBIndices(userManagedPhysicalDFBIndices) {}
 
   LogicalResult
   matchAndRewrite(OpaqueCallOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location location = op.getLoc();
+
+    // Dependency operands name every descriptor required by a typed external
+    // call, including operands that are absent from the emitted C++ call.
+    FailureOr<SmallVector<int32_t>> requiredPhysicalDFBIndices =
+        getValidatedPhysicalDFBIndices(op.getDFBDependencyOperands(), op);
+    if (failed(requiredPhysicalDFBIndices)) {
+      return failure();
+    }
+    if (op.hasUnknownDFBAccess()) {
+      // An untyped external call may refer to any user-managed physical DFB
+      // index without listing it as an operand.
+      llvm::append_range(*requiredPhysicalDFBIndices,
+                         userManagedPhysicalDFBIndices);
+      sortAndDeduplicateDFBIndices(*requiredPhysicalDFBIndices);
+    }
 
     SmallVector<Attribute> templateArgs;
     if (std::optional<ArrayAttr> sourceTemplateArgs = op.getTemplateArgs()) {
@@ -1741,6 +1865,8 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
 
     SmallVector<OpaqueArgumentPlan> argumentPlan;
     argumentPlan.reserve(op.getArgOperands().size());
+    std::optional<ttk::ThreadType> kernelThread =
+        getKernelThreadType(getEnclosingKernelThread(op));
     for (auto [originalArg, adaptedArg] :
          llvm::zip(op.getArgOperands(), adaptor.getArgOperands())) {
       Type originalType = originalArg.getType();
@@ -1755,23 +1881,41 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
       }
 
       if (mlir::isa<RankedTensorType>(originalType)) {
-        if (!isNocKernelThread(op)) {
-          return op.emitError(
-              "tensor operands require a data movement (noc) thread");
+        FailureOr<unsigned> argIdx = getTensorFuncArgIndex(originalArg);
+        if (failed(argIdx)) {
+          return rewriter.notifyMatchFailure(
+              op, "tensor must be a function argument for runtime arg mapping");
         }
-        FailureOr<TensorAccessorInfo> accessorInfo =
-            getTensorAccessorInfo(originalArg, op, rewriter);
-        if (failed(accessorInfo)) {
-          return failure();
+        if (!kernelThread || (*kernelThread != ttk::ThreadType::Noc &&
+                              *kernelThread != ttk::ThreadType::Compute)) {
+          return op.emitError(
+              "tensor operands require a compute or data movement kernel");
+        }
+        std::optional<std::pair<int32_t, int32_t>> ctaInfo;
+        if (*kernelThread == ttk::ThreadType::Noc) {
+          FailureOr<std::pair<int32_t, int32_t>> resolvedCTAInfo =
+              getBaseCTAAndGlobalTensorIdx(*argIdx, op);
+          if (failed(resolvedCTAInfo)) {
+            return failure();
+          }
+          ctaInfo = *resolvedCTAInfo;
+        }
+        auto tensorType = mlir::cast<RankedTensorType>(originalType);
+        if (!mlir::isa_and_nonnull<tt::ttl::LayoutAttr>(
+                tensorType.getEncoding())) {
+          return op.emitError(
+              "tensor must have ttl.layout encoding for accessor "
+              "materialization");
         }
         argumentPlan.push_back(
-            OpaqueTensorArgument{originalArg, *accessorInfo});
+            OpaqueTensorArgument{originalArg, *argIdx, ctaInfo});
         continue;
       }
 
       argumentPlan.push_back(OpaqueScalarArgument{adaptedArg});
     }
 
+    llvm::DenseMap<Value, Value> materializedTensorAccessors;
     SmallVector<Value> convertedArgs;
     convertedArgs.reserve(argumentPlan.size());
     for (const OpaqueArgumentPlan &argument : argumentPlan) {
@@ -1787,10 +1931,25 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
         continue;
       }
       const auto &tensor = std::get<OpaqueTensorArgument>(argument);
-      Value bankBase =
-          getCommonRuntimeArg(tensor.accessorInfo.argIdx, location, rewriter);
-      convertedArgs.push_back(materializeTensorAccessor(
-          tensor.tensor, bankBase, tensor.accessorInfo, rewriter));
+      auto existingAccessor = materializedTensorAccessors.find(tensor.tensor);
+      if (existingAccessor != materializedTensorAccessors.end()) {
+        convertedArgs.push_back(existingAccessor->second);
+        continue;
+      }
+      Value bankBase = getCommonRuntimeArg(tensor.argIdx, location, rewriter);
+      Value accessor;
+      if (tensor.ctaInfo) {
+        auto [baseCTA, globalTensorIdx] = *tensor.ctaInfo;
+        accessor =
+            buildTensorAccessor(location, rewriter, baseCTA, globalTensorIdx,
+                                static_cast<int32_t>(tensor.argIdx), bankBase);
+      } else {
+        accessor =
+            ttk::LocalTensorAccessorOp::create(rewriter, location, bankBase)
+                .getResult();
+      }
+      materializedTensorAccessors.insert({tensor.tensor, accessor});
+      convertedArgs.push_back(accessor);
     }
 
     ArrayAttr templateArgsAttr;
@@ -1799,12 +1958,15 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
     }
     auto newOp = ttk::OpaqueCallOp::create(
         rewriter, location, resultTypes, op.getCalleeAttr(), op.getHeaderAttr(),
-        convertedArgs, templateArgsAttr, op.getUnsignedArgIndicesAttr());
+        convertedArgs, templateArgsAttr, op.getUnsignedArgIndicesAttr(),
+        getRequiredDFBIndicesAttr(*requiredPhysicalDFBIndices, rewriter));
     rewriter.replaceOp(op, newOp->getResults());
     return success();
   }
 
 private:
+  SmallVector<int32_t> userManagedPhysicalDFBIndices;
+
   /// Resolve DFB metadata before type conversion discards block geometry.
   static FailureOr<Attribute>
   convertTemplateArg(ExternalTemplateArgAttr templateArg,
@@ -2380,6 +2542,12 @@ static LogicalResult lowerTTLOpsToTTKernel(
   if (failed(resetLoweringPlan)) {
     return failure();
   }
+
+  FailureOr<SmallVector<int32_t>> userManagedPhysicalDFBIndices =
+      collectUserManagedPhysicalDFBIndices(mod);
+  if (failed(userManagedPhysicalDFBIndices)) {
+    return failure();
+  }
   pipePlanningOptions.enableComputedAddresses = pipeComputedAddresses;
   pipePlanningOptions.enableCapacitySynchronization = pipeCapacitySync;
   pipePlanningOptions.counterAllocationPolicy =
@@ -2478,16 +2646,17 @@ static LogicalResult lowerTTLOpsToTTKernel(
       typeConverter, &ctx, pipeTransportPlan);
   patterns.add<ResetDFBsLowering, ResetAllDFBsLowering>(typeConverter, &ctx,
                                                         *resetLoweringPlan);
-  patterns
-      .add<BindCBLowering, TensorSliceLowering, TileStoreLowering,
-           StoreLowering, CoreXLowering, CoreYLowering, RawElementReadLowering,
-           ReadIndexLowering, RawElementWriteLowering, RawAddrLowering,
-           DFBReconfigurationLowering, OpaqueCallLowering, GetDfbIdLowering,
-           IsDeviceLowering, CurrentDeviceIndexLowering,
-           IsDeviceInRangeLowering, SelectedPipeSourceDeviceIndexLowering,
-           SelectedPipeDestinationDeviceIndexLowering,
-           SelectedPipeSourceCoordinatesLowering,
-           SelectedPipeDestinationCoordinatesLowering>(typeConverter, &ctx);
+  patterns.add<
+      BindCBLowering, TensorSliceLowering, TileStoreLowering, StoreLowering,
+      CoreXLowering, CoreYLowering, RawElementReadLowering, ReadIndexLowering,
+      RawElementWriteLowering, RawAddrLowering, DFBReconfigurationLowering,
+      GetDfbIdLowering, IsDeviceLowering, CurrentDeviceIndexLowering,
+      IsDeviceInRangeLowering, SelectedPipeSourceDeviceIndexLowering,
+      SelectedPipeDestinationDeviceIndexLowering,
+      SelectedPipeSourceCoordinatesLowering,
+      SelectedPipeDestinationCoordinatesLowering>(typeConverter, &ctx);
+  patterns.add<OpaqueCallLowering>(typeConverter, &ctx,
+                                   *userManagedPhysicalDFBIndices);
   patterns.add<CBPopLowering>(typeConverter, &ctx, pipeCapacityPlan,
                               pipeTransportPlan, transportSlotCounters,
                               pipeResourcePlan);

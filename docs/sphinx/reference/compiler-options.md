@@ -94,7 +94,7 @@ They are independent of the code generation flags above.
 | `TTLANG_DEBUG_LOCATIONS` | `0`/`1` | `0` | Include source locations in printed MLIR (locations are always tracked internally for error messages). |
 | `TTLANG_VERBOSE_ERRORS` | `0`/`1` | `0` | Include raw MLIR diagnostics in error output. |
 | `TTLANG_SIM_ONLY` | `0`/`1` | `0` | Force `import ttl` to skip loading the compiled MLIR extension. Used when running the simulator from a source tree without an installed `tt-lang-sim` wheel (which ships the same signal as a marker module). |
-| `TTL_RELAX_DFB_SPSC` | any value | (unset) | Skip per-launch-node verification that DFB producers, consumers, and waits execute on corresponding dynamically active nodes. The program must enforce those ownership and synchronization contracts. A waited DFB must still have a compiler-visible push or uncontracted external access that may contain one. Finalized DFB preconditions, PipeNet endpoint guards, transfer correspondence, and synchronization schedules remain enabled. |
+| `TTL_RELAX_DFB_SPSC` | any value | (unset) | Skip per-launch-node verification that DFB producers, consumers, and waits execute on corresponding dynamically active nodes. The program must enforce those ownership and synchronization contracts. A waited DFB must still have a compiler-visible push or uncontracted external access that may contain one. Finalized DFB preconditions, PipeNet endpoint guards, transfer correspondence, and synchronization schedules remain enabled. The compiler emits a warning and records `ttl.relaxed_dfb_protocol_domain_verification` on the module. |
 
 Profiling-related environment variables (`TTLANG_AUTO_PROFILE`,
 `TTLANG_PERF_DUMP`, `TTLANG_PERF_SERV`, `TTLANG_SIGNPOST_PROFILE`,
@@ -387,11 +387,11 @@ the original does not leave dangling `SymbolRefAttr`s; unrelated functions in
 the module are still specialized. Each clone replaces coordinate reads with
 `arith.constant`s and is tagged with `ttl.core_coord` for runtime dispatch.
 Downstream `canonicalize` / `cse` fold the now-constant branches.
-`ttkernel-annotate-dfb-use` then records surviving DFB compile-time
-argument indices on each specialized function. Debug prints of a DFB
-remain only on cores that still have a non-print use of that DFB; a
-print whose DFB was folded away is dropped rather than keeping the
-descriptor alive for debugging.
+`ttkernel-annotate-dfb-use` then records surviving DFB compile-time arguments,
+synchronized resets, and external-call dependencies on each specialized
+function. Debug prints of a DFB remain only on cores that still have a
+non-print use of that DFB; a print whose DFB was folded away is dropped rather
+than keeping the descriptor alive for debugging.
 
 This pass is off by default. Enable it through the pipeline option
 `specialize-cores` (Python: `--ttl-specialize-cores`), which runs the

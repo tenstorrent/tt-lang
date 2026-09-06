@@ -901,7 +901,9 @@ def TTLVerifyPipeNetGuards
     program must enforce that correspondence. The later SPSC verifier still
     rejects a waited DFB with neither a compiler-visible push nor uncontracted
     external access that may contain one. PipeNet endpoint guards, transfer
-    correspondence, and synchronization schedules remain mandatory.
+    correspondence, and synchronization schedules remain mandatory. The
+    compiler emits a warning and records
+    `ttl.relaxed_dfb_protocol_domain_verification` on the module.
   }];
 }
 
@@ -1010,7 +1012,9 @@ def TTLVerifyDFBSPSC
     rejects every waited DFB without a compiler-visible push or uncontracted
     external access that may contain one. Finalized DFB identity,
     physical-index, and launch-grid preconditions remain mandatory. Strict
-    verification is the default.
+    verification is the default. When relaxation is enabled, the compiler
+    emits a warning and records
+    `ttl.relaxed_dfb_protocol_domain_verification` on the module.
   }];
 
   let dependentDialects = [];
@@ -1521,11 +1525,17 @@ def TTKernelAnnotateDFBUse
     For each `ttkernel.thread` function, records the
     sorted physical DFB indices reached through surviving
     `ttkernel.get_compile_time_arg_val` operations below
-    `ttl.base_cta_index` in `ttl.used_dfb_indices`. Helpers stay in the
-    call-graph analysis so their uses propagate to kernel entries.
+    `ttl.base_cta_index` and `dfb_resource_indices` metadata on surviving
+    `ttkernel.opaque_call` operations in `ttl.used_dfb_indices`. The metadata
+    preserves resource requirements after lowering replaces DFB operands with
+    static values. Helpers stay in the call-graph analysis so their uses
+    propagate to kernel entries.
     Declarations are not annotated. The compile-time ABI places
     every DFB before tensor-accessor arguments, including DFB ids passed to
     opaque externs as scalar values.
+
+    Resource indices must be within the enclosing function's DFB compile-time
+    argument range.
 
     Calls are resolved through the MLIR call graph. Uses are propagated from
     callees to callers in SCC order, including recursive calls. An unknown or
@@ -1542,6 +1552,32 @@ def TTKernelAnnotateDFBUse
   }];
 
   let dependentDialects = [];
+}
+
+def TTKernelFinalizeTensorRuntimeArgs
+    : Pass<"ttkernel-finalize-tensor-runtime-args", "::mlir::ModuleOp"> {
+  let summary = "Finalize tensor common runtime arguments";
+  let description = [{
+    Compacts each kernel function's tensor-address prefix after dead-code
+    elimination. Surviving `ttkernel.get_common_arg_val` indices are rewritten
+    to the compact prefix, compiler-managed indices following that prefix are
+    shifted by the number of removed tensor addresses, and
+    `ttl.crta_indices` retains the corresponding global tensor indices.
+
+    The pass also records the surviving tensors used to construct
+    `LocalTensorAccessor` values in `ttl.local_tensor_indices`. The runtime uses
+    this metadata to require local tensor shards on every executing core.
+
+    Dynamic common-argument indices represented by
+    `ttkernel.experimental.constant_table_lookup` are rewritten with the same
+    mapping. Functions containing common-argument accesses hidden in verbatim
+    C++ retain the complete tensor prefix because those indices cannot be
+    analyzed structurally.
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect"
+  ];
 }
 
 def TTKernelCombinePackTiles

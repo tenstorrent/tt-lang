@@ -33,6 +33,25 @@ def _ensure_ttnn():
 
 from ttl.dialects import ttcore
 
+TTNN_DTYPE_NAMES_TO_TTCORE_DATATYPES = {
+    "FLOAT32": ttcore.DataType.Float32,
+    "BFLOAT16": ttcore.DataType.BFloat16,
+    "BFLOAT8_B": ttcore.DataType.BFP_BFloat8,
+    "BFLOAT4_B": ttcore.DataType.BFP_BFloat4,
+    "INT32": ttcore.DataType.Int32,
+    "UINT32": ttcore.DataType.UInt32,
+    "UINT16": ttcore.DataType.UInt16,
+    "UINT8": ttcore.DataType.UInt8,
+}
+TTNN_ROW_MAJOR_DTYPE_NAMES = (
+    "FLOAT32",
+    "BFLOAT16",
+    "INT32",
+    "UINT32",
+    "UINT16",
+    "UINT8",
+)
+
 
 def is_ttnn_tensor(tensor) -> bool:
     """Check if tensor is a ttnn.Tensor."""
@@ -88,32 +107,13 @@ def ttnn_dtype_to_ttcore_datatype(ttnn_dtype):
     Raises:
         ValueError: If dtype is not supported
     """
-    try:
-        import ttnn
-    except (ModuleNotFoundError, ImportError):
+    module = _ensure_ttnn()
+    if module is None:
         raise ImportError("ttnn module not available")
-
-    match ttnn_dtype:
-        case ttnn.DataType.FLOAT32:
-            return ttcore.DataType.Float32
-        case ttnn.DataType.BFLOAT16:
-            return ttcore.DataType.BFloat16
-        case ttnn.DataType.BFLOAT8_B:
-            return ttcore.DataType.BFP_BFloat8
-        case ttnn.DataType.BFLOAT4_B:
-            return ttcore.DataType.BFP_BFloat4
-        case ttnn.DataType.INT32:
-            return ttcore.DataType.Int32
-        case ttnn.DataType.UINT32:
-            return ttcore.DataType.UInt32
-        case ttnn.DataType.UINT16:
-            return ttcore.DataType.UInt16
-        case ttnn.DataType.UINT8:
-            return ttcore.DataType.UInt8
-        case _:
-            raise ValueError(
-                f"Unsupported ttnn dtype for ttcore.DataType: {ttnn_dtype}"
-            )
+    for dtype_name, ttcore_dtype in TTNN_DTYPE_NAMES_TO_TTCORE_DATATYPES.items():
+        if ttnn_dtype == getattr(module.DataType, dtype_name):
+            return ttcore_dtype
+    raise ValueError(f"Unsupported ttnn dtype for ttcore.DataType: {ttnn_dtype}")
 
 
 def tensor_dtype_to_ttcore_datatype(dtype):
@@ -126,11 +126,13 @@ def tensor_dtype_to_ttcore_datatype(dtype):
     Returns:
         ttcore.DataType enum value
     """
-    dtype_str = str(dtype)
-    if "DataType." in dtype_str:
+    module = _ensure_ttnn()
+    if module is not None and any(
+        dtype == getattr(module.DataType, dtype_name)
+        for dtype_name in TTNN_DTYPE_NAMES_TO_TTCORE_DATATYPES
+    ):
         return ttnn_dtype_to_ttcore_datatype(dtype)
-    else:
-        return torch_dtype_to_ttcore_datatype(dtype)
+    return torch_dtype_to_ttcore_datatype(dtype)
 
 
 def torch_dtype_to_ttnn_datatype(torch_dtype):

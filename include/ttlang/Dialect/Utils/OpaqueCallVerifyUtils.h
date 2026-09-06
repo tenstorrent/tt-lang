@@ -9,13 +9,32 @@
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/ValueRange.h"
 #include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 
 namespace mlir::tt::utils {
+
+/// Returns whether `nextIndex` follows `previousIndex` in canonical index
+/// order.
+inline bool isNextIndexStrictlyIncreasing(int32_t previousIndex,
+                                          int32_t nextIndex) {
+  return previousIndex < nextIndex;
+}
+
+/// Returns whether the indices are sorted in ascending order without
+/// duplicates.
+inline bool areIndicesStrictlyIncreasing(ArrayRef<int32_t> indices) {
+  return std::adjacent_find(indices.begin(), indices.end(),
+                            [](int32_t previousIndex, int32_t nextIndex) {
+                              return !isNextIndexStrictlyIncreasing(
+                                  previousIndex, nextIndex);
+                            }) == indices.end();
+}
 
 /// Verifies the attributes shared by `ttl.opaque_call` and
 /// `ttkernel.opaque_call`.
@@ -47,7 +66,7 @@ verifyOpaqueCallUnsignedArgIndices(Operation *op,
              << index << " is out of range for " << arguments.size()
              << " arguments";
     }
-    if (index <= previousIndex) {
+    if (!isNextIndexStrictlyIncreasing(previousIndex, index)) {
       return op->emitOpError(
           "unsigned function argument indices must be strictly increasing");
     }

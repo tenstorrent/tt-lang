@@ -8,6 +8,7 @@
 // CHECK-NEXT: %[[ADDRESS:.*]] = ttkernel.get_arg_val(%[[INDEX]]) : (i32) -> ui32
 // CHECK: ttkernel.opaque_call "experimental::reconfigure_dfb_interfaces"(%[[ADDRESS]]) {header = "<cstdint>", unsigned_arg_indices = array<i32: 0>} : (ui32) -> ()
 module attributes {
+  ttl.target_arch = #ttcore.arch<blackhole>,
   ttl.dfb_reconfiguration_plan = {
     boundary_ordinals = array<i64: 0, 1>,
     dfbs = []

@@ -74,6 +74,45 @@ static auto getLogicalKernelSortKey(LogicalKernelAttr participant) {
                          valueOrEmpty(participant.getRole()));
 }
 
+// Tiled layouts encode their data format in TileType. Scalar layouts use the
+// exact element types accepted by TTNN row-major tensors.
+static bool isSupportedLayoutElementType(Type elementType) {
+  if (isa<ttcore::TileType>(elementType)) {
+    return true;
+  }
+  if (isa<Float32Type, BFloat16Type>(elementType)) {
+    return true;
+  }
+  auto integerType = dyn_cast<IntegerType>(elementType);
+  if (!integerType) {
+    return false;
+  }
+  if (integerType.isSigned()) {
+    return integerType.getWidth() == 32;
+  }
+  if (!integerType.isUnsigned()) {
+    return false;
+  }
+  return integerType.getWidth() == 8 || integerType.getWidth() == 16 ||
+         integerType.getWidth() == 32;
+}
+
+// These layouts carry TTNN shard metadata over a core grid.
+static bool isShardedMemoryLayout(TensorMemoryLayout memoryLayout) {
+  return memoryLayout == TensorMemoryLayout::HeightSharded ||
+         memoryLayout == TensorMemoryLayout::WidthSharded ||
+         memoryLayout == TensorMemoryLayout::BlockSharded ||
+         memoryLayout == TensorMemoryLayout::NdSharded;
+}
+
+// LocalTensorAccessor represents one core-local bank base. ND sharding requires
+// the distributed metadata represented by TensorAccessor.
+static bool isComputeLocalMemoryLayout(TensorMemoryLayout memoryLayout) {
+  return memoryLayout == TensorMemoryLayout::HeightSharded ||
+         memoryLayout == TensorMemoryLayout::WidthSharded ||
+         memoryLayout == TensorMemoryLayout::BlockSharded;
+}
+
 static bool hasRequiredDFBSynchronizationParticipants(
     ArrayRef<LogicalKernelAttr> participants) {
   unsigned computeParticipants =
@@ -192,7 +231,7 @@ SynchronizedDFBResetAttr SynchronizedDFBResetAttr::getCheckedInstance(
 
 llvm::LogicalResult DFBReconfigurationAttr::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError, int64_t ordinal,
-    ArrayRef<LogicalKernelAttr> participants) {
+    ArrayRef<LogicalKernelAttr> participants, bool) {
   if (ordinal < 0) {
     return emitError() << "DFB reconfiguration ordinal must be nonnegative";
   }
@@ -217,10 +256,10 @@ llvm::LogicalResult DFBReconfigurationAttr::verify(
 
 DFBReconfigurationAttr DFBReconfigurationAttr::getCheckedInstance(
     Location location, MLIRContext *context, int64_t ordinal,
-    ArrayRef<LogicalKernelAttr> participants) {
+    ArrayRef<LogicalKernelAttr> participants, bool discardDfbState) {
   return DFBReconfigurationAttr::getChecked(
       [location]() { return emitError(location); }, context, ordinal,
-      participants);
+      participants, discardDfbState);
 }
 
 void TTLDialect::registerAttributes() {
@@ -567,6 +606,11 @@ LayoutAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                    ArrayRef<int64_t> shape, Type elementType,
                    BufferType bufferType, ArrayRef<int64_t> grid,
                    TensorMemoryLayout memoryLayout) {
+  if (!isSupportedLayoutElementType(elementType)) {
+    return emitError() << "layout element type must be a ttcore tile or one of "
+                          "f32, bf16, si32, ui32, ui16, or ui8, got "
+                       << elementType;
+  }
   if (shape.empty()) {
     return emitError() << "layout shape must not be empty";
   }
@@ -759,6 +803,54 @@ mlir::LogicalResult mlir::tt::ttl::TensorSliceOp::verify() {
   return mlir::success();
 }
 
+// A DFB operand denotes one complete block; an acquired view may denote less.
+static mlir::LogicalResult
+verifyByteCountFitsDFBEndpoint(mlir::Operation *operation, mlir::Value endpoint,
+                               uint64_t byteCount,
+                               llvm::StringRef endpointName) {
+  const bool isDFBBlock =
+      mlir::isa<mlir::tt::ttl::CircularBufferType>(endpoint.getType());
+  const llvm::StringRef capacityKind =
+      isDFBBlock ? "dataflow-buffer block" : "acquired dataflow-buffer view";
+  mlir::FailureOr<uint64_t> capacityBytes =
+      mlir::tt::ttl::getDFBTransferCapacityBytes(endpoint);
+  if (mlir::failed(capacityBytes)) {
+    return operation->emitOpError() << "cannot determine " << endpointName
+                                    << " " << capacityKind << " size";
+  }
+  if (byteCount > *capacityBytes) {
+    return operation->emitOpError()
+           << "byte_count " << byteCount << " exceeds " << endpointName << " "
+           << capacityKind << " capacity " << *capacityBytes;
+  }
+  return mlir::success();
+}
+
+// Raw byte copies may change tile geometry but cannot reinterpret data formats.
+static mlir::LogicalResult verifyByteCopyDataFormats(mlir::Operation *operation,
+                                                     mlir::Value srcDFB,
+                                                     mlir::Value dstDFB) {
+  auto srcType =
+      mlir::cast<mlir::tt::ttl::CircularBufferType>(srcDFB.getType());
+  auto dstType =
+      mlir::cast<mlir::tt::ttl::CircularBufferType>(dstDFB.getType());
+  auto srcTile =
+      mlir::dyn_cast<mlir::tt::ttcore::TileType>(srcType.getElementType());
+  auto dstTile =
+      mlir::dyn_cast<mlir::tt::ttcore::TileType>(dstType.getElementType());
+  if (!srcTile || !dstTile) {
+    return operation->emitOpError(
+        "byte-counted dataflow-buffer copies require tiled element types");
+  }
+  if (srcTile.getDataType() != dstTile.getDataType()) {
+    return operation->emitOpError()
+           << "byte-counted copy data formats must match; got source "
+           << srcType.getElementType() << " and destination "
+           << dstType.getElementType();
+  }
+  return mlir::success();
+}
+
 mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   auto srcTy = getSrc().getType();
   auto dstTy = getDst().getType();
@@ -771,6 +863,55 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
       mlir::isa<PipeType, SelectedPipeSrcType, SelectedPipeDstType>(srcTy);
   const bool dstIsPipe =
       mlir::isa<PipeType, SelectedPipeSrcType, SelectedPipeDstType>(dstTy);
+  Value srcAttachedDFB = getAttachedCB(getSrc());
+  Value dstAttachedDFB = getAttachedCB(getDst());
+  IntegerAttr byteCountAttr = getByteCountAttr();
+  uint64_t byteCount =
+      byteCountAttr ? static_cast<uint64_t>(byteCountAttr.getInt()) : 0;
+
+  if (srcAttachedDFB && dstAttachedDFB) {
+    if (!byteCountAttr) {
+      return emitOpError(
+          "dataflow-buffer block copies require an explicit byte_count");
+    }
+    auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
+    if (!handleType || handleType.getKind() != TransferKind::read) {
+      return emitOpError() << "dataflow-buffer block copy requires "
+                              "!ttl.transfer_handle<read> result";
+    }
+    auto srcAttach = getSrc().getDefiningOp<AttachCBOp>();
+    auto dstAttach = getDst().getDefiningOp<AttachCBOp>();
+    mlir::Operation *srcAcquire =
+        srcAttach ? traceUnrealizedCasts(srcAttach.getTensor()).getDefiningOp()
+                  : nullptr;
+    mlir::Operation *dstAcquire =
+        dstAttach ? traceUnrealizedCasts(dstAttach.getTensor()).getDefiningOp()
+                  : nullptr;
+    if (!mlir::isa_and_nonnull<CBWaitOp>(srcAcquire)) {
+      return emitOpError(
+          "dataflow-buffer copy source must be the exact view returned by "
+          "ttl.cb_wait");
+    }
+    if (!mlir::isa_and_nonnull<CBReserveOp>(dstAcquire)) {
+      return emitOpError(
+          "dataflow-buffer copy destination must be the exact view returned "
+          "by ttl.cb_reserve");
+    }
+    if (srcAttachedDFB == dstAttachedDFB) {
+      return emitOpError(
+          "byte-counted copy requires distinct source and destination "
+          "dataflow buffers");
+    }
+    if (failed(verifyByteCopyDataFormats(getOperation(), srcAttachedDFB,
+                                         dstAttachedDFB)) ||
+        failed(verifyByteCountFitsDFBEndpoint(getOperation(), getSrc(),
+                                              byteCount, "source")) ||
+        failed(verifyByteCountFitsDFBEndpoint(getOperation(), getDst(),
+                                              byteCount, "destination"))) {
+      return failure();
+    }
+    return success();
+  }
 
   if (srcIsPipe || dstIsPipe) {
     if (srcIsPipe && dstIsPipe) {
@@ -794,7 +935,9 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
         return emitOpError()
                << "pipe send requires !ttl.transfer_handle<write> result";
       }
-      return success();
+      return byteCountAttr ? verifyByteCountFitsDFBEndpoint(
+                                 getOperation(), getSrc(), byteCount, "source")
+                           : success();
     }
     if (!findCBReserveForPipeReceive(getDst())) {
       return emitOpError() << "pipe receive requires a cb_reserve destination";
@@ -803,7 +946,16 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
       return emitOpError()
              << "pipe receive requires !ttl.receive_request result";
     }
-    return success();
+    return byteCountAttr
+               ? verifyByteCountFitsDFBEndpoint(getOperation(), getDst(),
+                                                byteCount, "destination")
+               : success();
+  }
+
+  if (byteCountAttr) {
+    return emitOpError(
+        "byte_count is supported only for dataflow-buffer block copies and "
+        "pipe copies");
   }
 
   auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
@@ -3037,8 +3189,9 @@ mlir::LogicalResult mlir::tt::ttl::RawAddrOp::verify() {
 // PipeNetPredicateOpInterface implementations.
 //===----------------------------------------------------------------------===//
 
-template <typename PredicateOp>
-static mlir::LogicalResult verifyPipeNetPredicate(PredicateOp op) {
+// The ID and expanded records redundantly identify one PipeNet and must agree.
+template <typename PipeNetReferenceOp>
+static mlir::LogicalResult verifyPipeNetRecordIdentity(PipeNetReferenceOp op) {
   mlir::tt::ttl::PipeNetRecordsAttr records = op.getRecordsAttr();
   int64_t pipeNetId = op.getPipeNetIdAttr().getInt();
   if (records && records.getPipeNetId() != pipeNetId) {
@@ -3046,6 +3199,15 @@ static mlir::LogicalResult verifyPipeNetPredicate(PredicateOp op) {
            << "record table identifies PipeNet " << records.getPipeNetId()
            << ", but pipe_net_id is " << pipeNetId;
   }
+  return mlir::success();
+}
+
+template <typename PredicateOp>
+static mlir::LogicalResult verifyPipeNetPredicate(PredicateOp op) {
+  if (mlir::failed(verifyPipeNetRecordIdentity(op))) {
+    return mlir::failure();
+  }
+  mlir::tt::ttl::PipeNetRecordsAttr records = op.getRecordsAttr();
   if (records && !records.getPipes().front().getDeviceTransfer()) {
     return op.emitOpError()
            << "record table must identify logical-device transfers";
@@ -3059,6 +3221,10 @@ mlir::LogicalResult mlir::tt::ttl::IsSrcOp::verify() {
 
 mlir::LogicalResult mlir::tt::ttl::IsDstOp::verify() {
   return verifyPipeNetPredicate(*this);
+}
+
+mlir::LogicalResult mlir::tt::ttl::PipeNetDestinationCountOp::verify() {
+  return verifyPipeNetRecordIdentity(*this);
 }
 
 mlir::LogicalResult mlir::tt::ttl::IsActiveOp::verify() {
@@ -3163,14 +3329,9 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
           getOperation(), getUnsignedArgIndices(), getArgOperands()))) {
     return failure();
   }
-  if (!isNocKernelThread(getOperation()) &&
-      llvm::any_of(getArgOperands(), [](Value operand) {
-        return isa<RankedTensorType>(operand.getType());
-      })) {
-    return emitOpError(
-        "tensor function arguments require a data movement (noc) thread");
-  }
-  for (Value operand : getArgOperands()) {
+  std::optional<ttkernel::ThreadType> kernelThread =
+      getKernelThreadType(getEnclosingKernelThread(getOperation()));
+  for (auto [operandIndex, operand] : llvm::enumerate(getArgOperands())) {
     auto tensorType = mlir::dyn_cast<RankedTensorType>(operand.getType());
     if (!tensorType) {
       continue;
@@ -3181,13 +3342,43 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
                          "slices/views are not supported");
     }
     auto layout = mlir::cast<tt::ttl::LayoutAttr>(tensorType.getEncoding());
-    auto tileType =
-        mlir::dyn_cast<tt::ttcore::TileType>(layout.getElementType());
-    if (!tileType ||
-        (tileType.getDataType() != tt::ttcore::DataType::BFloat16 &&
-         tileType.getDataType() != tt::ttcore::DataType::Float32)) {
-      return emitOpError(
-          "TensorAccessor operands support only bf16 and f32 tile types");
+    if (!kernelThread || (*kernelThread != ttkernel::ThreadType::Noc &&
+                          *kernelThread != ttkernel::ThreadType::Compute)) {
+      return emitOpError("tensor operands require a compute or data movement "
+                         "kernel");
+    }
+    BufferType bufferType = layout.getBufferType();
+    TensorMemoryLayout memoryLayout = layout.getMemoryLayout();
+    if (*kernelThread == ttkernel::ThreadType::Noc) {
+      if (bufferType == BufferType::SystemMemory) {
+        return emitOpError("tensor operand ")
+               << operandIndex
+               << " in a data movement kernel uses SystemMemory storage; "
+                  "data movement tensor accessors require device DRAM or "
+                  "SRAM";
+      }
+      if (bufferType == BufferType::L1Small &&
+          !isShardedMemoryLayout(memoryLayout)) {
+        return emitOpError("tensor operand ")
+               << operandIndex
+               << " in a data movement kernel uses non-sharded SRAM with "
+                  "L1Small buffer type; L1Small requires sharded storage";
+      }
+      continue;
+    }
+    if (bufferType != BufferType::L1 && bufferType != BufferType::L1Small) {
+      return emitOpError("tensor operand ")
+             << operandIndex << " in a compute kernel uses "
+             << (bufferType == BufferType::DRAM ? "DRAM" : "SystemMemory")
+             << " storage; compute tensor accessors require sharded SRAM "
+                "(L1 or L1Small buffer type)";
+    }
+    if (!isComputeLocalMemoryLayout(memoryLayout)) {
+      return emitOpError("tensor operand ")
+             << operandIndex
+             << " in a compute kernel uses an unsupported memory layout; "
+                "compute tensor accessors require height-, width-, or "
+                "block-sharded SRAM";
     }
   }
   std::optional<ArrayAttr> templateArgs = getTemplateArgs();

@@ -153,6 +153,21 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     remain equal to the block shape. The span must not exceed the dataflow
     buffer's block count.
 
+    An explicit positive `byte_count` copies exactly that many consecutive
+    bytes starting at byte offset zero between two acquired dataflow-buffer
+    blocks with different tile geometry. The source must be the exact block
+    returned by `ttl.cb_wait`, and the destination must be the exact block
+    returned by `ttl.cb_reserve`. Both dataflow buffers must use the same
+    element data format, and the count must fit both acquired blocks. Later
+    destination bytes remain unchanged.
+
+    Pipe copies may also specify `byte_count` to transfer exactly that many
+    consecutive bytes starting at byte offset zero of one source block.
+    Byte-counted pipe transfers require a one-block transfer span. The sender
+    and every receiver must specify the same count, and the count must fit both
+    endpoint blocks and the unsigned 32-bit NoC transfer size. Omitting
+    `byte_count` transfers the entire block.
+
     TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
     TTKernel NOC ops are available. Issue: #87.
 
@@ -175,7 +190,9 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
   }];
   let arguments = (ins
     AnyType:$src,
-    AnyType:$dst
+    AnyType:$dst,
+    ConfinedAttr<OptionalAttr<I64Attr>,
+                 [IntPositive, IntMaxValue<4294967295>]>:$byte_count
   );
   // The verifier selects the result type from the transfer direction.
   let results = (outs AnyType:$xf);
@@ -961,11 +978,16 @@ def TTL_PipeTransferPostOp : TTL_Op<"pipe_transfer.post",
     Registers the receiver-owned destination DFB slot for a pipe transfer and
     returns the token that represents receiver-side completion. The selected
     address and synchronization protocols determine whether lowering publishes
-    the address or signals sender readiness.
+    the address or signals sender readiness. When `byte_count` is present, the
+    matching sender writes exactly that many consecutive bytes starting at byte
+    offset zero of the reserved destination block. Later bytes remain
+    unchanged.
   }];
   let arguments = (ins
     TTL_PipeTransfer:$transfer,
-    AnyType:$dst
+    AnyType:$dst,
+    ConfinedAttr<OptionalAttr<I64Attr>,
+                 [IntPositive, IntMaxValue<4294967295>]>:$byte_count
   );
   let results = (outs TTL_PipeToken:$token);
   let assemblyFormat = "$transfer `,` $dst attr-dict `:` functional-type(operands, results)";
@@ -978,11 +1000,15 @@ def TTL_PipeTransferSendOp : TTL_Op<"pipe_transfer.send",
     Waits until the selected synchronization condition is satisfied, then
     writes the source DFB payload to the receiver-owned destination storage and
     signals receiver completion. The returned write handle preserves the
-    existing `ttl.wait` ordering contract for send-side code.
+    existing `ttl.wait` ordering contract for send-side code. When `byte_count`
+    is present, the send reads exactly that many consecutive bytes starting at
+    byte offset zero of each source block.
   }];
   let arguments = (ins
     TTL_PipeTransfer:$transfer,
-    TTL_CircularBuffer:$src
+    TTL_CircularBuffer:$src,
+    ConfinedAttr<OptionalAttr<I64Attr>,
+                 [IntPositive, IntMaxValue<4294967295>]>:$byte_count
   );
   let results = (outs TTL_TransferHandle:$xf);
   let assemblyFormat = "$transfer `,` $src attr-dict `:` functional-type(operands, results)";
@@ -1071,6 +1097,23 @@ def TTL_IsDstOp : TTL_Op<"is_dst",
                         OptionalAttr<TTL_PipeNetRecordsAttr>:$records);
   let results = (outs I1:$result);
   let assemblyFormat = "attr-dict";
+  let hasVerifier = 1;
+}
+
+def TTL_PipeNetDestinationCountOp
+    : TTL_Op<"pipenet_destination_count", [Pure]> {
+  let summary = "Count PipeNet records targeting the current node";
+  let description = [{
+    Returns the number of records in the named PipeNet whose destination range
+    contains the current node. The count equals the number of times a
+    `ttl.pipenet_foreach_dst` region for the same PipeNet executes on that node.
+    For graph PipeNets, destination matching includes the current logical
+    device.
+  }];
+  let arguments = (ins I64Attr:$pipe_net_id,
+                        TTL_PipeNetRecordsAttr:$records);
+  let results = (outs Index:$result);
+  let assemblyFormat = "attr-dict `:` type($result)";
   let hasVerifier = 1;
 }
 
@@ -2181,7 +2224,8 @@ def TTL_RawAddrOp : TTL_Op<"raw_addr", [Pure]> {
     Every kernel that references the tensor receives its buffer base as a common
     runtime argument. Unlike a tensor operand to `ttl.opaque_call`, this op does
     not materialize a `TensorAccessor` or require its compile-time arguments.
-    Slice/view operands are unsupported.
+    The result carries no tensor layout, distribution, page size, alignment,
+    extent, or identity metadata. Slice/view operands are unsupported.
   }];
   let arguments = (ins TTLLayoutTensor:$tensor);
   let results = (outs I32:$result);
@@ -2242,20 +2286,23 @@ def TTL_DFBReconfigurationOp : TTL_Op<"dfb_reconfiguration",
     [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Enter the next worker-local DFB configuration epoch";
   let description = [{
-    `ttl.dfb_reconfiguration` is a worker-local synchronization boundary shared
-    by the logical kernels named by `boundary`. Every participant executes the
-    same zero-or-one dynamic boundary instance per dispatch and launch node and
-    executes boundary sites in the same order. Every boundary in one module
-    declares the same participant set. DFB-interface work ordered before the
-    boundary completes before the runtime installs the next epoch's
-    configuration. DFB-interface work ordered after the boundary begins after
-    installation. Independent math and SFPU work may overlap the boundary.
+    `ttl.dfb_reconfiguration` synchronizes the logical kernels named by
+    `boundary` before installing the next DFB configuration. On each launch
+    node, all participants execute the operation under equivalent control flow:
+    either the same static count and loop trip-count sequence or the same
+    conditional execution. Multiple reconfiguration operations execute in the
+    same order and declare the same participant set. DFB-interface work before
+    each execution completes before installation, and DFB-interface work after
+    it begins after installation. Independent math and SFPU work may overlap
+    the operation.
 
     The source operation does not name physical DFB indices or enumerate the
     interfaces that change. Allocation analysis derives the configuration for
     each epoch from logical DFB lifetimes. Live protocol state retains its
-    physical index, storage, and interface configuration across the boundary;
-    reassignment requires a complete protocol and synchronization proof.
+    physical index, storage, and interface configuration across the operation;
+    reassignment requires a complete protocol and synchronization proof unless
+    the operation declares that unread producer payload and opaque external
+    protocol state may be discarded.
 
     Runtime execution is currently supported only on Blackhole. Compilation
     rejects a resolved non-Blackhole target. Shared-L1 synchronization state
@@ -2299,6 +2346,18 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     occurrence, each descriptor template-argument occurrence, then each
     dependency-only operand. Operand adaptation may map distinct occurrences to
     the same DFB without merging them.
+
+    A base tensor argument is converted according to the enclosing logical
+    kernel and its `ttl.layout`. Data-movement kernels receive a
+    `TensorAccessor` for device DRAM or SRAM, including ND-sharded storage.
+    `L1` and `L1Small` identify the corresponding TTNN SRAM buffer types;
+    `L1Small` requires sharded storage.
+    Compute kernels receive a byte-addressable `LocalTensorAccessor<uint8_t>`
+    only for height-, width-, or block-sharded SRAM. Tensor slices and views are
+    invalid. Repeated occurrences of one tensor share one accessor object while
+    remaining distinct positional C++ arguments. The callee
+    accepts the accessor by `const&` and must not retain its address or
+    reference after the enclosing kernel function returns.
 
     The ordered `dfb_effects` list describes reserve, push, wait, and pop
     actions completed synchronously before the external call returns. Each
@@ -2357,7 +2416,6 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     access a DFB, declare DFB effects or non-transactional accesses, or declare
     unknown DFB access because condition evaluation is stable and repeat-safe
     rather than stateful.
-
     `fabric_manager_effects` declares ownership effects for external fabric
     connection managers. The enclosing operation binds each claim to one
     logical kernel. Nonlocal verification requires balanced ownership and

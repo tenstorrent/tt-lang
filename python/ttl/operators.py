@@ -63,9 +63,19 @@ def call_extern_func(
         callee: External C++ function name.
         template_args: Static values and explicit DFB wrappers emitted as C++
             template arguments.
-        func_args: Values emitted as C++ function arguments. Repeated opaque
-            DFBs are valid. Summarized occurrences must use distinct parameters
-            of a composed operation.
+        func_args: Scalars, DFBs, base tensors, or explicit raw tensor
+            addresses emitted as C++ function arguments. A base tensor becomes
+            a data-movement `TensorAccessor` for device DRAM or SRAM, or a
+            compute-local `LocalTensorAccessor<uint8_t>` for sharded SRAM.
+            `L1` and `L1Small` retain the corresponding TTNN buffer-type names;
+            `L1Small` requires sharded storage. TILE supports FLOAT32, BFLOAT16,
+            BFLOAT8_B, BFLOAT4_B,
+            INT32, UINT32, UINT16, and UINT8. ROW_MAJOR supports FLOAT32,
+            BFLOAT16, INT32, UINT32, UINT16, and UINT8. External functions must
+            accept the accessor by `const&` and must not retain it after the
+            enclosing kernel returns. Repeated opaque DFBs are valid.
+            Summarized occurrences must use distinct parameters of a composed
+            operation.
         dfb_dependencies: DFBs accessed by external C++ without adding C++
             arguments. Entries must identify distinct source occurrences and
             must not repeat an automatic dependency source in ``func_args`` or
@@ -776,14 +786,27 @@ def _get_pipe_mlir_value(pipe):
     return pipe._mlir_value
 
 
+def _copy_byte_count_attr(byte_count, ctx):
+    """Materialize the static transfer size required by byte-counted lowering."""
+
+    if byte_count is None:
+        return None
+    byte_count_value = _get_constant_int(byte_count)
+    if byte_count_value <= 0:
+        raise ValueError(f"copy() byte_count must be positive, got {byte_count_value}")
+    return IntegerAttr.get(IntegerType.get_signless(64, ctx), byte_count_value)
+
+
 @syntax("copy")
-def copy(src, dst) -> Union[CopyTransferHandler, ReceiveRequest]:
+def copy(src, dst, *, byte_count=None) -> Union[CopyTransferHandler, ReceiveRequest]:
     """
     Initiate an asynchronous data transfer using ttl.copy.
 
     Args:
         src: Source tensor/slice (for reads), block (for writes), or Pipe (for pipe receive)
         dst: Destination block (for reads), tensor/slice (for writes), or Pipe (for pipe send)
+        byte_count: Positive static byte count for DFB block-to-block and pipe
+            transfers. Tensor-slice transfers always copy complete tiles.
 
     Returns:
         ReceiveRequest for a PipeNet receive; CopyTransferHandler otherwise.
@@ -814,7 +837,12 @@ def copy(src, dst) -> Union[CopyTransferHandler, ReceiveRequest]:
             pipe_val = _get_pipe_mlir_value(dst)
             ctx = src_cb.type.context
             xf_type = Type.parse("!ttl.transfer_handle<write>", ctx)
-            return ttl.copy(xf_type, src_cb, pipe_val)
+            return ttl.copy(
+                xf_type,
+                src_cb,
+                pipe_val,
+                byte_count=_copy_byte_count_attr(byte_count, ctx),
+            )
         else:
             # Pipe -> DFB receive. The sender writes into the receiver-owned block.
             if not _is_block(dst):
@@ -824,7 +852,34 @@ def copy(src, dst) -> Union[CopyTransferHandler, ReceiveRequest]:
             pipe_val = _get_pipe_mlir_value(src)
             ctx = dst.type.context
             xf_type = ttl.ReceiveRequestType.get(ctx)
-            return ttl.copy(xf_type, pipe_val, dst)
+            return ttl.copy(
+                xf_type,
+                pipe_val,
+                dst,
+                byte_count=_copy_byte_count_attr(byte_count, ctx),
+            )
+
+    src_is_block = _is_block(src)
+    dst_is_block = _is_block(dst)
+    if src_is_block and dst_is_block:
+        if byte_count is None:
+            raise ValueError(
+                "copy() between dataflow-buffer blocks requires byte_count"
+            )
+        ctx = src.type.context
+        xf_type = Type.parse("!ttl.transfer_handle<read>", ctx)
+        return ttl.copy(
+            xf_type,
+            src,
+            dst,
+            byte_count=_copy_byte_count_attr(byte_count, ctx),
+        )
+
+    if byte_count is not None:
+        raise ValueError(
+            "copy() byte_count is supported only for dataflow-buffer "
+            "block-to-block and pipe transfers"
+        )
 
     # Non-pipe transfers: tensor subscript <-> block
     src_is_subscript = isinstance(src, tuple)

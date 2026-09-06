@@ -103,6 +103,109 @@ def _make_reconfiguration_operation(data_format, grid_cols):
     return reconfiguration_operation
 
 
+# Builds alternating DFB lifecycles while one payload remains live across the
+# first boundary.
+def _make_repeated_reconfiguration_operation(data_format, iterations, grid_cols):
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    first_boundary = ttl.DFBReconfiguration(
+        participants=(compute_kernel, reader_kernel, writer_kernel)
+    )
+    second_boundary = ttl.DFBReconfiguration(
+        participants=(compute_kernel, reader_kernel, writer_kernel)
+    )
+
+    @ttl.operation(grid=(grid_cols, 1))
+    def repeated_reconfiguration_operation(
+        first_input,
+        first_output,
+        preserved_input,
+        preserved_output,
+        second_input,
+        second_output,
+    ):
+        first_source = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        first_result = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        preserved_source = ttl.make_dfb(data_format, shape=(1, 2), block_count=3)
+        preserved_result = ttl.make_dfb(data_format, shape=(1, 2), block_count=3)
+        second_source = ttl.make_dfb(data_format, shape=(1, 2), block_count=3)
+        second_result = ttl.make_dfb(data_format, shape=(1, 2), block_count=3)
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            for _iteration in range(iterations):
+                with first_source.wait() as source:
+                    with first_result.reserve() as result:
+                        result.store(source)
+                ttl.reconfigure_dfbs(first_boundary)
+                with preserved_source.wait() as source:
+                    with preserved_result.reserve() as result:
+                        result.store(source)
+                with second_source.wait() as source:
+                    with second_result.reserve() as result:
+                        result.store(source)
+                ttl.reconfigure_dfbs(second_boundary)
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            node_x, _ = ttl.node(dims=2)
+            for iteration in range(iterations):
+                with first_source.reserve() as destination:
+                    ttl.copy(
+                        first_input[iteration : iteration + 1, node_x : node_x + 1],
+                        destination,
+                    ).wait()
+                with preserved_source.reserve() as destination:
+                    ttl.copy(
+                        preserved_input[
+                            iteration : iteration + 1,
+                            node_x * 2 : node_x * 2 + 2,
+                        ],
+                        destination,
+                    ).wait()
+                ttl.reconfigure_dfbs(first_boundary)
+                with second_source.reserve() as destination:
+                    ttl.copy(
+                        second_input[
+                            iteration : iteration + 1,
+                            node_x * 2 : node_x * 2 + 2,
+                        ],
+                        destination,
+                    ).wait()
+                ttl.reconfigure_dfbs(second_boundary)
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            node_x, _ = ttl.node(dims=2)
+            for iteration in range(iterations):
+                with first_result.wait() as source:
+                    ttl.copy(
+                        source,
+                        first_output[iteration : iteration + 1, node_x : node_x + 1],
+                    ).wait()
+                ttl.reconfigure_dfbs(first_boundary)
+                with preserved_result.wait() as source:
+                    ttl.copy(
+                        source,
+                        preserved_output[
+                            iteration : iteration + 1,
+                            node_x * 2 : node_x * 2 + 2,
+                        ],
+                    ).wait()
+                with second_result.wait() as source:
+                    ttl.copy(
+                        source,
+                        second_output[
+                            iteration : iteration + 1,
+                            node_x * 2 : node_x * 2 + 2,
+                        ],
+                    ).wait()
+                ttl.reconfigure_dfbs(second_boundary)
+
+    return repeated_reconfiguration_operation
+
+
 def _make_live_crossing_operation(data_format):
     compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
     reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
@@ -805,6 +908,8 @@ def test_reconfiguration_composes_varying_caller_runtime_args(device):
     )
 
 
+# Repeated boundaries preserve a live payload, reuse physical indices, and
+# restore the initial descriptors for the next iteration.
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
 @pytest.mark.parametrize("grid_cols", [1, 2], ids=["one-core", "two-core"])
 @pytest.mark.parametrize(
@@ -882,6 +987,60 @@ def test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution
         (cached_first_output, cached_first_host),
         (cached_second_output, cached_second_host),
         (cached_third_output, cached_third_host),
+    ):
+        _assert_output(actual, expected, dtype)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+@pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
+@pytest.mark.parametrize("grid_cols", [1, 2], ids=["one-core", "two-core"])
+def test_repeated_reconfiguration_reuses_ids_preserves_live_payload_and_restores_initial_epoch(
+    device, dtype, to_device, grid_cols, monkeypatch, tmp_path
+):
+    if ttl_api._detect_device_arch(device) != "blackhole":
+        pytest.skip("requires Blackhole DFB reconfiguration support")
+
+    iterations = 3
+    data_format = "bf16" if dtype == torch.bfloat16 else "float32"
+    operation = _make_repeated_reconfiguration_operation(
+        data_format, iterations, grid_cols
+    )
+    mlir_file = tmp_path / "repeated_reconfiguration.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(mlir_file))
+    first_host = (
+        torch.arange(iterations * 32 * 32 * grid_cols, dtype=torch.float32)
+        .reshape(iterations * 32, 32 * grid_cols)
+        .to(dtype)
+    )
+    second_host = (
+        torch.arange(iterations * 32 * 64 * grid_cols, dtype=torch.float32)
+        .reshape(iterations * 32, 64 * grid_cols)
+        .remainder(257)
+        .to(dtype)
+    )
+    preserved_host = (second_host.float() + 17).to(dtype)
+    first_output = to_device(torch.zeros_like(first_host), device)
+    preserved_output = to_device(torch.zeros_like(preserved_host), device)
+    second_output = to_device(torch.zeros_like(second_host), device)
+
+    operation(
+        to_device(first_host, device),
+        first_output,
+        to_device(preserved_host, device),
+        preserved_output,
+        to_device(second_host, device),
+        second_output,
+        options="--ttl-reuse-user-dfbs",
+    )
+
+    final_mlir = mlir_file.read_text()
+    allocation_metadata = final_mlir.partition("ttl.dfb_reconfiguration_plan")[0]
+    assert allocation_metadata.count("dfb_index = ") == 4
+    assert final_mlir.count("experimental::reconfigure_dfb_interfaces") == 6
+    for actual, expected in (
+        (first_output, first_host),
+        (preserved_output, preserved_host),
+        (second_output, second_host),
     ):
         _assert_output(actual, expected, dtype)
 

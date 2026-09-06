@@ -95,6 +95,14 @@ constexpr llvm::StringLiteral kKernelThreadAttrName("ttl.kernel_thread");
 /// Func-level target-independent logical-kernel identity.
 constexpr llvm::StringLiteral kLogicalKernelAttrName("ttl.logical_kernel");
 
+/// Global tensor indices represented by the function's common runtime-argument
+/// prefix.
+constexpr llvm::StringLiteral kCRTAIndicesAttrName("ttl.crta_indices");
+
+/// Global tensor indices requiring core-local L1 storage for this function.
+constexpr llvm::StringLiteral
+    kLocalTensorIndicesAttrName("ttl.local_tensor_indices");
+
 /// Number of tiles per DST sync region.
 constexpr llvm::StringLiteral kUnrollFactorAttrName("ttl.unroll_factor");
 
@@ -156,6 +164,11 @@ constexpr llvm::StringLiteral kDFBAllocationsAttrName("ttl.dfb_allocations");
 /// user-supplied handoff assumption.
 constexpr llvm::StringLiteral
     kAssumedDFBAllocationGroupsAttrName("ttl.assumed_dfb_allocation_groups");
+
+/// Module attribute recording that per-launch-node DFB protocol-domain checks
+/// were skipped.
+constexpr llvm::StringLiteral kRelaxedDFBProtocolDomainVerificationAttrName(
+    "ttl.relaxed_dfb_protocol_domain_verification");
 
 /// Module attribute containing physical DFB configuration-epoch metadata.
 constexpr llvm::StringLiteral

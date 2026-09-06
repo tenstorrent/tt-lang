@@ -28,9 +28,16 @@ from ..diagnostics import TTLangCompileError
 from ttl.dialects import ttl
 from ..dtype_utils import is_ttnn_tensor, tensor_dtype_to_ttcore_datatype
 from ..layouts import (
+    BUFFER_TYPE_DRAM,
+    BUFFER_TYPE_L1,
     LayoutConfig,
+    TENSOR_LAYOUT_ROW_MAJOR,
+    TENSOR_LAYOUT_TILE,
     create_layout,
+    create_layout_element_type,
+    detect_buffer_type,
     detect_memory_layout,
+    detect_tensor_layout,
     TENSOR_MEMORY_LAYOUT_INTERLEAVED,
 )
 from ..fabric import FabricManagerClaim
@@ -198,8 +205,6 @@ def _ceil_div(a, b):
 
 def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
     """Build MLIR tensor type with TTLLayoutAttr encoding."""
-    if not tiled:
-        raise ValueError("Only tiled tensors supported")
     if memory_space not in ("L1", "DRAM"):
         raise ValueError(f"Only L1 or DRAM memory space supported, got {memory_space}")
     if len(grid) != 2:
@@ -218,33 +223,37 @@ def _build_tensor_type(ctx, tensor, grid, tiled, memory_space):
         )
 
     mem_layout = TENSOR_MEMORY_LAYOUT_INTERLEAVED
+    buffer_type = BUFFER_TYPE_L1 if memory_space == "L1" else BUFFER_TYPE_DRAM
+    tensor_layout = TENSOR_LAYOUT_TILE if tiled else TENSOR_LAYOUT_ROW_MAJOR
     if is_ttnn_tensor(tensor):
         mem_layout = detect_memory_layout(tensor)
+        buffer_type = detect_buffer_type(tensor)
+        tensor_layout = detect_tensor_layout(tensor)
 
     tile = (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)
     if is_ttnn_tensor(tensor) and hasattr(tensor, "get_tile"):
         tile = tuple(tensor.get_tile().tile_shape)
 
-    layout = create_layout(
-        ctx,
-        LayoutConfig(
-            logical_shape=shape,
-            grid=grid,
-            dtype=tensor.dtype,
-            memory_layout=mem_layout,
-            tile=tile,
-        ),
+    layout_config = LayoutConfig(
+        logical_shape=shape,
+        grid=grid,
+        dtype=tensor.dtype,
+        memory_layout=mem_layout,
+        tile=tile,
+        buffer_type=buffer_type,
+        tensor_layout=tensor_layout,
     )
+    layout = create_layout(ctx, layout_config)
 
-    ttcore_dtype = tensor_dtype_to_ttcore_datatype(tensor.dtype)
-    element_type = ttcore.ir.TileType.get(ctx, tile[0], tile[1], ttcore_dtype)
-
-    # Device shape: batch dims preserved, last 2 dims converted to tile counts
-    batch_dims = shape[:-2]
-    tensor_rows, tensor_cols = shape[-2], shape[-1]
-    total_row_tiles = _ceil_div(tensor_rows, tile[0])
-    total_col_tiles = _ceil_div(tensor_cols, tile[1])
-    device_shape = batch_dims + [total_row_tiles, total_col_tiles]
+    element_type = create_layout_element_type(ctx, layout_config)
+    if tensor_layout == TENSOR_LAYOUT_TILE:
+        batch_dims = shape[:-2]
+        tensor_rows, tensor_cols = shape[-2], shape[-1]
+        total_row_tiles = _ceil_div(tensor_rows, tile[0])
+        total_col_tiles = _ceil_div(tensor_cols, tile[1])
+        device_shape = batch_dims + [total_row_tiles, total_col_tiles]
+    else:
+        device_shape = shape
 
     return RankedTensorType.get(device_shape, element_type, layout)
 
@@ -768,9 +777,8 @@ class TTLGenericCompiler(TTCompilerBase):
                 if self._is_pipenet_callback_call(node):
                     return self._handle_pipenet_callback(node)
 
-                # Check for PipeNet.is_src/is_dst/is_active predicate calls
-                if self._is_pipenet_predicate_call(node):
-                    return self._handle_pipenet_predicate(node)
+                if self._is_pipenet_query_call(node):
+                    return self._handle_pipenet_query(node)
 
                 if self._is_device_domain_predicate_call(node):
                     return self._handle_device_domain_predicate(node)
@@ -1120,16 +1128,18 @@ class TTLGenericCompiler(TTCompilerBase):
 
         return isinstance(val, PipeNet)
 
-    _PIPENET_PREDICATE_OPS = {
+    _PIPENET_QUERY_OPS = {
         "is_src": ttl.is_src,
         "is_dst": ttl.is_dst,
         "is_active": ttl.is_active,
+        "destination_count": ttl.pipenet_destination_count,
     }
 
-    def _is_pipenet_predicate_call(self, node):
+    def _is_pipenet_query_call(self, node):
+        """Return whether node calls a supported query on a bound PipeNet."""
         if not isinstance(node.func, ast.Attribute):
             return False
-        if node.func.attr not in self._PIPENET_PREDICATE_OPS:
+        if node.func.attr not in self._PIPENET_QUERY_OPS:
             return False
         if not isinstance(node.func.value, ast.Name):
             return False
@@ -1140,7 +1150,8 @@ class TTLGenericCompiler(TTCompilerBase):
 
         return isinstance(tbl[node.func.value.id], PipeNet)
 
-    def _handle_pipenet_predicate(self, node):
+    def _handle_pipenet_query(self, node):
+        """Lower a zero-argument PipeNet query with its static record table."""
         from ..pipe import PipeNet
 
         method = node.func.attr
@@ -1149,14 +1160,14 @@ class TTLGenericCompiler(TTCompilerBase):
         assert isinstance(pipenet, PipeNet)
         if node.args or node.keywords:
             self._raise_error(node, f"PipeNet.{method}() takes no arguments")
-        return self._PIPENET_PREDICATE_OPS[method](
-            pipe_net_id=IntegerAttr.get(
+        arguments = {
+            "pipe_net_id": IntegerAttr.get(
                 IntegerType.get_signless(64, self.ctx), pipenet.pipe_net_id
-            ),
-            records=(
-                self._get_pipe_net_records_attr(pipenet) if pipenet.is_graph else None
-            ),
-        )
+            )
+        }
+        if method == "destination_count" or pipenet.is_graph:
+            arguments["records"] = self._get_pipe_net_records_attr(pipenet)
+        return self._PIPENET_QUERY_OPS[method](**arguments)
 
     def _device_domain_call_receiver(self, node):
         if not isinstance(node.func, ast.Attribute):
@@ -2759,7 +2770,10 @@ class TTLGenericCompiler(TTCompilerBase):
             for participant in sorted(boundary.participants, key=_selector_sort_key)
         ]
         boundary_attr = ttl.ir.DFBReconfigurationAttr.get(
-            self.ctx, boundary.ordinal, participant_attrs
+            self.ctx,
+            boundary.ordinal,
+            participant_attrs,
+            boundary.discard_dfb_state,
         )
         return ttl.dfb_reconfiguration(boundary_attr)
 
