@@ -25,6 +25,7 @@ def _load_ttlang_test_utils(
     flat_nodes: list[str] | None = None,
     has_tt_device: bool = False,
     ttl_importable: bool = True,
+    emule_mode: bool = False,
 ):
     """Import ttlang_test_utils under controlled device/config conditions.
 
@@ -38,9 +39,12 @@ def _load_ttlang_test_utils(
     # Env vars checked before the device-node probe must not leak in from the
     # CI runner. TTLANG_COMPILE_ONLY is set by the module as an import side
     # effect; delenv here so monkeypatch restores its absence on teardown.
+    monkeypatch.delenv("TT_METAL_EMULE_MODE", raising=False)
     monkeypatch.delenv("TT_METAL_SIMULATOR", raising=False)
     monkeypatch.delenv("TTLANG_HAS_DEVICE", raising=False)
     monkeypatch.delenv("TTLANG_COMPILE_ONLY", raising=False)
+    if emule_mode:
+        monkeypatch.setenv("TT_METAL_EMULE_MODE", "1")
 
     if ttl_importable:
         fake_ttl = types.ModuleType("ttl")
@@ -156,6 +160,12 @@ def test_build_config_true_without_nodes_is_available(monkeypatch) -> None:
     # ttl.config fallback below the node check still applies.
     module = _load_ttlang_test_utils(monkeypatch, has_tt_device=True)
     assert module.is_hardware_available() is True
+
+
+def test_emule_mode_is_available_without_device_nodes(monkeypatch) -> None:
+    module = _load_ttlang_test_utils(monkeypatch, has_tt_device=False, emule_mode=True)
+    assert module.is_hardware_available() is True
+    assert "TTLANG_COMPILE_ONLY" not in os.environ
 
 
 def test_no_nodes_and_ttl_unimportable_is_unavailable(monkeypatch) -> None:

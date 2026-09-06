@@ -192,6 +192,24 @@ def test_example_cli(script_name: str, scheduler: str) -> None:
     assert code == 0, f"Script failed with code {code}. Output:\n{out}"
 
 
+@pytest.mark.parametrize("scheduler", ["greedy", "fair"])
+def test_compiler_only_external_call_requires_compiler_backend(
+    scheduler: str,
+) -> None:
+    """The Python simulator rejects the compiler's external-C++ escape hatch."""
+    script = EXAMPLES_DIR / "compiler_only_external_call.py"
+    code, out = run_script_in_process(script, scheduler)
+
+    assert code != 0, (
+        "compiler_only_external_call.py unexpectedly ran on the Python "
+        f"simulator. Output:\n{out}"
+    )
+    assert "no attribute 'call_extern_func'" in out, (
+        "The compiler-only example failed somewhere other than "
+        f"ttl.call_extern_func(). Output:\n{out}"
+    )
+
+
 @pytest.mark.parametrize(
     "example_path",
     [
