@@ -71,8 +71,8 @@ static void warnDroppedPrint(func::FuncOp func, int32_t dfbIndex) {
 
 static int64_t getFuncDFBCount(func::FuncOp func, int64_t maxDFBCount) {
   auto module = func->getParentOfType<ModuleOp>();
-  if (auto model = module->getAttrOfType<StringAttr>("ttl.memory_model");
-      model && model.getValue() == "compiler-l1") {
+  if (auto model = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
+      model && model.getValue() == kCompilerL1MemoryModel) {
     return module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName).size();
   }
   if (auto attr = func->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttrName)) {
@@ -245,6 +245,13 @@ struct TTKernelAnnotateDFBUsePass
     : impl::TTKernelAnnotateDFBUseBase<TTKernelAnnotateDFBUsePass> {
   void runOnOperation() override {
     ModuleOp module = getOperation();
+    if (auto model = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
+        model && model.getValue() == kCompilerL1MemoryModel &&
+        !module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName)) {
+      module.emitOpError("compiler-l1 requires finalized allocation metadata");
+      signalPassFailure();
+      return;
+    }
     llvm::DenseMap<Operation *, DFBSet> usedDFBs;
     llvm::SmallDenseSet<Operation *> conservative;
     int64_t maxDFBCount = 0;

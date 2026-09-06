@@ -1682,7 +1682,8 @@ def build_kernel_descriptors(
         core_ranges: ttnn.CoreRangeSet for kernel execution.
         grid_cols: Number of grid columns (x dimension).
         grid_rows: Number of grid rows (y dimension).
-        num_cbs: Total number of circular buffers (including intermediate CBs).
+        num_cbs: Total number of dataflow buffers. The Metal storage model uses
+            this value as its descriptor count.
         pipe_computed_address_base_addresses: L1 base address by receiver DFB index for
             compiler-selected computed pipe addressing. These addresses are
             passed as common runtime arguments.
@@ -1696,6 +1697,8 @@ def build_kernel_descriptors(
             kernel_specs.
         dfb_reconfiguration_runtime_args: Per-core L1 configuration addresses
             in finalized boundary order.
+        compiler_l1_base_address: Common per-core base address for the
+            compiler-managed L1 arena.
 
     Returns:
         List of ttnn.KernelDescriptor objects.
@@ -1860,7 +1863,6 @@ def _allocate_l1_sharded_storage_tensor(
     device: Any,
     *,
     zero_initialize: bool = False,
-    host_zero_initialize: bool = False,
 ):
     """Allocate row-major L1 storage with one 4-byte element per storage word."""
     aligned_bytes = _align_up(num_bytes, 32)
@@ -1876,16 +1878,6 @@ def _allocate_l1_sharded_storage_tensor(
         ttnn.BufferType.L1,
         shard_spec,
     )
-    if host_zero_initialize:
-        import torch
-
-        return ttnn.from_torch(
-            torch.zeros((num_cores, elements_per_core), dtype=torch.float32),
-            dtype=ttnn.float32,
-            layout=ttnn.ROW_MAJOR_LAYOUT,
-            device=device,
-            memory_config=memory_config,
-        )
     allocator = ttnn.zeros if zero_initialize else ttnn.empty
     return allocator(
         (num_cores, elements_per_core),
@@ -1893,6 +1885,26 @@ def _allocate_l1_sharded_storage_tensor(
         layout=ttnn.ROW_MAJOR_LAYOUT,
         device=device,
         memory_config=memory_config,
+    )
+
+
+def _get_compiler_l1_arena_bytes(
+    cb_configs: Sequence[PhysicalDFBConfig],
+) -> Optional[int]:
+    field_presence = [
+        (
+            config.l1_offset is not None,
+            config.l1_payload_offset is not None,
+            config.l1_allocation_bytes is not None,
+        )
+        for config in cb_configs
+    ]
+    if not any(any(fields) for fields in field_presence):
+        return None
+    if not all(all(fields) for fields in field_presence):
+        raise ValueError("mixed compiler-l1 and Metal storage metadata")
+    return max(
+        config.l1_payload_offset + config.l1_allocation_bytes for config in cb_configs
     )
 
 
@@ -4029,15 +4041,9 @@ def _run_kernel_on_device_impl(
 
     compiler_l1_arena = None
     compiler_l1_base_address = None
-    compiler_l1 = any(config.l1_offset is not None for config in cb_configs)
+    compiler_l1_arena_bytes = _get_compiler_l1_arena_bytes(cb_configs)
+    compiler_l1 = compiler_l1_arena_bytes is not None
     if compiler_l1:
-        if any(
-            config.l1_offset is None
-            or config.l1_payload_offset is None
-            or config.l1_allocation_bytes is None
-            for config in cb_configs
-        ):
-            raise ValueError("mixed compiler-l1 and Metal storage metadata")
         if (
             device_domain is not None
             or mesh_program_placements is not None
@@ -4055,15 +4061,11 @@ def _run_kernel_on_device_impl(
             raise ValueError(
                 "compiler-l1 POC does not support PipeNet or interface reset/reconfiguration"
             )
-        arena_bytes = max(
-            config.l1_payload_offset + config.l1_allocation_bytes
-            for config in cb_configs
-        )
         compiler_l1_arena = _allocate_l1_sharded_storage_tensor(
             core_ranges,
-            arena_bytes,
+            compiler_l1_arena_bytes,
             device if device is not None else _first_device(tensors),
-            host_zero_initialize=True,
+            zero_initialize=True,
         )
         compiler_l1_base_address = int(compiler_l1_arena.buffer_address())
 

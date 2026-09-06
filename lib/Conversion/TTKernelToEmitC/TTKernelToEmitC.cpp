@@ -8,6 +8,7 @@
 #include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 
 #include "mlir/Conversion/ArithToEmitC/ArithToEmitC.h"
 #include "mlir/Conversion/MemRefToEmitC/MemRefToEmitC.h"
@@ -105,8 +106,8 @@ static std::string datatypeToDataformatStr(ttcore::DataType dtype) {
 
 static bool usesCompilerL1(Operation *operation) {
   auto module = operation->getParentOfType<ModuleOp>();
-  auto model = module->getAttrOfType<StringAttr>("ttl.memory_model");
-  return model && model.getValue() == "compiler-l1";
+  auto model = module->getAttrOfType<StringAttr>(ttl::kMemoryModelAttrName);
+  return model && model.getValue() == ttl::kCompilerL1MemoryModel;
 }
 
 static bool isCompilerL1ComputeOperation(Operation *operation) {
@@ -264,7 +265,7 @@ static std::string ensureCBDeclaration(Value cb, Operation *useOp,
         cb.getDefiningOp()->getAttrOfType<IntegerAttr>("ttkernel.cb_ctarg_idx");
     assert(index && "compiler-l1 requires statically bound storage");
     auto entries = useOp->getParentOfType<ModuleOp>()->getAttrOfType<ArrayAttr>(
-        "ttl.dfb_allocations");
+        ttl::kDFBAllocationsAttrName);
     auto entry = cast<DictionaryAttr>(entries[index.getInt()]);
     auto pageBytes = cast<IntegerAttr>(entry.get("page_size")).getInt();
     auto pagesPerBlock = cast<IntegerAttr>(entry.get("num_tiles")).getInt();
@@ -887,7 +888,7 @@ static void emitCompilerL1ComputeCall(Operation *operation,
   SmallVector<Value> operands;
   auto entries =
       operation->getParentOfType<ModuleOp>()->template getAttrOfType<ArrayAttr>(
-          "ttl.dfb_allocations");
+          ttl::kDFBAllocationsAttrName);
   for (auto [source, converted] :
        llvm::zip(operation->getOperands(), convertedOperands)) {
     if (!isa<ttkernel::CBType>(source.getType())) {
@@ -1653,9 +1654,9 @@ public:
               .str();
       if (usesCompilerL1(op) &&
           isa<ttkernel::CBType>(op.getResult().getType())) {
-        auto entries =
-            op->template getParentOfType<ModuleOp>()
-                ->template getAttrOfType<ArrayAttr>("ttl.dfb_allocations");
+        auto entries = op->template getParentOfType<ModuleOp>()
+                           ->template getAttrOfType<ArrayAttr>(
+                               ttl::kDFBAllocationsAttrName);
         auto entry = cast<DictionaryAttr>(entries[op.getArgIndex()]);
         auto offset = cast<IntegerAttr>(entry.get("l1_offset")).getInt();
         expression =
@@ -3242,9 +3243,16 @@ public:
                  ? WalkResult::interrupt()
                  : WalkResult::advance();
     });
-    if (auto model = module->getAttrOfType<StringAttr>("ttl.memory_model");
-        model && model.getValue() == "compiler-l1" &&
+    if (auto model =
+            module->getAttrOfType<StringAttr>(ttl::kMemoryModelAttrName);
+        model && model.getValue() == ttl::kCompilerL1MemoryModel &&
         sourceOperations.wasInterrupted()) {
+      if (!module->getAttrOfType<ArrayAttr>(ttl::kDFBAllocationsAttrName)) {
+        module.emitOpError(
+            "compiler-l1 requires finalized allocation metadata");
+        signalPassFailure();
+        return;
+      }
       WalkResult validation = module.walk([&](Operation *operation) {
         if (operation->getName().getDialectNamespace() == "emitc") {
           operation->emitOpError(
@@ -3311,7 +3319,7 @@ public:
                 ttkernel::CBPushBackOp, ttkernel::CBPopFrontOp>(operation)) {
           auto identity = resolveDfbIndex(operation->getOperand(0));
           auto allocations =
-              module->getAttrOfType<ArrayAttr>("ttl.dfb_allocations");
+              module->getAttrOfType<ArrayAttr>(ttl::kDFBAllocationsAttrName);
           llvm::APInt pageCount;
           if (!identity || !allocations || *identity < 0 ||
               static_cast<size_t>(*identity) >= allocations.size() ||
@@ -3350,6 +3358,8 @@ public:
                 return isa<ttkernel::BinaryOpInitCommonOp,
                            ttkernel::UnaryOpInitCommonOp, ttkernel::InitSFPUOp,
                            ttkernel::MatmulInitOp, ttkernel::MatmulBlockInitOp,
+                           ttkernel::MatmulInitShortOp,
+                           ttkernel::MatmulBlockInitShortOp,
                            ttkernel::TransposeInitOp,
                            ttkernel::UnaryBcastInitOp, ttkernel::ReduceInitOp>(
                            operation)

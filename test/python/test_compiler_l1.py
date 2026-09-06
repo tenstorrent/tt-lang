@@ -214,15 +214,16 @@ def test_l1_sequence_wrap(device, monkeypatch, dtype, initial_sequence):
     original_from_torch = ttnn.from_torch
     arenas = []
 
-    def initialize_near_wrap(value, **kwargs):
+    def initialize_near_wrap(shape, **kwargs):
         # Seven transactions cross the modulo-six boundary from every initial state.
+        value = torch.zeros(shape, dtype=torch.float32)
         words = value.view(torch.int32).flatten()
         words[0:2] = initial_sequence
         arena = original_from_torch(value, **kwargs)
         arenas.append(arena)
         return arena
 
-    monkeypatch.setattr(ttnn, "from_torch", initialize_near_wrap)
+    monkeypatch.setattr(ttnn, "zeros", initialize_near_wrap)
     l1_copy(source, destination, options="--ttl-memory-model=compiler-l1")
     assert len(arenas) == 1
     words = ttnn.to_torch(arenas[0]).view(torch.int32).flatten()
@@ -332,7 +333,6 @@ def test_allocation_stress(device, dtype, schedule, grid, reuse, tmp_path, monke
     arena_bytes = int(re.search(r"ttl.l1_arena_bytes = (\d+)", ir).group(1))
     assert len(offsets) == len(pages)
     assert states == list(range(0, len(pages) * 8, 8))
-    # A 32-byte quantum is common to both supported architectures.
     assert all(offset % 32 == 0 and offset >= len(pages) * 8 for offset in offsets)
     assert sizes == [
         page_count * capacity * 1024 * expected.element_size()

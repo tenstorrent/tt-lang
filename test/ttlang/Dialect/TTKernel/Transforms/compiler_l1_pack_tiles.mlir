@@ -2,7 +2,7 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttkernel-combine-pack-tiles))' --split-input-file | FileCheck %s
 
 module attributes {ttl.memory_model = "compiler-l1"} {
-  // An implicit Metal packing cursor cannot address compiler-owned storage.
+  // The block operation cannot preserve explicit output tile indices.
   // CHECK-LABEL: func.func @compiler_owned
   // CHECK: %[[STORAGE:.*]] = ttkernel.get_compile_time_arg_val
   // CHECK: %[[ZERO:.*]] = arith.constant 0

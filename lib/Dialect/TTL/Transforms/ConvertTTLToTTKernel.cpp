@@ -429,8 +429,8 @@ static FailureOr<int32_t> getValidatedDFBIndex(Value dfb, Operation *op) {
     return op->emitError("cannot resolve finalized DFB index");
   }
   auto module = op->getParentOfType<ModuleOp>();
-  auto memoryModel = module->getAttrOfType<StringAttr>("ttl.memory_model");
-  if (memoryModel && memoryModel.getValue() == "compiler-l1") {
+  auto memoryModel = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
+  if (memoryModel && memoryModel.getValue() == kCompilerL1MemoryModel) {
     auto allocations =
         module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName);
     if (!allocations || *dfbIndex < 0 ||
@@ -2584,9 +2584,9 @@ static LogicalResult lowerTTLOpsToTTKernel(
     mod.emitOpError("failed to compute finalized DFB allocation sizes");
     return failure();
   }
-  if (auto model = mod->getAttrOfType<StringAttr>("ttl.memory_model");
-      model && model.getValue() == "compiler-l1") {
-    auto arenaBytes = mod->getAttrOfType<IntegerAttr>("ttl.l1_arena_bytes");
+  if (auto model = mod->getAttrOfType<StringAttr>(kMemoryModelAttrName);
+      model && model.getValue() == kCompilerL1MemoryModel) {
+    auto arenaBytes = mod->getAttrOfType<IntegerAttr>(kL1ArenaBytesAttrName);
     if (!arenaBytes || arenaBytes.getInt() < 0) {
       mod.emitOpError("missing validated compiler-l1 arena size");
       return failure();

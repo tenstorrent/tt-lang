@@ -7,6 +7,7 @@ file(MAKE_DIRECTORY "${LLK_GEN_DIR}")
 set(LLK_HEADERS
   compiler_l1
   compiler_l1_target
+  compiler_l1_compute_target
   compiler_l1_compute
   experimental_tilize_llks
   experimental_untilize_llks

@@ -173,7 +173,7 @@ The pipeline runs these passes and subpasses in order:
 - `ttl-verify-pipenet-guards`, then `ttl-verify-pipenet-schedule` -- verify PipeNet launch domains and event ordering while logical DFB identities remain distinct and before physical DFB allocation
 - `ttl-form-pipe-transports` -- group eligible repeated PipeNet transfers and select bounded receiver storage while accounting for synchronized-reset and reconfiguration state
 - `ttl-coalesce-dfb-acquires` -- coalesce compatible DFB acquires
-- `ttl-finalize-dfb-indices` -- `memory-model=compiler-l1` assigns explicit L1 payload and control offsets using completion-proven storage interference; the default assigns logical DFBs to physical indices, validate combined DFB and fixed-state capacity, and emit runtime metadata; `reuse-user-dfbs` controls automatic user-DFB reuse, `unsafe-assume-allocation-groups` trusts only explicit unproved group handoffs, `exact-coloring-search-limit` bounds exhaustive index and weighted-allocation queries, and `l1-budget-override` replaces the target L1 budget
+- `ttl-finalize-dfb-indices` -- `memory-model=compiler-l1` assigns explicit L1 payload and control offsets using completion-proven storage interference; the default assigns logical DFBs to physical indices, validates combined DFB and fixed-state capacity, and emits runtime metadata; `reuse-user-dfbs` controls automatic user-DFB reuse, `unsafe-assume-allocation-groups` trusts only explicit unproved group handoffs, `exact-coloring-search-limit` bounds exhaustive index and weighted-allocation queries, and `l1-budget-override` replaces the target L1 budget
 - `ttl-set-compute-kernel-config` -- select tile execution strategies and resolve kernel-wide DST and per-DFB unpack configuration
 - `ttl-assign-dst` -- DST register allocation (linear scan with copy insertion)
 - `ttl-subblock-compute-for-dst` -- tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*; optionally refine reserve/push to per-subblock granularity *(only if `subblock-sync=true`)*
@@ -257,7 +257,6 @@ prevents reuse.
 includes control and alignment bytes. Greedy placement failure does not establish
 infeasibility. The [backend contract](../../development/L1Allocation.md#contract-and-limits)
 defines supported execution and storage forms.
-
 
 Assign physical indices to logical DFBs and emit the complete runtime
 allocation table.

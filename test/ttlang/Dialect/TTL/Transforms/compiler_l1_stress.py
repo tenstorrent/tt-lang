@@ -3,6 +3,7 @@
 
 # Exhaustive three- and four-region mixed-size schedules check byte-placement
 # safety against execution events, independently of the compiler conflict graph.
+# A nine-region case checks control-prefix alignment across target quanta.
 # RUN: %python %s
 
 import itertools
@@ -60,6 +61,46 @@ def run_compiler(modules, reuse):
     return result.stdout
 
 
+def make_control_prefix_module(architecture, count):
+    lines = [
+        f"module attributes {{ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<{architecture}>}} {{",
+        "func.func @control_prefix() attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>, ttl.noc_index = 0 : i32} {",
+    ]
+    signature = "<[1, 1], !ttcore.tile<32x32, bf16>, 1>"
+    for region in range(count):
+        lines += [
+            f"%storage_{region} = ttl.bind_cb {{cb_index = {region}, block_count = 1}} {{dfb_id = {region} : index}} : !ttl.cb{signature}",
+            f"%produced_{region} = ttl.cb_reserve %storage_{region} : {signature} -> tensor<1x1x!ttcore.tile<32x32, bf16>>",
+            f"ttl.cb_push %storage_{region} : {signature}",
+            f"%consumed_{region} = ttl.cb_wait %storage_{region} : {signature} -> tensor<1x1x!ttcore.tile<32x32, bf16>>",
+            f"ttl.cb_pop %storage_{region} : {signature}",
+        ]
+    return "\n".join(lines + ["return", "}", "}"])
+
+
+def validate_control_prefix_alignment():
+    count = 9
+    architectures = ("wormhole_b0", "blackhole")
+    modules = [
+        make_control_prefix_module(architecture, count)
+        for architecture in architectures
+    ]
+    output = run_compiler(modules, reuse=True)
+    results = [section for section in output.split("// -----") if section.strip()]
+    assert len(results) == len(architectures)
+    for result, architecture in zip(results, architectures):
+        quantum = 32 if architecture == "wormhole_b0" else 64
+        control_bytes = (count * 8 + quantum - 1) // quantum * quantum
+        states = [int(value) for value in re.findall(r"l1_offset = (\d+)", result)]
+        offsets = [
+            int(value) for value in re.findall(r"l1_payload_offset = (\d+)", result)
+        ]
+        arena_bytes = int(re.search(r"ttl.l1_arena_bytes = (\d+)", result).group(1))
+        assert states == list(range(0, count * 8, 8))
+        assert offsets == [control_bytes] * count
+        assert arena_bytes == control_bytes + 2048
+
+
 def validate(output, events, architecture, reuse, unknown):
     count = len(events) // 2
     quantum = 32 if architecture == "wormhole_b0" else 64
@@ -101,11 +142,14 @@ def validate(output, events, architecture, reuse, unknown):
         ), (events, architecture, offsets, sizes)
     if not conflicts:
         assert arena_bytes == control_bytes + max(sizes)
+    if reuse and not unknown and len(conflicts) < count * (count - 1) // 2:
+        assert arena_bytes < control_bytes + sum(sizes)
     if not reuse:
         assert arena_bytes == control_bytes + sum(sizes)
 
 
 def main():
+    validate_control_prefix_alignment()
     schedules = [
         events
         for events in itertools.permutations(range(6))

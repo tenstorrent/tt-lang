@@ -1601,8 +1601,8 @@ def TTKernelCombinePackTiles
     buffer with contiguous DST and CB tile indices, and replaces each run with
     a single `ttkernel.pack_tile_block` for the Metal DFB backend. This reduces
     generated calls after loop unrolling. Compiler-owned storage retains the
-    explicit output indices because its packing interface has no implicit
-    descriptor-owned write cursor.
+    individual operations because `pack_tile_block` cannot represent their
+    explicit output tile indices.
 
     Only combines runs where both DST indices and CB tile indices step by 1,
     and the first CB tile index is 0 (pack_tile_block always writes to the CB

@@ -2714,7 +2714,7 @@ This representation encodes both position and occupancy:
 - Occupancy is `(published - consumed) modulo 2B`, in `[0, B]`.
 - Equal sequences mean empty; a distance of `B` means full.
 
-The second cycle distinguishes full from empty without separate cursor words.
+The second cycle distinguishes full from empty without separate position words.
 Unlike natural 32-bit counter overflow, explicit modulo-`2B` wrap preserves block
 position for every capacity, including non-power-of-two capacities.
 
@@ -2724,9 +2724,10 @@ Producer and consumer acquisitions may overlap. The `with` syntax pairs acquisit
 and release but does not reject nested acquisitions of the same DFB. Alternation
 is a caller precondition; SPSC verification checks ownership only.
 
-The converter requires full-block page counts and positive page capacity below
-`2^31`. Runtime assertions check page counts only with watcher or lightweight
-assertions enabled; ordinary builds rely on the converter's static checks.
+The converter requires full-block page counts and positive total capacity below
+`2^31` pages. Runtime assertions check page counts only with watcher or
+lightweight assertions enabled; ordinary builds rely on the converter's static
+checks.
 
 ```text
 reserve():

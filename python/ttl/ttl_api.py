@@ -2006,6 +2006,39 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
                 f"{context}.storage_index must be a nonnegative integer, "
                 f"got {storage_index!r}"
             )
+    l1_field_names = (
+        "l1_offset",
+        "l1_payload_offset",
+        "l1_allocation_bytes",
+    )
+    present_l1_fields = [field in entry for field in l1_field_names]
+    if any(present_l1_fields) and not all(present_l1_fields):
+        raise ValueError(f"{context} must contain all compiler-l1 allocation fields")
+    l1_offset = None
+    l1_payload_offset = None
+    l1_allocation_bytes = None
+    if all(present_l1_fields):
+        try:
+            l1_offset = int(entry["l1_offset"])
+            l1_payload_offset = int(entry["l1_payload_offset"])
+            l1_allocation_bytes = int(entry["l1_allocation_bytes"])
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"Invalid {context} compiler-l1 metadata: {error}"
+            ) from None
+        if l1_offset < 0 or l1_payload_offset < 0:
+            raise ValueError(f"{context} compiler-l1 offsets must be nonnegative")
+        if l1_allocation_bytes <= 0:
+            raise ValueError(
+                f"{context}.l1_allocation_bytes must be positive, "
+                f"got {l1_allocation_bytes}"
+            )
+        payload_bytes = num_tiles * block_count * page_size
+        if l1_allocation_bytes < payload_bytes:
+            raise ValueError(
+                f"{context}.l1_allocation_bytes must cover the "
+                f"{payload_bytes}-byte payload"
+            )
     return PhysicalDFBConfig(
         dfb_index=dfb_index,
         num_tiles=num_tiles,
@@ -2016,15 +2049,9 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
         storage_segments=tuple(storage_segments),
         allocation_nodes=allocation_nodes,
         storage_index=storage_index,
-        l1_offset=int(entry["l1_offset"]) if "l1_offset" in entry else None,
-        l1_payload_offset=(
-            int(entry["l1_payload_offset"]) if "l1_payload_offset" in entry else None
-        ),
-        l1_allocation_bytes=(
-            int(entry["l1_allocation_bytes"])
-            if "l1_allocation_bytes" in entry
-            else None
-        ),
+        l1_offset=l1_offset,
+        l1_payload_offset=l1_payload_offset,
+        l1_allocation_bytes=l1_allocation_bytes,
     )
 
 

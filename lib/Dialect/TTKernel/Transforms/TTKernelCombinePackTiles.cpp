@@ -65,10 +65,10 @@ struct TTKernelCombinePackTilesPass
 
   void runOnOperation() override {
     auto module = getOperation()->getParentOfType<ModuleOp>();
-    if (auto model = module->getAttrOfType<StringAttr>("ttl.memory_model");
-        model && model.getValue() == "compiler-l1") {
-      // Metal block packing discards the explicit output indices in favor of
-      // its descriptor-owned write cursor.
+    if (auto model = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
+        model && model.getValue() == kCompilerL1MemoryModel) {
+      // PackTileBlockOp cannot preserve the tile index used to address the
+      // compiler-assigned output payload.
       return;
     }
     getOperation().walk([](Block *block) {

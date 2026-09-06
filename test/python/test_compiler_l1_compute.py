@@ -297,10 +297,11 @@ def test_l1_residual_chain(device, dtype, memory_model, reuse, allocator):
         assert_allclose(ttnn.to_torch(output).float(), expected.float(), rtol=0, atol=0)
 
 
-def _make_reduce(tmp_path, axis, tiles, maximum):
-    rows = tiles if axis == 0 else 1
-    columns = tiles if axis == 1 else 1
+def _make_reduce(tmp_path, dimensions, tiles, maximum):
+    rows = tiles if 0 in dimensions else 1
+    columns = tiles if 1 in dimensions else 1
     reduce_name = "reduce_max" if maximum else "reduce_sum"
+    dimension_list = ", ".join(str(dimension) for dimension in dimensions)
     source = f"""import ttl
 import torch
 @ttl.operation(grid=(1, 1))
@@ -310,7 +311,7 @@ def reduction(source, output):
     @ttl.compute()
     def compute():
         with input_storage.wait() as input_block, output_storage.reserve() as output_block:
-            output_block.store(ttl.math.{reduce_name}(input_block, dims=[{axis}], shape=(1, 1)))
+            output_block.store(ttl.math.{reduce_name}(input_block, dims=[{dimension_list}], shape=(1, 1)))
     @ttl.datamovement()
     def reader():
         with input_storage.reserve() as block:
@@ -323,33 +324,39 @@ def reduction(source, output):
     return _load_operation(tmp_path, "reduction", source)
 
 
-@pytest.mark.parametrize("axis", [0, 1], ids=["columns", "rows"])
+@pytest.mark.parametrize(
+    "dimensions", [(0,), (1,), (0, 1)], ids=["columns", "rows", "scalar"]
+)
 @pytest.mark.parametrize("tiles", [1, 3], ids=["one_tile", "three_tiles"])
 @pytest.mark.parametrize("maximum", [False, True], ids=["sum", "max"])
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-l1"])
 @pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "l1"])
 def test_l1_reduce(
-    device, axis, tiles, maximum, dtype, memory_model, tmp_path, allocator
+    device, dimensions, tiles, maximum, dtype, memory_model, tmp_path, allocator
 ):
-
-    operation = _make_reduce(tmp_path, axis, tiles, maximum)
-    rows = tiles * 32 if axis == 0 else 32
-    columns = tiles * 32 if axis == 1 else 32
+    operation = _make_reduce(tmp_path, dimensions, tiles, maximum)
+    rows = tiles * 32 if 0 in dimensions else 32
+    columns = tiles * 32 if 1 in dimensions else 32
     for invocation in range(3):
         reference = (2 * torch.randint(0, 2, (rows, columns)) - 1).to(dtype)
         if maximum:
             reference = torch.randint(-16, 17, (rows, columns)).to(dtype)
         expected = (
-            reference.amax(dim=axis, keepdim=True)
+            reference.amax(dim=dimensions, keepdim=True)
             if maximum
-            else reference.sum(dim=axis, keepdim=True)
+            else reference.sum(dim=dimensions, keepdim=True)
         )
         source = allocator(reference, device)
         output = allocator(torch.zeros((32, 32), dtype=dtype), device)
         operation(source, output, options=f"--ttl-memory-model={memory_model}")
         actual = ttnn.to_torch(output).float()
-        actual = actual[:1, :] if axis == 0 else actual[:, :1]
+        if dimensions == (0,):
+            actual = actual[:1, :]
+        elif dimensions == (1,):
+            actual = actual[:, :1]
+        else:
+            actual = actual[:1, :1]
         assert_allclose(actual, expected.float(), rtol=0, atol=0)
 
 
@@ -479,10 +486,13 @@ def test_l1_sfpu_precision(device, multiply, dtype, allocator, memory_model):
         )
 
 
-def _make_gated_projection(normalize):
+def _make_kimi_situ_mlp_residual(normalize):
     @ttl.operation(grid=(1, 1))
-    def gated_projection(source, gate_weight, up_weight, down_weight, output):
+    def kimi_situ_mlp_residual(source, gate_weight, up_weight, down_weight, output):
         input_storage = ttl.make_dataflow_buffer_like(
+            source, shape=(1, 1), block_count=2
+        )
+        residual_storage = ttl.make_dataflow_buffer_like(
             source, shape=(1, 1), block_count=2
         )
         normalized_storage = ttl.make_dataflow_buffer_like(
@@ -519,7 +529,9 @@ def _make_gated_projection(normalize):
                     with (
                         input_storage.wait() as input_block,
                         normalized_storage.reserve() as normalized_block,
+                        residual_storage.reserve() as residual_block,
                     ):
+                        residual_block.store(input_block)
                         if normalize:
                             squared = input_block * input_block
                             total = ttl.math.reduce_sum(squared, dims=[1], shape=(1, 1))
@@ -543,16 +555,19 @@ def _make_gated_projection(normalize):
                         up_storage.wait() as up_block,
                         activation_storage.reserve() as activation_block,
                     ):
+                        limited_gate = 4.0 * ttl.math.tanh(gate_block * 0.25)
+                        limited_up = 25.0 * ttl.math.tanh(up_block * 0.04)
                         activation_block.store(
-                            ttl.math.tanh(gate_block)
-                            * ttl.math.sigmoid(gate_block)
-                            * up_block
+                            limited_gate * ttl.math.sigmoid(gate_block) * limited_up
                         )
                     with (
                         activation_storage.wait() as activation_block,
+                        residual_storage.wait() as residual_block,
                         output_storage.reserve() as output_block,
                     ):
-                        output_block.store(activation_block @ down_weights)
+                        output_block.store(
+                            activation_block @ down_weights + residual_block
+                        )
 
         @ttl.datamovement()
         def reader():
@@ -572,7 +587,7 @@ def _make_gated_projection(normalize):
                 with output_storage.wait() as block:
                     ttl.copy(block, output[iteration : iteration + 1, 0:1]).wait()
 
-    return gated_projection
+    return kimi_situ_mlp_residual
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
@@ -582,8 +597,10 @@ def _make_gated_projection(normalize):
 @pytest.mark.parametrize(
     "normalize", [False, True], ids=["projection", "normalized_projection"]
 )
-def test_l1_gated_projection(device, dtype, allocator, reuse, memory_model, normalize):
-    operation = _make_gated_projection(normalize)
+def test_l1_kimi_situ_mlp_residual(
+    device, dtype, allocator, reuse, memory_model, normalize
+):
+    operation = _make_kimi_situ_mlp_residual(normalize)
     options = f"--ttl-memory-model={memory_model}"
     if not reuse:
         options += " --no-ttl-reuse-user-dfbs"
@@ -604,8 +621,20 @@ def test_l1_gated_projection(device, dtype, allocator, reuse, memory_model, norm
             )
         gate = (projected_input @ weights[0].float()).to(dtype).float()
         up = (projected_input @ weights[1].float()).to(dtype).float()
-        activated = (torch.tanh(gate) * torch.sigmoid(gate) * up).to(dtype).float()
-        expected = (activated @ weights[2].float()).to(dtype).float()
+        activated = (
+            (
+                4.0
+                * torch.tanh(gate * 0.25)
+                * torch.sigmoid(gate)
+                * 25.0
+                * torch.tanh(up * 0.04)
+            )
+            .to(dtype)
+            .float()
+        )
+        expected = (
+            (activated @ weights[2].float() + reference.float()).to(dtype).float()
+        )
         inputs = [allocator(reference, device)] + [
             allocator(weight, device) for weight in weights
         ]
