@@ -8,17 +8,42 @@
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   // COMPUTED-LABEL: func.func @point_to_point_pipe
   // COMPUTED-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
-  // COMPUTED-NOT: ttkernel.noc_inline_dw_write
-  // COMPUTED: ttkernel.noc_async_write
-  // COMPUTED-NOT: ttkernel.noc_inline_dw_write
+  // COMPUTED-NOT: ttkernel.noc_async_write_barrier
+  // COMPUTED: ttkernel.noc_async_write_one_packet_set_state({{.*}}) posted true
+  // COMPUTED: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true
+  // COMPUTED-NEXT: ttkernel.noc_inline_dw_write({{.*}}) posted true
+  // COMPUTED-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
   // COMPUTED-NOT: ttkernel.load_from_l1
+  // COMPUTED-NOT: ttkernel.noc_async_write_barrier
+  // COMPUTED-NOT: ttkernel.noc_async_atomic_barrier
   // COMPUTED: return
 
   // PUBLISHED-LABEL: func.func @point_to_point_pipe
   // PUBLISHED-NOT: ttl.pipe_computed_address_dfb_indices
+  // PUBLISHED-NOT: posted true
   // PUBLISHED: ttkernel.noc_inline_dw_write
+  // PUBLISHED-NOT: posted true
   // PUBLISHED: ttkernel.load_from_l1
+  // PUBLISHED-NOT: posted true
   // PUBLISHED: ttkernel.noc_async_write
+  // PUBLISHED-NEXT: ttkernel.noc_async_write_barrier
+  // PUBLISHED: ttkernel.noc_semaphore_inc
+  // PUBLISHED-NEXT: ttkernel.noc_async_atomic_barrier
+  // PUBLISHED-NOT: posted true
+  // PUBLISHED: return
+
+  // RECEIVER-POST-LABEL: func.func @point_to_point_pipe
+  // RECEIVER-POST-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
+  // RECEIVER-POST-NOT: ttkernel.store_to_l1
+  // RECEIVER-POST-NOT: ttkernel.noc_async_write_barrier
+  // RECEIVER-POST: ttkernel.noc_async_write_one_packet_set_state({{.*}}) posted true
+  // RECEIVER-POST-NOT: ttkernel.noc_async_write_barrier
+  // RECEIVER-POST: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true
+  // RECEIVER-POST-NEXT: ttkernel.noc_inline_dw_write({{.*}}) posted true
+  // RECEIVER-POST-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
+  // RECEIVER-POST-NOT: ttkernel.noc_async_write_barrier
+  // RECEIVER-POST-NOT: ttkernel.noc_async_atomic_barrier
+  // RECEIVER-POST: return
   func.func @point_to_point_pipe() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
     %src_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
@@ -412,7 +437,11 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   // COMPUTED-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
   // COMPUTED-NOT: ttkernel.store_to_l1
   // COMPUTED-NOT: ttkernel.noc_inline_dw_write
-  // COMPUTED: ttkernel.noc_async_write
+  // COMPUTED: ttkernel.noc_async_write %
+  // COMPUTED: ttkernel.noc_async_write_barrier
+  // COMPUTED: ttkernel.noc_semaphore_inc
+  // COMPUTED: ttkernel.noc_async_atomic_barrier
+  // COMPUTED-NOT: posted true
   // COMPUTED: return
 
   // PUBLISHED-LABEL: func.func @loopback_point_to_point
@@ -432,11 +461,11 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
     %recv_dst = ttl.cb_reserve %dst_cb
         : <[1, 1], !ttcore.tile<32x32, f32>, 1>
         -> tensor<1x1x!ttcore.tile<32x32, f32>>
-    %recv = ttl.copy %pipe, %recv_dst
+    %recv = ttl.copy %pipe, %recv_dst {byte_count = 2048 : i64}
         : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
            tensor<1x1x!ttcore.tile<32x32, f32>>)
         -> !ttl.receive_request
-    %send = ttl.copy %src_cb, %pipe
+    %send = ttl.copy %src_cb, %pipe {byte_count = 2048 : i64}
         : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
            !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
         -> !ttl.transfer_handle<write>

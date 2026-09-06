@@ -8,7 +8,10 @@
 // PLAN-NEXT: PipeTransport:   endpoint 0 {{.*}}
 // LOWER-LABEL: func.func @byte_counted_pipe_transfer
 // LOWER: %[[SIZE:.*]] = arith.constant 896 : i32
-// LOWER: ttkernel.noc_async_write {{.*}}, core[{{.*}}, {{.*}}], {{.*}}, %[[SIZE]], noc {{.*}}
+// LOWER: ttkernel.noc_async_write_one_packet_set_state({{.*}}, %[[SIZE]], {{.*}}) posted true
+// LOWER: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true
+// LOWER-NEXT: ttkernel.noc_inline_dw_write({{.*}}) posted true
+// LOWER-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @byte_counted_pipe_transfer()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {

@@ -118,11 +118,13 @@ synchronization mechanism.
 `RA/CC` is unsupported because CC permits a send without a current
 receiver post, so the sender must compute the destination address.
 
-All three modes use the same payload write and receiver-completion
-signal. A sender-ready increment means that the receiver has reserved
-destination storage; it does not mean that the payload write is
-complete. The sender signals payload completion separately after its
-NoC write barrier.
+All three modes preserve the same receiver-visible ordering: completion is
+observable only after the payload. A sender-ready increment means that the
+receiver has reserved destination storage; it does not mean that the payload
+write is complete. Repeated, shared, collective, receiver-authored, and
+capacity-credit transfers signal completion with a payload barrier followed by
+an atomic increment. An eligible one-shot `CA/RP` point-to-point transfer to a
+remote core may instead use ordered posted payload and completion writes.
 
 | Protocol event or property | `RA/RP` | `CA/RP` | `CA/CC` |
 | --- | --- | --- | --- |
@@ -131,6 +133,7 @@ NoC write barrier.
 | Receiver increments the sender-ready counter | After the published address is visible | After reserving the block | No |
 | Condition for the sender's payload write | Every required receiver has posted | Every required receiver has posted | The receiver has available DFB capacity |
 | Sender obtains the destination address | Reads the published address-table entry | Computes `DFB base + slot * block stride + static offset` | Computes the same address |
+| Sender signals receiver completion | Payload barrier followed by an atomic increment | Ordered posted store for an eligible one-shot point-to-point transfer to a remote core; otherwise barrier and atomic increment | Payload barrier followed by an atomic increment |
 | Receiver action after popping a block | No capacity update | No capacity update | Increments the sender's capacity counter |
 | Sender/receiver synchronization | Per-transfer receiver-post rendezvous | Per-transfer receiver-post rendezvous | Sender may use the next computed slot when a capacity credit is available |
 | Multicast | Supported when receiver runtime addresses are proven equal | Supported with proven equal receiver runtime addresses | Not currently supported; uses `CA/RP` instead |
@@ -751,9 +754,12 @@ release cannot race with a sender update.
    `ttkernel.experimental.semaphore_wait_min`. The sender never writes
    `%capacity_counter` before computing `%dst_addr` and issuing the payload
    NoC write.
-3. The sender still signals receiver completion after the payload write
-   barrier, using the transfer node's receiver-completion counter. All three
-   modes use the same completion mechanism.
+3. The sender signals receiver completion after the payload write barrier,
+   using the transfer node's receiver-completion counter. `CA/CC` retains the
+   cumulative atomic mechanism because its completion is coupled to
+   iteration-domain credit. Eligible one-shot `CA/RP` point-to-point transfers
+   to a remote core may use the ordered posted mechanism described in
+   `PipeOptimizations.md`.
 4. The receiver executes its normal receive wait, push, wait-front, and
    pop sequence.
 5. Lowering emits `ttkernel.noc_semaphore_inc` to the source-node
@@ -1309,7 +1315,8 @@ only the storage class changes. The compiler records the final local and global 
 Receiver completion is cumulative across repeated executions of a transfer
 node: sends increment its shared counter, and waits consume it with
 monotonically increasing `wait_min` thresholds instead of resetting it per
-execution. Each receive post increments a kernel-local sequence for its
+execution. A counter proven to have exactly one lifetime update may instead be
+set directly to 1. Each receive post increments a kernel-local sequence for its
 completion counter and returns that sequence in the transfer token. The wait
 uses the token directly, so storing or reordering tokens does not associate a
 wait with a later post. Transfers that share a physical receiver never share a
@@ -1437,12 +1444,14 @@ This example uses three synchronization values:
 | Name | Storage | Initial value | Updated by | Read by |
 | --- | --- | --- | --- | --- |
 | Sender-ready counter | Source-node semaphore at `%ready_sem_index`. If local semaphore ids are exhausted, this is a GlobalSemaphore-backed SRAM address passed as a common runtime argument. | 0 | Each receiver post increments it by 1 after publishing the destination DFB address. The sender resets it to 0 after waiting for all expected posts. | Sender send waits for it to equal `%expected_receivers`. |
-| Receiver-completion counter | Destination-node local semaphore or GlobalSemaphore-backed SRAM address, assigned to one transfer node at this receiver. | 0 | Each dynamic execution of that transfer's send increments it by 1 after the payload write barrier. | The matching receiver wait uses `semaphore_wait_min` with the sequence stored in its transfer token. |
+| Receiver-completion counter | Destination-node local semaphore or GlobalSemaphore-backed SRAM address, assigned to one transfer node at this receiver. | 0 | Each send signals completion after the payload ordering point. Repeated or shared state uses an atomic increment. An eligible counter with exactly one lifetime update receives an ordered posted store of value 1. | The matching receiver wait uses `semaphore_wait_min` with the sequence stored in its transfer token. |
 | Receiver post-sequence counter | Kernel-local `memref<1xi32>` for a static completion counter. A table-driven receiver uses one `memref<Nxi32>`, where `N` is the number of distinct completion counters referenced by the records. | 0 at function entry | Each matching `ttl.pipe_transfer.post` increments the element for its completion counter. | The post returns the new value in its transfer token; the corresponding wait uses that token as its completion threshold. |
 
-The sender-ready counter is a reusable pre-send synchronization counter. The
-receiver-completion counter is cumulative across executions of its transfer
-node for the whole kernel execution and is not reset by pipe lowering.
+The sender-ready counter is a reusable pre-send synchronization counter.
+Repeated receiver completion is cumulative across executions of its transfer
+node for the whole kernel execution and is not reset by pipe lowering. A
+counter proven to receive exactly one lifetime update remains at its initial
+zero until the sender stores its only completion value, 1.
 
 ```mlir
 // Receiver node (1, 0).
@@ -1499,13 +1508,14 @@ ttkernel.noc_semaphore_inc(%completion_noc_addr, %one, %noc)
 ```
 
 `ttl.wait` on a handle produced by `ttl.pipe_transfer.send` lowers to no
-operation. This is correct for every pipe send because the sender waits
-for the payload NoC write before it increments the receiver-completion
-counter. Any receiver that observes the completion counter has therefore
-also observed the payload-write ordering point. A later send-handle wait
-cannot make receiver data more available. This rule applies only to pipe
-send handles; non-pipe async writes still lower `ttl.wait` to the
-appropriate NoC barrier.
+operation because `ttl.pipe_transfer.send` emits the complete selected
+send-side protocol. The cumulative protocol waits for the payload write before
+issuing its completion atomic. The one-shot protocol issues posted payload and
+completion writes in NoC order, then flushes those writes from the sender
+before source reuse. In both cases a receiver can observe completion only after
+the payload ordering point. A later send-handle wait cannot make receiver data
+more available. This rule applies only to pipe send handles; non-pipe async
+writes still lower `ttl.wait` to the appropriate NoC barrier.
 
 For collective transfers, the same structure is used with aggregate
 ready counting: each receiver increments the same sender-ready counter,
@@ -1569,9 +1579,11 @@ reservation.
 ### Completion counters
 
 Each transfer node has independent logical completion state at every
-destination node. Its sender increments that state once per payload arrival.
-The receiver keeps a local expected count for repeated executions of the same
-transfer and blocks until the corresponding semaphore reaches that count.
+destination node. Its sender updates that state after each payload arrival.
+Repeated transfers use atomic increments; a proven one-shot transfer may store
+its only expected value directly. The receiver keeps a local expected count
+for repeated executions of the same transfer and blocks until the
+corresponding semaphore reaches that count.
 Consequences:
 
 - A receiver in `N` pipes' destination ranges observes `N` distinct transfer
@@ -1579,7 +1591,7 @@ Consequences:
 - The user's `if_dst` callback runs once per pipe whose destination includes
   the current node; each callback waits for its corresponding transfer.
 - `N` senders targeting one receiver do not coordinate with each other. They
-  increment distinct completion counters, so one sender cannot satisfy
+  signal distinct completion counters, so one sender cannot satisfy
   another sender's receive wait.
 
 TT-Metal primitive details for `noc_semaphore_inc_multicast`,
@@ -1600,9 +1612,8 @@ collective. The proof tracks four points in the lowered IR:
    recorded in the source node's SRAM address table.
 2. No inter-sender wait. In `RP`, each sender waits only for its own
    receivers to post. In `CC`, each sender waits only for its own capacity
-   counter. The sender then performs its NoC write and increments the
-   receiver completion counter. No sender reads a counter signaled by
-   another sender.
+   counter. The sender then performs its NoC write and signals the receiver
+   completion counter. No sender reads a counter signaled by another sender.
 3. Receiver completion counters identify transfer nodes at each physical
    receiver. Transfers that share a receiver have distinct allocations;
    transfers with disjoint receiver sets may reuse one allocation.
