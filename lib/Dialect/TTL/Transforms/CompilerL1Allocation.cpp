@@ -36,6 +36,18 @@ static FailureOr<L1AllocationPlan>
 planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
             uint64_t budget, bool reuseStorage,
             const DFBConcurrentKernelLivenessAnalysis &liveness) {
+  WalkResult supportedStorage = module.walk([](Operation *operation) {
+    if (isa<DFBReconfigurationOp, ResetDFBsOp, ResetAllDFBsOp>(operation)) {
+      operation->emitOpError(
+          "compiler-l1 requires static storage ownership; DFB reset and "
+          "reconfiguration are unsupported");
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  if (supportedStorage.wasInterrupted()) {
+    return failure();
+  }
   std::string targetFailure;
   FailureOr<uint64_t> alignment =
       resolveTargetL1AllocationQuantumBytes(module, targetFailure);

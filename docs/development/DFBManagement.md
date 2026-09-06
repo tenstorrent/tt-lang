@@ -1,6 +1,11 @@
 # Dataflow Buffer Management
 
-This document describes how the tt-lang compiler manages dataflow buffers (DFBs) -- the L1-resident circular buffers that transfer data between compute and data movement threads on Tenstorrent hardware.
+This document describes DFB ownership, lifecycle analysis, and synchronization.
+The index-allocation sections describe the default Metal backend.
+[Compiler-managed L1 allocation](L1Allocation.md) assigns byte-addressed storage;
+its protocol is specified [below](#compiler-managed-storage-protocol).
+Shared hardware terms are defined in the
+[specification glossary](../sphinx/specs/TTLangSpecification.md#appendix-a-glossary).
 
 ## Overview
 
@@ -2695,3 +2700,95 @@ When writing an f32 value to a bf16 block, the Python DSL auto-inserts
 IEEE-754 encoding, which matches the bf16 representation. This
 truncation is lossy for values that are not exactly representable in
 bf16.
+
+## Compiler-Managed Storage Protocol
+
+The storage interface is implemented in
+[`compiler_l1.h`](../../include/ttlang/Target/TTKernel/LLKs/compiler_l1.h).
+Target visibility and completion operations are isolated in
+[`compiler_l1_target.h`](../../include/ttlang/Target/TTKernel/LLKs/compiler_l1_target.h).
+The transfer backend uses a 16-byte control record per logical DFB: four
+32-bit words holding published count, consumed count, write position, and read
+position. The runtime initializes all four to zero for each invocation.
+
+Each side has at most one outstanding acquisition per logical DFB: reserve must
+be followed by push before another reserve, and wait by pop before another wait.
+Producer and consumer acquisitions may overlap. The `with` syntax pairs acquisition
+and release but does not reject nested acquisitions of the same DFB. This
+alternation is a caller precondition; SPSC verification checks ownership only.
+
+The converter requires full-block page counts and a positive capacity below
+`2^31` pages. Capacity is a whole number of blocks, preserving contiguous
+acquisitions. Runtime `ASSERT` checks enforce bounds only with watcher or
+lightweight assertions enabled; ordinary builds rely on static checks.
+
+### Visibility and Completion
+
+`loadVisible` reads a shared L1 control word using the target's visibility
+sequence. `storeVisible` completes the target's store/readback sequence.
+`completeAccesses` waits for earlier accesses by the publishing or releasing
+processor. The full NoC barrier also waits for unrelated work from that
+processor. A CPU fence alone does not establish transfer completion.
+
+```text
+loadVisible(address):
+    execute target visibility fence
+    load word from address
+    execute target dependent-load completion sequence
+    return loaded word
+
+storeVisible(address, value):
+    store word to address
+    load back from address
+    execute target dependent-load completion sequence
+
+completeAccesses():
+    data-movement processor: wait for outstanding NoC work
+```
+
+### Producer Reservation and Publication
+
+All counter subtraction and addition below use unsigned 32-bit arithmetic.
+`writePosition` and `readPosition` are page offsets within `[0, capacity)`.
+The producer exclusively updates `published` and `writePosition`.
+
+```text
+reserve(pageCount):
+    require pageCount <= capacity
+    while capacity - (loadVisible(published) - loadVisible(consumed)) < pageCount:
+        poll
+    require loadVisible(writePosition) + pageCount <= capacity
+    return payloadAddress + loadVisible(writePosition) * pageBytes
+
+publish(pageCount):
+    completeAccesses()
+    nextPosition = (loadVisible(writePosition) + pageCount) modulo capacity
+    storeVisible(writePosition, nextPosition)
+    storeVisible(published, loadVisible(published) + pageCount)
+```
+
+Publication makes a completed payload available. The producer cannot overwrite
+unconsumed pages because reservation waits for sufficient capacity.
+
+### Consumer Acquisition and Release
+
+The consumer exclusively updates `consumed` and `readPosition`.
+
+```text
+wait(pageCount):
+    require pageCount <= capacity
+    while loadVisible(published) - loadVisible(consumed) < pageCount:
+        poll
+    require loadVisible(readPosition) + pageCount <= capacity
+    return payloadAddress + loadVisible(readPosition) * pageBytes
+
+release(pageCount):
+    completeAccesses()
+    nextPosition = (loadVisible(readPosition) + pageCount) modulo capacity
+    storeVisible(readPosition, nextPosition)
+    storeVisible(consumed, loadVisible(consumed) + pageCount)
+```
+
+Release permits reuse only after the consumer's accesses complete. Keeping ring
+positions separate from sequence counters is necessary when capacity does not
+divide `2^32`: wrapping a sequence counter must not change the ring position.
