@@ -96,6 +96,10 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::desc("Override the combined DFB, PipeNet, and synchronized-"
                      "reset L1 allocation budget."),
       llvm::cl::init(0)};
+  Option<std::string> memoryModel{
+      *this, "memory-model",
+      llvm::cl::desc("Select metal-cb or experimental compiler-l1 storage."),
+      llvm::cl::init("metal-cb")};
   Option<bool> reuseUserDFBs{
       *this, "reuse-user-dfbs",
       llvm::cl::desc("Reuse physical DFB indices when concurrent-kernel "

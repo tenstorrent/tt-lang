@@ -1076,6 +1076,17 @@ def TTLFinalizeDFBIndices
     `ttl-annotate-cb-associations`, which copy DFB indices into attributes and
     would otherwise capture provisional indices.
 
+    `memory-model=compiler-l1` assigns explicit byte ranges instead of Metal
+    descriptor slots. Logical identities retain independent 16-byte control
+    records. Payloads use decreasing-size aligned first-fit placement over the
+    concurrent-kernel storage conflict graph; unknown completion prohibits reuse.
+    The complete plan is validated before mutation. Runtime metadata supplies
+    state and payload offsets within one allocator-owned L1 arena. The arena
+    high-water mark includes alignment and state. A greedy budget failure does
+    not prove that a feasible placement is impossible. Unsupported storage forms
+    and operations are diagnosed; this mode never falls back to Metal descriptors.
+    `reuse-user-dfbs=false` disables payload aliasing in this mode.
+
     User-declared DFBs enter this pass with module-wide logical `dfb_id`
     attributes. Compiler-created DFB declarations receive unique logical IDs.
     The logical identity remains independent of the physical `cb_index`, so
@@ -1245,6 +1256,8 @@ def TTLFinalizeDFBIndices
   }];
 
   let options = [
+    Option<"memoryModel", "memory-model", "std::string", "\"metal-cb\"",
+           "Select metal-cb or experimental compiler-l1 storage.">,
     Option<"reuseUserDFBs", "reuse-user-dfbs", "bool", "true",
            "Reuse physical DFB indices and compiler-managed storage for "
            "lifetimes proven not to overlap across concurrent kernels.">,
