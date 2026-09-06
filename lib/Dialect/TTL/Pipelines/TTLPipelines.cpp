@@ -126,6 +126,10 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   if (options.specializeCores) {
     buildTTKernelSpecializationPipeline(pm);
   } else {
+    pm.addNestedPass<func::FuncOp>(
+        createTTKernelUnrollStaticPipeNetRecordLoops());
+    pm.addPass(createCanonicalizerPass());
+    pm.addPass(createCSEPass());
     pm.addPass(createTTKernelFinalizeTensorRuntimeArgs());
     pm.addPass(createCanonicalizerPass());
   }
@@ -149,6 +153,10 @@ void buildTTLAutoSyncPipeline(OpPassManager &pm) {
 
 void buildTTKernelSpecializationPipeline(OpPassManager &pm) {
   pm.addPass(createTTKernelSpecializeCores());
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(createCSEPass());
+  pm.addNestedPass<func::FuncOp>(
+      createTTKernelUnrollStaticPipeNetRecordLoops());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
   pm.addPass(createTTKernelFinalizeTensorRuntimeArgs());

@@ -16,6 +16,7 @@ module attributes {ttl.launch_grid = array<i64: 3, 2>} {
 // CHECK: scf.for %[[PARTICIPANT_INDEX:.*]] = %[[RECORD_OFFSET]] to %[[RECORD_END]]
 // CHECK: %[[RECORD_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[PARTICIPANT_INDEX]], [0, 2, 4, 3, 1] : index
 // CHECK-NOT: scf.if
+// CHECK: ttl.pipenet_local_record_loop
 // CHECK: return
 func.func @participant_sender()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -50,6 +51,7 @@ func.func @participant_sender()
 // CHECK: scf.for %[[PARTICIPANT_INDEX:.*]] = %[[RECORD_OFFSET]] to %[[RECORD_END]]
 // CHECK: %[[RECORD_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[PARTICIPANT_INDEX]], [1, 0, 4, 0, 3, 1, 2, 2, 2, 3] : index
 // CHECK-NOT: scf.if
+// CHECK: ttl.pipenet_local_record_loop
 // CHECK: return
 func.func @participant_receiver()
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
