@@ -122,6 +122,7 @@ tools = [
     "ttlang-dfb-allocation-oracle-test",
     "ttlang-launch-node-domain-test",
     "ttlang-op-stats",
+    "ttlang-opcost-test",
     "ttlang-value-origin-test",
     "ttlang-opt",
     "ttlang-translate",
