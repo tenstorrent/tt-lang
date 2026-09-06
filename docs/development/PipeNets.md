@@ -39,9 +39,9 @@ A PipeNet's active nodes are the union of its source and destination
 coordinates. This is the node set tested by `net.is_active()`. Whenever
 the launch is wider than those active nodes, the user must guard
 pipe-coupled regions with `net.is_src()`, `net.is_dst()`,
-`net.is_active()`, or coordinate predicates that express the same role
-tests. The verifier rejects any pipe-coupled operation reachable from a
-node outside its declared role. The diagnostic names the offending
+`net.is_active()`, or coordinate comparisons that test the same source or
+destination membership. The verifier rejects any pipe-coupled operation
+reachable from a node outside its declared role. The diagnostic names the offending
 operation, an example offending coordinate, the contributing PipeNet or
 PipeNets, and a suggested guard.
 
@@ -176,11 +176,11 @@ reservation sequence whose advance exceeds `block_count` in both address modes.
 Multicast is not itself a restriction. A collective transfer whose receiver
 endpoints form one address-sequence equivalence class uses `CA/RP` when the
 sender can materialize that sequence. `RA/RP` remains available when computed
-addressing is disabled or another computed-address predicate fails. It does not
-make an invalid receiver reservation sequence valid. Both modes
-require the same graph proof because TT-Metal NoC multicast has one destination
-SRAM address operand. A collective transfer is rejected unless every receiver
-address is proven equal for every occurrence.
+addressing is disabled or a computed-address eligibility condition is not
+satisfied. It does not make an invalid receiver reservation sequence valid.
+Both modes require the same graph proof because TT-Metal NoC multicast has one
+destination SRAM address operand. A collective transfer is rejected unless
+every receiver address is proven equal for every occurrence.
 
 Pipe transfers have the following operational semantics:
 
@@ -863,12 +863,11 @@ uniform across the participating nodes. Changes controlled by values that may
 differ between nodes produce `FullyDynamic`.
 
 The execution point includes both the logical device, when a device domain is
-present, and the launch node within that device. A device predicate emitted for
-a graph PipeNet callback is evaluated against that logical device before the
-schedule is classified. It is not `FullyDynamic` merely because one generic
-kernel module is instantiated on several devices. A condition remains fully
-dynamic only when it cannot be resolved after both device and launch-node
-coordinates are fixed.
+present, and the launch node within that device. Schedule classification
+evaluates a graph PipeNet callback's logical-device comparison first. One
+generic kernel module instantiated on several devices is therefore not
+`FullyDynamic`. A condition remains fully dynamic only when it cannot be
+resolved after both device and launch-node coordinates are fixed.
 
 Execution-count specialization shares one immutable baseline dataflow solution
 per function or selected-record loop. Each logical-device-qualified execution
@@ -983,8 +982,8 @@ proven equal across participating nodes. Equal execution counts do not create
 an order between different functions, branch regions, or loop nests. Such
 schedules are `FullyDynamic`.
 Scopes known to execute only at the receiver, such as a matching
-`ttl.if_dst`, `ttl.pipenet_scope`, or logical-device predicate, do not add an
-unresolved runtime condition.
+`ttl.if_dst`, `ttl.pipenet_scope`, or resolved `ttl.is_device` condition, do
+not add an unresolved runtime condition.
 
 The analysis is:
 
@@ -1094,9 +1093,9 @@ If `A` is `KnownCount(1)`, every endpoint address is compared only at `i = 0`,
 so the collective is legal. If a statically known loop makes `A`
 `KnownCount(N)` for `N > 1`, or an unknown-count periodic loop makes it
 `PeriodicUnknownCount`, the sequences differ at `i = 1`, so the graph produces
-two address classes and rejects the multicast. A uniform-repeat-stride
-predicate would reject all cases; pointwise equivalence accepts exactly the
-legal one.
+two address classes and rejects the multicast. Requiring one repeat stride for
+all receivers would reject every case; pointwise equivalence accepts exactly
+the legal one.
 
 #### CA/CC capacity proof
 
@@ -1763,10 +1762,10 @@ may execute there.
   DFB producer-domain check.
 - `visitRegionBranchControlFlowTransfer`: when entering a region of
   `scf.if`, `affine.if`, `ttl.if_src`, `ttl.if_dst`, or
-  `ttl.pipenet_scope`, the lattice at the region entry is set to
-  `current` intersected with `predicate-domain`. The framework's
-  `RegionBranchOpInterface` machinery handles join points after the
-  op (the post-op lattice is the union of region exits and skip).
+  `ttl.pipenet_scope`, the lattice at the region entry is set to `current`
+  intersected with the coordinates where the condition is true. The
+  framework's `RegionBranchOpInterface` machinery handles join points after
+  the op (the post-op lattice is the union of region exits and skip).
 
 The TTL custom region ops use a `ttl.yield` implicit terminator
 (`SingleBlockImplicitTerminator<"YieldOp">`) so the framework can
@@ -1789,8 +1788,8 @@ the role required by the op:
 | --- | --- |
 | `ttl.copy(buffer, pipe)` | `pipe.src` (single coord) |
 | `ttl.copy(pipe, buffer)` | `pipe.dst` (receiver set) |
-| `ttl.if_src %pipe` body | `pipe.src` (op carries the predicate intrinsically) |
-| `ttl.if_dst %pipe` body | `pipe.dst` (op carries the predicate intrinsically) |
+| `ttl.if_src %pipe` body | `pipe.src` (the operation executes its body only at the source coordinate) |
+| `ttl.if_dst %pipe` body | `pipe.dst` (the operation executes its body only in the destination range) |
 | `cb_wait` on pipe-coupled DFB | union of producer domains across all `cb_push` to the same DFB index |
 
 DFB wait checking is module-global: producer domains accumulate by
@@ -1827,9 +1826,10 @@ its events from the schedule.
 
 Cross-device correspondence includes the logical-device transfer in the pipe
 identity. Send counts are evaluated at the transfer's source device; receiver
-post and wait counts are evaluated at its destination device. Device predicates
-that are mutually exclusive in the generic kernel can therefore prove matching
-endpoint counts. Local pipes use the existing launch-node-only queries.
+post and wait counts are evaluated at its destination device. Mutually
+exclusive `ttl.is_device` conditions in the generic kernel can therefore prove
+matching endpoint counts. Local pipes use the existing launch-node-only
+queries.
 
 ### Pipe transfer and receiver-address graph
 
@@ -2022,7 +2022,7 @@ note: suggested guard: `net_0.is_src()`
 | collective pipe receiver payload layouts are incompatible | Collective endpoints use incompatible DFB element types, block sizes, reserve spans, or destination subviews. | use compatible receiver payload layouts, or use separate point-to-point transfers |
 | collective pipe receiver address sequences are not proven equal | The graph cannot prove one pointwise destination-address class over all occurrences of a collective transfer. | use receiver schedules that produce the same address for every occurrence, or use separate point-to-point transfers |
 | this `cb_wait` reads from a dataflow buffer that no other thread fills | A `cb_wait` references a DFB index that no `cb_push` anywhere in the module writes to. | check that another `@ttl.compute()` or `@ttl.datamovement()` thread reserves and pushes the same buffer |
-| this `cb_wait` runs on launched nodes where no thread pushes data to the buffer (would deadlock) | A `cb_wait` is reachable from nodes outside the union of `cb_push` producer domains for the same DFB index. | guard the wait with the same `if net.is_active(): ...` predicate the producer uses |
+| this `cb_wait` runs on launched nodes where no thread pushes data to the buffer (would deadlock) | A `cb_wait` is reachable from nodes outside the union of `cb_push` producer domains for the same DFB index. | guard the wait with the same `if net.is_active(): ...` role condition the producer uses |
 | could not statically analyze the PipeNet guard around this op | A surrounding condition uses runtime values or arithmetic the verifier can't enumerate per coordinate (e.g. multiplying a node coordinate by a runtime value). | rewrite using `net.is_src()` / `net.is_dst()` / `net.is_active()`, or compare `ttl.node(dims=2)` coordinates against integer constants |
 
 Internal-invariant diagnostics also exist (`references unknown PipeNet
@@ -2042,14 +2042,14 @@ declarations from each pipe-coupled op individually. The op never
 reaches TTL -> TTKernel lowering.
 
 The frontend emits this region op around DFB-context blocks
-(`with cb.reserve()`) whose body contains pipe role work. It carries
-two parallel attributes: `ttl.pipe_net_ids` (`DenseI64ArrayAttr`) and
+(`with cb.reserve()`) whose body contains pipe role work. It has two parallel
+attributes: `ttl.pipe_net_ids` (`DenseI64ArrayAttr`) and
 `ttl.pipe_net_roles` (`DenseI64ArrayAttr`, one entry per id; 0 =
 Source, 1 = Destination - `Active` is a runtime condition via
 `ttl.is_active` and is not valid as a scope role). The verifier checks
 that the scope's effective execution domain is a subset of the union
 of declared role domains, then walks its body with the same incoming
-domain because the scope has no runtime predicate. After verification
+domain because the scope adds no runtime condition. After verification
 the verifier inlines and erases the scope so downstream lowering sees a
 `pipenet_scope`-free IR.
 
@@ -2081,18 +2081,17 @@ A `ttl.copy(buffer, %pipe_a)` reachable from a node that is in
 diagnostic that names `net_a`, not the active nodes of some other
 PipeNet.
 
-Two mechanisms together carry per-PipeNet correctness in user code
+Two mechanisms enforce per-PipeNet correctness in user code
 when an operation defines multiple PipeNets over different node groups:
 
-1. `ttl.if_src %pipe { ... }` and `ttl.if_dst %pipe { ... }` carry
-   their own per-node predicate: the inner block executes only when
-   the current node matches that pipe's source or is in its
-   destination range. Per-pipe data movement is therefore correctly
-   conditional without any per-PipeNet wrapper.
+1. `ttl.if_src %pipe { ... }` executes only at the pipe's source, and
+   `ttl.if_dst %pipe { ... }` executes only in its destination range.
+   Per-pipe data movement is therefore conditional without a per-PipeNet
+   wrapper.
 
 2. Non-pipe work (dataflow-buffer reserves, compute, address
-   arithmetic) is guarded by the user with explicit role-based
-   predicates: `if net.is_src()`, `if net.is_dst()`,
+   arithmetic) is guarded by explicit role queries:
+   `if net.is_src()`, `if net.is_dst()`,
    `if net.is_active()`, or coordinate comparisons over
    `ttl.node(dims=2)` against integer constants.
 
@@ -2132,7 +2131,7 @@ that the two diverge:
 | Same-thread PipeNet wait-for cycles | yes (`ttl-verify-pipenet-schedule`) | runtime only |
 | `ttl.pipenet_scope` domain is a subset of declared role union | yes | no |
 | `cb_wait` covered by `cb_push` producer domain | yes (static) | runtime only (deadlock detector in `greenlet_scheduler.py`) |
-| Unanalyzable coord-dependent predicate diagnosed | yes | no |
+| Unanalyzable coordinate-dependent condition diagnosed | yes | no |
 | Missing/malformed `ttl.launch_grid`, unknown PipeNet ids | yes | n/a (no IR) |
 
 Consequently a guard bug that the compiler rejects with a precise
@@ -2183,7 +2182,7 @@ Pipe sources contribute `{(0, 0), (0, 1), (0, 2), (0, 3), (0, 0), (1, 0),
 (2, 0)}` and destinations contribute the rectangles `[0,3) x {row}` for
 each row plus `{col} x [0,4)` for each col. `a_net.is_active()` covers
 exactly `[0, 3) x [0, 4)`, twelve nodes; the remaining 8x7 - 12 = 44
-launched nodes evaluate the predicate to `false` and skip the
+launched nodes evaluate the role query to `false` and skip the
 pipe-coupled work.
 
 ## Test coverage
@@ -2256,7 +2255,7 @@ compile-time properties not runtime-observable.
 | 47 | Verifier names per-PipeNet role in cross-net diagnostics  |     |     |  X  |
 | 48 | `CreatePipeOp::verify` rejects `dstStart > dstEnd` (x)    |     |     |  X  |
 | 49 | `CreatePipeOp::verify` rejects `dstStart > dstEnd` (y)    |     |     |  X  |
-| 50 | Verifier rejects unanalyzable predicates with location note |   |     |  X  |
+| 50 | Verifier rejects unanalyzable coordinate conditions with location note |   |     |  X  |
 | 50a| Verifier rejects missing `ttl.launch_grid` module attribute |   |     |  X  |
 | 50b| Pipeline lit confirms `pipenet_scope` is gone post-verifier |   |     |  X  |
 | 51 | OperationPipeNets.work_extent: empty / point-to-point / collective |     |  X  |     |
@@ -2428,7 +2427,7 @@ resolves logical device edges to physical fabric routes.
 
 The shared graph and proof must preserve these fabric invariants:
 
-* logical-device predicates are evaluated as part of the execution coordinate;
+* logical-device comparisons are evaluated as part of the execution coordinate;
 * corresponding send and receiver-post declarations identify the same logical
   device transfer;
 * fabric transfers require a proven computed receiver address;
