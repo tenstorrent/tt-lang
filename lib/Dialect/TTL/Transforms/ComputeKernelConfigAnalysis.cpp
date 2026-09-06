@@ -75,18 +75,18 @@ getOptionalUnpackConstraint(func::FuncOp function) {
   }
 
   SmallVector<int32_t> dataflowBufferIndices(unpackAttribute.asArrayRef());
-  auto domain = getDFBIdentityDomain(function);
-  if (failed(domain)) {
+  auto range = getDFBIdentityRange(function);
+  if (failed(range)) {
     return function.emitOpError("requires finalized storage metadata");
   }
-  int64_t targetMaxDFBIndices = domain->size;
+  int64_t identityCount = range->count;
   if (llvm::any_of(dataflowBufferIndices, [&](int32_t index) {
-        return index < 0 || index >= targetMaxDFBIndices;
+        return index < 0 || index >= identityCount;
       })) {
     function.emitOpError()
         << kUnpackToDestFp32AttrName
         << " must contain dataflow buffer indices in range [0, "
-        << targetMaxDFBIndices - 1 << "] for " << domain->description;
+        << identityCount - 1 << "] for " << range->boundDescription;
     return failure();
   }
   llvm::sort(dataflowBufferIndices);
@@ -1089,16 +1089,16 @@ LogicalResult
 validateFinalizedDFBIndices(const KernelRequirements &requirements) {
   auto validateUses = [](ArrayRef<DFBInputUse> uses) -> LogicalResult {
     for (const DFBInputUse &use : uses) {
-      auto domain = getDFBIdentityDomain(use.consumer);
-      if (failed(domain)) {
+      auto range = getDFBIdentityRange(use.consumer);
+      if (failed(range)) {
         return use.consumer->emitOpError("requires finalized storage metadata");
       }
-      int64_t targetMaxDFBIndices = domain->size;
-      if (use.dfbIndex < 0 || use.dfbIndex >= targetMaxDFBIndices) {
+      int64_t identityCount = range->count;
+      if (use.dfbIndex < 0 || use.dfbIndex >= identityCount) {
         use.consumer->emitOpError()
             << "uses dataflow buffer index " << use.dfbIndex
-            << " outside the supported range [0, " << targetMaxDFBIndices - 1
-            << "] for " << domain->description;
+            << " outside the supported range [0, " << identityCount - 1
+            << "] for " << range->boundDescription;
         return failure();
       }
     }

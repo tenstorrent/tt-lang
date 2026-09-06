@@ -17,10 +17,12 @@ the memory and supplies its base address.
 | Limits | L1 capacity and 32 or 64 descriptor indices. | L1 capacity, including control records and alignment. |
 | Reuse | Compatible lifetimes share indices; distinct descriptors can also share backing storage. | Noninterfering payload ranges overlap; control records remain distinct. |
 | Runtime interface | Metal descriptor-indexed pointers, formats, and counters. | Arena-relative addresses, compile-time formats, and L1 control words. |
-| Execution coverage | Existing compute and transfer backend. | Tiled transfers, arithmetic, matmul, reductions, broadcast, and selected activations. |
+| Execution coverage | Existing compute and transfer backend. | BF16/FP32 full-tile tensor transfers, arithmetic, matmul, reductions, broadcast, and selected activations. |
 
 Both allocators already use completion-aware lifetime analysis. Storage reuse is
 not new; independence from the Metal descriptor interface is the change.
+Here, a full-tile transfer copies complete encoded tiles between a TTNN tensor
+and an arena-backed DFB on the same device.
 
 ## Design Decisions
 
@@ -47,12 +49,16 @@ avoids a device-side allocator, runtime fragmentation, and allocation work insid
 kernels. The complete plan is validated before declarations are rewritten, so a
 budget failure cannot leave partially assigned storage.
 
-The runtime provides one height-sharded L1 arena per invocation. Kernels receive
-one base address and use constant offsets; argument count does not grow with
-region count. Metal still allocates the arena, so its ownership and reservation
-rules remain authoritative. Passing the arena as a `generic_op` tensor retains
-it for execution. A fresh arena separates synchronization state across cached
-launches.
+For each call to a compiled `ttl.operation`, the runtime represents the arena as
+a row-major tensor with shape `(coreCount, arenaWords)` and height-shards it with
+one `(1, arenaWords)` row per participating worker core. Height sharding is the
+TTNN allocation mechanism for obtaining one equal-sized, contiguous L1 shard on
+each core; the arena has no tensor-height semantics. Kernels receive the
+core-local arena base address and use constant offsets, so argument count does
+not grow with region count. Metal still allocates the tensor, so its ownership
+and reservation rules remain authoritative. Passing the arena as a `generic_op`
+tensor retains it for execution. A fresh arena separates synchronization state
+across cached launches.
 
 The tradeoff is uniform allocation: every participating core reserves the largest
 required arena, including sparsely active cores. Initialization also currently
@@ -65,6 +71,10 @@ Payload lifetime completion proves that data bytes may be overwritten. It does
 not prove that another DFB can inherit the same counters and ring positions.
 Keeping control records distinct avoids requiring a state-reset and ownership
 handoff whenever payloads share an address.
+
+Two 32-bit words are the smallest representation that keeps producer and
+consumer updates independent. Packing both sequences into one word would require
+an atomic read-modify-write operation.
 
 This imposes a fixed `roundUp(8 * regionCount, alignment)` cost. For 96 one-page
 BF16 regions, simultaneous lifetimes require 196608 payload bytes plus 768
@@ -79,7 +89,7 @@ Those semantics are separate from choosing payload offsets.
 ### Configure compute from operand metadata and addresses
 
 Compute operands carry formats and arena-relative addresses instead of descriptor
-indices. The [target adapter](../../include/ttlang/Target/TTKernel/LLKs/compiler_l1_compute.h)
+indices. The [target adapter](../../include/ttlang/Target/TTKernel/LLKs/compiler_l1_compute_target.h)
 invokes existing address-based LLK primitives;
 architecture-specific signatures and address units stay inside that adapter.
 The allocator and Python DSL require no architecture-specific behavior.
@@ -93,8 +103,9 @@ to bound kernel code size as the number of logical DFBs grows.
 UNPACK owns input consumption; PACK owns output publication. MATH uses the existing
 DST synchronization protocol and does not update DFB counters. The completion
 rules are defined in [DFB Management](DFBManagement.md#compiler-managed-storage-protocol).
-Packing retains explicit output tile indices: combining these operations into
-Metal block-packing calls would introduce a descriptor-owned implicit cursor.
+Packing retains explicit output tile indices. `pack_tile_block` has no output
+tile-index operand, so replacing individual pack operations with it would
+discard the compiler-assigned L1 offsets.
 
 ### Place large regions first and reuse compatible gaps
 
@@ -172,8 +183,8 @@ root, sigmoid, tanh, and compute-produced intermediate storage. Both DRAM and L1
 tensors are covered. The existing [compute configuration contract](ComputeKernelConfiguration.md)
 requires a compatible unpack mode for every use of a logical DFB. Attention
 publishes distinct reduction and SFPU operands to satisfy that FP32 constraint.
-Compiler alignment tests cover both Wormhole and Blackhole; Wormhole compute, trace replay, and independent command
-queues require separate device qualification.
+Compiler alignment tests cover Wormhole and Blackhole. Device correctness
+evidence currently covers Blackhole.
 
 ## Validation and Implementation References
 
@@ -182,8 +193,8 @@ Validation checks numerical results and allocation safety independently:
 sequential lifetimes, mixed extents, multiple cores, repeated launches, and
 protocol wraparound. [Compute tests](../../test/python/test_compiler_l1_compute.py)
 compare both memory models and exercise 96 simultaneously live inputs, retained
-residuals, normalization with gate/up/down projection, dependent state updates,
-attention, expert merge, and repeated invocations. [Compiler stress tests](../../test/ttlang/Dialect/TTL/Transforms/compiler_l1_stress.py)
+residuals, a Kimi-derived SiTU MLP residual, dependent state updates, attention,
+expert merge, and repeated invocations. [Compiler stress tests](../../test/ttlang/Dialect/TTL/Transforms/compiler_l1_stress.py)
 derive conflicts and live-byte lower bounds from generated schedules, then check
 placement, target alignment, determinism, and budget boundaries. These checks do
 not assume the greedy result is optimal.
@@ -198,6 +209,22 @@ binding. Shared terminology is in the
 
 ## Future Work
 
+### Sub-tile Compute
+
+The compute lowering currently accepts only 32x32 BF16 and FP32 tiles. Supporting
+smaller tile geometries requires the compiler to carry the selected height,
+width, byte stride, and face layout into the address-based operand type. Target
+adapters must translate that metadata into architecture-specific unpack, math,
+and pack configuration. Allocation itself already operates on byte sizes and does
+not require a new placement algorithm.
+
+Device correctness coverage must include every supported geometry and dtype for
+copy, element-wise operations, matmul, reductions, broadcast, transpose, and
+format reconfiguration. Tests must also cover mixed geometries when the underlying
+LLK operation permits them and require a compiler diagnostic otherwise.
+
+### Other Backend Integrations
+
 Broader layer sizes, mixed formats, and performance require additional
 qualification. Consumer-owned in-place replacement requires a PACK-to-UNPACK
 completion handoff before the consumer releases storage; producer publication
@@ -208,3 +235,9 @@ across wraparound.
 Explicit DFB resets require a synchronized transition that restores counters and
 positions after outstanding accesses complete. Supporting that semantic operation
 is distinct from reconfiguring Metal descriptors, which this allocator eliminates.
+
+Tensor-backed DFBs, allocation groups, PipeNet transfers, and external kernels
+need explicit address ownership and completion contracts before they can use the
+arena. Row-major transfer, tilize/untilize, packed-format execution, Wormhole
+compute, trace replay, and independent command queues require separate device
+qualification.
