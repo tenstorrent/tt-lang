@@ -3742,6 +3742,7 @@ def build_generic_op_io_tensors(
     pipe_computed_address_dfb_tensors: Optional[Dict[int, Any]] = None,
     dfb_reconfiguration_scratch_tensors: Optional[Dict[int, Any]] = None,
     dfb_reconfiguration_configuration_tensors: Optional[List[Any]] = None,
+    compiler_l1_arena: Optional[Any] = None,
 ) -> List[Any]:
     """Return io_tensors with the user-visible output in the final position."""
     if not tensors:
@@ -3764,6 +3765,7 @@ def build_generic_op_io_tensors(
         + computed_address_dfb_tensors
         + reconfiguration_scratch_tensors
         + list(dfb_reconfiguration_configuration_tensors or [])
+        + ([compiler_l1_arena] if compiler_l1_arena is not None else [])
         + list(tensors)
     )
     if len(io_tensors) < 2:
@@ -4216,10 +4218,8 @@ def _run_kernel_on_device_impl(
         dfb_reconfiguration_configuration_tensors=(
             reconfiguration_resources.configuration_tensors
         ),
+        compiler_l1_arena=compiler_l1_arena,
     )
-
-    if compiler_l1_arena is not None:
-        io_tensors.append(compiler_l1_arena)
 
     portable_resource_lifetimes = (
         resource_plan.lifetimes if resource_plan is not None else ()

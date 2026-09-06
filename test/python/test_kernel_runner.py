@@ -4854,13 +4854,18 @@ def test_run_kernel_reuses_structural_hash_while_updating_invocation_values(
     assert kernel_runner.ttnn.synchronize_calls == [device, device]
 
 
-def test_build_generic_op_io_tensors_duplicates_single_output():
+# The compiler-L1 arena supplies the required input without replacing the output.
+def test_build_generic_op_io_tensors_handles_single_output():
     tensor = _FakeTensorWithoutDevice()
+    arena = object()
 
     assert kernel_runner.build_generic_op_io_tensors([tensor], []) == [
         tensor,
         tensor,
     ]
+    assert kernel_runner.build_generic_op_io_tensors(
+        [tensor], [], compiler_l1_arena=arena
+    ) == [arena, tensor]
 
 
 def test_build_generic_op_io_tensors_keeps_user_output_last():
@@ -4869,14 +4874,23 @@ def test_build_generic_op_io_tensors_keeps_user_output_last():
     scratch = object()
     computed_dfb_1 = object()
     computed_dfb_3 = object()
+    compiler_l1_arena = object()
 
     io_tensors = kernel_runner.build_generic_op_io_tensors(
         [inp, output],
         [scratch],
         {3: computed_dfb_3, 1: computed_dfb_1},
+        compiler_l1_arena=compiler_l1_arena,
     )
 
-    assert io_tensors == [scratch, computed_dfb_1, computed_dfb_3, inp, output]
+    assert io_tensors == [
+        scratch,
+        computed_dfb_1,
+        computed_dfb_3,
+        compiler_l1_arena,
+        inp,
+        output,
+    ]
     assert io_tensors[-1] is output
 
 
