@@ -321,9 +321,9 @@ def TTL_ComputeOp : TTL_Op<"compute", [
   let description = [{
     `ttl.compute` is a structured operation similar to `linalg.generic` but with
     tile-typed block arguments. It iterates over a grid of tiles and applies
-    the body computation to each tile position. Circular buffers are associated
-    to tensor operands/results via `ttl.attach_cb` (one CB per tensor SSA
-    value); `ttl.compute` itself only carries tensor operands.
+    the body computation to each tile position. `ttl.attach_cb` associates one
+    dataflow buffer (DFB) with each tensor SSA operand or result.
+    `ttl.compute` itself carries only tensor operands.
 
     The operation takes tensors of tiles as inputs and outputs. The block
     arguments are individual tiles (`!ttcore.tile<H, W, dtype>`) extracted from
@@ -333,23 +333,10 @@ def TTL_ComputeOp : TTL_Op<"compute", [
     iterator. The accumulator remains resident in DST across the corresponding
     reduction iterations.
 
-    In the pipeline, `ttl.compute` is lowered to `scf.for` loops by
-    `ttl-lower-to-loops` BEFORE bufferization. The `ttl.tile_*` ops in the
-    loop body are then converted to TTKernel ops after bufferization.
-
-    Example:
-    ```mlir
-    %result = ttl.compute
-        ins(%a, %b : tensor<4x4x!ttcore.tile<32x32, f32>>,
-                     tensor<4x4x!ttcore.tile<32x32, f32>>)
-        outs(%init : tensor<4x4x!ttcore.tile<32x32, f32>>) {
-      ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
-           %b_tile: !ttcore.tile<32x32, f32>,
-           %out_tile: !ttcore.tile<32x32, f32>):
-        %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-        ttl.yield
-    } -> tensor<4x4x!ttcore.tile<32x32, f32>>
-    ```
+    Every iteration dimension must occur in at least one operand indexing map
+    so its bound is defined. Tensor dimensions may use constant-zero map
+    results only when their extent is one. A zero-rank iteration domain
+    therefore represents one execution over unit-extent tensor operands.
   }];
 
   let arguments = (ins

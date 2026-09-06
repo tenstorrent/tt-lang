@@ -171,6 +171,94 @@ static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
                                  dynDims);
 }
 
+static void verifyOutputPlans(const ComputeOpCreationPlan &creation,
+                              const OutputPublicationPlan &outputs) {
+  assert(creation.outputPlans.size() == outputs.dfbs.size() &&
+         "each resolved output requires a formal output plan");
+  for (auto [outputPlan, outputDFB] :
+       llvm::zip_equal(creation.outputPlans, outputs.dfbs)) {
+    assert(outputPlan.dfb == outputDFB &&
+           "resolved output order changed after creation planning");
+  }
+}
+
+static void appendOutputIndexingMaps(const ComputeOpCreationPlan &creation,
+                                     SmallVectorImpl<Attribute> &indexingMaps) {
+  for (const ComputeOutputPlan &outputPlan : creation.outputPlans) {
+    indexingMaps.push_back(AffineMapAttr::get(outputPlan.indexingMap));
+  }
+}
+
+// Attach the complete DFB view before selecting its formal compute result;
+// allocation geometry remains complete when publication uses a compact view.
+static Value buildFormalOutput(PatternRewriter &rewriter, Location loc,
+                               RankedTensorType attachmentType,
+                               RankedTensorType formalType, Value outputDFB,
+                               std::optional<Value> dynamicDimensionExemplar) {
+  Value init =
+      dynamicDimensionExemplar
+          ? buildInitTensor(rewriter, loc, attachmentType,
+                            *dynamicDimensionExemplar)
+          : tensor::EmptyOp::create(rewriter, loc, attachmentType.getShape(),
+                                    attachmentType.getElementType());
+  Value attached =
+      AttachCBOp::create(rewriter, loc, attachmentType, init, outputDFB);
+  if (formalType == attachmentType) {
+    return attached;
+  }
+
+  SmallVector<OpFoldResult> offsets(formalType.getRank(),
+                                    rewriter.getIndexAttr(0));
+  SmallVector<OpFoldResult> sizes;
+  sizes.reserve(formalType.getRank());
+  for (int64_t extent : formalType.getShape()) {
+    sizes.push_back(rewriter.getIndexAttr(extent));
+  }
+  SmallVector<OpFoldResult> strides(formalType.getRank(),
+                                    rewriter.getIndexAttr(1));
+  return tensor::ExtractSliceOp::create(rewriter, loc, formalType, attached,
+                                        offsets, sizes, strides);
+}
+
+static void buildFormalOutputs(PatternRewriter &rewriter, Location loc,
+                               const ComputeOpCreationPlan &creation,
+                               const OutputPublicationPlan &outputs,
+                               std::optional<Value> dynamicDimensionExemplar,
+                               SmallVectorImpl<Value> &attachedOutputs,
+                               SmallVectorImpl<Type> &resultTypes) {
+  verifyOutputPlans(creation, outputs);
+  for (auto [outputPlan, outputDFB] :
+       llvm::zip_equal(creation.outputPlans, outputs.dfbs)) {
+    attachedOutputs.push_back(buildFormalOutput(
+        rewriter, loc, outputPlan.attachmentType, outputPlan.formalType,
+        outputDFB, dynamicDimensionExemplar));
+    resultTypes.push_back(outputPlan.formalType);
+  }
+}
+
+static void
+addFormalOutputBlockArguments(Block *body, Location loc,
+                              const ComputeOpCreationPlan &creation) {
+  for (const ComputeOutputPlan &outputPlan : creation.outputPlans) {
+    body->addArgument(outputPlan.formalType.getElementType(), loc);
+  }
+}
+
+// Type-changing publication absorbs every original result use, so no
+// type-compatible replacement exists or remains necessary.
+static void replaceComputeSource(PatternRewriter &rewriter, Operation *source,
+                                 Value computeResult) {
+  assert(source->getNumResults() == 1 &&
+         "compute creation requires one source result");
+  if (source->getResult(0).getType() == computeResult.getType()) {
+    rewriter.replaceOp(source, computeResult);
+    return;
+  }
+  assert(source->getResult(0).use_empty() &&
+         "type-changing output publication requires no surviving source use");
+  rewriter.eraseOp(source);
+}
+
 /// Selects the insertion position proven by output-publication planning.
 static void insertAtCreationAnchor(PatternRewriter &rewriter,
                                    const OutputPublicationPlan &outputs) {
@@ -415,7 +503,6 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   assert(creation.recipe == ComputeOpCreationRecipe::Fused &&
          "fused builder requires a fused creation recipe");
   const FusionTraceResult &trace = creation.trace;
-  RankedTensorType type = creation.resultType;
 
   // Verify every recorded dependency before creating IR. This prevents plan
   // invalidation by an earlier rewrite from leaving a partially built compute.
@@ -454,10 +541,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   for (AffineMap inputMap : creation.iteration.inputMaps) {
     maps.push_back(AffineMapAttr::get(inputMap));
   }
-  for (size_t outputIndex = 0; outputIndex < outputs.dfbs.size();
-       ++outputIndex) {
-    maps.push_back(AffineMapAttr::get(creation.iteration.outputMap));
-  }
+  appendOutputIndexingMaps(creation, maps);
   SmallVector<Attribute> iteratorTypes =
       buildIteratorTypeAttributes(rewriter, creation.iteration.iteratorTypes);
 
@@ -469,17 +553,11 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   // chains with no root inputs, use tensor.empty directly (static shapes).
   SmallVector<Value> allInitAttached;
   SmallVector<Type> resultTypes;
-  for (Value outputDFB : outputs.dfbs) {
-    Value init = creation.inputs.empty()
-                     ? tensor::EmptyOp::create(rewriter, loc, type.getShape(),
-                                               type.getElementType())
-                           .getResult()
-                     : buildInitTensor(rewriter, loc, type, creation.inputs[0]);
-    Value initAttached =
-        AttachCBOp::create(rewriter, loc, init.getType(), init, outputDFB);
-    allInitAttached.push_back(initAttached);
-    resultTypes.push_back(type);
-  }
+  buildFormalOutputs(rewriter, loc, creation, outputs,
+                     creation.inputs.empty()
+                         ? std::nullopt
+                         : std::optional<Value>(creation.inputs[0]),
+                     allInitAttached, resultTypes);
 
   // Create ttl.compute op
   auto computeOp = ComputeOp::create(
@@ -493,9 +571,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   for (ttcore::TileType inputTileType : creation.inputTileTypes) {
     body->addArgument(inputTileType, loc);
   }
-  for (size_t i = 0; i < outputs.dfbs.size(); ++i) {
-    body->addArgument(creation.resultTileType, loc);
-  }
+  addFormalOutputBlockArguments(body, loc, creation);
 
   rewriter.setInsertionPointToStart(body);
 
@@ -585,7 +661,7 @@ static LogicalResult buildFusedCompute(Operation *sinkOp,
   replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
                                    replacedPushes);
   eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
-  rewriter.replaceOp(sinkOp, computeOp.getResult(0));
+  replaceComputeSource(rewriter, sinkOp, computeOp.getResult(0));
 
   // Erase the fused ops in reverse topological order (sink to roots).
   // This ensures each op's users are erased before the op itself.
@@ -626,26 +702,19 @@ buildRowNormalizationCompute(Operation *sinkOp, PatternRewriter &rewriter,
         sinkOp, "row-normalization expression changed after planning");
   }
   Location loc = sinkOp->getLoc();
-  RankedTensorType outputType = creation.resultType;
   SmallVector<Attribute> maps;
   for (AffineMap inputMap : creation.iteration.inputMaps) {
     maps.push_back(AffineMapAttr::get(inputMap));
   }
-  maps.append(outputs.dfbs.size(),
-              AffineMapAttr::get(creation.iteration.outputMap));
+  appendOutputIndexingMaps(creation, maps);
   SmallVector<Attribute> iteratorTypes =
       buildIteratorTypeAttributes(rewriter, creation.iteration.iteratorTypes);
 
   insertAtCreationAnchor(rewriter, outputs);
   SmallVector<Value> outputViews;
   SmallVector<Type> resultTypes;
-  for (Value outputDFB : outputs.dfbs) {
-    Value init =
-        buildInitTensor(rewriter, loc, outputType, creation.inputs.front());
-    outputViews.push_back(
-        AttachCBOp::create(rewriter, loc, init.getType(), init, outputDFB));
-    resultTypes.push_back(outputType);
-  }
+  buildFormalOutputs(rewriter, loc, creation, outputs, creation.inputs.front(),
+                     outputViews, resultTypes);
 
   auto computeOp = ComputeOp::create(
       rewriter, loc, TypeRange(resultTypes), ValueRange(creation.inputs),
@@ -655,10 +724,7 @@ buildRowNormalizationCompute(Operation *sinkOp, PatternRewriter &rewriter,
   for (ttcore::TileType inputTileType : creation.inputTileTypes) {
     body->addArgument(inputTileType, loc);
   }
-  Type outputTileType = creation.resultTileType;
-  SmallVector<Type> outputTileTypes(outputs.dfbs.size(), outputTileType);
-  SmallVector<Location> outputLocations(outputs.dfbs.size(), loc);
-  body->addArguments(outputTileTypes, outputLocations);
+  addFormalOutputBlockArguments(body, loc, creation);
 
   rewriter.setInsertionPointToStart(body);
   Value inputTile = body->getArgument(0);
@@ -667,8 +733,9 @@ buildRowNormalizationCompute(Operation *sinkOp, PatternRewriter &rewriter,
   Value outputTile = body->getArgument(creation.inputs.size());
   Value result =
       createTileOpWithPlaceholderDstIndex<TileRowNormalizationBlockOp>(
-          rewriter, loc, outputTileType, inputTile, gammaTile, outputTile,
-          schedule.scale, schedule.epsilon, rewriter.getBoolAttr(hasGamma),
+          rewriter, loc, creation.resultTileType, inputTile, gammaTile,
+          outputTile, schedule.scale, schedule.epsilon,
+          rewriter.getBoolAttr(hasGamma),
           rewriter.getI64IntegerAttr(schedule.numTiles));
 
   for (StoreOp store : outputs.stores) {
@@ -680,7 +747,7 @@ buildRowNormalizationCompute(Operation *sinkOp, PatternRewriter &rewriter,
   replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
                                    replacedPushes);
   eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
-  rewriter.replaceOp(sinkOp, computeOp.getResult(0));
+  replaceComputeSource(rewriter, sinkOp, computeOp.getResult(0));
   for (Operation *operation : llvm::reverse(creation.trace.opsInOrder)) {
     if (operation != sinkOp && operation->use_empty()) {
       rewriter.eraseOp(operation);
@@ -719,16 +786,12 @@ static LogicalResult buildComputeFromInputs(
 
   Location loc = op->getLoc();
   ValueRange inputs(creation->inputs);
-  RankedTensorType outputType = creation->resultType;
 
   SmallVector<Attribute> maps;
   for (AffineMap inputMap : creation->iteration.inputMaps) {
     maps.push_back(AffineMapAttr::get(inputMap));
   }
-  for (size_t outputIndex = 0; outputIndex < outputs.dfbs.size();
-       ++outputIndex) {
-    maps.push_back(AffineMapAttr::get(creation->iteration.outputMap));
-  }
+  appendOutputIndexingMaps(*creation, maps);
   SmallVector<Attribute> iteratorTypes =
       buildIteratorTypeAttributes(rewriter, creation->iteration.iteratorTypes);
 
@@ -736,18 +799,10 @@ static LogicalResult buildComputeFromInputs(
 
   SmallVector<Value> allInitAttached;
   SmallVector<Type> resultTypes;
-  for (Value outputDFB : outputs.dfbs) {
-    Value init =
-        inputs.empty()
-            ? tensor::EmptyOp::create(rewriter, loc, outputType.getShape(),
-                                      outputType.getElementType())
-                  .getResult()
-            : buildInitTensor(rewriter, loc, outputType, inputs[0]);
-    Value initAttached =
-        AttachCBOp::create(rewriter, loc, init.getType(), init, outputDFB);
-    allInitAttached.push_back(initAttached);
-    resultTypes.push_back(outputType);
-  }
+  buildFormalOutputs(rewriter, loc, *creation, outputs,
+                     inputs.empty() ? std::nullopt
+                                    : std::optional<Value>(inputs.front()),
+                     allInitAttached, resultTypes);
 
   auto computeOp = ComputeOp::create(rewriter, loc, TypeRange(resultTypes),
                                      inputs, ValueRange(allInitAttached),
@@ -758,9 +813,7 @@ static LogicalResult buildComputeFromInputs(
   for (ttcore::TileType inputTileType : creation->inputTileTypes) {
     body->addArgument(inputTileType, loc);
   }
-  for (size_t i = 0; i < outputs.dfbs.size(); ++i) {
-    body->addArgument(creation->resultTileType, loc);
-  }
+  addFormalOutputBlockArguments(body, loc, *creation);
 
   rewriter.setInsertionPointToStart(body);
   ComputeInstrumentationEmitter instrumentationEmitter(
@@ -781,7 +834,7 @@ static LogicalResult buildComputeFromInputs(
   replaceOutputPushesBeforeCompute(rewriter, computeOp, outputs,
                                    replacedPushes);
   eraseAbsorbedOutputOps(rewriter, outputs, computeOp, replacedPushes);
-  rewriter.replaceOp(op, computeOp.getResult(0));
+  replaceComputeSource(rewriter, op, computeOp.getResult(0));
   for (const ComputeInstrumentationPlacement &placement :
        creation->instrumentation) {
     rewriter.eraseOp(placement.operation);
@@ -1159,9 +1212,10 @@ struct LowerStoreToCompute : OpRewritePattern<StoreOp> {
     SmallVector<Attribute> iteratorTypes =
         buildIteratorTypeAttributes(rewriter, plan.iteration.iteratorTypes);
 
-    Value init = buildInitTensor(rewriter, loc, outputType, plan.outputView);
+    auto attachmentType = cast<RankedTensorType>(plan.outputView.getType());
     Value initAttached =
-        AttachCBOp::create(rewriter, loc, init.getType(), init, plan.outputDFB);
+        buildFormalOutput(rewriter, loc, attachmentType, outputType,
+                          plan.outputDFB, plan.outputView);
 
     auto computeOp = ComputeOp::create(
         rewriter, loc, TypeRange{outputType}, ValueRange{input},

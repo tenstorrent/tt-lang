@@ -1343,9 +1343,11 @@ mlir::tt::ttl::TileTypecastOp::fold(FoldAdaptor /*adaptor*/) {
 
 void mlir::tt::ttl::ComputeOp::print(mlir::OpAsmPrinter &p) {
   p << " ins(";
-  p.printOperands(getInputs());
-  p << " : ";
-  llvm::interleaveComma(getInputs().getTypes(), p);
+  if (!getInputs().empty()) {
+    p.printOperands(getInputs());
+    p << " : ";
+    llvm::interleaveComma(getInputs().getTypes(), p);
+  }
   p << ")";
 
   p << " outs(";
@@ -1586,6 +1588,13 @@ mlir::tt::ttl::ComputeOp::getTiledImplementation(
   // can compute the correct global DFB offset from the extract_slice.
   mlir::IRMapping mapping;
   mlir::WalkResult storeWalk = getBody().walk([&](TileStoreOp store) {
+    if (store.getRowPrefix()) {
+      // Row-prefix packing derives its byte count from the complete reserved
+      // view. Its zero output map already fixes the one bulk store at the
+      // reservation origin, so replacing that view with a unit slice would
+      // truncate the packed prefix.
+      return mlir::WalkResult::advance();
+    }
     mlir::Value view = store.getView();
     if (view.getParentRegion() == &getBody()) {
       return mlir::WalkResult::advance();
@@ -1832,21 +1841,6 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   auto iteratorCount = getIteratorTypes().size();
   auto maps = mapsAttr;
 
-  // The iteration domain (from iterator_types) must be at least as large as the
-  // maximum operand rank. Extra dimensions are reduction dims that do not
-  // appear in any operand's shape (e.g., the K dimension in matmul: rank-2
-  // operands with a 3D [M, N, K] iteration space).
-  int64_t maxTensorRank = 0;
-  for (Value operand : llvm::concat<Value>(getInputs(), getOutputs())) {
-    auto ty = cast<RankedTensorType>(operand.getType());
-    maxTensorRank = std::max(maxTensorRank, ty.getRank());
-  }
-  if (iteratorCount < static_cast<size_t>(maxTensorRank)) {
-    return emitOpError("iterator_types count (")
-           << iteratorCount << ") must be >= maximum tensor rank ("
-           << maxTensorRank << ")";
-  }
-
   auto verifyMapCommon = [&](AffineMap map,
                              size_t expectedResults) -> mlir::LogicalResult {
     if (map.getNumDims() != iteratorCount) {
@@ -1871,28 +1865,48 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   // require the corresponding tensor dimension to be 1.
   // Examples of invalid maps: (d0, d1)->(d0 + d1), (d0, d1)->(1),
   // (d0, d1, d2)->(d0, d0), (d0)[s0]->(d0 + s0).
-  auto validateMapStructure =
-      [&](AffineMap map, RankedTensorType tensorTy, StringRef kind, size_t idx,
-          SmallVectorImpl<bool> *dimsReferenced) -> mlir::LogicalResult {
-    if (!map.isProjectedPermutation(/*allowZeroInResults=*/true)) {
+  auto validateMapStructure = [&](AffineMap map, RankedTensorType tensorTy,
+                                  StringRef kind,
+                                  size_t idx) -> mlir::LogicalResult {
+    if (map.getNumSymbols() != 0) {
       return emitOpError() << kind << " " << idx
-                           << " indexing map must be a projected permutation"
-                              " (unique dims or 0 constants)";
+                           << " indexing map must not contain symbols";
     }
+    llvm::SmallBitVector referencedDims(map.getNumDims(), false);
     for (auto [resIdx, expr] : llvm::enumerate(map.getResults())) {
       if (auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr)) {
-        if (dimsReferenced) {
-          (*dimsReferenced)[dimExpr.getPosition()] = true;
+        if (referencedDims.test(dimExpr.getPosition())) {
+          return emitOpError()
+                 << kind << " " << idx
+                 << " indexing map must not repeat an iterator dimension";
         }
-      } else if (auto cstExpr =
+        referencedDims.set(dimExpr.getPosition());
+      } else if (auto constantExpr =
                      mlir::dyn_cast<mlir::AffineConstantExpr>(expr)) {
+        if (constantExpr.getValue() != 0) {
+          return emitOpError() << kind << " " << idx
+                               << " indexing map constants must be zero";
+        }
         if (tensorTy.getDimSize(resIdx) != 1) {
           return emitOpError() << kind << " " << idx << " broadcast dim "
                                << resIdx << " must have size 1";
         }
+      } else {
+        return emitOpError()
+               << kind << " " << idx
+               << " indexing map results must be unique dimensions or zero "
+                  "constants";
       }
     }
     return success();
+  };
+  auto recordReferencedDims = [](AffineMap map,
+                                 SmallVectorImpl<bool> &dimsReferenced) {
+    for (AffineExpr expr : map.getResults()) {
+      if (auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr)) {
+        dimsReferenced[dimExpr.getPosition()] = true;
+      }
+    }
   };
 
   auto requireAttachedCB = [&](Value tensor, size_t idx,
@@ -1907,6 +1921,7 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   };
 
   SmallVector<bool> dimsReferencedByInputs(iteratorCount, false);
+  SmallVector<bool> dimsReferencedByOperands(iteratorCount, false);
   for (size_t i = 0; i < numInputs; ++i) {
     auto tensorTy = mlir::cast<RankedTensorType>(getInputs()[i].getType());
     if (!tensorTy.hasStaticShape()) {
@@ -1919,10 +1934,11 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     if (failed(verifyMapCommon(map, tensorTy.getRank()))) {
       return failure();
     }
-    if (failed(validateMapStructure(map, tensorTy, "input", i,
-                                    &dimsReferencedByInputs))) {
+    if (failed(validateMapStructure(map, tensorTy, "input", i))) {
       return failure();
     }
+    recordReferencedDims(map, dimsReferencedByInputs);
+    recordReferencedDims(map, dimsReferencedByOperands);
   }
 
   DenseSet<Value> outputDFBs;
@@ -1946,10 +1962,10 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     if (failed(verifyMapCommon(map, tensorTy.getRank()))) {
       return failure();
     }
-    if (failed(validateMapStructure(map, tensorTy, "output", i,
-                                    /*dimsReferenced=*/nullptr))) {
+    if (failed(validateMapStructure(map, tensorTy, "output", i))) {
       return failure();
     }
+    recordReferencedDims(map, dimsReferencedByOperands);
 
     // Reduction dims must not appear in output maps. Like linalg.generic,
     // reduction dimensions are contracted: the body accumulates into the
@@ -1971,6 +1987,13 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
       return emitOpError()
              << "reduction dimension " << d
              << " must be referenced by at least one input indexing map";
+    }
+  }
+  for (size_t dimension = 0; dimension < iteratorCount; ++dimension) {
+    if (!dimsReferencedByOperands[dimension]) {
+      return emitOpError() << "iterator dimension " << dimension
+                           << " must be referenced by at least one indexing "
+                              "map";
     }
   }
 
