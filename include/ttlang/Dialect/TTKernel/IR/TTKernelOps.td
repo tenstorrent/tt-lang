@@ -192,6 +192,61 @@ def TTKernel_PackTileBlockOp : TTKernel_Op<"pack_tile_block"> {
     }];
 }
 
+def TTKernel_PackRowsInitOp : TTKernel_InitOp<"pack_rows_init"> {
+    let summary = "Configure contiguous DST row packing";
+    let description = [{
+      Configures the packer to write `row_count` contiguous hardware rows from
+      a DST tile. The configuration remains active until `pack_rows_uninit`.
+      `row_count` must be in the range 1 through 64.
+    }];
+
+    let arguments = (ins
+      ConfinedAttr<I64Attr, [IntPositive, IntMaxValue<64>]>:$row_count
+    );
+
+    let assemblyFormat = [{ attr-dict }];
+}
+
+def TTKernel_PackRowsUninitOp : TTKernel_Op<"pack_rows_uninit"> {
+    let summary = "Restore the packer after contiguous DST row packing";
+    let description = [{
+      Restores the standard packer configuration after one or more
+      `pack_rows` operations.
+    }];
+
+    let assemblyFormat = [{ attr-dict }];
+}
+
+def TTKernel_PackRowsOp : TTKernel_Op<"pack_rows"> {
+    let summary = "Pack a contiguous prefix of DST rows";
+    let description = [{
+      Packs `row_count` hardware rows from one 32x32 DST tile into contiguous
+      storage beginning at `out_index` in the output dataflow buffer. Each
+      hardware row contains 16 datums, so two hardware rows represent one
+      logical 32-datum tile row. `row_count` must be in the range 1 through 64.
+      `out_index` is a page index relative to the reserved write pointer. The
+      packed bytes may span subsequent pages and must remain within the
+      reserved dataflow buffer capacity.
+
+      The destination pages must be reserved before this operation. A
+      dominating `pack_rows_init` must configure the same `row_count`, and a
+      subsequent `pack_rows_uninit` must restore the packer configuration.
+    }];
+
+    let arguments = (ins
+      IndexLike:$dst_index,
+      TTKernel_CB:$out_cb,
+      IndexLike:$out_index,
+      ConfinedAttr<I64Attr, [IntPositive, IntMaxValue<64>]>:$row_count
+    );
+
+    let assemblyFormat = [{
+      `(` $dst_index `,` $out_cb `,` $out_index `)` attr-dict `:`
+      functional-type(operands, results)
+    }];
+    let hasVerifier = 1;
+}
+
 def TTKernel_PackReconfigL1AccOp : TTKernel_Op<"pack_reconfig_l1_acc"> {
     let summary = "Reconfigure packer to L1 accumulation mode.";
     let description = [{

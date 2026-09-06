@@ -1,0 +1,47 @@
+// Summary: Verifies BF16 and FP32 row packing lowers to the public compute API.
+
+// RUN: ttlang-opt --convert-ttkernel-to-emitc --split-input-file -o %t.emitc.mlir %s
+// RUN: FileCheck %s --input-file=%t.emitc.mlir --check-prefix=EMITC
+// RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
+// RUN: FileCheck %s --input-file=%t.cpp --check-prefix=CPP
+
+// BF16 row packing emits the configured row count and balanced setup calls.
+// EMITC-LABEL: func.func @pack_rows_bf16
+// EMITC: %[[ROWS:.*]] = emitc.literal "28U" : i32
+// EMITC-NEXT: emitc.call_opaque "pack_rows_init"(%[[ROWS]])
+// EMITC-NEXT: emitc.call_opaque "pack_rows"
+// EMITC-NEXT: emitc.call_opaque "pack_rows_uninit"()
+// CPP: #include "api/compute/pack.h"
+// CPP-LABEL: void kernel_main() {
+// CPP: pack_rows_init(28U);
+// CPP-NEXT: pack_rows({{.*}});
+// CPP-NEXT: pack_rows_uninit();
+func.func @pack_rows_bf16() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %c0 = arith.constant 0 : index
+  %cb = ttkernel.get_compile_time_arg_val(0)
+      : () -> !ttkernel.cb<14, !ttcore.tile<1x32, bf16>>
+  ttkernel.pack_rows_init {row_count = 28 : i64}
+  ttkernel.pack_rows(%c0, %cb, %c0) {row_count = 28 : i64}
+      : (index, !ttkernel.cb<14, !ttcore.tile<1x32, bf16>>, index) -> ()
+  ttkernel.pack_rows_uninit
+  func.return
+}
+
+// -----
+
+// FP32 row packing uses the same public compute API.
+// EMITC-LABEL: func.func @pack_rows_f32
+// EMITC: %[[ROWS:.*]] = emitc.literal "28U" : i32
+// EMITC-NEXT: emitc.call_opaque "pack_rows_init"(%[[ROWS]])
+// EMITC-NEXT: emitc.call_opaque "pack_rows"
+// EMITC-NEXT: emitc.call_opaque "pack_rows_uninit"()
+func.func @pack_rows_f32() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+  %c0 = arith.constant 0 : index
+  %cb = ttkernel.get_compile_time_arg_val(1)
+      : () -> !ttkernel.cb<14, !ttcore.tile<1x32, f32>>
+  ttkernel.pack_rows_init {row_count = 28 : i64}
+  ttkernel.pack_rows(%c0, %cb, %c0) {row_count = 28 : i64}
+      : (index, !ttkernel.cb<14, !ttcore.tile<1x32, f32>>, index) -> ()
+  ttkernel.pack_rows_uninit
+  func.return
+}

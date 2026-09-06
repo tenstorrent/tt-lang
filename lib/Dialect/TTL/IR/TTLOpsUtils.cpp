@@ -1102,19 +1102,35 @@ llvm::StringRef describeTraceFailure(TraceFailureReason reason) {
 
 namespace ttk = mlir::tt::ttkernel;
 
-llvm::SmallDenseSet<Value, 2> getPackTileCBs(scf::ForOp loop) {
-  llvm::SmallDenseSet<Value, 2> cbs;
-  loop->walk([&](ttk::PackTileOp packOp) { cbs.insert(packOp.getOutCb()); });
-  loop->walk(
-      [&](ttk::PackTileBlockOp packOp) { cbs.insert(packOp.getOutCb()); });
-  return cbs;
+FailureOr<Value> getProducerPackOutputDFB(Operation *operation) {
+  if (auto packOp = dyn_cast<ttk::PackTileOp>(operation)) {
+    return packOp.getOutCb();
+  }
+  if (auto packOp = dyn_cast<ttk::PackTileBlockOp>(operation)) {
+    return packOp.getOutCb();
+  }
+  if (auto packOp = dyn_cast<ttk::PackRowsOp>(operation)) {
+    return packOp.getOutCb();
+  }
+  return failure();
 }
 
-bool sharePackCB(scf::ForOp loopA, scf::ForOp loopB) {
-  auto cbsA = getPackTileCBs(loopA);
-  auto cbsB = getPackTileCBs(loopB);
-  for (auto cb : cbsA) {
-    if (cbsB.contains(cb)) {
+llvm::SmallDenseSet<Value, 2> getProducerPackOutputDFBs(scf::ForOp loop) {
+  llvm::SmallDenseSet<Value, 2> outputDFBs;
+  loop->walk([&](Operation *operation) {
+    FailureOr<Value> outputDFB = getProducerPackOutputDFB(operation);
+    if (succeeded(outputDFB)) {
+      outputDFBs.insert(*outputDFB);
+    }
+  });
+  return outputDFBs;
+}
+
+bool shareProducerPackOutputDFB(scf::ForOp loopA, scf::ForOp loopB) {
+  llvm::SmallDenseSet<Value, 2> outputDFBsA = getProducerPackOutputDFBs(loopA);
+  llvm::SmallDenseSet<Value, 2> outputDFBsB = getProducerPackOutputDFBs(loopB);
+  for (Value outputDFB : outputDFBsA) {
+    if (outputDFBsB.contains(outputDFB)) {
       return true;
     }
   }

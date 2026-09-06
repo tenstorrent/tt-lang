@@ -37,6 +37,33 @@ func.func @accumulation_scope_init() {
 
 // -----
 
+// Init state may retain a full tile while publication uses a row prefix.
+// CHECK-LABEL: func.func @accumulation_scope_init_with_distinct_output_type
+func.func @accumulation_scope_init_with_distinct_output_type() {
+  // CHECK: ttl.accumulation_scope outs(%{{.*}} : tensor<1x14x!ttcore.tile<1x32, bf16>>) inits(%{{.*}} : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  // CHECK-NEXT: ^bb0(%[[ACC:.*]]: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+  // CHECK-NEXT:   ttl.store %[[ACC]], %{{.*}} {row_prefix}
+  // CHECK-NEXT:   ttl.yield %[[ACC]] : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  // CHECK-NEXT: } initial_modes([init])
+  %out_cb = ttl.bind_cb {cb_index = 16, block_count = 1}
+      : !ttl.cb<[1, 14], !ttcore.tile<1x32, bf16>, 1>
+  %out = ttl.cb_reserve %out_cb
+      : <[1, 14], !ttcore.tile<1x32, bf16>, 1>
+      -> tensor<1x14x!ttcore.tile<1x32, bf16>>
+  %init = tensor.empty() : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.accumulation_scope outs(%out : tensor<1x14x!ttcore.tile<1x32, bf16>>)
+      inits(%init : tensor<1x1x!ttcore.tile<32x32, bf16>>) {
+  ^bb0(%acc: tensor<1x1x!ttcore.tile<32x32, bf16>>):
+    ttl.store %acc, %out {row_prefix}
+        : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+          tensor<1x14x!ttcore.tile<1x32, bf16>>
+    ttl.yield %acc : tensor<1x1x!ttcore.tile<32x32, bf16>>
+  } initial_modes([init])
+  return
+}
+
+// -----
+
 // CHECK-LABEL: func.func @accumulation_scope_multi_output
 func.func @accumulation_scope_multi_output() {
   // CHECK: ttl.accumulation_scope outs(%{{.*}}, %{{.*}} : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>) inits(%{{.*}} : tensor<1x1x!ttcore.tile<32x32, bf16>>) {

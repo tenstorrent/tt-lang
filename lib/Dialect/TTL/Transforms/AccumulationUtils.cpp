@@ -590,6 +590,7 @@ void lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
                                   bool synthesizeResidentContributionPop,
                                   RewriterBase &rewriter) {
   scf::ForOp loop = match.loop;
+  StoreOp finalStore = match.finalStore;
   Location loc = loop.getLoc();
   CBReserveOp outputReserve = match.reserve;
   if (outputReserve->getBlock() == loop->getBlock() &&
@@ -687,7 +688,9 @@ void lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
         createIndexConstants(rewriter, loc, coordinates);
     Value placeholder = createTilePlaceholder(rewriter, loc, tileType);
     TileStoreOp::create(rewriter, loc, placeholder, outputReserve.getResult(),
-                        coordinateValues, dstIndices[linearIndex]);
+                        coordinateValues, dstIndices[linearIndex],
+                        DFBTileStoreKind::Producer,
+                        finalStore.getRowPrefixAttr());
   }
 
   if (info.contributionResidency ==
@@ -710,13 +713,8 @@ void lowerTensorAccumulationToDst(const TensorAccumulationMatch &match,
   rewriter.eraseOp(loop);
 }
 
-LogicalResult lowerTensorAccumulationToL1Pack(
-    const TensorAccumulationMatch &match, int64_t scopeId,
-    const DFBAcquireReleaseIndex &dfbIndex, RewriterBase &rewriter) {
-  if (failed(analyzeTensorAccumulationForL1Pack(match, &dfbIndex))) {
-    return failure();
-  }
-
+void lowerTensorAccumulationToL1Pack(const TensorAccumulationMatch &match,
+                                     int64_t scopeId, RewriterBase &rewriter) {
   scf::ForOp loop = match.loop;
   CBReserveOp outputReserve = match.reserve;
   if (outputReserve->getBlock() == loop->getBlock() &&
@@ -729,7 +727,8 @@ LogicalResult lowerTensorAccumulationToL1Pack(
 
   rewriter.setInsertionPoint(loop);
   StoreOp::create(rewriter, finalStore.getLoc(), match.initialValue,
-                  outputReserve.getResult(), /*accumulate=*/nullptr);
+                  outputReserve.getResult(), /*accumulate=*/nullptr,
+                  finalStore.getRowPrefixAttr());
   auto newLoop =
       scf::ForOp::create(rewriter, loop.getLoc(), loop.getLowerBound(),
                          loop.getUpperBound(), loop.getStep(), ValueRange{});
@@ -756,7 +755,8 @@ LogicalResult lowerTensorAccumulationToL1Pack(
     if (&bodyOp == add.getOperation()) {
       Value contribution = mapper.lookupOrDefault(match.contribution);
       StoreOp::create(rewriter, bodyOp.getLoc(), contribution,
-                      outputReserve.getResult(), rewriter.getUnitAttr());
+                      outputReserve.getResult(), rewriter.getUnitAttr(),
+                      finalStore.getRowPrefixAttr());
       emittedAccumulatingStore = true;
       continue;
     }
@@ -770,7 +770,6 @@ LogicalResult lowerTensorAccumulationToL1Pack(
     rewriter.eraseOp(attach);
   }
   rewriter.eraseOp(loop);
-  return success();
 }
 
 } // namespace mlir::tt::ttl

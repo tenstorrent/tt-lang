@@ -2293,22 +2293,20 @@ mlir::LogicalResult mlir::tt::ttl::AccumulationScopeOp::verify() {
            << " init modes";
   }
 
-  // The operand segment contains only init operands. This preserves the
-  // output-to-policy correspondence without unused operands for overwrite and
-  // accumulate-existing outputs.
+  // The operand segment contains only init operands. An init-mode state is
+  // seeded by its init operand, while other modes read or overwrite the
+  // destination and therefore use its type as their state type.
   size_t initIndex = 0;
+  mlir::SmallVector<mlir::Type> stateTypes;
+  stateTypes.reserve(outputCount);
   for (auto [outputIndex, mode] : llvm::enumerate(initialModes)) {
+    mlir::Value output = getOutputs()[outputIndex];
     if (mode != AccumulationInitialMode::Init) {
+      stateTypes.push_back(output.getType());
       continue;
     }
-    mlir::Value output = getOutputs()[outputIndex];
     mlir::Value init = getInits()[initIndex++];
-    if (output.getType() != init.getType()) {
-      return emitOpError("init operand ")
-             << (initIndex - 1) << " type " << init.getType()
-             << " must match output " << outputIndex << " type "
-             << output.getType();
-    }
+    stateTypes.push_back(init.getType());
   }
 
   if (getBody().getBlocks().size() != 1) {
@@ -2337,20 +2335,34 @@ mlir::LogicalResult mlir::tt::ttl::AccumulationScopeOp::verify() {
            << " outputs";
   }
 
-  for (auto [outputIndex, output] : llvm::enumerate(getOutputs())) {
-    mlir::Type expectedType = output.getType();
+  for (auto [outputIndex, stateType] : llvm::enumerate(stateTypes)) {
     mlir::Type bodyArgType = bodyBlock.getArgument(outputIndex).getType();
-    if (bodyArgType != expectedType) {
+    if (bodyArgType != stateType) {
       return emitOpError("body argument ")
              << outputIndex << " type " << bodyArgType
-             << " must match output type " << expectedType;
+             << " must match state type " << stateType;
     }
 
     mlir::Value yieldedValue = yield.getValues()[outputIndex];
-    if (yieldedValue.getType() != expectedType) {
+    if (yieldedValue.getType() != stateType) {
       return emitOpError("yielded value ")
              << outputIndex << " type " << yieldedValue.getType()
-             << " must match output type " << expectedType;
+             << " must match state type " << stateType;
+    }
+    mlir::Value output = getOutputs()[outputIndex];
+    if (stateType != output.getType()) {
+      bool publishesState =
+          llvm::any_of(bodyBlock.getOps<mlir::tt::ttl::StoreOp>(),
+                       [&](mlir::tt::ttl::StoreOp store) {
+                         return store.getTensor() == yieldedValue &&
+                                store.getView() == output;
+                       });
+      if (!publishesState) {
+        return emitOpError("state ")
+               << outputIndex << " type " << stateType
+               << " differs from output type " << output.getType()
+               << "; the body must store the yielded state to that output";
+      }
     }
   }
 
@@ -2458,42 +2470,103 @@ mlir::LogicalResult mlir::tt::ttl::CBPopOp::verify() {
   return success();
 }
 
+// Tensor-level and tile-level stores share this check so lowering cannot weaken
+// the row-prefix geometry contract.
+static mlir::LogicalResult
+verifyRowPrefixStore(mlir::Operation *operation,
+                     mlir::RankedTensorType sourceType,
+                     mlir::RankedTensorType destinationType) {
+  auto sourceTile =
+      mlir::dyn_cast<mlir::tt::ttcore::TileType>(sourceType.getElementType());
+  auto destinationTile = mlir::dyn_cast<mlir::tt::ttcore::TileType>(
+      destinationType.getElementType());
+  if (!sourceTile || !destinationTile) {
+    return operation->emitOpError(
+        "row_prefix requires tiled source and destination tensors");
+  }
+  if (sourceTile.getHeight() != mlir::tt::ttl::kDefaultTileHeight ||
+      sourceTile.getWidth() != mlir::tt::ttl::kDefaultTileWidth) {
+    return operation->emitOpError()
+           << "row_prefix source must use 32x32 tiles, got "
+           << sourceTile.getHeight() << "x" << sourceTile.getWidth();
+  }
+  if (sourceTile.getDataType() != destinationTile.getDataType()) {
+    return operation->emitOpError()
+           << "row_prefix source and destination data types must match";
+  }
+  if (sourceTile.getDataType() != mlir::tt::ttcore::DataType::BFloat16 &&
+      sourceTile.getDataType() != mlir::tt::ttcore::DataType::Float32) {
+    return operation->emitOpError(
+        "row_prefix supports only bf16 and f32 tile data types");
+  }
+  if (sourceType.getNumElements() != 1) {
+    return operation->emitOpError()
+           << "row_prefix source must contain exactly one tile, got "
+           << sourceType.getNumElements();
+  }
+  if (destinationTile.getWidth() != sourceTile.getWidth()) {
+    return operation->emitOpError()
+           << "row_prefix destination tile width must equal source width "
+           << sourceTile.getWidth() << ", got " << destinationTile.getWidth();
+  }
+
+  int64_t destinationScalars = destinationType.getNumElements() *
+                               destinationTile.getHeight() *
+                               destinationTile.getWidth();
+  int64_t sourceScalars = sourceTile.getHeight() * sourceTile.getWidth();
+  if (destinationScalars <= 0 || destinationScalars > sourceScalars) {
+    return operation->emitOpError()
+           << "row_prefix destination must contain between 1 and "
+           << sourceScalars << " scalar elements, got " << destinationScalars;
+  }
+  return mlir::success();
+}
+
 mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
   auto tensorTy = mlir::cast<RankedTensorType>(getTensor().getType());
   auto viewTy = mlir::cast<RankedTensorType>(getView().getType());
 
-  // CB->CB identity stores (dst.reserve().store(src.wait())) must use the same
-  // tile shape; mismatched tilization is not a supported retile.
-  if (failed(emitIfTileShapeMismatch(getOperation(), tensorTy.getElementType(),
-                                     viewTy.getElementType(), "source",
-                                     "destination CB"))) {
-    return failure();
-  }
+  if (getRowPrefix()) {
+    if (failed(verifyRowPrefixStore(getOperation(), tensorTy, viewTy))) {
+      return failure();
+    }
+  } else {
+    // DFB-to-DFB identity stores must not implicitly retile.
+    if (failed(emitIfTileShapeMismatch(
+            getOperation(), tensorTy.getElementType(), viewTy.getElementType(),
+            "source", "destination CB"))) {
+      return failure();
+    }
 
-  if (tensorTy.getElementType() != viewTy.getElementType()) {
-    return emitOpError() << "tensor element type (" << tensorTy.getElementType()
-                         << ") must match view element type ("
-                         << viewTy.getElementType() << ")";
-  }
+    if (tensorTy.getElementType() != viewTy.getElementType()) {
+      return emitOpError() << "tensor element type ("
+                           << tensorTy.getElementType()
+                           << ") must match view element type ("
+                           << viewTy.getElementType() << ")";
+    }
 
-  if (tensorTy.getRank() != viewTy.getRank()) {
-    return emitOpError() << "tensor rank (" << tensorTy.getRank()
-                         << ") must match view rank (" << viewTy.getRank()
-                         << ")";
-  }
+    if (tensorTy.getRank() != viewTy.getRank()) {
+      return emitOpError() << "tensor rank (" << tensorTy.getRank()
+                           << ") must match view rank (" << viewTy.getRank()
+                           << ")";
+    }
 
-  for (int64_t i = 0; i < tensorTy.getRank(); ++i) {
-    if (tensorTy.getDimSize(i) != viewTy.getDimSize(i)) {
-      return emitOpError() << "tensor shape dimension " << i << " ("
-                           << tensorTy.getDimSize(i)
-                           << ") must match view shape dimension ("
-                           << viewTy.getDimSize(i) << ")";
+    for (int64_t dimension = 0; dimension < tensorTy.getRank(); ++dimension) {
+      if (tensorTy.getDimSize(dimension) != viewTy.getDimSize(dimension)) {
+        return emitOpError() << "tensor shape dimension " << dimension << " ("
+                             << tensorTy.getDimSize(dimension)
+                             << ") must match view shape dimension ("
+                             << viewTy.getDimSize(dimension) << ")";
+      }
     }
   }
 
   Operation *acquire = findCBAcquireOp(getView(), getOperation());
   if (!acquire) {
     return emitOpError() << "view must come from ttl.cb_reserve or ttl.cb_wait";
+  }
+  if (getRowPrefix() && !isa<CBReserveOp>(acquire)) {
+    return emitOpError("row_prefix requires a ttl.cb_reserve-backed view");
   }
   if (getAccumulate() && isa<CBWaitOp>(acquire)) {
     return emitOpError()
@@ -2512,13 +2585,22 @@ mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
 
   auto viewTy = mlir::cast<RankedTensorType>(getView().getType());
   auto viewElemTy = viewTy.getElementType();
-  if (viewElemTy != tileType) {
+  if (getRowPrefix()) {
+    auto sourceTensorType = RankedTensorType::get({1, 1}, tileType);
+    if (failed(
+            verifyRowPrefixStore(getOperation(), sourceTensorType, viewTy))) {
+      return failure();
+    }
+  } else if (viewElemTy != tileType) {
     return emitOpError() << "view element type (" << viewElemTy
                          << ") must match tile type (" << tileType << ")";
   }
 
   Operation *acquire = findCBAcquireOp(getView(), getOperation());
   bool isWaitBacked = isa_and_nonnull<CBWaitOp>(acquire);
+  if (getRowPrefix() && !isa_and_nonnull<CBReserveOp>(acquire)) {
+    return emitOpError("row_prefix requires a producer-reserved view");
+  }
   if (getStoreKind() == DFBTileStoreKind::ConsumerReplacement &&
       !isWaitBacked) {
     return emitOpError(

@@ -2167,12 +2167,32 @@ static FailureOr<PassthroughStorePlan> buildPassthroughStorePlan(
   plan.reserve = reserve;
   plan.outputView = store.getView();
   plan.outputDFB = reserve.getCb();
-  plan.tensorType = tensorType;
-  plan.tileType = tileType;
+  auto outputTensorType = dyn_cast<RankedTensorType>(store.getView().getType());
+  assert(outputTensorType && "verified store output must be a ranked tensor");
+  auto outputTileType =
+      dyn_cast<ttcore::TileType>(outputTensorType.getElementType());
+  assert(outputTileType && "verified store output must contain tiles");
+  if (store.getRowPrefix()) {
+    SmallVector<int64_t> singlePackShape(outputTensorType.getRank(), 1);
+    plan.computeOutputTensorType = RankedTensorType::get(
+        singlePackShape, outputTileType, outputTensorType.getEncoding());
+  } else {
+    plan.computeOutputTensorType = outputTensorType;
+  }
+  plan.inputTileType = tileType;
+  plan.outputTileType = outputTileType;
   AffineMap identity = AffineMap::getMultiDimIdentityMap(tensorType.getRank(),
                                                          store->getContext());
   plan.iteration.inputMaps = {identity};
-  plan.iteration.outputMap = identity;
+  if (store.getRowPrefix()) {
+    SmallVector<AffineExpr> zeroResults(
+        outputTensorType.getRank(),
+        getAffineConstantExpr(0, store.getContext()));
+    plan.iteration.outputMap = AffineMap::get(tensorType.getRank(), 0,
+                                              zeroResults, store.getContext());
+  } else {
+    plan.iteration.outputMap = identity;
+  }
   plan.iteration.iteratorTypes.assign(tensorType.getRank(),
                                       utils::IteratorType::parallel);
   // These associations represent the passthrough result before a result SSA
@@ -2185,6 +2205,11 @@ static FailureOr<PassthroughStorePlan> buildPassthroughStorePlan(
         plan.outputAssociations.push_back(association);
       }
     }
+  }
+  if (store.getRowPrefix() && !plan.outputAssociations.empty()) {
+    failureReason =
+        "row-prefix store output cannot replace an existing tensor association";
+    return failure();
   }
   return plan;
 }

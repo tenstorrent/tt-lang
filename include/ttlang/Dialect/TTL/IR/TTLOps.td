@@ -451,7 +451,13 @@ def TTL_AccumulationScopeOp : TTL_Op<"accumulation_scope", [
     contains one operand for each output whose initial mode is `init`, in output
     order.
 
-    The body uses one block argument per output and yields one value per output.
+    The body uses one state block argument per output and yields one updated
+    state value per output. An `init` state has the init operand's type; an
+    `overwrite` or `accumulate_existing` state has the output's type. Keeping
+    init state distinct from destination storage permits a type-changing
+    packing operation. When the state and output types differ, the body must
+    store the yielded state to the corresponding output.
+
     This form makes
     cross-output data dependence an SSA property: if the yielded value for one
     output uses another output's updated value, normal SSA use-def edges encode
@@ -2091,20 +2097,17 @@ def TTL_StoreOp : TTL_ComputePrimitiveOp<"store", "Passthrough",
     packer accumulation so that each iteration adds to the existing L1
     value instead of overwriting.
 
-    Example:
-    ```mlir
-    %reserve = ttl.cb_reserve %cb : ... -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    %result = ttl.add %a, %b : ...
-    ttl.store %result, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>,
-                                  tensor<1x1x!ttcore.tile<32x32, bf16>>
-    // Accumulating store (from +=):
-    ttl.store %result, %reserve {accumulate} : ...
-    ```
+    When `row_prefix` is set, the source is one full 32x32 tile and the
+    destination is a reserve-backed block containing a contiguous prefix of
+    complete 32-datum rows. The prefix is packed directly from DST without
+    materializing the unused source rows. `row_prefix` supports bf16 and f32
+    sources and may be combined with `accumulate`.
   }];
   let arguments = (ins
     AnyRankedTensor:$tensor,
     AnyRankedTensor:$view,
-    OptionalAttr<UnitAttr>:$accumulate
+    OptionalAttr<UnitAttr>:$accumulate,
+    OptionalAttr<UnitAttr>:$row_prefix
   );
   let assemblyFormat = "$tensor `,` $view attr-dict `:` type($tensor) `,` type($view)";
   let hasVerifier = 1;
@@ -2499,19 +2502,9 @@ def TTL_TileStoreOp : TTL_ComputePrimitiveOp<"tile_store", "Passthrough",
     The `indices` operands are multi-dimensional DFB tile coordinates. The
     `dst_index` operand identifies the source tile in the DST register.
 
-    Example:
-    ```mlir
-    %view = ttl.cb_reserve %cb : <[2, 3], !ttcore.tile<32x32, bf16>, 1>
-                                 -> tensor<2x3x!ttcore.tile<32x32, bf16>>
-    // After assign-dst (inside ttl.compute body):
-    %i = ttl.iter_index 0 : index
-    %j = ttl.iter_index 1 : index
-    ttl.tile_store %tile, %view[%i, %j] from dst[%c0]
-      : !ttcore.tile<32x32, bf16>, tensor<2x3x!ttcore.tile<32x32, bf16>>
-    // After lower-to-loops (iter_index replaced with loop IVs):
-    ttl.tile_store %tile, %view[%row, %col] from dst[%c0]
-      : !ttcore.tile<32x32, bf16>, tensor<2x3x!ttcore.tile<32x32, bf16>>
-    ```
+    `row_prefix` preserves the tensor-level row-prefix packing decision. The
+    source is a full 32x32 DST tile, and the complete destination block stores
+    a contiguous prefix of 32-datum rows using one row-packing operation.
   }];
   let arguments = (ins
     AnyType:$tile,
@@ -2519,7 +2512,8 @@ def TTL_TileStoreOp : TTL_ComputePrimitiveOp<"tile_store", "Passthrough",
     Variadic<Index>:$indices,
     Index:$dst_index,
     DefaultValuedAttr<TTL_DFBTileStoreKindAttr,
-      "::mlir::tt::ttl::DFBTileStoreKind::Producer">:$store_kind
+      "::mlir::tt::ttl::DFBTileStoreKind::Producer">:$store_kind,
+    OptionalAttr<UnitAttr>:$row_prefix
   );
   let assemblyFormat = "$tile `,` $view `[` $indices `]` `from` `dst` `[` $dst_index `]` attr-dict `:` type($tile) `,` type($view)";
   let hasVerifier = 1;

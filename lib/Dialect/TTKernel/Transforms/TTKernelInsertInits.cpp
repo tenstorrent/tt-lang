@@ -2,22 +2,6 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//
-// Implementation of the TTKernelInsertInits pass, which inserts both common
-// inits (init_sfpu, binary_op_init_common) that configure UNPACK + PACK data
-// format routing, and per-op inits (exp_tile_init, add_tiles_init, etc.) that
-// configure the MATH pipeline.
-//
-// Two phases:
-//   1. Common inits: one per sync region, hoisted above enclosing loops.
-//      Scans each tile_regs_acquire -> tile_regs_release region to determine
-//      the compute category (FPU binary vs SFPU/copy/bcast) and derives
-//      input/output CBs from compute and pack ops.
-//   2. Per-op inits: emitted in linear block order whenever the op type
-//      changes (unary SFPU, binary SFPU, minmax, FPU binary). The init
-//      key is (init op TypeID, operand values). An init is inserted only
-//      when the key changes. Tracking resets at sync boundaries.
-//
 // TODO(#329): Emit init_short variants for cheaper re-inits on type switches.
 //
 //===----------------------------------------------------------------------===//
@@ -33,6 +17,8 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
+
+#include "llvm/ADT/DenseSet.h"
 
 #define DEBUG_TYPE "ttkernel-insert-inits"
 
@@ -432,6 +418,8 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
         collectOutputCB(pack.getOutCb(), pack);
       } else if (auto packBlock = dyn_cast<ttk::PackTileBlockOp>(inner)) {
         collectOutputCB(packBlock.getOutCb(), packBlock);
+      } else if (auto packRows = dyn_cast<ttk::PackRowsOp>(inner)) {
+        collectOutputCB(packRows.getOutCb(), packRows);
       }
     });
   }
@@ -511,7 +499,7 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
             if (auto prevFor = dyn_cast<scf::ForOp>(prev)) {
               if ((prevFor->hasAttr(kL1AccLoopAttrName) ||
                    prevFor->hasAttr(kReductionLoopAttrName)) &&
-                  sharePackCB(prevFor, forOp)) {
+                  shareProducerPackOutputDFB(prevFor, forOp)) {
                 useInitShort = true;
               }
               break;
@@ -536,6 +524,77 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
     }
   });
   return hadError ? failure() : success();
+}
+
+// Calls and TTKernel configuration operations may invalidate row-packer state,
+// so loop-scoped setup requires their absence.
+static bool mayInterfereWithRowPackConfiguration(Operation *operation) {
+  return operation->hasTrait<ttk::TTKernelInitOpTrait>() ||
+         operation->hasTrait<ttk::TTKernelLayoutOpTrait>() ||
+         isa<ttk::OpaqueCallOp, func::CallOp>(operation) ||
+         operation->getName().getStringRef().starts_with("ttkernel.pack_");
+}
+
+// A single pack_rows in a loop can reuse its static row configuration across
+// iterations when every other operation preserves that configuration.
+static ttk::PackRowsOp getHoistablePackRows(scf::ForOp loop) {
+  ttk::PackRowsOp candidate;
+  bool hasInterference = false;
+  loop->walk([&](Operation *operation) {
+    if (operation == loop.getOperation()) {
+      return WalkResult::advance();
+    }
+    if (auto packRows = dyn_cast<ttk::PackRowsOp>(operation)) {
+      if (candidate || packRows->getParentOfType<scf::ForOp>() != loop) {
+        hasInterference = true;
+        return WalkResult::interrupt();
+      }
+      candidate = packRows;
+      return WalkResult::advance();
+    }
+
+    if (mayInterfereWithRowPackConfiguration(operation)) {
+      hasInterference = true;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return hasInterference ? ttk::PackRowsOp() : candidate;
+}
+
+// Packs without proven loop-stable configuration restore standard packer state
+// immediately so unrelated operations cannot observe the row-packer setup.
+static void insertPackRowsInits(ModuleOp moduleOp) {
+  SmallVector<scf::ForOp> loops;
+  moduleOp->walk([&](scf::ForOp loop) { loops.push_back(loop); });
+
+  llvm::DenseSet<Operation *> loopConfiguredPacks;
+  for (scf::ForOp loop : loops) {
+    ttk::PackRowsOp packRows = getHoistablePackRows(loop);
+    if (!packRows) {
+      continue;
+    }
+
+    OpBuilder builder(loop);
+    ttk::PackRowsInitOp::create(builder, packRows.getLoc(),
+                                packRows.getRowCountAttr());
+    builder.setInsertionPointAfter(loop);
+    ttk::PackRowsUninitOp::create(builder, packRows.getLoc());
+    loopConfiguredPacks.insert(packRows.getOperation());
+  }
+
+  SmallVector<ttk::PackRowsOp> packs;
+  moduleOp->walk([&](ttk::PackRowsOp packRows) { packs.push_back(packRows); });
+  for (ttk::PackRowsOp packRows : packs) {
+    if (loopConfiguredPacks.contains(packRows.getOperation())) {
+      continue;
+    }
+    OpBuilder builder(packRows);
+    ttk::PackRowsInitOp::create(builder, packRows.getLoc(),
+                                packRows.getRowCountAttr());
+    builder.setInsertionPointAfter(packRows);
+    ttk::PackRowsUninitOp::create(builder, packRows.getLoc());
+  }
 }
 
 //===----------------------------------------------------------------------===//
@@ -611,6 +670,7 @@ struct TTKernelInsertInitsPass
     });
 
     moduleOp->walk([&](Operation *op) { op->removeAttr(kInitInserted); });
+    insertPackRowsInits(moduleOp);
   }
 };
 

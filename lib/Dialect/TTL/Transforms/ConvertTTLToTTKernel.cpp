@@ -806,7 +806,19 @@ struct TileStoreLowering : OpConversionPattern<TileStoreOp> {
 
     Value dstIndex = adaptor.getDstIndex();
 
-    if (op.getStoreKind() == DFBTileStoreKind::ConsumerReplacement) {
+    if (op.getRowPrefix()) {
+      auto destinationTileType =
+          cast<ttcore::TileType>(viewTy.getElementType());
+      int64_t destinationScalarCount = viewTy.getNumElements() *
+                                       destinationTileType.getHeight() *
+                                       destinationTileType.getWidth();
+      assert(destinationScalarCount % ttk::kPackRowElementCount == 0 &&
+             "row-prefix store verifier requires complete hardware rows");
+      int64_t hardwareRowCount =
+          destinationScalarCount / ttk::kPackRowElementCount;
+      ttk::PackRowsOp::create(rewriter, loc, dstIndex, *cb, cbTileIndex,
+                              hardwareRowCount);
+    } else if (op.getStoreKind() == DFBTileStoreKind::ConsumerReplacement) {
       uint64_t acquiredTiles = static_cast<uint64_t>(
           cast<ttk::CBType>((*cb).getType()).getNumElements());
       ttk::PackWaitedTileOp::create(rewriter, loc, dstIndex, *cb, cbTileIndex,

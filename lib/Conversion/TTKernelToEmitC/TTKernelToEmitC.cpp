@@ -2954,6 +2954,25 @@ public:
   }
 };
 
+class TTKernelToEmitCPackRowsInitRewriter
+    : public OpConversionPattern<ttkernel::PackRowsInitOp> {
+public:
+  using OpConversionPattern<ttkernel::PackRowsInitOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ttkernel::PackRowsInitOp op,
+                  ttkernel::PackRowsInitOp::Adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Location location = op.getLoc();
+    Value rowCount = emitc::LiteralOp::create(
+        rewriter, location, rewriter.getI32Type(),
+        rewriter.getStringAttr((Twine(op.getRowCount()) + "U").str()));
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange{}, "pack_rows_init", nullptr, ArrayAttr(),
+        ValueRange{rowCount});
+    return success();
+  }
+};
 // PackReconfigL1AccOp must be wrapped in the PACK((...)) macro to ensure it
 // only executes on the TRISC_PACK thread.
 class TTKernelToEmitCPackReconfigL1AccToEmitCRewriter
@@ -3238,6 +3257,9 @@ public:
         TTKernelToEmitCOpaqueRewriter<ttkernel::CopyTileInitOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::CopyTileOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::CopyBlockMatmulPartialsOp>,
+        TTKernelToEmitCPackRowsInitRewriter,
+        TTKernelToEmitCOpaqueRewriter<ttkernel::PackRowsUninitOp>,
+        TTKernelToEmitCOpaqueRewriter<ttkernel::PackRowsOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::PackTileOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::PackTileBlockOp>,
         TTKernelToEmitCPackReconfigL1AccToEmitCRewriter,

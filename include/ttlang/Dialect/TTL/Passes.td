@@ -1386,58 +1386,23 @@ def TTKernelInsertInits
   let summary = "Insert minimal init ops before TTKernel compute ops";
   let description = [{
     Inserts hardware initialization ops required before TTKernel compute
-    operations. Two categories of inits are inserted:
+    operations.
 
     Common inits (`init_sfpu`, `binary_op_init_common`) configure the
-    UNPACK and PACK data format routing for a sync region. These are placed
-    once per sync region, hoisted above any enclosing loops.
+    UNPACK and PACK data-format routing for a synchronization region. The pass
+    emits one common init per region and moves it above compiler-generated
+    loops whose DFB configuration is invariant.
 
     Per-op inits (`exp_tile_init`, `add_tiles_init`, etc.) configure the
-    MATH pipeline for a specific operation type. An init is emitted
-    whenever the op type changes from the previous compute op in
-    linear block order. Init tracking resets at sync boundaries
-    (`tile_regs_acquire`/`commit`/`wait`/`release`).
+    MATH pipeline for a specific operation type. The pass emits an init when
+    the operation type or init operands differ from the previous compute
+    operation in linear block order. Tracking resets at DST synchronization
+    boundaries.
 
-    Example (consecutive same-type ops share one init):
-    ```mlir
-    // Before:
-    ttkernel.tile_regs_acquire
-    ttkernel.exp_tile(%c0)
-    ttkernel.exp_tile(%c1)
-    ttkernel.log_tile(%c2)
-    ttkernel.tile_regs_commit
-
-    // After:
-    ttkernel.init_sfpu(%cb0, %cb1)
-    ttkernel.tile_regs_acquire
-    ttkernel.exp_tile_init
-    ttkernel.exp_tile(%c0)
-    ttkernel.exp_tile(%c1)      // no re-init (same type)
-    ttkernel.log_tile_init       // re-init on type switch
-    ttkernel.log_tile(%c2)
-    ttkernel.tile_regs_commit
-    ```
-
-    Example (interleaved ops each get their own init):
-    ```mlir
-    // Before:
-    ttkernel.tile_regs_acquire
-    ttkernel.exp_tile(%c0)
-    ttkernel.log_tile(%c1)
-    ttkernel.exp_tile(%c2)
-    ttkernel.tile_regs_commit
-
-    // After:
-    ttkernel.init_sfpu(%cb0, %cb1)
-    ttkernel.tile_regs_acquire
-    ttkernel.exp_tile_init
-    ttkernel.exp_tile(%c0)
-    ttkernel.log_tile_init
-    ttkernel.log_tile(%c1)
-    ttkernel.exp_tile_init       // re-init required (type switched back)
-    ttkernel.exp_tile(%c2)
-    ttkernel.tile_regs_commit
-    ```
+    Row-pack inits configure contiguous DST-row packing. One static
+    `pack_rows` in a loop reuses a configuration around the loop when no
+    operation in the loop can change or depend on packer configuration.
+    Otherwise, each `pack_rows` receives an adjacent init and uninit pair.
   }];
 
   let dependentDialects = [

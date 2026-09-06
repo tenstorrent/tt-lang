@@ -180,6 +180,45 @@ static bool insideKernelFunction(mlir::Operation *op) {
   return success();
 }
 
+::mlir::LogicalResult PackRowsOp::verify() {
+  auto dfbType = getOutCb().getType();
+  auto tileType = dyn_cast<ttcore::TileType>(dfbType.getElementType());
+  if (!tileType) {
+    return emitOpError("output dataflow buffer must contain tile elements");
+  }
+  if (tileType.getDataType() != ttcore::DataType::BFloat16 &&
+      tileType.getDataType() != ttcore::DataType::Float32) {
+    return emitOpError("supports only bf16 and f32 output data types");
+  }
+  uint64_t scalarCount = static_cast<uint64_t>(tileType.getHeight()) *
+                         static_cast<uint64_t>(tileType.getWidth());
+  uint64_t scalarBytes = tileType.getSizeBytes() / scalarCount;
+  uint64_t packedBytes =
+      static_cast<uint64_t>(getRowCount()) * kPackRowElementCount * scalarBytes;
+  uint64_t capacityBytes =
+      static_cast<uint64_t>(dfbType.getNumElements()) * tileType.getSizeBytes();
+  uint64_t availableBytes = capacityBytes;
+  if (std::optional<int64_t> outIndex = getConstantIntValue(getOutIndex())) {
+    if (*outIndex < 0) {
+      return emitOpError("out_index must be nonnegative");
+    }
+    uint64_t pageIndex = static_cast<uint64_t>(*outIndex);
+    uint64_t pageCount = static_cast<uint64_t>(dfbType.getNumElements());
+    if (pageIndex >= pageCount) {
+      return emitOpError() << "out_index " << pageIndex
+                           << " exceeds output dataflow buffer capacity of "
+                           << pageCount << " pages";
+    }
+    availableBytes -= pageIndex * tileType.getSizeBytes();
+  }
+  if (packedBytes > availableBytes) {
+    return emitOpError() << "packed prefix requires " << packedBytes
+                         << " bytes, but only " << availableBytes
+                         << " bytes remain in the output dataflow buffer";
+  }
+  return success();
+}
+
 static std::string verifyTilizeUntilizeCBs(CBType tilizedCB, CBType scalarCB) {
   if (mlir::isa<ttcore::TileType>(scalarCB.getElementType())) {
     return "Input to TilizeOp or Output to UntilizeOp must have scalar "
