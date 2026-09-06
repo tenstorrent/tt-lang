@@ -37,7 +37,7 @@ static FailureOr<int64_t> getRepresentableDeviceCount(DeviceDomainAttr domain) {
   return static_cast<int64_t>(deviceCount);
 }
 
-FailureOr<LocalPipeNetParticipantPlan> buildLocalPipeNetParticipantPlan(
+LogicalResult validateLocalPipeNetParticipantPlanInputs(
     PipeNetRecordsAttr records, PipeRole role, int64_t gridX, int64_t gridY,
     llvm::function_ref<InFlightDiagnostic()> emitError) {
   if (gridX <= 0 || gridY <= 0) {
@@ -61,8 +61,6 @@ FailureOr<LocalPipeNetParticipantPlan> buildLocalPipeNetParticipantPlan(
     return failure();
   }
 
-  SmallVector<SmallVector<int64_t>> recordsByNode(
-      static_cast<std::size_t>(*maybeGridArea));
   for (auto [recordIndex, record] : llvm::enumerate(records.getPipes())) {
     if (record.getDeviceTransfer()) {
       if (emitError) {
@@ -73,7 +71,6 @@ FailureOr<LocalPipeNetParticipantPlan> buildLocalPipeNetParticipantPlan(
       }
       return failure();
     }
-    llvm::SmallDenseSet<int64_t, 4> participantIndices;
     for (const PipeRecordRoleFacts &facts :
          getPipeRecordRoleFacts(record, role)) {
       if (facts.device || facts.minX < 0 || facts.minY < 0 ||
@@ -90,6 +87,24 @@ FailureOr<LocalPipeNetParticipantPlan> buildLocalPipeNetParticipantPlan(
         }
         return failure();
       }
+    }
+  }
+  return success();
+}
+
+FailureOr<LocalPipeNetParticipantPlan>
+buildLocalPipeNetParticipantPlan(PipeNetRecordsAttr records, PipeRole role,
+                                 int64_t gridX, int64_t gridY) {
+  if (failed(validateLocalPipeNetParticipantPlanInputs(records, role, gridX,
+                                                       gridY))) {
+    return failure();
+  }
+  SmallVector<SmallVector<int64_t>> recordsByNode(
+      static_cast<std::size_t>(gridX * gridY));
+  for (auto [recordIndex, record] : llvm::enumerate(records.getPipes())) {
+    llvm::SmallDenseSet<int64_t, 4> participantIndices;
+    for (const PipeRecordRoleFacts &facts :
+         getPipeRecordRoleFacts(record, role)) {
       for (int64_t nodeY = facts.minY; nodeY <= facts.maxY; ++nodeY) {
         for (int64_t nodeX = facts.minX; nodeX <= facts.maxX; ++nodeX) {
           participantIndices.insert(nodeY * gridX + nodeX);
