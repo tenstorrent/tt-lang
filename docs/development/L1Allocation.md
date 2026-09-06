@@ -59,6 +59,10 @@ not grow with region count. Metal still allocates the tensor, so its ownership
 and reservation rules remain authoritative. Passing the arena as a `generic_op`
 input retains it for execution while leaving the user output in the final tensor
 position. A fresh arena separates synchronization state across cached launches.
+Width sharding could reserve the same bytes, but would express core ownership as
+column partitions. Block sharding adds an unused partition axis. Height sharding
+is therefore a row-to-core representation, not a capacity or performance
+optimization.
 
 The tradeoff is uniform allocation: every participating core reserves the largest
 required arena, including sparsely active cores. Initialization also currently
