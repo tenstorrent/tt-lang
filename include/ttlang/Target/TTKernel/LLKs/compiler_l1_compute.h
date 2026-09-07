@@ -32,6 +32,21 @@ public:
   }
 };
 
+template <uint32_t Format, uint32_t PageBytes, uint32_t PagesPerBlock,
+          uint32_t BlockCount, uint32_t StateOffset, uint32_t PayloadOffset,
+          bool DirectToDestination>
+class ComputeDFBDescriptor
+    : public Operand<Format, PageBytes, PagesPerBlock, BlockCount,
+                     PayloadOffset, DirectToDestination> {
+public:
+  using Operand<Format, PageBytes, PagesPerBlock, BlockCount, PayloadOffset,
+                DirectToDestination>::Operand;
+  /// Binds this descriptor to its compile-time allocation in the core arena.
+  static ComputeDFBDescriptor bind() {
+    return ComputeDFBDescriptor(target::arenaBase() + StateOffset);
+  }
+};
+
 namespace target {
 template <typename Source>
 inline void copy_tile_init(Source source);

@@ -8,6 +8,10 @@ namespace ttlang::l1::target {
     !defined(ARCH_BLACKHOLE)
 #error "compiler-l1 requires Wormhole or Blackhole"
 #endif
+/// Returns the core-local base address supplied for the compiler-managed arena.
+inline uint32_t arenaBase() {
+  return get_common_arg_val<uint32_t>(get_compile_time_arg_val(0));
+}
 inline uint32_t load(uint32_t address) {
   asm volatile("fence" ::: "memory");
   uint32_t value;
@@ -44,6 +48,11 @@ inline constexpr bool ownsProducer = true;
 inline constexpr bool ownsConsumer = false;
 #else
 inline constexpr bool ownsConsumer = true;
+#endif
+#if defined(TRISC_MATH)
+inline constexpr bool ownsDFBInterface = false;
+#else
+inline constexpr bool ownsDFBInterface = true;
 #endif
 } // namespace ttlang::l1::target
 #endif
