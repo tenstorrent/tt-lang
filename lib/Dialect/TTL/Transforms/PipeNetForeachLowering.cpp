@@ -384,6 +384,8 @@ static void lowerPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
   Value upper =
       arith::ConstantIndexOp::create(rewriter, loc, records.getPipes().size());
   Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
+  // Keep the fallback loop rolled because it scans the complete PipeNet table;
+  // only the bounded per-node table is suitable for unconditional unrolling.
   auto forOp = scf::ForOp::create(rewriter, loc, lower, upper, step);
   foreachLoweringInfo.recordLoops[forOp] = {records, recordSelection, {}};
 
