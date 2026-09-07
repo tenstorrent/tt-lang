@@ -1076,6 +1076,17 @@ def TTLFinalizeDFBIndices
     `ttl-annotate-cb-associations`, which copy DFB indices into attributes and
     would otherwise capture provisional indices.
 
+    `memory-model=compiler-l1` assigns explicit byte ranges instead of Metal
+    descriptor slots. Logical identities retain independent 8-byte control
+    records. The selected L1 allocation strategy places payloads over the
+    concurrent-kernel storage conflict graph; unknown completion prohibits reuse.
+    The complete plan is validated before mutation. Runtime metadata supplies
+    state and payload offsets within one allocator-owned L1 arena. The arena
+    high-water mark includes alignment and state. A greedy budget failure does
+    not prove that a feasible placement is impossible. Unsupported storage forms
+    and operations are diagnosed; this mode never falls back to Metal descriptors.
+    `reuse-user-dfbs=false` disables payload aliasing in this mode.
+
     User-declared DFBs enter this pass with module-wide logical `dfb_id`
     attributes. Compiler-created DFB declarations receive unique logical IDs.
     The logical identity remains independent of the physical `cb_index`, so
@@ -1245,9 +1256,15 @@ def TTLFinalizeDFBIndices
   }];
 
   let options = [
+    Option<"memoryModel", "memory-model", "std::string", "\"metal-cb\"",
+           "Select metal-cb or experimental compiler-l1 storage.">,
     Option<"reuseUserDFBs", "reuse-user-dfbs", "bool", "true",
            "Reuse physical DFB indices and compiler-managed storage for "
            "lifetimes proven not to overlap across concurrent kernels.">,
+    Option<"l1AllocationStrategy", "l1-allocation-strategy", "std::string",
+           "\"first-fit-decreasing\"",
+           "Select first-fit-decreasing or best-fit-decreasing compiler-l1 "
+           "payload placement.">,
     Option<"unsafeAssumeAllocationGroups", "unsafe-assume-allocation-groups",
            "bool", "false",
            "Trust explicit DFB allocation groups when runtime handoff cannot "
@@ -1586,8 +1603,10 @@ def TTKernelCombinePackTiles
   let description = [{
     Scans for consecutive `ttkernel.pack_tile` ops targeting the same dataflow
     buffer with contiguous DST and CB tile indices, and replaces each run with
-    a single `ttkernel.pack_tile_block`. This reduces the number of hardware
-    pack operations after loop unrolling.
+    a single `ttkernel.pack_tile_block` for the Metal DFB backend. This reduces
+    generated calls after loop unrolling. Compiler-owned storage retains the
+    individual operations because `pack_tile_block` cannot represent their
+    explicit output tile indices.
 
     Only combines runs where both DST indices and CB tile indices step by 1,
     and the first CB tile index is 0 (pack_tile_block always writes to the CB

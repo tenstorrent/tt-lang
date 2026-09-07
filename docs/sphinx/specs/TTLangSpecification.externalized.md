@@ -401,6 +401,11 @@ TT-Lang includes ability to print information to the standard output for debuggi
 
 | Term | Description |
 | :---- | :---- |
+| *NoC* | Network on chip connecting device processors and memory. |
+| *L1* | Worker-local SRAM; each worker core has a separate address space. |
+| *LLK* | Low-level kernel interface controlling unpack, math, and pack engines. |
+| *RISC* | Controller processor executing a transfer or compute-engine instruction stream. |
+| *BF16 / FP32* | BFloat16 and 32-bit floating-point encodings. |
 | *Domain specific language (DSL)* | A language based on a constrained subset of the host language, Python in the case of TT-Lang. |
 | *Operation function* | A Python function, decorated with `ttl.operation`, that encapsulates an operation written in TT-Lang and can be used as a TT-NN operation. Its body describes the work of all the operation's threads and is split across them by the compiler. |
 | *Composed operation* | An operation called from the body of another operation. It is expanded in place when the calling operation is defined. |

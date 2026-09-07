@@ -96,11 +96,20 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::desc("Override the combined DFB, PipeNet, and synchronized-"
                      "reset L1 allocation budget."),
       llvm::cl::init(0)};
+  Option<std::string> memoryModel{
+      *this, "memory-model",
+      llvm::cl::desc("Select metal-cb or experimental compiler-l1 storage."),
+      llvm::cl::init("metal-cb")};
   Option<bool> reuseUserDFBs{
       *this, "reuse-user-dfbs",
       llvm::cl::desc("Reuse physical DFB indices when concurrent-kernel "
                      "liveness proves that logical lifetimes do not overlap."),
       llvm::cl::init(true)};
+  Option<std::string> l1AllocationStrategy{
+      *this, "l1-allocation-strategy",
+      llvm::cl::desc("Select first-fit-decreasing or best-fit-decreasing "
+                     "compiler-l1 payload placement."),
+      llvm::cl::init("first-fit-decreasing")};
   Option<bool> unsafeAssumeAllocationGroups{
       *this, "unsafe-assume-allocation-groups",
       llvm::cl::desc("Trust explicit DFB allocation groups when runtime "

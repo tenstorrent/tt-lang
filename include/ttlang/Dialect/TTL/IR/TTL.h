@@ -36,6 +36,9 @@ class TTLTileOpTrait
 
 /// Attribute names.
 constexpr llvm::StringLiteral kCBIndexAttrPrefix("ttl.cb_index.");
+constexpr llvm::StringLiteral kMemoryModelAttrName("ttl.memory_model");
+constexpr llvm::StringLiteral kCompilerL1MemoryModel("compiler-l1");
+constexpr llvm::StringLiteral kL1ArenaBytesAttrName("ttl.l1_arena_bytes");
 
 /// Runtime configuration attributes.
 constexpr llvm::StringLiteral kFp32DestAccEnAttrName("fp32_dest_acc_en");
@@ -159,6 +162,9 @@ constexpr llvm::StringLiteral kPlaceholderCopyAttrName("ttl.placeholder_copy");
 
 /// Module attribute containing one runtime descriptor per physical DFB index.
 constexpr llvm::StringLiteral kDFBAllocationsAttrName("ttl.dfb_allocations");
+/// Allocation indices whose state ends at each DFB reconfiguration ordinal.
+constexpr llvm::StringLiteral kCompilerL1ReconfigurationResetsAttrName(
+    "ttl.compiler_l1_reconfiguration_resets");
 
 /// Module attribute identifying allocation groups accepted by an unsafe
 /// user-supplied handoff assumption.

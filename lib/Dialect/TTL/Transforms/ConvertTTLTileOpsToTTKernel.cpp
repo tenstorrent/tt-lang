@@ -76,8 +76,9 @@ static Value lookupCBByIndex(Value src, Operation *funcOp) {
     if (computeOp) {
       unsigned argIdx = barg.getArgNumber();
       if (auto cbIndex = getCBIndexAttr(computeOp, argIdx)) {
-        assert(*cbIndex >= 0 && *cbIndex < getTargetMaxDFBIndices(computeOp) &&
-               "cb_index must be valid for the compilation target");
+        auto range = getDFBIdentityRange(computeOp);
+        assert(succeeded(range) && *cbIndex >= 0 && *cbIndex < range->count &&
+               "DFB identity must be valid for the storage backend");
 
         // Find the bind_cb op with matching cb_index in the function.
         Value result;

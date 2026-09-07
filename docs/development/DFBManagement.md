@@ -1,6 +1,11 @@
 # Dataflow Buffer Management
 
-This document describes how the tt-lang compiler manages dataflow buffers (DFBs) -- the L1-resident circular buffers that transfer data between compute and data movement threads on Tenstorrent hardware.
+This document describes DFB ownership, lifecycle analysis, and synchronization.
+The index-allocation sections describe the default Metal backend.
+[Compiler-managed L1 allocation](L1Allocation.md) assigns byte-addressed storage;
+its protocol is specified [below](#compiler-managed-storage-protocol).
+Shared hardware terms are defined in the
+[specification glossary](../sphinx/specs/TTLangSpecification.md#appendix-a-glossary).
 
 ## Overview
 
@@ -2695,3 +2700,79 @@ When writing an f32 value to a bf16 block, the Python DSL auto-inserts
 IEEE-754 encoding, which matches the bf16 representation. This
 truncation is lossy for values that are not exactly representable in
 bf16.
+
+## Compiler-Managed Storage Protocol
+
+[Compiler-managed allocation](L1Allocation.md) uses two 32-bit sequence numbers
+per logical DFB: one published-block sequence written by the producer, and one
+consumed-block sequence written by the consumer. Both start at zero. For `B`
+blocks of capacity, sequences wrap explicitly modulo `2B`.
+
+This representation encodes both position and occupancy:
+
+- Block position is `sequence modulo B`.
+- Occupancy is `(published - consumed) modulo 2B`, in `[0, B]`.
+- Equal sequences mean empty; a distance of `B` means full.
+
+The second cycle distinguishes full from empty without separate position words.
+Unlike natural 32-bit counter overflow, explicit modulo-`2B` wrap preserves block
+position for every capacity, including non-power-of-two capacities.
+
+Each side has at most one outstanding acquisition per logical DFB: reserve must
+be followed by push before another reserve, and wait by pop before another wait.
+Producer and consumer acquisitions may overlap. The `with` syntax pairs acquisition
+and release but does not reject nested acquisitions of the same DFB. Alternation
+is a caller precondition; SPSC verification checks ownership only.
+
+The converter requires full-block page counts and positive total capacity below
+`2^31` pages. Runtime assertions check page counts only with watcher or
+lightweight assertions enabled; ordinary builds rely on the converter's static
+checks.
+
+```text
+reserve():
+    wait until occupancy < B
+    return payload + (published modulo B) * bytesPerBlock
+
+publish():
+    complete producer accesses
+    storeVisible(published, (published + 1) modulo 2B)
+
+wait():
+    wait until occupancy > 0
+    return payload + (consumed modulo B) * bytesPerBlock
+
+release():
+    complete consumer accesses
+    storeVisible(consumed, (consumed + 1) modulo 2B)
+```
+
+At most `B` blocks separate producer and consumer progress. Neither side can
+advance through a full sequence cycle while the other remains stationary, so
+sequence wrap cannot turn a full queue into an apparently empty one. Publication
+follows write completion; consumption follows read completion. Each counter has
+one writer, avoiding read-modify-write races.
+
+The [storage interface](../../include/ttlang/Target/TTKernel/LLKs/compiler_l1.h)
+uses [target helpers](../../include/ttlang/Target/TTKernel/LLKs/compiler_l1_target.h)
+for control-word visibility and engine completion:
+
+```text
+loadVisible(address):
+    execute target visibility fence
+    load word and complete the dependent-load sequence
+    return word
+
+storeVisible(address, value):
+    store word, read it back, and complete the dependent-load sequence
+
+completeAccesses():
+    on a data-movement processor: wait for outstanding NoC work
+    on UNPACK: stall until unpack accesses finish, then synchronize Tensix
+    on PACK: stall until pack accesses finish, then synchronize Tensix
+```
+
+UNPACK alone performs compute-side wait/pop; PACK alone performs reserve/push.
+MATH does not access queue state. The full NoC barrier also waits for unrelated
+work from the data-movement processor. A CPU fence alone does not establish
+transfer or compute-engine completion.
