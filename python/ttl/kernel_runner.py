@@ -2054,7 +2054,7 @@ def build_pipe_sram_scratch_tensors(
     *,
     zero_initialize: bool = False,
 ) -> List[Any]:
-    """Allocate per-core SRAM scratch tensors used by PipeNet metadata."""
+    """Allocate per-core SRAM scratch used by PipeNet and DFB lifecycle state."""
     if scratch_bytes <= 0:
         return []
 
@@ -4058,7 +4058,7 @@ def _run_kernel_on_device_impl(
         num_pipe_sync_semaphores: Number of pipe synchronization semaphores
             allocated by the compiler.
         pipe_sram_scratch_bytes: Per-core SRAM scratch bytes required by
-            PipeNet metadata.
+            PipeNet metadata and DFB lifecycle synchronization.
         num_pipe_global_semaphores: Number of GlobalSemaphore-backed PipeNet
             counters allocated by the compiler.
         mesh_program_placements: Optional mesh device ranges. When present,
@@ -4101,7 +4101,6 @@ def _run_kernel_on_device_impl(
         dfb_reconfiguration_plan
         or pipe_computed_address_dfb_indices
         or num_pipe_sync_semaphores
-        or pipe_sram_scratch_bytes
         or num_pipe_global_semaphores
         or any(kernel_fabric_routes or ())
     ):
