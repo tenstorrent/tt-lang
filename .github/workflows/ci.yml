@@ -1,9 +1,10 @@
 name: CI
 
 on:
+  # Base-only retargets emit edited; job conditions exclude title/body edits.
   pull_request:
     branches: ["main"]
-    types: [opened, synchronize, reopened, ready_for_review]
+    types: [opened, synchronize, reopened, ready_for_review, edited]
   push:
     branches: ["main"]
   schedule:
@@ -28,17 +29,18 @@ permissions:
   packages: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  # Metadata edits must not cancel an in-progress source-validation run.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}-${{ github.event.action == 'edited' && github.event.changes.base == null && github.run_id || 'code' }}
   cancel-in-progress: true
 
 jobs:
   pre-commit:
-    if: ${{ github.event_name != 'pull_request' || github.base_ref == 'main' }}
+    if: ${{ github.event_name != 'pull_request' || (github.base_ref == 'main' && (github.event.action != 'edited' || github.event.changes.base != null)) }}
     uses: ./.github/workflows/call-pre-commit.yml
     secrets: inherit
 
   check-tt-metal-version:
-    if: ${{ github.event_name != 'pull_request' || github.base_ref == 'main' }}
+    if: ${{ github.event_name != 'pull_request' || (github.base_ref == 'main' && (github.event.action != 'edited' || github.event.changes.base != null)) }}
     name: Verify tt-metal version (third-party/tt-metal-version)
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -49,7 +51,7 @@ jobs:
       - run: .github/scripts/check-tt-metal-version.sh
 
   resolve-docker-tag:
-    if: ${{ github.event_name != 'pull_request' || github.base_ref == 'main' }}
+    if: ${{ github.event_name != 'pull_request' || (github.base_ref == 'main' && (github.event.action != 'edited' || github.event.changes.base != null)) }}
     name: Resolve docker tag for this branch
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -129,7 +131,7 @@ jobs:
     secrets: inherit
 
   changes:
-    if: ${{ github.event_name != 'pull_request' || github.base_ref == 'main' }}
+    if: ${{ github.event_name != 'pull_request' || (github.base_ref == 'main' && (github.event.action != 'edited' || github.event.changes.base != null)) }}
     name: Detect wheel/container-affecting changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -230,12 +232,12 @@ jobs:
       docker_tag: ${{ needs.resolve-docker-tag.outputs.docker_tag }}
 
   test-sim:
-    if: ${{ github.event_name != 'pull_request' || github.base_ref == 'main' }}
+    if: ${{ github.event_name != 'pull_request' || (github.base_ref == 'main' && (github.event.action != 'edited' || github.event.changes.base != null)) }}
     uses: ./.github/workflows/call-test-sim.yml
     secrets: inherit
 
   test-scripts:
-    if: ${{ github.event_name != 'pull_request' || github.base_ref == 'main' }}
+    if: ${{ github.event_name != 'pull_request' || (github.base_ref == 'main' && (github.event.action != 'edited' || github.event.changes.base != null)) }}
     uses: ./.github/workflows/call-test-scripts.yml
 
   test-dist-tutorials:
@@ -276,7 +278,8 @@ jobs:
         uses: actions/deploy-pages@v5
 
   check-all-green:
-    if: ${{ always() && (github.event_name != 'pull_request' || github.base_ref == 'main') }}
+    name: ${{ github.event.action == 'edited' && github.event.changes.base == null && 'metadata-edit' || 'check-all-green' }}
+    if: ${{ always() && (github.event_name != 'pull_request' || (github.base_ref == 'main' && (github.event.action != 'edited' || github.event.changes.base != null))) }}
     needs:
       - pre-commit
       - check-tt-metal-version
