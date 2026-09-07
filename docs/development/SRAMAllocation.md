@@ -16,7 +16,7 @@ An *arena* is the node-local SRAM reservation for one operation execution. A *co
 | Payload reuse | Requires the Metal descriptor and backing-storage contracts | Requires noninterfering completed lifetimes |
 | Producer/consumer state | TT-Metal DFB interface state | Two 32-bit sequence counters per logical DFB |
 | Reset and reconfiguration | Blackhole TT-Metal interface reset and runtime descriptor reconfiguration | Blackhole address-based state reset with unchanged page size, pages per block, block count, and storage capacity |
-| External C++ DFB access | Numeric index or descriptor metadata | Typed address-bearing descriptor |
+| External C++ DFB access | Numeric index or typed descriptor bound to a TT-Metal DFB | Typed descriptor bound to compiler-assigned storage |
 
 Shared terminology is defined in the [TT-Lang specification glossary](../sphinx/specs/TTLangSpecification.md#appendix-a-glossary). The DFB protocol and lifecycle rules are defined in [DFB Management](DFBManagement.md).
 
@@ -227,11 +227,11 @@ For each invocation with a nonempty allocation plan, the runtime allocates a zer
 
 The runtime passes the arena as an auxiliary `generic_op` input without changing the user output position. Each invocation waits for device completion before releasing its arena, including after descriptor preparation or dispatch fails. A synchronization failure retains the arena for the process lifetime because completion is unknown. This wait adds host latency to each invocation with a nonempty allocation plan.
 
-The runtime zero-initializes synchronization scratch. Runtime resource caching includes the allocation metadata and reset count, so incompatible layouts do not share resources.
+A mesh tensor uses TT-Metal lockstep allocation, which assigns the same SRAM address on every selected device. The runtime zero-initializes synchronization scratch. Existing semaphore, runtime-argument, define, and external-resource ownership contracts compose with the arena. Runtime resource caching includes the allocation metadata and reset count, so incompatible layouts do not share resources.
 
 Finalization records `ttl.memory_model`, `ttl.l1_arena_bytes`, and one entry per logical DFB in `ttl.dfb_allocations`. Entries are ordered by `dfb_index`, which equals each entry's array position. Each entry gives the arena-relative control-record offset (`l1_offset`), arena-relative payload offset (`l1_payload_offset`), and aligned payload extent (`l1_allocation_bytes`). Before code generation, EmitC checks bounds, target alignment, and agreement between each DFB type and its allocation's element type, page size, and total page count. A generated kernel's compile-time argument 0 identifies the common runtime argument containing its local arena base; subsequent DFB compile-time arguments identify allocation entries. The C++ `PayloadOffset` template parameter is relative to the control record: `l1_payload_offset - l1_offset`. `ttl.compiler_l1_reconfiguration_resets` records which control records are cleared at each reconfiguration boundary.
 
-Uniform allocation reserves the largest required arena on every participating node. This can waste capacity when activity is sparse. Per-node layouts require node-specific allocation metadata and are an extension of this design.
+Uniform allocation reserves the largest required arena on every participating worker node. This can waste capacity when activity is sparse. Per-node layouts require node-specific allocation metadata and are an extension of this design.
 
 ## Memory Utilization
 
@@ -248,25 +248,26 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 
 ## Implemented Contract
 
-- One device and one uniform worker-node arena.
+- One uniform worker-node arena layout at an equal SRAM address across selected devices.
 - Compiler-owned static storage. Tensor-backed DFBs and allocation groups are rejected.
 - Full-block transactions with positive capacity below `2^31` pages.
 - Full 32x32 BF16 and FP32 tiles for address-based compute.
 - Address-based tensor transfer, elementwise compute, matmul, reductions, broadcast, transpose, and loop-carried L1 packer accumulation. SFPU and initializer operations without DFB operands or results use their existing lowering.
 - Scalar device printing. Destination-register printing changes pack state on Blackhole; DFB, tile, and tensor printing require physical DFB descriptors. These modes are rejected before lowering.
 - Typed external C++ calls with explicit DFB effects.
+- Device-domain and mesh program placement with declarative external runtime resources.
 - Blackhole selected reset, reset-all, and reconfiguration.
 - Wormhole allocation, transfer, compute, and external descriptors without reset or reconfiguration.
 
-PipeNet transfers, computed-address DFBs, device-domain placement, multi-device execution, and external runtime resources are outside this contract and are rejected before device execution. The compiler does not fall back to Metal descriptors.
+PipeNet transfers and computed-address DFBs are outside this contract and are rejected before runtime-resource construction. The compiler does not fall back to Metal descriptors.
 
 ## Validation
 
-[Device tests](../../test/python/test_compiler_l1.py) cover transfer, allocation, reuse, and descriptor-count stress. [Compute tests](../../test/python/test_compiler_l1_compute.py) and [accumulation tests](../../test/python/test_accumulation_strategies.py) cover BF16/FP32 and DRAM/SRAM inputs. [Lifecycle tests](../../test/python/test_compiler_l1_lifecycle.py) cover reset, reconfiguration, and typed external calls. [Generated placement tests](../../test/ttlang/Dialect/TTL/Transforms/compiler_l1_stress.py) check alignment, conflicts, budgets, deterministic strategies, and reuse against independent expected placements. Negative compiler tests check unsupported contracts before device execution.
+[Device tests](../../test/python/test_compiler_l1.py) cover transfer, allocation, reuse, and descriptor-count stress. [Compute tests](../../test/python/test_compiler_l1_compute.py) and [accumulation tests](../../test/python/test_accumulation_strategies.py) cover BF16/FP32 and DRAM/SRAM inputs. [Lifecycle tests](../../test/python/test_compiler_l1_lifecycle.py) cover reset and reconfiguration. [Runtime placement tests](../../test/python/test_kernel_runner.py) and [external-resource device tests](../../test/python/test_operation_runtime_resources.py) cover mesh placement and resource composition. [Generated placement tests](../../test/ttlang/Dialect/TTL/Transforms/compiler_l1_stress.py) check alignment, conflicts, budgets, deterministic strategies, and reuse against independent expected placements.
 
 ## Extensions
 
-- Per-node and multi-device placement require node-specific layout metadata and ownership for each arena. Multicast receivers additionally require a shared payload address.
+- Per-node arena layouts require node-specific allocation metadata and ownership. Multicast receivers additionally require a shared payload address.
 - Tensor-backed DFBs and allocation groups require fixed external byte ranges and explicit alias/ownership constraints in the allocation problem.
 - PipeNet transfers require completion evidence through destination consumption before scratch ranges can be reused.
 - Sub-tile and row-major operations require matching geometry, stride, and capacity rules in the address-based compute interface.

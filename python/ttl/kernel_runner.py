@@ -2080,7 +2080,7 @@ def build_pipe_sram_scratch_tensors(
     *,
     zero_initialize: bool = False,
 ) -> List[Any]:
-    """Allocate per-core SRAM scratch tensors used by PipeNet metadata."""
+    """Allocate per-node SRAM scratch used by PipeNet and DFB lifecycle state."""
     if scratch_bytes <= 0:
         return []
 
@@ -4499,14 +4499,6 @@ def run_kernel_on_device(
         )
     )
     if compiler_l1_arena_bytes is not None:
-        if (
-            device_domain is not None
-            or mesh_program_placements is not None
-            or runtime_resource_factory is not None
-        ):
-            raise ValueError(
-                "compiler-sram requires one device and no external runtime resources"
-            )
         if (
             dfb_reconfiguration_plan
             or pipe_computed_address_dfb_indices

@@ -29,6 +29,7 @@ func.func @typed_literals_to_emitc() attributes {ttkernel.thread = #ttkernel.thr
 // CPP: #include "api/dataflow/circular_buffer.h"
 // CPP: namespace ttlang {
 // CPP: struct DFBDescriptor {
+// CPP: static CircularBuffer bind() { return CircularBuffer(Index); }
 // CPP: } // namespace ttlang
 // CPP: #include "describe.hpp"
 // CPP: describe<11, ttlang::DFBDescriptor<3, 2, 4, 4096>>();
