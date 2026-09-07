@@ -1,28 +1,22 @@
-// Summary: ttl.tile_binary_bcast lowers to a single ttkernel.binary_bcast
-// reading both operands from CBs, plus a binary_bcast_init carrying the
-// elementwise op and the broadcast dimension. Neither unary_bcast nor
-// copy_tile should appear: the broadcast is applied during unpack rather than
-// materialized into DST.
+// Purpose: end-to-end TTL -> TTKernel -> emitc -> C++ for a broadcast folded
+// into its binary consumer.
+// Verifies: the emitted kernel calls the current metal broadcast API,
+// bcast_init + any_tiles_bcast, rather than the deprecated init_bcast full
+// init, and pulls in the header that declares them.
 
-// RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(ttl-set-compute-kernel-config, func.func(ttl-assign-dst, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
-// RUN:   --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-set-compute-kernel-config, func.func(ttl-assign-dst, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse, lower-affine)' -o %t.ttkernel.mlir
+// RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
+// RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
+// RUN: FileCheck %s --input-file=%t.cpp
 
-// Row broadcast folded into an add: the (1, N) operand is unpacked with the
-// row broadcast while the (M, N) operand is unpacked normally.
-// CHECK-LABEL: func.func @binary_bcast_row_add
-// CHECK: %[[DATA_CB:.*]] = ttkernel.get_compile_time_arg_val(0)
-// CHECK: %[[OUT_CB:.*]] = ttkernel.get_compile_time_arg_val(1)
-// CHECK: %[[BCAST_CB:.*]] = ttkernel.get_compile_time_arg_val(2)
-// CHECK: ttkernel.binary_op_init_common(%[[DATA_CB]], %[[BCAST_CB]], %[[OUT_CB]])
-// CHECK: ttkernel.binary_bcast_init(%[[DATA_CB]], %[[BCAST_CB]], <add>, <row>)
-// CHECK: ttkernel.binary_bcast(%[[DATA_CB]], %[[BCAST_CB]],
-// CHECK-NOT: ttkernel.unary_bcast
-// CHECK-NOT: ttkernel.copy_tile
-// CHECK-NOT: ttkernel.add_binary_tile
+// CHECK: #include "api/compute/bcast.h"
+// CHECK: bcast_init<EltwiseBinaryType::ELWADD, BroadcastType::ROW>
+// CHECK: any_tiles_bcast<EltwiseBinaryType::ELWADD, BroadcastType::ROW>
+// CHECK-NOT: init_bcast
+
 #map = affine_map<(d0, d1) -> (d0, d1)>
 #bcast_row = affine_map<(d0, d1) -> (0, d1)>
-func.func @binary_bcast_row_add()
+func.func @binary_bcast_row_add_to_cpp()
     attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [],
                 ttl.kernel_thread = #ttkernel.thread<compute>} {
   %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
