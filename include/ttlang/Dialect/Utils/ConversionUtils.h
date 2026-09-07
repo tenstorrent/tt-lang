@@ -18,6 +18,7 @@
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "llvm/ADT/Twine.h"
 
 namespace mlir::tt::ttl::utils {
@@ -50,19 +51,22 @@ inline FailureOr<CircularBufferType> getTTLCircularBufferType(Value value) {
 ///   delinearize(5, [3,2]) -> (2,1), add [0,2] -> (2,3),
 ///   linearize((2,3), [3,4]) -> 11.
 ///
-/// Returns `localIndex` unchanged if no extract_slice is found. Set
-/// `composeNestedSlices` when the operand may be a slice of another slice and
-/// the index must be expressed relative to the root tensor.
+/// Returns `localIndex` unchanged if no extract_slice is found.
 inline Value addSliceOffset(Value operand, Value localIndex, OpBuilder &builder,
-                            Location loc, bool composeNestedSlices = false) {
+                            Location loc) {
   // Trace through tensor.extract (tile extraction from lower-to-loops).
   Value tensor = operand;
   if (auto extract = tensor.getDefiningOp<mlir::tensor::ExtractOp>()) {
     tensor = extract.getTensor();
   }
-  // Skip past any `ttl.attach_cb` (SSA identity) so the next
-  // `getDefiningOp` finds the extract_slice rather than the attach_cb.
-  while (auto attach = tensor.getDefiningOp<mlir::tt::ttl::AttachCBOp>()) {
+  // Singleton views preserve the row-major local index. Follow them and DFB
+  // associations before looking for a subblock's offset-bearing slice.
+  while (true) {
+    tensor = traceDFBShapeViews(tensor);
+    auto attach = tensor.getDefiningOp<AttachCBOp>();
+    if (!attach) {
+      break;
+    }
     tensor = attach.getTensor();
   }
   auto slice = tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>();
@@ -87,16 +91,12 @@ inline Value addSliceOffset(Value operand, Value localIndex, OpBuilder &builder,
     globalCoords.push_back(global);
   }
 
-  // Relinearize against the immediate source shape. Most callers address a
-  // single DFB slice; batched matmul explicitly composes its batch and
-  // subblock slices.
+  // Relinearize against the full source shape.
   Value sourceIndex = affine::AffineLinearizeIndexOp::create(
       builder, loc, globalCoords, sourceType.getShape());
-  if (!composeNestedSlices) {
-    return sourceIndex;
-  }
-  return addSliceOffset(slice.getSource(), sourceIndex, builder, loc,
-                        composeNestedSlices);
+  // Nested subblocks have offsets relative to their immediate source, not the
+  // root DFB. Compose each slice mapping before reaching that root.
+  return addSliceOffset(slice.getSource(), sourceIndex, builder, loc);
 }
 
 /// Convert a TTL CircularBufferType value to a TTKernel CBType, or return
