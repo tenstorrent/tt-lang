@@ -401,18 +401,18 @@ class TensorBlock:
         ttl.store(rhs, acquired_view)
 
     def store_rows(ast_self: TensorBlock, rhs: TensorBlock) -> None:
-        """Pack a complete-row prefix from one full tile into this block.
+        """Pack one 32x32 source tile into one same-width destination tile.
 
         The source must contain one 32x32 tile. The reserve-backed destination
-        may use smaller tiles, but its complete block must represent a
-        contiguous prefix of 32-datum rows. BF16 and FP32 are supported.
+        must contain one tile with the same width and a supported height no
+        greater than 32. BF16 and FP32 are supported.
         """
         acquired_view = _get_reserve_backed_view(ast_self, "store_rows")
         _require_row_prefix_store(rhs, acquired_view)
         ttl.store(rhs, acquired_view, row_prefix=True)
 
     def accumulate_rows(ast_self: TensorBlock, rhs: TensorBlock) -> None:
-        """Add a complete-row prefix from one full tile into this block.
+        """Accumulate one 32x32 tile into one same-width destination tile.
 
         The reserved block must first be initialized by ``store_rows`` before
         the enclosing loop uses this method for packer L1 accumulation.
@@ -739,7 +739,7 @@ def _require_matching_tile_shapes(lhs_elem, rhs_elem, lhs_name: str, rhs_name: s
 
 
 def _require_row_prefix_store(rhs, acquired_view) -> None:
-    """Validate a full-tile source and compact complete-row destination."""
+    """Validate a full source tile and one same-width destination tile."""
     from math import prod
 
     from ttl.dialects import ttcore
@@ -774,22 +774,16 @@ def _require_row_prefix_store(rhs, acquired_view) -> None:
     source_dtype = ttcore.DataType(source_tile.data_type_as_int)
     if source_dtype not in (ttcore.DataType.BFloat16, ttcore.DataType.Float32):
         raise ValueError("row-prefix store supports only bf16 and f32 tile data types")
+    destination_tile_count = prod(destination_type.shape)
+    if destination_tile_count != 1:
+        raise ValueError(
+            "row-prefix store destination must contain exactly one tile, got "
+            f"shape {tuple(destination_type.shape)}"
+        )
     if destination_tile_shape[1] != source_tile_shape[1]:
         raise ValueError(
             "row-prefix store destination tile width must equal source width "
             f"{source_tile_shape[1]}, got {destination_tile_shape[1]}"
-        )
-
-    destination_scalar_count = (
-        prod(destination_type.shape)
-        * destination_tile_shape[0]
-        * destination_tile_shape[1]
-    )
-    source_scalar_count = source_tile_shape[0] * source_tile_shape[1]
-    if not 0 < destination_scalar_count <= source_scalar_count:
-        raise ValueError(
-            "row-prefix store destination must contain between 1 and "
-            f"{source_scalar_count} scalar elements, got {destination_scalar_count}"
         )
 
 

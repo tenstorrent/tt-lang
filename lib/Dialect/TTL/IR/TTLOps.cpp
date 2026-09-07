@@ -2504,20 +2504,15 @@ verifyRowPrefixStore(mlir::Operation *operation,
            << "row_prefix source must contain exactly one tile, got "
            << sourceType.getNumElements();
   }
+  if (destinationType.getNumElements() != 1) {
+    return operation->emitOpError()
+           << "row_prefix destination must contain exactly one tile, got "
+           << destinationType.getNumElements();
+  }
   if (destinationTile.getWidth() != sourceTile.getWidth()) {
     return operation->emitOpError()
            << "row_prefix destination tile width must equal source width "
            << sourceTile.getWidth() << ", got " << destinationTile.getWidth();
-  }
-
-  int64_t destinationScalars = destinationType.getNumElements() *
-                               destinationTile.getHeight() *
-                               destinationTile.getWidth();
-  int64_t sourceScalars = sourceTile.getHeight() * sourceTile.getWidth();
-  if (destinationScalars <= 0 || destinationScalars > sourceScalars) {
-    return operation->emitOpError()
-           << "row_prefix destination must contain between 1 and "
-           << sourceScalars << " scalar elements, got " << destinationScalars;
   }
   return mlir::success();
 }

@@ -670,11 +670,7 @@ struct PassthroughStorePlan {
   /// DFB associated with `outputView`.
   Value outputDFB;
 
-  /// Formal output type that defines the passthrough compute iteration.
-  ///
-  /// A row-prefix store performs one bulk pack into a multi-page destination,
-  /// so its formal output has one element per destination dimension. The
-  /// `outputView` retains the complete destination block type for pack sizing.
+  /// Formal output type produced by the passthrough compute.
   RankedTensorType computeOutputTensorType;
 
   /// Tile read into DST by the passthrough compute.

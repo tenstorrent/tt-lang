@@ -24,7 +24,7 @@ def _make_valid_row_prefix_operation(data_format):
             data_format, shape=(1, 1), block_count=2, tile=(32, 32)
         )
         output_dfb = ttl.make_dfb(
-            data_format, shape=(1, 14), block_count=1, tile=(1, 32)
+            data_format, shape=(1, 1), block_count=1, tile=(16, 32)
         )
 
         @ttl.datamovement()
@@ -56,8 +56,8 @@ def _make_invalid_store_rows_operation(
     source_shape=(1, 1),
     source_tile=(32, 32),
     destination_data_format="bf16",
-    destination_shape=(1, 14),
-    destination_tile=(1, 32),
+    destination_shape=(1, 1),
+    destination_tile=(16, 32),
 ):
     @ttl.operation(grid=(1, 1))
     def invalid_store_rows_operation():
@@ -86,7 +86,7 @@ def _make_invalid_store_rows_operation(
 @ttl.operation(grid=(1, 1))
 def _store_rows_from_waited_destination():
     source_dfb = ttl.make_dfb("bf16", shape=(1, 1), block_count=1, tile=(32, 32))
-    destination_dfb = ttl.make_dfb("bf16", shape=(1, 14), block_count=1, tile=(1, 32))
+    destination_dfb = ttl.make_dfb("bf16", shape=(1, 1), block_count=1, tile=(16, 32))
 
     @ttl.compute()
     def compute():
@@ -98,7 +98,7 @@ def _store_rows_from_waited_destination():
 @ttl.operation(grid=(1, 1))
 def _accumulate_rows_into_waited_destination():
     source_dfb = ttl.make_dfb("bf16", shape=(1, 1), block_count=1, tile=(32, 32))
-    destination_dfb = ttl.make_dfb("bf16", shape=(1, 14), block_count=1, tile=(1, 32))
+    destination_dfb = ttl.make_dfb("bf16", shape=(1, 1), block_count=1, tile=(16, 32))
 
     @ttl.compute()
     def compute():
@@ -109,7 +109,7 @@ def _accumulate_rows_into_waited_destination():
 
 @ttl.operation(grid=(1, 1))
 def _store_rows_from_scalar():
-    destination_dfb = ttl.make_dfb("bf16", shape=(1, 14), block_count=1, tile=(1, 32))
+    destination_dfb = ttl.make_dfb("bf16", shape=(1, 1), block_count=1, tile=(16, 32))
 
     @ttl.compute()
     def compute():
@@ -158,16 +158,15 @@ INVALID_ROW_PREFIX_CASES = [
     ),
     pytest.param(
         _make_invalid_store_rows_operation(
-            destination_shape=(1, 28), destination_tile=(1, 16)
+            destination_shape=(1, 1), destination_tile=(16, 16)
         ),
         "row-prefix store destination tile width must equal source width 32, got 16",
         id="destination-width",
     ),
     pytest.param(
-        _make_invalid_store_rows_operation(destination_shape=(1, 33)),
-        "row-prefix store destination must contain between 1 and 1024 scalar "
-        "elements, got 1056",
-        id="destination-capacity",
+        _make_invalid_store_rows_operation(destination_shape=(1, 2)),
+        r"row-prefix store destination must contain exactly one tile, got shape \(1, 2\)",
+        id="destination-tile-count",
     ),
 ]
 
@@ -184,7 +183,7 @@ def test_row_prefix_methods_emit_expected_store_attributes(
 
     initial_text = initial_mlir.read_text()
     assert f"!ttcore.tile<32x32, {data_format}>" in initial_text
-    assert f"!ttcore.tile<1x32, {data_format}>" in initial_text
+    assert f"!ttcore.tile<16x32, {data_format}>" in initial_text
     assert "ttl.store" in initial_text
     assert "{row_prefix}" in initial_text
     assert "{accumulate, row_prefix}" in initial_text
