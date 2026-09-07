@@ -54,7 +54,7 @@
 | 0.18 | 06/16/2026 | Add `ttl.raw_element_read` and `ttl.raw_element_write` |
 | 0.19 | 06/15/2026 | Unified-body `ttl.operation` with thread assignment and composition; add multi-kernel operation with explicit kernels |
 | 0.20 | 06/23/2026 | Add `ttl.exp` hardware flags and scaled exponential canonicalization |
-| 0.21 | 09/03/2026 | Add `ttl.read_index`, `ttl.wait_any`, dataflow-buffer allocation groups, waited-block replacement, external-call inspection contracts, byte-counted DFB and PipeNet transfers, logical device domains, multidevice PipeNets, and per-node PipeNet destination counts |
+| 0.21 | 09/03/2026 | Add `ttl.read_index`, `ttl.wait_any`, dataflow-buffer allocation groups, waited-block replacement, external-call inspection contracts, byte-counted DFB and PipeNet transfers, logical device domains, sparse mesh program placement, multidevice PipeNets, and per-node PipeNet destination counts |
 
 
 ## Introduction
@@ -163,12 +163,16 @@ A *device domain* is a logical rectangular index set of devices. It is independe
 
 An operation declares multidevice execution with the `device_domain=` argument to `ttl.operation`. The operation's grid executes on every device in the domain. `DeviceDomain.is_current()` and `DeviceDomain.current_index()` provide logical-device predicates and indexing within kernels. At execution, the flattened domain extent must match the logical extent of the TT-NN mesh device. The runtime maps logical coordinates to that mesh arrangement; physical route selection is not part of the device-domain semantics.
 
+The `mesh_program_placements=` argument restricts program construction to selected logical device coordinates or inclusive rectangular ranges. Omitting it selects the complete device domain. Explicit placements must have one coordinate rank, remain within both the device domain and the runtime mesh, not overlap, and include every endpoint used by a graph-based PipeNet.
+
 | Type/Function | Description |
 | :---- | :---- |
 | `ttl.DeviceDomain(extent: Sequence[int], *, name: str = "device")` | Constructs one named rectangular logical device domain. |
 | `ttl.DeviceDomain.product(**components)` | Constructs a product of named rectangular domains or extents. |
 | `ttl.DeviceRef(*coordinates, **named_coordinates)` | Identifies one logical device by positional or named component coordinates. |
 | `ttl.DeviceRange(lo: ttl.DeviceRef, hi: ttl.DeviceRef)` | Describes a half-open rectangular range of logical devices. |
+| `ttl.MeshProgramPlacement(start: Sequence[int], end: Optional[Sequence[int]] = None)` | Describes one logical mesh coordinate or an inclusive rectangular range that receives the operation's program. |
+| `@ttl.operation(..., mesh_program_placements=placements)` | Restricts execution to disjoint `ttl.MeshProgramPlacement` values or coordinate tuples. |
 | `ttl.DeviceDomain.current_index(self) -> int` | Returns the current logical device's row-major index within a kernel. |
 | `ttl.DeviceDomain.is_current(self, device) -> bool` | Tests whether the kernel executes on the specified logical device. |
 | `ttl.DeviceDomain.index_order(self, device) -> int` | Returns a device reference's row-major index at operation construction time. |
