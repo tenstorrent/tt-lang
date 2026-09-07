@@ -2219,6 +2219,35 @@ def test_compiler_l1_arena_size_rejects_partial_metadata():
         kernel_runner._get_compiler_l1_arena_bytes([config])
 
 
+def _compiler_l1_config():
+    return PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        l1_offset=0,
+        l1_payload_offset=64,
+        l1_allocation_bytes=2048,
+    )
+
+
+def _install_compiler_l1_arena(monkeypatch, device, core_ranges=None):
+    core_ranges = core_ranges or _FakeCoreRanges()
+    arena = _FakeTensor(device, address=0x8000)
+    allocation_calls = []
+
+    def allocate_arena(ranges, num_bytes, allocation_device, *, zero_initialize):
+        allocation_calls.append((ranges, num_bytes, allocation_device, zero_initialize))
+        return arena
+
+    monkeypatch.setattr(
+        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_arena
+    )
+    return core_ranges, arena, allocation_calls
+
+
 def _local_tensor_test_environment():
     fake_ttnn = _FakeTTNN()
     fake_ttnn.TensorMemoryLayout = SimpleNamespace(
@@ -2475,6 +2504,146 @@ def test_run_kernel_materializes_resources_and_synchronizes_lifetimes(monkeypatc
     assert program.kernels[0].defines == [("MODE", "runtime")]
     assert program.kernels[0].runtime_args[1][0] == [8, 9]
     assert fake_ttnn.synchronize_calls == [device]
+
+
+# Compiler-managed storage composes with caller-owned descriptor resources.
+def test_run_kernel_composes_compiler_l1_with_runtime_resources(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    device = object()
+    core_ranges, arena, allocation_calls = _install_compiler_l1_arena(
+        monkeypatch, device
+    )
+    owner = object()
+    tensor = _FakeTensorWithoutDevice()
+
+    def make_resources(*, tensors, core_ranges, first_free_semaphore_id):
+        assert len(tensors) == 1
+        assert first_free_semaphore_id == 0
+        return ProgramRuntimeResources(
+            semaphore_descriptors=(_FakeTTNN.SemaphoreDescriptor(0, core_ranges, 3),),
+            kernel_resources=(
+                KernelRuntimeResources(
+                    kernel=KernelKind.COMPUTE,
+                    runtime_args=(CoreRuntimeArgs(_FakeCoreCoord(0, 0), (7, 8)),),
+                    defines=(KernelDefine("MODE", "external"),),
+                ),
+            ),
+            lifetimes=(owner,),
+        )
+
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
+        tensors=[tensor],
+        cb_configs=[_compiler_l1_config()],
+        core_ranges=core_ranges,
+        program_hash=5,
+        runtime_resource_factory=make_resources,
+        operation_name="compiler_l1_resources",
+        device=device,
+    )
+
+    program = result["program"]
+    assert allocation_calls == [(core_ranges, 2112, device, True)]
+    assert result["tensors"] == [arena, tensor]
+    assert program.cbs == []
+    assert [semaphore.id for semaphore in program.semaphores] == [0]
+    assert program.kernels[0].common_runtime_args == [0x8000]
+    assert program.kernels[0].compile_time_args == [0]
+    assert program.kernels[0].runtime_args[0][0] == [7, 8]
+    assert program.kernels[0].defines == [("MODE", "external")]
+    assert program.custom_program_hash != 5
+    assert fake_ttnn.synchronize_calls == [device]
+
+
+# Compiler-managed reset state uses the shared compiler scratch allocation.
+def test_compiler_l1_composes_with_lifecycle_scratch(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    device = object()
+    core_ranges = _FakeCoreRanges()
+    scratch = _FakeTensor(device, address=0x9000)
+    arena = _FakeTensor(device, address=0x8000)
+    tensor = _FakeTensorWithoutDevice()
+    allocation_calls = []
+
+    def allocate_storage(ranges, num_bytes, allocation_device, *, zero_initialize):
+        allocation_calls.append((ranges, num_bytes, allocation_device, zero_initialize))
+        return scratch if num_bytes == 16 else arena
+
+    monkeypatch.setattr(
+        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_storage
+    )
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
+        tensors=[tensor],
+        cb_configs=[_compiler_l1_config()],
+        core_ranges=core_ranges,
+        pipe_sram_scratch_bytes=16,
+        num_dfb_resets=1,
+        device=device,
+    )
+
+    assert allocation_calls == [
+        (core_ranges, 16, device, True),
+        (core_ranges, 2112, device, True),
+    ]
+    assert result["tensors"] == [scratch, arena, tensor]
+
+
+# PipeNet and Metal reconfiguration remain separate from this composition.
+@pytest.mark.parametrize(
+    "incompatible_resource",
+    [
+        "sync-semaphore",
+        "global-semaphore",
+        "computed-address",
+        "fabric-route",
+        "reconfiguration",
+    ],
+)
+def test_compiler_l1_rejects_incompatible_resources_before_allocation(
+    monkeypatch, incompatible_resource
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    kernel_spec = _kernel_spec(KernelKind.COMPUTE)
+    arguments = {}
+    if incompatible_resource == "sync-semaphore":
+        arguments["num_pipe_sync_semaphores"] = 1
+    elif incompatible_resource == "global-semaphore":
+        arguments["num_pipe_global_semaphores"] = 1
+    elif incompatible_resource == "computed-address":
+        kernel_spec.pipe_computed_address_dfb_indices = [0]
+    elif incompatible_resource == "fabric-route":
+        arguments["kernel_fabric_routes"] = [
+            [kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)]
+        ]
+    else:
+        arguments["dfb_reconfiguration_plan"] = object()
+
+    allocation_calls = []
+    factory_calls = []
+    monkeypatch.setattr(
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        lambda *_args, **_kwargs: allocation_calls.append(True),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="cannot combine with PipeNet or Metal DFB reconfiguration resources",
+    ):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[kernel_spec],
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=[_compiler_l1_config()],
+            core_ranges=_FakeCoreRanges(),
+            runtime_resource_factory=lambda **_kwargs: factory_calls.append(True),
+            **arguments,
+        )
+
+    assert allocation_calls == []
+    assert factory_calls == []
 
 
 def test_run_kernel_failure_preserves_runtime_resource_lifetimes(monkeypatch):
@@ -3233,6 +3402,105 @@ def test_device_domain_builds_per_device_runtime_coordinates(monkeypatch):
     assert mesh_programs[0][1] is not mesh_programs[1][1]
     assert mesh_programs[0][1].kernels[0].common_runtime_args == [0x2000, 0, 0]
     assert mesh_programs[1][1].kernels[0].common_runtime_args == [0x2000, 0, 1]
+
+
+# A mesh arena has one lockstep address and each descriptor retains its coordinates.
+def test_compiler_l1_device_domain_binds_lockstep_arena(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    mesh_device = _FakeMeshDevice()
+    core_ranges, arena, allocation_calls = _install_compiler_l1_arena(
+        monkeypatch, mesh_device
+    )
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
+        tensors=[_FakeTensor(mesh_device)],
+        cb_configs=[_compiler_l1_config()],
+        core_ranges=core_ranges,
+        device_domain=DeviceDomain((1, 2)),
+        mesh_program_placements=[kernel_runner.MeshProgramPlacement((0, 0), (0, 1))],
+        device=mesh_device,
+    )
+
+    assert allocation_calls == [(core_ranges, 2112, mesh_device, True)]
+    assert result["tensors"][0] is arena
+    mesh_programs = result["program"].mesh_programs
+    assert len(mesh_programs) == 2
+    assert mesh_programs[0][1] is not mesh_programs[1][1]
+    assert mesh_programs[0][1].cbs == []
+    assert mesh_programs[1][1].cbs == []
+    assert mesh_programs[0][1].kernels[0].common_runtime_args == [0, 0, 0x8000]
+    assert mesh_programs[1][1].kernels[0].common_runtime_args == [0, 1, 0x8000]
+    assert mesh_programs[0][1].kernels[0].compile_time_args == [2]
+    assert mesh_programs[1][1].kernels[0].compile_time_args == [2]
+
+
+# External fabric ownership remains valid with the compiler-managed mesh arena.
+def test_compiler_l1_device_domain_composes_external_fabric_binding(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    mesh_device = _FakeMeshDevice()
+    core_ranges = _FakeCoreRanges((((1, 0), (1, 0)),))
+    core_ranges, arena, allocation_calls = _install_compiler_l1_arena(
+        monkeypatch, mesh_device, core_ranges
+    )
+    claim = _bound_fabric_claim()
+    interval = _fabric_manager_interval(
+        "external.external",
+        kind=kernel_runner.FabricManagerIntervalKind.EXTERNAL,
+        claim=claim.identity,
+        route_indices=(),
+    )
+    kernel_spec = kernel_runner.KernelSpec(
+        path="/tmp/external.cpp",
+        thread_type="noc",
+        tensor_indices=[],
+        config=object(),
+        logical_kernel=claim.kernel,
+        fabric_manager_intervals=(interval,),
+    )
+    owner = object()
+    binding = FabricConnectionBinding(
+        claim=claim,
+        connections=(
+            FabricConnectionRequirement(
+                local_device=DeviceRef(0, 0),
+                remote_device=DeviceRef(0, 1),
+                worker_nodes=((1, 0),),
+                fixed_link_index=1,
+            ),
+            FabricConnectionRequirement(
+                local_device=DeviceRef(0, 1),
+                remote_device=DeviceRef(0, 0),
+                worker_nodes=((1, 0),),
+                fixed_link_index=1,
+            ),
+        ),
+        abi_identity="external-v1",
+        lifetimes=(owner,),
+    )
+
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[kernel_spec],
+        tensors=[_FakeTensor(mesh_device)],
+        cb_configs=[_compiler_l1_config()],
+        core_ranges=core_ranges,
+        device_domain=DeviceDomain((1, 2)),
+        kernel_fabric_routes=[[]],
+        runtime_resource_factory=lambda **_kwargs: ProgramRuntimeResources(
+            fabric_connections=(binding,)
+        ),
+        operation_name="test.operation",
+        device=mesh_device,
+    )
+
+    mesh_programs = result["program"].mesh_programs
+    assert allocation_calls == [(core_ranges, 2112, mesh_device, True)]
+    assert result["tensors"][0] is arena
+    assert len(mesh_programs) == 2
+    assert mesh_programs[0][1].kernels[0].common_runtime_args == [0, 0, 0x8000]
+    assert mesh_programs[1][1].kernels[0].common_runtime_args == [0, 1, 0x8000]
+    assert fake_ttnn.synchronize_calls == [mesh_device]
 
 
 def test_routing_plane_runtime_args_are_dense_per_device(monkeypatch):
@@ -4704,6 +4972,55 @@ def test_run_kernel_with_mesh_program_descriptor(monkeypatch):
     assert first_program is second_program
     assert first_program.kernels == []
     assert first_program.custom_program_hash == 5
+
+
+# A replicated mesh descriptor uses the mesh arena's common lockstep address.
+def test_compiler_l1_mesh_placements_bind_lockstep_arena(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    mesh_device = _FakeMeshDevice()
+    core_ranges, arena, allocation_calls = _install_compiler_l1_arena(
+        monkeypatch, mesh_device
+    )
+    owner = object()
+
+    def make_resources(**_kwargs):
+        return ProgramRuntimeResources(
+            semaphore_descriptors=(_FakeTTNN.SemaphoreDescriptor(0, core_ranges, 3),),
+            kernel_resources=(
+                KernelRuntimeResources(
+                    kernel=KernelKind.COMPUTE,
+                    runtime_args=(CoreRuntimeArgs(_FakeCoreCoord(0, 0), (7, 8)),),
+                    defines=(KernelDefine("MODE", "external"),),
+                ),
+            ),
+            lifetimes=(owner,),
+        )
+
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
+        tensors=[_FakeTensor(mesh_device)],
+        cb_configs=[_compiler_l1_config()],
+        core_ranges=core_ranges,
+        mesh_program_placements=[
+            kernel_runner.MeshProgramPlacement((0, 0), (0, 1)),
+        ],
+        runtime_resource_factory=make_resources,
+        device=mesh_device,
+    )
+
+    mesh_program = result["program"]
+    assert allocation_calls == [(core_ranges, 2112, mesh_device, True)]
+    assert result["tensors"][0] is arena
+    assert len(mesh_program.mesh_programs) == 1
+    program = mesh_program.mesh_programs[0][1]
+    assert program.cbs == []
+    assert [semaphore.id for semaphore in program.semaphores] == [0]
+    assert program.kernels[0].common_runtime_args == [0x8000]
+    assert program.kernels[0].compile_time_args == [0]
+    assert program.kernels[0].runtime_args[0][0] == [7, 8]
+    assert program.kernels[0].defines == [("MODE", "external")]
+    assert fake_ttnn.synchronize_calls == [mesh_device]
 
 
 def test_build_mesh_program_descriptor_rejects_empty_placements(monkeypatch):

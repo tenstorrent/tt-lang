@@ -85,13 +85,21 @@ def _make_runtime_resource_operation(dtype):
                 ttl.call_extern_func(
                     RUNTIME_RESOURCE_HEADER,
                     "write_operation_runtime_value",
-                    func_args=[output_dfb],
+                    template_args=[ttl.dfb_descriptor(output_dfb)],
+                    dfb_effects=[
+                        ttl.DFBEffect.reserve(output_dfb, tiles=1),
+                        ttl.DFBEffect.push(output_dfb, tiles=1),
+                    ],
                 )
             else:
                 ttl.call_extern_func(
                     RUNTIME_RESOURCE_HEADER,
                     "write_operation_runtime_value",
-                    func_args=[output_dfb],
+                    template_args=[ttl.dfb_descriptor(output_dfb)],
+                    dfb_effects=[
+                        ttl.DFBEffect.reserve(output_dfb, tiles=1),
+                        ttl.DFBEffect.push(output_dfb, tiles=1),
+                    ],
                 )
 
         @ttl.datamovement()
@@ -142,8 +150,9 @@ def _to_test_memory_config(host_tensor, device, memory_config):
     ["dram", "sharded_l1"],
     ids=["dram", "sharded-l1"],
 )
+@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-l1"])
 def test_operation_runtime_resources_materialize_per_core_values(
-    device, dtype, specialize_cores, memory_config
+    device, dtype, specialize_cores, memory_config, memory_model
 ):
     """One logical kernel receives distinct values and one caller semaphore."""
     host_output = torch.zeros((32, 64), dtype=dtype)
@@ -152,6 +161,7 @@ def test_operation_runtime_resources_materialize_per_core_values(
     options = (
         "--ttl-specialize-cores" if specialize_cores else "--no-ttl-specialize-cores"
     )
+    options += f" --ttl-memory-model={memory_model}"
     RUNTIME_RESOURCE_OPERATIONS[dtype](output, options=options)
 
     expected = torch.cat(
@@ -164,8 +174,9 @@ def test_operation_runtime_resources_materialize_per_core_values(
     assert_allclose(ttnn.to_torch(output).float(), expected.float())
 
 
+@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-l1"])
 def test_emitted_runtime_resource_runner_updates_invocation_values(
-    device, monkeypatch, tmp_path
+    device, monkeypatch, tmp_path, memory_model
 ):
     """The emitted specialized runner accepts a factory on every invocation."""
     runner_path = tmp_path / "operation_runtime_resources_runner.py"
@@ -176,7 +187,10 @@ def test_emitted_runtime_resource_runner_updates_invocation_values(
         device,
         "sharded_l1",
     )
-    operation(compile_output, options="--ttl-specialize-cores")
+    operation(
+        compile_output,
+        options=f"--ttl-specialize-cores --ttl-memory-model={memory_model}",
+    )
 
     emitted_runner = runpy.run_path(str(runner_path))
     test_cases = (
