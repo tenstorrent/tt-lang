@@ -2037,6 +2037,8 @@ def _get_pipe_computed_address_dfb_allocation_bytes(
                 f"computed-address receiver DFB index {dfb_index} is invalid"
             )
         configurations = [cb_configs[dfb_index]]
+        if configurations[0].l1_offset is not None:
+            continue
         if plan is not None:
             configurations.extend(epoch.config for epoch in plan.dfb_epochs[dfb_index])
 
@@ -2103,7 +2105,9 @@ def build_pipe_computed_address_dfb_tensors(
             )
         config = cb_configs[dfb_index]
         _validate_physical_dfb_config(config, dfb_index)
-        if _uses_tensor_backed_computed_address(config, dfb_index):
+        if config.l1_offset is not None or _uses_tensor_backed_computed_address(
+            config, dfb_index
+        ):
             continue
         if config.allocation_nodes is not None:
             backing_cores = set(config.allocation_nodes)
@@ -2168,6 +2172,39 @@ def _get_tensor_backed_computed_address_bases(
                 "tensor-backed base address across its launch nodes"
             )
         bases[dfb_index] = segment_bases.pop()
+    return bases
+
+
+def _get_compiler_l1_computed_address_bases(
+    cb_configs: List[PhysicalDFBConfig],
+    dfb_indices: Sequence[int],
+    arena_base_address: int,
+) -> Dict[int, int]:
+    bases = {}
+    for dfb_index in sorted(set(dfb_indices)):
+        if dfb_index < 0 or dfb_index >= len(cb_configs):
+            raise ValueError(
+                f"computed-address receiver DFB index {dfb_index} is invalid"
+            )
+        config = cb_configs[dfb_index]
+        if config.l1_offset is None:
+            continue
+        if config.l1_payload_offset is None:
+            if config.storage_segments and all(
+                segment.is_tensor_backed for segment in config.storage_segments
+            ):
+                continue
+            raise ValueError(
+                f"compiler-l1 computed-address receiver DFB {dfb_index} "
+                "has no arena payload offset or tensor backing"
+            )
+        base_address = arena_base_address + config.l1_payload_offset
+        if base_address < 0 or base_address > 0xFFFFFFFF:
+            raise ValueError(
+                f"compiler-l1 computed-address receiver DFB {dfb_index} "
+                "has an unrepresentable L1 address"
+            )
+        bases[dfb_index] = base_address
     return bases
 
 
@@ -2267,7 +2304,10 @@ def build_pipe_runtime_resources(
         [
             *(int(tensor.buffer_address()) for tensor in scratch_tensors),
             *global_semaphore_addresses,
-            *computed_address_base_addresses.values(),
+            *(
+                int(tensor.buffer_address())
+                for tensor in computed_address_dfb_tensors.values()
+            ),
         ]
     )
     return PipeRuntimeResources(
@@ -2309,6 +2349,13 @@ def _runtime_resource_compatibility_key(
             (int(core.x), int(core.y))
             for core in ttnn.corerange_to_cores(core_ranges, row_wise=True)
         )
+    tensor_backed_computed_address_key = tuple(
+        sorted(
+            _get_tensor_backed_computed_address_bases(
+                tensors, cb_configs, list(pipe_computed_address_dfb_indices)
+            ).items()
+        )
+    )
     tensor_address_key = []
     if dfb_reconfiguration_plan is not None:
         _validate_dfb_reconfiguration_plan(tensors, dfb_reconfiguration_plan)
@@ -2333,6 +2380,7 @@ def _runtime_resource_compatibility_key(
         pipe_sram_scratch_bytes,
         num_pipe_global_semaphores,
         pipe_computed_address_dfb_indices,
+        tensor_backed_computed_address_key,
         num_dfb_resets,
         dfb_reconfiguration_plan,
         tuple(tensor_address_key),
@@ -4014,17 +4062,10 @@ def _run_kernel_on_device_impl(
             }
         )
     )
-    if compiler_l1 and (
-        dfb_reconfiguration_plan
-        or pipe_computed_address_dfb_indices
-        or num_pipe_sync_semaphores
-        or _has_pipe_sram_scratch(pipe_sram_scratch_bytes, num_dfb_resets)
-        or num_pipe_global_semaphores
-        or any(kernel_fabric_routes or ())
-    ):
+    if compiler_l1 and (dfb_reconfiguration_plan or any(kernel_fabric_routes or ())):
         raise ValueError(
-            "compiler-l1 cannot combine with PipeNet or Metal DFB "
-            "reconfiguration resources"
+            "compiler-l1 cannot combine with Metal DFB reconfiguration or "
+            "generated fabric routes"
         )
 
     if runtime_resource_cache is not None:
@@ -4107,6 +4148,18 @@ def _run_kernel_on_device_impl(
         )
         compiler_l1_base_address = int(compiler_l1_arena.buffer_address())
 
+    pipe_computed_address_base_addresses = dict(
+        pipe_runtime_resources.computed_address_base_addresses
+    )
+    if compiler_l1:
+        pipe_computed_address_base_addresses.update(
+            _get_compiler_l1_computed_address_bases(
+                cb_configs,
+                pipe_computed_address_dfb_indices,
+                compiler_l1_base_address,
+            )
+        )
+
     cb_descriptors = (
         []
         if compiler_l1
@@ -4144,9 +4197,7 @@ def _run_kernel_on_device_impl(
             grid_rows=grid_rows,
             num_cbs=len(cb_configs),
             compiler_l1_base_address=compiler_l1_base_address,
-            pipe_computed_address_base_addresses=(
-                pipe_runtime_resources.computed_address_base_addresses
-            ),
+            pipe_computed_address_base_addresses=pipe_computed_address_base_addresses,
             extra_common_runtime_args=(
                 pipe_runtime_resources.extra_common_runtime_args
             ),

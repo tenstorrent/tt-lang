@@ -3560,31 +3560,13 @@ public:
             }
           }
         }
-        bool supported =
+        bool supportedDFBOperation =
             isa<ttkernel::GetCompileArgValOp, ttkernel::GetArgValOp,
-                ttkernel::GetCommonArgValOp, ttkernel::MyLogicalXOp,
-                ttkernel::MyLogicalYOp, ttkernel::CBReserveBackOp,
+                ttkernel::GetCommonArgValOp, ttkernel::CBReserveBackOp,
                 ttkernel::CBWaitFrontOp, ttkernel::CBPushBackOp,
                 ttkernel::CBPopFrontOp, ttkernel::GetReadPtrOp,
-                ttkernel::GetWritePtrOp, ttkernel::NocAsyncReadTileOp,
-                ttkernel::NocAsyncWriteTileOp, ttkernel::NocAsyncReadBarrierOp,
-                ttkernel::NocAsyncWriteBarrierOp, ttkernel::TensorAccessorOp,
-                ttkernel::TensorAccessorArgsOp, ttkernel::GetTileSizeOp,
-                ttkernel::GetDataFormatOp, ttkernel::TileRegsAcquireOp,
-                ttkernel::TileRegsCommitOp, ttkernel::TileRegsWaitOp,
-                ttkernel::TileRegsReleaseOp, ttkernel::AddBinaryTilesInitOp,
-                ttkernel::AddBinaryTilesOp, ttkernel::MulBinaryTilesInitOp,
-                ttkernel::MulBinaryTilesOp, ttkernel::FillTileOp,
-                ttkernel::FillTileInitOp, ttkernel::BinopWithScalarTileInitOp,
-                ttkernel::MulUnaryTileOp, ttkernel::AddUnaryTileOp,
-                ttkernel::CopyDestValuesInitOp, ttkernel::CopyDestValuesOp,
-                ttkernel::ExpTileInitOp, ttkernel::ExpTileOp,
-                ttkernel::RecipTileInitOp, ttkernel::RecipTileOp,
-                ttkernel::SubBinaryTilesInitOp, ttkernel::SubBinaryTilesOp,
-                ttkernel::RsqrtTileInitOp, ttkernel::RsqrtTileOp,
-                ttkernel::SigmoidTileInitOp, ttkernel::SigmoidTileOp,
-                ttkernel::TanhTileInitOp, ttkernel::TanhTileOp,
-                ttkernel::OpaqueCallOp>(operation) ||
+                ttkernel::GetWritePtrOp, ttkernel::GetTileSizeOp,
+                ttkernel::GetDataFormatOp, ttkernel::OpaqueCallOp>(operation) ||
             isCompilerL1ComputeOperation(operation);
         if (isCompilerL1ComputeOperation(operation)) {
           for (Value operand : operation->getOperands()) {
@@ -3608,7 +3590,11 @@ public:
             return WalkResult::interrupt();
           }
         }
-        if (!supported) {
+        bool hasDFBValue = llvm::any_of(
+            llvm::concat<Value>(operation->getOperands(),
+                                operation->getResults()),
+            [](Value value) { return isa<ttkernel::CBType>(value.getType()); });
+        if (hasDFBValue && !supportedDFBOperation) {
           operation->emitOpError()
               << "has no compiler-l1 lowering for " << operation->getName()
               << "; Metal DFB fallback is disabled";

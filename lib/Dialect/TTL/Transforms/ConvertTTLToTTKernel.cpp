@@ -1621,6 +1621,7 @@ struct DFBSynchronizationLoweringPlan {
   DenseMap<int64_t, int64_t> stateOffsetByReconfiguration;
   DenseMap<int64_t, SmallVector<int32_t>> resetDFBsByReconfiguration;
   DenseMap<int32_t, Type> dfbTypesByIndex;
+  DenseMap<int32_t, uint32_t> dfbStateOffsetsByIndex;
   SmallVector<int32_t> allDFBIndices;
   int64_t scratchBaseOffset = 0;
   int64_t scratchBytes = 0;
@@ -1752,6 +1753,24 @@ buildDFBSynchronizationLoweringPlan(ModuleOp module) {
     if (inserted) {
       plan.allDFBIndices.push_back(index);
     }
+    if (plan.compilerL1) {
+      auto allocations =
+          module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName);
+      auto allocation =
+          allocations && static_cast<uint64_t>(index) < allocations.size()
+              ? dyn_cast<DictionaryAttr>(allocations[index])
+              : DictionaryAttr();
+      auto stateOffset = allocation ? allocation.getAs<IntegerAttr>("l1_offset")
+                                    : IntegerAttr();
+      if (!stateOffset || stateOffset.getInt() < 0 ||
+          static_cast<uint64_t>(stateOffset.getInt()) >
+              std::numeric_limits<uint32_t>::max()) {
+        bind.emitOpError("requires a representable compiler-l1 state offset");
+        return WalkResult::interrupt();
+      }
+      plan.dfbStateOffsetsByIndex.try_emplace(
+          index, static_cast<uint32_t>(stateOffset.getInt()));
+    }
     if (!plan.compilerL1) {
       int32_t targetMaxDFBIndices = getTargetMaxDFBIndices(bind);
       if (index >= targetMaxDFBIndices) {
@@ -1821,6 +1840,23 @@ static void emitDFBSynchronizationBarrier(Operation *operation,
       getRequiredDFBIndicesAttr(requiredDFBIndices, rewriter));
 }
 
+static Value buildCompilerL1StateAddress(Operation *operation,
+                                         uint32_t stateOffset,
+                                         ConversionPatternRewriter &rewriter) {
+  Location location = operation->getLoc();
+  // Compile-time argument zero identifies the arena's common argument.
+  Value arenaCommonArgIndex = ttk::GetCompileArgValOp::create(
+      rewriter, location, rewriter.getI32Type(), 0);
+  Value arenaBase = ttk::GetCommonArgValOp::create(
+      rewriter, location, rewriter.getI32Type(), arenaCommonArgIndex);
+  if (stateOffset == 0) {
+    return arenaBase;
+  }
+  Value offset =
+      arith::ConstantIntOp::create(rewriter, location, stateOffset, 32);
+  return arith::AddIOp::create(rewriter, location, arenaBase, offset);
+}
+
 static LogicalResult
 lowerCompilerL1Synchronization(Operation *operation, int64_t stateOffset,
                                ArrayRef<int32_t> resetDFBIndices,
@@ -1831,11 +1867,11 @@ lowerCompilerL1Synchronization(Operation *operation, int64_t stateOffset,
   emitDFBSynchronizationBarrier(operation, synchronizationAddress,
                                 resetDFBIndices, rewriter);
   for (int32_t index : resetDFBIndices) {
-    auto typeIt = plan.dfbTypesByIndex.find(index);
-    assert(typeIt != plan.dfbTypesByIndex.end() &&
+    auto stateOffsetIt = plan.dfbStateOffsetsByIndex.find(index);
+    assert(stateOffsetIt != plan.dfbStateOffsetsByIndex.end() &&
            "planned compiler-l1 synchronization must reference known DFBs");
-    Value stateAddress = ttk::GetCompileArgValOp::create(
-        rewriter, operation->getLoc(), typeIt->second, index);
+    Value stateAddress =
+        buildCompilerL1StateAddress(operation, stateOffsetIt->second, rewriter);
     ttk::OpaqueCallOp::create(
         rewriter, operation->getLoc(), TypeRange{},
         rewriter.getStringAttr("ttlang::l1::resetState"),

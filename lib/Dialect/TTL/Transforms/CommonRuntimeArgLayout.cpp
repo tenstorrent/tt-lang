@@ -12,7 +12,12 @@
 
 namespace mlir::tt::ttl {
 
-static int64_t getTensorArgumentCount(func::FuncOp function) {
+static int64_t getTensorRuntimeArgCount(func::FuncOp function) {
+  if (auto indices = function->getAttrOfType<ArrayAttr>(kCRTAIndicesAttrName)) {
+    // The finalized ABI can include tensor-backed DFBs that are not function
+    // operands, so its metadata is authoritative when present.
+    return indices.size();
+  }
   return llvm::count_if(function.getArguments(), [](BlockArgument argument) {
     return mlir::isa<RankedTensorType>(argument.getType());
   });
@@ -54,7 +59,7 @@ CommonRuntimeArgLayout::CommonRuntimeArgLayout(
   assert(computedReceiverDFBBaseCount >= 0 &&
          "computed receiver DFB base count must be nonnegative");
 
-  computedReceiverDFBBaseArgIndex = getTensorArgumentCount(function);
+  computedReceiverDFBBaseArgIndex = getTensorRuntimeArgCount(function);
   pipeResourceBaseArgIndex =
       computedReceiverDFBBaseArgIndex + computedReceiverDFBBaseCount;
   pipeResourceCount = getPipeResourceCount(module);

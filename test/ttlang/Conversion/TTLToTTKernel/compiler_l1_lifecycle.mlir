@@ -12,18 +12,23 @@
 // CHECK-SAME: ttl.dfb_reset_count = 2 : i64
 // CHECK-SAME: ttl.pipe_sram_scratch_bytes = 32 : i64
 // CHECK-LABEL: func.func @compute
+// CHECK: %[[STATE_OFFSET:.*]] = arith.constant 8 : i32
 // CHECK: %[[ZERO:.*]] = arith.constant 0 : i32
 // CHECK: %[[SCRATCH0:.*]] = ttkernel.get_common_arg_val
 // CHECK-NEXT: ttkernel.opaque_call "experimental::reset_dfb_interfaces"(%[[SCRATCH0]], %[[ZERO]], %[[ZERO]]) {{.*}}dfb_resource_indices = array<i32: 0>
-// CHECK-NEXT: %[[SELECTED:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-NEXT: %[[SELECTED_ARG:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-NEXT: %[[SELECTED:.*]] = ttkernel.get_common_arg_val(%[[SELECTED_ARG]])
 // CHECK-NEXT: ttkernel.opaque_call "ttlang::l1::resetState"(%[[SELECTED]]) {{.*}}dfb_resource_indices = array<i32: 0>
 // CHECK-NEXT: ttkernel.opaque_call "experimental::reset_dfb_interfaces"(%[[SCRATCH0]], %[[ZERO]], %[[ZERO]]) {{.*}}dfb_resource_indices = array<i32: 0>
 // CHECK: %[[SCRATCH_BASE:.*]] = ttkernel.get_common_arg_val
 // CHECK-NEXT: %[[SCRATCH1:.*]] = arith.addi %[[SCRATCH_BASE]], %{{.*}} : i32
 // CHECK-NEXT: ttkernel.opaque_call "experimental::reset_dfb_interfaces"(%[[SCRATCH1]], %[[ZERO]], %[[ZERO]]) {{.*}}dfb_resource_indices = array<i32: 0, 1>
-// CHECK-NEXT: %[[ALL0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-NEXT: %[[ALL0_ARG:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-NEXT: %[[ALL0:.*]] = ttkernel.get_common_arg_val(%[[ALL0_ARG]])
 // CHECK-NEXT: ttkernel.opaque_call "ttlang::l1::resetState"(%[[ALL0]]) {{.*}}dfb_resource_indices = array<i32: 0>
-// CHECK-NEXT: %[[ALL1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK-NEXT: %[[ALL1_ARG:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-NEXT: %[[ALL1_BASE:.*]] = ttkernel.get_common_arg_val(%[[ALL1_ARG]])
+// CHECK-NEXT: %[[ALL1:.*]] = arith.addi %[[ALL1_BASE]], %[[STATE_OFFSET]] : i32
 // CHECK-NEXT: ttkernel.opaque_call "ttlang::l1::resetState"(%[[ALL1]]) {{.*}}dfb_resource_indices = array<i32: 1>
 // CHECK-NEXT: ttkernel.opaque_call "experimental::reset_dfb_interfaces"(%[[SCRATCH1]], %[[ZERO]], %[[ZERO]]) {{.*}}dfb_resource_indices = array<i32: 0, 1>
 // CHECK-NOT: ttl.reset
@@ -65,7 +70,8 @@ module attributes {ttl.dfb_allocations = [{block_count = 1 : i32, dfb_index = 0 
 // CHECK: %[[RECONFIG_ZERO:.*]] = arith.constant 0 : i32
 // CHECK: %[[RECONFIG_SCRATCH:.*]] = ttkernel.get_common_arg_val
 // CHECK-NEXT: ttkernel.opaque_call "experimental::reset_dfb_interfaces"(%[[RECONFIG_SCRATCH]], %[[RECONFIG_ZERO]], %[[RECONFIG_ZERO]]) {{.*}}dfb_resource_indices = array<i32: 0>
-// CHECK-NEXT: %[[ENDED:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-NEXT: %[[ENDED_ARG:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-NEXT: %[[ENDED:.*]] = ttkernel.get_common_arg_val(%[[ENDED_ARG]])
 // CHECK-NEXT: ttkernel.opaque_call "ttlang::l1::resetState"(%[[ENDED]]) {{.*}}dfb_resource_indices = array<i32: 0>
 // CHECK-NEXT: ttkernel.opaque_call "experimental::reset_dfb_interfaces"(%[[RECONFIG_SCRATCH]], %[[RECONFIG_ZERO]], %[[RECONFIG_ZERO]]) {{.*}}dfb_resource_indices = array<i32: 0>
 // CHECK-NOT: ttl.dfb_reconfiguration

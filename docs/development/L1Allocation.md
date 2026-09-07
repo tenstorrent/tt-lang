@@ -17,6 +17,7 @@ TT-Lang normally assigns each logical dataflow buffer (DFB) a TT-Metal DFB descr
 | Allocation groups | Reuse a physical descriptor and its storage contract | Share one validated storage owner and control record |
 | Reset and reconfiguration | Blackhole TT-Metal interface reset and runtime descriptor reconfiguration | Blackhole address-based state reset with compiler-fixed geometry |
 | External C++ DFB access | Numeric index or typed descriptor bound to a TT-Metal DFB | Typed descriptor bound to compiler-assigned storage |
+| Local PipeNet receivers | TT-Metal descriptor or tensor-backed computed address | Compiler arena or tensor-backed computed address; no TT-Metal DFB descriptor |
 
 Shared terminology is defined in the [TT-Lang specification glossary](../sphinx/specs/TTLangSpecification.md#appendix-a-glossary). The DFB protocol and lifecycle rules are defined in [DFB Management](DFBManagement.md).
 
@@ -249,6 +250,38 @@ bind(descriptor):
 
 External calls that access DFBs must provide explicit `DFBEffect` entries. These effects participate in lifetime and conflict analysis. Unknown DFB access and numeric `dfb_index` template arguments are rejected for compiler-managed storage.
 
+## PipeNet Integration
+
+Local intra-device PipeNets retain the existing transfer plan and synchronization protocols. Compiler-managed allocation changes only how a receiver address is obtained. A compiler-owned receiver uses the arena base plus its finalized payload offset. A tensor-backed receiver uses the tensor base plus its finalized byte offset. No TT-Metal DFB descriptor is created for either case.
+
+Producer and wait launch domains are validated for explicit DFB operations and external-call `DFBEffect` declarations. Treating both through the DFB access interface prevents an external producer from being omitted from PipeNet deadlock analysis.
+
+Receiver addresses precede PipeNet scratch and semaphore addresses in the common runtime argument layout. The finalized `ttl.crta_indices` metadata defines the tensor-argument prefix because tensor-backed DFBs can retain tensors that are no longer function operands. The arena base remains the final compiler-managed storage argument. This ordering matches lowering and does not depend on the number of TT-Metal DFB descriptors.
+
+```text
+buildPipeRuntimeArguments(allocations, computedReceivers, tensors):
+    resources = allocatePipeScratchAndSemaphores()
+    arena = allocateZeroedArena(allocations.arenaBytes)
+
+    for each receiver in computedReceivers:
+        if receiver has tensor backing:
+            base[receiver] = tensors[receiver.tensorIndex].base + receiver.byteOffset
+        else:
+            base[receiver] = arena.base + receiver.payloadOffset
+        require base[receiver] fits uint32
+
+    for each kernel:
+        arguments = retainedTensorAddresses(kernel)
+        append base addresses selected by kernel.computedReceivers
+        append resources in finalized PipeNet order
+        append arena.base
+    return arguments
+```
+
+Runtime-resource cache identity includes tensor-backed receiver addresses, so a new tensor allocation cannot reuse a stale receiver base. Cache ownership includes only L1 allocations created by the runtime; caller-owned tensor addresses remain part of the available-L1 calculation.
+
+The supported contract includes computed-capacity, computed receiver-post, published receiver-post, and global-counter protocols; ready-receive selection; grouped transfers; and compiler-managed reset and reconfiguration boundaries. PipeNet lifetime operations continue to participate in the existing completion-aware conflict analysis before placement.
+
 ## Target Interfaces
 
 Common allocation and lowering contain no architecture branches. `compiler_l1_target.h` provides arena-base access, L1 loads and stores, producer/consumer completion, and processor ownership. `compiler_l1_compute_target.h` provides LLK address conversion, format configuration, and address-based compute operations. Wormhole and Blackhole differences remain inside these target interfaces.
@@ -259,7 +292,7 @@ The runtime allocates the control records and compiler-owned payloads as a row-m
 
 The arena is passed as an auxiliary `generic_op` input so TTNN retains it through device execution while preserving the user output position. Arena and synchronization scratch are zero-initialized. Declarative runtime resources compose with the arena: semaphore descriptors, per-kernel runtime arguments, compile-time defines, external fabric bindings, and their lifetime owners retain their existing validation and program-hash contracts. Runtime resource caching includes the allocation metadata and reset count, so incompatible layouts do not share resources.
 
-Uniform allocation reserves the largest required arena on every participating core. This can waste capacity when activity is sparse. Per-core layouts require target-independent per-node allocation metadata and are follow-on work.
+Uniform allocation reserves the largest required arena on every participating core. This can waste capacity when activity is sparse.
 
 ## Memory Utilization
 
@@ -288,9 +321,8 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 - Typed external C++ calls with explicit DFB effects and either compiler-owned or tensor-backed payloads.
 - Device-domain and mesh program placement with declarative external runtime resources.
 - Blackhole selected reset, reset-all, and reconfiguration.
-- Wormhole allocation, transfer, compute, and external descriptors without reset or reconfiguration.
-
-PipeNet transfers and computed-address DFBs are outside this contract and are rejected before runtime-resource construction. The compiler does not fall back to Metal descriptors.
+- Wormhole allocation, transfer, compute, external descriptors, and local PipeNet compilation without reset or reconfiguration.
+- Local intra-device PipeNet transfers with compiler-owned or tensor-backed computed receiver addresses and no TT-Metal DFB descriptors.
 
 ## Validation
 
@@ -301,20 +333,21 @@ PipeNet transfers and computed-address DFBs are outside this contract and are re
 | Allocation groups | Four compiler-L1 Blackhole device-correctness cases across BF16/FP32 and DRAM/L1 tensors for repeated shared-state handoff with different member capacities; compile-only checks cover both allocator strategies, tensor-backed ownership, rejection with reuse disabled, and tensor byte-range alias diagnostics |
 | External calls and lifecycle boundaries | 20 Blackhole device cases across BF16/FP32 and DRAM/L1, including repeated selected reset, reset-all, reconfiguration, live state preservation, payload reuse, and reset of allocation index 65 |
 | Allocation | 20,888 compile-only generated placements covering both strategies, conflicts, alignment, reuse enabled and disabled, determinism, and exact budget boundaries; a focused fragmented graph verifies distinct strategy results |
-| Wormhole | Compile-only allocation, typed external descriptor, and UNPACK/MATH/PACK target compilation; negative reset and reconfiguration diagnostics |
-| Runtime placement and resources | Runtime-unit evidence for one-device and device-domain descriptors, replicated mesh placement, lockstep arena binding, external fabric bindings, resource lifetimes, program hashes, and retained PipeNet rejection; 18 Blackhole device-correctness cases for typed external calls with semaphores, runtime arguments, defines, repeated invocations, BF16/FP32, DRAM/L1, generic/specialized kernels, and both memory models |
+| Wormhole | Compile-only allocation, typed external descriptor, local PipeNet pipeline, and UNPACK/MATH/PACK target compilation; negative reset and reconfiguration diagnostics |
+| Runtime placement and resources | Runtime-unit evidence for one-device and device-domain descriptors, replicated mesh placement, lockstep arena binding, external fabric bindings, resource lifetimes, program hashes, tensor-address cache identity, and owned-allocation accounting; 18 Blackhole device-correctness cases for typed external calls with semaphores, runtime arguments, defines, repeated invocations, BF16/FP32, DRAM/L1, generic/specialized kernels, and both memory models |
+| Local PipeNet execution | Blackhole device correctness across BF16/FP32, DRAM/L1, both allocator strategies, four synchronization protocols, ready-receive selection, grouped transfers, reset, reconfiguration, typed external DFB calls, repeated invocation, two-axis matmul distribution, and receiver logical indices above the Metal limit; compile-only Metal and compiler-L1 transfer preservation |
 | Invalid contracts | Compiler diagnostics for malformed metadata, unsupported transactions and tile forms, unknown external effects, numeric external DFB indices, storage ownership, and budget overflow |
 
-Relevant tests are [transfer and allocator device tests](../../test/python/test_compiler_l1.py), [compute device tests](../../test/python/test_compiler_l1_compute.py), [lifecycle and external-call device tests](../../test/python/test_compiler_l1_lifecycle.py), [runtime placement tests](../../test/python/test_kernel_runner.py), [external runtime-resource device tests](../../test/python/test_operation_runtime_resources.py), and [generated allocator stress tests](../../test/ttlang/Dialect/TTL/Transforms/compiler_l1_stress.py).
+Relevant tests are [transfer and allocator device tests](../../test/python/test_compiler_l1.py), [compute device tests](../../test/python/test_compiler_l1_compute.py), [lifecycle and external-call device tests](../../test/python/test_compiler_l1_lifecycle.py), [local PipeNet device tests](../../test/python/pipe/test_compiler_l1_pipenet.py), [runtime placement tests](../../test/python/test_kernel_runner.py), [external runtime-resource device tests](../../test/python/test_operation_runtime_resources.py), and [generated allocator stress tests](../../test/ttlang/Dialect/TTL/Transforms/compiler_l1_stress.py).
 
 ## Follow-on PRs
 
-The intended dependency order after tensor-backed storage and allocation groups is:
+The intended dependency order after local PipeNet support is:
 
-1. Add PipeNet and computed-address transfers. Represent compiler-managed endpoint addresses in the immutable transport plan, validate the complete graph before allocation, and extend lifetime completion through remote transfer and destination consumption.
-2. Add multi-device fabric execution. Resolve source and destination device domains, allocate per-device resources through the runtime placement interface, and verify inter-device completion before storage reuse.
-3. Qualify representative external C++ kernels against the typed descriptor interface and add common adapters for required address, geometry, and completion operations.
-4. Add sub-tile and row-major metadata, partial-block and general contiguous multi-block transactions, and the corresponding address, stride, capacity, and wrap rules.
+1. Add multi-device fabric execution. Resolve source and destination device domains, allocate per-device resources through the runtime placement interface, and verify inter-device completion before storage reuse.
+2. Qualify representative external C++ kernels against the typed descriptor interface and add common adapters for required address, geometry, and completion operations.
+3. Add sub-tile and row-major metadata, partial-block and general contiguous multi-block transactions, and the corresponding address, stride, capacity, and wrap rules.
+4. Add per-core arena layouts if sparse-placement measurements justify the additional per-node allocation metadata and runtime binding.
 5. Add Wormhole reset and reconfiguration after defining and device-qualifying a Wormhole synchronization protocol behind the existing target interface.
 6. Qualify complete model layers, then measure device cycles, arena high-water usage, initialization cost, compile time, and generated code size against `metal-cb`.
 

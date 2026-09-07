@@ -66,7 +66,7 @@ constexpr std::size_t kMaxPipeScheduleNodesPerLaunchNode = 4096;
 
 /// A dataflow buffer wait and the launch-node domain where it executes.
 struct WaitUse {
-  CBWaitOp op;
+  Operation *op;
   LaunchNodeDomain domain;
   int64_t dfbId;
 };
@@ -706,24 +706,27 @@ void verifyPipeNetScope(PipeNetScopeOp scopeOp, const LaunchNodeDomain &domain,
 void recordGuardOperation(Operation *op, const LaunchNodeDomain &domain,
                           Operation *unanalyzableOp, ModuleState &state) {
   assert(state.dfbIdentities && "guard verification requires DFB identities");
+  if (auto access = dyn_cast<DFBAccessOpInterface>(op)) {
+    for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
+      if (effect.kind != DFBProtocolEffectKind::Push &&
+          effect.kind != DFBProtocolEffectKind::Wait) {
+        continue;
+      }
+      FailureOr<int64_t> dfbId = state.dfbIdentities->getLogicalId(effect.dfb);
+      assert(succeeded(dfbId) && "DFB operands were verified");
+      if (effect.kind == DFBProtocolEffectKind::Push) {
+        state.dfbProducerDomains[*dfbId] =
+            state.dfbProducerDomains[*dfbId].unionWith(domain);
+      } else {
+        state.waitUses.push_back({op, domain, *dfbId});
+      }
+    }
+  }
   TypeSwitch<Operation *>(op)
       .Case<CopyOp>(
           [&](CopyOp copy) { verifyCopy(copy, domain, unanalyzableOp, state); })
       .Case<WaitOp>([&](WaitOp wait) {
         verifyPipeWaitGuard(wait, domain, unanalyzableOp, state);
-      })
-      .Case<CBPushOp>([&](CBPushOp push) {
-        FailureOr<int64_t> dfbId =
-            state.dfbIdentities->getLogicalId(push.getCb());
-        assert(succeeded(dfbId) && "DFB operands were verified");
-        state.dfbProducerDomains[*dfbId] =
-            state.dfbProducerDomains[*dfbId].unionWith(domain);
-      })
-      .Case<CBWaitOp>([&](CBWaitOp wait) {
-        FailureOr<int64_t> dfbId =
-            state.dfbIdentities->getLogicalId(wait.getCb());
-        assert(succeeded(dfbId) && "DFB operands were verified");
-        state.waitUses.push_back({wait, domain, *dfbId});
       });
 }
 
@@ -749,21 +752,30 @@ void verifyCBWaits(ModuleState &state) {
   for (WaitUse &use : state.waitUses) {
     auto it = state.dfbProducerDomains.find(use.dfbId);
     if (it == state.dfbProducerDomains.end()) {
-      use.op.emitOpError()
-          << "this `cb_wait` reads from a dataflow buffer that no other "
-             "thread fills; check that another `@ttl.compute()` or "
-             "`@ttl.datamovement()` thread reserves and pushes the same "
-             "buffer";
+      InFlightDiagnostic diagnostic = use.op->emitOpError();
+      if (isa<CBWaitOp>(use.op)) {
+        diagnostic << "this `cb_wait` reads from a dataflow buffer that no "
+                      "other thread fills";
+      } else {
+        diagnostic << "this operation waits on a dataflow buffer that no "
+                      "other thread fills";
+      }
+      diagnostic << "; check that another `@ttl.compute()` or "
+                    "`@ttl.datamovement()` thread reserves and pushes the "
+                    "same buffer";
       state.sawError = true;
       continue;
     }
-    checkKnownSubset(use.op, use.domain, it->second,
-                     /*unanalyzableOp=*/nullptr,
-                     "this `cb_wait` runs on launched nodes where no "
-                     "thread pushes data to the buffer (would deadlock); "
-                     "guard the wait with the same `if net.is_active(): "
-                     "...` predicate the producer uses",
-                     /*roles=*/{}, state);
+    const char *waitDescription =
+        isa<CBWaitOp>(use.op) ? "this `cb_wait` runs" : "this operation waits";
+    checkKnownSubset(
+        use.op, use.domain, it->second,
+        /*unanalyzableOp=*/nullptr,
+        Twine(waitDescription) +
+            " on launched nodes where no thread pushes data to the buffer "
+            "(would deadlock); guard the wait with the same `if "
+            "net.is_active(): ...` predicate the producer uses",
+        /*roles=*/{}, state);
   }
 }
 
@@ -782,9 +794,18 @@ verifyGuardDFBIdentities(ModuleOp module,
 
   return verifyDFBOperandIdentities(
       module, "ttl-verify-pipenet-guards",
-      [](Operation *operation) { return isa<CBPushOp, CBWaitOp>(operation); },
+      [](Operation *operation) {
+        auto access = dyn_cast<DFBAccessOpInterface>(operation);
+        return access &&
+               llvm::any_of(access.getDFBProtocolEffects(),
+                            [](const DFBProtocolEffect &effect) {
+                              return effect.kind ==
+                                         DFBProtocolEffectKind::Push ||
+                                     effect.kind == DFBProtocolEffectKind::Wait;
+                            });
+      },
       [&](Value dfb) { return dfbIdentities.getLogicalId(dfb); },
-      "`ttl.cb_push` and `ttl.cb_wait` DFB", DFBIdentityRequirement::Logical);
+      "DFB protocol", DFBIdentityRequirement::Logical);
 }
 
 enum class PipeScheduleEdgeKind {

@@ -2620,22 +2620,34 @@ def test_run_kernel_materializes_resources_and_synchronizes_lifetimes(monkeypatc
     assert fake_ttnn.synchronize_calls == [device]
 
 
-# Compiler-managed storage composes with caller-owned descriptor resources.
+# Compiler-managed storage composes with PipeNet and caller-owned resources.
 def test_run_kernel_composes_compiler_l1_with_runtime_resources(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     device = object()
-    core_ranges, arena, allocation_calls = _install_compiler_l1_arena(
-        monkeypatch, device
+    core_ranges = _FakeCoreRanges((((0, 0), (1, 0)),))
+    arena = _FakeTensor(device, address=0x8000)
+    pipe_scratch = _FakeTensor(device, address=0x9000)
+    allocation_results = iter((pipe_scratch, arena))
+    allocation_calls = []
+
+    def allocate_storage(ranges, num_bytes, allocation_device, *, zero_initialize):
+        allocation_calls.append((ranges, num_bytes, allocation_device, zero_initialize))
+        return next(allocation_results)
+
+    monkeypatch.setattr(
+        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_storage
     )
     owner = object()
     tensor = _FakeTensorWithoutDevice()
+    kernel_spec = _kernel_spec(KernelKind.COMPUTE)
+    kernel_spec.pipe_computed_address_dfb_indices = [0]
 
     def make_resources(*, tensors, core_ranges, first_free_semaphore_id):
         assert len(tensors) == 1
-        assert first_free_semaphore_id == 0
+        assert first_free_semaphore_id == 1
         return ProgramRuntimeResources(
-            semaphore_descriptors=(_FakeTTNN.SemaphoreDescriptor(0, core_ranges, 3),),
+            semaphore_descriptors=(_FakeTTNN.SemaphoreDescriptor(1, core_ranges, 3),),
             kernel_resources=(
                 KernelRuntimeResources(
                     kernel=KernelKind.COMPUTE,
@@ -2647,23 +2659,34 @@ def test_run_kernel_composes_compiler_l1_with_runtime_resources(monkeypatch):
         )
 
     result = kernel_runner.run_kernel_on_device(
-        kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
+        kernel_specs=[kernel_spec],
         tensors=[tensor],
         cb_configs=[_compiler_l1_config()],
         core_ranges=core_ranges,
         program_hash=5,
+        num_pipe_sync_semaphores=1,
+        pipe_sram_scratch_bytes=32,
+        num_pipe_global_semaphores=1,
         runtime_resource_factory=make_resources,
         operation_name="compiler_l1_resources",
         device=device,
     )
 
     program = result["program"]
-    assert allocation_calls == [(core_ranges, 2112, device, True)]
-    assert result["tensors"] == [arena, tensor]
+    assert allocation_calls == [
+        (core_ranges, 32, device, True),
+        (core_ranges, 2112, device, True),
+    ]
+    assert result["tensors"] == [pipe_scratch, arena, tensor]
     assert program.cbs == []
-    assert [semaphore.id for semaphore in program.semaphores] == [0]
-    assert program.kernels[0].common_runtime_args == [0x8000]
-    assert program.kernels[0].compile_time_args == [0]
+    assert [semaphore.id for semaphore in program.semaphores] == [0, 1]
+    assert program.kernels[0].common_runtime_args == [
+        0x8040,
+        0x9000,
+        0x1000,
+        0x8000,
+    ]
+    assert program.kernels[0].compile_time_args == [3]
     assert program.kernels[0].runtime_args[0][0] == [7, 8]
     assert program.kernels[0].defines == [("MODE", "external")]
     assert program.custom_program_hash != 5
@@ -2705,16 +2728,10 @@ def test_compiler_l1_composes_with_lifecycle_scratch(monkeypatch):
     assert result["tensors"] == [scratch, arena, tensor]
 
 
-# PipeNet and Metal reconfiguration remain separate from this composition.
+# Local PipeNets still reject fabric routes and Metal DFB reconfiguration.
 @pytest.mark.parametrize(
     "incompatible_resource",
-    [
-        "sync-semaphore",
-        "global-semaphore",
-        "computed-address",
-        "fabric-route",
-        "reconfiguration",
-    ],
+    ["fabric-route", "reconfiguration"],
 )
 def test_compiler_l1_rejects_incompatible_resources_before_allocation(
     monkeypatch, incompatible_resource
@@ -2722,13 +2739,7 @@ def test_compiler_l1_rejects_incompatible_resources_before_allocation(
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     kernel_spec = _kernel_spec(KernelKind.COMPUTE)
     arguments = {}
-    if incompatible_resource == "sync-semaphore":
-        arguments["num_pipe_sync_semaphores"] = 1
-    elif incompatible_resource == "global-semaphore":
-        arguments["num_pipe_global_semaphores"] = 1
-    elif incompatible_resource == "computed-address":
-        kernel_spec.pipe_computed_address_dfb_indices = [0]
-    elif incompatible_resource == "fabric-route":
+    if incompatible_resource == "fabric-route":
         arguments["kernel_fabric_routes"] = [
             [kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)]
         ]
@@ -2745,7 +2756,7 @@ def test_compiler_l1_rejects_incompatible_resources_before_allocation(
 
     with pytest.raises(
         ValueError,
-        match="cannot combine with PipeNet or Metal DFB reconfiguration resources",
+        match="cannot combine with Metal DFB reconfiguration or generated fabric routes",
     ):
         kernel_runner.run_kernel_on_device(
             kernel_specs=[kernel_spec],
@@ -7364,6 +7375,37 @@ def test_pipe_runtime_resources_use_tensor_backed_computed_address_base(
 
     assert resources.computed_address_dfb_tensors == {}
     assert resources.computed_address_base_addresses == {0: 0x4800}
+    assert resources.l1_buffer_addresses == frozenset()
+
+
+def test_cached_pipe_resources_refresh_tensor_backed_computed_address(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    device = object()
+    config = _tensor_backing_config(0, nodes=((0, 0),))
+    cache = kernel_runner.KernelRuntimeResourceCache()
+    arguments = {
+        "cache": cache,
+        "cb_configs": [config],
+        "core_ranges": _FakeCoreRanges(),
+        "pipe_sram_scratch_bytes": 0,
+        "num_pipe_global_semaphores": 0,
+        "pipe_computed_address_dfb_indices": (0,),
+        "num_dfb_resets": 0,
+        "device": device,
+    }
+
+    first, _first_reconfiguration = kernel_runner.get_cached_runtime_resources(
+        tensors=[_FakeTensor(device, address=0x4000)], **arguments
+    )
+    second, _second_reconfiguration = kernel_runner.get_cached_runtime_resources(
+        tensors=[_FakeTensor(device, address=0x5000)], **arguments
+    )
+
+    assert first.computed_address_base_addresses == {0: 0x4000}
+    assert second.computed_address_base_addresses == {0: 0x5000}
+    assert second is not first
+    assert fake_ttnn.synchronize_calls == [device]
 
 
 @pytest.mark.parametrize(
