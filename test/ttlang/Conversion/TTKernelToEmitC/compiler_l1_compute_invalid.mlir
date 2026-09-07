@@ -118,6 +118,18 @@ module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [{cb_
 
 // -----
 
+// A DFB operation without an address-based lowering must not use the Metal implementation.
+module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [{cb_index = 0 : i64, page_size = 2048 : i64, num_tiles = 1 : i64, block_count = 1 : i64, storage_capacity_pages = 1 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64}]} {
+  func.func @unsupported_dfb_operation() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+    %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
+    // expected-error @below {{'ttkernel.compute_kernel_hw_startup' op has no compiler-l1 lowering for ttkernel.compute_kernel_hw_startup; Metal DFB fallback is disabled}}
+    ttkernel.compute_kernel_hw_startup(%storage, %storage) : (!ttkernel.cb<1, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>) -> ()
+    return
+  }
+}
+
+// -----
+
 // Pre-lowered C++ can contain storage effects that the validator cannot classify.
 module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = []} {
   func.func @prelowered_effect() attributes {ttkernel.thread = #ttkernel.thread<compute>} {

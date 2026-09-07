@@ -431,12 +431,11 @@ def test_compiler_l1_reset_above_metal_index_limit(
 
     final_ir = final_mlir.read_text()
     assert final_ir.count("l1_payload_offset =") == dfb_count + 1
-    reset_indices = {
-        int(index)
-        for index in re.findall(
-            r"ttkernel\.cb_ctarg_idx = (\d+) : i32\} : ui32\n"
-            r'\s+emitc\.call_opaque "ttlang::l1::resetState"',
-            final_ir,
-        )
-    }
-    assert reset_indices == {expected_reset_index}
+    reset_allocation = re.search(
+        rf"dfb_index = {expected_reset_index} : i32, " r"[^}]*l1_offset = (\d+) : i64",
+        final_ir,
+    )
+    assert reset_allocation is not None
+    expected_state_offset = int(reset_allocation.group(1))
+    assert f"value = {expected_state_offset} : i32" in final_ir
+    assert final_ir.count('emitc.call_opaque "ttlang::l1::resetState"') == 3

@@ -28,7 +28,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    // expected-error @below {{`ttl-verify-pipenet-guards` requires every `ttl.cb_push` and `ttl.cb_wait` DFB operand to resolve to `ttl.bind_cb`}}
+    // expected-error @below {{`ttl-verify-pipenet-guards` requires every DFB protocol operand to resolve to `ttl.bind_cb`}}
     %block = ttl.cb_wait %dfb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
