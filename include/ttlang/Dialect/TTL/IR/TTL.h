@@ -46,8 +46,8 @@ constexpr llvm::StringLiteral
 /// Selected strategy on tile operations with execution alternatives.
 constexpr llvm::StringLiteral
     kTileExecutionStrategyAttrName("ttl.tile_execution_strategy");
-/// PipeNet role exposed by `is_src` / `is_dst` / `is_active` predicate ops
-/// and by `pipenet_scope` declarations.
+/// PipeNet role queried by `is_src`, `is_dst`, and `is_active` operations and
+/// declared by `pipenet_scope`.
 enum class PipeRole : int64_t {
   Source = 0,
   Destination = 1,
