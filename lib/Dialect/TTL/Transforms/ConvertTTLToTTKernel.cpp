@@ -702,6 +702,7 @@ private:
 /// Traverses ViewLikeOpInterface ops (CBReserveOp, CBWaitOp) and casts.
 static FailureOr<Value> getCBFromView(Value v) {
   while (v) {
+    v = traceDFBShapeViews(v);
     if (llvm::isa<ttk::CBType>(v.getType())) {
       return v;
     }
@@ -711,16 +712,14 @@ static FailureOr<Value> getCBFromView(Value v) {
       break;
     }
 
-    if (auto viewLike = llvm::dyn_cast<ViewLikeOpInterface>(def)) {
-      v = viewLike.getViewSource();
+    if (isa<tensor::ExpandShapeOp, tensor::CollapseShapeOp>(def)) {
+      v = getSingletonDimensionShapeViewSource(def);
       continue;
     }
 
-    if (auto cast = llvm::dyn_cast<UnrealizedConversionCastOp>(def)) {
-      if (cast.getInputs().size() == 1) {
-        v = cast.getInputs()[0];
-        continue;
-      }
+    if (auto viewLike = llvm::dyn_cast<ViewLikeOpInterface>(def)) {
+      v = viewLike.getViewSource();
+      continue;
     }
 
     if (auto cast = llvm::dyn_cast<tensor::CastOp>(def)) {
@@ -2783,15 +2782,16 @@ removeStructuralTTLOps(ModuleOp mod, MLIRContext &ctx,
 static void removeTensorDataflowOps(func::FuncOp func) {
   SmallVector<Operation *> deadOps;
   func.walk([&](Operation *op) {
-    if (mlir::isa<tensor::ExtractOp, tensor::ExtractSliceOp, tensor::EmptyOp>(
-            op) &&
-        op->use_empty()) {
+    if (mlir::isa<tensor::ExtractOp, tensor::ExtractSliceOp, tensor::EmptyOp,
+                  tensor::ExpandShapeOp, tensor::CollapseShapeOp>(op)) {
       deadOps.push_back(op);
     }
   });
-  // Erase innermost-first to avoid dangling uses.
+  // Users precede their definitions so a dead view chain is removed together.
   for (auto *op : llvm::reverse(deadOps)) {
-    op->erase();
+    if (op->use_empty()) {
+      op->erase();
+    }
   }
 }
 
@@ -2904,6 +2904,39 @@ static void expandDstSections(ModuleOp mod) {
 // TTLConvertTTLToTTKernelPass
 //===----------------------------------------------------------------------===//
 
+static LogicalResult validateDFBShapeViews(ModuleOp module) {
+  WalkResult result = module.walk([&](Operation *operation) {
+    if (auto cast = dyn_cast<UnrealizedConversionCastOp>(operation)) {
+      bool hasBlockInput = llvm::any_of(cast.getInputs(), [](Value source) {
+        return getAttachedCB(source) || isCBAcquireView(source);
+      });
+      if (hasBlockInput && !getDFBConversionCastSource(operation)) {
+        operation->emitOpError(
+            "DFB views cannot use tensor reinterpretation casts; use checked "
+            "singleton-dimension expand_shape or collapse_shape operations");
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    }
+    if (!isa<tensor::ExpandShapeOp, tensor::CollapseShapeOp>(operation)) {
+      return WalkResult::advance();
+    }
+    Value source = operation->getOperand(0);
+    auto sourceType = dyn_cast<RankedTensorType>(source.getType());
+    bool isBlockView =
+        (sourceType && isa<ttcore::TileType>(sourceType.getElementType())) ||
+        getAttachedCB(source) || isCBAcquireView(source);
+    if (isBlockView && !getSingletonDimensionShapeViewSource(operation)) {
+      operation->emitOpError(
+          "block shape views require static shapes, identical element types "
+          "and encodings, and singleton-dimension insertion or removal");
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  return failure(result.wasInterrupted());
+}
+
 static LogicalResult
 validateTileOperationsForTarget(ModuleOp module,
                                 const ComputeTargetEnvironment &target) {
@@ -2932,6 +2965,10 @@ struct TTLConvertTTLToTTKernelPass
     ModuleOp mod = getOperation();
     TTLToTTKernelTypeConverter typeConverter;
 
+    if (failed(validateDFBShapeViews(mod))) {
+      signalPassFailure();
+      return;
+    }
     if (failed(validateSynchronizedDFBResetTarget(mod))) {
       signalPassFailure();
       return;

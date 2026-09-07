@@ -11,7 +11,7 @@ import ttl
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from ttl.diagnostics import TTLangCompileError
-from ttlang_test_utils import assert_allclose, to_l1
+from ttlang_test_utils import assert_allclose, to_dram, to_l1
 
 
 @ttl.operation(grid=(1, 1))
@@ -205,72 +205,89 @@ def unsqueeze_duplicate_dim_kernel(inp, out):
         pass
 
 
-def _make_tensors(device):
-    source = torch.arange(6 * 32 * 32, dtype=torch.bfloat16).reshape(1, 1, 64, 96)
-    inp = to_l1(source, device)
-    out = to_l1(torch.zeros((64, 96), dtype=torch.bfloat16), device)
+def _make_source(dtype):
+    indices = torch.arange(6 * 32 * 32, dtype=torch.float32)
+    # Include FP32 low bits so accidental BF16 conversion changes the result.
+    values = (indices.remainder(251) - 125) / 64 + indices.remainder(7) / 8192
+    return values.to(dtype).reshape(1, 1, 64, 96)
+
+
+def _make_tensors(device, dtype=torch.bfloat16, memory="l1"):
+    source = _make_source(dtype)
+    tensor_factory = to_l1 if memory == "l1" else to_dram
+    inp = tensor_factory(source, device)
+    out = tensor_factory(torch.zeros((64, 96), dtype=dtype), device)
     return source, inp, out
 
 
-def _make_interleaved_tensors(device):
-    source = torch.empty((2, 1, 96, 32), dtype=torch.bfloat16)
-    expected = torch.empty((64, 96), dtype=torch.bfloat16)
+def _make_interleaved_values(dtype):
+    source = _make_source(dtype).reshape(2, 1, 96, 32)
+    expected = torch.empty((64, 96), dtype=dtype)
     for tile_index in range(6):
         batch, tile_row = divmod(tile_index, 3)
-        value = float(tile_index + 1)
-        source[batch, 0, tile_row * 32 : (tile_row + 1) * 32, :] = value
         expected[
             batch * 32 : (batch + 1) * 32,
             tile_row * 32 : (tile_row + 1) * 32,
-        ] = value
-    inp = to_l1(source, device)
-    out = to_l1(torch.zeros_like(expected), device)
-    return source, expected, inp, out
+        ] = source[batch, 0, tile_row * 32 : (tile_row + 1) * 32, :]
+    return source, expected
 
 
 @pytest.mark.parametrize("kernel", [squeeze_kernel, squeeze_negative_dims_kernel])
-def test_squeeze_preserves_tile_values(device, kernel):
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("memory", ["dram", "l1"])
+def test_squeeze_preserves_tile_values(device, kernel, dtype, memory):
     """Squeezing unit dimensions changes only the block's logical rank.
 
     The positive-index kernel also covers duplicate dimensions and an empty
     second squeeze, both of which are no-ops after normalization.
     """
-    source, inp, out = _make_tensors(device)
+    source, inp, out = _make_tensors(device, dtype, memory)
 
     kernel(inp, out)
 
-    assert_allclose(ttnn.to_torch(out), source.reshape(64, 96))
+    assert_allclose(ttnn.to_torch(out), source.reshape(64, 96), rtol=0.0, atol=0.0)
 
 
-def test_squeeze_interleaved_dimensions_preserves_tile_order(device):
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("memory", ["dram", "l1"])
+def test_squeeze_interleaved_dimensions_preserves_tile_order(device, dtype, memory):
     """Removing interleaved unit axes preserves row-major tile ordering."""
-    _, expected, inp, out = _make_interleaved_tensors(device)
+    source, expected = _make_interleaved_values(dtype)
+    tensor_factory = to_l1 if memory == "l1" else to_dram
+    inp = tensor_factory(source, device)
+    out = tensor_factory(torch.zeros_like(expected), device)
 
     squeeze_interleaved_dims_kernel(inp, out)
 
-    assert_allclose(ttnn.to_torch(out), expected)
+    assert_allclose(ttnn.to_torch(out), expected, rtol=0.0, atol=0.0)
 
 
-def test_unsqueeze_leading_dimensions_preserves_tile_values(device):
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("memory", ["dram", "l1"])
+def test_unsqueeze_leading_dimensions_preserves_tile_values(device, dtype, memory):
     """Inserting leading unit axes changes only the block's logical rank."""
-    source, _, _ = _make_tensors(device)
-    inp = to_l1(source.reshape(64, 96), device)
-    out = to_l1(torch.zeros_like(source), device)
+    source = _make_source(dtype)
+    tensor_factory = to_l1 if memory == "l1" else to_dram
+    inp = tensor_factory(source.reshape(64, 96), device)
+    out = tensor_factory(torch.zeros_like(source), device)
 
     unsqueeze_kernel(inp, out)
 
-    assert_allclose(ttnn.to_torch(out), source)
+    assert_allclose(ttnn.to_torch(out), source, rtol=0.0, atol=0.0)
 
 
-def test_unsqueeze_interleaved_dimensions_preserves_tile_order(device):
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("memory", ["dram", "l1"])
+def test_unsqueeze_interleaved_dimensions_preserves_tile_order(device, dtype, memory):
     """Negative insertion positions preserve row-major tile ordering."""
-    source, expected, _, _ = _make_interleaved_tensors(device)
-    inp = to_l1(expected, device)
-    output = to_l1(torch.zeros_like(source), device)
+    source, expected = _make_interleaved_values(dtype)
+    tensor_factory = to_l1 if memory == "l1" else to_dram
+    inp = tensor_factory(expected, device)
+    output = tensor_factory(torch.zeros_like(source), device)
 
     unsqueeze_interleaved_dims_kernel(inp, output)
 
-    assert_allclose(ttnn.to_torch(output), source)
+    assert_allclose(ttnn.to_torch(output), source, rtol=0.0, atol=0.0)
 
 
 def test_squeeze_rejects_non_unit_dimension(device):
