@@ -24,9 +24,10 @@ func.func @typed_literals_to_emitc() attributes {ttkernel.thread = #ttkernel.thr
 // EMITC-SAME: ttlang.requires_dfb_descriptor
 
 // The emitted definition precedes the user header that names it.
-// CPP-LABEL: #include <cstdint>
+// CPP-LABEL: #include "api/dataflow/circular_buffer.h"
 // CPP: namespace ttlang {
 // CPP: struct DFBDescriptor {
+// CPP: static CircularBuffer bind() { return CircularBuffer(Index); }
 // CPP: } // namespace ttlang
 // CPP: #include "describe.hpp"
 // CPP: describe<11, ttlang::DFBDescriptor<3, 2, 4, 4096>>();
