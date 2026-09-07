@@ -123,8 +123,15 @@ def _to_height_sharded(torch_tensor, device):
 @pytest.mark.parametrize(
     "torch_dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"]
 )
-def test_ready_receive_ascending_tie(device, torch_dtype):
+@pytest.mark.parametrize(
+    "memory_model", ["metal-cb", "compiler-l1"], ids=["metal", "compiler-l1"]
+)
+def test_ready_receive_ascending_tie(
+    device, torch_dtype, memory_model, reject_metal_dfb_descriptor_creation
+):
     """Selection scans upward from index two when one and three are complete."""
+    if memory_model == "compiler-l1":
+        reject_metal_dfb_descriptor_creation()
     torch.manual_seed(0)
     input_torch = torch.rand((32, 128), dtype=torch_dtype)
     expected = input_torch[:, 32:64]
@@ -134,7 +141,12 @@ def test_ready_receive_ascending_tie(device, torch_dtype):
     ]
     out = to_dram(torch.zeros_like(expected), device)
 
-    ready_receive_ascending_tie(inp, *landing_tensors, out)
+    ready_receive_ascending_tie(
+        inp,
+        *landing_tensors,
+        out,
+        options=f"--ttl-memory-model={memory_model}",
+    )
 
     actual_landing = torch.cat(
         [ttnn.to_torch(landing) for landing in landing_tensors], dim=1
