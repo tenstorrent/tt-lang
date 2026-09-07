@@ -1,16 +1,18 @@
 // Purpose: end-to-end TTL -> TTKernel -> emitc -> C++ for a broadcast folded
 // into its binary consumer.
-// Verifies: the emitted kernel calls the current metal broadcast API,
-// bcast_init + any_tiles_bcast, rather than the deprecated init_bcast full
-// init, and pulls in the header that declares them.
+// Verifies: the emitted kernel calls the current metal broadcast API, a
+// format reconfiguration followed by bcast_init + any_tiles_bcast, rather than the
+// deprecated init_bcast full init, and pulls in the header that declares them.
 
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-set-compute-kernel-config, func.func(ttl-assign-dst, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse, lower-affine)' -o %t.ttkernel.mlir
 // RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
-// RUN: FileCheck %s --input-file=%t.cpp
+// RUN: FileCheck %s --input-file=%t.cpp --implicit-check-not=compute_kernel_hw_startup --implicit-check-not=init_bcast
 
 // CHECK: #include "api/compute/bcast.h"
-// CHECK: bcast_init<EltwiseBinaryType::ELWADD, BroadcastType::ROW>
+// CHECK: #include "api/compute/reconfig_data_format.h"
+// CHECK: reconfig_data_format<SrcOrder::Regular, true>(
+// CHECK-NEXT: bcast_init<EltwiseBinaryType::ELWADD, BroadcastType::ROW>
 // CHECK: any_tiles_bcast<EltwiseBinaryType::ELWADD, BroadcastType::ROW>
 // CHECK-NOT: init_bcast
 

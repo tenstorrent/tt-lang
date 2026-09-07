@@ -221,19 +221,13 @@ def TTKernel_PackReconfigDataFormatOp : TTKernel_Op<"pack_reconfig_data_format">
 }
 
 def TTKernel_ReconfigDataFormatOp : TTKernel_InitOp<"reconfig_data_format"> {
-    let summary = "Reconfigure the unpacker and math data formats for an input CB pair.";
+    let summary = "Reconfigure the UNPACK and MATH input formats";
     let description = [{
-      Repoints the SrcA and SrcB data formats at a new pair of input circular
-      buffers. The one-time hardware configuration only covers the CB pair it
-      was given, so an op reading a different pair inside the same sync region
-      must reconfigure the formats first or it unpacks with the formats of the
-      previous pair.
-
-      Lowers to the metal `reconfig_data_format(icb0, icb1)` API.
+      Configures SrcA and SrcB formats and tile geometry without resetting
+      DST synchronization or PACK state. Hardware startup must precede this op.
+      Lowers to `reconfig_data_format<SrcOrder::Regular, true>(in0_cb, in1_cb)`.
     }];
-
     let arguments = (ins TTKernel_CB:$in0_cb, TTKernel_CB:$in1_cb);
-
     let assemblyFormat = [{
       `(` $in0_cb `,` $in1_cb `)` attr-dict `:` functional-type(operands, results)
     }];
@@ -685,16 +679,17 @@ def TTKernel_ExperimentalRowNormalizationBlockOp :
 def TTKernel_UnaryBcastInitOp : TTKernel_InitOp<"unary_bcast_init"> {
     let summary = "Init function";
     let description = [{
-      Must be run before bcast_tile.
+      Configures the UNPACK and MATH broadcast pipelines before unary_bcast.
+      Hardware startup and input format configuration must precede this op.
+      Preserves live DST values and the current synchronization bank.
     }];
 
     let arguments = (ins TTKernel_CB:$in_cb,
-                         TTKernel_CB:$out_cb,
                          TTKernel_BcastTypeAttr:$bcast_type
                         );
 
     let assemblyFormat = [{
-      `(` $in_cb `,` $out_cb `,` $bcast_type `)` attr-dict `:` functional-type(operands, results)
+      `(` $in_cb `,` $bcast_type `)` attr-dict `:` functional-type(operands, results)
     }];
 }
 
@@ -725,10 +720,9 @@ def TTKernel_BinaryBcastInitOp : TTKernel_InitOp<"binary_bcast_init"> {
     let description = [{
       Must be run before binary_bcast. Configures the MATH pipeline for the
       requested elementwise binary operation and broadcast dimension, and the
-      UNPACK pipeline for both input CBs. The one-time hardware configuration,
-      including PACK, comes from the region-level common init, and the data
-      formats of a CB pair other than the one that init configured come from
-      a preceding reconfig_data_format.
+      UNPACK pipeline for both input CBs. Hardware startup and input format
+      configuration must precede this op. Preserves live DST values and the
+      current synchronization bank.
       Lowers to the metal `bcast_init<EltwiseBinaryType, BroadcastType>` API.
     }];
 
