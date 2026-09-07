@@ -105,9 +105,8 @@ static Value lookupCBByIndex(Value src, Operation *funcOp) {
     tensor = slice.getSource();
   }
 
-  // Trace through unrealized conversion casts.
-  // After cb_wait lowering, the tensor is an unrealized_cast(ttkernel.cb).
-  tensor = traceUnrealizedCasts(tensor);
+  // Shape views can wrap the conversion bridge from a lowered cb_wait.
+  tensor = traceDFBShapeViews(tensor);
 
   // If we traced to a ttkernel.cb, return it directly.
   if (llvm::isa<ttkernel::CBType>(tensor.getType())) {
@@ -1039,10 +1038,10 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
     // Starting DFB tile index: 0 when not subblocked (DFB refilled each
     // K-step), or the slice offset when subblocked.
     Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
-    Value in0TileIndex = utils::addSliceOffset(op.getLhs(), zero, rewriter, loc,
-                                               /*composeNestedSlices=*/true);
-    Value in1TileIndex = utils::addSliceOffset(op.getRhs(), zero, rewriter, loc,
-                                               /*composeNestedSlices=*/true);
+    Value in0TileIndex =
+        utils::addSliceOffset(op.getLhs(), zero, rewriter, loc);
+    Value in1TileIndex =
+        utils::addSliceOffset(op.getRhs(), zero, rewriter, loc);
 
     Value transpose = arith::ConstantOp::create(
         rewriter, loc, rewriter.getI32IntegerAttr(transposeRhs ? 1 : 0));
@@ -1069,8 +1068,7 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
       for (int32_t i = 0; i < ntiles; ++i) {
         Value localIdx = arith::ConstantIndexOp::create(rewriter, loc, i);
         Value cbIdx =
-            utils::addSliceOffset(op.getAccumulator(), localIdx, rewriter, loc,
-                                  /*composeNestedSlices=*/true);
+            utils::addSliceOffset(op.getAccumulator(), localIdx, rewriter, loc);
         Value localDstIdx = arith::ConstantIndexOp::create(rewriter, loc, i);
         Value dstTileIdx =
             arith::AddIOp::create(rewriter, loc, dstIdx, localDstIdx);

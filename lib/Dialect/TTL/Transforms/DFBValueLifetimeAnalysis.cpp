@@ -145,7 +145,7 @@ private:
 };
 
 static std::optional<AttachCBOp> findAssociation(Value value) {
-  value = traceUnrealizedCasts(value);
+  value = traceDFBShapeViews(value);
   if (auto slice = value.getDefiningOp<tensor::ExtractSliceOp>()) {
     return findAssociation(slice.getSource());
   }
