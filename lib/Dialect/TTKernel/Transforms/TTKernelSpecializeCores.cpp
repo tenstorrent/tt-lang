@@ -2,6 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+#include "ttlang/Analysis/ValueOriginAnalysis.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Dialect/TTL/Passes.h"
@@ -9,11 +10,12 @@
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
@@ -57,7 +59,13 @@ static FailureOr<std::pair<int64_t, int64_t>> readGrid(ArrayAttr attr) {
   return std::pair<int64_t, int64_t>{gridX, gridY};
 }
 
-static bool valueDependsOnCore(Value rootValue) {
+static bool valueDependsOnCore(Value rootValue,
+                               const ValueOriginAnalysis &originAnalysis,
+                               llvm::DenseSet<Value> &visitedValues) {
+  if (!visitedValues.insert(rootValue).second) {
+    return false;
+  }
+
   BackwardSliceOptions options;
   options.inclusive = true;
   options.omitBlockArguments = false;
@@ -73,32 +81,65 @@ static bool valueDependsOnCore(Value rootValue) {
       return true;
     }
   }
+
+  // Backward slices stop at multi-region block arguments. Resolve their entry
+  // and backedge values with the shared control-flow origin analysis.
+  SmallVector<BlockArgument> blockArguments;
+  if (auto rootArgument = dyn_cast<BlockArgument>(rootValue)) {
+    blockArguments.push_back(rootArgument);
+  }
+  for (Operation *operation : backwardSlice) {
+    for (Value operand : operation->getOperands()) {
+      if (auto blockArgument = dyn_cast<BlockArgument>(operand)) {
+        blockArguments.push_back(blockArgument);
+      }
+    }
+  }
+  for (BlockArgument blockArgument : blockArguments) {
+    for (Value origin : originAnalysis.getOrigins(blockArgument)) {
+      if (valueDependsOnCore(origin, originAnalysis, visitedValues)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+static bool regionBranchDependsOnCore(
+    RegionBranchOpInterface branch,
+    const ValueOriginAnalysis &originAnalysis) {
+  RegionBranchSuccessorMapping forwardedOperands;
+  branch.getSuccessorOperandInputMapping(forwardedOperands);
+
+  // Forwarded values are inspected when they reach a later branch point;
+  // inspect the remaining operands where they determine region control.
+  for (RegionBranchPoint branchPoint : branch.getAllRegionBranchPoints()) {
+    Operation *branchOperation = branchPoint.isParent()
+                                     ? branch.getOperation()
+                                     : branchPoint
+                                           .getTerminatorPredecessorOrNull()
+                                           .getOperation();
+    for (OpOperand &operand : branchOperation->getOpOperands()) {
+      if (forwardedOperands.contains(&operand)) {
+        continue;
+      }
+      llvm::DenseSet<Value> visitedValues;
+      if (valueDependsOnCore(operand.get(), originAnalysis, visitedValues)) {
+        return true;
+      }
+    }
+  }
   return false;
 }
 
 static bool functionControlFlowDependsOnCore(func::FuncOp function) {
-  bool dependsOnCore = false;
-  function.walk([&](scf::IfOp ifOp) {
-    if (valueDependsOnCore(ifOp.getCondition())) {
-      dependsOnCore = true;
-      return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
+  ValueOriginAnalysis originAnalysis(function);
+  auto result = function.walk([&](RegionBranchOpInterface branch) {
+    return regionBranchDependsOnCore(branch, originAnalysis)
+               ? WalkResult::interrupt()
+               : WalkResult::advance();
   });
-  if (dependsOnCore) {
-    return true;
-  }
-
-  function.walk([&](scf::ForOp forOp) {
-    if (valueDependsOnCore(forOp.getLowerBound()) ||
-        valueDependsOnCore(forOp.getUpperBound()) ||
-        valueDependsOnCore(forOp.getStep())) {
-      dependsOnCore = true;
-      return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
-  });
-  return dependsOnCore;
+  return result.wasInterrupted();
 }
 
 /// Replace every CoordOp in func clone with an arith.constant of coord.

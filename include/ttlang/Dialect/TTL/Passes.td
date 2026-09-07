@@ -1452,13 +1452,14 @@ def TTKernelSpecializeCores
     Specializes TTKernel functions using the `ttl.launch_grid` module
     attribute. Missing or malformed launch extents are errors.
 
-    A function is specialized when an `scf.if` condition or an `scf.for`
-    bound depends on `ttkernel.my_logical_x_` or
-    `ttkernel.my_logical_y_`. The pass creates one clone per launch
-    coordinate, replaces coordinate reads with constants, and records the
-    clone's coordinate in `ttl.core_coord`. Canonicalization can then resolve
-    coordinate-dependent control flow. The runtime uses `ttl.core_coord` to
-    dispatch each clone to its assigned core.
+    A function is specialized when a structured region branch selector,
+    repetition condition, or loop bound depends on
+    `ttkernel.my_logical_x_` or `ttkernel.my_logical_y_`. This includes
+    `scf.if`, `scf.index_switch`, `scf.for`, and `scf.while`. The pass creates
+    one clone per launch coordinate, replaces coordinate reads with constants,
+    and records the clone's coordinate in `ttl.core_coord`. Canonicalization
+    can then resolve coordinate-dependent control flow. The runtime uses
+    `ttl.core_coord` to dispatch each clone to its assigned core.
 
     Functions with symbol uses remain unspecialized because replacing them
     would require rewriting their references. The pass emits a warning for
