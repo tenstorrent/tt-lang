@@ -19,6 +19,7 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from examples.multidevice_all_reduce import make_structured_all_reduce_operation
 from ttlang_test_utils import (
+    FabricMeshUnavailable,
     get_fabric_mesh_shape,
     open_fabric_mesh,
     requires_forwarding_link_indices,
@@ -872,9 +873,12 @@ def _route_mesh_options(fabric_config):
 
 
 def _get_route_mesh_shape(fabric_config):
-    return get_fabric_mesh_shape(
-        fabric_config=fabric_config, **_route_mesh_options(fabric_config)
-    )
+    try:
+        return get_fabric_mesh_shape(
+            fabric_config=fabric_config, **_route_mesh_options(fabric_config)
+        )
+    except FabricMeshUnavailable as error:
+        pytest.skip(str(error))
 
 
 def _open_route_mesh(mesh_shape: tuple[int, ...], fabric_config):
