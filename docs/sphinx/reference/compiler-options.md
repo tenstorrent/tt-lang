@@ -30,7 +30,7 @@ python my_kernel.py --no-ttl-maximize-dst
 | `--ttl-reuse-user-dfbs` / `--no-ttl-reuse-user-dfbs` | enabled | Reuse physical DFB indices and compiler-managed storage when concurrent-kernel liveness proves that compatible lifetimes do not overlap. Disabling compacts provisional user indices without introducing user-DFB sharing and assigns each physical descriptor separate storage. |
 | `--ttl-dfb-exact-coloring-search-limit N` | `1000000` | Examine at most `N` states during deterministic exact DFB allocation when order-dependent first-fit prevents acceptance or exceeds the provisional threshold after a conservative PipeNet reservation. This bounds compile time; reaching the limit reports an inconclusive result only when authoritative acceptance requires the search result. |
 | `--ttl-unsafe-assume-dfb-allocation-groups` / `--no-ttl-unsafe-assume-dfb-allocation-groups` | disabled | Trust explicit `allocation_group=` handoffs that the compiler cannot prove. Accepted groups emit warnings and `ttl.assumed_dfb_allocation_groups` metadata. Descriptor, storage, static configuration, capacity, and L1 checks remain enforced. |
-| `--ttl-specialize-cores` / `--no-ttl-specialize-cores` | disabled | Clone each TTKernel function whose `scf.if` condition or `scf.for` bound depends on a core coordinate once per launch coordinate (`ttkernel-specialize-cores`), replacing `my_logical_x_` / `my_logical_y_` with constants and tagging clones with `ttl.core_coord` for per-core dispatch. Opt-in. |
+| `--ttl-specialize-cores` / `--no-ttl-specialize-cores` | disabled | Clone each TTKernel function whose structured branch or loop control depends on a core coordinate once per launch coordinate (`ttkernel-specialize-cores`), replacing `my_logical_x_` / `my_logical_y_` with constants and tagging clones with `ttl.core_coord` for per-core dispatch. Opt-in. |
 
 **f32 accumulation precision:** `dst` keeps the accumulator in the DST register
 but feeds it back through SRCA on each step, which truncates to tf32 (10-bit
@@ -381,8 +381,10 @@ i64 array of length 2 with positive entries). Missing or malformed
 `ttl.launch_grid` is a hard error. A valid single-core grid (product <= 1)
 skips specialization.
 
-An `scf.if` condition or `scf.for` lower bound, upper bound, or step derived
-from `ttkernel.my_logical_x_` / `ttkernel.my_logical_y_` triggers cloning.
+Any structured region branch selector, repetition condition, or loop bound
+derived from `ttkernel.my_logical_x_` / `ttkernel.my_logical_y_` triggers
+cloning. Covered SCF operations include `scf.if`, `scf.index_switch`,
+`scf.for`, and `scf.while`.
 Functions with symbol uses (for example `func.call` targets) are left
 unspecialized with a warning so erasing the original does not leave dangling
 `SymbolRefAttr`s; unrelated functions in the module are still specialized.

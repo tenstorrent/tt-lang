@@ -2,8 +2,8 @@
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttkernel-specialize-cores,canonicalize,cse)' | FileCheck %s --check-prefix=FOLDED
 
 // Summary: per-core specialization is a single module pass run at the TTKernel
-// level. It clones kernels whose `scf.if` conditions or `scf.for` bounds depend
-// on core coordinates, replaces coordinate reads with constants, and tags each
+// level. It clones kernels whose structured branch or loop control depends on
+// core coordinates, replaces coordinate reads with constants, and tags each
 // clone with `ttl.core_coord`. Downstream canonicalization resolves the
 // coordinate-dependent control flow. Coordinate-only data uses remain in one
 // whole-grid kernel.
@@ -149,6 +149,51 @@ module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
 
 // -----
 
+// Coordinate-dependent selectors and loop conditions require specialization.
+// This covers region control flow beyond scf.if and scf.for.
+
+// CHECK-NOT:   func.func @kindex_switch()
+// CHECK-LABEL: func.func @kindex_switch_c0_0
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 0]]
+// CHECK-NOT:   func.func @kindex_switch()
+// CHECK-LABEL: func.func @kindex_switch_c0_1
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 1]]
+// CHECK-NOT:   func.func @kwhile()
+// CHECK-LABEL: func.func @kwhile_c0_0
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 0]]
+// CHECK-NOT:   func.func @kwhile()
+// CHECK-LABEL: func.func @kwhile_c0_1
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 1]]
+
+module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
+  func.func @kindex_switch() {
+    %core_y = "ttkernel.my_logical_y_"() : () -> index
+    scf.index_switch %core_y
+    case 0 {
+      scf.yield
+    }
+    default {
+      scf.yield
+    }
+    return
+  }
+
+  func.func @kwhile() {
+    %zero = arith.constant 0 : index
+    %core_y = "ttkernel.my_logical_y_"() : () -> index
+    %result = scf.while (%current = %core_y) : (index) -> index {
+      %continue = arith.cmpi sgt, %current, %zero : index
+      scf.condition(%continue) %current : index
+    } do {
+    ^bb0(%current : index):
+      scf.yield %zero : index
+    }
+    return
+  }
+}
+
+// -----
+
 // -- Test 5: coordinate-dependent loop bounds require specialization. -------
 // A table-selected upper bound becomes constant in every per-core clone.
 
@@ -269,6 +314,10 @@ module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
 // CHECK-NOT:     ttl.core_coord
 // CHECK:         my_logical_y_
 // CHECK-NOT:   func.func @kindependent_region_c
+// CHECK-LABEL: func.func @kforwarded_region_value
+// CHECK-NOT:     ttl.core_coord
+// CHECK:         my_logical_y_
+// CHECK-NOT:   func.func @kforwarded_region_value_c
 
 module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
   func.func private @consume(index)
@@ -286,6 +335,19 @@ module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
     }
     scf.for %record = %lower to %upper step %one {
       func.call @consume(%record) : (index) -> ()
+    }
+    return
+  }
+
+  func.func @kforwarded_region_value() {
+    %lower = arith.constant 0 : index
+    %upper = arith.constant 2 : index
+    %step = arith.constant 1 : index
+    %core_y = "ttkernel.my_logical_y_"() : () -> index
+    %result = scf.for %record = %lower to %upper step %step
+        iter_args(%carried = %core_y) -> index {
+      func.call @consume(%carried) : (index) -> ()
+      scf.yield %carried : index
     }
     return
   }
