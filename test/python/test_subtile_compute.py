@@ -4,6 +4,8 @@
 
 """Device coverage for subtile compute operations."""
 
+import os
+
 import pytest
 import torch
 
@@ -62,7 +64,7 @@ def subtile_add(lhs, rhs, out):
 
 
 @ttl.operation(grid=(1, 1))
-def short_height_situ(gate, up, out):
+def short_height_tensor_backed_expression(gate, up, out):
     gate_dfb = ttl.make_tensor_backed_dfb(gate, shape=(1, 3), block_count=1)
     up_dfb = ttl.make_tensor_backed_dfb(up, shape=(1, 3), block_count=1)
     output_dfb = ttl.make_tensor_backed_dfb(out, shape=(1, 3), block_count=1)
@@ -350,6 +352,139 @@ def subtile_reduce_max_row(inp, out):
             ttl.copy(output_block, out[0:1, 0:1]).wait()
 
 
+@ttl.operation(grid=(1, 1))
+def subtile_geometry_sequence(short_input, full_input, short_output, full_output):
+    short_input_dfb = ttl.make_dataflow_buffer_like(
+        short_input, shape=(1, 1), block_count=2
+    )
+    full_input_dfb = ttl.make_dataflow_buffer_like(
+        full_input, shape=(1, 1), block_count=2
+    )
+    short_output_dfb = ttl.make_dataflow_buffer_like(
+        short_output, shape=(1, 1), block_count=2
+    )
+    full_output_dfb = ttl.make_dataflow_buffer_like(
+        full_output, shape=(1, 1), block_count=2
+    )
+
+    @ttl.compute()
+    def compute():
+        with short_input_dfb.wait() as input_block:
+            with short_output_dfb.reserve() as output_block:
+                output_block.store(ttl.math.exp(input_block))
+        with full_input_dfb.wait() as input_block:
+            with full_output_dfb.reserve() as output_block:
+                output_block.store(ttl.math.exp(input_block))
+        with short_input_dfb.wait() as input_block:
+            with short_output_dfb.reserve() as output_block:
+                output_block.store(ttl.math.exp(input_block))
+
+    @ttl.datamovement()
+    def reader():
+        with short_input_dfb.reserve() as input_block:
+            ttl.copy(short_input[0:1, 0:1], input_block).wait()
+        with full_input_dfb.reserve() as input_block:
+            ttl.copy(full_input[0:1, 0:1], input_block).wait()
+        with short_input_dfb.reserve() as input_block:
+            ttl.copy(short_input[1:2, 0:1], input_block).wait()
+
+    @ttl.datamovement()
+    def writer():
+        with short_output_dfb.wait() as output_block:
+            ttl.copy(output_block, short_output[0:1, 0:1]).wait()
+        with full_output_dfb.wait() as output_block:
+            ttl.copy(output_block, full_output[0:1, 0:1]).wait()
+        with short_output_dfb.wait() as output_block:
+            ttl.copy(output_block, short_output[1:2, 0:1]).wait()
+
+
+@ttl.operation(grid=(1, 1))
+def subtile_equal_page_geometry_sequence(
+    wide_input, narrow_input, wide_output, narrow_output
+):
+    wide_input_dfb = ttl.make_dataflow_buffer_like(
+        wide_input, shape=(1, 1), block_count=2
+    )
+    narrow_input_dfb = ttl.make_dataflow_buffer_like(
+        narrow_input, shape=(1, 1), block_count=2
+    )
+    wide_output_dfb = ttl.make_dataflow_buffer_like(
+        wide_output, shape=(1, 1), block_count=2
+    )
+    narrow_output_dfb = ttl.make_dataflow_buffer_like(
+        narrow_output, shape=(1, 1), block_count=2
+    )
+
+    @ttl.compute()
+    def compute():
+        with wide_input_dfb.wait() as input_block:
+            with wide_output_dfb.reserve() as output_block:
+                output_block.store(ttl.math.exp(input_block))
+        with narrow_input_dfb.wait() as input_block:
+            with narrow_output_dfb.reserve() as output_block:
+                output_block.store(ttl.math.exp(input_block))
+        with wide_input_dfb.wait() as input_block:
+            with wide_output_dfb.reserve() as output_block:
+                output_block.store(ttl.math.exp(input_block))
+
+    @ttl.datamovement()
+    def reader():
+        with wide_input_dfb.reserve() as input_block:
+            ttl.copy(wide_input[0:1, 0:1], input_block).wait()
+        with narrow_input_dfb.reserve() as input_block:
+            ttl.copy(narrow_input[0:1, 0:1], input_block).wait()
+        with wide_input_dfb.reserve() as input_block:
+            ttl.copy(wide_input[1:2, 0:1], input_block).wait()
+
+    @ttl.datamovement()
+    def writer():
+        with wide_output_dfb.wait() as output_block:
+            ttl.copy(output_block, wide_output[0:1, 0:1]).wait()
+        with narrow_output_dfb.wait() as output_block:
+            ttl.copy(output_block, narrow_output[0:1, 0:1]).wait()
+        with wide_output_dfb.wait() as output_block:
+            ttl.copy(output_block, wide_output[1:2, 0:1]).wait()
+
+
+SUBTILE_EXTERNAL_HEADER = os.path.join(
+    os.path.dirname(__file__), "include", "external_eltwise_mul.hpp"
+)
+
+
+def _make_subtile_external_multiply(data_format):
+    @ttl.operation(grid=(1, 1), fp32_dest_acc_en=data_format == "float32")
+    def external_multiply(lhs, rhs, result):
+        lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), block_count=2)
+        rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), block_count=2)
+        result_dfb = ttl.make_dataflow_buffer_like(result, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            ttl.call_extern_func(
+                SUBTILE_EXTERNAL_HEADER,
+                "ttl_external_eltwise_mul",
+                template_args=[
+                    ttl.dfb_descriptor(lhs_dfb),
+                    ttl.dfb_descriptor(rhs_dfb),
+                    ttl.dfb_descriptor(result_dfb),
+                ],
+            )
+
+        @ttl.datamovement()
+        def reader():
+            with lhs_dfb.reserve() as lhs_block:
+                ttl.copy(lhs[0:1, 0:1], lhs_block).wait()
+            with rhs_dfb.reserve() as rhs_block:
+                ttl.copy(rhs[0:1, 0:1], rhs_block).wait()
+
+        @ttl.datamovement()
+        def writer():
+            with result_dfb.wait() as result_block:
+                ttl.copy(result_block, result[0:1, 0:1]).wait()
+
+    return external_multiply
+
+
 SHORT_HEIGHT_TILE_SIZES = [(1, 32), (2, 32), (4, 32), (8, 32)]
 COMPUTE_TILE_SIZES = [(16, 16), (16, 32), (32, 16), (32, 32)]
 ELEMENTWISE_TILE_SIZES = SHORT_HEIGHT_TILE_SIZES + COMPUTE_TILE_SIZES
@@ -373,6 +508,10 @@ DTYPES = [
     (torch.bfloat16, ttnn.bfloat16, 5e-2, 1.0),
     (torch.float32, ttnn.float32, 1e-3, 1e-3),
 ]
+EXTERNAL_DTYPES = [
+    (torch.bfloat16, ttnn.bfloat16, 5e-2, 1.0),
+    (torch.float32, ttnn.float32, 5e-3, 1e-4),
+]
 REDUCE_DTYPES = [
     (torch.bfloat16, ttnn.bfloat16, 5e-2, 1.0),
     (torch.float32, ttnn.float32, 5e-3, 1e-2),
@@ -390,6 +529,21 @@ MEMORY_CONFIGS = [
     pytest.param(ttnn.DRAM_MEMORY_CONFIG, id="dram"),
     pytest.param(ttnn.L1_MEMORY_CONFIG, id="l1"),
 ]
+STORAGE_OPTIONS = [
+    pytest.param("", id="metal"),
+    pytest.param(
+        "--ttl-memory-model=compiler-l1 "
+        "--ttl-l1-allocation-strategy=first-fit-decreasing",
+        id="compiler-l1-first-fit",
+    ),
+    pytest.param(
+        "--ttl-memory-model=compiler-l1 "
+        "--ttl-l1-allocation-strategy=best-fit-decreasing",
+        id="compiler-l1-best-fit",
+    ),
+]
+METAL_AND_FIRST_FIT_STORAGE_OPTIONS = STORAGE_OPTIONS[:2]
+COMPILER_STORAGE_OPTIONS = STORAGE_OPTIONS[1:]
 INTEGER_OPERATIONS = [
     pytest.param(subtile_add, 10, id="add"),
     pytest.param(subtile_sub, 4, id="sub"),
@@ -449,8 +603,17 @@ def _to_height_sharded_l1(torch_tensor, device, tile_hw):
     ids=["bf16", "fp32"],
 )
 @pytest.mark.parametrize("memory_config", MEMORY_CONFIGS)
+@pytest.mark.parametrize("storage_options", METAL_AND_FIRST_FIT_STORAGE_OPTIONS)
 def test_subtile_exp(
-    device, tile_hw, torch_dtype, ttnn_dtype, rtol, atol, memory_config
+    device,
+    tile_hw,
+    torch_dtype,
+    ttnn_dtype,
+    rtol,
+    atol,
+    memory_config,
+    storage_options,
+    reject_metal_dfb_descriptor_creation,
 ):
     tile_height, tile_width = tile_hw
     source = torch.linspace(-0.5, 0.5, tile_height * tile_width).reshape(tile_hw)
@@ -465,7 +628,9 @@ def test_subtile_exp(
         memory_config,
     )
 
-    subtile_exp(input_tensor, output_tensor)
+    if storage_options:
+        reject_metal_dfb_descriptor_creation()
+    subtile_exp(input_tensor, output_tensor, options=storage_options)
 
     actual = ttnn.to_torch(output_tensor).reshape(tile_hw).float()
     assert_allclose(actual, expected.float(), rtol=rtol, atol=atol)
@@ -480,8 +645,17 @@ def test_subtile_exp(
     ids=["bf16", "fp32"],
 )
 @pytest.mark.parametrize("memory_config", MEMORY_CONFIGS)
+@pytest.mark.parametrize("storage_options", METAL_AND_FIRST_FIT_STORAGE_OPTIONS)
 def test_subtile_add(
-    device, tile_hw, torch_dtype, ttnn_dtype, rtol, atol, memory_config
+    device,
+    tile_hw,
+    torch_dtype,
+    ttnn_dtype,
+    rtol,
+    atol,
+    memory_config,
+    storage_options,
+    reject_metal_dfb_descriptor_creation,
 ):
     lhs_source = torch.ones(tile_hw, dtype=torch_dtype)
     rhs_source = torch.full(tile_hw, 2.0, dtype=torch_dtype)
@@ -493,7 +667,9 @@ def test_subtile_add(
         output_source, device, tile_hw, ttnn_dtype, memory_config
     )
 
-    subtile_add(lhs_tensor, rhs_tensor, output_tensor)
+    if storage_options:
+        reject_metal_dfb_descriptor_creation()
+    subtile_add(lhs_tensor, rhs_tensor, output_tensor, options=storage_options)
 
     actual = ttnn.to_torch(output_tensor).reshape(tile_hw).float()
     expected = lhs_source.float() + rhs_source.float()
@@ -503,8 +679,14 @@ def test_subtile_add(
 @pytest.mark.parametrize(
     "tile_hw", SHORT_HEIGHT_TILE_SIZES, ids=lambda tile: f"{tile[0]}x{tile[1]}"
 )
-def test_short_height_tensor_backed_situ(device, tile_hw):
-    """The K3 SiTU expression runs over three direct sharded-L1 pages."""
+@pytest.mark.parametrize("storage_options", STORAGE_OPTIONS)
+def test_short_height_tensor_backed_expression(
+    device,
+    tile_hw,
+    storage_options,
+    reject_metal_dfb_descriptor_creation,
+):
+    """A multi-operation expression runs over three tensor-backed L1 pages."""
     tile_height, tile_width = tile_hw
     tensor_shape = (tile_height, 3 * tile_width)
     torch.manual_seed(0)
@@ -519,7 +701,11 @@ def test_short_height_tensor_backed_situ(device, tile_hw):
     up_tensor = _to_height_sharded_l1(up, device, tile_hw)
     output_tensor = _to_height_sharded_l1(output, device, tile_hw)
 
-    short_height_situ(gate_tensor, up_tensor, output_tensor)
+    if storage_options:
+        reject_metal_dfb_descriptor_creation()
+    short_height_tensor_backed_expression(
+        gate_tensor, up_tensor, output_tensor, options=storage_options
+    )
 
     actual = ttnn.to_torch(output_tensor).reshape(tensor_shape).float()
     assert_allclose(actual, expected, rtol=5e-2, atol=1e-1)
@@ -583,8 +769,16 @@ def test_subtile_integer_broadcast(device, torch_dtype, ttnn_dtype, memory_confi
     ids=["bf16", "fp32"],
 )
 @pytest.mark.parametrize("memory_config", MEMORY_CONFIGS)
+@pytest.mark.parametrize("storage_options", METAL_AND_FIRST_FIT_STORAGE_OPTIONS)
 def test_subtile_broadcast_col(
-    device, torch_dtype, ttnn_dtype, rtol, atol, memory_config
+    device,
+    torch_dtype,
+    ttnn_dtype,
+    rtol,
+    atol,
+    memory_config,
+    storage_options,
+    reject_metal_dfb_descriptor_creation,
 ):
     tile_hw = (8, 32)
     source = torch.zeros(tile_hw, dtype=torch_dtype)
@@ -598,7 +792,9 @@ def test_subtile_broadcast_col(
         memory_config,
     )
 
-    subtile_broadcast_col(input_tensor, output_tensor)
+    if storage_options:
+        reject_metal_dfb_descriptor_creation()
+    subtile_broadcast_col(input_tensor, output_tensor, options=storage_options)
 
     actual = ttnn.to_torch(output_tensor).reshape(tile_hw).float()
     expected = source[:, :1].expand(tile_hw).float()
@@ -616,6 +812,7 @@ def test_subtile_broadcast_col(
     ids=["bf16", "fp32"],
 )
 @pytest.mark.parametrize("memory_config", MEMORY_CONFIGS)
+@pytest.mark.parametrize("storage_options", METAL_AND_FIRST_FIT_STORAGE_OPTIONS)
 def test_subtile_matmul(
     device,
     lhs_tile,
@@ -625,6 +822,8 @@ def test_subtile_matmul(
     ttnn_dtype,
     pcc_threshold,
     memory_config,
+    storage_options,
+    reject_metal_dfb_descriptor_creation,
 ):
     lhs_shape = (lhs_tile[0], 2 * lhs_tile[1])
     rhs_shape = (2 * rhs_tile[0], 2 * rhs_tile[1])
@@ -640,7 +839,9 @@ def test_subtile_matmul(
         output_source, device, output_tile, ttnn_dtype, memory_config
     )
 
-    subtile_matmul(lhs_tensor, rhs_tensor, output_tensor)
+    if storage_options:
+        reject_metal_dfb_descriptor_creation()
+    subtile_matmul(lhs_tensor, rhs_tensor, output_tensor, options=storage_options)
 
     actual = ttnn.to_torch(output_tensor).reshape(output_shape).float()
     expected = lhs_source.float() @ rhs_source.float()
@@ -658,6 +859,7 @@ def test_subtile_matmul(
     ids=["bf16", "fp32"],
 )
 @pytest.mark.parametrize("memory_config", MEMORY_CONFIGS)
+@pytest.mark.parametrize("storage_options", METAL_AND_FIRST_FIT_STORAGE_OPTIONS)
 def test_subtile_matmul_relu(
     device,
     lhs_tile,
@@ -667,6 +869,8 @@ def test_subtile_matmul_relu(
     ttnn_dtype,
     pcc_threshold,
     memory_config,
+    storage_options,
+    reject_metal_dfb_descriptor_creation,
 ):
     lhs_shape = (lhs_tile[0], 2 * lhs_tile[1])
     rhs_shape = (2 * rhs_tile[0], rhs_tile[1])
@@ -682,7 +886,9 @@ def test_subtile_matmul_relu(
         output_source, device, output_tile, ttnn_dtype, memory_config
     )
 
-    subtile_matmul_relu(lhs_tensor, rhs_tensor, output_tensor)
+    if storage_options:
+        reject_metal_dfb_descriptor_creation()
+    subtile_matmul_relu(lhs_tensor, rhs_tensor, output_tensor, options=storage_options)
 
     actual = ttnn.to_torch(output_tensor).reshape(output_shape).float()
     expected = torch.relu(lhs_source.float() @ rhs_source.float())
@@ -700,6 +906,7 @@ def test_subtile_matmul_relu(
     ids=["bf16", "fp32"],
 )
 @pytest.mark.parametrize("memory_config", MEMORY_CONFIGS)
+@pytest.mark.parametrize("storage_options", METAL_AND_FIRST_FIT_STORAGE_OPTIONS)
 def test_subtile_matmul_transposed(
     device,
     lhs_tile,
@@ -709,6 +916,8 @@ def test_subtile_matmul_transposed(
     ttnn_dtype,
     pcc_threshold,
     memory_config,
+    storage_options,
+    reject_metal_dfb_descriptor_creation,
 ):
     lhs_shape = (lhs_tile[0], 2 * lhs_tile[1])
     rhs_shape = (rhs_tile[0], 2 * rhs_tile[1])
@@ -724,7 +933,11 @@ def test_subtile_matmul_transposed(
         output_source, device, output_tile, ttnn_dtype, memory_config
     )
 
-    subtile_matmul_transposed(lhs_tensor, rhs_tensor, output_tensor)
+    if storage_options:
+        reject_metal_dfb_descriptor_creation()
+    subtile_matmul_transposed(
+        lhs_tensor, rhs_tensor, output_tensor, options=storage_options
+    )
 
     actual = ttnn.to_torch(output_tensor).reshape(output_shape).float()
     expected = lhs_source.float() @ rhs_source.float().t()
@@ -740,8 +953,17 @@ def test_subtile_matmul_transposed(
     ids=["bf16", "fp32"],
 )
 @pytest.mark.parametrize("memory_config", MEMORY_CONFIGS)
+@pytest.mark.parametrize("storage_options", METAL_AND_FIRST_FIT_STORAGE_OPTIONS)
 def test_subtile_reduce(
-    device, tile_hw, torch_dtype, ttnn_dtype, rtol, atol, memory_config
+    device,
+    tile_hw,
+    torch_dtype,
+    ttnn_dtype,
+    rtol,
+    atol,
+    memory_config,
+    storage_options,
+    reject_metal_dfb_descriptor_creation,
 ):
     source = torch.ones(tile_hw, dtype=torch_dtype)
     output_source = torch.zeros(tile_hw, dtype=torch_dtype)
@@ -750,7 +972,9 @@ def test_subtile_reduce(
         output_source, device, tile_hw, ttnn_dtype, memory_config
     )
 
-    subtile_reduce(input_tensor, output_tensor)
+    if storage_options:
+        reject_metal_dfb_descriptor_creation()
+    subtile_reduce(input_tensor, output_tensor, options=storage_options)
 
     actual = ttnn.to_torch(output_tensor).reshape(tile_hw).float()[0, 0]
     expected = source.float().sum()
@@ -764,6 +988,7 @@ def test_subtile_reduce(
     ids=["bf16", "fp32"],
 )
 @pytest.mark.parametrize("memory_config", MEMORY_CONFIGS)
+@pytest.mark.parametrize("storage_options", METAL_AND_FIRST_FIT_STORAGE_OPTIONS)
 def test_subtile_reduce_row(
     device,
     kernel,
@@ -773,6 +998,8 @@ def test_subtile_reduce_row(
     rtol,
     atol,
     memory_config,
+    storage_options,
+    reject_metal_dfb_descriptor_creation,
 ):
     tile_hw = (8, 32)
     source = torch.linspace(-3.0, 5.0, tile_hw[0] * tile_hw[1]).reshape(tile_hw)
@@ -787,8 +1014,170 @@ def test_subtile_reduce_row(
         memory_config,
     )
 
-    kernel(input_tensor, output_tensor)
+    if storage_options:
+        reject_metal_dfb_descriptor_creation()
+    kernel(input_tensor, output_tensor, options=storage_options)
 
     actual = ttnn.to_torch(output_tensor).reshape(tile_hw).float()[:, 0]
     expected = reducer(source.float(), dim=1)
+    assert_allclose(actual, expected, rtol=rtol, atol=atol)
+
+
+@pytest.mark.parametrize(
+    "torch_dtype,ttnn_dtype,rtol,atol",
+    DTYPES,
+    ids=["bf16", "fp32"],
+)
+@pytest.mark.parametrize("memory_config", MEMORY_CONFIGS)
+@pytest.mark.parametrize("storage_options", COMPILER_STORAGE_OPTIONS)
+def test_compiler_l1_tile_geometry_sequence(
+    device,
+    torch_dtype,
+    ttnn_dtype,
+    rtol,
+    atol,
+    memory_config,
+    storage_options,
+    reject_metal_dfb_descriptor_creation,
+):
+    """The compute configuration changes from 8x32 to 32x32 and back."""
+    short_tile = (8, 32)
+    full_tile = (32, 32)
+    short_source = torch.linspace(-0.5, 0.5, 2 * 8 * 32).reshape(16, 32)
+    full_source = torch.linspace(-0.25, 0.25, 32 * 32).reshape(full_tile)
+    short_source = short_source.to(torch_dtype)
+    full_source = full_source.to(torch_dtype)
+    short_input = _to_device(
+        short_source, device, short_tile, ttnn_dtype, memory_config
+    )
+    full_input = _to_device(full_source, device, full_tile, ttnn_dtype, memory_config)
+    short_output = _to_device(
+        torch.zeros_like(short_source),
+        device,
+        short_tile,
+        ttnn_dtype,
+        memory_config,
+    )
+    full_output = _to_device(
+        torch.zeros_like(full_source),
+        device,
+        full_tile,
+        ttnn_dtype,
+        memory_config,
+    )
+
+    reject_metal_dfb_descriptor_creation()
+    subtile_geometry_sequence(
+        short_input,
+        full_input,
+        short_output,
+        full_output,
+        options=storage_options,
+    )
+
+    actual_short = ttnn.to_torch(short_output).reshape(short_source.shape).float()
+    actual_full = ttnn.to_torch(full_output).reshape(full_source.shape).float()
+    assert_allclose(actual_short, torch.exp(short_source.float()), rtol=rtol, atol=atol)
+    assert_allclose(actual_full, torch.exp(full_source.float()), rtol=rtol, atol=atol)
+
+
+@pytest.mark.parametrize(
+    "torch_dtype,ttnn_dtype,rtol,atol",
+    DTYPES,
+    ids=["bf16", "fp32"],
+)
+@pytest.mark.parametrize("memory_config", MEMORY_CONFIGS)
+@pytest.mark.parametrize("storage_options", COMPILER_STORAGE_OPTIONS)
+def test_compiler_l1_equal_page_geometry_sequence(
+    device,
+    torch_dtype,
+    ttnn_dtype,
+    rtol,
+    atol,
+    memory_config,
+    storage_options,
+    reject_metal_dfb_descriptor_creation,
+):
+    """The compute configuration changes between equal-size 16x32 and 32x16 tiles."""
+    wide_tile = (16, 32)
+    narrow_tile = (32, 16)
+    wide_source = torch.linspace(-0.5, 0.5, 2 * 16 * 32).reshape(32, 32)
+    narrow_source = torch.linspace(-0.25, 0.25, 32 * 16).reshape(narrow_tile)
+    wide_source = wide_source.to(torch_dtype)
+    narrow_source = narrow_source.to(torch_dtype)
+    wide_input = _to_device(wide_source, device, wide_tile, ttnn_dtype, memory_config)
+    narrow_input = _to_device(
+        narrow_source, device, narrow_tile, ttnn_dtype, memory_config
+    )
+    wide_output = _to_device(
+        torch.zeros_like(wide_source),
+        device,
+        wide_tile,
+        ttnn_dtype,
+        memory_config,
+    )
+    narrow_output = _to_device(
+        torch.zeros_like(narrow_source),
+        device,
+        narrow_tile,
+        ttnn_dtype,
+        memory_config,
+    )
+
+    reject_metal_dfb_descriptor_creation()
+    subtile_equal_page_geometry_sequence(
+        wide_input,
+        narrow_input,
+        wide_output,
+        narrow_output,
+        options=storage_options,
+    )
+
+    actual_wide = ttnn.to_torch(wide_output).reshape(wide_source.shape).float()
+    actual_narrow = ttnn.to_torch(narrow_output).reshape(narrow_source.shape).float()
+    assert_allclose(actual_wide, torch.exp(wide_source.float()), rtol=rtol, atol=atol)
+    assert_allclose(
+        actual_narrow, torch.exp(narrow_source.float()), rtol=rtol, atol=atol
+    )
+
+
+@pytest.mark.parametrize(
+    "tile_hw",
+    [(1, 32), (8, 32), (16, 16), (32, 16)],
+    ids=lambda tile: f"{tile[0]}x{tile[1]}",
+)
+@pytest.mark.parametrize(
+    "torch_dtype,ttnn_dtype,rtol,atol",
+    EXTERNAL_DTYPES,
+    ids=["bf16", "fp32"],
+)
+@pytest.mark.parametrize("memory_config", MEMORY_CONFIGS)
+@pytest.mark.parametrize("storage_options", COMPILER_STORAGE_OPTIONS)
+def test_compiler_l1_subtile_external_descriptor(
+    device,
+    tile_hw,
+    torch_dtype,
+    ttnn_dtype,
+    rtol,
+    atol,
+    memory_config,
+    storage_options,
+    reject_metal_dfb_descriptor_creation,
+):
+    """A typed external descriptor carries the sub-tile dimensions."""
+    torch.manual_seed(0)
+    lhs_source = torch.randn(tile_hw).to(torch_dtype)
+    rhs_source = torch.randn(tile_hw).to(torch_dtype)
+    output_source = torch.zeros(tile_hw, dtype=torch_dtype)
+    lhs = _to_device(lhs_source, device, tile_hw, ttnn_dtype, memory_config)
+    rhs = _to_device(rhs_source, device, tile_hw, ttnn_dtype, memory_config)
+    output = _to_device(output_source, device, tile_hw, ttnn_dtype, memory_config)
+    data_format = "float32" if torch_dtype == torch.float32 else "bfloat16"
+
+    reject_metal_dfb_descriptor_creation()
+    external_multiply = _make_subtile_external_multiply(data_format)
+    external_multiply(lhs, rhs, output, options=storage_options)
+
+    actual = ttnn.to_torch(output).reshape(tile_hw).float()
+    expected = lhs_source.float() * rhs_source.float()
     assert_allclose(actual, expected, rtol=rtol, atol=atol)

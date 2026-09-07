@@ -20,47 +20,67 @@ inline void resetMatmulThrottleState() {
 #endif
 }
 
-template <ckernel::DataCopyType CopyType, ckernel::BroadcastType Broadcast>
-inline void initializeUnaryDataCopy(uint32_t unpackFormat) {
+template <ckernel::DataCopyType CopyType, ckernel::BroadcastType Broadcast,
+          typename Source>
+inline void initializeUnaryDataCopy() {
 #if defined(ARCH_BLACKHOLE)
   MATH((_llk_math_eltwise_unary_datacopy_init_<CopyType, DST_ACCUM_MODE,
-                                               Broadcast>(4, unpackFormat,
-                                                          false)));
+                                               Broadcast>(
+      Source::faceCount, Source::unpackFormat, false)));
 #else
   MATH((_llk_math_eltwise_unary_datacopy_init_<CopyType, DST_ACCUM_MODE,
-                                               Broadcast>(4, unpackFormat)));
+                                               Broadcast>(
+      Source::faceCount, Source::unpackFormat)));
 #endif
 }
 
-template <uint32_t OutputFormat, uint32_t OutputPageWords>
+template <typename Output>
 inline void initializePack() {
 #if defined(ARCH_BLACKHOLE)
   PACK((_llk_pack_hw_configure_<DST_ACCUM_MODE, ckernel::PackMode::Default>(
-      OutputFormat, OutputFormat, OutputPageWords, 16, 32, 4, false, 0)));
-  PACK((_llk_pack_init_<ckernel::PackMode::Default>(OutputFormat, 16, 32, 4, 1,
-                                                    false)));
+      Output::format, Output::format, Output::pageWords, Output::faceRowHeight,
+      Output::width, Output::faceCount, Output::partialFace, 0)));
+  PACK((_llk_pack_init_<ckernel::PackMode::Default>(
+      Output::format, Output::faceRowHeight, Output::width, Output::faceCount,
+      1, false)));
   PACK((_llk_pack_dest_init_<DST_SYNC_MODE, DST_ACCUM_MODE>()));
 #else
   PACK((_llk_pack_hw_configure_<DST_ACCUM_MODE, ckernel::PackMode::Default>(
-      OutputFormat, OutputFormat, OutputPageWords, 16, 4, false, false, 0)));
-  PACK((_llk_pack_init_<ckernel::PackMode::Default>(OutputFormat, 16, 4, false,
-                                                    false, 1)));
+      Output::format, Output::format, Output::pageWords, Output::faceRowHeight,
+      Output::faceCount, Output::partialFace, Output::narrowTile, 0)));
+  PACK((_llk_pack_init_<ckernel::PackMode::Default>(
+      Output::format, Output::faceRowHeight, Output::faceCount,
+      Output::partialFace, Output::narrowTile, 1)));
   PACK((_llk_pack_dest_init_<DST_SYNC_MODE, DST_ACCUM_MODE,
-                             ckernel::PackMode::Default>(16, false)));
+                             ckernel::PackMode::Default>(Output::faceRowHeight,
+                                                         Output::narrowTile)));
 #endif
 }
 
-template <uint32_t OutputFormat, uint32_t OutputPageWords>
+template <typename Output, bool ReconfigureTileDimensions = false>
 inline void reconfigurePack() {
 #if defined(ARCH_BLACKHOLE)
   PACK((_llk_pack_reconfig_data_format_<DST_ACCUM_MODE>(
-      OutputFormat, OutputFormat, OutputPageWords, 32, 4, false)));
+      Output::format, Output::format, Output::pageWords, Output::width,
+      Output::faceCount, Output::partialFace)));
+  if constexpr (ReconfigureTileDimensions) {
+    PACK((_llk_pack_init_<ckernel::PackMode::Default, false, true>(
+        Output::format, Output::faceRowHeight, Output::width, Output::faceCount,
+        1, false)));
+  }
 #else
   PACK((_llk_pack_reconfig_data_format_<DST_ACCUM_MODE>(
-      OutputFormat, OutputFormat, OutputPageWords, 16, 4, false, false)));
+      Output::format, Output::format, Output::pageWords, Output::faceRowHeight,
+      Output::faceCount, Output::partialFace, Output::narrowTile)));
+  if constexpr (ReconfigureTileDimensions) {
+    PACK((_llk_pack_init_<ckernel::PackMode::Default, false, true>(
+        Output::format, Output::faceRowHeight, Output::faceCount,
+        Output::partialFace, Output::narrowTile, 1)));
+  }
 #endif
 }
 
+template <typename Lhs, typename Rhs>
 inline void executeMatmul(uint32_t destination, uint32_t transpose,
                           uint32_t columns, uint32_t rows) {
 #if defined(ARCH_BLACKHOLE) && defined(TRISC_MATH)
@@ -68,14 +88,16 @@ inline void executeMatmul(uint32_t destination, uint32_t transpose,
   if (throttled) {
     if (ckernel::throttled_mop_status != 1) {
       _llk_math_matmul_init_<MATH_FIDELITY, MM_THROTTLE_MAX>(
-          32, 32, 32, 32, false, transpose, columns, rows);
+          Lhs::height, Lhs::width, Rhs::height, Rhs::width, Lhs::partialFace,
+          transpose, columns, rows);
       ckernel::throttled_mop_status = 1;
     }
     llk_math_matmul<MATH_FIDELITY, MM_THROTTLE_MAX>(destination, columns, rows);
   } else {
     if (ckernel::throttled_mop_status != 0) {
       _llk_math_matmul_init_<MATH_FIDELITY, MM_THROTTLE>(
-          32, 32, 32, 32, false, transpose, columns, rows);
+          Lhs::height, Lhs::width, Rhs::height, Rhs::width, Lhs::partialFace,
+          transpose, columns, rows);
       ckernel::throttled_mop_status = 0;
     }
     llk_math_matmul<MATH_FIDELITY, MM_THROTTLE>(destination, columns, rows);

@@ -10,6 +10,7 @@
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/Transforms/ComputeTarget.h"
 
 #include "mlir/Conversion/ArithToEmitC/ArithToEmitC.h"
 #include "mlir/Conversion/MemRefToEmitC/MemRefToEmitC.h"
@@ -41,6 +42,7 @@
 #include <cmath>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -257,6 +259,18 @@ static bool isCompilerL1ComputeOperation(Operation *operation) {
       ttkernel::BinaryOpInitCommonOp, ttkernel::AddTilesInitOp,
       ttkernel::AddTilesOp, ttkernel::MulTilesInitOp, ttkernel::MulTilesOp,
       ttkernel::PackTileOp, ttkernel::PackWaitedTileOp>(operation);
+}
+
+static LogicalResult
+validateCompilerL1ComputeTileType(const ttl::ComputeTargetEnvironment &target,
+                                  ttcore::TileType tile,
+                                  std::string &failureReason) {
+  if (tile.getDataType() != ttcore::DataType::Float32 &&
+      tile.getDataType() != ttcore::DataType::BFloat16) {
+    failureReason = "requires BF16 or FP32 tiles";
+    return failure();
+  }
+  return target.validateKernelTileType(tile, failureReason);
 }
 
 static std::string getTTKernelCalleeName(llvm::StringRef opName) {
@@ -661,7 +675,8 @@ getCompilerL1GeometryTemplateArguments(const CompilerL1Allocation &allocation,
                                        ttcore::TileType tile) {
   return (Twine("static_cast<uint32_t>(") +
           datatypeToDataformatStr(tile.getDataType()) + "), " +
-          Twine(allocation.pageSizeBytes) + ", " +
+          Twine(allocation.pageSizeBytes) + ", " + Twine(tile.getHeight()) +
+          ", " + Twine(tile.getWidth()) + ", " +
           Twine(allocation.pagesPerBlock) + ", " +
           Twine(allocation.blockCount) + ", " +
           Twine(allocation.storageCapacityPages))
@@ -3464,6 +3479,16 @@ public:
           return;
         }
       }
+      std::string computeTargetFailureReason;
+      FailureOr<std::unique_ptr<ttl::ComputeTargetEnvironment>> computeTarget =
+          ttl::ComputeTargetEnvironment::get(module,
+                                             computeTargetFailureReason);
+      if (failed(computeTarget)) {
+        module.emitOpError("compiler-l1 compute target is invalid: ")
+            << computeTargetFailureReason;
+        signalPassFailure();
+        return;
+      }
       WalkResult validation = module.walk([&](Operation *operation) {
         if (operation->getName().getDialectNamespace() == "emitc") {
           operation->emitOpError(
@@ -3557,11 +3582,13 @@ public:
                 threadType.getValue() == ttkernel::ThreadType::Compute) {
               auto tile =
                   dyn_cast_if_present<ttcore::TileType>(allocation.elementType);
-              if (!tile || tile.getHeight() != 32 || tile.getWidth() != 32 ||
-                  (tile.getDataType() != ttcore::DataType::Float32 &&
-                   tile.getDataType() != ttcore::DataType::BFloat16)) {
-                operation->emitOpError("compiler-l1 compute descriptors "
-                                       "require 32x32 BF16 or FP32 tiles");
+              computeTargetFailureReason.clear();
+              if (!tile ||
+                  failed(validateCompilerL1ComputeTileType(
+                      **computeTarget, tile, computeTargetFailureReason))) {
+                operation->emitOpError("compiler-l1 compute descriptor ")
+                    << (tile ? computeTargetFailureReason
+                             : "requires BF16 or FP32 tiles");
                 return WalkResult::interrupt();
               }
             }
@@ -3582,11 +3609,13 @@ public:
               continue;
             }
             auto tile = dyn_cast<ttcore::TileType>(buffer.getElementType());
-            if (!tile || tile.getHeight() != 32 || tile.getWidth() != 32 ||
-                (tile.getDataType() != ttcore::DataType::Float32 &&
-                 tile.getDataType() != ttcore::DataType::BFloat16)) {
-              operation->emitOpError(
-                  "compiler-l1 compute requires 32x32 BF16 or FP32 tiles");
+            computeTargetFailureReason.clear();
+            if (!tile ||
+                failed(validateCompilerL1ComputeTileType(
+                    **computeTarget, tile, computeTargetFailureReason))) {
+              operation->emitOpError("compiler-l1 compute ")
+                  << (tile ? computeTargetFailureReason
+                           : "requires BF16 or FP32 tiles");
               return WalkResult::interrupt();
             }
           }
