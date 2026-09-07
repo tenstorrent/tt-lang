@@ -655,18 +655,6 @@ def _resolve_mesh_program_placements(
     return placements
 
 
-def _detect_memory_space_from_tensor(tensor, default: str) -> str:
-    """Detect memory space (L1/DRAM) from a ttnn tensor's buffer type."""
-    mem_config = tensor.memory_config()
-    if hasattr(mem_config, "buffer_type"):
-        buffer_type_str = str(mem_config.buffer_type)
-        if "L1" in buffer_type_str:
-            return "L1"
-        elif "DRAM" in buffer_type_str:
-            return "DRAM"
-    return default
-
-
 def _require_device(args):
     """Extract the device from tensor arguments, raising if none are on-device.
 

@@ -112,8 +112,6 @@ from .ttl_api import (
     _backend_kernel_slots,
     _build_pipenet_graph,
     _canonical_tensor_args,
-    _default_mesh_program_placements_with_domain,
-    _detect_memory_space_from_tensor,
     _lower_program_to_kernel,
     _make_operation_wrapper,
     _resolve_mesh_program_placements,
