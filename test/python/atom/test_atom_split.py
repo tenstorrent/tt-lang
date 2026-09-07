@@ -3327,6 +3327,10 @@ def test_external_call_selects_kernel_specific_dfb_effects():
     [
         ("{}", "must not be empty"),
         (
+            "{**shared_effects}",
+            "does not support dictionary expansion",
+        ),
+        (
             "{ttl.PIPE_SOURCE_KERNEL: [ttl.DFBEffect.wait(source, tiles=1)]}",
             "selects a kernel excluded by the call's kernel selection",
         ),
