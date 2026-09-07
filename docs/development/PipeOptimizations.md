@@ -117,11 +117,23 @@ store completion value 1 with a posted inline word write
 flush posted writes before source reuse
 ```
 
-Writes issued on the same NoC and static virtual channel are observed in order
-across command buffers, so receiver-visible completion follows
-receiver-visible payload data. The final flush waits for the posted writes to
-leave the sender; it does not add a remote acknowledgement. The receiver keeps
-the same completion wait and observes no protocol semantic change.
+TT-Metal uses `NOC_UNICAST_WRITE_VC` for both the stateful payload write and
+the inline completion write unless a caller requests a custom virtual channel
+([NoC API defaults](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/tt_metal/hw/inc/api/dataflow/noc.h#L420-L453),
+[inline write selection](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/tt_metal/hw/inc/api/dataflow/noc.h#L543-L578)).
+This lowering does not request a custom virtual channel. The Wormhole NoC
+ordering contract states that packets with the same route and virtual channel
+do not reorder or interleave
+([NoC ordering](https://github.com/tenstorrent/tt-isa-documentation/blob/5287a62727350bcef35f7b411d1b8a706172ec4c/WormholeB0/NoC/Ordering.md#L9-L16)).
+Blackhole programs a static virtual channel for the stateful write and emulates
+an L1 inline write with a normal asynchronous write after flushing prior posted
+writes
+([stateful write setup](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/tt_metal/hw/inc/internal/tt-1xx/blackhole/noc_nonblocking_api.h#L1451-L1459),
+[L1 inline write](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/tt_metal/hw/inc/internal/tt-1xx/blackhole/noc_nonblocking_api.h#L963-L1030)).
+The receiver therefore observes the payload before completion on both targets.
+The final flush waits for posted writes to leave the sender; it does not add a
+remote acknowledgement. The receiver keeps the same completion wait and
+observes no protocol semantic change.
 
 TTKernel cleanup may move one-packet state configuration before the blocking
 receiver-readiness wait. It does so only when the destination coordinates,
