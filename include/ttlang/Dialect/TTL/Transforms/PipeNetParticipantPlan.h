@@ -7,7 +7,9 @@
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 
+#include "mlir/IR/Diagnostics.h"
 #include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
@@ -26,7 +28,16 @@ struct LocalPipeNetParticipantPlan {
   SmallVector<int64_t> recordIndices;
 };
 
-/// Build local launch-node record slices for `role`.
+/// Check that `records` selects local nodes within (`gridX`, `gridY`) for
+/// `role` and that the grid area and record count fit signed 64-bit indices.
+/// Report invalid inputs through `emitError` when supplied, without building
+/// the node tables; optional optimizations may omit diagnostics.
+LogicalResult validateLocalPipeNetParticipantPlanInputs(
+    PipeNetRecordsAttr records, PipeRole role, int64_t gridX, int64_t gridY,
+    llvm::function_ref<InFlightDiagnostic()> emitError = {});
+
+/// Group `records` by nodes with `role` in the grid (`gridX`, `gridY`).
+/// Fail if the inputs do not satisfy validateLocalPipeNetParticipantPlanInputs.
 FailureOr<LocalPipeNetParticipantPlan>
 buildLocalPipeNetParticipantPlan(PipeNetRecordsAttr records, PipeRole role,
                                  int64_t gridX, int64_t gridY);
