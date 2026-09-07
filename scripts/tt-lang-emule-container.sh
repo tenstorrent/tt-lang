@@ -48,6 +48,8 @@ cleanup() {
             rm -rf -- "$_TEMP_DIR"
         fi
     done
+    _TEMP_EMULE_SOURCE=""
+    _TEMP_EMULE_CONTEXT=""
 }
 
 trap cleanup EXIT
@@ -186,4 +188,5 @@ if [ "${TTLANG_EMULE_REBUILD:-0}" = "1" ] || \
         "${_REPO_ROOT}/scripts"
 fi
 
+cleanup
 exec "$_DOCKER" "${_RUN_ARGS[@]}" "$_IMAGE" "$_CONTAINER_SCRIPT" "$@"
