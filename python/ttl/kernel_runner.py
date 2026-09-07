@@ -3969,6 +3969,30 @@ def _run_kernel_on_device_impl(
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
 
+    compiler_l1_arena_bytes = _get_compiler_l1_arena_bytes(cb_configs)
+    compiler_l1 = compiler_l1_arena_bytes is not None
+    pipe_computed_address_dfb_indices = tuple(
+        sorted(
+            {
+                dfb_index
+                for spec in kernel_specs
+                for dfb_index in spec.pipe_computed_address_dfb_indices
+            }
+        )
+    )
+    if compiler_l1 and (
+        dfb_reconfiguration_plan
+        or pipe_computed_address_dfb_indices
+        or num_pipe_sync_semaphores
+        or pipe_sram_scratch_bytes
+        or num_pipe_global_semaphores
+        or any(kernel_fabric_routes or ())
+    ):
+        raise ValueError(
+            "compiler-l1 cannot combine with PipeNet or Metal DFB "
+            "reconfiguration resources"
+        )
+
     if runtime_resource_cache is not None:
         _release_portable_runtime_resources_impl(runtime_resource_cache)
 
@@ -4024,15 +4048,6 @@ def _run_kernel_on_device_impl(
     grid_cols = grid_size.x
     grid_rows = grid_size.y
 
-    pipe_computed_address_dfb_indices = tuple(
-        sorted(
-            {
-                dfb_index
-                for spec in kernel_specs
-                for dfb_index in spec.pipe_computed_address_dfb_indices
-            }
-        )
-    )
     pipe_runtime_resources, reconfiguration_resources = get_cached_runtime_resources(
         runtime_resource_cache,
         tensors=tensors,
@@ -4049,26 +4064,7 @@ def _run_kernel_on_device_impl(
 
     compiler_l1_arena = None
     compiler_l1_base_address = None
-    compiler_l1_arena_bytes = _get_compiler_l1_arena_bytes(cb_configs)
-    compiler_l1 = compiler_l1_arena_bytes is not None
     if compiler_l1:
-        if (
-            device_domain is not None
-            or mesh_program_placements is not None
-            or resource_plan is not None
-        ):
-            raise ValueError(
-                "compiler-l1 requires one device and no external runtime resources"
-            )
-        if (
-            dfb_reconfiguration_plan
-            or pipe_computed_address_dfb_indices
-            or num_pipe_sync_semaphores
-            or num_pipe_global_semaphores
-        ):
-            raise ValueError(
-                "compiler-l1 cannot combine PipeNet or Metal DFB reconfiguration resources"
-            )
         compiler_l1_arena = _allocate_l1_sharded_storage_tensor(
             core_ranges,
             compiler_l1_arena_bytes,

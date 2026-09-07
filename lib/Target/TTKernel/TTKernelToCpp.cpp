@@ -283,6 +283,8 @@ public:
     // headers may name it in their function declarations.
     emitc::IncludeOp::create(*builder, loc, "cstdint", /*isStandard=*/true);
     if (requiresDFBDescriptor) {
+      emitc::IncludeOp::create(*builder, loc, "api/dataflow/circular_buffer.h");
+      headers.erase("api/dataflow/circular_buffer.h");
       emitc::VerbatimOp::create(
           *builder, loc,
           llvm::StringRef(dfb_descriptor_prelude_generated,
