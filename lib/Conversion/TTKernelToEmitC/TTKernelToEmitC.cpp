@@ -1721,7 +1721,7 @@ public:
     std::string callStr =
         *nocName + ".async_writes_flushed" + templateArgument + "();";
 
-    rewriter.create<emitc::VerbatimOp>(op.getLoc(), callStr, operands);
+    emitc::VerbatimOp::create(rewriter, op.getLoc(), callStr, operands);
     rewriter.eraseOp(op);
     return success();
   }
