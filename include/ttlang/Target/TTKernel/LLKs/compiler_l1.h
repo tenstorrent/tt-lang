@@ -4,6 +4,15 @@
 #define TTLANG_COMPILER_L1_H
 #include <cstdint>
 namespace ttlang::l1 {
+/// Clears the producer and consumer sequences for one compiler-managed DFB.
+inline void resetState(uint32_t state) {
+  if constexpr (!target::ownsDFBInterface) {
+    return;
+  }
+  target::store(state, 0);
+  target::store(state + sizeof(uint32_t), 0);
+}
+
 /// Single-producer/single-consumer storage with two block sequence counters.
 template <uint32_t PageBytes, uint32_t PagesPerBlock, uint32_t BlockCount,
           uint32_t PayloadOffset>
@@ -34,6 +43,10 @@ class Buffer {
   }
 
 public:
+  static constexpr uint32_t page_size_bytes = PageBytes;
+  static constexpr uint32_t pages_per_block = PagesPerBlock;
+  static constexpr uint32_t block_count = BlockCount;
+  static constexpr uint32_t payload_offset = PayloadOffset;
   explicit Buffer(uint32_t address) : state(address) {}
   void reserve_back(uint32_t pages) const {
     if constexpr (!target::ownsProducer) {
@@ -69,6 +82,18 @@ public:
   }
   uint32_t get_write_ptr() const { return address(published); }
   uint32_t get_read_ptr() const { return address(consumed); }
+};
+
+template <uint32_t PageBytes, uint32_t PagesPerBlock, uint32_t BlockCount,
+          uint32_t StateOffset, uint32_t PayloadOffset>
+class DFBDescriptor
+    : public Buffer<PageBytes, PagesPerBlock, BlockCount, PayloadOffset> {
+public:
+  using Buffer<PageBytes, PagesPerBlock, BlockCount, PayloadOffset>::Buffer;
+  /// Binds this descriptor to its compile-time allocation in the core arena.
+  static DFBDescriptor bind() {
+    return DFBDescriptor(target::arenaBase() + StateOffset);
+  }
 };
 } // namespace ttlang::l1
 #endif

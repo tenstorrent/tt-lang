@@ -2353,7 +2353,13 @@ def _get_cached_runtime_resources_impl(
         num_pipe_global_semaphores=num_pipe_global_semaphores,
         pipe_computed_address_dfb_indices=list(pipe_computed_address_dfb_indices),
         device=resource_device,
-        initialize_sram_scratch=num_dfb_resets > 0,
+        initialize_sram_scratch=(
+            num_dfb_resets > 0
+            or (
+                pipe_sram_scratch_bytes > 0
+                and _get_compiler_l1_arena_bytes(cb_configs) is not None
+            )
+        ),
         kernel_specs=kernel_specs,
         dfb_reconfiguration_plan=dfb_reconfiguration_plan,
     )
@@ -4052,16 +4058,16 @@ def _run_kernel_on_device_impl(
             or resource_plan is not None
         ):
             raise ValueError(
-                "compiler-l1 POC requires a single-device program without external resources"
+                "compiler-l1 requires one device and no external runtime resources"
             )
         if (
-            num_dfb_resets
-            or dfb_reconfiguration_plan
+            dfb_reconfiguration_plan
             or pipe_computed_address_dfb_indices
-            or pipe_sram_scratch_bytes
+            or num_pipe_sync_semaphores
+            or num_pipe_global_semaphores
         ):
             raise ValueError(
-                "compiler-l1 POC does not support PipeNet or interface reset/reconfiguration"
+                "compiler-l1 cannot combine PipeNet or Metal DFB reconfiguration resources"
             )
         compiler_l1_arena = _allocate_l1_sharded_storage_tensor(
             core_ranges,

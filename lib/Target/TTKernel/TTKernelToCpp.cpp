@@ -97,6 +97,7 @@ public:
 
     bool hasDevicePrint = false;
     bool requiresDFBDescriptor = false;
+    bool requiresCompilerL1 = false;
     region->walk([&](emitc::CallOpaqueOp callOp) {
       llvm::StringRef callee = callOp.getCallee();
 
@@ -115,6 +116,7 @@ public:
       }
       requiresDFBDescriptor |=
           callOp->hasAttr("ttlang.requires_dfb_descriptor");
+      requiresCompilerL1 |= callOp->hasAttr("ttlang.requires_compiler_l1");
 
       // Our experimental kernel code snippets.
       if (callee == "experimental::unpack_stall_on_pack") {
@@ -204,6 +206,17 @@ public:
     if (hasDevicePrint) {
       headers.insert("api/debug/dprint.h");
       emitDebugPrint(threadType);
+    }
+
+    if (requiresCompilerL1) {
+      emitLlk(compiler_l1_target_generated, compiler_l1_target_generated_len);
+      emitLlk(compiler_l1_generated, compiler_l1_generated_len);
+      if (threadType == ThreadType::Compute) {
+        emitLlk(compiler_l1_compute_target_generated,
+                compiler_l1_compute_target_generated_len);
+        emitLlk(compiler_l1_compute_generated,
+                compiler_l1_compute_generated_len);
+      }
     }
 
     region->walk([&](emitc::VerbatimOp verbatimOp) {

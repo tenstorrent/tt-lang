@@ -38,6 +38,7 @@
 #include <array>
 #include <cmath>
 #include <functional>
+#include <limits>
 #include <optional>
 #include <string>
 
@@ -108,6 +109,73 @@ static bool usesCompilerL1(Operation *operation) {
   auto module = operation->getParentOfType<ModuleOp>();
   auto model = module->getAttrOfType<StringAttr>(ttl::kMemoryModelAttrName);
   return model && model.getValue() == ttl::kCompilerL1MemoryModel;
+}
+
+struct CompilerL1Allocation {
+  int64_t pageSizeBytes;
+  int64_t pagesPerBlock;
+  int64_t blockCount;
+  int64_t stateOffset;
+  int64_t payloadOffset;
+  Type elementType;
+};
+
+static FailureOr<CompilerL1Allocation>
+parseCompilerL1Allocation(Attribute attribute) {
+  auto dictionary = dyn_cast<DictionaryAttr>(attribute);
+  auto pageSize =
+      dictionary ? dictionary.getAs<IntegerAttr>("page_size") : IntegerAttr();
+  auto pagesPerBlock =
+      dictionary ? dictionary.getAs<IntegerAttr>("num_tiles") : IntegerAttr();
+  auto blockCount =
+      dictionary ? dictionary.getAs<IntegerAttr>("block_count") : IntegerAttr();
+  auto stateOffset =
+      dictionary ? dictionary.getAs<IntegerAttr>("l1_offset") : IntegerAttr();
+  auto payloadAddress = dictionary
+                            ? dictionary.getAs<IntegerAttr>("l1_payload_offset")
+                            : IntegerAttr();
+  if (!pageSize || !pagesPerBlock || !blockCount || !stateOffset ||
+      !payloadAddress) {
+    return failure();
+  }
+
+  constexpr uint64_t maxAddress = std::numeric_limits<uint32_t>::max();
+  int64_t stateOffsetValue = stateOffset.getInt();
+  int64_t payloadAddressValue = payloadAddress.getInt();
+  if (pageSize.getInt() <= 0 || pagesPerBlock.getInt() <= 0 ||
+      blockCount.getInt() <= 0 || stateOffsetValue < 0 ||
+      payloadAddressValue < stateOffsetValue ||
+      static_cast<uint64_t>(pageSize.getInt()) > maxAddress ||
+      static_cast<uint64_t>(pagesPerBlock.getInt()) > maxAddress ||
+      static_cast<uint64_t>(blockCount.getInt()) > maxAddress ||
+      static_cast<uint64_t>(stateOffsetValue) > maxAddress ||
+      static_cast<uint64_t>(payloadAddressValue - stateOffsetValue) >
+          maxAddress) {
+    return failure();
+  }
+
+  auto elementType = dictionary.getAs<TypeAttr>("element_type");
+  return CompilerL1Allocation{pageSize.getInt(),
+                              pagesPerBlock.getInt(),
+                              blockCount.getInt(),
+                              stateOffsetValue,
+                              payloadAddressValue - stateOffsetValue,
+                              elementType ? elementType.getValue() : Type()};
+}
+
+static CompilerL1Allocation getCompilerL1Allocation(Operation *operation,
+                                                    int64_t index) {
+  auto allocations =
+      operation->getParentOfType<ModuleOp>()->getAttrOfType<ArrayAttr>(
+          ttl::kDFBAllocationsAttrName);
+  assert(allocations && index >= 0 &&
+         static_cast<uint64_t>(index) < allocations.size() &&
+         "compiler-l1 storage identity must be validated before conversion");
+  FailureOr<CompilerL1Allocation> allocation =
+      parseCompilerL1Allocation(allocations[index]);
+  assert(succeeded(allocation) &&
+         "compiler-l1 allocation metadata must be validated before conversion");
+  return *allocation;
 }
 
 static bool isCompilerL1ComputeOperation(Operation *operation) {
@@ -264,19 +332,13 @@ static std::string ensureCBDeclaration(Value cb, Operation *useOp,
     auto index =
         cb.getDefiningOp()->getAttrOfType<IntegerAttr>("ttkernel.cb_ctarg_idx");
     assert(index && "compiler-l1 requires statically bound storage");
-    auto entries = useOp->getParentOfType<ModuleOp>()->getAttrOfType<ArrayAttr>(
-        ttl::kDFBAllocationsAttrName);
-    auto entry = cast<DictionaryAttr>(entries[index.getInt()]);
-    auto pageBytes = cast<IntegerAttr>(entry.get("page_size")).getInt();
-    auto pagesPerBlock = cast<IntegerAttr>(entry.get("num_tiles")).getInt();
-    auto blockCount = cast<IntegerAttr>(entry.get("block_count")).getInt();
-    auto displacement =
-        cast<IntegerAttr>(entry.get("l1_payload_offset")).getInt() -
-        cast<IntegerAttr>(entry.get("l1_offset")).getInt();
-    bufferType = (Twine("ttlang::l1::Buffer<") + Twine(pageBytes) + ", " +
-                  Twine(pagesPerBlock) + ", " + Twine(blockCount) + ", " +
-                  Twine(displacement) + ">")
-                     .str();
+    CompilerL1Allocation allocation =
+        getCompilerL1Allocation(useOp, index.getInt());
+    bufferType =
+        (Twine("ttlang::l1::Buffer<") + Twine(allocation.pageSizeBytes) + ", " +
+         Twine(allocation.pagesPerBlock) + ", " + Twine(allocation.blockCount) +
+         ", " + Twine(allocation.payloadOffset) + ">")
+            .str();
   }
   std::string cbDecl = bufferType + " " + cbName + "({});";
   rewriter.create<emitc::VerbatimOp>(useOp->getLoc(), cbDecl, ValueRange{cb});
@@ -521,6 +583,57 @@ getDFBDescriptorTypeName(ttkernel::DFBDescriptorAttr descriptor) {
           ", " + Twine(descriptor.getPagesPerBlock()) + ", " +
           Twine(descriptor.getBlockCount()) + ", " +
           Twine(descriptor.getPageSizeBytes()) + ">")
+      .str();
+}
+
+static std::string
+getCompilerL1GeometryTemplateArguments(const CompilerL1Allocation &allocation,
+                                       ttcore::TileType tile) {
+  return (Twine("static_cast<uint32_t>(") +
+          datatypeToDataformatStr(tile.getDataType()) + "), " +
+          Twine(allocation.pageSizeBytes) + ", " +
+          Twine(allocation.pagesPerBlock) + ", " + Twine(allocation.blockCount))
+      .str();
+}
+
+static std::string
+getCompilerL1OperandTypeName(const CompilerL1Allocation &allocation,
+                             ttcore::TileType tile, bool directToDestination) {
+  return (Twine("ttlang::l1::Operand<") +
+          getCompilerL1GeometryTemplateArguments(allocation, tile) + ", " +
+          Twine(allocation.payloadOffset) + ", " +
+          (directToDestination ? "true>" : "false>"))
+      .str();
+}
+
+static std::string
+getCompilerL1DFBDescriptorTypeName(Operation *operation,
+                                   ttkernel::DFBDescriptorAttr descriptor) {
+  CompilerL1Allocation allocation =
+      getCompilerL1Allocation(operation, descriptor.getIndex());
+  auto function = operation->getParentOfType<func::FuncOp>();
+  auto threadType = function->getAttrOfType<ttkernel::ThreadTypeAttr>(
+      ttkernel::ThreadTypeAttr::name);
+  if (!threadType || threadType.getValue() != ttkernel::ThreadType::Compute) {
+    return (Twine("ttlang::l1::DFBDescriptor<") +
+            Twine(descriptor.getPageSizeBytes()) + ", " +
+            Twine(descriptor.getPagesPerBlock()) + ", " +
+            Twine(descriptor.getBlockCount()) + ", " +
+            Twine(allocation.stateOffset) + ", " +
+            Twine(allocation.payloadOffset) + ">")
+        .str();
+  }
+  auto tile = cast<ttcore::TileType>(allocation.elementType);
+  auto directOperands = function->getAttrOfType<DenseI32ArrayAttr>(
+      ttl::kUnpackToDestFp32AttrName);
+  bool directToDestination =
+      directOperands &&
+      llvm::is_contained(directOperands.asArrayRef(), descriptor.getIndex());
+  return (Twine("ttlang::l1::ComputeDFBDescriptor<") +
+          getCompilerL1GeometryTemplateArguments(allocation, tile) + ", " +
+          Twine(allocation.stateOffset) + ", " +
+          Twine(allocation.payloadOffset) + ", " +
+          (directToDestination ? "true>" : "false>"))
       .str();
 }
 
@@ -886,9 +999,6 @@ static void emitCompilerL1ComputeCall(Operation *operation,
                                       ArrayAttr templateArgs,
                                       ConversionPatternRewriter &rewriter) {
   SmallVector<Value> operands;
-  auto entries =
-      operation->getParentOfType<ModuleOp>()->template getAttrOfType<ArrayAttr>(
-          ttl::kDFBAllocationsAttrName);
   for (auto [source, converted] :
        llvm::zip(operation->getOperands(), convertedOperands)) {
     if (!isa<ttkernel::CBType>(source.getType())) {
@@ -897,26 +1007,18 @@ static void emitCompilerL1ComputeCall(Operation *operation,
     }
     auto identity = resolveDfbIndex(source);
     assert(identity && "validated compiler-l1 operand identity");
-    auto entry = cast<DictionaryAttr>(entries[*identity]);
-    auto integer = [&](StringRef name) {
-      return cast<IntegerAttr>(entry.get(name)).getInt();
-    };
+    CompilerL1Allocation allocation =
+        getCompilerL1Allocation(operation, *identity);
     auto tile = cast<ttcore::TileType>(
         cast<ttkernel::CBType>(source.getType()).getElementType());
     auto directOperands = operation->getParentOfType<func::FuncOp>()
                               ->template getAttrOfType<DenseI32ArrayAttr>(
-                                  "ttl.unpack_to_dest_fp32");
+                                  ttl::kUnpackToDestFp32AttrName);
     bool directToDestination =
         directOperands &&
         llvm::is_contained(directOperands.asArrayRef(), *identity);
     std::string operandType =
-        (Twine("ttlang::l1::Operand<static_cast<uint32_t>(") +
-         datatypeToDataformatStr(tile.getDataType()) + "), " +
-         Twine(integer("page_size")) + ", " + Twine(integer("num_tiles")) +
-         ", " + Twine(integer("block_count")) + ", " +
-         Twine(integer("l1_payload_offset") - integer("l1_offset")) + ", " +
-         (directToDestination ? "true" : "false") + ">")
-            .str();
+        getCompilerL1OperandTypeName(allocation, tile, directToDestination);
     auto constructor = emitc::CallOpaqueOp::create(
         rewriter, operation->getLoc(),
         TypeRange{emitc::OpaqueType::get(operation->getContext(), operandType)},
@@ -1654,14 +1756,11 @@ public:
               .str();
       if (usesCompilerL1(op) &&
           isa<ttkernel::CBType>(op.getResult().getType())) {
-        auto entries = op->template getParentOfType<ModuleOp>()
-                           ->template getAttrOfType<ArrayAttr>(
-                               ttl::kDFBAllocationsAttrName);
-        auto entry = cast<DictionaryAttr>(entries[op.getArgIndex()]);
-        auto offset = cast<IntegerAttr>(entry.get("l1_offset")).getInt();
+        CompilerL1Allocation allocation =
+            getCompilerL1Allocation(op, op.getArgIndex());
         expression =
             "get_common_arg_val<uint32_t>(get_compile_time_arg_val(0)) + " +
-            std::to_string(offset);
+            std::to_string(allocation.stateOffset);
       }
       auto literal = emitc::LiteralOp::create(rewriter, op.getLoc(), resultType,
                                               expression);
@@ -2428,6 +2527,7 @@ public:
   LogicalResult
   matchAndRewrite(ttkernel::OpaqueCallOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
+    bool compilerL1 = usesCompilerL1(op);
     SmallVector<Type> resultTypes;
     for (Type resTy : op.getResultTypes()) {
       Type converted = getTypeConverter()->convertType(resTy);
@@ -2438,15 +2538,20 @@ public:
     }
 
     ArrayAttr emitcTemplateArgs;
-    bool hasDescriptor = false;
+    bool hasMetalDescriptor = false;
+    bool requiresCompilerL1 = false;
     if (std::optional<ArrayAttr> templateArgs = op.getTemplateArgs()) {
       SmallVector<Attribute> opaqueArgs;
       for (Attribute templateArg : *templateArgs) {
         if (auto descriptor =
                 dyn_cast<ttkernel::DFBDescriptorAttr>(templateArg)) {
-          opaqueArgs.push_back(emitc::OpaqueAttr::get(
-              op.getContext(), getDFBDescriptorTypeName(descriptor)));
-          hasDescriptor = true;
+          std::string typeName =
+              compilerL1 ? getCompilerL1DFBDescriptorTypeName(op, descriptor)
+                         : getDFBDescriptorTypeName(descriptor);
+          opaqueArgs.push_back(
+              emitc::OpaqueAttr::get(op.getContext(), typeName));
+          hasMetalDescriptor |= !compilerL1;
+          requiresCompilerL1 |= compilerL1;
           continue;
         }
         if (auto boolValue = dyn_cast<BoolAttr>(templateArg)) {
@@ -2500,8 +2605,13 @@ public:
         callArguments);
     callOp->setAttr("ttlang.opaque_header",
                     rewriter.getStringAttr(op.getHeader()));
-    if (hasDescriptor) {
+    if (hasMetalDescriptor) {
       callOp->setAttr("ttlang.requires_dfb_descriptor", rewriter.getUnitAttr());
+    }
+    requiresCompilerL1 |=
+        compilerL1 && op.getCallee().starts_with("ttlang::l1::");
+    if (requiresCompilerL1) {
+      callOp->setAttr("ttlang.requires_compiler_l1", rewriter.getUnitAttr());
     }
     return success();
   }
@@ -3247,11 +3357,23 @@ public:
             module->getAttrOfType<StringAttr>(ttl::kMemoryModelAttrName);
         model && model.getValue() == ttl::kCompilerL1MemoryModel &&
         sourceOperations.wasInterrupted()) {
-      if (!module->getAttrOfType<ArrayAttr>(ttl::kDFBAllocationsAttrName)) {
+      auto allocations =
+          module->getAttrOfType<ArrayAttr>(ttl::kDFBAllocationsAttrName);
+      if (!allocations) {
         module.emitOpError(
             "compiler-l1 requires finalized allocation metadata");
         signalPassFailure();
         return;
+      }
+      for (auto [index, attribute] : llvm::enumerate(allocations)) {
+        if (failed(parseCompilerL1Allocation(attribute))) {
+          module.emitOpError("compiler-l1 allocation entry ")
+              << index
+              << " must define positive uint32 page_size, num_tiles, and "
+                 "block_count values and representable ordered L1 offsets";
+          signalPassFailure();
+          return;
+        }
       }
       WalkResult validation = module.walk([&](Operation *operation) {
         if (operation->getName().getDialectNamespace() == "emitc") {
@@ -3261,6 +3383,80 @@ public:
         }
         if (operation->getName().getDialectNamespace() != "ttkernel") {
           return WalkResult::advance();
+        }
+        if (auto getCompileArg =
+                dyn_cast<ttkernel::GetCompileArgValOp>(operation);
+            getCompileArg && isa<ttkernel::CBType>(getCompileArg.getType()) &&
+            static_cast<uint64_t>(getCompileArg.getArgIndex()) >=
+                allocations.size()) {
+          operation->emitOpError(
+              "compiler-l1 storage index is absent from allocation metadata");
+          return WalkResult::interrupt();
+        }
+        if ((isa<ttkernel::GetArgValOp, ttkernel::GetCommonArgValOp>(
+                operation)) &&
+            isa<ttkernel::CBType>(operation->getResult(0).getType())) {
+          operation->emitOpError(
+              "compiler-l1 requires statically bound DFB storage");
+          return WalkResult::interrupt();
+        }
+        for (Value operand : operation->getOperands()) {
+          if (!isa<ttkernel::CBType>(operand.getType())) {
+            continue;
+          }
+          std::optional<int> index = resolveDfbIndex(operand);
+          if (!index || *index < 0 ||
+              static_cast<uint64_t>(*index) >= allocations.size()) {
+            operation->emitOpError(
+                "compiler-l1 DFB operand has no finalized allocation");
+            return WalkResult::interrupt();
+          }
+        }
+        if (auto opaqueCall = dyn_cast<ttkernel::OpaqueCallOp>(operation)) {
+          auto threadType = operation->getParentOfType<func::FuncOp>()
+                                ->getAttrOfType<ttkernel::ThreadTypeAttr>(
+                                    ttkernel::ThreadTypeAttr::name);
+          std::optional<ArrayAttr> templateArguments =
+              opaqueCall.getTemplateArgs();
+          ArrayAttr templateArgumentsAttr = templateArguments.value_or(
+              ArrayAttr::get(operation->getContext(), {}));
+          for (Attribute templateArgument : templateArgumentsAttr) {
+            auto descriptor =
+                dyn_cast<ttkernel::DFBDescriptorAttr>(templateArgument);
+            if (!descriptor) {
+              continue;
+            }
+            int64_t index = descriptor.getIndex();
+            if (index < 0 ||
+                static_cast<uint64_t>(index) >= allocations.size()) {
+              operation->emitOpError(
+                  "compiler-l1 descriptor index is absent from allocation "
+                  "metadata");
+              return WalkResult::interrupt();
+            }
+            CompilerL1Allocation allocation =
+                getCompilerL1Allocation(operation, index);
+            if (descriptor.getPageSizeBytes() != allocation.pageSizeBytes ||
+                descriptor.getPagesPerBlock() != allocation.pagesPerBlock ||
+                descriptor.getBlockCount() != allocation.blockCount) {
+              operation->emitOpError(
+                  "compiler-l1 descriptor geometry differs from its "
+                  "allocation metadata");
+              return WalkResult::interrupt();
+            }
+            if (threadType &&
+                threadType.getValue() == ttkernel::ThreadType::Compute) {
+              auto tile =
+                  dyn_cast_if_present<ttcore::TileType>(allocation.elementType);
+              if (!tile || tile.getHeight() != 32 || tile.getWidth() != 32 ||
+                  (tile.getDataType() != ttcore::DataType::Float32 &&
+                   tile.getDataType() != ttcore::DataType::BFloat16)) {
+                operation->emitOpError("compiler-l1 compute descriptors "
+                                       "require 32x32 BF16 or FP32 tiles");
+                return WalkResult::interrupt();
+              }
+            }
+          }
         }
         bool supported =
             isa<ttkernel::GetCompileArgValOp, ttkernel::GetArgValOp,
@@ -3285,7 +3481,8 @@ public:
                 ttkernel::SubBinaryTilesInitOp, ttkernel::SubBinaryTilesOp,
                 ttkernel::RsqrtTileInitOp, ttkernel::RsqrtTileOp,
                 ttkernel::SigmoidTileInitOp, ttkernel::SigmoidTileOp,
-                ttkernel::TanhTileInitOp, ttkernel::TanhTileOp>(operation) ||
+                ttkernel::TanhTileInitOp, ttkernel::TanhTileOp,
+                ttkernel::OpaqueCallOp>(operation) ||
             isCompilerL1ComputeOperation(operation);
         if (isCompilerL1ComputeOperation(operation)) {
           for (Value operand : operation->getOperands()) {
@@ -3329,12 +3526,11 @@ public:
                                    "identity and page count");
             return WalkResult::interrupt();
           }
-          auto descriptor = cast<DictionaryAttr>(allocations[*identity]);
-          int64_t blockPages =
-              cast<IntegerAttr>(descriptor.get("num_tiles")).getInt();
-          if (pageCount.getSExtValue() != blockPages) {
+          CompilerL1Allocation allocation =
+              getCompilerL1Allocation(operation, *identity);
+          if (pageCount.getSExtValue() != allocation.pagesPerBlock) {
             operation->emitOpError(
-                "compiler-l1 POC requires full-block synchronization to "
+                "compiler-l1 requires full-block synchronization to "
                 "preserve contiguous acquisitions");
             return WalkResult::interrupt();
           }

@@ -5221,6 +5221,50 @@ def test_cached_pipe_resources_distinguish_reset_initialization(monkeypatch):
     assert fake_ttnn.synchronize_calls == [device]
 
 
+def test_compiler_l1_synchronization_scratch_is_zero_initialized(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    initialization = []
+
+    def build_resources(**kwargs):
+        initialization.append(kwargs["initialize_sram_scratch"])
+        return kernel_runner.PipeRuntimeResources(
+            scratch_tensors=[object()],
+            global_semaphores=[],
+            computed_address_dfb_tensors={},
+            computed_address_dfb_allocation_bytes={},
+            computed_address_base_addresses={},
+            extra_common_runtime_args=[0x1000],
+            expected_extra_common_runtime_args=1,
+        )
+
+    monkeypatch.setattr(kernel_runner, "build_pipe_runtime_resources", build_resources)
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        l1_offset=0,
+        l1_payload_offset=64,
+        l1_allocation_bytes=2048,
+    )
+
+    kernel_runner.get_cached_runtime_resources(
+        None,
+        tensors=[],
+        cb_configs=[config],
+        core_ranges=_FakeCoreRanges(),
+        pipe_sram_scratch_bytes=16,
+        num_pipe_global_semaphores=0,
+        pipe_computed_address_dfb_indices=(),
+        num_dfb_resets=0,
+        device=object(),
+    )
+
+    assert initialization == [True]
+
+
 def test_run_kernel_reuses_reconfiguration_resource_generation(monkeypatch):
     fake_ttnn = _FakeTTNN()
     fake_ttnn.uint32 = "uint32"

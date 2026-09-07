@@ -12,6 +12,7 @@
 #include "mlir/IR/Builders.h"
 
 #include "llvm/ADT/MapVector.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/MathExtras.h"
 
 #include <limits>
@@ -42,18 +43,6 @@ static FailureOr<L1AllocationPlan>
 planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
             uint64_t budget, bool reuseStorage,
             const DFBConcurrentKernelLivenessAnalysis &liveness) {
-  WalkResult supportedStorage = module.walk([](Operation *operation) {
-    if (isa<DFBReconfigurationOp, ResetDFBsOp, ResetAllDFBsOp>(operation)) {
-      operation->emitOpError(
-          "compiler-l1 requires static storage ownership; DFB reset and "
-          "reconfiguration are unsupported");
-      return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
-  });
-  if (supportedStorage.wasInterrupted()) {
-    return failure();
-  }
   std::string targetFailure;
   FailureOr<uint64_t> alignment =
       resolveTargetL1AllocationQuantumBytes(module, targetFailure);
@@ -66,8 +55,9 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     BindCBOp declaration = assignment.declaration;
     auto type = cast<CircularBufferType>(declaration.getResult().getType());
     if (declaration.getTensorBackingAttr() || assignment.allocationGroup) {
-      declaration.emitOpError("compiler-l1 does not yet support tensor-backed "
-                              "storage or allocation groups");
+      declaration.emitOpError("compiler-l1 requires independently owned "
+                              "storage without tensor backing or allocation "
+                              "groups");
       return failure();
     }
     auto found = regions.find(assignment.logicalId);
@@ -116,15 +106,25 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
   llvm::stable_sort(placementOrder, [&](unsigned lhsIndex, unsigned rhsIndex) {
     return plan[lhsIndex].allocationBytes > plan[rhsIndex].allocationBytes;
   });
-  const auto conflicts = DFBPhysicalConflictModel::buildStorage(liveness);
+  const auto conflicts = DFBPhysicalConflictModel::buildStorage(
+      liveness, DFBStorageConflictMode::CompilerManaged);
   DenseMap<int64_t, unsigned> lifecycleIndices;
   for (auto [lifecycleIndex, lifecycle] :
        llvm::enumerate(liveness.getLogicalDFBLifecycles())) {
     lifecycleIndices[lifecycle.logicalId] = lifecycleIndex;
   }
   // Payload liveness does not prove that counter state can change ownership.
-  uint64_t controlBytes =
-      llvm::alignTo(plan.size() * kControlRecordBytes, *alignment);
+  std::optional<uint64_t> unalignedControlBytes = llvm::checkedMulUnsigned(
+      static_cast<uint64_t>(plan.size()), kControlRecordBytes);
+  FailureOr<uint64_t> controlBytes =
+      unalignedControlBytes
+          ? getL1AllocationSizeBytes(module, *unalignedControlBytes)
+          : FailureOr<uint64_t>(failure());
+  if (failed(controlBytes) || *controlBytes > budget) {
+    module.emitOpError(
+        "compiler-l1 control records exceed the available L1 budget");
+    return failure();
+  }
   SmallVector<unsigned> placed;
   for (unsigned regionIndex : placementOrder) {
     L1Region &region = plan[regionIndex];
@@ -144,7 +144,7 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
       return std::tie(plan[lhsIndex].offset, lhsIndex) <
              std::tie(plan[rhsIndex].offset, rhsIndex);
     });
-    uint64_t offset = controlBytes;
+    uint64_t offset = *controlBytes;
     for (unsigned previousIndex : interfering) {
       const auto &previous = plan[previousIndex];
       if (offset + region.allocationBytes <= previous.offset) {
@@ -190,7 +190,10 @@ allocateCompilerL1(ModuleOp module,
   const L1AllocationPlan &plan = *maybePlan;
   OpBuilder builder(module.getContext());
   SmallVector<Attribute> allocations;
+  DenseMap<int64_t, int32_t> allocationIndexByLogicalId;
   for (auto [regionIndex, region] : llvm::enumerate(plan.regions)) {
+    allocationIndexByLogicalId.try_emplace(region.logicalId,
+                                           static_cast<int32_t>(regionIndex));
     for (BindCBOp declaration : region.declarations) {
       declaration.setDfbIdAttr(builder.getIndexAttr(region.logicalId));
       declaration.setCbIndexAttr(builder.getIndexAttr(regionIndex));
@@ -215,6 +218,50 @@ allocateCompilerL1(ModuleOp module,
         builder.getNamedAttr("l1_allocation_bytes",
                              builder.getI64IntegerAttr(region.allocationBytes)),
     }));
+  }
+  DenseMap<int64_t, SmallVector<int32_t>> resetsByReconfiguration;
+  for (const DFBLogicalLifecycle &lifecycle :
+       liveness.getLogicalDFBLifecycles()) {
+    auto allocationIt = allocationIndexByLogicalId.find(lifecycle.logicalId);
+    assert(allocationIt != allocationIndexByLogicalId.end() &&
+           "every logical DFB must have a compiler-l1 allocation");
+    auto collectTerminalReconfigurations = [&](const DFBPerNodeLifetime &node) {
+      for (const DFBLifecycleEpoch &epoch : node.epochs) {
+        if (epoch.terminalReconfigurationOrdinal) {
+          resetsByReconfiguration[*epoch.terminalReconfigurationOrdinal]
+              .push_back(allocationIt->second);
+        }
+      }
+    };
+    for (const DFBPerNodeLifetime &node : lifecycle.nodeLifetimes) {
+      collectTerminalReconfigurations(node);
+    }
+    for (const DFBPerNodeLifetime &node : lifecycle.possibleNodeLifetimes) {
+      collectTerminalReconfigurations(node);
+    }
+  }
+  SmallVector<Attribute> reconfigurationResets;
+  for (int64_t ordinal : liveness.getReconfigurationBoundaryOrdinals()) {
+    auto resetIt = resetsByReconfiguration.find(ordinal);
+    if (resetIt == resetsByReconfiguration.end()) {
+      continue;
+    }
+    SmallVector<int32_t> &indices = resetIt->second;
+    llvm::sort(indices);
+    indices.erase(llvm::unique(indices), indices.end());
+    reconfigurationResets.push_back(builder.getDictionaryAttr({
+        builder.getNamedAttr("ordinal", builder.getI64IntegerAttr(ordinal)),
+        builder.getNamedAttr("dfb_indices",
+                             builder.getDenseI32ArrayAttr(indices)),
+    }));
+  }
+  assert(reconfigurationResets.size() == resetsByReconfiguration.size() &&
+         "every terminal epoch must reference a known reconfiguration");
+  if (reconfigurationResets.empty()) {
+    module->removeAttr(kCompilerL1ReconfigurationResetsAttrName);
+  } else {
+    module->setAttr(kCompilerL1ReconfigurationResetsAttrName,
+                    builder.getArrayAttr(reconfigurationResets));
   }
   module->setAttr(kL1ArenaBytesAttrName,
                   builder.getI64IntegerAttr(plan.arenaBytes));
