@@ -105,20 +105,19 @@ static bool valueDependsOnCore(Value rootValue,
   return false;
 }
 
-static bool regionBranchDependsOnCore(
-    RegionBranchOpInterface branch,
-    const ValueOriginAnalysis &originAnalysis) {
+static bool
+regionBranchDependsOnCore(RegionBranchOpInterface branch,
+                          const ValueOriginAnalysis &originAnalysis) {
   RegionBranchSuccessorMapping forwardedOperands;
   branch.getSuccessorOperandInputMapping(forwardedOperands);
 
   // Forwarded values are inspected when they reach a later branch point;
   // inspect the remaining operands where they determine region control.
   for (RegionBranchPoint branchPoint : branch.getAllRegionBranchPoints()) {
-    Operation *branchOperation = branchPoint.isParent()
-                                     ? branch.getOperation()
-                                     : branchPoint
-                                           .getTerminatorPredecessorOrNull()
-                                           .getOperation();
+    Operation *branchOperation =
+        branchPoint.isParent()
+            ? branch.getOperation()
+            : branchPoint.getTerminatorPredecessorOrNull().getOperation();
     for (OpOperand &operand : branchOperation->getOpOperands()) {
       if (forwardedOperands.contains(&operand)) {
         continue;
