@@ -24,6 +24,7 @@ class TestDefaults:
         assert opts.pipe_global_semaphores_only is False
         assert opts.pipe_capacity_sync is True
         assert opts.pipe_batch_tiles == 0
+        assert opts.l1_allocation_strategy == "first-fit-decreasing"
         assert opts.reuse_user_dfbs is True
         assert opts.unsafe_assume_dfb_allocation_groups is False
         assert opts.dfb_exact_coloring_search_limit == 1_000_000
@@ -262,3 +263,25 @@ def test_memory_model_cache_identity():
     assert CompilerOptions() != CompilerOptions(memory_model="compiler-l1")
     with pytest.raises(ValueError, match="Invalid memory model"):
         CompilerOptions(memory_model="invalid")
+
+
+@pytest.mark.parametrize(
+    "allocation_strategy", ["first-fit-decreasing", "best-fit-decreasing"]
+)
+def test_l1_allocation_strategy(allocation_strategy):
+    options = CompilerOptions.from_string(
+        f"--ttl-l1-allocation-strategy={allocation_strategy}"
+    )
+    assert options.l1_allocation_strategy == allocation_strategy
+    assert "l1_allocation_strategy" in options._explicit
+    assert (
+        CompilerOptions().merge(options).l1_allocation_strategy == allocation_strategy
+    )
+
+
+def test_l1_allocation_strategy_cache_identity():
+    assert CompilerOptions() != CompilerOptions(
+        l1_allocation_strategy="best-fit-decreasing"
+    )
+    with pytest.raises(ValueError, match="Invalid L1 allocation strategy"):
+        CompilerOptions(l1_allocation_strategy="invalid")

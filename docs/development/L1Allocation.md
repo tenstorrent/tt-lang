@@ -75,44 +75,123 @@ buildStorageConflicts(lifetimes, storageMode):
 
 Possible launch domains use the same rules as exact domains and remain conservative. The compiler authorizes overlap only when every common worker core has a proven completion order.
 
-## Placement Algorithm
+## Placement Interface and Algorithms
 
-The allocator uses deterministic first-fit decreasing placement. Large regions are placed first because they have fewer usable gaps. First-fit selects the lowest aligned gap that does not overlap an already placed conflicting region. Declaration order resolves equal-size ties.
+Placement is independent of MLIR and target-specific code. Conflict analysis produces an immutable allocation problem containing each payload extent, a symmetric conflict matrix, target alignment, the payload base after control records, and the L1 budget. An allocator returns one byte offset per payload and the arena high-water mark.
+
+Every allocator result passes the same validation before IR mutation. Validation requires the correct offset count, target alignment, offsets at or above the payload base, intervals within the L1 budget, disjoint intervals for every conflict, and an exact arena high-water mark. Allocation policy cannot weaken these invariants.
+
+### C++ Allocator Contract
+
+The compiler-internal interface is:
+
+```cpp
+namespace mlir::tt::ttl {
+
+struct CompilerL1AllocationProblem {
+  llvm::SmallVector<uint64_t> regionBytes;
+  llvm::SmallVector<llvm::BitVector> conflicts;
+  uint64_t alignmentBytes;
+  uint64_t payloadBaseOffset;
+  uint64_t budgetBytes;
+};
+
+struct CompilerL1AllocationSolution {
+  llvm::SmallVector<uint64_t> offsets;
+  uint64_t arenaBytes;
+};
+
+class CompilerL1Allocator {
+public:
+  virtual ~CompilerL1Allocator() = default;
+  virtual llvm::StringRef getName() const = 0;
+
+private:
+  friend FailureOr<CompilerL1AllocationSolution>
+  solveCompilerL1Allocation(const CompilerL1Allocator &allocator,
+                            const CompilerL1AllocationProblem &problem,
+                            std::optional<unsigned> &failureRegionIndex,
+                            std::string &failureReason);
+
+  virtual FailureOr<CompilerL1AllocationSolution>
+  allocate(const CompilerL1AllocationProblem &problem,
+           std::string &failureReason) const = 0;
+};
+
+FailureOr<std::unique_ptr<CompilerL1Allocator>>
+createCompilerL1Allocator(llvm::StringRef name, std::string &failureReason);
+
+FailureOr<CompilerL1AllocationSolution> solveCompilerL1Allocation(
+    const CompilerL1Allocator &allocator,
+    const CompilerL1AllocationProblem &problem,
+    std::optional<unsigned> &failureRegionIndex,
+    std::string &failureReason);
+
+} // namespace mlir::tt::ttl
+```
+
+Region vector order defines region indices and deterministic equal-size ordering. Every extent is nonzero and aligned. `conflicts` is a square, symmetric bit matrix with a clear diagonal. `payloadBaseOffset` is aligned and does not exceed `budgetBytes`. The problem is passed as `const` after construction.
+
+`solveCompilerL1Allocation` is the only caller of the private strategy method. It validates the problem, invokes the selected strategy, and validates the solution. On success, `offsets` has one entry per region and `arenaBytes` is the exact maximum payload end, or zero when no regions exist. On failure, `failureReason` contains the diagnostic text and `failureRegionIndex` identifies a region only when the error applies to one region. The allocator layer does not emit diagnostics or modify IR.
+
+`createCompilerL1Allocator` maps stable compiler-option names to implementations. A new implementation derives from `CompilerL1Allocator`, implements `getName()` and `allocate()`, and registers its name in the factory. It cannot change conflict construction or bypass common validation.
+
+| Strategy | Gap selection | Use |
+| --- | --- | --- |
+| `first-fit-decreasing` | Lowest aligned legal offset | Default; preserves deterministic low-address placement. |
+| `best-fit-decreasing` | Finite legal gap with the least unused space; lower offset resolves ties | Reduces fragmentation when differently sized lifetimes leave reusable gaps. |
+
+Both strategies place larger regions first because large extents have fewer usable gaps. Declaration order resolves equal-size ties. Both are greedy heuristics and can produce different arena sizes; neither proves optimality.
 
 ```text
-allocate(regions, conflicts, alignment, budget, reuseEnabled):
-    controlEnd = roundUp(8 * count(regions), alignment)
-    placementOrder = stableSort(regions, decreasing extent)
+allocateDecreasing(problem, gapSelection):
+    placementOrder = stableSort(problem.regions, decreasing extent)
     placed = empty list
 
     for region in placementOrder:
-        if reuseEnabled:
-            blockers = placed regions that conflict with region
-        else:
-            blockers = placed
+        blockers = placed regions that conflict with region
         blockers = sort(blockers, increasing payload start)
-
-        candidate = controlEnd
-        for blocker in blockers:
-            if candidate + region.extent <= blocker.start:
-                break
-            if candidate < blocker.end:
-                candidate = roundUp(blocker.end, alignment)
-
-        if candidate + region.extent > budget:
-            fail before modifying IR
-
-        region.stateOffset = 8 * region.allocationIndex
-        region.payload = [candidate, candidate + region.extent)
+        offset = selectOffset(problem, region, blockers, gapSelection)
+        record offset for region
         append region to placed
 
-    arenaBytes = maximum payload end, or zero for an empty plan
-    return all offsets and arenaBytes
+    arenaBytes = maximum payload end, or zero for an empty problem
+    return offsets and arenaBytes
 ```
 
-For each new region, the scan either finds a sufficient gap or advances beyond every overlapping blocker. The assigned interval therefore overlaps no conflicting interval. Applying this argument in placement order proves disjoint storage for every conflict edge. All other overlap is authorized by the lifetime analysis.
+First-fit selects an offset as follows:
 
-Placement takes `O(N^2 log N)` time after conflict construction and uses `O(N)` placement storage. Conflict adjacency uses `O(N^2)` bits. The algorithm does not prove an optimal arena size. A budget failure reports that greedy placement failed; it does not claim that no feasible placement exists.
+```text
+selectFirstFit(problem, region, blockers):
+    candidate = problem.payloadBase
+    for blocker in blockers:
+        if [candidate, candidate + region.extent) ends before blocker:
+            return candidate
+        if candidate lies before blocker.end:
+            candidate = roundUp(blocker.end, problem.alignment)
+    return candidate
+```
+
+Best-fit evaluates every finite gap before the unbounded space after the final blocker:
+
+```text
+selectBestFit(problem, region, blockers):
+    candidate = problem.payloadBase
+    best = none
+    for blocker in blockers:
+        if [candidate, candidate + region.extent) ends before blocker:
+            unused = blocker.start - candidate - region.extent
+            best = minimum(best, (unused, candidate))
+        if candidate lies before blocker.end:
+            candidate = roundUp(blocker.end, problem.alignment)
+    return best.offset if best exists, otherwise candidate
+```
+
+For each new region, either selection scans gaps between sorted blockers and advances beyond every blocker that intersects the current candidate. The selected interval therefore overlaps no conflicting interval. Applying this argument in placement order proves disjoint storage for every conflict edge. All other overlap is authorized by the lifetime analysis.
+
+Placement takes `O(N^2 log N)` time after conflict construction and uses `O(N)` placement storage. Conflict adjacency uses `O(N^2)` bits. A budget failure reports that the selected strategy failed; it does not claim that no feasible placement exists.
+
+The allocator interface contains no MLIR operations, DFB identities, architecture identities, or target branches. It receives normalized alignment and budget values through the allocation problem. Adding a strategy requires an implementation of the placement interface and a stable factory name. Conflict construction, target queries, validation, metadata emission, and runtime allocation remain unchanged.
 
 ## Reset and Reconfiguration
 
@@ -162,13 +241,13 @@ Uniform allocation reserves the largest required arena on every participating co
 Storage efficiency comes from four decisions:
 
 1. Completion-aware conflicts permit payload overlap across sequential lifetimes, formats, and reconfiguration epochs.
-2. First-fit searches aligned gaps instead of using a monotonic offset.
+2. Both allocation strategies search aligned gaps instead of using a monotonic offset.
 3. Payloads are ordered by decreasing size to reduce fragmentation from early small placements.
 4. The arena uses one runtime argument, and each logical DFB adds only its fixed control record rather than a Metal descriptor.
 
 The fixed control cost is `roundUp(8 * N, A)`. For 96 one-page BF16 DFBs, simultaneous lifetimes require 196,608 payload bytes and 768 control bytes before final arena alignment. If all 96 lifetimes are sequential, they reuse one 2,048-byte payload range and retain 768 control bytes. The control records are then 27% of the 2,816 bytes before final alignment. Reducing that cost would require shared state ownership transitions or packed atomic updates, both of which add synchronization and target requirements.
 
-Monotonic allocation with explicit execution-phase overlays was considered. It cannot reuse an aligned gap between active allocations and requires explicit phase boundaries. TT-Lang instead uses its completion-aware conflict graph and searches reusable gaps, which permits overlap within a phase and across different extents. More expensive exact or bounded search is justified only if measurements show material first-fit fragmentation.
+Monotonic allocation with explicit execution-phase overlays was considered. It cannot reuse an aligned gap between active allocations and requires explicit phase boundaries. TT-Lang instead uses its completion-aware conflict graph and searches reusable gaps, which permits overlap within a phase and across different extents. Best-fit addresses fragmentation without exponential search. An exact or bounded-search strategy can use the same allocator interface if measurements justify its compile-time cost.
 
 ## Implemented Contract
 
@@ -189,7 +268,7 @@ PipeNet transfers, computed-address DFBs, device-domain placement, multi-device 
 | --- | --- |
 | Blackhole transfer and compute | Device correctness across BF16/FP32, DRAM/L1 tensors, repeated executions, counter wraparound, 96 live DFBs, arithmetic with 66 allocated DFBs, matmul, reductions, residual, MLP, attention, and expert merge |
 | External calls and lifecycle boundaries | 20 Blackhole device cases across BF16/FP32 and DRAM/L1, including repeated selected reset, reset-all, reconfiguration, live state preservation, payload reuse, and reset of allocation index 65 |
-| Allocation | 10,444 compile-only generated placements covering conflicts, alignment, reuse enabled and disabled, determinism, and exact budget boundaries |
+| Allocation | 20,888 compile-only generated placements covering both strategies, conflicts, alignment, reuse enabled and disabled, determinism, and exact budget boundaries; a focused fragmented graph verifies distinct strategy results |
 | Wormhole | Compile-only allocation, typed external descriptor, and UNPACK/MATH/PACK target compilation; negative reset and reconfiguration diagnostics |
 | Invalid contracts | Compiler diagnostics for malformed metadata, unsupported transactions and tile forms, unknown external effects, numeric external DFB indices, storage ownership, and budget overflow |
 

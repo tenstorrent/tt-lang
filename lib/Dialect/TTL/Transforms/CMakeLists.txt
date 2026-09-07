@@ -3,6 +3,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   AccumulationUtils.cpp
   CommonRuntimeArgLayout.cpp
   CompilerL1Allocation.cpp
+  CompilerL1Allocator.cpp
   ComputeOpCreationPlanning.cpp
   ComputeTarget.cpp
   ComputeKernelConfigAnalysis.cpp

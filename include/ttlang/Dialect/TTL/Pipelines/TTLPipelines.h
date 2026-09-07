@@ -105,6 +105,11 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::desc("Reuse physical DFB indices when concurrent-kernel "
                      "liveness proves that logical lifetimes do not overlap."),
       llvm::cl::init(true)};
+  Option<std::string> l1AllocationStrategy{
+      *this, "l1-allocation-strategy",
+      llvm::cl::desc("Select first-fit-decreasing or best-fit-decreasing "
+                     "compiler-l1 payload placement."),
+      llvm::cl::init("first-fit-decreasing")};
   Option<bool> unsafeAssumeAllocationGroups{
       *this, "unsafe-assume-allocation-groups",
       llvm::cl::desc("Trust explicit DFB allocation groups when runtime "

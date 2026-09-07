@@ -1078,7 +1078,7 @@ def TTLFinalizeDFBIndices
 
     `memory-model=compiler-l1` assigns explicit byte ranges instead of Metal
     descriptor slots. Logical identities retain independent 8-byte control
-    records. Payloads use decreasing-size aligned first-fit placement over the
+    records. The selected L1 allocation strategy places payloads over the
     concurrent-kernel storage conflict graph; unknown completion prohibits reuse.
     The complete plan is validated before mutation. Runtime metadata supplies
     state and payload offsets within one allocator-owned L1 arena. The arena
@@ -1261,6 +1261,10 @@ def TTLFinalizeDFBIndices
     Option<"reuseUserDFBs", "reuse-user-dfbs", "bool", "true",
            "Reuse physical DFB indices and compiler-managed storage for "
            "lifetimes proven not to overlap across concurrent kernels.">,
+    Option<"l1AllocationStrategy", "l1-allocation-strategy", "std::string",
+           "\"first-fit-decreasing\"",
+           "Select first-fit-decreasing or best-fit-decreasing compiler-l1 "
+           "payload placement.">,
     Option<"unsafeAssumeAllocationGroups", "unsafe-assume-allocation-groups",
            "bool", "false",
            "Trust explicit DFB allocation groups when runtime handoff cannot "
