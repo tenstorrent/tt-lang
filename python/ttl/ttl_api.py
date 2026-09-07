@@ -2843,6 +2843,8 @@ def _lower_program_to_kernel(
             "func.func(ttl-coalesce-dfb-acquires)",
             "ttl-finalize-dfb-indices{"
             f"memory-model={compiler_options.memory_model} "
+            "l1-allocation-strategy="
+            f"{compiler_options.l1_allocation_strategy} "
             f"reuse-user-dfbs={reuse_user_dfbs_flag} "
             "unsafe-assume-allocation-groups="
             f"{unsafe_assume_allocation_groups_flag} "

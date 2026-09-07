@@ -45,12 +45,12 @@ def make_module(events, architecture, unknown=False):
     return "\n".join(lines + ["return", "}", "}"])
 
 
-def run_compiler(modules, reuse):
+def run_compiler(modules, reuse, allocation_strategy="first-fit-decreasing"):
     result = subprocess.run(
         [
             "ttlang-opt",
             "--split-input-file",
-            f"-pass-pipeline=builtin.module(ttl-finalize-dfb-indices{{memory-model=compiler-l1 reuse-user-dfbs={str(reuse).lower()}}})",
+            f"-pass-pipeline=builtin.module(ttl-finalize-dfb-indices{{memory-model=compiler-l1 reuse-user-dfbs={str(reuse).lower()} l1-allocation-strategy={allocation_strategy}}})",
         ],
         input="\n// -----\n".join(modules),
         text=True,
@@ -179,14 +179,21 @@ def main():
         for architecture in ("wormhole_b0", "blackhole")
     ]
     modules = [make_module(*case) for case in cases]
-    for reuse in (False, True):
-        output = run_compiler(modules, reuse)
-        assert output == run_compiler(modules, reuse), "placement is nondeterministic"
-        results = [section for section in output.split("// -----") if section.strip()]
-        assert len(results) == len(cases)
-        for result, (events, architecture, unknown) in zip(results, cases):
-            validate(result, events, architecture, reuse, unknown)
-    print(f"Verified {len(cases) * 2} placements and deterministic repetition.")
+    strategies = ("first-fit-decreasing", "best-fit-decreasing")
+    for allocation_strategy in strategies:
+        for reuse in (False, True):
+            output = run_compiler(modules, reuse, allocation_strategy)
+            assert output == run_compiler(
+                modules, reuse, allocation_strategy
+            ), "placement is nondeterministic"
+            results = [
+                section for section in output.split("// -----") if section.strip()
+            ]
+            assert len(results) == len(cases)
+            for result, (events, architecture, unknown) in zip(results, cases):
+                validate(result, events, architecture, reuse, unknown)
+    placement_count = len(cases) * 2 * len(strategies)
+    print(f"Verified {placement_count} placements and deterministic repetition.")
 
 
 if __name__ == "__main__":

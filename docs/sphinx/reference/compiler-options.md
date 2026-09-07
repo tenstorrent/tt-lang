@@ -13,6 +13,7 @@ python my_kernel.py --no-ttl-maximize-dst
 | Flag | Default | Description |
 |---|---|---|
 | `--ttl-memory-model {metal-cb,compiler-l1}` | `metal-cb` | Select Metal DFB descriptors or experimental compiler-owned L1 byte allocation. Unsupported operations in `compiler-l1` are errors. |
+| `--ttl-l1-allocation-strategy {first-fit-decreasing,best-fit-decreasing}` | `first-fit-decreasing` | Select the payload placement strategy for `compiler-l1`. |
 | `--ttl-maximize-dst` / `--no-ttl-maximize-dst` | enabled | Partition compute iteration spaces into subblocks that maximize DST register utilization, and reorder tile operations within sync regions to group by kind. Disabling falls back to per-tile synchronization. |
 | `--ttl-accumulation-strategy {auto,dst,l1-pack}` | `auto` | Select tensor recurrence accumulation storage. `auto` compares legal DST and L1 packer candidates with the accumulation cost model. |
 | `--ttl-fpu-binary-ops` / `--no-ttl-fpu-binary-ops` | enabled | Allow FPU strategy selection for binary add, subtract, and multiply when their operands permit it. Disabling selects SFPU. |
@@ -151,6 +152,7 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | `pipe-batch-tiles` | int64_t | `0` (auto) | Limit logical transfers per PipeTransport group. `0` selects automatically and `1` disables grouping. |
 | `l1-budget-override` | uint32_t | `0` (target default) | Override the per-core L1 budget used for target-aligned DFB allocation, PipeNet resources, synchronized-reset state, reconfiguration state, and final combined validation. |
 | `memory-model` | string | `metal-cb` | Select `metal-cb` or experimental `compiler-l1` byte allocation. |
+| `l1-allocation-strategy` | string | `first-fit-decreasing` | Select `first-fit-decreasing` or `best-fit-decreasing` compiler-managed L1 payload placement. |
 | `reuse-user-dfbs` | bool | `true` | Reuse physical DFB indices and compiler-managed storage for compatible lifetimes proven not to overlap. |
 | `unsafe-assume-allocation-groups` | bool | `false` | Trust explicit DFB allocation-group handoffs that lack a complete compiler proof. Automatic reuse remains proof-based. |
 | `exact-coloring-search-limit` | uint64 | `1000000` | Maximum states examined during deterministic exact DFB allocation before reporting an inconclusive result. |
@@ -173,7 +175,7 @@ The pipeline runs these passes and subpasses in order:
 - `ttl-verify-pipenet-guards`, then `ttl-verify-pipenet-schedule` -- verify PipeNet launch domains and event ordering while logical DFB identities remain distinct and before physical DFB allocation
 - `ttl-form-pipe-transports` -- group eligible repeated PipeNet transfers and select bounded receiver storage while accounting for synchronized-reset and reconfiguration state
 - `ttl-coalesce-dfb-acquires` -- coalesce compatible DFB acquires
-- `ttl-finalize-dfb-indices` -- `memory-model=compiler-l1` assigns explicit L1 payload and control offsets using completion-proven storage interference; the default assigns logical DFBs to physical indices, validates combined DFB and fixed-state capacity, and emits runtime metadata; `reuse-user-dfbs` controls automatic user-DFB reuse, `unsafe-assume-allocation-groups` trusts only explicit unproved group handoffs, `exact-coloring-search-limit` bounds exhaustive index and weighted-allocation queries, and `l1-budget-override` replaces the target L1 budget
+- `ttl-finalize-dfb-indices` -- `memory-model=compiler-l1` assigns explicit L1 payload and control offsets using completion-proven storage interference and the selected `l1-allocation-strategy`; the default assigns logical DFBs to physical indices, validates combined DFB and fixed-state capacity, and emits runtime metadata; `reuse-user-dfbs` controls automatic user-DFB reuse, `unsafe-assume-allocation-groups` trusts only explicit unproved group handoffs, `exact-coloring-search-limit` bounds exhaustive index and weighted-allocation queries, and `l1-budget-override` replaces the target L1 budget
 - `ttl-set-compute-kernel-config` -- select tile execution strategies and resolve kernel-wide DST and per-DFB unpack configuration
 - `ttl-assign-dst` -- DST register allocation (linear scan with copy insertion)
 - `ttl-subblock-compute-for-dst` -- tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*; optionally refine reserve/push to per-subblock granularity *(only if `subblock-sync=true`)*
@@ -249,10 +251,7 @@ ttlang-opt input.mlir -p 'func.func(ttl-insert-intermediate-dfbs{enable=false})'
 
 #### `ttl-finalize-dfb-indices`
 
-`memory-model=compiler-l1` uses deterministic decreasing-size aligned byte
-placement and independent synchronization records. It removes the Metal DFB index
-limit for supported transfer and compute operations. Unknown access completion
-prevents reuse.
+`memory-model=compiler-l1` uses the selected deterministic decreasing-size byte-placement strategy and independent synchronization records. It removes the Metal DFB index limit for supported transfer and compute operations. Unknown access completion prevents reuse.
 `reuse-user-dfbs=false` gives every payload separate storage. The arena allocation
 includes control and alignment bytes. Greedy placement failure does not establish
 infeasibility. The [backend contract](../../development/L1Allocation.md#implemented-contract)
@@ -264,13 +263,14 @@ allocation table.
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `memory-model` | string | `metal-cb` | Select `metal-cb` or experimental `compiler-l1` byte allocation. |
+| `l1-allocation-strategy` | string | `first-fit-decreasing` | Select `first-fit-decreasing` or `best-fit-decreasing` compiler-managed L1 payload placement. |
 | `reuse-user-dfbs` | bool | `true` | Reuse physical indices for compatible logical DFBs and storage allocations for physical descriptors when concurrent-kernel liveness proves that their lifetimes cannot overlap. When false, compact provisional user indices without introducing new user-DFB sharing, apply physical-index reuse only to compiler-created DFBs, and assign each physical descriptor separate storage. |
 | `exact-coloring-search-limit` | uint64 | `1000000` | Examine at most this many states during deterministic exact DFB allocation. Exhaustive search runs when order-dependent first-fit prevents acceptance by the index or weighted L1 limit, or exceeds the provisional threshold after a conservative PipeNet reservation. Reaching the limit fails with an inconclusive-search diagnostic only when acceptance requires the result; a reservation-only search may retain an authoritative-budget-valid assignment. |
 | `l1-budget-override` | uint32_t | `0` (target default) | Override the per-core L1 budget used by target-aligned DFB allocation, synchronized-reset and reconfiguration state, and the conservative PipeNet reservation. |
 | `unsafe-assume-allocation-groups` | bool | `false` | Trust explicit DFB allocation groups when launch-domain, access-completion, pointer-handoff, or lifetime-order proof is incomplete. Emit one warning per accepted group and record the assumptions in `ttl.assumed_dfb_allocation_groups`. Page-format, storage, static compute-configuration, per-member ring-envelope, target-capacity, and L1-budget errors remain fatal. |
 
 ```bash
-ttlang-opt input.mlir -p 'builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true unsafe-assume-allocation-groups=false exact-coloring-search-limit=1000000 l1-budget-override=0})'
+ttlang-opt input.mlir -p 'builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=best-fit-decreasing reuse-user-dfbs=true l1-budget-override=0})'
 ```
 
 #### `ttl-validate-cb-budget`

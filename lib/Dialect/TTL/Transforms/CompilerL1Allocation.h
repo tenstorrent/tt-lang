@@ -6,6 +6,8 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
 
+#include "llvm/ADT/StringRef.h"
+
 #include <cstdint>
 
 namespace mlir::tt::ttl {
@@ -19,6 +21,7 @@ LogicalResult
 allocateCompilerL1(ModuleOp module,
                    const DFBLogicalIdentityAnalysis &identities,
                    uint64_t budgetOverride, bool reuseStorage,
+                   llvm::StringRef allocationStrategy,
                    const DFBConcurrentKernelLivenessAnalysis &liveness);
 
 } // namespace mlir::tt::ttl
