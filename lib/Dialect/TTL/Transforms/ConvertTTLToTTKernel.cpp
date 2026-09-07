@@ -1624,7 +1624,7 @@ struct DFBSynchronizationLoweringPlan {
   SmallVector<int32_t> allDFBIndices;
   int64_t scratchBaseOffset = 0;
   int64_t scratchBytes = 0;
-  int64_t synchronizedResetCount = 0;
+  int64_t synchronizationRecordCount = 0;
   uint64_t allDFBMask = 0;
   bool compilerL1 = false;
 };
@@ -1648,7 +1648,7 @@ buildDFBSynchronizationLoweringPlan(ModuleOp module) {
 
   DFBSynchronizationLoweringPlan plan;
   plan.compilerL1 = usesCompilerL1(module);
-  plan.synchronizedResetCount = static_cast<int64_t>(orderedResets.size());
+  plan.synchronizationRecordCount = static_cast<int64_t>(orderedResets.size());
   for (auto [resetIndex, reset] : llvm::enumerate(orderedResets)) {
     plan.stateOffsetByReset.try_emplace(
         reset, static_cast<int64_t>(resetIndex) * kDFBResetStateBytes);
@@ -1690,6 +1690,8 @@ buildDFBSynchronizationLoweringPlan(ModuleOp module) {
     }
     plan.scratchBytes +=
         static_cast<int64_t>(reconfigurations.size()) * kDFBResetStateBytes;
+    plan.synchronizationRecordCount +=
+        static_cast<int64_t>(reconfigurations.size());
 
     if (auto entries = module->getAttrOfType<ArrayAttr>(
             kCompilerL1ReconfigurationResetsAttrName)) {
@@ -1795,13 +1797,13 @@ buildDFBSynchronizationLoweringPlan(ModuleOp module) {
 
 static void applyDFBSynchronizationLoweringPlanAttributes(
     ModuleOp module, const DFBSynchronizationLoweringPlan &plan) {
-  if (plan.synchronizedResetCount == 0) {
+  if (plan.synchronizationRecordCount == 0) {
     module->removeAttr(kDFBResetCountAttrName);
     return;
   }
   Builder builder(module.getContext());
   module->setAttr(kDFBResetCountAttrName,
-                  builder.getI64IntegerAttr(plan.synchronizedResetCount));
+                  builder.getI64IntegerAttr(plan.synchronizationRecordCount));
 }
 
 static void emitDFBSynchronizationBarrier(Operation *operation,
@@ -3185,6 +3187,60 @@ validateTileOperationsForTarget(ModuleOp module,
   return failure(hasErrors);
 }
 
+static LogicalResult addCompilerL1TensorRuntimeArgs(ModuleOp module) {
+  auto memoryModel = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
+  if (!memoryModel || memoryModel.getValue() != kCompilerL1MemoryModel) {
+    return success();
+  }
+
+  SmallVector<std::pair<func::FuncOp, SmallVector<int64_t>>> plans;
+  for (func::FuncOp function : module.getOps<func::FuncOp>()) {
+    SmallVector<int64_t> backingTensorIndices;
+    function.walk([&](BindCBOp bind) {
+      TensorBackingAttr backing = bind.getTensorBackingAttr();
+      if (backing &&
+          !llvm::is_contained(backingTensorIndices, backing.getTensorIndex())) {
+        backingTensorIndices.push_back(backing.getTensorIndex());
+      }
+    });
+    if (backingTensorIndices.empty()) {
+      continue;
+    }
+    auto currentIndices =
+        function->getAttrOfType<ArrayAttr>(kCRTAIndicesAttrName);
+    if (!currentIndices) {
+      function.emitOpError() << "missing " << kCRTAIndicesAttrName;
+      return failure();
+    }
+    SmallVector<int64_t> indices;
+    for (Attribute attribute : currentIndices) {
+      auto index = dyn_cast<IntegerAttr>(attribute);
+      if (!index || index.getInt() < 0) {
+        function.emitOpError()
+            << kCRTAIndicesAttrName << " must contain non-negative integers";
+        return failure();
+      }
+      indices.push_back(index.getInt());
+    }
+    for (int64_t backingTensorIndex : backingTensorIndices) {
+      if (!llvm::is_contained(indices, backingTensorIndex)) {
+        indices.push_back(backingTensorIndex);
+      }
+    }
+    plans.push_back({function, std::move(indices)});
+  }
+
+  OpBuilder builder(module.getContext());
+  for (auto &[function, indices] : plans) {
+    SmallVector<Attribute> attributes;
+    for (int64_t index : indices) {
+      attributes.push_back(builder.getI32IntegerAttr(index));
+    }
+    function->setAttr(kCRTAIndicesAttrName, builder.getArrayAttr(attributes));
+  }
+  return success();
+}
+
 struct TTLConvertTTLToTTKernelPass
     : impl::TTLConvertTTLToTTKernelBase<TTLConvertTTLToTTKernelPass> {
   using TTLConvertTTLToTTKernelBase::TTLConvertTTLToTTKernelBase;
@@ -3225,6 +3281,10 @@ struct TTLConvertTTLToTTKernelPass
     FailureOr<DFBSynchronizationLoweringPlan> synchronizationLoweringPlan =
         buildDFBSynchronizationLoweringPlan(mod);
     if (failed(synchronizationLoweringPlan)) {
+      signalPassFailure();
+      return;
+    }
+    if (failed(addCompilerL1TensorRuntimeArgs(mod))) {
       signalPassFailure();
       return;
     }

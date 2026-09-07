@@ -558,17 +558,18 @@ the generated DFB lifecycle in write-then-publish order: `cb_reserve`,
 read-only compute-op-creation analysis described below before modifying IR.
 
 A wait-backed `ttl.store` represents replacement of consumer-owned pages. The
-initial contract accepts one complete block from a one-block DFB, with the wait
-as the compute kernel's first access to that DFB. Analysis requires the
+contract requires acquisition of the complete DFB capacity, with the wait as
+the compute kernel's first access to that DFB. Analysis requires the
 replacement computation to read the original generation, requires values
 derived from the original contents to remain within that computation, excludes
 overlapping DFB access, and requires every replacement-generation read to
 precede the matching pop.
-Lowering emits `ttkernel.pack_waited_tile`, then converts it to the same
-`pack_tile` runtime call used for producer stores. It emits no reserve or push;
-the operation changes neither occupancy nor either DFB pointer. Full-ring
-acquisition and the absence of earlier producer-pointer access prove that the
-consumer read window and pack destination identify the same pages.
+Lowering emits `ttkernel.pack_waited_tile`. Metal storage converts it to the
+existing `pack_tile` call after proving pointer equality. Compiler-managed
+storage packs directly to the acquired read-window address. It emits no reserve
+or push; the operation changes neither occupancy nor either DFB pointer.
+Full-ring acquisition and the absence of earlier producer-pointer access prove
+that the consumer read window and pack destination identify the same pages.
 
 After `cb_pop`, the producer may overwrite the released slot because its prior
 contents are no longer live. The DFB's backing storage remains allocated. Index
@@ -2704,50 +2705,58 @@ bf16.
 ## Compiler-Managed Storage Protocol
 
 [Compiler-managed allocation](L1Allocation.md) uses two 32-bit sequence numbers
-per logical DFB: one published-block sequence written by the producer, and one
-consumed-block sequence written by the consumer. Both start at zero. For `B`
-blocks of capacity, sequences wrap explicitly modulo `2B`.
+per storage owner: one published-page sequence written by the producer, and one
+consumed-page sequence written by the consumer. Both start at zero. For `C`
+pages of physical capacity, sequences wrap explicitly modulo `2C`.
 
 This representation encodes both position and occupancy:
 
-- Block position is `sequence modulo B`.
-- Occupancy is `(published - consumed) modulo 2B`, in `[0, B]`.
-- Equal sequences mean empty; a distance of `B` means full.
+- Page position is `sequence modulo C`.
+- Occupancy is `(published - consumed) modulo 2C`, in `[0, C]`.
+- Equal sequences mean empty; a distance of `C` means full.
 
 The second cycle distinguishes full from empty without separate position words.
-Unlike natural 32-bit counter overflow, explicit modulo-`2B` wrap preserves block
-position for every capacity, including non-power-of-two capacities.
+Unlike natural 32-bit counter overflow, explicit modulo-`2C` wrap preserves page
+position for every capacity, including non-power-of-two capacities. Page units
+also preserve cursor state when validated allocation-group members use different
+pages-per-block and block-count values within one physical capacity envelope.
 
-Each side has at most one outstanding acquisition per logical DFB: reserve must
+Each side has at most one outstanding acquisition per storage owner: reserve must
 be followed by push before another reserve, and wait by pop before another wait.
 Producer and consumer acquisitions may overlap. The `with` syntax pairs acquisition
 and release but does not reject nested acquisitions of the same DFB. Alternation
 is a caller precondition; SPSC verification checks ownership only.
 
-The converter requires full-block page counts and positive total capacity below
-`2^31` pages. Runtime assertions check page counts only with watcher or
-lightweight assertions enabled; ordinary builds rely on the converter's static
-checks.
+The converter accepts one complete block per synchronization operation. A
+tensor-backed DFB can also publish or consume its complete capacity in one
+operation; this supports `DataflowBuffer.publish()`. Other multi-block and
+partial-block operations are rejected because one returned address cannot
+represent a range that wraps at the payload end. Total capacity must be positive
+and below `2^31` pages. Runtime assertions check page counts and contiguity only
+with watcher or lightweight assertions enabled; ordinary builds rely on the
+converter's static checks.
 
 ```text
-reserve():
-    wait until occupancy < B
-    return payload + (published modulo B) * bytesPerBlock
+reserve(requestedPages):
+    wait until C - occupancy >= requestedPages
+    require the requested pages to be contiguous before the payload end
+    return payload + (published modulo C) * bytesPerPage
 
-publish():
+publish(requestedPages):
     complete producer accesses
-    storeVisible(published, (published + 1) modulo 2B)
+    storeVisible(published, (published + requestedPages) modulo 2C)
 
-wait():
-    wait until occupancy > 0
-    return payload + (consumed modulo B) * bytesPerBlock
+wait(requestedPages):
+    wait until occupancy >= requestedPages
+    require the requested pages to be contiguous before the payload end
+    return payload + (consumed modulo C) * bytesPerPage
 
-release():
+release(requestedPages):
     complete consumer accesses
-    storeVisible(consumed, (consumed + 1) modulo 2B)
+    storeVisible(consumed, (consumed + requestedPages) modulo 2C)
 ```
 
-At most `B` blocks separate producer and consumer progress. Neither side can
+At most `C` pages separate producer and consumer progress. Neither side can
 advance through a full sequence cycle while the other remains stationary, so
 sequence wrap cannot turn a full queue into an apparently empty one. Publication
 follows write completion; consumption follows read completion. Each counter has

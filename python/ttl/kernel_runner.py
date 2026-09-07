@@ -28,6 +28,8 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tupl
 ttnn = None  # Lazy-loaded via _ensure_ttnn()
 
 _STATIC_DFB_PACKING_SEARCH_STATE_LIMIT = 1_000_000
+_DFB_RESET_STATE_BYTES = 4 * 4
+_SRAM_SCRATCH_ALIGNMENT_BYTES = 32
 
 
 def _ensure_ttnn():
@@ -137,6 +139,18 @@ def _validate_physical_dfb_config(
             f"DFB[{config.dfb_index}] storage_index must be a nonnegative "
             f"integer, got {config.storage_index!r}"
         )
+    if config.storage_capacity_pages is not None:
+        logical_capacity_pages = config.num_tiles * config.block_count
+        if (
+            type(config.storage_capacity_pages) is not int
+            or config.storage_capacity_pages < logical_capacity_pages
+            or config.storage_capacity_pages >= 1 << 31
+        ):
+            raise ValueError(
+                f"DFB[{config.dfb_index}] storage_capacity_pages must be an "
+                f"integer in [{logical_capacity_pages}, 2^31), got "
+                f"{config.storage_capacity_pages!r}"
+            )
     allocation_nodes = None
     if config.allocation_nodes is not None:
         for node_position, node in enumerate(config.allocation_nodes):
@@ -1891,21 +1905,41 @@ def _allocate_l1_sharded_storage_tensor(
 def _get_compiler_l1_arena_bytes(
     cb_configs: Sequence[PhysicalDFBConfig],
 ) -> Optional[int]:
-    field_presence = [
-        (
-            config.l1_offset is not None,
-            config.l1_payload_offset is not None,
-            config.l1_allocation_bytes is not None,
-        )
+    has_compiler_l1_metadata = any(
+        config.l1_offset is not None
+        or config.l1_payload_offset is not None
+        or config.l1_allocation_bytes is not None
         for config in cb_configs
-    ]
-    if not any(any(fields) for fields in field_presence):
-        return None
-    if not all(all(fields) for fields in field_presence):
-        raise ValueError("mixed compiler-l1 and Metal storage metadata")
-    return max(
-        config.l1_payload_offset + config.l1_allocation_bytes for config in cb_configs
     )
+    if not has_compiler_l1_metadata:
+        return None
+    if not all(config.l1_offset is not None for config in cb_configs):
+        raise ValueError("mixed compiler-l1 and Metal storage metadata")
+    arena_ends = [config.l1_offset + 8 for config in cb_configs]
+    for config in cb_configs:
+        has_payload_offset = config.l1_payload_offset is not None
+        has_allocation_bytes = config.l1_allocation_bytes is not None
+        if has_payload_offset != has_allocation_bytes:
+            raise ValueError("incomplete compiler-l1 payload allocation metadata")
+        if has_payload_offset:
+            arena_ends.append(config.l1_payload_offset + config.l1_allocation_bytes)
+            continue
+        if not config.storage_segments or any(
+            not segment.is_tensor_backed for segment in config.storage_segments
+        ):
+            raise ValueError(
+                "compiler-l1 storage without an arena payload requires "
+                "tensor backing on every storage segment"
+            )
+    return max(arena_ends)
+
+
+def _has_pipe_sram_scratch(pipe_sram_scratch_bytes: int, num_dfb_resets: int) -> bool:
+    reset_scratch_bytes = _align_up(
+        num_dfb_resets * _DFB_RESET_STATE_BYTES,
+        _SRAM_SCRATCH_ALIGNMENT_BYTES,
+    )
+    return pipe_sram_scratch_bytes != reset_scratch_bytes
 
 
 def _l1_buffer_addresses_by_core(
@@ -3984,6 +4018,7 @@ def _run_kernel_on_device_impl(
         dfb_reconfiguration_plan
         or pipe_computed_address_dfb_indices
         or num_pipe_sync_semaphores
+        or _has_pipe_sram_scratch(pipe_sram_scratch_bytes, num_dfb_resets)
         or num_pipe_global_semaphores
         or any(kernel_fabric_routes or ())
     ):
@@ -4496,6 +4531,10 @@ def _append_physical_dfb_config_source(
         lines.append(f"{indent}    l1_allocation_bytes={config.l1_allocation_bytes},")
     if config.storage_index is not None:
         lines.append(f"{indent}    storage_index={config.storage_index},")
+    if config.storage_capacity_pages is not None:
+        lines.append(
+            f"{indent}    storage_capacity_pages={config.storage_capacity_pages},"
+        )
     if config.allocation_nodes is not None:
         lines.append(f"{indent}    allocation_nodes={config.allocation_nodes!r},")
     if config.storage_segments:

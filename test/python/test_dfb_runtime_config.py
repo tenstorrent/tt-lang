@@ -23,12 +23,15 @@ def _entry(
     l1_offset=None,
     l1_payload_offset=None,
     l1_allocation_bytes=None,
+    storage_capacity_pages=None,
 ):
     """Build one textual physical-allocation metadata entry."""
 
     storage_field = (
         "" if storage_index is None else f"storage_index = {storage_index} : i32, "
     )
+    if storage_capacity_pages is not None:
+        storage_field += f"storage_capacity_pages = {storage_capacity_pages} : i32, "
     l1_fields = ""
     for field_name, field_value in (
         ("l1_offset", l1_offset),
@@ -82,6 +85,25 @@ def test_storage_indices_are_preserved():
         assert _resolve_dfb_configs(module) == [
             PhysicalDFBConfig(0, 1, "bfloat16", 2, 2048, None, storage_index=3),
             PhysicalDFBConfig(1, 1, "bfloat16", 2, 2048, None, storage_index=3),
+        ]
+
+
+def test_storage_capacity_is_preserved():
+    with Context():
+        module = _module(
+            [_entry(0, num_tiles=1, block_count=2, storage_capacity_pages=4)]
+        )
+
+        assert _resolve_dfb_configs(module) == [
+            PhysicalDFBConfig(
+                0,
+                1,
+                "bfloat16",
+                2,
+                2048,
+                None,
+                storage_capacity_pages=4,
+            )
         ]
 
 
@@ -146,6 +168,47 @@ def test_tensor_backing_segments_preserve_nodes_and_tensor_range():
                         byte_size=2048,
                     ),
                 ),
+            )
+        ]
+
+
+def test_compiler_l1_tensor_backing_preserves_state_and_omits_arena_payload():
+    with Context():
+        module = Module.parse(
+            """module attributes {ttl.dfb_allocations = [{
+              block_count = 1 : i32,
+              dfb_index = 0 : i32,
+              element_type = !ttcore.tile<32x32, bf16>,
+              l1_offset = 0 : i64,
+              num_tiles = 1 : i32,
+              page_size = 2048 : i32,
+              storage_index = 0 : i32,
+              storage_segments = [{
+                tensor_backing = #ttl.tensor_backing<
+                  tensor_index = 2, byte_offset = 2048, byte_size = 2048>,
+                nodes = [[0, 0]]
+              }]
+            }]} {}"""
+        )
+
+        assert _resolve_dfb_configs(module) == [
+            PhysicalDFBConfig(
+                0,
+                1,
+                "bfloat16",
+                1,
+                2048,
+                (32, 32),
+                (
+                    DFBStorageSegment(
+                        nodes=((0, 0),),
+                        tensor_index=2,
+                        byte_offset=2048,
+                        byte_size=2048,
+                    ),
+                ),
+                storage_index=0,
+                l1_offset=0,
             )
         ]
 
@@ -253,10 +316,23 @@ def test_missing_complete_allocations_are_rejected():
         ([_entry(0, block_count=0)], "block_count must be positive"),
         ([_entry(0, page_size=0)], "page_size must be positive"),
         ([_entry(0, storage_index=-1)], "storage_index must be a nonnegative"),
+        (
+            [_entry(0, num_tiles=2, block_count=2, storage_capacity_pages=3)],
+            "storage_capacity_pages must cover the 4-page logical capacity",
+        ),
+        (
+            [
+                "{dfb_index = 0 : i32, storage_capacity_pages = "
+                "2147483648 : i64, num_tiles = 1 : i32, "
+                "element_type = bf16, block_count = 2 : i32, "
+                "page_size = 2048 : i32}"
+            ],
+            "storage_capacity_pages must be less than 2\\^31",
+        ),
         ([_entry(0, element_type="i1")], "Unrecognized MLIR scalar element type"),
         (
             [_entry(0, l1_offset=0)],
-            "must contain all compiler-l1 allocation fields",
+            "requires tensor backing",
         ),
         (
             [
@@ -267,7 +343,7 @@ def test_missing_complete_allocations_are_rejected():
                     l1_allocation_bytes=4096,
                 )
             ],
-            "compiler-l1 offsets must be nonnegative",
+            "l1_offset must be nonnegative",
         ),
         (
             [

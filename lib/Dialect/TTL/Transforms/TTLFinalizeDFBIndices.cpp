@@ -39,6 +39,45 @@ namespace mlir::tt::ttl {
 
 namespace {
 
+static void applyAssumedAllocationGroups(
+    ModuleOp moduleOp, OpBuilder &builder,
+    ArrayRef<DFBAssumedAllocationGroup> assumedGroups) {
+  if (assumedGroups.empty()) {
+    moduleOp->removeAttr(kAssumedDFBAllocationGroupsAttrName);
+    return;
+  }
+  SmallVector<Attribute> assumedGroupAttributes;
+  for (const DFBAssumedAllocationGroup &group : assumedGroups) {
+    SmallVector<Attribute> memberAttributes;
+    for (int64_t logicalId : group.logicalIds) {
+      memberAttributes.push_back(builder.getI64IntegerAttr(logicalId));
+    }
+    SmallVector<Attribute> assumptionAttributes;
+    for (const DFBAllocationGroupAssumption &assumption : group.assumptions) {
+      SmallVector<NamedAttribute> fields;
+      fields.push_back(builder.getNamedAttr(
+          "reason",
+          builder.getStringAttr(
+              getDFBAllocationGroupAssumptionReasonName(assumption.reason))));
+      fields.push_back(builder.getNamedAttr(
+          "lhs", builder.getI64IntegerAttr(assumption.lhsLogicalId)));
+      if (assumption.rhsLogicalId) {
+        fields.push_back(builder.getNamedAttr(
+            "rhs", builder.getI64IntegerAttr(*assumption.rhsLogicalId)));
+      }
+      assumptionAttributes.push_back(builder.getDictionaryAttr(fields));
+    }
+    assumedGroupAttributes.push_back(builder.getDictionaryAttr({
+        builder.getNamedAttr("allocation_group", group.allocationGroup),
+        builder.getNamedAttr("members", builder.getArrayAttr(memberAttributes)),
+        builder.getNamedAttr("assumptions",
+                             builder.getArrayAttr(assumptionAttributes)),
+    }));
+  }
+  moduleOp->setAttr(kAssumedDFBAllocationGroupsAttrName,
+                    builder.getArrayAttr(assumedGroupAttributes));
+}
+
 static FailureOr<SmallVector<DFBStaticConfigurationConflict>>
 collectStaticConfigurationConflicts(
     ModuleOp moduleOp,
@@ -200,43 +239,8 @@ applyPhysicalAllocationPlan(ModuleOp moduleOp, OpBuilder &builder,
   }
   moduleOp->setAttr(kDFBAllocationsAttrName,
                     ArrayAttr::get(context, descriptorAttributes));
-  ArrayRef<DFBAssumedAllocationGroup> assumedGroups =
-      allocationPlan.getAssumedAllocationGroups();
-  if (assumedGroups.empty()) {
-    moduleOp->removeAttr(kAssumedDFBAllocationGroupsAttrName);
-  } else {
-    SmallVector<Attribute> assumedGroupAttributes;
-    for (const DFBAssumedAllocationGroup &group : assumedGroups) {
-      SmallVector<Attribute> memberAttributes;
-      for (int64_t logicalId : group.logicalIds) {
-        memberAttributes.push_back(builder.getI64IntegerAttr(logicalId));
-      }
-      SmallVector<Attribute> assumptionAttributes;
-      for (const DFBAllocationGroupAssumption &assumption : group.assumptions) {
-        SmallVector<NamedAttribute> fields;
-        fields.push_back(builder.getNamedAttr(
-            "reason",
-            builder.getStringAttr(
-                getDFBAllocationGroupAssumptionReasonName(assumption.reason))));
-        fields.push_back(builder.getNamedAttr(
-            "lhs", builder.getI64IntegerAttr(assumption.lhsLogicalId)));
-        if (assumption.rhsLogicalId) {
-          fields.push_back(builder.getNamedAttr(
-              "rhs", builder.getI64IntegerAttr(*assumption.rhsLogicalId)));
-        }
-        assumptionAttributes.push_back(builder.getDictionaryAttr(fields));
-      }
-      assumedGroupAttributes.push_back(builder.getDictionaryAttr({
-          builder.getNamedAttr("allocation_group", group.allocationGroup),
-          builder.getNamedAttr("members",
-                               builder.getArrayAttr(memberAttributes)),
-          builder.getNamedAttr("assumptions",
-                               builder.getArrayAttr(assumptionAttributes)),
-      }));
-    }
-    moduleOp->setAttr(kAssumedDFBAllocationGroupsAttrName,
-                      builder.getArrayAttr(assumedGroupAttributes));
-  }
+  applyAssumedAllocationGroups(moduleOp, builder,
+                               allocationPlan.getAssumedAllocationGroups());
 
   ArrayRef<int64_t> boundaryOrdinals =
       allocationPlan.getReconfigurationBoundaryOrdinals();
@@ -256,9 +260,8 @@ applyPhysicalAllocationPlan(ModuleOp moduleOp, OpBuilder &builder,
 }
 
 static void emitAssumedAllocationGroupWarnings(
-    const DFBPhysicalAllocationPlan &allocationPlan) {
-  for (const DFBAssumedAllocationGroup &group :
-       allocationPlan.getAssumedAllocationGroups()) {
+    ArrayRef<DFBAssumedAllocationGroup> assumedGroups) {
+  for (const DFBAssumedAllocationGroup &group : assumedGroups) {
     std::string message;
     llvm::raw_string_ostream messageStream(message);
     messageStream << "unsafe DFB allocation-group policy accepted "
@@ -326,11 +329,36 @@ struct TTLFinalizeDFBIndicesPass
         signalPassFailure();
         return;
       }
-      if (failed(allocateCompilerL1(moduleOp, logicalIdentityAnalysis,
-                                    l1BudgetOverride, reuseUserDFBs,
-                                    l1AllocationStrategy, liveness))) {
-        signalPassFailure();
+      SmallVector<DFBStaticConfigurationConflict> staticConfigurationConflicts;
+      bool hasAllocationGroups =
+          llvm::any_of(liveness.getLogicalDFBLifecycles(),
+                       [](const DFBLogicalLifecycle &lifecycle) {
+                         return static_cast<bool>(lifecycle.allocationGroup);
+                       });
+      if (hasAllocationGroups) {
+        FailureOr<SmallVector<DFBStaticConfigurationConflict>>
+            maybeStaticConfigurationConflicts =
+                collectStaticConfigurationConflicts(moduleOp,
+                                                    logicalIdentityAnalysis);
+        if (failed(maybeStaticConfigurationConflicts)) {
+          signalPassFailure();
+          return;
+        }
+        staticConfigurationConflicts =
+            std::move(*maybeStaticConfigurationConflicts);
       }
+      SmallVector<DFBAssumedAllocationGroup> assumedAllocationGroups;
+      if (failed(allocateCompilerL1(
+              moduleOp, logicalIdentityAnalysis, l1BudgetOverride,
+              reuseUserDFBs, l1AllocationStrategy, liveness,
+              staticConfigurationConflicts, unsafeAssumeAllocationGroups,
+              assumedAllocationGroups))) {
+        signalPassFailure();
+        return;
+      }
+      emitAssumedAllocationGroupWarnings(assumedAllocationGroups);
+      OpBuilder builder(moduleOp.getContext());
+      applyAssumedAllocationGroups(moduleOp, builder, assumedAllocationGroups);
       return;
     }
     if (memoryModel != "metal-cb") {
@@ -363,7 +391,8 @@ struct TTLFinalizeDFBIndicesPass
 
     const DFBPhysicalAllocationPlan &allocationPlan =
         allocationPlanner.getPlan();
-    emitAssumedAllocationGroupWarnings(allocationPlan);
+    emitAssumedAllocationGroupWarnings(
+        allocationPlan.getAssumedAllocationGroups());
     LLVM_DEBUG(llvm::dbgs() << "Total DFB count: "
                             << allocationPlan.getPhysicalDFBCount() << "\n");
 

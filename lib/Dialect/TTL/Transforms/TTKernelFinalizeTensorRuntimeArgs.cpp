@@ -175,6 +175,33 @@ remapCommonArgIndex(int64_t originalIndex,
   return *tensorSlotMap[originalIndex];
 }
 
+static FailureOr<int64_t> getCompilerL1TensorIndex(ModuleOp module,
+                                                   int64_t dfbIndex) {
+  auto memoryModel = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
+  if (!memoryModel || memoryModel.getValue() != kCompilerL1MemoryModel) {
+    return int64_t{-1};
+  }
+  auto allocations = module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName);
+  if (!allocations || dfbIndex < 0 ||
+      static_cast<uint64_t>(dfbIndex) >= allocations.size()) {
+    return failure();
+  }
+  auto allocation = dyn_cast<DictionaryAttr>(allocations[dfbIndex]);
+  auto segments = allocation ? allocation.getAs<ArrayAttr>("storage_segments")
+                             : ArrayAttr();
+  if (!segments) {
+    return int64_t{-1};
+  }
+  if (segments.size() != 1) {
+    return failure();
+  }
+  auto segment = dyn_cast<DictionaryAttr>(segments[0]);
+  auto backing = segment ? segment.getAs<TensorBackingAttr>("tensor_backing")
+                         : TensorBackingAttr();
+  return backing ? FailureOr<int64_t>(backing.getTensorIndex())
+                 : FailureOr<int64_t>(failure());
+}
+
 static LogicalResult finalizeFunction(func::FuncOp function) {
   auto crtaIndices = function->getAttrOfType<ArrayAttr>(kCRTAIndicesAttrName);
   if (!crtaIndices) {
@@ -191,6 +218,34 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
   SmallVector<CommonArgIndexUse> commonArgUses;
   SmallVector<TensorAccessorArgsIndexUse> tensorAccessorArgsUses;
   bool hasUnresolvedIndex = false;
+  ModuleOp module = function->getParentOfType<ModuleOp>();
+  WalkResult compilerL1Walk =
+      function.walk([&](ttk::GetCompileArgValOp get) -> WalkResult {
+        if (!isa<ttk::CBType>(get.getType())) {
+          return WalkResult::advance();
+        }
+        FailureOr<int64_t> tensorIndex =
+            getCompilerL1TensorIndex(module, get.getArgIndex());
+        if (failed(tensorIndex)) {
+          get.emitOpError("has invalid compiler-l1 tensor-backing metadata");
+          return WalkResult::interrupt();
+        }
+        if (*tensorIndex < 0) {
+          return WalkResult::advance();
+        }
+        auto slot = llvm::find(globalTensorIndices, *tensorIndex);
+        if (slot == globalTensorIndices.end()) {
+          get.emitOpError("compiler-l1 tensor backing references tensor ")
+              << *tensorIndex
+              << " which is absent from the kernel's common tensor arguments";
+          return WalkResult::interrupt();
+        }
+        liveTensorSlots.set(std::distance(globalTensorIndices.begin(), slot));
+        return WalkResult::advance();
+      });
+  if (compilerL1Walk.wasInterrupted()) {
+    return failure();
+  }
   if (failed(classifyCommonArgIndices(function, tensorCount, liveTensorSlots,
                                       commonArgUses, hasUnresolvedIndex))) {
     return failure();

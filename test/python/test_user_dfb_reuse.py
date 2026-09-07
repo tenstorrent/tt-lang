@@ -2509,6 +2509,9 @@ def test_disjoint_incompatible_static_configurations_do_not_reuse_dfb(
     ids=["dram", "l1"],
 )
 @pytest.mark.parametrize(
+    "memory_model", ["metal-cb", "compiler-l1"], ids=["metal", "compiler-l1"]
+)
+@pytest.mark.parametrize(
     ("operation", "dtype"),
     [
         (_allocation_group_bf16_kernel, torch.bfloat16),
@@ -2522,6 +2525,7 @@ def test_allocation_group_reuses_one_capacity_envelope(
     dtype,
     memory_config,
     to_device,
+    memory_model,
     tmp_path,
     monkeypatch,
 ):
@@ -2535,8 +2539,9 @@ def test_allocation_group_reuses_one_capacity_envelope(
     final_mlir_path = tmp_path / "allocation_group.mlir"
     monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
 
-    operation(input_tensor, output_tensor)
-    operation(input_tensor, output_tensor)
+    options = f"--ttl-memory-model={memory_model}"
+    operation(input_tensor, output_tensor, options=options)
+    operation(input_tensor, output_tensor, options=options)
 
     actual = ttnn.to_torch(output_tensor).float()
     if dtype == torch.bfloat16:
@@ -2545,15 +2550,32 @@ def test_allocation_group_reuses_one_capacity_envelope(
         assert_allclose(actual, expected.float(), rtol=1e-5, atol=1e-6)
 
     final_mlir = final_mlir_path.read_text()
-    reader_mlir = final_mlir.split("func.func @read", 1)[1].split(
-        "func.func @compute", 1
-    )[0]
-    reader_dfb_indices = [
-        int(index)
-        for index in re.findall(r"ttkernel\.cb_ctarg_idx = (\d+)", reader_mlir)
-    ]
-    assert reader_dfb_indices == [0, 1, 0]
-    assert "block_count = 4 : i32, dfb_index = 0 : i32" in final_mlir
+    if memory_model == "metal-cb":
+        reader_mlir = final_mlir.split("func.func @read", 1)[1].split(
+            "func.func @compute", 1
+        )[0]
+        reader_dfb_indices = [
+            int(index)
+            for index in re.findall(r"ttkernel\.cb_ctarg_idx = (\d+)", reader_mlir)
+        ]
+        assert reader_dfb_indices == [0, 1, 0]
+        assert "block_count = 4 : i32, dfb_index = 0 : i32" in final_mlir
+    else:
+        storage_by_dfb = dict(_get_final_dfb_storage_assignments(final_mlir_path))
+        assert storage_by_dfb[0] == storage_by_dfb[2]
+        assert len(set(storage_by_dfb.values())) == 3
+        expected_envelope_bytes = 4 * int(
+            input_tensor.get_tile().get_tile_size(input_tensor.dtype)
+        )
+        group_entries = re.findall(r"\{[^{}]*dfb_index = (?:0|2)[^{}]*\}", final_mlir)
+        assert len(group_entries) == 2
+        assert all(
+            f"l1_allocation_bytes = {expected_envelope_bytes} : i64" in entry
+            for entry in group_entries
+        )
+        assert all(
+            "storage_capacity_pages = 4 : i32" in entry for entry in group_entries
+        )
 
 
 @pytest.mark.parametrize(

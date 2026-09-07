@@ -25,6 +25,7 @@ namespace mlir::tt::ttl {
 
 class DFBPhysicalConflictModelBuilder;
 class DFBConcurrentKernelLivenessAnalysis;
+struct DFBAnalysisFailure;
 
 /// Storage ownership semantics used when constructing the conflict relation.
 enum class DFBStorageConflictMode {
@@ -140,6 +141,14 @@ struct DFBAssumedAllocationGroup {
   SmallVector<DFBAllocationGroupAssumption> assumptions;
   Operation *operation = nullptr;
 };
+
+/// Validates explicit allocation-group storage and cursor ownership.
+LogicalResult validateDFBAllocationGroups(
+    const DFBConcurrentKernelLivenessAnalysis &liveness,
+    ArrayRef<DFBStaticConfigurationConflict> staticConflicts,
+    bool unsafeAssumeAllocationGroups,
+    SmallVectorImpl<DFBAssumedAllocationGroup> &assumedAllocationGroups,
+    DFBAnalysisFailure &analysisFailure);
 
 /// Source evidence that explains why one logical DFB pair cannot share.
 struct DFBConflictEvidence {
