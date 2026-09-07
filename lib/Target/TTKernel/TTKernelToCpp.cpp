@@ -213,13 +213,15 @@ public:
     }
 
     if (requiresCompilerL1) {
-      emitLlk(compiler_l1_target_generated, compiler_l1_target_generated_len);
-      emitLlk(compiler_l1_generated, compiler_l1_generated_len);
+      emitLlkBeforeOpaqueHeaders(compiler_l1_target_generated,
+                                 compiler_l1_target_generated_len);
+      emitLlkBeforeOpaqueHeaders(compiler_l1_generated,
+                                 compiler_l1_generated_len);
       if (threadType == ThreadType::Compute) {
-        emitLlk(compiler_l1_compute_target_generated,
-                compiler_l1_compute_target_generated_len);
-        emitLlk(compiler_l1_compute_generated,
-                compiler_l1_compute_generated_len);
+        emitLlkBeforeOpaqueHeaders(compiler_l1_compute_target_generated,
+                                   compiler_l1_compute_target_generated_len);
+        emitLlkBeforeOpaqueHeaders(compiler_l1_compute_generated,
+                                   compiler_l1_compute_generated_len);
       }
     }
 
@@ -227,16 +229,20 @@ public:
       llvm::StringRef value = verbatimOp.getValue();
 
       if (value.starts_with("ttlang::l1::target::ComputeContext")) {
-        emitLlk(compiler_l1_target_generated, compiler_l1_target_generated_len);
-        emitLlk(compiler_l1_generated, compiler_l1_generated_len);
-        emitLlk(compiler_l1_compute_target_generated,
-                compiler_l1_compute_target_generated_len);
-        emitLlk(compiler_l1_compute_generated,
-                compiler_l1_compute_generated_len);
+        emitLlkBeforeOpaqueHeaders(compiler_l1_target_generated,
+                                   compiler_l1_target_generated_len);
+        emitLlkBeforeOpaqueHeaders(compiler_l1_generated,
+                                   compiler_l1_generated_len);
+        emitLlkBeforeOpaqueHeaders(compiler_l1_compute_target_generated,
+                                   compiler_l1_compute_target_generated_len);
+        emitLlkBeforeOpaqueHeaders(compiler_l1_compute_generated,
+                                   compiler_l1_compute_generated_len);
       }
       if (value.starts_with("ttlang::l1::Buffer<")) {
-        emitLlk(compiler_l1_target_generated, compiler_l1_target_generated_len);
-        emitLlk(compiler_l1_generated, compiler_l1_generated_len);
+        emitLlkBeforeOpaqueHeaders(compiler_l1_target_generated,
+                                   compiler_l1_target_generated_len);
+        emitLlkBeforeOpaqueHeaders(compiler_l1_generated,
+                                   compiler_l1_generated_len);
       }
       if (value.starts_with("CircularBuffer")) {
         headers.insert("api/dataflow/circular_buffer.h");
@@ -283,12 +289,13 @@ public:
           loc, "#define REDUCE_DIM ReduceDim::REDUCE_COL");
     }
 
-    // The descriptor definition must precede user headers because those
-    // headers may name it in their function declarations.
+    // Generated storage types and target APIs must precede external headers
+    // that use them.
     emitc::IncludeOp::create(*builder, loc, "cstdint", /*isStandard=*/true);
     if (requiresDFBDescriptor) {
       headers.insert("api/dataflow/circular_buffer.h");
-    } else {
+    }
+    if (!requiresDFBDescriptor && !requiresCompilerL1) {
       headers.insert(opaqueHeaders.begin(), opaqueHeaders.end());
       opaqueHeaders.clear();
     }
@@ -315,35 +322,45 @@ public:
                           dfb_descriptor_prelude_generated_len));
     }
 
+    for (llvm::StringRef snippet : llksBeforeOpaqueHeaders) {
+      emitc::VerbatimOp::create(*builder, loc, snippet);
+    }
+
     emitHeaders(opaqueHeaders);
 
     if (threadType == ThreadType::Compute) {
-      // Helper for float-to-uint32 bit reinterpretation (used by scalar tile
-      // ops).
-      builder->create<emitc::VerbatimOp>(
-          loc, "inline uint32_t float_to_bits(const float f) { "
-               "uint32_t r; __builtin_memcpy(&r, &f, sizeof(r)); return r; }");
-      // Define INFINITY if not available (needed for OOB masking with inf
-      // fill).
-      builder->create<emitc::VerbatimOp>(
-          loc, "#ifndef INFINITY\n#define INFINITY __builtin_inff()\n#endif");
+      emitc::VerbatimOp::create(
+          *builder, loc,
+          "inline uint32_t float_to_bits(const float value) { "
+          "uint32_t bits; __builtin_memcpy(&bits, &value, sizeof(bits)); "
+          "return bits; }");
+      emitc::VerbatimOp::create(
+          *builder, loc,
+          "#ifndef INFINITY\n#define INFINITY __builtin_inff()\n#endif");
     }
 
-    // Emit all LLKs and custom functions AFTER the headers.
     for (llvm::StringRef snippet : llksToEmit) {
-      builder->create<emitc::VerbatimOp>(loc, snippet);
+      emitc::VerbatimOp::create(*builder, loc, snippet);
     }
   }
 
   ~ScopedModuleHelper() = default;
 
-  void emitLlk(const char *generated, unsigned int len) {
+  void emitLlkTo(const char *generated, unsigned int len,
+                 llvm::SmallVectorImpl<llvm::StringRef> &destination) {
     llvm::StringRef snippet(generated, len);
-    // Prevent duplicated emissions.
     if (!emittedLlks.insert(snippet).second) {
       return;
     }
-    llksToEmit.push_back(snippet);
+    destination.push_back(snippet);
+  }
+
+  void emitLlk(const char *generated, unsigned int len) {
+    emitLlkTo(generated, len, llksToEmit);
+  }
+
+  void emitLlkBeforeOpaqueHeaders(const char *generated, unsigned int len) {
+    emitLlkTo(generated, len, llksBeforeOpaqueHeaders);
   }
 
   void emitDebugPrint(ThreadType threadType) {
@@ -402,6 +419,7 @@ void dprint(Arg &&arg, ArgV&&... argv) {
 
 private:
   std::set<llvm::StringRef> emittedLlks;
+  llvm::SmallVector<llvm::StringRef> llksBeforeOpaqueHeaders;
   llvm::SmallVector<llvm::StringRef> llksToEmit;
 };
 } // namespace

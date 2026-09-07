@@ -202,6 +202,60 @@ static FailureOr<int64_t> getCompilerL1TensorIndex(ModuleOp module,
                  : FailureOr<int64_t>(failure());
 }
 
+static LogicalResult retainCompilerL1TensorSlot(
+    Operation *operation, ModuleOp module, int64_t dfbIndex,
+    ArrayRef<int64_t> globalTensorIndices, BitVector &liveTensorSlots) {
+  FailureOr<int64_t> tensorIndex = getCompilerL1TensorIndex(module, dfbIndex);
+  if (failed(tensorIndex)) {
+    operation->emitOpError("has invalid compiler-l1 tensor-backing metadata");
+    return failure();
+  }
+  if (*tensorIndex < 0) {
+    return success();
+  }
+  auto tensorSlot = llvm::find(globalTensorIndices, *tensorIndex);
+  if (tensorSlot == globalTensorIndices.end()) {
+    operation->emitOpError("compiler-l1 tensor backing references tensor ")
+        << *tensorIndex
+        << " which is absent from the kernel's common tensor arguments";
+    return failure();
+  }
+  liveTensorSlots.set(std::distance(globalTensorIndices.begin(), tensorSlot));
+  return success();
+}
+
+static LogicalResult
+classifyCompilerL1TensorBackings(func::FuncOp function, ModuleOp module,
+                                 ArrayRef<int64_t> globalTensorIndices,
+                                 BitVector &liveTensorSlots) {
+  WalkResult walkResult = function.walk([&](Operation *operation) {
+    if (auto getCompileArg = dyn_cast<ttk::GetCompileArgValOp>(operation);
+        getCompileArg && isa<ttk::CBType>(getCompileArg.getType()) &&
+        failed(retainCompilerL1TensorSlot(
+            operation, module, getCompileArg.getArgIndex(), globalTensorIndices,
+            liveTensorSlots))) {
+      return WalkResult::interrupt();
+    }
+    auto opaqueCall = dyn_cast<ttk::OpaqueCallOp>(operation);
+    if (!opaqueCall) {
+      return WalkResult::advance();
+    }
+    if (std::optional<ArrayAttr> templateArguments =
+            opaqueCall.getTemplateArgs()) {
+      for (Attribute templateArgument : *templateArguments) {
+        auto descriptor = dyn_cast<ttk::DFBDescriptorAttr>(templateArgument);
+        if (descriptor && failed(retainCompilerL1TensorSlot(
+                              operation, module, descriptor.getIndex(),
+                              globalTensorIndices, liveTensorSlots))) {
+          return WalkResult::interrupt();
+        }
+      }
+    }
+    return WalkResult::advance();
+  });
+  return walkResult.wasInterrupted() ? failure() : success();
+}
+
 static LogicalResult finalizeFunction(func::FuncOp function) {
   auto crtaIndices = function->getAttrOfType<ArrayAttr>(kCRTAIndicesAttrName);
   if (!crtaIndices) {
@@ -219,31 +273,8 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
   SmallVector<TensorAccessorArgsIndexUse> tensorAccessorArgsUses;
   bool hasUnresolvedIndex = false;
   ModuleOp module = function->getParentOfType<ModuleOp>();
-  WalkResult compilerL1Walk =
-      function.walk([&](ttk::GetCompileArgValOp get) -> WalkResult {
-        if (!isa<ttk::CBType>(get.getType())) {
-          return WalkResult::advance();
-        }
-        FailureOr<int64_t> tensorIndex =
-            getCompilerL1TensorIndex(module, get.getArgIndex());
-        if (failed(tensorIndex)) {
-          get.emitOpError("has invalid compiler-l1 tensor-backing metadata");
-          return WalkResult::interrupt();
-        }
-        if (*tensorIndex < 0) {
-          return WalkResult::advance();
-        }
-        auto slot = llvm::find(globalTensorIndices, *tensorIndex);
-        if (slot == globalTensorIndices.end()) {
-          get.emitOpError("compiler-l1 tensor backing references tensor ")
-              << *tensorIndex
-              << " which is absent from the kernel's common tensor arguments";
-          return WalkResult::interrupt();
-        }
-        liveTensorSlots.set(std::distance(globalTensorIndices.begin(), slot));
-        return WalkResult::advance();
-      });
-  if (compilerL1Walk.wasInterrupted()) {
+  if (failed(classifyCompilerL1TensorBackings(
+          function, module, globalTensorIndices, liveTensorSlots))) {
     return failure();
   }
   if (failed(classifyCommonArgIndices(function, tensorCount, liveTensorSlots,
