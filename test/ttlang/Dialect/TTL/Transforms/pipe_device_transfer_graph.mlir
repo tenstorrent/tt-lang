@@ -1,5 +1,7 @@
 // RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s
 // RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s --check-prefix=COUNT
+// RUN: ttlang-opt %s --ttl-to-ttkernel-pipeline='memory-model=compiler-l1 l1-allocation-strategy=first-fit-decreasing' --convert-ttkernel-to-emitc | FileCheck %s --check-prefix=COMPILER-L1
+// RUN: ttlang-opt %s --ttl-to-ttkernel-pipeline='memory-model=compiler-l1 l1-allocation-strategy=best-fit-decreasing' --convert-ttkernel-to-emitc | FileCheck %s --check-prefix=COMPILER-L1
 
 // Summary: Verify that PipeGraph preserves distinct logical-device transfers
 // that share one node-level PipeKey.
@@ -7,6 +9,24 @@
 // Receiver declarations intentionally reverse the send order. Each edge must
 // retain its route, predicate, payload send, completion wait, and receiver DFB.
 // Disjoint device predicates share one function-scoped fabric manager.
+
+// Compiler-managed storage preserves generated fabric routes while replacing
+// every DFB operand with an arena-relative address object.
+// COMPILER-L1-LABEL: module attributes
+// COMPILER-L1-SAME: ttl.l1_arena_bytes = 12352 : i64
+// COMPILER-L1-SAME: ttl.memory_model = "compiler-l1"
+// COMPILER-L1-LABEL: func.func @senders
+// COMPILER-L1-SAME: ttl.fabric_routes = [
+// COMPILER-L1-SAME: ttl.fabric_runtime_arg_base_common_index = 4 : i64
+// COMPILER-L1: emitc.verbatim "ttlang::l1::Buffer<4096, 1, 1, 1, 64, -1> cb_ctarg_0({});"
+// COMPILER-L1: call_opaque "experimental::routing_plane_fused_write_atomic_inc"
+// COMPILER-L1-NOT: !ttkernel.cb<
+// COMPILER-L1-LABEL: func.func @receivers
+// COMPILER-L1-SAME: ttl.fabric_routes = [
+// COMPILER-L1-SAME: ttl.fabric_runtime_arg_base_common_index = 2 : i64
+// COMPILER-L1: emitc.verbatim "ttlang::l1::Buffer<4096, 1, 1, 1, 4152, -1> cb_ctarg_1({});"
+// COMPILER-L1: call_opaque "experimental::routing_plane_atomic_inc"
+// COMPILER-L1-NOT: !ttkernel.cb<
 
 // COUNT-LABEL: func.func @senders
 // COUNT: ttkernel.routing_plane.create_connection_manager

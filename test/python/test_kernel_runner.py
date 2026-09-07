@@ -2728,23 +2728,12 @@ def test_compiler_l1_composes_with_lifecycle_scratch(monkeypatch):
     assert result["tensors"] == [scratch, arena, tensor]
 
 
-# Local PipeNets still reject fabric routes and Metal DFB reconfiguration.
-@pytest.mark.parametrize(
-    "incompatible_resource",
-    ["fabric-route", "reconfiguration"],
-)
-def test_compiler_l1_rejects_incompatible_resources_before_allocation(
-    monkeypatch, incompatible_resource
+# Compiler-managed storage rejects Metal DFB reconfiguration before allocation.
+def test_compiler_l1_rejects_metal_reconfiguration_before_allocation(
+    monkeypatch,
 ):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     kernel_spec = _kernel_spec(KernelKind.COMPUTE)
-    arguments = {}
-    if incompatible_resource == "fabric-route":
-        arguments["kernel_fabric_routes"] = [
-            [kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)]
-        ]
-    else:
-        arguments["dfb_reconfiguration_plan"] = object()
 
     allocation_calls = []
     factory_calls = []
@@ -2756,7 +2745,7 @@ def test_compiler_l1_rejects_incompatible_resources_before_allocation(
 
     with pytest.raises(
         ValueError,
-        match="cannot combine with Metal DFB reconfiguration or generated fabric routes",
+        match="cannot combine with Metal DFB reconfiguration",
     ):
         kernel_runner.run_kernel_on_device(
             kernel_specs=[kernel_spec],
@@ -2764,7 +2753,7 @@ def test_compiler_l1_rejects_incompatible_resources_before_allocation(
             cb_configs=[_compiler_l1_config()],
             core_ranges=_FakeCoreRanges(),
             runtime_resource_factory=lambda **_kwargs: factory_calls.append(True),
-            **arguments,
+            dfb_reconfiguration_plan=object(),
         )
 
     assert allocation_calls == []
@@ -3626,6 +3615,112 @@ def test_compiler_l1_device_domain_composes_external_fabric_binding(monkeypatch)
     assert mesh_programs[0][1].kernels[0].common_runtime_args == [0, 0, 0x8000]
     assert mesh_programs[1][1].kernels[0].common_runtime_args == [0, 1, 0x8000]
     assert fake_ttnn.synchronize_calls == [mesh_device]
+
+
+# Generated fabric binding preserves compiler-owned receiver and arena addresses.
+def test_compiler_l1_device_domain_composes_generated_fabric_route(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    mesh_device = _FakeMeshDevice()
+    core_ranges, arena, allocation_calls = _install_compiler_l1_arena(
+        monkeypatch, mesh_device
+    )
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
+    kernel_spec = kernel_runner.KernelSpec(
+        path="/tmp/generated.cpp",
+        thread_type="noc",
+        tensor_indices=[],
+        config=object(),
+        pipe_computed_address_dfb_indices=[0],
+        fabric_runtime_arg_base_common_index=1,
+        fabric_manager_intervals=(_fabric_manager_interval("generated.0"),),
+    )
+
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[kernel_spec],
+        tensors=[_FakeTensor(mesh_device)],
+        cb_configs=[_compiler_l1_config()],
+        core_ranges=core_ranges,
+        device_domain=DeviceDomain((1, 2)),
+        kernel_fabric_routes=[[route]],
+        device=mesh_device,
+    )
+
+    assert allocation_calls == [(core_ranges, 2112, mesh_device, True)]
+    assert result["tensors"][0] is arena
+    mesh_programs = result["program"].mesh_programs
+    assert len(mesh_programs) == 2
+    for _mesh_range, program in mesh_programs:
+        assert program.cbs == []
+        assert program.kernels[0].common_runtime_args[0] == 0x8040
+        assert program.kernels[0].common_runtime_args[-1] == 0x8000
+        assert program.kernels[0].compile_time_args == [4]
+    assert len(fake_ttnn.fabric_setup_calls) == 1
+    assert fake_ttnn.fabric_setup_calls[0][4] == (0, 0)
+
+
+# Generated fabric binding uses the retained tensor allocation for a
+# tensor-backed receiver while retaining compiler-owned interface state.
+def test_compiler_l1_generated_fabric_route_uses_tensor_backed_receiver(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    mesh_device = _FakeMeshDevice()
+    core_ranges, arena, allocation_calls = _install_compiler_l1_arena(
+        monkeypatch, mesh_device
+    )
+    receiver_storage = _FakeTensor(mesh_device, address=0x9000)
+    receiver_config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        storage_segments=(
+            DFBStorageSegment(
+                nodes=((0, 0),),
+                tensor_index=0,
+                byte_offset=64,
+                byte_size=2048,
+            ),
+        ),
+        l1_offset=0,
+    )
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
+    kernel_spec = kernel_runner.KernelSpec(
+        path="/tmp/generated.cpp",
+        thread_type="noc",
+        tensor_indices=[0],
+        config=object(),
+        pipe_computed_address_dfb_indices=[0],
+        fabric_runtime_arg_base_common_index=2,
+        fabric_manager_intervals=(_fabric_manager_interval("generated.0"),),
+    )
+
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[kernel_spec],
+        tensors=[receiver_storage],
+        cb_configs=[receiver_config],
+        core_ranges=core_ranges,
+        device_domain=DeviceDomain((1, 2)),
+        kernel_fabric_routes=[[route]],
+        device=mesh_device,
+    )
+
+    assert allocation_calls == [(core_ranges, 8, mesh_device, True)]
+    assert result["tensors"][0] is arena
+    assert result["tensors"][-1] is receiver_storage
+    mesh_programs = result["program"].mesh_programs
+    assert len(mesh_programs) == 2
+    for _mesh_range, program in mesh_programs:
+        assert program.cbs == []
+        common_runtime_args = program.kernels[0].common_runtime_args
+        assert common_runtime_args[0] == 0x9000
+        assert common_runtime_args[1] == 0x9040
+        assert common_runtime_args[-1] == 0x8000
+        assert program.kernels[0].compile_time_args == [5]
+    assert len(fake_ttnn.fabric_setup_calls) == 1
+    assert fake_ttnn.fabric_setup_calls[0][4] == (0, 0)
 
 
 def test_routing_plane_runtime_args_are_dense_per_device(monkeypatch):

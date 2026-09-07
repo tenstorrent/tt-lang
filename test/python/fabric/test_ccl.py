@@ -251,6 +251,52 @@ def _make_point_to_point_operation(
     return point_to_point
 
 
+def _make_tensor_backed_receiver_point_to_point_operation(
+    mesh_shape: tuple[int, ...],
+    source_device: tuple[int, ...],
+    destination_device: tuple[int, ...],
+):
+    device_domain = ttl.DeviceDomain(mesh_shape)
+    point_to_point_net = ttl.PipeNet(
+        graph=ttl.TransferGraph.edges(
+            device_domain, edges=[(source_device, destination_device)]
+        )
+    )
+
+    @ttl.operation(grid=(1, 1), device_domain=device_domain)
+    def point_to_point(inp, receive_storage, out):
+        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        receive_dfb = ttl.make_tensor_backed_dfb(
+            receive_storage, shape=(1, 1), block_count=1
+        )
+
+        @ttl.compute()
+        def idle_compute():
+            pass
+
+        @ttl.datamovement()
+        def sender_node():
+            def send(pipe):
+                with send_dfb.reserve() as send_block:
+                    ttl.copy(inp[0, 0], send_block).wait()
+                with send_dfb.wait() as send_block:
+                    ttl.copy(send_block, pipe).wait()
+
+            point_to_point_net.if_src(send)
+
+        @ttl.datamovement()
+        def receiver_node():
+            def receive(pipe):
+                with receive_dfb.reserve() as receive_block:
+                    ttl.copy(pipe, receive_block).wait()
+                with receive_dfb.wait() as receive_block:
+                    ttl.copy(receive_block, out[0, 0]).wait()
+
+            point_to_point_net.if_dst(receive)
+
+    return point_to_point
+
+
 def _make_graph_destination_count_operation(mesh_shape: tuple[int, ...]):
     """Build a gather whose root consumes every expanded destination record."""
     device_count = prod(mesh_shape)
@@ -845,6 +891,28 @@ def _mesh_tensor(mesh, tensor, dtype):
     )
 
 
+def _mesh_l1_sharded_tensor(mesh, tensor, dtype):
+    worker_core = ttnn.CoreCoord(0, 0)
+    shard_spec = ttnn.ShardSpec(
+        ttnn.CoreRangeSet({ttnn.CoreRange(worker_core, worker_core)}),
+        (TILE_SIZE, TILE_SIZE),
+        ttnn.ShardOrientation.ROW_MAJOR,
+    )
+    memory_config = ttnn.MemoryConfig(
+        ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+        ttnn.BufferType.L1,
+        shard_spec,
+    )
+    return ttnn.from_torch(
+        tensor,
+        dtype=dtype,
+        layout=ttnn.TILE_LAYOUT,
+        device=mesh,
+        memory_config=memory_config,
+        mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=0),
+    )
+
+
 def _compose(mesh, tensor):
     return ttnn.to_torch(
         tensor,
@@ -929,6 +997,80 @@ def test_point_to_point(
     assert len(set(program_cache_entry_counts)) == 1
     expected = torch.zeros_like(inp_torch)
     expected[(device_count - 1) * TILE_SIZE :, :] = inp_torch[:TILE_SIZE, :]
+    assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+
+
+# Compiler-managed DFB storage must preserve generated inter-device routing and
+# repeated mesh execution without constructing TT-Metal DFB descriptors.
+@pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
+@pytest.mark.parametrize(
+    "allocation_strategy",
+    ["first-fit-decreasing", "best-fit-decreasing"],
+    ids=["first-fit", "best-fit"],
+)
+@pytest.mark.parametrize(
+    "receiver_storage_kind",
+    ["compiler-owned", "tensor-backed"],
+    ids=["compiler-owned", "tensor-backed"],
+)
+def test_compiler_l1_point_to_point(
+    fabric_mesh_shape,
+    torch_dtype,
+    ttnn_dtype,
+    rtol,
+    atol,
+    allocation_strategy,
+    receiver_storage_kind,
+    reject_metal_dfb_descriptor_creation,
+):
+    reject_metal_dfb_descriptor_creation()
+    device_count = prod(fabric_mesh_shape)
+    source_device = tuple(0 for _extent in fabric_mesh_shape)
+    destination_device = tuple(extent - 1 for extent in fabric_mesh_shape)
+    logical_shape = (device_count * TILE_SIZE, TILE_SIZE)
+    inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
+    out_torch = torch.zeros(logical_shape, dtype=torch_dtype)
+
+    with _open_collective_mesh(fabric_mesh_shape) as mesh:
+        mesh.enable_program_cache()
+        inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
+        out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
+        operation_arguments = [inp]
+        if receiver_storage_kind == "tensor-backed":
+            operation = _make_tensor_backed_receiver_point_to_point_operation(
+                fabric_mesh_shape, source_device, destination_device
+            )
+            operation_arguments.append(
+                _mesh_l1_sharded_tensor(mesh, out_torch, ttnn_dtype)
+            )
+        else:
+            operation = _make_point_to_point_operation(
+                fabric_mesh_shape, source_device, destination_device
+            )
+        operation_arguments.append(out)
+
+        program_cache_entry_counts = []
+        for _submission in range(2):
+            operation(
+                *operation_arguments,
+                options=(
+                    "--ttl-memory-model=compiler-l1 "
+                    f"--ttl-l1-allocation-strategy={allocation_strategy}"
+                ),
+            )
+            program_cache_entry_counts.append(mesh.num_program_cache_entries())
+
+        result = _compose(mesh, out)
+
+    assert len(set(program_cache_entry_counts)) == 1
+    expected = torch.zeros_like(inp_torch)
+    source_start = _flatten_device_index(source_device, fabric_mesh_shape) * TILE_SIZE
+    destination_start = (
+        _flatten_device_index(destination_device, fabric_mesh_shape) * TILE_SIZE
+    )
+    expected[destination_start : destination_start + TILE_SIZE, :] = inp_torch[
+        source_start : source_start + TILE_SIZE, :
+    ]
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
 
 
