@@ -458,6 +458,22 @@ static Operation *findInstrumentationBetween(Operation *producer,
   return nullptr;
 }
 
+/// Returns the elementwise binary kind the FPU can fuse with a broadcast
+/// operand, or nullopt when `operation` is not such a binary.
+static std::optional<EltwiseBinaryType>
+getFusedEltwiseBinaryType(Operation *operation) {
+  if (isa<AddOp>(operation)) {
+    return EltwiseBinaryType::Add;
+  }
+  if (isa<SubOp>(operation)) {
+    return EltwiseBinaryType::Sub;
+  }
+  if (isa<MulOp>(operation)) {
+    return EltwiseBinaryType::Mul;
+  }
+  return std::nullopt;
+}
+
 static FailureOr<unsigned> findFusedRootInput(const ComputeOpCreationPlan &plan,
                                               Value value,
                                               FusedInputRole role) {
@@ -539,7 +555,7 @@ static LogicalResult buildFusedOperationPlans(ComputeOpCreationPlan &plan,
     }
 
     Operation *user = *broadcast.getResult().getUsers().begin();
-    if (!isa<AddOp, SubOp, MulOp>(user) || !fusedOperations.contains(user) ||
+    if (!getFusedEltwiseBinaryType(user) || !fusedOperations.contains(user) ||
         foldedMatmulByAdd.contains(user) ||
         broadcast->getBlock() != user->getBlock()) {
       continue;
@@ -632,6 +648,7 @@ static LogicalResult buildFusedOperationPlans(ComputeOpCreationPlan &plan,
       RankedTensorType inputType = getTensorType(foldedBroadcast.getInput());
       operationPlan.tileBroadcast =
           getTileBroadcastType(foldedBroadcast.getDims(), inputType.getRank());
+      operationPlan.eltwiseBinary = getFusedEltwiseBinaryType(operation);
       operationPlan.recipe = FusedOperationRecipe::BinaryBroadcast;
     } else if (auto matmul = dyn_cast<MatmulOp>(operation)) {
       if (failed(addOperand(matmul.getLhs(), FusedInputRole::MatmulLeft)) ||
@@ -1344,20 +1361,6 @@ resolveTransactionPushes(OutputPublicationPlan plan) {
 }
 
 } // namespace
-
-std::optional<EltwiseBinaryType>
-getFusedEltwiseBinaryType(Operation *operation) {
-  if (isa<AddOp>(operation)) {
-    return EltwiseBinaryType::Add;
-  }
-  if (isa<SubOp>(operation)) {
-    return EltwiseBinaryType::Sub;
-  }
-  if (isa<MulOp>(operation)) {
-    return EltwiseBinaryType::Mul;
-  }
-  return std::nullopt;
-}
 
 PlanningResult<OutputPublicationPlan, OutputPublicationRejection>
 buildOutputPublicationPlan(Operation *source) {

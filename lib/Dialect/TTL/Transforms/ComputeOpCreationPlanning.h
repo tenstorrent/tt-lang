@@ -253,11 +253,6 @@ struct FusedOperationOperand {
   std::optional<unsigned> rootInputIndex;
 };
 
-/// Return the elementwise binary kind the FPU can fuse with a broadcast
-/// operand, or nullopt when `operation` is not such a binary.
-std::optional<EltwiseBinaryType>
-getFusedEltwiseBinaryType(Operation *operation);
-
 /// Hardware configuration captured for an exp tile recipe.
 struct ExpFlagsPlan {
   BoolAttr approx;
@@ -278,7 +273,10 @@ struct FusedOperationPlan {
   Operation *source = nullptr;
 
   /// Original operands used to detect invalidation before application.
-  SmallVector<Value> sourceOperands;
+  ///
+  /// A fused source is at most ternary, and the inline capacity is pinned so
+  /// the plan stays inside the inline-size limit `SmallVector` asserts on.
+  SmallVector<Value, 4> sourceOperands;
 
   /// Tile recipe selected by the planner.
   FusedOperationRecipe recipe = FusedOperationRecipe::TileOperation;
@@ -291,6 +289,9 @@ struct FusedOperationPlan {
 
   /// Hardware broadcast kind for a tile-broadcast recipe.
   std::optional<BcastType> tileBroadcast;
+
+  /// Hardware binary kind for a binary-broadcast recipe.
+  std::optional<EltwiseBinaryType> eltwiseBinary;
 
   /// Matmul emitted by a later accumulator recipe.
   std::optional<MatmulOp> foldedMatmul;
