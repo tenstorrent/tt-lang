@@ -2167,24 +2167,18 @@ static FailureOr<PassthroughStorePlan> buildPassthroughStorePlan(
   plan.reserve = reserve;
   plan.outputView = store.getView();
   plan.outputDFB = reserve.getCb();
-  auto outputTensorType = dyn_cast<RankedTensorType>(store.getView().getType());
-  assert(outputTensorType && "verified store output must be a ranked tensor");
+  auto outputTensorType = cast<RankedTensorType>(store.getView().getType());
   auto outputTileType =
-      dyn_cast<ttcore::TileType>(outputTensorType.getElementType());
-  assert(outputTileType && "verified store output must contain tiles");
-  if (store.getRowPrefix()) {
-    SmallVector<int64_t> singlePackShape(outputTensorType.getRank(), 1);
-    plan.computeOutputTensorType = RankedTensorType::get(
-        singlePackShape, outputTileType, outputTensorType.getEncoding());
-  } else {
-    plan.computeOutputTensorType = outputTensorType;
-  }
+      cast<ttcore::TileType>(outputTensorType.getElementType());
+  plan.computeOutputTensorType = outputTensorType;
   plan.inputTileType = tileType;
   plan.outputTileType = outputTileType;
   AffineMap identity = AffineMap::getMultiDimIdentityMap(tensorType.getRank(),
                                                          store->getContext());
   plan.iteration.inputMaps = {identity};
   if (store.getRowPrefix()) {
+    // Both tensors contain one tile, but their ranks may differ; every source
+    // coordinate therefore stores to the destination's sole tile.
     SmallVector<AffineExpr> zeroResults(
         outputTensorType.getRank(),
         getAffineConstantExpr(0, store.getContext()));
@@ -2205,11 +2199,6 @@ static FailureOr<PassthroughStorePlan> buildPassthroughStorePlan(
         plan.outputAssociations.push_back(association);
       }
     }
-  }
-  if (store.getRowPrefix() && !plan.outputAssociations.empty()) {
-    failureReason =
-        "row-prefix store output cannot replace an existing tensor association";
-    return failure();
   }
   return plan;
 }

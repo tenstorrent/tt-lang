@@ -142,14 +142,19 @@ static bool isL1AccumulationDataTypeSupported(ttcore::DataType dataType) {
 
 static void addPackCBs(scf::ForOp loop,
                        llvm::SmallDenseSet<Value, 2> &packCBs) {
-  llvm::SmallDenseSet<Value, 2> loopPackCBs = getProducerPackOutputDFBs(loop);
+  llvm::SmallDenseSet<Value, 2> loopPackCBs = getPackTileCBs(loop);
   packCBs.insert(loopPackCBs.begin(), loopPackCBs.end());
 }
 
 static bool packsToAnyCB(Operation *operation,
                          const llvm::SmallDenseSet<Value, 2> &packCBs) {
-  FailureOr<Value> outputDFB = getProducerPackOutputDFB(operation);
-  return succeeded(outputDFB) && packCBs.contains(*outputDFB);
+  if (auto packOp = dyn_cast<ttk::PackTileOp>(operation)) {
+    return packCBs.contains(packOp.getOutCb());
+  }
+  if (auto packOp = dyn_cast<ttk::PackTileBlockOp>(operation)) {
+    return packCBs.contains(packOp.getOutCb());
+  }
+  return false;
 }
 
 static void addScopeOutputCBs(Operation *operation,
@@ -164,7 +169,7 @@ static void addScopeOutputCBs(Operation *operation,
 static bool containsAnyPack(Operation *operation) {
   bool found = false;
   operation->walk([&](Operation *nested) {
-    if (succeeded(getProducerPackOutputDFB(nested))) {
+    if (isa<ttk::PackTileOp, ttk::PackTileBlockOp>(nested)) {
       found = true;
       return WalkResult::interrupt();
     }
@@ -283,9 +288,16 @@ static void insertNonScopePackL1AccGuards(
     if (findL1AccLoop(operation) != loop) {
       return;
     }
-    FailureOr<Value> outputDFB = getProducerPackOutputDFB(operation);
-    if (succeeded(outputDFB) && !scopeOutputCBs.contains(*outputDFB)) {
-      nonScopePacks.push_back(operation);
+    if (auto packOp = dyn_cast<ttk::PackTileOp>(operation)) {
+      if (!scopeOutputCBs.contains(packOp.getOutCb())) {
+        nonScopePacks.push_back(operation);
+      }
+      return;
+    }
+    if (auto packOp = dyn_cast<ttk::PackTileBlockOp>(operation)) {
+      if (!scopeOutputCBs.contains(packOp.getOutCb())) {
+        nonScopePacks.push_back(operation);
+      }
     }
   });
 
@@ -337,9 +349,11 @@ static LogicalResult verifyL1AccumulationPackFormats(
   };
 
   loop->walk([&](Operation *operation) {
-    FailureOr<Value> outputDFB = getProducerPackOutputDFB(operation);
-    if (succeeded(outputDFB)) {
-      return verifyPackOutput(operation, *outputDFB);
+    if (auto packOp = dyn_cast<ttk::PackTileOp>(operation)) {
+      return verifyPackOutput(packOp.getOperation(), packOp.getOutCb());
+    }
+    if (auto packOp = dyn_cast<ttk::PackTileBlockOp>(operation)) {
+      return verifyPackOutput(packOp.getOperation(), packOp.getOutCb());
     }
     return WalkResult::advance();
   });

@@ -2097,11 +2097,22 @@ def TTL_StoreOp : TTL_ComputePrimitiveOp<"store", "Passthrough",
     packer accumulation so that each iteration adds to the existing L1
     value instead of overwriting.
 
-    When `row_prefix` is set, the source is one full 32x32 tile and the
-    destination is a reserve-backed block containing a contiguous prefix of
-    complete 32-datum rows. The prefix is packed directly from DST without
-    materializing the unused source rows. `row_prefix` supports bf16 and f32
-    sources and may be combined with `accumulate`.
+    Example:
+    ```mlir
+    %reserve = ttl.cb_reserve %cb : ... -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %result = ttl.add %a, %b : ...
+    ttl.store %result, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+                                  tensor<1x1x!ttcore.tile<32x32, bf16>>
+    // Accumulating store (from +=):
+    ttl.store %result, %reserve {accumulate} : ...
+    ```
+
+    When `row_prefix` is set, the source contains one 32x32 tile and the
+    reserve-backed destination contains one tile with the same 32-element
+    width and a supported height no greater than 32. The operation packs the
+    source DST tile directly into the destination tile; rows outside the
+    destination tile are not stored. `row_prefix` supports bf16 and f32 and
+    may be combined with `accumulate`.
   }];
   let arguments = (ins
     AnyRankedTensor:$tensor,
@@ -2502,9 +2513,24 @@ def TTL_TileStoreOp : TTL_ComputePrimitiveOp<"tile_store", "Passthrough",
     The `indices` operands are multi-dimensional DFB tile coordinates. The
     `dst_index` operand identifies the source tile in the DST register.
 
-    `row_prefix` preserves the tensor-level row-prefix packing decision. The
-    source is a full 32x32 DST tile, and the complete destination block stores
-    a contiguous prefix of 32-datum rows using one row-packing operation.
+    Example:
+    ```mlir
+    %view = ttl.cb_reserve %cb : <[2, 3], !ttcore.tile<32x32, bf16>, 1>
+                                 -> tensor<2x3x!ttcore.tile<32x32, bf16>>
+    // After assign-dst (inside ttl.compute body):
+    %i = ttl.iter_index 0 : index
+    %j = ttl.iter_index 1 : index
+    ttl.tile_store %tile, %view[%i, %j] from dst[%c0]
+      : !ttcore.tile<32x32, bf16>, tensor<2x3x!ttcore.tile<32x32, bf16>>
+    // After lower-to-loops (iter_index replaced with loop IVs):
+    ttl.tile_store %tile, %view[%row, %col] from dst[%c0]
+      : !ttcore.tile<32x32, bf16>, tensor<2x3x!ttcore.tile<32x32, bf16>>
+    ```
+
+    `row_prefix` preserves the tensor-level decision to store one 32x32 DST
+    tile into one destination tile with the same width and a supported height
+    no greater than 32. Lowering uses the destination tile configuration to
+    omit source rows outside that height.
   }];
   let arguments = (ins
     AnyType:$tile,
