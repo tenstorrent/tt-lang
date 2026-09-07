@@ -83,3 +83,33 @@ func.func @preserve_unresolved_index(%index: index)
   %arg = ttkernel.get_common_arg_val(%index) : (index) -> i32
   return
 }
+
+// -----
+
+// External descriptors retain their tensor-backed storage argument.
+// CHECK-LABEL: func.func @retain_external_descriptor_tensor
+// CHECK-SAME: ttl.crta_indices = [7 : i32]
+module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [
+  {storage_segments = [{tensor_backing = #ttl.tensor_backing<tensor_index = 7, byte_offset = 0, byte_size = 2048>}]}
+]} {
+  func.func @retain_external_descriptor_tensor()
+      attributes {ttl.crta_indices = [4, 7, 9],
+                  ttl.kernel_thread = #ttkernel.thread<compute>} {
+    ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<0, 1, 1, 2048>] () {dfb_resource_indices = array<i32: 0>, header = "describe.hpp"} : () -> ()
+    return
+  }
+}
+
+// -----
+
+// Opaque calls without template arguments do not affect tensor compaction.
+// CHECK-LABEL: func.func @ignore_opaque_call_without_template_arguments
+// CHECK-SAME: ttl.crta_indices = []
+module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = []} {
+  func.func @ignore_opaque_call_without_template_arguments()
+      attributes {ttl.crta_indices = [4, 7],
+                  ttl.kernel_thread = #ttkernel.thread<noc>} {
+    ttkernel.opaque_call "reset"() {header = "reset.hpp"} : () -> ()
+    return
+  }
+}
