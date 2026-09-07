@@ -79,9 +79,11 @@ def _load_ttlang_test_utils(
 def _create_fake_fabric_ttnn(
     discovered_shape: tuple[int, ...],
     configured_shapes: dict[object, tuple[int, ...]] | None = None,
+    configuration_errors: dict[object, RuntimeError] | None = None,
 ):
     events = []
     configured_shapes = configured_shapes or {}
+    configuration_errors = configuration_errors or {}
     active_config = None
 
     class MeshShape:
@@ -102,6 +104,8 @@ def _create_fake_fabric_ttnn(
         if kwargs:
             event += (kwargs,)
         events.append(event)
+        if config in configuration_errors:
+            raise configuration_errors[config]
 
     def open_mesh_device(shape):
         events.append(("open", shape.shape))
@@ -218,6 +222,45 @@ def test_fabric_mesh_discovers_shape_for_requested_config(monkeypatch) -> None:
     assert mesh_shape == (2, 2)
     assert events == [
         ("configure", "fabric-torus", {"reliability_mode": "relaxed"}),
+        ("configure", "disabled"),
+    ]
+
+
+def test_fabric_mesh_reports_unmappable_configuration(monkeypatch) -> None:
+    module = _load_ttlang_test_utils(monkeypatch)
+    mapping_error = RuntimeError(
+        "Graph specified in MGD could not fit in the discovered physical topology"
+    )
+    fake_ttnn, events, _mesh_device = _create_fake_fabric_ttnn(
+        (2, 4), configuration_errors={"fabric-torus": mapping_error}
+    )
+    monkeypatch.setattr(module, "_get_ttnn", lambda: fake_ttnn)
+
+    with pytest.raises(
+        module.FabricMeshUnavailable,
+        match="fabric configuration fabric-torus cannot be mapped",
+    ):
+        module.get_fabric_mesh_shape(fabric_config="fabric-torus")
+
+    assert events == [
+        ("configure", "fabric-torus"),
+        ("configure", "disabled"),
+    ]
+
+
+def test_fabric_mesh_preserves_other_configuration_errors(monkeypatch) -> None:
+    module = _load_ttlang_test_utils(monkeypatch)
+    fake_ttnn, events, _mesh_device = _create_fake_fabric_ttnn(
+        (2, 4),
+        configuration_errors={"fabric-torus": RuntimeError("configuration failed")},
+    )
+    monkeypatch.setattr(module, "_get_ttnn", lambda: fake_ttnn)
+
+    with pytest.raises(RuntimeError, match="configuration failed"):
+        module.get_fabric_mesh_shape(fabric_config="fabric-torus")
+
+    assert events == [
+        ("configure", "fabric-torus"),
         ("configure", "disabled"),
     ]
 

@@ -3202,25 +3202,12 @@ static mlir::LogicalResult verifyPipeNetRecordIdentity(PipeNetReferenceOp op) {
   return mlir::success();
 }
 
-template <typename PredicateOp>
-static mlir::LogicalResult verifyPipeNetPredicate(PredicateOp op) {
-  if (mlir::failed(verifyPipeNetRecordIdentity(op))) {
-    return mlir::failure();
-  }
-  mlir::tt::ttl::PipeNetRecordsAttr records = op.getRecordsAttr();
-  if (records && !records.getPipes().front().getDeviceTransfer()) {
-    return op.emitOpError()
-           << "record table must identify logical-device transfers";
-  }
-  return mlir::success();
-}
-
 mlir::LogicalResult mlir::tt::ttl::IsSrcOp::verify() {
-  return verifyPipeNetPredicate(*this);
+  return verifyPipeNetRecordIdentity(*this);
 }
 
 mlir::LogicalResult mlir::tt::ttl::IsDstOp::verify() {
-  return verifyPipeNetPredicate(*this);
+  return verifyPipeNetRecordIdentity(*this);
 }
 
 mlir::LogicalResult mlir::tt::ttl::PipeNetDestinationCountOp::verify() {
@@ -3228,7 +3215,7 @@ mlir::LogicalResult mlir::tt::ttl::PipeNetDestinationCountOp::verify() {
 }
 
 mlir::LogicalResult mlir::tt::ttl::IsActiveOp::verify() {
-  return verifyPipeNetPredicate(*this);
+  return verifyPipeNetRecordIdentity(*this);
 }
 
 int64_t mlir::tt::ttl::IsSrcOp::getReferencedPipeNetId() {
