@@ -179,6 +179,11 @@ class FabricMeshUnavailable(RuntimeError):
     pass
 
 
+_UNMAPPABLE_FABRIC_TOPOLOGY = (
+    "Graph specified in MGD could not fit in the discovered physical topology"
+)
+
+
 def _get_current_fabric_mesh_shape(ttnn_module) -> tuple[int, ...]:
     return tuple(
         int(extent)
@@ -217,6 +222,14 @@ def get_fabric_mesh_shape(
             ),
         )
         return _get_current_fabric_mesh_shape(ttnn_module)
+    except RuntimeError as error:
+        # TTNN exposes topology support only by attempting configuration.
+        if _UNMAPPABLE_FABRIC_TOPOLOGY not in str(error):
+            raise
+        raise FabricMeshUnavailable(
+            f"fabric configuration {fabric_config} cannot be mapped to the "
+            "discovered physical topology"
+        ) from error
     finally:
         ttnn_module.set_fabric_config(ttnn_module.FabricConfig.DISABLED)
 
