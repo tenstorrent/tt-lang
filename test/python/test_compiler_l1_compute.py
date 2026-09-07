@@ -492,9 +492,9 @@ def test_l1_sfpu_precision(device, multiply, dtype, allocator, memory_model):
         )
 
 
-def _make_kimi_situ_mlp_residual(normalize):
+def _make_gated_mlp_residual(normalize):
     @ttl.operation(grid=(1, 1))
-    def kimi_situ_mlp_residual(source, gate_weight, up_weight, down_weight, output):
+    def gated_mlp_residual(source, gate_weight, up_weight, down_weight, output):
         input_storage = ttl.make_dataflow_buffer_like(
             source, shape=(1, 1), block_count=2
         )
@@ -593,7 +593,7 @@ def _make_kimi_situ_mlp_residual(normalize):
                 with output_storage.wait() as block:
                     ttl.copy(block, output[iteration : iteration + 1, 0:1]).wait()
 
-    return kimi_situ_mlp_residual
+    return gated_mlp_residual
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
@@ -603,10 +603,10 @@ def _make_kimi_situ_mlp_residual(normalize):
 @pytest.mark.parametrize(
     "normalize", [False, True], ids=["projection", "normalized_projection"]
 )
-def test_l1_kimi_situ_mlp_residual(
+def test_l1_gated_mlp_residual(
     device, dtype, allocator, reuse, memory_model, normalize
 ):
-    operation = _make_kimi_situ_mlp_residual(normalize)
+    operation = _make_gated_mlp_residual(normalize)
     options = f"--ttl-memory-model={memory_model}"
     if not reuse:
         options += " --no-ttl-reuse-user-dfbs"
