@@ -125,13 +125,6 @@ static AffineMap buildZeroMap(MLIRContext *context, int64_t domainRank,
   return AffineMap::get(domainRank, 0, expressions, context);
 }
 
-static RankedTensorType
-buildSingleElementTensorType(RankedTensorType tensorType) {
-  SmallVector<int64_t> shape(tensorType.getRank(), 1);
-  return RankedTensorType::get(shape, tensorType.getElementType(),
-                               tensorType.getEncoding());
-}
-
 static AffineMap
 buildBroadcastAwareInputMap(MLIRContext *context, RankedTensorType inputType,
                             RankedTensorType outputType, int64_t iterationRank,
@@ -1936,11 +1929,9 @@ buildComputeOutputPlans(ComputeOpCreationPlan &creation,
     }
 
     ComputeOutputPlan plan;
-    plan.dfb = outputDFB;
     if (!usesRowPrefix) {
       onlyRowPrefixOutputs = false;
-      plan.attachmentType = creation.resultType;
-      plan.formalType = creation.resultType;
+      plan.tensorType = creation.resultType;
       plan.indexingMap = creation.iteration.outputMap;
     } else {
       if (creation.rowNormalization) {
@@ -1959,16 +1950,15 @@ buildComputeOutputPlans(ComputeOpCreationPlan &creation,
                         "destination tensor type";
         return failure();
       }
-      plan.attachmentType = destinationType;
-      plan.formalType = buildSingleElementTensorType(destinationType);
+      plan.tensorType = destinationType;
       plan.indexingMap = buildZeroMap(stores.front().getContext(),
                                       creation.iteration.iteratorTypes.size(),
                                       destinationType.getRank());
-      changesResultRepresentation |= plan.formalType != creation.resultType;
+      changesResultRepresentation |= plan.tensorType != creation.resultType;
     }
 
-    if (!plans.empty() && plans.front().formalType.getElementType() !=
-                              plan.formalType.getElementType()) {
+    if (!plans.empty() && plans.front().tensorType.getElementType() !=
+                              plan.tensorType.getElementType()) {
       failureReason = "one compute cannot publish output dataflow buffers with "
                       "different tile types";
       return failure();
@@ -1979,15 +1969,14 @@ buildComputeOutputPlans(ComputeOpCreationPlan &creation,
   if (creation.inputs.empty() && onlyRowPrefixOutputs) {
     assert(creation.resultType.getNumElements() == 1 &&
            "row-prefix source must contain one tile");
-    // No operand carries a nonconstant indexing map from which the tiling
-    // interface could recover loop bounds. Model the one-tile source as one
-    // zero-rank execution instead of retaining unused unit iterators.
+    // No operand defines a loop bound. Represent the one-tile source with a
+    // zero-dimensional iteration domain instead of unused unit iterators.
     creation.iteration.iteratorTypes.clear();
     creation.iteration.outputMap = buildZeroMap(
         creation.source->getContext(), 0, creation.resultType.getRank());
     for (ComputeOutputPlan &plan : plans) {
       plan.indexingMap = buildZeroMap(creation.source->getContext(), 0,
-                                      plan.formalType.getRank());
+                                      plan.tensorType.getRank());
     }
   }
 
@@ -2286,12 +2275,7 @@ static FailureOr<PassthroughStorePlan> buildPassthroughStorePlan(
   auto outputTensorType = cast<RankedTensorType>(store.getView().getType());
   auto outputTileType =
       cast<ttcore::TileType>(outputTensorType.getElementType());
-  if (store.getRowPrefix()) {
-    plan.computeOutputTensorType =
-        buildSingleElementTensorType(outputTensorType);
-  } else {
-    plan.computeOutputTensorType = outputTensorType;
-  }
+  plan.computeOutputTensorType = outputTensorType;
   plan.inputTileType = tileType;
   plan.outputTileType = outputTileType;
   AffineMap identity = AffineMap::getMultiDimIdentityMap(tensorType.getRank(),

@@ -371,20 +371,10 @@ struct OutputPublicationPlan {
   }
 };
 
-/// Formal tensor representation for one created `ComputeOp` output.
-///
-/// `formalType` and `indexingMap` define how one compute iteration addresses a
-/// DFB-backed view. These differ from the complete DFB attachment and source
-/// result for type-changing stores such as row-prefix packing.
+/// Tensor representation for one created `ComputeOp` output.
 struct ComputeOutputPlan {
-  /// DFB represented by this formal output.
-  Value dfb;
-
-  /// Complete tensor type required when attaching `dfb`.
-  RankedTensorType attachmentType;
-
-  /// DFB-backed tensor view used as the formal compute output.
-  RankedTensorType formalType;
+  /// Tensor type of the compute result attached to the associated DFB.
+  RankedTensorType tensorType;
 
   /// Map from compute iteration indices to this output's view coordinates.
   AffineMap indexingMap;
@@ -632,7 +622,7 @@ struct ComputeOpCreationPlan {
   /// Reserve, store, and publication transactions affected by creation.
   OutputPublicationPlan outputs;
 
-  /// Formal output representations in `outputs.dfbs` order.
+  /// Created output representations in `outputs.dfbs` order.
   SmallVector<ComputeOutputPlan> outputPlans;
 
   /// Consumer-owned DFB replacements proved before IR mutation.
