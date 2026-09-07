@@ -3,6 +3,7 @@
 #ifndef TTLANG_COMPILER_L1_H
 #define TTLANG_COMPILER_L1_H
 #include <cstdint>
+#define TTLANG_DFB_STORAGE_COMPILER_L1 1
 namespace ttlang::l1 {
 /// Clears the producer and consumer sequences for one compiler-managed DFB.
 inline void resetState(uint32_t state) {
