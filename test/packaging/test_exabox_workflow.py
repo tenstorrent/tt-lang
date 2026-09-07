@@ -24,18 +24,16 @@ INSTALL_EXABOX_WORKER = (
 UPLIFT_PATHS = REPO_ROOT / ".github" / "scripts" / "uplift-paths.sh"
 
 
-def test_pull_request_ci_distinguishes_base_and_metadata_edits() -> None:
+def test_pull_request_ci_targets_main_without_metadata_edits() -> None:
     ci_workflow = CI_WORKFLOW.read_text()
     ci_jobs = yaml.safe_load(ci_workflow)["jobs"]
     pull_request_guard = (
-        "${{ github.event_name != 'pull_request' || (github.base_ref == 'main' && "
-        "(github.event.action != 'edited' || github.event.changes.base != null)) }}"
+        "${{ github.event_name != 'pull_request' || github.base_ref == 'main' }}"
     )
 
     assert (
         '  pull_request:\n    branches: ["main"]\n'
-        "    types: [opened, synchronize, reopened, ready_for_review, edited]"
-        in ci_workflow
+        "    types: [opened, synchronize, reopened, ready_for_review]" in ci_workflow
     )
     root_jobs = {
         job_name: job for job_name, job in ci_jobs.items() if "needs" not in job
@@ -48,16 +46,7 @@ def test_pull_request_ci_distinguishes_base_and_metadata_edits() -> None:
             assert job["if"] == pull_request_guard
     assert ci_jobs["check-all-green"]["if"] == (
         "${{ always() && (github.event_name != 'pull_request' || "
-        "(github.base_ref == 'main' && (github.event.action != 'edited' || "
-        "github.event.changes.base != null))) }}"
-    )
-    assert ci_jobs["check-all-green"]["name"] == (
-        "${{ github.event.action == 'edited' && github.event.changes.base == null "
-        "&& 'metadata-edit' || 'check-all-green' }}"
-    )
-    assert yaml.safe_load(ci_workflow)["concurrency"]["group"].endswith(
-        "${{ github.event.action == 'edited' && github.event.changes.base == null "
-        "&& github.run_id || 'code' }}"
+        "github.base_ref == 'main') }}"
     )
 
 
