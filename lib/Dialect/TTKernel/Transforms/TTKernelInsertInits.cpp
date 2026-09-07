@@ -163,16 +163,16 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
                                       bcastOp.getBcastTypeAttr());
       }};
 
-  map[mlir::TypeID::get<ttk::BinaryBcastTileOp>()] = {[](OpBuilder &b,
-                                                         Location l,
-                                                         Operation *computeOp) {
-    auto bcastOp = cast<ttk::BinaryBcastTileOp>(computeOp);
-    Value outputCB = resolveOutputCB(computeOp, kBcastOutputCBIndexAttrName);
-    assert(outputCB && "output CB required for binary_bcast_init");
-    ttk::BinaryBcastInitOp::create(b, l, bcastOp.getIn0Cb(), bcastOp.getIn1Cb(),
-                                   outputCB, bcastOp.getEltwiseBinaryTypeAttr(),
-                                   bcastOp.getBcastTypeAttr());
-  }};
+  // Unlike unary_bcast_init, the per-op init needs no output CB: PACK is
+  // configured once per sync region by the common init, and the input data
+  // formats come from that init or from a preceding reconfig_data_format.
+  map[mlir::TypeID::get<ttk::BinaryBcastTileOp>()] = {
+      [](OpBuilder &b, Location l, Operation *computeOp) {
+        auto bcastOp = cast<ttk::BinaryBcastTileOp>(computeOp);
+        ttk::BinaryBcastInitOp::create(
+            b, l, bcastOp.getIn0Cb(), bcastOp.getIn1Cb(),
+            bcastOp.getEltwiseBinaryTypeAttr(), bcastOp.getBcastTypeAttr());
+      }};
 
   map[mlir::TypeID::get<ttk::ReduceTileOp>()] = {[](OpBuilder &b, Location l,
                                                     Operation *computeOp) {
@@ -588,8 +588,15 @@ struct TTKernelInsertInitsPass
       ttk::ReduceUninitOp::create(builder, loc);
     };
 
+    // The input data formats currently programmed into the hardware, or
+    // nullopt when the region has no common init to program them. Only the
+    // common init and reconfig_data_format touch them: the short per-op inits
+    // configure the MATH and UNPACK pipelines and leave formats alone.
+    using CBPair = std::pair<Value, Value>;
+
     auto processOp = [&](Operation &topOp, std::optional<InitKey> &prevKey,
-                         ttk::ReduceTileOp &prevReduce) {
+                         ttk::ReduceTileOp &prevReduce,
+                         std::optional<CBPair> &configuredInputs) {
       if (isSyncBoundary(&topOp)) {
         if (prevKey &&
             prevKey->typeId == mlir::TypeID::get<ttk::ReduceTileOp>()) {
@@ -615,6 +622,14 @@ struct TTKernelInsertInitsPass
             emitReduceUninit(builder, topOp.getLoc(), prevReduce);
           }
           OpBuilder builder(&topOp);
+          if (auto bcast = dyn_cast<ttk::BinaryBcastTileOp>(inner)) {
+            CBPair inputs{bcast.getIn0Cb(), bcast.getIn1Cb()};
+            if (configuredInputs != inputs) {
+              ttk::ReconfigDataFormatOp::create(builder, inner->getLoc(),
+                                                inputs.first, inputs.second);
+              configuredInputs = inputs;
+            }
+          }
           mapIt->second.createInit(builder, inner->getLoc(), inner);
         }
         prevKey = key;
@@ -628,12 +643,23 @@ struct TTKernelInsertInitsPass
       Block *block = acquireOp->getBlock();
       std::optional<InitKey> prevKey;
       ttk::ReduceTileOp prevReduce;
+
+      // The common init programmed the formats of the CB pair it was given,
+      // which is the first input pair of the region.
+      std::optional<CBPair> configuredInputs;
+      Value inputCB, in0CB, in1CB, outputCB;
+      if (succeeded(
+              analyzeSyncRegion(acquireOp, inputCB, in0CB, in1CB, outputCB)) &&
+          outputCB && in0CB && in1CB) {
+        configuredInputs = CBPair{in0CB, in1CB};
+      }
+
       for (auto it = std::next(acquireOp->getIterator()); it != block->end();
            ++it) {
         if (isa<ttk::TileRegsReleaseOp>(&*it)) {
           break;
         }
-        processOp(*it, prevKey, prevReduce);
+        processOp(*it, prevKey, prevReduce, configuredInputs);
       }
     });
 
