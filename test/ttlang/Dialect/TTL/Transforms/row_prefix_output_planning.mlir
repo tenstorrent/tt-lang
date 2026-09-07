@@ -5,7 +5,7 @@
 // Summary: Verifies row-prefix output planning rejects publication contracts
 // that cannot preserve one valid compute output representation.
 
-// A compact formal result cannot replace an observable full-tile result.
+// A short-height compute result cannot replace an observable full-tile result.
 // CHECK-LABEL: ComputeOp creation plan @non_store_result_use
 // CHECK:       rejected-source {{.*}} ttl.add
 // CHECK-SAME:  reason=row-prefix output cannot preserve a non-store use of the full-tile result
@@ -19,7 +19,7 @@ func.func @non_store_result_use(
   %rhs_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
   %output_dfb = ttl.bind_cb {cb_index = 16, block_count = 1}
-      : !ttl.cb<[1, 14], !ttcore.tile<1x32, bf16>, 1>
+      : !ttl.cb<[1, 1], !ttcore.tile<16x32, bf16>, 1>
   %attached_lhs = ttl.attach_cb %lhs, %lhs_dfb
       : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
          !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
@@ -29,21 +29,21 @@ func.func @non_store_result_use(
          !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   %output = ttl.cb_reserve %output_dfb
-      : <[1, 14], !ttcore.tile<1x32, bf16>, 1>
-        -> tensor<1x14x!ttcore.tile<1x32, bf16>>
+      : <[1, 1], !ttcore.tile<16x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<16x32, bf16>>
   %sum = ttl.add %attached_lhs, %attached_rhs
       : tensor<1x1x!ttcore.tile<32x32, bf16>>,
         tensor<1x1x!ttcore.tile<32x32, bf16>>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.store %sum, %output {row_prefix}
       : tensor<1x1x!ttcore.tile<32x32, bf16>>,
-        tensor<1x14x!ttcore.tile<1x32, bf16>>
+        tensor<1x1x!ttcore.tile<16x32, bf16>>
   return %sum : tensor<1x1x!ttcore.tile<32x32, bf16>>
 }
 
 // -----
 
-// One compute cannot publish formal outputs with different tile types.
+// One compute cannot configure output DFBs with different tile formats.
 // CHECK-LABEL: ComputeOp creation plan @different_output_tile_types
 // CHECK:       rejected-source {{.*}} ttl.add
 // CHECK-SAME:  reason=one compute cannot publish output dataflow buffers with different tile types
@@ -56,8 +56,8 @@ func.func @different_output_tile_types(
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
   %full_output_dfb = ttl.bind_cb {cb_index = 16, block_count = 1}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-  %compact_output_dfb = ttl.bind_cb {cb_index = 17, block_count = 1}
-      : !ttl.cb<[1, 14], !ttcore.tile<1x32, bf16>, 1>
+  %short_output_dfb = ttl.bind_cb {cb_index = 17, block_count = 1}
+      : !ttl.cb<[1, 1], !ttcore.tile<16x32, bf16>, 1>
   %attached_lhs = ttl.attach_cb %lhs, %lhs_dfb
       : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
          !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
@@ -69,9 +69,9 @@ func.func @different_output_tile_types(
   %full_output = ttl.cb_reserve %full_output_dfb
       : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %compact_output = ttl.cb_reserve %compact_output_dfb
-      : <[1, 14], !ttcore.tile<1x32, bf16>, 1>
-        -> tensor<1x14x!ttcore.tile<1x32, bf16>>
+  %short_output = ttl.cb_reserve %short_output_dfb
+      : <[1, 1], !ttcore.tile<16x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<16x32, bf16>>
   %sum = ttl.add %attached_lhs, %attached_rhs
       : tensor<1x1x!ttcore.tile<32x32, bf16>>,
         tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -79,9 +79,9 @@ func.func @different_output_tile_types(
   ttl.store %sum, %full_output
       : tensor<1x1x!ttcore.tile<32x32, bf16>>,
         tensor<1x1x!ttcore.tile<32x32, bf16>>
-  ttl.store %sum, %compact_output {row_prefix}
+  ttl.store %sum, %short_output {row_prefix}
       : tensor<1x1x!ttcore.tile<32x32, bf16>>,
-        tensor<1x14x!ttcore.tile<1x32, bf16>>
+        tensor<1x1x!ttcore.tile<16x32, bf16>>
   return
 }
 
@@ -137,7 +137,7 @@ func.func @different_destination_types(
   %rhs_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
   %output_dfb = ttl.bind_cb {cb_index = 16, block_count = 1}
-      : !ttl.cb<[1, 14], !ttcore.tile<1x32, bf16>, 1>
+      : !ttl.cb<[1, 1], !ttcore.tile<16x32, bf16>, 1>
   %attached_lhs = ttl.attach_cb %lhs, %lhs_dfb
       : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
          !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
@@ -147,27 +147,27 @@ func.func @different_destination_types(
          !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   %output = ttl.cb_reserve %output_dfb
-      : <[1, 14], !ttcore.tile<1x32, bf16>, 1>
-        -> tensor<1x14x!ttcore.tile<1x32, bf16>>
-  %short_output = tensor.extract_slice %output[0, 0] [1, 13] [1, 1]
-      : tensor<1x14x!ttcore.tile<1x32, bf16>>
-        to tensor<1x13x!ttcore.tile<1x32, bf16>>
+      : <[1, 1], !ttcore.tile<16x32, bf16>, 1>
+        -> tensor<1x1x!ttcore.tile<16x32, bf16>>
+  %rank_reduced_output = tensor.extract_slice %output[0, 0] [1, 1] [1, 1]
+      : tensor<1x1x!ttcore.tile<16x32, bf16>>
+        to tensor<1x!ttcore.tile<16x32, bf16>>
   %sum = ttl.add %attached_lhs, %attached_rhs
       : tensor<1x1x!ttcore.tile<32x32, bf16>>,
         tensor<1x1x!ttcore.tile<32x32, bf16>>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.store %sum, %output {row_prefix}
       : tensor<1x1x!ttcore.tile<32x32, bf16>>,
-        tensor<1x14x!ttcore.tile<1x32, bf16>>
-  ttl.store %sum, %short_output {row_prefix}
+        tensor<1x1x!ttcore.tile<16x32, bf16>>
+  ttl.store %sum, %rank_reduced_output {row_prefix}
       : tensor<1x1x!ttcore.tile<32x32, bf16>>,
-        tensor<1x13x!ttcore.tile<1x32, bf16>>
+        tensor<1x!ttcore.tile<16x32, bf16>>
   return
 }
 
 // -----
 
-// Row-normalization creation does not support compact output publication.
+// Row-normalization creation does not support short-height output publication.
 // CHECK-LABEL: ComputeOp creation plan @row_normalization_output
 // CHECK:       rejected-source {{.*}} ttl.mul
 // CHECK-SAME:  reason=row-prefix output is unsupported for row-normalization block creation
@@ -177,7 +177,7 @@ module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
     %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
-        : !ttl.cb<[1, 14], !ttcore.tile<1x32, bf16>, 2>
+        : !ttl.cb<[1, 1], !ttcore.tile<16x32, bf16>, 2>
     %input_wait = ttl.cb_wait %input_dfb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -215,11 +215,11 @@ module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
           tensor<1x1x!ttcore.tile<32x32, bf16>>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     %output = ttl.cb_reserve %output_dfb
-        : <[1, 14], !ttcore.tile<1x32, bf16>, 2>
-          -> tensor<1x14x!ttcore.tile<1x32, bf16>>
+        : <[1, 1], !ttcore.tile<16x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<16x32, bf16>>
     ttl.store %result, %output {row_prefix}
         : tensor<1x1x!ttcore.tile<32x32, bf16>>,
-          tensor<1x14x!ttcore.tile<1x32, bf16>>
+          tensor<1x1x!ttcore.tile<16x32, bf16>>
     return
   }
 }
