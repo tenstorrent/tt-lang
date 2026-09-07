@@ -2095,11 +2095,12 @@ static LogicalResult validateDFBReconfigurationsAtNode(
         return failure();
       }
     }
-    if (validatedBoundaries.size() < 2) {
+    if (validatedBoundaries.size() < 2 &&
+        !repeatedReference->boundary.getDiscardDfbState()) {
       analysisFailure.set(
           repeatedReference->participantOperations.front(),
-          "repeated DFB reconfiguration requires at least two ordered "
-          "reconfiguration calls in the loop");
+          "a repeated state-preserving DFB reconfiguration requires at least "
+          "two ordered reconfiguration calls in the loop");
       return failure();
     }
   }
@@ -3723,21 +3724,27 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
       unsupportedAccess = &access;
       continue;
     }
+    const AccessRun &run = runIt->second;
     if (!access.getProtocolEffect()) {
+      continue;
+    }
+    if (selectedExecutionDivisor &&
+        run.executionCount % *selectedExecutionDivisor != 0) {
+      unsupportedAccess = &access;
       continue;
     }
     switch (*access.getProtocolEffect()) {
     case DFBProtocolEffectKind::Reserve:
-      reserves.push_back(&runIt->second);
+      reserves.push_back(&run);
       break;
     case DFBProtocolEffectKind::Push:
-      pushes.push_back(&runIt->second);
+      pushes.push_back(&run);
       break;
     case DFBProtocolEffectKind::Wait:
-      waits.push_back(&runIt->second);
+      waits.push_back(&run);
       break;
     case DFBProtocolEffectKind::Pop:
-      pops.push_back(&runIt->second);
+      pops.push_back(&run);
       break;
     }
   }
@@ -3836,12 +3843,23 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
     return {};
   }
 
+  bool hasOnlyReserveAndInspectionAccesses =
+      hasReserve && llvm::all_of(
+                        activeAccesses,
+                        [](const DFBAccessOccurrence *access) {
+                          return access->isProtocolEffect(
+                                     DFBProtocolEffectKind::Reserve) ||
+                                 access->isNonTransactionalAccess(
+                                     DFBNonTransactionalAccessKind::Inspect);
+                        });
+
   bool resetTerminatedProducer =
       stateDiscardingTerminator && hasReserve && hasPush && !hasWait && !hasPop;
   bool stateDiscardedProtocol =
       stateDiscardingTerminator && hasReserve && hasPush;
   if ((!hasReserve || !hasPush || !hasWait || !hasPop) &&
-      !resetTerminatedProducer && !stateDiscardedProtocol) {
+      !resetTerminatedProducer && !stateDiscardedProtocol &&
+      !hasOnlyReserveAndInspectionAccesses) {
     return {DFBLifecycleCompletionFailureReason::MissingProtocolEffect,
             activeAccesses.empty() ? logicalDFB.declarations.front()
                                    : activeAccesses.front()->operation};
@@ -3851,8 +3869,10 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
     return {DFBLifecycleCompletionFailureReason::UnsupportedControlFlow,
             unsupportedAccess->operation};
   }
-  assert(!reserves.empty() && !pushes.empty() &&
-         (stateDiscardedProtocol || (!waits.empty() && !pops.empty())) &&
+  assert(!reserves.empty() &&
+         (hasOnlyReserveAndInspectionAccesses ||
+          (!pushes.empty() &&
+           (stateDiscardedProtocol || (!waits.empty() && !pops.empty())))) &&
          "supported protocol effects must have access runs");
 
   SmallVector<const AccessRun *> conditionalRuns;
@@ -3876,11 +3896,21 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
     }
     lifetime.conditionalExecutionProven = true;
   }
+
+  // Reserve waits for free producer capacity without modifying DFB interface
+  // state. It is therefore complete without a matching push. Wait remains
+  // subject to publication proof because it can block when the DFB is empty.
+  if (hasOnlyReserveAndInspectionAccesses) {
+    if (failed(recordAccessFrontiers(lifetime))) {
+      return {DFBLifecycleCompletionFailureReason::UnsupportedControlFlow,
+              activeAccesses.front()->operation};
+    }
+    lifetime.terminalStateCanonical = true;
+    return {};
+  }
+
   auto getIntervalExecutionCount = [&](const AccessRun &run) {
     if (selectedExecutionDivisor) {
-      assert(run.executionCount % *selectedExecutionDivisor == 0 &&
-             "selected repeated accesses must have an integral per-iteration "
-             "execution count");
       return run.executionCount / *selectedExecutionDivisor;
     }
     return run.executionCount;

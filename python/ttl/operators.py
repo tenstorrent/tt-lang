@@ -84,8 +84,10 @@ def call_extern_func(
             performed on every selected kernel, or a mapping from individual
             kernel selectors to their respective sequences. A complete summary
             can permit physical-index reuse and does not emit protocol calls.
-        dfb_accesses: Optional synchronous DFB inspections performed by the
-            call without publishing, consuming, or changing DFB state.
+        dfb_accesses: Optional sequence of synchronous DFB inspections
+            performed on every selected kernel, or a mapping from individual
+            kernel selectors to their respective sequences. An inspection
+            does not publish, consume, or change DFB state.
         unknown_dfb_access: Whether external C++ may access unlisted
             user-managed DFBs, conservatively restricting physical-index reuse.
         include_paths: Compile-time directories added to external header

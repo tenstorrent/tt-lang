@@ -2,7 +2,8 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-#pragma once
+#ifndef TTLANG_TARGET_TTKERNEL_LLKS_RISC_BARRIER_H
+#define TTLANG_TARGET_TTKERNEL_LLKS_RISC_BARRIER_H
 
 #include <cstdint>
 
@@ -178,3 +179,5 @@ FORCE_INLINE void riscBarrierExit(uint32_t word0, uint32_t word1,
 #undef TTLANG_RISC_BARRIER_UNPACK
 #undef TTLANG_RISC_BARRIER_MATH
 #undef TTLANG_RISC_BARRIER_PACK
+
+#endif // TTLANG_TARGET_TTKERNEL_LLKS_RISC_BARRIER_H

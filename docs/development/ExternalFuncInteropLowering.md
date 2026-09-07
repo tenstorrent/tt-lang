@@ -283,8 +283,15 @@ ttl.call_extern_func(
 `dfb_effects` is one call-wide execution sequence. List position specifies the
 order in which the external C++ executes protocol actions, including actions on
 different DFBs. Different DFBs do not share an order position; their actions
-occupy distinct positions in the same sequence. The call above produces this
-dependency sequence and effect sequence:
+occupy distinct positions in the same sequence. When one source call selects
+multiple logical kernels, the Python frontend also accepts a mapping from each
+kernel selector to its sequence. The operation splitter replaces the mapping
+with the selected sequence before emitting each `ttl.opaque_call`.
+
+`dfb_accesses` accepts the same per-kernel mapping form for synchronous
+inspections. A dependency occurrence omitted from both the selected effects and
+accesses remains opaque. The call above produces this dependency sequence and
+effect sequence:
 
 ```text
 Sequence returned by getDFBDependencyOperands():

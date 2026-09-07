@@ -18,6 +18,7 @@
 
 #include "mlir/IR/BuiltinOps.h"
 
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -569,10 +570,10 @@ private:
       }
       return;
     }
-    if (requirements.allowEpochSeparatedScratchStorage &&
-        !lhs.tensorBacking && !rhs.tensorBacking &&
-        lhs.accessCompletionProven && rhs.accessCompletionProven &&
-        lhs.lifecycleCompletionProven && rhs.lifecycleCompletionProven &&
+    if (requirements.allowEpochSeparatedScratchStorage && !lhs.tensorBacking &&
+        !rhs.tensorBacking && lhs.accessCompletionProven &&
+        rhs.accessCompletionProven && lhs.lifecycleCompletionProven &&
+        rhs.lifecycleCompletionProven &&
         haveDisjointConfigurationEpochs(lhs, rhs)) {
       return;
     }
@@ -1436,6 +1437,53 @@ struct ConcurrentAssignmentResult {
   std::uint64_t exactSearchStateCount = 0;
 };
 
+/// Physical-allocation graph after explicit allocation-group members have
+/// been combined into one vertex.
+struct DFBAllocationInterferenceGraph {
+  InterferenceGraph graph;
+  SmallVector<unsigned> vertexByCandidate;
+};
+
+static DFBAllocationInterferenceGraph buildDFBAllocationInterferenceGraph(
+    ArrayRef<unsigned> logicalIndices,
+    const DFBPhysicalConflictModel &conflictModel,
+    ArrayRef<DFBLogicalLifecycle> logicalDFBs) {
+  SmallVector<unsigned> vertexByCandidate;
+  DenseMap<int64_t, unsigned> vertexByAllocationGroup;
+  unsigned vertexCount = 0;
+  vertexByCandidate.reserve(logicalIndices.size());
+  for (unsigned logicalIndex : logicalIndices) {
+    DFBAllocationGroupAttr allocationGroup =
+        logicalDFBs[logicalIndex].allocationGroup;
+    if (!allocationGroup) {
+      vertexByCandidate.push_back(vertexCount++);
+      continue;
+    }
+    auto [groupIt, inserted] = vertexByAllocationGroup.try_emplace(
+        allocationGroup.getOrdinal(), vertexCount);
+    if (inserted) {
+      ++vertexCount;
+    }
+    vertexByCandidate.push_back(groupIt->second);
+  }
+
+  InterferenceGraph graph(vertexCount);
+  for (unsigned lhsCandidate = 0; lhsCandidate < logicalIndices.size();
+       ++lhsCandidate) {
+    for (unsigned rhsCandidate = lhsCandidate + 1;
+         rhsCandidate < logicalIndices.size(); ++rhsCandidate) {
+      unsigned lhsVertex = vertexByCandidate[lhsCandidate];
+      unsigned rhsVertex = vertexByCandidate[rhsCandidate];
+      if (lhsVertex != rhsVertex &&
+          conflictModel.conflicts(logicalIndices[lhsCandidate],
+                                  logicalIndices[rhsCandidate])) {
+        graph.addInterference(lhsVertex, rhsVertex);
+      }
+    }
+  }
+  return {std::move(graph), std::move(vertexByCandidate)};
+}
+
 /// Assigns indices by mapping each logical DFB to a graph vertex, each conflict
 /// to an edge, and each available physical index to a graph color.
 ///
@@ -1457,40 +1505,13 @@ static FailureOr<ConcurrentAssignmentResult> computeConcurrentAssignments(
   SmallVector<unsigned> logicalIndices(candidateIndices.begin(),
                                        candidateIndices.end());
 
-  SmallVector<unsigned> allocationVertexByCandidate;
-  DenseMap<int64_t, unsigned> vertexByAllocationGroup;
-  unsigned allocationVertexCount = 0;
-  allocationVertexByCandidate.reserve(logicalIndices.size());
-  for (unsigned logicalIndex : logicalIndices) {
-    DFBAllocationGroupAttr allocationGroup =
-        logicalDFBs[logicalIndex].allocationGroup;
-    if (!allocationGroup) {
-      allocationVertexByCandidate.push_back(allocationVertexCount++);
-      continue;
-    }
-    auto [groupIt, inserted] = vertexByAllocationGroup.try_emplace(
-        allocationGroup.getOrdinal(), allocationVertexCount);
-    if (inserted) {
-      ++allocationVertexCount;
-    }
-    allocationVertexByCandidate.push_back(groupIt->second);
-  }
-
-  InterferenceGraph interferenceGraph(allocationVertexCount);
-  for (unsigned lhsVertex = 0; lhsVertex < logicalIndices.size(); ++lhsVertex) {
-    for (unsigned rhsVertex = lhsVertex + 1; rhsVertex < logicalIndices.size();
-         ++rhsVertex) {
-      unsigned lhsIndex = logicalIndices[lhsVertex];
-      unsigned rhsIndex = logicalIndices[rhsVertex];
-      unsigned lhsAllocationVertex = allocationVertexByCandidate[lhsVertex];
-      unsigned rhsAllocationVertex = allocationVertexByCandidate[rhsVertex];
-      if (lhsAllocationVertex != rhsAllocationVertex &&
-          conflictModel.conflicts(lhsIndex, rhsIndex)) {
-        interferenceGraph.addInterference(lhsAllocationVertex,
-                                          rhsAllocationVertex);
-      }
-    }
-  }
+  DFBAllocationInterferenceGraph allocationGraph =
+      buildDFBAllocationInterferenceGraph(logicalIndices, conflictModel,
+                                          logicalDFBs);
+  const InterferenceGraph &interferenceGraph = allocationGraph.graph;
+  ArrayRef<unsigned> allocationVertexByCandidate =
+      allocationGraph.vertexByCandidate;
+  unsigned allocationVertexCount = interferenceGraph.size();
 
   InterferenceGraphColoringBounds bounds =
       computeInterferenceGraphColoringBounds(interferenceGraph);
@@ -2129,6 +2150,7 @@ static LogicalResult assignPhysicalStorageIndices(
   };
   SmallVector<StorageSlot> slots;
   SmallVector<uint64_t> totalBytesByNode(launchNodes.size(), 0);
+  uint64_t peakNodeBytes = 0;
   uint64_t totalGlobalBytes = 0;
   SmallVector<int32_t> storageIndexByPhysicalIndex(allocation.physicalDFBCount,
                                                    -1);
@@ -2151,8 +2173,6 @@ static LogicalResult assignPhysicalStorageIndices(
       uint64_t globalBytes = 0;
       bool createsSlot = false;
       DFBStorageLayout layout;
-      SmallVector<DFBStorageLayout> layoutsByNode;
-      SmallVector<uint64_t> totalBytesByNode;
     };
     std::optional<StoragePlacement> selectedPlacement;
     for (unsigned slotIndex = 0; slotIndex <= slots.size(); ++slotIndex) {
@@ -2175,16 +2195,14 @@ static LogicalResult assignPhysicalStorageIndices(
       if (failed(mergedLayout)) {
         continue;
       }
-      SmallVector<DFBStorageLayout> candidateLayoutsByNode =
-          slot ? slot->layoutsByNode
-               : SmallVector<DFBStorageLayout>(launchNodes.size());
-      SmallVector<uint64_t> candidateTotalBytesByNode = totalBytesByNode;
-      uint64_t peakNodeBytes = 0;
+      uint64_t candidatePeakNodeBytes = peakNodeBytes;
+      bool nodeLayoutsRepresentable = true;
       const std::set<LaunchNodeCoord> *possibleNodes =
           domainByPhysicalIndex[physicalIndex].getUpperBoundNodes();
       for (auto indexedNode : llvm::enumerate(launchNodes)) {
-        DFBStorageLayout &nodeLayout =
-            candidateLayoutsByNode[indexedNode.index()];
+        DFBStorageLayout nodeLayout =
+            slot ? slot->layoutsByNode[indexedNode.index()]
+                 : DFBStorageLayout{};
         uint64_t previousCapacity = nodeLayout.capacityBytes;
         if (!possibleNodes ||
             possibleNodes->find(indexedNode.value()) != possibleNodes->end()) {
@@ -2192,7 +2210,7 @@ static LogicalResult assignPhysicalStorageIndices(
               nodeLayout, bytesByPhysicalIndex[physicalIndex],
               pageSizeByPhysicalIndex[physicalIndex], failureReason);
           if (failed(mergedNodeLayout)) {
-            candidateLayoutsByNode.clear();
+            nodeLayoutsRepresentable = false;
             break;
           }
           nodeLayout = *mergedNodeLayout;
@@ -2203,10 +2221,10 @@ static LogicalResult assignPhysicalStorageIndices(
         if (failed(candidateNodeBytes)) {
           return failStorageAllocation(physicalIndex);
         }
-        peakNodeBytes = std::max(peakNodeBytes, *candidateNodeBytes);
-        candidateTotalBytesByNode[indexedNode.index()] = *candidateNodeBytes;
+        candidatePeakNodeBytes =
+            std::max(candidatePeakNodeBytes, *candidateNodeBytes);
       }
-      if (candidateLayoutsByNode.empty() && !launchNodes.empty()) {
+      if (!nodeLayoutsRepresentable) {
         continue;
       }
       FailureOr<uint64_t> candidateGlobalBytes = replaceAllocationContribution(
@@ -2216,15 +2234,11 @@ static LogicalResult assignPhysicalStorageIndices(
         return failStorageAllocation(physicalIndex);
       }
       if (launchNodes.empty()) {
-        peakNodeBytes = *candidateGlobalBytes;
+        candidatePeakNodeBytes = *candidateGlobalBytes;
       }
-      StoragePlacement placement{slotIndex,
-                                 peakNodeBytes,
-                                 *candidateGlobalBytes,
-                                 createsSlot,
-                                 *mergedLayout,
-                                 std::move(candidateLayoutsByNode),
-                                 std::move(candidateTotalBytesByNode)};
+      StoragePlacement placement{slotIndex, candidatePeakNodeBytes,
+                                 *candidateGlobalBytes, createsSlot,
+                                 *mergedLayout};
       auto isBetterPlacement = [](const StoragePlacement &candidate,
                                   const StoragePlacement &selected) {
         if (candidate.peakNodeBytes != selected.peakNodeBytes) {
@@ -2253,11 +2267,35 @@ static LogicalResult assignPhysicalStorageIndices(
     }
     if (selectedPlacement->createsSlot) {
       slots.push_back({});
+      slots.back().layoutsByNode.resize(launchNodes.size());
     }
     StorageSlot &slot = slots[selectedPlacement->slotIndex];
     slot.layout = selectedPlacement->layout;
-    slot.layoutsByNode = std::move(selectedPlacement->layoutsByNode);
-    totalBytesByNode = std::move(selectedPlacement->totalBytesByNode);
+    const std::set<LaunchNodeCoord> *possibleNodes =
+        domainByPhysicalIndex[physicalIndex].getUpperBoundNodes();
+    for (auto indexedNode : llvm::enumerate(launchNodes)) {
+      DFBStorageLayout &nodeLayout = slot.layoutsByNode[indexedNode.index()];
+      uint64_t previousCapacity = nodeLayout.capacityBytes;
+      if (!possibleNodes ||
+          possibleNodes->find(indexedNode.value()) != possibleNodes->end()) {
+        std::string failureReason;
+        FailureOr<DFBStorageLayout> mergedNodeLayout = mergeDFBStorageLayout(
+            nodeLayout, bytesByPhysicalIndex[physicalIndex],
+            pageSizeByPhysicalIndex[physicalIndex], failureReason);
+        if (failed(mergedNodeLayout)) {
+          return failStorageAllocation(physicalIndex);
+        }
+        nodeLayout = *mergedNodeLayout;
+      }
+      FailureOr<uint64_t> updatedNodeBytes = replaceAllocationContribution(
+          totalBytesByNode[indexedNode.index()], previousCapacity,
+          nodeLayout.capacityBytes);
+      if (failed(updatedNodeBytes)) {
+        return failStorageAllocation(physicalIndex);
+      }
+      totalBytesByNode[indexedNode.index()] = *updatedNodeBytes;
+    }
+    peakNodeBytes = selectedPlacement->peakNodeBytes;
     slot.physicalIndices.push_back(physicalIndex);
     storageIndexByPhysicalIndex[physicalIndex] = selectedPlacement->slotIndex;
     totalGlobalBytes = selectedPlacement->globalBytes;
@@ -2270,6 +2308,344 @@ static LogicalResult assignPhysicalStorageIndices(
   return success();
 }
 
+static FailureOr<uint64_t> assignStorageAndComputeAllocationBytes(
+    ModuleOp moduleOp, PhysicalAllocationCandidate &allocation,
+    const DFBPhysicalConflictModel &storageConflictModel,
+    ArrayRef<LaunchNodeCoord> launchNodes, DFBAnalysisFailure &analysisFailure,
+    bool reuseUserDFBs) {
+  if (failed(assignPhysicalStorageIndices(moduleOp, allocation,
+                                          storageConflictModel, launchNodes,
+                                          analysisFailure, reuseUserDFBs))) {
+    return failure();
+  }
+  std::string failureReason;
+  FailureOr<uint64_t> allocationBytes = computeAllocationBytes(
+      moduleOp, allocation.assignments, launchNodes, failureReason);
+  if (failed(allocationBytes)) {
+    analysisFailure.set(moduleOp, failureReason);
+  }
+  return allocationBytes;
+}
+
+enum class StorageAwareAllocationSearchStatus {
+  Fits,
+  NoAlternativeAssignment,
+  Inconclusive,
+};
+
+struct StorageAwareAllocationSearchResult {
+  StorageAwareAllocationSearchStatus status;
+  uint64_t exploredStateCount = 0;
+};
+
+static void
+applyDensePhysicalColoring(PhysicalAllocationCandidate &allocation,
+                           ArrayRef<unsigned> colors,
+                           ArrayRef<unsigned> vertexByLogicalIndex) {
+  llvm::BitVector usedColors(allocation.physicalDFBCount);
+  for (unsigned color : colors) {
+    assert(color < usedColors.size());
+    usedColors.set(color);
+  }
+
+  constexpr unsigned kUnassigned = std::numeric_limits<unsigned>::max();
+  SmallVector<unsigned> denseColorByOriginalColor(allocation.physicalDFBCount,
+                                                  kUnassigned);
+  unsigned denseColorCount = 0;
+  for (int color = usedColors.find_first(); color >= 0;
+       color = usedColors.find_next(color)) {
+    denseColorByOriginalColor[static_cast<unsigned>(color)] = denseColorCount++;
+  }
+  for (auto indexedAssignment : llvm::enumerate(allocation.assignments)) {
+    unsigned color = colors[vertexByLogicalIndex[indexedAssignment.index()]];
+    indexedAssignment.value().physicalIndex =
+        static_cast<int32_t>(denseColorByOriginalColor[color]);
+  }
+  allocation.physicalDFBCount = static_cast<int32_t>(denseColorCount);
+}
+
+/// Searches valid physical-index assignments whose resulting storage
+/// placement does not exceed the requested DFB-storage budget.
+///
+/// A physical coloring changes both the physical descriptors and the storage
+/// interference graph. The deterministic local search ranks colorings by
+/// physical descriptor bytes and validates each new best coloring with the
+/// authoritative storage allocator. A decreasing threshold permits movement
+/// between local optima. Exhausting this bounded search is inconclusive.
+static FailureOr<StorageAwareAllocationSearchResult>
+searchStorageAwarePhysicalAllocation(
+    ModuleOp moduleOp, PhysicalAllocationCandidate &allocation,
+    uint64_t &allocationBytes, uint64_t allocationByteLimit,
+    uint64_t searchStateLimit,
+    const DFBConcurrentKernelLivenessAnalysis &liveness,
+    const DFBPhysicalConflictModel &physicalConflictModel,
+    const DFBPhysicalConflictModel &storageConflictModel,
+    ArrayRef<uint64_t> allocationBytesByLogicalIndex,
+    ArrayRef<LaunchNodeCoord> launchNodes,
+    DFBAnalysisFailure &analysisFailure) {
+  if (allocationBytes <= allocationByteLimit) {
+    return StorageAwareAllocationSearchResult{
+        StorageAwareAllocationSearchStatus::Fits};
+  }
+  if (allocation.physicalDFBCount < 2 || allocation.assignments.empty()) {
+    return StorageAwareAllocationSearchResult{
+        StorageAwareAllocationSearchStatus::NoAlternativeAssignment};
+  }
+  if (searchStateLimit == 0) {
+    return StorageAwareAllocationSearchResult{
+        StorageAwareAllocationSearchStatus::Inconclusive};
+  }
+
+  ArrayRef<DFBLogicalLifecycle> logicalDFBs =
+      liveness.getLogicalDFBLifecycles();
+  assert(logicalDFBs.size() == allocation.assignments.size());
+  SmallVector<unsigned> logicalIndices =
+      llvm::to_vector(llvm::seq<unsigned>(0, logicalDFBs.size()));
+  DFBAllocationInterferenceGraph allocationGraph =
+      buildDFBAllocationInterferenceGraph(logicalIndices, physicalConflictModel,
+                                          logicalDFBs);
+  const InterferenceGraph &interferenceGraph = allocationGraph.graph;
+  ArrayRef<unsigned> vertexByLogicalIndex = allocationGraph.vertexByCandidate;
+  constexpr unsigned kUnassigned = std::numeric_limits<unsigned>::max();
+  SmallVector<unsigned> currentColors(interferenceGraph.size(), kUnassigned);
+  for (auto indexedAssignment : llvm::enumerate(allocation.assignments)) {
+    const DFBPhysicalIndexAssignment &assignment = indexedAssignment.value();
+    unsigned vertex = vertexByLogicalIndex[indexedAssignment.index()];
+    unsigned physicalIndex = static_cast<unsigned>(assignment.physicalIndex);
+    if (currentColors[vertex] == kUnassigned) {
+      currentColors[vertex] = physicalIndex;
+    } else {
+      assert(currentColors[vertex] == physicalIndex &&
+             "allocation-group members must share one physical index");
+    }
+  }
+  assert(llvm::none_of(currentColors,
+                       [](unsigned color) { return color == kUnassigned; }));
+  assert(allocationBytesByLogicalIndex.size() == logicalDFBs.size());
+  SmallVector<uint64_t> allocationBytesByVertex(interferenceGraph.size(), 0);
+  for (auto indexedLogicalDFB : llvm::enumerate(logicalDFBs)) {
+    unsigned vertex = vertexByLogicalIndex[indexedLogicalDFB.index()];
+    allocationBytesByVertex[vertex] =
+        std::max(allocationBytesByVertex[vertex],
+                 allocationBytesByLogicalIndex[indexedLogicalDFB.index()]);
+  }
+  auto computePhysicalAllocationBytes =
+      [&](ArrayRef<unsigned> colors) -> FailureOr<uint64_t> {
+    SmallVector<uint64_t> maximumBytesByColor(allocation.physicalDFBCount, 0);
+    for (auto [vertex, color] : llvm::enumerate(colors)) {
+      maximumBytesByColor[color] =
+          std::max(maximumBytesByColor[color], allocationBytesByVertex[vertex]);
+    }
+    uint64_t totalBytes = 0;
+    for (uint64_t colorBytes : maximumBytesByColor) {
+      std::optional<uint64_t> updatedBytes =
+          llvm::checkedAddUnsigned(totalBytes, colorBytes);
+      if (!updatedBytes) {
+        return failure();
+      }
+      totalBytes = *updatedBytes;
+    }
+    return totalBytes;
+  };
+  FailureOr<uint64_t> initialPhysicalAllocationBytes =
+      computePhysicalAllocationBytes(currentColors);
+  if (failed(initialPhysicalAllocationBytes)) {
+    analysisFailure.set(moduleOp, "DFB allocation size is not representable");
+    return failure();
+  }
+
+  uint64_t randomState = 1;
+  auto nextPseudoRandom = [&]() {
+    randomState ^= randomState << 13;
+    randomState ^= randomState >> 7;
+    randomState ^= randomState << 17;
+    return randomState;
+  };
+  auto selectRandomIndex = [&](uint64_t limit) {
+    assert(limit != 0);
+    return static_cast<unsigned>(nextPseudoRandom() % limit);
+  };
+
+  const uint64_t initialThreshold =
+      std::max<uint64_t>(1, (allocationBytes - allocationByteLimit) / 8);
+  uint64_t currentPhysicalAllocationBytes = *initialPhysicalAllocationBytes;
+  uint64_t bestPhysicalAllocationBytes = *initialPhysicalAllocationBytes;
+  PhysicalAllocationCandidate bestAllocation = allocation;
+  uint64_t bestAllocationBytes = allocationBytes;
+  for (uint64_t candidateIndex = 0; candidateIndex < searchStateLimit;
+       ++candidateIndex) {
+    SmallVector<unsigned> candidateColors = currentColors;
+    bool changed = false;
+    if (selectRandomIndex(100) < 65) {
+      unsigned firstColor = selectRandomIndex(allocation.physicalDFBCount);
+      unsigned secondColor = selectRandomIndex(allocation.physicalDFBCount - 1);
+      if (secondColor >= firstColor) {
+        ++secondColor;
+      }
+      llvm::BitVector eligibleVertices(interferenceGraph.size());
+      for (auto [vertex, color] : llvm::enumerate(candidateColors)) {
+        if (color == firstColor || color == secondColor) {
+          eligibleVertices.set(vertex);
+        }
+      }
+      if (eligibleVertices.any()) {
+        unsigned selectedPosition = selectRandomIndex(eligibleVertices.count());
+        int selectedVertex = eligibleVertices.find_first();
+        while (selectedPosition-- != 0) {
+          selectedVertex = eligibleVertices.find_next(selectedVertex);
+        }
+        llvm::BitVector component(interferenceGraph.size());
+        llvm::BitVector pending(interferenceGraph.size());
+        pending.set(static_cast<unsigned>(selectedVertex));
+        while (pending.any()) {
+          int pendingVertex = pending.find_first();
+          pending.reset(static_cast<unsigned>(pendingVertex));
+          unsigned vertex = static_cast<unsigned>(pendingVertex);
+          if (component.test(vertex)) {
+            continue;
+          }
+          component.set(vertex);
+          llvm::BitVector eligibleNeighbors =
+              interferenceGraph.getNeighbors(vertex);
+          eligibleNeighbors &= eligibleVertices;
+          eligibleNeighbors.reset(component);
+          pending |= eligibleNeighbors;
+        }
+        for (int vertex = component.find_first(); vertex >= 0;
+             vertex = component.find_next(vertex)) {
+          unsigned &color = candidateColors[static_cast<unsigned>(vertex)];
+          color = color == firstColor ? secondColor : firstColor;
+        }
+        changed = true;
+      }
+    } else {
+      unsigned vertex = selectRandomIndex(interferenceGraph.size());
+      llvm::BitVector unavailableColors(allocation.physicalDFBCount);
+      for (int neighbor = interferenceGraph.getNeighbors(vertex).find_first();
+           neighbor >= 0;
+           neighbor =
+               interferenceGraph.getNeighbors(vertex).find_next(neighbor)) {
+        unavailableColors.set(candidateColors[static_cast<unsigned>(neighbor)]);
+      }
+      SmallVector<unsigned> availableColors;
+      for (unsigned color = 0;
+           color < static_cast<unsigned>(allocation.physicalDFBCount);
+           ++color) {
+        if (color != candidateColors[vertex] &&
+            !unavailableColors.test(color)) {
+          availableColors.push_back(color);
+        }
+      }
+      if (!availableColors.empty()) {
+        candidateColors[vertex] =
+            availableColors[selectRandomIndex(availableColors.size())];
+        changed = true;
+      }
+    }
+    if (!changed) {
+      continue;
+    }
+
+    FailureOr<uint64_t> candidatePhysicalAllocationBytes =
+        computePhysicalAllocationBytes(candidateColors);
+    if (failed(candidatePhysicalAllocationBytes)) {
+      continue;
+    }
+    uint64_t remainingCandidates = searchStateLimit - candidateIndex;
+    llvm::APInt thresholdNumerator(128, initialThreshold);
+    thresholdNumerator *= llvm::APInt(128, remainingCandidates);
+    uint64_t threshold =
+        thresholdNumerator.udiv(llvm::APInt(128, searchStateLimit))
+            .getZExtValue();
+    std::optional<uint64_t> acceptedLimit =
+        llvm::checkedAddUnsigned(currentPhysicalAllocationBytes, threshold);
+    if (!acceptedLimit || *candidatePhysicalAllocationBytes <= *acceptedLimit) {
+      currentColors = candidateColors;
+      currentPhysicalAllocationBytes = *candidatePhysicalAllocationBytes;
+    }
+    if (*candidatePhysicalAllocationBytes >= bestPhysicalAllocationBytes) {
+      continue;
+    }
+    PhysicalAllocationCandidate candidate = allocation;
+    applyDensePhysicalColoring(candidate, candidateColors,
+                               vertexByLogicalIndex);
+    DFBAnalysisFailure candidateFailure;
+    FailureOr<uint64_t> candidateBytes = assignStorageAndComputeAllocationBytes(
+        moduleOp, candidate, storageConflictModel, launchNodes,
+        candidateFailure, /*reuseUserDFBs=*/true);
+    if (failed(candidateBytes)) {
+      continue;
+    }
+    bestPhysicalAllocationBytes = *candidatePhysicalAllocationBytes;
+    if (*candidateBytes < bestAllocationBytes) {
+      bestAllocation = std::move(candidate);
+      bestAllocationBytes = *candidateBytes;
+    }
+    if (bestAllocationBytes <= allocationByteLimit) {
+      allocation = std::move(bestAllocation);
+      allocationBytes = bestAllocationBytes;
+      return StorageAwareAllocationSearchResult{
+          StorageAwareAllocationSearchStatus::Fits, candidateIndex + 1};
+    }
+  }
+
+  allocation = std::move(bestAllocation);
+  allocationBytes = bestAllocationBytes;
+  return StorageAwareAllocationSearchResult{
+      StorageAwareAllocationSearchStatus::Inconclusive, searchStateLimit};
+}
+
+static void setStorageAwareSearchFailure(
+    ModuleOp moduleOp, const PhysicalAllocationCandidate &allocation,
+    uint64_t allocationBytes, uint64_t allocationByteLimit,
+    const StorageAwareAllocationSearchResult &searchResult,
+    uint64_t searchStateLimit, DFBAnalysisFailure &analysisFailure) {
+  std::string message;
+  llvm::raw_string_ostream messageStream(message);
+  messageStream << "deterministic physical assignment uses "
+                << allocation.physicalDFBCount << " DFB indices and "
+                << allocationBytes
+                << " DFB-storage bytes; storage-aware allocation search "
+                   "explored "
+                << searchResult.exploredStateCount << " states and reached the "
+                << searchStateLimit
+                << "-state limit without finding an assignment within the "
+                << allocationByteLimit
+                << "-byte DFB-storage budget; this does not prove that no "
+                   "fitting assignment exists; increase "
+                   "`exact-coloring-search-limit`";
+  analysisFailure.set(moduleOp, messageStream.str());
+}
+
+/// Selects one representative from each set of launch nodes that has the same
+/// logical DFB activity. Storage placement produces identical layouts and byte
+/// totals for every node in one set, independent of the physical assignment.
+static SmallVector<LaunchNodeCoord> getStorageEvaluationLaunchNodes(
+    const DFBConcurrentKernelLivenessAnalysis &liveness) {
+  ArrayRef<LaunchNodeCoord> launchNodes = liveness.getLaunchNodes();
+  ArrayRef<DFBLogicalLifecycle> logicalDFBs =
+      liveness.getLogicalDFBLifecycles();
+  SmallVector<llvm::BitVector> activitySignatures;
+  SmallVector<LaunchNodeCoord> representatives;
+  for (const LaunchNodeCoord &launchNode : launchNodes) {
+    llvm::BitVector signature(logicalDFBs.size());
+    for (auto indexedLogicalDFB : llvm::enumerate(logicalDFBs)) {
+      const std::set<LaunchNodeCoord> *possibleNodes =
+          indexedLogicalDFB.value().launchDomain.getUpperBoundNodes();
+      if (!possibleNodes ||
+          possibleNodes->find(launchNode) != possibleNodes->end()) {
+        signature.set(indexedLogicalDFB.index());
+      }
+    }
+    if (llvm::is_contained(activitySignatures, signature)) {
+      continue;
+    }
+    activitySignatures.push_back(std::move(signature));
+    representatives.push_back(launchNode);
+  }
+  return representatives;
+}
+
 /// Selects an assignment that fits both the target index count and the L1
 /// allocation limit. A conservative PipeNet reservation may trigger a stricter
 /// search, but only the authoritative DFB-plus-fixed-state budget can reject an
@@ -2279,12 +2655,16 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
     ModuleOp moduleOp, std::uint64_t exactColoringSearchStateLimit,
     std::optional<uint64_t> l1BudgetOverride,
     DFBAnalysisFailure &analysisFailure,
+    const DFBConcurrentKernelLivenessAnalysis &liveness,
+    const DFBPhysicalConflictModel &physicalConflictModel,
     const DFBPhysicalConflictModel &storageConflictModel,
+    ArrayRef<uint64_t> allocationBytesByLogicalIndex,
     ArrayRef<LaunchNodeCoord> launchNodes, bool reuseUserDFBs,
     llvm::function_ref<FailureOr<PhysicalAllocationCandidate>(
         std::optional<uint64_t>, std::optional<uint64_t>)>
         computeAllocation) {
-  std::string allocationSizeFailureReason;
+  SmallVector<LaunchNodeCoord> storageEvaluationLaunchNodes =
+      getStorageEvaluationLaunchNodes(liveness);
   FailureOr<uint64_t> resetStateBytes =
       getSynchronizedDFBResetStateAllocationBytes(moduleOp);
   if (failed(resetStateBytes)) {
@@ -2339,40 +2719,41 @@ static FailureOr<PhysicalAllocationCandidate> computeAllocationWithinL1(
   }
   std::optional<uint64_t> initialAllocationByteLimit =
       reuseUserDFBs ? std::nullopt : std::optional<uint64_t>(dfbBudgetBytes);
-  FailureOr<PhysicalAllocationCandidate> allocation =
-      computeAllocation(initialAllocationByteLimit, minimumSearchTriggerBytes);
+  FailureOr<PhysicalAllocationCandidate> allocation = computeAllocation(
+      initialAllocationByteLimit,
+      reuseUserDFBs ? std::nullopt : minimumSearchTriggerBytes);
   if (failed(allocation)) {
     return failure();
   }
-  if (failed(assignPhysicalStorageIndices(moduleOp, *allocation,
-                                          storageConflictModel, launchNodes,
-                                          analysisFailure, reuseUserDFBs))) {
-    return failure();
-  }
-  FailureOr<uint64_t> allocationBytes =
-      computeAllocationBytes(moduleOp, allocation->assignments, launchNodes,
-                             allocationSizeFailureReason);
+  FailureOr<uint64_t> allocationBytes = assignStorageAndComputeAllocationBytes(
+      moduleOp, *allocation, storageConflictModel, storageEvaluationLaunchNodes,
+      analysisFailure, reuseUserDFBs);
   if (failed(allocationBytes)) {
-    analysisFailure.set(moduleOp, allocationSizeFailureReason);
     return failure();
   }
-  if (*allocationBytes > dfbBudgetBytes && reuseUserDFBs) {
-    allocation = computeAllocation(dfbBudgetBytes, std::optional<uint64_t>(0));
-    if (failed(allocation)) {
+  std::optional<StorageAwareAllocationSearchResult> storageSearchResult;
+  uint64_t storageSearchByteLimit =
+      minimumSearchTriggerBytes.value_or(dfbBudgetBytes);
+  if (*allocationBytes > storageSearchByteLimit && reuseUserDFBs) {
+    FailureOr<StorageAwareAllocationSearchResult> result =
+        searchStorageAwarePhysicalAllocation(
+            moduleOp, *allocation, *allocationBytes, storageSearchByteLimit,
+            exactColoringSearchStateLimit, liveness, physicalConflictModel,
+            storageConflictModel, allocationBytesByLogicalIndex,
+            storageEvaluationLaunchNodes, analysisFailure);
+    if (failed(result)) {
       return failure();
     }
-    if (failed(assignPhysicalStorageIndices(moduleOp, *allocation,
-                                            storageConflictModel, launchNodes,
-                                            analysisFailure, reuseUserDFBs))) {
-      return failure();
-    }
-    allocationBytes =
-        computeAllocationBytes(moduleOp, allocation->assignments, launchNodes,
-                               allocationSizeFailureReason);
-    if (failed(allocationBytes)) {
-      analysisFailure.set(moduleOp, allocationSizeFailureReason);
-      return failure();
-    }
+    storageSearchResult = *result;
+  }
+  if (storageSearchResult &&
+      storageSearchResult->status ==
+          StorageAwareAllocationSearchStatus::Inconclusive &&
+      *allocationBytes > dfbBudgetBytes) {
+    setStorageAwareSearchFailure(
+        moduleOp, *allocation, *allocationBytes, dfbBudgetBytes,
+        *storageSearchResult, exactColoringSearchStateLimit, analysisFailure);
+    return failure();
   }
   if (allocation->exactSearchLimitReached &&
       *allocationBytes > dfbBudgetBytes) {
@@ -2886,8 +3267,9 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
   };
   FailureOr<PhysicalAllocationCandidate> allocation = computeAllocationWithinL1(
       moduleOp, exactColoringSearchStateLimit, l1BudgetOverride,
-      analysisFailure, storageConflictModel, liveness.getLaunchNodes(),
-      reuseUserDFBs, computeAllocation);
+      analysisFailure, liveness, plan.conflictModel, storageConflictModel,
+      allocationBytesByLogicalIndex, liveness.getLaunchNodes(), reuseUserDFBs,
+      computeAllocation);
   if (failed(allocation)) {
     errorOperation = analysisFailure.operation;
     errorMessage = std::move(analysisFailure.message);

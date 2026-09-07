@@ -19,6 +19,7 @@ from ttl.dfb_reconfiguration import DFBReconfiguration
 from ttl.fabric import FabricManagerClaim
 from ttl.kernel import Kernel, KernelKind, _selector_implicit_role
 from ttl.scalar import ScalarType
+from ttl._src.global_semaphore import is_ttnn_global_semaphore
 
 _INLINED_OPERATION_STATEMENT = "_ttl_inlined_operation_statement"
 _DFB_SOURCE_OCCURRENCE = "_ttl_dfb_source_occurrence"
@@ -268,18 +269,19 @@ def inline_atom_calls(
 
 def _static_boolean_value(
     expression: ast.expr,
-    static_booleans: Dict[str, bool],
+    static_values: Dict[str, object],
 ) -> Optional[bool]:
     if isinstance(expression, ast.Constant) and type(expression.value) is bool:
         return expression.value
     if isinstance(expression, ast.Name):
-        return static_booleans.get(expression.id)
+        value = static_values.get(expression.id)
+        return value if type(value) is bool else None
     if isinstance(expression, ast.UnaryOp) and isinstance(expression.op, ast.Not):
-        operand = _static_boolean_value(expression.operand, static_booleans)
+        operand = _static_boolean_value(expression.operand, static_values)
         return None if operand is None else not operand
     if isinstance(expression, ast.BoolOp):
         operands = [
-            _static_boolean_value(value, static_booleans) for value in expression.values
+            _static_boolean_value(value, static_values) for value in expression.values
         ]
         if any(operand is None for operand in operands):
             return None
@@ -287,22 +289,46 @@ def _static_boolean_value(
             return all(operands)
         if isinstance(expression.op, ast.Or):
             return any(operands)
+    if isinstance(expression, ast.Compare) and len(expression.ops) == 1:
+        left = _static_scalar_value(expression.left, static_values)
+        right = _static_scalar_value(expression.comparators[0], static_values)
+        if left is None or right is None:
+            return None
+        if isinstance(expression.ops[0], ast.Eq):
+            return left == right
+        if isinstance(expression.ops[0], ast.NotEq):
+            return left != right
+    return None
+
+
+def _static_scalar_value(
+    expression: ast.expr,
+    static_values: Dict[str, object],
+) -> Optional[object]:
+    if isinstance(expression, ast.Constant) and isinstance(
+        expression.value, (bool, int, float, str)
+    ):
+        return expression.value
+    if isinstance(expression, ast.Name):
+        value = static_values.get(expression.id)
+        if isinstance(value, (bool, int, float, str)):
+            return value
     return None
 
 
 class _StaticBooleanBranchSpecializer(ast.NodeTransformer):
     def __init__(self, captured_values: Dict[str, object]):
-        self.static_booleans = {
+        self.static_values = {
             name: value
             for name, value in captured_values.items()
-            if type(value) is bool
+            if isinstance(value, (bool, int, float, str))
         }
 
     def _visit_function(self, node):
-        enclosing_booleans = self.static_booleans
-        self.static_booleans = {
+        enclosing_values = self.static_values
+        self.static_values = {
             name: value
-            for name, value in enclosing_booleans.items()
+            for name, value in enclosing_values.items()
             if name not in _nested_binding_names(node)
         }
         try:
@@ -311,7 +337,7 @@ class _StaticBooleanBranchSpecializer(ast.NodeTransformer):
                 transformed.body = [ast.copy_location(ast.Pass(), transformed)]
             return transformed
         finally:
-            self.static_booleans = enclosing_booleans
+            self.static_values = enclosing_values
 
     def visit_FunctionDef(self, node):
         return self._visit_function(node)
@@ -320,7 +346,7 @@ class _StaticBooleanBranchSpecializer(ast.NodeTransformer):
         return self._visit_function(node)
 
     def visit_If(self, node):
-        condition = _static_boolean_value(node.test, self.static_booleans)
+        condition = _static_boolean_value(node.test, self.static_values)
         if condition is None:
             return self.generic_visit(node)
         selected = node.body if condition else node.orelse
@@ -906,6 +932,10 @@ def _literal_node(
     suffix: str,
     name_hint: str,
 ) -> ast.expr:
+    if is_ttnn_global_semaphore(value):
+        fresh_name = _fresh_name(name_hint, suffix, reserved_names)
+        scope[fresh_name] = value
+        return ast.Name(id=fresh_name, ctx=ast.Load())
     if value is ScalarType or isinstance(value, ScalarType):
         type_name = "class" if value is ScalarType else value.name.lower()
         fresh_name = _fresh_name(

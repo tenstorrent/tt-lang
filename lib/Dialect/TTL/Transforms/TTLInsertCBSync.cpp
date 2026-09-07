@@ -20,6 +20,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -80,6 +81,70 @@ struct GuardedLocalReleaseInfo {
 
 struct GuardedAcquireUseInfo {
   bool hasNonLocalUse = false;
+};
+
+// Static core predicates may express a subset of an acquisition domain with a
+// different SSA value. Prove that implication over every declared launch node;
+// predicates that cannot be evaluated statically retain the structural rule.
+class GuardImplicationAnalysis {
+public:
+  explicit GuardImplicationAnalysis(func::FuncOp func) {
+    ModuleOp module = func->getParentOfType<ModuleOp>();
+    if (!module) {
+      return;
+    }
+    state.initialize(module);
+  }
+
+  bool proves(Operation *operation, Value acquisitionCondition) const {
+    if (isOperationInThenRegionGuardedBy(operation, acquisitionCondition)) {
+      return true;
+    }
+    if (!state.hasLaunchGrid) {
+      return false;
+    }
+    for (LaunchNodeCoord coord : state.baseDomain.nodes) {
+      std::optional<bool> acquisitionRuns =
+          evaluatePredicateAtLaunchNode(acquisitionCondition, coord, state);
+      if (!acquisitionRuns) {
+        return false;
+      }
+      if (*acquisitionRuns) {
+        continue;
+      }
+      if (!isExcludedByEnclosingBranch(operation, coord)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+private:
+  bool isExcludedByEnclosingBranch(Operation *operation,
+                                    LaunchNodeCoord coord) const {
+    for (Operation *ancestor = operation->getParentOp(), *child = operation;
+         ancestor; child = ancestor, ancestor = ancestor->getParentOp()) {
+      auto ifOp = dyn_cast<scf::IfOp>(ancestor);
+      if (!ifOp) {
+        continue;
+      }
+      bool inThen =
+          ifOp.getThenRegion().isAncestor(child->getParentRegion());
+      bool inElse = !ifOp.getElseRegion().empty() &&
+                    ifOp.getElseRegion().isAncestor(child->getParentRegion());
+      if (!inThen && !inElse) {
+        continue;
+      }
+      std::optional<bool> condition =
+          evaluatePredicateAtLaunchNode(ifOp.getCondition(), coord, state);
+      if (condition && (*condition != inThen)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  LaunchNodeDomainState state;
 };
 
 static scf::IfOp getGuardedAcquireIf(Operation *acquire) {
@@ -292,7 +357,8 @@ findGuardedExternalKindBoundary(DFBAcquireInterval interval, scf::IfOp guard,
 static std::optional<PlanningDiagnostic> validateGuardedExternalReleases(
     DFBAcquireInterval interval, scf::IfOp guard, Operation *lastOwnedUse,
     Operation *externalKindBoundary, ArrayRef<Operation *> releases,
-    DFBProtocolEffectKind releaseEffectKind, StringRef effectName) {
+    DFBProtocolEffectKind releaseEffectKind, StringRef effectName,
+    const GuardImplicationAnalysis &guardAnalysis) {
   Operation *projectedLast =
       lastOwnedUse ? projectToGuardBlock(lastOwnedUse, guard) : nullptr;
   for (Operation *release : releases) {
@@ -310,7 +376,7 @@ static std::optional<PlanningDiagnostic> validateGuardedExternalReleases(
       continue;
     }
 
-    if (!isOperationInThenRegionGuardedBy(release, guard.getCondition())) {
+    if (!guardAnalysis.proves(release, guard.getCondition())) {
       return PlanningDiagnostic(release,
                                 ("conditional dataflow buffer " + effectName +
                                  " must execute under the acquiring condition")
@@ -330,13 +396,15 @@ static bool hasGuardedExternalRelease(DFBAcquireInterval interval,
                                       scf::IfOp guard, Operation *lastOwnedUse,
                                       Operation *externalKindBoundary,
                                       ArrayRef<Operation *> releases,
-                                      DFBProtocolEffectKind releaseEffectKind) {
+                                      DFBProtocolEffectKind releaseEffectKind,
+                                      const GuardImplicationAnalysis
+                                          &guardAnalysis) {
   Operation *projectedLast =
       lastOwnedUse ? projectToGuardBlock(lastOwnedUse, guard) : nullptr;
   for (Operation *release : releases) {
     if (!hasProtocolEffect(release, interval.dfb, releaseEffectKind) ||
         isNestedUnder(release, guard.getOperation()) ||
-        !isOperationInThenRegionGuardedBy(release, guard.getCondition())) {
+        !guardAnalysis.proves(release, guard.getCondition())) {
       continue;
     }
     Operation *projectedRelease = projectToGuardBlock(release, guard);
@@ -357,14 +425,15 @@ static bool hasGuardedExternalRelease(DFBAcquireInterval interval,
 
 static PlanningResult<GuardedAcquireUseInfo>
 analyzeGuardedAcquireUses(DFBAcquireInterval interval, scf::IfOp guard,
-                          Operation *externalKindBoundary) {
+                          Operation *externalKindBoundary,
+                          const GuardImplicationAnalysis &guardAnalysis) {
   GuardedAcquireUseInfo info;
 
   auto classifyUse = [&](Operation *user) -> std::optional<PlanningDiagnostic> {
     if (isNestedUnder(user, guard.getOperation())) {
       return std::nullopt;
     }
-    if (!isOperationInThenRegionGuardedBy(user, guard.getCondition())) {
+    if (!guardAnalysis.proves(user, guard.getCondition())) {
       return PlanningDiagnostic(
           user,
           "conditional dataflow buffer slot use must be under the acquiring "
@@ -505,7 +574,8 @@ static PlanningResult<SmallVector<MissingReleasePlan>> planMissingReleases(
     ArrayRef<Operation *> acquires, ArrayRef<Operation *> releases,
     DFBProtocolEffectKind releaseEffectKind, StringRef effectName,
     const DenseSet<Operation *> &acquisitionsRequiringExplicitRelease,
-    const DominanceInfo &dominanceInfo) {
+    const DominanceInfo &dominanceInfo,
+    const GuardImplicationAnalysis &guardAnalysis) {
   SmallVector<MissingReleasePlan> plans;
   for (Operation *acquire : acquires) {
     DFBAcquireInterval interval = makeDFBAcquireInterval(acquire, acquires);
@@ -530,7 +600,8 @@ static PlanningResult<SmallVector<MissingReleasePlan>> planMissingReleases(
       }
 
       auto guardedUseInfo =
-          analyzeGuardedAcquireUses(interval, guard, externalKindBoundary);
+          analyzeGuardedAcquireUses(interval, guard, externalKindBoundary,
+                                    guardAnalysis);
       if (guardedUseInfo.isInvalidIR()) {
         const PlanningDiagnostic &diagnostic = guardedUseInfo.getInvalidIR();
         return PlanningResult<SmallVector<MissingReleasePlan>>::invalidIR(
@@ -540,7 +611,8 @@ static PlanningResult<SmallVector<MissingReleasePlan>> planMissingReleases(
       if (std::optional<PlanningDiagnostic> diagnostic =
               validateGuardedExternalReleases(interval, guard, last,
                                               externalKindBoundary, releases,
-                                              releaseEffectKind, effectName)) {
+                                              releaseEffectKind, effectName,
+                                              guardAnalysis)) {
         return PlanningResult<SmallVector<MissingReleasePlan>>::invalidIR(
             diagnostic->operation, diagnostic->message);
       }
@@ -550,7 +622,8 @@ static PlanningResult<SmallVector<MissingReleasePlan>> planMissingReleases(
       }
 
       if (hasGuardedExternalRelease(interval, guard, last, externalKindBoundary,
-                                    releases, releaseEffectKind)) {
+                                    releases, releaseEffectKind,
+                                    guardAnalysis)) {
         continue;
       }
 
@@ -837,10 +910,11 @@ struct TTLInsertCBSyncPass
 
     const DenseSet<Operation *> noExplicitReleaseAcquisitions;
     DominanceInfo dominanceInfo(func);
+    GuardImplicationAnalysis guardAnalysis(func);
     auto producerPlan = planMissingReleases<CBPushOp>(
         operations.reserves, operations.producerProtocolReleases,
         DFBProtocolEffectKind::Push, "push", conditionalReleasePlan->reserves,
-        dominanceInfo);
+        dominanceInfo, guardAnalysis);
     if (producerPlan.isInvalidIR()) {
       const PlanningDiagnostic &diagnostic = producerPlan.getInvalidIR();
       diagnostic.operation->emitError(diagnostic.message);
@@ -850,7 +924,7 @@ struct TTLInsertCBSyncPass
     auto consumerPlan = planMissingReleases<CBPopOp>(
         operations.waits, operations.consumerProtocolReleases,
         DFBProtocolEffectKind::Pop, "pop", noExplicitReleaseAcquisitions,
-        dominanceInfo);
+        dominanceInfo, guardAnalysis);
     if (consumerPlan.isInvalidIR()) {
       const PlanningDiagnostic &diagnostic = consumerPlan.getInvalidIR();
       diagnostic.operation->emitError(diagnostic.message);

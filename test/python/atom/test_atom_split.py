@@ -3381,6 +3381,62 @@ def test_external_call_selects_kernel_specific_dfb_effects():
     assert "DFBEffect.pop" not in data_movement_source
 
 
+def test_external_call_selects_kernel_specific_dfb_accesses():
+    """Each emitted call retains only its selected kernel's DFB accesses."""
+    reader = _logical_kernel(KernelKind.DATA_MOVEMENT, "reader")
+    fn = _fn(
+        """
+        def k(first, second):
+            ttl.call_extern_func(
+                "shared.hpp",
+                "shared",
+                func_args=[first, second],
+                dfb_accesses={
+                    ttl.KernelKind.COMPUTE: [ttl.DFBAccess.inspect(first)],
+                    reader: [ttl.DFBAccess.inspect(second)],
+                },
+                kernel=(ttl.KernelKind.COMPUTE, reader),
+            )
+        """
+    )
+
+    result = split_function_body(
+        fn,
+        dfb_param_names={"first", "second"},
+        logical_kernels={"reader": reader},
+    )
+
+    compute_source = _kernel_src(result, KernelKind.COMPUTE)
+    assert "DFBAccess.inspect(first)" in compute_source
+    assert "DFBAccess.inspect(second)" not in compute_source
+
+    reader_source = _kernel_src(result, reader)
+    assert "DFBAccess.inspect(second)" in reader_source
+    assert "DFBAccess.inspect(first)" not in reader_source
+
+
+def test_external_call_rejects_access_for_excluded_kernel():
+    fn = _fn(
+        """
+        def k(source):
+            ttl.call_extern_func(
+                "shared.hpp",
+                "shared",
+                func_args=[source],
+                dfb_accesses={
+                    ttl.KernelKind.DATA_MOVEMENT: [
+                        ttl.DFBAccess.inspect(source)
+                    ]
+                },
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+        """
+    )
+
+    with pytest.raises(ValueError, match="selects a kernel excluded"):
+        split_function_body(fn, dfb_param_names={"source"})
+
+
 @pytest.mark.parametrize(
     "effects, message",
     [

@@ -67,6 +67,7 @@ from ._src.atom_rules import (
 )
 from ._src.atom_split import split_function_body
 from ._src.tensor_registry import register_tensor_name
+from ._src.global_semaphore import is_ttnn_global_semaphore
 from .compiler_options import CompilerOptions
 from .condition import (
     DispatchCondition,
@@ -326,6 +327,11 @@ def _build_atom_spec(
     for node in ast.walk(fn_def):
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
             loaded_names.add(node.id)
+    captured_values.update(
+        (capture_name, scope[capture_name])
+        for capture_name in loaded_names
+        if capture_name in scope and is_ttnn_global_semaphore(scope[capture_name])
+    )
 
     external_pipenets = dict(inlined_pipenets)
     compile_time_captures: Dict[str, Any] = {}
@@ -373,6 +379,8 @@ def _build_atom_spec(
             dfb_resets[capture_name] = value
         elif isinstance(value, DFBReconfiguration):
             dfb_reconfigurations[capture_name] = value
+        elif is_ttnn_global_semaphore(value):
+            compile_time_captures[capture_name] = value
         elif _is_compile_time_literal(value):
             compile_time_captures[capture_name] = copy.deepcopy(value)
         elif not isinstance(value, types.ModuleType) and not callable(value):
@@ -822,6 +830,11 @@ def _compile_atom(
     captures.update(bound_dispatch_conditions)
     captures.update(bound_dfb_resets)
     captures.update(bound_dfb_reconfigurations)
+    captures.update(
+        (name, value)
+        for name, value in spec.compile_time_captures.items()
+        if is_ttnn_global_semaphore(value)
+    )
 
     # TTNN interop requires one emitted thread for every backend slot. Empty
     # slots retain a pass body so argument metadata stays aligned with slot order.

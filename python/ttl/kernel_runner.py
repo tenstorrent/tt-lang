@@ -861,7 +861,7 @@ def _validate_semaphore_descriptors(
     operation_coordinates: frozenset[Tuple[int, int]],
     first_free_semaphore_id: int,
 ) -> Tuple[_SemaphoreResourceFingerprint, ...]:
-    seen_ids = set()
+    claimed_coordinates_by_identity = {}
     fingerprints = []
     for descriptor_index, descriptor in enumerate(semaphore_descriptors):
         semaphore_id = _normalize_index(
@@ -875,12 +875,6 @@ def _validate_semaphore_descriptors(
                 f"{descriptor_index} id {semaphore_id} is below first free "
                 f"semaphore id {first_free_semaphore_id}"
             )
-        if semaphore_id in seen_ids:
-            raise ValueError(
-                f"@ttl.operation {operation_name!r}: semaphore id "
-                f"{semaphore_id} was specified more than once"
-            )
-        seen_ids.add(semaphore_id)
         descriptor_coordinates = _canonicalize_core_ranges(
             descriptor.core_ranges,
             operation_name=operation_name,
@@ -893,6 +887,26 @@ def _validate_semaphore_descriptors(
                 f"{descriptor_index} has cores outside the operation range: "
                 f"{tuple(sorted(outside_coordinates, key=lambda core: (core[1], core[0])))}"
             )
+        core_type = _normalize_semaphore_core_type(
+            descriptor.core_type,
+            operation_name=operation_name,
+            descriptor_index=descriptor_index,
+        )
+        identity = (semaphore_id, core_type)
+        claimed_coordinates = claimed_coordinates_by_identity.setdefault(
+            identity, set()
+        )
+        overlapping_coordinates = claimed_coordinates.intersection(
+            descriptor_coordinates
+        )
+        if overlapping_coordinates:
+            raise ValueError(
+                f"@ttl.operation {operation_name!r}: semaphore id "
+                f"{semaphore_id} for core type {core_type} was specified more "
+                "than once on cores "
+                f"{tuple(sorted(overlapping_coordinates, key=lambda core: (core[1], core[0])))}"
+            )
+        claimed_coordinates.update(descriptor_coordinates)
         initial_value = _normalize_index(
             descriptor.initial_value,
             operation_name=operation_name,
@@ -903,14 +917,20 @@ def _validate_semaphore_descriptors(
                 semaphore_id=semaphore_id,
                 coordinates=descriptor_coordinates,
                 initial_value=initial_value,
-                core_type=_normalize_semaphore_core_type(
-                    descriptor.core_type,
-                    operation_name=operation_name,
-                    descriptor_index=descriptor_index,
-                ),
+                core_type=core_type,
             )
         )
-    return tuple(sorted(fingerprints, key=lambda descriptor: descriptor.semaphore_id))
+    return tuple(
+        sorted(
+            fingerprints,
+            key=lambda descriptor: (
+                descriptor.semaphore_id,
+                descriptor.core_type,
+                descriptor.coordinates,
+                descriptor.initial_value,
+            ),
+        )
+    )
 
 
 def _validate_runtime_resource_record_types(
@@ -1680,6 +1700,76 @@ def _validate_local_tensor_access(
             )
 
 
+def _uses_per_core_allocation(tensor: Any) -> bool:
+    predicate = getattr(tensor, "is_per_core_allocated", None)
+    return callable(predicate) and bool(predicate())
+
+
+def _build_kernel_tensor_address_variants(
+    spec: KernelSpec,
+    tensors: List[Any],
+    kernel_ranges: Any,
+    device_coordinate: Optional[Any],
+) -> List[Tuple[Any, List[int]]]:
+    """Return descriptor core ranges and their tensor runtime addresses."""
+    per_core_tensor_indices = {
+        tensor_index
+        for tensor_index in spec.tensor_indices
+        if _uses_per_core_allocation(tensors[tensor_index])
+    }
+    if not per_core_tensor_indices:
+        return [
+            (
+                kernel_ranges,
+                [tensors[index].buffer_address() for index in spec.tensor_indices],
+            )
+        ]
+
+    resolved_device_coordinate = device_coordinate
+    if resolved_device_coordinate is None:
+        tensor_device_coordinates = []
+        for tensor_index in sorted(per_core_tensor_indices):
+            coordinates = tensors[tensor_index].device_coords()
+            if len(coordinates) != 1:
+                raise ValueError(
+                    "per-core allocated tensors spanning multiple devices require "
+                    "a device-specific program"
+                )
+            tensor_device_coordinates.append(tuple(coordinates[0]))
+        if any(
+            coordinate != tensor_device_coordinates[0]
+            for coordinate in tensor_device_coordinates[1:]
+        ):
+            raise ValueError(
+                "per-core allocated tensors in one program must use the same device"
+            )
+        resolved_device_coordinate = _build_mesh_coordinate(
+            tensor_device_coordinates[0]
+        )
+    else:
+        resolved_device_coordinate = _build_mesh_coordinate(device_coordinate)
+
+    address_variants = []
+    for core in ttnn.corerange_to_cores(kernel_ranges, row_wise=True):
+        tensor_addresses = []
+        for tensor_index in spec.tensor_indices:
+            tensor = tensors[tensor_index]
+            if tensor_index in per_core_tensor_indices:
+                address = tensor.experimental_per_core_buffer_address(
+                    resolved_device_coordinate, core
+                )
+            else:
+                address = tensor.buffer_address()
+            tensor_addresses.append(int(address))
+        address_variants.append(
+            (
+                _make_singleton_core_ranges([(int(core.x), int(core.y))]),
+                tensor_addresses,
+            )
+        )
+    return address_variants
+
+
 def build_kernel_descriptors(
     kernel_specs: List[KernelSpec],
     tensors: List[Any],
@@ -1692,6 +1782,7 @@ def build_kernel_descriptors(
     extra_common_runtime_args: Optional[List[int]] = None,
     expected_extra_common_runtime_args: Optional[int] = None,
     device_coordinates: Optional[List[int]] = None,
+    device_coordinate: Optional[Any] = None,
     descriptor_resource_plans: Optional[Sequence[_KernelDescriptorResourcePlan]] = None,
     dfb_reconfiguration_runtime_args: Optional[Dict[Tuple[int, int], List[int]]] = None,
     compiler_l1_base_address: Optional[int] = None,
@@ -1719,6 +1810,8 @@ def build_kernel_descriptors(
             pipe runtime args from the compiled resource plan.
         device_coordinates: Logical device coordinates appended to common
             runtime arguments for device-domain dispatch.
+        device_coordinate: Mesh coordinate used to resolve per-core allocated
+            tensor addresses for this device's program.
         descriptor_resource_plans: Immutable caller resource plans aligned with
             kernel_specs.
         dfb_reconfiguration_runtime_args: Per-core L1 configuration addresses
@@ -1763,11 +1856,6 @@ def build_kernel_descriptors(
         )
         _validate_local_tensor_access(spec, tensors, kernel_ranges)
 
-        # Build common_runtime_args using tensor_indices.
-        # C++ indexes by function-local position, we provide addresses in that order.
-        common_runtime_args = [
-            tensors[idx].buffer_address() for idx in spec.tensor_indices
-        ]
         computed_address_base_args = []
         for dfb_index in spec.pipe_computed_address_dfb_indices:
             if dfb_index not in computed_address_base_addresses:
@@ -1777,22 +1865,6 @@ def build_kernel_descriptors(
             computed_address_base_args.append(
                 computed_address_base_addresses[dfb_index]
             )
-        common_runtime_args.extend(computed_address_base_args)
-        common_runtime_args.extend(extra_args)
-        if spec.fabric_runtime_arg_base_common_index is not None:
-            if len(common_runtime_args) != spec.fabric_runtime_arg_base_common_index:
-                raise RuntimeError(
-                    "fabric runtime argument base common index mismatch: "
-                    f"compiler selected {spec.fabric_runtime_arg_base_common_index}, "
-                    f"host constructed {len(common_runtime_args)} arguments"
-                )
-            common_runtime_args.append(0)
-        common_runtime_args.extend(device_coordinates or [])
-        common_runtime_args.extend(spec.extra_common_runtime_args or [])
-        storage_runtime_base = len(common_runtime_args)
-        if compiler_l1_base_address is not None:
-            common_runtime_args.append(compiler_l1_base_address)
-
         runtime_args = []
         defines = []
         if descriptor_resource_plans is not None:
@@ -1814,45 +1886,82 @@ def build_kernel_descriptors(
             ]
             defines = list(descriptor_resource_plan.defines)
 
-        descriptor_variants: List[_KernelDescriptorVariant]
-        if not reconfiguration_args:
-            kernel_compile_time_args = (
-                [storage_runtime_base]
-                if compiler_l1_base_address is not None
-                else list(cb_indices)
-            )
-            if spec.thread_type != "compute":
-                kernel_compile_time_args.extend(tensor_accessor_args)
-            descriptor_variants = [
-                _KernelDescriptorVariant(
-                    core_ranges=kernel_ranges,
-                    compile_time_args=kernel_compile_time_args,
-                    runtime_args=runtime_args,
-                )
-            ]
-        else:
-            descriptor_variants = _build_reconfiguration_descriptor_variants(
-                kernel_ranges,
-                cb_indices,
-                tensor_accessor_args,
-                spec.thread_type,
-                runtime_args,
-                reconfiguration_args,
-            )
+        tensor_address_groups = _build_kernel_tensor_address_variants(
+            spec, tensors, kernel_ranges, device_coordinate
+        )
+        for address_core_ranges, tensor_addresses in tensor_address_groups:
+            common_runtime_args = list(tensor_addresses)
+            common_runtime_args.extend(computed_address_base_args)
+            common_runtime_args.extend(extra_args)
+            if spec.fabric_runtime_arg_base_common_index is not None:
+                if (
+                    len(common_runtime_args)
+                    != spec.fabric_runtime_arg_base_common_index
+                ):
+                    raise RuntimeError(
+                        "fabric runtime argument base common index mismatch: "
+                        f"compiler selected {spec.fabric_runtime_arg_base_common_index}, "
+                        f"host constructed {len(common_runtime_args)} arguments"
+                    )
+                common_runtime_args.append(0)
+            common_runtime_args.extend(device_coordinates or [])
+            common_runtime_args.extend(spec.extra_common_runtime_args or [])
+            storage_runtime_base = len(common_runtime_args)
+            if compiler_l1_base_address is not None:
+                common_runtime_args.append(compiler_l1_base_address)
 
-        for descriptor_variant in descriptor_variants:
-            kernel_descriptor_args = dict(
-                kernel_source=spec.path,
-                core_ranges=descriptor_variant.core_ranges,
-                compile_time_args=descriptor_variant.compile_time_args,
-                defines=defines,
-                common_runtime_args=common_runtime_args,
-                config=spec.config,
-                compiler_include_paths=spec.compiler_include_paths,
+            address_core_coordinates = _core_range_coordinates(
+                address_core_ranges, label="tensor-address descriptor core ranges"
             )
-            if descriptor_variant.runtime_args:
-                kernel_descriptor_args["runtime_args"] = descriptor_variant.runtime_args
-            kernel_descriptors.append(ttnn.KernelDescriptor(**kernel_descriptor_args))
+            address_runtime_args = [
+                (core, values)
+                for core, values in runtime_args
+                if (int(core.x), int(core.y)) in address_core_coordinates
+            ]
+
+            descriptor_variants: List[_KernelDescriptorVariant]
+            if not reconfiguration_args:
+                kernel_compile_time_args = (
+                    [storage_runtime_base]
+                    if compiler_l1_base_address is not None
+                    else list(cb_indices)
+                )
+                if spec.thread_type != "compute":
+                    kernel_compile_time_args.extend(tensor_accessor_args)
+                descriptor_variants = [
+                    _KernelDescriptorVariant(
+                        core_ranges=address_core_ranges,
+                        compile_time_args=kernel_compile_time_args,
+                        runtime_args=address_runtime_args,
+                    )
+                ]
+            else:
+                descriptor_variants = _build_reconfiguration_descriptor_variants(
+                    address_core_ranges,
+                    cb_indices,
+                    tensor_accessor_args,
+                    spec.thread_type,
+                    address_runtime_args,
+                    reconfiguration_args,
+                )
+
+            for descriptor_variant in descriptor_variants:
+                kernel_descriptor_args = dict(
+                    kernel_source=spec.path,
+                    core_ranges=descriptor_variant.core_ranges,
+                    compile_time_args=descriptor_variant.compile_time_args,
+                    defines=defines,
+                    common_runtime_args=common_runtime_args,
+                    config=spec.config,
+                    compiler_include_paths=spec.compiler_include_paths,
+                )
+                if descriptor_variant.runtime_args:
+                    kernel_descriptor_args["runtime_args"] = (
+                        descriptor_variant.runtime_args
+                    )
+                kernel_descriptors.append(
+                    ttnn.KernelDescriptor(**kernel_descriptor_args)
+                )
 
     return kernel_descriptors
 
@@ -3460,12 +3569,9 @@ def _order_static_dfb_descriptor_plans(
             f"exceeds the L1 budget by {required_bytes - available_bytes} bytes"
         )
 
-    if (
-        current_score[0] > 0
-        and (
-            not search_unsplit_orders
-            or len(static_plan_indices) > _STATIC_DFB_PACKING_EXACT_PLAN_LIMIT
-        )
+    if current_score[0] > 0 and (
+        not search_unsplit_orders
+        or len(static_plan_indices) > _STATIC_DFB_PACKING_EXACT_PLAN_LIMIT
     ):
         return split_overflow_core_or_raise(current_result, current_order)
 
@@ -3674,9 +3780,7 @@ def _shared_static_storage_size(
 
 def _static_storage_bytes_by_core(
     cb_configs: Sequence[PhysicalDFBConfig],
-    static_members_by_storage_by_core: Dict[
-        int, Dict[Tuple[int, int], set[int]]
-    ],
+    static_members_by_storage_by_core: Dict[int, Dict[Tuple[int, int], set[int]]],
     reconfiguration_plan: Optional[DFBReconfigurationPlan],
 ) -> Dict[int, Dict[Tuple[int, int], int]]:
     """Return each compiler-managed storage allocation's required capacity."""
@@ -4322,6 +4426,30 @@ def build_mesh_program_descriptor(
     return mesh_program_descriptor
 
 
+def _iter_mesh_program_placement_coordinates(
+    mesh_program_placements: List[Any],
+) -> Iterable[Tuple[int, ...]]:
+    """Expand mesh placements into unique coordinates in placement order."""
+    seen_coordinates = set()
+    for placement in mesh_program_placements:
+        mesh_range = _build_mesh_coordinate_range(placement)
+        try:
+            coordinates = iter(mesh_range)
+        except TypeError as error:
+            raise TypeError(
+                "mesh program placements must be iterable coordinate ranges"
+            ) from error
+        for coordinate in coordinates:
+            coordinate_tuple = tuple(int(value) for value in coordinate)
+            if coordinate_tuple in seen_coordinates:
+                raise ValueError(
+                    "mesh_program_placements contains overlapping device "
+                    f"coordinate {coordinate_tuple}"
+                )
+            seen_coordinates.add(coordinate_tuple)
+            yield coordinate_tuple
+
+
 def _iter_device_domain_coordinates(device_domain):
     component_coordinates = []
     for component in device_domain.components:
@@ -4589,7 +4717,7 @@ def _run_kernel_on_device_impl(
             resource_plan.structural_fingerprint,
         )
 
-    def build_device_program(device_coordinates=None):
+    def build_device_program(device_coordinates=None, device_coordinate=None):
         kernel_descriptors = build_kernel_descriptors(
             kernel_specs=kernel_specs,
             tensors=tensors,
@@ -4607,6 +4735,7 @@ def _run_kernel_on_device_impl(
                 pipe_runtime_resources.expected_extra_common_runtime_args
             ),
             device_coordinates=device_coordinates,
+            device_coordinate=device_coordinate,
             descriptor_resource_plans=(
                 resource_plan.kernel_descriptors if resource_plan is not None else None
             ),
@@ -4637,7 +4766,7 @@ def _run_kernel_on_device_impl(
         for mesh_coordinate, runtime_coordinates in _iter_device_domain_coordinates(
             device_domain
         ):
-            device_program = build_device_program(runtime_coordinates)
+            device_program = build_device_program(runtime_coordinates, mesh_coordinate)
             program_descriptors[mesh_coordinate] = device_program
             if not has_fabric_target_bindings:
                 configure_routing_plane_runtime_args(
@@ -4682,9 +4811,30 @@ def _run_kernel_on_device_impl(
             )
         program = build_device_mesh_program_descriptor(program_descriptors)
     else:
-        program_descriptor = build_device_program()
-        program = program_descriptor
-        if mesh_program_placements is not None:
+        used_tensor_indices = {
+            tensor_index
+            for spec in kernel_specs
+            for tensor_index in spec.tensor_indices
+        }
+        requires_device_specific_programs = mesh_program_placements is not None and any(
+            _uses_per_core_allocation(tensors[tensor_index])
+            for tensor_index in used_tensor_indices
+        )
+        if requires_device_specific_programs:
+            program_descriptors = {
+                mesh_coordinate: build_device_program(device_coordinate=mesh_coordinate)
+                for mesh_coordinate in _iter_mesh_program_placement_coordinates(
+                    mesh_program_placements
+                )
+            }
+            program = build_device_mesh_program_descriptor(program_descriptors)
+        else:
+            program_descriptor = build_device_program()
+            program = program_descriptor
+        if (
+            mesh_program_placements is not None
+            and not requires_device_specific_programs
+        ):
             program = build_mesh_program_descriptor(
                 program_descriptor=program_descriptor,
                 mesh_program_placements=mesh_program_placements,

@@ -8,6 +8,7 @@ from collections import defaultdict
 from dataclasses import FrozenInstanceError, replace
 from enum import Enum
 import gc
+import itertools
 import os
 from pathlib import Path
 import re
@@ -354,6 +355,9 @@ class _FakeTTNN:
                 and self.coords == other.coords
             )
 
+        def __iter__(self):
+            return iter(self.coords)
+
     class MeshCoordinateRange:
         def __init__(self, start, end):
             self.start = start
@@ -368,6 +372,16 @@ class _FakeTTNN:
 
         def __hash__(self):
             return hash((self.start.coords, self.end.coords))
+
+        def __iter__(self):
+            coordinate_ranges = [
+                range(start, end + 1)
+                for start, end in zip(self.start.coords, self.end.coords, strict=True)
+            ]
+            return (
+                _FakeTTNN.MeshCoordinate(coordinate)
+                for coordinate in itertools.product(*coordinate_ranges)
+            )
 
     class MeshProgramDescriptor:
         def __init__(self):
@@ -2395,7 +2409,15 @@ def _local_tensor_test_environment():
 
 
 class _LocalTensorTestDouble:
-    def __init__(self, buffer_type, memory_layout, shard_grid):
+    def __init__(
+        self,
+        buffer_type,
+        memory_layout,
+        shard_grid,
+        *,
+        per_core_addresses=None,
+        device_coordinates=((0, 0),),
+    ):
         self._memory_config = SimpleNamespace(
             buffer_type=buffer_type,
             memory_layout=memory_layout,
@@ -2403,6 +2425,8 @@ class _LocalTensorTestDouble:
                 None if shard_grid is None else SimpleNamespace(grid=shard_grid)
             ),
         )
+        self._per_core_addresses = per_core_addresses
+        self._device_coordinates = device_coordinates
 
     def memory_config(self):
         return self._memory_config
@@ -2410,6 +2434,20 @@ class _LocalTensorTestDouble:
     @staticmethod
     def buffer_address():
         return 0x2000
+
+    def is_per_core_allocated(self):
+        return self._per_core_addresses is not None
+
+    def device_coords(self):
+        return [
+            _FakeTTNN.MeshCoordinate(coordinate)
+            for coordinate in self._device_coordinates
+        ]
+
+    def experimental_per_core_buffer_address(self, device_coordinate, core):
+        return self._per_core_addresses[
+            (tuple(device_coordinate), (int(core.x), int(core.y)))
+        ]
 
 
 def test_build_kernel_descriptors_accepts_complete_local_tensor_shards(monkeypatch):
@@ -2436,6 +2474,154 @@ def test_build_kernel_descriptors_accepts_complete_local_tensor_shards(monkeypat
     )
 
     assert descriptors[0].common_runtime_args == [0x2000]
+
+
+@pytest.mark.parametrize(
+    ("thread_type", "local_tensor_indices", "tensor_accessor_args"),
+    [
+        pytest.param("compute", [0], [], id="compute-local-accessor"),
+        pytest.param("noc", [], [7], id="data-movement-accessor"),
+    ],
+)
+def test_build_kernel_descriptors_uses_per_device_core_tensor_addresses(
+    monkeypatch, thread_type, local_tensor_indices, tensor_accessor_args
+):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    tensor = _LocalTensorTestDouble(
+        "l1",
+        "height",
+        full_grid,
+        per_core_addresses={
+            ((0, 1), (0, 0)): 0x3000,
+            ((0, 1), (1, 0)): 0x5000,
+        },
+        device_coordinates=((0, 0), (0, 1)),
+    )
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type=thread_type,
+        tensor_indices=[0],
+        local_tensor_indices=local_tensor_indices,
+        config=object(),
+    )
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        tensor_accessor_args=tensor_accessor_args,
+        core_ranges=full_grid,
+        grid_cols=2,
+        grid_rows=1,
+        num_cbs=0,
+        device_coordinate=(0, 1),
+    )
+
+    assert [descriptor.common_runtime_args for descriptor in descriptors] == [
+        [0x3000],
+        [0x5000],
+    ]
+    assert [
+        kernel_runner._core_range_coordinates(
+            descriptor.core_ranges, label="test descriptor core ranges"
+        )
+        for descriptor in descriptors
+    ] == [{(0, 0)}, {(1, 0)}]
+    if thread_type != "compute":
+        assert all(
+            descriptor.compile_time_args == tensor_accessor_args
+            for descriptor in descriptors
+        )
+
+
+def test_build_kernel_descriptors_combines_per_core_addresses_with_compiler_l1(
+    monkeypatch,
+):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    tensor = _LocalTensorTestDouble(
+        "l1",
+        "height",
+        full_grid,
+        per_core_addresses={
+            ((0, 1), (0, 0)): 0x3000,
+            ((0, 1), (1, 0)): 0x5000,
+        },
+        device_coordinates=((0, 0), (0, 1)),
+    )
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="compute",
+        tensor_indices=[0],
+        local_tensor_indices=[0],
+        config=object(),
+    )
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        tensor_accessor_args=[],
+        core_ranges=full_grid,
+        grid_cols=2,
+        grid_rows=1,
+        num_cbs=0,
+        device_coordinate=(0, 1),
+        compiler_l1_base_address=0x8000,
+    )
+
+    assert [descriptor.common_runtime_args for descriptor in descriptors] == [
+        [0x3000, 0x8000],
+        [0x5000, 0x8000],
+    ]
+    assert all(descriptor.compile_time_args == [1] for descriptor in descriptors)
+
+
+def test_build_kernel_descriptors_composes_per_core_addresses_and_reconfiguration(
+    monkeypatch,
+):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    tensor = _LocalTensorTestDouble(
+        "l1",
+        "height",
+        full_grid,
+        per_core_addresses={
+            ((0, 0), (0, 0)): 0x3000,
+            ((0, 0), (1, 0)): 0x5000,
+        },
+    )
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[0],
+        local_tensor_indices=[0],
+        config=object(),
+    )
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        tensor_accessor_args=[7],
+        core_ranges=full_grid,
+        grid_cols=2,
+        grid_rows=1,
+        num_cbs=1,
+        dfb_reconfiguration_runtime_args={
+            (0, 0): [0x4000],
+            (1, 0): [0x6000],
+        },
+    )
+
+    assert [descriptor.common_runtime_args for descriptor in descriptors] == [
+        [0x3000],
+        [0x5000],
+    ]
+    assert all(descriptor.compile_time_args == [0, 0, 7] for descriptor in descriptors)
+    assert descriptors[0].runtime_args[0][0] == [0x4000]
+    assert descriptors[1].runtime_args[1][0] == [0x6000]
 
 
 def test_local_tensor_access_requires_runtime_address_metadata(monkeypatch):
@@ -5702,6 +5888,45 @@ def test_compiler_l1_mesh_placements_bind_lockstep_arena(monkeypatch):
     assert program.kernels[0].runtime_args[0][0] == [7, 8]
     assert program.kernels[0].defines == [("MODE", "external")]
     assert fake_ttnn.synchronize_calls == [mesh_device]
+
+
+def test_run_kernel_builds_per_device_programs_for_local_addresses(monkeypatch):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    core_ranges = _FakeExplicitCoreRanges((0, 0), (0, 0))
+    tensor = _LocalTensorTestDouble(
+        "l1",
+        "height",
+        core_ranges,
+        per_core_addresses={
+            ((0, 0), (0, 0)): 0x3000,
+            ((0, 1), (0, 0)): 0x5000,
+        },
+        device_coordinates=((0, 0), (0, 1)),
+    )
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="compute",
+        tensor_indices=[0],
+        local_tensor_indices=[0],
+        config=object(),
+    )
+
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        cb_configs=[],
+        core_ranges=core_ranges,
+        program_hash=5,
+        mesh_program_placements=[kernel_runner.MeshProgramPlacement((0, 0), (0, 1))],
+    )
+
+    mesh_programs = result["program"].mesh_programs
+    assert len(mesh_programs) == 2
+    assert [
+        program.kernels[0].common_runtime_args for _mesh_range, program in mesh_programs
+    ] == [[0x3000], [0x5000]]
+    assert all(mesh_range.start == mesh_range.end for mesh_range, _ in mesh_programs)
 
 
 def test_build_mesh_program_descriptor_rejects_empty_placements(monkeypatch):

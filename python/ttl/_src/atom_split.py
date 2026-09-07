@@ -250,53 +250,64 @@ class _KernelSelectorResolver:
         self, call: ast.Call, selected: FrozenSet[KernelSelector]
     ) -> None:
         self._validate_fabric_manager_effects(call, selected)
-        effects = _keyword_value(call, "dfb_effects")
-        if not isinstance(effects, ast.Dict):
+        for metadata_name in ("dfb_effects", "dfb_accesses"):
+            self._validate_kernel_specific_dfb_metadata(call, selected, metadata_name)
+
+    def _validate_kernel_specific_dfb_metadata(
+        self,
+        call: ast.Call,
+        selected: FrozenSet[KernelSelector],
+        metadata_name: str,
+    ) -> None:
+        metadata = _keyword_value(call, metadata_name)
+        if not isinstance(metadata, ast.Dict):
             return
-        if not effects.keys:
+        if not metadata.keys:
             raise _split_error(
-                effects,
-                "call_extern_func kernel-specific dfb_effects must not be empty",
+                metadata,
+                f"call_extern_func kernel-specific {metadata_name} must not "
+                "be empty",
             )
-        effect_kernels: Set[KernelSelector] = set()
-        for selector_node, sequence in zip(effects.keys, effects.values):
+        metadata_kernels: Set[KernelSelector] = set()
+        for selector_node, sequence in zip(metadata.keys, metadata.values):
             if selector_node is None:
                 raise _split_error(
-                    effects,
-                    "call_extern_func kernel-specific dfb_effects does not "
+                    metadata,
+                    f"call_extern_func kernel-specific {metadata_name} does not "
                     "support dictionary expansion",
                 )
             selector = self._resolve_selector(selector_node)
             if selector not in selected:
                 raise _split_error(
                     selector_node,
-                    "call_extern_func dfb_effects selects a kernel excluded "
+                    f"call_extern_func {metadata_name} selects a kernel excluded "
                     "by the call's kernel selection",
                 )
-            if selector in effect_kernels:
+            if selector in metadata_kernels:
                 raise _split_error(
                     selector_node,
-                    "call_extern_func dfb_effects contains a duplicate kernel "
+                    f"call_extern_func {metadata_name} contains a duplicate kernel "
                     "selector",
                 )
             if not isinstance(sequence, ast.List) or not sequence.elts:
                 raise _split_error(
                     sequence,
-                    "each call_extern_func kernel-specific dfb_effects value "
+                    f"each call_extern_func kernel-specific {metadata_name} "
+                    "value "
                     "must be a nonempty list",
                 )
-            effect_kernels.add(selector)
+            metadata_kernels.add(selector)
 
-    def select_external_dfb_effects(
-        self, call: ast.Call, kernel: KernelSelector
+    def select_kernel_specific_dfb_metadata(
+        self, call: ast.Call, kernel: KernelSelector, metadata_name: str
     ) -> None:
-        effects = _keyword_value(call, "dfb_effects")
-        if not isinstance(effects, ast.Dict):
+        metadata = _keyword_value(call, metadata_name)
+        if not isinstance(metadata, ast.Dict):
             return
         selected_sequence = next(
             (
                 sequence
-                for selector_node, sequence in zip(effects.keys, effects.values)
+                for selector_node, sequence in zip(metadata.keys, metadata.values)
                 if selector_node is not None
                 and self._resolve_selector(selector_node) == kernel
             ),
@@ -304,11 +315,11 @@ class _KernelSelectorResolver:
         )
         if selected_sequence is None:
             call.keywords = [
-                keyword for keyword in call.keywords if keyword.arg != "dfb_effects"
+                keyword for keyword in call.keywords if keyword.arg != metadata_name
             ]
             return
         for keyword in call.keywords:
-            if keyword.arg == "dfb_effects":
+            if keyword.arg == metadata_name:
                 keyword.value = selected_sequence
                 return
 
@@ -698,9 +709,7 @@ def split_function_body(
         target_capacities=target_capacities,
     )
     bodies = {
-        kernel: _apply_split_plan(
-            fn_def.body, kernel, plan, selector_resolver
-        )
+        kernel: _apply_split_plan(fn_def.body, kernel, plan, selector_resolver)
         for kernel in ordered_kernels
     }
     return SplitResult(
@@ -1473,7 +1482,10 @@ class _KernelKeywordStripper(ast.NodeTransformer):
             and node.func.attr in _DFB_RELEASE_METHODS
         )
         if _is_external_call(node):
-            self.selector_resolver.select_external_dfb_effects(node, self.kernel)
+            for metadata_name in ("dfb_effects", "dfb_accesses"):
+                self.selector_resolver.select_kernel_specific_dfb_metadata(
+                    node, self.kernel, metadata_name
+                )
         if _is_external_call(node) or is_release:
             node.keywords = [
                 keyword for keyword in node.keywords if keyword.arg != _KERNEL_KEYWORD
