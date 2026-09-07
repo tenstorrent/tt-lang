@@ -975,6 +975,11 @@ public:
       template_args.push_back(
           datatypeToDataformatEnumNameOpaqueAttr(builder, op.getDataFormat()));
       return ArrayAttr::get(op.getContext(), template_args);
+    } else if constexpr (std::is_same_v<SourceOp,
+                                        ttkernel::ReconfigDataFormatOp>) {
+      return builder.getArrayAttr(
+          {emitc::OpaqueAttr::get(op.getContext(), "SrcOrder::Regular"),
+           emitc::OpaqueAttr::get(op.getContext(), "true")});
     } else if constexpr (std::is_same_v<SourceOp, ttkernel::UnaryBcastInitOp> ||
                          std::is_same_v<SourceOp, ttkernel::UnaryBcastTileOp>) {
       SmallVector<Attribute, 1> template_args;
@@ -985,7 +990,7 @@ public:
                                         ttkernel::BinaryBcastInitOp> ||
                          std::is_same_v<SourceOp,
                                         ttkernel::BinaryBcastTileOp>) {
-      // init_bcast<EltwiseBinaryType, BroadcastType>(icb0, icb1, ocb)
+      // bcast_init<EltwiseBinaryType, BroadcastType>(icb0, icb1)
       // any_tiles_bcast<EltwiseBinaryType, BroadcastType>(icb0, icb1, itile0,
       //                                                   itile1, idst)
       SmallVector<Attribute, 2> template_args;
