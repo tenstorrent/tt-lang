@@ -17,7 +17,7 @@ TT-Lang normally assigns each logical dataflow buffer (DFB) a TT-Metal DFB descr
 | Allocation groups | Reuse a physical descriptor and its storage contract | Share one validated storage owner and control record |
 | Reset and reconfiguration | Blackhole TT-Metal interface reset and runtime descriptor reconfiguration | Blackhole address-based state reset with compiler-fixed geometry |
 | External C++ DFB access | Numeric index or typed descriptor bound to a TT-Metal DFB | Typed descriptor bound to compiler-assigned storage |
-| Local PipeNet receivers | TT-Metal descriptor or tensor-backed computed address | Compiler arena or tensor-backed computed address; no TT-Metal DFB descriptor |
+| PipeNet receivers | TT-Metal descriptor with computed or receiver-published addressing | Compiler arena or tensor-backed computed address for intra-device and generated inter-device transfers; no TT-Metal DFB descriptor |
 
 Shared terminology is defined in the [TT-Lang specification glossary](../sphinx/specs/TTLangSpecification.md#appendix-a-glossary). The DFB protocol and lifecycle rules are defined in [DFB Management](DFBManagement.md).
 
@@ -56,7 +56,7 @@ Packed-format metadata is included in `P`. An allocation group reserves the larg
 
 Allocation consumes the existing logical-identity, allocation-group, and completion-aware lifetime analyses. The compiler validates every allocation group and builds the complete conflict relation before changing IR. Unknown launch domains, unproved completion, concurrent lifetimes, and incompatible storage ownership remain conflicts.
 
-The shared storage conflict analysis accepts an explicit storage mode. Metal storage includes conflicts caused by runtime descriptor installation and Metal-managed backing changes. Compiler-managed storage excludes those conflicts because each logical DFB retains fixed compile-time geometry and each validated storage owner has a control record. This distinction permits byte reuse across a reconfiguration boundary after the prior lifecycle ends while preserving DFBs that remain live across the boundary.
+The shared storage conflict analysis accepts an explicit storage mode. Metal storage includes conflicts caused by runtime descriptor installation and Metal-managed backing changes. Compiler-managed storage excludes those conflicts because each logical DFB's page size, pages per block, block count, and storage capacity remain constant during execution, and each validated storage owner has a control record. This distinction permits byte reuse across a reconfiguration boundary after the prior lifecycle ends while preserving DFBs that remain live across the boundary.
 
 Validated allocation-group members are collapsed into one storage owner. The owner conflicts with another owner if any member pair conflicts. This preserves all lifecycle conflicts while allowing the explicit ownership transfer represented by the group. The existing group validator proves ordering, capacity, cursor continuity, and storage compatibility; the compiler-L1 allocator does not duplicate or weaken those checks.
 
@@ -252,7 +252,11 @@ External calls that access DFBs must provide explicit `DFBEffect` entries. These
 
 ## PipeNet Integration
 
-Local intra-device PipeNets retain the existing transfer plan and synchronization protocols. Compiler-managed allocation changes only how a receiver address is obtained. A compiler-owned receiver uses the arena base plus its finalized payload offset. A tensor-backed receiver uses the tensor base plus its finalized byte offset. No TT-Metal DFB descriptor is created for either case.
+Intra-device and generated inter-device PipeNets retain the existing transfer plan and synchronization protocols. Compiler-managed allocation changes how a receiver address is obtained. A compiler-owned receiver uses the arena base plus its finalized payload offset. A tensor-backed receiver uses the tensor base plus its finalized byte offset. No TT-Metal DFB descriptor is created for either case.
+
+Generated inter-device transfers use the same computed receiver address as intra-device transfers. A mesh arena has one lockstep L1 base address, and the compiler emits one relative layout for every participating device. `arenaBase + payloadOffset` therefore identifies the same storage owner on the destination device. Tensor-backed receivers use the common base of the sharded mesh tensor plus their validated byte offset. Fabric binding independently resolves logical device coordinates to physical routing targets; it does not change storage placement.
+
+The Metal backend retains receiver publication when one physical DFB index can refer to different storage across reconfiguration epochs. Compiler-managed allocation assigns each finalized DFB index one arena or tensor base for the compiled operation, so that base remains valid for every transfer occurrence.
 
 Producer and wait launch domains are validated for explicit DFB operations and external-call `DFBEffect` declarations. Treating both through the DFB access interface prevents an external producer from being omitted from PipeNet deadlock analysis.
 
@@ -278,9 +282,23 @@ buildPipeRuntimeArguments(allocations, computedReceivers, tensors):
     return arguments
 ```
 
+```text
+bindGeneratedFabricRoutes(deviceDomain, kernels, routes):
+    plans = empty map
+    for each logical device in deviceDomain:
+        program = buildProgramDescriptor(kernels, logicalDevice)
+        plans[logicalDevice] = planFabricBindings(program, routes, logicalDevice)
+
+    for each logical device in deviceDomain:
+        apply plans[logicalDevice] to its program descriptor
+    return one mesh program descriptor containing every device program
+```
+
+Planning every device before applying any binding prevents a later invalid route from leaving earlier program descriptors partially configured.
+
 Runtime-resource cache identity includes tensor-backed receiver addresses, so a new tensor allocation cannot reuse a stale receiver base. Cache ownership includes only L1 allocations created by the runtime; caller-owned tensor addresses remain part of the available-L1 calculation.
 
-The supported contract includes computed-capacity, computed receiver-post, published receiver-post, and global-counter protocols; ready-receive selection; grouped transfers; and compiler-managed reset and reconfiguration boundaries. PipeNet lifetime operations continue to participate in the existing completion-aware conflict analysis before placement.
+The supported contract includes computed-capacity, computed receiver-post, published receiver-post, and global-counter protocols; ready-receive selection; grouped transfers; generated inter-device routes; and compiler-managed reset and reconfiguration boundaries. PipeNet lifetime operations, including remote completion, continue to participate in the existing completion-aware conflict analysis before placement.
 
 ## Target Interfaces
 
@@ -323,6 +341,7 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 - Blackhole selected reset, reset-all, and reconfiguration.
 - Wormhole allocation, transfer, compute, external descriptors, and local PipeNet compilation without reset or reconfiguration.
 - Local intra-device PipeNet transfers with compiler-owned or tensor-backed computed receiver addresses and no TT-Metal DFB descriptors.
+- Generated inter-device PipeNet transfers with compiler-owned or tensor-backed computed receiver addresses and per-device fabric binding.
 
 ## Validation
 
@@ -336,19 +355,19 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 | Wormhole | Compile-only allocation, typed external descriptor, local PipeNet pipeline, and UNPACK/MATH/PACK target compilation; negative reset and reconfiguration diagnostics |
 | Runtime placement and resources | Runtime-unit evidence for one-device and device-domain descriptors, replicated mesh placement, lockstep arena binding, external fabric bindings, resource lifetimes, program hashes, tensor-address cache identity, and owned-allocation accounting; 18 Blackhole device-correctness cases for typed external calls with semaphores, runtime arguments, defines, repeated invocations, BF16/FP32, DRAM/L1, generic/specialized kernels, and both memory models |
 | Local PipeNet execution | Blackhole device correctness across BF16/FP32, DRAM/L1, both allocator strategies, four synchronization protocols, ready-receive selection, grouped transfers, reset, reconfiguration, typed external DFB calls, repeated invocation, two-axis matmul distribution, and receiver logical indices above the Metal limit; compile-only Metal and compiler-L1 transfer preservation |
+| Generated fabric PipeNet execution | Compile-only full-pipeline coverage preserves generated routes, routing-plane operations, compiler-owned receiver offsets, and descriptor independence; runtime-unit coverage verifies per-device route binding for compiler-owned and tensor-backed receiver addresses |
 | Invalid contracts | Compiler diagnostics for malformed metadata, unsupported transactions and tile forms, unknown external effects, numeric external DFB indices, storage ownership, and budget overflow |
 
-Relevant tests are [transfer and allocator device tests](../../test/python/test_compiler_l1.py), [compute device tests](../../test/python/test_compiler_l1_compute.py), [lifecycle and external-call device tests](../../test/python/test_compiler_l1_lifecycle.py), [local PipeNet device tests](../../test/python/pipe/test_compiler_l1_pipenet.py), [runtime placement tests](../../test/python/test_kernel_runner.py), [external runtime-resource device tests](../../test/python/test_operation_runtime_resources.py), and [generated allocator stress tests](../../test/ttlang/Dialect/TTL/Transforms/compiler_l1_stress.py).
+Relevant tests are [transfer and allocator device tests](../../test/python/test_compiler_l1.py), [compute device tests](../../test/python/test_compiler_l1_compute.py), [lifecycle and external-call device tests](../../test/python/test_compiler_l1_lifecycle.py), [local PipeNet device tests](../../test/python/pipe/test_compiler_l1_pipenet.py), [generated fabric device tests](../../test/python/fabric/test_ccl.py), [runtime placement tests](../../test/python/test_kernel_runner.py), [external runtime-resource device tests](../../test/python/test_operation_runtime_resources.py), and [generated allocator stress tests](../../test/ttlang/Dialect/TTL/Transforms/compiler_l1_stress.py).
 
 ## Follow-on PRs
 
-The intended dependency order after local PipeNet support is:
+The intended dependency order after generated fabric support is:
 
-1. Add multi-device fabric execution. Resolve source and destination device domains, allocate per-device resources through the runtime placement interface, and verify inter-device completion before storage reuse.
-2. Qualify representative external C++ kernels against the typed descriptor interface and add common adapters for required address, geometry, and completion operations.
-3. Add sub-tile and row-major metadata, partial-block and general contiguous multi-block transactions, and the corresponding address, stride, capacity, and wrap rules.
-4. Add per-core arena layouts if sparse-placement measurements justify the additional per-node allocation metadata and runtime binding.
-5. Add Wormhole reset and reconfiguration after defining and device-qualifying a Wormhole synchronization protocol behind the existing target interface.
-6. Qualify complete model layers, then measure device cycles, arena high-water usage, initialization cost, compile time, and generated code size against `metal-cb`.
+1. Qualify representative external C++ kernels against the typed descriptor interface and add common adapters for required address, geometry, and completion operations.
+2. Add sub-tile and row-major metadata, partial-block and general contiguous multi-block transactions, and the corresponding address, stride, capacity, and wrap rules.
+3. Add per-core arena layouts if sparse-placement measurements justify the additional per-node allocation metadata and runtime binding.
+4. Add Wormhole reset and reconfiguration after defining and device-qualifying a Wormhole synchronization protocol behind the existing target interface.
+5. Qualify complete model layers, then measure device cycles, arena high-water usage, initialization cost, compile time, and generated code size against `metal-cb`.
 
 Each extension must preserve the fail-before-mutation rule, architecture isolation, explicit ownership, and compiler-managed descriptor independence.
