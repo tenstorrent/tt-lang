@@ -41,6 +41,7 @@ constexpr uint32_t participantCount = 3;
 constexpr uint32_t entryComplete = 1;
 constexpr uint32_t exitComplete = 2;
 constexpr uint32_t completionMarker = 0xD1FB;
+constexpr uint32_t preserveFifoAddress = 0;
 
 FORCE_INLINE uint32_t
 loadSynchronizationWord(volatile uint32_t tt_l1_ptr *synchronizationWord) {
@@ -164,8 +165,7 @@ FORCE_INLINE void applyMask(uint32_t tt_l1_ptr *configuration,
   while (activeMask != 0) {
     if ((activeMask & 1U) != 0) {
       uint32_t configurationOffset = dfbIndex * 4;
-      uint32_t fifoAddress =
-          configuration[configurationOffset] >> cb_addr_shift;
+      uint32_t configuredAddress = configuration[configurationOffset];
       uint32_t fifoSize =
           configuration[configurationOffset + 1] >> cb_addr_shift;
       uint32_t fifoNumPages = configuration[configurationOffset + 2];
@@ -173,6 +173,10 @@ FORCE_INLINE void applyMask(uint32_t tt_l1_ptr *configuration,
           configuration[configurationOffset + 3] >> cb_addr_shift;
 
       LocalCBInterface &interface = get_local_cb_interface(dfbIndex);
+      uint32_t fifoAddress =
+          configuredAddress == preserveFifoAddress
+              ? interface.fifo_limit - interface.fifo_size
+              : configuredAddress >> cb_addr_shift;
       if constexpr (updateReadPointer) {
         interface.fifo_rd_ptr = fifoAddress;
       }

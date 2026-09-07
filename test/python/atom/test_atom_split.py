@@ -36,6 +36,8 @@ from ttl.dfb_allocation_group import (
 )
 from ttl.kernel import Kernel, KernelKind, _operation_identity
 
+_GLOBAL_KERNEL_KIND_FOR_IDENTITY = ttl.KernelKind.COMPUTE
+
 
 def _fn(src: str) -> ast.FunctionDef:
     return ast.parse(textwrap.dedent(src)).body[0]
@@ -147,6 +149,88 @@ def test_captured_kernel_is_bound_for_final_operation():
         kernel_capacities=_backend_kernel_capacities(),
     )
     assert result.kernels == (reader,)
+
+
+def test_captured_kernel_selectors_preserve_global_roles():
+    """Aliases may select canonical and compiler-owned implicit kernels."""
+
+    def make_spec(kernel_selector):
+        def operation():
+            ttl.call_extern_func(
+                "source.hpp",
+                "source",
+                kernel=kernel_selector,
+            )
+
+        return _build_atom_spec(operation)
+
+    for kernel_selector in (
+        ttl.KernelKind.DATA_MOVEMENT,
+        ttl.PIPE_SOURCE_KERNEL,
+    ):
+        spec = make_spec(kernel_selector)
+        result = split_function_body(
+            spec.fn_ast,
+            dfb_param_names=set(),
+            logical_kernels=spec.logical_kernels,
+            selector_scope=spec.frozen_scope,
+            kernel_capacities=_backend_kernel_capacities(),
+        )
+
+        assert spec.logical_kernels == {}
+        assert spec.frozen_scope["kernel_selector"] is kernel_selector
+        assert result.kernels == (kernel_selector,)
+
+        @ttl.operation()
+        def selector_helper():
+            ttl.call_extern_func(
+                "source.hpp",
+                "source",
+                kernel=kernel_selector,
+            )
+
+        @ttl.operation(grid=(1, 1))
+        def composed_operation():
+            selector_helper()
+
+        composed_result = split_function_body(
+            composed_operation._spec.fn_ast,
+            dfb_param_names=set(),
+            logical_kernels=composed_operation._spec.logical_kernels,
+            selector_scope=composed_operation._spec.frozen_scope,
+            kernel_capacities=_backend_kernel_capacities(),
+        )
+        assert composed_result.kernels == (kernel_selector,)
+
+    canonical_spec = make_spec(ttl.KernelKind.DATA_MOVEMENT)
+    pipe_source_spec = make_spec(ttl.PIPE_SOURCE_KERNEL)
+    assert canonical_spec.operation_identity != pipe_source_spec.operation_identity
+
+
+def test_module_global_kernel_kind_changes_operation_identity(monkeypatch):
+    """Operation identity includes a referenced module-global selector."""
+
+    def selected_operation():
+        ttl.call_extern_func(
+            "source.hpp",
+            "source",
+            kernel=_GLOBAL_KERNEL_KIND_FOR_IDENTITY,
+        )
+
+    monkeypatch.setitem(
+        selected_operation.__globals__,
+        "_GLOBAL_KERNEL_KIND_FOR_IDENTITY",
+        ttl.KernelKind.COMPUTE,
+    )
+    compute_identity = _operation_identity(selected_operation)
+    monkeypatch.setitem(
+        selected_operation.__globals__,
+        "_GLOBAL_KERNEL_KIND_FOR_IDENTITY",
+        ttl.KernelKind.DATA_MOVEMENT,
+    )
+    data_movement_identity = _operation_identity(selected_operation)
+
+    assert compute_identity != data_movement_identity
 
 
 def test_captured_fabric_manager_claim_binds_to_selected_kernel():
@@ -586,6 +670,177 @@ def test_composition_preserves_captured_kernel_handle():
         kernel_capacities=_backend_kernel_capacities(),
     )
     assert result.kernels == (reader,)
+
+
+def test_composition_removes_inactive_factory_boolean_branch():
+    """Dead factory branches cannot add kernels or invalid literals."""
+    enabled = False
+    absent_offset = None
+
+    @ttl.operation()
+    def selected_callee():
+        if not enabled:
+            ttl.call_extern_func(
+                "live.hpp",
+                "live",
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+        if enabled:
+            ttl.call_extern_func(
+                "dead.hpp",
+                "dead",
+                template_args=[absent_offset],
+                kernel=ttl.KernelKind.DATA_MOVEMENT,
+            )
+
+    @ttl.operation(grid=(1, 1))
+    def selected_caller():
+        selected_callee()
+
+    for spec in (selected_callee._spec, selected_caller._spec):
+        assert "if " not in spec.source
+        assert "'live'" in spec.source
+        assert "'dead'" not in spec.source
+        assert "None" not in spec.source
+
+    result = split_function_body(
+        selected_caller._spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=selected_caller._spec.logical_kernels,
+        selector_scope=selected_caller._spec.frozen_scope,
+        kernel_capacities=_backend_kernel_capacities(),
+    )
+    assert result.kernels == (KernelKind.COMPUTE,)
+
+
+def test_factory_boolean_specialization_respects_nested_parameter():
+    """Nested parameters shadow same-named factory captures."""
+    enabled = False
+
+    @ttl.operation()
+    def selected_operation():
+        if enabled:
+            ttl.call_extern_func(
+                "dead.hpp",
+                "dead",
+                kernel=ttl.KernelKind.DATA_MOVEMENT,
+            )
+
+        def selected_callback(enabled):
+            if enabled:
+                ttl.call_extern_func(
+                    "live.hpp",
+                    "live",
+                    kernel=ttl.KernelKind.COMPUTE,
+                )
+
+    assert "'dead'" not in selected_operation._spec.source
+    assert "def selected_callback(enabled):" in selected_operation._spec.source
+    assert "if enabled:" in selected_operation._spec.source
+    assert "'live'" in selected_operation._spec.source
+
+
+def test_factory_boolean_specialization_preserves_empty_function_syntax():
+    """A fully disabled operation retains a valid empty body."""
+    enabled = False
+
+    @ttl.operation()
+    def disabled_operation():
+        if enabled:
+            ttl.call_extern_func(
+                "dead.hpp",
+                "dead",
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+
+    assert disabled_operation._spec.source.endswith("    pass")
+    result = split_function_body(
+        disabled_operation._spec.fn_ast,
+        dfb_param_names=set(),
+        selector_scope=disabled_operation._spec.frozen_scope,
+    )
+    assert result.kernels == ()
+
+
+@pytest.mark.parametrize(
+    "coordinates",
+    [((1, 2), (3, 4)), [[1, 2], [3, 4]]],
+    ids=["tuple", "list"],
+)
+def test_composition_expands_captured_sequence_loop(coordinates):
+    """Composition expands static coordinate iteration before lowering."""
+
+    @ttl.operation()
+    def coordinate_helper(core_x, core_y):
+        selected = False
+        for coordinate_x, coordinate_y in coordinates:
+            selected = selected or (
+                core_x == coordinate_x and core_y == coordinate_y
+            )
+        if selected:
+            ttl.call_extern_func(
+                "selected.hpp",
+                "selected",
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+
+    @ttl.operation(grid=(1, 1))
+    def composed_coordinates(core_x, core_y):
+        coordinate_helper(core_x, core_y)
+
+    source = composed_coordinates._spec.source
+    assert "for " not in source
+    assert "core_x == 1" in source
+    assert "core_y == 2" in source
+    assert "core_x == 3" in source
+    assert "core_y == 4" in source
+
+
+def test_composition_folds_captured_sequence_subscript():
+    """Composition resolves nested indexing into a captured sequence."""
+    coordinates = ((1, 2), (3, 4))
+
+    @ttl.operation()
+    def coordinate_helper(core_x, core_y):
+        selected = core_x == coordinates[-1][0] and core_y == coordinates[-1][1]
+        if selected:
+            ttl.call_extern_func(
+                "selected.hpp",
+                "selected",
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+
+    @ttl.operation(grid=(1, 1))
+    def composed_coordinates(core_x, core_y):
+        coordinate_helper(core_x, core_y)
+
+    source = composed_coordinates._spec.source
+    assert "[" not in source
+    assert "core_x == 3" in source
+    assert "core_y == 4" in source
+
+
+def test_composition_rejects_incompatible_captured_sequence_target():
+    coordinates = ((1, 2, 3),)
+
+    @ttl.operation()
+    def coordinate_helper():
+        for coordinate_x, coordinate_y in coordinates:
+            ttl.call_extern_func(
+                "selected.hpp",
+                "selected",
+                template_args=[coordinate_x, coordinate_y],
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+
+    with pytest.raises(
+        ValueError,
+        match="captured sequence loop .* has incompatible target and element structures",
+    ):
+
+        @ttl.operation(grid=(1, 1))
+        def composed_coordinates():
+            coordinate_helper()
 
 
 def test_repeated_composition_reuses_callee_logical_kernel():
@@ -1510,6 +1765,58 @@ def test_composition_preserves_inspect_dfb_access():
         assert source.count("dfb_accesses=") == 1
 
 
+def test_composition_preserves_dfb_occurrences_through_sequence_loop():
+    """Static loop expansion retains distinct nested formal DFB occurrences."""
+
+    @ttl.operation()
+    def inspect_pair(first: ttl.DFB, second: ttl.DFB):
+        ttl.call_extern_func(
+            "descriptor.hpp",
+            "inspect_pair",
+            func_args=[first, second],
+            dfb_accesses=[
+                ttl.DFBAccess.inspect(first),
+                ttl.DFBAccess.inspect(second),
+            ],
+            kernel=ttl.KernelKind.COMPUTE,
+        )
+
+    @ttl.operation()
+    def indexed_pair(descriptor: ttl.DFB):
+        for first, second in ((descriptor, descriptor),):
+            inspect_pair(first, second)
+
+    @ttl.operation(grid=(1, 1))
+    def composed_pair(descriptor: ttl.DFB):
+        indexed_pair(descriptor)
+
+    call = next(
+        node
+        for node in ast.walk(composed_pair._spec.fn_ast)
+        if isinstance(node, ast.Call)
+        and atom_rules.call_name(node) == "call_extern_func"
+    )
+    function_arguments = next(
+        keyword.value.elts for keyword in call.keywords if keyword.arg == "func_args"
+    )
+    source_occurrences = [
+        getattr(argument, "_ttl_dfb_source_occurrence", None)
+        for argument in function_arguments
+    ]
+    assert None not in source_occurrences
+    assert source_occurrences[0] != source_occurrences[1]
+    access_arguments = next(
+        [access.args[0] for access in keyword.value.elts]
+        for keyword in call.keywords
+        if keyword.arg == "dfb_accesses"
+    )
+    assert [
+        getattr(argument, "_ttl_dfb_source_occurrence", None)
+        for argument in access_arguments
+    ] == source_occurrences
+    assert not any(isinstance(node, ast.For) for node in ast.walk(call))
+
+
 def test_composition_instantiates_reset_identity_per_call_site():
     """Repeated helper calls denote distinct dynamic reset instances."""
     compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
@@ -1583,6 +1890,35 @@ def test_composition_remaps_equivalent_reset_participants():
         selector_scope=spec.frozen_scope,
     )
     assert _kind_src(result, KernelKind.COMPUTE).count("ttl.reset_dfbs(") == 2
+
+
+def test_composition_preserves_implicit_reset_participant():
+    """Composition replicates reset into the compiler-owned PipeNet kernel."""
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    reset = ttl.DFBReset(
+        participants=(compute_kernel, reader_kernel, ttl.PIPE_SOURCE_KERNEL)
+    )
+
+    @ttl.operation()
+    def reset_helper():
+        ttl.reset_all_dfbs(reset)
+
+    @ttl.operation()
+    def composed_reset():
+        reset_helper()
+
+    spec = composed_reset._spec
+    composed_boundary = next(iter(spec.dfb_resets.values()))
+    assert ttl.PIPE_SOURCE_KERNEL in composed_boundary.participants
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+    )
+    for participant in composed_boundary.participants:
+        assert _kernel_src(result, participant).count("ttl.reset_all_dfbs(") == 1
 
 
 def test_synchronized_dfb_reset_requires_positional_boundary():
@@ -1825,6 +2161,37 @@ def test_composition_remaps_equivalent_reconfiguration_participants():
         selector_scope=spec.frozen_scope,
     )
     assert _kind_src(result, KernelKind.COMPUTE).count("ttl.reconfigure_dfbs(") == 2
+
+
+def test_composition_preserves_implicit_reconfiguration_participant():
+    """Composition retains the compiler-owned PipeNet source kernel."""
+    boundary = ttl.DFBReconfiguration(
+        participants=(
+            ttl.KernelKind.COMPUTE,
+            ttl.KernelKind.DATA_MOVEMENT,
+            ttl.PIPE_SOURCE_KERNEL,
+        )
+    )
+
+    @ttl.operation()
+    def reconfiguration_helper():
+        ttl.reconfigure_dfbs(boundary)
+
+    @ttl.operation()
+    def composed_reconfiguration():
+        reconfiguration_helper()
+
+    spec = composed_reconfiguration._spec
+    composed_boundary = next(iter(spec.dfb_reconfigurations.values()))
+    assert composed_boundary.participants == boundary.participants
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+    )
+    for participant in composed_boundary.participants:
+        assert _kernel_src(result, participant).count("ttl.reconfigure_dfbs(") == 1
 
 
 def test_control_header_anchor_is_retained_only_in_selected_logical_kernel():
@@ -2567,6 +2934,65 @@ def test_producer_with_no_uses_is_rejected():
         split_function_body(fn, dfb_param_names=set(), local_dfb_names={"a_cb"})
 
 
+def test_push_compute_compatibility_spelling_owns_reserve_on_compute():
+    fn = _fn(
+        """
+        def k():
+            block = buffer.reserve()
+            block.push_compute()
+        """
+    )
+
+    result = split_function_body(fn, dfb_param_names={"buffer"})
+    compute = _kind_src(result, KernelKind.COMPUTE)
+    data_movement = _kind_src(result, KernelKind.DATA_MOVEMENT)
+    assert "buffer.reserve()" in compute
+    assert "block.push_compute()" in compute
+    assert "buffer.reserve()" not in data_movement
+
+
+@pytest.mark.parametrize(
+    ("acquire", "release"),
+    [("reserve", "push_ncrisc"), ("wait", "pop_ncrisc")],
+)
+def test_ncrisc_compatibility_spelling_owns_dfb_transaction(acquire, release):
+    fn = _fn(
+        f"""
+        def k():
+            block = buffer.{acquire}()
+            block.{release}()
+        """
+    )
+
+    result = split_function_body(fn, dfb_param_names={"buffer"})
+    data_movement = _kind_src(result, KernelKind.DATA_MOVEMENT)
+    compute = _kind_src(result, KernelKind.COMPUTE)
+    assert f"buffer.{acquire}()" in data_movement
+    assert f"block.{release}()" in data_movement
+    assert f"buffer.{acquire}()" not in compute
+
+
+def test_ncrisc_pop_inside_control_does_not_leak_block_to_compute():
+    """Match the resident K3 handoff shape that crosses a scalar if."""
+    fn = _fn(
+        """
+        def k(result):
+            value = output.wait()
+            if final_iteration:
+                ttl.copy(value, result).wait()
+            value.pop_ncrisc()
+            ttl.fill(0.0, shape=(1, 1))
+        """
+    )
+
+    result = split_function_body(fn, dfb_param_names={"output"})
+    data_movement = _kind_src(result, KernelKind.DATA_MOVEMENT)
+    compute = _kind_src(result, KernelKind.COMPUTE)
+    assert "output.wait()" in data_movement
+    assert "value.pop_ncrisc()" in data_movement
+    assert "output.wait()" not in compute
+
+
 def test_producer_split_across_data_movement_kernels_is_rejected():
     """One reserve cannot feed two distinct data-movement callbacks."""
     fn = _fn(
@@ -2908,6 +3334,85 @@ def test_external_call_tuple_selects_multiple_logical_kernels():
         source = _kernel_src(result, kernel)
         assert source.count("call_extern_func") == 1
         assert "kernel=" not in source
+
+
+def test_external_call_selects_kernel_specific_dfb_effects():
+    """Each emitted call retains only its selected kernel's DFB effects."""
+    fn = _fn(
+        """
+        def k(source, destination):
+            ttl.call_extern_func(
+                "shared.hpp",
+                "shared",
+                func_args=[source, destination],
+                dfb_effects={
+                    ttl.KernelKind.COMPUTE: [
+                        ttl.DFBEffect.wait(source, tiles=2),
+                        ttl.DFBEffect.pop(source, tiles=2),
+                    ],
+                    ttl.KernelKind.DATA_MOVEMENT: [
+                        ttl.DFBEffect.reserve(destination, tiles=2),
+                        ttl.DFBEffect.push(destination, tiles=2),
+                    ],
+                },
+                kernel=(
+                    ttl.KernelKind.COMPUTE,
+                    ttl.KernelKind.DATA_MOVEMENT,
+                ),
+            )
+        """
+    )
+
+    result = split_function_body(
+        fn,
+        dfb_param_names={"source", "destination"},
+    )
+
+    compute_source = _kernel_src(result, KernelKind.COMPUTE)
+    assert "DFBEffect.wait(source" in compute_source
+    assert "DFBEffect.pop(source" in compute_source
+    assert "DFBEffect.reserve" not in compute_source
+    assert "DFBEffect.push" not in compute_source
+
+    data_movement_source = _kernel_src(result, KernelKind.DATA_MOVEMENT)
+    assert "DFBEffect.reserve(destination" in data_movement_source
+    assert "DFBEffect.push(destination" in data_movement_source
+    assert "DFBEffect.wait" not in data_movement_source
+    assert "DFBEffect.pop" not in data_movement_source
+
+
+@pytest.mark.parametrize(
+    "effects, message",
+    [
+        ("{}", "must not be empty"),
+        (
+            "{ttl.PIPE_SOURCE_KERNEL: [ttl.DFBEffect.wait(source, tiles=1)]}",
+            "selects a kernel excluded by the call's kernel selection",
+        ),
+        (
+            "{ttl.KernelKind.COMPUTE: []}",
+            "must be a nonempty list",
+        ),
+    ],
+)
+def test_external_call_rejects_invalid_kernel_specific_dfb_effects(
+    effects, message
+):
+    fn = _fn(
+        f"""
+        def k(source):
+            ttl.call_extern_func(
+                "shared.hpp",
+                "shared",
+                func_args=[source],
+                dfb_effects={effects},
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+        """
+    )
+
+    with pytest.raises(ValueError, match=message):
+        split_function_body(fn, dfb_param_names={"source"})
 
 
 def test_external_call_kind_union_selects_multiple_logical_kernels():

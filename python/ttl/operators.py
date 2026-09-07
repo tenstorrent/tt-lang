@@ -80,9 +80,10 @@ def call_extern_func(
             arguments. Entries must identify distinct source occurrences and
             must not repeat an automatic dependency source in ``func_args`` or
             DFB descriptor template arguments.
-        dfb_effects: Optional call-wide sequence of synchronous DFB protocol
-            actions performed on every call execution. A complete summary can
-            permit physical-index reuse and does not emit protocol calls.
+        dfb_effects: Optional sequence of synchronous DFB protocol actions
+            performed on every selected kernel, or a mapping from individual
+            kernel selectors to their respective sequences. A complete summary
+            can permit physical-index reuse and does not emit protocol calls.
         dfb_accesses: Optional synchronous DFB inspections performed by the
             call without publishing, consuming, or changing DFB state.
         unknown_dfb_access: Whether external C++ may access unlisted
@@ -451,6 +452,32 @@ class TensorBlock:
         cb = _get_cb_from_block(ast_self)
         ttl.cb_push(cb)
 
+    def push_compute(ast_self: TensorBlock) -> None:
+        """Push a reserved block explicitly owned by the compute kernel.
+
+        This compatibility spelling is equivalent to
+        ``push(kernel=ttl.KernelKind.COMPUTE)``. It is useful when opaque
+        compute code filled the block and ordinary value flow cannot infer
+        ownership.
+        """
+        if not _is_block(ast_self):
+            raise ValueError(
+                "push_compute() must be called on a block acquired from "
+                "reserve(), not a regular tensor"
+            )
+        cb = _get_cb_from_block(ast_self)
+        ttl.cb_push(cb)
+
+    def push_ncrisc(ast_self: TensorBlock) -> None:
+        """Push a reserved block explicitly owned by data movement."""
+        if not _is_block(ast_self):
+            raise ValueError(
+                "push_ncrisc() must be called on a block acquired from "
+                "reserve(), not a regular tensor"
+            )
+        cb = _get_cb_from_block(ast_self)
+        ttl.cb_push(cb)
+
     def pop(
         ast_self: TensorBlock,
         *,
@@ -474,6 +501,16 @@ class TensorBlock:
         if not _is_block(ast_self):
             raise ValueError(
                 "pop() must be called on a block acquired from wait(), not a regular tensor"
+            )
+        cb = _get_cb_from_block(ast_self)
+        ttl.cb_pop(cb)
+
+    def pop_ncrisc(ast_self: TensorBlock) -> None:
+        """Pop a waited block explicitly owned by data movement."""
+        if not _is_block(ast_self):
+            raise ValueError(
+                "pop_ncrisc() must be called on a block acquired from wait(), "
+                "not a regular tensor"
             )
         cb = _get_cb_from_block(ast_self)
         ttl.cb_pop(cb)

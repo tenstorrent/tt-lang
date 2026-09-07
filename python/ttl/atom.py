@@ -34,7 +34,18 @@ import inspect
 import os
 import types
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Hashable,
+    List,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Tuple,
+    Union,
+)
 
 import ttl as _ttl
 from ttl.pykernel._src.utils import _cleanup_source_code
@@ -43,6 +54,7 @@ from ._src.atom_inline import (
     _INLINED_OPERATION_STATEMENT,
     _collect_local_names,
     inline_atom_calls,
+    specialize_static_boolean_branches,
 )
 from ._src.atom_rules import (
     defines_kernels_by_spelling,
@@ -88,6 +100,7 @@ from .dataflow_buffer import (
 from .dtype_utils import is_ttnn_tensor
 from .kernel import (
     Kernel,
+    KernelKind,
     KernelSelector,
     _bind_kernel_declarations,
     _operation_identity,
@@ -292,6 +305,7 @@ def _build_atom_spec(
         )
     fn_def: ast.FunctionDef = module.body[0]
     scope = function_scope(fn)
+    captured_values = _referenced_operation_values(fn)
 
     # Inline statement-level calls to other unified operations, then keep
     # the post-inline AST + source.
@@ -304,6 +318,7 @@ def _build_atom_spec(
         inlined_dfb_resets,
         inlined_dfb_reconfigurations,
     ) = inline_atom_calls(fn_def, scope, caller_name=name)
+    specialize_static_boolean_branches(fn_def, captured_values)
     _hoist_inlined_resource_declarations(fn_def, scope, name)
     validate_resource_declarations(fn_def, name)
 
@@ -312,7 +327,6 @@ def _build_atom_spec(
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
             loaded_names.add(node.id)
 
-    captured_values = _referenced_operation_values(fn)
     external_pipenets = dict(inlined_pipenets)
     compile_time_captures: Dict[str, Any] = {}
     logical_kernels: Dict[str, Kernel] = dict(inlined_logical_kernels)
@@ -331,7 +345,7 @@ def _build_atom_spec(
     captured_names = sorted(loaded_names & captured_values.keys())
     for capture_name in captured_names:
         value = captured_values[capture_name]
-        if not isinstance(value, Kernel):
+        if not isinstance(value, Kernel) or _selector_implicit_role(value) is not None:
             continue
         if not any(value is kernel for kernel in logical_kernels.values()):
             captured_logical_kernels[capture_name] = value
@@ -346,7 +360,7 @@ def _build_atom_spec(
             )
         if isinstance(value, PipeNet):
             external_pipenets[capture_name] = value
-        elif isinstance(value, Kernel):
+        elif isinstance(value, (Kernel, KernelKind)):
             continue
         elif isinstance(value, FabricManagerClaim):
             if not any(value is claim for claim in fabric_manager_claims.values()):
@@ -925,6 +939,9 @@ class Atom:
             math_fidelity=decorator_options["math_fidelity"],
             options=decorator_options["options"],
             prepare_call=prepare_call,
+            factory_cache=decorator_options["factory_cache"],
+            factory_cache_key=decorator_options["factory_cache_key"],
+            runtime_resource_factory=decorator_options["runtime_resource_factory"],
         )
         functools.update_wrapper(self, spec.fn)
 
@@ -955,6 +972,8 @@ def _unified_operation(
     options: Optional[str] = None,
     device_domain=None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+    factory_cache: Optional[MutableMapping] = None,
+    factory_cache_key: Optional[Hashable] = None,
 ) -> Callable:
     """Build the unified-body form selected by ``@ttl.operation``.
 
@@ -982,6 +1001,8 @@ def _unified_operation(
                 "options": options,
                 "device_domain": device_domain,
                 "runtime_resource_factory": runtime_resource_factory,
+                "factory_cache": factory_cache,
+                "factory_cache_key": factory_cache_key,
             },
         )
 
@@ -1001,6 +1022,8 @@ def operation(
     options: Optional[str] = None,
     device_domain=None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+    factory_cache: Optional[MutableMapping] = None,
+    factory_cache_key: Optional[Hashable] = None,
 ) -> Callable:
     """Define a unified-body or explicit multi-kernel operation."""
 
@@ -1037,6 +1060,8 @@ def operation(
                 math_fidelity=math_fidelity,
                 options=options,
                 runtime_resource_factory=runtime_resource_factory,
+                factory_cache=factory_cache,
+                factory_cache_key=factory_cache_key,
                 _prepare_call=prepare_call,
                 device_domain=device_domain,
             )(fn)
@@ -1054,6 +1079,8 @@ def operation(
             options=options,
             device_domain=device_domain,
             runtime_resource_factory=runtime_resource_factory,
+            factory_cache=factory_cache,
+            factory_cache_key=factory_cache_key,
         )(fn)
 
     return _decorator
