@@ -226,11 +226,32 @@ ordinals.
 | `int` | Signed integer constant |
 | `bool` | Boolean constant |
 | `float` | Unsigned binary32 bit-pattern constant |
-| `ttl.dfb_descriptor(dfb)` | `ttlang::DFBDescriptor<index, pages_per_block, block_count, page_size>` type |
+| `ttl.dfb_descriptor(dfb)` | Storage-backend descriptor type |
 | `ttl.get_dfb_id(dfb)` | Physical DFB index constant |
 
 A bare DFB is invalid in `template_args`. `ttl.dfb_descriptor` supplies typed
-allocation metadata. `ttl.get_dfb_id` supplies only an integer index.
+allocation metadata. The Metal backend generates
+`ttlang::DFBDescriptor<index, pages_per_block, block_count, page_size>`. The
+compiler-managed backend generates `ttlang::l1::DFBDescriptor` for data
+movement and `ttlang::l1::ComputeDFBDescriptor` for compute. Each descriptor
+provides `pages_per_block`, `block_count`, `page_size_bytes`, and a static
+`bind()` function. The bound object provides `reserve_back`, `push_back`,
+`wait_front`, `pop_front`, `get_write_ptr`, and `get_read_ptr`.
+
+For a call with a descriptor template argument, generated kernel source defines
+`TTLANG_DFB_STORAGE_COMPILER_L1` as `0` or `1` before including the external
+header. A compute adapter tests this macro when its Metal implementation calls
+TT-Metal LLKs with numeric DFB indices. Its compiler-managed implementation
+uses the address-based `ttlang::l1::target` interface. The macro identifies the
+storage backend; architecture-specific behavior remains inside the target
+interface.
+
+Opaque C++ bodies are not part of compiler compute analysis. The enclosing
+`@ttl.operation` must set any compute configuration required by the external
+function through the existing operation options. For example, an external
+function that uses FP32 destination registers sets `fp32_dest_acc_en=True`.
+
+`ttl.get_dfb_id` supplies only an integer index.
 
 ```python
 ttl.call_extern_func(
@@ -254,7 +275,7 @@ addresses.
 | Python argument | Generated C++ argument | Restrictions |
 | --- | --- | --- |
 | Scalar value | Scalar parameter | Uses the kernel runtime-argument convention. |
-| DFB | Physical DFB index parameter | Declares a direct dependency on that DFB. |
+| DFB | Physical DFB index parameter | Declares a direct dependency on that DFB; valid only with Metal storage. Compiler-managed storage requires `ttl.dfb_descriptor` in `template_args`. |
 | Base tensor | Typed tensor accessor | Data movement accepts device DRAM or SRAM; compute accepts sharded SRAM. |
 | `ttl.raw_addr(tensor)` | `uint32_t` buffer address | Supported in compute and data-movement kernels. |
 

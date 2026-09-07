@@ -97,3 +97,18 @@ module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [
     return
   }
 }
+
+// -----
+
+// External descriptors require the referenced tensor in the common arguments.
+module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [
+  {storage_segments = [{tensor_backing = #ttl.tensor_backing<tensor_index = 7, byte_offset = 0, byte_size = 2048>}]}
+]} {
+  func.func @missing_external_descriptor_tensor()
+      attributes {ttl.crta_indices = [0],
+                  ttl.kernel_thread = #ttkernel.thread<compute>} {
+    // expected-error @below {{'ttkernel.opaque_call' op compiler-l1 tensor backing references tensor 7 which is absent from the kernel's common tensor arguments}}
+    ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<0, 1, 1, 2048>] () {dfb_resource_indices = array<i32: 0>, header = "describe.hpp"} : () -> ()
+    return
+  }
+}
