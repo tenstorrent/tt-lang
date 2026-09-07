@@ -45,8 +45,11 @@ from ttl.domains import DeviceDomain
 from ttl.ttl import ProgramRuntimeResources as TTLProgramRuntimeResources
 
 
-def _extract_unsigned_constant(source, name):
-    match = re.search(rf"constexpr uint(?:32|64)_t {name} = (?P<value>[0-9]+);", source)
+def _extract_integer_constant(source, name):
+    match = re.search(
+        rf"(?:inline )?constexpr (?:u?int(?:32|64)_t) {name} = (?P<value>[0-9]+);",
+        source,
+    )
     assert match is not None
     return int(match.group("value"))
 
@@ -62,10 +65,10 @@ def test_dfb_reconfiguration_abi_constants_match_sources():
         repository_root / "lib/Dialect/TTL/Transforms/DFBAllocationLimits.cpp"
     ).read_text()
 
-    low_mask_word = _extract_unsigned_constant(llk_source, "lowMaskWord")
-    high_mask_word = _extract_unsigned_constant(llk_source, "highMaskWord")
-    synchronization_word = _extract_unsigned_constant(llk_source, "synchronizationWord")
-    compiler_words_per_core = _extract_unsigned_constant(
+    low_mask_word = _extract_integer_constant(llk_source, "lowMaskWord")
+    high_mask_word = _extract_integer_constant(llk_source, "highMaskWord")
+    synchronization_word = _extract_integer_constant(llk_source, "synchronizationWord")
+    compiler_words_per_core = _extract_integer_constant(
         allocation_source, "kDFBReconfigurationWordsPerCore"
     )
 
@@ -2201,6 +2204,78 @@ def test_compiler_l1_arena_size_uses_all_regions():
     ]
 
     assert kernel_runner._get_compiler_l1_arena_bytes(configs) == 6208
+
+
+def test_compiler_l1_arena_size_accepts_tensor_backing_without_payload():
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        storage_segments=(
+            DFBStorageSegment(
+                nodes=((0, 0),),
+                tensor_index=0,
+                byte_offset=2048,
+                byte_size=2048,
+            ),
+        ),
+        l1_offset=0,
+    )
+
+    assert kernel_runner._get_compiler_l1_arena_bytes([config]) == 8
+
+
+def test_compiler_l1_arena_size_combines_tensor_and_static_storage():
+    configs = [
+        PhysicalDFBConfig(
+            0,
+            1,
+            "bfloat16",
+            1,
+            2048,
+            None,
+            storage_segments=(
+                DFBStorageSegment(
+                    nodes=((0, 0),),
+                    tensor_index=0,
+                    byte_offset=0,
+                    byte_size=2048,
+                ),
+            ),
+            l1_offset=0,
+        ),
+        PhysicalDFBConfig(
+            1,
+            1,
+            "bfloat16",
+            1,
+            2048,
+            None,
+            l1_offset=8,
+            l1_payload_offset=64,
+            l1_allocation_bytes=2048,
+        ),
+    ]
+
+    assert kernel_runner._get_compiler_l1_arena_bytes(configs) == 2112
+
+
+def test_compiler_l1_arena_size_rejects_storage_without_payload_or_tensor():
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        l1_offset=0,
+    )
+
+    with pytest.raises(ValueError, match="requires tensor backing"):
+        kernel_runner._get_compiler_l1_arena_bytes([config])
 
 
 def test_compiler_l1_arena_size_rejects_partial_metadata():
@@ -8730,6 +8805,7 @@ def test_emit_runner_source_accepts_physical_dfb_configs(monkeypatch):
                 page_size=32,
                 tile=(1, 16),
                 allocation_nodes=((0, 0),),
+                storage_capacity_pages=8,
             )
         ],
         grid_cols=1,
@@ -8746,6 +8822,7 @@ def test_emit_runner_source_accepts_physical_dfb_configs(monkeypatch):
     assert "tile=(1, 16)" in source
     assert "cb_configs=CB_CONFIGS" in source
     assert "allocation_nodes=((0, 0),)" in source
+    assert "storage_capacity_pages=8" in source
     assert "for i, (num_tiles, block_count" not in source
 
 

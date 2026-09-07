@@ -78,4 +78,29 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 2464
     ttkernel.mm_init_short(%lhs, %rhs, %zero) : (!ttkernel.cb<3, !ttcore.tile<32x32, f32>>, !ttkernel.cb<3, !ttcore.tile<32x32, f32>>, i32) -> ()
     return
   }
+
+  // Consumer replacement packs to the acquired read window without changing occupancy.
+  // CHECK-LABEL: func.func @replace_waited
+  // CHECK: ttlang::l1::target::pack_waited_tile
+  // CPP: ttlang::l1::target::pack_waited_tile
+  func.func @replace_waited() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+    %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<3, !ttcore.tile<32x32, f32>>
+    %zero = arith.constant 0 : index
+    ttkernel.pack_waited_tile(%zero, %storage, %zero, true) {acquired_tiles = 3 : i64} : (index, !ttkernel.cb<3, !ttcore.tile<32x32, f32>>, index) -> ()
+    return
+  }
+
+  // A tensor-backed DFB can publish its complete capacity as one contiguous transaction.
+  // CHECK-LABEL: func.func @publish_tensor_capacity
+  // CHECK: ttlang::l1::Buffer<2048, 1, 2, 2, 0, 0>
+  // CHECK: .reserve_back({{.*}})
+  // CHECK: .push_back({{.*}})
+  // CPP: ttlang::l1::Buffer<2048, 1, 2, 2, 0, 0>
+  func.func @publish_tensor_capacity() attributes {ttkernel.thread = #ttkernel.thread<noc>, ttl.crta_indices = [0]} {
+    %storage = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>
+    %capacity = arith.constant 2 : i32
+    ttkernel.cb_reserve_back(%storage, %capacity) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, i32) -> ()
+    ttkernel.cb_push_back(%storage, %capacity) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, i32) -> ()
+    return
+  }
 }

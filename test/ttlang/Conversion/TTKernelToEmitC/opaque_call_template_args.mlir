@@ -43,7 +43,7 @@ func.func @dfb_descriptor_template_to_emitc() attributes {ttkernel.thread = #ttk
 // Compiler-managed descriptors bind storage by arena address on Wormhole.
 // EMITC-LABEL: func.func @compiler_l1_descriptor_template_to_emitc
 // EMITC: emitc.call_opaque "describe"
-// EMITC-SAME: template_args = [#emitc.opaque<"ttlang::l1::DFBDescriptor<2048, 1, 2, 0, 64>">]
+// EMITC-SAME: template_args = [#emitc.opaque<"ttlang::l1::DFBDescriptor<2048, 1, 2, 2, 0, 64, -1>">]
 // EMITC-SAME: ttlang.requires_compiler_l1
 // EMITC: emitc.call_opaque "describe"
 // EMITC-SAME: template_args = [#emitc.opaque<"ttlang::l1::DFBDescriptor<2048, 1, 2, 8, 12344>">]

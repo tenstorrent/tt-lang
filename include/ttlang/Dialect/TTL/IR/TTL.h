@@ -213,10 +213,12 @@ constexpr llvm::StringLiteral kDFBAllocationNumTilesField("num_tiles");
 constexpr llvm::StringLiteral kDFBAllocationPageSizeField("page_size");
 constexpr llvm::StringLiteral kDFBAllocationBlockCountField("block_count");
 constexpr llvm::StringLiteral kDFBAllocationElementTypeField("element_type");
-/// One published and one consumed 32-bit counter per logical DFB.
+/// One published and one consumed 32-bit counter per storage owner.
 inline constexpr uint64_t kCompilerSRAMControlRecordBytes =
     2 * sizeof(uint32_t);
 /// Fields present only in compiler-managed SRAM allocation entries.
+constexpr llvm::StringLiteral kDFBAllocationCapacityPagesField(
+    "storage_capacity_pages");
 constexpr llvm::StringLiteral kDFBAllocationStateOffsetField("l1_offset");
 constexpr llvm::StringLiteral
     kDFBAllocationPayloadOffsetField("l1_payload_offset");

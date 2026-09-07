@@ -141,6 +141,18 @@ def _validate_physical_dfb_config(
             f"DFB[{config.dfb_index}] storage_index must be a nonnegative "
             f"integer, got {config.storage_index!r}"
         )
+    if config.storage_capacity_pages is not None:
+        logical_capacity_pages = config.num_tiles * config.block_count
+        if (
+            type(config.storage_capacity_pages) is not int
+            or config.storage_capacity_pages < logical_capacity_pages
+            or config.storage_capacity_pages >= 1 << 31
+        ):
+            raise ValueError(
+                f"DFB[{config.dfb_index}] storage_capacity_pages must be an "
+                f"integer in [{logical_capacity_pages}, 2^31), got "
+                f"{config.storage_capacity_pages!r}"
+            )
     allocation_nodes = None
     if config.allocation_nodes is not None:
         for node_position, node in enumerate(config.allocation_nodes):
@@ -2020,15 +2032,13 @@ def _get_compiler_l1_arena_bytes(
 ) -> Optional[int]:
     if memory_model not in (None, "metal-cb", "compiler-sram"):
         raise ValueError(f"unknown DFB memory model {memory_model!r}")
-    field_presence = [
-        (
-            config.l1_offset is not None,
-            config.l1_payload_offset is not None,
-            config.l1_allocation_bytes is not None,
-        )
+    has_compiler_sram_metadata = any(
+        config.l1_offset is not None
+        or config.l1_payload_offset is not None
+        or config.l1_allocation_bytes is not None
         for config in cb_configs
-    ]
-    if not any(any(fields) for fields in field_presence):
+    )
+    if not has_compiler_sram_metadata:
         if memory_model == "compiler-sram":
             if cb_configs:
                 raise ValueError("compiler-sram requires complete allocation metadata")
@@ -2036,9 +2046,22 @@ def _get_compiler_l1_arena_bytes(
         return None
     if memory_model == "metal-cb":
         raise ValueError("metal-cb cannot use compiler-sram allocation metadata")
-    if not all(all(fields) for fields in field_presence):
+    if not all(config.l1_offset is not None for config in cb_configs):
         raise ValueError("mixed compiler-sram and Metal storage metadata")
-    control_starts = sorted(config.l1_offset for config in cb_configs)
+
+    control_offsets_by_owner = {}
+    payloads_by_owner = {}
+    for config in cb_configs:
+        owner = (
+            "storage" if config.storage_index is not None else "dfb",
+            config.storage_index
+            if config.storage_index is not None
+            else config.dfb_index,
+        )
+        previous_offset = control_offsets_by_owner.setdefault(owner, config.l1_offset)
+        if previous_offset != config.l1_offset:
+            raise ValueError("compiler-sram storage owner has inconsistent control records")
+    control_starts = sorted(control_offsets_by_owner.values())
     if any(start < 0 or start % 4 for start in control_starts):
         raise ValueError("compiler-sram has an unaligned control record")
     if any(
@@ -2047,16 +2070,39 @@ def _get_compiler_l1_arena_bytes(
     ):
         raise ValueError("compiler-sram control records overlap")
     control_end = control_starts[-1] + _COMPILER_SRAM_CONTROL_RECORD_BYTES
+    arena_ends = [control_end]
     for config in cb_configs:
-        if config.l1_payload_offset < control_end:
-            raise ValueError("compiler-sram payload must follow all control records")
-        if config.l1_allocation_bytes < (
-            config.num_tiles * config.block_count * config.page_size
+        has_payload_offset = config.l1_payload_offset is not None
+        has_allocation_bytes = config.l1_allocation_bytes is not None
+        if has_payload_offset != has_allocation_bytes:
+            raise ValueError("incomplete compiler-sram payload allocation metadata")
+        if has_payload_offset:
+            if config.l1_payload_offset < control_end:
+                raise ValueError("compiler-sram payload must follow all control records")
+            if config.l1_allocation_bytes < (
+                config.num_tiles * config.block_count * config.page_size
+            ):
+                raise ValueError("compiler-sram allocation does not cover its payload")
+            owner = (
+                "storage" if config.storage_index is not None else "dfb",
+                config.storage_index
+                if config.storage_index is not None
+                else config.dfb_index,
+            )
+            payload = (config.l1_payload_offset, config.l1_allocation_bytes)
+            previous_payload = payloads_by_owner.setdefault(owner, payload)
+            if previous_payload != payload:
+                raise ValueError("compiler-sram storage owner has inconsistent payloads")
+            arena_ends.append(config.l1_payload_offset + config.l1_allocation_bytes)
+            continue
+        if not config.storage_segments or any(
+            not segment.is_tensor_backed for segment in config.storage_segments
         ):
-            raise ValueError("compiler-sram allocation does not cover its payload")
-    return max(
-        config.l1_payload_offset + config.l1_allocation_bytes for config in cb_configs
-    )
+            raise ValueError(
+                "compiler-sram storage without an arena payload requires "
+                "tensor backing on every storage segment"
+            )
+    return max(arena_ends)
 
 
 def _l1_buffer_addresses_by_core(
@@ -4750,6 +4796,10 @@ def _append_physical_dfb_config_source(
         lines.append(f"{indent}    l1_allocation_bytes={config.l1_allocation_bytes},")
     if config.storage_index is not None:
         lines.append(f"{indent}    storage_index={config.storage_index},")
+    if config.storage_capacity_pages is not None:
+        lines.append(
+            f"{indent}    storage_capacity_pages={config.storage_capacity_pages},"
+        )
     if config.allocation_nodes is not None:
         lines.append(f"{indent}    allocation_nodes={config.allocation_nodes!r},")
     if config.storage_segments:
