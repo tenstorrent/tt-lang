@@ -4,7 +4,6 @@
 
 #include "ttlang/Dialect/TTKernel/Transforms/TTKernelCleanupPatterns.h"
 
-#include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Target/TargetInfo.h"
@@ -44,56 +43,13 @@ static bool isDefinedOutsideRegion(Value value, Region *region) {
   return !region->isAncestor(definingOp->getParentRegion());
 }
 
-/// Return execution-domain constraints between `op` and `limit`.
-static SmallVector<ArrayAttr>
-getEnclosingExecutionCoreRanges(Operation *op, Operation *limit) {
-  SmallVector<ArrayAttr> domains;
-  for (Operation *ancestor = op->getParentOp(); ancestor && ancestor != limit;
-       ancestor = ancestor->getParentOp()) {
-    if (auto ranges =
-            ancestor->getAttrOfType<ArrayAttr>(kExecutionCoreRangesAttrName)) {
-      domains.push_back(ranges);
-    }
-  }
-  return domains;
-}
-
-/// Return whether two core-range arrays have an empty intersection.
-static bool haveDisjointCoreRanges(ArrayAttr lhs, ArrayAttr rhs) {
-  if (lhs.empty() || rhs.empty()) {
-    return false;
-  }
-  for (Attribute lhsAttr : lhs) {
-    auto lhsRange = dyn_cast<ttcore::CoreRangeAttr>(lhsAttr);
-    if (!lhsRange) {
-      return false;
-    }
-    for (Attribute rhsAttr : rhs) {
-      auto rhsRange = dyn_cast<ttcore::CoreRangeAttr>(rhsAttr);
-      if (!rhsRange || lhsRange.intersects(rhsRange)) {
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
 /// Return whether two operations cannot execute on the same loop iteration.
 static bool haveMutuallyExclusiveExecution(Operation *lhs, Operation *rhs,
                                            Operation *loop) {
   if (insideMutuallyExclusiveRegions(lhs, rhs)) {
     return true;
   }
-
-  SmallVector<ArrayAttr> lhsDomains =
-      getEnclosingExecutionCoreRanges(lhs, loop);
-  SmallVector<ArrayAttr> rhsDomains =
-      getEnclosingExecutionCoreRanges(rhs, loop);
-  return llvm::any_of(lhsDomains, [&](ArrayAttr lhsDomain) {
-    return llvm::any_of(rhsDomains, [&](ArrayAttr rhsDomain) {
-      return haveDisjointCoreRanges(lhsDomain, rhsDomain);
-    });
-  });
+  return haveDisjointExecutionCoreRanges(lhs, rhs, loop);
 }
 
 /// Deduplicate consecutive barriers of the same type and NoC. Barriers only

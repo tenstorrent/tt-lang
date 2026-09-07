@@ -17,6 +17,12 @@ namespace mlir::tt::ttkernel {
 constexpr llvm::StringLiteral
     kExecutionCoreRangesAttrName("ttkernel.execution_core_ranges");
 
+/// Return whether enclosing `ttkernel.execution_core_ranges` attributes prove
+/// that two operations execute on disjoint worker cores. A nonnull `limit`
+/// must be a common ancestor and is excluded from the inspected metadata.
+bool haveDisjointExecutionCoreRanges(Operation *lhs, Operation *rhs,
+                                     Operation *limit = nullptr);
+
 } // namespace mlir::tt::ttkernel
 
 #endif

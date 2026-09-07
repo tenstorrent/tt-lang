@@ -77,6 +77,35 @@ func.func @conditional_intervening_setup(
 
 // -----
 
+// Overlapping execution-core ranges do not prove that conditional setups are
+// mutually exclusive.
+func.func @overlapping_core_setups_may_interfere(
+    %first_condition: i1, %second_condition: i1,
+    %first_state_address: !ttkernel.noc_addr,
+    %second_state_address: !ttkernel.noc_addr, %source_address: i32,
+    %destination_address: i32, %size: i32, %noc: i8) {
+  scf.if %first_condition {
+    ttkernel.noc_async_write_one_packet_set_state(
+        %first_state_address, %size, noc %noc)
+        : (!ttkernel.noc_addr, i32, i8) -> ()
+  } {ttkernel.execution_core_ranges = [#ttcore.core_range<(0, 0), (1, 0)>]}
+  scf.if %second_condition {
+    // expected-note @below {{this setup may replace the selected state before a later issue}}
+    ttkernel.noc_async_write_one_packet_set_state(
+        %second_state_address, %size, noc %noc)
+        : (!ttkernel.noc_addr, i32, i8) -> ()
+  } {ttkernel.execution_core_ranges = [#ttcore.core_range<(1, 0), (2, 0)>]}
+  scf.if %first_condition {
+    // expected-error @below {{'ttkernel.noc_async_write_one_packet_with_state' op cannot identify one preceding write state setup for every execution}}
+    ttkernel.noc_async_write_one_packet_with_state(
+        %source_address, %destination_address, noc %noc)
+        : (i32, i32, i8) -> ()
+  } {ttkernel.execution_core_ranges = [#ttcore.core_range<(0, 0), (1, 0)>]}
+  func.return
+}
+
+// -----
+
 // Distinct dynamic selectors may identify the same NoC at runtime.
 func.func @dynamic_intervening_noc_may_alias(
     %initial_noc: i8, %intervening_noc: i8,
