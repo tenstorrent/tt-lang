@@ -60,6 +60,7 @@ public:
   ScopedModuleHelper(OpBuilder *builder, Location loc, Region *region,
                      ThreadType threadType) {
     std::set<llvm::StringRef> headers;
+    std::set<llvm::StringRef> opaqueHeaders;
 
     // Baseline, always required.
     switch (threadType) {
@@ -112,7 +113,7 @@ public:
 
       if (auto headerAttr =
               callOp->getAttrOfType<StringAttr>("ttlang.opaque_header")) {
-        headers.insert(headerAttr.getValue());
+        opaqueHeaders.insert(headerAttr.getValue());
       }
       requiresDFBDescriptor |=
           callOp->hasAttr("ttlang.requires_dfb_descriptor");
@@ -283,22 +284,35 @@ public:
     // headers may name it in their function declarations.
     emitc::IncludeOp::create(*builder, loc, "cstdint", /*isStandard=*/true);
     if (requiresDFBDescriptor) {
-      emitc::IncludeOp::create(*builder, loc, "api/dataflow/circular_buffer.h");
-      headers.erase("api/dataflow/circular_buffer.h");
+      headers.insert("api/dataflow/circular_buffer.h");
+    } else {
+      headers.insert(opaqueHeaders.begin(), opaqueHeaders.end());
+      opaqueHeaders.clear();
+    }
+
+    auto emitHeaders = [&](const std::set<llvm::StringRef> &headersToEmit) {
+      for (llvm::StringRef header : headersToEmit) {
+        bool isStandard = false;
+        if (header.starts_with("<") && header.ends_with(">")) {
+          isStandard = true;
+          header = header.drop_front(1).drop_back(1);
+        }
+        builder->create<emitc::IncludeOp>(loc, header, isStandard);
+      }
+    };
+    for (llvm::StringRef header : headers) {
+      opaqueHeaders.erase(header);
+    }
+    emitHeaders(headers);
+
+    if (requiresDFBDescriptor) {
       emitc::VerbatimOp::create(
           *builder, loc,
           llvm::StringRef(dfb_descriptor_prelude_generated,
                           dfb_descriptor_prelude_generated_len));
     }
 
-    for (llvm::StringRef header : headers) {
-      bool isStandard = false;
-      if (header.starts_with("<") && header.ends_with(">")) {
-        isStandard = true;
-        header = header.drop_front(1).drop_back(1);
-      }
-      builder->create<emitc::IncludeOp>(loc, header, isStandard);
-    }
+    emitHeaders(opaqueHeaders);
 
     if (threadType == ThreadType::Compute) {
       // Helper for float-to-uint32 bit reinterpretation (used by scalar tile

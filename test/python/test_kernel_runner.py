@@ -2556,12 +2556,46 @@ def test_run_kernel_composes_compiler_l1_with_runtime_resources(monkeypatch):
     assert fake_ttnn.synchronize_calls == [device]
 
 
+# Compiler-managed reset state uses the shared compiler scratch allocation.
+def test_compiler_l1_composes_with_lifecycle_scratch(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    device = object()
+    core_ranges = _FakeCoreRanges()
+    scratch = _FakeTensor(device, address=0x9000)
+    arena = _FakeTensor(device, address=0x8000)
+    tensor = _FakeTensorWithoutDevice()
+    allocation_calls = []
+
+    def allocate_storage(ranges, num_bytes, allocation_device, *, zero_initialize):
+        allocation_calls.append((ranges, num_bytes, allocation_device, zero_initialize))
+        return scratch if num_bytes == 16 else arena
+
+    monkeypatch.setattr(
+        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_storage
+    )
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
+        tensors=[tensor],
+        cb_configs=[_compiler_l1_config()],
+        core_ranges=core_ranges,
+        pipe_sram_scratch_bytes=16,
+        num_dfb_resets=1,
+        device=device,
+    )
+
+    assert allocation_calls == [
+        (core_ranges, 16, device, True),
+        (core_ranges, 2112, device, True),
+    ]
+    assert result["tensors"] == [scratch, arena, tensor]
+
+
 # PipeNet and Metal reconfiguration remain separate from this composition.
 @pytest.mark.parametrize(
     "incompatible_resource",
     [
         "sync-semaphore",
-        "sram-scratch",
         "global-semaphore",
         "computed-address",
         "fabric-route",
@@ -2576,8 +2610,6 @@ def test_compiler_l1_rejects_incompatible_resources_before_allocation(
     arguments = {}
     if incompatible_resource == "sync-semaphore":
         arguments["num_pipe_sync_semaphores"] = 1
-    elif incompatible_resource == "sram-scratch":
-        arguments["pipe_sram_scratch_bytes"] = 16
     elif incompatible_resource == "global-semaphore":
         arguments["num_pipe_global_semaphores"] = 1
     elif incompatible_resource == "computed-address":
