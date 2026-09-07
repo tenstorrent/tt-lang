@@ -4062,11 +4062,8 @@ def _run_kernel_on_device_impl(
             }
         )
     )
-    if compiler_l1 and (dfb_reconfiguration_plan or any(kernel_fabric_routes or ())):
-        raise ValueError(
-            "compiler-l1 cannot combine with Metal DFB reconfiguration or "
-            "generated fabric routes"
-        )
+    if compiler_l1 and dfb_reconfiguration_plan:
+        raise ValueError("compiler-l1 cannot combine with Metal DFB reconfiguration")
 
     if runtime_resource_cache is not None:
         _release_portable_runtime_resources_impl(runtime_resource_cache)
