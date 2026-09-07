@@ -38,8 +38,18 @@ def l1_copy(source, destination):
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "l1"])
-@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-l1"])
-def test_l1_copy(device, dtype, memory_model, allocator, monkeypatch):
+@pytest.mark.parametrize(
+    "memory_model,l1_allocation_strategy",
+    [
+        ("metal-cb", None),
+        ("compiler-l1", "first-fit-decreasing"),
+        ("compiler-l1", "best-fit-decreasing"),
+    ],
+    ids=["metal", "compiler-l1-first-fit", "compiler-l1-best-fit"],
+)
+def test_l1_copy(
+    device, dtype, memory_model, l1_allocation_strategy, allocator, monkeypatch
+):
     expected = torch.randn(32, 32, dtype=dtype)
     source = allocator(expected, device)
     destination = allocator(torch.zeros_like(expected), device)
@@ -61,9 +71,10 @@ def test_l1_copy(device, dtype, memory_model, allocator, monkeypatch):
 
         monkeypatch.setattr(runner, "build_cb_descriptors", reject_descriptors)
     for invocation in range(3):
-        result = l1_copy(
-            source, destination, options=f"--ttl-memory-model={memory_model}"
-        )
+        options = f"--ttl-memory-model={memory_model}"
+        if l1_allocation_strategy is not None:
+            options += f" --ttl-l1-allocation-strategy={l1_allocation_strategy}"
+        result = l1_copy(source, destination, options=options)
         assert result.buffer_address() == destination.buffer_address()
         assert_allclose(
             ttnn.to_torch(destination).float(), expected.float(), rtol=0, atol=0

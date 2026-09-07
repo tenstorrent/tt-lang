@@ -328,7 +328,7 @@ struct TTLFinalizeDFBIndicesPass
       }
       if (failed(allocateCompilerL1(moduleOp, logicalIdentityAnalysis,
                                     l1BudgetOverride, reuseUserDFBs,
-                                    liveness))) {
+                                    l1AllocationStrategy, liveness))) {
         signalPassFailure();
       }
       return;
