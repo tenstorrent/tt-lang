@@ -6,7 +6,7 @@
 # UNSUPPORTED: system-darwin
 # RUN: %python -m pytest %s -v
 
-"""Frontend contract coverage for compact row-prefix stores."""
+"""Frontend contract coverage for native short-height row-prefix stores."""
 
 import subprocess
 import sys
