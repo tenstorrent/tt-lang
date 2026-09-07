@@ -9,7 +9,7 @@ from __future__ import annotations
 import warnings
 from typing import List, Optional, Tuple, Union
 
-from ttl.dialects import arith, ttl
+from ttl.dialects import arith, tensor, ttl
 from ttl.ir import (
     Context,
     F32Type,
@@ -1107,15 +1107,15 @@ def broadcast(input: TensorBlock, *, dims: List[int], shape) -> TensorBlock:
     return ttl.block_broadcast(result_type, input, dims_attr, shape_attr)
 
 
-def _block_shape_view(input: TensorBlock, result_shape: List[int]) -> TensorBlock:
-    """Create a zero-copy block view with a different grid rank."""
-    from ttl.dialects import builtin
-
-    input_type = input.type
-    result_type = RankedTensorType.get(
-        result_shape, input_type.element_type, input_type.encoding
-    )
-    return builtin.UnrealizedConversionCastOp([result_type], [input]).result
+def _singleton_reassociation(
+    expanded_rank: int, singleton_dims: set[int]
+) -> List[List[int]]:
+    """Group inserted or removed axes with the surviving dimensions."""
+    retained = [axis for axis in range(expanded_rank) if axis not in singleton_dims]
+    if not retained:
+        return []
+    boundaries = [0, *retained[1:], expanded_rank]
+    return [list(range(start, end)) for start, end in zip(boundaries, boundaries[1:])]
 
 
 @syntax("squeeze")
@@ -1157,10 +1157,19 @@ def squeeze(input: TensorBlock, *, dims: List[int]) -> TensorBlock:
     if not norm_dims:
         return input
 
+    if not input_type.has_static_shape:
+        raise ValueError(
+            f"squeeze requires a static block shape, got {tuple(input_shape)}"
+        )
+
     result_shape = [
         size for index, size in enumerate(input_shape) if index not in norm_dims
     ]
-    return _block_shape_view(input, result_shape)
+    result_type = RankedTensorType.get(
+        result_shape, input_type.element_type, input_type.encoding
+    )
+    reassociation = _singleton_reassociation(rank, norm_dims)
+    return tensor.CollapseShapeOp(result_type, input, reassociation).result
 
 
 @syntax("unsqueeze")
@@ -1202,10 +1211,21 @@ def unsqueeze(input: TensorBlock, *, dims: List[int]) -> TensorBlock:
     if not norm_dims:
         return input
 
+    if not input_type.has_static_shape:
+        raise ValueError(
+            f"unsqueeze requires a static block shape, got {tuple(input_shape)}"
+        )
+
     result_shape = input_shape
     for dim in sorted(norm_dims):
         result_shape.insert(dim, 1)
-    return _block_shape_view(input, result_shape)
+    result_type = RankedTensorType.get(
+        result_shape, input_type.element_type, input_type.encoding
+    )
+    reassociation = _singleton_reassociation(result_rank, norm_dims)
+    return tensor.ExpandShapeOp(
+        result_type, input, reassociation, [], result_shape
+    ).result
 
 
 def _warn_if_reduce_shape_omitted(shape) -> None:

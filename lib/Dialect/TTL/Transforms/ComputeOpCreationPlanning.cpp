@@ -1646,7 +1646,8 @@ rejectComputeOpCreation(
 
 static bool propagatesWaitedMutationProvenance(Operation *operation) {
   return isa<AttachCBOp, tensor::ExtractSliceOp, tensor::ExtractOp,
-             UnrealizedConversionCastOp>(operation);
+             UnrealizedConversionCastOp>(operation) ||
+         getSingletonDimensionShapeViewSource(operation);
 }
 
 static LogicalResult collectWaitedMutationUsers(
@@ -1765,7 +1766,7 @@ static FailureOr<WaitedDFBMutationPlan> buildWaitedDFBMutationPlan(
     failureReason = "wait-backed replacement requires one complete DFB block";
     return failure();
   }
-  if (traceUnrealizedCasts(store.getView()) != wait.getResult()) {
+  if (traceDFBShapeViews(store.getView()) != wait.getResult()) {
     failureReason =
         "wait-backed replacement requires the complete acquired view";
     return failure();

@@ -12,6 +12,73 @@
 
 namespace mlir::tt::ttl {
 
+Value getDFBConversionCastSource(Operation *operation) {
+  auto cast = dyn_cast_or_null<UnrealizedConversionCastOp>(operation);
+  if (!cast || cast.getInputs().size() != 1 || cast.getOutputs().size() != 1) {
+    return {};
+  }
+  Value source = cast.getInputs().front();
+  Type sourceType = source.getType();
+  Type resultType = cast.getResult(0).getType();
+  if (sourceType == resultType) {
+    return source;
+  }
+
+  // CB lowering materializes a view of an acquired slot from a CB handle.
+  // Keep that bridge, but never infer storage identity from an arbitrary
+  // tensor-to-tensor cast, including a shape or element-type reinterpretation.
+  auto getElementType = [](Type type) -> Type {
+    if (auto cb = dyn_cast<CircularBufferType>(type)) {
+      return cb.getElementType();
+    }
+    if (auto cb = dyn_cast<ttkernel::CBType>(type)) {
+      return cb.getElementType();
+    }
+    if (auto tensor = dyn_cast<RankedTensorType>(type)) {
+      return tensor.getElementType();
+    }
+    return {};
+  };
+  bool hasCBType = isa<CircularBufferType, ttkernel::CBType>(sourceType) ||
+                   isa<CircularBufferType, ttkernel::CBType>(resultType);
+  Type sourceElementType = getElementType(sourceType);
+  if (hasCBType && sourceElementType &&
+      sourceElementType == getElementType(resultType)) {
+    return source;
+  }
+  return {};
+}
+
+Value getSingletonDimensionShapeViewSource(Operation *operation) {
+  Value source;
+  if (auto expand = dyn_cast_or_null<tensor::ExpandShapeOp>(operation)) {
+    source = expand.getSrc();
+  } else if (auto collapse =
+                 dyn_cast_or_null<tensor::CollapseShapeOp>(operation)) {
+    source = collapse.getSrc();
+  } else {
+    return {};
+  }
+
+  auto sourceType = dyn_cast<RankedTensorType>(source.getType());
+  auto resultType =
+      dyn_cast<RankedTensorType>(operation->getResult(0).getType());
+  if (!sourceType || !resultType || !sourceType.hasStaticShape() ||
+      !resultType.hasStaticShape() ||
+      sourceType.getElementType() != resultType.getElementType() ||
+      sourceType.getEncoding() != resultType.getEncoding()) {
+    return {};
+  }
+
+  auto isNotSingleton = [](int64_t extent) { return extent != 1; };
+  if (!llvm::equal(
+          llvm::make_filter_range(sourceType.getShape(), isNotSingleton),
+          llvm::make_filter_range(resultType.getShape(), isNotSingleton))) {
+    return {};
+  }
+  return source;
+}
+
 std::optional<ReadyReceiveSelection> getReadyReceiveSelection(Value predicate) {
   auto compare = predicate.getDefiningOp<arith::CmpIOp>();
   if (!compare || (compare.getPredicate() != arith::CmpIPredicate::eq &&
