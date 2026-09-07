@@ -13,6 +13,7 @@
 #include "ttlang/Dialect/TTCore/IR/TTCore.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 using namespace mlir;
@@ -22,6 +23,56 @@ using namespace mlir::tt::ttkernel;
 
 #define GET_ATTRDEF_CLASSES
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsAttrDefs.cpp.inc"
+
+namespace {
+
+SmallVector<ArrayAttr> getEnclosingExecutionCoreRanges(Operation *op,
+                                                       Operation *limit) {
+  SmallVector<ArrayAttr> domains;
+  for (Operation *ancestor = op->getParentOp(); ancestor && ancestor != limit;
+       ancestor = ancestor->getParentOp()) {
+    if (auto ranges =
+            ancestor->getAttrOfType<ArrayAttr>(kExecutionCoreRangesAttrName)) {
+      domains.push_back(ranges);
+    }
+  }
+  return domains;
+}
+
+bool haveDisjointCoreRanges(ArrayAttr lhs, ArrayAttr rhs) {
+  if (lhs.empty() || rhs.empty()) {
+    return false;
+  }
+  for (Attribute lhsAttr : lhs) {
+    auto lhsRange = dyn_cast<tt::ttcore::CoreRangeAttr>(lhsAttr);
+    if (!lhsRange) {
+      return false;
+    }
+    for (Attribute rhsAttr : rhs) {
+      auto rhsRange = dyn_cast<tt::ttcore::CoreRangeAttr>(rhsAttr);
+      if (!rhsRange || lhsRange.intersects(rhsRange)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+} // namespace
+
+bool mlir::tt::ttkernel::haveDisjointExecutionCoreRanges(Operation *lhs,
+                                                         Operation *rhs,
+                                                         Operation *limit) {
+  SmallVector<ArrayAttr> lhsDomains =
+      getEnclosingExecutionCoreRanges(lhs, limit);
+  SmallVector<ArrayAttr> rhsDomains =
+      getEnclosingExecutionCoreRanges(rhs, limit);
+  return llvm::any_of(lhsDomains, [&](ArrayAttr lhsDomain) {
+    return llvm::any_of(rhsDomains, [&](ArrayAttr rhsDomain) {
+      return haveDisjointCoreRanges(lhsDomain, rhsDomain);
+    });
+  });
+}
 
 //===----------------------------------------------------------------------===//
 // TTKernel dialect.

@@ -5,6 +5,7 @@
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "ttlang/Dialect/Utils/OpaqueCallVerifyUtils.h"
 
@@ -14,6 +15,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/InferIntRangeInterface.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "llvm/ADT/STLExtras.h"
@@ -482,15 +484,11 @@ static bool useExecutionImpliesSetupExecution(Operation *setup,
   });
 }
 
-// Return false only when a shared branch condition proves mutual exclusion.
+// Return false when branch conditions or execution-core metadata prove that
+// the operations cannot execute on the same worker core.
 static bool executionsMayOverlap(Operation *lhs, Operation *rhs) {
-  SmallVector<ConditionAssignment> lhsConditions = getEnclosingConditions(lhs);
-  SmallVector<ConditionAssignment> rhsConditions = getEnclosingConditions(rhs);
-  return llvm::none_of(lhsConditions, [&](ConditionAssignment lhsCondition) {
-    return llvm::is_contained(
-        rhsConditions,
-        ConditionAssignment{lhsCondition.first, !lhsCondition.second});
-  });
+  return !insideMutuallyExclusiveRegions(lhs, rhs) &&
+         !haveDisjointExecutionCoreRanges(lhs, rhs);
 }
 
 // Exclude setup operations in loops that do not also contain the state use.
