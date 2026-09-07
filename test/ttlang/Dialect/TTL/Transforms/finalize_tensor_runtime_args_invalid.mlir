@@ -69,3 +69,31 @@ func.func @negative_tensor_accessor_runtime_index()
   %args = ttkernel.TensorAccessorArgs(%cta, %crta)
   return
 }
+
+// -----
+
+// Compiler-L1 DFB indices must reference finalized allocation metadata.
+module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = []} {
+  func.func @missing_compiler_l1_allocation()
+      attributes {ttl.crta_indices = [0],
+                  ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{'ttkernel.get_compile_time_arg_val' op has invalid compiler-l1 tensor-backing metadata}}
+    %dfb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
+    return
+  }
+}
+
+// -----
+
+// A tensor-backed DFB requires the referenced tensor in the common arguments.
+module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [
+  {storage_segments = [{tensor_backing = #ttl.tensor_backing<tensor_index = 7, byte_offset = 0, byte_size = 2048>}]}
+]} {
+  func.func @missing_compiler_l1_tensor()
+      attributes {ttl.crta_indices = [0],
+                  ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{'ttkernel.get_compile_time_arg_val' op compiler-l1 tensor backing references tensor 7 which is absent from the kernel's common tensor arguments}}
+    %dfb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
+    return
+  }
+}

@@ -1265,7 +1265,9 @@ static LogicalResult validateAllocationGroupCursor(
   return success();
 }
 
-static LogicalResult validateAllocationGroups(
+} // namespace
+
+LogicalResult validateDFBAllocationGroups(
     const DFBConcurrentKernelLivenessAnalysis &liveness,
     ArrayRef<DFBStaticConfigurationConflict> staticConflicts,
     bool unsafeAssumeAllocationGroups,
@@ -1431,6 +1433,8 @@ static LogicalResult validateAllocationGroups(
   }
   return success();
 }
+
+namespace {
 
 /// Physical-index assignment and its proven bounds for selected logical DFBs.
 struct ConcurrentAssignmentResult {
@@ -2833,7 +2837,7 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
     errorMessage = "DFB allocation groups require user DFB reuse to be enabled";
     return;
   }
-  if (failed(validateAllocationGroups(
+  if (failed(validateDFBAllocationGroups(
           liveness, staticConfigurationConflicts, unsafeAssumeAllocationGroups,
           plan.assumedAllocationGroups, analysisFailure))) {
     errorOperation = analysisFailure.operation;

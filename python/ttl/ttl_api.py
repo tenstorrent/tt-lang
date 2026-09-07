@@ -2006,38 +2006,70 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
                 f"{context}.storage_index must be a nonnegative integer, "
                 f"got {storage_index!r}"
             )
-    l1_field_names = (
-        "l1_offset",
-        "l1_payload_offset",
-        "l1_allocation_bytes",
-    )
-    present_l1_fields = [field in entry for field in l1_field_names]
-    if any(present_l1_fields) and not all(present_l1_fields):
-        raise ValueError(f"{context} must contain all compiler-l1 allocation fields")
+    storage_capacity_pages = None
+    if "storage_capacity_pages" in entry:
+        try:
+            storage_capacity_pages = int(entry["storage_capacity_pages"])
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"Invalid {context}.storage_capacity_pages: {error}"
+            ) from None
+        logical_capacity_pages = num_tiles * block_count
+        if storage_capacity_pages < logical_capacity_pages:
+            raise ValueError(
+                f"{context}.storage_capacity_pages must cover the "
+                f"{logical_capacity_pages}-page logical capacity"
+            )
+        if storage_capacity_pages >= 1 << 31:
+            raise ValueError(f"{context}.storage_capacity_pages must be less than 2^31")
+    has_l1_offset = "l1_offset" in entry
+    has_l1_payload_offset = "l1_payload_offset" in entry
+    has_l1_allocation_bytes = "l1_allocation_bytes" in entry
+    if has_l1_payload_offset != has_l1_allocation_bytes:
+        raise ValueError(
+            f"{context} must contain both compiler-l1 payload allocation fields"
+        )
+    if (has_l1_payload_offset or has_l1_allocation_bytes) and not has_l1_offset:
+        raise ValueError(f"{context} compiler-l1 payload requires l1_offset")
     l1_offset = None
     l1_payload_offset = None
     l1_allocation_bytes = None
-    if all(present_l1_fields):
+    if has_l1_offset:
         try:
             l1_offset = int(entry["l1_offset"])
-            l1_payload_offset = int(entry["l1_payload_offset"])
-            l1_allocation_bytes = int(entry["l1_allocation_bytes"])
         except (TypeError, ValueError) as error:
             raise ValueError(
                 f"Invalid {context} compiler-l1 metadata: {error}"
             ) from None
-        if l1_offset < 0 or l1_payload_offset < 0:
-            raise ValueError(f"{context} compiler-l1 offsets must be nonnegative")
-        if l1_allocation_bytes <= 0:
+        if l1_offset < 0:
+            raise ValueError(f"{context}.l1_offset must be nonnegative")
+        if has_l1_payload_offset:
+            try:
+                l1_payload_offset = int(entry["l1_payload_offset"])
+                l1_allocation_bytes = int(entry["l1_allocation_bytes"])
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"Invalid {context} compiler-l1 metadata: {error}"
+                ) from None
+            if l1_payload_offset < 0:
+                raise ValueError(f"{context}.l1_payload_offset must be nonnegative")
+            if l1_allocation_bytes <= 0:
+                raise ValueError(
+                    f"{context}.l1_allocation_bytes must be positive, "
+                    f"got {l1_allocation_bytes}"
+                )
+            payload_bytes = num_tiles * block_count * page_size
+            if l1_allocation_bytes < payload_bytes:
+                raise ValueError(
+                    f"{context}.l1_allocation_bytes must cover the "
+                    f"{payload_bytes}-byte payload"
+                )
+        elif not storage_segments or any(
+            not segment.is_tensor_backed for segment in storage_segments
+        ):
             raise ValueError(
-                f"{context}.l1_allocation_bytes must be positive, "
-                f"got {l1_allocation_bytes}"
-            )
-        payload_bytes = num_tiles * block_count * page_size
-        if l1_allocation_bytes < payload_bytes:
-            raise ValueError(
-                f"{context}.l1_allocation_bytes must cover the "
-                f"{payload_bytes}-byte payload"
+                f"{context} compiler-l1 storage without an arena payload "
+                "requires tensor backing on every storage segment"
             )
     return PhysicalDFBConfig(
         dfb_index=dfb_index,
@@ -2052,6 +2084,7 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
         l1_offset=l1_offset,
         l1_payload_offset=l1_payload_offset,
         l1_allocation_bytes=l1_allocation_bytes,
+        storage_capacity_pages=storage_capacity_pages,
     )
 
 
