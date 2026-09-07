@@ -337,6 +337,61 @@ def TTL_ComputeOp : TTL_Op<"compute", [
     so its bound is defined. Tensor dimensions may use constant-zero map
     results only when their extent is one. A zero-rank iteration domain
     therefore represents one execution over unit-extent tensor operands.
+
+    Example:
+    ```mlir
+    #identity = affine_map<(dim0, dim1) -> (dim0, dim1)>
+
+    func.func @add(
+        %lhs: tensor<4x4x!ttcore.tile<32x32, f32>>,
+        %rhs: tensor<4x4x!ttcore.tile<32x32, f32>>,
+        %init: tensor<4x4x!ttcore.tile<32x32, f32>>)
+        -> tensor<4x4x!ttcore.tile<32x32, f32>> {
+      %lhs_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} :
+          !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+      %rhs_dfb = ttl.bind_cb {cb_index = 1, block_count = 2} :
+          !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+      %out_dfb = ttl.bind_cb {cb_index = 2, block_count = 2} :
+          !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+      %lhs_attached = ttl.attach_cb %lhs, %lhs_dfb :
+          (tensor<4x4x!ttcore.tile<32x32, f32>>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+          -> tensor<4x4x!ttcore.tile<32x32, f32>>
+      %rhs_attached = ttl.attach_cb %rhs, %rhs_dfb :
+          (tensor<4x4x!ttcore.tile<32x32, f32>>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+          -> tensor<4x4x!ttcore.tile<32x32, f32>>
+      %init_attached = ttl.attach_cb %init, %out_dfb :
+          (tensor<4x4x!ttcore.tile<32x32, f32>>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+          -> tensor<4x4x!ttcore.tile<32x32, f32>>
+      %out_view = ttl.cb_reserve %out_dfb :
+          <[1, 1], !ttcore.tile<32x32, f32>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %result = ttl.compute
+          ins(%lhs_attached, %rhs_attached :
+              tensor<4x4x!ttcore.tile<32x32, f32>>,
+              tensor<4x4x!ttcore.tile<32x32, f32>>)
+          outs(%init_attached : tensor<4x4x!ttcore.tile<32x32, f32>>)
+          {indexing_maps = [#identity, #identity, #identity],
+           iterator_types = ["parallel", "parallel"]} {
+        ^bb0(%lhs_tile: !ttcore.tile<32x32, f32>,
+             %rhs_tile: !ttcore.tile<32x32, f32>,
+             %out_tile: !ttcore.tile<32x32, f32>):
+          %row = ttl.iter_index 0 : index
+          %column = ttl.iter_index 1 : index
+          %dst = arith.constant 0 : index
+          %sum = ttl.tile_add %lhs_tile, %rhs_tile into dst[%dst] :
+              !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32>
+              -> !ttcore.tile<32x32, f32>
+          ttl.tile_store %sum, %out_view[%row, %column] from dst[%dst] :
+              !ttcore.tile<32x32, f32>,
+              tensor<1x1x!ttcore.tile<32x32, f32>>
+          ttl.yield
+      } -> tensor<4x4x!ttcore.tile<32x32, f32>>
+      func.return %result : tensor<4x4x!ttcore.tile<32x32, f32>>
+    }
+    ```
   }];
 
   let arguments = (ins
