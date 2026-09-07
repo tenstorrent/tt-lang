@@ -1,7 +1,7 @@
 // Verifies whole-kernel compute-op-creation ordering and exact consumer-operand
 // materialization decisions discovered by adversarial producer/use sweeps.
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-print-compute-op-creation-plans))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=PLAN
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute,ttl-auto-sync))' | FileCheck %s --check-prefix=FULL
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute,ttl-auto-sync))' | FileCheck %s --check-prefix=FULL --implicit-check-not=tensor.expand_shape --implicit-check-not=tensor.collapse_shape
 
 // A pure producer that dominates a nested consumer can be recomputed in the
 // consumer's region. No storage is needed across the region boundary.
@@ -295,9 +295,14 @@ func.func @computed_shape_view_store()
   %negative = ttl.neg %input
       : tensor<2x2x!ttcore.tile<32x32, bf16>>
         -> tensor<2x2x!ttcore.tile<32x32, bf16>>
-  %view = builtin.unrealized_conversion_cast %negative
+  %inner_view = tensor.expand_shape %negative [[0, 1], [2]]
+      output_shape [1, 2, 2]
       : tensor<2x2x!ttcore.tile<32x32, bf16>>
-        to tensor<1x1x2x2x!ttcore.tile<32x32, bf16>>
+        into tensor<1x2x2x!ttcore.tile<32x32, bf16>>
+  %view = tensor.expand_shape %inner_view [[0, 1], [2], [3]]
+      output_shape [1, 1, 2, 2]
+      : tensor<1x2x2x!ttcore.tile<32x32, bf16>>
+        into tensor<1x1x2x2x!ttcore.tile<32x32, bf16>>
   %output = ttl.cb_reserve %output_dfb
       : <[1, 1, 2, 2], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x2x2x!ttcore.tile<32x32, bf16>>

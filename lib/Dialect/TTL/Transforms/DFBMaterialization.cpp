@@ -6,6 +6,7 @@
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
 #include "mlir/IR/Dominance.h"
 #include "llvm/ADT/STLExtras.h"
@@ -14,32 +15,15 @@
 
 namespace mlir::tt::ttl {
 
-static bool isSingletonDimensionShapeView(RankedTensorType inputType,
-                                          RankedTensorType resultType) {
-  auto isNotSingleton = [](int64_t extent) { return extent != 1; };
-  return llvm::equal(
-      llvm::make_filter_range(inputType.getShape(), isNotSingleton),
-      llvm::make_filter_range(resultType.getShape(), isNotSingleton));
-}
-
-Value getDFBMaterializationStoreSource(Value intermediate) {
+Value getDFBMaterializationStoreSource(
+    Value intermediate, SmallVectorImpl<Operation *> *shapeViews) {
   Value source = intermediate;
-  while (auto cast = source.getDefiningOp<UnrealizedConversionCastOp>()) {
-    if (cast.getInputs().size() != 1 || cast.getOutputs().size() != 1) {
-      break;
+  while (Value input =
+             getSingletonDimensionShapeViewSource(source.getDefiningOp())) {
+    if (shapeViews) {
+      shapeViews->push_back(source.getDefiningOp());
     }
-
-    auto inputType = dyn_cast<RankedTensorType>(cast.getInputs()[0].getType());
-    auto resultType =
-        dyn_cast<RankedTensorType>(cast.getOutputs()[0].getType());
-    if (!inputType || !resultType || !inputType.hasStaticShape() ||
-        !resultType.hasStaticShape() ||
-        inputType.getElementType() != resultType.getElementType() ||
-        inputType.getEncoding() != resultType.getEncoding() ||
-        !isSingletonDimensionShapeView(inputType, resultType)) {
-      break;
-    }
-    source = cast.getInputs()[0];
+    source = input;
   }
   return source;
 }
@@ -119,8 +103,9 @@ AttachCBOp createDFBWaitAndAttach(Value dfb, RankedTensorType tensorType,
   return AttachCBOp::create(builder, loc, tensorType, wait.getResult(), dfb);
 }
 
-Value materializeToDFB(Value intermediate, Operation *insertionAnchor,
-                       func::FuncOp kernel, OpBuilder &builder) {
+Value materializeToDFB(Value intermediate, Value storeSource,
+                       Operation *insertionAnchor, func::FuncOp kernel,
+                       OpBuilder &builder) {
   auto result = dyn_cast<OpResult>(intermediate);
   assert((!result || !isa<ComputeOp>(result.getOwner())) &&
          "compute results are materialized atomically by "
@@ -139,7 +124,6 @@ Value materializeToDFB(Value intermediate, Operation *insertionAnchor,
       createCompilerAllocatedDFB(tensorType, loc, kernel, builder);
 
   builder.setInsertionPointAfter(insertionAnchor);
-  Value storeSource = getDFBMaterializationStoreSource(intermediate);
   IntegerAttr numTiles;
   if (storeSource != intermediate) {
     auto storeType = cast<RankedTensorType>(storeSource.getType());

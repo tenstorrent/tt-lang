@@ -163,6 +163,12 @@ struct StandaloneDFBMaterializationPlan {
   /// Tensor value routed through a compiler-created DFB.
   Value source;
 
+  /// Producer stored before exposing the consumer-visible tensor shape.
+  Value storeSource;
+
+  /// Checked singleton views bypassed by the store, outermost first.
+  SmallVector<Operation *> shapeViews;
+
   /// Static tensor type used by the new DFB lifecycle.
   RankedTensorType tensorType;
 

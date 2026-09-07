@@ -402,7 +402,14 @@ static StandaloneDFBMaterializationPlan &getOrCreateStandaloneMaterialization(
            "one tensor value must have a consistent type");
     return *existing;
   }
-  plans.push_back({source, tensorType, source.getDefiningOp(), {}});
+  SmallVector<Operation *> shapeViews;
+  Value storeSource = getDFBMaterializationStoreSource(source, &shapeViews);
+  plans.push_back({source,
+                   storeSource,
+                   std::move(shapeViews),
+                   tensorType,
+                   source.getDefiningOp(),
+                   {}});
   return plans.back();
 }
 

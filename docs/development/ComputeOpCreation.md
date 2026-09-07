@@ -572,11 +572,16 @@ disabled, either condition produces a diagnostic instead of changing the
 lifetime result.
 
 Singleton-rank `squeeze` and `unsqueeze` operations lower to zero-copy
-`unrealized_conversion_cast` shape views. A direct store of a computed shape
+`tensor.collapse_shape` and `tensor.expand_shape` views. Shared DFB provenance
+accepts only static singleton-dimension changes with identical element types
+and encodings. A direct store of a computed shape
 view cannot become a tile recipe because the view itself performs no compute.
 Intermediate DFB planning therefore materializes the computed input. The
 producer reserves and stores the same number of tiles through its original-rank
 view; consumers attach the published DFB using the requested result rank.
+The immutable plan records the producer and accepted view chain before
+mutation. Application validates those records and removes dead recorded views
+in consumer-first order after all planned rewrites, including shared chains.
 
 ## Plan Application
 

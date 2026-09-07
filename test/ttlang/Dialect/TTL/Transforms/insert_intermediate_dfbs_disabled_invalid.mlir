@@ -94,9 +94,10 @@ func.func @computed_shape_view_store_disabled()
   %negative = ttl.neg %input
       : tensor<1x1x!ttcore.tile<32x32, bf16>>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-  %view = builtin.unrealized_conversion_cast %negative
+  %view = tensor.expand_shape %negative [[0, 1], [2, 3]]
+      output_shape [1, 1, 1, 1]
       : tensor<1x1x!ttcore.tile<32x32, bf16>>
-        to tensor<1x1x1x1x!ttcore.tile<32x32, bf16>>
+        into tensor<1x1x1x1x!ttcore.tile<32x32, bf16>>
   %output = ttl.cb_reserve %output_dfb
       : <[1, 1, 1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x1x1x!ttcore.tile<32x32, bf16>>

@@ -17,12 +17,10 @@
 
 namespace mlir::tt::ttl {
 
-/// Returns the value whose tiles must be published when `intermediate` is
-/// materialized. Unrealized tensor casts that only insert or remove singleton
-/// dimensions are zero-copy block-shape views, so their input can be stored
-/// through a reserve view with the input rank while consumers retain the
-/// original attached tensor type.
-Value getDFBMaterializationStoreSource(Value intermediate);
+/// Trace checked singleton-dimension tensor views to their stored producer.
+/// Optionally record the accepted views in consumer-to-producer order.
+Value getDFBMaterializationStoreSource(
+    Value intermediate, SmallVectorImpl<Operation *> *shapeViews = nullptr);
 
 /// Allocates a fresh compiler-managed dataflow buffer and emits its `bind_cb`
 /// at kernel entry, where finalization can assign physical indices
@@ -49,10 +47,12 @@ AttachCBOp createDFBWaitAndAttach(Value dfb, RankedTensorType tensorType,
 /// Routes a non-`ttl.compute` tensor value through a fresh compiler-allocated
 /// DFB after `insertionAnchor`. The source must dominate the anchor, and the
 /// returned attached value may serve every consumer that the anchor properly
-/// dominates. Compute results are materialized atomically by
+/// dominates. `storeSource` is the prevalidated producer recorded by the plan.
+/// Compute results are materialized atomically by
 /// `TTLInsertIntermediateDFBs` so one producer compute is rebuilt at most once.
-Value materializeToDFB(Value intermediate, Operation *insertionAnchor,
-                       func::FuncOp kernel, OpBuilder &builder);
+Value materializeToDFB(Value intermediate, Value storeSource,
+                       Operation *insertionAnchor, func::FuncOp kernel,
+                       OpBuilder &builder);
 
 } // namespace mlir::tt::ttl
 

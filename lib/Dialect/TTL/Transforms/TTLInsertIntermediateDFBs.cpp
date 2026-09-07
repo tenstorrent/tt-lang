@@ -21,14 +21,17 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/TTL/Transforms/DFBMaterialization.h"
 
+#include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/PatternMatch.h"
 
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 
 #define DEBUG_TYPE "ttl-insert-intermediate-dfbs"
@@ -225,28 +228,11 @@ static void applyStandaloneMaterializationPlan(
   // source. Without an applicable output plan, evaluation remains at the
   // definition. Otherwise, a definition anchor requires every source use to
   // be rewritten, which leaves the compiler DFB store as the source's only use.
-  Value materializedValue =
-      materializeToDFB(plan.source, plan.insertionAnchor, kernel, builder);
+  Value materializedValue = materializeToDFB(
+      plan.source, plan.storeSource, plan.insertionAnchor, kernel, builder);
   for (unsigned requirementIndex : plan.requirementIndices) {
     const IntermediateDFBRequirement &use = requirements[requirementIndex];
     use.consumer->setOperand(use.operandIndex, materializedValue);
-  }
-
-  // Shape-view casts are bypassed by the producer-side store. Remove an
-  // original cast chain after every planned consumer has been rewritten so a
-  // dead earlier use cannot constrain final ComputeOp placement.
-  Value view = plan.source;
-  Value storeSource = getDFBMaterializationStoreSource(view);
-  while (view != storeSource) {
-    auto cast = view.getDefiningOp<UnrealizedConversionCastOp>();
-    assert(cast && cast.getInputs().size() == 1 &&
-           "materialization view trace must contain single-input casts");
-    Value input = cast.getInputs()[0];
-    if (!cast->use_empty()) {
-      break;
-    }
-    cast.erase();
-    view = input;
   }
 }
 
@@ -259,7 +245,47 @@ static LogicalResult verifyPlanSources(const IntermediateDFBPlan &plan) {
           "intermediate DFB plan was invalidated before application");
     }
   }
+  for (const StandaloneDFBMaterializationPlan &standalone :
+       plan.getStandaloneMaterializations()) {
+    Value source = standalone.source;
+    if (source.getType() != standalone.tensorType) {
+      return standalone.insertionAnchor->emitOpError(
+          "intermediate DFB plan source type changed before application");
+    }
+    for (Operation *view : standalone.shapeViews) {
+      if (source.getDefiningOp() != view) {
+        return view->emitOpError("intermediate DFB plan shape-view chain "
+                                 "changed before application");
+      }
+      source = getSingletonDimensionShapeViewSource(view);
+      if (!source) {
+        return view->emitOpError(
+            "intermediate DFB plan shape view is no longer compatible");
+      }
+    }
+    if (source != standalone.storeSource) {
+      return standalone.insertionAnchor->emitOpError(
+          "intermediate DFB plan store source changed before application");
+    }
+  }
   return success();
+}
+
+static void eraseDeadMaterializedShapeViews(const IntermediateDFBPlan &plan,
+                                            IRRewriter &rewriter) {
+  llvm::SetVector<Operation *> views;
+  for (const StandaloneDFBMaterializationPlan &standalone :
+       plan.getStandaloneMaterializations()) {
+    views.insert(standalone.shapeViews.begin(), standalone.shapeViews.end());
+  }
+  // Shared chains stay alive until every planned operand has been rewritten.
+  // Erase each recorded view once, with its consumers before its producer.
+  auto orderedViews = topologicalSort(views);
+  for (Operation *view : llvm::reverse(orderedViews)) {
+    if (view->use_empty()) {
+      rewriter.eraseOp(view);
+    }
+  }
 }
 
 struct TTLInsertIntermediateDFBsPass
@@ -338,6 +364,8 @@ struct TTLInsertIntermediateDFBsPass
          materializationPlan.getComputeMaterializations()) {
       applyComputeMaterializationPlan(computePlan, requiredUses, builder);
     }
+    IRRewriter rewriter(kernel.getContext());
+    eraseDeadMaterializedShapeViews(materializationPlan, rewriter);
   }
 };
 

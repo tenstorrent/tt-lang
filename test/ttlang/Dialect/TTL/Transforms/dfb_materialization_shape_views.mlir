@@ -24,9 +24,9 @@ func.func @singleton_dimension_shape_view()
   %negative = ttl.neg %input
       : tensor<2x2x!ttcore.tile<32x32, bf16>>
         -> tensor<2x2x!ttcore.tile<32x32, bf16>>
-  %view = builtin.unrealized_conversion_cast %negative
+  %view = tensor.expand_shape %negative [[0, 1], [2]] output_shape [1, 2, 2]
       : tensor<2x2x!ttcore.tile<32x32, bf16>>
-        to tensor<1x2x2x!ttcore.tile<32x32, bf16>>
+        into tensor<1x2x2x!ttcore.tile<32x32, bf16>>
   %output = ttl.cb_reserve %output_dfb
       : <[1, 2, 2], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x2x2x!ttcore.tile<32x32, bf16>>
@@ -39,7 +39,7 @@ func.func @singleton_dimension_shape_view()
 // -----
 
 // Equal tile counts do not make an arbitrary extent change a shape view.
-// Such a cast must not enter the compiler's singleton-view materialization
+// Such a collapse must not enter the compiler's singleton-view materialization
 // path, which would silently reinterpret the producer's tile coordinates.
 // CHECK-LABEL: ComputeOp creation plan @non_singleton_reshape
 // CHECK:       unassigned-store
@@ -49,7 +49,7 @@ func.func @non_singleton_reshape()
   %input_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
       : !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>
   %output_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
-      : !ttl.cb<[1, 4], !ttcore.tile<32x32, bf16>, 2>
+      : !ttl.cb<[4], !ttcore.tile<32x32, bf16>, 2>
   %input_wait = ttl.cb_wait %input_dfb
       : <[2, 2], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<2x2x!ttcore.tile<32x32, bf16>>
@@ -60,14 +60,14 @@ func.func @non_singleton_reshape()
   %negative = ttl.neg %input
       : tensor<2x2x!ttcore.tile<32x32, bf16>>
         -> tensor<2x2x!ttcore.tile<32x32, bf16>>
-  %reshape = builtin.unrealized_conversion_cast %negative
+  %reshape = tensor.collapse_shape %negative [[0, 1]]
       : tensor<2x2x!ttcore.tile<32x32, bf16>>
-        to tensor<1x4x!ttcore.tile<32x32, bf16>>
+        into tensor<4x!ttcore.tile<32x32, bf16>>
   %output = ttl.cb_reserve %output_dfb
-      : <[1, 4], !ttcore.tile<32x32, bf16>, 2>
-        -> tensor<1x4x!ttcore.tile<32x32, bf16>>
+      : <[4], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<4x!ttcore.tile<32x32, bf16>>
   ttl.store %reshape, %output
-      : tensor<1x4x!ttcore.tile<32x32, bf16>>,
-        tensor<1x4x!ttcore.tile<32x32, bf16>>
+      : tensor<4x!ttcore.tile<32x32, bf16>>,
+        tensor<4x!ttcore.tile<32x32, bf16>>
   return
 }
