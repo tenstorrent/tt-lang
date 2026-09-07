@@ -3183,7 +3183,33 @@ class TTLGenericCompiler(TTCompilerBase):
                     ta_node, "ttl.call_extern_func() template_args must be a list"
                 )
             for elt in ta_node.elts:
-                resolved_template_args.append(self._resolve_template_arg_value(elt))
+                if not isinstance(elt, ast.Starred):
+                    resolved_template_args.append(self._resolve_template_arg_value(elt))
+                    continue
+                expanded_nodes = None
+                if isinstance(elt.value, (ast.List, ast.Tuple)):
+                    expanded_nodes = elt.value.elts
+                elif isinstance(elt.value, ast.Name):
+                    sequence = None
+                    for namespace in (self.captures, self.fn_globals):
+                        if elt.value.id in namespace:
+                            sequence = namespace[elt.value.id]
+                            break
+                    if isinstance(sequence, (list, tuple)):
+                        expanded_nodes = [
+                            ast.copy_location(ast.Constant(value=value), elt)
+                            for value in sequence
+                        ]
+                if expanded_nodes is None:
+                    self._raise_error(
+                        elt,
+                        "ttl.call_extern_func() starred template arguments must "
+                        "reference a captured or module-level list or tuple",
+                    )
+                for value_node in expanded_nodes:
+                    resolved_template_args.append(
+                        self._resolve_template_arg_value(value_node)
+                    )
 
         func_args = []
         func_arg_nodes = []
