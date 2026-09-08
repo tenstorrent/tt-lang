@@ -131,6 +131,71 @@ struct HoistLoopInvariantValueOps : OpRewritePattern<scf::ForOp> {
   }
 };
 
+// Check whether `operation` preserves the unpack/math configuration for copies
+// from `sourceDFB`. Unclassified hardware operations and calls are
+// conservative.
+static bool preservesCopyTileConfiguration(Operation *operation,
+                                           Value sourceDFB) {
+  if (auto copy = dyn_cast<CopyTileOp>(operation)) {
+    return copy.getCb0() == sourceDFB;
+  }
+  return isa<CBWaitFrontOp, CBPopFrontOp, CBReserveBackOp, CBPushBackOp,
+             TileRegsAcquireOp, TileRegsCommitOp, TileRegsWaitOp,
+             TileRegsReleaseOp, PackTileOp, PackTileBlockOp, scf::YieldOp>(
+             operation) ||
+         isHoistableTTKernelValueComputation(operation);
+}
+
+// Share one copy initialization across a nonempty loop whose straight-line
+// body preserves that configuration and uses an invariant source DFB.
+struct HoistInvariantCopyTileInit : OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ForOp loop,
+                                PatternRewriter &rewriter) const override {
+    std::optional<APInt> tripCount = loop.getStaticTripCount();
+    if (!tripCount || tripCount->isZero()) {
+      return rewriter.notifyMatchFailure(loop,
+                                         "loop execution is not guaranteed");
+    }
+    SmallVector<CopyTileInitOp> initializations;
+    Value sourceDFB;
+    bool foundCopy = false;
+    for (Operation &operation : loop.getBody()->getOperations()) {
+      if (operation.getNumRegions() != 0) {
+        return rewriter.notifyMatchFailure(
+            loop, "copy loop contains nested control flow");
+      }
+      if (auto init = dyn_cast<CopyTileInitOp>(operation)) {
+        if (!loop.isDefinedOutsideOfLoop(init.getCb0()) ||
+            (sourceDFB && sourceDFB != init.getCb0())) {
+          return rewriter.notifyMatchFailure(
+              loop, "copy source is not loop invariant");
+        }
+        sourceDFB = init.getCb0();
+        initializations.push_back(init);
+        continue;
+      }
+      if (!preservesCopyTileConfiguration(&operation, sourceDFB)) {
+        return rewriter.notifyMatchFailure(
+            loop, "operation may change copy configuration");
+      }
+      foundCopy |= isa<CopyTileOp>(operation);
+    }
+    if (initializations.empty() || !foundCopy) {
+      return failure();
+    }
+
+    // All iterations execute the same initialization before their first copy;
+    // the complete body has been checked before moving or erasing any init.
+    rewriter.moveOpBefore(initializations.front(), loop);
+    for (CopyTileInitOp redundant : llvm::drop_begin(initializations)) {
+      rewriter.eraseOp(redundant);
+    }
+    return success();
+  }
+};
+
 /// A loop and the predicates that must guard its stateful write setup.
 struct StatefulWriteLoop {
   scf::ForOp loop;
@@ -416,8 +481,8 @@ void populateTTKernelCleanupPatterns(RewritePatternSet &patterns) {
       patterns.getContext());
   patterns
       .add<HoistIfRegionInvariantValueOps, HoistLoopInvariantValueOps,
-           SchedulePostedNocWriteStateBeforeWait, UseStatefulNocWriteInLoop>(
-          patterns.getContext());
+           HoistInvariantCopyTileInit, SchedulePostedNocWriteStateBeforeWait,
+           UseStatefulNocWriteInLoop>(patterns.getContext());
 }
 
 } // namespace mlir::tt::ttkernel

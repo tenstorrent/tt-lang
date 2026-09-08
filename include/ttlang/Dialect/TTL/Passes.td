@@ -1446,12 +1446,17 @@ def TTKernelInsertInits
 }
 
 def TTKernelCleanup : Pass<"ttkernel-cleanup", "::mlir::ModuleOp"> {
-  let summary = "Simplify TTKernel synchronization and configure reusable NoC write state";
+  let summary = "Simplify TTKernel synchronization and invariant hardware configuration";
   let description = [{
     Removes redundant barriers, hoists invariant value computations, and
     replaces eligible writes with one-packet state setup and issue operations.
     State setup precedes a blocking wait or an invariant loop only when the
     intervening operations and their callees preserve the write command.
+
+    A statically nonempty copy/pack loop shares one copy initialization when
+    its source DFB is invariant and every operation preserves the copy
+    configuration. Nested control flow, unknown calls, changing sources,
+    and other hardware operations retain per-iteration initialization.
 
     Running after core specialization and static record-loop expansion exposes
     constant endpoints and straight-line waits that were unavailable during
