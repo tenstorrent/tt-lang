@@ -245,19 +245,19 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     module.emitOpError() << allocationFailure;
     return failure();
   }
-  std::optional<unsigned> failureRegionIndex;
-  FailureOr<SRAMAllocationSolution> solution =
-      (*allocator)->allocate(problem, failureRegionIndex, allocationFailure);
-  if (failed(solution)) {
+  SRAMAllocationDomainProblem domain{std::move(problem),
+                                     std::move(storageIndexByAllocationRegion)};
+  SRAMAllocationDomainFailure allocationError;
+  auto domains = (*allocator)->allocateDomains(domain, allocationError);
+  if (failed(domains)) {
     auto diagnostic =
-        failureRegionIndex
-            ? plan[storage[storageIndexByAllocationRegion[*failureRegionIndex]]
-                       .members.front()]
+        allocationError.storageIndex
+            ? plan[storage[*allocationError.storageIndex].members.front()]
                   .declarations.front()
                   .emitOpError()
             : module.emitOpError();
-    diagnostic << "compiler-l1 " << allocationFailure;
-    if (llvm::StringRef(allocationFailure)
+    diagnostic << "compiler-l1 " << allocationError.reason;
+    if (llvm::StringRef(allocationError.reason)
             .starts_with("placement exceeds SRAM budget")) {
       diagnostic << " (payload, control records, and alignment included); "
                  << (*allocator)->getName()
@@ -265,12 +265,12 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     }
     return failure();
   }
-  for (auto [allocationRegionIndex, storageIndex] :
-       llvm::enumerate(storageIndexByAllocationRegion)) {
-    storage[storageIndex].offset = solution->offsets[allocationRegionIndex];
+  const SRAMAllocationDomainSolution &uniformDomain = domains->front();
+  for (const SRAMStoragePlacement &placement : uniformDomain.placements) {
+    storage[placement.storageIndex].offset = placement.offset;
   }
-  uint64_t arenaBytes = std::max(*controlBytes, solution->arenaBytes);
-  SRAMAllocationPlan result{std::move(plan), std::move(storage), arenaBytes};
+  SRAMAllocationPlan result{std::move(plan), std::move(storage),
+                            uniformDomain.arenaBytes};
   if (reportAllocation) {
     printSRAMAllocationReport(llvm::errs(), result, liveness, conflicts,
                               allocationStrategy, reuseStorage, *alignment,

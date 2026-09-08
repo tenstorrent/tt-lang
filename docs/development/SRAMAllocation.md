@@ -101,7 +101,7 @@ Possible launch domains use the same rules as exact domains and remain conservat
 
 Placement is independent of MLIR and target-specific code. Storage-owner construction produces one allocator region for each owner with a compiler-owned payload. Tensor-backed owners consume control records but add no allocator regions. The immutable allocation problem contains each payload extent, a symmetric conflict matrix, target alignment, the payload base after all control records, and the SRAM budget. An allocator returns one byte offset per allocator region and the payload high-water mark.
 
-Every allocator result passes the same validation before IR mutation. Validation requires the correct offset count, target alignment, offsets at or above the payload base, intervals within the SRAM budget, disjoint intervals for every conflict, and an exact payload high-water mark. Allocation policy cannot weaken these invariants. The caller maps the returned offsets to storage owners and computes the arena size as the maximum of the control-section end and the payload high-water mark.
+Every allocator result passes the same validation before IR mutation. Validation requires the correct offset count, target alignment, offsets at or above the payload base, intervals within the SRAM budget, disjoint intervals for every conflict, and an exact payload high-water mark. Allocation policy cannot weaken these invariants. The domain allocation entry point maps offsets to storage owners and retains the control prefix when computing the arena size.
 
 ### C++ Allocator Contract
 
@@ -127,6 +127,27 @@ struct SRAMAllocationSolution {
   uint64_t arenaBytes;
 };
 
+struct SRAMAllocationDomainProblem {
+  SRAMAllocationProblem allocation;
+  llvm::SmallVector<unsigned> storageIndices;
+};
+
+struct SRAMStoragePlacement {
+  unsigned storageIndex;
+  uint64_t offset;
+};
+
+struct SRAMAllocationDomainSolution {
+  llvm::SmallVector<SRAMStoragePlacement> placements;
+  uint64_t arenaBytes;
+};
+
+struct SRAMAllocationDomainFailure {
+  unsigned domainIndex;
+  std::optional<unsigned> storageIndex;
+  std::string reason;
+};
+
 class SRAMAllocator {
 public:
   virtual ~SRAMAllocator() = default;
@@ -136,6 +157,10 @@ public:
   allocate(const SRAMAllocationProblem &problem,
            std::optional<unsigned> &failureRegionIndex,
            std::string &failureReason) const;
+
+  FailureOr<llvm::SmallVector<SRAMAllocationDomainSolution>>
+  allocateDomains(llvm::ArrayRef<SRAMAllocationDomainProblem> domains,
+                  SRAMAllocationDomainFailure &failureDetail) const;
 
 private:
   virtual FailureOr<SRAMAllocationSolution>
@@ -153,6 +178,21 @@ createSRAMAllocator(llvm::StringRef name, const SRAMAllocatorOptions &options,
 `regionBytes[i]` is the nonzero, aligned extent of allocator region `i`. The caller retains the mapping from allocator-region indices to compiler-owned storage-owner indices. `conflicts` is the shared undirected resource-interference graph. `payloadBaseOffset` is aligned and does not exceed `budgetBytes`. The problem is immutable after construction. Region order supplies the final deterministic tie-break.
 
 `SRAMAllocator::allocate` is the public, nonvirtual entry point. It validates the problem, invokes the private strategy method, and validates the solution. This structure keeps strategy selection replaceable while enforcing one correctness contract. On success, `offsets` has one entry per allocator region and `arenaBytes` is the exact maximum payload end, or zero when no allocator regions exist. On failure, `failureReason` contains diagnostic text and `failureRegionIndex` identifies an allocator region only when the error applies to one region. The allocator layer does not emit diagnostics or modify IR.
+
+`allocateDomains` applies the same strategy and validation to independently addressable layouts. Domain order is stable; `storageIndices` maps each domain-local region to a caller-owned storage identity. Identities must be unique within a domain and may recur across domains. Each domain supplies its own conflicts, alignment, control prefix, and budget. Core membership and the proof that domain bindings are disjoint belong to the caller, not the placement strategy. The current compiler supplies one uniform domain.
+
+All domain inputs are validated before any strategy executes. Failure returns no partial placement; `failureDetail` identifies the domain and, when available, the storage owner. A control-only domain retains `payloadBaseOffset` as its arena size. Exact search has the configured work limit separately for each domain. Independent exact minima minimize total reservation for a fixed domain partition and positive replication counts; this does not optimize the partition itself or account for host allocation granularity.
+
+```text
+allocateDomains(domains):
+    validate every domain problem and storage-identity mapping
+    for each domain in input order:
+        placement = selected strategy(domain.problem)
+        validate placement using the common allocator rules
+        map local region offsets to storage identities
+        arenaBytes = max(control-prefix end, payload high-water mark)
+    return all domain placements, or failure without a partial result
+```
 
 `SRAMAllocatorOptions` contains limits that affect strategy execution but do not change the allocation problem. `exactSearchLimit` bounds the exact strategy's combined subset-sum candidates and partial placements. `createSRAMAllocator` maps stable compiler-option names to implementations and supplies these options. `getName()` identifies the implementation in validation diagnostics. A new implementation derives from `SRAMAllocator`, implements `getName()` and `allocateImpl()`, and registers its name in the factory. It cannot change conflict construction or bypass common validation.
 
@@ -298,7 +338,7 @@ The initial scope is one compiled `ttl.operation`, including its tensor-backed a
 | Request | Implemented | Missing |
 | --- | --- | --- |
 | Late allocation and global minimum | One immutable problem per `ttl.operation`; optional exact minimum for its compiler-owned uniform arena. | Joint placement of tensor-backed and compiler-owned storage within that operation. Existing tensor addresses are already assigned. |
-| Full lockstep, ranged lockstep, and per-core allocation | One common layout across participating cores and devices. | Domain-specific layouts and receiver addresses. Uniform allocation reserves the largest arena on every participating core. |
+| Full lockstep, ranged lockstep, and per-core allocation | Domain-indexed placement API; generated kernels still use one common layout across participating cores and devices. | Core-domain construction, runtime bindings, and destination-domain addresses. Uniform allocation reserves the largest arena on every participating core. |
 | Unified tensor and DFB allocation | Shared ownership, lifetime, allocation-group, and alias validation; tensor-backed DFBs avoid duplicate payload storage. | Shared physical placement. TTNN owns existing tensor allocations; the compiler currently owns only its arena. |
 | Lifetime inspection and reuse hints | Automatic completion-aware reuse and the allocation report above. | A user-facing guidance contract that preserves asynchronous completion. |
 
