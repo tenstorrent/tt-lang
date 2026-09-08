@@ -1,5 +1,5 @@
 // Summary: The specialize-and-annotate-dfb-use subpipeline owns the
-// per-core clone, fold, local record-loop unroll, tensor-argument finalization,
+// per-core clone, fold, local record-loop unroll, write-state cleanup, tensor-argument finalization,
 // and DFB-use annotation sequence. The full pipeline also runs record-loop
 // unrolling and argument finalization without specialization.
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttkernel-specialize-and-annotate-dfb-use)' --dump-pass-pipeline -o /dev/null 2>&1 | FileCheck %s --check-prefix=SUBPIPELINE
@@ -16,6 +16,7 @@
 // SUBPIPELINE-NEXT: ),
 // SUBPIPELINE-NEXT: canonicalize{{.*}},
 // SUBPIPELINE-NEXT: cse,
+// SUBPIPELINE-NEXT: ttkernel-cleanup,
 // SUBPIPELINE-NEXT: ttkernel-finalize-tensor-runtime-args,
 // SUBPIPELINE-NEXT: canonicalize{{.*}},
 // SUBPIPELINE-NEXT: ttkernel-annotate-dfb-use
@@ -33,6 +34,7 @@
 // ENABLED-NEXT: ),
 // ENABLED-NEXT: canonicalize{{.*}},
 // ENABLED-NEXT: cse,
+// ENABLED-NEXT: ttkernel-cleanup,
 // ENABLED-NEXT: ttkernel-finalize-tensor-runtime-args,
 // ENABLED-NEXT: canonicalize{{.*}},
 // ENABLED-NEXT: ttkernel-annotate-dfb-use
@@ -48,6 +50,7 @@
 // DISABLED-NEXT: ),
 // DISABLED-NEXT: canonicalize{{.*}},
 // DISABLED-NEXT: cse
+// DISABLED-NEXT: ttkernel-cleanup
 // DISABLED-NEXT: ttkernel-finalize-tensor-runtime-args
 // DISABLED-NEXT: canonicalize{{.*}}
 
