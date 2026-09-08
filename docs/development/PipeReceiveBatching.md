@@ -76,3 +76,12 @@ sequences, and unproven state retain the original transfer protocol. Core
 specialization is not required, but commonly resolves the per-worker record
 count needed for batching. The pass runs in both pipeline configurations so
 temporary annotations never reach generated C++.
+
+The full C++ pipeline, standalone specialization pipeline, and Python compiler
+share `ttkernel-cleanup-and-finalize-runtime-args`'s implementation. This
+sequence batches receives, unrolls records, lowers affine index arithmetic,
+folds table lookups, reapplies
+TTKernel cleanup, and finally removes unused runtime arguments. Python invokes
+the registered sequence rather than maintaining its own pass list. The
+TreeReduce device test checks the expanded Python pass order and numerical
+results with specialization enabled and disabled.

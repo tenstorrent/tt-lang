@@ -2945,24 +2945,14 @@ def _lower_program_to_kernel(
             "canonicalize",
             "cse",
         ]
-        if not compiler_options.specialize_cores:
-            pipeline_passes += [
-                "ttkernel-finalize-tensor-runtime-args",
-                "canonicalize",
-            ]
-        pipeline_passes += [
-            "lower-affine",
-            "ttl-lower-signpost-to-emitc",
-        ]
+        # Both registered pipelines share record cleanup and finalize only
+        # the runtime arguments that survive it, matching the C++ pipeline.
         if compiler_options.specialize_cores:
             pipeline_passes.append("ttkernel-specialize-and-annotate-dfb-use")
         else:
-            pipeline_passes += [
-                "func.func(ttkernel-unroll-static-pipenet-record-loops)",
-                "canonicalize",
-                "cse",
-            ]
+            pipeline_passes.append("ttkernel-cleanup-and-finalize-runtime-args")
         pipeline_passes += [
+            "ttl-lower-signpost-to-emitc",
             "convert-ttkernel-to-emitc",
             "symbol-dce",
         ]

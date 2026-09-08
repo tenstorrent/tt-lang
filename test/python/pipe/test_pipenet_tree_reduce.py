@@ -8,6 +8,7 @@ import pytest
 import torch
 
 import ttl
+import ttl.ttl_api as ttl_api
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
@@ -34,20 +35,22 @@ def _tree_edges():
     return tuple(edges)
 
 
-def _make_tree_reduce(fp32):
+def _make_tree_reduce(fp32, specialize_cores):
     tree_net = ttl.PipeNet(
         [ttl.Pipe(src=source, dst=destination) for source, destination in _tree_edges()]
     )
     stage_count = (CORE_COUNT - 1).bit_length()
     root_x, root_y = ROOT
 
+    options = []
+    if specialize_cores:
+        options.append("--ttl-specialize-cores")
+    if fp32:
+        options.append("--ttl-accumulation-strategy=l1-pack")
+
     @ttl.operation(
         grid=(CORE_COUNT, 1),
-        options=(
-            "--ttl-specialize-cores --ttl-accumulation-strategy=l1-pack"
-            if fp32
-            else "--ttl-specialize-cores"
-        ),
+        options=" ".join(options),
         fp32_dest_acc_en=fp32,
     )
     def tree_reduce(source, output):
@@ -112,14 +115,12 @@ def _make_tree_reduce(fp32):
 
 TREE_REDUCE_CASES = [
     pytest.param(
-        _make_tree_reduce(fp32=False),
         torch.bfloat16,
         5e-2,
         1.0,
         id="bf16",
     ),
     pytest.param(
-        _make_tree_reduce(fp32=True),
         torch.float32,
         1e-5,
         1e-5,
@@ -128,9 +129,32 @@ TREE_REDUCE_CASES = [
 ]
 
 
-@pytest.mark.parametrize(("operation", "dtype", "rtol", "atol"), TREE_REDUCE_CASES)
+def _record_pipelines(monkeypatch):
+    """Record expanded Python compiler pipelines without changing their execution."""
+    pipelines = []
+    parse_pipeline = ttl_api.PassManager.parse
+
+    class RecordingPassManager:
+        @staticmethod
+        def parse(pipeline):
+            manager = parse_pipeline(pipeline)
+            pipelines.append(str(manager))
+            return manager
+
+    monkeypatch.setattr(ttl_api, "PassManager", RecordingPassManager)
+    return pipelines
+
+
+@pytest.mark.parametrize(("dtype", "rtol", "atol"), TREE_REDUCE_CASES)
 @pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
-def test_tree_reduce(device, operation, dtype, rtol, atol, to_device):
+@pytest.mark.parametrize(
+    "specialize_cores", [False, True], ids=["default", "specialized"]
+)
+def test_tree_reduce(
+    device, dtype, rtol, atol, to_device, specialize_cores, monkeypatch
+):
+    pipelines = _record_pipelines(monkeypatch)
+    operation = _make_tree_reduce(dtype == torch.float32, specialize_cores)
     torch.manual_seed(0)
     source_host = torch.randn(TILE_SIZE, CORE_COUNT * TILE_SIZE, dtype=dtype)
     output_host = torch.zeros(OUTPUT_ROWS, TILE_SIZE, dtype=dtype)
@@ -139,6 +163,23 @@ def test_tree_reduce(device, operation, dtype, rtol, atol, to_device):
 
     operation(source, output)
     ttnn.synchronize_device(device)
+
+    # Inspect the actual Python pipeline: C++-only tests cannot detect a
+    # missing pass or premature argument finalization in this construction.
+    pipeline = next(item for item in pipelines if "convert-ttl-to-ttkernel" in item)
+    ordered_passes = (
+        "ttkernel-batch-static-pipenet-receives",
+        "ttkernel-unroll-static-pipenet-record-loops",
+        "lower-affine",
+        "ttkernel-cleanup",
+        "ttkernel-finalize-tensor-runtime-args",
+        "ttl-lower-signpost-to-emitc",
+        "convert-ttkernel-to-emitc",
+    )
+    positions = [pipeline.index(name) for name in ordered_passes]
+    assert positions == sorted(positions)
+    assert all(pipeline.count(name) == 1 for name in ordered_passes)
+    assert ("ttkernel-specialize-cores" in pipeline) == specialize_cores
 
     actual = ttnn.to_torch(output).reshape(OUTPUT_ROWS, TILE_SIZE).float()
     expected = (

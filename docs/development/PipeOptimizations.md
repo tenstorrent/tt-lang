@@ -136,8 +136,9 @@ Otherwise the payload uses an ordinary posted `noc_async_write`. A send selected
 from a PipeNet endpoint table uses this protocol only when every possible
 selected transfer meets the conditions above.
 
-The pipeline reapplies these cleanup patterns with `ttkernel-cleanup` after
-core specialization, static record-loop expansion, and endpoint simplification.
+The shared record-cleanup pipeline reapplies these patterns with
+`ttkernel-cleanup` after static record-loop expansion and endpoint
+simplification, with or without core specialization.
 Initial TTL lowering cannot configure a constant destination while that
 destination still depends on an unresolved record index.
 

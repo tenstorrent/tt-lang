@@ -186,8 +186,8 @@ The pipeline runs these passes and subpasses in order:
 - `ttkernel-insert-l1-accumulation` -- insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
 - `ttkernel-combine-pack-tiles` -- combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*
 - Canonicalization and CSE cleanup
-- `ttkernel-specialize-and-annotate-dfb-use` -- `ttkernel-specialize-cores`, `canonicalize`, `cse`, `ttkernel-batch-static-pipenet-receives`, `ttkernel-unroll-static-pipenet-record-loops`, `canonicalize`, `cse`, `ttkernel-cleanup`, `ttkernel-finalize-tensor-runtime-args`, `canonicalize`, then `ttkernel-annotate-dfb-use` *(only if `specialize-cores=true`)*
-- Without core specialization, run `ttkernel-batch-static-pipenet-receives`, `ttkernel-unroll-static-pipenet-record-loops`, `canonicalize`, `cse`, `ttkernel-cleanup`, `ttkernel-finalize-tensor-runtime-args`, then `canonicalize`. This simplifies already-static record loops, optimizes writes with resolved endpoints, and removes unused runtime arguments in both configurations.
+- `ttkernel-specialize-and-annotate-dfb-use` -- `ttkernel-specialize-cores`, `canonicalize`, `cse`, `ttkernel-batch-static-pipenet-receives`, `ttkernel-unroll-static-pipenet-record-loops`, `lower-affine`, `canonicalize`, `cse`, `ttkernel-cleanup`, `ttkernel-finalize-tensor-runtime-args`, `canonicalize`, then `ttkernel-annotate-dfb-use` *(only if `specialize-cores=true`)*
+- Without core specialization, `ttkernel-cleanup-and-finalize-runtime-args` runs `ttkernel-batch-static-pipenet-receives`, `ttkernel-unroll-static-pipenet-record-loops`, `lower-affine`, `canonicalize`, `cse`, `ttkernel-cleanup`, `ttkernel-finalize-tensor-runtime-args`, then `canonicalize`. Python, the full C++ pipeline, and the standalone specialization pipeline use this same implementation.
 - *(if `lower-to-emitc=true`)* `lower-affine`, `convert-ttkernel-to-emitc`, `emitc-form-expressions`
 
 ### Individual Pass Options
@@ -407,6 +407,19 @@ registered `ttkernel-specialize-and-annotate-dfb-use` sub-pipeline:
 ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{specialize-cores=true lower-to-emitc=true}'
 # Or stand-alone:
 ttlang-opt input.mlir -p 'builtin.module(ttkernel-specialize-and-annotate-dfb-use)'
+```
+
+#### `ttkernel-cleanup-and-finalize-runtime-args`
+
+This registered pipeline performs receive batching, record-loop unrolling,
+affine lowering, canonicalization and CSE, TTKernel cleanup, runtime-argument finalization, and
+final canonicalization. The specialization pipeline includes this sequence
+after cloning and coordinate folding. Python uses the registered pipelines in
+both modes, before signpost lowering to EmitC. Affine index arithmetic is
+lowered before canonicalization so newly exposed constants are folded too.
+
+```bash
+ttlang-opt input.mlir -p 'builtin.module(ttkernel-cleanup-and-finalize-runtime-args)'
 ```
 
 #### `ttkernel-cleanup`

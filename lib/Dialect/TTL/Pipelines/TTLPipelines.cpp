@@ -24,6 +24,8 @@ static void buildTTKernelRecordCleanupPipeline(OpPassManager &pm) {
   OpPassManager &functionPasses = pm.nest<func::FuncOp>();
   functionPasses.addPass(createTTKernelBatchStaticPipeNetReceives());
   functionPasses.addPass(createTTKernelUnrollStaticPipeNetRecordLoops());
+  // Expose affine index arithmetic before folding tables and scheduling writes.
+  pm.addPass(createLowerAffinePass());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
   pm.addPass(createTTKernelCleanup());
@@ -142,7 +144,6 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     buildTTKernelRecordCleanupPipeline(pm);
   }
   if (options.lowerToEmitC) {
-    pm.addPass(createLowerAffinePass());
     pm.addPass(::mlir::tt::createConvertTTKernelToEmitC());
     pm.addPass(createCanonicalizerPass());
     pm.addPass(mlir::emitc::createFormExpressionsPass());
@@ -180,6 +181,11 @@ void registerTTLPipelines() {
   PassPipelineRegistration<>("ttl-auto-sync",
                              "Insert auto pop/push and coalesce DFB acquires.",
                              buildTTLAutoSyncPipeline);
+  PassPipelineRegistration<>(
+      "ttkernel-cleanup-and-finalize-runtime-args",
+      "Batch and expand static PipeNet records, optimize resolved transfers, "
+      "and finalize surviving runtime arguments.",
+      buildTTKernelRecordCleanupPipeline);
   PassPipelineRegistration<>(
       "ttkernel-specialize-and-annotate-dfb-use",
       "Specialize kernels per launch coordinate, fold coordinate-dependent "

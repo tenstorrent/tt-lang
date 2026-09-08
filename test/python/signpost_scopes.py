@@ -7,6 +7,8 @@
 # RUN: FileCheck %s < %t.output
 # RUN: %python %s > %t.fpu.output 2>&1
 # RUN: FileCheck %s --check-prefix=CHECK-FPU < %t.fpu.output
+# RUN: %python %s --ttl-specialize-cores > %t.specialized.output 2>&1
+# RUN: FileCheck %s --check-prefix=CHECK-FPU < %t.specialized.output
 
 """
 Broadcast multitile blocks kernel - verifies user-defined signpost scopes
@@ -121,6 +123,8 @@ def bcast_multitile_kernel(
 # CHECK-NOT:  DeviceZoneScopedN(
 # CHECK:      init_sfpu(
 # CHECK:      for (size_t [[K:.*]] = [[V6:.*]]; [[K]] < [[V4:.*]]; [[K]] += [[V5:.*]]) {
+# The row offset is invariant in the inner loop; scope nesting remains unchanged.
+# CHECK-NEXT:   size_t [[ROW_OFFSET:.*]] = [[K]] * [[V4]];
 # CHECK-NEXT:   for (size_t [[L:.*]] = [[V6]]; [[L]] < [[V4]]; [[L]] += [[V5]]) {
 # CHECK-NEXT:     tile_regs_acquire();
 # CHECK-NEXT:     {
@@ -143,8 +147,7 @@ def bcast_multitile_kernel(
 # CHECK-NEXT:     DeviceZoneScopedN("ttl_store");
 # CHECK-NEXT:     tile_regs_commit();
 # CHECK-NEXT:     tile_regs_wait();
-# CHECK-NEXT:     size_t [[V12:.*]] = [[K]] * [[V4]];
-# CHECK-NEXT:     size_t [[V13:.*]] = [[V12]] + [[L]];
+# CHECK-NEXT:     size_t [[V13:.*]] = [[ROW_OFFSET]] + [[L]];
 # CHECK-NEXT:     pack_tile<true>([[V6]], get_compile_time_arg_val(3), [[V13]]);
 # CHECK-NEXT:     }
 # CHECK-NEXT:     }

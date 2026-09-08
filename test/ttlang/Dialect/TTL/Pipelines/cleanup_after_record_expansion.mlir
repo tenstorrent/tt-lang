@@ -1,4 +1,5 @@
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttkernel-specialize-and-annotate-dfb-use)' | FileCheck %s
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttkernel-cleanup-and-finalize-runtime-args)' | FileCheck %s
 // RUN: ttlang-opt %s --ttl-to-ttkernel-pipeline | FileCheck %s
 
 // Summary: Record-loop expansion resolves destination tables before write-state
