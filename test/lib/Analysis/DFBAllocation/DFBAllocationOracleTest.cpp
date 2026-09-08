@@ -753,6 +753,127 @@ static bool compareMultiOrderLargeGraphs() {
   return true;
 }
 
+// Observe validation ordering and exercise common validation of strategy
+// results.
+class DomainTestAllocator final : public SRAMAllocator {
+public:
+  mutable unsigned calls = 0;
+  bool invalidPlacement = false;
+  llvm::StringRef getName() const override { return "domain-test"; }
+
+private:
+  mlir::FailureOr<SRAMAllocationSolution>
+  allocateImpl(const SRAMAllocationProblem &problem,
+               std::string &failureReason) const override {
+    ++calls;
+    SRAMAllocationSolution result;
+    uint64_t nextOffset = problem.payloadBaseOffset;
+    for (uint64_t size : problem.regionBytes) {
+      result.offsets.push_back(invalidPlacement ? 0 : nextOffset);
+      nextOffset += size;
+    }
+    result.arenaBytes = problem.regionBytes.empty() ? 0 : nextOffset;
+    return result;
+  }
+};
+
+static bool verifySRAMAllocationDomains() {
+  using mlir::tt::ttl::SRAMAllocationDomainFailure;
+  using mlir::tt::ttl::SRAMAllocationDomainProblem;
+  SRAMAllocationProblem large{{64, 128}, InterferenceGraph(2), 64, 64, 256};
+  large.conflicts.addInterference(0, 1);
+  SRAMAllocationProblem small{{32}, InterferenceGraph(1), 32, 32, 64};
+  SRAMAllocationProblem controlOnly{{}, InterferenceGraph(0), 64, 64, 64};
+  llvm::SmallVector<SRAMAllocationDomainProblem> domains{
+      {large, {91, 7}}, {small, {91}}, {controlOnly, {}}};
+  uint64_t cases = 0;
+  for (llvm::StringRef strategy :
+       {mlir::tt::ttl::kFirstFitDecreasingSRAMAllocator,
+        mlir::tt::ttl::kBestFitDecreasingSRAMAllocator,
+        mlir::tt::ttl::kMultiOrderDecreasingSRAMAllocator,
+        mlir::tt::ttl::kExactSRAMAllocator}) {
+    std::string reason;
+    auto allocator = mlir::tt::ttl::createSRAMAllocator(
+        strategy, {kUnlimitedSearchStates}, reason);
+    if (mlir::failed(allocator)) {
+      return false;
+    }
+    SRAMAllocationDomainFailure failureDetail;
+    auto result = (*allocator)->allocateDomains(domains, failureDetail);
+    if (mlir::failed(result) || result->size() != 3 ||
+        (*result)[0].arenaBytes != 256 || (*result)[1].arenaBytes != 64 ||
+        (*result)[2].arenaBytes != 64 || !(*result)[2].placements.empty() ||
+        (*result)[0].placements[0].storageIndex != 91 ||
+        (*result)[0].placements[1].storageIndex != 7 ||
+        (*result)[1].placements[0].storageIndex != 91 ||
+        (*result)[1].placements[0].offset != 32) {
+      llvm::errs() << "domain ownership or reservation mismatch: " << strategy
+                   << "\n";
+      return false;
+    }
+    std::optional<unsigned> failedRegion;
+    auto uniform = (*allocator)->allocate(large, failedRegion, reason);
+    if (mlir::failed(uniform) ||
+        uniform->arenaBytes != (*result)[0].arenaBytes) {
+      return false;
+    }
+    for (unsigned region = 0; region < large.regionBytes.size(); ++region) {
+      if (uniform->offsets[region] != (*result)[0].placements[region].offset) {
+        return false;
+      }
+    }
+    auto empty = (*allocator)->allocateDomains({}, failureDetail);
+    if (mlir::failed(empty) || !empty->empty()) {
+      return false;
+    }
+    auto invalid = domains;
+    invalid[1].allocation.budgetBytes = 32;
+    auto rejected = (*allocator)->allocateDomains(invalid, failureDetail);
+    if (mlir::succeeded(rejected) || failureDetail.domainIndex != 1 ||
+        failureDetail.reason.empty()) {
+      return false;
+    }
+    ++cases;
+  }
+
+  DomainTestAllocator allocator;
+  SRAMAllocationDomainFailure failureDetail;
+  for (unsigned invalidKind = 0; invalidKind < 4; ++invalidKind) {
+    auto invalid = domains;
+    if (invalidKind == 0) {
+      invalid[1].storageIndices.clear();
+    } else if (invalidKind == 1) {
+      invalid[1] = {large, {91, 91}};
+    } else if (invalidKind == 2) {
+      invalid[1].allocation.alignmentBytes = 3;
+    } else {
+      invalid[1].allocation.conflicts = InterferenceGraph(0);
+    }
+    auto rejected = allocator.allocateDomains(invalid, failureDetail);
+    if (mlir::succeeded(rejected) || allocator.calls != 0 ||
+        failureDetail.domainIndex != 1 || failureDetail.reason.empty()) {
+      llvm::errs() << "invalid domain reached placement\n";
+      return false;
+    }
+    ++cases;
+  }
+  auto invalid = domains;
+  invalid[1].allocation.budgetBytes = 32;
+  auto rejected = allocator.allocateDomains(invalid, failureDetail);
+  if (mlir::succeeded(rejected) || allocator.calls != 2 ||
+      failureDetail.domainIndex != 1 || failureDetail.storageIndex != 91) {
+    return false;
+  }
+  allocator.invalidPlacement = true;
+  rejected = allocator.allocateDomains(domains, failureDetail);
+  if (mlir::succeeded(rejected) || failureDetail.domainIndex != 0 ||
+      failureDetail.storageIndex != 91) {
+    return false;
+  }
+  llvm::outs() << "sram_domain_cases=" << cases + 2 << "\n";
+  return true;
+}
+
 static bool compareL1PlacementWithOracle() {
   constexpr unsigned kVertexCount = 4;
   constexpr unsigned kGraphCount = 1U << 6;
@@ -981,6 +1102,7 @@ int main() {
                  verifyWeightedColoringAcrossComponents() &&
                  compareWeightedSolverWithOracle() &&
                  compareL1PlacementWithOracle() &&
+                 verifySRAMAllocationDomains() &&
                  verifyTargetDFBIndexCapacities() &&
                  compareAssignmentContracts()
              ? 0
