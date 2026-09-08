@@ -15,7 +15,7 @@ TT-Lang normally assigns each logical dataflow buffer (DFB) a TT-Metal DFB descr
 | Producer/consumer state | TT-Metal DFB interface state | Two 32-bit page-sequence counters per storage owner |
 | Tensor-backed storage | Installed through a TT-Metal descriptor | Addressed directly through the tensor runtime argument |
 | Allocation groups | Reuse a physical descriptor and its storage contract | Share one validated storage owner and control record |
-| Reset and reconfiguration | Blackhole TT-Metal interface reset and runtime descriptor reconfiguration | Blackhole address-based state reset with compiler-fixed geometry |
+| Reset and reconfiguration | Blackhole TT-Metal interface reset and runtime descriptor reconfiguration | Blackhole address-based state reset; page size, pages per block, block count, and storage capacity remain unchanged |
 | External C++ DFB access | Numeric index or typed descriptor bound to a TT-Metal DFB | Typed descriptor bound to compiler-assigned storage |
 | PipeNet receivers | TT-Metal descriptor with computed or receiver-published addressing | Compiler arena or tensor-backed computed address for intra-device and generated inter-device transfers; no TT-Metal DFB descriptor |
 
@@ -238,6 +238,8 @@ Wormhole continues to support ordinary compiler-managed allocation, transfer, an
 
 `ttl.dfb_descriptor(dfb)` lowers to a C++ template type containing page size, pages per block, block count, shared storage capacity, state offset, payload offset, and an optional tensor common-argument index. Its `bind()` method obtains the state address from the arena. The payload address comes from either the arena or the tensor's existing common runtime argument. External functions therefore require no Metal DFB index and no additional runtime argument per DFB.
 
+Generated C++ emits storage descriptor definitions before the external header, allowing one source adapter to bind either Metal or compiler-owned storage. Compiler-owned adapters use `ttlang::l1::target`, which contains target-specific address operations. Opaque C++ bodies do not participate in compute analysis, so the enclosing operation declares required compute configuration. [External functions](../sphinx/reference/external-functions.md#template-arguments) defines the exact C++ interface.
+
 ```text
 bind(descriptor):
     stateAddress = target.arenaBase() + descriptor.stateOffset
@@ -245,10 +247,12 @@ bind(descriptor):
         payloadAddress = target.commonArg(descriptor.tensorArg) + descriptor.payloadOffset
     else:
         payloadAddress = stateAddress + descriptor.payloadOffset
-    return AddressDFB(stateAddress, payloadAddress, descriptor.geometry, descriptor.storageCapacity)
+    return AddressDFB(stateAddress, payloadAddress, descriptor.pageSize,
+                      descriptor.pagesPerBlock, descriptor.blockCount,
+                      descriptor.storageCapacity)
 ```
 
-External calls that access DFBs must provide explicit `DFBEffect` entries. These effects participate in lifetime and conflict analysis. Unknown DFB access and numeric `dfb_index` template arguments are rejected for compiler-managed storage.
+External calls can provide explicit `DFBEffect` entries for protocol operations. These effects participate in lifetime and conflict analysis; a dependency without effects remains conservatively live until a synchronization boundary proves completion. Numeric DFB references through `ttl.get_dfb_id` or a DFB in `func_args` are rejected for compiler-managed storage.
 
 ## PipeNet Integration
 
@@ -364,7 +368,7 @@ Relevant tests are [transfer and allocator device tests](../../test/python/test_
 
 The intended dependency order after generated fabric support is:
 
-1. Qualify representative external C++ kernels against the typed descriptor interface and add common adapters for required address, geometry, and completion operations.
+1. Qualify representative external C++ kernels against the typed descriptor interface and add common adapters for address operations, page and block metadata, and completion operations.
 2. Add sub-tile and row-major metadata, partial-block and general contiguous multi-block transactions, and the corresponding address, stride, capacity, and wrap rules.
 3. Add per-core arena layouts if sparse-placement measurements justify the additional per-node allocation metadata and runtime binding.
 4. Add Wormhole reset and reconfiguration after defining and device-qualifying a Wormhole synchronization protocol behind the existing target interface.

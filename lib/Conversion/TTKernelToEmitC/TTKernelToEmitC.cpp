@@ -3538,12 +3538,19 @@ public:
             }
             CompilerL1Allocation allocation =
                 getCompilerL1Allocation(operation, index);
+            if (failed(
+                    getCompilerL1TensorCommonArgIndex(operation, allocation))) {
+              operation->emitOpError(
+                  "compiler-l1 tensor backing is absent from the kernel's "
+                  "common tensor arguments");
+              return WalkResult::interrupt();
+            }
             if (descriptor.getPageSizeBytes() != allocation.pageSizeBytes ||
                 descriptor.getPagesPerBlock() != allocation.pagesPerBlock ||
                 descriptor.getBlockCount() != allocation.blockCount) {
               operation->emitOpError(
-                  "compiler-l1 descriptor geometry differs from its "
-                  "allocation metadata");
+                  "compiler-l1 descriptor page size, pages per block, or "
+                  "block count differs from its allocation metadata");
               return WalkResult::interrupt();
             }
             if (threadType &&
@@ -3566,7 +3573,7 @@ public:
                 ttkernel::CBWaitFrontOp, ttkernel::CBPushBackOp,
                 ttkernel::CBPopFrontOp, ttkernel::GetReadPtrOp,
                 ttkernel::GetWritePtrOp, ttkernel::GetTileSizeOp,
-                ttkernel::GetDataFormatOp, ttkernel::OpaqueCallOp>(operation) ||
+                ttkernel::GetDataFormatOp>(operation) ||
             isCompilerL1ComputeOperation(operation);
         if (isCompilerL1ComputeOperation(operation)) {
           for (Value operand : operation->getOperands()) {
