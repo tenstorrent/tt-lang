@@ -115,7 +115,7 @@ static bool usesCompilerL1(Operation *operation) {
   return model && model.getValue() == ttl::kCompilerL1MemoryModel;
 }
 
-struct CompilerL1Allocation {
+struct SRAMAllocation {
   int64_t pageSizeBytes;
   int64_t pagesPerBlock;
   int64_t blockCount;
@@ -126,8 +126,7 @@ struct CompilerL1Allocation {
   Type elementType;
 };
 
-static FailureOr<CompilerL1Allocation>
-parseCompilerL1Allocation(Attribute attribute) {
+static FailureOr<SRAMAllocation> parseSRAMAllocation(Attribute attribute) {
   auto dictionary = dyn_cast<DictionaryAttr>(attribute);
   auto pageSize =
       dictionary ? dictionary.getAs<IntegerAttr>("page_size") : IntegerAttr();
@@ -195,21 +194,20 @@ parseCompilerL1Allocation(Attribute attribute) {
   }
 
   auto elementType = dictionary.getAs<TypeAttr>("element_type");
-  return CompilerL1Allocation{
-      pageSize.getInt(),
-      pagesPerBlock.getInt(),
-      blockCount.getInt(),
-      storageCapacityValue,
-      stateOffsetValue,
-      tensorBacking ? tensorBacking.getByteOffset()
-                    : payloadAddressValue - stateOffsetValue,
-      tensorBacking ? tensorBacking.getTensorIndex() : -1,
-      elementType ? elementType.getValue() : Type()};
+  return SRAMAllocation{pageSize.getInt(),
+                        pagesPerBlock.getInt(),
+                        blockCount.getInt(),
+                        storageCapacityValue,
+                        stateOffsetValue,
+                        tensorBacking ? tensorBacking.getByteOffset()
+                                      : payloadAddressValue - stateOffsetValue,
+                        tensorBacking ? tensorBacking.getTensorIndex() : -1,
+                        elementType ? elementType.getValue() : Type()};
 }
 
 static FailureOr<int64_t>
 getCompilerL1TensorCommonArgIndex(Operation *operation,
-                                  const CompilerL1Allocation &allocation) {
+                                  const SRAMAllocation &allocation) {
   if (allocation.tensorIndex < 0) {
     return int64_t{-1};
   }
@@ -229,16 +227,15 @@ getCompilerL1TensorCommonArgIndex(Operation *operation,
   return failure();
 }
 
-static CompilerL1Allocation getCompilerL1Allocation(Operation *operation,
-                                                    int64_t index) {
+static SRAMAllocation getSRAMAllocation(Operation *operation, int64_t index) {
   auto allocations =
       operation->getParentOfType<ModuleOp>()->getAttrOfType<ArrayAttr>(
           ttl::kDFBAllocationsAttrName);
   assert(allocations && index >= 0 &&
          static_cast<uint64_t>(index) < allocations.size() &&
          "compiler-l1 storage identity must be validated before conversion");
-  FailureOr<CompilerL1Allocation> allocation =
-      parseCompilerL1Allocation(allocations[index]);
+  FailureOr<SRAMAllocation> allocation =
+      parseSRAMAllocation(allocations[index]);
   assert(succeeded(allocation) &&
          "compiler-l1 allocation metadata must be validated before conversion");
   return *allocation;
@@ -424,8 +421,7 @@ static std::string ensureCBDeclaration(Value cb, Operation *useOp,
     auto index =
         cb.getDefiningOp()->getAttrOfType<IntegerAttr>("ttkernel.cb_ctarg_idx");
     assert(index && "compiler-l1 requires statically bound storage");
-    CompilerL1Allocation allocation =
-        getCompilerL1Allocation(useOp, index.getInt());
+    SRAMAllocation allocation = getSRAMAllocation(useOp, index.getInt());
     FailureOr<int64_t> tensorCommonArgIndex =
         getCompilerL1TensorCommonArgIndex(useOp, allocation);
     assert(succeeded(tensorCommonArgIndex) &&
@@ -685,7 +681,7 @@ getDFBDescriptorTypeName(ttkernel::DFBDescriptorAttr descriptor) {
 }
 
 static std::string
-getCompilerL1GeometryTemplateArguments(const CompilerL1Allocation &allocation,
+getCompilerL1GeometryTemplateArguments(const SRAMAllocation &allocation,
                                        ttcore::TileType tile) {
   return (Twine("static_cast<uint32_t>(") +
           datatypeToDataformatStr(tile.getDataType()) + "), " +
@@ -699,7 +695,7 @@ getCompilerL1GeometryTemplateArguments(const CompilerL1Allocation &allocation,
 
 static std::string
 getCompilerL1OperandTypeName(Operation *operation,
-                             const CompilerL1Allocation &allocation,
+                             const SRAMAllocation &allocation,
                              ttcore::TileType tile, bool directToDestination) {
   FailureOr<int64_t> tensorCommonArgIndex =
       getCompilerL1TensorCommonArgIndex(operation, allocation);
@@ -716,8 +712,8 @@ getCompilerL1OperandTypeName(Operation *operation,
 static std::string
 getCompilerL1DFBDescriptorTypeName(Operation *operation,
                                    ttkernel::DFBDescriptorAttr descriptor) {
-  CompilerL1Allocation allocation =
-      getCompilerL1Allocation(operation, descriptor.getIndex());
+  SRAMAllocation allocation =
+      getSRAMAllocation(operation, descriptor.getIndex());
   auto function = operation->getParentOfType<func::FuncOp>();
   auto threadType = function->getAttrOfType<ttkernel::ThreadTypeAttr>(
       ttkernel::ThreadTypeAttr::name);
@@ -1121,8 +1117,7 @@ static void emitCompilerL1ComputeCall(Operation *operation,
     }
     auto identity = resolveDfbIndex(source);
     assert(identity && "validated compiler-l1 operand identity");
-    CompilerL1Allocation allocation =
-        getCompilerL1Allocation(operation, *identity);
+    SRAMAllocation allocation = getSRAMAllocation(operation, *identity);
     auto tile = cast<ttcore::TileType>(
         cast<ttkernel::CBType>(source.getType()).getElementType());
     auto directOperands = operation->getParentOfType<func::FuncOp>()
@@ -1872,8 +1867,7 @@ public:
               .str();
       if (usesCompilerL1(op) &&
           isa<ttkernel::CBType>(op.getResult().getType())) {
-        CompilerL1Allocation allocation =
-            getCompilerL1Allocation(op, op.getArgIndex());
+        SRAMAllocation allocation = getSRAMAllocation(op, op.getArgIndex());
         expression =
             "get_common_arg_val<uint32_t>(get_compile_time_arg_val(0)) + " +
             std::to_string(allocation.stateOffset);
@@ -3482,7 +3476,7 @@ public:
         return;
       }
       for (auto [index, attribute] : llvm::enumerate(allocations)) {
-        if (failed(parseCompilerL1Allocation(attribute))) {
+        if (failed(parseSRAMAllocation(attribute))) {
           module.emitOpError("compiler-l1 allocation entry ")
               << index
               << " must define positive uint32 page_size, num_tiles, and "
@@ -3524,8 +3518,8 @@ public:
         if (auto getCompileArg =
                 dyn_cast<ttkernel::GetCompileArgValOp>(operation);
             getCompileArg && isa<ttkernel::CBType>(getCompileArg.getType())) {
-          CompilerL1Allocation allocation =
-              getCompilerL1Allocation(operation, getCompileArg.getArgIndex());
+          SRAMAllocation allocation =
+              getSRAMAllocation(operation, getCompileArg.getArgIndex());
           if (failed(
                   getCompilerL1TensorCommonArgIndex(operation, allocation))) {
             operation->emitOpError(
@@ -3575,8 +3569,7 @@ public:
                   "metadata");
               return WalkResult::interrupt();
             }
-            CompilerL1Allocation allocation =
-                getCompilerL1Allocation(operation, index);
+            SRAMAllocation allocation = getSRAMAllocation(operation, index);
             if (failed(
                     getCompilerL1TensorCommonArgIndex(operation, allocation))) {
               operation->emitOpError(
@@ -3664,8 +3657,7 @@ public:
                                    "identity and page count");
             return WalkResult::interrupt();
           }
-          CompilerL1Allocation allocation =
-              getCompilerL1Allocation(operation, *identity);
+          SRAMAllocation allocation = getSRAMAllocation(operation, *identity);
           int64_t pageCountValue = pageCount.getSExtValue();
           bool isOneBlock = pageCountValue == allocation.pagesPerBlock;
           bool isCompleteTensorCapacity =

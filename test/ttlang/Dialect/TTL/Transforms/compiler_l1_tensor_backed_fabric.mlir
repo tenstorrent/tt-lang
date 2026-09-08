@@ -3,7 +3,7 @@
 // RUN: ttlang-opt %s --ttl-to-ttkernel-pipeline='memory-model=compiler-l1 l1-allocation-strategy=best-fit-decreasing' --convert-ttkernel-to-emitc | FileCheck %s
 
 // Generated fabric transfers use the tensor runtime argument as the stable
-// receiver base while retaining the compiler-L1 arena for interface state.
+// receiver base while retaining the compiler-SRAM arena for interface state.
 
 // CHECK-LABEL: module attributes
 // CHECK-SAME: ttl.l1_arena_bytes = 4160 : i64

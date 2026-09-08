@@ -1,16 +1,16 @@
-# Compiler-Managed L1 Allocation
+# Compiler-Managed SRAM Allocation
 
 ## Purpose
 
-TT-Lang normally assigns each logical dataflow buffer (DFB) a TT-Metal DFB descriptor. Wormhole B0 provides 32 descriptor indices and Blackhole provides 64. A program can therefore exhaust descriptor indices while sufficient L1 storage remains.
+TT-Lang normally assigns each logical dataflow buffer (DFB) a TT-Metal DFB descriptor. Wormhole B0 provides 32 descriptor indices and Blackhole provides 64. A program can therefore exhaust descriptor indices while sufficient SRAM storage remains.
 
-`--ttl-memory-model=compiler-l1` replaces descriptor-indexed storage with compiler-assigned L1 byte ranges. The Python DFB API and its producer/consumer semantics remain unchanged. `metal-cb` remains the default.
+`--ttl-memory-model=compiler-l1` replaces descriptor-indexed storage with compiler-assigned SRAM byte ranges. The Python DFB API and its producer/consumer semantics remain unchanged. `metal-cb` remains the default.
 
 | Property | `metal-cb` | `compiler-l1` |
 | --- | --- | --- |
 | Allocated identity | TT-Metal DFB index | Logical DFB index and compiler storage owner |
 | Storage address | TT-Metal descriptor | Compiler arena or tensor base plus byte offset |
-| Capacity limit | L1 capacity and 32 or 64 descriptor indices | L1 capacity, control records, and alignment |
+| Capacity limit | SRAM capacity and 32 or 64 descriptor indices | SRAM capacity, control records, and alignment |
 | Payload reuse | Requires the Metal descriptor and backing-storage contracts | Requires noninterfering completed lifetimes or an explicit validated allocation group |
 | Producer/consumer state | TT-Metal DFB interface state | Two 32-bit page-sequence counters per storage owner |
 | Tensor-backed storage | Installed through a TT-Metal descriptor | Addressed directly through the tensor runtime argument |
@@ -50,7 +50,7 @@ For compiler-owned storage with page size `P`, pages per block `T`, and block co
 extent = roundUp(P * T * B, A)
 ```
 
-Packed-format metadata is included in `P`. An allocation group reserves the largest payload extent required by any member. Tensor-backed storage uses the tensor's node-local L1 address and adds no payload bytes to the arena. Its control record remains in the arena. The complete arena size is the maximum of the control section end and every compiler-owned payload end. Empty programs allocate no arena.
+Packed-format metadata is included in `P`. An allocation group reserves the largest payload extent required by any member. Tensor-backed storage uses the tensor's node-local SRAM address and adds no payload bytes to the arena. Its control record remains in the arena. The complete arena size is the maximum of the control section end and every compiler-owned payload end. Empty programs allocate no arena.
 
 ## Conflict Analysis
 
@@ -58,7 +58,7 @@ Allocation consumes the existing logical-identity, allocation-group, and complet
 
 The shared storage conflict analysis accepts an explicit storage mode. Metal storage includes conflicts caused by runtime descriptor installation and Metal-managed backing changes. Compiler-managed storage excludes those conflicts because each logical DFB's page size, pages per block, block count, and storage capacity remain constant during execution, and each validated storage owner has a control record. This distinction permits byte reuse across a reconfiguration boundary after the prior lifecycle ends while preserving DFBs that remain live across the boundary.
 
-Validated allocation-group members are collapsed into one storage owner. The owner conflicts with another owner if any member pair conflicts. This preserves all lifecycle conflicts while allowing the explicit ownership transfer represented by the group. The existing group validator proves ordering, capacity, cursor continuity, and storage compatibility; the compiler-L1 allocator does not duplicate or weaken those checks.
+Validated allocation-group members are collapsed into one storage owner. The owner conflicts with another owner if any member pair conflicts. This preserves all lifecycle conflicts while allowing the explicit ownership transfer represented by the group. The existing group validator proves ordering, capacity, cursor continuity, and storage compatibility; the compiler-managed SRAM allocator does not duplicate or weaken those checks.
 
 Tensor-backed DFBs require an exact, non-empty launch-node domain. On a shared launch node, partial byte-range overlap is rejected because it does not represent a complete storage ownership transfer. Identical byte ranges are permitted for the same storage owner or for nonconflicting lifetimes. Disjoint ranges do not alias.
 
@@ -99,9 +99,9 @@ Possible launch domains use the same rules as exact domains and remain conservat
 
 ## Placement Interface and Algorithms
 
-Placement is independent of MLIR and target-specific code. Storage-owner construction produces one allocator region for each owner with a compiler-owned payload. Tensor-backed owners consume control records but add no allocator regions. The immutable allocation problem contains each payload extent, a symmetric conflict matrix, target alignment, the payload base after all control records, and the L1 budget. An allocator returns one byte offset per allocator region and the payload high-water mark.
+Placement is independent of MLIR and target-specific code. Storage-owner construction produces one allocator region for each owner with a compiler-owned payload. Tensor-backed owners consume control records but add no allocator regions. The immutable allocation problem contains each payload extent, a symmetric conflict matrix, target alignment, the payload base after all control records, and the SRAM budget. An allocator returns one byte offset per allocator region and the payload high-water mark.
 
-Every allocator result passes the same validation before IR mutation. Validation requires the correct offset count, target alignment, offsets at or above the payload base, intervals within the L1 budget, disjoint intervals for every conflict, and an exact payload high-water mark. Allocation policy cannot weaken these invariants. The caller maps the returned offsets to storage owners and computes the arena size as the maximum of the control-section end and the payload high-water mark.
+Every allocator result passes the same validation before IR mutation. Validation requires the correct offset count, target alignment, offsets at or above the payload base, intervals within the SRAM budget, disjoint intervals for every conflict, and an exact payload high-water mark. Allocation policy cannot weaken these invariants. The caller maps the returned offsets to storage owners and computes the arena size as the maximum of the control-section end and the payload high-water mark.
 
 ### C++ Allocator Contract
 
@@ -110,60 +110,62 @@ The compiler-internal interface is:
 ```cpp
 namespace mlir::tt::ttl {
 
-struct CompilerL1AllocationProblem {
+struct SRAMAllocationProblem {
   llvm::SmallVector<uint64_t> regionBytes;
-  llvm::SmallVector<llvm::BitVector> conflicts;
+  InterferenceGraph conflicts{0};
   uint64_t alignmentBytes;
   uint64_t payloadBaseOffset;
   uint64_t budgetBytes;
 };
 
-struct CompilerL1AllocationSolution {
+struct SRAMAllocatorOptions {
+  uint64_t exactSearchLimit;
+};
+
+struct SRAMAllocationSolution {
   llvm::SmallVector<uint64_t> offsets;
   uint64_t arenaBytes;
 };
 
-class CompilerL1Allocator {
+class SRAMAllocator {
 public:
-  virtual ~CompilerL1Allocator() = default;
+  virtual ~SRAMAllocator() = default;
   virtual llvm::StringRef getName() const = 0;
 
-private:
-  friend FailureOr<CompilerL1AllocationSolution>
-  solveCompilerL1Allocation(const CompilerL1Allocator &allocator,
-                            const CompilerL1AllocationProblem &problem,
-                            std::optional<unsigned> &failureRegionIndex,
-                            std::string &failureReason);
+  FailureOr<SRAMAllocationSolution>
+  allocate(const SRAMAllocationProblem &problem,
+           std::optional<unsigned> &failureRegionIndex,
+           std::string &failureReason) const;
 
-  virtual FailureOr<CompilerL1AllocationSolution>
-  allocate(const CompilerL1AllocationProblem &problem,
-           std::string &failureReason) const = 0;
+private:
+  virtual FailureOr<SRAMAllocationSolution>
+  allocateImpl(const SRAMAllocationProblem &problem,
+               std::string &failureReason) const = 0;
 };
 
-FailureOr<std::unique_ptr<CompilerL1Allocator>>
-createCompilerL1Allocator(llvm::StringRef name, std::string &failureReason);
-
-FailureOr<CompilerL1AllocationSolution> solveCompilerL1Allocation(
-    const CompilerL1Allocator &allocator,
-    const CompilerL1AllocationProblem &problem,
-    std::optional<unsigned> &failureRegionIndex,
-    std::string &failureReason);
+FailureOr<std::unique_ptr<SRAMAllocator>>
+createSRAMAllocator(llvm::StringRef name, const SRAMAllocatorOptions &options,
+                  std::string &failureReason);
 
 } // namespace mlir::tt::ttl
 ```
 
-`regionBytes[i]` is the nonzero, aligned extent of allocator region `i`. The caller retains the mapping from allocator-region indices to compiler-owned storage-owner indices. `conflicts` is a square, symmetric bit matrix with a clear diagonal. `payloadBaseOffset` is aligned and does not exceed `budgetBytes`. The problem is immutable after construction. Region order defines deterministic equal-size ordering.
+`regionBytes[i]` is the nonzero, aligned extent of allocator region `i`. The caller retains the mapping from allocator-region indices to compiler-owned storage-owner indices. `conflicts` is the shared undirected resource-interference graph. `payloadBaseOffset` is aligned and does not exceed `budgetBytes`. The problem is immutable after construction. Region order supplies the final deterministic tie-break.
 
-`solveCompilerL1Allocation` is the only caller of the private strategy method. It validates the problem, invokes the selected strategy, and validates the solution. On success, `offsets` has one entry per allocator region and `arenaBytes` is the exact maximum payload end, or zero when no allocator regions exist. On failure, `failureReason` contains diagnostic text and `failureRegionIndex` identifies an allocator region only when the error applies to one region. The allocator layer does not emit diagnostics or modify IR.
+`SRAMAllocator::allocate` is the public, nonvirtual entry point. It validates the problem, invokes the private strategy method, and validates the solution. This structure keeps strategy selection replaceable while enforcing one correctness contract. On success, `offsets` has one entry per allocator region and `arenaBytes` is the exact maximum payload end, or zero when no allocator regions exist. On failure, `failureReason` contains diagnostic text and `failureRegionIndex` identifies an allocator region only when the error applies to one region. The allocator layer does not emit diagnostics or modify IR.
 
-`createCompilerL1Allocator` maps stable compiler-option names to implementations. A new implementation derives from `CompilerL1Allocator`, implements `getName()` and `allocate()`, and registers its name in the factory. It cannot change conflict construction or bypass common validation.
+`SRAMAllocatorOptions` contains limits that affect strategy execution but do not change the allocation problem. `exactSearchLimit` bounds the exact strategy's combined subset-sum candidates and partial placements. `createSRAMAllocator` maps stable compiler-option names to implementations and supplies these options. `getName()` identifies the implementation in validation diagnostics. A new implementation derives from `SRAMAllocator`, implements `getName()` and `allocateImpl()`, and registers its name in the factory. It cannot change conflict construction or bypass common validation.
 
-| Strategy | Gap selection | Use |
+The common interface and validation are in `SRAMAllocator.h` and `SRAMAllocator.cpp`. `SRAMAllocator_Greedy.cpp` shares ordering and gap placement across the three greedy strategies; `SRAMAllocator_Exact.cpp` contains exact search. Private declarations in `SRAMAllocator_Internal.h` connect the factory and allow exact search to reuse greedy upper bounds.
+
+| Strategy | Placement rule | Result |
 | --- | --- | --- |
-| `first-fit-decreasing` | Lowest aligned legal offset | Default deterministic low-address placement. |
-| `best-fit-decreasing` | Finite legal gap with the least unused space; lower offset resolves ties | Reduces fragmentation when differently sized lifetimes leave reusable gaps. |
+| `multi-order-decreasing` (default) | Run first-fit decreasing with stable and degree-aware equal-size ordering; retain the smaller arena and the stable layout on ties. | Deterministic placement no larger than first-fit decreasing. |
+| `first-fit-decreasing` | Place decreasing extents at the lowest aligned legal offset. | Deterministic feasible placement. |
+| `best-fit-decreasing` | Place decreasing extents in the finite legal gap with the least unused space; lower offset resolves ties. | Deterministic feasible placement that can reduce fragmentation. |
+| `exact` | Search aligned subset-sum offsets with branch-and-bound. | Proven minimum arena, or a precise inconclusive or infeasible diagnostic. |
 
-Both strategies place larger regions first because large extents fit in fewer gaps. Storage-owner order resolves equal-size ties. Both are greedy heuristics and can produce different arena sizes; neither proves optimality.
+The decreasing strategies place larger regions first because large extents fit in fewer gaps. Storage-owner order resolves equal-size ties in the individual first-fit and best-fit strategies. They are greedy heuristics and can produce different arena sizes.
 
 ```text
 allocateDecreasing(problem, gapSelection):
@@ -179,6 +181,17 @@ allocateDecreasing(problem, gapSelection):
 
     arenaBytes = maximum payload end, or zero for an empty problem
     return offsets and arenaBytes
+```
+
+The default uses two decreasing-size orders. The second resolves equal extents by decreasing conflict degree (the number of conflicting regions), placing more constrained regions first. It selects the smaller arena; equal arena sizes retain the original offsets. Since the original placement remains a candidate, the result cannot increase its arena size. Both candidates use the same gap-placement algorithm and the selected result passes common validation. Two placements preserve the `O(P^2 log P)` bound with additional constant-factor work.
+
+```text
+allocateMultiOrder(problem):
+    stable = firstFit(problem, order by decreasing extent then owner order)
+    degreeAware = firstFit(problem, order by decreasing extent then decreasing conflict degree then owner order)
+    if degreeAware succeeds and (stable fails or degreeAware.arenaBytes < stable.arenaBytes):
+        return degreeAware
+    return stable
 ```
 
 First-fit selects an offset as follows:
@@ -209,22 +222,71 @@ selectBestFit(problem, region, blockers):
     return best.offset if best exists, otherwise candidate
 ```
 
-For each new region, either selection scans gaps between sorted blockers and advances beyond every blocker that intersects the current candidate. The selected interval therefore overlaps no conflicting interval. Applying this argument in placement order proves disjoint storage for every conflict edge. All other overlap is authorized by the lifetime analysis.
+For each new region, either decreasing strategy scans gaps between sorted blockers and advances beyond every blocker that intersects the current candidate. The selected interval therefore overlaps no conflicting interval. Applying this argument in placement order proves disjoint storage for every conflict edge. All other overlap is authorized by the lifetime analysis.
 
-For `P` compiler-owned storage owners, placement takes `O(P^2 log P)` time after conflict construction and uses `O(P)` placement storage. Conflict adjacency for `N` logical DFBs uses `O(N^2)` bits. A budget failure reports that the selected strategy failed; it does not claim that no feasible placement exists.
+For `P` compiler-owned storage owners, decreasing placement takes `O(P^2 log P)` time after conflict construction and uses `O(P)` placement storage. Conflict adjacency for `N` logical DFBs uses `O(N^2)` bits. A decreasing-strategy budget failure reports only that the selected strategy failed.
+
+Exact placement first computes the better decreasing-strategy result as a feasible upper bound. It partitions the conflict graph into connected components because components have no disjointness constraints and can use the same addresses. A decreasing-weight clique in each component supplies a proven lower bound. Each component is then searched independently, and the component minima are overlaid at the common payload base.
+
+Only subset sums of aligned region extents need consideration. In an optimal placement chosen to minimize the sum of offsets among all minimum-arena placements, every region at a nonzero offset must touch the end of a conflicting region below it. Otherwise it could move left while preserving validity. Repeating this argument reaches offset zero, so every selected offset is a sum of distinct region extents.
+
+```text
+allocateExact(problem, workLimit):
+    incumbent = better of first-fit-decreasing and best-fit-decreasing
+    components = connectedComponents(problem.conflicts)
+    resultOffsets = empty vector
+
+    for component in components:
+        lowerBound = maximum weight found by deterministic greedy cliques
+        if lowerBound exceeds the available payload capacity:
+            report proven infeasibility
+
+        componentIncumbent = incumbent restricted to component, if it fits
+        if componentIncumbent equals lowerBound:
+            record componentIncumbent
+            continue
+
+        candidates = sorted subset sums below the incumbent, or within capacity when no incumbent fits
+        search assignments in decreasing conflict-degree and extent order
+        reject overlap with each assigned conflicting region
+        reject assignments whose high-water mark cannot improve the incumbent
+
+        if the work limit is reached:
+            report limit exhaustion and include any feasible incumbent size
+            fail without returning an unproved placement
+        if no feasible assignment exists after exhaustive search:
+            report proven infeasibility
+        record the best component assignment; exhaustion proves it minimal
+
+    overlay component assignments at the payload base
+    return the maximum component end as the proven minimum arena size
+```
+
+The proof above establishes completeness of the candidate offsets. Exhaustive enumeration below the incumbent establishes that no smaller placement exists. Component overlay is valid because different components have no conflict edges. The search is exponential in the worst case. `--ttl-l1-exact-allocation-search-limit` bounds generated subset sums and visited partial assignments; reaching the limit fails compilation rather than returning an unproved result.
 
 The allocator interface contains no MLIR operations, DFB identities, architecture identities, tensor identities, or target branches. It receives normalized alignment and budget values through the allocation problem. Adding a strategy requires an implementation of the placement interface and a stable factory name. Conflict construction, storage-owner mapping, target queries, validation, metadata emission, and runtime allocation remain unchanged.
 
 ## Requested Allocator Capabilities
 
-| Capability | Current design | Required extension |
-| --- | --- | --- |
-| Defer address allocation and minimize L1 use globally | Late planning is implemented for every compiler-owned payload in one compiled `ttl.operation`. Logical identities, storage owners, extents, launch domains, lifetimes, and conflicts form one immutable allocation problem before any offset is emitted. Tensor-backed bases remain runtime inputs. First-fit decreasing and best-fit decreasing are heuristics and do not prove the minimum per-core arena high-water mark. | Add an exact or bounded-exact strategy that minimizes `max(offset[i] + regionBytes[i])` under the common alignment, conflict, payload-base, and budget constraints. A bounded search must report whether it proved optimality, found only a feasible solution, or exhausted its limit. Joint optimization with tensor-backed storage also requires the unified host allocation contract below. |
-| Model full lockstep, ranged lockstep, and independent per-core allocation | Full lockstep is implemented. Every participating worker core and device uses one relative layout, and a storage-owner pair conflicts if any common worker core may need both payloads concurrently. Per-core kernel specialization does not produce distinct storage layouts. | Partition worker cores into allocation domains: one global domain, ranges with identical requirements, or one domain per core. Each domain needs its own conflict problem and validated offsets. Generated kernels, receiver-address planning, runtime metadata, cache identity, and arena sizing must select the receiver core's domain. |
-| Unify tensor-backed and compiler-owned allocation | Storage ownership is partially unified. Both forms participate in logical identity, lifetime, allocation-group, launch-domain, and alias validation. Only compiler-owned payloads are movable; TTNN allocates tensor-backed L1 before invocation and supplies their bases at runtime. | Define a host allocation contract containing fixed and movable L1 intervals, ownership, device/core domains, alignment, and lifetimes. Coordinated placement across tensors and arena payloads requires TTNN or TT-Metal host allocator support, but no LLK change. |
-| Provide lifetime inspection and compiler hints for temporal reuse | The compiler derives lifetimes from DFB effects, producer/consumer completion, resets, reconfiguration, PipeNet completion, and allocation-group ownership transfer. Allocation metadata exposes final offsets, but there is no user-facing lifetime report or general Python hint API. | Add a report that attributes each conflict or reuse decision to its completion evidence. Add semantic lifetime boundaries or verified annotations only where the compiler can prove that all producers published and all consumers completed. Hints are advisory and cannot override an unproven conflict. |
+The initial scope is one compiled `ttl.operation`, including its tensor-backed and compiler-owned DFBs. The requested static/dynamic distinction remains to be defined; it is not assumed to mean runtime-dependent sizes.
 
-These extensions preserve the existing separation between semantic analysis and placement policy. Exact placement is another `CompilerL1Allocator` implementation. Allocation domains extend the normalized problem and result types. Unified host placement extends the runtime allocation contract. Lifetime tools improve the facts supplied to planning and cannot bypass common solution validation.
+| Request | Implemented | Missing |
+| --- | --- | --- |
+| Late allocation and global minimum | One immutable problem per `ttl.operation`; optional exact minimum for its compiler-owned uniform arena. | Joint placement of tensor-backed and compiler-owned storage within that operation. Existing tensor addresses are already assigned. |
+| Full lockstep, ranged lockstep, and per-core allocation | One common layout across participating cores and devices. | Domain-specific layouts and receiver addresses. Uniform allocation reserves the largest arena on every participating core. |
+| Unified tensor and DFB allocation | Shared ownership, lifetime, allocation-group, and alias validation; tensor-backed DFBs avoid duplicate payload storage. | Shared physical placement. TTNN owns existing tensor allocations; the compiler currently owns only its arena. |
+| Lifetime inspection and reuse hints | Automatic completion-aware reuse and developer conflict diagnostics. | A stable allocation report and a user-facing guidance contract that preserves asynchronous completion. |
+
+### Planned Implementation
+
+1. Reports and lifetime guidance. Expose existing analysis evidence as storage extents, live boundaries, conflict reasons, reused ranges, and reserved bytes. Placement preferences may change ordering but cannot remove conflicts. Reuse existing ownership-transfer operations for semantic lifetime boundaries; validate producer publication and consumer completion, including remote and external users.
+2. Allocation domains. Represent full lockstep as one domain, core ranges as several domains, and independent allocation as one domain per core. Build and validate offsets per domain. Update local addressing, destination-core PipeNet addressing, runtime reservations, and cache identity together. Use supported host allocation APIs for domain reservations; extend them where equal-shard assumptions prevent independent sizes.
+3. Unified host placement. Describe tensor and DFB storage with common ownership, alias, lifetime, alignment, domain, and fixed/movable constraints. Preserve caller-owned addresses. Reserve the validated plan transactionally and construct tensor views over owned storage, retaining owners through completion. Reuse TTNN/TT-Metal host facilities where their contracts suffice; extend host APIs where required.
+4. Late joint placement within one operation. Extend the existing immutable allocation problem and its oracle to fixed tensor intervals and domain-specific movable storage. Assign offsets only after sizes, ownership, domains, and completion conflicts are known. Minimize uniform arena size or total domain reservation subject to each core's capacity. Optimality remains relative to the supplied requirements and fixed addresses.
+
+Reporting supplies the measurements for later work. Domain representation precedes unified placement. Lifetime guidance can proceed alongside domain work. These host/compiler extensions preserve common validation and address-based LLK interfaces.
+
+Cross-launch persistence, cross-launch reuse, and runtime-dependent sizes are possible extensions proposed during design discussion, not requirements inferred from the original requests. Persistence retains contents across launches; reuse releases storage after completion. They require separate ownership and lifetime contracts.
 
 ## Reset and Reconfiguration
 
@@ -293,7 +355,7 @@ The template parameters are compile-time constants copied from finalized allocat
 
 | Parameter | Contract |
 | --- | --- |
-| `Format` | TT-Metal data-format value stored in L1. |
+| `Format` | TT-Metal data-format value stored in SRAM. |
 | `PageBytes` | Bytes per tile and per DFB page. It is a positive multiple of 16. |
 | `TileHeight`, `TileWidth` | Compute-target tile dimensions used to configure UNPACK, MATH, and PACK. |
 | `PagesPerBlock`, `BlockCount` | Transaction size and number of transactions in the logical DFB. |
@@ -325,7 +387,7 @@ External calls can provide explicit `DFBEffect` entries for protocol operations.
 
 Intra-device and generated inter-device PipeNets retain the existing transfer plan and synchronization protocols. Compiler-managed allocation changes how a receiver address is obtained. A compiler-owned receiver uses the arena base plus its finalized payload offset. A tensor-backed receiver uses the tensor base plus its finalized byte offset. No TT-Metal DFB descriptor is created for either case.
 
-Generated inter-device transfers use the same computed receiver address as intra-device transfers. A mesh arena has one lockstep L1 base address, and the compiler emits one relative layout for every participating device. `arenaBase + payloadOffset` therefore identifies the same storage owner on the destination device. Tensor-backed receivers use the common base of the sharded mesh tensor plus their validated byte offset. Fabric binding independently resolves logical device coordinates to physical routing targets; it does not change storage placement.
+Generated inter-device transfers use the same computed receiver address as intra-device transfers. A mesh arena has one lockstep SRAM base address, and the compiler emits one relative layout for every participating device. `arenaBase + payloadOffset` therefore identifies the same storage owner on the destination device. Tensor-backed receivers use the common base of the sharded mesh tensor plus their validated byte offset. Fabric binding independently resolves logical device coordinates to physical routing targets; it does not change storage placement.
 
 The Metal backend retains receiver publication when one physical DFB index can refer to different storage across reconfiguration epochs. Compiler-managed allocation assigns each finalized DFB index one arena or tensor base for the compiled operation, so that base remains valid for every transfer occurrence.
 
@@ -367,17 +429,17 @@ bindGeneratedFabricRoutes(deviceDomain, kernels, routes):
 
 Planning every device before applying any binding prevents a later invalid route from leaving earlier program descriptors partially configured.
 
-Runtime-resource cache identity includes tensor-backed receiver addresses, so a new tensor allocation cannot reuse a stale receiver base. Cache ownership includes only L1 allocations created by the runtime; caller-owned tensor addresses remain part of the available-L1 calculation.
+Runtime-resource cache identity includes tensor-backed receiver addresses, so a new tensor allocation cannot reuse a stale receiver base. Cache ownership includes only SRAM allocations created by the runtime; caller-owned tensor addresses remain part of the available-SRAM calculation.
 
 The supported contract includes computed-capacity, computed receiver-post, published receiver-post, and global-counter protocols; ready-receive selection; grouped transfers; generated inter-device routes; and compiler-managed reset and reconfiguration boundaries. PipeNet lifetime operations, including remote completion, continue to participate in the existing completion-aware conflict analysis before placement.
 
 ## Target Interfaces
 
-Common allocation and lowering contain no architecture branches. `compiler_l1_target.h` provides arena-base access, L1 loads and stores, producer/consumer completion, and processor ownership. `compiler_l1_compute_target.h` provides LLK address conversion, format configuration, and address-based compute operations. Wormhole and Blackhole differences remain inside these target interfaces.
+Common allocation and lowering contain no architecture branches. `compiler_l1_target.h` provides arena-base access, SRAM loads and stores, producer/consumer completion, and processor ownership. `compiler_l1_compute_target.h` provides LLK address conversion, format configuration, and address-based compute operations. Wormhole and Blackhole differences remain inside these target interfaces.
 
 ## Runtime Arena
 
-The runtime allocates the control records and compiler-owned payloads as a row-major, height-sharded TTNN L1 tensor with one equal-length row per participating worker core. Height sharding directly represents one arena row per core. Width sharding provides no capacity benefit, and block sharding introduces an unused partition dimension. Tensor-backed payloads retain their existing height-, width-, or block-sharded TTNN allocations. A mesh arena uses TT-Metal's lockstep allocation, which assigns the same L1 address on every selected device. Device-domain descriptors therefore combine device-specific logical coordinates with one common arena base.
+The runtime allocates the control records and compiler-owned payloads as a row-major, height-sharded TTNN SRAM tensor with one equal-length row per participating worker core. Height sharding directly represents one arena row per core. Width sharding provides no capacity benefit, and block sharding introduces an unused partition dimension. Tensor-backed payloads retain their existing height-, width-, or block-sharded TTNN allocations. A mesh arena uses TT-Metal's lockstep allocation, which assigns the same SRAM address on every selected device. Device-domain descriptors therefore combine device-specific logical coordinates with one common arena base.
 
 The arena is passed as an auxiliary `generic_op` input so TTNN retains it through device execution while preserving the user output position. Arena and synchronization scratch are zero-initialized. Declarative runtime resources compose with the arena: semaphore descriptors, per-kernel runtime arguments, compile-time defines, external fabric bindings, and their lifetime owners retain their existing validation and program-hash contracts. Runtime resource caching includes the allocation metadata and reset count, so incompatible layouts do not share resources.
 
@@ -385,18 +447,25 @@ Uniform allocation reserves the largest required arena on every participating co
 
 ## Memory Utilization
 
-Storage efficiency comes from six decisions:
+Storage efficiency comes from seven decisions:
 
 1. Completion-aware conflicts permit payload overlap across sequential lifetimes, formats, and reconfiguration epochs.
-2. Both allocation strategies search aligned gaps instead of using a monotonic offset.
+2. Both decreasing strategies search aligned gaps instead of using a monotonic offset.
 3. Payloads are ordered by decreasing size to reduce fragmentation from early small placements.
 4. Allocation groups share one payload envelope and one control record after the shared validator proves ownership transfer.
-5. Tensor-backed payloads remain in their existing L1 tensors and consume no duplicate arena payload storage.
+5. Tensor-backed payloads remain in their existing SRAM tensors and consume no duplicate arena payload storage.
 6. The arena uses one runtime argument, independent of logical DFB count.
+7. Exact placement can prove the minimum high-water mark when greedy placement leaves fragmentation.
 
 The fixed control cost is `roundUp(8 * S, A)` for `S` storage owners. For 96 ungrouped one-page BF16 DFBs, simultaneous lifetimes require 196,608 payload bytes and 768 control bytes before final arena alignment. If all 96 lifetimes are sequential, they reuse one 2,048-byte payload range and retain 768 control bytes. The control records are then 27% of the 2,816 bytes before final alignment. A validated allocation group reduces both payload envelopes and control records because its members explicitly transfer ownership. Further reduction would require inferring state ownership transfer without an allocation group or packing independently written producer and consumer state, which would weaken the ownership contract or require atomic updates.
 
-Monotonic allocation with explicit execution-phase overlays was considered. It cannot reuse an aligned gap between active allocations and requires explicit phase boundaries. TT-Lang instead uses its completion-aware conflict graph and searches reusable gaps, which permits overlap within a phase and across different extents. Best-fit addresses fragmentation without exponential search. An exact or bounded-search strategy can use the same allocator interface if measurements justify its compile-time cost.
+Monotonic allocation with explicit execution-phase overlays was considered. It cannot reuse an aligned gap between active allocations and requires explicit phase boundaries. TT-Lang instead uses its completion-aware conflict graph and searches reusable gaps, which permits overlap within a phase and across different extents. Best-fit reduces fragmentation at predictable compile time. Exact placement removes remaining fragmentation when its bounded exhaustive search completes.
+
+Allocation quality excludes the fixed control prefix. For a nonempty problem, payload high-water mark `H` is `arenaBytes - payloadBaseOffset`; `Hmin` is the proven minimum of the same quantity. Absolute fragmentation is `H - Hmin`, relative fragmentation is `(H - Hmin) / Hmin`, and packing efficiency is `Hmin / H`. Exact placement has efficiency 1 when it completes. Control overhead is measured separately as `payloadBaseOffset`, and total per-core SRAM use remains `arenaBytes`.
+
+Regression tests compare exact placement with an independent exhaustive byte-offset oracle for all 5,184 combinations of four-region conflict graphs and three aligned extent sizes. The individual first-fit and best-fit strategies are optimal in 5,035 cases (97.13%). Across all cases, `sum(Hmin) / sum(H)` is 99.26%. Across the 149 suboptimal cases, the same payload-weighted efficiency is 78.74%, the worst-case efficiency is 66.66%, the average excess is 1.32 alignment units, and the maximum excess is three alignment units. The worst case is a four-region chain with equal extents: stable owner order uses three address levels, while alternating the chain endpoints uses two. Best-fit cannot improve this case because equal extents present the same gaps as first-fit. Exact placement finds the two-level result. The combined default reduces suboptimal cases to 68 and total excess from 196 to 80 alignment units, with approximately 99.70% aggregate efficiency and 71.43% worst-case efficiency. These synthetic cases provide a stable regression baseline rather than a workload distribution.
+
+Compiler-level tests compare 616 lifetime-derived placements with a separate exhaustive oracle, retain a fixed BF16 fragmentation case, and verify deterministic metadata. In the fixed case, decreasing placement uses 45,056 payload bytes while exact placement uses 32,768 bytes: 72.73% efficiency and 12,288 excess bytes. Device tests verify that reuse and 96 simultaneously live DFBs preserve data while using no TT-Metal descriptors.
 
 ## Implemented Contract
 
@@ -418,30 +487,29 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 
 | Scenario | Evidence |
 | --- | --- |
-| Sub-tile compute | 220 compiler-L1 Blackhole device-correctness cases across BF16/FP32, DRAM/L1 tensors, both allocation strategies, supported tile dimensions, a tensor-backed multi-page expression, elementwise operations, broadcast, matmul, transpose, reductions, mixed dimensions in one compute kernel, equal-byte-size width transitions, and typed external descriptors; 192 Metal device-correctness cases preserve existing behavior |
-| Blackhole transfer and compute | Device correctness across BF16/FP32, DRAM/L1 tensors, repeated executions, counter wraparound, 96 live DFBs, arithmetic with 66 allocated DFBs, matmul, reductions, residual, MLP, attention, and expert merge |
-| Tensor-backed storage | 46 Blackhole device-correctness cases across BF16/FP32, compiler-owned scratch and tensor-backed storage, height/width/block sharding, row/column shard orientation, nonzero byte offsets, complete-capacity publication, replacement, and repeated execution; compile-only metadata checks cover both allocator strategies |
-| Allocation groups | Four compiler-L1 Blackhole device-correctness cases across BF16/FP32 and DRAM/L1 tensors for repeated shared-state handoff with different member capacities; compile-only checks cover both allocator strategies, tensor-backed ownership, rejection with reuse disabled, and tensor byte-range alias diagnostics |
-| External calls and lifecycle boundaries | 20 Blackhole device cases across BF16/FP32 and DRAM/L1, including repeated selected reset, reset-all, reconfiguration, live state preservation, payload reuse, and reset of allocation index 65 |
-| External descriptor and elementwise compute | 98 Blackhole device-correctness cases across BF16/FP32, compiler-owned and tensor-backed storage, TT-Metal and compiler-managed storage, both allocator strategies, reset and reconfiguration, repeated invocation, and a 70-DFB composition |
-| External block matmul | 148 Blackhole device-correctness cases across one tile through a 2x2-tile result, BF16/FP32, BFP4_B/BFP8_B weights, compiler-owned and single-core height/width/block-sharded tensor-backed storage, TT-Metal and compiler-managed storage, both allocator strategies, selected reset, reconfiguration with payload reuse, repeated invocation, and a gated-MLP composition with native normalization, activation, and residual operations |
-| Allocation | 20,888 compile-only generated placements covering both strategies, conflicts, alignment, reuse enabled and disabled, determinism, and exact budget boundaries; a focused fragmented graph verifies distinct strategy results |
+| Sub-tile compute | 220 compiler-managed SRAM Blackhole device-correctness cases across BF16/FP32, DRAM/SRAM tensors, both decreasing strategies, supported tile dimensions, a tensor-backed multi-page expression, elementwise operations, broadcast, matmul, transpose, reductions, mixed dimensions in one compute kernel, equal-byte-size width transitions, and typed external descriptors; 192 Metal device-correctness cases preserve existing behavior |
+| Blackhole transfer and compute | Device correctness across BF16/FP32, DRAM/SRAM tensors, repeated executions, counter wraparound, 96 live DFBs, arithmetic with 66 allocated DFBs, matmul, reductions, residual, MLP, attention, and expert merge |
+| Tensor-backed storage | 46 Blackhole device-correctness cases across BF16/FP32, compiler-owned scratch and tensor-backed storage, height/width/block sharding, row/column shard orientation, nonzero byte offsets, complete-capacity publication, replacement, and repeated execution; compile-only metadata checks cover all three allocator strategies |
+| Allocation groups | Four compiler-managed SRAM Blackhole device-correctness cases across BF16/FP32 and DRAM/SRAM tensors for repeated shared-state handoff with different member capacities; compile-only checks cover all three allocator strategies, tensor-backed ownership, rejection with reuse disabled, and tensor byte-range alias diagnostics |
+| External calls and lifecycle boundaries | 20 Blackhole device cases across BF16/FP32 and DRAM/SRAM, including repeated selected reset, reset-all, reconfiguration, live state preservation, payload reuse, and reset of allocation index 65 |
+| External descriptor and elementwise compute | 98 Blackhole device-correctness cases across BF16/FP32, compiler-owned and tensor-backed storage, TT-Metal and compiler-managed storage, both decreasing strategies, reset and reconfiguration, repeated invocation, and a 70-DFB composition |
+| External block matmul | 148 Blackhole device-correctness cases across one tile through a 2x2-tile result, BF16/FP32, BFP4_B/BFP8_B weights, compiler-owned and single-core height/width/block-sharded tensor-backed storage, TT-Metal and compiler-managed storage, both decreasing strategies, selected reset, reconfiguration with payload reuse, repeated invocation, and a gated-MLP composition with native normalization, activation, and residual operations |
+| Allocation | 16 Blackhole default/combined-strategy device cases cover BF16/FP32 transfers, DRAM/SRAM inputs, reuse, and 96 live DFBs; 160 graphs with 8-512 regions check non-regression against first-fit, stable ties, and exact-budget determinism; 12 Blackhole exact-strategy device-correctness cases cover BF16/FP32, DRAM/SRAM inputs, repeated invocation, compiler-owned storage reuse, 96 simultaneous DFBs, and 96 sequential DFBs; 5,184 arbitrary conflict and extent combinations compare exact placement with an independent byte-offset oracle and record greedy excess; 31,948 compile-only generated placements cover all four strategies, Wormhole and Blackhole alignment, conflicts, reuse enabled and disabled, determinism, and exact budget boundaries; 616 exact cases are checked against a separate exhaustive oracle; an adversarial fragmented graph verifies that exact placement improves both decreasing strategies and proves the minimum; negative tests distinguish proven infeasibility from work-limit exhaustion |
 | Wormhole | Compile-only allocation, typed external descriptor, local PipeNet pipeline, and UNPACK/MATH/PACK target compilation; negative reset and reconfiguration diagnostics |
-| Runtime placement and resources | Runtime-unit evidence for one-device and device-domain descriptors, replicated mesh placement, lockstep arena binding, external fabric bindings, resource lifetimes, program hashes, tensor-address cache identity, and owned-allocation accounting; 18 Blackhole device-correctness cases for typed external calls with semaphores, runtime arguments, defines, repeated invocations, BF16/FP32, DRAM/L1, generic/specialized kernels, and both memory models |
-| Local PipeNet execution | Blackhole device correctness across BF16/FP32, DRAM/L1, both allocator strategies, four synchronization protocols, ready-receive selection, grouped transfers, reset, reconfiguration, typed external DFB calls, repeated invocation, two-axis matmul distribution, and receiver logical indices above the Metal limit; compile-only Metal and compiler-L1 transfer preservation |
+| Runtime placement and resources | Runtime-unit evidence for one-device and device-domain descriptors, replicated mesh placement, lockstep arena binding, external fabric bindings, resource lifetimes, program hashes, tensor-address cache identity, and owned-allocation accounting; 18 Blackhole device-correctness cases for typed external calls with semaphores, runtime arguments, defines, repeated invocations, BF16/FP32, DRAM/SRAM, generic/specialized kernels, and both memory models |
+| Local PipeNet execution | Blackhole device correctness across BF16/FP32, DRAM/SRAM, both decreasing strategies, four synchronization protocols, ready-receive selection, grouped transfers, reset, reconfiguration, typed external DFB calls, repeated invocation, two-axis matmul distribution, and receiver logical indices above the Metal limit; compile-only coverage includes exact placement |
 | Generated fabric PipeNet execution | Compile-only full-pipeline coverage preserves generated routes, routing-plane operations, compiler-owned receiver offsets, and descriptor independence; runtime-unit coverage verifies per-device route binding for compiler-owned and tensor-backed receiver addresses |
 | Invalid contracts | Compiler diagnostics for malformed metadata, unsupported transactions and tile forms, unknown external effects, numeric external DFB indices, storage ownership, and budget overflow |
 
 Relevant tests are [transfer and allocator device tests](../../test/python/test_compiler_l1.py), [compute device tests](../../test/python/test_compiler_l1_compute.py), [sub-tile compute device tests](../../test/python/test_subtile_compute.py), [lifecycle and external-call device tests](../../test/python/test_compiler_l1_lifecycle.py), [external elementwise device tests](../../test/python/test_external_dfb_reuse.py), [external matmul device tests](../../test/python/test_external_matmul.py), [local PipeNet device tests](../../test/python/pipe/test_compiler_l1_pipenet.py), [generated fabric device tests](../../test/python/fabric/test_ccl.py), [runtime placement tests](../../test/python/test_kernel_runner.py), [external runtime-resource device tests](../../test/python/test_operation_runtime_resources.py), and [generated allocator stress tests](../../test/ttlang/Dialect/TTL/Transforms/compiler_l1_stress.py).
 
-## Follow-on PRs
+## Other Follow-on Work
 
-The intended dependency order after generated fabric support is:
+The allocator extensions and their dependencies are outlined above. Other backend work comprises:
 
-1. Qualify additional external C++ kernels beyond elementwise multiply and block matmul against the typed descriptor interface. Add target operations only when a kernel requires an address, page/block, or completion operation that the common interface does not provide.
-2. Add row-major metadata, partial-block and general contiguous multi-block transactions, and the corresponding address, stride, capacity, and wrap rules.
-3. Add per-core arena layouts if sparse-placement measurements justify the additional per-node allocation metadata and runtime binding.
-4. Add Wormhole reset and reconfiguration after defining and device-qualifying a Wormhole synchronization protocol behind the existing target interface.
-5. Qualify complete model layers, then measure device cycles, arena high-water usage, initialization cost, compile time, and generated code size against `metal-cb`.
+- Qualify additional external C++ kernels against the typed descriptor interface; add target operations only when required address or completion primitives are absent.
+- Add row-major metadata, partial-block and general contiguous multi-block transactions, with explicit stride, capacity, and wrap rules.
+- Define and device-qualify Wormhole reset and reconfiguration behind the common target interface.
+- Qualify complete model layers and measure device cycles, reserved SRAM, initialization cost, compile time, and generated code size against `metal-cb`.
 
-Each extension must preserve the fail-before-mutation rule, architecture isolation, explicit ownership, and compiler-managed descriptor independence.
+Each extension preserves validation before mutation, architecture isolation, explicit ownership, and compiler-managed descriptor independence.

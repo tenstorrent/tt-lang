@@ -2,7 +2,7 @@
 
 This document describes DFB ownership, lifecycle analysis, and synchronization.
 The index-allocation sections describe the default Metal backend.
-[Compiler-managed L1 allocation](L1Allocation.md) assigns byte-addressed storage;
+[Compiler-managed SRAM allocation](SRAMAllocation.md) assigns byte-addressed storage;
 its protocol is specified [below](#compiler-managed-storage-protocol).
 Shared hardware terms are defined in the
 [specification glossary](../sphinx/specs/TTLangSpecification.md#appendix-a-glossary).
@@ -2704,7 +2704,7 @@ bf16.
 
 ## Compiler-Managed Storage Protocol
 
-[Compiler-managed allocation](L1Allocation.md) uses two 32-bit sequence numbers
+[Compiler-managed allocation](SRAMAllocation.md) uses two 32-bit sequence numbers
 per storage owner: one published-page sequence written by the producer, and one
 consumed-page sequence written by the consumer. Both start at zero. For `C`
 pages of physical capacity, sequences wrap explicitly modulo `2C`.

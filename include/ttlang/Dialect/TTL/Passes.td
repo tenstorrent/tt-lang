@@ -1082,10 +1082,14 @@ def TTLFinalizeDFBIndices
     concurrent-kernel storage conflict graph; unknown completion prohibits reuse.
     The complete plan is validated before mutation. Runtime metadata supplies
     state and payload offsets within one allocator-owned L1 arena. The arena
-    high-water mark includes alignment and state. A greedy budget failure does
-    not prove that a feasible placement is impossible. Unsupported storage forms
-    and operations are diagnosed; this mode never falls back to Metal descriptors.
-    `reuse-user-dfbs=false` disables payload aliasing in this mode.
+    high-water mark includes alignment and state. The decreasing strategies
+    produce feasible placements. The default compares stable and conflict-degree
+    ordering among equal extents and retains the smaller arena, preserving stable
+    offsets on ties. The exact strategy uses bounded exhaustive
+    search to prove the minimum arena size; limit exhaustion is inconclusive.
+    Unsupported storage forms and operations are diagnosed; this mode never
+    falls back to Metal descriptors. `reuse-user-dfbs=false` disables payload
+    aliasing in this mode.
 
     User-declared DFBs enter this pass with module-wide logical `dfb_id`
     attributes. Compiler-created DFB declarations receive unique logical IDs.
@@ -1262,9 +1266,13 @@ def TTLFinalizeDFBIndices
            "Reuse physical DFB indices and compiler-managed storage for "
            "lifetimes proven not to overlap across concurrent kernels.">,
     Option<"l1AllocationStrategy", "l1-allocation-strategy", "std::string",
-           "\"first-fit-decreasing\"",
-           "Select first-fit-decreasing or best-fit-decreasing compiler-l1 "
-           "payload placement.">,
+           "\"multi-order-decreasing\"",
+           "Select multi-order-decreasing, first-fit-decreasing, best-fit-decreasing, or exact "
+           "compiler-l1 payload placement.">,
+    Option<"l1ExactAllocationSearchLimit",
+           "l1-exact-allocation-search-limit", "uint64_t", "1000000",
+           "Maximum work items examined by exact compiler-l1 placement before "
+           "reporting an inconclusive result.">,
     Option<"unsafeAssumeAllocationGroups", "unsafe-assume-allocation-groups",
            "bool", "false",
            "Trust explicit DFB allocation groups when runtime handoff cannot "

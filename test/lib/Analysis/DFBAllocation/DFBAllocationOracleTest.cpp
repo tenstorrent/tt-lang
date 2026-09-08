@@ -2,11 +2,11 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// This test treats each graph vertex as one DFB, each edge as a required
-// distinct-index relation, and each color as one physical index. Exhaustive
-// assignment enumeration supplies expected results without calling the
-// production search.
+// This test treats each graph vertex as one DFB and each edge as a storage
+// conflict. Exhaustive index and byte-placement enumeration supplies expected
+// results without calling the production search.
 
+#include "SRAMAllocator.h"
 #include "ttlang/Dialect/TTCore/IR/TTCore.h"
 #include "ttlang/Dialect/TTL/Transforms/InterferenceGraphColoring.h"
 #include "ttlang/Target/TargetInfo.h"
@@ -19,8 +19,12 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
+#include <cassert>
 #include <cstdint>
 #include <limits>
+#include <memory>
+#include <optional>
+#include <string>
 
 namespace {
 
@@ -32,6 +36,10 @@ using mlir::tt::ttl::InterferenceGraph;
 using mlir::tt::ttl::InterferenceGraphColorLimitResult;
 using mlir::tt::ttl::InterferenceGraphColorLimitStatus;
 using mlir::tt::ttl::InterferenceGraphWeightLimitResult;
+using mlir::tt::ttl::SRAMAllocationProblem;
+using mlir::tt::ttl::SRAMAllocationSolution;
+using mlir::tt::ttl::SRAMAllocator;
+using mlir::tt::ttl::SRAMAllocatorOptions;
 
 constexpr uint64_t kUnlimitedSearchStates =
     std::numeric_limits<uint64_t>::max();
@@ -590,6 +598,323 @@ static bool compareWeightedSolverWithOracle() {
   return true;
 }
 
+static void oracleMinimumArenaBytes(
+    const InterferenceGraph &graph, llvm::ArrayRef<uint64_t> regionBytes,
+    uint64_t alignmentBytes, uint64_t payloadBaseOffset,
+    llvm::MutableArrayRef<uint64_t> offsets, unsigned regionIndex,
+    uint64_t highWaterMark, uint64_t &minimumArenaBytes) {
+  if (regionIndex == graph.size()) {
+    minimumArenaBytes = std::min(minimumArenaBytes, highWaterMark);
+    return;
+  }
+
+  uint64_t regionSize = regionBytes[regionIndex];
+  for (uint64_t offset = payloadBaseOffset;
+       offset < minimumArenaBytes - regionSize; offset += alignmentBytes) {
+    uint64_t regionEnd = offset + regionSize;
+    bool overlapsConflict = false;
+    for (unsigned previousIndex = 0; previousIndex < regionIndex;
+         ++previousIndex) {
+      if (!graph.interferes(regionIndex, previousIndex)) {
+        continue;
+      }
+      uint64_t previousEnd =
+          offsets[previousIndex] + regionBytes[previousIndex];
+      if (regionEnd > offsets[previousIndex] && previousEnd > offset) {
+        overlapsConflict = true;
+        break;
+      }
+    }
+    if (overlapsConflict) {
+      continue;
+    }
+    offsets[regionIndex] = offset;
+    oracleMinimumArenaBytes(
+        graph, regionBytes, alignmentBytes, payloadBaseOffset, offsets,
+        regionIndex + 1, std::max(highWaterMark, regionEnd), minimumArenaBytes);
+  }
+}
+
+static uint64_t oracleMinimumArenaBytes(const InterferenceGraph &graph,
+                                        llvm::ArrayRef<uint64_t> regionBytes,
+                                        uint64_t alignmentBytes,
+                                        uint64_t payloadBaseOffset) {
+  if (regionBytes.empty()) {
+    return 0;
+  }
+  uint64_t minimumArenaBytes = payloadBaseOffset;
+  for (uint64_t regionSize : regionBytes) {
+    minimumArenaBytes += regionSize;
+  }
+  llvm::SmallVector<uint64_t> offsets(graph.size());
+  oracleMinimumArenaBytes(graph, regionBytes, alignmentBytes, payloadBaseOffset,
+                          offsets, /*regionIndex=*/0,
+                          /*highWaterMark=*/payloadBaseOffset,
+                          minimumArenaBytes);
+  return minimumArenaBytes;
+}
+
+struct PlacementQuality {
+  uint64_t suboptimalCount = 0;
+  uint64_t excessUnits = 0;
+  uint64_t maximumExcessUnits = 0;
+  uint64_t optimalUnits = 0;
+  uint64_t allocatedUnits = 0;
+  uint64_t suboptimalOptimalUnits = 0;
+  uint64_t suboptimalAllocatedUnits = 0;
+  uint64_t worstOptimalUnits = 0;
+  uint64_t worstAllocatedUnits = 0;
+
+  void record(uint64_t minimumUnits, uint64_t placementUnits) {
+    assert(minimumUnits > 0 && placementUnits >= minimumUnits);
+    uint64_t currentExcessUnits = placementUnits - minimumUnits;
+    optimalUnits += minimumUnits;
+    allocatedUnits += placementUnits;
+    excessUnits += currentExcessUnits;
+    maximumExcessUnits = std::max(maximumExcessUnits, currentExcessUnits);
+    if (currentExcessUnits == 0) {
+      return;
+    }
+
+    ++suboptimalCount;
+    suboptimalOptimalUnits += minimumUnits;
+    suboptimalAllocatedUnits += placementUnits;
+    if (worstAllocatedUnits == 0 || minimumUnits * worstAllocatedUnits <
+                                        worstOptimalUnits * placementUnits) {
+      worstOptimalUnits = minimumUnits;
+      worstAllocatedUnits = placementUnits;
+    }
+  }
+};
+
+static uint64_t getEfficiencyBasisPoints(uint64_t optimalUnits,
+                                         uint64_t allocatedUnits) {
+  constexpr uint64_t kBasisPointScale = 10000;
+  if (allocatedUnits == 0) {
+    assert(optimalUnits == 0);
+    return kBasisPointScale;
+  }
+  return optimalUnits * kBasisPointScale / allocatedUnits;
+}
+
+static bool compareMultiOrderLargeGraphs() {
+  std::string reason;
+  SRAMAllocatorOptions options{kUnlimitedSearchStates};
+  auto first = mlir::tt::ttl::createSRAMAllocator(
+      mlir::tt::ttl::kFirstFitDecreasingSRAMAllocator, options, reason);
+  auto multi = mlir::tt::ttl::createSRAMAllocator(
+      mlir::tt::ttl::kMultiOrderDecreasingSRAMAllocator, options, reason);
+  if (mlir::failed(first) || mlir::failed(multi)) {
+    return false;
+  }
+  uint64_t cases = 0;
+  for (unsigned regionCount : {8U, 32U, 96U, 256U, 512U}) {
+    for (unsigned seed = 0; seed < 32; ++seed) {
+      SRAMAllocationProblem problem;
+      problem.alignmentBytes = seed % 2 == 0 ? 32 : 64;
+      problem.payloadBaseOffset = problem.alignmentBytes * 3;
+      problem.budgetBytes = problem.payloadBaseOffset;
+      problem.conflicts = InterferenceGraph(regionCount);
+      for (unsigned region = 0; region < regionCount; ++region) {
+        uint64_t size =
+            problem.alignmentBytes *
+            (seed % 4 == 0 ? 1 : 1 + (region * 17 + seed * 13) % 31);
+        problem.regionBytes.push_back(size);
+        problem.budgetBytes += size;
+        for (unsigned other = 0; other < region; ++other) {
+          unsigned hash = (region * 2654435761U) ^ (other * 2246822519U) ^
+                          (seed * 3266489917U);
+          if (hash % 100 < (seed % 5) * 25) {
+            problem.conflicts.addInterference(region, other);
+          }
+        }
+      }
+      std::optional<unsigned> failedRegion;
+      auto stable = (*first)->allocate(problem, failedRegion, reason);
+      auto combined = (*multi)->allocate(problem, failedRegion, reason);
+      if (mlir::failed(stable) || mlir::failed(combined) ||
+          combined->arenaBytes > stable->arenaBytes ||
+          (combined->arenaBytes == stable->arenaBytes &&
+           combined->offsets != stable->offsets)) {
+        llvm::errs() << "large multi-order regression: " << regionCount << ", "
+                     << seed << "\n";
+        return false;
+      }
+      problem.budgetBytes = combined->arenaBytes;
+      auto repeated = (*multi)->allocate(problem, failedRegion, reason);
+      if (mlir::failed(repeated) || repeated->offsets != combined->offsets) {
+        llvm::errs() << "multi-order exact-budget determinism failed\n";
+        return false;
+      }
+      ++cases;
+    }
+  }
+  llvm::outs() << "l1_multi_order_large_cases=" << cases << "\n";
+  return true;
+}
+
+static bool compareL1PlacementWithOracle() {
+  constexpr unsigned kVertexCount = 4;
+  constexpr unsigned kGraphCount = 1U << 6;
+  constexpr unsigned kSizeValueCount = 3;
+  constexpr unsigned kSizeTupleCount =
+      kSizeValueCount * kSizeValueCount * kSizeValueCount * kSizeValueCount;
+  constexpr uint64_t kAlignmentBytes = 4;
+  constexpr uint64_t kPayloadBaseOffset = 12;
+  SRAMAllocatorOptions options{kUnlimitedSearchStates};
+  std::string failureReason;
+  mlir::FailureOr<std::unique_ptr<SRAMAllocator>> exactAllocator =
+      mlir::tt::ttl::createSRAMAllocator(mlir::tt::ttl::kExactSRAMAllocator,
+                                         options, failureReason);
+  mlir::FailureOr<std::unique_ptr<SRAMAllocator>> firstFitAllocator =
+      mlir::tt::ttl::createSRAMAllocator(
+          mlir::tt::ttl::kFirstFitDecreasingSRAMAllocator, options,
+          failureReason);
+  mlir::FailureOr<std::unique_ptr<SRAMAllocator>> bestFitAllocator =
+      mlir::tt::ttl::createSRAMAllocator(
+          mlir::tt::ttl::kBestFitDecreasingSRAMAllocator, options,
+          failureReason);
+  if (mlir::failed(exactAllocator) || mlir::failed(firstFitAllocator) ||
+      mlir::failed(bestFitAllocator)) {
+    llvm::errs() << "failed to create L1 allocators: " << failureReason << "\n";
+    return false;
+  }
+
+  auto multiAllocator = mlir::tt::ttl::createSRAMAllocator(
+      mlir::tt::ttl::kMultiOrderDecreasingSRAMAllocator, options,
+      failureReason);
+  if (mlir::failed(multiAllocator)) {
+    return false;
+  }
+  uint64_t checkedCaseCount = 0;
+  PlacementQuality multiQuality;
+  PlacementQuality firstFitQuality;
+  PlacementQuality bestFitQuality;
+  for (unsigned edgeMask = 0; edgeMask < kGraphCount; ++edgeMask) {
+    InterferenceGraph graph = buildGraph(kVertexCount, edgeMask);
+    for (unsigned encodedSizes = 0; encodedSizes < kSizeTupleCount;
+         ++encodedSizes) {
+      unsigned remainingSizes = encodedSizes;
+      llvm::SmallVector<uint64_t> regionBytes;
+      uint64_t budgetBytes = kPayloadBaseOffset;
+      for (unsigned regionIndex = 0; regionIndex < kVertexCount;
+           ++regionIndex) {
+        uint64_t regionSize =
+            (1 + remainingSizes % kSizeValueCount) * kAlignmentBytes;
+        remainingSizes /= kSizeValueCount;
+        regionBytes.push_back(regionSize);
+        budgetBytes += regionSize;
+      }
+      SRAMAllocationProblem problem{regionBytes, graph, kAlignmentBytes,
+                                    kPayloadBaseOffset, budgetBytes};
+      std::optional<unsigned> failureRegionIndex;
+      mlir::FailureOr<SRAMAllocationSolution> exact =
+          (*exactAllocator)
+              ->allocate(problem, failureRegionIndex, failureReason);
+      mlir::FailureOr<SRAMAllocationSolution> repeated =
+          (*exactAllocator)
+              ->allocate(problem, failureRegionIndex, failureReason);
+      mlir::FailureOr<SRAMAllocationSolution> firstFit =
+          (*firstFitAllocator)
+              ->allocate(problem, failureRegionIndex, failureReason);
+      mlir::FailureOr<SRAMAllocationSolution> bestFit =
+          (*bestFitAllocator)
+              ->allocate(problem, failureRegionIndex, failureReason);
+      auto multi = (*multiAllocator)
+                       ->allocate(problem, failureRegionIndex, failureReason);
+      if (mlir::failed(multi) || mlir::failed(firstFit) ||
+          multi->arenaBytes > firstFit->arenaBytes ||
+          (multi->arenaBytes == firstFit->arenaBytes &&
+           multi->offsets != firstFit->offsets)) {
+        llvm::errs()
+            << "multi-order placement regressed or changed a tied layout\n";
+        return false;
+      }
+      uint64_t expectedArenaBytes = oracleMinimumArenaBytes(
+          graph, regionBytes, kAlignmentBytes, kPayloadBaseOffset);
+      if (mlir::failed(exact) || mlir::failed(repeated) ||
+          mlir::failed(firstFit) || mlir::failed(bestFit) ||
+          exact->arenaBytes != expectedArenaBytes ||
+          repeated->arenaBytes != exact->arenaBytes ||
+          repeated->offsets != exact->offsets ||
+          firstFit->arenaBytes < exact->arenaBytes ||
+          bestFit->arenaBytes < exact->arenaBytes) {
+        llvm::errs() << "L1 placement mismatch: edge_mask=" << edgeMask
+                     << " encoded_sizes=" << encodedSizes
+                     << " expected=" << expectedArenaBytes;
+        if (mlir::succeeded(exact)) {
+          llvm::errs() << " exact=" << exact->arenaBytes;
+        }
+        llvm::errs() << " failure=" << failureReason << "\n";
+        return false;
+      }
+
+      uint64_t optimalUnits =
+          (exact->arenaBytes - kPayloadBaseOffset) / kAlignmentBytes;
+      uint64_t firstFitUnits =
+          (firstFit->arenaBytes - kPayloadBaseOffset) / kAlignmentBytes;
+      uint64_t bestFitUnits =
+          (bestFit->arenaBytes - kPayloadBaseOffset) / kAlignmentBytes;
+      multiQuality.record(optimalUnits,
+                          (multi->arenaBytes - kPayloadBaseOffset) /
+                              kAlignmentBytes);
+      firstFitQuality.record(optimalUnits, firstFitUnits);
+      bestFitQuality.record(optimalUnits, bestFitUnits);
+      ++checkedCaseCount;
+    }
+  }
+
+  llvm::outs() << "l1_multi_order_suboptimal_cases="
+               << multiQuality.suboptimalCount << "\n"
+               << "l1_multi_order_excess_units=" << multiQuality.excessUnits
+               << "\n"
+               << "l1_multi_order_aggregate_efficiency_basis_points="
+               << getEfficiencyBasisPoints(multiQuality.optimalUnits,
+                                           multiQuality.allocatedUnits)
+               << "\n"
+               << "l1_multi_order_worst_efficiency_basis_points="
+               << getEfficiencyBasisPoints(multiQuality.worstOptimalUnits,
+                                           multiQuality.worstAllocatedUnits)
+               << "\n";
+  llvm::outs()
+      << "l1_placement_cases=" << checkedCaseCount << "\n"
+      << "l1_first_fit_suboptimal_cases=" << firstFitQuality.suboptimalCount
+      << "\n"
+      << "l1_best_fit_suboptimal_cases=" << bestFitQuality.suboptimalCount
+      << "\n"
+      << "l1_first_fit_excess_units=" << firstFitQuality.excessUnits << "\n"
+      << "l1_best_fit_excess_units=" << bestFitQuality.excessUnits << "\n"
+      << "l1_first_fit_max_excess_units=" << firstFitQuality.maximumExcessUnits
+      << "\n"
+      << "l1_best_fit_max_excess_units=" << bestFitQuality.maximumExcessUnits
+      << "\n"
+      << "l1_first_fit_aggregate_efficiency_basis_points="
+      << getEfficiencyBasisPoints(firstFitQuality.optimalUnits,
+                                  firstFitQuality.allocatedUnits)
+      << "\n"
+      << "l1_best_fit_aggregate_efficiency_basis_points="
+      << getEfficiencyBasisPoints(bestFitQuality.optimalUnits,
+                                  bestFitQuality.allocatedUnits)
+      << "\n"
+      << "l1_first_fit_suboptimal_efficiency_basis_points="
+      << getEfficiencyBasisPoints(firstFitQuality.suboptimalOptimalUnits,
+                                  firstFitQuality.suboptimalAllocatedUnits)
+      << "\n"
+      << "l1_best_fit_suboptimal_efficiency_basis_points="
+      << getEfficiencyBasisPoints(bestFitQuality.suboptimalOptimalUnits,
+                                  bestFitQuality.suboptimalAllocatedUnits)
+      << "\n"
+      << "l1_first_fit_worst_efficiency_basis_points="
+      << getEfficiencyBasisPoints(firstFitQuality.worstOptimalUnits,
+                                  firstFitQuality.worstAllocatedUnits)
+      << "\n"
+      << "l1_best_fit_worst_efficiency_basis_points="
+      << getEfficiencyBasisPoints(bestFitQuality.worstOptimalUnits,
+                                  bestFitQuality.worstAllocatedUnits)
+      << "\n";
+  return compareMultiOrderLargeGraphs();
+}
+
 /// Exhaustively measures the assignment-count penalty of uniform assignment
 /// relative to per-node and two-group contracts.
 static bool compareAssignmentContracts() {
@@ -655,6 +980,7 @@ int main() {
                  verifyFixedLimitAvoidsMinimumSearch() &&
                  verifyWeightedColoringAcrossComponents() &&
                  compareWeightedSolverWithOracle() &&
+                 compareL1PlacementWithOracle() &&
                  verifyTargetDFBIndexCapacities() &&
                  compareAssignmentContracts()
              ? 0

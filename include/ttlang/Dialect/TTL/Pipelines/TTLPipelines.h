@@ -107,9 +107,16 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::init(true)};
   Option<std::string> l1AllocationStrategy{
       *this, "l1-allocation-strategy",
-      llvm::cl::desc("Select first-fit-decreasing or best-fit-decreasing "
-                     "compiler-l1 payload placement."),
-      llvm::cl::init("first-fit-decreasing")};
+      llvm::cl::desc("Select multi-order-decreasing, first-fit-decreasing, "
+                     "best-fit-decreasing, or "
+                     "exact compiler-l1 payload placement."),
+      llvm::cl::init("multi-order-decreasing")};
+  Option<std::uint64_t> l1ExactAllocationSearchLimit{
+      *this, "l1-exact-allocation-search-limit",
+      llvm::cl::desc("Maximum work items examined by exact compiler-l1 "
+                     "placement "
+                     "before reporting an inconclusive result."),
+      llvm::cl::init(1000000)};
   Option<bool> unsafeAssumeAllocationGroups{
       *this, "unsafe-assume-allocation-groups",
       llvm::cl::desc("Trust explicit DFB allocation groups when runtime "

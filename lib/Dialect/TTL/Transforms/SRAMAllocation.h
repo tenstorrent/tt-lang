@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 // SPDX-License-Identifier: Apache-2.0
-#ifndef TTLANG_DIALECT_TTL_TRANSFORMS_COMPILERL1ALLOCATION_H
-#define TTLANG_DIALECT_TTL_TRANSFORMS_COMPILERL1ALLOCATION_H
+#ifndef TTLANG_DIALECT_TTL_TRANSFORMS_SRAMALLOCATION_H
+#define TTLANG_DIALECT_TTL_TRANSFORMS_SRAMALLOCATION_H
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
@@ -19,12 +19,12 @@ class DFBLogicalIdentityAnalysis;
 struct DFBAssumedAllocationGroup;
 struct DFBStaticConfigurationConflict;
 
-/// Plans and materializes compiler-managed L1 offsets. Failure leaves IR
+/// Plans and materializes compiler-managed SRAM offsets. Failure leaves IR
 /// unchanged.
-LogicalResult allocateCompilerL1(
+LogicalResult allocateSRAM(
     ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     uint64_t budgetOverride, bool reuseStorage,
-    llvm::StringRef allocationStrategy,
+    llvm::StringRef allocationStrategy, uint64_t exactSearchLimit,
     const DFBConcurrentKernelLivenessAnalysis &liveness,
     llvm::ArrayRef<DFBStaticConfigurationConflict> staticConfigurationConflicts,
     bool unsafeAssumeAllocationGroups,

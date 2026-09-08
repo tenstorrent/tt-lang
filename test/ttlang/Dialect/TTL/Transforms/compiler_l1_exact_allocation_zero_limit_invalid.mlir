@@ -1,9 +1,9 @@
-// Verifies that an unknown compiler-managed SRAM allocation strategy is rejected.
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=unknown})' --verify-diagnostics
+// Verifies exact placement rejects a zero work limit before allocation.
+// RUN: ttlang-opt %s --verify-diagnostics --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=exact l1-exact-allocation-search-limit=0})'
 
-// expected-error @below {{unknown compiler-l1 allocation strategy 'unknown'; expected multi-order-decreasing, first-fit-decreasing, best-fit-decreasing, or exact}}
-module attributes {ttl.launch_grid = [1, 1]} {
-  func.func @unknown_strategy()
+// expected-error @below {{'builtin.module' op compiler-l1 exact allocation search limit must be positive}}
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
+  func.func @zero_limit()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
                   ttl.noc_index = 0 : i32} {

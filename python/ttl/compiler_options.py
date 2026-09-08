@@ -22,13 +22,22 @@ from typing import Optional, Sequence
 # TODO(#649): Add dfb-state after explicit DFB fallback becomes a selectable
 # accumulation strategy.
 _ACCUMULATION_STRATEGIES = frozenset({"auto", "dst", "l1-pack"})
-_L1_ALLOCATION_STRATEGIES = frozenset({"first-fit-decreasing", "best-fit-decreasing"})
+_L1_ALLOCATION_STRATEGIES = frozenset(
+    {"multi-order-decreasing", "first-fit-decreasing", "best-fit-decreasing", "exact"}
+)
 
 
 def _nonnegative_int(value: str) -> int:
     parsed_value = int(value)
     if parsed_value < 0:
         raise argparse.ArgumentTypeError("must be nonnegative")
+    return parsed_value
+
+
+def _positive_int(value: str) -> int:
+    parsed_value = int(value)
+    if parsed_value <= 0:
+        raise argparse.ArgumentTypeError("must be positive")
     return parsed_value
 
 
@@ -52,8 +61,16 @@ def _make_parser() -> argparse.ArgumentParser:
         dest="l1_allocation_strategy",
         choices=sorted(_L1_ALLOCATION_STRATEGIES),
         help="Select the compiler-owned L1 payload placement strategy: "
-        "first-fit-decreasing or best-fit-decreasing "
-        "(default: first-fit-decreasing).",
+        "multi-order-decreasing, first-fit-decreasing, best-fit-decreasing, or exact "
+        "(default: multi-order-decreasing).",
+    )
+    p.add_argument(
+        "--ttl-l1-exact-allocation-search-limit",
+        default=None,
+        dest="l1_exact_allocation_search_limit",
+        type=_positive_int,
+        help="Limit exact compiler-owned L1 placement to this many work "
+        "items (default: 1000000).",
     )
     p.add_argument(
         "--ttl-maximize-dst",
@@ -271,7 +288,8 @@ class CompilerOptions:
     matmul_full_fp32: bool = True
     strict_f32_acc: bool = False
     memory_model: str = "metal-cb"
-    l1_allocation_strategy: str = "first-fit-decreasing"
+    l1_allocation_strategy: str = "multi-order-decreasing"
+    l1_exact_allocation_search_limit: int = 1_000_000
     compiler_dfbs: bool = True
     pipe_computed_addresses: bool = True
     pipe_capacity_sync: bool = True
@@ -300,6 +318,8 @@ class CompilerOptions:
                 f"{self.l1_allocation_strategy!r}; expected one of "
                 f"{sorted(_L1_ALLOCATION_STRATEGIES)}"
             )
+        if self.l1_exact_allocation_search_limit <= 0:
+            raise ValueError("L1 exact allocation search limit must be positive")
         if self.accumulation_strategy not in _ACCUMULATION_STRATEGIES:
             raise ValueError(
                 "Invalid accumulation strategy "
