@@ -133,6 +133,10 @@ constexpr llvm::StringLiteral kTileLoopStrideAttrName("ttl.tile_loop_stride");
 constexpr llvm::StringLiteral
     kPipeNetLocalRecordLoopAttrName("ttl.pipenet_local_record_loop");
 
+/// Page capacity proven available for an initial PipeNet receive sequence.
+constexpr llvm::StringLiteral kPipeNetInitialReceiveCapacityAttrName(
+    "ttl.pipenet_initial_receive_capacity");
+
 /// Marks an scf.for loop as iterating over a reduction dimension.
 constexpr llvm::StringLiteral kReductionLoopAttrName("ttl.reduction_loop");
 

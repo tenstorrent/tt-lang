@@ -18,6 +18,19 @@ using namespace mlir;
 
 namespace mlir::tt::ttl {
 
+// Resolve record-loop transfers before finalizing runtime arguments in either
+// specialization mode. Adjacent function passes share one module traversal.
+static void buildTTKernelRecordCleanupPipeline(OpPassManager &pm) {
+  OpPassManager &functionPasses = pm.nest<func::FuncOp>();
+  functionPasses.addPass(createTTKernelBatchStaticPipeNetReceives());
+  functionPasses.addPass(createTTKernelUnrollStaticPipeNetRecordLoops());
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(createCSEPass());
+  pm.addPass(createTTKernelCleanup());
+  pm.addPass(createTTKernelFinalizeTensorRuntimeArgs());
+  pm.addPass(createCanonicalizerPass());
+}
+
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
   {
@@ -126,13 +139,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   if (options.specializeCores) {
     buildTTKernelSpecializationPipeline(pm);
   } else {
-    pm.addNestedPass<func::FuncOp>(
-        createTTKernelUnrollStaticPipeNetRecordLoops());
-    pm.addPass(createCanonicalizerPass());
-    pm.addPass(createCSEPass());
-    pm.addPass(createTTKernelCleanup());
-    pm.addPass(createTTKernelFinalizeTensorRuntimeArgs());
-    pm.addPass(createCanonicalizerPass());
+    buildTTKernelRecordCleanupPipeline(pm);
   }
   if (options.lowerToEmitC) {
     pm.addPass(createLowerAffinePass());
@@ -156,13 +163,7 @@ void buildTTKernelSpecializationPipeline(OpPassManager &pm) {
   pm.addPass(createTTKernelSpecializeCores());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
-  pm.addNestedPass<func::FuncOp>(
-      createTTKernelUnrollStaticPipeNetRecordLoops());
-  pm.addPass(createCanonicalizerPass());
-  pm.addPass(createCSEPass());
-  pm.addPass(createTTKernelCleanup());
-  pm.addPass(createTTKernelFinalizeTensorRuntimeArgs());
-  pm.addPass(createCanonicalizerPass());
+  buildTTKernelRecordCleanupPipeline(pm);
   pm.addPass(createTTKernelAnnotateDFBUse());
 }
 

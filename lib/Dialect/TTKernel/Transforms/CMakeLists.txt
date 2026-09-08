@@ -1,5 +1,6 @@
 add_mlir_dialect_library(TTLangTTKernelTransforms
   TTKernelCleanup.cpp
+  TTKernelBatchStaticPipeNetReceives.cpp
   TTKernelCleanupPatterns.cpp
   TTKernelCombinePackTiles.cpp
   TTKernelInsertInits.cpp
@@ -18,6 +19,7 @@ add_mlir_dialect_library(TTLangTTKernelTransforms
   MLIREmitCDialect
   MLIRFuncDialect
   MLIRFuncTransforms
+  MLIRMemRefDialect
   MLIRSCFDialect
   MLIRSCFTransforms
   MLIRTransforms

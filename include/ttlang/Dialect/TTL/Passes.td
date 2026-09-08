@@ -1536,6 +1536,30 @@ def TTKernelSpecializeCores
   ];
 }
 
+def TTKernelBatchStaticPipeNetReceives
+    : Pass<"ttkernel-batch-static-pipenet-receives", "::mlir::func::FuncOp"> {
+  let summary = "Post independent PipeNet receives before waiting for payloads";
+  let description = [{
+    Combines reservations for a static, initially empty receive DFB and posts
+    every readiness notification before waiting for individual completions.
+    Sender-computed addresses place each payload in a distinct reserved slot.
+    Completion waits and DFB publication remain in record order.
+
+    For example, three sequential `reserve(1); post(); wait(); push(1)`
+    transactions become `reserve(3); post(); post(); post(); atomic_barrier()`
+    followed by three ordered `wait(); push(1)` transactions. The reservation
+    must fit capacity proven available before the first receive.
+
+    Unknown counts, repeated receive sequences, receiver-published addresses,
+    and additional observable effects retain sequential execution. Temporary
+    initial-capacity annotations are removed whether batching succeeds or not.
+  }];
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::tt::ttkernel::TTKernelDialect"
+  ];
+}
+
 def TTKernelUnrollStaticPipeNetRecordLoops
     : Pass<"ttkernel-unroll-static-pipenet-record-loops",
            "::mlir::func::FuncOp"> {

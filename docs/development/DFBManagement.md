@@ -129,6 +129,8 @@ ttkernel-insert-inits              (Module) Insert hardware init calls
   ... L1 accumulation, cleanup ...
 ttkernel-specialize-cores          (Module, optional) Clone coordinate-dependent kernels
 canonicalize, cse                  (Module, after specialization) Resolve coordinate-dependent control flow
+ttkernel-batch-static-pipenet-receives
+                                    (FuncOp) Post proven initial receives before waiting
 ttkernel-unroll-static-pipenet-record-loops
                                     (FuncOp) Unroll static local record loops
 canonicalize, cse                  (Module) Fold selected record tables
@@ -138,7 +140,8 @@ canonicalize                       (Module) Remove obsolete argument expressions
 ttkernel-annotate-dfb-use          (Module, specialized only) Record surviving physical DFB uses
 ```
 
-Core specialization and DFB-use annotation are optional. Record-loop unrolling,
+Core specialization and DFB-use annotation are optional. [Initial receive
+batching](PipeReceiveBatching.md), record-loop unrolling,
 cleanup, and tensor runtime-argument finalization run in both modes. Finalization
 follows record-loop cleanup so eliminated uses cannot retain obsolete arguments;
 annotation then records only surviving DFB uses on each clone's launch node.

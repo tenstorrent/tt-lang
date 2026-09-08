@@ -11,6 +11,7 @@
 #include "PipeLowering.h"
 #include "PipeNetForeachLowering.h"
 #include "PipePlanning.h"
+#include "PipeReceiveBatching.h"
 #include "PipeTransferExpansion.h"
 #include "ttlang/Dialect/TTKernel/Transforms/TTKernelCleanupPatterns.h"
 
@@ -2564,6 +2565,8 @@ static LogicalResult lowerTTLOpsToTTKernel(
     return failure();
   }
   PipeModulePlan pipeModulePlan = std::move(*maybePipeModulePlan);
+  annotateInitialPipeReceiveBatches(mod, foreachLoweringInfo, *pipeGraphOrErr,
+                                    pipeModulePlan.getResourcePlan());
   resetLoweringPlan->scratchBaseOffset =
       pipeModulePlan.getTrailingSramScratchOffset();
   FailureOr<FinalizedDFBStorageFootprint> allocationFootprint =

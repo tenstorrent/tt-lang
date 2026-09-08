@@ -186,8 +186,8 @@ The pipeline runs these passes and subpasses in order:
 - `ttkernel-insert-l1-accumulation` -- insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
 - `ttkernel-combine-pack-tiles` -- combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*
 - Canonicalization and CSE cleanup
-- `ttkernel-specialize-and-annotate-dfb-use` -- `ttkernel-specialize-cores`, `canonicalize`, `cse`, `ttkernel-unroll-static-pipenet-record-loops`, `canonicalize`, `cse`, `ttkernel-cleanup`, `ttkernel-finalize-tensor-runtime-args`, `canonicalize`, then `ttkernel-annotate-dfb-use` *(only if `specialize-cores=true`)*
-- Without core specialization, run `ttkernel-unroll-static-pipenet-record-loops`, `canonicalize`, `cse`, `ttkernel-cleanup`, `ttkernel-finalize-tensor-runtime-args`, then `canonicalize`. This simplifies already-static record loops, optimizes writes with resolved endpoints, and removes unused runtime arguments in both configurations.
+- `ttkernel-specialize-and-annotate-dfb-use` -- `ttkernel-specialize-cores`, `canonicalize`, `cse`, `ttkernel-batch-static-pipenet-receives`, `ttkernel-unroll-static-pipenet-record-loops`, `canonicalize`, `cse`, `ttkernel-cleanup`, `ttkernel-finalize-tensor-runtime-args`, `canonicalize`, then `ttkernel-annotate-dfb-use` *(only if `specialize-cores=true`)*
+- Without core specialization, run `ttkernel-batch-static-pipenet-receives`, `ttkernel-unroll-static-pipenet-record-loops`, `canonicalize`, `cse`, `ttkernel-cleanup`, `ttkernel-finalize-tensor-runtime-args`, then `canonicalize`. This simplifies already-static record loops, optimizes writes with resolved endpoints, and removes unused runtime arguments in both configurations.
 - *(if `lower-to-emitc=true`)* `lower-affine`, `convert-ttkernel-to-emitc`, `emitc-form-expressions`
 
 ### Individual Pass Options
@@ -416,6 +416,15 @@ when intervening operations preserve that state. It runs after record-loop
 expansion and endpoint simplification so newly exposed constant destinations
 receive the same optimizations as straight-line transfers during TTL lowering.
 The module-scoped pass inspects callees without concurrent function rewrites.
+
+#### `ttkernel-batch-static-pipenet-receives`
+
+Posts all receives in a static local record loop before waiting for individual
+payloads, provided TTL analysis proves that their distinct destination slots
+fit initially empty DFB storage. Completion waits and publication remain in
+record order. Repeated sequences, unknown counts, receiver-published addresses,
+and additional effects retain sequential execution. This pass runs before
+record-loop unrolling in both core-specialization configurations.
 
 #### `ttkernel-unroll-static-pipenet-record-loops`
 
