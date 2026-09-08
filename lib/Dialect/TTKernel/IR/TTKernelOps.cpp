@@ -563,6 +563,17 @@ findReachingWriteStateSetup(NocAsyncWriteOnePacketWithStateOp use,
   return reachingSetup;
 }
 
+// Return whether constant scf.for bounds prove at most `limit` body executions.
+// Other loop forms and dynamic bounds do not establish this upper bound.
+static bool hasAtMostIterations(Operation *operation, uint64_t limit) {
+  auto loop = dyn_cast<scf::ForOp>(operation);
+  if (!loop) {
+    return false;
+  }
+  std::optional<APInt> tripCount = loop.getStaticTripCount();
+  return tripCount && tripCount->ule(limit);
+}
+
 // Find an operation that can overwrite the selected setup before this or a
 // later loop iteration's issue. Calls use the same effect summary as cleanup.
 static Operation *
@@ -583,14 +594,15 @@ findInterveningWriteStateChange(NocAsyncWriteOnePacketSetStateOp reachingSetup,
       return operation;
     }
 
-    // A setup after the use becomes the reaching state on the next iteration
-    // unless that loop also contains the selected setup.
+    // A later write can invalidate the next iteration's issue only if another
+    // iteration exists and the loop does not restore the selected setup.
     if (!structurallyPrecedes(use, operation)) {
       continue;
     }
     for (Operation *ancestor = use->getParentOp(); ancestor;
          ancestor = ancestor->getParentOp()) {
       if (!isa<LoopLikeOpInterface>(ancestor) ||
+          hasAtMostIterations(ancestor, 1) ||
           ancestor->isAncestor(reachingSetup)) {
         continue;
       }
@@ -608,10 +620,14 @@ findInterveningWriteStateChange(NocAsyncWriteOnePacketSetStateOp reachingSetup,
   if (auto function = getOperation()->getParentOfType<func::FuncOp>()) {
     // One traversal collects both candidate setups and all possible clobbers;
     // state-preserving issues and independent read/atomic commands are omitted.
-    function.walk([&](Operation *operation) {
+    function.walk<WalkOrder::PreOrder>([&](Operation *operation) {
+      if (hasAtMostIterations(operation, 0)) {
+        return WalkResult::skip();
+      }
       if (commandEffects.getEffects(operation).mayReprogram) {
         stateChanges.push_back(operation);
       }
+      return WalkResult::advance();
     });
   }
   NocAsyncWriteOnePacketSetStateOp setup =
