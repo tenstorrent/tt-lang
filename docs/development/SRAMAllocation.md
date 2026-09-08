@@ -106,7 +106,7 @@ Possible launch domains use the same rules as exact domains and remain conservat
 
 Placement uses a reusable C++ allocator API. The caller converts storage owners, conflicts, target alignment, and capacity into an immutable allocation problem; strategies do not inspect IR. Each owner with a compiler-owned payload contributes one allocator region. Tensor-backed owners consume control records but add no allocator regions. A solution contains one byte offset per allocator region and the payload high-water mark.
 
-Every allocator result passes the same validation before IR mutation. Validation requires the correct offset count, target alignment, offsets at or above the payload base, intervals within the SRAM budget, disjoint intervals for every conflict, and an exact payload high-water mark. Allocation policy cannot weaken these invariants. The caller maps the returned offsets to storage owners and computes the arena size as the maximum of the control-section end and the payload high-water mark.
+Every allocator result passes the same validation before IR mutation. Validation requires the correct offset count, target alignment, offsets at or above the payload base, intervals within the SRAM budget, disjoint intervals for every conflict, and an exact payload high-water mark. Allocation policy cannot weaken these invariants. The domain allocation entry point maps offsets to storage owners and retains the control prefix when computing the arena size.
 
 ### C++ Allocator Contract
 
@@ -120,9 +120,16 @@ FailureOr<std::unique_ptr<SRAMAllocator>> createSRAMAllocator(
 FailureOr<SRAMAllocationSolution> SRAMAllocator::allocate(
     const SRAMAllocationProblem &problem,
     SRAMPlacementFailure &failureDetail) const;
+
+FailureOr<llvm::SmallVector<SRAMAllocationDomainSolution>>
+SRAMAllocator::allocateDomains(
+    llvm::ArrayRef<SRAMAllocationDomainProblem> domains,
+    SRAMAllocationDomainFailure &failureDetail) const;
 ```
 
 `SRAMAllocatorOptions::minimumArenaSearchLimit` is positive and bounds the exact strategy; the factory rejects zero. A solution contains one arena-relative byte offset per region and `arenaBytes`, the maximum payload end (zero for no regions). `allocate` validates the immutable problem, calls the strategy, and validates its solution before the caller changes IR. Validation checks offset count, alignment, budget, conflict disjointness, and the exact high-water mark. On failure, `SRAMPlacementFailure` reports the category, reason, and optional region index. A strategy implements `getName()` and private `allocateImpl()`; the factory gives it a stable option name. All strategies share the same input and validation contract.
+
+`allocateDomains` applies that contract to independently addressable layouts. Each domain maps its region indices to storage owners; the caller proves that domain bindings do not overlap. It validates all domains before placing any of them, then returns one placement and arena size per domain. A failure returns no partial result and identifies the domain, failure category, and affected storage owner when available. A control-only domain retains its aligned control prefix. The exact strategy's work limit applies to each domain separately.
 
 | Strategy | Selection | Guarantee |
 | --- | --- | --- |

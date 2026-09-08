@@ -255,32 +255,31 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
                                         previousRegionIndex);
     }
   }
-  SRAMPlacementFailure placementFailure;
-  FailureOr<SRAMAllocationSolution> solution =
-      allocator.allocate(problem, placementFailure);
-  if (failed(solution)) {
+  SRAMAllocationDomainProblem domain{std::move(problem),
+                                     std::move(storageIndexByAllocationRegion)};
+  SRAMAllocationDomainFailure domainFailure;
+  auto domains = allocator.allocateDomains(domain, domainFailure);
+  if (failed(domains)) {
     auto diagnostic =
-        placementFailure.regionIndex
-            ? plan[storage[storageIndexByAllocationRegion[*placementFailure
-                                                               .regionIndex]]
-                       .members.front()]
+        domainFailure.storageIndex
+            ? plan[storage[*domainFailure.storageIndex].members.front()]
                   .declarations.front()
                   .emitOpError()
             : module.emitOpError();
-    diagnostic << "compiler-sram " << placementFailure.reason;
-    if (placementFailure.kind == SRAMPlacementFailureKind::BudgetExceeded) {
+    diagnostic << "compiler-sram " << domainFailure.reason;
+    if (domainFailure.kind == SRAMPlacementFailureKind::BudgetExceeded) {
       diagnostic << " (payload, control records, and alignment included); "
                  << allocator.getName()
                  << " placement does not prove infeasibility";
     }
     return failure();
   }
-  for (auto [allocationRegionIndex, storageIndex] :
-       llvm::enumerate(storageIndexByAllocationRegion)) {
-    storage[storageIndex].offset = solution->offsets[allocationRegionIndex];
+  const SRAMAllocationDomainSolution &uniformDomain = domains->front();
+  for (const SRAMStoragePlacement &placement : uniformDomain.placements) {
+    storage[placement.storageIndex].offset = placement.offset;
   }
-  uint64_t arenaBytes = std::max(*controlBytes, solution->arenaBytes);
-  return SRAMAllocationPlan{std::move(plan), std::move(storage), arenaBytes,
+  return SRAMAllocationPlan{std::move(plan), std::move(storage),
+                            uniformDomain.arenaBytes,
                             alignment, *controlBytes};
 }
 
