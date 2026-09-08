@@ -1,20 +1,22 @@
 // Summary: Verifies that PipeNet transfers coexist with compiler-managed DFB allocation.
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=first-fit-decreasing})' | FileCheck %s --check-prefix=L1
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=best-fit-decreasing})' | FileCheck %s --check-prefix=L1
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=first-fit-decreasing})' | FileCheck %s --check-prefix=SRAM
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=best-fit-decreasing})' | FileCheck %s --check-prefix=SRAM
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=exact})' | FileCheck %s --check-prefix=SRAM
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=multi-order-decreasing})' | FileCheck %s --check-prefix=SRAM
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=metal-cb})' | FileCheck %s --check-prefix=METAL
 // RUN: ttlang-opt %s --ttl-to-ttkernel-pipeline='memory-model=compiler-l1 l1-allocation-strategy=first-fit-decreasing' --convert-ttkernel-to-emitc -o /dev/null
 
 // The storage model changes DFB allocation metadata without changing the
 // transfer contract consumed by later PipeNet planning and lowering.
-// L1: module attributes {ttl.dfb_allocations = [
-// L1-SAME: dfb_index = 0 : i32
-// L1-SAME: dfb_index = 1 : i32
-// L1-SAME: ttl.l1_arena_bytes = 8224 : i64
-// L1-SAME: ttl.memory_model = "compiler-l1"
-// L1-LABEL: func.func @compiler_l1_pipenet
-// L1: ttl.pipe_transfer.create
-// L1: ttl.pipe_transfer.post
-// L1: ttl.pipe_transfer.send
+// SRAM: module attributes {ttl.dfb_allocations = [
+// SRAM-SAME: dfb_index = 0 : i32
+// SRAM-SAME: dfb_index = 1 : i32
+// SRAM-SAME: ttl.l1_arena_bytes = 8224 : i64
+// SRAM-SAME: ttl.memory_model = "compiler-l1"
+// SRAM-LABEL: func.func @compiler_l1_pipenet
+// SRAM: ttl.pipe_transfer.create
+// SRAM: ttl.pipe_transfer.post
+// SRAM: ttl.pipe_transfer.send
 // METAL-NOT: ttl.memory_model
 // METAL-LABEL: func.func @compiler_l1_pipenet
 // METAL: ttl.pipe_transfer.create

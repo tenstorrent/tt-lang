@@ -6,22 +6,22 @@
 
 // The default leaves group selection to ttl-form-pipe-transports.
 // AUTO: ttl-form-pipe-transports{group-size=0 l1-budget-override=0}
-// AUTO: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 l1-allocation-strategy=first-fit-decreasing l1-budget-override=0 memory-model=metal-cb reuse-user-dfbs=true unsafe-assume-allocation-groups=false}
+// AUTO: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 l1-allocation-strategy=multi-order-decreasing l1-budget-override=0 l1-exact-allocation-search-limit=1000000 memory-model=metal-cb reuse-user-dfbs=true unsafe-assume-allocation-groups=false}
 // AUTO: ttl-validate-cb-budget{l1-budget-override=0}
 // AUTO: convert-ttl-to-ttkernel{l1-budget-override=0
 
 // A pipeline bound is forwarded to ttl-form-pipe-transports.
 // BOUND: ttl-form-pipe-transports{group-size=4 l1-budget-override=0}
-// BOUND: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 l1-allocation-strategy=first-fit-decreasing l1-budget-override=0 memory-model=metal-cb reuse-user-dfbs=true unsafe-assume-allocation-groups=false}
+// BOUND: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 l1-allocation-strategy=multi-order-decreasing l1-budget-override=0 l1-exact-allocation-search-limit=1000000 memory-model=metal-cb reuse-user-dfbs=true unsafe-assume-allocation-groups=false}
 
 // The L1 override applies to transport selection, physical allocation, static
 // validation, and final exact resource validation.
 // BUDGET: ttl-form-pipe-transports{group-size=0 l1-budget-override=98304}
-// BUDGET: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 l1-allocation-strategy=first-fit-decreasing l1-budget-override=98304 memory-model=metal-cb reuse-user-dfbs=true unsafe-assume-allocation-groups=false}
+// BUDGET: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 l1-allocation-strategy=multi-order-decreasing l1-budget-override=98304 l1-exact-allocation-search-limit=1000000 memory-model=metal-cb reuse-user-dfbs=true unsafe-assume-allocation-groups=false}
 // BUDGET: ttl-validate-cb-budget{l1-budget-override=98304}
 // BUDGET: convert-ttl-to-ttkernel{l1-budget-override=98304
 
 // The selected memory model reaches physical allocation.
-// COMPILER-L1: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 l1-allocation-strategy=first-fit-decreasing l1-budget-override=0 memory-model=compiler-l1 reuse-user-dfbs=true unsafe-assume-allocation-groups=false}
+// COMPILER-L1: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 l1-allocation-strategy=multi-order-decreasing l1-budget-override=0 l1-exact-allocation-search-limit=1000000 memory-model=compiler-l1 reuse-user-dfbs=true unsafe-assume-allocation-groups=false}
 
 module {}
