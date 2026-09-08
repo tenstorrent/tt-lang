@@ -141,6 +141,14 @@ core specialization, static record-loop expansion, and endpoint simplification.
 Initial TTL lowering cannot configure a constant destination while that
 destination still depends on an unresolved record index.
 
+The same cleanup shares copy initialization across statically nonempty
+copy/pack loops. It moves `copy_tile_init(source)` before the loop only when
+the source DFB is defined outside the loop and every body operation preserves
+the unpack/math configuration. Copies from another DFB, other initialization,
+unknown calls, nested control flow, and a possibly empty loop prevent this
+transformation. Queue synchronization and packing remain in the loop. This
+avoids reinitializing copying for every incoming tile during L1 accumulation.
+
 Write-state verification and cleanup share `NocCommandEffectsAnalysis` to
 classify command changes and dependencies, including effects inside called
 functions. Unknown and recursive callees conservatively use and overwrite
