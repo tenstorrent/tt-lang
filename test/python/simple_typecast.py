@@ -77,8 +77,13 @@ def typecast_kernel(inp, out):
 # CHECK-CPP: === compute_fn kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 
-# init_sfpu uses the input (bf16) and output (f32) CB formats.
-# CHECK-CPP: init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
+# Reconfiguration uses the input (bf16) and output (f32) CB formats.
+# CHECK-CPP: reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(0), get_compile_time_arg_val(0));
+# CHECK-CPP-NEXT: pack_reconfig_data_format<true>(get_compile_time_arg_val(1));
+# CHECK-CPP-NEXT: copy_tile_init(get_compile_time_arg_val(0));
+# CHECK-CPP-NEXT: #ifndef ARCH_QUASAR
+# CHECK-CPP-NEXT: MATH((ckernel::math::_configure_unary_preserve_zero_flag_state_()));
+# CHECK-CPP-NEXT: #endif
 
 # Tile is loaded into DST then typecast in-place; then packed.
 # CHECK-CPP: tile_regs_acquire();
