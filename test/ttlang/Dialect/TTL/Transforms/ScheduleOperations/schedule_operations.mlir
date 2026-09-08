@@ -29,7 +29,8 @@
 // FPU: ttkernel.cb_wait_front(%[[CB0]], %[[C4]])
 // FPU: ttkernel.cb_wait_front(%[[CB1]], %[[C4]])
 // FPU: ttkernel.cb_reserve_back(%[[CB2]], %[[C4]])
-// FPU: ttkernel.binary_op_init_common(%[[CB0]], %[[CB1]], %[[CB2]])
+// FPU: ttkernel.reconfig_data_format(%[[CB0]], %[[CB1]])
+// FPU: ttkernel.pack_reconfig_data_format(%[[CB2]])
 // FPU: ttkernel.tile_regs_acquire
 // Grouped: all add_tiles, then all exp_tiles
 // FPU: ttkernel.add_tiles_init(%[[CB0]], %[[CB1]])
@@ -70,7 +71,8 @@
 // SFPU: ttkernel.cb_wait_front(%[[SCB0]], %[[SC4]])
 // SFPU: ttkernel.cb_wait_front(%[[SCB1]], %[[SC4]])
 // SFPU: ttkernel.cb_reserve_back(%[[SCB2]], %[[SC4]])
-// SFPU: ttkernel.init_sfpu(%[[SCB0]], %[[SCB2]])
+// SFPU: ttkernel.reconfig_data_format(%[[SCB0]], %[[SCB0]])
+// SFPU: ttkernel.pack_reconfig_data_format(%[[SCB2]])
 // SFPU: scf.for %[[IV:.*]] = %[[SC0]] to %[[SC2]] step %[[SC1]]
 // Per-subblock cb_reserve inside loop (outermost dim subblocked).
 // SFPU:   ttkernel.cb_reserve_back(%[[SCB2]], %[[SC2I]])

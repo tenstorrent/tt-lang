@@ -4,10 +4,13 @@
 
 """Broadcast initialization preserves live results across DST bank switches."""
 
+import re
+
 import pytest
 import torch
 
 import ttl
+from ttl import ttl_api
 from ttlang_test_utils import to_dram
 from utils.correctness import assert_allclose
 
@@ -67,10 +70,28 @@ def make_normalized_broadcast_pairs(fp32_dest_acc_en, dst_full_sync_en):
     "torch_dtype,fp32_dest_acc_en", [(torch.bfloat16, False), (torch.float32, True)]
 )
 def test_binary_then_unary_broadcast(
-    device, fp32_dest_acc_en, dst_full_sync_en, torch_dtype
+    device, fp32_dest_acc_en, dst_full_sync_en, torch_dtype, monkeypatch
 ):
     # The tile domain spans multiple DST acquisitions, including the upper bank
     # in half-sync mode. Unary broadcast must preserve the preceding products.
+    compute_sources = []
+    write_kernel = ttl_api._write_kernel_to_tmp
+
+    def check_startup(name, source):
+        if name == "compute":
+            body = source.split("void kernel_main() {", 1)[1]
+            startups = list(re.finditer(r"\bcompute_kernel_hw_startup\(", body))
+            assert len(startups) == 1
+            assert not re.search(
+                r"\b(for|if|while)\s*\(|\.wait_front\(|\.reserve_back\("
+                r"|\btile_regs_acquire\(",
+                body[: startups[0].start()],
+            )
+            assert not re.search(r"\b(init_sfpu|binary_op_init_common)\(", body)
+            compute_sources.append(source)
+        return write_kernel(name, source)
+
+    monkeypatch.setattr(ttl_api, "_write_kernel_to_tmp", check_startup)
     torch.manual_seed(947)
     a = torch.randn(32, 256, dtype=torch_dtype) * 0.1
     b = torch.rand(32, 32, dtype=torch_dtype) + 0.5
@@ -85,5 +106,6 @@ def test_binary_then_unary_broadcast(
     ]
     kernel = make_normalized_broadcast_pairs(fp32_dest_acc_en, dst_full_sync_en)
     kernel(*tensors)
+    assert len(compute_sources) == 1
     actual = ttnn.to_torch(tensors[-1]).float()
     assert_allclose(actual, expected, rtol=0.03, atol=0.005)

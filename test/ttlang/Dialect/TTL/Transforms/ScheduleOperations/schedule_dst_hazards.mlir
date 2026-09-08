@@ -32,6 +32,7 @@
 // CHECK-WAR-NEXT:  ttkernel.copy_tile(
 // CHECK-WAR-NEXT:  ttkernel.copy_tile(
 // Group 2: copies from CB1 (b) for both tiles
+// CHECK-WAR-NEXT: ttkernel.reconfig_data_format(
 // CHECK-WAR-NEXT:  ttkernel.copy_tile_init(
 // CHECK-WAR-NEXT:  ttkernel.copy_tile(
 // CHECK-WAR-NEXT:  ttkernel.copy_tile(
@@ -44,6 +45,7 @@
 // CHECK-WAR-NEXT:  ttkernel.add_binary_tile(
 // CHECK-WAR-NEXT:  ttkernel.add_binary_tile(
 // Group 5: copies from CB2 (c) for both tiles (WAR: must follow first add)
+// CHECK-WAR-NEXT: ttkernel.reconfig_data_format(
 // CHECK-WAR-NEXT:  ttkernel.copy_tile_init(
 // CHECK-WAR-NEXT:  ttkernel.copy_tile(
 // CHECK-WAR-NEXT:  ttkernel.copy_tile(

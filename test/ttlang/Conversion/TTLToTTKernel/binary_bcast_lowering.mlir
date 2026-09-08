@@ -11,10 +11,11 @@
 // Row broadcast folded into an add: the (1, N) operand is unpacked with the
 // row broadcast while the (M, N) operand is unpacked normally.
 // CHECK-LABEL: func.func @binary_bcast_row_add
-// CHECK: %[[DATA_CB:.*]] = ttkernel.get_compile_time_arg_val(0)
-// CHECK: %[[OUT_CB:.*]] = ttkernel.get_compile_time_arg_val(1)
-// CHECK: %[[BCAST_CB:.*]] = ttkernel.get_compile_time_arg_val(2)
-// CHECK: ttkernel.binary_op_init_common(%[[DATA_CB]], %[[BCAST_CB]], %[[OUT_CB]])
+// CHECK-DAG: %[[DATA_CB:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-DAG: %[[OUT_CB:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK-DAG: %[[BCAST_CB:.*]] = ttkernel.get_compile_time_arg_val(2)
+// CHECK: ttkernel.reconfig_data_format(%[[DATA_CB]], %[[BCAST_CB]])
+// CHECK: ttkernel.pack_reconfig_data_format(%[[OUT_CB]])
 // CHECK: ttkernel.reconfig_data_format(%[[DATA_CB]], %[[BCAST_CB]])
 // CHECK: ttkernel.binary_bcast_init(%[[DATA_CB]], %[[BCAST_CB]], <add>, <row>)
 // CHECK: ttkernel.binary_bcast(%[[DATA_CB]], %[[BCAST_CB]],
