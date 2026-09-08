@@ -25,7 +25,7 @@ Shared terminology is defined in the [TT-Lang specification glossary](../sphinx/
 
 ## Allocation Model
 
-An invocation of a compiled Python `ttl.operation` with a nonempty allocation plan owns one compiler-managed arena on each participating worker node. Every arena uses the same relative layout. Kernels receive the node-local arena base as one common runtime argument, so the argument count does not depend on the number of logical DFBs.
+An invocation of a compiled Python `ttl.operation` with a nonempty allocation plan owns compiler-managed SRAM on each participating worker node. The default uses one relative layout on every node; per-core allocation can use different layouts. Kernels receive their local arena base as one common runtime argument, so the argument count does not depend on the number of logical DFBs.
 
 The arena has two sections:
 
@@ -130,6 +130,22 @@ SRAMAllocator::allocateDomains(
 `SRAMAllocatorOptions::minimumArenaSearchLimit` is positive and bounds the exact strategy; the factory rejects zero. A solution contains one arena-relative byte offset per region and `arenaBytes`, the maximum payload end (zero for no regions). `allocate` validates the immutable problem, calls the strategy, and validates its solution before the caller changes IR. Validation checks offset count, alignment, budget, conflict disjointness, and the exact high-water mark. On failure, `SRAMPlacementFailure` reports the category, reason, and optional region index. A strategy implements `getName()` and private `allocateImpl()`; the factory gives it a stable option name. All strategies share the same input and validation contract.
 
 `allocateDomains` applies that contract to independently addressable layouts. Each domain maps its region indices to storage owners; the caller proves that domain bindings do not overlap. It validates all domains before placing any of them, then returns one placement and arena size per domain. A failure returns no partial result and identifies the domain, failure category, and affected storage owner when available. A control-only domain retains its aligned control prefix. The exact strategy's work limit applies to each domain separately.
+
+### Per-Core Allocation Domains
+
+`--ttl-sram-allocation-mode=per-core` requires an exact launch grid. The compiler groups multicast receivers that must use the same destination address; groups that share a node become one domain. Other nodes can have separate payload layouts. Every domain retains the same control-record offsets, while payloads proven inactive on a domain are omitted. The compiler then calls `allocateDomains` once with the complete set of domain requests.
+
+```text
+domains = merge overlapping multicast receiver groups
+for each domain:
+    include owners that may be active on a member node
+    retain conflicts among included owners
+    use the common control prefix and target SRAM budget
+placements = allocateDomains(domains)
+emit one payload layout and arena size per domain
+```
+
+For a fixed domain partition, the `minimum-arena` strategy minimizes each domain independently. Multicast equality can force unrelated local payloads into the same layout, so this is not a global minimum over alternative domain partitions.
 
 | Strategy | Selection | Guarantee |
 | --- | --- | --- |
@@ -263,7 +279,7 @@ bindLocalPipeReceivers(allocation, computedReceivers):
 
 The finalized `ttl.crta_indices` list determines the tensor-address prefix even when a tensor-backed DFB outlives its original function operand. Cache identity includes tensor-backed receiver addresses, while ownership accounting excludes caller-owned tensors. The 32- or 64-index TT-Metal DFB limit does not apply to these logical DFBs; PipeNet transport and semaphore limits are unchanged.
 
-Generated inter-device transfers use the same receiver address rule. The arena is one TT-Metal mesh buffer with a common address on participating devices, so its payload offset identifies the destination allocation. A tensor-backed receiver has a computed address only when every participating node has the same tensor base and byte offset. Generated fabric requires a computed receiver address and diagnoses other cases before transfer lowering. Local PipeNets can use receiver publication, including when Metal shared descriptors can change backing storage. Fabric routing resolves device targets independently of these storage decisions.
+Generated inter-device transfers use the same receiver address rule. In uniform mode, the arena has one common address on participating devices. In per-core mode, receiver metadata identifies the destination device and node; the runtime uses that node's arena or tensor base and payload offset. Generated fabric requires a computed receiver address and diagnoses other cases before transfer lowering. Local PipeNets can use receiver publication, including when Metal shared descriptors can change backing storage. Fabric routing resolves device targets independently of these storage decisions.
 
 ```text
 for each logicalDevice:
@@ -282,7 +298,7 @@ Common allocation and lowering contain no architecture branches. `compiler_l1_ta
 
 ## Runtime Arena
 
-The runtime allocates the control records and compiler-owned payloads as a row-major, height-sharded TTNN SRAM tensor with one equal-length row per participating worker node. Height sharding directly represents one arena row per node. Width sharding provides no capacity benefit, and block sharding introduces an unused partition dimension. Tensor-backed payloads retain their existing height-, width-, or block-sharded TTNN allocations. A mesh arena uses TT-Metal's lockstep allocation, which assigns the same SRAM address on every selected device. Device-domain descriptors therefore combine device-specific logical coordinates with one common arena base.
+The runtime allocates control records and compiler-owned payloads as row-major, height-sharded TTNN SRAM tensors. Uniform mode reserves one equal-length row per participating node. Per-core mode reserves each independent node separately and reserves a shared-address tensor for each multicast receiver domain. The runtime binds each node's actual base address, specializes descriptor defines for its payload offsets, and retains every arena through device completion. Tensor-backed payloads retain their existing height-, width-, or block-sharded allocations.
 
 Before reserving an arena, the runtime validates each tensor-backed segment against its actual tensor's type, tile, shard nodes, and byte range. Tensor-backed ring capacity must equal the declared DFB capacity so the runtime validates every address the ring can use. It also rejects undeclared overlap at the tensors' current addresses. Identical ranges are permitted for one storage owner or for reuse of the same declared tensor backing after compiler-proved lifetime separation.
 
@@ -292,7 +308,7 @@ The runtime zero-initializes synchronization scratch. Existing semaphore, runtim
 
 Finalization records `ttl.memory_model`, `ttl.l1_arena_bytes`, and one entry per logical DFB in `ttl.dfb_allocations`. Entries are ordered by `dfb_index`, which equals each entry's array position. Each entry identifies its storage owner (`storage_index`), shared capacity (`storage_capacity_pages`), and arena-relative control-record offset (`l1_offset`). Members of an allocation group share these values. Compiler-owned payloads also record an arena-relative offset (`l1_payload_offset`) and aligned extent (`l1_allocation_bytes`); tensor-backed payloads instead retain their tensor segment metadata and consume no arena payload. Before code generation, EmitC checks record ownership, bounds, target alignment, shared capacity, and agreement with each DFB's element type and page count. A generated kernel's compile-time argument 0 identifies the common runtime argument containing its local arena base; subsequent DFB compile-time arguments identify allocation entries. The C++ `PayloadOffset` template parameter is relative to the control record for arena payloads. `ttl.compiler_sram_reconfiguration_resets` records which control records are cleared at each reconfiguration boundary.
 
-Uniform allocation reserves the largest required arena on every participating worker node. This can waste capacity when activity is sparse. Per-node layouts require node-specific allocation metadata and are an extension of this design.
+Uniform allocation reserves the largest required arena on every participating worker node. Per-core domains reduce this overreservation when activity differs between nodes; the compiler emits node-specific layouts and the runtime reserves their validated extents.
 
 ## Allocation Report
 
@@ -309,7 +325,7 @@ The compiler record identifies storage `owners`, logical DFB `regions`, overlapp
 | `payload_reuse_bytes` | Extent sum minus union; excludes sharing within an allocation group. |
 | `payload_gap_bytes` | Payload high-water mark minus union; an unused address gap, not distance from optimal placement. |
 
-The runtime record has `phase: "runtime"` and `scope: "arena-reference-device"`. It reports the requested arena bytes per node and the actual reserved bytes derived from the arena buffer's aligned page size and uniform page count. `node_count` and `reserved_bytes_on_reference_device` describe only the participating nodes on the reference device. Existing tensor payloads, PipeNet scratch, external resources, and program storage are outside this measurement. A control-only arena may omit trailing compiler alignment padding from the runtime request.
+The runtime record has `phase: "runtime"` and reports requested and reserved arena bytes derived from each arena tensor's page geometry. Uniform mode uses `scope: "arena-reference-device"`; per-core mode emits one `arena-domain-reference-device` record per reservation, with its member nodes. These records cover only the reference device. Existing tensor payloads, PipeNet scratch, external resources, and program storage are outside this measurement.
 
 A compiler-only report can be inspected with:
 
@@ -367,7 +383,6 @@ The bounded `minimum-arena` strategy measures the gap between the selected greed
 
 ## Extensions
 
-- Per-node arena layouts require node-specific allocation metadata and ownership. Multicast receivers additionally require a shared payload address.
 - Cross-operation reuse of PipeNet scratch requires enforced completion through destination consumption.
 - Row-major operations require matching geometry, stride, and capacity rules in the address-based interface.
 - Wormhole reset and reconfiguration require a target synchronization protocol validated on device.

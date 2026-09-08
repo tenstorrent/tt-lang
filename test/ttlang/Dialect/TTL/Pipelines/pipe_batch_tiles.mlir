@@ -8,28 +8,28 @@
 
 // The default leaves group selection to ttl-form-pipe-transports.
 // AUTO: ttl-form-pipe-transports{group-size=0 l1-budget-override=0}
-// AUTO: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 l1-budget-override=0 memory-model=metal-cb reuse-user-dfbs=true sram-allocation-report=false sram-allocation-strategy=multi-order-decreasing sram-minimum-arena-search-limit=1000000 unsafe-assume-allocation-groups=false}
+// AUTO: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 l1-budget-override=0 memory-model=metal-cb reuse-user-dfbs=true sram-allocation-mode=uniform sram-allocation-report=false sram-allocation-strategy=multi-order-decreasing sram-minimum-arena-search-limit=1000000 unsafe-assume-allocation-groups=false}
 // AUTO: ttl-validate-cb-budget{l1-budget-override=0}
 // AUTO: convert-ttl-to-ttkernel{l1-budget-override=0
 
 // A pipeline bound is forwarded to ttl-form-pipe-transports.
 // BOUND: ttl-form-pipe-transports{group-size=4 l1-budget-override=0}
-// BOUND: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 l1-budget-override=0 memory-model=metal-cb reuse-user-dfbs=true sram-allocation-report=false sram-allocation-strategy=multi-order-decreasing sram-minimum-arena-search-limit=1000000 unsafe-assume-allocation-groups=false}
+// BOUND: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 l1-budget-override=0 memory-model=metal-cb reuse-user-dfbs=true sram-allocation-mode=uniform sram-allocation-report=false sram-allocation-strategy=multi-order-decreasing sram-minimum-arena-search-limit=1000000 unsafe-assume-allocation-groups=false}
 
 // The L1 override applies to transport selection, physical allocation, static
 // validation, and final exact resource validation.
 // BUDGET: ttl-form-pipe-transports{group-size=0 l1-budget-override=98304}
-// BUDGET: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 l1-budget-override=98304 memory-model=metal-cb reuse-user-dfbs=true sram-allocation-report=false sram-allocation-strategy=multi-order-decreasing sram-minimum-arena-search-limit=1000000 unsafe-assume-allocation-groups=false}
+// BUDGET: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 l1-budget-override=98304 memory-model=metal-cb reuse-user-dfbs=true sram-allocation-mode=uniform sram-allocation-report=false sram-allocation-strategy=multi-order-decreasing sram-minimum-arena-search-limit=1000000 unsafe-assume-allocation-groups=false}
 // BUDGET: ttl-validate-cb-budget{l1-budget-override=98304}
 // BUDGET: convert-ttl-to-ttkernel{l1-budget-override=98304
 
 // The selected memory model reaches physical allocation.
-// COMPILER-SRAM: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 l1-budget-override=0 memory-model=compiler-sram reuse-user-dfbs=true sram-allocation-report=false sram-allocation-strategy=multi-order-decreasing sram-minimum-arena-search-limit=1000000 unsafe-assume-allocation-groups=false}
+// COMPILER-SRAM: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 l1-budget-override=0 memory-model=compiler-sram reuse-user-dfbs=true sram-allocation-mode=uniform sram-allocation-report=false sram-allocation-strategy=multi-order-decreasing sram-minimum-arena-search-limit=1000000 unsafe-assume-allocation-groups=false}
 
 // An explicit SRAM strategy reaches the final allocation pass.
-// BEST-FIT-SRAM: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 l1-budget-override=0 memory-model=compiler-sram reuse-user-dfbs=true sram-allocation-report=false sram-allocation-strategy=best-fit-decreasing sram-minimum-arena-search-limit=1000000 unsafe-assume-allocation-groups=false}
+// BEST-FIT-SRAM: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 l1-budget-override=0 memory-model=compiler-sram reuse-user-dfbs=true sram-allocation-mode=uniform sram-allocation-report=false sram-allocation-strategy=best-fit-decreasing sram-minimum-arena-search-limit=1000000 unsafe-assume-allocation-groups=false}
 
 // A bounded minimum-arena strategy forwards its search limit.
-// MINIMUM-SRAM: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 l1-budget-override=0 memory-model=compiler-sram reuse-user-dfbs=true sram-allocation-report=false sram-allocation-strategy=minimum-arena sram-minimum-arena-search-limit=19 unsafe-assume-allocation-groups=false}
+// MINIMUM-SRAM: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 l1-budget-override=0 memory-model=compiler-sram reuse-user-dfbs=true sram-allocation-mode=uniform sram-allocation-report=false sram-allocation-strategy=minimum-arena sram-minimum-arena-search-limit=19 unsafe-assume-allocation-groups=false}
 
 module {}

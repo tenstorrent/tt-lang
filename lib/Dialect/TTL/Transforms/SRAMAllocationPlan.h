@@ -10,6 +10,7 @@
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
+#include <optional>
 
 namespace mlir::tt::ttl {
 
@@ -40,6 +41,14 @@ struct SRAMStorage {
   SmallVector<unsigned> members;
 };
 
+/// A worker node's payload layout; absent payloads retain no arena extent.
+struct SRAMCoreLayout {
+  LaunchNodeCoord node;
+  llvm::SmallVector<std::optional<uint64_t>> payloadOffsets;
+  uint64_t arenaBytes;
+  unsigned domain;
+};
+
 /// Validated per-node placement, consumed before any IR mutation.
 struct SRAMAllocationPlan {
   SmallVector<SRAMRegion> regions;
@@ -47,6 +56,7 @@ struct SRAMAllocationPlan {
   uint64_t arenaBytes;
   uint64_t alignmentBytes;
   uint64_t controlBytes;
+  llvm::SmallVector<SRAMCoreLayout> coreLayouts;
 };
 
 } // namespace mlir::tt::ttl

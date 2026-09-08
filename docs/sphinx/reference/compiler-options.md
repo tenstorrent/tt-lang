@@ -13,6 +13,7 @@ python my_kernel.py --no-ttl-maximize-dst
 | Flag | Default | Description |
 |---|---|---|
 | `--ttl-memory-model {metal-cb,compiler-sram}` | `metal-cb` | Select Metal DFB descriptors or experimental compiler-owned SRAM byte allocation. Unsupported operations in `compiler-sram` are errors. |
+| `--ttl-sram-allocation-mode {uniform,per-core}` | `uniform` | Use one SRAM layout for all worker nodes or independently reserve layouts for nodes outside shared multicast receiver domains. Per-core mode requires an exact launch grid and TT-Metal hybrid allocation enabled before device initialization. |
 | `--ttl-sram-allocation-report` / `--no-ttl-sram-allocation-report` | disabled | Emit JSON allocation and runtime arena reservation records to stderr for `compiler-sram`. |
 | `--ttl-sram-allocation-strategy {multi-order-decreasing,first-fit-decreasing,best-fit-decreasing,minimum-arena}` | `multi-order-decreasing` | Select the payload placement strategy for `compiler-sram`. |
 | `--ttl-sram-minimum-arena-search-limit N` | `1000000` | Bound examined subset sums and partial placements in `minimum-arena`; exhaustion is inconclusive. |
@@ -160,6 +161,7 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | `pipe-batch-tiles` | int64_t | `0` (auto) | Limit logical transfers per PipeTransport group. `0` selects automatically and `1` disables grouping. |
 | `l1-budget-override` | uint32_t | `0` (target default) | Override the per-core L1 budget used for target-aligned DFB allocation, PipeNet resources, synchronized-reset state, reconfiguration state, and final combined validation. |
 | `memory-model` | string | `metal-cb` | Select `metal-cb` or experimental `compiler-sram` byte allocation. |
+| `sram-allocation-mode` | string | `uniform` | Use a common SRAM layout or per-core layouts with equal-address multicast receiver domains. Per-core mode requires `compiler-sram`. |
 | `sram-allocation-report` | bool | `false` | Emit JSON ownership, reuse, conflict, and planned arena records to stderr for `compiler-sram`. |
 | `sram-allocation-strategy` | string | `multi-order-decreasing` | Select `multi-order-decreasing`, `first-fit-decreasing`, `best-fit-decreasing`, or `minimum-arena` SRAM payload placement. |
 | `sram-minimum-arena-search-limit` | uint64_t | `1000000` | Bound examined subset sums and partial placements in `minimum-arena`. |
@@ -185,7 +187,7 @@ The pipeline runs these passes and subpasses in order:
 - `ttl-verify-pipenet-guards`, then `ttl-verify-pipenet-schedule` -- verify PipeNet launch domains and event ordering while logical DFB identities remain distinct and before physical DFB allocation
 - `ttl-form-pipe-transports` -- group eligible repeated PipeNet transfers and select bounded receiver storage while accounting for synchronized-reset and reconfiguration state
 - `ttl-coalesce-dfb-acquires` -- coalesce compatible DFB acquires
-- `ttl-finalize-dfb-indices` -- `memory-model=compiler-sram` assigns explicit SRAM payload and control offsets using completion-proven storage interference and the selected `sram-allocation-strategy` with `sram-minimum-arena-search-limit` bounding exact search; `sram-allocation-report` emits validated allocation facts; the default assigns logical DFBs to physical indices, validates combined DFB and fixed-state capacity, and emits runtime metadata; `reuse-user-dfbs` controls automatic user-DFB reuse, `unsafe-assume-allocation-groups` trusts only explicit unproved group handoffs, `exact-coloring-search-limit` bounds exhaustive index and weighted-allocation queries, and `l1-budget-override` replaces the target SRAM budget
+- `ttl-finalize-dfb-indices` -- `memory-model=compiler-sram` assigns explicit SRAM payload and control offsets using completion-proven storage interference and the selected `sram-allocation-strategy` with `sram-minimum-arena-search-limit` bounding exact search; `sram-allocation-mode=per-core` places independently addressable node domains while preserving multicast address equality; `sram-allocation-report` emits validated allocation facts; the default assigns logical DFBs to physical indices, validates combined DFB and fixed-state capacity, and emits runtime metadata; `reuse-user-dfbs` controls automatic user-DFB reuse, `unsafe-assume-allocation-groups` trusts only explicit unproved group handoffs, `exact-coloring-search-limit` bounds exhaustive index and weighted-allocation queries, and `l1-budget-override` replaces the target SRAM budget
 - `ttl-set-compute-kernel-config` -- select tile execution strategies and resolve kernel-wide DST and per-DFB unpack configuration
 - `ttl-assign-dst` -- DST register allocation (linear scan with copy insertion)
 - `ttl-subblock-compute-for-dst` -- tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*; optionally refine reserve/push to per-subblock granularity *(only if `subblock-sync=true`)*
@@ -262,6 +264,8 @@ ttlang-opt input.mlir -p 'func.func(ttl-insert-intermediate-dfbs{enable=false})'
 
 #### `ttl-finalize-dfb-indices`
 
+`sram-allocation-mode=per-core` requires an exact launch grid. The compiler specializes kernels by worker node and records destination-node addresses for PipeNet receivers. The runtime reserves one arena per independent node or shared multicast receiver domain. TT-Metal hybrid allocation must be enabled before device initialization.
+
 `sram-allocation-report=true` emits a JSON compiler record to stderr. The [SRAM allocation report](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/SRAMAllocation.md#allocation-report) defines its fields and the runtime reservation record.
 
 `memory-model=compiler-sram` assigns payload byte offsets and independent DFB control records. Unknown access completion prevents payload reuse. `reuse-user-dfbs=false` gives every payload separate storage. The arena includes control and alignment bytes. Greedy placement failure does not establish infeasibility; `minimum-arena` distinguishes proven infeasibility from an exhausted search limit. The [backend contract](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/SRAMAllocation.md#implemented-contract) defines supported execution and storage forms.
@@ -271,6 +275,7 @@ Assign DFB storage identities and emit the runtime allocation table.
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `memory-model` | string | `metal-cb` | Select `metal-cb` or experimental `compiler-sram` byte allocation. |
+| `sram-allocation-mode` | string | `uniform` | Use a common SRAM layout or per-core layouts with equal-address multicast receiver domains. Per-core mode requires `compiler-sram`. |
 | `sram-allocation-report` | bool | `false` | Emit JSON ownership, reuse, conflict, and planned arena records to stderr for `compiler-sram`. |
 | `sram-allocation-strategy` | string | `multi-order-decreasing` | Select `multi-order-decreasing`, `first-fit-decreasing`, `best-fit-decreasing`, or `minimum-arena` SRAM payload placement. |
 | `sram-minimum-arena-search-limit` | uint64_t | `1000000` | Bound examined subset sums and partial placements in `minimum-arena`. |

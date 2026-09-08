@@ -127,6 +127,7 @@ struct CompilerL1Allocation {
   int64_t tensorIndex;
   ArrayAttr launchNodes;
   Type elementType;
+  std::string payloadOffsetExpression;
 };
 
 static bool isRepresentableMetadataInteger(IntegerAttr value) {
@@ -275,6 +276,17 @@ parseCompilerL1Allocation(Attribute attribute) {
     return failure();
   }
 
+  std::string payloadOffsetExpression =
+      std::to_string(tensorBacking ? tensorBacking.getByteOffset()
+                                   : payloadAddressValue - stateOffsetValue);
+  if (payloadAddress && dictionary.getAs<ArrayAttr>("sram_core_layouts")) {
+    auto index = dictionary.getAs<IntegerAttr>("dfb_index");
+    if (!index || index.getInt() < 0) {
+      return failure();
+    }
+    payloadOffsetExpression =
+        "TTLANG_SRAM_DFB_" + std::to_string(index.getInt()) + "_PAYLOAD_OFFSET";
+  }
   return CompilerL1Allocation{
       pageSize.getInt(),
       pagesPerBlock.getInt(),
@@ -286,7 +298,8 @@ parseCompilerL1Allocation(Attribute attribute) {
       hasArenaPayload ? allocationBytes.getInt() : 0,
       tensorBacking ? tensorBacking.getTensorIndex() : -1,
       launchNodes,
-      elementType.getValue()};
+      elementType.getValue(),
+      std::move(payloadOffsetExpression)};
 }
 
 static FailureOr<int64_t>
@@ -512,8 +525,8 @@ static std::string ensureCBDeclaration(Value cb, Operation *useOp,
         (Twine("ttlang::l1::Buffer<") + Twine(allocation.pageSizeBytes) + ", " +
          Twine(allocation.pagesPerBlock) + ", " + Twine(allocation.blockCount) +
          ", " + Twine(allocation.storageCapacityPages) + ", " +
-         Twine(allocation.payloadOffset) + ", " + Twine(*tensorCommonArgIndex) +
-         ">")
+         Twine(allocation.payloadOffsetExpression) + ", " +
+         Twine(*tensorCommonArgIndex) + ">")
             .str();
   }
   std::string cbDecl = bufferType + " " + cbName + "({});";
@@ -789,7 +802,7 @@ getCompilerL1OperandTypeName(Operation *operation,
          "compiler-sram tensor argument must be validated before conversion");
   return (Twine("ttlang::l1::Operand<") +
           getCompilerL1GeometryTemplateArguments(allocation, tile) + ", " +
-          Twine(allocation.payloadOffset) + ", " +
+          Twine(allocation.payloadOffsetExpression) + ", " +
           Twine(*tensorCommonArgIndex) + ", " +
           (directToDestination ? "true>" : "false>"))
       .str();
@@ -814,7 +827,7 @@ getCompilerL1DFBDescriptorTypeName(Operation *operation,
             Twine(descriptor.getBlockCount()) + ", " +
             Twine(allocation.storageCapacityPages) + ", " +
             Twine(allocation.stateOffset) + ", " +
-            Twine(allocation.payloadOffset) + ", " +
+            Twine(allocation.payloadOffsetExpression) + ", " +
             Twine(*tensorCommonArgIndex) + ">")
         .str();
   }
@@ -827,7 +840,7 @@ getCompilerL1DFBDescriptorTypeName(Operation *operation,
   return (Twine("ttlang::l1::ComputeDFBDescriptor<") +
           getCompilerL1GeometryTemplateArguments(allocation, tile) + ", " +
           Twine(allocation.stateOffset) + ", " +
-          Twine(allocation.payloadOffset) + ", " +
+          Twine(allocation.payloadOffsetExpression) + ", " +
           Twine(*tensorCommonArgIndex) + ", " +
           (directToDestination ? "true>" : "false>"))
       .str();

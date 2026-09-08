@@ -1081,16 +1081,15 @@ def TTLFinalizeDFBIndices
     records. The selected SRAM allocation strategy places payloads over the
     concurrent-kernel storage conflict graph; unknown completion prohibits reuse.
     The complete plan is validated before mutation. Runtime metadata supplies
-    state and payload offsets within one allocator-owned SRAM arena. The arena
-    high-water mark includes alignment and state. A greedy budget failure does
-    not prove that a feasible placement is impossible. Unsupported storage forms
-    and PipeNet transfers are diagnosed; this mode never falls back to Metal descriptors.
-    `reuse-user-dfbs=false` disables payload aliasing in this mode.
-    `sram-allocation-report` emits a schema-versioned JSON record to stderr
-    after allocation validation and before IR mutation. It reports storage
-    owners, tensor references, reused ranges, lifetime and conflict evidence,
-    and planned per-node arena bytes. It does not report hardware reservations
-    or change allocation. The option is inactive for `metal-cb`.
+    state and payload offsets within allocator-owned SRAM arenas. Uniform mode
+    uses one layout on all participating worker nodes. Per-core mode requires an
+    exact launch grid and omits payloads proven inactive on each node. Multicast
+    receivers share one layout to preserve equal destination addresses. Control
+    offsets remain common to all layouts. A greedy budget failure does not prove
+    infeasibility. Unsupported storage forms are errors; this mode never falls
+    back to Metal descriptors. `reuse-user-dfbs=false` disables payload aliasing.
+    `sram-allocation-report` emits validated per-domain allocation facts before
+    IR mutation and does not change placement or report hardware reservations.
 
     User-declared DFBs enter this pass with module-wide logical `dfb_id`
     attributes. Compiler-created DFB declarations receive unique logical IDs.
@@ -1266,6 +1265,8 @@ def TTLFinalizeDFBIndices
     Option<"reuseUserDFBs", "reuse-user-dfbs", "bool", "true",
            "Reuse physical DFB indices and compiler-managed storage for "
            "lifetimes proven not to overlap across concurrent kernels.">,
+    Option<"sramAllocationMode", "sram-allocation-mode", "std::string",
+           "\"uniform\"", "SRAM allocation domains: uniform or per-core">,
     Option<"sramAllocationReport", "sram-allocation-report", "bool", "false",
            "Emit a versioned JSON report of compiler-managed SRAM ownership, "
            "reuse, conflicts, and planned arena bytes.">,
@@ -1520,6 +1521,11 @@ def TTKernelSpecializeCores
     can then resolve coordinate-dependent control flow and retain only the
     constant-table entries reachable on each core. The runtime uses
     `ttl.core_coord` to dispatch each clone to its assigned core.
+
+    Compiler-managed per-core SRAM requires specialization of every kernel,
+    including kernels without coordinate-dependent control flow. This binds
+    each kernel to one finalized arena layout. Referenced kernels are rejected
+    before cloning in that mode.
 
     Functions with symbol uses remain unspecialized because replacing them
     would require rewriting their references. The pass emits a warning for
