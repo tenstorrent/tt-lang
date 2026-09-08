@@ -1237,9 +1237,20 @@ public:
       resultTypes.push_back(ct);
     }
 
-    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
-        op, resultTypes, getOpName(op), getCallArgs(rewriter, op),
-        getTemplateArgs(rewriter, op), adaptor.getOperands());
+    auto call = emitc::CallOpaqueOp::create(
+        rewriter, op.getLoc(), resultTypes, getOpName(op),
+        getCallArgs(rewriter, op), getTemplateArgs(rewriter, op),
+        adaptor.getOperands());
+    if constexpr (std::is_same_v<SourceOp, ttkernel::CopyTileInitOp>) {
+      // Format reconfiguration restores the FPU zero-substitution default.
+      // Datacopy must preserve signed zero, as the legacy init_sfpu did.
+      emitc::VerbatimOp::create(rewriter, op.getLoc(),
+                                "#ifndef ARCH_QUASAR\n"
+                                "MATH((ckernel::math::_configure_unary_"
+                                "preserve_zero_flag_state_()));\n"
+                                "#endif");
+    }
+    rewriter.replaceOp(op, call.getResults());
 
     return success();
   }
@@ -3042,9 +3053,14 @@ public:
   matchAndRewrite(ttkernel::PackReconfigDataFormatOp op,
                   ttkernel::PackReconfigDataFormatOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
-    rewriter.create<emitc::CallOpaqueOp>(op->getLoc(), TypeRange{},
-                                         "pack_reconfig_data_format",
-                                         ValueRange{adaptor.getOutCb()});
+    ArrayAttr templateArgs;
+    if (op.getTileDimReconfig()) {
+      templateArgs = rewriter.getArrayAttr(
+          {emitc::OpaqueAttr::get(op.getContext(), "true")});
+    }
+    emitc::CallOpaqueOp::create(rewriter, op.getLoc(), TypeRange{},
+                                "pack_reconfig_data_format", ArrayAttr(),
+                                templateArgs, ValueRange{adaptor.getOutCb()});
     rewriter.eraseOp(op);
     return success();
   }

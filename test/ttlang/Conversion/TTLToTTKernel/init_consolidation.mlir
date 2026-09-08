@@ -3,8 +3,8 @@
 // RUN: ttlang-opt --ttkernel-insert-inits %s | FileCheck %s --check-prefix=COMMON
 // Summary: Tests for ttkernel-insert-inits pass.
 //
-// Phase 1 (common init): Inserts init_sfpu or binary_op_init_common before
-// each sync region (tile_regs_acquire ... tile_regs_release).
+// Phase 1: Plans one startup at entry and reconfiguration before each sync
+// region (tile_regs_acquire ... tile_regs_release).
 // Phase 2 (per-op init): Consecutive same-type compute ops share a single
 // init op, while type switches get separate inits.
 
@@ -150,20 +150,22 @@ func.func @fpu_binary_consolidation() {
 }
 
 // =============================================================================
-// Phase 1 tests: common init insertion before sync regions
+// Phase 1 tests: region configuration insertion before sync regions
 // =============================================================================
 
-// Test 6: SFPU sync region -> init_sfpu inserted before acquire
+// Test 6: SFPU sync region -> unary region reconfiguration inserted before acquire
 // COMMON-LABEL: func.func @common_init_sfpu
 // COMMON-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
 // COMMON-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
-// COMMON: ttkernel.init_sfpu(%[[CB0]], %[[CB2]])
+// COMMON: ttkernel.reconfig_data_format(%[[CB0]], %[[CB0]])
+// COMMON: ttkernel.pack_reconfig_data_format(%[[CB2]])
+// COMMON-NEXT: ttkernel.copy_tile_init(
 // COMMON-NEXT: ttkernel.tile_regs_acquire
 // COMMON: ttkernel.copy_tile(%[[CB0]],
 // COMMON: ttkernel.exp_tile(
 // COMMON: ttkernel.pack_tile({{.*}}, %[[CB2]],
 // COMMON: ttkernel.tile_regs_release
-// No duplicate init_sfpu
+// No legacy full SFPU init.
 // COMMON-NOT: ttkernel.init_sfpu
 func.func @common_init_sfpu() {
   %cb0 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
@@ -177,17 +179,18 @@ func.func @common_init_sfpu() {
   func.return
 }
 
-// Test 7: FPU binary sync region -> binary_op_init_common inserted before acquire
+// Test 7: FPU binary sync region -> binary region reconfiguration inserted before acquire
 // COMMON-LABEL: func.func @common_init_fpu_binary
 // COMMON-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
 // COMMON-DAG: %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
 // COMMON-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
-// COMMON: ttkernel.binary_op_init_common(%[[CB0]], %[[CB1]], %[[CB2]])
+// COMMON: ttkernel.reconfig_data_format(%[[CB0]], %[[CB1]])
+// COMMON: ttkernel.pack_reconfig_data_format(%[[CB2]])
 // COMMON-NEXT: ttkernel.tile_regs_acquire
 // COMMON: ttkernel.add_tiles(%[[CB0]], %[[CB1]],
 // COMMON: ttkernel.pack_tile({{.*}}, %[[CB2]],
 // COMMON: ttkernel.tile_regs_release
-// No duplicate binary_op_init_common
+// No legacy full binary init.
 // COMMON-NOT: ttkernel.binary_op_init_common
 func.func @common_init_fpu_binary() {
   %cb0 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
@@ -201,16 +204,20 @@ func.func @common_init_fpu_binary() {
   func.return
 }
 
-// Test 8: Two sync regions -> each gets its own common init
+// Test 8: Two sync regions -> each gets its own region configuration
 // COMMON-LABEL: func.func @two_sync_regions_two_inits
 // COMMON-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
 // COMMON-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
 // First region
-// COMMON: ttkernel.init_sfpu(%[[CB0]], %[[CB2]])
+// COMMON: ttkernel.reconfig_data_format(%[[CB0]], %[[CB0]])
+// COMMON: ttkernel.pack_reconfig_data_format(%[[CB2]])
+// COMMON-NEXT: ttkernel.copy_tile_init(
 // COMMON-NEXT: ttkernel.tile_regs_acquire
 // COMMON: ttkernel.tile_regs_release
 // Second region
-// COMMON: ttkernel.init_sfpu(%[[CB0]], %[[CB2]])
+// COMMON: ttkernel.reconfig_data_format(%[[CB0]], %[[CB0]])
+// COMMON: ttkernel.pack_reconfig_data_format(%[[CB2]])
+// COMMON-NEXT: ttkernel.copy_tile_init(
 // COMMON-NEXT: ttkernel.tile_regs_acquire
 // COMMON: ttkernel.tile_regs_release
 func.func @two_sync_regions_two_inits() {
@@ -232,11 +239,13 @@ func.func @two_sync_regions_two_inits() {
   func.return
 }
 
-// Test 9: Compiler-generated loop (ttl.tile_loop_stride) -> common init hoisted above
+// Test 9: Compiler-generated loop (ttl.tile_loop_stride) -> region configuration hoisted above
 // COMMON-LABEL: func.func @common_init_hoisted_above_compiler_loop
 // COMMON-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
 // COMMON-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
-// COMMON: ttkernel.init_sfpu(%[[CB0]], %[[CB2]])
+// COMMON: ttkernel.reconfig_data_format(%[[CB0]], %[[CB0]])
+// COMMON: ttkernel.pack_reconfig_data_format(%[[CB2]])
+// COMMON-NEXT: ttkernel.copy_tile_init(
 // COMMON-NEXT: scf.for
 // COMMON: ttkernel.tile_regs_acquire
 // COMMON: ttkernel.exp_tile(
@@ -263,7 +272,9 @@ func.func @common_init_hoisted_above_compiler_loop() {
 // COMMON-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
 // COMMON-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
 // COMMON: scf.for
-// COMMON: ttkernel.init_sfpu(%[[CB0]], %[[CB2]])
+// COMMON: ttkernel.reconfig_data_format(%[[CB0]], %[[CB0]])
+// COMMON: ttkernel.pack_reconfig_data_format(%[[CB2]])
+// COMMON-NEXT: ttkernel.copy_tile_init(
 // COMMON-NEXT: ttkernel.tile_regs_acquire
 // COMMON: ttkernel.tile_regs_release
 func.func @common_init_not_hoisted_past_unmarked_loop() {
@@ -287,7 +298,9 @@ func.func @common_init_not_hoisted_past_unmarked_loop() {
 // COMMON-LABEL: func.func @common_init_hoisted_above_nested_compiler_loops
 // COMMON-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
 // COMMON-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2)
-// COMMON: ttkernel.init_sfpu(%[[CB0]], %[[CB2]])
+// COMMON: ttkernel.reconfig_data_format(%[[CB0]], %[[CB0]])
+// COMMON: ttkernel.pack_reconfig_data_format(%[[CB2]])
+// COMMON-NEXT: ttkernel.copy_tile_init(
 // COMMON-NEXT: scf.for
 // COMMON: scf.for
 // COMMON: ttkernel.tile_regs_acquire
@@ -364,14 +377,16 @@ func.func @reduce_init_consolidates_same_dim() {
   func.return
 }
 
-// Test 15: Multiple output CBs with same data format -> accepted, one common init.
+// Test 15: Multiple output CBs with same data format -> accepted, one region configuration.
 // When two pack ops target DFBs with the same element type but different
-// capacities, PACK data format routing is identical and one common init
+// capacities, PACK data format routing is identical and one region configuration
 // suffices.
 // COMMON-LABEL: func.func @multi_output_cb_same_format
 // COMMON-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0)
 // COMMON-DAG: %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1)
-// COMMON: ttkernel.init_sfpu(%[[CB0]], %[[CB1]])
+// COMMON: ttkernel.reconfig_data_format(%[[CB0]], %[[CB0]])
+// COMMON: ttkernel.pack_reconfig_data_format(%[[CB1]])
+// COMMON-NEXT: ttkernel.copy_tile_init(
 // COMMON-NEXT: ttkernel.tile_regs_acquire
 // COMMON: ttkernel.pack_tile({{.*}}, %[[CB1]],
 // COMMON: ttkernel.pack_tile({{.*}}, %[[CB2:.*]],

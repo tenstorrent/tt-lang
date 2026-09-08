@@ -210,10 +210,12 @@ def TTKernel_PackReconfigDataFormatOp : TTKernel_Op<"pack_reconfig_data_format">
     let description = [{
       Reconfigures the packer data format to match the output circular buffer.
       Must be called before pack_reconfig_l1_acc to ensure format consistency
-      during L1 accumulation.
+      during L1 accumulation. With tile_dim_reconfig, also configures tile
+      geometry while preserving packer address modes and DST synchronization.
     }];
 
-    let arguments = (ins TTKernel_CB:$out_cb);
+    let arguments = (ins TTKernel_CB:$out_cb,
+                         DefaultValuedAttr<BoolAttr, "false">:$tile_dim_reconfig);
 
     let assemblyFormat = [{
       `(` $out_cb `)` attr-dict `:` functional-type(operands, results)
@@ -3586,19 +3588,19 @@ def TTKernel_UntilizeUninitOp : TTKernel_Op<"untilize_uninit", [TTKernel_LayoutO
     }];
 }
 
-def TTKernel_TransposeInitOp : TTKernel_Op<"transpose_wh_init"> {
+def TTKernel_TransposeInitOp : TTKernel_InitOp<"transpose_init"> {
     let summary = "TransposeInitOp call.";
     let description = [{
-      Initialize the transpose operation. To be called once at beginning of a
-      kernel before transpose operations.
+      Configures the transpose UNPACK and MATH pipelines after hardware startup
+      and input reconfiguration. Preserves PACK state and DST synchronization.
     }];
 
-    let arguments = (ins TTKernel_CB:$cbIn, TTKernel_CB:$cbOut);
+    let arguments = (ins TTKernel_CB:$cbIn);
 
     let hasVerifier = 1;
 
     let assemblyFormat = [{
-      `(` $cbIn `,` $cbOut `)` attr-dict `:` functional-type(operands, results)
+      `(` $cbIn `)` attr-dict `:` functional-type(operands, results)
     }];
 }
 

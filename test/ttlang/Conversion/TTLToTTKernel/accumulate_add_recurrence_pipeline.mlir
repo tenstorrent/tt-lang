@@ -10,14 +10,16 @@
 // CHECK-LABEL: func.func @carried_add_dst_compute_pipeline
 // CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
 // CHECK-DAG: %[[C1_I32:.*]] = arith.constant 1 : i32
-// CHECK: %[[INIT_CB:.*]] = ttkernel.get_compile_time_arg_val(0)
-// CHECK: %[[DELTA_CB:.*]] = ttkernel.get_compile_time_arg_val(1)
-// CHECK: %[[OUT_CB:.*]] = ttkernel.get_compile_time_arg_val(2)
+// CHECK-DAG: %[[INIT_CB:.*]] = ttkernel.get_compile_time_arg_val(0)
+// CHECK-DAG: %[[DELTA_CB:.*]] = ttkernel.get_compile_time_arg_val(1)
+// CHECK-DAG: %[[OUT_CB:.*]] = ttkernel.get_compile_time_arg_val(2)
 // CHECK: ttkernel.cb_wait_front(%[[INIT_CB]], %[[C1_I32]])
 // CHECK: ttkernel.cb_reserve_back(%[[OUT_CB]], %[[C1_I32]])
 // CHECK: ttkernel.tile_regs_acquire
+// CHECK-NEXT: ttkernel.reconfig_data_format(
 // CHECK-NEXT: ttkernel.copy_tile_init(%[[INIT_CB]])
 // CHECK-NEXT: ttkernel.copy_tile(%[[INIT_CB]], %[[C0]], %[[C0]])
+// CHECK-NEXT: ttkernel.reconfig_data_format(
 // CHECK-NEXT: ttkernel.binary_dest_reuse_tiles_init(%[[DELTA_CB]], <add>, <dest_to_srca>)
 // CHECK-NEXT: scf.for %[[RED:.*]] = %[[C0]]
 // CHECK-NEXT: ttkernel.cb_wait_front(%[[DELTA_CB]], %[[C1_I32]])
@@ -31,9 +33,9 @@
 // L1-LABEL: func.func @carried_add_dst_compute_pipeline
 // L1-DAG: %[[C0_I32:.*]] = arith.constant 0 : i32
 // L1-DAG: %[[C1_I32:.*]] = arith.constant 1 : i32
-// L1: %[[INIT_CB:.*]] = ttkernel.get_compile_time_arg_val(0)
-// L1: %[[DELTA_CB:.*]] = ttkernel.get_compile_time_arg_val(1)
-// L1: %[[OUT_CB:.*]] = ttkernel.get_compile_time_arg_val(2)
+// L1-DAG: %[[INIT_CB:.*]] = ttkernel.get_compile_time_arg_val(0)
+// L1-DAG: %[[DELTA_CB:.*]] = ttkernel.get_compile_time_arg_val(1)
+// L1-DAG: %[[OUT_CB:.*]] = ttkernel.get_compile_time_arg_val(2)
 // L1: ttkernel.cb_wait_front(%[[INIT_CB]], %[[C1_I32]])
 // L1: ttkernel.cb_reserve_back(%[[OUT_CB]], %[[C1_I32]])
 // L1: ttkernel.pack_tile({{.*}}, %[[OUT_CB]]

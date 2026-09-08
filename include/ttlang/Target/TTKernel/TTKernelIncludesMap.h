@@ -248,7 +248,7 @@ inline const llvm::StringMap<HeaderRequirement> &getCalleeToHeadersMap() {
         {"tilize_block",                                   {"api/compute/tilize.h", ""}},
         {"tilize_init",                                    {"api/compute/tilize.h", ""}},
         {"tilize_uninit",                                  {"api/compute/tilize.h", ""}},
-        {"transpose_wh_init",                              {"api/compute/transpose_wh.h", ""}},
+        {"transpose_init",                                 {"api/compute/transpose.h", ""}},
         {"transpose_wh_tile",                              {"api/compute/transpose_wh.h", ""}},
         {"trunc_tile",                                     {"api/compute/eltwise_unary/rounding.h", ""}},
         {"typecast_tile",                                  {"api/compute/eltwise_unary/typecast.h", ""}},

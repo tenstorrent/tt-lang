@@ -2,12 +2,13 @@
 // the DST synchronization bank. Equal consecutive keys share an init; changing
 // either input or hardware kind requires another init.
 
-// RUN: ttlang-opt %s --split-input-file --ttkernel-insert-inits | FileCheck %s --implicit-check-not=ttkernel.compute_kernel_hw_startup
+// RUN: ttlang-opt %s --split-input-file --ttkernel-insert-inits | FileCheck %s --implicit-check-not=ttkernel.binary_op_init_common --implicit-check-not=ttkernel.init_sfpu
 
 // CHECK-LABEL: func.func @binary_bcast_single
 // CHECK-DAG: %[[IN0:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK-DAG: %[[IN1:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK-DAG: %[[OUT:.*]] = ttkernel.get_compile_time_arg_val(2)
+// CHECK: ttkernel.tile_regs_acquire
 // CHECK: ttkernel.reconfig_data_format(%[[IN0]], %[[IN1]])
 // CHECK-NEXT: ttkernel.binary_bcast_init(%[[IN0]], %[[IN1]], <add>, <col>)
 // CHECK-NEXT: ttkernel.binary_bcast(%[[IN0]], %[[IN1]],
@@ -29,6 +30,7 @@ func.func @binary_bcast_single() {
 
 // Two ops with identical op/bcast kinds and CBs share one init.
 // CHECK-LABEL: func.func @binary_bcast_shared_init
+// CHECK: ttkernel.tile_regs_acquire
 // CHECK: ttkernel.reconfig_data_format(
 // CHECK-NEXT: ttkernel.binary_bcast_init({{.*}}, <mul>, <row>)
 // CHECK-NEXT: ttkernel.binary_bcast(
@@ -78,7 +80,7 @@ func.func @binary_bcast_reinit_on_op_change() {
 
 // Two input pairs in one sync region: each op configures the hardware for the
 // pair it reads, so neither runs with the other pair's configuration. The
-// region-level binary_op_init_common only covers the first pair, and a region
+// region-level binary region reconfiguration only covers the first pair, and a region
 // like this one can sit inside a loop, where the configuration left behind is
 // the one of the last op of the previous iteration.
 // CHECK-LABEL: func.func @binary_bcast_two_input_pairs
@@ -87,6 +89,7 @@ func.func @binary_bcast_reinit_on_op_change() {
 // CHECK-DAG: %[[IN2:.*]] = ttkernel.get_compile_time_arg_val(2)
 // CHECK-DAG: %[[IN3:.*]] = ttkernel.get_compile_time_arg_val(3)
 // CHECK-DAG: %[[OUT:.*]] = ttkernel.get_compile_time_arg_val(4)
+// CHECK: ttkernel.tile_regs_acquire
 // CHECK: ttkernel.reconfig_data_format(%[[IN0]], %[[IN1]])
 // CHECK-NEXT: ttkernel.binary_bcast_init(%[[IN0]], %[[IN1]], <mul>, <row>)
 // CHECK-NEXT: ttkernel.binary_bcast(%[[IN0]], %[[IN1]],
@@ -124,7 +127,7 @@ func.func @binary_bcast_two_input_pairs() {
 // CHECK-DAG: %[[IN0:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK-DAG: %[[IN1:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK-DAG: %[[IN2:.*]] = ttkernel.get_compile_time_arg_val(2)
-// CHECK: ttkernel.binary_op_init_common
+// CHECK-DAG: ttkernel.compute_kernel_hw_startup
 // CHECK: scf.for
 // CHECK-NEXT: ttkernel.tile_regs_acquire
 // CHECK-NEXT: ttkernel.reconfig_data_format(%[[IN0]], %[[IN1]])

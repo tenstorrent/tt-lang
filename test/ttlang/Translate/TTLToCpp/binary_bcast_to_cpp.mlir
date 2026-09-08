@@ -7,10 +7,11 @@
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-set-compute-kernel-config, func.func(ttl-assign-dst, ttl-lower-to-loops, ttl-schedule-operations, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse, lower-affine)' -o %t.ttkernel.mlir
 // RUN: ttlang-opt --allow-unregistered-dialect --convert-ttkernel-to-emitc %t.ttkernel.mlir -o %t.emitc.mlir
 // RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
-// RUN: FileCheck %s --input-file=%t.cpp --implicit-check-not=compute_kernel_hw_startup --implicit-check-not=init_bcast
+// RUN: FileCheck %s --input-file=%t.cpp --implicit-check-not=binary_op_init_common --implicit-check-not=init_sfpu --implicit-check-not=init_bcast
 
 // CHECK: #include "api/compute/bcast.h"
 // CHECK: #include "api/compute/reconfig_data_format.h"
+// CHECK: tile_regs_acquire();
 // CHECK: reconfig_data_format<SrcOrder::Regular, true>(
 // CHECK-NEXT: bcast_init<EltwiseBinaryType::ELWADD, BroadcastType::ROW>
 // CHECK: any_tiles_bcast<EltwiseBinaryType::ELWADD, BroadcastType::ROW>

@@ -2,23 +2,10 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-//
-// Implementation of the TTKernelInsertInits pass, which inserts both common
-// inits (init_sfpu, binary_op_init_common) that configure UNPACK + PACK data
-// format routing, and per-op inits (exp_tile_init, add_tiles_init, etc.) that
-// configure the MATH pipeline.
-//
-// Two phases:
-//   1. Common inits: one per sync region, hoisted above enclosing loops.
-//      Scans each tile_regs_acquire -> tile_regs_release region to determine
-//      the compute category (FPU binary vs SFPU/copy/bcast) and derives
-//      input/output CBs from compute and pack ops.
-//   2. Per-op inits: emitted in linear block order whenever the op type
-//      changes (unary SFPU, binary SFPU, minmax, FPU binary). The init
-//      key is (init op TypeID, operand values). An init is inserted only
-//      when the key changes. Tracking resets at sync boundaries.
-//
-// TODO(#329): Emit init_short variants for cheaper re-inits on type switches.
+// Hardware startup is planned once per function before any compute API call.
+// Region and operation changes reconfigure formats and use short pipeline
+// inits. See docs/development/broadcast-initialization.md for the
+// initialization contract.
 //
 //===----------------------------------------------------------------------===//
 
@@ -33,6 +20,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/Dominance.h"
 
 #define DEBUG_TYPE "ttkernel-insert-inits"
 
@@ -119,6 +107,8 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
 #define TTL_FPU_BINARY_TILE_OP(TTL_OP, TILE_OP, TTK_INIT, TTK_COMPUTE)         \
   map[mlir::TypeID::get<ttk::TTK_COMPUTE>()] = {                               \
       [](OpBuilder &b, Location l, Operation *computeOp) {                     \
+        ttk::ReconfigDataFormatOp::create(b, l, computeOp->getOperand(0),      \
+                                          computeOp->getOperand(1));           \
         ttk::TTK_INIT::create(b, l, computeOp->getOperand(0),                  \
                               computeOp->getOperand(1));                       \
       }};
@@ -126,7 +116,9 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
 
   map[mlir::TypeID::get<ttk::CopyTileOp>()] = {
       [](OpBuilder &b, Location l, Operation *computeOp) {
-        ttk::CopyTileInitOp::create(b, l, computeOp->getOperand(0));
+        Value input = computeOp->getOperand(0);
+        ttk::ReconfigDataFormatOp::create(b, l, input, input);
+        ttk::CopyTileInitOp::create(b, l, input);
       }};
 
   // Destination reuse supplies one binary operand from DST, so the init needs
@@ -134,6 +126,8 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
   map[mlir::TypeID::get<ttk::BinaryDestReuseTilesOp>()] = {
       [](OpBuilder &b, Location l, Operation *computeOp) {
         auto binaryDestReuseOp = cast<ttk::BinaryDestReuseTilesOp>(computeOp);
+        ttk::ReconfigDataFormatOp::create(b, l, binaryDestReuseOp.getInCb(),
+                                          binaryDestReuseOp.getInCb());
         ttk::BinaryDestReuseTilesInitOp::create(
             b, l, binaryDestReuseOp.getInCb(),
             binaryDestReuseOp.getEltwiseBinaryTypeAttr(),
@@ -148,6 +142,8 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
   map[mlir::TypeID::get<ttk::MatmulBlockOp>()] = {[](OpBuilder &b, Location l,
                                                      Operation *computeOp) {
     auto matmul = cast<ttk::MatmulBlockOp>(computeOp);
+    ttk::ReconfigDataFormatOp::create(b, l, matmul.getIn1CbId(),
+                                      matmul.getIn0CbId());
     ttk::MatmulBlockInitShortOp::create(
         b, l, matmul.getIn0CbId(), matmul.getIn1CbId(), matmul.getTranspose(),
         matmul.getCtDim(), matmul.getRtDim(), matmul.getKtDim());
@@ -179,6 +175,8 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
     auto reduceOp = cast<ttk::ReduceTileOp>(computeOp);
     Value outputCB = resolveOutputCB(computeOp, kReduceOutputCBIndexAttrName);
     assert(outputCB && "output CB required for reduce_init");
+    ttk::ReconfigDataFormatOp::create(b, l, reduceOp.getInCb(),
+                                      reduceOp.getScalingCb());
     ttk::ReduceInitOp::create(b, l, reduceOp.getInCb(), reduceOp.getScalingCb(),
                               outputCB, reduceOp.getReduceTypeAttr(),
                               reduceOp.getReduceDimAttr());
@@ -211,14 +209,12 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
                                    expOp.getInputClampingAttr());
       }};
 
-  // Transpose: resolves output CB from annotated attribute.
   map[mlir::TypeID::get<ttk::TransposeTileOp>()] = {
       [](OpBuilder &b, Location l, Operation *computeOp) {
         auto transposeOp = cast<ttk::TransposeTileOp>(computeOp);
-        Value outputCB =
-            resolveOutputCB(computeOp, kTransposeOutputCBIndexAttrName);
-        assert(outputCB && "output CB required for transpose_wh_init");
-        ttk::TransposeInitOp::create(b, l, transposeOp.getIcb(), outputCB);
+        ttk::ReconfigDataFormatOp::create(b, l, transposeOp.getIcb(),
+                                          transposeOp.getIcb());
+        ttk::TransposeInitOp::create(b, l, transposeOp.getIcb());
       }};
 
   return map;
@@ -336,15 +332,7 @@ static bool isSyncBoundary(Operation *op) {
 // Common init insertion
 //===----------------------------------------------------------------------===//
 
-/// Scan a sync region (acquire -> release) including nested regions to find
-/// input CBs, output CBs, and determine the compute category.
-/// Returns true if FPU binary ops are present, false if not, failure on
-/// error (missing tile_regs_release or mismatched output CB data formats).
-///
-/// Multiple output CBs are allowed when they share the same element type
-/// (PACK data format routing is identical). The first output CB encountered
-/// is returned for the common init.
-/// Result of analyzing a sync region for common init insertion.
+/// Input routing and pipeline configuration for a sync region.
 struct SyncRegionAnalysis {
   bool hasFPUBinary = false;
   bool hasMatmul = false;
@@ -385,8 +373,7 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
       } else if (auto binaryDestReuseOp =
                      dyn_cast<ttk::BinaryDestReuseTilesOp>(inner)) {
         // binary_dest_reuse_tiles uses the FPU binary unpack path for its DFB
-        // operand even though the accumulator operand is already in DST, so
-        // binary_op_init_common must be selected for the sync region.
+        // operand even though the accumulator operand is already in DST.
         result.hasFPUBinary = true;
         if (!in0CB) {
           in0CB = binaryDestReuseOp.getInCb();
@@ -409,8 +396,7 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
           inputCB = bcast.getInCb();
         }
       } else if (auto bcast = dyn_cast<ttk::BinaryBcastTileOp>(inner)) {
-        // Unpacks both operands into SRCA/SRCB like any other FPU binary, so
-        // the region needs binary_op_init_common rather than init_sfpu.
+        // Both inputs use the FPU binary unpack path.
         result.hasFPUBinary = true;
         if (!in0CB) {
           in0CB = bcast.getIn0Cb();
@@ -495,74 +481,124 @@ static Operation *hoistAboveCompilerLoops(Operation *op) {
   return insertBefore;
 }
 
-/// Insert common init ops (init_sfpu or binary_op_init_common) before each
-/// sync region. These configure UNPACK + PACK data format routing.
-static LogicalResult insertCommonInits(ModuleOp moduleOp) {
+struct RegionInitPlan {
+  Operation *insertBefore;
+  Value srcA, srcB, output;
+  SyncRegionAnalysis analysis;
+};
+
+struct KernelInitPlan {
+  func::FuncOp function;
+  SmallVector<Operation *> entryDefinitions;
+  SmallVector<RegionInitPlan> regions;
+};
+
+static FailureOr<SmallVector<KernelInitPlan>>
+planKernelInits(ModuleOp moduleOp) {
+  SmallVector<KernelInitPlan> plans;
+  DominanceInfo dominance(moduleOp);
   bool hadError = false;
-  moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
-    Value inputCB, in0CB, in1CB, outputCB;
-    auto analysisResult =
-        analyzeSyncRegion(acquireOp, inputCB, in0CB, in1CB, outputCB);
-    if (failed(analysisResult)) {
-      hadError = true;
+  moduleOp.walk([&](func::FuncOp function) {
+    if (function.isDeclaration()) {
       return;
     }
-    SyncRegionAnalysis analysis = *analysisResult;
-
-    // No output CB means the sync region has no pack ops -- nothing to
-    // configure for UNPACK + PACK routing.
-    if (!outputCB) {
-      return;
-    }
-
-    Operation *insertBefore = hoistAboveCompilerLoops(acquireOp);
-    OpBuilder builder(insertBefore);
-    Location loc = acquireOp->getLoc();
-
-    // Fill-only regions have no copy_tile or bcast; route both sides of
-    // init_sfpu through outputCB since fill writes directly to DST.
-    if (!inputCB && outputCB) {
-      inputCB = outputCB;
-    }
-
-    // Use init_short when sharing an output CB with a preceding sibling
-    // annotated loop: the full init reconfigures PACK and clobbers packer
-    // state (including L1 acc on Wormhole).
-    bool useInitShort = false;
-    if (analysis.hasMatmul) {
-      if (auto forOp = dyn_cast<scf::ForOp>(insertBefore)) {
-        if (forOp->hasAttr(kL1AccLoopAttrName) ||
-            forOp->hasAttr(kReductionLoopAttrName)) {
-          for (Operation *prev = forOp->getPrevNode(); prev;
-               prev = prev->getPrevNode()) {
-            if (auto prevFor = dyn_cast<scf::ForOp>(prev)) {
-              if ((prevFor->hasAttr(kL1AccLoopAttrName) ||
-                   prevFor->hasAttr(kReductionLoopAttrName)) &&
-                  sharePackCB(prevFor, forOp)) {
-                useInitShort = true;
-              }
-              break;
-            }
+    KernelInitPlan plan{function, {}, {}};
+    function.walk([&](ttk::TileRegsAcquireOp acquireOp) {
+      Value input, in0, in1, output;
+      auto analysis = analyzeSyncRegion(acquireOp, input, in0, in1, output);
+      if (failed(analysis)) {
+        hadError = true;
+        return;
+      }
+      if (!output) {
+        return;
+      }
+      Value srcA = in0 ? in0 : (input ? input : output);
+      Value srcB = in1 ? in1 : srcA;
+      if (analysis->hasMatmul) {
+        std::swap(srcA, srcB);
+      }
+      Operation *insertBefore = hoistAboveCompilerLoops(acquireOp);
+      for (Value cb : {srcA, srcB, output}) {
+        if (!dominance.dominates(cb, insertBefore)) {
+          acquireOp.emitOpError(
+              "configuration CB must dominate its sync region");
+          hadError = true;
+          return;
+        }
+      }
+      if (analysis->hasMatmul) {
+        for (Value dimension : {analysis->matmulTranspose, analysis->matmulCt,
+                                analysis->matmulRt, analysis->matmulKt}) {
+          if (!dominance.dominates(dimension, insertBefore)) {
+            acquireOp.emitOpError(
+                "matmul configuration must dominate its sync region");
+            hadError = true;
+            return;
           }
         }
       }
+      plan.regions.push_back({insertBefore, srcA, srcB, output, *analysis});
+    });
+    if (plan.regions.empty()) {
+      return;
     }
-
-    if (analysis.hasMatmul && in0CB && in1CB && useInitShort) {
-      ttk::MatmulBlockInitShortOp::create(
-          builder, loc, in0CB, in1CB, analysis.matmulTranspose,
-          analysis.matmulCt, analysis.matmulRt, analysis.matmulKt);
-    } else if (analysis.hasMatmul && in0CB && in1CB) {
-      ttk::MatmulBlockInitOp::create(
-          builder, loc, in0CB, in1CB, outputCB, analysis.matmulTranspose,
-          analysis.matmulCt, analysis.matmulRt, analysis.matmulKt);
-    } else if (analysis.hasFPUBinary && in0CB && in1CB) {
-      ttk::BinaryOpInitCommonOp::create(builder, loc, in0CB, in1CB, outputCB);
-    } else if (inputCB) {
-      ttk::InitSFPUOp::create(builder, loc, inputCB, outputCB);
+    const auto &first = plan.regions.front();
+    for (Value cb : {first.srcA, first.srcB, first.output}) {
+      if (auto argument = dyn_cast<BlockArgument>(cb)) {
+        if (argument.getOwner() == &function.front()) {
+          continue;
+        }
+      }
+      auto definition = cb.getDefiningOp<ttk::GetCompileArgValOp>();
+      if (!definition) {
+        function.emitOpError("kernel-entry startup requires compile-time CB "
+                             "IDs or entry arguments");
+        hadError = true;
+        return;
+      }
+      if (!llvm::is_contained(plan.entryDefinitions,
+                              definition.getOperation())) {
+        plan.entryDefinitions.push_back(definition.getOperation());
+      }
     }
+    plans.push_back(std::move(plan));
   });
-  return hadError ? failure() : success();
+  if (hadError) {
+    return failure();
+  }
+  return plans;
+}
+
+static void applyKernelInits(ArrayRef<KernelInitPlan> plans) {
+  for (const auto &plan : plans) {
+    auto function = plan.function;
+    Block &entry = function.getBody().front();
+    for (Operation *definition : llvm::reverse(plan.entryDefinitions)) {
+      definition->moveBefore(&entry, entry.begin());
+    }
+    OpBuilder builder(&entry, entry.begin());
+    if (!plan.entryDefinitions.empty()) {
+      builder.setInsertionPointAfter(plan.entryDefinitions.back());
+    }
+    const auto &first = plan.regions.front();
+    ttk::ComputeKernelHWStartupOp::create(builder, function.getLoc(),
+                                          first.srcA, first.srcB, first.output);
+    for (const auto &region : plan.regions) {
+      builder.setInsertionPoint(region.insertBefore);
+      Location loc = region.insertBefore->getLoc();
+      ttk::ReconfigDataFormatOp::create(builder, loc, region.srcA, region.srcB);
+      ttk::PackReconfigDataFormatOp::create(builder, loc, region.output, true);
+      if (region.analysis.hasMatmul) {
+        const auto &analysis = region.analysis;
+        ttk::MatmulBlockInitShortOp::create(
+            builder, loc, region.srcB, region.srcA, analysis.matmulTranspose,
+            analysis.matmulCt, analysis.matmulRt, analysis.matmulKt);
+      } else if (!region.analysis.hasFPUBinary) {
+        ttk::CopyTileInitOp::create(builder, loc, region.srcA);
+      }
+    }
+  }
 }
 
 //===----------------------------------------------------------------------===//
@@ -576,10 +612,14 @@ struct TTKernelInsertInitsPass
     auto moduleOp = getOperation();
     constexpr llvm::StringLiteral kInitInserted("ttk.init_inserted");
 
-    if (failed(insertCommonInits(moduleOp))) {
+    auto plans = planKernelInits(moduleOp);
+    if (failed(plans)) {
       signalPassFailure();
       return;
     }
+
+    applyKernelInits(*plans);
+    plans->clear();
 
     auto computeToInit = buildComputeToInitMap();
 
