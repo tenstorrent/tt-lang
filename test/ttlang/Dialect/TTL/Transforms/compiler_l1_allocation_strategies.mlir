@@ -13,7 +13,7 @@
 // FIRST-SAME: l1_payload_offset = 64 : i64
 // FIRST-SAME: ttl.l1_arena_bytes = 81984 : i64
 // FIRST-LABEL: func.func @fragmented_schedule
-// FIRST-BUDGET: error: 'ttl.bind_cb' op compiler-l1 placement exceeds L1 budget 75000 bytes
+// FIRST-BUDGET: error: 'ttl.bind_cb' op compiler-l1 placement exceeds SRAM budget 75000 bytes
 // FIRST-BUDGET-SAME: first-fit-decreasing placement does not prove infeasibility
 
 // BEST: module attributes {ttl.dfb_allocations = [

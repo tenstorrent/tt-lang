@@ -10,10 +10,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "CompilerL1Allocation.h"
 #include "DFBAllocationLimits.h"
 #include "DFBConcurrentKernelLivenessAnalysis.h"
 #include "DFBPhysicalAllocationPlan.h"
+#include "SRAMAllocation.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
@@ -310,6 +310,12 @@ struct TTLFinalizeDFBIndicesPass
       return;
     }
     if (memoryModel == kCompilerL1MemoryModel) {
+      if (l1ExactAllocationSearchLimit == 0) {
+        moduleOp.emitOpError(
+            "compiler-l1 exact allocation search limit must be positive");
+        signalPassFailure();
+        return;
+      }
       const auto &liveness = getAnalysis<DFBConcurrentKernelLivenessAnalysis>();
       if (!liveness.succeeded()) {
         moduleOp.emitOpError() << liveness.getErrorMessage();
@@ -335,11 +341,11 @@ struct TTLFinalizeDFBIndicesPass
             std::move(*maybeStaticConfigurationConflicts);
       }
       SmallVector<DFBAssumedAllocationGroup> assumedAllocationGroups;
-      if (failed(allocateCompilerL1(
+      if (failed(allocateSRAM(
               moduleOp, logicalIdentityAnalysis, l1BudgetOverride,
-              reuseUserDFBs, l1AllocationStrategy, liveness,
-              staticConfigurationConflicts, unsafeAssumeAllocationGroups,
-              assumedAllocationGroups))) {
+              reuseUserDFBs, l1AllocationStrategy, l1ExactAllocationSearchLimit,
+              liveness, staticConfigurationConflicts,
+              unsafeAssumeAllocationGroups, assumedAllocationGroups))) {
         signalPassFailure();
         return;
       }

@@ -1,4 +1,4 @@
-// Verifies that Wormhole retains compiler-managed L1 support while rejecting Blackhole-only lifecycle boundaries.
+// Verifies that Wormhole retains compiler-managed SRAM support while rejecting Blackhole-only lifecycle boundaries.
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1})'
 
 module attributes {ttl.target_arch = #ttcore.arch<wormhole_b0>} {

@@ -3,6 +3,7 @@
 
 # Exhaustive three- and four-region mixed-size schedules check byte-placement
 # safety against execution events, independently of the compiler conflict graph.
+# Exact placement is also compared with an independent exhaustive oracle.
 # A nine-region case checks control-prefix alignment across target quanta.
 # RUN: %python %s
 
@@ -101,7 +102,57 @@ def validate_control_prefix_alignment():
         assert arena_bytes == control_bytes + 2048
 
 
-def validate(output, events, architecture, reuse, unknown):
+def minimum_payload_bytes(sizes, conflicts):
+    candidate_offsets = {0}
+    for region_count in range(1, len(sizes)):
+        candidate_offsets.update(
+            sum(sizes[region] for region in regions)
+            for regions in itertools.combinations(range(len(sizes)), region_count)
+        )
+    candidate_offsets = sorted(candidate_offsets)
+    region_order = sorted(
+        range(len(sizes)),
+        key=lambda region: (
+            -sum(region in conflict for conflict in conflicts),
+            -sizes[region],
+            region,
+        ),
+    )
+    offsets = [None] * len(sizes)
+    minimum_bytes = sum(sizes)
+
+    def search(position, high_water):
+        nonlocal minimum_bytes
+        if position == len(region_order):
+            minimum_bytes = min(minimum_bytes, high_water)
+            return
+        region = region_order[position]
+        for candidate_offset in candidate_offsets:
+            region_end = candidate_offset + sizes[region]
+            if region_end >= minimum_bytes:
+                break
+            overlaps = False
+            for other_region, other_offset in enumerate(offsets):
+                if (
+                    other_offset is None
+                    or tuple(sorted((region, other_region))) not in conflicts
+                ):
+                    continue
+                other_end = other_offset + sizes[other_region]
+                if region_end > other_offset and other_end > candidate_offset:
+                    overlaps = True
+                    break
+            if overlaps:
+                continue
+            offsets[region] = candidate_offset
+            search(position + 1, max(high_water, region_end))
+            offsets[region] = None
+
+    search(0, 0)
+    return minimum_bytes
+
+
+def validate(output, events, architecture, reuse, unknown, allocation_strategy):
     count = len(events) // 2
     quantum = 32 if architecture == "wormhole_b0" else 64
     control_bytes = (count * 8 + quantum - 1) // quantum * quantum
@@ -146,6 +197,8 @@ def validate(output, events, architecture, reuse, unknown):
         assert arena_bytes < control_bytes + sum(sizes)
     if not reuse:
         assert arena_bytes == control_bytes + sum(sizes)
+    if allocation_strategy == "exact":
+        assert arena_bytes == control_bytes + minimum_payload_bytes(sizes, conflicts)
 
 
 def main():
@@ -178,21 +231,62 @@ def main():
         ((0, 1, 2, 3, 4, 5), architecture, True)
         for architecture in ("wormhole_b0", "blackhole")
     ]
-    modules = [make_module(*case) for case in cases]
-    strategies = ("first-fit-decreasing", "best-fit-decreasing")
-    for allocation_strategy in strategies:
+    # All three-region schedules and an even sample from the complete
+    # four-region enumeration bound exact-test time.
+    exact_four_region_schedules = four_region_schedules[::40]
+    assert len(exact_four_region_schedules) == 63
+    exact_schedules = schedules[:90] + exact_four_region_schedules
+    exact_cases = [
+        (events, architecture, False)
+        for architecture in ("wormhole_b0", "blackhole")
+        for events in exact_schedules
+    ]
+    exact_cases += [
+        ((0, 1, 2, 3, 4, 5), architecture, True)
+        for architecture in ("wormhole_b0", "blackhole")
+    ]
+    strategy_cases = (
+        ("first-fit-decreasing", cases),
+        ("best-fit-decreasing", cases),
+        ("multi-order-decreasing", cases),
+        ("exact", exact_cases),
+    )
+    placement_count = 0
+    stable_results = {}
+    for allocation_strategy, cases_for_strategy in strategy_cases:
+        modules_for_strategy = [make_module(*case) for case in cases_for_strategy]
         for reuse in (False, True):
-            output = run_compiler(modules, reuse, allocation_strategy)
+            output = run_compiler(modules_for_strategy, reuse, allocation_strategy)
             assert output == run_compiler(
-                modules, reuse, allocation_strategy
+                modules_for_strategy, reuse, allocation_strategy
             ), "placement is nondeterministic"
             results = [
                 section for section in output.split("// -----") if section.strip()
             ]
-            assert len(results) == len(cases)
-            for result, (events, architecture, unknown) in zip(results, cases):
-                validate(result, events, architecture, reuse, unknown)
-    placement_count = len(cases) * 2 * len(strategies)
+            assert len(results) == len(cases_for_strategy)
+            for result, (events, architecture, unknown) in zip(
+                results, cases_for_strategy
+            ):
+                validate(
+                    result,
+                    events,
+                    architecture,
+                    reuse,
+                    unknown,
+                    allocation_strategy,
+                )
+            arenas = [
+                int(re.search(r"ttl.l1_arena_bytes = (\d+)", result).group(1))
+                for result in results
+            ]
+            if allocation_strategy == "first-fit-decreasing":
+                stable_results[reuse] = arenas
+            if allocation_strategy == "multi-order-decreasing":
+                assert all(
+                    combined <= stable
+                    for combined, stable in zip(arenas, stable_results[reuse])
+                )
+            placement_count += len(cases_for_strategy)
     print(f"Verified {placement_count} placements and deterministic repetition.")
 
 
