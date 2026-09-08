@@ -841,6 +841,28 @@ bool hasExactEmptyLaunchDomain(Operation *op,
   return true;
 }
 
+LaunchNodeDomain
+refineLaunchNodeDomainFromExecutionCounts(Operation *op,
+                                          const LaunchNodeDomain &domain,
+                                          const LaunchNodeDomainState &state) {
+  if (domain.known || !state.hasLaunchGrid || state.sawError) {
+    return domain;
+  }
+
+  LaunchNodeDomain exactDomain;
+  for (LaunchNodeCoord node : state.baseDomain.nodes) {
+    std::optional<std::uint64_t> executionCount =
+        getExactExecutionCountAtLaunchNode(op, node, state);
+    if (!executionCount) {
+      return domain;
+    }
+    if (*executionCount > 0) {
+      exactDomain.nodes.insert(node);
+    }
+  }
+  return exactDomain;
+}
+
 /// Return true if evaluating `value` can depend on the current launch
 /// coordinate.
 static bool dependsOnCoord(Value value, llvm::DenseMap<Value, bool> &cache) {

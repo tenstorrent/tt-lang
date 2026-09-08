@@ -7,10 +7,10 @@
 //===----------------------------------------------------------------------===//
 //
 // Rejects waits without a push and modules in which a logical dataflow buffer
-// has more than one producer or consumer kernel active on the same launched
+// has more than one producer or read-pointer owner active on the same launched
 // node. Logical identity remains distinct when non-overlapping DFBs share a
-// physical `cb_index`. tt-metal CBs are single-producer single-consumer at the
-// API level; see `docs/development/DFBManagement.md` for the rationale.
+// physical `cb_index`. See `docs/development/DFBManagement.md` for the runtime
+// ownership contract.
 //
 //===----------------------------------------------------------------------===//
 
@@ -46,7 +46,7 @@ struct ProtocolActionDomain {
   Operation *unanalyzableOp = nullptr;
 };
 
-// A kernel thread that produces or consumes a dataflow buffer.
+// A kernel thread that produces a dataflow buffer or advances its read pointer.
 //
 // Multiple actions in the same thread are merged because SPSC is a thread-level
 // property, not an operation-level property.
@@ -57,7 +57,7 @@ struct DFBParticipant {
   Operation *unanalyzableOp = nullptr;
 };
 
-// Producers or consumers for one logical dataflow buffer.
+// Producers or read-pointer owners for one logical dataflow buffer.
 struct DFBParticipantSet {
   llvm::SmallMapVector<func::FuncOp, DFBParticipant, 2> participants;
 };
@@ -94,9 +94,14 @@ void addParticipant(DFBParticipantSet &set, func::FuncOp thread, Operation *op,
 
 void attachCommonNotes(InFlightDiagnostic &diag, Operation *bindSite,
                        llvm::StringRef role) {
-  diag.attachNote() << "tt-metal CBs are single-producer single-consumer; "
-                       "allocate one DFB per "
-                    << role;
+  if (role == "producer") {
+    diag.attachNote()
+        << "only one kernel may produce a DFB on each launched node";
+  } else {
+    diag.attachNote()
+        << "only one kernel may advance a DFB read pointer on each launched "
+           "node";
+  }
   if (bindSite) {
     diag.attachNote(bindSite->getLoc()) << "dataflow buffer declared here";
   }
@@ -110,11 +115,16 @@ struct DFBProtocolPresence {
   llvm::SmallMapVector<int64_t, Operation *, 4> firstWaitByDFB;
 };
 
-DFBProtocolPresence collectDFBProtocolPresence(ModuleOp module) {
+DFBProtocolPresence
+collectDFBProtocolPresence(ModuleOp module,
+                           const LaunchNodeDomainState *domainState = nullptr) {
   DFBProtocolPresence presence;
   module.walk([&](Operation *op) {
     auto access = dyn_cast<DFBAccessOpInterface>(op);
     if (!access || !getEnclosingKernelThread(op)) {
+      return;
+    }
+    if (domainState && hasExactEmptyLaunchDomain(op, *domainState)) {
       return;
     }
     if (auto opaqueCall = dyn_cast<OpaqueCallOp>(op)) {
@@ -289,8 +299,8 @@ struct TTLVerifyDFBSPSCPass
       return;
     }
 
-    DFBProtocolPresence protocolPresence = collectDFBProtocolPresence(module);
-    if (!protocolPresence.hasAcquisitionAction) {
+    DFBProtocolPresence unrefinedPresence = collectDFBProtocolPresence(module);
+    if (!unrefinedPresence.hasAcquisitionAction) {
       return;
     }
 
@@ -302,15 +312,6 @@ struct TTLVerifyDFBSPSCPass
              "attribute (an i64 array of length 2 with positive entries) "
              "when verifying DFB acquire actions";
       signalPassFailure();
-      return;
-    }
-
-    if (failed(verifyDFBWaitsHavePushes(protocolPresence, bindSites))) {
-      signalPassFailure();
-      return;
-    }
-
-    if (applyDFBProtocolDomainVerificationRelaxation(module)) {
       return;
     }
 
@@ -333,8 +334,22 @@ struct TTLVerifyDFBSPSCPass
       return;
     }
 
+    DFBProtocolPresence protocolPresence =
+        collectDFBProtocolPresence(module, &state);
+    if (!protocolPresence.hasAcquisitionAction) {
+      return;
+    }
+    if (failed(verifyDFBWaitsHavePushes(protocolPresence, bindSites))) {
+      signalPassFailure();
+      return;
+    }
+
+    if (applyDFBProtocolDomainVerificationRelaxation(module)) {
+      return;
+    }
+
     llvm::MapVector<int64_t, DFBParticipantSet> producersByDFB;
-    llvm::MapVector<int64_t, DFBParticipantSet> consumersByDFB;
+    llvm::MapVector<int64_t, DFBParticipantSet> readPointerOwnersByDFB;
 
     auto record = [&](llvm::MapVector<int64_t, DFBParticipantSet> &perDFB,
                       Operation *op, Value cb) {
@@ -349,8 +364,15 @@ struct TTLVerifyDFBSPSCPass
           domainIt == state.protocolActionDomains.end()
               ? ProtocolActionDomain{LaunchNodeDomain::unknown(), op}
               : domainIt->second;
-      addParticipant(perDFB[*dfbId], thread, op, actionDomain.domain,
-                     actionDomain.unanalyzableOp);
+      LaunchNodeDomain refinedDomain =
+          refineLaunchNodeDomainFromExecutionCounts(op, actionDomain.domain,
+                                                    state);
+      if (refinedDomain.known && refinedDomain.nodes.empty()) {
+        return;
+      }
+      addParticipant(perDFB[*dfbId], thread, op, refinedDomain,
+                     refinedDomain.known ? nullptr
+                                         : actionDomain.unanalyzableOp);
     };
 
     module.walk([&](Operation *op) {
@@ -361,8 +383,8 @@ struct TTLVerifyDFBSPSCPass
       for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
         if (isProducerDFBProtocolEffect(effect.kind)) {
           record(producersByDFB, op, effect.dfb);
-        } else if (isConsumerDFBProtocolEffect(effect.kind)) {
-          record(consumersByDFB, op, effect.dfb);
+        } else if (effect.kind == DFBProtocolEffectKind::Pop) {
+          record(readPointerOwnersByDFB, op, effect.dfb);
         }
       }
     });
@@ -373,10 +395,10 @@ struct TTLVerifyDFBSPSCPass
           entry.first, entry.second, bindSites.lookup(entry.first), "producer",
           "performed a producer action");
     }
-    for (auto &entry : consumersByDFB) {
+    for (auto &entry : readPointerOwnersByDFB) {
       sawError |= verifyParticipantSet(
-          entry.first, entry.second, bindSites.lookup(entry.first), "consumer",
-          "performed a consumer action");
+          entry.first, entry.second, bindSites.lookup(entry.first),
+          "read-pointer owner", "advanced the read pointer");
     }
 
     if (sawError) {
