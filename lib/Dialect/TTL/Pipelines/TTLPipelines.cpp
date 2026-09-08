@@ -69,6 +69,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     TTLFinalizeDFBIndicesOptions finalizeOptions;
     finalizeOptions.memoryModel = options.memoryModel;
     finalizeOptions.reuseUserDFBs = options.reuseUserDFBs;
+    finalizeOptions.sramAllocationMode = options.sramAllocationMode;
     finalizeOptions.sramAllocationReport = options.sramAllocationReport;
     finalizeOptions.l1AllocationStrategy = options.l1AllocationStrategy;
     finalizeOptions.l1ExactAllocationSearchLimit =
@@ -128,7 +129,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
-  if (options.specializeCores) {
+  if (options.specializeCores || options.sramAllocationMode == "per-core") {
     buildTTKernelSpecializationPipeline(pm);
   } else {
     pm.addPass(createTTKernelFinalizeTensorRuntimeArgs());

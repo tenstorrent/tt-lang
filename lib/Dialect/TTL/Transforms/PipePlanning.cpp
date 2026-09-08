@@ -718,11 +718,17 @@ void applyPipeModuleAttributes(ModuleOp module, const PipeModulePlan &plan) {
   const PipeResourcePlan &resources = plan.getResourcePlan();
   module.walk([&](func::FuncOp function) {
     function->removeAttr(kPipeComputedAddressDFBIndicesAttrName);
+    function->removeAttr("ttl.sram_receiver_targets");
   });
   for (const auto &[function, dfbIndices] :
        resources.computedAddressDFBIndices) {
     function->setAttr(kPipeComputedAddressDFBIndicesAttrName,
                       builder.getDenseI32ArrayAttr(dfbIndices));
+  }
+
+  for (const auto &[function, targets] : resources.sramReceiverTargets) {
+    function->setAttr("ttl.sram_receiver_targets",
+                      builder.getArrayAttr(targets));
   }
 
   const PipeResourceRequirements &requirements = plan.getResourceRequirements();

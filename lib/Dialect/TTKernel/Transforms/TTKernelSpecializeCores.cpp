@@ -166,18 +166,25 @@ struct TTKernelSpecializeCoresPass
       return;
     }
 
-    // Cloning renames a target and erases the original; inter-function
-    // SymbolRefAttr fixups are not performed. A referenced function is left
-    // un-specialized (still a correct whole-grid binary via its runtime
-    // coordinate reads) rather than failing the whole pass, so unrelated
-    // functions still get specialized.
+    auto allocationMode =
+        module->getAttrOfType<StringAttr>("ttl.sram_allocation_mode");
+    bool independentStorage =
+        allocationMode && allocationMode.getValue() == "per-core";
     SmallVector<func::FuncOp> targets;
     for (auto func : module.getOps<func::FuncOp>()) {
-      if (!funcBranchesOnCore(func)) {
+      bool requiresStorageBinding =
+          independentStorage && func->hasAttr(ttk::ThreadTypeAttr::name);
+      if (!requiresStorageBinding && !funcBranchesOnCore(func)) {
         continue;
       }
       if (auto uses = SymbolTable::getSymbolUses(func, module);
           uses && !uses->empty()) {
+        if (requiresStorageBinding) {
+          func.emitOpError(
+              "per-core SRAM kernel cannot have symbol references");
+          signalPassFailure();
+          return;
+        }
         func.emitWarning() << "not specializing '" << func.getSymName()
                            << "': function has symbol uses";
         continue;

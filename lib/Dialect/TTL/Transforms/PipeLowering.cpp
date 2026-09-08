@@ -4711,6 +4711,7 @@ struct ComputedAddressPlan {
   llvm::MapVector<FuncOp, SmallVector<PipeComputedAddressCounterInitInfo>>
       counterInitializations;
   llvm::MapVector<FuncOp, SmallVector<int32_t>> dfbIndices;
+  llvm::MapVector<FuncOp, SmallVector<Attribute>> receiverTargets;
 };
 
 static ComputedAddressPlan buildComputedAddressPlan(
@@ -4729,11 +4730,15 @@ static ComputedAddressPlan buildComputedAddressPlan(
   const bool usesCompilerL1Storage =
       memoryModel && memoryModel.getValue() == kCompilerL1MemoryModel;
 
+  const bool independentStorage = module->hasAttr("ttl.sram_allocation_mode");
+  Builder targetBuilder(module.getContext());
+
   /// One transfer whose recurrence can be materialized by its sender.
   struct Candidate {
     std::size_t unitIndex = 0;
     FuncOp senderFunc;
     PipeComputedAddressInfo computedAddress;
+    std::optional<unsigned> targetOrdinal;
   };
   SmallVector<Candidate> candidates;
   llvm::MapVector<FuncOp, llvm::SmallSetVector<int64_t, 4>> dfbIndicesByFunc;
@@ -4745,7 +4750,8 @@ static ComputedAddressPlan buildComputedAddressPlan(
     // Local table-driven transfers retain receiver publication because it
     // produces substantially smaller kernels. Device transfers cannot publish
     // receiver-local addresses directly, so they require this computation.
-    if (isSelectedTransferUnit(unit) && !transferNode.deviceTransfer) {
+    if (!independentStorage && isSelectedTransferUnit(unit) &&
+        !transferNode.deviceTransfer) {
       continue;
     }
     const PipeReceiverEndpoint *receiverEndpoint =
@@ -4771,9 +4777,38 @@ static ComputedAddressPlan buildComputedAddressPlan(
     if (!maybeSenderFunc) {
       continue;
     }
+    std::optional<unsigned> targetOrdinal;
+    if (independentStorage) {
+      SmallVector<int64_t> deviceCoordinates;
+      if (auto device = receiverEndpoint->receiverDFB.receiverDevice) {
+        for (auto coordinates : device.getCoordinates()) {
+          llvm::append_range(deviceCoordinates, coordinates.asArrayRef());
+        }
+      }
+      auto target = targetBuilder.getDictionaryAttr({
+          targetBuilder.getNamedAttr(
+              "dfb_index",
+              targetBuilder.getI64IntegerAttr(receiverInfo.dfbIndex)),
+          targetBuilder.getNamedAttr("node",
+                                     targetBuilder.getDenseI64ArrayAttr(
+                                         {receiverEndpoint->receiver.x,
+                                          receiverEndpoint->receiver.y})),
+          targetBuilder.getNamedAttr(
+              "device", targetBuilder.getDenseI64ArrayAttr(deviceCoordinates)),
+      });
+      auto &targets = plan.receiverTargets[*maybeSenderFunc];
+      auto existing = llvm::find(targets, target);
+      targetOrdinal = std::distance(targets.begin(), existing);
+      if (existing == targets.end()) {
+        targets.push_back(target);
+        plan.dfbIndices[*maybeSenderFunc].push_back(receiverInfo.dfbIndex);
+      }
+    }
     candidates.push_back(Candidate{indexedUnit.index(), *maybeSenderFunc,
-                                   *maybeComputedAddress});
-    dfbIndicesByFunc[*maybeSenderFunc].insert(receiverInfo.dfbIndex);
+                                   *maybeComputedAddress, targetOrdinal});
+    if (!independentStorage) {
+      dfbIndicesByFunc[*maybeSenderFunc].insert(receiverInfo.dfbIndex);
+    }
   }
 
   if (candidates.empty()) {
@@ -4795,15 +4830,20 @@ static ComputedAddressPlan buildComputedAddressPlan(
   llvm::MapVector<FuncOp, int64_t> nextDynamicSlotCounterIndexByFunc;
   for (const Candidate &candidate : candidates) {
     FuncOp senderFunc = candidate.senderFunc;
-    const SmallVector<int64_t> &dfbIndices = sortedDFBIndicesByFunc[senderFunc];
     PipeComputedAddressInfo computedAddress = candidate.computedAddress;
-    auto dfbIt = llvm::find(dfbIndices, computedAddress.receiverDFBIndex);
-    assert(dfbIt != dfbIndices.end() && "candidate DFB missing from func list");
+    unsigned ordinal;
+    if (candidate.targetOrdinal) {
+      ordinal = *candidate.targetOrdinal;
+    } else {
+      const auto &dfbIndices = sortedDFBIndicesByFunc[senderFunc];
+      auto dfbIt = llvm::find(dfbIndices, computedAddress.receiverDFBIndex);
+      assert(dfbIt != dfbIndices.end() &&
+             "candidate DFB missing from func list");
+      ordinal = std::distance(dfbIndices.begin(), dfbIt);
+    }
     computedAddress.baseRuntimeCommonArgIndex =
-        CommonRuntimeArgLayout(senderFunc,
-                               static_cast<int64_t>(dfbIndices.size()))
-            .getComputedReceiverDFBBaseIndex(
-                std::distance(dfbIndices.begin(), dfbIt));
+        CommonRuntimeArgLayout(senderFunc, plan.dfbIndices[senderFunc].size())
+            .getComputedReceiverDFBBaseIndex(ordinal);
 
     const PipeTransferAllocationUnit &unit = units[candidate.unitIndex];
     const PipeTransferNode &transferNode =
@@ -4906,6 +4946,7 @@ LogicalResult buildPipeResourcePlan(
   info.computedAddressCounterInitializations =
       computedAddressPlan.counterInitializations;
   info.computedAddressDFBIndices = computedAddressPlan.dfbIndices;
+  info.sramReceiverTargets = computedAddressPlan.receiverTargets;
 
   FailureOr<SmallVector<std::size_t>> maybeCompletionGroups =
       buildWaitAnyCompletionGroups(mod, units, transferIndex);
@@ -5185,6 +5226,8 @@ void finalizePipeTransportResources(const PipeTransportPlan &transportPlan,
     }
   }
 
+  llvm::MapVector<FuncOp, SmallVector<Attribute>> activeReceiverTargets;
+  llvm::DenseMap<PipeResourceInfo *, unsigned> receiverTargetOrdinals;
   llvm::MapVector<FuncOp, llvm::SmallSetVector<int64_t, 4>> dfbIndicesBySender;
   for (auto [operation, resource] : resources) {
     auto sendOp = dyn_cast<PipeTransferSendOp>(operation);
@@ -5193,11 +5236,43 @@ void finalizePipeTransportResources(const PipeTransportPlan &transportPlan,
     }
     assert(resource->addressStorage.computedAddress.has_value() &&
            "computed receiver DFB is missing address information");
-    dfbIndicesBySender[sendOp->getParentOfType<FuncOp>()].insert(
-        resource->addressStorage.computedAddress->receiverDFBIndex);
+    FuncOp senderFunc = sendOp->getParentOfType<FuncOp>();
+    auto targetsIt = pipeResourcePlan.sramReceiverTargets.find(senderFunc);
+    if (targetsIt != pipeResourcePlan.sramReceiverTargets.end()) {
+      const auto &computedAddress = *resource->addressStorage.computedAddress;
+      int64_t firstArgument =
+          CommonRuntimeArgLayout(senderFunc, targetsIt->second.size())
+              .getComputedReceiverDFBBaseIndex(0);
+      int64_t ordinal =
+          computedAddress.baseRuntimeCommonArgIndex - firstArgument;
+      assert(ordinal >= 0 &&
+             static_cast<size_t>(ordinal) < targetsIt->second.size() &&
+             "computed receiver argument is missing its destination identity");
+      Attribute target = targetsIt->second[ordinal];
+      auto &activeTargets = activeReceiverTargets[senderFunc];
+      auto existing = llvm::find(activeTargets, target);
+      receiverTargetOrdinals[resource] =
+          std::distance(activeTargets.begin(), existing);
+      if (existing == activeTargets.end()) {
+        activeTargets.push_back(target);
+      }
+    } else {
+      dfbIndicesBySender[senderFunc].insert(
+          resource->addressStorage.computedAddress->receiverDFBIndex);
+    }
   }
 
   pipeResourcePlan.computedAddressDFBIndices.clear();
+  pipeResourcePlan.sramReceiverTargets = std::move(activeReceiverTargets);
+  for (const auto &[senderFunc, targets] :
+       pipeResourcePlan.sramReceiverTargets) {
+    auto &indices = pipeResourcePlan.computedAddressDFBIndices[senderFunc];
+    for (Attribute target : targets) {
+      indices.push_back(cast<DictionaryAttr>(target)
+                            .getAs<IntegerAttr>("dfb_index")
+                            .getInt());
+    }
+  }
   llvm::DenseMap<PipeTransferNodeId, PipeResourceInfo *>
       senderResourceByTransfer;
   for (auto &[senderFunc, dfbIndexSet] : dfbIndicesBySender) {
@@ -5227,11 +5302,14 @@ void finalizePipeTransportResources(const PipeTransportPlan &transportPlan,
           llvm::find(dfbIndices, computedAddress.receiverDFBIndex);
       assert(dfbIndexIt != dfbIndices.end() &&
              "computed receiver DFB is missing its runtime argument");
+      auto targetOrdinal = receiverTargetOrdinals.find(resource);
+      unsigned ordinal = targetOrdinal != receiverTargetOrdinals.end()
+                             ? targetOrdinal->second
+                             : std::distance(dfbIndices.begin(), dfbIndexIt);
       computedAddress.baseRuntimeCommonArgIndex =
           CommonRuntimeArgLayout(senderFunc,
                                  static_cast<int64_t>(dfbIndices.size()))
-              .getComputedReceiverDFBBaseIndex(
-                  std::distance(dfbIndices.begin(), dfbIndexIt));
+              .getComputedReceiverDFBBaseIndex(ordinal);
     }
     auto [resourceIt, inserted] =
         senderResourceByTransfer.try_emplace(resource->transferNode, resource);

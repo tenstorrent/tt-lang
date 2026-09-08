@@ -105,6 +105,10 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::desc("Reuse physical DFB indices when concurrent-kernel "
                      "liveness proves that logical lifetimes do not overlap."),
       llvm::cl::init(true)};
+  Option<std::string> sramAllocationMode{
+      *this, "sram-allocation-mode",
+      llvm::cl::desc("SRAM allocation domains: uniform or per-core"),
+      llvm::cl::init("uniform")};
   Option<bool> sramAllocationReport{
       *this, "sram-allocation-report",
       llvm::cl::desc("Emit a JSON compiler-managed SRAM allocation report."),

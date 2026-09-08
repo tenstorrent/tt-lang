@@ -88,6 +88,8 @@ from .dataflow_buffer import (
     DFBReconfigurationPlan,
     DFBStorageSegment,
     PhysicalDFBConfig,
+    SRAMCoreLayout,
+    SRAMReceiverTarget,
     get_cb_count,
 )
 from .pipe import Pipe, PipeNet
@@ -793,6 +795,7 @@ class CompiledTTNNKernel:
         runtime_resource_cache=None,
         kernel_used_dfb_indices=None,
         kernel_local_tensor_indices=None,
+        kernel_sram_receiver_targets=None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -872,6 +875,9 @@ class CompiledTTNNKernel:
         self.num_dfb_resets = num_dfb_resets
         self.pipe_sram_scratch_bytes = pipe_sram_scratch_bytes
         self.num_pipe_global_semaphores = num_pipe_global_semaphores
+        self.kernel_sram_receiver_targets = kernel_sram_receiver_targets or [
+            [] for _ in kernel_paths
+        ]
         self.kernel_pipe_computed_address_dfb_indices = (
             kernel_pipe_computed_address_dfb_indices or [[] for _ in kernel_paths]
         )
@@ -957,6 +963,7 @@ class CompiledTTNNKernel:
                 tensor_indices=tensor_indices,
                 config=config,
                 compiler_include_paths=self.opaque_include_paths,
+                sram_receiver_targets=self.kernel_sram_receiver_targets[kernel_idx],
                 pipe_computed_address_dfb_indices=self.kernel_pipe_computed_address_dfb_indices[
                     kernel_idx
                 ],
@@ -1494,6 +1501,7 @@ def _compile_ttnn_kernel(
     kernel_configs = []
     kernel_arg_specs = []
     kernel_pipe_computed_address_dfb_indices = []
+    kernel_sram_receiver_targets = []
     kernel_used_dfb_indices = []
     # Read metadata from each final function because specialization changes the
     # kernel count and order.
@@ -1528,6 +1536,21 @@ def _compile_ttnn_kernel(
                 module, name, _ttl_ir.PIPE_COMPUTED_ADDRESS_DFB_INDICES_ATTR
             )
             or []
+        )
+        target_attr = _lookup_kernel_func_op(module, name).attributes.get(
+            "ttl.sram_receiver_targets", None
+        )
+        kernel_sram_receiver_targets.append(
+            []
+            if target_attr is None
+            else [
+                SRAMReceiverTarget(
+                    dfb_index=int(DictAttr(target)["dfb_index"]),
+                    node=tuple(DenseI64ArrayAttr(DictAttr(target)["node"])),
+                    device=tuple(DenseI64ArrayAttr(DictAttr(target)["device"])),
+                )
+                for target in ArrayAttr(target_attr)
+            ]
         )
         kernel_used_dfb_indices.append(
             _get_kernel_optional_i32_array_attr(
@@ -1627,6 +1650,7 @@ def _compile_ttnn_kernel(
         num_pipe_global_semaphores=num_pipe_global_semaphores,
         opaque_include_paths=opaque_include_paths or [],
         kernel_pipe_computed_address_dfb_indices=kernel_pipe_computed_address_dfb_indices,
+        kernel_sram_receiver_targets=kernel_sram_receiver_targets,
         kernel_fabric_routes=kernel_fabric_routes,
         kernel_fabric_runtime_arg_base_common_indices=(
             kernel_fabric_runtime_arg_base_common_indices
@@ -1657,6 +1681,7 @@ def _compile_ttnn_kernel(
                 tensor_indices=tensor_indices,
                 config=kernel_configs[kernel_idx],
                 compiler_include_paths=opaque_include_paths or [],
+                sram_receiver_targets=kernel_sram_receiver_targets[kernel_idx],
                 pipe_computed_address_dfb_indices=kernel_pipe_computed_address_dfb_indices[
                     kernel_idx
                 ],
@@ -2090,6 +2115,18 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
         l1_payload_offset=l1_payload_offset,
         l1_allocation_bytes=l1_allocation_bytes,
         storage_capacity_pages=storage_capacity_pages,
+        sram_core_layouts=tuple(
+            SRAMCoreLayout(
+                node=tuple(int(value) for value in layout["node"]),
+                payload_offset=int(layout["payload_offset"]),
+                payload_present=bool(layout["payload_present"].value),
+                arena_bytes=int(layout["arena_bytes"]),
+                domain=int(layout["domain"]),
+            )
+            for layout in (
+                entry["sram_core_layouts"] if "sram_core_layouts" in entry else ()
+            )
+        ),
     )
 
 
@@ -2884,6 +2921,7 @@ def _lower_program_to_kernel(
             "func.func(ttl-coalesce-dfb-acquires)",
             "ttl-finalize-dfb-indices{"
             f"memory-model={compiler_options.memory_model} "
+            f"sram-allocation-mode={compiler_options.sram_allocation_mode} "
             f"sram-allocation-report={str(compiler_options.sram_allocation_report).lower()} "
             "l1-allocation-strategy="
             f"{compiler_options.l1_allocation_strategy} "
@@ -2967,7 +3005,8 @@ def _lower_program_to_kernel(
             "canonicalize",
             "cse",
         ]
-        if not compiler_options.specialize_cores:
+        specialize_cores = compiler_options.specialize_cores or compiler_options.sram_allocation_mode == "per-core"
+        if not specialize_cores:
             pipeline_passes += [
                 "ttkernel-finalize-tensor-runtime-args",
                 "canonicalize",
@@ -2976,7 +3015,7 @@ def _lower_program_to_kernel(
             "lower-affine",
             "ttl-lower-signpost-to-emitc",
         ]
-        if compiler_options.specialize_cores:
+        if specialize_cores:
             pipeline_passes.append("ttkernel-specialize-and-annotate-dfb-use")
         pipeline_passes += [
             "convert-ttkernel-to-emitc",
