@@ -19,6 +19,7 @@ import json
 import math
 import operator
 import os
+import sys
 import threading
 import warnings
 import weakref
@@ -2020,6 +2021,36 @@ def _allocate_l1_sharded_storage_tensor(
         device=device,
         memory_config=memory_config,
     )
+
+
+def _print_sram_runtime_report(arena, core_ranges, requested_bytes, operation_name):
+    """Report the arena's reservation from TTNN's reference-device allocator."""
+    address = int(arena.buffer_address())
+    buffers = [
+        buffer
+        for buffer in ttnn._ttnn.reports.get_buffers(arena.device())
+        if buffer.buffer_type == ttnn.BufferType.L1 and int(buffer.address) == address
+    ]
+    if len(buffers) != 1:
+        raise RuntimeError("SRAM report requires one reference-device arena allocation")
+    reserved_bytes = int(buffers[0].max_size_per_bank)
+    if reserved_bytes < requested_bytes:
+        raise RuntimeError(
+            "SRAM report reservation is smaller than its requested arena"
+        )
+    core_count = core_ranges.num_cores()
+    report = {
+        "schema_version": 1,
+        "phase": "runtime",
+        "operation": operation_name,
+        "scope": "arena-reference-device",
+        "requested_bytes_per_core": requested_bytes,
+        "reserved_bytes_per_core": reserved_bytes,
+        "core_count": core_count,
+        "reserved_bytes_on_reference_device": reserved_bytes * core_count,
+        "reservation_padding_bytes_per_core": reserved_bytes - requested_bytes,
+    }
+    print("ttlang-sram-report: " + json.dumps(report, sort_keys=True), file=sys.stderr)
 
 
 def _get_compiler_l1_arena_bytes(
@@ -4118,6 +4149,7 @@ def _run_kernel_on_device_impl(
     fabric_route_cache: Optional[_FabricRouteCache] = None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     operation_name: str = "<anonymous>",
+    sram_allocation_report: bool = False,
     runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
     device: Optional[Any] = None,
 ) -> Any:
@@ -4261,6 +4293,13 @@ def _run_kernel_on_device_impl(
             zero_initialize=True,
         )
         compiler_l1_base_address = int(compiler_l1_arena.buffer_address())
+        if sram_allocation_report:
+            _print_sram_runtime_report(
+                compiler_l1_arena,
+                core_ranges,
+                compiler_l1_arena_bytes,
+                operation_name,
+            )
 
     pipe_computed_address_base_addresses = dict(
         pipe_runtime_resources.computed_address_base_addresses
@@ -4514,6 +4553,7 @@ def run_kernel_on_device(
     fabric_route_cache: Optional[_FabricRouteCache] = None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     operation_name: str = "<anonymous>",
+    sram_allocation_report: bool = False,
     runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
     device: Optional[Any] = None,
 ) -> Any:
@@ -4545,6 +4585,7 @@ def run_kernel_on_device(
         "fabric_route_cache": fabric_route_cache,
         "runtime_resource_factory": runtime_resource_factory,
         "operation_name": operation_name,
+        "sram_allocation_report": sram_allocation_report,
         "runtime_resource_cache": runtime_resource_cache,
         "device": device,
     }

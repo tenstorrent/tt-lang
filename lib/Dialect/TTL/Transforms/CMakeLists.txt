@@ -3,6 +3,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   AccumulationUtils.cpp
   CommonRuntimeArgLayout.cpp
   SRAMAllocation.cpp
+  SRAMAllocationReport.cpp
   SRAMAllocator.cpp
   SRAMAllocator_Greedy.cpp
   SRAMAllocator_Exact.cpp
