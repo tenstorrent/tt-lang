@@ -1,12 +1,12 @@
 // SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 // SPDX-License-Identifier: Apache-2.0
 
-#include "CompilerL1Allocation.h"
-#include "CompilerL1Allocator.h"
+#include "SRAMAllocation.h"
 #include "DFBAllocationLimits.h"
 #include "DFBAnalysisFailure.h"
 #include "DFBConcurrentKernelLivenessAnalysis.h"
 #include "DFBPhysicalAllocationPlan.h"
+#include "SRAMAllocator.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/DFBLogicalIdentityAnalysis.h"
 #include "ttlang/Target/TargetInfo.h"
@@ -54,7 +54,7 @@ struct L1AllocationPlan {
 static FailureOr<L1AllocationPlan>
 planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
             uint64_t budget, bool reuseStorage,
-            llvm::StringRef allocationStrategy,
+            llvm::StringRef allocationStrategy, uint64_t exactSearchLimit,
             const DFBConcurrentKernelLivenessAnalysis &liveness) {
   std::string targetFailure;
   FailureOr<uint64_t> alignment =
@@ -211,10 +211,10 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
           : FailureOr<uint64_t>(failure());
   if (failed(controlBytes) || *controlBytes > budget) {
     module.emitOpError(
-        "compiler-l1 control records exceed the available L1 budget");
+        "compiler-l1 control records exceed the available SRAM budget");
     return failure();
   }
-  CompilerL1AllocationProblem problem;
+  SRAMAllocationProblem problem;
   problem.alignmentBytes = *alignment;
   problem.payloadBaseOffset = *controlBytes;
   problem.budgetBytes = budget;
@@ -230,8 +230,7 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     problem.regionBytes.push_back(allocation.allocationBytes);
   }
   unsigned allocationRegionCount = storageIndexByAllocationRegion.size();
-  problem.conflicts.assign(allocationRegionCount,
-                           llvm::BitVector(allocationRegionCount));
+  problem.conflicts = InterferenceGraph(allocationRegionCount);
   for (unsigned allocationRegionIndex = 0;
        allocationRegionIndex < allocationRegionCount; ++allocationRegionIndex) {
     unsigned storageIndex =
@@ -261,20 +260,21 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
       if (!hasConflict) {
         continue;
       }
-      problem.conflicts[allocationRegionIndex].set(previousRegionIndex);
-      problem.conflicts[previousRegionIndex].set(allocationRegionIndex);
+      problem.conflicts.addInterference(allocationRegionIndex,
+                                        previousRegionIndex);
     }
   }
   std::string allocationFailure;
-  FailureOr<std::unique_ptr<CompilerL1Allocator>> allocator =
-      createCompilerL1Allocator(allocationStrategy, allocationFailure);
+  SRAMAllocatorOptions allocatorOptions{exactSearchLimit};
+  FailureOr<std::unique_ptr<SRAMAllocator>> allocator = createSRAMAllocator(
+      allocationStrategy, allocatorOptions, allocationFailure);
   if (failed(allocator)) {
     module.emitOpError() << allocationFailure;
     return failure();
   }
   std::optional<unsigned> failureRegionIndex;
-  FailureOr<CompilerL1AllocationSolution> solution = solveCompilerL1Allocation(
-      **allocator, problem, failureRegionIndex, allocationFailure);
+  FailureOr<SRAMAllocationSolution> solution =
+      (*allocator)->allocate(problem, failureRegionIndex, allocationFailure);
   if (failed(solution)) {
     auto diagnostic =
         failureRegionIndex
@@ -285,7 +285,7 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
             : module.emitOpError();
     diagnostic << "compiler-l1 " << allocationFailure;
     if (llvm::StringRef(allocationFailure)
-            .starts_with("placement exceeds L1 budget")) {
+            .starts_with("placement exceeds SRAM budget")) {
       diagnostic << " (payload, control records, and alignment included); "
                  << (*allocator)->getName()
                  << " placement does not prove infeasibility";
@@ -301,10 +301,10 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
 }
 } // namespace
 
-LogicalResult allocateCompilerL1(
+LogicalResult allocateSRAM(
     ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     uint64_t budgetOverride, bool reuseStorage,
-    llvm::StringRef allocationStrategy,
+    llvm::StringRef allocationStrategy, uint64_t exactSearchLimit,
     const DFBConcurrentKernelLivenessAnalysis &liveness,
     ArrayRef<DFBStaticConfigurationConflict> staticConfigurationConflicts,
     bool unsafeAssumeAllocationGroups,
@@ -333,8 +333,9 @@ LogicalResult allocateCompilerL1(
   auto budget = getUsableDFBL1Bytes(
       module,
       budgetOverride ? std::optional<uint64_t>(budgetOverride) : std::nullopt);
-  FailureOr<L1AllocationPlan> maybePlan = planRegions(
-      module, identities, budget, reuseStorage, allocationStrategy, liveness);
+  FailureOr<L1AllocationPlan> maybePlan =
+      planRegions(module, identities, budget, reuseStorage, allocationStrategy,
+                  exactSearchLimit, liveness);
   if (failed(maybePlan)) {
     return failure();
   }

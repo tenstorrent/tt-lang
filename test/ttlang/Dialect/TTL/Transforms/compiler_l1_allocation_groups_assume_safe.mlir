@@ -1,4 +1,4 @@
-// Verifies compiler-L1 audit metadata for explicitly assumed allocation groups.
+// Verifies compiler-SRAM audit metadata for explicitly assumed allocation groups.
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 reuse-user-dfbs=true unsafe-assume-allocation-groups=true})' 2>%t.warning | FileCheck %s
 // RUN: FileCheck %s --check-prefix=WARNING < %t.warning
 

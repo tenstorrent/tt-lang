@@ -4,7 +4,7 @@
 // A complete page plus its control record cannot fit a 1024-byte budget.
 module attributes {ttl.launch_grid = [1, 1]} {
   func.func @insufficient_budget() attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>, ttl.noc_index = 0 : i32} {
-    // expected-error @below {{compiler-l1 placement exceeds L1 budget 1024 bytes}}
+    // expected-error @below {{compiler-l1 placement exceeds SRAM budget 1024 bytes}}
     %storage = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
       : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     return
