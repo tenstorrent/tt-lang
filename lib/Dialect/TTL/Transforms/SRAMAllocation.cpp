@@ -15,6 +15,7 @@
 
 #include "mlir/IR/Builders.h"
 
+#include "llvm/ADT/EquivalenceClasses.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/Support/CheckedArithmetic.h"
 
@@ -23,12 +24,74 @@
 namespace mlir::tt::ttl {
 namespace {
 
+// Multicast writes carry one destination address; their receivers must share a
+// layout.
+static SmallVector<SmallVector<LaunchNodeCoord>>
+collectSRAMCoreDomains(ModuleOp module, ArrayRef<LaunchNodeCoord> nodes) {
+  llvm::EquivalenceClasses<unsigned> equivalence;
+  for (unsigned index = 0; index < nodes.size(); ++index) {
+    equivalence.insert(index);
+  }
+  auto mergeReceivers = [&](int64_t startX, int64_t startY, int64_t endX,
+                            int64_t endY) {
+    std::optional<unsigned> leader;
+    for (auto [index, node] : llvm::enumerate(nodes)) {
+      if (node.x < startX || node.x > endX || node.y < startY ||
+          node.y > endY) {
+        continue;
+      }
+      if (leader) {
+        equivalence.unionSets(*leader, index);
+      } else {
+        leader = index;
+      }
+    }
+  };
+  module.walk([&](Operation *operation) {
+    for (Type type : operation->getResultTypes()) {
+      if (auto pipe = dyn_cast<PipeType>(type);
+          pipe && pipe.hasMultipleReceivers()) {
+        mergeReceivers(pipe.getDstStartX(), pipe.getDstStartY(),
+                       pipe.getDstEndX(), pipe.getDstEndY());
+      }
+    }
+    for (NamedAttribute attribute : operation->getAttrs()) {
+      if (auto records = dyn_cast<PipeNetRecordsAttr>(attribute.getValue())) {
+        for (auto pipe : records.getPipes()) {
+          if (pipe.getIsCollective()) {
+            mergeReceivers(pipe.getDstStartX(), pipe.getDstStartY(),
+                           pipe.getDstEndX(), pipe.getDstEndY());
+          }
+        }
+      }
+    }
+  });
+  llvm::MapVector<unsigned, SmallVector<LaunchNodeCoord>> groups;
+  for (auto [index, node] : llvm::enumerate(nodes)) {
+    groups[equivalence.getLeaderValue(index)].push_back(node);
+  }
+  SmallVector<SmallVector<LaunchNodeCoord>> result;
+  for (auto &group : groups) {
+    result.push_back(std::move(group.second));
+  }
+  return result;
+}
+
 static FailureOr<SRAMAllocationPlan>
 planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
             uint64_t budget, bool reuseStorage,
             llvm::StringRef allocationStrategy, uint64_t exactSearchLimit,
-            bool reportAllocation,
+            bool reportAllocation, llvm::StringRef allocationMode,
             const DFBConcurrentKernelLivenessAnalysis &liveness) {
+  if (allocationMode != "uniform" && allocationMode != "per-core") {
+    module.emitOpError("SRAM allocation mode must be uniform or per-core");
+    return failure();
+  }
+  if (allocationMode == "per-core" && !liveness.hasExactLaunchGrid()) {
+    module.emitOpError(
+        "per-core SRAM allocation requires an exact launch grid");
+    return failure();
+  }
   std::string targetFailure;
   FailureOr<uint64_t> alignment =
       resolveTargetL1AllocationQuantumBytes(module, targetFailure);
@@ -245,10 +308,64 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     module.emitOpError() << allocationFailure;
     return failure();
   }
-  SRAMAllocationDomainProblem domain{std::move(problem),
-                                     std::move(storageIndexByAllocationRegion)};
+  SmallVector<SRAMAllocationDomainProblem> requests;
+  SmallVector<SmallVector<LaunchNodeCoord>> coreDomains;
+  if (allocationMode == "per-core") {
+    coreDomains = collectSRAMCoreDomains(module, liveness.getLaunchNodes());
+  }
+  if (allocationMode == "uniform") {
+    requests.push_back(
+        {std::move(problem), std::move(storageIndexByAllocationRegion)});
+  } else {
+    for (const auto &coreDomain : coreDomains) {
+      SRAMAllocationDomainProblem request;
+      request.allocation.alignmentBytes = *alignment;
+      request.allocation.payloadBaseOffset = *controlBytes;
+      request.allocation.budgetBytes = budget;
+      SmallVector<unsigned> sourceRegions;
+      for (auto indexedStorage :
+           llvm::enumerate(storageIndexByAllocationRegion)) {
+        unsigned sourceRegion = indexedStorage.index();
+        unsigned storageIndex = indexedStorage.value();
+        bool active = llvm::any_of(coreDomain, [&](LaunchNodeCoord node) {
+          return llvm::any_of(
+              storage[storageIndex].members, [&](unsigned member) {
+                const auto &lifecycle =
+                    liveness.getLogicalDFBLifecycles()[lifecycleIndices.lookup(
+                        plan[member].logicalId)];
+                if (lifecycle.launchDomain.known &&
+                    !llvm::is_contained(lifecycle.launchDomain.nodes, node)) {
+                  return false;
+                }
+                const auto *lifetime =
+                    lifecycle.launchDomain.known
+                        ? lifecycle.findNodeLifetime(node)
+                        : lifecycle.findPossibleNodeLifetime(node);
+                return !lifetime || lifetime->mayBeActive;
+              });
+        });
+        if (!active) {
+          continue;
+        }
+        sourceRegions.push_back(sourceRegion);
+        request.storageIndices.push_back(storageIndex);
+        request.allocation.regionBytes.push_back(
+            problem.regionBytes[sourceRegion]);
+      }
+      request.allocation.conflicts = InterferenceGraph(sourceRegions.size());
+      for (unsigned left = 0; left < sourceRegions.size(); ++left) {
+        for (unsigned right = 0; right < left; ++right) {
+          if (problem.conflicts.interferes(sourceRegions[left],
+                                           sourceRegions[right])) {
+            request.allocation.conflicts.addInterference(left, right);
+          }
+        }
+      }
+      requests.push_back(std::move(request));
+    }
+  }
   SRAMAllocationDomainFailure allocationError;
-  auto domains = (*allocator)->allocateDomains(domain, allocationError);
+  auto domains = (*allocator)->allocateDomains(requests, allocationError);
   if (failed(domains)) {
     auto diagnostic =
         allocationError.storageIndex
@@ -265,16 +382,60 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     }
     return failure();
   }
-  const SRAMAllocationDomainSolution &uniformDomain = domains->front();
-  for (const SRAMStoragePlacement &placement : uniformDomain.placements) {
-    storage[placement.storageIndex].offset = placement.offset;
+  SRAMAllocationPlan result{
+      std::move(plan), std::move(storage), *controlBytes, {}};
+  for (auto [domainIndex, domain] : llvm::enumerate(*domains)) {
+    result.arenaBytes = std::max(result.arenaBytes, domain.arenaBytes);
+    if (allocationMode == "uniform") {
+      for (const auto &placement : domain.placements) {
+        result.storage[placement.storageIndex].offset = placement.offset;
+      }
+    } else {
+      for (LaunchNodeCoord node : coreDomains[domainIndex]) {
+        SRAMCoreLayout layout{
+            node, {}, domain.arenaBytes, static_cast<unsigned>(domainIndex)};
+        layout.payloadOffsets.resize(result.storage.size());
+        for (const auto &placement : domain.placements) {
+          layout.payloadOffsets[placement.storageIndex] = placement.offset;
+        }
+        result.coreLayouts.push_back(std::move(layout));
+      }
+    }
   }
-  SRAMAllocationPlan result{std::move(plan), std::move(storage),
-                            uniformDomain.arenaBytes};
+  if (allocationMode != "uniform") {
+    for (auto &owner : result.storage) {
+      owner.offset = *controlBytes;
+    }
+  }
   if (reportAllocation) {
-    printSRAMAllocationReport(llvm::errs(), result, liveness, conflicts,
-                              allocationStrategy, reuseStorage, *alignment,
-                              *controlBytes, budget);
+    if (result.coreLayouts.empty()) {
+      printSRAMAllocationReport(llvm::errs(), result, liveness, conflicts,
+                                allocationStrategy, reuseStorage, *alignment,
+                                *controlBytes, budget);
+    } else {
+      for (unsigned domain = 0; domain < coreDomains.size(); ++domain) {
+        auto layout =
+            llvm::find_if(result.coreLayouts, [&](const auto &candidate) {
+              return candidate.domain == domain;
+            });
+        assert(layout != result.coreLayouts.end());
+        SRAMAllocationPlan domainPlan = result;
+        domainPlan.arenaBytes = layout->arenaBytes;
+        llvm::erase_if(domainPlan.coreLayouts, [&](const auto &candidate) {
+          return candidate.domain != domain;
+        });
+        for (auto [ownerIndex, owner] : llvm::enumerate(domainPlan.storage)) {
+          if (layout->payloadOffsets[ownerIndex]) {
+            owner.offset = *layout->payloadOffsets[ownerIndex];
+          } else {
+            owner.allocationBytes = 0;
+          }
+        }
+        printSRAMAllocationReport(llvm::errs(), domainPlan, liveness, conflicts,
+                                  allocationStrategy, reuseStorage, *alignment,
+                                  *controlBytes, budget);
+      }
+    }
   }
   return result;
 }
@@ -284,7 +445,8 @@ LogicalResult allocateSRAM(
     ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     uint64_t budgetOverride, bool reuseStorage,
     llvm::StringRef allocationStrategy, uint64_t exactSearchLimit,
-    bool reportAllocation, const DFBConcurrentKernelLivenessAnalysis &liveness,
+    bool reportAllocation, llvm::StringRef allocationMode,
+    const DFBConcurrentKernelLivenessAnalysis &liveness,
     ArrayRef<DFBStaticConfigurationConflict> staticConfigurationConflicts,
     bool unsafeAssumeAllocationGroups,
     SmallVectorImpl<DFBAssumedAllocationGroup> &assumedAllocationGroups) {
@@ -314,7 +476,7 @@ LogicalResult allocateSRAM(
       budgetOverride ? std::optional<uint64_t>(budgetOverride) : std::nullopt);
   FailureOr<SRAMAllocationPlan> maybePlan =
       planRegions(module, identities, budget, reuseStorage, allocationStrategy,
-                  exactSearchLimit, reportAllocation, liveness);
+                  exactSearchLimit, reportAllocation, allocationMode, liveness);
   if (failed(maybePlan)) {
     return failure();
   }
@@ -370,6 +532,29 @@ LogicalResult allocateSRAM(
           "l1_allocation_bytes",
           builder.getI64IntegerAttr(storage.allocationBytes)));
     }
+    if (!plan.coreLayouts.empty()) {
+      SmallVector<Attribute> layouts;
+      for (const auto &layout : plan.coreLayouts) {
+        auto offset = layout.payloadOffsets[region.storageIndex];
+        layouts.push_back(builder.getDictionaryAttr({
+            builder.getNamedAttr(
+                "node", builder.getArrayAttr(
+                            {builder.getI64IntegerAttr(layout.node.x),
+                             builder.getI64IntegerAttr(layout.node.y)})),
+            builder.getNamedAttr("payload_offset",
+                                 builder.getI64IntegerAttr(
+                                     offset.value_or(storage.stateOffset))),
+            builder.getNamedAttr("payload_present",
+                                 builder.getBoolAttr(offset.has_value())),
+            builder.getNamedAttr("arena_bytes",
+                                 builder.getI64IntegerAttr(layout.arenaBytes)),
+            builder.getNamedAttr("domain",
+                                 builder.getI64IntegerAttr(layout.domain)),
+        }));
+      }
+      entryAttributes.push_back(builder.getNamedAttr(
+          "sram_core_layouts", builder.getArrayAttr(layouts)));
+    }
     allocations.push_back(builder.getDictionaryAttr(entryAttributes));
   }
   DenseMap<int64_t, SmallVector<int32_t>> resetsByReconfiguration;
@@ -415,6 +600,10 @@ LogicalResult allocateSRAM(
   } else {
     module->setAttr(kCompilerL1ReconfigurationResetsAttrName,
                     builder.getArrayAttr(reconfigurationResets));
+  }
+  if (!plan.coreLayouts.empty()) {
+    module->setAttr("ttl.sram_allocation_mode",
+                    builder.getStringAttr("per-core"));
   }
   module->setAttr(kL1ArenaBytesAttrName,
                   builder.getI64IntegerAttr(plan.arenaBytes));
