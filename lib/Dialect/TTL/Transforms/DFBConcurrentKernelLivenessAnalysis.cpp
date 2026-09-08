@@ -464,27 +464,6 @@ static bool executesRegionsAtMostOnce(Operation *operation) {
              scf::ExecuteRegionOp, IfSrcOp, IfDstOp>(operation);
 }
 
-static AccessDomain refineUnknownAccessDomainFromExecutionCounts(
-    Operation *operation, AccessDomain accessDomain,
-    const LaunchNodeDomainState &domainState) {
-  if (accessDomain.domain.known) {
-    return accessDomain;
-  }
-
-  LaunchNodeDomain exactDomain;
-  for (LaunchNodeCoord node : domainState.baseDomain.nodes) {
-    std::optional<std::uint64_t> executionCount =
-        getExactExecutionCountAtLaunchNode(operation, node, domainState);
-    if (!executionCount) {
-      return accessDomain;
-    }
-    if (*executionCount > 0) {
-      exactDomain.nodes.insert(node);
-    }
-  }
-  return {std::move(exactDomain), nullptr};
-}
-
 // Proves that an access executes once in every iteration of one immutable
 // structured loop nest. At-most-once regions must be selected on every
 // enclosing-loop invocation.
@@ -5087,10 +5066,14 @@ void DFBConcurrentKernelLivenessAnalysis::analyze(
               ? AccessDomain{LaunchNodeDomain{}, nullptr}
               : AccessDomain{LaunchNodeDomain::unknown(), accessOperation};
     }
+    LaunchNodeDomain refinedDomain = refineLaunchNodeDomainFromExecutionCounts(
+        accessOperation, accessDomain.domain, domainState);
     return refinedAccessDomains
         .try_emplace(accessOperation,
-                     refineUnknownAccessDomainFromExecutionCounts(
-                         accessOperation, accessDomain, domainState))
+                     AccessDomain{refinedDomain,
+                                  refinedDomain.known
+                                      ? nullptr
+                                      : accessDomain.unanalyzableOperation})
         .first->second;
   };
 
