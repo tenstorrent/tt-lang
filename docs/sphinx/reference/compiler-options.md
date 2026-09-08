@@ -186,14 +186,14 @@ The pipeline runs these passes and subpasses in order:
 - `ttkernel-insert-l1-accumulation` -- insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
 - `ttkernel-combine-pack-tiles` -- combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*
 - Canonicalization and CSE cleanup
-- `ttkernel-specialize-and-annotate-dfb-use` -- `ttkernel-specialize-cores`, `canonicalize`, `cse`, `ttkernel-unroll-static-pipenet-record-loops`, `canonicalize`, `cse`, then `ttkernel-annotate-dfb-use` *(only if `specialize-cores=true`)*
-- Without core specialization, `ttkernel-unroll-static-pipenet-record-loops`, canonicalization, and CSE still run to consume compiler-owned loop markers and optimize any already-static local record loops.
+- `ttkernel-specialize-and-annotate-dfb-use` -- `ttkernel-specialize-cores`, `canonicalize`, `cse`, `ttkernel-unroll-static-pipenet-record-loops`, `canonicalize`, `cse`, `ttkernel-finalize-tensor-runtime-args`, `canonicalize`, then `ttkernel-annotate-dfb-use` *(only if `specialize-cores=true`)*
+- Without core specialization, run `ttkernel-unroll-static-pipenet-record-loops`, `canonicalize`, `cse`, `ttkernel-finalize-tensor-runtime-args`, then `canonicalize`. This simplifies already-static record loops and removes unused runtime arguments in both configurations.
 - *(if `lower-to-emitc=true`)* `lower-affine`, `convert-ttkernel-to-emitc`, `emitc-form-expressions`
 
 ### Individual Pass Options
 
-Each pass can also be run standalone for testing. Only passes with configurable
-options are listed; the remaining passes have no options.
+The following references describe configurable passes and selected passes that
+are useful to run independently for testing.
 
 #### `ttl-form-accumulation-scopes`
 
@@ -411,8 +411,12 @@ ttlang-opt input.mlir -p 'builtin.module(ttkernel-specialize-and-annotate-dfb-us
 
 #### `ttkernel-unroll-static-pipenet-record-loops`
 
-Fully unroll compiler-marked local PipeNet record loops after their bounds
-become constant. This exposes each selected record index to canonicalization,
+PipeNet lowering generates loops over the source or destination records selected
+for a worker. It marks bounded local-record loops as eligible for unrolling;
+loops that scan the complete fallback table remain rolled to limit code size.
+
+This pass replaces each marked loop with its individual iterations once its
+bounds are constant. This exposes each selected record index to canonicalization,
 which replaces immutable record-table lookups with constants. Dynamic loop
 bounds remain unchanged, and their temporary compiler marker is removed.
 

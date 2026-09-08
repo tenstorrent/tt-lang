@@ -118,11 +118,12 @@ synchronization mechanism.
 `RA/CC` is unsupported because CC permits a send without a current
 receiver post, so the sender must compute the destination address.
 
-All three modes preserve the same receiver-visible ordering: completion is
-observable only after the payload. A sender-ready increment means that the
-receiver has reserved destination storage; it does not mean that the payload
-write is complete. Repeated, shared, collective, receiver-authored, and
-capacity-credit transfers signal completion with a payload barrier followed by
+All three modes preserve the same receiver-visible ordering: the receiver
+observes completion only after the payload write is visible in its L1 memory.
+A sender-ready increment means that the receiver has reserved destination
+storage; it does not mean that the payload write is complete. Repeated, shared,
+collective, receiver-authored, and capacity-credit transfers signal completion
+with a payload barrier followed by
 an atomic increment. An eligible one-shot `CA/RP` point-to-point transfer to a
 remote core may instead use ordered posted payload and completion writes.
 
@@ -138,7 +139,8 @@ remote core may instead use ordered posted payload and completion writes.
 | Sender/receiver synchronization | Per-transfer receiver-post rendezvous | Per-transfer receiver-post rendezvous | Sender may use the next computed slot when a capacity credit is available |
 | Multicast | Supported when receiver runtime addresses are proven equal | Supported with proven equal receiver runtime addresses | Not currently supported; uses `CA/RP` instead |
 
-The practical difference is address publication, not send admission.
+The difference between `RA/RP` and `CA/RP` is how the sender obtains the
+destination address, while both wait for the receiver to reserve storage.
 `CA/RP` does not permit the sender to run before the receiver post. It
 removes the receiver's address write and the sender's address-table read
 when the compiler can prove that its computed address is the address of
@@ -756,10 +758,9 @@ release cannot race with a sender update.
    NoC write.
 3. The sender signals receiver completion after the payload write barrier,
    using the transfer node's receiver-completion counter. `CA/CC` retains the
-   cumulative atomic mechanism because its completion is coupled to
-   iteration-domain credit. Eligible one-shot `CA/RP` point-to-point transfers
-   to a remote core may use the ordered posted mechanism described in
-   `PipeOptimizations.md`.
+   cumulative atomic mechanism. The separate one-shot optimization applies
+   only to `CA/RP`; see the
+   [posted-write protocol](PipeOptimizations.md#one-shot-posted-point-to-point-protocol).
 4. The receiver executes its normal receive wait, push, wait-front, and
    pop sequence.
 5. Lowering emits `ttkernel.noc_semaphore_inc` to the source-node
@@ -1315,8 +1316,8 @@ only the storage class changes. The compiler records the final local and global 
 Receiver completion is cumulative across repeated executions of a transfer
 node: sends increment its shared counter, and waits consume it with
 monotonically increasing `wait_min` thresholds instead of resetting it per
-execution. A counter proven to have exactly one lifetime update may instead be
-set directly to 1. Each receive post increments a kernel-local sequence for its
+execution. An eligible one-shot point-to-point send may instead set its counter
+directly to 1. Each receive post increments a kernel-local sequence for its
 completion counter and returns that sequence in the transfer token. The wait
 uses the token directly, so storing or reordering tokens does not associate a
 wait with a later post. Transfers that share a physical receiver never share a
@@ -1402,8 +1403,8 @@ transfer contract and optional logical-device transfer proven across every
 possible pipe origin. The receive copy becomes a receive post plus a
 receive-completion wait. The send copy becomes a pipe-transfer send. The public
 send handle preserves the TTL ordering contract for sender-side code, but the
-pipe-transfer send itself owns the payload-write barrier and
-receiver-completion signal.
+pipe-transfer send itself ensures payload-before-completion ordering and makes
+the source storage safe to reuse.
 
 ```mlir
 %transfer = ttl.pipe_transfer.create %pipe {
@@ -1444,14 +1445,14 @@ This example uses three synchronization values:
 | Name | Storage | Initial value | Updated by | Read by |
 | --- | --- | --- | --- | --- |
 | Sender-ready counter | Source-node semaphore at `%ready_sem_index`. If local semaphore ids are exhausted, this is a GlobalSemaphore-backed SRAM address passed as a common runtime argument. | 0 | Each receiver post increments it by 1 after publishing the destination DFB address. The sender resets it to 0 after waiting for all expected posts. | Sender send waits for it to equal `%expected_receivers`. |
-| Receiver-completion counter | Destination-node local semaphore or GlobalSemaphore-backed SRAM address, assigned to one transfer node at this receiver. | 0 | Each send signals completion after the payload ordering point. Repeated or shared state uses an atomic increment. An eligible counter with exactly one lifetime update receives an ordered posted store of value 1. | The matching receiver wait uses `semaphore_wait_min` with the sequence stored in its transfer token. |
+| Receiver-completion counter | Destination-node local semaphore or GlobalSemaphore-backed SRAM address, assigned to one transfer node at this receiver. | 0 | Each send increments it after the payload write barrier. | The matching receiver wait uses `semaphore_wait_min` with the sequence stored in its transfer token. |
 | Receiver post-sequence counter | Kernel-local `memref<1xi32>` for a static completion counter. A table-driven receiver uses one `memref<Nxi32>`, where `N` is the number of distinct completion counters referenced by the records. | 0 at function entry | Each matching `ttl.pipe_transfer.post` increments the element for its completion counter. | The post returns the new value in its transfer token; the corresponding wait uses that token as its completion threshold. |
 
 The sender-ready counter is a reusable pre-send synchronization counter.
 Repeated receiver completion is cumulative across executions of its transfer
-node for the whole kernel execution and is not reset by pipe lowering. A
-counter proven to receive exactly one lifetime update remains at its initial
-zero until the sender stores its only completion value, 1.
+node for the whole kernel execution and is not reset by pipe lowering. The
+`RA/RP` example below uses an atomic increment even for a single send; the
+posted-write optimization requires computed receiver addresses.
 
 ```mlir
 // Receiver node (1, 0).
@@ -1512,9 +1513,9 @@ operation because `ttl.pipe_transfer.send` emits the complete selected
 send-side protocol. The cumulative protocol waits for the payload write before
 issuing its completion atomic. The one-shot protocol issues posted payload and
 completion writes in NoC order, then flushes those writes from the sender
-before source reuse. In both cases a receiver can observe completion only after
-the payload ordering point. A later send-handle wait cannot make receiver data
-more available. This rule applies only to pipe send handles; non-pipe async
+before source reuse. In both cases the receiver observes completion only after
+the payload write is visible in its L1 memory. A later send-handle wait adds no
+synchronization. This rule applies only to pipe send handles; non-pipe async
 writes still lower `ttl.wait` to the appropriate NoC barrier.
 
 For collective transfers, the same structure is used with aggregate

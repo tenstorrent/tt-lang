@@ -563,10 +563,12 @@ An operation executes on its complete `device_domain` by default. The
 `mesh_program_placements` operation option can instead select explicit logical
 device coordinates or inclusive `ttl.MeshProgramPlacement` ranges. The host
 then materializes descriptors only for those devices. Placement is explicit:
-the compiler does not infer it from PipeNet endpoints because non-PipeNet code
-can have effects on every logical device. Every graph-based PipeNet source and
-destination must be included in the explicit placement. Explicit placements
-must use one coordinate rank and their inclusive ranges must not overlap.
+the compiler does not infer it from PipeNet endpoints. A device without a
+PipeNet endpoint may still run a tensor copy or computation elsewhere in the
+operation. Omitting that device would omit that work. Every graph-based PipeNet
+source and destination must be included in the explicit placement. Explicit
+placements must use one coordinate rank and their inclusive ranges must not
+overlap.
 
 The compiler-managed runtime prefix is:
 
