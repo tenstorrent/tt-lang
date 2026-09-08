@@ -63,13 +63,13 @@ module attributes {ttl.memory_model = "compiler-l1", ttl.target_arch = #ttcore.a
 
 // Compute descriptors preserve direct-to-destination format selection.
 // EMITC-LABEL: func.func @compiler_l1_compute_descriptor
-// EMITC: #emitc.opaque<"ttlang::l1::ComputeDFBDescriptor<static_cast<uint32_t>(DataFormat::Float32), 4096, 1, 1, 1, 0, 64, -1, true>">
+// EMITC: #emitc.opaque<"ttlang::l1::ComputeDFBDescriptor<static_cast<uint32_t>(DataFormat::Float32), 1024, 8, 32, 1, 1, 1, 0, 64, -1, true>">
 // CPP: #define TTLANG_DFB_STORAGE_COMPILER_L1 1
 // CPP: #include "describe.hpp"
-// CPP: describe<ttlang::l1::ComputeDFBDescriptor<static_cast<uint32_t>(DataFormat::Float32), 4096, 1, 1, 1, 0, 64, -1, true>>();
-module attributes {ttl.memory_model = "compiler-l1", ttl.target_arch = #ttcore.arch<wormhole_b0>, ttl.dfb_allocations = [{block_count = 1 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, f32>, l1_allocation_bytes = 4096 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i32, page_size = 4096 : i32, storage_capacity_pages = 1 : i32, storage_index = 0 : i32}]} {
+// CPP: describe<ttlang::l1::ComputeDFBDescriptor<static_cast<uint32_t>(DataFormat::Float32), 1024, 8, 32, 1, 1, 1, 0, 64, -1, true>>();
+module attributes {ttl.memory_model = "compiler-l1", ttl.target_arch = #ttcore.arch<wormhole_b0>, ttl.dfb_allocations = [{block_count = 1 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<8x32, f32>, l1_allocation_bytes = 1024 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i32, page_size = 1024 : i32, storage_capacity_pages = 1 : i32, storage_index = 0 : i32}]} {
   func.func @compiler_l1_compute_descriptor() attributes {ttkernel.thread = #ttkernel.thread<compute>, ttl.unpack_to_dest_fp32 = array<i32: 0>} {
-    ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<0, 1, 1, 4096>] () {dfb_resource_indices = array<i32: 0>, header = "describe.hpp"} : () -> ()
+    ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<0, 1, 1, 1024>] () {dfb_resource_indices = array<i32: 0>, header = "describe.hpp"} : () -> ()
     return
   }
 }
