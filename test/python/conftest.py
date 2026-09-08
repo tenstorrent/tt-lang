@@ -142,5 +142,8 @@ def reject_metal_dfb_descriptor_creation(monkeypatch):
             pytest.fail("compiler-l1 constructed a TT-Metal DFB descriptor")
 
         monkeypatch.setattr(ttnn, "CBDescriptor", reject_descriptor)
+        monkeypatch.setattr(
+            ttnn, "cb_descriptor_from_sharded_tensor", reject_descriptor
+        )
 
     return install_rejection
