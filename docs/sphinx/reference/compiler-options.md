@@ -188,7 +188,7 @@ The pipeline runs these passes and subpasses in order:
 - Canonicalization and CSE cleanup
 - `ttkernel-specialize-and-annotate-dfb-use` -- `ttkernel-specialize-cores`, `canonicalize`, `cse`, `ttkernel-batch-static-pipenet-receives`, `ttkernel-unroll-static-pipenet-record-loops`, `lower-affine`, `canonicalize`, `cse`, `ttkernel-cleanup`, `ttkernel-finalize-tensor-runtime-args`, `canonicalize`, then `ttkernel-annotate-dfb-use` *(only if `specialize-cores=true`)*
 - Without core specialization, `ttkernel-cleanup-and-finalize-runtime-args` runs `ttkernel-batch-static-pipenet-receives`, `ttkernel-unroll-static-pipenet-record-loops`, `lower-affine`, `canonicalize`, `cse`, `ttkernel-cleanup`, `ttkernel-finalize-tensor-runtime-args`, then `canonicalize`. Python, the full C++ pipeline, and the standalone specialization pipeline use this same implementation.
-- *(if `lower-to-emitc=true`)* `lower-affine`, `convert-ttkernel-to-emitc`, `emitc-form-expressions`
+- *(if `lower-to-emitc=true`)* `convert-ttkernel-to-emitc`, `emitc-form-expressions`
 
 ### Individual Pass Options
 
