@@ -273,6 +273,20 @@ validateCompilerL1ComputeTileType(const ttl::ComputeTargetEnvironment &target,
   return target.validateKernelTileType(tile, failureReason);
 }
 
+static LogicalResult validateCompilerL1ExternalComputeTileType(
+    const ttl::ComputeTargetEnvironment &target, ttcore::TileType tile,
+    std::string &failureReason) {
+  ttcore::DataType dataType = tile.getDataType();
+  if (dataType != ttcore::DataType::Float32 &&
+      dataType != ttcore::DataType::BFloat16 &&
+      dataType != ttcore::DataType::BFP_BFloat4 &&
+      dataType != ttcore::DataType::BFP_BFloat8) {
+    failureReason = "requires BF16, FP32, BFP4_B, or BFP8_B tiles";
+    return failure();
+  }
+  return target.validateKernelTileType(tile, failureReason);
+}
+
 static std::string getTTKernelCalleeName(llvm::StringRef opName) {
   opName.consume_front("ttkernel.");
   if (opName.consume_front("experimental.")) {
@@ -3584,11 +3598,11 @@ public:
                   dyn_cast_if_present<ttcore::TileType>(allocation.elementType);
               computeTargetFailureReason.clear();
               if (!tile ||
-                  failed(validateCompilerL1ComputeTileType(
+                  failed(validateCompilerL1ExternalComputeTileType(
                       **computeTarget, tile, computeTargetFailureReason))) {
                 operation->emitOpError("compiler-l1 compute descriptor ")
                     << (tile ? computeTargetFailureReason
-                             : "requires BF16 or FP32 tiles");
+                             : "requires BF16, FP32, BFP4_B, or BFP8_B tiles");
                 return WalkResult::interrupt();
               }
             }

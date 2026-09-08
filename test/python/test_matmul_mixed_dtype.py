@@ -10,7 +10,7 @@ import ttl
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttlang_test_utils import to_dram
+from ttlang_test_utils import make_single_core_sharded_l1_memory_config, to_dram
 from utils.correctness import assert_pcc
 
 TILE_SIZE = 32
@@ -197,26 +197,6 @@ def _make_weight_tensor(weights_torch, weight_dtype, device, memory_config):
     )
 
 
-def _make_sharded_l1_memory_config(tensor_shape, memory_layout):
-    shard_spec = ttnn.ShardSpec(
-        ttnn.CoreRangeSet(
-            {
-                ttnn.CoreRange(
-                    ttnn.CoreCoord(0, 0),
-                    ttnn.CoreCoord(0, 0),
-                )
-            }
-        ),
-        tensor_shape,
-        ttnn.ShardOrientation.ROW_MAJOR,
-    )
-    return ttnn.MemoryConfig(
-        memory_layout,
-        ttnn.BufferType.L1,
-        shard_spec,
-    )
-
-
 @pytest.mark.requires_device
 @pytest.mark.parametrize(
     ("weight_storage", "tensor_backing_layout"),
@@ -265,7 +245,7 @@ def test_mixed_dtype_matmul_device(
         weight_memory_config = ttnn.L1_MEMORY_CONFIG
         matmul = STAGED_WEIGHT_MATMULS[math_fidelity]
     elif weight_storage == "tensor_backed_l1":
-        weight_memory_config = _make_sharded_l1_memory_config(
+        weight_memory_config = make_single_core_sharded_l1_memory_config(
             tuple(weights_torch.shape), tensor_backing_layout
         )
         matmul = TENSOR_BACKED_WEIGHT_MATMULS[math_fidelity]

@@ -71,8 +71,42 @@ module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [{blo
 // Compute descriptors require a supported tile type in the allocation table.
 module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [{block_count = 1 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i64, page_size = 2048 : i64, storage_capacity_pages = 1 : i64}]} {
   func.func @descriptor_missing_element_type() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
-    // expected-error @below {{'ttkernel.opaque_call' op compiler-l1 compute descriptor requires BF16 or FP32 tiles}}
+    // expected-error @below {{'ttkernel.opaque_call' op compiler-l1 compute descriptor requires BF16, FP32, BFP4_B, or BFP8_B tiles}}
     ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<0, 1, 1, 2048>] () {dfb_resource_indices = array<i32: 0>, header = "describe.hpp"} : () -> ()
+    return
+  }
+}
+
+// -----
+
+// External compute descriptors reject unqualified block-float formats.
+module attributes {ttl.memory_model = "compiler-l1", ttl.target_arch = #ttcore.arch<blackhole>, ttl.dfb_allocations = [{block_count = 1 : i64, element_type = !ttcore.tile<32x32, bfp_bf2>, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i64, page_size = 320 : i64, storage_capacity_pages = 1 : i64}]} {
+  func.func @descriptor_bfp2() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+    // expected-error @below {{'ttkernel.opaque_call' op compiler-l1 compute descriptor requires BF16, FP32, BFP4_B, or BFP8_B tiles}}
+    ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<0, 1, 1, 320>] () {dfb_resource_indices = array<i32: 0>, header = "describe.hpp"} : () -> ()
+    return
+  }
+}
+
+// -----
+
+// Block-float external compute descriptors require complete 32x32 tiles.
+module attributes {ttl.memory_model = "compiler-l1", ttl.target_arch = #ttcore.arch<blackhole>, ttl.dfb_allocations = [{block_count = 1 : i64, element_type = !ttcore.tile<8x32, bfp_bf4>, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i64, page_size = 160 : i64, storage_capacity_pages = 1 : i64}]} {
+  func.func @descriptor_bfp_subtile() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+    // expected-error @below {{'ttkernel.opaque_call' op compiler-l1 compute descriptor BFP compute tiles require 32x32 dimensions, got 8x32}}
+    ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<0, 1, 1, 160>] () {dfb_resource_indices = array<i32: 0>, header = "describe.hpp"} : () -> ()
+    return
+  }
+}
+
+// -----
+
+// Native compiler-managed compute remains restricted to BF16 and FP32.
+module attributes {ttl.memory_model = "compiler-l1", ttl.target_arch = #ttcore.arch<blackhole>, ttl.dfb_allocations = [{block_count = 1 : i64, element_type = !ttcore.tile<32x32, bfp_bf4>, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i64, page_size = 576 : i64, storage_capacity_pages = 1 : i64}]} {
+  func.func @native_bfp_compute() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+    %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bfp_bf4>>
+    // expected-error @below {{compiler-l1 compute requires BF16 or FP32 tiles}}
+    ttkernel.copy_tile_init(%storage) : (!ttkernel.cb<1, !ttcore.tile<32x32, bfp_bf4>>) -> ()
     return
   }
 }

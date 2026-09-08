@@ -76,6 +76,23 @@ module attributes {ttl.memory_model = "compiler-l1", ttl.target_arch = #ttcore.a
 
 // -----
 
+// External compute descriptors preserve full-tile block-float formats.
+// EMITC-LABEL: func.func @compiler_l1_bfp_compute_descriptors
+// EMITC: #emitc.opaque<"ttlang::l1::ComputeDFBDescriptor<static_cast<uint32_t>(DataFormat::Bfp4_b), 576, 32, 32, 1, 1, 1, 0, 64, -1, false>">
+// EMITC-SAME: #emitc.opaque<"ttlang::l1::ComputeDFBDescriptor<static_cast<uint32_t>(DataFormat::Bfp8_b), 1088, 32, 32, 1, 1, 1, 8, 632, -1, false>">
+// CPP: describe<ttlang::l1::ComputeDFBDescriptor<static_cast<uint32_t>(DataFormat::Bfp4_b), 576, 32, 32, 1, 1, 1, 0, 64, -1, false>, ttlang::l1::ComputeDFBDescriptor<static_cast<uint32_t>(DataFormat::Bfp8_b), 1088, 32, 32, 1, 1, 1, 8, 632, -1, false>>();
+module attributes {ttl.memory_model = "compiler-l1", ttl.target_arch = #ttcore.arch<wormhole_b0>, ttl.dfb_allocations = [
+  {block_count = 1 : i32, element_type = !ttcore.tile<32x32, bfp_bf4>, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i32, page_size = 576 : i32, storage_capacity_pages = 1 : i32},
+  {block_count = 1 : i32, element_type = !ttcore.tile<32x32, bfp_bf8>, l1_offset = 8 : i64, l1_payload_offset = 640 : i64, num_tiles = 1 : i32, page_size = 1088 : i32, storage_capacity_pages = 1 : i32}
+]} {
+  func.func @compiler_l1_bfp_compute_descriptors() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+    ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<0, 1, 1, 576>, #ttkernel.dfb_descriptor<1, 1, 1, 1088>] () {dfb_resource_indices = array<i32: 0, 1>, header = "describe.hpp"} : () -> ()
+    return
+  }
+}
+
+// -----
+
 // An unsigned boundary annotation creates an explicit uint32_t call operand.
 // EMITC-LABEL: func.func @unsigned_func_arg_to_emitc
 // EMITC: %[[SIGNED:.*]] = "emitc.constant"() <{value = -1 : i32}> : () -> i32
