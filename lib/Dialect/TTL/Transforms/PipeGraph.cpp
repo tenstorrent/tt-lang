@@ -2394,14 +2394,9 @@ PipeGraph::addPipeReceiver(Operation *op, PipeTransferCreateOp transferCreateOp,
     return failure();
   }
   ReceiverDFBInfo receiverInfo{
-      *maybeDFBIndex,
-      *maybeDFBId,
-      dfbType,
-      hasStaticTileOffset,
-      staticTileOffset,
-      *slotSpanBlocks,
-      dfbType.getBlockCount(),
-      op->getLoc()};
+      *maybeDFBIndex,          *maybeDFBId,      dfbType,
+      hasStaticTileOffset,     staticTileOffset, *slotSpanBlocks,
+      dfbType.getBlockCount(), op->getLoc()};
   bool inserted = receiverDFBByPost.insert({op, receiverInfo}).second;
   assert(inserted && "receiver post visited more than once");
   return success();
