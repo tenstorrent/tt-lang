@@ -482,6 +482,19 @@ def assert_allclose(actual, expected, rtol=1e-5, atol=1e-8, verbose=True):
         raise AssertionError(msg)
 
 
+def make_single_core_sharded_l1_memory_config(tensor_shape, memory_layout):
+    """Create an L1 memory configuration with one full-tensor shard."""
+    ttnn = _get_ttnn()
+    if ttnn is None:
+        raise RuntimeError("TTNN not available")
+    shard_spec = ttnn.ShardSpec(
+        ttnn.CoreRangeSet({ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))}),
+        tensor_shape,
+        ttnn.ShardOrientation.ROW_MAJOR,
+    )
+    return ttnn.MemoryConfig(memory_layout, ttnn.BufferType.L1, shard_spec)
+
+
 def to_l1_sharded(torch_tensor, device, layout="height"):
     """Create a sharded TTNN tensor in L1 from a torch tensor.
 
@@ -510,15 +523,8 @@ def to_l1_sharded(torch_tensor, device, layout="height"):
         )
     dram_tensor = to_dram(torch_tensor, device)
     rows, cols = torch_tensor.shape[-2], torch_tensor.shape[-1]
-    shard_spec = ttnn.ShardSpec(
-        ttnn.CoreRangeSet({ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))}),
-        (rows, cols),
-        ttnn.ShardOrientation.ROW_MAJOR,
-    )
-    sharded_mem_config = ttnn.MemoryConfig(
-        layout_map[layout],
-        ttnn.BufferType.L1,
-        shard_spec,
+    sharded_mem_config = make_single_core_sharded_l1_memory_config(
+        (rows, cols), layout_map[layout]
     )
     return ttnn.to_memory_config(dram_tensor, memory_config=sharded_mem_config)
 
@@ -534,6 +540,7 @@ __all__ = [
     "to_dram",
     "to_l1",
     "to_l1_sharded",
+    "make_single_core_sharded_l1_memory_config",
     "assert_pcc",
     "assert_allclose",
 ]

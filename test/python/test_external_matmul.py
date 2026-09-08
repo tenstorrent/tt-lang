@@ -4,9 +4,10 @@
 
 """Device coverage for external matmul with compiler-managed L1 storage.
 
-The focused cases validate one external matmul with compiler-owned and
-tensor-backed storage, reset, and reconfiguration. The model-like case composes
-external matmuls with native normalization, activation, and residual operations.
+The tests validate external matmul with compiler-owned and tensor-backed
+storage, mixed BF16 and block-float operands, reset, and reconfiguration. The
+model-like case composes external matmuls with native normalization, activation,
+and residual operations.
 """
 
 import os
@@ -20,13 +21,21 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 import ttl  # noqa: E402
 from ttl import ttl_api  # noqa: E402
-from ttlang_test_utils import to_dram, to_l1, to_l1_sharded  # noqa: E402
-from utils.correctness import assert_allclose  # noqa: E402
+from ttlang_test_utils import (  # noqa: E402
+    make_single_core_sharded_l1_memory_config,
+    to_dram,
+    to_l1,
+    to_l1_sharded,
+)
+from utils.correctness import assert_allclose, assert_pcc  # noqa: E402
 
 pytestmark = pytest.mark.requires_device
 
 TILE = 32
 MATMUL_DIMENSIONS = [(1, 1, 1), (1, 2, 1), (2, 2, 2)]
+MIXED_FORMAT_MATMUL_DIMENSIONS = (1, 2, 2)
+SHORT_ACTIVATION_TILE = (1, TILE)
+FULL_WEIGHT_TILE = (TILE, TILE)
 EXTERNAL_MATMUL_HEADER = os.path.join(
     os.path.dirname(__file__), "include", "external_matmul.hpp"
 )
@@ -110,9 +119,15 @@ def _make_external_matmul_operation(data_format, tensor_backed, dimensions):
 
         @ttl.operation(grid=(1, 1), fp32_dest_acc_en=data_format == "float32")
         def external_matmul_operation(lhs, rhs, result):
-            lhs_dfb = ttl.make_dfb(data_format, shape=(rows, inner), block_count=2)
-            rhs_dfb = ttl.make_dfb(data_format, shape=(inner, columns), block_count=2)
-            result_dfb = ttl.make_dfb(data_format, shape=(rows, columns), block_count=2)
+            lhs_dfb = ttl.make_dataflow_buffer_like(
+                lhs, shape=(rows, inner), block_count=2
+            )
+            rhs_dfb = ttl.make_dataflow_buffer_like(
+                rhs, shape=(inner, columns), block_count=2
+            )
+            result_dfb = ttl.make_dataflow_buffer_like(
+                result, shape=(rows, columns), block_count=2
+            )
             with lhs_dfb.reserve() as lhs_destination:
                 ttl.copy(lhs[0:rows, 0:inner], lhs_destination).wait()
             with rhs_dfb.reserve() as rhs_destination:
@@ -122,6 +137,32 @@ def _make_external_matmul_operation(data_format, tensor_backed, dimensions):
                 ttl.copy(result_source, result[0:rows, 0:columns]).wait()
 
     return external_matmul_operation
+
+
+def _external_bfp_memory_config(storage, tensor_shape):
+    if storage == "dram":
+        return ttnn.DRAM_MEMORY_CONFIG
+    if storage == "l1":
+        return ttnn.L1_MEMORY_CONFIG
+    memory_layouts = {
+        "tensor-backed-height": ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+        "tensor-backed-width": ttnn.TensorMemoryLayout.WIDTH_SHARDED,
+        "tensor-backed-block": ttnn.TensorMemoryLayout.BLOCK_SHARDED,
+    }
+    return make_single_core_sharded_l1_memory_config(
+        tensor_shape, memory_layouts[storage]
+    )
+
+
+def _make_tiled_tensor(torch_tensor, ttnn_dtype, tile, device, memory_config):
+    return ttnn.from_torch(
+        torch_tensor,
+        dtype=ttnn_dtype,
+        layout=ttnn.TILE_LAYOUT,
+        tile=ttnn.Tile(tile),
+        device=device,
+        memory_config=memory_config,
+    )
 
 
 def _make_external_gated_mlp(data_format):
@@ -420,6 +461,88 @@ def test_external_matmul(
 
     expected = reference_lhs.float() @ reference_rhs.float()
     assert_allclose(ttnn.to_torch(result).float(), expected, rtol=0, atol=0)
+
+
+# Validates 1x32 BF16 activation by block-float weight descriptors.
+@pytest.mark.parametrize(
+    "weight_dtype", [ttnn.bfloat4_b, ttnn.bfloat8_b], ids=["bfp4", "bfp8"]
+)
+@pytest.mark.parametrize(
+    "storage",
+    [
+        "dram",
+        "l1",
+        "tensor-backed-height",
+        "tensor-backed-width",
+        "tensor-backed-block",
+    ],
+)
+@pytest.mark.parametrize("storage_options", STORAGE_OPTIONS)
+def test_external_bfp_matmul(
+    device,
+    weight_dtype,
+    storage,
+    storage_options,
+    reject_metal_dfb_descriptor_creation,
+):
+    rows, inner, columns = MIXED_FORMAT_MATMUL_DIMENSIONS
+    torch.manual_seed(0)
+    lhs_source = torch.randn(
+        rows * SHORT_ACTIVATION_TILE[0],
+        inner * SHORT_ACTIVATION_TILE[1],
+        dtype=torch.bfloat16,
+    )
+    rhs_source = torch.randn(
+        inner * FULL_WEIGHT_TILE[0],
+        columns * FULL_WEIGHT_TILE[1],
+        dtype=torch.bfloat16,
+    )
+    result_source = torch.zeros(
+        rows * SHORT_ACTIVATION_TILE[0],
+        columns * SHORT_ACTIVATION_TILE[1],
+        dtype=torch.bfloat16,
+    )
+    lhs = _make_tiled_tensor(
+        lhs_source,
+        ttnn.bfloat16,
+        SHORT_ACTIVATION_TILE,
+        device,
+        _external_bfp_memory_config(storage, tuple(lhs_source.shape)),
+    )
+    rhs = _make_tiled_tensor(
+        rhs_source,
+        weight_dtype,
+        FULL_WEIGHT_TILE,
+        device,
+        _external_bfp_memory_config(storage, tuple(rhs_source.shape)),
+    )
+    result = _make_tiled_tensor(
+        result_source,
+        ttnn.bfloat16,
+        SHORT_ACTIVATION_TILE,
+        device,
+        _external_bfp_memory_config(storage, tuple(result_source.shape)),
+    )
+    tensor_backed = storage.startswith("tensor-backed-")
+    operation = _make_external_matmul_operation(
+        "bf16", tensor_backed, MIXED_FORMAT_MATMUL_DIMENSIONS
+    )
+    if "--ttl-memory-model=compiler-l1" in storage_options:
+        reject_metal_dfb_descriptor_creation()
+
+    device.enable_program_cache()
+    operation(lhs, rhs, result, options=storage_options)
+    ttnn.synchronize_device(device)
+    first_output = ttnn.to_torch(result).float()
+    first_cache_entries = device.num_program_cache_entries()
+    operation(lhs, rhs, result, options=storage_options)
+    ttnn.synchronize_device(device)
+    second_output = ttnn.to_torch(result).float()
+
+    expected = ttnn.to_torch(lhs).float() @ ttnn.to_torch(rhs).float()
+    assert_pcc(expected, first_output, threshold=0.999)
+    assert torch.equal(first_output, second_output)
+    assert first_cache_entries == device.num_program_cache_entries()
 
 
 # Validates synchronized reset after a complete multi-page external transaction.
