@@ -132,6 +132,7 @@ canonicalize, cse                  (Module, after specialization) Resolve coordi
 ttkernel-unroll-static-pipenet-record-loops
                                     (FuncOp) Unroll static local record loops
 canonicalize, cse                  (Module) Fold selected record tables
+ttkernel-cleanup                  (Module) Optimize writes with resolved endpoints
 ttkernel-finalize-tensor-runtime-args (Module) Finalize tensor and DFB argument indices
 canonicalize                       (Module) Remove obsolete argument expressions
 ttkernel-annotate-dfb-use          (Module, specialized only) Record surviving physical DFB uses

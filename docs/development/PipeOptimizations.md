@@ -136,6 +136,11 @@ Otherwise the payload uses an ordinary posted `noc_async_write`. A send selected
 from a PipeNet endpoint table uses this protocol only when every possible
 selected transfer meets the conditions above.
 
+The pipeline reapplies these cleanup patterns with `ttkernel-cleanup` after
+core specialization, static record-loop expansion, and endpoint simplification.
+Initial TTL lowering cannot configure a constant destination while that
+destination still depends on an unresolved record index.
+
 Write-state verification and cleanup share `NocCommandEffectsAnalysis` to
 classify command changes and dependencies, including effects inside called
 functions. Unknown and recursive callees conservatively use and overwrite

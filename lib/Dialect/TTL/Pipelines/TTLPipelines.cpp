@@ -130,6 +130,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
         createTTKernelUnrollStaticPipeNetRecordLoops());
     pm.addPass(createCanonicalizerPass());
     pm.addPass(createCSEPass());
+    pm.addPass(createTTKernelCleanup());
     pm.addPass(createTTKernelFinalizeTensorRuntimeArgs());
     pm.addPass(createCanonicalizerPass());
   }
@@ -159,6 +160,7 @@ void buildTTKernelSpecializationPipeline(OpPassManager &pm) {
       createTTKernelUnrollStaticPipeNetRecordLoops());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
+  pm.addPass(createTTKernelCleanup());
   pm.addPass(createTTKernelFinalizeTensorRuntimeArgs());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createTTKernelAnnotateDFBUse());

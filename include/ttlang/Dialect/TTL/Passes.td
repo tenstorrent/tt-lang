@@ -1445,6 +1445,27 @@ def TTKernelInsertInits
   ];
 }
 
+def TTKernelCleanup : Pass<"ttkernel-cleanup", "::mlir::ModuleOp"> {
+  let summary = "Simplify TTKernel synchronization and configure reusable NoC write state";
+  let description = [{
+    Removes redundant barriers, hoists invariant value computations, and
+    replaces eligible writes with one-packet state setup and issue operations.
+    State setup precedes a blocking wait or an invariant loop only when the
+    intervening operations and their callees preserve the write command.
+
+    Running after core specialization and static record-loop expansion exposes
+    constant endpoints and straight-line waits that were unavailable during
+    initial TTL lowering. This pass reuses that lowering's cleanup patterns.
+    Module scope prevents concurrent mutation of functions inspected by
+    callable-effect analysis.
+  }];
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect",
+    "::mlir::tt::ttkernel::TTKernelDialect"
+  ];
+}
+
 def TTKernelSpecializeCores
     : Pass<"ttkernel-specialize-cores", "::mlir::ModuleOp"> {
   let summary = "Clone kernels per core when control flow depends on a coordinate";

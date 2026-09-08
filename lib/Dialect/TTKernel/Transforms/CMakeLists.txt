@@ -1,4 +1,5 @@
 add_mlir_dialect_library(TTLangTTKernelTransforms
+  TTKernelCleanup.cpp
   TTKernelCleanupPatterns.cpp
   TTKernelCombinePackTiles.cpp
   TTKernelInsertInits.cpp
