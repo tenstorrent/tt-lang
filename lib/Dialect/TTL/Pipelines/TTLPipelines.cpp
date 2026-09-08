@@ -69,6 +69,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
     TTLFinalizeDFBIndicesOptions finalizeOptions;
     finalizeOptions.memoryModel = options.memoryModel;
     finalizeOptions.reuseUserDFBs = options.reuseUserDFBs;
+    finalizeOptions.sramAllocationReport = options.sramAllocationReport;
     finalizeOptions.l1AllocationStrategy = options.l1AllocationStrategy;
     finalizeOptions.l1ExactAllocationSearchLimit =
         options.l1ExactAllocationSearchLimit;

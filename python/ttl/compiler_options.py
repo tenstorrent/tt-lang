@@ -56,6 +56,14 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Select Metal DFB allocation or experimental compiler-owned L1 storage (default: metal-cb).",
     )
     p.add_argument(
+        "--ttl-sram-allocation-report",
+        default=None,
+        dest="sram_allocation_report",
+        action=argparse.BooleanOptionalAction,
+        help="Emit JSON compiler SRAM ownership, reuse, and conflict facts plus "
+        "runtime arena reservations to stderr (default: disabled).",
+    )
+    p.add_argument(
         "--ttl-l1-allocation-strategy",
         default=None,
         dest="l1_allocation_strategy",
@@ -288,6 +296,7 @@ class CompilerOptions:
     matmul_full_fp32: bool = True
     strict_f32_acc: bool = False
     memory_model: str = "metal-cb"
+    sram_allocation_report: bool = False
     l1_allocation_strategy: str = "multi-order-decreasing"
     l1_exact_allocation_search_limit: int = 1_000_000
     compiler_dfbs: bool = True
