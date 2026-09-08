@@ -63,7 +63,7 @@ func.func @conditional_intervening_setup(
       %initial_state_address, %size, noc %noc)
       : (!ttkernel.noc_addr, i32, i8) -> ()
   scf.if %condition {
-    // expected-note @below {{this setup may replace the selected state before a later issue}}
+    // expected-note @below {{this operation may replace the selected state before a later issue}}
     ttkernel.noc_async_write_one_packet_set_state(
         %conditional_state_address, %size, noc %noc) posted true
         : (!ttkernel.noc_addr, i32, i8) -> ()
@@ -90,7 +90,7 @@ func.func @overlapping_core_setups_may_interfere(
         : (!ttkernel.noc_addr, i32, i8) -> ()
   } {ttkernel.execution_core_ranges = [#ttcore.core_range<(0, 0), (1, 0)>]}
   scf.if %second_condition {
-    // expected-note @below {{this setup may replace the selected state before a later issue}}
+    // expected-note @below {{this operation may replace the selected state before a later issue}}
     ttkernel.noc_async_write_one_packet_set_state(
         %second_state_address, %size, noc %noc)
         : (!ttkernel.noc_addr, i32, i8) -> ()
@@ -115,7 +115,7 @@ func.func @dynamic_intervening_noc_may_alias(
   ttkernel.noc_async_write_one_packet_set_state(
       %initial_state_address, %size, noc %initial_noc)
       : (!ttkernel.noc_addr, i32, i8) -> ()
-  // expected-note @below {{this setup may replace the selected state before a later issue}}
+  // expected-note @below {{this operation may replace the selected state before a later issue}}
   ttkernel.noc_async_write_one_packet_set_state(
       %intervening_state_address, %size, noc %intervening_noc) posted true
       : (!ttkernel.noc_addr, i32, i8) -> ()
@@ -145,7 +145,7 @@ func.func @later_iteration_uses_intervening_state(
     ttkernel.noc_async_write_one_packet_with_state(
         %source_address, %destination_address, noc %noc)
         : (i32, i32, i8) -> ()
-    // expected-note @below {{this setup may replace the selected state before a later issue}}
+    // expected-note @below {{this operation may replace the selected state before a later issue}}
     ttkernel.noc_async_write_one_packet_set_state(
         %later_state_address, %size, noc %noc) posted true
         : (!ttkernel.noc_addr, i32, i8) -> ()

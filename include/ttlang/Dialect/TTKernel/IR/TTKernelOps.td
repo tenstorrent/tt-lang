@@ -3853,6 +3853,11 @@ def TTKernel_NocAsyncWriteOnePacketWithStateOp
       that was used to set the command state. The transfer size is the size
       programmed by the set-state operation. Its `posted` setting must match
       the set-state operation.
+
+      A matching setup must execute before every issue, including repeated
+      issues in loops. An intervening operation or call that may overwrite
+      write-command state invalidates the setup. Read and atomic commands
+      that preserve write-command state do not invalidate it.
     }];
 
     let arguments = (ins I32:$srcLocalL1Addr,

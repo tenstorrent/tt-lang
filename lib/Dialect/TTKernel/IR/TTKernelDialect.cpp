@@ -10,6 +10,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/DialectImplementation.h"
 #include "mlir/InitAllDialects.h"
+#include "mlir/Interfaces/CallInterfaces.h"
 #include "ttlang/Dialect/TTCore/IR/TTCore.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
@@ -19,6 +20,38 @@
 using namespace mlir;
 using namespace mlir::tt::ttkernel;
 
+NocCommandEffects NocCommandEffectsAnalysis::getEffects(Operation *operation) {
+  NocCommandEffects effects{mayReprogramNocCommand(operation, commandClass),
+                            usesNocCommandState(operation, commandClass)};
+  auto call = dyn_cast<CallOpInterface>(operation);
+  if (!call) {
+    return effects;
+  }
+  Operation *callee = call.resolveCallable();
+  auto callable = dyn_cast_or_null<CallableOpInterface>(callee);
+  Region *body = callable ? callable.getCallableRegion() : nullptr;
+  if (!body) {
+    return {true, true};
+  }
+  auto cached = callableEffects.find(callee);
+  if (cached != callableEffects.end()) {
+    effects.mayReprogram |= cached->second.mayReprogram;
+    effects.mayUseState |= cached->second.mayUseState;
+    return effects;
+  }
+
+  // A recursive call encounters this conservative entry before all operations
+  // in its strongly connected component have been inspected.
+  callableEffects[callee] = {true, true};
+  body->walk([&](Operation *nested) {
+    NocCommandEffects nestedEffects = getEffects(nested);
+    effects.mayReprogram |= nestedEffects.mayReprogram;
+    effects.mayUseState |= nestedEffects.mayUseState;
+  });
+  callableEffects[callee] = effects;
+  return effects;
+}
+
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsDialect.cpp.inc"
 
 #define GET_ATTRDEF_CLASSES
@@ -26,6 +59,9 @@ using namespace mlir::tt::ttkernel;
 
 namespace {
 
+// Collect core-range restrictions on ancestors of `op`, stopping before
+// `limit`. The operation executes only on cores allowed by every collected
+// restriction.
 SmallVector<ArrayAttr> getEnclosingExecutionCoreRanges(Operation *op,
                                                        Operation *limit) {
   SmallVector<ArrayAttr> domains;
@@ -39,6 +75,8 @@ SmallVector<ArrayAttr> getEnclosingExecutionCoreRanges(Operation *op,
   return domains;
 }
 
+// Prove that no core belongs to both range lists. Empty or malformed lists
+// provide insufficient information and return false.
 bool haveDisjointCoreRanges(ArrayAttr lhs, ArrayAttr rhs) {
   if (lhs.empty() || rhs.empty()) {
     return false;

@@ -12,13 +12,11 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/PatternMatch.h"
-#include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/LoopInvariantCodeMotionUtils.h"
-#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/SmallPtrSet.h"
 
 #include <optional>
@@ -139,72 +137,15 @@ struct StatefulWriteLoop {
   SmallVector<scf::IfOp> predicates;
 };
 
-/// Cached transitive write-command interference for a callable operation.
-enum class CallableWriteCommandInterference {
-  Analyzing,
-  Preserves,
-  Interferes,
-};
-
-/// Return whether `operation` or a called function may interfere with setup.
-static bool mayTransitivelyInterfereWithWriteCommand(
-    Operation *operation,
-    DenseMap<Operation *, CallableWriteCommandInterference> &callableEffects) {
-  if (mayReprogramNocCommand(operation, NocCommandClass::Write) ||
-      usesNocCommandState(operation, NocCommandClass::Write)) {
-    return true;
-  }
-
-  auto call = dyn_cast<CallOpInterface>(operation);
-  if (!call) {
-    return false;
-  }
-  Operation *callableOperation = call.resolveCallable();
-  auto callable = dyn_cast_or_null<CallableOpInterface>(callableOperation);
-  Region *callableRegion = callable ? callable.getCallableRegion() : nullptr;
-  if (!callableRegion) {
-    return true;
-  }
-
-  auto cachedEffect = callableEffects.find(callableOperation);
-  if (cachedEffect != callableEffects.end()) {
-    // The remaining operations in an active recursive component have not been
-    // analyzed, so the component cannot yet be proven to preserve command
-    // state.
-    return cachedEffect->second != CallableWriteCommandInterference::Preserves;
-  }
-
-  callableEffects[callableOperation] =
-      CallableWriteCommandInterference::Analyzing;
-  WalkResult walkResult = callableRegion->walk([&](Operation *nested) {
-    if (mayTransitivelyInterfereWithWriteCommand(nested, callableEffects)) {
-      return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
-  });
-  bool interferes = walkResult.wasInterrupted();
-  callableEffects[callableOperation] =
-      interferes ? CallableWriteCommandInterference::Interferes
-                 : CallableWriteCommandInterference::Preserves;
-  return interferes;
-}
-
-// Return whether an operation or one of its nested regions can change or use
-// write-command state.
-static bool mayOperationTreeInterfereWithWriteCommand(
-    Operation *operation,
-    DenseMap<Operation *, CallableWriteCommandInterference> &callableEffects) {
-  if (mayTransitivelyInterfereWithWriteCommand(operation, callableEffects)) {
-    return true;
-  }
+// Check `operation`, its nested operations, and their callees for uses or
+// overwrites of resident write-command state.
+static bool
+mayUseOrOverwriteWriteCommand(Operation *operation,
+                              NocCommandEffectsAnalysis &commandEffects) {
   WalkResult result = operation->walk([&](Operation *nested) {
-    if (nested == operation) {
-      return WalkResult::advance();
-    }
-    if (mayTransitivelyInterfereWithWriteCommand(nested, callableEffects)) {
-      return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
+    NocCommandEffects effects = commandEffects.getEffects(nested);
+    return effects.mayReprogram || effects.mayUseState ? WalkResult::interrupt()
+                                                       : WalkResult::advance();
   });
   return result.wasInterrupted();
 }
@@ -264,11 +205,10 @@ struct SchedulePostedNocWriteStateBeforeWait
     }
 
     Operation *firstBlockingWait = nullptr;
-    DenseMap<Operation *, CallableWriteCommandInterference> callableEffects;
+    NocCommandEffectsAnalysis commandEffects(NocCommandClass::Write);
     for (Operation *previous = op->getPrevNode(); previous;
          previous = previous->getPrevNode()) {
-      if (mayOperationTreeInterfereWithWriteCommand(previous,
-                                                    callableEffects)) {
+      if (mayUseOrOverwriteWriteCommand(previous, commandEffects)) {
         break;
       }
       if (isa<CBWaitFrontOp, SemaphoreWaitOp, SemaphoreWaitMinOp>(previous)) {
@@ -360,12 +300,13 @@ static LogicalResult analyzeStatefulWriteLoop(NocAsyncWriteOp op,
     }
   }
 
-  DenseMap<Operation *, CallableWriteCommandInterference> callableEffects;
+  NocCommandEffectsAnalysis commandEffects(NocCommandClass::Write);
   WalkResult commandCheck = loop.walk([&](Operation *nestedOp) {
     if (nestedOp == op.getOperation()) {
       return WalkResult::advance();
     }
-    if (mayTransitivelyInterfereWithWriteCommand(nestedOp, callableEffects) &&
+    NocCommandEffects effects = commandEffects.getEffects(nestedOp);
+    if ((effects.mayReprogram || effects.mayUseState) &&
         !haveMutuallyExclusiveExecution(op, nestedOp, loop)) {
       return WalkResult::interrupt();
     }

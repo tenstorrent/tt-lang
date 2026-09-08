@@ -7,11 +7,36 @@
 
 #include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/IR/Dialect.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/StringRef.h"
 
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsDialect.h.inc"
 
 namespace mlir::tt::ttkernel {
+
+enum class NocCommandClass;
+
+/// Effects on one resident command class, independent of the selected NoC.
+struct NocCommandEffects {
+  bool mayReprogram = false;
+  bool mayUseState = false;
+};
+
+/// Summarize command effects through calls on immutable IR. Unknown and
+/// recursive callees conservatively both use and replace resident state.
+class NocCommandEffectsAnalysis {
+public:
+  explicit NocCommandEffectsAnalysis(NocCommandClass commandClass)
+      : commandClass(commandClass) {}
+
+  /// Return the effects of `operation`, including callees but excluding its
+  /// nested regions. Callers walking regions therefore visit each op once.
+  NocCommandEffects getEffects(Operation *operation);
+
+private:
+  NocCommandClass commandClass;
+  llvm::DenseMap<Operation *, NocCommandEffects> callableEffects;
+};
 
 /// Core ranges on which an internally lowered control-flow region executes.
 constexpr llvm::StringLiteral

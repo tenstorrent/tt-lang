@@ -451,9 +451,9 @@ static ::mlir::LogicalResult verifyNocAsyncAddressMode(Operation *op,
 
 using ConditionAssignment = std::pair<Value, bool>;
 
-// Return the branch conditions that must hold for `operation` to execute.
+// Return the scf.if condition values and branch choices enclosing `operation`.
 static SmallVector<ConditionAssignment>
-getEnclosingConditions(Operation *operation) {
+getEnclosingIfConditions(Operation *operation) {
   SmallVector<ConditionAssignment> conditions;
   for (Operation *ancestor = operation->getParentOp(); ancestor;
        ancestor = ancestor->getParentOp()) {
@@ -473,12 +473,21 @@ getEnclosingConditions(Operation *operation) {
   return conditions;
 }
 
-// Return whether every execution of `use` also executes `setup`'s guards.
+// Require matching scf.if guards and keep other region-local setups inside
+// their region, where conditional entry and loop execution are shared.
 static bool useExecutionImpliesSetupExecution(Operation *setup,
                                               Operation *use) {
+  for (Region *region = setup->getParentRegion(); region;
+       region = region->getParentRegion()) {
+    if (!isa<scf::IfOp>(region->getParentOp()) &&
+        !region->isAncestor(use->getParentRegion())) {
+      return false;
+    }
+  }
   SmallVector<ConditionAssignment> setupConditions =
-      getEnclosingConditions(setup);
-  SmallVector<ConditionAssignment> useConditions = getEnclosingConditions(use);
+      getEnclosingIfConditions(setup);
+  SmallVector<ConditionAssignment> useConditions =
+      getEnclosingIfConditions(use);
   return llvm::all_of(setupConditions, [&](ConditionAssignment setupCondition) {
     return llvm::is_contained(useConditions, setupCondition);
   });
@@ -489,17 +498,6 @@ static bool useExecutionImpliesSetupExecution(Operation *setup,
 static bool executionsMayOverlap(Operation *lhs, Operation *rhs) {
   return !insideMutuallyExclusiveRegions(lhs, rhs) &&
          !haveDisjointExecutionCoreRanges(lhs, rhs);
-}
-
-// Exclude setup operations in loops that do not also contain the state use.
-static bool setupLoopExecutionsReachUse(Operation *setup, Operation *use) {
-  for (Operation *ancestor = setup->getParentOp(); ancestor;
-       ancestor = ancestor->getParentOp()) {
-    if (isa<LoopLikeOpInterface>(ancestor) && !ancestor->isAncestor(use)) {
-      return false;
-    }
-  }
-  return true;
 }
 
 // Compare execution order after projecting nested operations into a common
@@ -548,52 +546,47 @@ static bool nocSelectorsMayAlias(Value lhs, Value rhs) {
 // Find the last state setup proven to execute before every execution of `use`
 // on the same NoC.
 static NocAsyncWriteOnePacketSetStateOp
-findReachingWriteStateSetup(NocAsyncWriteOnePacketWithStateOp use) {
-  func::FuncOp function = use->getParentOfType<func::FuncOp>();
-  if (!function) {
-    return {};
-  }
-
+findReachingWriteStateSetup(NocAsyncWriteOnePacketWithStateOp use,
+                            ArrayRef<Operation *> stateChanges) {
   NocAsyncWriteOnePacketSetStateOp reachingSetup;
-  function.walk([&](NocAsyncWriteOnePacketSetStateOp setup) {
-    if (!haveProvablySameNocSelector(setup.getNoc(), use.getNoc()) ||
-        !setupLoopExecutionsReachUse(setup, use) ||
+  for (Operation *operation : stateChanges) {
+    auto setup = dyn_cast<NocAsyncWriteOnePacketSetStateOp>(operation);
+    if (!setup || !haveProvablySameNocSelector(setup.getNoc(), use.getNoc()) ||
         !useExecutionImpliesSetupExecution(setup, use) ||
         !structurallyPrecedes(setup, use)) {
-      return;
+      continue;
     }
     if (!reachingSetup || structurallyPrecedes(reachingSetup, setup)) {
       reachingSetup = setup;
     }
-  });
+  }
   return reachingSetup;
 }
 
-// Return a state setup that may replace `reachingSetup` on only a subset of the
-// executions that reach `use`.
-static NocAsyncWriteOnePacketSetStateOp
-findInterveningWriteStateSetup(NocAsyncWriteOnePacketSetStateOp reachingSetup,
-                               NocAsyncWriteOnePacketWithStateOp use) {
-  func::FuncOp function = use->getParentOfType<func::FuncOp>();
-  NocAsyncWriteOnePacketSetStateOp interveningSetup;
-  function.walk([&](NocAsyncWriteOnePacketSetStateOp setup) {
-    if (setup == reachingSetup ||
-        !nocSelectorsMayAlias(setup.getNoc(), use.getNoc()) ||
-        !executionsMayOverlap(setup, use)) {
-      return;
+// Find an operation that can overwrite the selected setup before this or a
+// later loop iteration's issue. Calls use the same effect summary as cleanup.
+static Operation *
+findInterveningWriteStateChange(NocAsyncWriteOnePacketSetStateOp reachingSetup,
+                                NocAsyncWriteOnePacketWithStateOp use,
+                                ArrayRef<Operation *> stateChanges) {
+  for (Operation *operation : stateChanges) {
+    if (operation == reachingSetup || !executionsMayOverlap(operation, use)) {
+      continue;
     }
-
-    bool precedesUse = structurallyPrecedes(setup, use);
-    bool followsReachingSetup = structurallyPrecedes(reachingSetup, setup);
+    if (auto setup = dyn_cast<NocAsyncWriteOnePacketSetStateOp>(operation);
+        setup && !nocSelectorsMayAlias(setup.getNoc(), use.getNoc())) {
+      continue;
+    }
+    bool precedesUse = structurallyPrecedes(operation, use);
+    bool followsReachingSetup = structurallyPrecedes(reachingSetup, operation);
     if (precedesUse && followsReachingSetup) {
-      interveningSetup = setup;
-      return;
+      return operation;
     }
 
     // A setup after the use becomes the reaching state on the next iteration
     // unless that loop also contains the selected setup.
-    if (!structurallyPrecedes(use, setup)) {
-      return;
+    if (!structurallyPrecedes(use, operation)) {
+      continue;
     }
     for (Operation *ancestor = use->getParentOp(); ancestor;
          ancestor = ancestor->getParentOp()) {
@@ -601,28 +594,39 @@ findInterveningWriteStateSetup(NocAsyncWriteOnePacketSetStateOp reachingSetup,
           ancestor->isAncestor(reachingSetup)) {
         continue;
       }
-      if (ancestor->isAncestor(setup)) {
-        interveningSetup = setup;
-        return;
+      if (ancestor->isAncestor(operation)) {
+        return operation;
       }
     }
-  });
-  return interveningSetup;
+  }
+  return nullptr;
 }
 
 ::mlir::LogicalResult NocAsyncWriteOnePacketWithStateOp::verify() {
-  NocAsyncWriteOnePacketSetStateOp setup = findReachingWriteStateSetup(*this);
+  SmallVector<Operation *> stateChanges;
+  NocCommandEffectsAnalysis commandEffects(NocCommandClass::Write);
+  if (auto function = getOperation()->getParentOfType<func::FuncOp>()) {
+    // One traversal collects both candidate setups and all possible clobbers;
+    // state-preserving issues and independent read/atomic commands are omitted.
+    function.walk([&](Operation *operation) {
+      if (commandEffects.getEffects(operation).mayReprogram) {
+        stateChanges.push_back(operation);
+      }
+    });
+  }
+  NocAsyncWriteOnePacketSetStateOp setup =
+      findReachingWriteStateSetup(*this, stateChanges);
   if (!setup) {
     return emitOpError(
         "requires a preceding one-packet write state setup on the same NoC "
         "whose execution conditions cover this operation");
   }
-  if (NocAsyncWriteOnePacketSetStateOp interveningSetup =
-          findInterveningWriteStateSetup(setup, *this)) {
+  if (Operation *interveningChange =
+          findInterveningWriteStateChange(setup, *this, stateChanges)) {
     InFlightDiagnostic diagnostic = emitOpError(
         "cannot identify one preceding write state setup for every execution");
-    diagnostic.attachNote(interveningSetup.getLoc())
-        << "this setup may replace the selected state before a later issue";
+    diagnostic.attachNote(interveningChange->getLoc())
+        << "this operation may replace the selected state before a later issue";
     return failure();
   }
   bool setupIsPosted = setup.getPosted().value_or(false);
@@ -812,6 +816,7 @@ void MyLogicalYOp::inferResultRanges(
                  getIndexRange(0, std::numeric_limits<uint32_t>::max()));
 }
 
+// Return `values[index]`, or failure when `index` is outside the table bounds.
 static FailureOr<int64_t> lookupConstantTableValue(int64_t index,
                                                    ArrayRef<int64_t> values) {
   if (index < 0 || static_cast<std::size_t>(index) >= values.size()) {
