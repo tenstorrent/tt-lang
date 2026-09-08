@@ -24,6 +24,7 @@ class TestDefaults:
         assert opts.pipe_global_semaphores_only is False
         assert opts.pipe_capacity_sync is True
         assert opts.pipe_batch_tiles == 0
+        assert opts.sram_allocation_report is False
         assert opts.l1_allocation_strategy == "multi-order-decreasing"
         assert opts.l1_exact_allocation_search_limit == 1_000_000
         assert opts.reuse_user_dfbs is True
@@ -303,3 +304,13 @@ def test_nonpositive_l1_exact_allocation_search_limit_is_invalid():
         CompilerOptions.from_string("--ttl-l1-exact-allocation-search-limit=0")
     with pytest.raises(ValueError, match="search limit must be positive"):
         CompilerOptions(l1_exact_allocation_search_limit=0)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_sram_report_option(enabled):
+    flag = (
+        "--ttl-sram-allocation-report" if enabled else "--no-ttl-sram-allocation-report"
+    )
+    option = CompilerOptions.from_string(flag)
+    assert option.sram_allocation_report is enabled
+    assert CompilerOptions().merge(option).sram_allocation_report is enabled
