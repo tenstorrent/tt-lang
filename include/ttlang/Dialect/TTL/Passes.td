@@ -1464,6 +1464,44 @@ def TTKernelSpecializeCores
     Functions with symbol uses remain unspecialized because replacing them
     would require rewriting their references. The pass emits a warning for
     each such function and continues specializing independent functions.
+
+    For example, this function selects a value using the core's y coordinate:
+
+    ```mlir
+    module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
+      func.func @select_value() -> index {
+        %zero = arith.constant 0 : index
+        %first = arith.constant 7 : index
+        %other = arith.constant 9 : index
+        %core_y = "ttkernel.my_logical_y_"() : () -> index
+        %is_first = arith.cmpi eq, %core_y, %zero : index
+        %value = scf.if %is_first -> (index) {
+          scf.yield %first : index
+        } else {
+          scf.yield %other : index
+        }
+        return %value : index
+      }
+    }
+    ```
+
+    After specialization followed by canonicalization, each clone contains
+    only the value selected on its assigned core:
+
+    ```mlir
+    module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
+      func.func @select_value_c0_0() -> index
+          attributes {ttl.core_coord = [[0, 0]]} {
+        %value = arith.constant 7 : index
+        return %value : index
+      }
+      func.func @select_value_c0_1() -> index
+          attributes {ttl.core_coord = [[0, 1]]} {
+        %value = arith.constant 9 : index
+        return %value : index
+      }
+    }
+    ```
   }];
 
   let dependentDialects = [
@@ -1485,6 +1523,37 @@ def TTKernelUnrollStaticPipeNetRecordLoops
 
     A loop with dynamic bounds remains structurally unchanged. Its temporary
     compiler marker is removed because no later pass consumes it.
+
+    For example, a marked loop selects a destination from a two-record table.
+    Here `@transfer` represents the transfer body for that destination:
+
+    ```mlir
+    func.func private @transfer(index)
+    func.func @send_records() {
+      %lower = arith.constant 0 : index
+      %upper = arith.constant 2 : index
+      %step = arith.constant 1 : index
+      scf.for %record = %lower to %upper step %step {
+        %destination = ttkernel.experimental.constant_table_lookup %record, [3, 5] : index
+        func.call @transfer(%destination) : (index) -> ()
+      } {ttl.pipenet_local_record_loop}
+      return
+    }
+    ```
+
+    After unrolling followed by canonicalization, both destinations are
+    constants and the transfers execute in their original record order:
+
+    ```mlir
+    func.func private @transfer(index)
+    func.func @send_records() {
+      %second_destination = arith.constant 5 : index
+      %first_destination = arith.constant 3 : index
+      func.call @transfer(%first_destination) : (index) -> ()
+      func.call @transfer(%second_destination) : (index) -> ()
+      return
+    }
+    ```
   }];
 
   let dependentDialects = [

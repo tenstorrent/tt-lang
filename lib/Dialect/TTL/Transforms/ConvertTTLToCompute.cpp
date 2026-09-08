@@ -171,6 +171,9 @@ static Value buildInitTensor(OpBuilder &b, Location loc, RankedTensorType type,
                                  dynDims);
 }
 
+// Append `creation`'s planned output maps in output-DFB order, including
+// constant zero maps for single-tile outputs rather than inferring maps from
+// their sizes.
 static void appendOutputIndexingMaps(const ComputeOpCreationPlan &creation,
                                      SmallVectorImpl<Attribute> &indexingMaps) {
   for (const ComputeOutputPlan &outputPlan : creation.outputPlans) {
@@ -178,6 +181,9 @@ static void appendOutputIndexingMaps(const ComputeOpCreationPlan &creation,
   }
 }
 
+// Create an empty tensor of `outputType` attached to `outputDFB`. Dynamic sizes
+// come from `dynamicDimensionExemplar`; without it, `outputType` must be
+// static.
 static Value buildComputeOutput(PatternRewriter &rewriter, Location loc,
                                 RankedTensorType outputType, Value outputDFB,
                                 std::optional<Value> dynamicDimensionExemplar) {
@@ -190,6 +196,8 @@ static Value buildComputeOutput(PatternRewriter &rewriter, Location loc,
   return AttachCBOp::create(rewriter, loc, outputType, init, outputDFB);
 }
 
+// Append tensors and result types using `creation`'s planned representations
+// and `outputs`' resolved DFBs, whose orders must match.
 static void buildComputeOutputs(PatternRewriter &rewriter, Location loc,
                                 const ComputeOpCreationPlan &creation,
                                 const OutputPublicationPlan &outputs,
@@ -207,6 +215,8 @@ static void buildComputeOutputs(PatternRewriter &rewriter, Location loc,
   }
 }
 
+// Append one tile argument to `body` for each planned output in `creation`;
+// the argument type uses the destination's tile dimensions, not the source's.
 static void addOutputBlockArguments(Block *body, Location loc,
                                     const ComputeOpCreationPlan &creation) {
   for (const ComputeOutputPlan &outputPlan : creation.outputPlans) {
@@ -214,8 +224,9 @@ static void addOutputBlockArguments(Block *body, Location loc,
   }
 }
 
-// Planning permits a type-changing result only when its stores are the source
-// result's only uses, so erasing the source cannot invalidate another user.
+// Replace `source` with `computeResult` when their types match. Otherwise erase
+// `source`, whose stores must already be removed and whose result must be
+// unused.
 static void replaceComputeSource(PatternRewriter &rewriter, Operation *source,
                                  Value computeResult) {
   assert(source->getNumResults() == 1 &&

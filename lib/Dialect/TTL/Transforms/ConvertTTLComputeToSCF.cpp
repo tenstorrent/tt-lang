@@ -46,8 +46,8 @@ static SmallVector<Range> getIterationDomain(OpBuilder &b, ComputeOp op) {
   return op.getIterationDomain(b);
 }
 
-/// Generate side-effect-only loop body. Extracts tiles from inputs, clones
-/// compute body ops, and returns nothing (stores are explicit side effects).
+// Instantiate `op`'s tile computation at `ivs`, using `indexingMaps` to select
+// its input and output tiles. Explicit tile stores publish the results.
 static void generateTileProcessing(OpBuilder &b, Location loc, ComputeOp op,
                                    ArrayRef<AffineMap> indexingMaps,
                                    ValueRange ivs) {

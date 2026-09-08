@@ -594,6 +594,7 @@ def _synchronize_or_retain_runtime_resources(
 def _normalize_mesh_program_coordinate(
     coordinate: Any, endpoint: str
 ) -> Tuple[int, ...]:
+    """Validate a coordinate sequence; use endpoint to identify invalid input."""
     if not isinstance(coordinate, (tuple, list)):
         raise TypeError(f"mesh program placement {endpoint} must be a coordinate tuple")
     return _normalize_domain_coordinate(
@@ -628,6 +629,7 @@ class MeshProgramPlacement:
         object.__setattr__(self, "end", end)
 
     def contains(self, coordinate: Sequence[int]) -> bool:
+        """Test coordinate against this inclusive range; differing ranks return false."""
         end = self.start if self.end is None else self.end
         return len(coordinate) == len(self.start) and all(
             start_value <= coordinate_value <= end_value
@@ -640,6 +642,7 @@ class MeshProgramPlacement:
 def _mesh_program_placements_intersect(
     first: MeshProgramPlacement, second: MeshProgramPlacement
 ) -> bool:
+    """Test overlap of first and second; the caller must establish equal ranks."""
     first_end = first.start if first.end is None else first.end
     second_end = second.start if second.end is None else second.end
     return all(

@@ -2,11 +2,13 @@
 
 // RUN: ttlang-opt %s --convert-ttl-to-ttkernel --canonicalize -cse | FileCheck %s
 
-// A BF16 row-prefix store uses the destination's short-height tile format.
+// The destination owns one native tile: reserve one page and pack at index zero.
 // CHECK-LABEL: func.func @row_prefix_bf16
-// CHECK: %[[BF16_CB:.*]] = ttkernel.get_compile_time_arg_val(0)
-// CHECK-NEXT: ttkernel.cb_reserve_back(%[[BF16_CB]], %{{.*}})
-// CHECK-NEXT: ttkernel.pack_tile(%{{.*}}, %[[BF16_CB]], %{{.*}}, true)
+// CHECK: %[[BF16_ZERO:.*]] = arith.constant 0 : index
+// CHECK-NEXT: %[[BF16_ONE:.*]] = arith.constant 1 : i32
+// CHECK-NEXT: %[[BF16_CB:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<16x32, bf16>>
+// CHECK-NEXT: ttkernel.cb_reserve_back(%[[BF16_CB]], %[[BF16_ONE]])
+// CHECK-NEXT: ttkernel.pack_tile(%[[BF16_ZERO]], %[[BF16_CB]], %[[BF16_ZERO]], true)
 func.func @row_prefix_bf16(%tile: !ttcore.tile<32x32, bf16>)
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 1}
@@ -20,11 +22,13 @@ func.func @row_prefix_bf16(%tile: !ttcore.tile<32x32, bf16>)
   func.return
 }
 
-// An FP32 row-prefix store uses the FP32 short-height destination format.
+// FP32 uses its own native page size, with the same one-page, index-zero bounds.
 // CHECK-LABEL: func.func @row_prefix_f32
-// CHECK: %[[F32_CB:.*]] = ttkernel.get_compile_time_arg_val(1)
-// CHECK-NEXT: ttkernel.cb_reserve_back(%[[F32_CB]], %{{.*}})
-// CHECK-NEXT: ttkernel.pack_tile(%{{.*}}, %[[F32_CB]], %{{.*}}, true)
+// CHECK: %[[F32_ZERO:.*]] = arith.constant 0 : index
+// CHECK-NEXT: %[[F32_ONE:.*]] = arith.constant 1 : i32
+// CHECK-NEXT: %[[F32_CB:.*]] = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<1, !ttcore.tile<16x32, f32>>
+// CHECK-NEXT: ttkernel.cb_reserve_back(%[[F32_CB]], %[[F32_ONE]])
+// CHECK-NEXT: ttkernel.pack_tile(%[[F32_ZERO]], %[[F32_CB]], %[[F32_ZERO]], true)
 func.func @row_prefix_f32(%tile: !ttcore.tile<32x32, f32>)
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
   %cb = ttl.bind_cb {cb_index = 1, block_count = 1}

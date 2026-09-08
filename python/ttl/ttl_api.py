@@ -607,7 +607,11 @@ def _resolve_mesh_program_placements(
     *,
     required_devices=(),
 ):
-    """Resolve explicit mesh placements or the full logical device domain."""
+    """Validate requested placements against args' mesh and device_domain.
+
+    Explicit placements must cover required_devices. Without an override,
+    use the complete tensor mesh or logical device domain.
+    """
     if requested_placements is None:
         default_placements = _default_mesh_program_placements_with_domain(
             args, device_domain

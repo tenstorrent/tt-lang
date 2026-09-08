@@ -812,6 +812,9 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
     LaunchExecutionLocation location;
     std::optional<std::uint64_t> executionCount;
   };
+  // Resolve `endpoint`'s receiver location and total post count. An unresolved
+  // location fails; a valid location with an unknown count remains
+  // conservative.
   auto getEndpointExecutionInfo = [&](const PipeReceiverEndpoint &endpoint)
       -> FailureOr<ReceiverEndpointExecutionInfo> {
     auto postOp = cast<PipeTransferPostOp>(endpoint.postOp);

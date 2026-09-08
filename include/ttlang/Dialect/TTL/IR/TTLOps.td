@@ -348,26 +348,26 @@ def TTL_ComputeOp : TTL_Op<"compute", [
         %init: tensor<4x4x!ttcore.tile<32x32, f32>>)
         -> tensor<4x4x!ttcore.tile<32x32, f32>> {
       %lhs_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} :
-          !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+          !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
       %rhs_dfb = ttl.bind_cb {cb_index = 1, block_count = 2} :
-          !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+          !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
       %out_dfb = ttl.bind_cb {cb_index = 2, block_count = 2} :
-          !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+          !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
       %lhs_attached = ttl.attach_cb %lhs, %lhs_dfb :
           (tensor<4x4x!ttcore.tile<32x32, f32>>,
-           !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+           !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>)
           -> tensor<4x4x!ttcore.tile<32x32, f32>>
       %rhs_attached = ttl.attach_cb %rhs, %rhs_dfb :
           (tensor<4x4x!ttcore.tile<32x32, f32>>,
-           !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+           !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>)
           -> tensor<4x4x!ttcore.tile<32x32, f32>>
       %init_attached = ttl.attach_cb %init, %out_dfb :
           (tensor<4x4x!ttcore.tile<32x32, f32>>,
-           !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>)
+           !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>)
           -> tensor<4x4x!ttcore.tile<32x32, f32>>
       %out_view = ttl.cb_reserve %out_dfb :
-          <[1, 1], !ttcore.tile<32x32, f32>, 2>
-          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+          <[4, 4], !ttcore.tile<32x32, f32>, 2>
+          -> tensor<4x4x!ttcore.tile<32x32, f32>>
       %result = ttl.compute
           ins(%lhs_attached, %rhs_attached :
               tensor<4x4x!ttcore.tile<32x32, f32>>,
@@ -386,7 +386,7 @@ def TTL_ComputeOp : TTL_Op<"compute", [
               -> !ttcore.tile<32x32, f32>
           ttl.tile_store %sum, %out_view[%row, %column] from dst[%dst] :
               !ttcore.tile<32x32, f32>,
-              tensor<1x1x!ttcore.tile<32x32, f32>>
+              tensor<4x4x!ttcore.tile<32x32, f32>>
           ttl.yield
       } -> tensor<4x4x!ttcore.tile<32x32, f32>>
       func.return %result : tensor<4x4x!ttcore.tile<32x32, f32>>

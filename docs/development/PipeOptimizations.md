@@ -136,6 +136,21 @@ Otherwise the payload uses an ordinary posted `noc_async_write`. A send selected
 from a PipeNet endpoint table uses this protocol only when every possible
 selected transfer meets the conditions above.
 
+Write-state verification and cleanup share `NocCommandEffectsAnalysis` to
+classify command changes and dependencies, including effects inside called
+functions. Unknown and recursive callees conservatively use and overwrite
+state. Cleanup must preserve existing dependent uses when moving a setup;
+verification instead checks that no overwrite separates a setup from its
+issue, including an overwrite carried into the next loop iteration.
+
+A setup in one `scf.if` may cover an issue in another only when the issue's
+enclosing conditions include every setup condition and select the same
+branches. For other enclosing regions, the issue must remain in the setup's
+region. This conservatively rejects escaping conditional or loop-local setups
+without assuming that an unknown region executes. Proven-distinct constant
+NoC selectors distinguish set-state operations; other command changes remain
+conservative when their NoC selection is not analyzed.
+
 ### Grouped PipeTransport lowering
 
 Repeated point-to-point transfers previously retained the scalar protocol

@@ -2486,8 +2486,9 @@ mlir::LogicalResult mlir::tt::ttl::CBPopOp::verify() {
   return success();
 }
 
-// Tensor-level and tile-level stores share this check so lowering cannot weaken
-// the row-prefix geometry contract.
+// Verify that `sourceType` contains one 32x32 tile and `destinationType`
+// contains one 32-column tile with the same BF16 or FP32 dtype. Report
+// violations on `operation` and return failure.
 static mlir::LogicalResult
 verifyRowPrefixStore(mlir::Operation *operation,
                      mlir::RankedTensorType sourceType,

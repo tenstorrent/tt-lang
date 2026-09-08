@@ -1899,8 +1899,10 @@ static FailureOr<WaitedDFBMutationPlan> buildWaitedDFBMutationPlan(
   return plan;
 }
 
-// Derive one immutable representation per output DFB. Changing the source
-// result type is safe only when output stores consume every result use.
+// Plan each output DFB's tensor type and indexing map from `creation`'s stores.
+// Input-free row-prefix outputs also update `creation.iteration` to execute
+// once. Reject incompatible stores or surviving full-tile uses via
+// `failureReason`.
 static FailureOr<SmallVector<ComputeOutputPlan>>
 buildComputeOutputPlans(ComputeOpCreationPlan &creation,
                         std::string &failureReason) {

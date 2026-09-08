@@ -987,7 +987,9 @@ inline TileOp createTileOpWithPlaceholderDstIndex(OpBuilder &builder,
   return tileOp;
 }
 
-/// Create a tile store with a placeholder dst_index and producer defaults.
+/// Store `tile` into producer-owned `view` at `indices`, preserving
+/// `rowPrefix`. Mark the DST index as a placeholder for subsequent register
+/// assignment.
 inline TileStoreOp createTileStoreWithPlaceholderDstIndex(
     OpBuilder &builder, Location loc, Value tile, Value view,
     ValueRange indices, UnitAttr rowPrefix = nullptr) {

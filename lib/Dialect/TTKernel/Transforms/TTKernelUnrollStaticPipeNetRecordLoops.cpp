@@ -2,6 +2,15 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//===----------------------------------------------------------------------===//
+//
+// Expand compiler-marked PipeNet record loops with static trip counts.
+// Unrolling exposes constant table indices so canonicalization can resolve each
+// transfer's endpoints. Dynamic loops retain their control flow without the
+// temporary mark.
+//
+//===----------------------------------------------------------------------===//
+
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 

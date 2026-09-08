@@ -1851,6 +1851,9 @@ protected:
     return {translatedX, translatedY};
   }
 
+  // Write all four bytes of `value` to `destinationAddress` on
+  // `destinationCore` using this emitter's NoC; `posted` controls whether an
+  // acknowledgment is requested.
   void emitUnicastInlineWordWrite(TranslatedCore destinationCore,
                                   Value destinationAddress, Value value,
                                   bool posted) {
@@ -1862,6 +1865,9 @@ protected:
         posted ? rewriter.getBoolAttr(true) : BoolAttr());
   }
 
+  // Signal one completed transfer at `receiverCompletionCounterAddr` on
+  // `destinationCore`. Posted signaling stores 1 and requires a one-update
+  // counter; non-posted signaling atomically increments a reusable counter.
   void emitUnicastCompletionSignal(TranslatedCore destinationCore,
                                    Value receiverCompletionCounterAddr,
                                    bool posted) {
@@ -2792,8 +2798,8 @@ static Value incrementPipePostSequence(Location loc, Value sequenceCounter,
   return tokenSequence;
 }
 
-// An absolute completion store requires one remote fixed slot and one update
-// over the counter's complete lifetime.
+// Return whether `resource` has one remote receiver, a fixed computed DFB slot,
+// and exactly one completion update, allowing completion to be stored as 1.
 static bool hasOneShotRemoteFixedReceiver(const PipeResourceInfo &resource) {
   const PipeKey &pipe = resource.pipe;
   bool hasRemoteSingleReceiver =
@@ -4729,8 +4735,8 @@ getCompletionCounterLocations(const PipeTransferAllocationUnit &unit,
   return locations;
 }
 
-// A repeated receiver endpoint requires cumulative completion state even when
-// its transfer is the only member of the counter group.
+// Require every receiver endpoint for `unit` in `pipeGraph` to execute exactly
+// once; an unknown or repeated count cannot justify a one-update counter.
 static bool executesOnceAtEveryReceiver(const PipeTransferAllocationUnit &unit,
                                         const PipeGraph &pipeGraph) {
   return llvm::all_of(pipeGraph.getPipeReceiverEndpoints(unit.transferNodeId),

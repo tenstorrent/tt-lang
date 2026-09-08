@@ -2,6 +2,15 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
+//===----------------------------------------------------------------------===//
+//
+// Per-core specialization of TTKernel functions. Coordinate-dependent control
+// flow is identified through MLIR backward slices and control-flow value
+// origins. Each clone substitutes its assigned coordinates so subsequent
+// canonicalization can simplify branches and loop bounds.
+//
+//===----------------------------------------------------------------------===//
+
 #include "ttlang/Analysis/ValueOriginAnalysis.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
@@ -59,6 +68,10 @@ static FailureOr<std::pair<int64_t, int64_t>> readGrid(ArrayAttr attr) {
   return std::pair<int64_t, int64_t>{gridX, gridY};
 }
 
+// Determine whether `rootValue` depends on a logical core-coordinate read,
+// following block arguments through `originAnalysis`. `visitedValues` prevents
+// recursion through loop-carried values; an unavailable backward slice returns
+// true so the caller conservatively specializes the function.
 static bool valueDependsOnCore(Value rootValue,
                                const ValueOriginAnalysis &originAnalysis,
                                llvm::DenseSet<Value> &visitedValues) {
@@ -73,7 +86,6 @@ static bool valueDependsOnCore(Value rootValue,
 
   llvm::SetVector<Operation *> backwardSlice;
   if (failed(getBackwardSlice(rootValue, &backwardSlice, options))) {
-    // Specializing conservatively preserves coordinate-dependent semantics.
     return true;
   }
   for (Operation *operation : backwardSlice) {
@@ -105,6 +117,9 @@ static bool valueDependsOnCore(Value rootValue,
   return false;
 }
 
+// Check whether `branch` uses a core-dependent value to choose a successor or
+// control repetition. Values forwarded unchanged into regions are not
+// selectors.
 static bool
 regionBranchDependsOnCore(RegionBranchOpInterface branch,
                           const ValueOriginAnalysis &originAnalysis) {
@@ -131,6 +146,8 @@ regionBranchDependsOnCore(RegionBranchOpInterface branch,
   return false;
 }
 
+// Return whether any structured branch or loop in `function` requires per-core
+// specialization, sharing one origin analysis across its control-flow checks.
 static bool functionControlFlowDependsOnCore(func::FuncOp function) {
   ValueOriginAnalysis originAnalysis(function);
   auto result = function.walk([&](RegionBranchOpInterface branch) {
