@@ -27,20 +27,11 @@ public:
               !DirectToDestination
           ? static_cast<uint32_t>(DataFormat::Tf32)
           : Format;
-  static constexpr uint32_t pageWords = PageBytes / 16;
-  static constexpr uint32_t height = TileHeight;
-  static constexpr uint32_t width = TileWidth;
-  static constexpr uint32_t faceRowHeight = TileHeight < 16 ? TileHeight : 16;
-  static constexpr uint32_t faceRowCount = TileHeight > 16 ? 2 : 1;
-  static constexpr uint32_t faceColumnCount = TileWidth > 16 ? 2 : 1;
-  static constexpr uint32_t faceCount = faceRowCount * faceColumnCount;
-  static constexpr bool partialFace = TileHeight < 16;
-  static constexpr bool narrowTile = TileWidth == 16;
+  static constexpr uint32_t pageWords = PageBytes / target::llkAddressWordBytes;
   static constexpr ckernel::TensorShape tensorShape =
-      ckernel::make_tensor_shape(faceRowHeight, 16, faceRowCount,
-                                 faceColumnCount);
-  static_assert(PageBytes % 16 == 0,
-                "compute page size must be 16-byte aligned");
+      target::makeTensorShape<TileHeight, TileWidth>();
+  static_assert(PageBytes % target::llkAddressWordBytes == 0,
+                "compute page size must use whole LLK address words");
   uint32_t readTile(uint32_t tile) const {
     return target::toLlkTileAddress(this->get_read_ptr(), tile, pageWords);
   }
@@ -76,11 +67,15 @@ __attribute__((noinline)) inline void
 matmulInitShape(uint32_t transpose, uint32_t columns, uint32_t rows,
                 uint32_t inner) {
   UNPACK((_llk_unpack_AB_matmul_init_(
-      transpose, columns, rows, inner, Rhs::faceRowHeight, Lhs::faceRowHeight,
-      Rhs::faceCount, Lhs::faceCount, Rhs::partialFace, Lhs::partialFace)));
+      transpose, columns, rows, inner, Rhs::tensorShape.face_r_dim,
+      Lhs::tensorShape.face_r_dim, Rhs::tensorShape.total_num_faces(),
+      Lhs::tensorShape.total_num_faces(),
+      target::hasPartialFace(Rhs::tensorShape),
+      target::hasPartialFace(Lhs::tensorShape))));
   MATH((_llk_math_matmul_init_<MATH_FIDELITY, MM_THROTTLE>(
-      Lhs::height, Lhs::width, Rhs::height, Rhs::width, Lhs::partialFace,
-      transpose, columns, rows)));
+      Lhs::tensorShape.total_row_dim(), Lhs::tensorShape.total_col_dim(),
+      Rhs::tensorShape.total_row_dim(), Rhs::tensorShape.total_col_dim(),
+      target::hasPartialFace(Lhs::tensorShape), transpose, columns, rows)));
   resetMatmulThrottleState();
 }
 template <ckernel::PoolType Pool, ckernel::ReduceDim Dimension, typename Input,
@@ -90,7 +85,7 @@ __attribute__((noinline)) inline void reduceInitShape() {
   MATH((_llk_math_reduce_init_<Pool, Dimension, DST_ACCUM_MODE, MATH_FIDELITY>(
       Input::tensorShape)));
   PACK((_llk_pack_reduce_mask_config_<Dimension, ckernel::PackMode::Default>(
-      Output::faceRowHeight)));
+      Output::tensorShape.face_r_dim)));
 }
 template <ckernel::BroadcastType Broadcast, typename Source>
 inline void unaryBcastInit(Source) {
@@ -142,21 +137,21 @@ class ComputeContext {
     sourceAFormat = SourceA::format;
     sourceAUnpackFormat = SourceA::unpackFormat;
     sourceAPageWords = SourceA::pageWords;
-    sourceAFaceRowHeight = SourceA::faceRowHeight;
-    sourceAFaceCount = SourceA::faceCount;
+    sourceAFaceRowHeight = SourceA::tensorShape.face_r_dim;
+    sourceAFaceCount = SourceA::tensorShape.total_num_faces();
     sourceBFormat = SourceB::format;
     sourceBUnpackFormat = SourceB::unpackFormat;
     sourceBPageWords = SourceB::pageWords;
-    sourceBFaceRowHeight = SourceB::faceRowHeight;
-    sourceBFaceCount = SourceB::faceCount;
+    sourceBFaceRowHeight = SourceB::tensorShape.face_r_dim;
+    sourceBFaceCount = SourceB::tensorShape.total_num_faces();
   }
 
   template <typename Output>
   void recordOutput() {
     outputFormat = Output::format;
     outputPageWords = Output::pageWords;
-    outputHeight = Output::height;
-    outputWidth = Output::width;
+    outputHeight = Output::tensorShape.total_row_dim();
+    outputWidth = Output::tensorShape.total_col_dim();
   }
 
 public:
@@ -165,8 +160,10 @@ public:
     if (!initialized) {
       UNPACK((_llk_unpack_hw_configure_<DST_ACCUM_MODE>(
           SourceA::format, SourceB::format, SourceA::unpackFormat,
-          SourceB::unpackFormat, SourceA::faceRowHeight, SourceB::faceRowHeight,
-          SourceA::faceCount, SourceB::faceCount, SourceA::pageWords,
+          SourceB::unpackFormat, SourceA::tensorShape.face_r_dim,
+          SourceB::tensorShape.face_r_dim,
+          SourceA::tensorShape.total_num_faces(),
+          SourceB::tensorShape.total_num_faces(), SourceA::pageWords,
           SourceB::pageWords)));
       MATH((llk_math_pack_sync_init<DST_ACCUM_MODE>()));
       MATH((_llk_math_hw_configure_<DST_ACCUM_MODE>(SourceA::unpackFormat,
@@ -176,7 +173,8 @@ public:
       recordInputs<SourceA, SourceB>();
     } else {
       configureInputs<SourceA, SourceB>();
-      if (outputHeight != Output::height || outputWidth != Output::width) {
+      if (outputHeight != Output::tensorShape.total_row_dim() ||
+          outputWidth != Output::tensorShape.total_col_dim()) {
         reconfigurePack<Output, true>();
       } else if (outputFormat != Output::format ||
                  outputPageWords != Output::pageWords) {
@@ -189,8 +187,8 @@ public:
   __attribute__((noinline)) void configureInputs() {
     bool sourceAGeometryChanged =
         sourceAPageWords != SourceA::pageWords ||
-        sourceAFaceRowHeight != SourceA::faceRowHeight ||
-        sourceAFaceCount != SourceA::faceCount;
+        sourceAFaceRowHeight != SourceA::tensorShape.face_r_dim ||
+        sourceAFaceCount != SourceA::tensorShape.total_num_faces();
     if (sourceAFormat != SourceA::format ||
         sourceAUnpackFormat != SourceA::unpackFormat ||
         sourceAGeometryChanged) {
@@ -198,12 +196,14 @@ public:
         UNPACK((_llk_unpack_reconfig_data_format_srca_impl_<
                 DST_ACCUM_MODE, p_dim_stride_target::FACE_ROW_MAJOR>(
             SourceA::format, SourceA::unpackFormat, SourceA::pageWords,
-            SourceA::faceRowHeight, SourceA::faceCount)));
+            SourceA::tensorShape.face_r_dim,
+            SourceA::tensorShape.total_num_faces())));
       } else {
         UNPACK((_llk_unpack_reconfig_data_format_srca_impl_<
                 DST_ACCUM_MODE, p_dim_stride_target::IGNORE>(
             SourceA::format, SourceA::unpackFormat, SourceA::pageWords,
-            SourceA::faceRowHeight, SourceA::faceCount)));
+            SourceA::tensorShape.face_r_dim,
+            SourceA::tensorShape.total_num_faces())));
       }
       if (sourceAUnpackFormat != SourceA::unpackFormat) {
         MATH((_llk_math_reconfig_data_format_srca_<DST_ACCUM_MODE>(
@@ -212,8 +212,8 @@ public:
     }
     bool sourceBGeometryChanged =
         sourceBPageWords != SourceB::pageWords ||
-        sourceBFaceRowHeight != SourceB::faceRowHeight ||
-        sourceBFaceCount != SourceB::faceCount;
+        sourceBFaceRowHeight != SourceB::tensorShape.face_r_dim ||
+        sourceBFaceCount != SourceB::tensorShape.total_num_faces();
     if (sourceBFormat != SourceB::format ||
         sourceBUnpackFormat != SourceB::unpackFormat ||
         sourceBGeometryChanged) {
@@ -221,12 +221,14 @@ public:
         UNPACK((_llk_unpack_reconfig_data_format_srcb_impl_<
                 DST_ACCUM_MODE, p_dim_stride_target::FACE_ROW_MAJOR>(
             SourceB::format, SourceB::unpackFormat, SourceB::pageWords,
-            SourceB::faceRowHeight, SourceB::faceCount)));
+            SourceB::tensorShape.face_r_dim,
+            SourceB::tensorShape.total_num_faces())));
       } else {
         UNPACK((_llk_unpack_reconfig_data_format_srcb_impl_<
                 DST_ACCUM_MODE, p_dim_stride_target::IGNORE>(
             SourceB::format, SourceB::unpackFormat, SourceB::pageWords,
-            SourceB::faceRowHeight, SourceB::faceCount)));
+            SourceB::tensorShape.face_r_dim,
+            SourceB::tensorShape.total_num_faces())));
       }
       if (sourceBUnpackFormat != SourceB::unpackFormat) {
         MATH((_llk_math_reconfig_data_format_srcb_<DST_ACCUM_MODE>(
@@ -421,8 +423,9 @@ matmulBlockAtAddresses(uint32_t lhs, uint32_t rhs, uint32_t lhsPageWords,
                        uint32_t transpose, uint32_t columns, uint32_t rows,
                        uint32_t inner) {
   UNPACK((_llk_unpack_AB_matmul_(lhs, rhs, 0, 0, lhsPageWords, rhsPageWords,
-                                 Rhs::partialFace, Lhs::partialFace, columns,
-                                 rows, inner)));
+                                 target::hasPartialFace(Rhs::tensorShape),
+                                 target::hasPartialFace(Lhs::tensorShape),
+                                 columns, rows, inner)));
   executeMatmul<Lhs, Rhs>(destination, transpose, columns, rows);
 }
 template <typename Lhs, typename Rhs>
