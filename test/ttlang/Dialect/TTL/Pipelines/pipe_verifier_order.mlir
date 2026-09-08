@@ -29,7 +29,7 @@
 // CHECK-NEXT: func.func(
 // CHECK-NEXT:   ttl-coalesce-dfb-acquires
 // CHECK-NEXT: ),
-// CHECK-NEXT: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 l1-allocation-strategy=multi-order-decreasing l1-budget-override=0 l1-exact-allocation-search-limit=1000000 memory-model=metal-cb reuse-user-dfbs=true unsafe-assume-allocation-groups=false},
+// CHECK-NEXT: ttl-finalize-dfb-indices{exact-coloring-search-limit=1000000 l1-allocation-strategy=multi-order-decreasing l1-budget-override=0 l1-exact-allocation-search-limit=1000000 memory-model=metal-cb reuse-user-dfbs=true sram-allocation-report=false unsafe-assume-allocation-groups=false},
 // CHECK-NEXT: ttl-set-compute-kernel-config{{.*}},
 // CHECK-NEXT: func.func(
 // CHECK-NOT:    ttl-verify-pipenet-guards

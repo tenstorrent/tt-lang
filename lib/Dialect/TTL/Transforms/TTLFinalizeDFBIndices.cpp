@@ -344,7 +344,7 @@ struct TTLFinalizeDFBIndicesPass
       if (failed(allocateSRAM(
               moduleOp, logicalIdentityAnalysis, l1BudgetOverride,
               reuseUserDFBs, l1AllocationStrategy, l1ExactAllocationSearchLimit,
-              liveness, staticConfigurationConflicts,
+              sramAllocationReport, liveness, staticConfigurationConflicts,
               unsafeAssumeAllocationGroups, assumedAllocationGroups))) {
         signalPassFailure();
         return;

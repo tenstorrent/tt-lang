@@ -266,6 +266,31 @@ The proof above establishes completeness of the candidate offsets. Exhaustive en
 
 The allocator interface contains no MLIR operations, DFB identities, architecture identities, tensor identities, or target branches. It receives normalized alignment and budget values through the allocation problem. Adding a strategy requires an implementation of the placement interface and a stable factory name. Conflict construction, storage-owner mapping, target queries, validation, metadata emission, and runtime allocation remain unchanged.
 
+## Allocation Report
+
+`--ttl-sram-allocation-report` emits JSON records to stderr, each prefixed by `ttlang-sram-report: `. Reporting is disabled by default and inactive with `metal-cb`. The compiler record appears on compilation; the runtime record appears on each invocation that allocates an arena, including compiled-artifact cache hits. Reporting does not change placement or lifetime proofs.
+
+The compiler record has `schema_version: 1` and `phase: "compiler"`. `owners` maps shared storage and control offsets to logical DFBs. `regions` includes declaration locations, core domains, and fixed tensor byte ranges. `logical_conflicts` reuses existing reason names and source evidence; these are analysis facts before allocation-group ownership is applied. `reuse_enabled: false` separately explains policy-disabled reuse. `reused_ranges` lists overlapping compiler-owned owner pairs; its byte counts are not additive when more than two owners reuse a range. `lifetimes` records known and possible core membership, completion proof status, entry locations, and entry/completion event IDs. Event IDs identify partial-order analysis events, not elapsed time or a total execution order.
+
+| Compiler metric | Meaning |
+| --- | --- |
+| `arena_bytes_per_core` | Planned control prefix plus payload high-water mark. |
+| `control_record_bytes`, `control_padding_bytes` | Control state and alignment padding, reported separately. |
+| `payload_extent_sum_bytes` | Sum of distinct compiler-owned storage-owner extents, after allocation-group consolidation. |
+| `payload_union_bytes` | Number of distinct payload addresses occupied by those extents. |
+| `payload_reuse_bytes` | Extent sum minus union; excludes sharing already represented by allocation groups. |
+| `payload_gap_bytes` | Payload high-water mark minus union; unused address gaps, not excess over an optimal allocation. |
+
+The runtime record has `phase: "runtime"` and `scope: "arena-reference-device"`. It reports TTNN's `max_size_per_bank` as `reserved_bytes_per_core`, the participating `core_count`, their product as `reserved_bytes_on_reference_device`, and `reservation_padding_bytes_per_core` beyond `requested_bytes_per_core`. The requested extent is reconstructed from finalized DFB descriptors; a control-only arena can omit trailing compiler alignment padding from this request. It measures the arena reservation on the mesh reference device; it is not a mesh-wide total or total program SRAM use. Existing tensor payloads, PipeNet scratch, and external resources are outside this runtime total.
+
+A compiler-only report can be obtained with:
+
+```sh
+ttlang-opt test/ttlang/Dialect/TTL/Transforms/compiler_l1_multi_order.mlir \
+  -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 sram-allocation-report=true})' \
+  > /tmp/allocated.mlir 2> /tmp/sram-report.log
+```
+
 ## Requested Allocator Capabilities
 
 The initial scope is one compiled `ttl.operation`, including its tensor-backed and compiler-owned DFBs. The requested static/dynamic distinction remains to be defined; it is not assumed to mean runtime-dependent sizes.
@@ -275,11 +300,11 @@ The initial scope is one compiled `ttl.operation`, including its tensor-backed a
 | Late allocation and global minimum | One immutable problem per `ttl.operation`; optional exact minimum for its compiler-owned uniform arena. | Joint placement of tensor-backed and compiler-owned storage within that operation. Existing tensor addresses are already assigned. |
 | Full lockstep, ranged lockstep, and per-core allocation | One common layout across participating cores and devices. | Domain-specific layouts and receiver addresses. Uniform allocation reserves the largest arena on every participating core. |
 | Unified tensor and DFB allocation | Shared ownership, lifetime, allocation-group, and alias validation; tensor-backed DFBs avoid duplicate payload storage. | Shared physical placement. TTNN owns existing tensor allocations; the compiler currently owns only its arena. |
-| Lifetime inspection and reuse hints | Automatic completion-aware reuse and developer conflict diagnostics. | A stable allocation report and a user-facing guidance contract that preserves asynchronous completion. |
+| Lifetime inspection and reuse hints | Automatic completion-aware reuse and the allocation report above. | A user-facing guidance contract that preserves asynchronous completion. |
 
 ### Planned Implementation
 
-1. Reports and lifetime guidance. Expose existing analysis evidence as storage extents, live boundaries, conflict reasons, reused ranges, and reserved bytes. Placement preferences may change ordering but cannot remove conflicts. Reuse existing ownership-transfer operations for semantic lifetime boundaries; validate producer publication and consumer completion, including remote and external users.
+1. Lifetime guidance. Build on the allocation report. Placement preferences may change ordering but cannot remove conflicts. Reuse existing ownership-transfer operations for semantic lifetime boundaries; validate producer publication and consumer completion, including remote and external users.
 2. Allocation domains. Represent full lockstep as one domain, core ranges as several domains, and independent allocation as one domain per core. Build and validate offsets per domain. Update local addressing, destination-core PipeNet addressing, runtime reservations, and cache identity together. Use supported host allocation APIs for domain reservations; extend them where equal-shard assumptions prevent independent sizes.
 3. Unified host placement. Describe tensor and DFB storage with common ownership, alias, lifetime, alignment, domain, and fixed/movable constraints. Preserve caller-owned addresses. Reserve the validated plan transactionally and construct tensor views over owned storage, retaining owners through completion. Reuse TTNN/TT-Metal host facilities where their contracts suffice; extend host APIs where required.
 4. Late joint placement within one operation. Extend the existing immutable allocation problem and its oracle to fixed tensor intervals and domain-specific movable storage. Assign offsets only after sizes, ownership, domains, and completion conflicts are known. Minimize uniform arena size or total domain reservation subject to each core's capacity. Optimality remains relative to the supplied requirements and fixed addresses.

@@ -3,6 +3,7 @@
 
 """Compiler-owned L1 transfer correctness and descriptor independence."""
 import importlib.util
+import json
 import re
 
 import pytest
@@ -387,3 +388,105 @@ def test_allocation_stress(device, dtype, schedule, grid, reuse, tmp_path, monke
                     offsets[first] + sizes[first] <= offsets[second]
                     or offsets[second] + sizes[second] <= offsets[first]
                 )
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "sram"])
+@pytest.mark.parametrize("enabled", [False, True], ids=["silent", "report"])
+def test_sram_allocation_report(device, dtype, allocator, enabled, capfd):
+    """Reporting preserves copies and distinguishes plan bytes from reservation."""
+    expected = torch.randn(32, 32, dtype=dtype)
+    source = allocator(expected, device)
+    destination = allocator(torch.zeros_like(expected), device)
+    flag = (
+        "--ttl-sram-allocation-report" if enabled else "--no-ttl-sram-allocation-report"
+    )
+    capfd.readouterr()
+    for invocation in range(2):
+        l1_copy(source, destination, options=f"--ttl-memory-model=compiler-l1 {flag}")
+        assert_allclose(
+            ttnn.to_torch(destination).float(), expected.float(), rtol=0, atol=0
+        )
+    captured = capfd.readouterr()
+    prefix = "ttlang-sram-report: "
+    reports = [
+        json.loads(line.partition(prefix)[2])
+        for line in captured.err.splitlines()
+        if prefix in line
+    ]
+    if not enabled:
+        assert reports == []
+        return
+    compiler = [record for record in reports if record["phase"] == "compiler"]
+    runtime = [record for record in reports if record["phase"] == "runtime"]
+    assert len(compiler) == 1
+    assert len(runtime) == 2
+    placement = compiler[0]
+    assert placement["schema_version"] == 1
+    assert (
+        placement["payload_extent_sum_bytes"]
+        == 3 * expected.numel() * expected.element_size()
+    )
+    assert placement["payload_reuse_bytes"] == 0
+    assert placement["payload_gap_bytes"] == 0
+    assert len(placement["owners"]) == 1
+    assert placement["owners"][0]["logical_dfbs"]
+    for reservation in runtime:
+        assert reservation["scope"] == "arena-reference-device"
+        assert reservation["operation"] == "l1_copy"
+        assert reservation["core_count"] == 1
+        assert (
+            reservation["requested_bytes_per_core"] == placement["arena_bytes_per_core"]
+        )
+        assert (
+            reservation["reserved_bytes_per_core"]
+            >= reservation["requested_bytes_per_core"]
+        )
+        assert reservation["reservation_padding_bytes_per_core"] == (
+            reservation["reserved_bytes_per_core"]
+            - reservation["requested_bytes_per_core"]
+        )
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("reuse", [False, True], ids=["distinct", "reuse"])
+def test_sram_report_multicore_reuse(device, dtype, reuse, tmp_path, capfd):
+    """Report mixed-size ownership and actual reservation across four cores."""
+    operation, pages, capacities, conflicts = _make_allocation_stress(
+        tmp_path, ALLOCATION_SCHEDULES[0], (2, 2)
+    )
+    expected = torch.randn(sum(pages) * 4 * 32, 32, dtype=dtype)
+    source = to_dram(expected, device)
+    destination = to_dram(torch.zeros_like(expected), device)
+    options = "--ttl-memory-model=compiler-l1 --ttl-sram-allocation-report"
+    if not reuse:
+        options += " --no-ttl-reuse-user-dfbs"
+    capfd.readouterr()
+    operation(source, destination, options=options)
+    assert_allclose(
+        ttnn.to_torch(destination).float(), expected.float(), rtol=0, atol=0
+    )
+    prefix = "ttlang-sram-report: "
+    reports = [
+        json.loads(line[len(prefix) :])
+        for line in capfd.readouterr().err.splitlines()
+        if line.startswith(prefix)
+    ]
+    (placement,) = [record for record in reports if record["phase"] == "compiler"]
+    (reservation,) = [record for record in reports if record["phase"] == "runtime"]
+    assert len(placement["owners"]) == len(pages)
+    assert (
+        placement["payload_extent_sum_bytes"]
+        == sum(page_count * capacity for page_count, capacity in zip(pages, capacities))
+        * 1024
+        * expected.element_size()
+    )
+    assert bool(placement["reused_ranges"]) == reuse
+    assert bool(placement["payload_reuse_bytes"]) == reuse
+    assert placement["logical_conflicts"]
+    assert reservation["core_count"] == 4
+    assert reservation["requested_bytes_per_core"] == placement["arena_bytes_per_core"]
+    assert (
+        reservation["reserved_bytes_on_reference_device"]
+        == 4 * reservation["reserved_bytes_per_core"]
+    )

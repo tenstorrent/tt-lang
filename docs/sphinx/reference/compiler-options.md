@@ -13,6 +13,7 @@ python my_kernel.py --no-ttl-maximize-dst
 | Flag | Default | Description |
 |---|---|---|
 | `--ttl-memory-model {metal-cb,compiler-l1}` | `metal-cb` | Select Metal DFB descriptors or experimental compiler-owned SRAM byte allocation. Unsupported operations in `compiler-l1` are errors. |
+| `--ttl-sram-allocation-report` / `--no-ttl-sram-allocation-report` | disabled | Emit versioned JSON SRAM allocation facts and runtime arena reservations to stderr for `compiler-l1`. |
 | `--ttl-l1-allocation-strategy {multi-order-decreasing,first-fit-decreasing,best-fit-decreasing,exact}` | `multi-order-decreasing` | Select the payload placement strategy for `compiler-l1`. `exact` proves the minimum arena size within its work limit. |
 | `--ttl-l1-exact-allocation-search-limit N` | `1000000` | Limit exact compiler-managed SRAM placement to `N` subset-sum candidates and partial placements. Reaching the limit reports an inconclusive result. |
 | `--ttl-maximize-dst` / `--no-ttl-maximize-dst` | enabled | Partition compute iteration spaces into subblocks that maximize DST register utilization, and reorder tile operations within sync regions to group by kind. Disabling falls back to per-tile synchronization. |
@@ -153,6 +154,7 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | `pipe-batch-tiles` | int64_t | `0` (auto) | Limit logical transfers per PipeTransport group. `0` selects automatically and `1` disables grouping. |
 | `l1-budget-override` | uint32_t | `0` (target default) | Override the per-core L1 budget used for target-aligned DFB allocation, PipeNet resources, synchronized-reset state, reconfiguration state, and final combined validation. |
 | `memory-model` | string | `metal-cb` | Select `metal-cb` or experimental `compiler-l1` byte allocation. |
+| `sram-allocation-report` | bool | `false` | Emit versioned JSON ownership, reuse, conflict, and planned arena facts to stderr for `compiler-l1`. |
 | `l1-allocation-strategy` | string | `multi-order-decreasing` | Select `multi-order-decreasing` (stable plus degree-aware first-fit), `first-fit-decreasing`, `best-fit-decreasing`, or `exact` compiler-managed SRAM payload placement. |
 | `l1-exact-allocation-search-limit` | uint64 | `1000000` | Maximum work items examined by exact compiler-managed SRAM placement before reporting an inconclusive result. |
 | `reuse-user-dfbs` | bool | `true` | Reuse physical DFB indices and compiler-managed storage for compatible lifetimes proven not to overlap. |
@@ -177,7 +179,7 @@ The pipeline runs these passes and subpasses in order:
 - `ttl-verify-pipenet-guards`, then `ttl-verify-pipenet-schedule` -- verify PipeNet launch domains and event ordering while logical DFB identities remain distinct and before physical DFB allocation
 - `ttl-form-pipe-transports` -- group eligible repeated PipeNet transfers and select bounded receiver storage while accounting for synchronized-reset and reconfiguration state
 - `ttl-coalesce-dfb-acquires` -- coalesce compatible DFB acquires
-- `ttl-finalize-dfb-indices` -- `memory-model=compiler-l1` assigns explicit SRAM payload and control offsets using completion-proven storage interference and the selected `l1-allocation-strategy`; `l1-exact-allocation-search-limit` bounds exact byte placement; the default assigns logical DFBs to physical indices, validates combined DFB and fixed-state capacity, and emits runtime metadata; `reuse-user-dfbs` controls automatic user-DFB reuse, `unsafe-assume-allocation-groups` trusts only explicit unproved group handoffs, `exact-coloring-search-limit` bounds exhaustive index and weighted-allocation queries, and `l1-budget-override` replaces the target L1 budget
+- `ttl-finalize-dfb-indices` -- `memory-model=compiler-l1` assigns explicit SRAM payload and control offsets using completion-proven storage interference and the selected `l1-allocation-strategy`; `l1-exact-allocation-search-limit` bounds exact byte placement; `sram-allocation-report` emits allocation facts without changing placement; the default assigns logical DFBs to physical indices, validates combined DFB and fixed-state capacity, and emits runtime metadata; `reuse-user-dfbs` controls automatic user-DFB reuse, `unsafe-assume-allocation-groups` trusts only explicit unproved group handoffs, `exact-coloring-search-limit` bounds exhaustive index and weighted-allocation queries, and `l1-budget-override` replaces the target L1 budget
 - `ttl-set-compute-kernel-config` -- select tile execution strategies and resolve kernel-wide DST and per-DFB unpack configuration
 - `ttl-assign-dst` -- DST register allocation (linear scan with copy insertion)
 - `ttl-subblock-compute-for-dst` -- tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*; optionally refine reserve/push to per-subblock granularity *(only if `subblock-sync=true`)*
@@ -253,6 +255,8 @@ ttlang-opt input.mlir -p 'func.func(ttl-insert-intermediate-dfbs{enable=false})'
 
 #### `ttl-finalize-dfb-indices`
 
+`sram-allocation-report=true` emits a versioned JSON compiler allocation record to stderr. See [SRAM allocation reporting](../../development/SRAMAllocation.md#allocation-report) for metrics and runtime reservation reporting.
+
 `memory-model=compiler-l1` uses the selected deterministic byte-placement strategy and independent synchronization records. The default compares stable and conflict-degree ordering among equal extents and retains the smaller arena, preserving stable offsets on ties. The decreasing strategies produce feasible placements; `exact` proves the minimum arena size or reports that its work limit prevented a conclusion. It removes the Metal DFB index limit for supported transfer and compute operations. Unknown access completion prevents reuse.
 `reuse-user-dfbs=false` gives every payload separate storage. The arena allocation
 includes control and alignment bytes. Greedy placement failure does not establish
@@ -265,6 +269,7 @@ allocation table.
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `memory-model` | string | `metal-cb` | Select `metal-cb` or experimental `compiler-l1` byte allocation. |
+| `sram-allocation-report` | bool | `false` | Emit versioned JSON ownership, reuse, conflict, and planned arena facts to stderr for `compiler-l1`. |
 | `l1-allocation-strategy` | string | `multi-order-decreasing` | Select `multi-order-decreasing` (stable plus degree-aware first-fit), `first-fit-decreasing`, `best-fit-decreasing`, or `exact` compiler-managed SRAM payload placement. |
 | `l1-exact-allocation-search-limit` | uint64 | `1000000` | Maximum subset-sum candidates and partial placements examined by exact compiler-managed SRAM placement. Reaching the limit reports an inconclusive result. |
 | `reuse-user-dfbs` | bool | `true` | Reuse physical indices for compatible logical DFBs and storage allocations for physical descriptors when concurrent-kernel liveness proves that their lifetimes cannot overlap. When false, compact provisional user indices without introducing new user-DFB sharing, apply physical-index reuse only to compiler-created DFBs, and assign each physical descriptor separate storage. |
