@@ -37,6 +37,20 @@ cyclically across a fixed set of workers. Each worker computes
   across M workers.
 - Every output block has exactly one writer.
 
+`k_tiles_per_transfer` controls fabric messages; `k_block_tiles` independently
+controls matmul operand blocks and defaults to the transfer size. Both must
+divide the per-device K extent. During the first N round, each common group of
+`lcm(k_tiles_per_transfer, k_block_tiles)` K tiles is gathered into DRAM and
+published to compute before gathering the next group. Subsequent N rounds reuse
+that gathered data. Both operand streams use group/block/device order, while
+gathered output retains canonical device order.
+
+Sequential send/local/receive staging uses one DFB block each; operand DFBs
+remain double-buffered. The activation reader is declared first to select
+NoC 0, with weight traffic on NoC 1. This assignment is measured on the
+transposed Blackhole workload; it is not a claim of optimal placement for
+every grid or architecture.
+
 The configuration requires at least two workers on both axes. Tile counts must
 be divisible by their block extents, and M/N block counts must be divisible by
 the corresponding worker counts. Edge blocks are not padded implicitly.

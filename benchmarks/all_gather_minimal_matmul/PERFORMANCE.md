@@ -3,7 +3,113 @@
 Each results section records its own source, binary and timing provenance.
 Dependency pins do not establish the build revision of the installed binaries.
 
-## Native-sized local comparison
+## Operation-only optimization
+
+The original gap has substantial implementation-level causes. No compiler,
+runtime, toolchain or timing-method change is needed for the improvements below.
+Compute K blocking, fabric transfer granularity and data-movement assignment
+are varied separately before selecting the combined configuration.
+
+Both implementations use BF16/HiFi2, FP32 destinations, M/K/N blocks 2/40/2,
+and the same transposed 2x5 worker grid on two Blackhole devices. TT-Lang fabric
+transfers contain 40 K tiles. Other settings retain the
+[measurement contract](README.md#measurement-contract): three warmups, five
+samples, mean device-kernel duration across ranks, ordinary launches.
+
+| M / full K / per-device N | Original TT-Lang ms | Optimized TT-Lang ms (range) | Original native ms (K=2) | Native ms (K=40, range) | Optimized TT-Lang / original native | Optimized TT-Lang / K=40 native |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 3072 / 5120 / 1280 | 24.456 | 4.437 (4.431-4.439) | 7.075 | 3.696 (3.691-3.700) | 0.627 | 1.201 |
+| 3072 / 5120 / 3840 | 63.013 | 11.358 (11.355-11.362) | 20.131 | 10.385 (10.360-10.427) | 0.564 | 1.094 |
+
+2026-09-09 21:40:10-21:41:16 UTC; TT-Lang `0b4b8840c431` + local changes (operation SHA-256 `730491f4be48`, driver `4b712b8cde1f`); Metal/LLVM pins `ea042c4ad623`/`37aca9d384347`; compiler/TTNN/Metal binary SHA-256 `7f5e02a65e4c`/`62edde2b1f61`/`65380f11dc15`; image `6eaf96b4b00d5`; [reports and exact sources](https://gist.github.com/brnorris03/79c57b196efe09355699d40165780088).
+
+The K=40 native measurements use the same TTNN operation and 2x5 grid as the
+original native baseline, with only compute K blocking increased from 2 to 40
+tiles. No native implementation code changes. Optimized TT-Lang is 37.3% and
+43.6% faster than the original K=2 native configuration; those ratios compare
+different blocking. The K=40 native column compares matching compute blocks.
+
+TT-Lang improves by 5.51x and 5.55x, but remains 20.1% and 9.4% slower than
+native with the same K=40 blocks. Accuracy thresholds are unchanged and the
+gather remains bit-exact. Mean absolute output errors are 0.003634/0.003636;
+maximum errors increase from 0.03290/0.03636 to 0.03892/0.03943, still within
+the original bounds. Native's 12x9 Galaxy/trace configuration is not measured
+on this machine.
+
+A separate alternating 20-pair check of the original and optimized operations
+on the non-transposed M64/K64/per-device N128 smoke case measured medians
+13.970/14.084 us (0.8% slower), with ranges 12.530-15.281/13.068-15.073 us.
+The median paired ratio was 0.982. This does not establish a consistent small-
+workload speedup or regression; both statistics are retained in the archive.
+That check uses the same BF16/HiFi2/FP32-destination settings and device metric.
+
+### Attribution experiments
+
+M=3072, full K=5120, per-device N=1280; the 2x5 transposed grid and 2x2 output
+blocks are unchanged except in the explicitly labeled wider-grid experiment.
+Every reported time passes the original correctness checks. Times are median
+device-kernel milliseconds, not host latency.
+
+| Implementation/configuration change | TT-Lang ms | Native ms | Interpretation |
+| --- | ---: | ---: | --- |
+| Original compute K=2, fabric K=2 | 24.456 | 7.075 | Baseline. |
+| Compute K=20, fabric K=2 | 9.478 | 3.714 | Fewer compute invocations, intermediate packs, local multicasts and DRAM barriers; fabric message count is unchanged. |
+| Compute K=40, fabric K=2 | 9.357 | 3.694 | Diminishing benefit from compute blocking alone. |
+| Compute K=40, fabric K=20 | 5.337 | unchanged | Larger fabric transfers and local staging batches remove approximately 4.02 ms; this does not isolate wire-transfer time from staging and synchronization. |
+| Fabric K=40, single-block sequential staging | 5.111 | unchanged | Lower staging capacity permits larger transfers. |
+| Publish each gathered K group to compute | 5.083 | 3.696 | Small benefit at this blocking; does not eliminate DRAM staging. |
+| Activation NoC 0, weight NoC 1 | 4.437 | unchanged | Data-movement assignment matters; this also swaps RISCs and fabric-send ownership, not just NoC direction. |
+| Move output writes to the weight thread | 4.661 | 3.696 | **5.1% regression**; rejected. |
+| Separate trial: 2x8 grid, M/K/N=4/20/1, fabric K=20 | 5.323 | 3.283 | TT-Lang is slower despite 16 rather than 10 workers; rejected as the local TT-Lang configuration. |
+
+2026-09-09 20:54-21:33 UTC; base `0b4b8840c431` plus operation edits (original baseline `e0cced786d1e` plus edits); source hashes, exact configurations and binary identities are recorded in each [archived report](https://gist.github.com/brnorris03/79c57b196efe09355699d40165780088).
+
+The native column is retuned with each compute-block change. `unchanged` means
+the preceding native compute configuration is unchanged, not that a new native
+sample was collected. The native 16-worker result is faster than its 10-worker
+result: matching TT-Lang's best grid does not establish native's optimal grid.
+These are successive controlled changes, not additive measurements of disjoint
+hardware components; communication and compute can overlap.
+
+### Generated compute and remaining opportunities
+
+For each 2x2 output block, the original operation performs 80 compute K
+iterations. Each iteration packs four BF16 product tiles, converts and packs
+four FP32 partial tiles, then reloads/adds/packs four FP32 accumulator tiles:
+960 tile packs per output block, excluding initialization and bias/output.
+Native packs four FP32 intermediate tiles per iteration with L1 accumulation:
+320 tile packs. At compute K=40, these counts become 48 and 16 respectively;
+the number of matrix tile products is unchanged. Larger blocks also reduce
+operand DFB handoffs and per-block initialization. This explains why changing
+K blocking helps both implementations, especially TT-Lang.
+
+The archive includes `compute_baseline_n1280.cpp`,
+`compute_streamed_n1280.cpp` and `native_compute_installed.cpp` for these counts;
+the historical smoke snapshots below describe a different implementation.
+
+The retained operation still rounds each matmul-block product to BF16 before
+widening to FP32, retains extra conversions and SFPU additions, and stages
+gathered activation through DRAM. Avoiding the first-N-round DRAM reread while
+preserving the required gathered output is an operation-level optimization to
+investigate next. Larger or more deeply buffered blocks must fit the actual L1
+budget; adding workers alone did not improve the measured implementation.
+
+Existing DSL alternatives were tested before proposing compiler work:
+
+| Attempt | Observed limitation | Work needed to enable that specific optimization |
+| --- | --- | --- |
+| BF16 tensor recurrence over K | Compiles to BF16 packer accumulation, but the full-size N=1280 output fails the unchanged tolerance at 9 elements; max absolute error 0.151. | An FP32 intermediate or proven DST-resident matmul recurrence is needed; relaxing accuracy is not an optimization. |
+| FP32 reserved accumulator `+= typecast(activation @ weight, fp32)` | [`computeDSTCapacity`](../../include/ttlang/Dialect/TTL/IR/TTLOpsUtils.h) rejects the mixed BF16/FP32 compute arguments. | Support BF16 matmul inputs with an FP32 packed result, including correct DST capacity, unpack/pack formats and conversion semantics. Removing the diagnostic alone is insufficient. |
+| Materialize the product, then accumulate its conversion in the same loop | [`collectDFBAccumulationStores`](../../lib/Dialect/TTL/Transforms/TTLInsertAccumulationScopes.cpp) rejects a non-accumulating store inside a packer-accumulation loop (#648). | Model packer accumulation state per store so ordinary product packs cannot accidentally accumulate. |
+| Hold a waited accumulator across K and update it in place | [`ComputeOpCreationPlanning.cpp`](../../lib/Dialect/TTL/Transforms/ComputeOpCreationPlanning.cpp) requires waited replacement to execute in a straight-line entry block. | Prove loop-scoped consumer ownership and repeated replacement before permitting this form. |
+
+No rejected variant is retained in the operation. These are precise limits on
+those particular optimizations, not evidence that compiler changes are required
+for all further performance improvements. Native's FP32 intermediate format is
+confirmed in the installed program factory, not inferred from the destination
+precision flag alone.
+
+## Original native-sized local comparison
 
 The [configuration table](README.md#comparison-with-the-native-benchmark)
 distinguishes matching settings from the native Galaxy benchmark. The following
@@ -153,7 +259,7 @@ These differences explain additional work and reduced overlap, but the
 measured device gap is only a few microseconds for this case. No experiment
 isolated the latency contribution of each individual C++ difference.
 
-## Numerical precision
+## Historical FP32 numerical checks
 
 FP32 results also pass the documented FPU-aware checks: TT-Lang 3.440 ms/call,
 native 0.106 ms/call. Both failed the initial rtol/atol 0.0001 comparison against
@@ -163,16 +269,10 @@ through the source registers. The benchmark uses rtol/atol 0.005 and PCC >=
 0.999 for FP32, versus 0.05 and 0.99 for BF16, and records absolute errors.
 This does not claim full-FP32 arithmetic accuracy.
 
-## Optimization order
+## Remaining host/runtime work
 
-1. Retain invocation-compatible global semaphore and hidden DFB resources with
-   a correct reset/ownership protocol. Cache immutable binding plans and
-   descriptors; update only invocation-dependent addresses and arguments.
-2. Remove the accumulator DFB copies and repeated compute initialization
-   without changing required dtype/rounding semantics.
-3. Stream activation blocks into matmul instead of completing a DRAM-staged
-   gather first; retain full gathered output only when the operation contract
-   requires it.
-
-These are diagnosed optimization targets, not implemented runtime/compiler
-changes. Larger workloads are required to quantify throughput effects.
+Replay-safe resource reuse and immutable binding-plan caching remain necessary
+to address the historical host overhead and support trace capture. Neither is
+implemented here, and host timings are not used to explain the measured device
+speedups. Device-level implementation changes and the remaining compiler
+constraints are described in the operation-only analysis above.

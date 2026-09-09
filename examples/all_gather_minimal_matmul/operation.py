@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from math import prod
+from math import lcm, prod
 
 import ttl
 import ttnn
@@ -29,6 +29,7 @@ class AllGatherMinimalMatmulConfig:
     n_block_tiles: int = 1
     worker_grid: tuple[int, int] | None = None
     transpose: bool = False
+    k_block_tiles: int | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "mesh_shape", tuple(self.mesh_shape))
@@ -70,6 +71,11 @@ class AllGatherMinimalMatmulConfig:
             if total % block != 0:
                 raise ValueError(f"{total_name} must be divisible by {block_name}")
 
+        if self.compute_k_tiles <= 0 or self.k_tiles_per_device % self.compute_k_tiles:
+            raise ValueError(
+                "k_block_tiles must be positive and divide k_tiles_per_device"
+            )
+
         if self.worker_grid is not None:
             object.__setattr__(self, "worker_grid", tuple(self.worker_grid))
             if len(self.worker_grid) != 2 or min(self.worker_grid) < 2:
@@ -110,6 +116,14 @@ class AllGatherMinimalMatmulConfig:
     @property
     def k_transfer_count(self) -> int:
         return self.k_tiles_per_device // self.k_tiles_per_transfer
+
+    @property
+    def compute_k_tiles(self) -> int:
+        return (
+            self.k_tiles_per_transfer
+            if self.k_block_tiles is None
+            else self.k_block_tiles
+        )
 
 
 def make_all_gather_minimal_matmul_operation(
@@ -163,8 +177,13 @@ def make_all_gather_minimal_matmul_operation(
     k_tiles_per_transfer = config.k_tiles_per_transfer
     n_block_tiles = config.n_block_tiles
     device_count = config.device_count
-    k_transfer_count = config.k_transfer_count
-    receive_block_count = max(2, device_count - 1)
+    compute_k_tiles = config.compute_k_tiles
+    compute_k_blocks_per_device = k_tiles_per_device // compute_k_tiles
+    # Common boundaries let compute start before the full K shard is gathered.
+    gather_k_tiles = lcm(k_tiles_per_transfer, compute_k_tiles)
+    gather_groups = k_tiles_per_device // gather_k_tiles
+    transfers_per_group = gather_k_tiles // k_tiles_per_transfer
+    compute_blocks_per_group = gather_k_tiles // compute_k_tiles
     m_rounds = config.m_tiles // (m_block_tiles * grid_rows)
     n_rounds = config.n_tiles_per_device // (n_block_tiles * grid_columns)
     column_axis = 1 if config.transpose else 0
@@ -186,26 +205,26 @@ def make_all_gather_minimal_matmul_operation(
         fabric_send_dfb = ttl.make_dataflow_buffer_like(
             activation_shard,
             shape=(m_block_tiles, k_tiles_per_transfer),
-            block_count=2,
+            block_count=1,
         )
         local_activation_dfb = ttl.make_dataflow_buffer_like(
             activation_shard,
             shape=(m_block_tiles, k_tiles_per_transfer),
-            block_count=2,
+            block_count=1,
         )
         fabric_receive_dfb = ttl.make_dataflow_buffer_like(
             activation_shard,
             shape=(m_block_tiles, k_tiles_per_transfer),
-            block_count=receive_block_count,
+            block_count=1,
         )
         activation_compute_dfb = ttl.make_dataflow_buffer_like(
             activation_shard,
-            shape=(m_block_tiles, k_tiles_per_transfer),
+            shape=(m_block_tiles, compute_k_tiles),
             block_count=2,
         )
         weight_compute_dfb = ttl.make_dataflow_buffer_like(
             weight_shard,
-            shape=(k_tiles_per_transfer, n_block_tiles),
+            shape=(compute_k_tiles, n_block_tiles),
             block_count=2,
         )
         bias_dfb = ttl.make_dataflow_buffer_like(
@@ -231,66 +250,7 @@ def make_all_gather_minimal_matmul_operation(
             output_shard, shape=(m_block_tiles, n_block_tiles), block_count=2
         )
 
-        @ttl.datamovement()
-        def send_activation_and_distribute_weights() -> None:
-            physical_column, physical_row = ttl.node(dims=2)
-            node_column = (
-                physical_column * (1 - column_axis) + physical_row * column_axis
-            )
-            node_row = physical_column * (1 - row_axis) + physical_row * row_axis
-            for m_round in range(m_rounds):
-                m_begin = (m_round * grid_rows + node_row) * m_block_tiles
-                m_end = m_begin + m_block_tiles
-
-                if node_column == 0:
-
-                    def send_activation_to_device(pipe) -> None:
-                        for transfer_index in range(k_transfer_count):
-                            local_k_begin = transfer_index * k_tiles_per_transfer
-                            local_k_end = local_k_begin + k_tiles_per_transfer
-                            with fabric_send_dfb.reserve() as activation_block:
-                                ttl.copy(
-                                    activation_shard[
-                                        m_begin:m_end, local_k_begin:local_k_end
-                                    ],
-                                    activation_block,
-                                ).wait()
-                            with fabric_send_dfb.wait() as activation_block:
-                                ttl.copy(activation_block, pipe).wait()
-
-                    activation_all_gather_net.if_src(send_activation_to_device)
-
-                for n_round in range(n_rounds):
-                    n_begin = (n_round * grid_columns + node_column) * n_block_tiles
-                    n_end = n_begin + n_block_tiles
-                    for source_index in range(device_count):
-                        source_k_begin = source_index * k_tiles_per_device
-                        for transfer_index in range(k_transfer_count):
-                            k_begin = (
-                                source_k_begin + transfer_index * k_tiles_per_transfer
-                            )
-                            k_end = k_begin + k_tiles_per_transfer
-                            with weight_compute_dfb.reserve() as weight_block:
-                                if node_row == 0:
-                                    ttl.copy(
-                                        weight_shard[k_begin:k_end, n_begin:n_end],
-                                        weight_block,
-                                    ).wait()
-
-                                    def send_weight(pipe) -> None:
-                                        ttl.copy(weight_block, pipe).wait()
-
-                                    weight_column_net.if_src(send_weight)
-                                else:
-
-                                    def receive_weight(pipe) -> None:
-                                        ttl.copy(pipe, weight_block).wait()
-
-                                    weight_column_net.if_dst(receive_weight)
-
-                    with bias_dfb.reserve() as bias_block:
-                        ttl.copy(bias_shard[0:1, n_begin:n_end], bias_block).wait()
-
+        # Declaration order keeps activation traffic on the reader's NoC 0.
         @ttl.datamovement()
         def receive_activation_and_write_output() -> None:
             physical_column, physical_row = ttl.node(dims=2)
@@ -302,75 +262,95 @@ def make_all_gather_minimal_matmul_operation(
                 m_begin = (m_round * grid_rows + node_row) * m_block_tiles
                 m_end = m_begin + m_block_tiles
 
-                if node_column == 0:
-                    local_device_index = device_domain.current_index()
-                    local_device_k_begin = local_device_index * k_tiles_per_device
-
-                    for transfer_index in range(k_transfer_count):
-                        local_k_begin = transfer_index * k_tiles_per_transfer
-                        local_k_end = local_k_begin + k_tiles_per_transfer
-                        gathered_k_begin = local_device_k_begin + local_k_begin
-                        gathered_k_end = gathered_k_begin + k_tiles_per_transfer
-                        with local_activation_dfb.reserve() as activation_block:
-                            ttl.copy(
-                                activation_shard[
-                                    m_begin:m_end, local_k_begin:local_k_end
-                                ],
-                                activation_block,
-                            ).wait()
-                        with local_activation_dfb.wait() as activation_block:
-                            ttl.copy(
-                                activation_block,
-                                gathered_activation[
-                                    m_begin:m_end, gathered_k_begin:gathered_k_end
-                                ],
-                            ).wait()
-
-                    def receive_activation_from_device(pipe) -> None:
-                        source_index = pipe.source_device_index
-                        source_k_begin = source_index * k_tiles_per_device
-                        k_begin = source_k_begin + transfer_index * k_tiles_per_transfer
-                        k_end = k_begin + k_tiles_per_transfer
-                        with fabric_receive_dfb.reserve() as activation_block:
-                            ttl.copy(pipe, activation_block).wait()
-                        with fabric_receive_dfb.wait() as activation_block:
-                            ttl.copy(
-                                activation_block,
-                                gathered_activation[m_begin:m_end, k_begin:k_end],
-                            ).wait()
-
-                    for transfer_index in range(k_transfer_count):
-                        activation_all_gather_net.if_dst(receive_activation_from_device)
-
                 for n_round in range(n_rounds):
-                    for source_index in range(device_count):
-                        source_k_begin = source_index * k_tiles_per_device
-                        for transfer_index in range(k_transfer_count):
-                            k_begin = (
-                                source_k_begin + transfer_index * k_tiles_per_transfer
+                    for gather_group in range(gather_groups):
+                        group_k_begin = gather_group * gather_k_tiles
+                        if n_round == 0 and node_column == 0:
+                            local_device_index = device_domain.current_index()
+                            local_device_k_begin = (
+                                local_device_index * k_tiles_per_device
                             )
-                            k_end = k_begin + k_tiles_per_transfer
-                            with activation_compute_dfb.reserve() as activation_block:
-                                if node_column == 0:
+
+                            for transfer_index in range(transfers_per_group):
+                                local_k_begin = (
+                                    group_k_begin
+                                    + transfer_index * k_tiles_per_transfer
+                                )
+                                local_k_end = local_k_begin + k_tiles_per_transfer
+                                gathered_k_begin = local_device_k_begin + local_k_begin
+                                gathered_k_end = gathered_k_begin + k_tiles_per_transfer
+                                with local_activation_dfb.reserve() as activation_block:
                                     ttl.copy(
-                                        gathered_activation[
-                                            m_begin:m_end, k_begin:k_end
+                                        activation_shard[
+                                            m_begin:m_end, local_k_begin:local_k_end
                                         ],
                                         activation_block,
                                     ).wait()
+                                with local_activation_dfb.wait() as activation_block:
+                                    ttl.copy(
+                                        activation_block,
+                                        gathered_activation[
+                                            m_begin:m_end,
+                                            gathered_k_begin:gathered_k_end,
+                                        ],
+                                    ).wait()
 
-                                    def send_activation_to_row(pipe) -> None:
-                                        ttl.copy(activation_block, pipe).wait()
+                            def receive_activation_from_device(pipe) -> None:
+                                source_index = pipe.source_device_index
+                                k_begin = (
+                                    source_index * k_tiles_per_device
+                                    + group_k_begin
+                                    + transfer_index * k_tiles_per_transfer
+                                )
+                                k_end = k_begin + k_tiles_per_transfer
+                                with fabric_receive_dfb.reserve() as activation_block:
+                                    ttl.copy(pipe, activation_block).wait()
+                                with fabric_receive_dfb.wait() as activation_block:
+                                    ttl.copy(
+                                        activation_block,
+                                        gathered_activation[
+                                            m_begin:m_end, k_begin:k_end
+                                        ],
+                                    ).wait()
 
-                                    activation_row_net.if_src(send_activation_to_row)
-                                else:
+                            for transfer_index in range(transfers_per_group):
+                                activation_all_gather_net.if_dst(
+                                    receive_activation_from_device
+                                )
 
-                                    def receive_activation_from_row(pipe) -> None:
-                                        ttl.copy(pipe, activation_block).wait()
+                        for block_index in range(compute_blocks_per_group):
+                            for source_index in range(device_count):
+                                k_begin = (
+                                    source_index * k_tiles_per_device
+                                    + group_k_begin
+                                    + block_index * compute_k_tiles
+                                )
+                                k_end = k_begin + compute_k_tiles
+                                with (
+                                    activation_compute_dfb.reserve() as activation_block
+                                ):
+                                    if node_column == 0:
+                                        ttl.copy(
+                                            gathered_activation[
+                                                m_begin:m_end, k_begin:k_end
+                                            ],
+                                            activation_block,
+                                        ).wait()
 
-                                    activation_row_net.if_dst(
-                                        receive_activation_from_row
-                                    )
+                                        def send_activation_to_row(pipe) -> None:
+                                            ttl.copy(activation_block, pipe).wait()
+
+                                        activation_row_net.if_src(
+                                            send_activation_to_row
+                                        )
+                                    else:
+
+                                        def receive_activation_from_row(pipe) -> None:
+                                            ttl.copy(pipe, activation_block).wait()
+
+                                        activation_row_net.if_dst(
+                                            receive_activation_from_row
+                                        )
 
                     n_begin = (n_round * grid_columns + node_column) * n_block_tiles
                     n_end = n_begin + n_block_tiles
@@ -379,6 +359,72 @@ def make_all_gather_minimal_matmul_operation(
                             output_block,
                             output_shard[m_begin:m_end, n_begin:n_end],
                         ).wait()
+
+        @ttl.datamovement()
+        def send_activation_and_distribute_weights() -> None:
+            physical_column, physical_row = ttl.node(dims=2)
+            node_column = (
+                physical_column * (1 - column_axis) + physical_row * column_axis
+            )
+            node_row = physical_column * (1 - row_axis) + physical_row * row_axis
+            for m_round in range(m_rounds):
+                m_begin = (m_round * grid_rows + node_row) * m_block_tiles
+                m_end = m_begin + m_block_tiles
+
+                for n_round in range(n_rounds):
+                    n_begin = (n_round * grid_columns + node_column) * n_block_tiles
+                    n_end = n_begin + n_block_tiles
+                    for gather_group in range(gather_groups):
+                        group_k_begin = gather_group * gather_k_tiles
+                        if n_round == 0 and node_column == 0:
+
+                            def send_activation_to_device(pipe) -> None:
+                                for transfer_index in range(transfers_per_group):
+                                    local_k_begin = (
+                                        group_k_begin
+                                        + transfer_index * k_tiles_per_transfer
+                                    )
+                                    local_k_end = local_k_begin + k_tiles_per_transfer
+                                    with fabric_send_dfb.reserve() as activation_block:
+                                        ttl.copy(
+                                            activation_shard[
+                                                m_begin:m_end, local_k_begin:local_k_end
+                                            ],
+                                            activation_block,
+                                        ).wait()
+                                    with fabric_send_dfb.wait() as activation_block:
+                                        ttl.copy(activation_block, pipe).wait()
+
+                            activation_all_gather_net.if_src(send_activation_to_device)
+
+                        for block_index in range(compute_blocks_per_group):
+                            for source_index in range(device_count):
+                                k_begin = (
+                                    source_index * k_tiles_per_device
+                                    + group_k_begin
+                                    + block_index * compute_k_tiles
+                                )
+                                k_end = k_begin + compute_k_tiles
+                                with weight_compute_dfb.reserve() as weight_block:
+                                    if node_row == 0:
+                                        ttl.copy(
+                                            weight_shard[k_begin:k_end, n_begin:n_end],
+                                            weight_block,
+                                        ).wait()
+
+                                        def send_weight(pipe) -> None:
+                                            ttl.copy(weight_block, pipe).wait()
+
+                                        weight_column_net.if_src(send_weight)
+                                    else:
+
+                                        def receive_weight(pipe) -> None:
+                                            ttl.copy(pipe, weight_block).wait()
+
+                                        weight_column_net.if_dst(receive_weight)
+
+                    with bias_dfb.reserve() as bias_block:
+                        ttl.copy(bias_shard[0:1, n_begin:n_end], bias_block).wait()
 
         @ttl.compute()
         def compute_output_block() -> None:
@@ -392,7 +438,7 @@ def make_all_gather_minimal_matmul_operation(
                                 dtype=accumulator_block.dtype,
                             )
                         )
-                    for _k_transfer in range(device_count * k_transfer_count):
+                    for _k_block in range(device_count * compute_k_blocks_per_device):
                         with (
                             activation_compute_dfb.wait() as activation_block,
                             weight_compute_dfb.wait() as weight_block,

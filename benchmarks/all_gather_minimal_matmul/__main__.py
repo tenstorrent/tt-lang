@@ -55,6 +55,11 @@ def parse_args():
     parser.add_argument("--n-tiles-per-device", type=positive_int, default=4)
     parser.add_argument("--m-block-tiles", type=positive_int, default=1)
     parser.add_argument("--k-tiles-per-transfer", type=positive_int, default=1)
+    parser.add_argument(
+        "--k-block-tiles",
+        type=positive_int,
+        help="compute K block for both implementations; defaults to transfer size",
+    )
     parser.add_argument("--n-block-tiles", type=positive_int, default=1)
     parser.add_argument("--worker-grid", type=positive_int, nargs=2, metavar=("X", "Y"))
     parser.add_argument(
@@ -182,7 +187,7 @@ def create_workloads(
             ]
             native_config = ttnn.MinimalMatmulConfig(
                 M_block_size=config.m_block_tiles,
-                K_block_size=config.k_tiles_per_transfer,
+                K_block_size=config.compute_k_tiles,
                 N_block_size=config.n_block_tiles,
                 subblock_h=native_subblock(config)[0],
                 subblock_w=native_subblock(config)[1],
@@ -415,6 +420,7 @@ def main():
             n_tiles_per_device=arguments.n_tiles_per_device,
             m_block_tiles=arguments.m_block_tiles,
             k_tiles_per_transfer=arguments.k_tiles_per_transfer,
+            k_block_tiles=arguments.k_block_tiles,
             n_block_tiles=arguments.n_block_tiles,
             worker_grid=arguments.worker_grid,
             transpose=arguments.transpose,
@@ -451,6 +457,7 @@ def main():
             native_config={
                 "links": 1,
                 "workers_per_link": config.m_workers,
+                "compute_k_tiles": config.compute_k_tiles,
                 "subblock": list(native_subblock(config)),
                 "channel_buffers": arguments.native_channel_buffers,
                 "packer_l1_acc": True,

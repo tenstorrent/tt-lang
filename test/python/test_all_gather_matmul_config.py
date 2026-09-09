@@ -54,3 +54,29 @@ def test_invalid_worker_grid(worker_grid, error):
             n_tiles_per_device=6,
             worker_grid=worker_grid,
         )
+
+
+@pytest.mark.parametrize("k_block_tiles,expected", [(None, 2), (1, 1), (4, 4)])
+def test_independent_compute_k_block(k_block_tiles, expected):
+    config = AllGatherMinimalMatmulConfig(
+        mesh_shape=(2, 1),
+        m_tiles=2,
+        k_tiles_per_device=4,
+        n_tiles_per_device=2,
+        k_tiles_per_transfer=2,
+        k_block_tiles=k_block_tiles,
+    )
+    assert config.compute_k_tiles == expected
+    assert config.k_transfer_count == 2
+
+
+@pytest.mark.parametrize("k_block_tiles", [0, -1, 3, 8])
+def test_invalid_compute_k_block(k_block_tiles):
+    with pytest.raises(ValueError, match="k_block_tiles"):
+        AllGatherMinimalMatmulConfig(
+            mesh_shape=(2, 1),
+            m_tiles=2,
+            k_tiles_per_device=4,
+            n_tiles_per_device=2,
+            k_block_tiles=k_block_tiles,
+        )

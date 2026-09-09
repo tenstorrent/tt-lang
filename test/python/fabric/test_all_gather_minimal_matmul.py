@@ -76,15 +76,23 @@ def participant_mesh(fabric_mesh_shape, participant_mesh_shape):
 @requires_forwarding_link_indices(ttnn)
 @pytest.mark.parametrize("torch_dtype,pcc_threshold,fp32_dest_acc_en", MATMUL_DTYPES)
 @pytest.mark.parametrize(
-    "k_tiles_per_device", [1, 4], ids=["one-transfer", "four-transfers"]
+    "k_tiles_per_device,k_tiles_per_transfer,k_block_tiles",
+    [
+        pytest.param(1, 1, None, id="one-transfer"),
+        pytest.param(4, 1, None, id="four-transfers"),
+        pytest.param(4, 1, 4, id="compute-larger-than-transfer"),
+        pytest.param(4, 2, 1, id="compute-smaller-than-transfer"),
+        pytest.param(6, 2, 3, id="non-nested-block-extents"),
+    ],
 )
 @pytest.mark.parametrize("with_bias", [False, True], ids=["no-bias", "bias"])
 @pytest.mark.parametrize(
-    "m_tiles,n_tiles,worker_grid,transpose",
+    "m_tiles,n_tiles,worker_grid,transpose,output_block_tiles",
     [
-        pytest.param(2, 2, None, False, id="one-block"),
-        pytest.param(4, 6, (3, 2), False, id="repeated-blocks"),
-        pytest.param(4, 6, (2, 3), True, id="transposed-repeated-blocks"),
+        pytest.param(2, 2, None, False, 1, id="one-block"),
+        pytest.param(4, 6, (3, 2), False, 1, id="repeated-blocks"),
+        pytest.param(4, 6, (2, 3), True, 1, id="transposed-repeated-blocks"),
+        pytest.param(8, 12, (2, 3), True, 2, id="multi-tile-blocks"),
     ],
 )
 def test_all_gather_minimal_matmul(
@@ -94,11 +102,14 @@ def test_all_gather_minimal_matmul(
     pcc_threshold,
     fp32_dest_acc_en,
     k_tiles_per_device,
+    k_tiles_per_transfer,
+    k_block_tiles,
     with_bias,
     m_tiles,
     n_tiles,
     worker_grid,
     transpose,
+    output_block_tiles,
 ):
     """Cover TILE/DRAM tensors for every supported numeric dtype."""
 
@@ -106,6 +117,10 @@ def test_all_gather_minimal_matmul(
         mesh_shape=participant_mesh_shape,
         m_tiles=m_tiles,
         k_tiles_per_device=k_tiles_per_device,
+        k_tiles_per_transfer=k_tiles_per_transfer,
+        k_block_tiles=k_block_tiles,
+        m_block_tiles=output_block_tiles,
+        n_block_tiles=output_block_tiles,
         n_tiles_per_device=n_tiles,
         worker_grid=worker_grid,
         transpose=transpose,
