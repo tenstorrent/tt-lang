@@ -29,6 +29,7 @@ from utils.correctness import assert_allclose, assert_pcc
 
 REFERENCE_REVISION = "f69f924c6b4f38daa0a6f25716731f36c573dc0e"
 REFERENCE_ROOT = f"https://github.com/tenstorrent/tt-metal/blob/{REFERENCE_REVISION}"
+MATH_FIDELITIES = {"HiFi2": ttnn.MathFidelity.HiFi2, "HiFi4": ttnn.MathFidelity.HiFi4}
 
 
 def positive_int(value):
@@ -195,7 +196,7 @@ def create_workloads(
             )
             compute_config = ttnn.init_device_compute_kernel_config(
                 mesh.arch(),
-                math_fidelity=getattr(ttnn.MathFidelity, math_fidelity),
+                math_fidelity=MATH_FIDELITIES[math_fidelity],
                 math_approx_mode=False,
                 fp32_dest_acc_en=fp32_dest_acc,
                 packer_l1_acc=True,
@@ -330,7 +331,6 @@ def run_isolated_variants(arguments):
                 dir=arguments.json.resolve().parent,
             )
         )
-        directory.chmod(0o755)
         output_file = directory / "result.json"
         environment = {
             **os.environ,
