@@ -189,8 +189,7 @@ def TTL_AccumulationInitialMode : I32EnumAttr<"AccumulationInitialMode",
 //===----------------------------------------------------------------------===//
 
 // Controls whether the (approximate) exp clamps very negative inputs before
-// the SFPU evaluation. Underlying values match tt-metal's ckernel::InputClamping
-// and the TTKernel InputClamping enum so the lowering can forward by value:
+// the SFPU evaluation:
 //   None (0): no clamp -- faster, but inputs below ~-88.5 produce incorrect
 //             outputs (guaranteed negative; consider packer ReLU).
 //   ClampToNegative (1): clamp very negative inputs -- safer, slightly slower.

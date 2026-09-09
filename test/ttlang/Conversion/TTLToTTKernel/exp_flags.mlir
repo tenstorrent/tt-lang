@@ -10,14 +10,13 @@
 // CHECK-LABEL: func.func @tile_exp_flags
 // CHECK: ttkernel.tile_regs_acquire
 // CHECK: ttkernel.exp_tile_init() {{[{].*}}approx = true{{.*}}input_clamping = #ttkernel.input_clamping<none>{{.*}}scale = 1073741824 : i32{{.*[}]}}
-// CHECK: ttkernel.exp_tile({{.*}}) {{[{].*}}approx = true{{.*}}input_clamping = #ttkernel.input_clamping<none>{{.*}}iterations = 4 : i32{{.*}}scale = 1073741824 : i32{{.*[}]}}
+// CHECK: ttkernel.exp_tile({{.*}}) {{[{].*}}approx = true{{.*}}input_clamping = #ttkernel.input_clamping<none>{{.*}}scale = 1073741824 : i32{{.*[}]}}
 // CHECK: ttkernel.tile_regs_release
 func.func @tile_exp_flags(%a: !ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f32> {
   %c0 = arith.constant 0 : index
   ttkernel.tile_regs_acquire() : () -> ()
   %exp = ttl.tile_exp %a into dst[%c0] {approx = true, scale = 2.000000e+00 : f32,
-                                        input_clamping = 0 : i32,
-                                        iterations = 4 : i32}
+                                        input_clamping = 0 : i32}
       : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
   ttkernel.tile_regs_release() : () -> ()
   func.return %exp : !ttcore.tile<32x32, f32>
@@ -25,25 +24,25 @@ func.func @tile_exp_flags(%a: !ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f
 
 // -----
 
-// Two exps with identical flags share a single init; a third with different
-// flags forces a fresh init.
+// Two approximate exps with the same scale share an init; changing the scale
+// forces a fresh init and updates the runtime scale argument.
 // CHECK-LABEL: func.func @tile_exp_flag_change
-// CHECK: ttkernel.exp_tile_init
-// CHECK: ttkernel.exp_tile
+// CHECK: ttkernel.exp_tile_init() {{[{].*}}approx = true{{.*}}scale = 1073741824 : i32{{.*[}]}}
+// CHECK: ttkernel.exp_tile({{.*}}) {{[{].*}}approx = true{{.*}}scale = 1073741824 : i32{{.*[}]}}
 // CHECK-NOT: ttkernel.exp_tile_init
-// CHECK: ttkernel.exp_tile
-// CHECK: ttkernel.exp_tile_init
-// CHECK: ttkernel.exp_tile
+// CHECK: ttkernel.exp_tile({{.*}}) {{[{].*}}approx = true{{.*}}scale = 1073741824 : i32{{.*[}]}}
+// CHECK: ttkernel.exp_tile_init() {{[{].*}}approx = true{{.*}}scale = 1077936128 : i32{{.*[}]}}
+// CHECK: ttkernel.exp_tile({{.*}}) {{[{].*}}approx = true{{.*}}scale = 1077936128 : i32{{.*[}]}}
 func.func @tile_exp_flag_change(%a: !ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f32> {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %c2 = arith.constant 2 : index
   ttkernel.tile_regs_acquire() : () -> ()
-  %e0 = ttl.tile_exp %a into dst[%c0] {approx = true}
+  %e0 = ttl.tile_exp %a into dst[%c0] {approx = true, scale = 2.000000e+00 : f32}
       : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-  %e1 = ttl.tile_exp %a into dst[%c1] {approx = true}
+  %e1 = ttl.tile_exp %a into dst[%c1] {approx = true, scale = 2.000000e+00 : f32}
       : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
-  %e2 = ttl.tile_exp %a into dst[%c2] {approx = false}
+  %e2 = ttl.tile_exp %a into dst[%c2] {approx = true, scale = 3.000000e+00 : f32}
       : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
   ttkernel.tile_regs_release() : () -> ()
   func.return %e2 : !ttcore.tile<32x32, f32>

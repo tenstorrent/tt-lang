@@ -312,7 +312,6 @@ struct TTLTileTypecastToTTKernel : OpConversionPattern<TileTypecastOp> {
 ///   ttkernel.exp_tile : (tile_index, approx?, input_clamping?, iterations?,
 ///                        scale?)
 ///   ttkernel.exp_tile_init : (approx?, scale?, input_clamping?)
-/// where InputClamping shares the underlying values of ttl::InputClamping.
 struct TTLTileExpToTTKernel : OpConversionPattern<ExpTileOp> {
   using OpConversionPattern<ExpTileOp>::OpConversionPattern;
 
@@ -327,10 +326,13 @@ struct TTLTileExpToTTKernel : OpConversionPattern<ExpTileOp> {
       approxAttr = rewriter.getBoolAttr(true);
     }
     ttk::InputClampingAttr inputClampingAttr;
-    if (op.getInputClamping() != ttl::InputClamping::ClampToNegative) {
-      inputClampingAttr = ttk::InputClampingAttr::get(
-          rewriter.getContext(),
-          static_cast<ttk::InputClamping>(op.getInputClamping()));
+    switch (op.getInputClamping()) {
+    case ttl::InputClamping::None:
+      inputClampingAttr = ttk::InputClampingAttr::get(rewriter.getContext(),
+                                                      ttk::InputClamping::None);
+      break;
+    case ttl::InputClamping::ClampToNegative:
+      break;
     }
     IntegerAttr iterationsAttr;
     if (op.getIterations() != defaultExpIterations) {
