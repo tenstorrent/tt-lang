@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
+# REQUIRES: ttnn, tt-device
 # RUN: env TT_METAL_ALLOCATOR_MODE_HYBRID=1 TTLANG_COMPILER_OPTIONS=--ttl-sram-allocation-mode=per-core %python %s
 # Verify independent SRAM allocation in a process configured before device opening.
 

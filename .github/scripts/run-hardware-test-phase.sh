@@ -122,6 +122,19 @@ case "$PHASE" in
         activate_build
         .github/scripts/reset-tt-cards.sh
         ;;
+    sram-fabric-pytests)
+        activate_build
+        unset TT_VISIBLE_DEVICES
+        TT_METAL_ALLOCATOR_MODE_HYBRID=1 \
+            TTLANG_COMPILER_OPTIONS=--ttl-sram-allocation-mode=per-core \
+            timeout --signal=TERM --kill-after=15s 600 \
+            python3 -m pytest \
+                -c build/test/pytest.ini \
+                --rootdir="${REPO_ROOT}/test" \
+                test/python/fabric/test_ccl.py::test_compiler_l1_point_to_point \
+                -v -x --tb=long --timeout=120 --timeout-method=thread \
+                --junitxml=build/test/pytest-report-sram-fabric.xml
+        ;;
     fabric-pytests)
         activate_build
         unset TT_VISIBLE_DEVICES

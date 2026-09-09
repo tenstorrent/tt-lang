@@ -82,6 +82,9 @@ jobs:
         timeout-minutes: 45
         run: .github/scripts/run-exabox-hardware-phase.sh reset
 
+      - name: Per-core SRAM fabric pytests
+        run: .github/scripts/run-exabox-hardware-phase.sh sram-fabric-pytests
+
       - name: Full Galaxy fabric topology pytests
         run: .github/scripts/run-exabox-hardware-phase.sh fabric-pytests
 
