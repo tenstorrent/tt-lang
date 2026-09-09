@@ -488,10 +488,10 @@ def TTLInsertIntermediateDFBs
     producer materializes the exact consumer operand. Multiple reserve
     transactions for one result, and direct stores of one value in multiple
     blocks, materialize all relevant uses through one shared compiler DFB.
-    A direct store of a computed singleton-dimension tensor shape view
-    materializes its producer tiles through the producer-rank reserve view and
-    preserves the store's consumer-visible tensor rank when attaching the
-    compiler DFB.
+    A shape view may insert or remove singleton dimensions from a computed
+    tensor. A direct store of that view requires materialization of the
+    underlying producer operand. The checked view of the attached result
+    preserves the consumer's tensor shape.
     Application begins only after the complete plan is valid.
 
     In the standard pipeline this pass runs after
