@@ -166,9 +166,13 @@ struct DFBConflictEvidence {
 class DFBPhysicalConflictModel {
 public:
   /// Builds byte-storage conflicts for the selected ownership semantics.
+  /// With nodes supplied, retains conflicts on those nodes and any constraints
+  /// whose scope or completion cannot be proved. An empty domain has no
+  /// conflicts.
   static DFBPhysicalConflictModel
   buildStorage(const DFBConcurrentKernelLivenessAnalysis &liveness,
-               DFBStorageConflictMode mode);
+               DFBStorageConflictMode mode,
+               std::optional<ArrayRef<LaunchNodeCoord>> nodes = std::nullopt);
   bool conflicts(unsigned lhsLogicalIndex, unsigned rhsLogicalIndex) const {
     assert(lhsLogicalIndex < adjacency.size() &&
            rhsLogicalIndex < adjacency.size());

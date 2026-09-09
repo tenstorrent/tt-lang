@@ -317,12 +317,15 @@ buildDomains(operation):
         union all receiver cores
     for each resulting domain, in stable core order:
         include every storage owner that may be active on any member core
-        retain conflicts between included owners
+        build storage conflicts using completion ordering on member cores
+        add an owner conflict if any pair of their logical DFB members conflicts
         retain the common control prefix and target alignment
     allocate and validate all domains before changing IR
 ```
 
-Unknown activity retains the payload. Conflict edges remain conservative across the operation: a conflict observed on another core is not currently removed. Control records remain at fixed offsets on every core, including cores without that owner's payload, so reset and allocation-group ownership retain their existing contracts. These choices bound the current savings; independent placement does not imply an optimal domain partition or minimum total device reservation.
+`DFBPhysicalConflictModel::buildStorage` accepts an optional core domain and reuses the existing per-core lifetime analysis. Conflicts on other cores do not constrain the domain; a conflict on any member core prevents reuse throughout a multicast domain. Omitting the domain preserves whole-operation conflicts. Unknown activity retains the payload, and unknown launch domains or unproved access completion prevent reuse.
+
+Control records remain at fixed offsets on every core, including cores without that owner's payload, so reset and allocation-group ownership retain their existing contracts. These choices bound the current savings; independent placement does not imply an optimal domain partition or minimum total device reservation.
 
 The existing core-specialization pass creates one kernel instance per core. Finalized metadata supplies each instance's payload offsets and each computed PipeNet argument's destination DFB, core, and logical device. Transport finalization preserves those identities when it removes unused receiver arguments. The runtime validates domain membership, shared layouts, storage aliases, and receiver bindings before creating resources.
 
@@ -374,14 +377,14 @@ The initial scope is one compiled `ttl.operation`, including its tensor-backed a
 | Request | Implemented | Missing |
 | --- | --- | --- |
 | Late allocation and global minimum | One immutable problem per `ttl.operation`; optional exact minimum for each compiler-owned allocation domain. | Joint placement of tensor-backed and compiler-owned storage within that operation. Existing tensor addresses are already assigned. |
-| Full lockstep, ranged lockstep, and per-core allocation | Uniform mode uses one shared layout; per-core mode allocates independent domains, merging multicast receivers that require equal addresses. | Explicit user-selected partitions and core-specific conflict refinement. Multicast constraints can force larger shared domains. |
+| Full lockstep, ranged lockstep, and per-core allocation | Uniform mode uses one shared layout; per-core mode uses domain-specific completion conflicts and merges multicast receivers that require equal addresses. | Explicit user-selected partitions. Multicast constraints can force larger shared domains. |
 | Unified tensor and DFB allocation | Shared ownership, lifetime, allocation-group, and alias validation; tensor-backed DFBs avoid duplicate payload storage. | Shared physical placement. TTNN owns existing tensor allocations; the compiler currently owns only its arena. |
 | Lifetime inspection and reuse hints | Automatic completion-aware reuse and the allocation report above. | A user-facing guidance contract that preserves asynchronous completion. |
 
 ### Planned Implementation
 
 1. Lifetime guidance. Build on the allocation report. Placement preferences may change ordering but cannot remove conflicts. Reuse existing ownership-transfer operations for semantic lifetime boundaries; validate producer publication and consumer completion, including remote and external users.
-2. Allocation-domain refinement. Accept explicit core partitions, validate multicast receiver address equality, and project completion conflicts onto each domain. Keep unknown completion conservative. Measure whether finer domains reduce actual reservation enough to justify additional host allocations and kernel specialization.
+2. Allocation-domain refinement. Accept explicit core partitions, validate multicast receiver address equality, and reuse domain-specific conflict construction. Measure whether finer domains reduce actual reservation enough to justify additional host allocations and kernel specialization.
 3. Unified host placement. Describe tensor and DFB storage with common ownership, alias, lifetime, alignment, domain, and fixed/movable constraints. Preserve caller-owned addresses. Reserve the validated plan transactionally and construct tensor views over owned storage, retaining owners through completion. Reuse TTNN/TT-Metal host facilities where their contracts suffice; extend host APIs where required.
 4. Late joint placement within one operation. Extend the existing immutable allocation problem and its oracle to fixed tensor intervals and domain-specific movable storage. Assign offsets only after sizes, ownership, domains, and completion conflicts are known. Minimize uniform arena size or total domain reservation subject to each core's capacity. Optimality remains relative to the supplied requirements and fixed addresses.
 
@@ -568,7 +571,7 @@ Allocation quality excludes the fixed control prefix. For a nonempty problem, pa
 
 Regression tests compare exact placement with an independent exhaustive byte-offset oracle for all 5,184 combinations of four-region conflict graphs and three aligned extent sizes. The individual first-fit and best-fit strategies are optimal in 5,035 cases (97.13%). Across all cases, `sum(Hmin) / sum(H)` is 99.26%. Across the 149 suboptimal cases, the same payload-weighted efficiency is 78.74%, the worst-case efficiency is 66.66%, the average excess is 1.32 alignment units, and the maximum excess is three alignment units. The worst case is a four-region chain with equal extents: stable owner order uses three address levels, while alternating the chain endpoints uses two. Best-fit cannot improve this case because equal extents present the same gaps as first-fit. Exact placement finds the two-level result. The combined default reduces suboptimal cases to 68 and total excess from 196 to 80 alignment units, with approximately 99.70% aggregate efficiency and 71.43% worst-case efficiency. These synthetic cases provide a stable regression baseline rather than a workload distribution.
 
-Compiler-level tests compare 616 lifetime-derived placements with a separate exhaustive oracle, retain a fixed BF16 fragmentation case, and verify deterministic metadata. In the fixed case, decreasing placement uses 45,056 payload bytes while exact placement uses 32,768 bytes: 72.73% efficiency and 12,288 excess bytes. Device tests verify that reuse and 96 simultaneously live DFBs preserve data while using no TT-Metal descriptors.
+Compiler-level tests compare 616 lifetime-derived placements with a separate exhaustive oracle, retain a fixed BF16 fragmentation case, and verify deterministic metadata. In the fixed case, decreasing placement uses 45,056 payload bytes while exact placement uses 32,768 bytes: 72.73% efficiency and 12,288 excess bytes. Device tests verify that reuse and 96 simultaneously live DFBs preserve data while using no TT-Metal descriptors. Domain tests independently derive conflicts from per-core execution schedules and check 8,688 placements across both target alignments and all strategies, including exact minima. A two-core copy test verifies one-page temporal reuse on one core while retaining simultaneous storage on the other, across BF16/FP32 and DRAM/SRAM inputs.
 
 The two-core uneven-demand regression assigns 16 tiles to one core and one tile to the other. Uniform allocation reserves 65,664 bytes for BF16 and 131,200 bytes for FP32; per-core allocation uses 34,944 and 69,760 bytes respectively, including the common 64-byte control prefix on each core. The test checks exact output equality with DRAM and SRAM tensors and verifies backing extents through runtime reports. This measures reduced reservation for that workload, not execution speed or a universal improvement over another allocator.
 
