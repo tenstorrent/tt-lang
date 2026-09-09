@@ -5,20 +5,25 @@
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "ttlang/Dialect/Utils/OpaqueCallVerifyUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/InferIntRangeInterface.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "llvm/ADT/STLExtras.h"
 
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <utility>
 
 #define GET_OP_CLASSES
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.cpp.inc"
@@ -444,6 +449,211 @@ static ::mlir::LogicalResult verifyNocAsyncAddressMode(Operation *op,
                                    getDstBankId());
 }
 
+using ConditionAssignment = std::pair<Value, bool>;
+
+// Return the scf.if condition values and branch choices enclosing `operation`.
+static SmallVector<ConditionAssignment>
+getEnclosingIfConditions(Operation *operation) {
+  SmallVector<ConditionAssignment> conditions;
+  for (Operation *ancestor = operation->getParentOp(); ancestor;
+       ancestor = ancestor->getParentOp()) {
+    auto ifOp = dyn_cast<scf::IfOp>(ancestor);
+    if (!ifOp) {
+      continue;
+    }
+    Region *operationRegion = operation->getParentRegion();
+    bool executesInThenRegion =
+        ifOp.getThenRegion().isAncestor(operationRegion);
+    bool executesInElseRegion =
+        ifOp.getElseRegion().isAncestor(operationRegion);
+    assert(executesInThenRegion != executesInElseRegion &&
+           "operation nested in scf.if must belong to exactly one branch");
+    conditions.emplace_back(ifOp.getCondition(), executesInThenRegion);
+  }
+  return conditions;
+}
+
+// Require matching scf.if guards and keep other region-local setups inside
+// their region, where conditional entry and loop execution are shared.
+static bool useExecutionImpliesSetupExecution(Operation *setup,
+                                              Operation *use) {
+  for (Region *region = setup->getParentRegion(); region;
+       region = region->getParentRegion()) {
+    if (!isa<scf::IfOp>(region->getParentOp()) &&
+        !region->isAncestor(use->getParentRegion())) {
+      return false;
+    }
+  }
+  SmallVector<ConditionAssignment> setupConditions =
+      getEnclosingIfConditions(setup);
+  SmallVector<ConditionAssignment> useConditions =
+      getEnclosingIfConditions(use);
+  return llvm::all_of(setupConditions, [&](ConditionAssignment setupCondition) {
+    return llvm::is_contained(useConditions, setupCondition);
+  });
+}
+
+// Return false when branch conditions or execution-core metadata prove that
+// the operations cannot execute on the same worker core.
+static bool executionsMayOverlap(Operation *lhs, Operation *rhs) {
+  return !insideMutuallyExclusiveRegions(lhs, rhs) &&
+         !haveDisjointExecutionCoreRanges(lhs, rhs);
+}
+
+// Compare execution order after projecting nested operations into a common
+// enclosing block.
+static bool structurallyPrecedes(Operation *before, Operation *after) {
+  for (Operation *ancestor = before; ancestor;
+       ancestor = ancestor->getParentOp()) {
+    if (ancestor->isProperAncestor(after)) {
+      return false;
+    }
+    if (Operation *projectedAfter =
+            ancestor->getBlock()->findAncestorOpInBlock(*after)) {
+      return ancestor->isBeforeInBlock(projectedAfter);
+    }
+  }
+  return false;
+}
+
+// Prove selector equality from SSA identity, equal constants, or two omitted
+// selectors that both select the default NoC.
+static bool haveProvablySameNocSelector(Value lhs, Value rhs) {
+  if (!lhs || !rhs) {
+    return !lhs && !rhs;
+  }
+  if (lhs == rhs) {
+    return true;
+  }
+  std::optional<int64_t> lhsConstant = getConstantIntValue(lhs);
+  std::optional<int64_t> rhsConstant = getConstantIntValue(rhs);
+  return lhsConstant && rhsConstant && *lhsConstant == *rhsConstant;
+}
+
+// Return false only when two explicit constant selectors are distinct.
+static bool nocSelectorsMayAlias(Value lhs, Value rhs) {
+  if (lhs == rhs) {
+    return true;
+  }
+  if (!lhs || !rhs) {
+    return true;
+  }
+  std::optional<int64_t> lhsConstant = getConstantIntValue(lhs);
+  std::optional<int64_t> rhsConstant = getConstantIntValue(rhs);
+  return !lhsConstant || !rhsConstant || *lhsConstant == *rhsConstant;
+}
+
+// Find the last state setup proven to execute before every execution of `use`
+// on the same NoC.
+static NocAsyncWriteOnePacketSetStateOp
+findReachingWriteStateSetup(NocAsyncWriteOnePacketWithStateOp use,
+                            ArrayRef<Operation *> stateChanges) {
+  NocAsyncWriteOnePacketSetStateOp reachingSetup;
+  for (Operation *operation : stateChanges) {
+    auto setup = dyn_cast<NocAsyncWriteOnePacketSetStateOp>(operation);
+    if (!setup || !haveProvablySameNocSelector(setup.getNoc(), use.getNoc()) ||
+        !useExecutionImpliesSetupExecution(setup, use) ||
+        !structurallyPrecedes(setup, use)) {
+      continue;
+    }
+    if (!reachingSetup || structurallyPrecedes(reachingSetup, setup)) {
+      reachingSetup = setup;
+    }
+  }
+  return reachingSetup;
+}
+
+// Return whether constant scf.for bounds prove at most `limit` body executions.
+// Other loop forms and dynamic bounds do not establish this upper bound.
+static bool hasAtMostIterations(Operation *operation, uint64_t limit) {
+  auto loop = dyn_cast<scf::ForOp>(operation);
+  if (!loop) {
+    return false;
+  }
+  std::optional<APInt> tripCount = loop.getStaticTripCount();
+  return tripCount && tripCount->ule(limit);
+}
+
+// Find an operation that can overwrite the selected setup before this or a
+// later loop iteration's issue. Calls use the same effect summary as cleanup.
+static Operation *
+findInterveningWriteStateChange(NocAsyncWriteOnePacketSetStateOp reachingSetup,
+                                NocAsyncWriteOnePacketWithStateOp use,
+                                ArrayRef<Operation *> stateChanges) {
+  for (Operation *operation : stateChanges) {
+    if (operation == reachingSetup || !executionsMayOverlap(operation, use)) {
+      continue;
+    }
+    if (auto setup = dyn_cast<NocAsyncWriteOnePacketSetStateOp>(operation);
+        setup && !nocSelectorsMayAlias(setup.getNoc(), use.getNoc())) {
+      continue;
+    }
+    bool precedesUse = structurallyPrecedes(operation, use);
+    bool followsReachingSetup = structurallyPrecedes(reachingSetup, operation);
+    if (precedesUse && followsReachingSetup) {
+      return operation;
+    }
+
+    // A later write can invalidate the next iteration's issue only if another
+    // iteration exists and the loop does not restore the selected setup.
+    if (!structurallyPrecedes(use, operation)) {
+      continue;
+    }
+    for (Operation *ancestor = use->getParentOp(); ancestor;
+         ancestor = ancestor->getParentOp()) {
+      if (!isa<LoopLikeOpInterface>(ancestor) ||
+          hasAtMostIterations(ancestor, 1) ||
+          ancestor->isAncestor(reachingSetup)) {
+        continue;
+      }
+      if (ancestor->isAncestor(operation)) {
+        return operation;
+      }
+    }
+  }
+  return nullptr;
+}
+
+::mlir::LogicalResult NocAsyncWriteOnePacketWithStateOp::verify() {
+  SmallVector<Operation *> stateChanges;
+  NocCommandEffectsAnalysis commandEffects(NocCommandClass::Write);
+  if (auto function = getOperation()->getParentOfType<func::FuncOp>()) {
+    // One traversal collects both candidate setups and all possible clobbers;
+    // state-preserving issues and independent read/atomic commands are omitted.
+    function.walk<WalkOrder::PreOrder>([&](Operation *operation) {
+      if (hasAtMostIterations(operation, 0)) {
+        return WalkResult::skip();
+      }
+      if (commandEffects.getEffects(operation).mayReprogram) {
+        stateChanges.push_back(operation);
+      }
+      return WalkResult::advance();
+    });
+  }
+  NocAsyncWriteOnePacketSetStateOp setup =
+      findReachingWriteStateSetup(*this, stateChanges);
+  if (!setup) {
+    return emitOpError(
+        "requires a preceding one-packet write state setup on the same NoC "
+        "whose execution conditions cover this operation");
+  }
+  if (Operation *interveningChange =
+          findInterveningWriteStateChange(setup, *this, stateChanges)) {
+    InFlightDiagnostic diagnostic = emitOpError(
+        "cannot identify one preceding write state setup for every execution");
+    diagnostic.attachNote(interveningChange->getLoc())
+        << "this operation may replace the selected state before a later issue";
+    return failure();
+  }
+  bool setupIsPosted = setup.getPosted().value_or(false);
+  bool useIsPosted = getPosted().value_or(false);
+  if (setupIsPosted != useIsPosted) {
+    return emitOpError(
+        "posted mode must match the preceding one-packet write state setup");
+  }
+  return success();
+}
+
 ::mlir::LogicalResult TensorAccessorArgsOp::verify() {
   // Validation rules:
   // 1. If prev_args is present, cta_base and crta_base should NOT be present.
@@ -622,17 +832,47 @@ void MyLogicalYOp::inferResultRanges(
                  getIndexRange(0, std::numeric_limits<uint32_t>::max()));
 }
 
+// Return `values[index]`, or failure when `index` is outside the table bounds.
+static FailureOr<int64_t> lookupConstantTableValue(int64_t index,
+                                                   ArrayRef<int64_t> values) {
+  if (index < 0 || static_cast<std::size_t>(index) >= values.size()) {
+    return failure();
+  }
+  return values[index];
+}
+
 OpFoldResult ConstantTableLookupOp::fold(FoldAdaptor adaptor) {
   auto indexAttr = dyn_cast_or_null<IntegerAttr>(adaptor.getIndex());
   if (!indexAttr) {
     return {};
   }
-  int64_t index = indexAttr.getInt();
-  ArrayRef<int64_t> values = getValues();
-  if (index < 0 || static_cast<std::size_t>(index) >= values.size()) {
+  FailureOr<int64_t> tableValue =
+      lookupConstantTableValue(indexAttr.getInt(), getValues());
+  if (failed(tableValue)) {
     return {};
   }
-  return IntegerAttr::get(getResult().getType(), values[index]);
+  return IntegerAttr::get(getResult().getType(), *tableValue);
+}
+
+void ConstantTableLookupOp::getCanonicalizationPatterns(
+    RewritePatternSet &patterns, MLIRContext *) {
+  patterns.add(+[](ConstantTableLookupOp lookupOp,
+                   PatternRewriter &rewriter) -> LogicalResult {
+    APInt indexValue;
+    if (!matchPattern(lookupOp.getIndex(), m_ConstantInt(&indexValue))) {
+      return rewriter.notifyMatchFailure(lookupOp, "index is not constant");
+    }
+
+    FailureOr<int64_t> tableValue = lookupConstantTableValue(
+        indexValue.getSExtValue(), lookupOp.getValues());
+    if (failed(tableValue)) {
+      return rewriter.notifyMatchFailure(lookupOp,
+                                         "index is outside table bounds");
+    }
+
+    rewriter.replaceOpWithNewOp<arith::ConstantIndexOp>(lookupOp, *tableValue);
+    return success();
+  });
 }
 
 LogicalResult ConstantTableLookupOp::verify() {
@@ -692,12 +932,10 @@ void NocAsyncWriteBarrierOp::getCanonicalizationPatterns(
           return success();
         }
       }
-      if (mlir::isa<NocAsyncWriteOp, NocAsyncWriteTileOp,
-                    NocAsyncWriteOnePacketWithTridOp, NocAsyncWriteMulticastOp,
-                    NocAsyncWriteMulticastOnePacketOp,
-                    NocAsyncWriteMulticastLoopbackSrcOp, NocInlineDwWriteOp>(
-              it) ||
-          it->getNumRegions() > 0) {
+      bool issuesOrConfiguresWrite =
+          accessesNocCommand(it, NocCommandClass::Write) &&
+          !mlir::isa<NocAsyncWriteBarrierOp, NocAsyncWritesFlushedOp>(it);
+      if (issuesOrConfiguresWrite || it->getNumRegions() > 0) {
         break;
       }
     }

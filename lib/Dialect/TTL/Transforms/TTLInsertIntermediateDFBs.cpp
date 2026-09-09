@@ -101,7 +101,8 @@ static void cloneComputeBodyWithMaterializedStores(
       auto materializedStore = TileStoreOp::create(
           builder, clonedStore.getLoc(), clonedStore.getTile(),
           output.reserve.getResult(), clonedStore.getIndices(),
-          clonedStore.getDstIndex());
+          clonedStore.getDstIndex(), DFBTileStoreKind::Producer,
+          /*row_prefix=*/nullptr);
       materializedStore->setAttrs(clonedStore->getAttrs());
       materializedStore.setStoreKind(DFBTileStoreKind::Producer);
       ++output.storeCount;

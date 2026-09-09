@@ -806,6 +806,39 @@ verifyReceiverReservationSequence(const ReceiverAddressSequenceProof &sequence,
 LogicalResult PipeGraph::assignReceiverAddressSequences(
     ModuleOp mod, const PipeTransferIndex &transferIndex,
     PipeGraphAnalysisState &analysisState) {
+  // Address recurrence and execution count are independent: an invariant
+  // receiver address may still be posted repeatedly.
+  struct ReceiverEndpointExecutionInfo {
+    LaunchExecutionLocation location;
+    std::optional<std::uint64_t> executionCount;
+  };
+  // Resolve `endpoint`'s receiver location and total post count. An unresolved
+  // location fails; a valid location with an unknown count remains
+  // conservative.
+  auto getEndpointExecutionInfo = [&](const PipeReceiverEndpoint &endpoint)
+      -> FailureOr<ReceiverEndpointExecutionInfo> {
+    auto postOp = cast<PipeTransferPostOp>(endpoint.postOp);
+    PipeTransferCreateOp createOp =
+        transferIndex.getTransferCreate(postOp.getOperation());
+    FailureOr<PipeReference> pipeRef =
+        getPipeReference(postOp, createOp.getPipe());
+    assert(succeeded(pipeRef) &&
+           "pipe transfer graph validated pipe references");
+    const PipeTransferNode &transferNode =
+        getPipeTransferNode(endpoint.transferNode);
+    FailureOr<LaunchExecutionLocation> maybeLocation =
+        getPipeGraphExecutionLocation(
+            postOp.getOperation(), getLaunchNodeCoord(endpoint.receiver),
+            transferNode.deviceTransfer, PipeRole::Destination);
+    if (failed(maybeLocation)) {
+      return failure();
+    }
+    return ReceiverEndpointExecutionInfo{
+        *maybeLocation, getConcreteTransferExecutionCount(
+                            postOp.getOperation(), *maybeLocation, *pipeRef,
+                            endpoint.postRecordIndex, analysisState)};
+  };
+
   ReceiverEndpointsByDFB endpointsByReceiverDFB =
       collectReceiverEndpointsByDFB(pipeReceiverEndpoints);
   llvm::DenseSet<PipeReceiverDFBKey> invariantAddressReceiverDFBs;
@@ -822,7 +855,13 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
       invariantAddressReceiverDFBs.insert(receiverDFB);
       for (PipeReceiverEndpointId endpointId : endpoints) {
         PipeReceiverEndpoint &endpoint = pipeReceiverEndpoints[endpointId];
+        FailureOr<ReceiverEndpointExecutionInfo> maybeExecutionInfo =
+            getEndpointExecutionInfo(endpoint);
+        if (failed(maybeExecutionInfo)) {
+          return failure();
+        }
         ReceiverAddressSequenceProof sequence;
+        sequence.executionCount = maybeExecutionInfo->executionCount;
         sequence.recurrence = ReceiverAddressRecurrence{
             /*initialSlot=*/0,
             /*repeatStride=*/0,
@@ -951,15 +990,13 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
       if (invariantAddressReceiverDFBs.contains(receiverDFB)) {
         continue;
       }
-      FailureOr<LaunchExecutionLocation> maybeLocation =
-          getPipeGraphExecutionLocation(
-              postOp.getOperation(), getLaunchNodeCoord(receiver),
-              transferNode.deviceTransfer, PipeRole::Destination);
-      if (failed(maybeLocation)) {
+      FailureOr<ReceiverEndpointExecutionInfo> maybeExecutionInfo =
+          getEndpointExecutionInfo(endpoint);
+      if (failed(maybeExecutionInfo)) {
         return failure();
       }
       ActivePipeNetExecution activeExecution = evaluateActivePipeNetExecution(
-          activeRecords, *maybeLocation, resolveRecordLoop);
+          activeRecords, maybeExecutionInfo->location, resolveRecordLoop);
       if (!activeExecution.mayExecute) {
         continue;
       }
@@ -994,12 +1031,8 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
       } else {
         slot = reserveIt->second;
       }
-      std::optional<std::uint64_t> maybeExecutionCount =
-          getConcreteTransferExecutionCount(postOp.getOperation(),
-                                            *maybeLocation, *pipeRef,
-                                            activeRecordIndex, analysisState);
       endpointAssignment.initialSlot = slot;
-      endpointAssignment.executionCount = maybeExecutionCount;
+      endpointAssignment.executionCount = maybeExecutionInfo->executionCount;
     }
     return success();
   };

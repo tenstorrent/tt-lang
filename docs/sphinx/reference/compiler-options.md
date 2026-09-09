@@ -30,7 +30,7 @@ python my_kernel.py --no-ttl-maximize-dst
 | `--ttl-reuse-user-dfbs` / `--no-ttl-reuse-user-dfbs` | enabled | Reuse physical DFB indices and compiler-managed storage when concurrent-kernel liveness proves that compatible lifetimes do not overlap. Disabling compacts provisional user indices without introducing user-DFB sharing and assigns each physical descriptor separate storage. |
 | `--ttl-dfb-exact-coloring-search-limit N` | `1000000` | Examine at most `N` states during deterministic exact DFB allocation when order-dependent first-fit prevents acceptance or exceeds the provisional threshold after a conservative PipeNet reservation. This bounds compile time; reaching the limit reports an inconclusive result only when authoritative acceptance requires the search result. |
 | `--ttl-unsafe-assume-dfb-allocation-groups` / `--no-ttl-unsafe-assume-dfb-allocation-groups` | disabled | Trust explicit `allocation_group=` handoffs that the compiler cannot prove. Accepted groups emit warnings and `ttl.assumed_dfb_allocation_groups` metadata. Descriptor, storage, static configuration, capacity, and L1 checks remain enforced. |
-| `--ttl-specialize-cores` / `--no-ttl-specialize-cores` | disabled | Clone each TTKernel function whose control flow branches on a core coordinate once per launch coordinate (`ttkernel-specialize-cores`), replacing `my_logical_x_` / `my_logical_y_` with constants and tagging clones with `ttl.core_coord` for per-core dispatch. Opt-in. |
+| `--ttl-specialize-cores` / `--no-ttl-specialize-cores` | disabled | Clone each TTKernel function whose structured branch or loop control depends on a core coordinate once per launch coordinate (`ttkernel-specialize-cores`), replacing `my_logical_x_` / `my_logical_y_` with constants and tagging clones with `ttl.core_coord` for per-core dispatch. Opt-in. |
 
 **f32 accumulation precision:** `dst` keeps the accumulator in the DST register
 but feeds it back through SRCA on each step, which truncates to tf32 (10-bit
@@ -186,13 +186,14 @@ The pipeline runs these passes and subpasses in order:
 - `ttkernel-insert-l1-accumulation` -- insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
 - `ttkernel-combine-pack-tiles` -- combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*
 - Canonicalization and CSE cleanup
-- `ttkernel-specialize-and-annotate-dfb-use` -- `ttkernel-specialize-cores`, `canonicalize`, `cse`, then `ttkernel-annotate-dfb-use` *(only if `specialize-cores=true`)*
-- *(if `lower-to-emitc=true`)* `lower-affine`, `convert-ttkernel-to-emitc`, `emitc-form-expressions`
+- `ttkernel-specialize-and-annotate-dfb-use` -- `ttkernel-specialize-cores`, `canonicalize`, `cse`, `ttkernel-batch-static-pipenet-receives`, `ttkernel-unroll-static-pipenet-record-loops`, `lower-affine`, `canonicalize`, `cse`, `ttkernel-cleanup`, `ttkernel-finalize-tensor-runtime-args`, `canonicalize`, then `ttkernel-annotate-dfb-use` *(only if `specialize-cores=true`)*
+- Without core specialization, `ttkernel-cleanup-and-finalize-runtime-args` runs `ttkernel-batch-static-pipenet-receives`, `ttkernel-unroll-static-pipenet-record-loops`, `lower-affine`, `canonicalize`, `cse`, `ttkernel-cleanup`, `ttkernel-finalize-tensor-runtime-args`, then `canonicalize`. Python, the full C++ pipeline, and the standalone specialization pipeline use this same implementation.
+- *(if `lower-to-emitc=true`)* `convert-ttkernel-to-emitc`, `emitc-form-expressions`
 
 ### Individual Pass Options
 
-Each pass can also be run standalone for testing. Only passes with configurable
-options are listed; the remaining passes have no options.
+The following references describe configurable passes and selected passes that
+are useful to run independently for testing.
 
 #### `ttl-form-accumulation-scopes`
 
@@ -375,18 +376,23 @@ ttlang-opt input.mlir -p 'ttl-dump-cb-flow-graph{output="/tmp/cb_graph.json"}'
 
 #### `ttkernel-specialize-cores`
 
-Clone TTKernel functions that branch on a core coordinate once per launch
-coordinate. Requires a module-level `ttl.launch_grid` attribute (an i64 array
-of length 2 with positive entries). Missing or malformed `ttl.launch_grid` is
-a hard error. A valid single-core grid (product <= 1) skips specialization.
+Clone TTKernel functions whose control flow depends on a core coordinate once
+per launch coordinate. Requires a module-level `ttl.launch_grid` attribute (an
+i64 array of length 2 with positive entries). Missing or malformed
+`ttl.launch_grid` is a hard error. A valid single-core grid (product <= 1)
+skips specialization.
 
-Only `scf.if` conditions derived from `ttkernel.my_logical_x_` /
-`ttkernel.my_logical_y_` trigger cloning. Functions with symbol uses (for
-example `func.call` targets) are left unspecialized with a warning so erasing
-the original does not leave dangling `SymbolRefAttr`s; unrelated functions in
-the module are still specialized. Each clone replaces coordinate reads with
-`arith.constant`s and is tagged with `ttl.core_coord` for runtime dispatch.
-Downstream `canonicalize` / `cse` fold the now-constant branches.
+Any structured region branch selector, repetition condition, or loop bound
+derived from `ttkernel.my_logical_x_` / `ttkernel.my_logical_y_` triggers
+cloning. Covered SCF operations include `scf.if`, `scf.index_switch`,
+`scf.for`, and `scf.while`.
+Functions with symbol uses (for example `func.call` targets) are left
+unspecialized with a warning so erasing the original does not leave dangling
+`SymbolRefAttr`s; unrelated functions in the module are still specialized.
+Each clone replaces coordinate reads with `arith.constant`s and is tagged with
+`ttl.core_coord` for runtime dispatch. Downstream `canonicalize` / `cse` fold
+the now-constant conditions and loop bounds. Static local PipeNet record loops
+are then fully unrolled so record-table lookups can fold to constants.
 `ttkernel-annotate-dfb-use` then records surviving DFB compile-time arguments,
 synchronized resets, and external-call dependencies on each specialized
 function. Debug prints of a DFB remain only on cores that still have a
@@ -401,4 +407,53 @@ registered `ttkernel-specialize-and-annotate-dfb-use` sub-pipeline:
 ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{specialize-cores=true lower-to-emitc=true}'
 # Or stand-alone:
 ttlang-opt input.mlir -p 'builtin.module(ttkernel-specialize-and-annotate-dfb-use)'
+```
+
+#### `ttkernel-cleanup-and-finalize-runtime-args`
+
+This registered pipeline performs receive batching, record-loop unrolling,
+affine lowering, canonicalization and CSE, TTKernel cleanup, runtime-argument finalization, and
+final canonicalization. The specialization pipeline includes this sequence
+after cloning and coordinate folding. Python uses the registered pipelines in
+both modes, before signpost lowering to EmitC. Affine index arithmetic is
+lowered before canonicalization so newly exposed constants are folded too.
+
+```bash
+ttlang-opt input.mlir -p 'builtin.module(ttkernel-cleanup-and-finalize-runtime-args)'
+```
+
+#### `ttkernel-cleanup`
+
+Removes redundant barriers and configures reusable one-packet NoC write state
+when intervening operations preserve that state. It runs after record-loop
+expansion and endpoint simplification so newly exposed constant destinations
+receive the same optimizations as straight-line transfers during TTL lowering.
+The module-scoped pass inspects callees without concurrent function rewrites.
+
+#### `ttkernel-batch-static-pipenet-receives`
+
+Posts all receives in a static local record loop before waiting for individual
+payloads, provided TTL analysis proves that their distinct destination slots
+fit initially empty DFB storage. Completion waits and publication remain in
+record order. Repeated sequences, unknown counts, receiver-published addresses,
+and additional effects retain sequential execution. This pass runs before
+record-loop unrolling in both core-specialization configurations.
+
+#### `ttkernel-unroll-static-pipenet-record-loops`
+
+PipeNet lowering generates loops over the source or destination records selected
+for a worker. It marks bounded local-record loops as eligible for unrolling;
+loops that scan the complete fallback table remain rolled to limit code size.
+
+This pass replaces each marked loop with its individual iterations once its
+bounds are constant. This exposes each selected record index to canonicalization,
+which replaces immutable record-table lookups with constants. Dynamic loop
+bounds remain unchanged, and their temporary compiler marker is removed.
+
+The full TTL-to-TTKernel pipeline runs this pass even when core specialization
+is disabled so the marker never reaches code generation. In that case, loops
+whose bounds still depend on runtime coordinates remain loops.
+
+```bash
+ttlang-opt input.mlir -p 'builtin.module(func.func(ttkernel-unroll-static-pipenet-record-loops),canonicalize)'
 ```

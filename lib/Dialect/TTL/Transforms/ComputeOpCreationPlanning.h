@@ -371,6 +371,15 @@ struct OutputPublicationPlan {
   }
 };
 
+/// Tensor representation for one created `ComputeOp` output.
+struct ComputeOutputPlan {
+  /// Tensor type of the compute result attached to the associated DFB.
+  RankedTensorType tensorType;
+
+  /// Map from compute iteration indices to this output's view coordinates.
+  AffineMap indexingMap;
+};
+
 /// Immutable proof for one straight-line replacement of a waited DFB block.
 ///
 /// The initial contract accepts one complete one-block consumer acquisition
@@ -613,6 +622,9 @@ struct ComputeOpCreationPlan {
   /// Reserve, store, and publication transactions affected by creation.
   OutputPublicationPlan outputs;
 
+  /// Created output representations in `outputs.dfbs` order.
+  SmallVector<ComputeOutputPlan> outputPlans;
+
   /// Consumer-owned DFB replacements proved before IR mutation.
   SmallVector<WaitedDFBMutationPlan> waitedMutations;
 
@@ -670,13 +682,17 @@ struct PassthroughStorePlan {
   /// DFB associated with `outputView`.
   Value outputDFB;
 
-  /// Tensor type shared by the passthrough input and result.
-  RankedTensorType tensorType;
+  /// Formal output type produced by the passthrough compute.
+  RankedTensorType computeOutputTensorType;
 
-  /// Exact tile type shared by the passthrough input and result.
-  ttcore::TileType tileType;
+  /// Tile read into DST by the passthrough compute.
+  ttcore::TileType inputTileType;
 
-  /// Identity iteration used by the passthrough compute.
+  /// Tile type used by the output dataflow buffer.
+  ttcore::TileType outputTileType;
+
+  /// Input-driven iteration and destination indexing for the passthrough
+  /// compute.
   ComputeIterationPlan iteration;
 
   /// Associations whose results must be replaced by the compute result.

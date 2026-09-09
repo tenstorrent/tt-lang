@@ -5,7 +5,8 @@
 # REQUIRES: ttnn, tt-device
 # RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
-# Reject receiver-address publication anywhere in the generated C++.
+# Permit only the expected completion publication; reject any additional inline
+# word write that would publish a receiver address.
 # RUN: FileCheck %s --check-prefix=CHECK-CPP --implicit-check-not=noc0.inline_dw_write < %t.output
 
 """
@@ -89,18 +90,25 @@ def unicast_pipe(inp, out):
 # C++ Output Checks (unicast pipe)
 # =============================================================================
 
-# Sender side: wait for receiver readiness, compute the receiver DFB address,
-# then write the payload and signal completion.
+# Sender side: compute the receiver DFB address, preconfigure the payload write,
+# wait for receiver readiness, then issue ordered posted payload and completion
+# writes before flushing the source command stream.
 # CHECK-CPP: === dm_read kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # The receiver DFB base is loop-invariant and may be materialized before the
 # synchronization sequence.
 # CHECK-CPP-DAG: get_common_arg_val<uint32_t>(
+# CHECK-CPP: noc_async_write_one_packet_set_state<true>(
 # CHECK-CPP: experimental::semaphore_wait(
 # CHECK-CPP: noc_semaphore_set(
-# CHECK-CPP: noc0.async_write(
-# CHECK-CPP: noc0.async_write_barrier();
-# CHECK-CPP: noc_semaphore_inc(
+# CHECK-CPP-NOT: noc0.async_write(
+# CHECK-CPP: noc_async_write_one_packet_with_state<true>(
+# CHECK-CPP-NOT: noc0.async_write_barrier();
+# CHECK-CPP-NOT: noc_semaphore_inc(
+# CHECK-CPP: noc0.inline_dw_write<NocOptions::INLINE_L1 | NocOptions::POSTED>(
+# CHECK-CPP-NOT: noc0.async_write_barrier();
+# CHECK-CPP-NOT: noc_semaphore_inc(
+# CHECK-CPP: noc0.async_writes_flushed<NocOptions::POSTED>();
 
 # Receiver side: signal readiness without publishing an address, then wait for
 # sender completion.
