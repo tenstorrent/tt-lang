@@ -9,7 +9,7 @@ from __future__ import annotations
 import warnings
 from typing import List, Optional, Tuple, Union
 
-from ttl.dialects import arith, ttl
+from ttl.dialects import arith, tensor, ttl
 from ttl.ir import (
     Context,
     F32Type,
@@ -1156,7 +1156,7 @@ def broadcast(input: TensorBlock, *, dims: List[int], shape) -> TensorBlock:
             f"shape size {len(shape_list)} does not match input rank {rank}"
         )
 
-    norm_dims = set()
+    norm_dims: set[int] = set()
     for d in dims:
         if d < -rank or d >= rank:
             raise ValueError(
@@ -1186,6 +1186,127 @@ def broadcast(input: TensorBlock, *, dims: List[int], shape) -> TensorBlock:
     dims_attr = DenseI64ArrayAttr.get(list(dims))
     shape_attr = DenseI64ArrayAttr.get(shape_list)
     return ttl.block_broadcast(result_type, input, dims_attr, shape_attr)
+
+
+def _singleton_reassociation(
+    expanded_rank: int, singleton_dims: set[int]
+) -> List[List[int]]:
+    """Group inserted or removed axes with the surviving dimensions."""
+    retained = [axis for axis in range(expanded_rank) if axis not in singleton_dims]
+    if not retained:
+        return []
+    boundaries = [0, *retained[1:], expanded_rank]
+    return [list(range(start, end)) for start, end in zip(boundaries, boundaries[1:])]
+
+
+@syntax("squeeze")
+def squeeze(input: TensorBlock, *, dims: List[int]) -> TensorBlock:
+    """Remove size-one dimensions from a block without moving its tiles.
+
+    Every entry in ``dims`` is interpreted relative to the input rank and must
+    select a dimension whose size is one. Positive and negative indices may be
+    mixed, and repeated indices remove the selected dimension only once.
+
+    Args:
+        input: Input tensor block.
+        dims: Dimensions to remove.
+
+    Returns:
+        A view with the selected dimensions removed.
+    """
+    input_type = input.type
+    if not isinstance(input_type, RankedTensorType):
+        raise ValueError(f"squeeze input must be a ranked tensor, got {input_type}")
+
+    input_shape = list(input_type.shape)
+    rank = len(input_shape)
+    norm_dims = set()
+    for dim in dims:
+        if dim < -rank or dim >= rank:
+            raise ValueError(
+                f"Cannot squeeze dimension {dim}: block has shape "
+                f"{tuple(input_shape)} with only {rank} dimensions"
+            )
+        normalized = dim % rank
+        if input_shape[normalized] != 1:
+            raise ValueError(
+                f"Cannot squeeze dimension {dim}: grid size is "
+                f"{input_shape[normalized]}, expected 1"
+            )
+        norm_dims.add(normalized)
+
+    if not norm_dims:
+        return input
+
+    if not input_type.has_static_shape:
+        raise ValueError(
+            f"squeeze requires a static block shape, got {tuple(input_shape)}"
+        )
+
+    result_shape = [
+        size for index, size in enumerate(input_shape) if index not in norm_dims
+    ]
+    result_type = RankedTensorType.get(
+        result_shape, input_type.element_type, input_type.encoding
+    )
+    reassociation = _singleton_reassociation(rank, norm_dims)
+    return tensor.CollapseShapeOp(result_type, input, reassociation).result
+
+
+@syntax("unsqueeze")
+def unsqueeze(input: TensorBlock, *, dims: List[int]) -> TensorBlock:
+    """Insert size-one dimensions into a block without moving its tiles.
+
+    Every entry in ``dims`` refers to a position in the resulting shape.
+    Positive and negative indices may be mixed. Duplicate positions are
+    rejected because each result position can hold only one inserted axis.
+
+    Args:
+        input: Input tensor block.
+        dims: Positions at which to insert size-one dimensions.
+
+    Returns:
+        A view with size-one dimensions inserted at the selected positions.
+    """
+    input_type = input.type
+    if not isinstance(input_type, RankedTensorType):
+        raise ValueError(f"unsqueeze input must be a ranked tensor, got {input_type}")
+
+    input_shape = list(input_type.shape)
+    result_rank = len(input_shape) + len(dims)
+    norm_dims: set[int] = set()
+    for dim in dims:
+        if dim < -result_rank or dim >= result_rank:
+            raise ValueError(
+                f"Cannot unsqueeze at dimension {dim}: resulting shape would "
+                f"have {result_rank} dimensions"
+            )
+        normalized = dim % result_rank
+        if normalized in norm_dims:
+            raise ValueError(
+                f"Cannot unsqueeze duplicate dimension {dim}: result position "
+                f"{normalized} is already selected"
+            )
+        norm_dims.add(normalized)
+
+    if not norm_dims:
+        return input
+
+    if not input_type.has_static_shape:
+        raise ValueError(
+            f"unsqueeze requires a static block shape, got {tuple(input_shape)}"
+        )
+
+    result_shape = input_shape
+    for dim in sorted(norm_dims):
+        result_shape.insert(dim, 1)
+    result_type = RankedTensorType.get(
+        result_shape, input_type.element_type, input_type.encoding
+    )
+    reassociation = _singleton_reassociation(result_rank, norm_dims)
+    return tensor.ExpandShapeOp(
+        result_type, input, reassociation, [], result_shape
+    ).result
 
 
 def _warn_if_reduce_shape_omitted(shape) -> None:

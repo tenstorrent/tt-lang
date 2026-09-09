@@ -10,8 +10,9 @@ bodies work whether or not the attribute exists on the module. These tests
 cover the other half: resolution performed by Python itself, when a kernel
 module imports, aliases, or introspects an operation at module scope.
 
-Specification revision 0.16 places ``broadcast``, ``transpose`` and ``fill``
-under ``ttl.block``, and the reducers under ``ttl.math``.
+Specification revision 0.17 places ``broadcast``, ``transpose``, ``fill``,
+``squeeze`` and ``unsqueeze`` under ``ttl.block``, and the reducers under
+``ttl.math``.
 """
 
 import inspect
@@ -22,12 +23,12 @@ from ttl import operators
 
 # Operations the specification places under ttl.block and the compiler
 # implements.
-IMPLEMENTED = ["broadcast", "fill", "transpose"]
+IMPLEMENTED = ["broadcast", "fill", "squeeze", "transpose", "unsqueeze"]
 
 # Operations the specification places under ttl.block that the compiler does
 # not implement. They are absent rather than bound to a stub, so that a kernel
 # using one fails at the call site instead of at run time.
-UNIMPLEMENTED = ["mask", "mask_posinf", "squeeze", "unsqueeze", "where"]
+UNIMPLEMENTED = ["mask", "mask_posinf", "where"]
 
 
 def test_block_is_exposed_on_the_package():
@@ -62,6 +63,13 @@ def test_fill_exposes_specified_parameters():
 
 def test_fill_dtype_is_optional():
     assert inspect.signature(ttl.block.fill).parameters["dtype"].default is None
+
+
+@pytest.mark.parametrize("name", ["squeeze", "unsqueeze"])
+def test_shape_view_exposes_keyword_only_dims(name):
+    parameters = inspect.signature(getattr(ttl.block, name)).parameters
+    assert list(parameters) == ["input", "dims"]
+    assert parameters["dims"].kind is inspect.Parameter.KEYWORD_ONLY
 
 
 @pytest.mark.parametrize("name", UNIMPLEMENTED)
