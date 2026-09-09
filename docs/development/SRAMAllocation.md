@@ -323,7 +323,7 @@ buildDomains(operation):
     allocate and validate all domains before changing IR
 ```
 
-`DFBPhysicalConflictModel::buildStorage` accepts an optional core domain and reuses the existing per-core lifetime analysis. Conflicts on other cores do not constrain the domain; a conflict on any member core prevents reuse throughout a multicast domain. Omitting the domain preserves whole-operation conflicts. Unknown activity retains the payload, and unknown launch domains or unproved access completion prevent reuse.
+Buffers can share storage only when the compiler proves that their lifetimes do not overlap on any core sharing the allocation layout. Overlap on cores outside that group does not prevent reuse. If activity or completion is uncertain, the compiler retains potentially needed storage and prevents reuse wherever it cannot prove that sharing is safe.
 
 Control records remain at fixed offsets on every core, including cores without that owner's payload, so reset and allocation-group ownership retain their existing contracts. These choices bound the current savings; independent placement does not imply an optimal domain partition or minimum total device reservation.
 
