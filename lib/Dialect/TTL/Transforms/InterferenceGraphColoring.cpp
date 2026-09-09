@@ -48,10 +48,10 @@ struct FixedColorCountSearchResult {
   llvm::SmallVector<unsigned> colors;
 };
 
-/// Separates candidate groups that have no conflicts between them. Independent
-/// groups can reuse the same resource slots and are cheaper to search alone.
-static llvm::SmallVector<llvm::SmallVector<unsigned>>
-getConnectedComponents(const InterferenceGraph &graph) {
+} // namespace
+
+llvm::SmallVector<llvm::SmallVector<unsigned>>
+getInterferenceGraphConnectedComponents(const InterferenceGraph &graph) {
   llvm::SmallVector<llvm::SmallVector<unsigned>> components;
   llvm::BitVector visited(graph.size());
   for (unsigned root = 0; root < graph.size(); ++root) {
@@ -79,6 +79,8 @@ getConnectedComponents(const InterferenceGraph &graph) {
   }
   return components;
 }
+
+namespace {
 
 /// Finds a pairwise-conflicting set whose size proves a required slot count.
 ///
@@ -566,7 +568,8 @@ colorInterferenceGraphWithColorLimitExactly(const InterferenceGraph &graph,
 
   result.colors.assign(graph.size(), 0);
   ExactColoringSearchBudget searchBudget(searchStateLimit);
-  for (llvm::ArrayRef<unsigned> component : getConnectedComponents(graph)) {
+  for (llvm::ArrayRef<unsigned> component :
+       getInterferenceGraphConnectedComponents(graph)) {
     // More pairwise-conflicting candidates than available slots prove failure
     // without backtracking.
     if (getPairwiseConflictLowerBound(graph, component) > colorLimit) {
@@ -663,7 +666,8 @@ colorInterferenceGraphExactly(const InterferenceGraph &graph,
 
   ExactColoringSearchBudget searchBudget(searchStateLimit);
 
-  for (llvm::ArrayRef<unsigned> component : getConnectedComponents(graph)) {
+  for (llvm::ArrayRef<unsigned> component :
+       getInterferenceGraphConnectedComponents(graph)) {
     unsigned pairwiseConflictLowerBound =
         getPairwiseConflictLowerBound(graph, component);
     result.pairwiseConflictLowerBound =

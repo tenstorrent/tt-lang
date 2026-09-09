@@ -8,6 +8,9 @@
 #include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
+#include "ttlang/Dialect/TTL/IR/TTL.h"
+#include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/Transforms/ComputeTarget.h"
 
 #include "mlir/Conversion/ArithToEmitC/ArithToEmitC.h"
 #include "mlir/Conversion/MemRefToEmitC/MemRefToEmitC.h"
@@ -18,6 +21,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Value.h"
@@ -32,11 +36,14 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/bit.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/xxhash.h"
 
 #include <array>
 #include <cmath>
 #include <functional>
+#include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <type_traits>
@@ -103,6 +110,191 @@ static std::string datatypeToDataformatStr(ttcore::DataType dtype) {
     break;
   }
   return expression;
+}
+
+static bool usesCompilerL1(Operation *operation) {
+  auto module = operation->getParentOfType<ModuleOp>();
+  auto model = module->getAttrOfType<StringAttr>(ttl::kMemoryModelAttrName);
+  return model && model.getValue() == ttl::kCompilerL1MemoryModel;
+}
+
+struct SRAMAllocation {
+  int64_t pageSizeBytes;
+  int64_t pagesPerBlock;
+  int64_t blockCount;
+  int64_t storageCapacityPages;
+  int64_t stateOffset;
+  int64_t tensorIndex;
+  Type elementType;
+  std::string payloadOffsetExpression;
+};
+
+static FailureOr<SRAMAllocation> parseSRAMAllocation(Attribute attribute) {
+  auto dictionary = dyn_cast<DictionaryAttr>(attribute);
+  auto pageSize =
+      dictionary ? dictionary.getAs<IntegerAttr>("page_size") : IntegerAttr();
+  auto pagesPerBlock =
+      dictionary ? dictionary.getAs<IntegerAttr>("num_tiles") : IntegerAttr();
+  auto blockCount =
+      dictionary ? dictionary.getAs<IntegerAttr>("block_count") : IntegerAttr();
+  auto storageCapacity =
+      dictionary ? dictionary.getAs<IntegerAttr>("storage_capacity_pages")
+                 : IntegerAttr();
+  auto stateOffset =
+      dictionary ? dictionary.getAs<IntegerAttr>("l1_offset") : IntegerAttr();
+  auto payloadAddress = dictionary
+                            ? dictionary.getAs<IntegerAttr>("l1_payload_offset")
+                            : IntegerAttr();
+  auto storageSegments = dictionary
+                             ? dictionary.getAs<ArrayAttr>("storage_segments")
+                             : ArrayAttr();
+  if (!pageSize || !pagesPerBlock || !blockCount || !storageCapacity ||
+      !stateOffset || (!payloadAddress && !storageSegments)) {
+    return failure();
+  }
+
+  ttl::TensorBackingAttr tensorBacking;
+  if (storageSegments) {
+    if (storageSegments.size() != 1) {
+      return failure();
+    }
+    auto segment = dyn_cast<DictionaryAttr>(storageSegments[0]);
+    tensorBacking =
+        segment ? segment.getAs<ttl::TensorBackingAttr>("tensor_backing")
+                : ttl::TensorBackingAttr();
+    if (!tensorBacking) {
+      return failure();
+    }
+  }
+  if (static_cast<bool>(payloadAddress) == static_cast<bool>(tensorBacking)) {
+    return failure();
+  }
+
+  constexpr uint64_t maxAddress = std::numeric_limits<uint32_t>::max();
+  int64_t stateOffsetValue = stateOffset.getInt();
+  int64_t payloadAddressValue =
+      payloadAddress ? payloadAddress.getInt() : stateOffsetValue;
+  int64_t storageCapacityValue = storageCapacity.getInt();
+  if (pageSize.getInt() <= 0 || pagesPerBlock.getInt() <= 0 ||
+      blockCount.getInt() <= 0 || stateOffsetValue < 0 ||
+      storageCapacityValue <= 0 ||
+      static_cast<uint64_t>(pageSize.getInt()) > maxAddress ||
+      static_cast<uint64_t>(pagesPerBlock.getInt()) > maxAddress ||
+      static_cast<uint64_t>(blockCount.getInt()) > maxAddress ||
+      static_cast<uint64_t>(stateOffsetValue) > maxAddress ||
+      (payloadAddress && payloadAddressValue < stateOffsetValue) ||
+      static_cast<uint64_t>(payloadAddressValue - stateOffsetValue) >
+          maxAddress) {
+    return failure();
+  }
+  std::optional<uint64_t> logicalCapacity =
+      llvm::checkedMulUnsigned(static_cast<uint64_t>(pagesPerBlock.getInt()),
+                               static_cast<uint64_t>(blockCount.getInt()));
+  if (!logicalCapacity ||
+      static_cast<uint64_t>(storageCapacityValue) < *logicalCapacity ||
+      static_cast<uint64_t>(storageCapacityValue) >= (uint64_t{1} << 31)) {
+    return failure();
+  }
+
+  auto elementType = dictionary.getAs<TypeAttr>("element_type");
+  std::string payloadOffsetExpression =
+      std::to_string(tensorBacking ? tensorBacking.getByteOffset()
+                                   : payloadAddressValue - stateOffsetValue);
+  if (payloadAddress && dictionary.getAs<ArrayAttr>("sram_core_layouts")) {
+    auto index = dictionary.getAs<IntegerAttr>("dfb_index");
+    if (!index || index.getInt() < 0) {
+      return failure();
+    }
+    payloadOffsetExpression =
+        "TTLANG_SRAM_DFB_" + std::to_string(index.getInt()) + "_PAYLOAD_OFFSET";
+  }
+  return SRAMAllocation{pageSize.getInt(),
+                        pagesPerBlock.getInt(),
+                        blockCount.getInt(),
+                        storageCapacityValue,
+                        stateOffsetValue,
+                        tensorBacking ? tensorBacking.getTensorIndex() : -1,
+                        elementType ? elementType.getValue() : Type(),
+                        std::move(payloadOffsetExpression)};
+}
+
+static FailureOr<int64_t>
+getCompilerL1TensorCommonArgIndex(Operation *operation,
+                                  const SRAMAllocation &allocation) {
+  if (allocation.tensorIndex < 0) {
+    return int64_t{-1};
+  }
+  auto function = operation->getParentOfType<func::FuncOp>();
+  auto tensorIndices =
+      function ? function->getAttrOfType<ArrayAttr>(ttl::kCRTAIndicesAttrName)
+               : ArrayAttr();
+  if (!tensorIndices) {
+    return failure();
+  }
+  for (auto [commonArgIndex, attribute] : llvm::enumerate(tensorIndices)) {
+    auto tensorIndex = dyn_cast<IntegerAttr>(attribute);
+    if (tensorIndex && tensorIndex.getInt() == allocation.tensorIndex) {
+      return static_cast<int64_t>(commonArgIndex);
+    }
+  }
+  return failure();
+}
+
+static SRAMAllocation getSRAMAllocation(Operation *operation, int64_t index) {
+  auto allocations =
+      operation->getParentOfType<ModuleOp>()->getAttrOfType<ArrayAttr>(
+          ttl::kDFBAllocationsAttrName);
+  assert(allocations && index >= 0 &&
+         static_cast<uint64_t>(index) < allocations.size() &&
+         "compiler-l1 storage identity must be validated before conversion");
+  FailureOr<SRAMAllocation> allocation =
+      parseSRAMAllocation(allocations[index]);
+  assert(succeeded(allocation) &&
+         "compiler-l1 allocation metadata must be validated before conversion");
+  return *allocation;
+}
+
+static bool isCompilerL1ComputeOperation(Operation *operation) {
+  return isa<
+      ttkernel::SubTilesInitOp, ttkernel::SubTilesOp, ttkernel::TransposeInitOp,
+      ttkernel::TransposeTileOp, ttkernel::BinaryDestReuseTilesInitOp,
+      ttkernel::BinaryDestReuseTilesOp, ttkernel::UnaryBcastInitOp,
+      ttkernel::UnaryBcastTileOp, ttkernel::ReduceInitOp,
+      ttkernel::ReduceTileOp, ttkernel::ReduceUninitOp, ttkernel::MatmulInitOp,
+      ttkernel::MatmulBlockInitOp, ttkernel::MatmulInitShortOp,
+      ttkernel::MatmulBlockInitShortOp, ttkernel::MatmulTilesOp,
+      ttkernel::MatmulBlockOp, ttkernel::ExperimentalMatmulBlockOp,
+      ttkernel::InitSFPUOp, ttkernel::UnaryOpInitCommonOp,
+      ttkernel::CopyTileInitOp, ttkernel::CopyTileOp,
+      ttkernel::BinaryOpInitCommonOp, ttkernel::AddTilesInitOp,
+      ttkernel::AddTilesOp, ttkernel::MulTilesInitOp, ttkernel::MulTilesOp,
+      ttkernel::PackTileOp, ttkernel::PackWaitedTileOp>(operation);
+}
+
+static LogicalResult
+validateCompilerL1ComputeTileType(const ttl::ComputeTargetEnvironment &target,
+                                  ttcore::TileType tile,
+                                  std::string &failureReason) {
+  if (tile.getDataType() != ttcore::DataType::Float32 &&
+      tile.getDataType() != ttcore::DataType::BFloat16) {
+    failureReason = "requires BF16 or FP32 tiles";
+    return failure();
+  }
+  return target.validateKernelTileType(tile, failureReason);
+}
+
+static LogicalResult validateCompilerL1ExternalComputeTileType(
+    const ttl::ComputeTargetEnvironment &target, ttcore::TileType tile,
+    std::string &failureReason) {
+  ttcore::DataType dataType = tile.getDataType();
+  if (dataType != ttcore::DataType::Float32 &&
+      dataType != ttcore::DataType::BFloat16 &&
+      dataType != ttcore::DataType::BFP_BFloat4 &&
+      dataType != ttcore::DataType::BFP_BFloat8) {
+    failureReason = "requires BF16, FP32, BFP4_B, or BFP8_B tiles";
+    return failure();
+  }
+  return target.validateKernelTileType(tile, failureReason);
 }
 
 static std::string getTTKernelCalleeName(llvm::StringRef opName) {
@@ -237,7 +429,25 @@ static std::string ensureCBDeclaration(Value cb, Operation *useOp,
   OpBuilder::InsertionGuard guard(rewriter);
   setInsertionPointAfterDefOrBlockStart(cb, rewriter);
 
-  std::string cbDecl = "CircularBuffer " + cbName + "({});";
+  std::string bufferType = "CircularBuffer";
+  if (usesCompilerL1(useOp)) {
+    auto index =
+        cb.getDefiningOp()->getAttrOfType<IntegerAttr>("ttkernel.cb_ctarg_idx");
+    assert(index && "compiler-l1 requires statically bound storage");
+    SRAMAllocation allocation = getSRAMAllocation(useOp, index.getInt());
+    FailureOr<int64_t> tensorCommonArgIndex =
+        getCompilerL1TensorCommonArgIndex(useOp, allocation);
+    assert(succeeded(tensorCommonArgIndex) &&
+           "compiler-l1 tensor argument must be validated before conversion");
+    bufferType =
+        (Twine("ttlang::l1::Buffer<") + Twine(allocation.pageSizeBytes) + ", " +
+         Twine(allocation.pagesPerBlock) + ", " + Twine(allocation.blockCount) +
+         ", " + Twine(allocation.storageCapacityPages) + ", " +
+         Twine(allocation.payloadOffsetExpression) + ", " +
+         Twine(*tensorCommonArgIndex) + ">")
+            .str();
+  }
+  std::string cbDecl = bufferType + " " + cbName + "({});";
   rewriter.create<emitc::VerbatimOp>(useOp->getLoc(), cbDecl, ValueRange{cb});
   declarations.insert(cbName);
   return cbName;
@@ -480,6 +690,73 @@ getDFBDescriptorTypeName(ttkernel::DFBDescriptorAttr descriptor) {
           ", " + Twine(descriptor.getPagesPerBlock()) + ", " +
           Twine(descriptor.getBlockCount()) + ", " +
           Twine(descriptor.getPageSizeBytes()) + ">")
+      .str();
+}
+
+static std::string
+getCompilerL1GeometryTemplateArguments(const SRAMAllocation &allocation,
+                                       ttcore::TileType tile) {
+  return (Twine("static_cast<uint32_t>(") +
+          datatypeToDataformatStr(tile.getDataType()) + "), " +
+          Twine(allocation.pageSizeBytes) + ", " + Twine(tile.getHeight()) +
+          ", " + Twine(tile.getWidth()) + ", " +
+          Twine(allocation.pagesPerBlock) + ", " +
+          Twine(allocation.blockCount) + ", " +
+          Twine(allocation.storageCapacityPages))
+      .str();
+}
+
+static std::string
+getCompilerL1OperandTypeName(Operation *operation,
+                             const SRAMAllocation &allocation,
+                             ttcore::TileType tile, bool directToDestination) {
+  FailureOr<int64_t> tensorCommonArgIndex =
+      getCompilerL1TensorCommonArgIndex(operation, allocation);
+  assert(succeeded(tensorCommonArgIndex) &&
+         "compiler-l1 tensor argument must be validated before conversion");
+  return (Twine("ttlang::l1::Operand<") +
+          getCompilerL1GeometryTemplateArguments(allocation, tile) + ", " +
+          Twine(allocation.payloadOffsetExpression) + ", " +
+          Twine(*tensorCommonArgIndex) + ", " +
+          (directToDestination ? "true>" : "false>"))
+      .str();
+}
+
+static std::string
+getCompilerL1DFBDescriptorTypeName(Operation *operation,
+                                   ttkernel::DFBDescriptorAttr descriptor) {
+  SRAMAllocation allocation =
+      getSRAMAllocation(operation, descriptor.getIndex());
+  auto function = operation->getParentOfType<func::FuncOp>();
+  auto threadType = function->getAttrOfType<ttkernel::ThreadTypeAttr>(
+      ttkernel::ThreadTypeAttr::name);
+  FailureOr<int64_t> tensorCommonArgIndex =
+      getCompilerL1TensorCommonArgIndex(operation, allocation);
+  assert(succeeded(tensorCommonArgIndex) &&
+         "compiler-l1 tensor argument must be validated before conversion");
+  if (!threadType || threadType.getValue() != ttkernel::ThreadType::Compute) {
+    return (Twine("ttlang::l1::DFBDescriptor<") +
+            Twine(descriptor.getPageSizeBytes()) + ", " +
+            Twine(descriptor.getPagesPerBlock()) + ", " +
+            Twine(descriptor.getBlockCount()) + ", " +
+            Twine(allocation.storageCapacityPages) + ", " +
+            Twine(allocation.stateOffset) + ", " +
+            Twine(allocation.payloadOffsetExpression) + ", " +
+            Twine(*tensorCommonArgIndex) + ">")
+        .str();
+  }
+  auto tile = cast<ttcore::TileType>(allocation.elementType);
+  auto directOperands = function->getAttrOfType<DenseI32ArrayAttr>(
+      ttl::kUnpackToDestFp32AttrName);
+  bool directToDestination =
+      directOperands &&
+      llvm::is_contained(directOperands.asArrayRef(), descriptor.getIndex());
+  return (Twine("ttlang::l1::ComputeDFBDescriptor<") +
+          getCompilerL1GeometryTemplateArguments(allocation, tile) + ", " +
+          Twine(allocation.stateOffset) + ", " +
+          Twine(allocation.payloadOffsetExpression) + ", " +
+          Twine(*tensorCommonArgIndex) + ", " +
+          (directToDestination ? "true>" : "false>"))
       .str();
 }
 
@@ -852,6 +1129,65 @@ enum class PostedTemplateArgument { None, Boolean };
 template <typename SourceOp>
 using PostedAttributeResult = decltype(std::declval<SourceOp>().getPosted());
 
+static void emitCompilerL1ComputeCall(Operation *operation,
+                                      ValueRange convertedOperands,
+                                      TypeRange resultTypes,
+                                      StringRef operationName,
+                                      ArrayAttr templateArgs,
+                                      ConversionPatternRewriter &rewriter) {
+  SmallVector<Value> operands;
+  for (auto [source, converted] :
+       llvm::zip(operation->getOperands(), convertedOperands)) {
+    if (!isa<ttkernel::CBType>(source.getType())) {
+      operands.push_back(converted);
+      continue;
+    }
+    auto identity = resolveDfbIndex(source);
+    assert(identity && "validated compiler-l1 operand identity");
+    SRAMAllocation allocation = getSRAMAllocation(operation, *identity);
+    auto tile = cast<ttcore::TileType>(
+        cast<ttkernel::CBType>(source.getType()).getElementType());
+    auto directOperands = operation->getParentOfType<func::FuncOp>()
+                              ->template getAttrOfType<DenseI32ArrayAttr>(
+                                  ttl::kUnpackToDestFp32AttrName);
+    bool directToDestination =
+        directOperands &&
+        llvm::is_contained(directOperands.asArrayRef(), *identity);
+    std::string operandType = getCompilerL1OperandTypeName(
+        operation, allocation, tile, directToDestination);
+    auto constructor = emitc::CallOpaqueOp::create(
+        rewriter, operation->getLoc(),
+        TypeRange{emitc::OpaqueType::get(operation->getContext(), operandType)},
+        operandType, ArrayAttr(), ArrayAttr(), ValueRange{converted});
+    operands.push_back(constructor.getResult(0));
+  }
+  std::string callee = ("ttlang::l1::target::" + operationName).str();
+  if (isa<ttkernel::BinaryOpInitCommonOp, ttkernel::UnaryOpInitCommonOp,
+          ttkernel::InitSFPUOp>(operation)) {
+    callee = "l1_compute_context.configure";
+  } else if (isa<ttkernel::TransposeInitOp>(operation)) {
+    callee = "l1_compute_context.transposeInit";
+  } else if (isa<ttkernel::UnaryBcastInitOp>(operation)) {
+    callee = "l1_compute_context.broadcastInit";
+  } else if (isa<ttkernel::ReduceInitOp>(operation)) {
+    callee = "l1_compute_context.reduceInit";
+  } else if (isa<ttkernel::MatmulInitOp>(operation)) {
+    callee = "l1_compute_context.matmulInit";
+  } else if (isa<ttkernel::MatmulBlockInitOp>(operation)) {
+    callee = "l1_compute_context.matmulBlockInit";
+  } else if (isa<ttkernel::MatmulInitShortOp>(operation)) {
+    callee = "l1_compute_context.matmulInitShort";
+  } else if (isa<ttkernel::MatmulBlockInitShortOp>(operation)) {
+    callee = "l1_compute_context.matmulBlockInitShort";
+  } else if (isa<ttkernel::ExperimentalMatmulBlockOp>(operation)) {
+    callee = "ttlang::l1::target::matmul_block_strided";
+  } else if (isa<ttkernel::PackWaitedTileOp>(operation)) {
+    callee = "ttlang::l1::target::pack_waited_tile";
+  }
+  rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+      operation, resultTypes, callee, ArrayAttr(), templateArgs, operands);
+}
+
 template <typename SourceOp, typename Adaptor = typename SourceOp::Adaptor,
           PostedTemplateArgument postedArgument = PostedTemplateArgument::None>
 class TTKernelToEmitCOpaqueRewriter : public OpConversionPattern<SourceOp> {
@@ -1219,6 +1555,34 @@ public:
       resultTypes.push_back(ct);
     }
 
+    if constexpr (std::is_same_v<SourceOp, ttkernel::GetTileSizeOp> ||
+                  std::is_same_v<SourceOp, ttkernel::GetDataFormatOp>) {
+      if (usesCompilerL1(op)) {
+        auto elementType =
+            cast<ttkernel::CBType>(op.getCb().getType()).getElementType();
+        auto tile = dyn_cast<ttcore::TileType>(elementType);
+        if (!tile) {
+          return rewriter.notifyMatchFailure(
+              op, "compiler-l1 requires tiled storage metadata");
+        }
+        std::string value;
+        if constexpr (std::is_same_v<SourceOp, ttkernel::GetTileSizeOp>) {
+          value = std::to_string(tile.getSizeBytes());
+        } else {
+          value = datatypeToDataformatStr(tile.getDataType());
+        }
+        auto literal = emitc::LiteralOp::create(rewriter, op.getLoc(),
+                                                resultTypes.front(), value);
+        rewriter.replaceOp(op, literal);
+        return success();
+      }
+    }
+    if (usesCompilerL1(op) && isCompilerL1ComputeOperation(op)) {
+      emitCompilerL1ComputeCall(op, adaptor.getOperands(), resultTypes,
+                                getOpName(op), getTemplateArgs(rewriter, op),
+                                rewriter);
+      return success();
+    }
     rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
         op, resultTypes, getOpName(op), getCallArgs(rewriter, op),
         getTemplateArgs(rewriter, op), adaptor.getOperands());
@@ -1388,6 +1752,13 @@ public:
   LogicalResult
   matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
+    if (usesCompilerL1(op)) {
+      emitCompilerL1ComputeCall(
+          op, adaptor.getOperands(), TypeRange{},
+          getTTKernelCalleeName(op->getName().getStringRef()), ArrayAttr(),
+          rewriter);
+      return success();
+    }
     ValueRange operands = adaptor.getOperands();
     SmallVector<Attribute, 1> templateArgs;
     templateArgs.push_back(
@@ -1524,10 +1895,18 @@ public:
                        Type resultType,
                        ConversionPatternRewriter &rewriter) const {
     if constexpr (std::is_same_v<SourceOp, ttkernel::GetCompileArgValOp>) {
-      auto literal = rewriter.create<emitc::LiteralOp>(
-          op.getLoc(), resultType,
+      std::string expression =
           (Twine("get_compile_time_arg_val(") + Twine(op.getArgIndex()) + ")")
-              .str());
+              .str();
+      if (usesCompilerL1(op) &&
+          isa<ttkernel::CBType>(op.getResult().getType())) {
+        SRAMAllocation allocation = getSRAMAllocation(op, op.getArgIndex());
+        expression =
+            "get_common_arg_val<uint32_t>(get_compile_time_arg_val(0)) + " +
+            std::to_string(allocation.stateOffset);
+      }
+      auto literal = emitc::LiteralOp::create(rewriter, op.getLoc(), resultType,
+                                              expression);
       if (mlir::isa<ttkernel::CBType>(op.getResult().getType())) {
         literal->setAttr("ttkernel.cb_ctarg_idx",
                          rewriter.getI32IntegerAttr(op.getArgIndex()));
@@ -2331,6 +2710,7 @@ public:
   LogicalResult
   matchAndRewrite(ttkernel::OpaqueCallOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
+    bool compilerL1 = usesCompilerL1(op);
     SmallVector<Type> resultTypes;
     for (Type resTy : op.getResultTypes()) {
       Type converted = getTypeConverter()->convertType(resTy);
@@ -2341,15 +2721,20 @@ public:
     }
 
     ArrayAttr emitcTemplateArgs;
-    bool hasDescriptor = false;
+    bool hasMetalDescriptor = false;
+    bool requiresCompilerL1 = false;
     if (std::optional<ArrayAttr> templateArgs = op.getTemplateArgs()) {
       SmallVector<Attribute> opaqueArgs;
       for (Attribute templateArg : *templateArgs) {
         if (auto descriptor =
                 dyn_cast<ttkernel::DFBDescriptorAttr>(templateArg)) {
-          opaqueArgs.push_back(emitc::OpaqueAttr::get(
-              op.getContext(), getDFBDescriptorTypeName(descriptor)));
-          hasDescriptor = true;
+          std::string typeName =
+              compilerL1 ? getCompilerL1DFBDescriptorTypeName(op, descriptor)
+                         : getDFBDescriptorTypeName(descriptor);
+          opaqueArgs.push_back(
+              emitc::OpaqueAttr::get(op.getContext(), typeName));
+          hasMetalDescriptor |= !compilerL1;
+          requiresCompilerL1 |= compilerL1;
           continue;
         }
         if (auto boolValue = dyn_cast<BoolAttr>(templateArg)) {
@@ -2403,8 +2788,13 @@ public:
         callArguments);
     callOp->setAttr("ttlang.opaque_header",
                     rewriter.getStringAttr(op.getHeader()));
-    if (hasDescriptor) {
+    if (hasMetalDescriptor) {
       callOp->setAttr("ttlang.requires_dfb_descriptor", rewriter.getUnitAttr());
+    }
+    requiresCompilerL1 |=
+        compilerL1 && op.getCallee().starts_with("ttlang::l1::");
+    if (requiresCompilerL1) {
+      callOp->setAttr("ttlang.requires_compiler_l1", rewriter.getUnitAttr());
     }
     return success();
   }
@@ -3141,11 +3531,254 @@ public:
 
   void runOnOperation() final {
     ModuleOp module = getOperation();
+    WalkResult sourceOperations = module.walk([](Operation *operation) {
+      return operation->getName().getDialectNamespace() == "ttkernel"
+                 ? WalkResult::interrupt()
+                 : WalkResult::advance();
+    });
+    if (auto model =
+            module->getAttrOfType<StringAttr>(ttl::kMemoryModelAttrName);
+        model && model.getValue() == ttl::kCompilerL1MemoryModel &&
+        sourceOperations.wasInterrupted()) {
+      auto allocations =
+          module->getAttrOfType<ArrayAttr>(ttl::kDFBAllocationsAttrName);
+      if (!allocations) {
+        module.emitOpError(
+            "compiler-l1 requires finalized allocation metadata");
+        signalPassFailure();
+        return;
+      }
+      for (auto [index, attribute] : llvm::enumerate(allocations)) {
+        if (failed(parseSRAMAllocation(attribute))) {
+          module.emitOpError("compiler-l1 allocation entry ")
+              << index
+              << " must define positive uint32 page_size, num_tiles, and "
+                 "block_count values, storage_capacity_pages at least "
+                 "num_tiles times block_count and less than 2^31, and "
+                 "representable ordered L1 offsets";
+          signalPassFailure();
+          return;
+        }
+      }
+      std::string computeTargetFailureReason;
+      FailureOr<std::unique_ptr<ttl::ComputeTargetEnvironment>> computeTarget =
+          ttl::ComputeTargetEnvironment::get(module,
+                                             computeTargetFailureReason);
+      if (failed(computeTarget)) {
+        module.emitOpError("compiler-l1 compute target is invalid: ")
+            << computeTargetFailureReason;
+        signalPassFailure();
+        return;
+      }
+      WalkResult validation = module.walk([&](Operation *operation) {
+        if (operation->getName().getDialectNamespace() == "emitc") {
+          operation->emitOpError(
+              "compiler-l1 cannot validate pre-lowered C++ effects");
+          return WalkResult::interrupt();
+        }
+        if (operation->getName().getDialectNamespace() != "ttkernel") {
+          return WalkResult::advance();
+        }
+        if (auto getCompileArg =
+                dyn_cast<ttkernel::GetCompileArgValOp>(operation);
+            getCompileArg && isa<ttkernel::CBType>(getCompileArg.getType()) &&
+            static_cast<uint64_t>(getCompileArg.getArgIndex()) >=
+                allocations.size()) {
+          operation->emitOpError(
+              "compiler-l1 storage index is absent from allocation metadata");
+          return WalkResult::interrupt();
+        }
+        if (auto getCompileArg =
+                dyn_cast<ttkernel::GetCompileArgValOp>(operation);
+            getCompileArg && isa<ttkernel::CBType>(getCompileArg.getType())) {
+          SRAMAllocation allocation =
+              getSRAMAllocation(operation, getCompileArg.getArgIndex());
+          if (failed(
+                  getCompilerL1TensorCommonArgIndex(operation, allocation))) {
+            operation->emitOpError(
+                "compiler-l1 tensor backing is absent from the kernel's "
+                "common tensor arguments");
+            return WalkResult::interrupt();
+          }
+        }
+        if ((isa<ttkernel::GetArgValOp, ttkernel::GetCommonArgValOp>(
+                operation)) &&
+            isa<ttkernel::CBType>(operation->getResult(0).getType())) {
+          operation->emitOpError(
+              "compiler-l1 requires statically bound DFB storage");
+          return WalkResult::interrupt();
+        }
+        for (Value operand : operation->getOperands()) {
+          if (!isa<ttkernel::CBType>(operand.getType())) {
+            continue;
+          }
+          std::optional<int> index = resolveDfbIndex(operand);
+          if (!index || *index < 0 ||
+              static_cast<uint64_t>(*index) >= allocations.size()) {
+            operation->emitOpError(
+                "compiler-l1 DFB operand has no finalized allocation");
+            return WalkResult::interrupt();
+          }
+        }
+        if (auto opaqueCall = dyn_cast<ttkernel::OpaqueCallOp>(operation)) {
+          auto threadType = operation->getParentOfType<func::FuncOp>()
+                                ->getAttrOfType<ttkernel::ThreadTypeAttr>(
+                                    ttkernel::ThreadTypeAttr::name);
+          std::optional<ArrayAttr> templateArguments =
+              opaqueCall.getTemplateArgs();
+          ArrayAttr templateArgumentsAttr = templateArguments.value_or(
+              ArrayAttr::get(operation->getContext(), {}));
+          for (Attribute templateArgument : templateArgumentsAttr) {
+            auto descriptor =
+                dyn_cast<ttkernel::DFBDescriptorAttr>(templateArgument);
+            if (!descriptor) {
+              continue;
+            }
+            int64_t index = descriptor.getIndex();
+            if (index < 0 ||
+                static_cast<uint64_t>(index) >= allocations.size()) {
+              operation->emitOpError(
+                  "compiler-l1 descriptor index is absent from allocation "
+                  "metadata");
+              return WalkResult::interrupt();
+            }
+            SRAMAllocation allocation = getSRAMAllocation(operation, index);
+            if (failed(
+                    getCompilerL1TensorCommonArgIndex(operation, allocation))) {
+              operation->emitOpError(
+                  "compiler-l1 tensor backing is absent from the kernel's "
+                  "common tensor arguments");
+              return WalkResult::interrupt();
+            }
+            if (descriptor.getPageSizeBytes() != allocation.pageSizeBytes ||
+                descriptor.getPagesPerBlock() != allocation.pagesPerBlock ||
+                descriptor.getBlockCount() != allocation.blockCount) {
+              operation->emitOpError(
+                  "compiler-l1 descriptor page size, pages per block, or "
+                  "block count differs from its allocation metadata");
+              return WalkResult::interrupt();
+            }
+            if (threadType &&
+                threadType.getValue() == ttkernel::ThreadType::Compute) {
+              auto tile =
+                  dyn_cast_if_present<ttcore::TileType>(allocation.elementType);
+              computeTargetFailureReason.clear();
+              if (!tile ||
+                  failed(validateCompilerL1ExternalComputeTileType(
+                      **computeTarget, tile, computeTargetFailureReason))) {
+                operation->emitOpError("compiler-l1 compute descriptor ")
+                    << (tile ? computeTargetFailureReason
+                             : "requires BF16, FP32, BFP4_B, or BFP8_B tiles");
+                return WalkResult::interrupt();
+              }
+            }
+          }
+        }
+        bool supportedDFBOperation =
+            isa<ttkernel::GetCompileArgValOp, ttkernel::GetArgValOp,
+                ttkernel::GetCommonArgValOp, ttkernel::CBReserveBackOp,
+                ttkernel::CBWaitFrontOp, ttkernel::CBPushBackOp,
+                ttkernel::CBPopFrontOp, ttkernel::GetReadPtrOp,
+                ttkernel::GetWritePtrOp, ttkernel::GetTileSizeOp,
+                ttkernel::GetDataFormatOp>(operation) ||
+            isCompilerL1ComputeOperation(operation);
+        if (isCompilerL1ComputeOperation(operation)) {
+          for (Value operand : operation->getOperands()) {
+            auto buffer = dyn_cast<ttkernel::CBType>(operand.getType());
+            if (!buffer) {
+              continue;
+            }
+            auto tile = dyn_cast<ttcore::TileType>(buffer.getElementType());
+            computeTargetFailureReason.clear();
+            if (!tile ||
+                failed(validateCompilerL1ComputeTileType(
+                    **computeTarget, tile, computeTargetFailureReason))) {
+              operation->emitOpError("compiler-l1 compute ")
+                  << (tile ? computeTargetFailureReason
+                           : "requires BF16 or FP32 tiles");
+              return WalkResult::interrupt();
+            }
+          }
+          if (auto pack = dyn_cast<ttkernel::PackTileOp>(operation);
+              pack && !pack.getOutOfOrder()) {
+            operation->emitOpError(
+                "compiler-l1 packing requires an explicit tile index");
+            return WalkResult::interrupt();
+          }
+        }
+        bool hasDFBValue = llvm::any_of(
+            llvm::concat<Value>(operation->getOperands(),
+                                operation->getResults()),
+            [](Value value) { return isa<ttkernel::CBType>(value.getType()); });
+        if (hasDFBValue && !supportedDFBOperation) {
+          operation->emitOpError()
+              << "has no compiler-l1 lowering for " << operation->getName()
+              << "; Metal DFB fallback is disabled";
+          return WalkResult::interrupt();
+        }
+        if (isa<ttkernel::CBReserveBackOp, ttkernel::CBWaitFrontOp,
+                ttkernel::CBPushBackOp, ttkernel::CBPopFrontOp>(operation)) {
+          auto identity = resolveDfbIndex(operation->getOperand(0));
+          auto allocations =
+              module->getAttrOfType<ArrayAttr>(ttl::kDFBAllocationsAttrName);
+          llvm::APInt pageCount;
+          if (!identity || !allocations || *identity < 0 ||
+              static_cast<size_t>(*identity) >= allocations.size() ||
+              !matchPattern(operation->getOperand(1),
+                            m_ConstantInt(&pageCount))) {
+            operation->emitOpError("compiler-l1 requires a static storage "
+                                   "identity and page count");
+            return WalkResult::interrupt();
+          }
+          SRAMAllocation allocation = getSRAMAllocation(operation, *identity);
+          int64_t pageCountValue = pageCount.getSExtValue();
+          bool isOneBlock = pageCountValue == allocation.pagesPerBlock;
+          bool isCompleteTensorCapacity =
+              allocation.tensorIndex >= 0 && pageCountValue > 0 &&
+              pageCountValue % allocation.pagesPerBlock == 0 &&
+              pageCountValue / allocation.pagesPerBlock ==
+                  allocation.blockCount;
+          if (!isOneBlock && !isCompleteTensorCapacity) {
+            operation->emitOpError(
+                "compiler-l1 requires one complete block or the complete "
+                "tensor-backed capacity per synchronization operation");
+            return WalkResult::interrupt();
+          }
+        }
+        return WalkResult::advance();
+      });
+      if (validation.wasInterrupted()) {
+        signalPassFailure();
+        return;
+      }
+    }
     TTKernelToEmitCConversionState state;
     ConversionPlan config(module.getContext(), state);
     for (func::FuncOp funcOp : module.getOps<func::FuncOp>()) {
       if (!funcOp->hasAttr(ttkernel::ThreadTypeAttr::name)) {
         continue;
+      }
+      if (usesCompilerL1(funcOp) &&
+          funcOp
+              .walk([](Operation *operation) {
+                return isa<ttkernel::BinaryOpInitCommonOp,
+                           ttkernel::UnaryOpInitCommonOp, ttkernel::InitSFPUOp,
+                           ttkernel::MatmulInitOp, ttkernel::MatmulBlockInitOp,
+                           ttkernel::MatmulInitShortOp,
+                           ttkernel::MatmulBlockInitShortOp,
+                           ttkernel::TransposeInitOp,
+                           ttkernel::UnaryBcastInitOp, ttkernel::ReduceInitOp>(
+                           operation)
+                           ? WalkResult::interrupt()
+                           : WalkResult::advance();
+              })
+              .wasInterrupted()) {
+        OpBuilder builder(&funcOp.getBody().front(),
+                          funcOp.getBody().front().begin());
+        emitc::VerbatimOp::create(
+            builder, funcOp.getLoc(),
+            "ttlang::l1::target::ComputeContext l1_compute_context;",
+            ValueRange{});
       }
       if (mayHaveRuntimeCBArgs(funcOp)) {
         assignRuntimeCBArgIndices(funcOp);

@@ -130,3 +130,20 @@ def seed_rng():
 def device(ttnn_device):
     """Alias for the isolated TTNN device fixture."""
     return ttnn_device
+
+
+@pytest.fixture
+def reject_metal_dfb_descriptor_creation(monkeypatch):
+    """Provide a callback that rejects TT-Metal DFB descriptor construction."""
+    import ttnn
+
+    def install_rejection():
+        def reject_descriptor(*_unused_args, **_unused_kwargs):
+            pytest.fail("compiler-l1 constructed a TT-Metal DFB descriptor")
+
+        monkeypatch.setattr(ttnn, "CBDescriptor", reject_descriptor)
+        monkeypatch.setattr(
+            ttnn, "cb_descriptor_from_sharded_tensor", reject_descriptor
+        )
+
+    return install_rejection

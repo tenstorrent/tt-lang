@@ -280,6 +280,7 @@ struct PipeResourcePlan {
       computedAddressCounterInitializations;
   /// Receiver DFB indices supplied as common runtime arguments to each sender.
   llvm::MapVector<func::FuncOp, SmallVector<int32_t>> computedAddressDFBIndices;
+  llvm::MapVector<func::FuncOp, SmallVector<Attribute>> sramReceiverTargets;
 
   /// Visit each protocol operation and its complete resource table.
   LogicalResult forEachResourceTable(

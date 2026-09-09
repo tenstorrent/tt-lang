@@ -22,12 +22,22 @@ from typing import Optional, Sequence
 # TODO(#649): Add dfb-state after explicit DFB fallback becomes a selectable
 # accumulation strategy.
 _ACCUMULATION_STRATEGIES = frozenset({"auto", "dst", "l1-pack"})
+_L1_ALLOCATION_STRATEGIES = frozenset(
+    {"multi-order-decreasing", "first-fit-decreasing", "best-fit-decreasing", "exact"}
+)
 
 
 def _nonnegative_int(value: str) -> int:
     parsed_value = int(value)
     if parsed_value < 0:
         raise argparse.ArgumentTypeError("must be nonnegative")
+    return parsed_value
+
+
+def _positive_int(value: str) -> int:
+    parsed_value = int(value)
+    if parsed_value <= 0:
+        raise argparse.ArgumentTypeError("must be positive")
     return parsed_value
 
 
@@ -38,6 +48,45 @@ def _make_parser() -> argparse.ArgumentParser:
     "explicitly set to the dataclass default".
     """
     p = argparse.ArgumentParser(add_help=False)
+    p.add_argument(
+        "--ttl-memory-model",
+        default=None,
+        dest="memory_model",
+        choices=("metal-cb", "compiler-l1"),
+        help="Select Metal DFB allocation or experimental compiler-owned L1 storage (default: metal-cb).",
+    )
+    p.add_argument(
+        "--ttl-sram-allocation-mode",
+        choices=("uniform", "per-core"),
+        default=None,
+        dest="sram_allocation_mode",
+        help="Select uniform or per-core SRAM layouts for compiler-l1; multicast receivers share a layout. Per-core mode requires Metal hybrid allocation before device initialization (default: uniform).",
+    )
+    p.add_argument(
+        "--ttl-sram-allocation-report",
+        default=None,
+        dest="sram_allocation_report",
+        action=argparse.BooleanOptionalAction,
+        help="Emit JSON compiler SRAM ownership, reuse, and conflict facts plus "
+        "runtime arena reservations to stderr (default: disabled).",
+    )
+    p.add_argument(
+        "--ttl-l1-allocation-strategy",
+        default=None,
+        dest="l1_allocation_strategy",
+        choices=sorted(_L1_ALLOCATION_STRATEGIES),
+        help="Select the compiler-owned L1 payload placement strategy: "
+        "multi-order-decreasing, first-fit-decreasing, best-fit-decreasing, or exact "
+        "(default: multi-order-decreasing).",
+    )
+    p.add_argument(
+        "--ttl-l1-exact-allocation-search-limit",
+        default=None,
+        dest="l1_exact_allocation_search_limit",
+        type=_positive_int,
+        help="Limit exact compiler-owned L1 placement to this many work "
+        "items per allocation domain (default: 1000000).",
+    )
     p.add_argument(
         "--ttl-maximize-dst",
         default=None,
@@ -254,6 +303,10 @@ class CompilerOptions:
     reduce_full_fp32: bool = True
     matmul_full_fp32: bool = True
     strict_f32_acc: bool = False
+    memory_model: str = "metal-cb"
+    sram_allocation_report: bool = False
+    l1_allocation_strategy: str = "multi-order-decreasing"
+    l1_exact_allocation_search_limit: int = 1_000_000
     compiler_dfbs: bool = True
     pipe_computed_addresses: bool = True
     pipe_capacity_sync: bool = True
@@ -264,6 +317,7 @@ class CompilerOptions:
     dfb_exact_coloring_search_limit: int = 1_000_000
     specialize_cores: bool = False
     l1_budget: int = dataclasses.field(default=0, compare=False, hash=False)
+    sram_allocation_mode: str = "uniform"
 
     # Fields that were explicitly provided (not defaulted). Excluded from
     # equality and hashing so two instances with the same bool values are
@@ -274,6 +328,20 @@ class CompilerOptions:
 
     def __post_init__(self):
         """Validate options that can be constructed without argparse."""
+        if self.memory_model not in ("metal-cb", "compiler-l1"):
+            raise ValueError(f"Invalid memory model {self.memory_model!r}")
+        if self.sram_allocation_mode not in ("uniform", "per-core"):
+            raise ValueError(
+                f"Invalid SRAM allocation mode {self.sram_allocation_mode!r}"
+            )
+        if self.l1_allocation_strategy not in _L1_ALLOCATION_STRATEGIES:
+            raise ValueError(
+                "Invalid L1 allocation strategy "
+                f"{self.l1_allocation_strategy!r}; expected one of "
+                f"{sorted(_L1_ALLOCATION_STRATEGIES)}"
+            )
+        if self.l1_exact_allocation_search_limit <= 0:
+            raise ValueError("L1 exact allocation search limit must be positive")
         if self.accumulation_strategy not in _ACCUMULATION_STRATEGIES:
             raise ValueError(
                 "Invalid accumulation strategy "

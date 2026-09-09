@@ -88,6 +88,8 @@ from .dataflow_buffer import (
     DFBReconfigurationPlan,
     DFBStorageSegment,
     PhysicalDFBConfig,
+    SRAMCoreLayout,
+    SRAMReceiverTarget,
     get_cb_count,
 )
 from .domains import DeviceDomain
@@ -849,12 +851,14 @@ class CompiledTTNNKernel:
         device_domain=None,
         kernel_logical_selectors=None,
         operation_name="<anonymous>",
+        sram_allocation_report=False,
         runtime_resource_factory: Optional[
             Callable[..., ProgramRuntimeResources]
         ] = None,
         runtime_resource_cache=None,
         kernel_used_dfb_indices=None,
         kernel_local_tensor_indices=None,
+        kernel_sram_receiver_targets=None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -934,6 +938,9 @@ class CompiledTTNNKernel:
         self.num_dfb_resets = num_dfb_resets
         self.pipe_sram_scratch_bytes = pipe_sram_scratch_bytes
         self.num_pipe_global_semaphores = num_pipe_global_semaphores
+        self.kernel_sram_receiver_targets = kernel_sram_receiver_targets or [
+            [] for _ in kernel_paths
+        ]
         self.kernel_pipe_computed_address_dfb_indices = (
             kernel_pipe_computed_address_dfb_indices or [[] for _ in kernel_paths]
         )
@@ -976,6 +983,7 @@ class CompiledTTNNKernel:
             if kernel_used_dfb_indices is not None
             else [None for _ in kernel_paths]
         )
+        self.sram_allocation_report = sram_allocation_report
         self.operation_name = operation_name
         self.runtime_resource_factory = runtime_resource_factory
         owns_runtime_resource_cache = runtime_resource_cache is None
@@ -1018,6 +1026,7 @@ class CompiledTTNNKernel:
                 tensor_indices=tensor_indices,
                 config=config,
                 compiler_include_paths=self.opaque_include_paths,
+                sram_receiver_targets=self.kernel_sram_receiver_targets[kernel_idx],
                 pipe_computed_address_dfb_indices=self.kernel_pipe_computed_address_dfb_indices[
                     kernel_idx
                 ],
@@ -1052,6 +1061,7 @@ class CompiledTTNNKernel:
             fabric_route_cache=self._fabric_route_cache,
             runtime_resource_factory=self.runtime_resource_factory,
             operation_name=self.operation_name,
+            sram_allocation_report=self.sram_allocation_report,
             runtime_resource_cache=self._runtime_resource_cache,
             device=device,
         )
@@ -1410,6 +1420,7 @@ def _compile_ttnn_kernel(
     device_domain=None,
     target_arch: Optional[str] = None,
     operation_name: str = "<anonymous>",
+    sram_allocation_report: bool = False,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
 ):
@@ -1553,6 +1564,7 @@ def _compile_ttnn_kernel(
     kernel_configs = []
     kernel_arg_specs = []
     kernel_pipe_computed_address_dfb_indices = []
+    kernel_sram_receiver_targets = []
     kernel_used_dfb_indices = []
     # Read metadata from each final function because specialization changes the
     # kernel count and order.
@@ -1588,6 +1600,21 @@ def _compile_ttnn_kernel(
             )
             or []
         )
+        target_attr = _lookup_kernel_func_op(module, name).attributes.get(
+            "ttl.sram_receiver_targets", None
+        )
+        kernel_sram_receiver_targets.append(
+            []
+            if target_attr is None
+            else [
+                SRAMReceiverTarget(
+                    dfb_index=int(DictAttr(target)["dfb_index"]),
+                    node=tuple(DenseI64ArrayAttr(DictAttr(target)["node"])),
+                    device=tuple(DenseI64ArrayAttr(DictAttr(target)["device"])),
+                )
+                for target in ArrayAttr(target_attr)
+            ]
+        )
         kernel_used_dfb_indices.append(
             _get_kernel_optional_i32_array_attr(
                 module, name, _ttl_ir.USED_DFB_INDICES_ATTR
@@ -1622,7 +1649,11 @@ def _compile_ttnn_kernel(
             elif kernel_config_attrs[name]["dst_full_sync_en"]:
                 config.dst_full_sync_en = True
             unpack_fp32_cbs = kernel_config_attrs[name]["unpack_to_dest_fp32"]
-            if unpack_fp32_cbs:
+            compiler_l1 = any(
+                storage_config.l1_offset is not None
+                for storage_config in (cb_configs or [])
+            )
+            if unpack_fp32_cbs and not compiler_l1:
                 _set_unpack_to_dest_fp32(config, ttnn, unpack_fp32_cbs)
             # Compute kernels run on TRISC threads
             thread_to_kernel["TRISC_0"] = name
@@ -1682,6 +1713,7 @@ def _compile_ttnn_kernel(
         num_pipe_global_semaphores=num_pipe_global_semaphores,
         opaque_include_paths=opaque_include_paths or [],
         kernel_pipe_computed_address_dfb_indices=kernel_pipe_computed_address_dfb_indices,
+        kernel_sram_receiver_targets=kernel_sram_receiver_targets,
         kernel_fabric_routes=kernel_fabric_routes,
         kernel_fabric_runtime_arg_base_common_indices=(
             kernel_fabric_runtime_arg_base_common_indices
@@ -1691,6 +1723,7 @@ def _compile_ttnn_kernel(
         device_domain=device_domain,
         kernel_logical_selectors=kernel_logical_selectors,
         operation_name=operation_name,
+        sram_allocation_report=sram_allocation_report,
         runtime_resource_factory=runtime_resource_factory,
         runtime_resource_cache=runtime_resource_cache,
         kernel_used_dfb_indices=kernel_used_dfb_indices,
@@ -1711,6 +1744,7 @@ def _compile_ttnn_kernel(
                 tensor_indices=tensor_indices,
                 config=kernel_configs[kernel_idx],
                 compiler_include_paths=opaque_include_paths or [],
+                sram_receiver_targets=kernel_sram_receiver_targets[kernel_idx],
                 pipe_computed_address_dfb_indices=kernel_pipe_computed_address_dfb_indices[
                     kernel_idx
                 ],
@@ -2063,6 +2097,71 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
                 f"{context}.storage_index must be a nonnegative integer, "
                 f"got {storage_index!r}"
             )
+    storage_capacity_pages = None
+    if "storage_capacity_pages" in entry:
+        try:
+            storage_capacity_pages = int(entry["storage_capacity_pages"])
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"Invalid {context}.storage_capacity_pages: {error}"
+            ) from None
+        logical_capacity_pages = num_tiles * block_count
+        if storage_capacity_pages < logical_capacity_pages:
+            raise ValueError(
+                f"{context}.storage_capacity_pages must cover the "
+                f"{logical_capacity_pages}-page logical capacity"
+            )
+        if storage_capacity_pages >= 1 << 31:
+            raise ValueError(f"{context}.storage_capacity_pages must be less than 2^31")
+    has_l1_offset = "l1_offset" in entry
+    has_l1_payload_offset = "l1_payload_offset" in entry
+    has_l1_allocation_bytes = "l1_allocation_bytes" in entry
+    if has_l1_payload_offset != has_l1_allocation_bytes:
+        raise ValueError(
+            f"{context} must contain both compiler-l1 payload allocation fields"
+        )
+    if (has_l1_payload_offset or has_l1_allocation_bytes) and not has_l1_offset:
+        raise ValueError(f"{context} compiler-l1 payload requires l1_offset")
+    l1_offset = None
+    l1_payload_offset = None
+    l1_allocation_bytes = None
+    if has_l1_offset:
+        try:
+            l1_offset = int(entry["l1_offset"])
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"Invalid {context} compiler-l1 metadata: {error}"
+            ) from None
+        if l1_offset < 0:
+            raise ValueError(f"{context}.l1_offset must be nonnegative")
+        if has_l1_payload_offset:
+            try:
+                l1_payload_offset = int(entry["l1_payload_offset"])
+                l1_allocation_bytes = int(entry["l1_allocation_bytes"])
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"Invalid {context} compiler-l1 metadata: {error}"
+                ) from None
+            if l1_payload_offset < 0:
+                raise ValueError(f"{context}.l1_payload_offset must be nonnegative")
+            if l1_allocation_bytes <= 0:
+                raise ValueError(
+                    f"{context}.l1_allocation_bytes must be positive, "
+                    f"got {l1_allocation_bytes}"
+                )
+            payload_bytes = num_tiles * block_count * page_size
+            if l1_allocation_bytes < payload_bytes:
+                raise ValueError(
+                    f"{context}.l1_allocation_bytes must cover the "
+                    f"{payload_bytes}-byte payload"
+                )
+        elif not storage_segments or any(
+            not segment.is_tensor_backed for segment in storage_segments
+        ):
+            raise ValueError(
+                f"{context} compiler-l1 storage without an arena payload "
+                "requires tensor backing on every storage segment"
+            )
     return PhysicalDFBConfig(
         dfb_index=dfb_index,
         num_tiles=num_tiles,
@@ -2073,6 +2172,22 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
         storage_segments=tuple(storage_segments),
         allocation_nodes=allocation_nodes,
         storage_index=storage_index,
+        l1_offset=l1_offset,
+        l1_payload_offset=l1_payload_offset,
+        l1_allocation_bytes=l1_allocation_bytes,
+        storage_capacity_pages=storage_capacity_pages,
+        sram_core_layouts=tuple(
+            SRAMCoreLayout(
+                node=tuple(int(value) for value in layout["node"]),
+                payload_offset=int(layout["payload_offset"]),
+                payload_present=bool(layout["payload_present"].value),
+                arena_bytes=int(layout["arena_bytes"]),
+                domain=int(layout["domain"]),
+            )
+            for layout in (
+                entry["sram_core_layouts"] if "sram_core_layouts" in entry else ()
+            )
+        ),
     )
 
 
@@ -2846,6 +2961,9 @@ def _lower_program_to_kernel(
         exact_coloring_search_limit = (
             compiler_options.dfb_exact_coloring_search_limit
         )
+        l1_exact_allocation_search_limit = (
+            compiler_options.l1_exact_allocation_search_limit
+        )
         tensor_recurrence_pipeline = (
             "ttl-form-accumulation-scopes{"
             f"strategy={accumulation_strategy}"
@@ -2867,6 +2985,13 @@ def _lower_program_to_kernel(
             pipe_transport_pass,
             "func.func(ttl-coalesce-dfb-acquires)",
             "ttl-finalize-dfb-indices{"
+            f"memory-model={compiler_options.memory_model} "
+            f"sram-allocation-mode={compiler_options.sram_allocation_mode} "
+            f"sram-allocation-report={str(compiler_options.sram_allocation_report).lower()} "
+            "l1-allocation-strategy="
+            f"{compiler_options.l1_allocation_strategy} "
+            "l1-exact-allocation-search-limit="
+            f"{l1_exact_allocation_search_limit} "
             f"reuse-user-dfbs={reuse_user_dfbs_flag} "
             "unsafe-assume-allocation-groups="
             f"{unsafe_assume_allocation_groups_flag} "
@@ -2947,7 +3072,11 @@ def _lower_program_to_kernel(
         ]
         # Both registered pipelines share record cleanup and finalize only
         # the runtime arguments that survive it, matching the C++ pipeline.
-        if compiler_options.specialize_cores:
+        specialize_cores = (
+            compiler_options.specialize_cores
+            or compiler_options.sram_allocation_mode == "per-core"
+        )
+        if specialize_cores:
             pipeline_passes.append("ttkernel-specialize-and-annotate-dfb-use")
         else:
             pipeline_passes.append("ttkernel-cleanup-and-finalize-runtime-args")
@@ -3058,6 +3187,7 @@ def _lower_program_to_kernel(
             device_domain=device_domain,
             target_arch=target_arch,
             operation_name=operation_name,
+            sram_allocation_report=compiler_options.sram_allocation_report,
             runtime_resource_factory=runtime_resource_factory,
             runtime_resource_cache=runtime_resource_cache,
         )

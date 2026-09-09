@@ -1076,6 +1076,33 @@ def TTLFinalizeDFBIndices
     `ttl-annotate-cb-associations`, which copy DFB indices into attributes and
     would otherwise capture provisional indices.
 
+    `memory-model=compiler-l1` assigns explicit byte ranges instead of Metal
+    descriptor slots. Logical identities retain independent 8-byte control
+    records. The selected L1 allocation strategy places payloads over the
+    concurrent-kernel storage conflict graph; unknown completion prohibits reuse.
+    The complete plan is validated before mutation. Runtime metadata supplies
+    state and payload offsets within allocator-owned SRAM arenas.
+    `sram-allocation-mode=uniform` uses one layout on all participating cores.
+    `per-core` requires an exact launch grid and omits payloads proven inactive
+    on each core. Multicast receiver groups share a layout to preserve equal
+    destination addresses; overlapping groups merge transitively. All domains
+    retain the same control-record offsets. Domain placement is validated
+    before any metadata changes. The runtime binds each core and device to its
+    arena address using TT-Metal's existing host allocation interfaces. The arena
+    high-water mark includes alignment and state. The decreasing strategies
+    produce feasible placements. The default compares stable and conflict-degree
+    ordering among equal extents and retains the smaller arena, preserving stable
+    offsets on ties. The exact strategy uses bounded exhaustive
+    search to prove the minimum arena size; limit exhaustion is inconclusive.
+    Unsupported storage forms and operations are diagnosed; this mode never
+    falls back to Metal descriptors. `reuse-user-dfbs=false` disables payload
+    aliasing in this mode. `sram-allocation-report` emits a schema-versioned JSON
+    record to stderr after successful placement, before IR mutation. The record
+    includes storage owners, tensor references, reused ranges, lifetime evidence,
+    logical conflict reasons, and planned per-core arena byte counts. It does
+    not change allocation or report hardware reservation sizes. The option is
+    inactive for `metal-cb`.
+
     User-declared DFBs enter this pass with module-wide logical `dfb_id`
     attributes. Compiler-created DFB declarations receive unique logical IDs.
     The logical identity remains independent of the physical `cb_index`, so
@@ -1245,9 +1272,24 @@ def TTLFinalizeDFBIndices
   }];
 
   let options = [
+    Option<"memoryModel", "memory-model", "std::string", "\"metal-cb\"",
+           "Select metal-cb or experimental compiler-l1 storage.">,
     Option<"reuseUserDFBs", "reuse-user-dfbs", "bool", "true",
            "Reuse physical DFB indices and compiler-managed storage for "
            "lifetimes proven not to overlap across concurrent kernels.">,
+    Option<"sramAllocationMode", "sram-allocation-mode", "std::string",
+           "\"uniform\"", "SRAM allocation domains: uniform or per-core">,
+    Option<"sramAllocationReport", "sram-allocation-report", "bool", "false",
+           "Emit a versioned JSON report of compiler-managed SRAM ownership, "
+           "reuse, conflicts, and planned arena bytes.">,
+    Option<"l1AllocationStrategy", "l1-allocation-strategy", "std::string",
+           "\"multi-order-decreasing\"",
+           "Select multi-order-decreasing, first-fit-decreasing, best-fit-decreasing, or exact "
+           "compiler-l1 payload placement.">,
+    Option<"l1ExactAllocationSearchLimit",
+           "l1-exact-allocation-search-limit", "uint64_t", "1000000",
+           "Maximum work items examined per allocation domain by exact compiler-l1 placement before "
+           "reporting an inconclusive result.">,
     Option<"unsafeAssumeAllocationGroups", "unsafe-assume-allocation-groups",
            "bool", "false",
            "Trust explicit DFB allocation groups when runtime handoff cannot "
@@ -1491,6 +1533,11 @@ def TTKernelSpecializeCores
     would require rewriting their references. The pass emits a warning for
     each such function and continues specializing independent functions.
 
+    Compiler-managed per-core SRAM requires specialization of every kernel,
+    including kernels without coordinate-dependent control flow. This binds
+    each kernel to one finalized arena layout. Referenced kernels are rejected
+    before cloning in that mode.
+
     For example, this function selects a value using the core's y coordinate:
 
     ```mlir
@@ -1681,8 +1728,10 @@ def TTKernelCombinePackTiles
   let description = [{
     Scans for consecutive `ttkernel.pack_tile` ops targeting the same dataflow
     buffer with contiguous DST and CB tile indices, and replaces each run with
-    a single `ttkernel.pack_tile_block`. This reduces the number of hardware
-    pack operations after loop unrolling.
+    a single `ttkernel.pack_tile_block` for the Metal DFB backend. This reduces
+    generated calls after loop unrolling. Compiler-owned storage retains the
+    individual operations because `pack_tile_block` cannot represent their
+    explicit output tile indices.
 
     Only combines runs where both DST indices and CB tile indices step by 1,
     and the first CB tile index is 0 (pack_tile_block always writes to the CB
