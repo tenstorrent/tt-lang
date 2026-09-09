@@ -9,7 +9,6 @@
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
-#include "ttlang/Dialect/TTL/Transforms/DFBMaterialization.h"
 
 #include "mlir/Analysis/TopologicalSortUtils.h"
 #include "llvm/ADT/DenseMap.h"
@@ -28,26 +27,49 @@ IntermediateDFBPlan::IntermediateDFBPlan(
       computeMaterializations(std::move(computeMaterializations)),
       standaloneMaterializations(std::move(standaloneMaterializations)) {}
 
+static OpOperand *getShapeViewSourceOperand(Value value) {
+  OpOperand *sourceOperand = nullptr;
+  while (Value source =
+             getSingletonDimensionShapeViewSource(value.getDefiningOp())) {
+    sourceOperand = &value.getDefiningOp()->getOpOperand(0);
+    value = source;
+  }
+  return sourceOperand;
+}
+
 bool DFBMaterializationAnalysisState::requiresMaterialization(
     const OpOperand &operand) const {
+  const OpOperand *materializedOperand =
+      getShapeViewSourceOperand(operand.get());
+  if (!materializedOperand) {
+    materializedOperand = &operand;
+  }
   return llvm::any_of(
       requirements, [&](const IntermediateDFBRequirement &requirement) {
-        return requirement.consumer == operand.getOwner() &&
-               requirement.operandIndex == operand.getOperandNumber();
+        return requirement.consumer == materializedOperand->getOwner() &&
+               requirement.operandIndex ==
+                   materializedOperand->getOperandNumber();
       });
 }
 
 bool DFBMaterializationAnalysisState::requireMaterialization(
     OpOperand &operand, IntermediateDFBEvidence evidence) {
-  Value value = operand.get();
+  // Singleton views preserve storage identity. Materialize their producer at
+  // its own evaluation point, including atomic rebuilds of existing computes.
+  OpOperand *materializedOperand = getShapeViewSourceOperand(operand.get());
+  if (!materializedOperand) {
+    materializedOperand = &operand;
+  }
+  Value value = materializedOperand->get();
   auto requirement = llvm::find_if(
       requirements, [&](const IntermediateDFBRequirement &candidate) {
-        return candidate.consumer == operand.getOwner() &&
-               candidate.operandIndex == operand.getOperandNumber();
+        return candidate.consumer == materializedOperand->getOwner() &&
+               candidate.operandIndex ==
+                   materializedOperand->getOperandNumber();
       });
   if (requirement == requirements.end()) {
-    requirements.push_back({operand.getOwner(),
-                            operand.getOperandNumber(),
+    requirements.push_back({materializedOperand->getOwner(),
+                            materializedOperand->getOperandNumber(),
                             value,
                             {std::move(evidence)}});
     return true;
@@ -108,8 +130,7 @@ addMaterializedSourceRequirements(DFBMaterializationAnalysisState &state) {
   }
 
   for (Value requiredValue : requiredValues) {
-    Value storeSource = getDFBMaterializationStoreSource(requiredValue);
-    Operation *source = storeSource.getDefiningOp();
+    Operation *source = requiredValue.getDefiningOp();
     if (!source || isa<ComputeOp>(source)) {
       continue;
     }
@@ -122,7 +143,7 @@ addMaterializedSourceRequirements(DFBMaterializationAnalysisState &state) {
     }
 
     FusionTraceResult trace =
-        traceFusionToRoots(storeSource, [&](OpOperand &operand) {
+        traceFusionToRoots(requiredValue, [&](OpOperand &operand) {
           return state.requiresMaterialization(operand);
         });
     OpOperand *failedOperand = trace.failedOperand;
@@ -147,8 +168,7 @@ addShapeViewStoreRequirements(func::FuncOp kernel,
   kernel.walk([&](StoreOp store) {
     OpOperand &storedValue = store.getTensorMutable();
     Value value = storedValue.get();
-    if (getAttachedCB(value) ||
-        getDFBMaterializationStoreSource(value) == value) {
+    if (getAttachedCB(value) || !getShapeViewSourceOperand(value)) {
       return;
     }
 
@@ -402,14 +422,7 @@ static StandaloneDFBMaterializationPlan &getOrCreateStandaloneMaterialization(
            "one tensor value must have a consistent type");
     return *existing;
   }
-  SmallVector<Operation *> shapeViews;
-  Value storeSource = getDFBMaterializationStoreSource(source, &shapeViews);
-  plans.push_back({source,
-                   storeSource,
-                   std::move(shapeViews),
-                   tensorType,
-                   source.getDefiningOp(),
-                   {}});
+  plans.push_back({source, tensorType, source.getDefiningOp(), {}});
   return plans.back();
 }
 

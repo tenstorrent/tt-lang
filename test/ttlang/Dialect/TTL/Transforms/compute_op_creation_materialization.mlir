@@ -1,7 +1,7 @@
 // Verifies whole-kernel compute-op-creation ordering and exact consumer-operand
 // materialization decisions discovered by adversarial producer/use sweeps.
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-print-compute-op-creation-plans))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=PLAN
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute,ttl-auto-sync))' | FileCheck %s --check-prefix=FULL --implicit-check-not=tensor.expand_shape --implicit-check-not=tensor.collapse_shape
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-create-producer-compute,ttl-insert-intermediate-dfbs,convert-ttl-to-compute,ttl-auto-sync))' | FileCheck %s --check-prefix=FULL
 
 // A pure producer that dominates a nested consumer can be recomputed in the
 // consumer's region. No storage is needed across the region boundary.
@@ -264,20 +264,22 @@ func.func @two_transactions_and_elementwise_use()
 // -----
 
 // A zero-copy singleton-rank view has no tile recipe of its own. Materialize
-// its computed input through a reserve view with the producer's rank, then
-// attach the same DFB with the consumer-visible rank for the final passthrough.
+// its computed input in the producer's rank, then preserve the checked tensor
+// views of that attached input for the final passthrough.
 // PLAN-LABEL: ComputeOp creation plan @computed_shape_view_store
 // PLAN:       unassigned-store
 // PLAN:       operand=0
 // PLAN-NEXT:  reason=store-input-shape-view
 // FULL-LABEL: func.func @computed_shape_view_store
 // FULL:       %[[INTERMEDIATE_DFB:.*]] = ttl.bind_cb{{.*}} {ttl.compiler_allocated}
-// FULL:       %[[INTERMEDIATE_RESERVE:.*]] = ttl.cb_reserve %[[INTERMEDIATE_DFB]] {num_tiles = 4 : i64}
+// FULL:       %[[INTERMEDIATE_RESERVE:.*]] = ttl.cb_reserve %[[INTERMEDIATE_DFB]] : <[2, 2],
 // FULL:       ttl.compute
 // FULL:         ttl.tile_neg
 // FULL:       %[[INTERMEDIATE_WAIT:.*]] = ttl.cb_wait %[[INTERMEDIATE_DFB]]
 // FULL:       %[[INTERMEDIATE:.*]] = ttl.attach_cb %[[INTERMEDIATE_WAIT]], %[[INTERMEDIATE_DFB]]
-// FULL:       ttl.compute ins(%[[INTERMEDIATE]]
+// FULL-NEXT:  %[[INNER_VIEW:.*]] = tensor.expand_shape %[[INTERMEDIATE]]
+// FULL-NEXT:  %[[OUTER_VIEW:.*]] = tensor.expand_shape %[[INNER_VIEW]]
+// FULL:       ttl.compute ins(%[[OUTER_VIEW]]
 // FULL-NOT:   ttl.store
 func.func @computed_shape_view_store()
     attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
