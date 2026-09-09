@@ -323,7 +323,7 @@ buildDomains(operation):
     allocate and validate all domains before changing IR
 ```
 
-Each domain uses only conflicts observed on its member nodes. A conflict on any member prevents reuse throughout a multicast domain. Uniform mode uses conflicts from the complete launch grid. Unknown activity retains the payload, and unknown launch domains or unproved completion prevent reuse.
+Buffers share storage only when the compiler proves that their lifetimes do not overlap on any node in the allocation domain. Activity on nodes outside the domain does not constrain reuse. Unknown activity or completion prevents reuse. Uniform mode treats the complete launch grid as one domain.
 
 Control records remain at fixed offsets on every node, including nodes without that owner's payload, so reset and allocation-group ownership retain their existing contracts. Independent placement does not imply an optimal domain partition or minimum total device reservation.
 
