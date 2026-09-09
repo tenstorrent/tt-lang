@@ -246,3 +246,112 @@ func.func @matmul_transpose_rhs(
   ttl.store %mm, %reserve : tensor<2x3x!ttcore.tile<32x32, bf16>>, tensor<2x3x!ttcore.tile<32x32, bf16>>
   func.return %mm : tensor<2x3x!ttcore.tile<32x32, bf16>>
 }
+
+// -----
+
+// Rank-3 matmul preserves one batch dimension and adds it to every map.
+// CHECK-DAG: #[[$RANK3_LHS:.*]] = affine_map<(d0, d1, d2, d3) -> (d0, d1, d3)>
+// CHECK-DAG: #[[$RANK3_RHS:.*]] = affine_map<(d0, d1, d2, d3) -> (d0, d3, d2)>
+// CHECK-DAG: #[[$RANK3_OUT:.*]] = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2)>
+// CHECK-LABEL: func.func @matmul_rank3
+func.func @matmul_rank3(
+    %arg0: tensor<2x1x2x!ttcore.tile<32x32, bf16>>,
+    %arg1: tensor<2x2x1x!ttcore.tile<32x32, bf16>>)
+    -> tensor<2x1x1x!ttcore.tile<32x32, bf16>> {
+  // CHECK: ttl.compute
+  // CHECK-SAME: indexing_maps = [#[[$RANK3_LHS]], #[[$RANK3_RHS]], #[[$RANK3_OUT]]]
+  // CHECK-SAME: iterator_types = ["parallel", "parallel", "parallel", "reduction"]
+  // CHECK: ttl.tile_matmul_block
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 1, 2], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[2, 2, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[2, 1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %a = ttl.attach_cb %arg0, %cb0 : (tensor<2x1x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 1, 2], !ttcore.tile<32x32, bf16>, 2>) -> tensor<2x1x2x!ttcore.tile<32x32, bf16>>
+  %b = ttl.attach_cb %arg1, %cb1 : (tensor<2x2x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 2, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<2x2x1x!ttcore.tile<32x32, bf16>>
+  %reserve = ttl.cb_reserve %cb2 : <[2, 1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x1x1x!ttcore.tile<32x32, bf16>>
+  %mm = ttl.matmul %a, %b : tensor<2x1x2x!ttcore.tile<32x32, bf16>>, tensor<2x2x1x!ttcore.tile<32x32, bf16>> -> tensor<2x1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %mm, %reserve : tensor<2x1x1x!ttcore.tile<32x32, bf16>>, tensor<2x1x1x!ttcore.tile<32x32, bf16>>
+  func.return %mm : tensor<2x1x1x!ttcore.tile<32x32, bf16>>
+}
+
+// -----
+
+// Rank-4 matmul preserves both batch dimensions.
+// CHECK-DAG: #[[$RANK4_LHS:.*]] = affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2, d4)>
+// CHECK-DAG: #[[$RANK4_RHS:.*]] = affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d4, d3)>
+// CHECK-DAG: #[[$RANK4_OUT:.*]] = affine_map<(d0, d1, d2, d3, d4) -> (d0, d1, d2, d3)>
+// CHECK-LABEL: func.func @matmul_rank4
+func.func @matmul_rank4(
+    %arg0: tensor<2x2x1x2x!ttcore.tile<32x32, bf16>>,
+    %arg1: tensor<2x2x2x1x!ttcore.tile<32x32, bf16>>)
+    -> tensor<2x2x1x1x!ttcore.tile<32x32, bf16>> {
+  // CHECK: ttl.compute
+  // CHECK-SAME: indexing_maps = [#[[$RANK4_LHS]], #[[$RANK4_RHS]], #[[$RANK4_OUT]]]
+  // CHECK-SAME: iterator_types = ["parallel", "parallel", "parallel", "parallel", "reduction"]
+  // CHECK: ttl.tile_matmul_block
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 2, 1, 2], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[2, 2, 2, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[2, 2, 1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %a = ttl.attach_cb %arg0, %cb0 : (tensor<2x2x1x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 2, 1, 2], !ttcore.tile<32x32, bf16>, 2>) -> tensor<2x2x1x2x!ttcore.tile<32x32, bf16>>
+  %b = ttl.attach_cb %arg1, %cb1 : (tensor<2x2x2x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 2, 2, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<2x2x2x1x!ttcore.tile<32x32, bf16>>
+  %reserve = ttl.cb_reserve %cb2 : <[2, 2, 1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x2x1x1x!ttcore.tile<32x32, bf16>>
+  %mm = ttl.matmul %a, %b : tensor<2x2x1x2x!ttcore.tile<32x32, bf16>>, tensor<2x2x2x1x!ttcore.tile<32x32, bf16>> -> tensor<2x2x1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %mm, %reserve : tensor<2x2x1x1x!ttcore.tile<32x32, bf16>>, tensor<2x2x1x1x!ttcore.tile<32x32, bf16>>
+  func.return %mm : tensor<2x2x1x1x!ttcore.tile<32x32, bf16>>
+}
+
+// -----
+
+// A batched matmul and elementwise consumer share the batch-aware domain.
+// CHECK-DAG: #[[$FUSED_RANK3_LHS:.*]] = affine_map<(d0, d1, d2, d3) -> (d0, d1, d3)>
+// CHECK-DAG: #[[$FUSED_RANK3_RHS:.*]] = affine_map<(d0, d1, d2, d3) -> (d0, d3, d2)>
+// CHECK-DAG: #[[$FUSED_RANK3_OUT:.*]] = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2)>
+// CHECK-LABEL: func.func @matmul_rank3_fused_add
+func.func @matmul_rank3_fused_add(
+    %arg0: tensor<2x1x2x!ttcore.tile<32x32, bf16>>,
+    %arg1: tensor<2x2x1x!ttcore.tile<32x32, bf16>>,
+    %arg2: tensor<2x1x1x!ttcore.tile<32x32, bf16>>)
+    -> tensor<2x1x1x!ttcore.tile<32x32, bf16>> {
+  // CHECK: ttl.compute
+  // CHECK-SAME: indexing_maps = [#[[$FUSED_RANK3_LHS]], #[[$FUSED_RANK3_RHS]], #[[$FUSED_RANK3_OUT]], #[[$FUSED_RANK3_OUT]]]
+  // CHECK-SAME: iterator_types = ["parallel", "parallel", "parallel", "reduction"]
+  // CHECK: ttl.tile_matmul_block %{{.*}}, %{{.*}}, %{{.*}} into
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 1, 2], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[2, 2, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[2, 1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb3 = ttl.bind_cb {cb_index = 3, block_count = 2} : !ttl.cb<[2, 1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %a = ttl.attach_cb %arg0, %cb0 : (tensor<2x1x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 1, 2], !ttcore.tile<32x32, bf16>, 2>) -> tensor<2x1x2x!ttcore.tile<32x32, bf16>>
+  %b = ttl.attach_cb %arg1, %cb1 : (tensor<2x2x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 2, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<2x2x1x!ttcore.tile<32x32, bf16>>
+  %bias = ttl.attach_cb %arg2, %cb2 : (tensor<2x1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<2x1x1x!ttcore.tile<32x32, bf16>>
+  %reserve = ttl.cb_reserve %cb3 : <[2, 1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x1x1x!ttcore.tile<32x32, bf16>>
+  %mm = ttl.matmul %a, %b : tensor<2x1x2x!ttcore.tile<32x32, bf16>>, tensor<2x2x1x!ttcore.tile<32x32, bf16>> -> tensor<2x1x1x!ttcore.tile<32x32, bf16>>
+  %sum = ttl.add %mm, %bias : tensor<2x1x1x!ttcore.tile<32x32, bf16>>, tensor<2x1x1x!ttcore.tile<32x32, bf16>> -> tensor<2x1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %sum, %reserve : tensor<2x1x1x!ttcore.tile<32x32, bf16>>, tensor<2x1x1x!ttcore.tile<32x32, bf16>>
+  func.return %sum : tensor<2x1x1x!ttcore.tile<32x32, bf16>>
+}
+
+// -----
+
+// Batched transpose_rhs maps rhs as [batch..., N, K].
+// CHECK-DAG: #[[$TRANSPOSE_RANK3_LHS:.*]] = affine_map<(d0, d1, d2, d3) -> (d0, d1, d3)>
+// CHECK-DAG: #[[$TRANSPOSE_RANK3_RHS:.*]] = affine_map<(d0, d1, d2, d3) -> (d0, d2, d3)>
+// CHECK-DAG: #[[$TRANSPOSE_RANK3_OUT:.*]] = affine_map<(d0, d1, d2, d3) -> (d0, d1, d2)>
+// CHECK-LABEL: func.func @matmul_rank3_transpose_rhs
+func.func @matmul_rank3_transpose_rhs(
+    %arg0: tensor<2x1x2x!ttcore.tile<32x32, bf16>>,
+    %arg1: tensor<2x1x2x!ttcore.tile<32x32, bf16>>)
+    -> tensor<2x1x1x!ttcore.tile<32x32, bf16>> {
+  // CHECK: ttl.compute
+  // CHECK-SAME: indexing_maps = [#[[$TRANSPOSE_RANK3_LHS]], #[[$TRANSPOSE_RANK3_RHS]], #[[$TRANSPOSE_RANK3_OUT]]]
+  // CHECK-SAME: iterator_types = ["parallel", "parallel", "parallel", "reduction"]
+  // CHECK: ttl.tile_matmul_block
+  // CHECK-SAME: transpose_rhs
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 1, 2], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[2, 1, 2], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[2, 1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %a = ttl.attach_cb %arg0, %cb0 : (tensor<2x1x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 1, 2], !ttcore.tile<32x32, bf16>, 2>) -> tensor<2x1x2x!ttcore.tile<32x32, bf16>>
+  %b = ttl.attach_cb %arg1, %cb1 : (tensor<2x1x2x!ttcore.tile<32x32, bf16>>, !ttl.cb<[2, 1, 2], !ttcore.tile<32x32, bf16>, 2>) -> tensor<2x1x2x!ttcore.tile<32x32, bf16>>
+  %reserve = ttl.cb_reserve %cb2 : <[2, 1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x1x1x!ttcore.tile<32x32, bf16>>
+  %mm = ttl.matmul %a, %b {transpose_rhs} : tensor<2x1x2x!ttcore.tile<32x32, bf16>>, tensor<2x1x2x!ttcore.tile<32x32, bf16>> -> tensor<2x1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %mm, %reserve : tensor<2x1x1x!ttcore.tile<32x32, bf16>>, tensor<2x1x1x!ttcore.tile<32x32, bf16>>
+  func.return %mm : tensor<2x1x1x!ttcore.tile<32x32, bf16>>
+}

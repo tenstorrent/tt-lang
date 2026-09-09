@@ -23,13 +23,35 @@ func.func @matmul_bad_result_shape(
 
 // -----
 
-// Test: lhs not rank 2
-func.func @matmul_lhs_rank3(
+// Test: Operand ranks must match.
+func.func @matmul_operand_rank_mismatch(
     %a: tensor<1x2x3x!ttcore.tile<32x32, bf16>>,
     %b: tensor<3x4x!ttcore.tile<32x32, bf16>>) -> tensor<2x4x!ttcore.tile<32x32, bf16>> {
-  // expected-error @below {{lhs must be rank 2, got rank 3}}
+  // expected-error @below {{operand ranks must match, got lhs rank 3 and rhs rank 2}}
   %r = ttl.matmul %a, %b : tensor<1x2x3x!ttcore.tile<32x32, bf16>>, tensor<3x4x!ttcore.tile<32x32, bf16>> -> tensor<2x4x!ttcore.tile<32x32, bf16>>
   return %r : tensor<2x4x!ttcore.tile<32x32, bf16>>
+}
+
+// -----
+
+// Test: Leading batch dimensions must match.
+func.func @matmul_batch_mismatch(
+    %a: tensor<2x2x3x!ttcore.tile<32x32, bf16>>,
+    %b: tensor<3x3x4x!ttcore.tile<32x32, bf16>>) -> tensor<2x2x4x!ttcore.tile<32x32, bf16>> {
+  // expected-error @below {{batch dimension 0 mismatch: lhs has 2 but rhs has 3}}
+  %r = ttl.matmul %a, %b : tensor<2x2x3x!ttcore.tile<32x32, bf16>>, tensor<3x3x4x!ttcore.tile<32x32, bf16>> -> tensor<2x2x4x!ttcore.tile<32x32, bf16>>
+  return %r : tensor<2x2x4x!ttcore.tile<32x32, bf16>>
+}
+
+// -----
+
+// Test: Batched result must preserve leading dimensions and replace M/N.
+func.func @matmul_bad_batched_result_shape(
+    %a: tensor<2x2x3x!ttcore.tile<32x32, bf16>>,
+    %b: tensor<2x3x4x!ttcore.tile<32x32, bf16>>) -> tensor<2x2x3x!ttcore.tile<32x32, bf16>> {
+  // expected-error @below {{result shape [2, 2, 3] does not match expected [2, 2, 4]}}
+  %r = ttl.matmul %a, %b : tensor<2x2x3x!ttcore.tile<32x32, bf16>>, tensor<2x3x4x!ttcore.tile<32x32, bf16>> -> tensor<2x2x3x!ttcore.tile<32x32, bf16>>
+  return %r : tensor<2x2x3x!ttcore.tile<32x32, bf16>>
 }
 
 // -----
@@ -49,7 +71,7 @@ func.func @matmul_element_mismatch(
 func.func @matmul_rhs_rank1(
     %a: tensor<2x3x!ttcore.tile<32x32, bf16>>,
     %b: tensor<3x!ttcore.tile<32x32, bf16>>) -> tensor<2x3x!ttcore.tile<32x32, bf16>> {
-  // expected-error @below {{rhs must be rank 2, got rank 1}}
+  // expected-error @below {{rhs must have rank 2 or greater, got rank 1}}
   %r = ttl.matmul %a, %b : tensor<2x3x!ttcore.tile<32x32, bf16>>, tensor<3x!ttcore.tile<32x32, bf16>> -> tensor<2x3x!ttcore.tile<32x32, bf16>>
   return %r : tensor<2x3x!ttcore.tile<32x32, bf16>>
 }

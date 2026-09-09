@@ -199,13 +199,13 @@ enum class FusedInputRole {
   /// Elementwise input indexed by the output's parallel dimensions.
   Parallel,
 
-  /// Matmul left operand indexed by `[M, K]`.
+  /// Matmul left operand indexed by `[batch..., M, K]`.
   MatmulLeft,
 
-  /// Matmul right operand indexed by `[K, N]`.
+  /// Matmul right operand indexed by `[batch..., K, N]`.
   MatmulRight,
 
-  /// Transposed matmul right operand indexed by `[N, K]`.
+  /// Transposed matmul right operand indexed by `[batch..., N, K]`.
   MatmulTransposedRight,
 };
 
