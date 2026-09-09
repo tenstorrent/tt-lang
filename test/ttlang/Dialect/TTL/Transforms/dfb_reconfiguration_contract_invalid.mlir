@@ -165,7 +165,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
     %upper = arith.constant 2 : index
     %step = arith.constant 1 : index
     scf.for %iteration = %lower to %upper step %step {
-      // expected-error @below {{repeated DFB reconfiguration requires at least two ordered reconfiguration calls in the loop}}
+      // expected-error @below {{a repeated state-preserving DFB reconfiguration requires at least two ordered reconfiguration calls in the loop}}
       ttl.dfb_reconfiguration #boundary
     }
     return

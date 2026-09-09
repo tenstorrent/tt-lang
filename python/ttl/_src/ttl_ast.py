@@ -2415,14 +2415,16 @@ class TTLGenericCompiler(TTCompilerBase):
         """
         arg_kind = ttl.ir.ExternalTemplateArgKind
 
-        def _signed_integer(py_int: int):
-            if not -(1 << 31) <= py_int < (1 << 31):
-                self._raise_error(
-                    node,
-                    "ttl.call_extern_func() signed integer template argument "
-                    "must fit in 32 bits",
-                )
-            return _ExternalTemplateArg(arg_kind.SignedInteger, py_int)
+        def _integer(py_int: int):
+            if -(1 << 31) <= py_int < (1 << 31):
+                return _ExternalTemplateArg(arg_kind.SignedInteger, py_int)
+            if (1 << 31) <= py_int < (1 << 32):
+                return _ExternalTemplateArg(arg_kind.UnsignedInteger, py_int)
+            self._raise_error(
+                node,
+                "ttl.call_extern_func() integer template argument must fit "
+                f"in signed or unsigned 32 bits, got {py_int}",
+            )
 
         def _unsigned_integer(py_int: int):
             if not 0 <= py_int < (1 << 32):
@@ -2483,13 +2485,13 @@ class TTLGenericCompiler(TTCompilerBase):
             if type(node.value) is bool:
                 return _boolean(node.value)
             if type(node.value) is int:
-                return _signed_integer(node.value)
+                return _integer(node.value)
             if isinstance(node.value, float):
                 return _unsigned_integer(_float_bits(node.value))
 
         int_val = self._signed_int_literal(node)
         if int_val is not None:
-            return _signed_integer(int_val)
+            return _integer(int_val)
 
         # Fold unary-minus float literals (e.g. ``-1.5``).
         if (
@@ -2505,7 +2507,7 @@ class TTLGenericCompiler(TTCompilerBase):
             if type(val) is bool:
                 return _boolean(val)
             if type(val) is int:
-                return _signed_integer(val)
+                return _integer(val)
             if isinstance(val, float):
                 return _unsigned_integer(_float_bits(val))
             if is_ttnn_global_semaphore(val):
@@ -2517,7 +2519,7 @@ class TTLGenericCompiler(TTCompilerBase):
             if type(val) is bool:
                 return _boolean(val)
             if type(val) is int:
-                return _signed_integer(val)
+                return _integer(val)
             if isinstance(val, float):
                 return _unsigned_integer(_float_bits(val))
             if is_ttnn_global_semaphore(val):
@@ -2536,7 +2538,11 @@ class TTLGenericCompiler(TTCompilerBase):
                 "ttl.raw_addr(base_tensor)",
             )
         resolved_type = getattr(resolved, "type", None)
-        cb_type = ttl.CircularBufferType.maybe_downcast(resolved_type)
+        cb_type = (
+            ttl.CircularBufferType.maybe_downcast(resolved_type)
+            if resolved_type is not None
+            else None
+        )
         if cb_type is not None:
             self._raise_error(
                 node,
@@ -2553,7 +2559,7 @@ class TTLGenericCompiler(TTCompilerBase):
                 if isinstance(value_attr, IntegerAttr):
                     if resolved_type.width == 1:
                         return _boolean(bool(int(value_attr.value)))
-                    return _signed_integer(int(value_attr.value))
+                    return _integer(int(value_attr.value))
             self._raise_error(
                 node,
                 "ttl.call_extern_func() template_args integer values must be "
@@ -2563,7 +2569,7 @@ class TTLGenericCompiler(TTCompilerBase):
             if isinstance(def_op, arith.ConstantOp):
                 value_attr = def_op.value
                 if isinstance(value_attr, IntegerAttr):
-                    return _signed_integer(int(value_attr.value))
+                    return _integer(int(value_attr.value))
             self._raise_error(
                 node,
                 "ttl.call_extern_func() template_args index values must be "
@@ -2574,7 +2580,7 @@ class TTLGenericCompiler(TTCompilerBase):
             node,
             "ttl.call_extern_func() template_args element must be an int, "
             "bool, float, ttl.dfb_descriptor(dfb), ttl.get_dfb_id(dfb), "
-            "or an integer/index value",
+            f"or an integer/index value, got {type(resolved).__name__}",
         )
 
     def _resolve_string_value(self, node, param_name):

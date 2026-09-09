@@ -7,6 +7,10 @@
 #if defined(COMPILE_FOR_TRISC)
 #include "api/compute/cb_api.h"
 #include "api/compute/compute_kernel_api.h"
+#include "api/compute/eltwise_unary/eltwise_unary.h"
+#include "api/compute/pack.h"
+#include "api/compute/reg_api.h"
+#include "api/compute/tile_move_copy.h"
 #elif defined(COMPILE_FOR_NCRISC) || defined(COMPILE_FOR_BRISC)
 #include "api/dataflow/circular_buffer.h"
 #include "api/dataflow/dataflow_api.h"
@@ -49,5 +53,24 @@ inline void wait_without_pop() {
 #if defined(COMPILE_FOR_TRISC)
   using namespace ckernel;
   cb_wait_front(InputDFB::index, 1);
+#endif
+}
+
+template <typename InputDFB, typename OutputDFB>
+inline void copy_dfb_tile() {
+#if defined(COMPILE_FOR_TRISC)
+  using namespace ckernel;
+  cb_wait_front(InputDFB::index, 1);
+  cb_reserve_back(OutputDFB::index, 1);
+  init_sfpu(InputDFB::index, OutputDFB::index);
+  tile_regs_acquire();
+  copy_tile_init(InputDFB::index);
+  copy_tile(InputDFB::index, 0, 0);
+  tile_regs_commit();
+  tile_regs_wait();
+  pack_tile<true>(0, OutputDFB::index, 0);
+  tile_regs_release();
+  cb_push_back(OutputDFB::index, 1);
+  cb_pop_front(InputDFB::index, 1);
 #endif
 }

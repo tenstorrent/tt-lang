@@ -84,6 +84,9 @@ public:
   /// Adds one DFB. On failure, `failureReason` describes the invalid type.
   LogicalResult add(int64_t storageIndex, CircularBufferType type,
                     std::string &failureReason);
+  /// Adds one finalized DFB configuration from runtime metadata.
+  LogicalResult add(int64_t storageIndex, uint64_t allocationBytes,
+                    uint64_t pageSize, std::string &failureReason);
 
   bool empty() const { return layoutByIndex.empty(); }
   /// Returns the sum after target allocation rounding is applied per storage.

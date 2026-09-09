@@ -1808,6 +1808,12 @@ and the order of statically expanded transactions. Effects are synchronous
 facts about actions completed inside the external call; they do not emit
 lifecycle operations.
 
+A reserve without a push waits for free producer capacity but changes no DFB
+counter or pointer. It is a complete state-preserving access. It still extends
+the DFB lifetime and requires the current descriptor on every node where it
+executes. A wait without a pop is different: it may block until a producer
+publishes the requested data, so the compiler must prove that publication.
+
 An occurrence with neither a protocol effect nor a non-transactional access
 remains a possible read or write beginning at call entry. Its access contract
 is incomplete unless a following synchronized reset or state-discarding
@@ -1832,7 +1838,8 @@ descriptor or contents but does not publish, consume, or leave that DFB changed.
 The call remains a storage access, so reuse still requires a proved
 non-overlapping lifetime order; the summary establishes an identity queue-state
 transition. One dependency occurrence cannot declare both a protocol effect and
-a non-transactional access.
+a non-transactional access. For calls emitted in multiple logical kernels, both
+`dfb_effects` and `dfb_accesses` may map each kernel selector to its own list.
 
 `unknown_dfb_access` represents access to user-managed DFBs absent from the
 declared dependencies. For allocation, liveness analysis conservatively adds

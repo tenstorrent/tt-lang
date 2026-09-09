@@ -139,6 +139,118 @@ def _make_discarded_wait_state_operation(data_format):
     return discarded_wait_state_operation
 
 
+def _make_repeated_allocation_domain_expansion_operation(
+    data_format, iterations, external_compute
+):
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    reconfigure_for_all_cores = ttl.DFBReconfiguration(
+        participants=(compute_kernel, reader_kernel, writer_kernel),
+        discard_dfb_state=True,
+    )
+    reconfigure_for_root_core = ttl.DFBReconfiguration(
+        participants=(compute_kernel, reader_kernel, writer_kernel),
+        discard_dfb_state=True,
+    )
+    allocation_group = ttl.make_dfb_allocation_group()
+
+    @ttl.operation(grid=(2, 1))
+    def repeated_allocation_domain_expansion_operation(input_tensor, output_tensor):
+        root_input_dfb = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=1,
+        )
+        root_result_dfb = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=1,
+            allocation_group=allocation_group,
+        )
+        all_cores_dfb = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=1,
+            allocation_group=allocation_group,
+        )
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            node_x, _node_y = ttl.node(dims=2)
+            for _iteration in range(iterations):
+                if node_x == 0:
+                    if external_compute:
+                        ttl.call_extern_func(
+                            DFB_RECONFIGURATION_TEST_HEADER,
+                            "copy_dfb_tile",
+                            template_args=[
+                                ttl.dfb_descriptor(root_input_dfb),
+                                ttl.dfb_descriptor(root_result_dfb),
+                            ],
+                            dfb_effects=[
+                                ttl.DFBEffect.wait(root_input_dfb, tiles=1),
+                                ttl.DFBEffect.reserve(root_result_dfb, tiles=1),
+                                ttl.DFBEffect.push(root_result_dfb, tiles=1),
+                                ttl.DFBEffect.pop(root_input_dfb, tiles=1),
+                            ],
+                        )
+                    else:
+                        with root_input_dfb.wait() as source:
+                            with root_result_dfb.reserve() as result:
+                                result.store(source)
+                ttl.reconfigure_dfbs(reconfigure_for_all_cores)
+                ttl.reconfigure_dfbs(reconfigure_for_root_core)
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            node_x, _node_y = ttl.node(dims=2)
+            for iteration in range(iterations):
+                root_phase = iteration * 2
+                if node_x == 0:
+                    with root_input_dfb.reserve() as destination:
+                        ttl.copy(
+                            input_tensor[root_phase : root_phase + 1, 0:1],
+                            destination,
+                        ).wait()
+                ttl.reconfigure_dfbs(reconfigure_for_all_cores)
+                all_cores_phase = root_phase + 1
+                with all_cores_dfb.reserve() as destination:
+                    ttl.copy(
+                        input_tensor[
+                            all_cores_phase : all_cores_phase + 1,
+                            node_x : node_x + 1,
+                        ],
+                        destination,
+                    ).wait()
+                ttl.reconfigure_dfbs(reconfigure_for_root_core)
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            node_x, _node_y = ttl.node(dims=2)
+            for iteration in range(iterations):
+                root_phase = iteration * 2
+                if node_x == 0:
+                    with root_result_dfb.wait() as source:
+                        ttl.copy(
+                            source,
+                            output_tensor[root_phase : root_phase + 1, 0:1],
+                        ).wait()
+                ttl.reconfigure_dfbs(reconfigure_for_all_cores)
+                all_cores_phase = root_phase + 1
+                with all_cores_dfb.wait() as source:
+                    ttl.copy(
+                        source,
+                        output_tensor[
+                            all_cores_phase : all_cores_phase + 1,
+                            node_x : node_x + 1,
+                        ],
+                    ).wait()
+                ttl.reconfigure_dfbs(reconfigure_for_root_core)
+
+    return repeated_allocation_domain_expansion_operation
+
+
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
 @pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
 def test_repeated_reconfiguration_discards_opaque_state_before_reuse(
@@ -217,6 +329,53 @@ def test_reconfiguration_discards_wait_state_before_reuse(
     assert allocation_metadata.count("dfb_index = ") == 1
     actual = ttnn.to_torch(output).float()
     expected = host_input[:, 32:].float()
+    assert_pcc(expected, actual, 0.9999)
+    tolerance = (0.05, 1.0) if dtype == torch.bfloat16 else (1e-5, 1e-6)
+    assert_allclose(actual, expected, rtol=tolerance[0], atol=tolerance[1])
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+@pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
+@pytest.mark.parametrize(
+    "external_compute", [False, True], ids=["native-compute", "external-compute"]
+)
+def test_repeated_reconfiguration_expands_allocation_domain(
+    device, dtype, to_device, external_compute, monkeypatch, tmp_path
+):
+    """A native or external compute result becomes an all-core data-movement DFB."""
+    if ttl_api._detect_device_arch(device) != "blackhole":
+        pytest.skip("requires Blackhole DFB reconfiguration support")
+
+    iterations = 3
+    data_format = "bf16" if dtype == torch.bfloat16 else "float32"
+    operation = _make_repeated_allocation_domain_expansion_operation(
+        data_format, iterations, external_compute
+    )
+    final_mlir_file = tmp_path / "allocation_domain_expansion.final.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_file))
+    host_input = (
+        torch.arange(iterations * 2 * 32 * 64, dtype=torch.float32)
+        .reshape(iterations * 2 * 32, 64)
+        .remainder(257)
+        .to(dtype)
+    )
+    output = to_device(torch.zeros_like(host_input), device)
+
+    operation(
+        to_device(host_input, device),
+        output,
+        options="--ttl-unsafe-assume-dfb-allocation-groups",
+    )
+
+    allocation_metadata = final_mlir_file.read_text().partition(
+        "ttl.dfb_reconfiguration_plan"
+    )[0]
+    assert allocation_metadata.count("dfb_index = ") == 2
+    actual = ttnn.to_torch(output).float()
+    expected = host_input.float()
+    for iteration in range(iterations):
+        root_phase_start = iteration * 2 * 32
+        expected[root_phase_start : root_phase_start + 32, 32:64] = 0
     assert_pcc(expected, actual, 0.9999)
     tolerance = (0.05, 1.0) if dtype == torch.bfloat16 else (1e-5, 1e-6)
     assert_allclose(actual, expected, rtol=tolerance[0], atol=tolerance[1])

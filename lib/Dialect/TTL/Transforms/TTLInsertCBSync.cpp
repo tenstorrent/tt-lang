@@ -20,6 +20,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
+#include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -80,6 +81,70 @@ struct GuardedLocalReleaseInfo {
 
 struct GuardedAcquireUseInfo {
   bool hasNonLocalUse = false;
+};
+
+// Static core predicates may express a subset of an acquisition domain with a
+// different SSA value. Prove that implication over every declared launch node;
+// predicates that cannot be evaluated statically retain the structural rule.
+class GuardImplicationAnalysis {
+public:
+  explicit GuardImplicationAnalysis(func::FuncOp func) {
+    ModuleOp module = func->getParentOfType<ModuleOp>();
+    if (!module) {
+      return;
+    }
+    state.initialize(module);
+  }
+
+  bool proves(Operation *operation, Value acquisitionCondition) const {
+    if (isOperationInThenRegionGuardedBy(operation, acquisitionCondition)) {
+      return true;
+    }
+    if (!state.hasLaunchGrid) {
+      return false;
+    }
+    for (LaunchNodeCoord coord : state.baseDomain.nodes) {
+      std::optional<bool> acquisitionRuns =
+          evaluatePredicateAtLaunchNode(acquisitionCondition, coord, state);
+      if (!acquisitionRuns) {
+        return false;
+      }
+      if (*acquisitionRuns) {
+        continue;
+      }
+      if (!isExcludedByEnclosingBranch(operation, coord)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+private:
+  bool isExcludedByEnclosingBranch(Operation *operation,
+                                    LaunchNodeCoord coord) const {
+    for (Operation *ancestor = operation->getParentOp(), *child = operation;
+         ancestor; child = ancestor, ancestor = ancestor->getParentOp()) {
+      auto ifOp = dyn_cast<scf::IfOp>(ancestor);
+      if (!ifOp) {
+        continue;
+      }
+      bool inThen =
+          ifOp.getThenRegion().isAncestor(child->getParentRegion());
+      bool inElse = !ifOp.getElseRegion().empty() &&
+                    ifOp.getElseRegion().isAncestor(child->getParentRegion());
+      if (!inThen && !inElse) {
+        continue;
+      }
+      std::optional<bool> condition =
+          evaluatePredicateAtLaunchNode(ifOp.getCondition(), coord, state);
+      if (condition && (*condition != inThen)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  LaunchNodeDomainState state;
 };
 
 static scf::IfOp getGuardedAcquireIf(Operation *acquire) {
@@ -149,7 +214,9 @@ static bool isBeforeLocalKindBoundary(Operation *operation,
 static bool updateLocalSlotValuesAndTestUse(DFBAcquireInterval interval,
                                             Operation *operation,
                                             DenseSet<Value> &slotValues,
-                                            Operation *localKindBoundary) {
+                                            Operation *localKindBoundary,
+                                            ArrayRef<Operation *> acquires,
+                                            const DominanceInfo &dominanceInfo) {
   bool usesSlot = false;
   for (Value operand : operation->getOperands()) {
     if (slotValues.contains(operand)) {
@@ -172,20 +239,34 @@ static bool updateLocalSlotValuesAndTestUse(DFBAcquireInterval interval,
   if (!isBeforeLocalKindBoundary(operation, interval, localKindBoundary)) {
     return false;
   }
+  // A later acquisition owns dominated direct DFB accesses because it advances
+  // the queue pointer. SSA uses derived from this acquisition remain exact.
+  if (llvm::any_of(acquires, [&](Operation *otherAcquire) {
+        return otherAcquire != interval.acquire &&
+               getDFBAcquireDFB(otherAcquire) == interval.dfb &&
+               dominanceInfo.properlyDominates(interval.acquire,
+                                                otherAcquire) &&
+               dominanceInfo.properlyDominates(otherAcquire, operation);
+      })) {
+    return false;
+  }
   return operationMayDirectlyUseAcquiredDFBSlot(interval, operation);
 }
 
 static bool nestedRegionMayUseLocalSlot(DFBAcquireInterval interval,
                                         Operation *operation,
                                         DenseSet<Value> slotValues,
-                                        Operation *localKindBoundary) {
+                                        Operation *localKindBoundary,
+                                        ArrayRef<Operation *> acquires,
+                                        const DominanceInfo &dominanceInfo) {
   bool foundUse = false;
   operation->walk([&](Operation *nested) {
     if (nested == operation) {
       return;
     }
-    foundUse |= updateLocalSlotValuesAndTestUse(interval, nested, slotValues,
-                                                localKindBoundary);
+    foundUse |= updateLocalSlotValuesAndTestUse(
+        interval, nested, slotValues, localKindBoundary, acquires,
+        dominanceInfo);
   });
   return foundUse;
 }
@@ -193,16 +274,20 @@ static bool nestedRegionMayUseLocalSlot(DFBAcquireInterval interval,
 static bool operationMayUseLocalSlot(DFBAcquireInterval interval,
                                      Operation *operation,
                                      DenseSet<Value> &slotValues,
-                                     Operation *localKindBoundary) {
+                                     Operation *localKindBoundary,
+                                     ArrayRef<Operation *> acquires,
+                                     const DominanceInfo &dominanceInfo) {
   if (updateLocalSlotValuesAndTestUse(interval, operation, slotValues,
-                                      localKindBoundary)) {
+                                      localKindBoundary, acquires,
+                                      dominanceInfo)) {
     for (Value result : operation->getResults()) {
       slotValues.insert(result);
     }
     return true;
   }
   if (nestedRegionMayUseLocalSlot(interval, operation, slotValues,
-                                  localKindBoundary)) {
+                                  localKindBoundary, acquires,
+                                  dominanceInfo)) {
     for (Value result : operation->getResults()) {
       slotValues.insert(result);
     }
@@ -272,7 +357,8 @@ findGuardedExternalKindBoundary(DFBAcquireInterval interval, scf::IfOp guard,
 static std::optional<PlanningDiagnostic> validateGuardedExternalReleases(
     DFBAcquireInterval interval, scf::IfOp guard, Operation *lastOwnedUse,
     Operation *externalKindBoundary, ArrayRef<Operation *> releases,
-    DFBProtocolEffectKind releaseEffectKind, StringRef effectName) {
+    DFBProtocolEffectKind releaseEffectKind, StringRef effectName,
+    const GuardImplicationAnalysis &guardAnalysis) {
   Operation *projectedLast =
       lastOwnedUse ? projectToGuardBlock(lastOwnedUse, guard) : nullptr;
   for (Operation *release : releases) {
@@ -290,7 +376,7 @@ static std::optional<PlanningDiagnostic> validateGuardedExternalReleases(
       continue;
     }
 
-    if (!isOperationInThenRegionGuardedBy(release, guard.getCondition())) {
+    if (!guardAnalysis.proves(release, guard.getCondition())) {
       return PlanningDiagnostic(release,
                                 ("conditional dataflow buffer " + effectName +
                                  " must execute under the acquiring condition")
@@ -310,13 +396,15 @@ static bool hasGuardedExternalRelease(DFBAcquireInterval interval,
                                       scf::IfOp guard, Operation *lastOwnedUse,
                                       Operation *externalKindBoundary,
                                       ArrayRef<Operation *> releases,
-                                      DFBProtocolEffectKind releaseEffectKind) {
+                                      DFBProtocolEffectKind releaseEffectKind,
+                                      const GuardImplicationAnalysis
+                                          &guardAnalysis) {
   Operation *projectedLast =
       lastOwnedUse ? projectToGuardBlock(lastOwnedUse, guard) : nullptr;
   for (Operation *release : releases) {
     if (!hasProtocolEffect(release, interval.dfb, releaseEffectKind) ||
         isNestedUnder(release, guard.getOperation()) ||
-        !isOperationInThenRegionGuardedBy(release, guard.getCondition())) {
+        !guardAnalysis.proves(release, guard.getCondition())) {
       continue;
     }
     Operation *projectedRelease = projectToGuardBlock(release, guard);
@@ -337,14 +425,15 @@ static bool hasGuardedExternalRelease(DFBAcquireInterval interval,
 
 static PlanningResult<GuardedAcquireUseInfo>
 analyzeGuardedAcquireUses(DFBAcquireInterval interval, scf::IfOp guard,
-                          Operation *externalKindBoundary) {
+                          Operation *externalKindBoundary,
+                          const GuardImplicationAnalysis &guardAnalysis) {
   GuardedAcquireUseInfo info;
 
   auto classifyUse = [&](Operation *user) -> std::optional<PlanningDiagnostic> {
     if (isNestedUnder(user, guard.getOperation())) {
       return std::nullopt;
     }
-    if (!isOperationInThenRegionGuardedBy(user, guard.getCondition())) {
+    if (!guardAnalysis.proves(user, guard.getCondition())) {
       return PlanningDiagnostic(
           user,
           "conditional dataflow buffer slot use must be under the acquiring "
@@ -424,8 +513,9 @@ analyzeGuardedAcquireUses(DFBAcquireInterval interval, scf::IfOp guard,
 }
 
 static PlanningResult<GuardedLocalReleaseInfo> analyzeGuardedLocalReleases(
-    DFBAcquireInterval interval, ArrayRef<Operation *> releases,
-    DFBProtocolEffectKind releaseEffectKind, StringRef effectName) {
+    DFBAcquireInterval interval, ArrayRef<Operation *> acquires,
+    ArrayRef<Operation *> releases, DFBProtocolEffectKind releaseEffectKind,
+    StringRef effectName, const DominanceInfo &dominanceInfo) {
   GuardedLocalReleaseInfo info;
   Operation *localKindBoundary = findLocalKindBoundary(interval);
   DenseSet<Operation *> candidateReleases;
@@ -452,7 +542,8 @@ static PlanningResult<GuardedLocalReleaseInfo> analyzeGuardedLocalReleases(
       continue;
     }
     if (operationMayUseLocalSlot(interval, &operation, slotValues,
-                                 localKindBoundary)) {
+                                 localKindBoundary, acquires,
+                                 dominanceInfo)) {
       info.lastLocalUse = &operation;
     }
   }
@@ -482,7 +573,9 @@ template <typename ConcreteReleaseOp>
 static PlanningResult<SmallVector<MissingReleasePlan>> planMissingReleases(
     ArrayRef<Operation *> acquires, ArrayRef<Operation *> releases,
     DFBProtocolEffectKind releaseEffectKind, StringRef effectName,
-    const DenseSet<Operation *> &acquisitionsRequiringExplicitRelease) {
+    const DenseSet<Operation *> &acquisitionsRequiringExplicitRelease,
+    const DominanceInfo &dominanceInfo,
+    const GuardImplicationAnalysis &guardAnalysis) {
   SmallVector<MissingReleasePlan> plans;
   for (Operation *acquire : acquires) {
     DFBAcquireInterval interval = makeDFBAcquireInterval(acquire, acquires);
@@ -498,7 +591,8 @@ static PlanningResult<SmallVector<MissingReleasePlan>> planMissingReleases(
       Operation *externalKindBoundary =
           findGuardedExternalKindBoundary(interval, guard, acquires);
       auto localReleaseInfo = analyzeGuardedLocalReleases(
-          interval, releases, releaseEffectKind, effectName);
+          interval, acquires, releases, releaseEffectKind, effectName,
+          dominanceInfo);
       if (localReleaseInfo.isInvalidIR()) {
         const PlanningDiagnostic &diagnostic = localReleaseInfo.getInvalidIR();
         return PlanningResult<SmallVector<MissingReleasePlan>>::invalidIR(
@@ -506,7 +600,8 @@ static PlanningResult<SmallVector<MissingReleasePlan>> planMissingReleases(
       }
 
       auto guardedUseInfo =
-          analyzeGuardedAcquireUses(interval, guard, externalKindBoundary);
+          analyzeGuardedAcquireUses(interval, guard, externalKindBoundary,
+                                    guardAnalysis);
       if (guardedUseInfo.isInvalidIR()) {
         const PlanningDiagnostic &diagnostic = guardedUseInfo.getInvalidIR();
         return PlanningResult<SmallVector<MissingReleasePlan>>::invalidIR(
@@ -516,7 +611,8 @@ static PlanningResult<SmallVector<MissingReleasePlan>> planMissingReleases(
       if (std::optional<PlanningDiagnostic> diagnostic =
               validateGuardedExternalReleases(interval, guard, last,
                                               externalKindBoundary, releases,
-                                              releaseEffectKind, effectName)) {
+                                              releaseEffectKind, effectName,
+                                              guardAnalysis)) {
         return PlanningResult<SmallVector<MissingReleasePlan>>::invalidIR(
             diagnostic->operation, diagnostic->message);
       }
@@ -526,7 +622,8 @@ static PlanningResult<SmallVector<MissingReleasePlan>> planMissingReleases(
       }
 
       if (hasGuardedExternalRelease(interval, guard, last, externalKindBoundary,
-                                    releases, releaseEffectKind)) {
+                                    releases, releaseEffectKind,
+                                    guardAnalysis)) {
         continue;
       }
 
@@ -812,9 +909,12 @@ struct TTLInsertCBSyncPass
     }
 
     const DenseSet<Operation *> noExplicitReleaseAcquisitions;
+    DominanceInfo dominanceInfo(func);
+    GuardImplicationAnalysis guardAnalysis(func);
     auto producerPlan = planMissingReleases<CBPushOp>(
         operations.reserves, operations.producerProtocolReleases,
-        DFBProtocolEffectKind::Push, "push", conditionalReleasePlan->reserves);
+        DFBProtocolEffectKind::Push, "push", conditionalReleasePlan->reserves,
+        dominanceInfo, guardAnalysis);
     if (producerPlan.isInvalidIR()) {
       const PlanningDiagnostic &diagnostic = producerPlan.getInvalidIR();
       diagnostic.operation->emitError(diagnostic.message);
@@ -823,7 +923,8 @@ struct TTLInsertCBSyncPass
     }
     auto consumerPlan = planMissingReleases<CBPopOp>(
         operations.waits, operations.consumerProtocolReleases,
-        DFBProtocolEffectKind::Pop, "pop", noExplicitReleaseAcquisitions);
+        DFBProtocolEffectKind::Pop, "pop", noExplicitReleaseAcquisitions,
+        dominanceInfo, guardAnalysis);
     if (consumerPlan.isInvalidIR()) {
       const PlanningDiagnostic &diagnostic = consumerPlan.getInvalidIR();
       diagnostic.operation->emitError(diagnostic.message);

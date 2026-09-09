@@ -16,7 +16,7 @@ import sys
 import threading
 import weakref
 from collections.abc import Hashable, MutableMapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Union
 
@@ -1525,6 +1525,26 @@ def _get_kernel_fabric_manager_intervals(module, kernel_name: str):
     return tuple(intervals)
 
 
+def _make_data_movement_config(noc_role: int, dynamic_noc: bool):
+    """Build the TTNN descriptor for a compiler-assigned NOC thread."""
+    if not dynamic_noc:
+        if noc_role == 0:
+            return ttnn.ReaderConfigDescriptor()
+        return ttnn.WriterConfigDescriptor()
+
+    if noc_role == 0:
+        processor = ttnn.DataMovementProcessor.RISCV_1
+        noc = ttnn.NOC.RISCV_0_default
+    else:
+        processor = ttnn.DataMovementProcessor.RISCV_0
+        noc = ttnn.NOC.RISCV_1_default
+    return ttnn.DataMovementConfigDescriptor(
+        processor=processor,
+        noc=noc,
+        noc_mode=ttnn.NOC_MODE.DM_DYNAMIC_NOC,
+    )
+
+
 def _compile_ttnn_kernel(
     module,
     args,
@@ -1552,6 +1572,7 @@ def _compile_ttnn_kernel(
     sram_allocation_report: bool = False,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
+    dynamic_noc: bool = False,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -1790,11 +1811,10 @@ def _compile_ttnn_kernel(
             thread_to_kernel["TRISC_2"] = name
         elif thread_type == "noc":
             noc_role = _get_kernel_noc_index(module, name)
+            config = _make_data_movement_config(noc_role, dynamic_noc)
             if noc_role == 0:
-                config = ttnn.ReaderConfigDescriptor()
                 thread_to_kernel["NCRISC"] = name  # Reader
             else:
-                config = ttnn.WriterConfigDescriptor()
                 thread_to_kernel["BRISC"] = name  # Writer
         else:
             config = ttnn.ReaderConfigDescriptor()
@@ -2378,6 +2398,8 @@ def _extract_dfb_reconfiguration_plan(module, physical_configs):
             if field not in dfb_entry:
                 raise ValueError(f"{context} is missing '{field}'")
         dfb_index = int(dfb_entry["dfb_index"])
+        if dfb_index < 0 or dfb_index >= len(physical_configs):
+            raise ValueError(f"{context}.dfb_index must reference ttl.dfb_allocations")
         if dfb_index in dfb_epochs_by_index:
             raise ValueError(f"{attribute_name} contains duplicate index {dfb_index}")
         epochs = []
@@ -2396,12 +2418,22 @@ def _extract_dfb_reconfiguration_plan(module, physical_configs):
                     f"{epoch_context}.entry_reconfiguration is not a boundary"
                 )
             seen_entries.add(entry_ordinal)
+            config = _parse_physical_dfb_config(
+                epoch_entry, dfb_index=dfb_index, context=epoch_context
+            )
+            physical_storage_index = physical_configs[dfb_index].storage_index
+            if (
+                config.storage_index is not None
+                and config.storage_index != physical_storage_index
+            ):
+                raise ValueError(
+                    f"{epoch_context}.storage_index does not match "
+                    "ttl.dfb_allocations"
+                )
             epochs.append(
                 DFBConfigurationEpoch(
                     entry_reconfiguration_ordinal=entry_ordinal,
-                    config=_parse_physical_dfb_config(
-                        epoch_entry, dfb_index=dfb_index, context=epoch_context
-                    ),
+                    config=replace(config, storage_index=physical_storage_index),
                 )
             )
         if not epochs:
@@ -3319,6 +3351,7 @@ def _lower_program_to_kernel(
             sram_allocation_report=compiler_options.sram_allocation_report,
             runtime_resource_factory=runtime_resource_factory,
             runtime_resource_cache=runtime_resource_cache,
+            dynamic_noc=compiler_options.dynamic_noc,
         )
         return compiled_kernel
 
