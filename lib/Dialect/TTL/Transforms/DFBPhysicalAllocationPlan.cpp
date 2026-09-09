@@ -482,12 +482,16 @@ public:
 
   static DFBPhysicalConflictModel
   buildStorage(const DFBConcurrentKernelLivenessAnalysis &liveness,
-               DFBStorageConflictMode mode) {
+               DFBStorageConflictMode mode,
+               std::optional<ArrayRef<LaunchNodeCoord>> nodes) {
     ArrayRef<DFBLogicalLifecycle> logicalDFBs =
         liveness.getLogicalDFBLifecycles();
     DFBPhysicalConflictModel model;
     model.adjacency.assign(logicalDFBs.size(),
                            llvm::BitVector(logicalDFBs.size()));
+    if (nodes && nodes->empty()) {
+      return model;
+    }
     for (unsigned lhsIndex = 0; lhsIndex < logicalDFBs.size(); ++lhsIndex) {
       for (unsigned rhsIndex = lhsIndex + 1; rhsIndex < logicalDFBs.size();
            ++rhsIndex) {
@@ -500,7 +504,8 @@ public:
             mode == DFBStorageConflictMode::CompilerManaged;
         requirements.considerDescriptorInstallationWrites =
             mode == DFBStorageConflictMode::MetalRuntimeDescriptor;
-        addPairConflicts(model, liveness, lhsIndex, rhsIndex, requirements);
+        addPairConflicts(model, liveness, lhsIndex, rhsIndex, requirements,
+                         nodes);
       }
     }
     return model;
@@ -552,11 +557,11 @@ private:
     }
   }
 
-  static void
-  addPairConflicts(DFBPhysicalConflictModel &model,
-                   const DFBConcurrentKernelLivenessAnalysis &liveness,
-                   unsigned lhsIndex, unsigned rhsIndex,
-                   const DFBPairConflictRequirements &requirements) {
+  static void addPairConflicts(
+      DFBPhysicalConflictModel &model,
+      const DFBConcurrentKernelLivenessAnalysis &liveness, unsigned lhsIndex,
+      unsigned rhsIndex, const DFBPairConflictRequirements &requirements,
+      std::optional<ArrayRef<LaunchNodeCoord>> nodes = std::nullopt) {
     ArrayRef<DFBLogicalLifecycle> logicalDFBs =
         liveness.getLogicalDFBLifecycles();
     const DFBLogicalLifecycle &lhs = logicalDFBs[lhsIndex];
@@ -604,6 +609,11 @@ private:
       LaunchNodeDomain exactSharedNodes =
           lhs.launchDomain.intersectWith(rhs.launchDomain);
       llvm::append_range(sharedNodes, exactSharedNodes.nodes);
+    }
+    if (nodes) {
+      llvm::erase_if(sharedNodes, [&](LaunchNodeCoord node) {
+        return !llvm::is_contained(*nodes, node);
+      });
     }
     if (sharedNodes.empty()) {
       return;
@@ -803,8 +813,9 @@ private:
 
 DFBPhysicalConflictModel DFBPhysicalConflictModel::buildStorage(
     const DFBConcurrentKernelLivenessAnalysis &liveness,
-    DFBStorageConflictMode mode) {
-  return DFBPhysicalConflictModelBuilder::buildStorage(liveness, mode);
+    DFBStorageConflictMode mode,
+    std::optional<ArrayRef<LaunchNodeCoord>> nodes) {
+  return DFBPhysicalConflictModelBuilder::buildStorage(liveness, mode, nodes);
 }
 
 namespace {
