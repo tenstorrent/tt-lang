@@ -1288,7 +1288,8 @@ def TTLFinalizeDFBIndices
            "compiler-l1 payload placement.">,
     Option<"l1ExactAllocationSearchLimit",
            "l1-exact-allocation-search-limit", "uint64_t", "1000000",
-           "Maximum work items examined by exact compiler-managed SRAM placement before "
+           "Maximum work items examined per allocation domain by exact "
+           "compiler-managed SRAM placement before "
            "reporting an inconclusive result.">,
     Option<"unsafeAssumeAllocationGroups", "unsafe-assume-allocation-groups",
            "bool", "false",
