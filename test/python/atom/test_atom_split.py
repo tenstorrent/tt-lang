@@ -36,6 +36,8 @@ from ttl.dfb_allocation_group import (
 )
 from ttl.kernel import Kernel, KernelKind, _operation_identity
 
+_GLOBAL_KERNEL_KIND_FOR_IDENTITY = ttl.KernelKind.COMPUTE
+
 
 def _fn(src: str) -> ast.FunctionDef:
     return ast.parse(textwrap.dedent(src)).body[0]
@@ -147,6 +149,88 @@ def test_captured_kernel_is_bound_for_final_operation():
         kernel_capacities=_backend_kernel_capacities(),
     )
     assert result.kernels == (reader,)
+
+
+def test_captured_kernel_selectors_preserve_global_roles():
+    """Aliases may select canonical and compiler-owned implicit kernels."""
+
+    def make_spec(kernel_selector):
+        def operation():
+            ttl.call_extern_func(
+                "source.hpp",
+                "source",
+                kernel=kernel_selector,
+            )
+
+        return _build_atom_spec(operation)
+
+    for kernel_selector in (
+        ttl.KernelKind.DATA_MOVEMENT,
+        ttl.PIPE_SOURCE_KERNEL,
+    ):
+        spec = make_spec(kernel_selector)
+        result = split_function_body(
+            spec.fn_ast,
+            dfb_param_names=set(),
+            logical_kernels=spec.logical_kernels,
+            selector_scope=spec.frozen_scope,
+            kernel_capacities=_backend_kernel_capacities(),
+        )
+
+        assert spec.logical_kernels == {}
+        assert spec.frozen_scope["kernel_selector"] is kernel_selector
+        assert result.kernels == (kernel_selector,)
+
+        @ttl.operation()
+        def selector_helper():
+            ttl.call_extern_func(
+                "source.hpp",
+                "source",
+                kernel=kernel_selector,
+            )
+
+        @ttl.operation(grid=(1, 1))
+        def composed_operation():
+            selector_helper()
+
+        composed_result = split_function_body(
+            composed_operation._spec.fn_ast,
+            dfb_param_names=set(),
+            logical_kernels=composed_operation._spec.logical_kernels,
+            selector_scope=composed_operation._spec.frozen_scope,
+            kernel_capacities=_backend_kernel_capacities(),
+        )
+        assert composed_result.kernels == (kernel_selector,)
+
+    canonical_spec = make_spec(ttl.KernelKind.DATA_MOVEMENT)
+    pipe_source_spec = make_spec(ttl.PIPE_SOURCE_KERNEL)
+    assert canonical_spec.operation_identity != pipe_source_spec.operation_identity
+
+
+def test_module_global_kernel_kind_changes_operation_identity(monkeypatch):
+    """Operation identity includes a referenced module-global selector."""
+
+    def selected_operation():
+        ttl.call_extern_func(
+            "source.hpp",
+            "source",
+            kernel=_GLOBAL_KERNEL_KIND_FOR_IDENTITY,
+        )
+
+    monkeypatch.setitem(
+        selected_operation.__globals__,
+        "_GLOBAL_KERNEL_KIND_FOR_IDENTITY",
+        ttl.KernelKind.COMPUTE,
+    )
+    compute_identity = _operation_identity(selected_operation)
+    monkeypatch.setitem(
+        selected_operation.__globals__,
+        "_GLOBAL_KERNEL_KIND_FOR_IDENTITY",
+        ttl.KernelKind.DATA_MOVEMENT,
+    )
+    data_movement_identity = _operation_identity(selected_operation)
+
+    assert compute_identity != data_movement_identity
 
 
 def test_captured_fabric_manager_claim_binds_to_selected_kernel():
@@ -1585,6 +1669,35 @@ def test_composition_remaps_equivalent_reset_participants():
     assert _kind_src(result, KernelKind.COMPUTE).count("ttl.reset_dfbs(") == 2
 
 
+def test_composition_preserves_implicit_reset_participant():
+    """Composition replicates reset into the compiler-owned PipeNet kernel."""
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    reset = ttl.DFBReset(
+        participants=(compute_kernel, reader_kernel, ttl.PIPE_SOURCE_KERNEL)
+    )
+
+    @ttl.operation()
+    def reset_helper():
+        ttl.reset_all_dfbs(reset)
+
+    @ttl.operation()
+    def composed_reset():
+        reset_helper()
+
+    spec = composed_reset._spec
+    composed_boundary = next(iter(spec.dfb_resets.values()))
+    assert ttl.PIPE_SOURCE_KERNEL in composed_boundary.participants
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+    )
+    for participant in composed_boundary.participants:
+        assert _kernel_src(result, participant).count("ttl.reset_all_dfbs(") == 1
+
+
 def test_synchronized_dfb_reset_requires_positional_boundary():
     """The public API matches the frontend's positional boundary syntax."""
     compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
@@ -1825,6 +1938,37 @@ def test_composition_remaps_equivalent_reconfiguration_participants():
         selector_scope=spec.frozen_scope,
     )
     assert _kind_src(result, KernelKind.COMPUTE).count("ttl.reconfigure_dfbs(") == 2
+
+
+def test_composition_preserves_implicit_reconfiguration_participant():
+    """Composition retains the compiler-owned PipeNet source kernel."""
+    boundary = ttl.DFBReconfiguration(
+        participants=(
+            ttl.KernelKind.COMPUTE,
+            ttl.KernelKind.DATA_MOVEMENT,
+            ttl.PIPE_SOURCE_KERNEL,
+        )
+    )
+
+    @ttl.operation()
+    def reconfiguration_helper():
+        ttl.reconfigure_dfbs(boundary)
+
+    @ttl.operation()
+    def composed_reconfiguration():
+        reconfiguration_helper()
+
+    spec = composed_reconfiguration._spec
+    composed_boundary = next(iter(spec.dfb_reconfigurations.values()))
+    assert composed_boundary.participants == boundary.participants
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+    )
+    for participant in composed_boundary.participants:
+        assert _kernel_src(result, participant).count("ttl.reconfigure_dfbs(") == 1
 
 
 def test_control_header_anchor_is_retained_only_in_selected_logical_kernel():

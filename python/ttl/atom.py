@@ -34,7 +34,18 @@ import inspect
 import os
 import types
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Hashable,
+    List,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Tuple,
+    Union,
+)
 
 import ttl as _ttl
 from ttl.pykernel._src.utils import _cleanup_source_code
@@ -88,6 +99,7 @@ from .dataflow_buffer import (
 from .dtype_utils import is_ttnn_tensor
 from .kernel import (
     Kernel,
+    KernelKind,
     KernelSelector,
     _bind_kernel_declarations,
     _operation_identity,
@@ -331,7 +343,7 @@ def _build_atom_spec(
     captured_names = sorted(loaded_names & captured_values.keys())
     for capture_name in captured_names:
         value = captured_values[capture_name]
-        if not isinstance(value, Kernel):
+        if not isinstance(value, Kernel) or _selector_implicit_role(value) is not None:
             continue
         if not any(value is kernel for kernel in logical_kernels.values()):
             captured_logical_kernels[capture_name] = value
@@ -346,7 +358,7 @@ def _build_atom_spec(
             )
         if isinstance(value, PipeNet):
             external_pipenets[capture_name] = value
-        elif isinstance(value, Kernel):
+        elif isinstance(value, (Kernel, KernelKind)):
             continue
         elif isinstance(value, FabricManagerClaim):
             if not any(value is claim for claim in fabric_manager_claims.values()):
@@ -930,6 +942,9 @@ class Atom:
             math_fidelity=decorator_options["math_fidelity"],
             options=decorator_options["options"],
             prepare_call=prepare_call,
+            factory_cache=decorator_options["factory_cache"],
+            factory_cache_key=decorator_options["factory_cache_key"],
+            runtime_resource_factory=decorator_options["runtime_resource_factory"],
         )
         functools.update_wrapper(self, spec.fn)
 
@@ -961,6 +976,8 @@ def _unified_operation(
     device_domain=None,
     mesh_program_placements=None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+    factory_cache: Optional[MutableMapping] = None,
+    factory_cache_key: Optional[Hashable] = None,
 ) -> Callable:
     """Build the unified-body form selected by ``@ttl.operation``.
 
@@ -989,6 +1006,8 @@ def _unified_operation(
                 "device_domain": device_domain,
                 "mesh_program_placements": mesh_program_placements,
                 "runtime_resource_factory": runtime_resource_factory,
+                "factory_cache": factory_cache,
+                "factory_cache_key": factory_cache_key,
             },
         )
 
@@ -1009,6 +1028,8 @@ def operation(
     device_domain=None,
     mesh_program_placements=None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+    factory_cache: Optional[MutableMapping] = None,
+    factory_cache_key: Optional[Hashable] = None,
 ) -> Callable:
     """Define a unified-body or explicit multi-kernel operation.
 
@@ -1052,6 +1073,8 @@ def operation(
                 math_fidelity=math_fidelity,
                 options=options,
                 runtime_resource_factory=runtime_resource_factory,
+                factory_cache=factory_cache,
+                factory_cache_key=factory_cache_key,
                 _prepare_call=prepare_call,
                 device_domain=device_domain,
                 mesh_program_placements=mesh_program_placements,
@@ -1071,6 +1094,8 @@ def operation(
             device_domain=device_domain,
             mesh_program_placements=mesh_program_placements,
             runtime_resource_factory=runtime_resource_factory,
+            factory_cache=factory_cache,
+            factory_cache_key=factory_cache_key,
         )(fn)
 
     return _decorator
