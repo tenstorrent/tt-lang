@@ -100,7 +100,7 @@ timeout 360 python -m benchmarks.all_gather_minimal_matmul \
 
 Use `--n-tiles-per-device 120` for per-device N=3840. These commands match
 the native tensor dimensions, not its four-device ring or 12x9 worker grid.
-The [results](PERFORMANCE.md#native-sized-local-comparison) retain those
+The [results](PERFORMANCE.md#operation-only-optimization) retain those
 distinctions alongside every reported ratio.
 
 ## Measurement contract

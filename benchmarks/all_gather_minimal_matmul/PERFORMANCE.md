@@ -29,6 +29,24 @@ tiles. No native implementation code changes. Optimized TT-Lang is 37.3% and
 43.6% faster than the original K=2 native configuration; those ratios compare
 different blocking. The K=40 native column compares matching compute blocks.
 
+The original native configuration is the locally constrained baseline, not
+upstream's tuned configuration. TT-Lang experiments motivated changing K
+blocking for both implementations; they did not introduce a native algorithm
+or demonstrate an optimization absent upstream. TT-Metal already provides a
+[block-size sweep](https://github.com/tenstorrent/tt-metal/blob/9fe0ba04fc9d450555b756f35dcb4de88126693d/models/tt_dit/utils/sweep_mm_block_sizes.py),
+and its [plain-bias tests](https://github.com/tenstorrent/tt-metal/blob/9fe0ba04fc9d450555b756f35dcb4de88126693d/models/tt_dit/tests/models/wan2_2/test_all_gather_minimal_matmul_async.py#L637-L642)
+use 8/8/8 blocks for these dimensions.
+
+Source check on 2026-09-09: fetched TT-Metal `origin/main` at
+`9fe0ba04fc9d450555b756f35dcb4de88126693d` and compared all 13 files in the
+[native operation directory](https://github.com/tenstorrent/tt-metal/tree/9fe0ba04fc9d450555b756f35dcb4de88126693d/ttnn/cpp/ttnn/operations/experimental/ccl/all_gather_minimal_matmul_async)
+with the installed v1.1.9 sources. The only differences are five
+`copy_tile_to_dst_init_short` -> `copy_init` substitutions in `compute.cpp`;
+the program factory and data-movement kernels are byte-identical. The sweep
+and operation test are unchanged from the earlier `f69f924c6b4f` reference.
+This comparison does not cover dependencies outside the operation directory
+or establish binary equivalence. Current-main binaries have not been measured.
+
 TT-Lang improves by 5.51x and 5.55x, but remains 20.1% and 9.4% slower than
 native with the same K=40 blocks. Accuracy thresholds are unchanged and the
 gather remains bit-exact. Mean absolute output errors are 0.003634/0.003636;
@@ -64,7 +82,7 @@ device-kernel milliseconds, not host latency.
 
 2026-09-09 20:54-21:33 UTC; base `0b4b8840c431` plus operation edits (original baseline `e0cced786d1e` plus edits); source hashes, exact configurations and binary identities are recorded in each [archived report](https://gist.github.com/brnorris03/79c57b196efe09355699d40165780088).
 
-The native column is retuned with each compute-block change. `unchanged` means
+The native column uses each changed compute block. `unchanged` means
 the preceding native compute configuration is unchanged, not that a new native
 sample was collected. The native 16-worker result is faster than its 10-worker
 result: matching TT-Lang's best grid does not establish native's optimal grid.
