@@ -56,18 +56,17 @@ def test_invalid_worker_grid(worker_grid, error):
         )
 
 
-@pytest.mark.parametrize("k_block_tiles,expected", [(None, 2), (1, 1), (4, 4)])
-def test_independent_compute_k_block(k_block_tiles, expected):
+@pytest.mark.parametrize("k_block_tiles", [1, 2, 4])
+def test_compute_k_block(k_block_tiles):
     config = AllGatherMinimalMatmulConfig(
         mesh_shape=(2, 1),
         m_tiles=2,
         k_tiles_per_device=4,
         n_tiles_per_device=2,
-        k_tiles_per_transfer=2,
         k_block_tiles=k_block_tiles,
     )
-    assert config.compute_k_tiles == expected
-    assert config.k_transfer_count == 2
+    assert config.compute_k_tiles == k_block_tiles
+    assert config.activation_block_count == 8 // k_block_tiles
 
 
 @pytest.mark.parametrize("k_block_tiles", [0, -1, 3, 8])
@@ -79,4 +78,25 @@ def test_invalid_compute_k_block(k_block_tiles):
             k_tiles_per_device=4,
             n_tiles_per_device=2,
             k_block_tiles=k_block_tiles,
+        )
+
+
+def test_streaming_bounds_activation_capacity():
+    config = AllGatherMinimalMatmulConfig(
+        mesh_shape=(2, 1),
+        m_tiles=2,
+        k_tiles_per_device=64,
+        n_tiles_per_device=2,
+        reuse_activation=False,
+    )
+    assert config.activation_block_count == 2
+
+
+def test_reuse_capacity_limit():
+    with pytest.raises(ValueError, match="at most 32 K blocks"):
+        AllGatherMinimalMatmulConfig(
+            mesh_shape=(2, 1),
+            m_tiles=2,
+            k_tiles_per_device=64,
+            n_tiles_per_device=2,
         )

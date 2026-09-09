@@ -7,13 +7,12 @@
 from __future__ import annotations
 
 import argparse
-from math import prod
 
 import torch
 import ttnn
 
 from ttlang_test_utils import get_fabric_mesh_shape, open_fabric_mesh, to_dram
-from utils.correctness import assert_allclose, assert_pcc
+from utils.correctness import assert_pcc
 
 from .operation import (
     AllGatherMinimalMatmulConfig,
@@ -42,7 +41,7 @@ def _make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--k-tiles-per-device", type=int, default=1)
     parser.add_argument("--n-tiles-per-device", type=int, default=2)
     parser.add_argument("--m-block-tiles", type=int, default=1)
-    parser.add_argument("--k-tiles-per-transfer", type=int, default=1)
+    parser.add_argument("--k-block-tiles", type=int, default=1)
     parser.add_argument("--n-block-tiles", type=int, default=1)
     parser.add_argument("--dtype", choices=("bf16", "fp32"), default="bf16")
     parser.add_argument("--no-bias", action="store_true")
@@ -61,7 +60,7 @@ def main() -> None:
         k_tiles_per_device=arguments.k_tiles_per_device,
         n_tiles_per_device=arguments.n_tiles_per_device,
         m_block_tiles=arguments.m_block_tiles,
-        k_tiles_per_transfer=arguments.k_tiles_per_transfer,
+        k_block_tiles=arguments.k_block_tiles,
         n_block_tiles=arguments.n_block_tiles,
     )
     operation = make_all_gather_minimal_matmul_operation(config)
@@ -99,11 +98,6 @@ def main() -> None:
             mesh_device,
             mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=1),
         )
-        gathered_activation = to_dram(
-            torch.zeros_like(activation_torch),
-            mesh_device,
-            mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
-        )
         output_shard = to_dram(
             torch.zeros((m_elements, n_elements), dtype=torch_dtype),
             mesh_device,
@@ -114,23 +108,14 @@ def main() -> None:
             activation_shard,
             weight_shard,
             bias_shard,
-            gathered_activation,
             output_shard,
         )
 
-        gathered_result = ttnn.to_torch(
-            gathered_activation,
-            mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=0),
-        )
         output_result = ttnn.to_torch(
             output_shard,
             mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=1),
         )
 
-    expected_gather = activation_torch.repeat(prod(mesh_shape), 1)
-    assert_allclose(
-        gathered_result.float(), expected_gather.float(), rtol=0.0, atol=0.0
-    )
     expected_output = activation_torch.float() @ weight_torch.float()
     expected_output += bias_torch.float()
     threshold = 0.99 if torch_dtype == torch.bfloat16 else 0.999

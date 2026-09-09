@@ -55,11 +55,14 @@ def parse_args():
     parser.add_argument("--k-tiles-per-device", type=positive_int, default=1)
     parser.add_argument("--n-tiles-per-device", type=positive_int, default=4)
     parser.add_argument("--m-block-tiles", type=positive_int, default=1)
-    parser.add_argument("--k-tiles-per-transfer", type=positive_int, default=1)
     parser.add_argument(
         "--k-block-tiles",
         type=positive_int,
-        help="compute K block for both implementations; defaults to transfer size",
+        default=1,
+        help="compute and fabric K block in tiles",
+    )
+    parser.add_argument(
+        "--reuse-activation", action=argparse.BooleanOptionalAction, default=True
     )
     parser.add_argument("--n-block-tiles", type=positive_int, default=1)
     parser.add_argument("--worker-grid", type=positive_int, nargs=2, metavar=("X", "Y"))
@@ -153,9 +156,7 @@ def create_workloads(
     for name in (
         ("ttlang", "ttmetal") if implementation == "both" else (implementation,)
     ):
-        gathered = to_dram(
-            torch.zeros_like(activation), mesh, mesh_mapper=replicate_mapper
-        )
+        gathered = None
         if name == "ttlang":
             output = to_dram(
                 torch.zeros((m_elements, n_elements), dtype=torch_dtype),
@@ -166,14 +167,15 @@ def create_workloads(
                 config, math_fidelity=math_fidelity, fp32_dest_acc_en=fp32_dest_acc
             )
 
-            def run_ttlang(operation=operation, gathered=gathered, output=output):
-                operation(
-                    activation_device, weight_device, bias_device, gathered, output
-                )
+            def run_ttlang(operation=operation, output=output):
+                operation(activation_device, weight_device, bias_device, output)
                 return output
 
             workloads[name] = (run_ttlang, gathered, lambda result: None)
         else:
+            gathered = to_dram(
+                torch.zeros_like(activation), mesh, mesh_mapper=replicate_mapper
+            )
             full_grid = mesh.compute_with_storage_grid_size()
             cores = ttnn.CoreRangeSet(
                 {
@@ -229,11 +231,11 @@ def create_workloads(
         output_torch = ttnn.to_torch(
             output, mesh_composer=ttnn.ConcatMeshToTensor(mesh, dim=1)
         ).float()
-        gathered_torch = ttnn.to_torch(
-            gathered, mesh_composer=ttnn.ConcatMeshToTensor(mesh, dim=0)
-        ).float()
-        expected_gather = activation.float().repeat(config.device_count, 1)
         if name == "ttmetal":
+            gathered_torch = ttnn.to_torch(
+                gathered, mesh_composer=ttnn.ConcatMeshToTensor(mesh, dim=0)
+            ).float()
+            expected_gather = activation.float().repeat(config.device_count, 1)
             # Native compute reads its local shard directly; only remote shards
             # are written into the persistent gather scratch buffer.
             local_k = config.k_tiles_per_device * 32
@@ -242,7 +244,7 @@ def create_workloads(
                     device_index * m_elements : (device_index + 1) * m_elements,
                     device_index * local_k : (device_index + 1) * local_k,
                 ] = 0
-        assert_allclose(gathered_torch, expected_gather, rtol=0, atol=0)
+            assert_allclose(gathered_torch, expected_gather, rtol=0, atol=0)
         assert_pcc(expected, output_torch, threshold=0.999 if dtype == "fp32" else 0.99)
         # The FPU truncates FP32 sources to TF32 even with FP32 destinations.
         tolerance = 0.005 if dtype == "fp32" else 0.05
@@ -419,8 +421,10 @@ def main():
             k_tiles_per_device=arguments.k_tiles_per_device,
             n_tiles_per_device=arguments.n_tiles_per_device,
             m_block_tiles=arguments.m_block_tiles,
-            k_tiles_per_transfer=arguments.k_tiles_per_transfer,
             k_block_tiles=arguments.k_block_tiles,
+            reuse_activation=(
+                arguments.reuse_activation and arguments.implementation == "ttlang"
+            ),
             n_block_tiles=arguments.n_block_tiles,
             worker_grid=arguments.worker_grid,
             transpose=arguments.transpose,

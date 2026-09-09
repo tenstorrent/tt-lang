@@ -76,15 +76,15 @@ def participant_mesh(fabric_mesh_shape, participant_mesh_shape):
 @requires_forwarding_link_indices(ttnn)
 @pytest.mark.parametrize("torch_dtype,pcc_threshold,fp32_dest_acc_en", MATMUL_DTYPES)
 @pytest.mark.parametrize(
-    "k_tiles_per_device,k_tiles_per_transfer,k_block_tiles",
+    "k_tiles_per_device,k_block_tiles",
     [
-        pytest.param(1, 1, None, id="one-transfer"),
-        pytest.param(4, 1, None, id="four-transfers"),
-        pytest.param(4, 1, 4, id="compute-larger-than-transfer"),
-        pytest.param(4, 2, 1, id="compute-smaller-than-transfer"),
-        pytest.param(6, 2, 3, id="non-nested-block-extents"),
+        pytest.param(1, 1, id="one-transfer"),
+        pytest.param(4, 1, id="four-transfers"),
+        pytest.param(4, 4, id="full-shard"),
+        pytest.param(6, 3, id="two-transfers"),
     ],
 )
+@pytest.mark.parametrize("reuse_activation", [False, True], ids=["stream", "reuse"])
 @pytest.mark.parametrize("with_bias", [False, True], ids=["no-bias", "bias"])
 @pytest.mark.parametrize(
     "m_tiles,n_tiles,worker_grid,transpose,output_block_tiles",
@@ -102,7 +102,7 @@ def test_all_gather_minimal_matmul(
     pcc_threshold,
     fp32_dest_acc_en,
     k_tiles_per_device,
-    k_tiles_per_transfer,
+    reuse_activation,
     k_block_tiles,
     with_bias,
     m_tiles,
@@ -117,7 +117,7 @@ def test_all_gather_minimal_matmul(
         mesh_shape=participant_mesh_shape,
         m_tiles=m_tiles,
         k_tiles_per_device=k_tiles_per_device,
-        k_tiles_per_transfer=k_tiles_per_transfer,
+        reuse_activation=reuse_activation,
         k_block_tiles=k_block_tiles,
         m_block_tiles=output_block_tiles,
         n_block_tiles=output_block_tiles,
@@ -157,11 +157,6 @@ def test_all_gather_minimal_matmul(
         participant_mesh,
         mesh_mapper=ttnn.ShardTensorToMesh(participant_mesh, dim=1),
     )
-    gathered_activation = to_dram(
-        torch.zeros_like(activation_torch),
-        participant_mesh,
-        mesh_mapper=ttnn.ReplicateTensorToMesh(participant_mesh),
-    )
     output_shard = to_dram(
         torch.zeros((m_elements, n_elements), dtype=torch_dtype),
         participant_mesh,
@@ -172,23 +167,14 @@ def test_all_gather_minimal_matmul(
         activation_shard,
         weight_shard,
         bias_shard,
-        gathered_activation,
         output_shard,
     )
 
-    gathered_result = ttnn.to_torch(
-        gathered_activation,
-        mesh_composer=ttnn.ConcatMeshToTensor(participant_mesh, dim=0),
-    )
     output_result = ttnn.to_torch(
         output_shard,
         mesh_composer=ttnn.ConcatMeshToTensor(participant_mesh, dim=1),
     )
 
-    expected_gather = activation_torch.repeat(config.device_count, 1)
-    assert_allclose(
-        gathered_result.float(), expected_gather.float(), rtol=0.0, atol=0.0
-    )
     expected_output = activation_torch.float() @ weight_torch.float()
     expected_output += bias_torch.float()
     assert_pcc(expected_output, output_result.float(), threshold=pcc_threshold)

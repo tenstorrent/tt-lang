@@ -42,15 +42,15 @@ M/K/N blocks to both implementations. It is not an exact Galaxy reproduction.
 | Problem dimensions | Plain bias tests include M=3072, full K=5120, per-device N=1280 or 3840. | CLI supports these dimensions through repeated output blocks; default remains M=64/K=64/per-device N=128. | Default is a smoke test, not a model-performance result. N in the reference is per device, not global output width. |
 | Participants | Default sweep opens a 4x8 parent and uses a 4x1 ring; alternative uses a 1x8 ring. | Discovered 2x2 parent, connected 2x1 submesh, physical IDs recorded per run. | Two participants, not four/eight; local K=2560 for full K=5120, versus K=1280 on four participants. |
 | Worker scheduling | 12x9, transposed; multiple blocks and edge blocks. | Explicit fixed `--worker-grid X Y` and `--transpose`; repeated M/N blocks. | Block counts must divide worker extents. A 12x5 configuration passes that condition but fails local fabric assignment: generated per-worker send/receive managers require distinct forwarding connections, with only four eligible links. Two M workers work locally. Full 12x9 edge scheduling and native mux sharing are not implemented. |
-| M/K/N blocks | Plain M=3072 cases use 8/8/8 tiles in the test; sweep tunes blocks. | Configurable and identical between local implementations. Initial measurements use 2/2/2; tuning selects 2/40/2 with the same 2x5 grid. `--k-block-tiles` sets compute K independently of TT-Lang's fabric transfer size. | Larger K blocks amortize matmul initialization, intermediate packing, local multicast synchronization and DRAM barriers. Initial 8/8/8 exceeded L1; the historical 4/8/8 attempt timed out. |
-| Arithmetic | BF16, HiFi2, FP32 destinations, packer L1 accumulation. | BF16 uses HiFi2; the separate FP32 variant uses HiFi4. FP32 destinations and explicit FP32 accumulator/bias DFBs by default. | BF16 matmul-block products are packed to BF16 before conversion and FP32 addition; native uses packer L1 accumulation. Destination precision matches, but intermediate rounding and storage do not. FP32 HiFi2 fails the FP32 error bound; HiFi4 is applied to both implementations. |
+| M/K/N blocks | Plain M=3072 cases use 8/8/8 tiles in the test; sweep tunes blocks. | Configurable and identical between local implementations. Initial measurements use 2/2/2; tuning selects 2/40/2 with the same 2x5 grid. `--k-block-tiles` controls both TT-Lang compute and fabric blocks. | Larger K blocks amortize intermediate packing, local multicast synchronization and DRAM barriers. Initial 8/8/8 exceeded L1; the historical 4/8/8 attempt timed out. |
+| Arithmetic | BF16, HiFi2, FP32 destinations, packer L1 accumulation. | BF16 uses HiFi2; the separate FP32 variant uses HiFi4. FP32 destinations and FP32 packer accumulation by default. | Both accumulate FP32 block products in L1. Reduction ordering and bias scheduling can differ. FP32 HiFi2 fails the FP32 error bound; HiFi4 is applied to both implementations. |
 | Subblocks | Test uses 2x2 for the plain M=3072 cases; sweep selects valid subblocks. | Native uses 2 on each evenly divisible block axis, otherwise 1. TT-Lang compiler-selected; a 2x2 output block fits four FP32 DST tiles. | Larger block configurations can still have different register scheduling. |
-| Fabric | Ring, 2 links, 6 workers/link; sweep uses 24 channel buffers, operation test uses 48. | Linear, one link; native workers/link equals M-worker count, 24 channel buffers. TT-Lang uses direct all-to-all PipeNets, single-block sequential staging and double-buffered compute operands. | Native mux buffering and TT-Lang DFB capacity describe different protocols; equal buffer counts would not imply equal buffering. Fabric transfers and compute blocks can be tuned independently. |
+| Fabric | Ring, 2 links, 6 workers/link; sweep uses 24 channel buffers, operation test uses 48. | Linear, one link; native workers/link equals M-worker count, 24 channel buffers. TT-Lang uses direct all-to-all PipeNets, L1 receive staging, full-K activation caching and double-buffered weights. | Native mux buffering and TT-Lang DFB capacity describe different protocols; equal buffer counts would not imply equal buffering. TT-Lang sends each activation block once per M round. |
 | Fabric initialization | Sweep uses STRICT_INIT and 8192-byte router payload; Blackhole operation test uses 4096-byte payload. | RELAXED_INIT, installed runtime's default router payload. | Router configuration and link-health requirements differ. |
 | Timing | Compile/warmup, trace replay, `device_kernel_duration`, mean across devices. | Same device metric and mean across participants; ordinary launches, median across repeated samples. Per-sample maximum also retained. | No trace replay: TT-Lang replaces global-semaphore resources with synchronization. Cross-device dispatch skew can contribute device-side fabric waits. |
 | Profiling implementation | `run_device_profiler`, Tracy signposts and ops-log processing. | `import_log_run_stats` with the standard `device_kernel_duration` analysis; one archived dump per sample. | Same per-device interval definition, different collection workflow; not whole-application latency. |
-| Tensor residency and bias | TILE/interleaved DRAM; row bias. Test replicates each rank's KxN weight and 1xN bias. | TILE/interleaved DRAM; row bias; distinct N shards of weight/bias. | Same per-rank dimensions, different cross-rank values. TT-Lang additionally writes the local activation shard to gather scratch. |
-| Communication/compute overlap | Consume available K blocks while communicating. | Gather one common fabric/compute K group during the first N round, then publish its operands to compute. Later N rounds reuse gathered DRAM data. | TT-Lang still stages local and remote activation through DRAM and uses separate send/receive staging. Native reads its local shard directly; the schedules and overlap are not identical. |
+| Tensor residency and bias | TILE/interleaved DRAM; row bias. Test replicates each rank's KxN weight and 1xN bias. | Inputs/output are TILE/interleaved DRAM; row bias; distinct N shards of weight/bias. | Same per-rank dimensions, different cross-rank values. Native has remote-activation DRAM scratch; TT-Lang has no gathered tensor or DRAM scratch. |
+| Communication/compute overlap | Consume available K blocks while communicating; remote activation uses DRAM scratch. | Publish local and remote K blocks from L1 during the first N round; later N rounds reuse cached activation pages on every worker. | TT-Lang eliminates gathered-activation DRAM traffic and repeated activation row broadcasts, at the cost of full-K L1 capacity. `--no-reuse-activation` trades capacity for repeated activation reads/transfers. |
 | Data-movement assignment | With transpose, activation uses BRISC/NoC 0; weight and output use NCRISC/NoC 1. | Activation and output use NCRISC/NoC 0; weight and fabric send use BRISC/NoC 1. | Operand NoCs match; processor assignment, fabric-send ownership and output-write ownership differ. Moving TT-Lang output writes to NoC 1 regressed N=1280 by 5.1% and was rejected. |
 
 The sweep's M labels need care: its AGMM allocation multiplies M by the parent
@@ -91,8 +91,7 @@ The native plain-bias dimensions can be measured on the local pair with:
 ```bash
 timeout 360 python -m benchmarks.all_gather_minimal_matmul \
     --m-tiles 96 --k-tiles-per-device 80 --n-tiles-per-device 40 \
-  --m-block-tiles 2 --k-tiles-per-transfer 40 --k-block-tiles 40 \
-  --n-block-tiles 2 \
+    --m-block-tiles 2 --k-block-tiles 40 --n-block-tiles 2 \
     --worker-grid 2 5 --transpose \
     --json /tmp/all_gather_matmul_wan3072_n1280.json \
     2>&1 | tee /tmp/device_test.log
@@ -100,7 +99,7 @@ timeout 360 python -m benchmarks.all_gather_minimal_matmul \
 
 Use `--n-tiles-per-device 120` for per-device N=3840. These commands match
 the native tensor dimensions, not its four-device ring or 12x9 worker grid.
-The [results](PERFORMANCE.md#operation-only-optimization) retain those
+The [results](PERFORMANCE.md) retain those
 distinctions alongside every reported ratio.
 
 ## Measurement contract
@@ -137,12 +136,13 @@ the selected metric includes all worker RISCs, not only TRISC1 math time.
 - Native uses one linear fabric link, 24 channel buffers, one worker per M
   block, and additional fabric mux cores. TT-Lang uses direct fabric PipeNets
   on column-zero workers. Both use `FABRIC_1D`.
-- TT-Lang writes the complete gathered activation to DRAM. Native scratch holds
-  remote shards only; native compute reads its local shard directly. Validation
-  checks these respective contracts. Kernel timings include TT-Lang's extra
-  local DRAM traffic.
-- Native uses packer L1 accumulation. TT-Lang materializes block products,
-  converts them into the accumulation dtype, and sums through explicit DFBs.
+- TT-Lang caches activation blocks in L1 and has no gathered output. Native
+  scratch holds remote shards only; native compute reads its local shard
+  directly. Native scratch is checked exactly; both implementations' outputs
+  are validated against the full gathered matmul plus bias.
+- Both use packer L1 accumulation with FP32 intermediate storage by default.
+  TT-Lang's explicit BF16-to-FP32 product conversion selects FP32 packing;
+  it does not materialize a separate BF16 product DFB.
   Bias conversion is separate from addition because the compiler rejects
   mixed-dtype fusion with an unrelated FP32 accumulator input.
   Both outputs must pass identical numerical criteria.

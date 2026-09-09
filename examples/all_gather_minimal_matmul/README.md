@@ -11,7 +11,6 @@ The operation accepts:
 - an activation tensor sharded across K;
 - a weight tensor sharded across output N;
 - a row-broadcast bias sharded across output N;
-- a replicated activation output used to validate the collective;
 - an output tensor sharded across N.
 
 Each device gathers every activation K shard, computes its local N output, and
@@ -37,17 +36,31 @@ cyclically across a fixed set of workers. Each worker computes
   across M workers.
 - Every output block has exactly one writer.
 
-`k_tiles_per_transfer` controls fabric messages; `k_block_tiles` independently
-controls matmul operand blocks and defaults to the transfer size. Both must
-divide the per-device K extent. During the first N round, each common group of
-`lcm(k_tiles_per_transfer, k_block_tiles)` K tiles is gathered into DRAM and
-published to compute before gathering the next group. Subsequent N rounds reuse
-that gathered data. Both operand streams use group/block/device order, while
-gathered output retains canonical device order.
+`k_block_tiles` controls both fabric messages and matmul operand blocks and
+must divide the per-device K extent. The first N round receives remote blocks
+into L1, interleaves them with local blocks in K-block/device order, and
+broadcasts them across each worker row. No gathered activation tensor or DRAM
+scratch is allocated or written.
 
-Sequential send/local/receive staging uses one DFB block each; operand DFBs
-remain double-buffered. The activation reader is declared first to select
-NoC 0, with weight traffic on NoC 1. This assignment is measured on the
+By default, `reuse_activation=True` retains one M block's full K extent in each
+worker's activation DFB. Subsequent N rounds republish the same L1 pages without
+fabric transfers, DRAM reads or row broadcasts. Full-K DFB capacity and matching
+producer/consumer order preserve the cached pages until the next M block.
+`reuse_activation=False` instead streams every N round through a two-block DFB;
+it uses less L1 but repeats activation communication. Reuse supports at most
+32 K blocks; larger reductions require larger K blocks or streamed activations.
+Actual capacity is also limited by per-worker L1 allocation.
+
+Fabric send and row receive use one staging block each; fabric receive holds
+one block per remote device. Separate row-receive storage preserves the
+multicast protocol's receiver address sequence while cached compute pages are
+republished. Weight operands remain double-buffered. FP32 destinations select
+FP32 packer accumulation directly from BF16 or FP32 matmul operands, avoiding
+intermediate BF16 rounding and SFPU accumulation. Bias is converted and added
+after the reduction, followed by output conversion.
+
+The activation reader is declared first to select NoC 0, with weight traffic
+on NoC 1. This assignment is measured on the
 transposed Blackhole workload; it is not a claim of optimal placement for
 every grid or architecture.
 
@@ -89,7 +102,8 @@ Implemented:
 - transposed scheduling and repeated output blocks on a fixed worker grid;
 - row-broadcast bias;
 - BF16 and FP32 interfaces;
-- bit-exact gathered-activation validation and PCC output validation.
+- scratch-free L1 activation caching and packer accumulation;
+- numerical output validation against the full gathered matmul plus bias.
 
 Not yet implemented:
 
