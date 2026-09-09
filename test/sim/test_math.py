@@ -1490,6 +1490,15 @@ def test_unsqueeze_basic():
     assert result.shape == (1, 1, 2)
 
 
+def test_unsqueeze_duplicate_dimension_rejected():
+    """unsqueeze rejects result positions selected more than once."""
+    tiles = [Tensor(torch.tensor([[1.0]])), Tensor(torch.tensor([[2.0]]))]
+    block = Block.from_list(tiles, shape=(1, 2))
+
+    with pytest.raises(ValueError, match="duplicate dimension"):
+        ttl.block.unsqueeze(block, dims=[0, -4])
+
+
 def test_unsqueeze_negative_dim():
     """unsqueeze with dim=-1 inserts a size-1 dimension at the end."""
     t_a = [Tensor(torch.tensor([[1.0]])), Tensor(torch.tensor([[2.0]]))]

@@ -62,3 +62,19 @@ func.func @multi_result_reinterpretation(%tensor: tensor<4x!ttcore.tile<32x32, b
       : tensor<4x!ttcore.tile<32x32, bf16>> to tensor<4x!ttcore.tile<32x32, bf16>>, tensor<4x!ttcore.tile<32x32, bf16>>
   return
 }
+
+// -----
+
+// A user-authored tensor-to-TTL-CB cast is not a target conversion bridge.
+func.func @ttl_cb_result_is_not_conversion_bridge(%tensor: tensor<4x!ttcore.tile<32x32, bf16>>)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[4], !ttcore.tile<32x32, bf16>, 2>
+  %attached = ttl.attach_cb %tensor, %cb
+      : (tensor<4x!ttcore.tile<32x32, bf16>>, !ttl.cb<[4], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<4x!ttcore.tile<32x32, bf16>>
+  // expected-error @below {{DFB views cannot use tensor reinterpretation casts; use checked singleton-dimension expand_shape or collapse_shape operations}}
+  %forged_cb = builtin.unrealized_conversion_cast %attached
+      : tensor<4x!ttcore.tile<32x32, bf16>> to !ttl.cb<[4], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
