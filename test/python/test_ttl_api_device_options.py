@@ -186,6 +186,168 @@ class TestMeshProgramPlacement:
 
         assert placements == [ttl_api.MeshProgramPlacement((0, 0), (0, 3))]
 
+    def test_explicit_mesh_program_placements_override_full_domain(self):
+        domain = ttl.DeviceDomain((4, 8))
+        placements = [(0, 0), (3, 7)]
+
+        resolved = ttl_api._resolve_mesh_program_placements((), domain, placements)
+
+        assert resolved == (
+            ttl.MeshProgramPlacement((0, 0)),
+            ttl.MeshProgramPlacement((3, 7)),
+        )
+
+    def test_explicit_mesh_program_placements_are_immutable(self):
+        start = [0, 0]
+        end = [0, 1]
+        coordinate = [1, 1]
+
+        resolved = ttl_api._resolve_mesh_program_placements(
+            (),
+            ttl.DeviceDomain((2, 2)),
+            [ttl.MeshProgramPlacement(start, end), coordinate],
+        )
+        start[0] = 1
+        end[1] = 0
+        coordinate[0] = 0
+
+        assert resolved == (
+            ttl.MeshProgramPlacement((0, 0), (0, 1)),
+            ttl.MeshProgramPlacement((1, 1)),
+        )
+
+    def test_explicit_mesh_program_placements_allow_sparse_tensor_domain(self):
+        tensor = _TensorWithDevice(_DeviceWithMeshShape((1, 2)))
+
+        resolved = ttl_api._resolve_mesh_program_placements(
+            (tensor,),
+            ttl.DeviceDomain((2, 2)),
+            [(0, 0), (0, 1)],
+        )
+
+        assert resolved == (
+            ttl.MeshProgramPlacement((0, 0)),
+            ttl.MeshProgramPlacement((0, 1)),
+        )
+
+    def test_explicit_mesh_program_placements_stay_inside_tensor_mesh(self):
+        tensor = _TensorWithDevice(_DeviceWithMeshShape((1, 2)))
+
+        with pytest.raises(ValueError, match="inside the mesh tensor"):
+            ttl_api._resolve_mesh_program_placements(
+                (tensor,),
+                ttl.DeviceDomain((2, 2)),
+                [(1, 0)],
+            )
+
+    def test_explicit_mesh_program_placements_cover_pipenet_endpoints(self):
+        domain = ttl.DeviceDomain((2, 2))
+        required_devices = (
+            domain.device_ref((0, 0)),
+            domain.device_ref((1, 1)),
+        )
+
+        resolved = ttl_api._resolve_mesh_program_placements(
+            (),
+            domain,
+            [ttl.MeshProgramPlacement((0, 0), (1, 1))],
+            required_devices=required_devices,
+        )
+
+        assert resolved == (ttl.MeshProgramPlacement((0, 0), (1, 1)),)
+
+    def test_explicit_mesh_program_placements_reject_missing_pipenet_endpoint(self):
+        domain = ttl.DeviceDomain((2, 2))
+
+        with pytest.raises(ValueError, match=r"missing \[\(1, 1\)\]"):
+            ttl_api._resolve_mesh_program_placements(
+                (),
+                domain,
+                [(0, 0)],
+                required_devices=(domain.device_ref((1, 1)),),
+            )
+
+    def test_product_domain_pipenet_endpoints_use_runtime_coordinate_order(self):
+        domain = ttl.DeviceDomain.product(board=(2,), device=(2,))
+
+        resolved = ttl_api._resolve_mesh_program_placements(
+            (),
+            domain,
+            [ttl.MeshProgramPlacement((1, 0), (1, 1))],
+            required_devices=(ttl.DeviceRef(board=1, device=0),),
+        )
+
+        assert resolved == (ttl.MeshProgramPlacement((1, 0), (1, 1)),)
+
+    @pytest.mark.parametrize("placements", [(), []])
+    def test_explicit_mesh_program_placements_reject_empty(self, placements):
+        with pytest.raises(ValueError, match="must not be empty"):
+            ttl_api._resolve_mesh_program_placements(
+                (), ttl.DeviceDomain((1, 2)), placements
+            )
+
+    @pytest.mark.parametrize(
+        ("placements", "error_type", "message"),
+        [
+            ("0,0", TypeError, "must be a tuple or list"),
+            ([object()], TypeError, "must be coordinate tuples"),
+            ([()], ValueError, "start must have at least one component"),
+            ([(0, "1")], TypeError, "component must be an integer"),
+            ([(True, 0)], TypeError, "component must be an integer"),
+        ],
+    )
+    def test_explicit_mesh_program_placements_reject_invalid_values(
+        self, placements, error_type, message
+    ):
+        with pytest.raises(error_type, match=message):
+            ttl_api._resolve_mesh_program_placements(
+                (), ttl.DeviceDomain((1, 2)), placements
+            )
+
+    @pytest.mark.parametrize(
+        "placements",
+        [
+            [(0, 0), (0, 0)],
+            [
+                ttl.MeshProgramPlacement((0, 0), (1, 2)),
+                ttl.MeshProgramPlacement((1, 1), (2, 3)),
+            ],
+        ],
+        ids=("duplicate-coordinate", "partial-multidimensional-intersection"),
+    )
+    def test_mesh_program_placements_reject_intersections(self, placements):
+        with pytest.raises(ValueError, match="indices 0 and 1 must not overlap"):
+            ttl_api.normalize_mesh_program_placements(placements)
+
+    def test_mesh_program_placements_accept_disjoint_inclusive_ranges(self):
+        placements = [
+            ttl.MeshProgramPlacement((0, 0), (0, 1)),
+            ttl.MeshProgramPlacement((0, 2), (0, 3)),
+        ]
+
+        assert ttl_api.normalize_mesh_program_placements(placements) == tuple(
+            placements
+        )
+
+    def test_mesh_program_placements_reject_mixed_ranks_without_extent(self):
+        with pytest.raises(ValueError, match="placement 1 has rank 3, expected rank 2"):
+            ttl_api.normalize_mesh_program_placements([(0, 0), (0, 0, 0)])
+
+    @pytest.mark.parametrize(
+        ("start", "end", "error_type", "message"),
+        [
+            (0, None, TypeError, "start must be a coordinate tuple"),
+            ((-1, 0), None, ValueError, "axis 0 must be non-negative"),
+            ((0,), (0, 1), ValueError, "same rank"),
+            ((0, 1), (0, 0), ValueError, "must not exceed"),
+        ],
+    )
+    def test_mesh_program_placement_rejects_invalid_range(
+        self, start, end, error_type, message
+    ):
+        with pytest.raises(error_type, match=message):
+            ttl.MeshProgramPlacement(start, end)
+
     def test_compile_kernel_forwards_device_domain_to_lowering(self, monkeypatch):
         domain = ttl.DeviceDomain((1, 2))
         calls = []
@@ -230,13 +392,58 @@ class TestMeshProgramPlacement:
 
         assert result == "compiled"
         assert calls[0]["device_domain"] is domain
-        assert calls[0]["mesh_program_placements"] == [
-            ttl_api.MeshProgramPlacement((0, 0), (0, 1))
-        ]
+        assert calls[0]["mesh_program_placements"] == (
+            ttl_api.MeshProgramPlacement((0, 0), (0, 1)),
+        )
         assert calls[0]["logical_kernels"] == [ttl.KernelKind.COMPUTE]
+
+    def test_compile_kernel_rejects_placement_before_lowering_when_endpoint_missing(
+        self, monkeypatch
+    ):
+        domain = ttl.DeviceDomain((1, 2))
+        graph = ttl.TransferGraph.edges(domain, edges=[((0, 0), (0, 1))])
+        operation_pipenets = ttl_api._build_pipenet_graph([ttl.PipeNet(graph=graph)])
+
+        def compute_thread():
+            pass
+
+        compute_thread._logical_kernel = ttl.KernelKind.COMPUTE
+        monkeypatch.setattr(
+            ttl_api, "_get_registered_threads", lambda: [compute_thread]
+        )
+        monkeypatch.setattr(
+            ttl_api,
+            "_build_operation_pipenets",
+            lambda *_: operation_pipenets,
+        )
+        lowering_calls = []
+        monkeypatch.setattr(
+            ttl_api,
+            "_lower_program_to_kernel",
+            lambda **kwargs: lowering_calls.append(kwargs),
+        )
+
+        with pytest.raises(ValueError, match="cover every PipeNet endpoint"):
+            ttl_api._compile_kernel(
+                lambda: None,
+                (),
+                {},
+                (1, 1),
+                [],
+                [],
+                0,
+                "L1",
+                True,
+                0,
+                device_domain=domain,
+                mesh_program_placements=[(0, 0)],
+            )
+
+        assert lowering_calls == []
 
     def test_operation_forwards_device_domain_to_explicit_compiler(self, monkeypatch):
         domain = ttl.DeviceDomain((1, 2))
+        placements = [(0, 0)]
         decorator_options = []
 
         def fake_pykernel_gen(**kwargs):
@@ -246,11 +453,16 @@ class TestMeshProgramPlacement:
         monkeypatch.setattr(ttl_atom, "pykernel_gen", fake_pykernel_gen)
         monkeypatch.setattr(ttl_atom, "_has_explicit_kernels", lambda _: True)
 
-        @ttl_atom.operation(grid=(1, 1), device_domain=domain)
+        @ttl_atom.operation(
+            grid=(1, 1),
+            device_domain=domain,
+            mesh_program_placements=placements,
+        )
         def operation():
             pass
 
         assert decorator_options[0]["device_domain"] is domain
+        assert decorator_options[0]["mesh_program_placements"] is placements
 
     def test_unified_compiler_forwards_device_domain(self, monkeypatch):
         domain = ttl.DeviceDomain((1, 2))
@@ -269,6 +481,7 @@ class TestMeshProgramPlacement:
             "dst_full_sync_en": None,
             "math_fidelity": None,
             "device_domain": domain,
+            "mesh_program_placements": [(0, 1)],
             "runtime_resource_factory": None,
         }
 
@@ -286,9 +499,10 @@ class TestMeshProgramPlacement:
 
         assert result == "compiled"
         assert calls[0][1]["device_domain"] is domain
+        assert calls[0][1]["mesh_program_placements"] == [(0, 1)]
 
     def test_compiled_kernel_forwards_mesh_program_placements(self, monkeypatch):
-        placement = ttl_api.MeshProgramPlacement((0, 0), (0, 3))
+        placement = ttl.MeshProgramPlacement((0, 0), (0, 3))
         calls = []
 
         def fake_run_kernel_on_device(**kwargs):

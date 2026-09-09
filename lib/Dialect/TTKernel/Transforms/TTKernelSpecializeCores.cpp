@@ -3,32 +3,29 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //===----------------------------------------------------------------------===//
-// TTKernelSpecializeCores (per-core specialization)
 //
-// A single module pass that runs at the TTKernel level, right before EmitC
-// conversion. For every kernel function whose control flow branches on a core
-// coordinate (i.e. an `scf.if` whose condition is derived from
-// `ttkernel.my_logical_x_` / `ttkernel.my_logical_y_`), the pass clones the
-// function once per launch coordinate. In each clone, the coordinate reads are
-// replaced by `arith.constant`s for that core, so the following
-// `canonicalize` / `cse` fold the now-constant branch conditions and delete the
-// untaken regions. Each clone is tagged with a `ttl.core_coord` attribute (the
-// coordinate it serves) and the runtime bridge (ttl_api.py) turns that into a
-// per-kernel core range for dispatch.
+// Per-core specialization of TTKernel functions. Coordinate-dependent control
+// flow is identified through MLIR backward slices and control-flow value
+// origins. Each clone substitutes its assigned coordinates so subsequent
+// canonicalization can simplify branches and loop bounds.
+//
 //===----------------------------------------------------------------------===//
 
+#include "ttlang/Analysis/ValueOriginAnalysis.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
+#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
@@ -71,40 +68,94 @@ static FailureOr<std::pair<int64_t, int64_t>> readGrid(ArrayAttr attr) {
   return std::pair<int64_t, int64_t>{gridX, gridY};
 }
 
-/// Return true when `condition` is derived from a core
-/// coordinate reads (`ttkernel.my_logical_x_` / `my_logical_y_`).
-static bool conditionDependsOnCore(Value condition) {
-  llvm::DenseSet<Value> visited;
-  SmallVector<Value> worklist{condition};
-  while (!worklist.empty()) {
-    Value value = worklist.pop_back_val();
-    if (!visited.insert(value).second) {
-      continue;
-    }
-    Operation *op = value.getDefiningOp();
-    if (!op) {
-      continue;
-    }
-    if (isa<ttk::MyLogicalXOp, ttk::MyLogicalYOp>(op)) {
+// Determine whether `rootValue` depends on a logical core-coordinate read,
+// following block arguments through `originAnalysis`. `visitedValues` prevents
+// recursion through loop-carried values; an unavailable backward slice returns
+// true so the caller conservatively specializes the function.
+static bool valueDependsOnCore(Value rootValue,
+                               const ValueOriginAnalysis &originAnalysis,
+                               llvm::DenseSet<Value> &visitedValues) {
+  if (!visitedValues.insert(rootValue).second) {
+    return false;
+  }
+
+  BackwardSliceOptions options;
+  options.inclusive = true;
+  options.omitBlockArguments = false;
+  options.omitUsesFromAbove = false;
+
+  llvm::SetVector<Operation *> backwardSlice;
+  if (failed(getBackwardSlice(rootValue, &backwardSlice, options))) {
+    return true;
+  }
+  for (Operation *operation : backwardSlice) {
+    if (isa<ttk::MyLogicalXOp, ttk::MyLogicalYOp>(operation)) {
       return true;
     }
-    worklist.append(op->operand_begin(), op->operand_end());
+  }
+
+  // Backward slices stop at multi-region block arguments. Resolve their entry
+  // and backedge values with the shared control-flow origin analysis.
+  SmallVector<BlockArgument> blockArguments;
+  if (auto rootArgument = dyn_cast<BlockArgument>(rootValue)) {
+    blockArguments.push_back(rootArgument);
+  }
+  for (Operation *operation : backwardSlice) {
+    for (Value operand : operation->getOperands()) {
+      if (auto blockArgument = dyn_cast<BlockArgument>(operand)) {
+        blockArguments.push_back(blockArgument);
+      }
+    }
+  }
+  for (BlockArgument blockArgument : blockArguments) {
+    for (Value origin : originAnalysis.getOrigins(blockArgument)) {
+      if (valueDependsOnCore(origin, originAnalysis, visitedValues)) {
+        return true;
+      }
+    }
   }
   return false;
 }
 
-/// Return true when `func` has any `scf.if` whose condition branches on a core
-/// coordinate. Only such functions need per-core clones.
-static bool funcBranchesOnCore(func::FuncOp func) {
-  bool found = false;
-  func.walk([&](scf::IfOp ifOp) {
-    if (conditionDependsOnCore(ifOp.getCondition())) {
-      found = true;
-      return WalkResult::interrupt();
+// Check whether `branch` uses a core-dependent value to choose a successor or
+// control repetition. Values forwarded unchanged into regions are not
+// selectors.
+static bool
+regionBranchDependsOnCore(RegionBranchOpInterface branch,
+                          const ValueOriginAnalysis &originAnalysis) {
+  RegionBranchSuccessorMapping forwardedOperands;
+  branch.getSuccessorOperandInputMapping(forwardedOperands);
+
+  // Forwarded values are inspected when they reach a later branch point;
+  // inspect the remaining operands where they determine region control.
+  for (RegionBranchPoint branchPoint : branch.getAllRegionBranchPoints()) {
+    Operation *branchOperation =
+        branchPoint.isParent()
+            ? branch.getOperation()
+            : branchPoint.getTerminatorPredecessorOrNull().getOperation();
+    for (OpOperand &operand : branchOperation->getOpOperands()) {
+      if (forwardedOperands.contains(&operand)) {
+        continue;
+      }
+      llvm::DenseSet<Value> visitedValues;
+      if (valueDependsOnCore(operand.get(), originAnalysis, visitedValues)) {
+        return true;
+      }
     }
-    return WalkResult::advance();
+  }
+  return false;
+}
+
+// Return whether any structured branch or loop in `function` requires per-core
+// specialization, sharing one origin analysis across its control-flow checks.
+static bool functionControlFlowDependsOnCore(func::FuncOp function) {
+  ValueOriginAnalysis originAnalysis(function);
+  auto result = function.walk([&](RegionBranchOpInterface branch) {
+    return regionBranchDependsOnCore(branch, originAnalysis)
+               ? WalkResult::interrupt()
+               : WalkResult::advance();
   });
-  return found;
+  return result.wasInterrupted();
 }
 
 /// Replace every CoordOp in func clone with an arith.constant of coord.
@@ -173,7 +224,7 @@ struct TTKernelSpecializeCoresPass
     // functions still get specialized.
     SmallVector<func::FuncOp> targets;
     for (auto func : module.getOps<func::FuncOp>()) {
-      if (!funcBranchesOnCore(func)) {
+      if (!functionControlFlowDependsOnCore(func)) {
         continue;
       }
       if (auto uses = SymbolTable::getSymbolUses(func, module);
