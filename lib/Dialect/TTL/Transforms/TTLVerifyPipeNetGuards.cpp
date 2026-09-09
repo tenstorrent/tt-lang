@@ -2430,8 +2430,10 @@ validatePipeEndpoints(ModuleOp module,
       return;
     }
 
-    PipeNetRecordsAttr records =
+    auto records =
         llvm::TypeSwitch<Operation *, PipeNetRecordsAttr>(op)
+            .Case<PipeNetPredicateOpInterface>(
+                [](auto query) { return query.getReferencedRecords(); })
             .Case<PipeNetForeachSrcOp, PipeNetForeachDstOp, SelectPipeSrcOp,
                   SelectPipeDstOp>(
                 [](auto recordsOp) { return recordsOp.getRecords(); })
@@ -2476,6 +2478,8 @@ struct TTLVerifyPipeNetGuardsPass
     : impl::TTLVerifyPipeNetGuardsBase<TTLVerifyPipeNetGuardsPass> {
   void runOnOperation() override {
     ModuleOp module = getOperation();
+    bool protocolDomainVerificationRelaxed =
+        applyDFBProtocolDomainVerificationRelaxation(module);
 
     const PipeNetLaunchNodeDomainAnalysis &launchNodeAnalysis =
         getAnalysis<PipeNetLaunchNodeDomainAnalysis>();
@@ -2525,7 +2529,7 @@ struct TTLVerifyPipeNetGuardsPass
       }
     });
 
-    if (!isDFBProtocolDomainVerificationRelaxed()) {
+    if (!protocolDomainVerificationRelaxed) {
       verifyCBWaits(state);
     }
     if (state.sawError) {

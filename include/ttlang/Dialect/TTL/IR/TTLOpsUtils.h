@@ -382,6 +382,10 @@ FailureOr<uint64_t> getDFBPagesPerBlock(CircularBufferType type);
 /// Scalar elements must occupy a positive whole number of bytes.
 FailureOr<uint64_t> getDFBPageSizeBytes(CircularBufferType type);
 
+/// Returns one block's capacity for a DFB operand and the static view capacity
+/// for an acquired DFB block operand.
+FailureOr<uint64_t> getDFBTransferCapacityBytes(Value endpoint);
+
 /// Selects the identity contract diagnosed by verifyDFBOperandIdentities.
 enum class DFBIdentityRequirement {
   /// The caller's analysis can resolve logical identity before finalization.
@@ -981,6 +985,20 @@ inline TileOp createTileOpWithPlaceholderDstIndex(OpBuilder &builder,
       TileOp::create(builder, loc, std::forward<Args>(args)..., dstIndex);
   addPlaceholderDstIndexAttr(tileOp.getOperation());
   return tileOp;
+}
+
+/// Store `tile` into producer-owned `view` at `indices`, preserving
+/// `rowPrefix`. Mark the DST index as a placeholder for subsequent register
+/// assignment.
+inline TileStoreOp createTileStoreWithPlaceholderDstIndex(
+    OpBuilder &builder, Location loc, Value tile, Value view,
+    ValueRange indices, UnitAttr rowPrefix = nullptr) {
+  Value dstIndex = createPlaceholderDstIndex(builder, loc);
+  TileStoreOp store =
+      TileStoreOp::create(builder, loc, tile, view, indices, dstIndex,
+                          DFBTileStoreKind::Producer, rowPrefix);
+  addPlaceholderDstIndexAttr(store.getOperation());
+  return store;
 }
 
 /// Collect the dataflow buffer values targeted by pack operations inside a

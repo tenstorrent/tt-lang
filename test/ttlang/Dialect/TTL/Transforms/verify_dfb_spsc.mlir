@@ -1,7 +1,9 @@
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices,ttl-verify-dfb-spsc)' | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices,ttl-verify-dfb-spsc)' | FileCheck %s --check-prefixes=CHECK,STRICT
 // RUN: env TTL_RELAX_DFB_SPSC=1 ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices,ttl-verify-dfb-spsc)' -o /dev/null
 
 // Producer in one thread, consumer in another: classic SPSC, accepted.
+// STRICT: module attributes
+// STRICT-NOT: ttl.relaxed_dfb_protocol_domain_verification
 // CHECK-LABEL: func.func @producer
 // CHECK-LABEL: func.func @consumer
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {

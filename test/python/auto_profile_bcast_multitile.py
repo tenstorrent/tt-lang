@@ -140,6 +140,7 @@ def bcast_multitile_kernel(
 # CHECK-NEXT:         DeviceZoneScopedN("demo_compute_L{{[0-9]+}}");
 # CHECK-NEXT:         init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(3));
 # CHECK-NEXT:         for (size_t [[K:.*]] = [[V6]]; [[K]] < [[V4:.*]]; [[K]] += [[V5]]) {
+# CHECK-NEXT:           size_t [[ROW_OFFSET:.*]] = [[K]] * [[V4]];
 # CHECK-NEXT:           for (size_t [[L:.*]] = [[V6]]; [[L]] < [[V4]]; [[L]] += [[V5]]) {
 # CHECK-NEXT:             tile_regs_acquire();
 # CHECK-NEXT:             unary_bcast_init<BroadcastType::COL>(get_compile_time_arg_val(0), get_compile_time_arg_val(3));
@@ -154,10 +155,8 @@ def bcast_multitile_kernel(
 # CHECK-NEXT:             add_binary_tile([[V6]], [[V5]], [[V6]]);
 # CHECK-NEXT:             tile_regs_commit();
 # CHECK-NEXT:             tile_regs_wait();
-# CHECK-NEXT:             size_t [[V12:.*]] = 4;
-# CHECK-NEXT:             size_t [[V13:.*]] = [[K]] * [[V12]];
-# CHECK-NEXT:             size_t [[V14:.*]] = [[V13]] + [[L]];
-# CHECK-NEXT:             pack_tile<true>([[V6]], get_compile_time_arg_val(3), [[V14]]);
+# CHECK-NEXT:             size_t [[V13:.*]] = [[ROW_OFFSET]] + [[L]];
+# CHECK-NEXT:             pack_tile<true>([[V6]], get_compile_time_arg_val(3), [[V13]]);
 # CHECK-NEXT:             tile_regs_release();
 # CHECK-NEXT:           }
 # CHECK-NEXT:         }

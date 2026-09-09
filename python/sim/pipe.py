@@ -483,6 +483,10 @@ class PipeNet(Generic[DstT]):
                 return True
         return False
 
+    def destination_count(self) -> int:
+        """Return the number of records targeting the current node."""
+        return sum(1 for pipe in self._pipes if node_in_dst_range(pipe.dst))
+
     def if_src(self, cond_fun: Callable[[SrcPipeIdentity[DstT]], None]) -> None:
         """Execute condition function for each pipe where current node is source.
 

@@ -28,6 +28,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/LiveIntervalUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/PipeConstants.h"
+#include "ttlang/Dialect/TTL/Transforms/PipeNetParticipantPlan.h"
 #include "ttlang/Dialect/TTL/Transforms/PipeRecordLoweringUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/PipeTransferAnalysis.h"
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
@@ -1700,7 +1701,7 @@ public:
                                          Value totalSizeBytes) = 0;
   virtual void emitPayloadWriteBarrier() = 0;
   virtual LogicalResult
-  emitReceiverCompletionIncrement(Value receiverCompletionCounterAddr) = 0;
+  emitReceiverCompletionSignal(Value receiverCompletionCounterAddr) = 0;
   virtual void emitCompletionSignalBarrier() = 0;
 };
 
@@ -1737,9 +1738,11 @@ protected:
   };
 
 public:
-  NocPipeTransportEmitterBase(Operation *op,
+  NocPipeTransportEmitterBase(Operation *op, bool useOrderedPostedProtocol,
                               ConversionPatternRewriter &rewriter)
-      : loc(op->getLoc()), rewriter(rewriter), nocIdx(getNocIndex(op)),
+      : loc(op->getLoc()), rewriter(rewriter),
+        useOrderedPostedProtocol(useOrderedPostedProtocol),
+        nocIdx(getNocIndex(op)),
         nocVal(arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
                                          rewriter.getI8IntegerAttr(nocIdx))) {}
 
@@ -1784,13 +1787,10 @@ public:
   void emitRemoteReceiverAddressPublish(Value senderTableAddress,
                                         Value publishedAddress) {
     TranslatedCore sourceCore = getSourceCore();
-    auto byteEnableAll = arith::ConstantOp::create(
-        rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(0xF));
     // An inline NoC write does not update the sender's local SRAM when the
     // sender is also this receiver, so that case uses a direct L1 store.
-    ttk::NocInlineDwWriteOp::create(rewriter, loc, sourceCore.x, sourceCore.y,
-                                    senderTableAddress, publishedAddress,
-                                    byteEnableAll, nocVal);
+    emitUnicastInlineWordWrite(sourceCore, senderTableAddress, publishedAddress,
+                               /*posted=*/false);
   }
 
   void emitAddressPublishBarrier() override {
@@ -1812,10 +1812,18 @@ public:
   }
 
   void emitPayloadWriteBarrier() override {
+    if (useOrderedPostedProtocol) {
+      return;
+    }
     ttk::NocAsyncWriteBarrierOp::create(rewriter, loc, nocVal);
   }
 
   void emitCompletionSignalBarrier() override {
+    if (useOrderedPostedProtocol) {
+      ttk::NocAsyncWritesFlushedOp::create(rewriter, loc, nocVal,
+                                           rewriter.getBoolAttr(true));
+      return;
+    }
     ttk::NocAsyncAtomicBarrierOp::create(rewriter, loc, nocVal);
   }
 
@@ -1843,8 +1851,47 @@ protected:
     return {translatedX, translatedY};
   }
 
+  // Write all four bytes of `value` to `destinationAddress` on
+  // `destinationCore` using this emitter's NoC; `posted` controls whether an
+  // acknowledgment is requested.
+  void emitUnicastInlineWordWrite(TranslatedCore destinationCore,
+                                  Value destinationAddress, Value value,
+                                  bool posted) {
+    Value byteEnableAll = arith::ConstantOp::create(
+        rewriter, loc, rewriter.getI8Type(), rewriter.getI8IntegerAttr(0xF));
+    ttk::NocInlineDwWriteOp::create(
+        rewriter, loc, destinationCore.x, destinationCore.y, destinationAddress,
+        value, byteEnableAll, nocVal,
+        posted ? rewriter.getBoolAttr(true) : BoolAttr());
+  }
+
+  // Signal one completed transfer at `receiverCompletionCounterAddr` on
+  // `destinationCore`. Posted signaling stores 1 and requires a one-update
+  // counter; non-posted signaling atomically increments a reusable counter.
+  void emitUnicastCompletionSignal(TranslatedCore destinationCore,
+                                   Value receiverCompletionCounterAddr,
+                                   bool posted) {
+    if (posted) {
+      Value completionValue =
+          arith::ConstantIntOp::create(rewriter, loc, 1, 32);
+      emitUnicastInlineWordWrite(destinationCore, receiverCompletionCounterAddr,
+                                 completionValue, /*posted=*/true);
+      return;
+    }
+
+    Value completionIncrement =
+        arith::ConstantIndexOp::create(rewriter, loc, 1);
+    auto receiverCompletionNocAddr = ttk::GetNocAddrOp::create(
+        rewriter, loc, destinationCore.x, destinationCore.y,
+        receiverCompletionCounterAddr, nocVal);
+    ttk::NocSemaphoreIncOp::create(
+        rewriter, loc, receiverCompletionNocAddr.getResult(),
+        completionIncrement, nocVal, /*posted=*/BoolAttr());
+  }
+
   Location loc;
   ConversionPatternRewriter &rewriter;
+  bool useOrderedPostedProtocol;
   int64_t nocIdx;
   Value nocVal;
 };
@@ -1852,8 +1899,10 @@ protected:
 class NocPipeTransportEmitter final : public NocPipeTransportEmitterBase {
 public:
   NocPipeTransportEmitter(Operation *op, PipeType pipeType,
+                          bool useOrderedPostedProtocol,
                           ConversionPatternRewriter &rewriter)
-      : NocPipeTransportEmitterBase(op, rewriter), pipeType(pipeType) {}
+      : NocPipeTransportEmitterBase(op, useOrderedPostedProtocol, rewriter),
+        pipeType(pipeType) {}
 
   LogicalResult emitReceiverAddressPublish(Value senderTableAddress,
                                            Value publishedAddress) override {
@@ -1885,7 +1934,8 @@ public:
       TranslatedCore dstStartCore = getDstStartCore();
       ttk::NocAsyncWriteOp::create(
           rewriter, loc, srcAddr, ValueRange{dstStartCore.x, dstStartCore.y},
-          ValueRange{}, dstAddr, totalSizeBytes, nocVal);
+          ValueRange{}, dstAddr, totalSizeBytes, nocVal,
+          useOrderedPostedProtocol ? rewriter.getBoolAttr(true) : BoolAttr());
       return success();
     }
 
@@ -1938,29 +1988,22 @@ public:
     TranslatedCore dstStartCore = getDstStartCore();
     ttk::NocAsyncWriteOp::create(rewriter, loc, pageSrcAddr,
                                  ValueRange{dstStartCore.x, dstStartCore.y},
-                                 ValueRange{}, pageDstAddr, pageSize, nocVal);
+                                 ValueRange{}, pageDstAddr, pageSize, nocVal,
+                                 /*posted=*/BoolAttr());
     return success();
   }
 
-  void emitPayloadWriteBarrier() override {
-    ttk::NocAsyncWriteBarrierOp::create(rewriter, loc, nocVal);
-  }
-
-  LogicalResult emitReceiverCompletionIncrement(
-      Value receiverCompletionCounterAddr) override {
-    auto completionIncrement = arith::ConstantIndexOp::create(rewriter, loc, 1);
-
+  LogicalResult
+  emitReceiverCompletionSignal(Value receiverCompletionCounterAddr) override {
     if (pipeType.hasSingleReceiver()) {
       TranslatedCore dstStartCore = getDstStartCore();
-      auto receiverCompletionNocAddr = ttk::GetNocAddrOp::create(
-          rewriter, loc, dstStartCore.x, dstStartCore.y,
-          receiverCompletionCounterAddr, nocVal);
-      ttk::NocSemaphoreIncOp::create(
-          rewriter, loc, receiverCompletionNocAddr.getResult(),
-          completionIncrement, nocVal, /*posted=*/BoolAttr());
+      emitUnicastCompletionSignal(dstStartCore, receiverCompletionCounterAddr,
+                                  useOrderedPostedProtocol);
       return success();
     }
 
+    Value completionIncrement =
+        arith::ConstantIndexOp::create(rewriter, loc, 1);
     DestinationRange destinationRange = getDestinationRange();
     int64_t numRemoteDests = pipeType.srcInDstRange()
                                  ? pipeType.getNumDests() - 1
@@ -2044,8 +2087,13 @@ class SelectedNocPipeTransportEmitter final
     : public NocPipeTransportEmitterBase {
 public:
   SelectedNocPipeTransportEmitter(Operation *op, SelectedPipeFields fields,
+                                  bool useOrderedPostedProtocol,
                                   ConversionPatternRewriter &rewriter)
-      : NocPipeTransportEmitterBase(op, rewriter), fields(fields) {}
+      : NocPipeTransportEmitterBase(op, useOrderedPostedProtocol, rewriter),
+        fields(fields) {
+    assert((!useOrderedPostedProtocol || !fields.isCollective) &&
+           "posted selected completion requires point-to-point records");
+  }
 
   void preparePayloadWrite() override {
     // Coordinate translations must dominate the conditional regions emitted
@@ -2084,16 +2132,17 @@ public:
     return success();
   }
 
-  LogicalResult emitReceiverCompletionIncrement(
-      Value receiverCompletionCounterAddr) override {
-    auto completionIncrement = arith::ConstantIndexOp::create(rewriter, loc, 1);
-
+  LogicalResult
+  emitReceiverCompletionSignal(Value receiverCompletionCounterAddr) override {
     if (!fields.isCollective) {
-      emitUnicastCompletionIncrement(receiverCompletionCounterAddr,
-                                     completionIncrement);
+      emitUnicastCompletionSignal(getDstStartCore(),
+                                  receiverCompletionCounterAddr,
+                                  useOrderedPostedProtocol);
       return success();
     }
 
+    Value completionIncrement =
+        arith::ConstantIndexOp::create(rewriter, loc, 1);
     DestinationRange destinationRange = getDestinationRange();
     Value numDests = getNumDests();
     auto singleReceiverIf = scf::IfOp::create(
@@ -2102,8 +2151,9 @@ public:
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(
           &singleReceiverIf.getThenRegion().front());
-      emitUnicastCompletionIncrement(receiverCompletionCounterAddr,
-                                     completionIncrement);
+      emitUnicastCompletionSignal(getDstStartCore(),
+                                  receiverCompletionCounterAddr,
+                                  /*posted=*/false);
       rewriter.setInsertionPointToStart(
           &singleReceiverIf.getElseRegion().front());
       emitMulticastCompletionIncrement(receiverCompletionCounterAddr,
@@ -2118,9 +2168,10 @@ private:
   void emitUnicastPayloadWrite(Value srcAddr, Value dstAddr,
                                Value totalSizeBytes) {
     TranslatedCore dstStartCore = getDstStartCore();
-    ttk::NocAsyncWriteOp::create(rewriter, loc, srcAddr,
-                                 ValueRange{dstStartCore.x, dstStartCore.y},
-                                 ValueRange{}, dstAddr, totalSizeBytes, nocVal);
+    ttk::NocAsyncWriteOp::create(
+        rewriter, loc, srcAddr, ValueRange{dstStartCore.x, dstStartCore.y},
+        ValueRange{}, dstAddr, totalSizeBytes, nocVal,
+        useOrderedPostedProtocol ? rewriter.getBoolAttr(true) : BoolAttr());
   }
 
   void emitMulticastPayloadWrite(Value srcAddr, Value dstAddr,
@@ -2146,17 +2197,6 @@ private:
           /*linked=*/nullptr);
     }
     rewriter.setInsertionPointAfter(loopbackIf);
-  }
-
-  void emitUnicastCompletionIncrement(Value receiverCompletionCounterAddr,
-                                      Value completionIncrement) {
-    TranslatedCore dstStartCore = getDstStartCore();
-    auto receiverCompletionNocAddr =
-        ttk::GetNocAddrOp::create(rewriter, loc, dstStartCore.x, dstStartCore.y,
-                                  receiverCompletionCounterAddr, nocVal);
-    ttk::NocSemaphoreIncOp::create(
-        rewriter, loc, receiverCompletionNocAddr.getResult(),
-        completionIncrement, nocVal, /*posted=*/BoolAttr());
   }
 
   void emitMulticastCompletionIncrement(Value receiverCompletionCounterAddr,
@@ -2387,8 +2427,8 @@ public:
 
   void emitPayloadWriteBarrier() override {}
 
-  LogicalResult emitReceiverCompletionIncrement(
-      Value receiverCompletionCounterAddr) override {
+  LogicalResult
+  emitReceiverCompletionSignal(Value receiverCompletionCounterAddr) override {
     assert(sourceAddress && destinationAddress && sizeBytes &&
            "fabric payload must be prepared before completion signaling");
     routeEmitter.emitFusedWriteAtomicIncrement(
@@ -2758,6 +2798,21 @@ static Value incrementPipePostSequence(Location loc, Value sequenceCounter,
   return tokenSequence;
 }
 
+// Return whether `resource` has one remote receiver, a fixed computed DFB slot,
+// and exactly one completion update, allowing completion to be stored as 1.
+static bool hasOneShotRemoteFixedReceiver(const PipeResourceInfo &resource) {
+  const PipeKey &pipe = resource.pipe;
+  bool hasRemoteSingleReceiver =
+      pipe.hasSingleReceiver() &&
+      (pipe.srcX != pipe.dstStartX || pipe.srcY != pipe.dstStartY);
+  const std::optional<PipeComputedAddressInfo> &computedAddress =
+      resource.addressStorage.computedAddress;
+  return hasRemoteSingleReceiver &&
+         resource.completion.hasSingleLifetimeUpdate &&
+         resource.addressStorage.usesComputedReceiverDFB() && computedAddress &&
+         !computedAddress->usesDynamicSlotCounter();
+}
+
 static LogicalResult lowerSelectedPipeTransferSend(
     PipeTransferSendOp op, Value srcCB, const PipeTransferPlan &transferPlan,
     const PipeResourcePlan &pipeResourcePlan,
@@ -2781,6 +2836,16 @@ static LogicalResult lowerSelectedPipeTransferSend(
       (!usesFabric || sendPlan.fabricRouteIndices.size() == resources.size()) &&
       "selected fabric route table must match the resource table");
 
+  // Record-selected transfers remain scalar. An absolute completion store is
+  // valid only when every possible record has one fixed receiver slot and its
+  // completion counter receives exactly one update.
+  bool useOrderedPostedProtocol =
+      transferPlan.getSynchronizationProtocol() ==
+          PipeSynchronizationProtocol::ReceiverPost &&
+      !fields.isCollective &&
+      sendPlan.payloadSizeBytes <= getTargetNocMaxBurstBytes(op) &&
+      llvm::all_of(resources, hasOneShotRemoteFixedReceiver);
+
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
   std::unique_ptr<PipeSendTransportEmitter> transport;
   if (usesFabric) {
@@ -2803,8 +2868,8 @@ static LogicalResult lowerSelectedPipeTransferSend(
         op, fields.dstStartX, fields.dstStartY, routeIndex, runtimeIt->second,
         rewriter);
   } else {
-    transport =
-        std::make_unique<SelectedNocPipeTransportEmitter>(op, fields, rewriter);
+    transport = std::make_unique<SelectedNocPipeTransportEmitter>(
+        op, fields, useOrderedPostedProtocol, rewriter);
   }
 
   Value senderSemAddr = buildSelectedReadyCounterAddress(
@@ -2930,8 +2995,8 @@ static LogicalResult lowerSelectedPipeTransferSend(
   Value completionCounterAddress = buildSelectedPipeCounterAddress(
       op, loc, completionCounters, fields.recordIndex, pipeResourcePlan,
       rewriter);
-  if (failed(transport->emitReceiverCompletionIncrement(
-          completionCounterAddress))) {
+  if (failed(
+          transport->emitReceiverCompletionSignal(completionCounterAddress))) {
     return failure();
   }
   transport->emitCompletionSignalBarrier();
@@ -3002,6 +3067,19 @@ LogicalResult lowerPipeTransferSend(
       (!usesFabric || pipeResource.addressStorage.usesComputedReceiverDFB()) &&
       "fabric transfer plan uses a receiver-published address");
 
+  bool usePageWrites =
+      !usesFabric && shouldEmitPayloadPageWrites(op, pipeType, transportStream);
+  // Ordered posted writes can replace the payload barrier and atomic update
+  // only when value one is the counter's complete lifetime state.
+  bool useOrderedPostedProtocol =
+      !usesFabric && !usePageWrites &&
+      transferPlan.getSynchronizationProtocol() ==
+          PipeSynchronizationProtocol::ReceiverPost &&
+      hasOneShotRemoteFixedReceiver(pipeResource) &&
+      sendPlan.payloadSizeBytes <= getTargetNocMaxBurstBytes(op) &&
+      transportStream.getCreditCompletion() ==
+          PipeTransportCreditCompletion::Immediate;
+
   bool usesCapacityProtocol = transferPlan.getSynchronizationProtocol() ==
                               PipeSynchronizationProtocol::Capacity;
   ArrayRef<PipeCapacityAcquireInfo> capacityAcquires =
@@ -3050,8 +3128,8 @@ LogicalResult lowerPipeTransferSend(
         op, destinationX, destinationY, routeIndexValue, runtimeIt->second,
         rewriter);
   } else {
-    auto emitter =
-        std::make_unique<NocPipeTransportEmitter>(op, pipeType, rewriter);
+    auto emitter = std::make_unique<NocPipeTransportEmitter>(
+        op, pipeType, useOrderedPostedProtocol, rewriter);
     nocTransport = emitter.get();
     transport = std::move(emitter);
   }
@@ -3172,8 +3250,6 @@ LogicalResult lowerPipeTransferSend(
         buildAddressTableDestinationAddress(loc, addressTableInfo, rewriter);
   }
 
-  bool usePageWrites =
-      !usesFabric && shouldEmitPayloadPageWrites(op, pipeType, transportStream);
   LogicalResult writeResult =
       usePageWrites
           ? nocTransport->emitPayloadPageWrites(srcAddr, dstAddr,
@@ -3184,13 +3260,14 @@ LogicalResult lowerPipeTransferSend(
     return failure();
   }
 
-  // Wait for payload writes to complete before signaling receiver completion.
-  // Without this barrier, the receiver may wake up before all data arrives.
+  // Fallback atomics wait for remote payload completion. Ordered writes on the
+  // same NoC and static virtual channel preserve payload-before-completion
+  // visibility, and the final posted flush permits source reuse.
   Value receiverCompletionCounterAddr = buildPipeCounterAddress(
       loc, senderFunc, completionInfo.counter, pipeResourcePlan, rewriter);
   transport->emitPayloadWriteBarrier();
 
-  if (failed(transport->emitReceiverCompletionIncrement(
+  if (failed(transport->emitReceiverCompletionSignal(
           receiverCompletionCounterAddr))) {
     return failure();
   }
@@ -3292,7 +3369,8 @@ lowerSelectedPipeTransferPost(PipeTransferPostOp op, Value dst,
         fields.srcX, fields.srcY, senderSemAddr,
         arith::ConstantIntOp::create(rewriter, loc, 1, 32));
   } else {
-    SelectedNocPipeTransportEmitter transport(op, fields, rewriter);
+    SelectedNocPipeTransportEmitter transport(
+        op, fields, /*useOrderedPostedProtocol=*/false, rewriter);
     if (anyUsePublishedAddress) {
       auto emitAddressPublication = [&]() -> LogicalResult {
         Value publishedAddress = buildReceiverPublishedAddress(
@@ -3424,7 +3502,9 @@ lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
         sourceX, sourceY, senderReadyCounterAddress,
         arith::ConstantIntOp::create(rewriter, loc, 1, 32));
   } else {
-    NocPipeTransportEmitter transport(op, pipeType, rewriter);
+    NocPipeTransportEmitter transport(op, pipeType,
+                                      /*useOrderedPostedProtocol=*/false,
+                                      rewriter);
     if (postPlan.addressPublication) {
       AddressTableInfo addressTableInfo = getAddressTableInfo(op, pipeResource);
       Value publishedAddress = buildReceiverPublishedAddress(
@@ -3842,7 +3922,8 @@ struct IfDstLowering : OpConversionPattern<IfDstOp> {
   }
 };
 
-struct PipeRoleTables {
+// Parallel arrays map each record field to the constant-table lookup primitive.
+struct DevicePipeRoleTables {
   SmallVector<int64_t> minX;
   SmallVector<int64_t> minY;
   SmallVector<int64_t> maxX;
@@ -3852,8 +3933,11 @@ struct PipeRoleTables {
   std::size_t size() const { return minX.size(); }
 };
 
-static PipeRoleTables buildPipeRoleTables(PipeNetRecordsAttr records,
-                                          PipeRole role) {
+// Boolean predicates ignore duplicates, while counts retain each record
+// because every matching record executes one destination callback.
+static DevicePipeRoleTables
+buildDevicePipeRoleTables(PipeNetRecordsAttr records, PipeRole role,
+                          bool deduplicateRecords) {
   using PipeRoleRecord =
       std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t>;
   SmallVector<PipeRoleRecord> roleRecords;
@@ -3861,17 +3945,19 @@ static PipeRoleTables buildPipeRoleTables(PipeNetRecordsAttr records,
     for (const PipeRecordRoleFacts &facts :
          getPipeRecordRoleFacts(record, role)) {
       assert(facts.device &&
-             "selected device role requires device transfer records");
+             "device role query requires device transfer records");
       roleRecords.emplace_back(
           facts.minX, facts.minY, facts.maxX, facts.maxY,
           getLogicalDeviceIndex(facts.deviceDomain, facts.device));
     }
   }
   llvm::sort(roleRecords);
-  roleRecords.erase(std::unique(roleRecords.begin(), roleRecords.end()),
-                    roleRecords.end());
+  if (deduplicateRecords) {
+    roleRecords.erase(std::unique(roleRecords.begin(), roleRecords.end()),
+                      roleRecords.end());
+  }
 
-  PipeRoleTables tables;
+  DevicePipeRoleTables tables;
   for (auto [minX, minY, maxX, maxY, deviceIndex] : roleRecords) {
     tables.minX.push_back(minX);
     tables.minY.push_back(minY);
@@ -3882,14 +3968,19 @@ static PipeRoleTables buildPipeRoleTables(PipeNetRecordsAttr records,
   return tables;
 }
 
-static Value lowerSelectedRolePredicate(Operation *op,
-                                        PipeNetRecordsAttr records,
-                                        PipeRole role,
-                                        ConversionPatternRewriter &rewriter) {
+// Share coordinate and device matching between boolean predicates and counts;
+// callers select OR or addition and whether duplicate records contribute.
+static Value lowerDeviceRoleQuery(
+    Operation *op, PipeNetRecordsAttr records, PipeRole role,
+    bool deduplicateRecords, Value initialValue,
+    llvm::function_ref<Value(OpBuilder &, Location, Value, Value)>
+        accumulateRecord,
+    ConversionPatternRewriter &rewriter) {
   Location loc = op->getLoc();
-  PipeRoleTables tables = buildPipeRoleTables(records, role);
+  DevicePipeRoleTables tables =
+      buildDevicePipeRoleTables(records, role, deduplicateRecords);
   DeviceTransferAttr transfer = records.getPipes().front().getDeviceTransfer();
-  assert(transfer && "selected device role requires device transfer records");
+  assert(transfer && "device role query requires device transfer records");
 
   Value nodeX =
       ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
@@ -3900,10 +3991,9 @@ static Value lowerSelectedRolePredicate(Operation *op,
   Value lower = arith::ConstantIndexOp::create(rewriter, loc, 0);
   Value upper = arith::ConstantIndexOp::create(rewriter, loc, tables.size());
   Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
-  Value initialMatch = arith::ConstantIntOp::create(rewriter, loc, 0, 1);
 
   auto loop = scf::ForOp::create(
-      rewriter, loc, lower, upper, step, ValueRange{initialMatch},
+      rewriter, loc, lower, upper, step, ValueRange{initialValue},
       [&](OpBuilder &builder, Location bodyLoc, Value recordIndex,
           ValueRange iterArgs) {
         Value minX = buildConstantIndexTableLookup(builder, bodyLoc,
@@ -3923,15 +4013,125 @@ static Value lowerSelectedRolePredicate(Operation *op,
                                   currentDevice, roleDevice);
         Value recordMatches = arith::AndIOp::create(
             builder, bodyLoc, coordinateMatches, deviceMatches);
-        Value accumulatedMatch = arith::OrIOp::create(
-            builder, bodyLoc, iterArgs.front(), recordMatches);
-        scf::YieldOp::create(builder, bodyLoc, accumulatedMatch);
+        Value accumulatedValue =
+            accumulateRecord(builder, bodyLoc, iterArgs.front(), recordMatches);
+        scf::YieldOp::create(builder, bodyLoc, accumulatedValue);
       });
   return loop.getResult(0);
 }
 
-// Lower a per-pipe-role predicate op to the OR of per-pipe matches in the
-// named PipeNet. `roleBuilder` produces the i1 match for one static pipe.
+static Value lowerSelectedRolePredicate(Operation *op,
+                                        PipeNetRecordsAttr records,
+                                        PipeRole role,
+                                        ConversionPatternRewriter &rewriter) {
+  Location loc = op->getLoc();
+  Value initialMatch = arith::ConstantIntOp::create(rewriter, loc, 0, 1);
+  return lowerDeviceRoleQuery(
+      op, records, role, /*deduplicateRecords=*/true, initialMatch,
+      [](OpBuilder &builder, Location bodyLoc, Value accumulatedMatch,
+         Value recordMatches) {
+        return Value(arith::OrIOp::create(builder, bodyLoc, accumulatedMatch,
+                                          recordMatches));
+      },
+      rewriter);
+}
+
+// Irregular graph records require matching each record at runtime.
+static Value
+lowerDeviceDestinationCountByRecord(Operation *op, PipeNetRecordsAttr records,
+                                    ConversionPatternRewriter &rewriter) {
+  Location loc = op->getLoc();
+  Value initialCount = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  return lowerDeviceRoleQuery(
+      op, records, PipeRole::Destination, /*deduplicateRecords=*/false,
+      initialCount,
+      [](OpBuilder &builder, Location bodyLoc, Value accumulatedCount,
+         Value recordMatches) {
+        Value zero = arith::ConstantIndexOp::create(builder, bodyLoc, 0);
+        Value one = arith::ConstantIndexOp::create(builder, bodyLoc, 1);
+        Value increment =
+            arith::SelectOp::create(builder, bodyLoc, recordMatches, one, zero);
+        return Value(arith::AddIOp::create(builder, bodyLoc, accumulatedCount,
+                                           increment));
+      },
+      rewriter);
+}
+
+// Dense grid-major records permit one device-indexed count-table lookup.
+static FailureOr<Value>
+lowerPlannedDeviceDestinationCount(Operation *op, PipeNetRecordsAttr records,
+                                   ConversionPatternRewriter &rewriter) {
+  FailureOr<std::pair<int64_t, int64_t>> launchGrid = getLaunchGrid(op);
+  if (failed(launchGrid)) {
+    return failure();
+  }
+  auto [gridX, gridY] = *launchGrid;
+  FailureOr<DevicePipeNetParticipantPlan> participantPlan =
+      buildDevicePipeNetParticipantPlan(records, PipeRole::Destination, gridX,
+                                        gridY);
+  if (failed(participantPlan)) {
+    return failure();
+  }
+
+  Location loc = op->getLoc();
+  DeviceDomainAttr deviceDomain =
+      records.getPipes().front().getDeviceTransfer().getDomain();
+  Value currentDevice = CurrentDeviceIndexOp::create(
+      rewriter, loc, rewriter.getIndexType(), deviceDomain);
+  return buildConstantIndexTableLookup(
+      rewriter, loc, participantPlan->recordCountsByDevice, currentDevice);
+}
+
+// Emit an index value counting entries in `records` for which the current node
+// has `role` (source, destination, or either). Use the launch grid enclosing
+// `op`; fail before emitting IR if that grid or the local records are invalid.
+static FailureOr<Value>
+lowerLocalRoleRecordCount(Operation *op, PipeNetRecordsAttr records,
+                          PipeRole role, ConversionPatternRewriter &rewriter) {
+  FailureOr<std::pair<int64_t, int64_t>> launchGrid = getLaunchGrid(op);
+  if (failed(launchGrid)) {
+    return failure();
+  }
+  auto [gridX, gridY] = *launchGrid;
+  FailureOr<LocalPipeNetParticipantPlan> participantPlan =
+      buildLocalPipeNetParticipantPlan(records, role, gridX, gridY);
+  if (failed(participantPlan)) {
+    return failure();
+  }
+
+  Location loc = op->getLoc();
+  Value nodeX =
+      ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
+  Value nodeY =
+      ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
+  Value gridXValue =
+      arith::ConstantIndexOp::create(rewriter, loc, participantPlan->gridX);
+  Value nodeRowOffset = arith::MulIOp::create(rewriter, loc, nodeY, gridXValue);
+  Value nodeIndex = arith::AddIOp::create(rewriter, loc, nodeRowOffset, nodeX);
+  return buildConstantIndexTableLookup(
+      rewriter, loc, participantPlan->recordCountsByNode, nodeIndex);
+}
+
+// Emit an i1 that is true when the current node is a source, destination, or
+// either, as requested by `role`, in any entry of the local `records`.
+// Use the launch grid enclosing `op`; propagate failure without emitting IR.
+static FailureOr<Value>
+lowerLocalRolePredicate(Operation *op, PipeNetRecordsAttr records,
+                        PipeRole role, ConversionPatternRewriter &rewriter) {
+  FailureOr<Value> recordCount =
+      lowerLocalRoleRecordCount(op, records, role, rewriter);
+  if (failed(recordCount)) {
+    return failure();
+  }
+  Value zero = arith::ConstantIndexOp::create(rewriter, op->getLoc(), 0);
+  return arith::CmpIOp::create(rewriter, op->getLoc(), arith::CmpIPredicate::ne,
+                               *recordCount, zero)
+      .getResult();
+}
+
+// Replace `op` with an i1 testing whether the current node/device has `role` in
+// its records. If `op` has no records, use `pipeNetIndex` to find its pipes and
+// `roleBuilder` to emit each pipe's coordinate test, then OR those results.
 template <typename Op>
 static LogicalResult lowerRolePredicate(
     Op op, ConversionPatternRewriter &rewriter,
@@ -3940,8 +4140,17 @@ static LogicalResult lowerRolePredicate(
         roleBuilder) {
   auto loc = op.getLoc();
   if (PipeNetRecordsAttr records = op.getRecordsAttr()) {
-    rewriter.replaceOp(op,
-                       lowerSelectedRolePredicate(op, records, role, rewriter));
+    if (records.getPipes().front().getDeviceTransfer()) {
+      rewriter.replaceOp(
+          op, lowerSelectedRolePredicate(op, records, role, rewriter));
+      return success();
+    }
+    FailureOr<Value> localPredicate =
+        lowerLocalRolePredicate(op, records, role, rewriter);
+    if (failed(localPredicate)) {
+      return failure();
+    }
+    rewriter.replaceOp(op, *localPredicate);
     return success();
   }
   int64_t netId = op.getPipeNetId();
@@ -4003,6 +4212,53 @@ struct IsActiveLowering : IsRoleLoweringBase<IsActiveOp> {
           Value isDst = buildDstMatch(builder, loc, coreX, coreY, pipeType);
           return Value(arith::OrIOp::create(builder, loc, isSrc, isDst));
         });
+  }
+};
+
+struct PipeNetDestinationCountLowering
+    : OpConversionPattern<PipeNetDestinationCountOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(PipeNetDestinationCountOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    PipeNetRecordsAttr records = op.getRecords();
+    // Regular records use one indexed lookup. Irregular records retain exact
+    // per-record matching because they cannot use the participant table.
+    if (records.getPipes().front().getDeviceTransfer()) {
+      FailureOr<Value> plannedCount =
+          lowerPlannedDeviceDestinationCount(op, records, rewriter);
+      rewriter.replaceOp(
+          op, succeeded(plannedCount)
+                  ? *plannedCount
+                  : lowerDeviceDestinationCountByRecord(op, records, rewriter));
+      return success();
+    }
+    FailureOr<Value> localCount =
+        lowerLocalRoleRecordCount(op, records, PipeRole::Destination, rewriter);
+    if (succeeded(localCount)) {
+      rewriter.replaceOp(op, *localCount);
+      return success();
+    }
+
+    Location loc = op.getLoc();
+    Value nodeX =
+        ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
+    Value nodeY =
+        ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
+    Value count = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    for (PipeRecordAttr record : records.getPipes()) {
+      PipeType pipeType = getPipeTypeFromRecord(rewriter.getContext(), record,
+                                                records.getPipeNetId());
+      Value matches = buildDstMatch(rewriter, loc, nodeX, nodeY, pipeType);
+      Value increment =
+          arith::SelectOp::create(rewriter, loc, matches, one, zero);
+      count = arith::AddIOp::create(rewriter, loc, count, increment);
+    }
+    rewriter.replaceOp(op, count);
+    return success();
   }
 };
 
@@ -4070,8 +4326,28 @@ LogicalResult buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
   mod.walk([&](PipeNetForeachSrcOp op) { addRecords(op.getRecords()); });
   mod.walk([&](PipeNetForeachDstOp op) { addRecords(op.getRecords()); });
 
+  // Validate role-query inputs before conversion so diagnostics retain the
+  // query's source location instead of the conversion wrapper's module
+  // location.
   WalkResult validation = mod.walk([&](PipeNetPredicateOpInterface predicate) {
-    if (predicate.getReferencedRecords()) {
+    if (PipeNetRecordsAttr records = predicate.getReferencedRecords()) {
+      if (!records.getPipes().front().getDeviceTransfer()) {
+        FailureOr<std::pair<int64_t, int64_t>> launchGrid =
+            getLaunchGrid(predicate);
+        if (failed(launchGrid)) {
+          predicate->emitError()
+              << "local PipeNet role query requires a valid ttl.launch_grid "
+                 "with two positive integer extents; set the operation's "
+                 "launch grid to include its PipeNet endpoints";
+          return WalkResult::interrupt();
+        }
+        if (failed(validateLocalPipeNetParticipantPlanInputs(
+                records, predicate.getReferencedRole(), launchGrid->first,
+                launchGrid->second,
+                [&]() { return predicate->emitError(); }))) {
+          return WalkResult::interrupt();
+        }
+      }
       return WalkResult::advance();
     }
     int64_t pipeNetId = predicate.getReferencedPipeNetId();
@@ -4124,6 +4400,9 @@ struct PipeTransferAllocationUnit {
 
   /// Completion-counter color; disjoint receiver sets may share one color.
   std::optional<int64_t> maybeCompletionCounterColor;
+
+  // Whether this unit is the only update to its completion-counter lifetime.
+  bool hasSingleLifetimeCompletionUpdate = false;
 
   /// Deterministic order used by first-fit interval coloring.
   bool operator<(const PipeTransferAllocationUnit &rhs) const {
@@ -4429,8 +4708,8 @@ buildWaitAnyCompletionGroups(ModuleOp module,
 static bool usesSenderReadyCounter(
     const PipeTransferAllocationUnit &unit,
     const PipeSynchronizationSelection *synchronizationSelection) {
-  // Selected transfers publish receiver addresses, so their sender must wait
-  // until the matching table entry has been initialized.
+  // Selected transfers use record-indexed receiver-post synchronization, so
+  // the sender must wait for the matching receiver reservation.
   if (!synchronizationSelection || isSelectedTransferUnit(unit)) {
     return true;
   }
@@ -4454,6 +4733,18 @@ getCompletionCounterLocations(const PipeTransferAllocationUnit &unit,
   }
   assert(!locations.empty() && "pipe completion counter has no destination");
   return locations;
+}
+
+// Require every receiver endpoint for `unit` in `pipeGraph` to execute exactly
+// once; an unknown or repeated count cannot justify a one-update counter.
+static bool executesOnceAtEveryReceiver(const PipeTransferAllocationUnit &unit,
+                                        const PipeGraph &pipeGraph) {
+  return llvm::all_of(pipeGraph.getPipeReceiverEndpoints(unit.transferNodeId),
+                      [&](PipeReceiverEndpointId endpointId) {
+                        const PipeReceiverEndpoint &endpoint =
+                            pipeGraph.getPipeReceiverEndpoint(endpointId);
+                        return endpoint.addressSequence.executionCount == 1;
+                      });
 }
 
 static bool counterLocationsOverlap(ArrayRef<PipeCounterLocation> lhs,
@@ -4588,16 +4879,8 @@ static ComputedAddressPlan buildComputedAddressPlan(
 
   for (auto indexedUnit : llvm::enumerate(units)) {
     PipeTransferAllocationUnit &unit = indexedUnit.value();
-    const PipeTransferNode &transferNode =
-        pipeGraph.getPipeTransferNode(unit.transferNodeId);
-    // Local table-driven transfers retain receiver publication because it
-    // produces substantially smaller kernels. Device transfers cannot publish
-    // receiver-local addresses directly, so they require this computation.
-    if (isSelectedTransferUnit(unit) && !transferNode.deviceTransfer) {
-      continue;
-    }
     const PipeReceiverEndpoint *receiverEndpoint =
-        pipeGraph.getProvenReceiverAddressEndpoint(transferNode.id);
+        pipeGraph.getProvenReceiverAddressEndpoint(unit.transferNodeId);
     if (!receiverEndpoint) {
       continue;
     }
@@ -4796,6 +5079,17 @@ LogicalResult buildPipeResourcePlan(
   SmallVector<SmallVector<PipeCounterLocation>>
       fabricCompletionLocationsByColor;
   for (const CompletionCounterGroup &group : completionGroups) {
+    assert(!group.unitIndices.empty() &&
+           "completion counter group must contain a transfer");
+    bool hasSingleLifetimeCompletionUpdate =
+        group.unitIndices.size() == 1 &&
+        executesOnceAtEveryReceiver(units[group.unitIndices.front()],
+                                    pipeGraph);
+    for (std::size_t unitIndex : group.unitIndices) {
+      units[unitIndex].hasSingleLifetimeCompletionUpdate =
+          hasSingleLifetimeCompletionUpdate;
+    }
+
     SmallVector<SmallVector<PipeCounterLocation>> &locationsByColor =
         group.usesFabric ? fabricCompletionLocationsByColor
                          : nodeLocalCompletionLocationsByColor;
@@ -4901,7 +5195,8 @@ LogicalResult buildPipeResourcePlan(
         unit.transferNodeId,
         unit.pipe,
         unit.transferContract,
-        PipeCompletionInfo{completionCounters[completionColor]},
+        PipeCompletionInfo{completionCounters[completionColor],
+                           unit.hasSingleLifetimeCompletionUpdate},
         maybeReadyCounter,
         addressStorage,
     };
@@ -5167,6 +5462,8 @@ void populatePipeLoweringPatterns(RewritePatternSet &patterns,
       typeConverter, patterns.getContext());
   patterns.add<IsSrcLowering, IsDstLowering, IsActiveLowering>(
       typeConverter, patterns.getContext(), &pipeNetIndex);
+  patterns.add<PipeNetDestinationCountLowering>(typeConverter,
+                                                patterns.getContext());
 }
 
 } // namespace mlir::tt::ttl

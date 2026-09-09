@@ -46,8 +46,8 @@ constexpr llvm::StringLiteral
 /// Selected strategy on tile operations with execution alternatives.
 constexpr llvm::StringLiteral
     kTileExecutionStrategyAttrName("ttl.tile_execution_strategy");
-/// PipeNet role exposed by `is_src` / `is_dst` / `is_active` predicate ops
-/// and by `pipenet_scope` declarations.
+/// PipeNet role queried by `is_src`, `is_dst`, and `is_active` operations and
+/// declared by `pipenet_scope`.
 enum class PipeRole : int64_t {
   Source = 0,
   Destination = 1,
@@ -128,6 +128,15 @@ constexpr llvm::StringLiteral
 /// linearization stride for this dimension.
 constexpr llvm::StringLiteral kTileLoopStrideAttrName("ttl.tile_loop_stride");
 
+/// Marks a compiler-generated loop over the local PipeNet records selected for
+/// one launch node.
+constexpr llvm::StringLiteral
+    kPipeNetLocalRecordLoopAttrName("ttl.pipenet_local_record_loop");
+
+/// Page capacity proven available for an initial PipeNet receive sequence.
+constexpr llvm::StringLiteral kPipeNetInitialReceiveCapacityAttrName(
+    "ttl.pipenet_initial_receive_capacity");
+
 /// Marks an scf.for loop as iterating over a reduction dimension.
 constexpr llvm::StringLiteral kReductionLoopAttrName("ttl.reduction_loop");
 
@@ -164,6 +173,11 @@ constexpr llvm::StringLiteral kDFBAllocationsAttrName("ttl.dfb_allocations");
 /// user-supplied handoff assumption.
 constexpr llvm::StringLiteral
     kAssumedDFBAllocationGroupsAttrName("ttl.assumed_dfb_allocation_groups");
+
+/// Module attribute recording that per-launch-node DFB protocol-domain checks
+/// were skipped.
+constexpr llvm::StringLiteral kRelaxedDFBProtocolDomainVerificationAttrName(
+    "ttl.relaxed_dfb_protocol_domain_verification");
 
 /// Module attribute containing physical DFB configuration-epoch metadata.
 constexpr llvm::StringLiteral

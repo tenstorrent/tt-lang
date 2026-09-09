@@ -806,6 +806,39 @@ verifyReceiverReservationSequence(const ReceiverAddressSequenceProof &sequence,
 LogicalResult PipeGraph::assignReceiverAddressSequences(
     ModuleOp mod, const PipeTransferIndex &transferIndex,
     PipeGraphAnalysisState &analysisState) {
+  // Address recurrence and execution count are independent: an invariant
+  // receiver address may still be posted repeatedly.
+  struct ReceiverEndpointExecutionInfo {
+    LaunchExecutionLocation location;
+    std::optional<std::uint64_t> executionCount;
+  };
+  // Resolve `endpoint`'s receiver location and total post count. An unresolved
+  // location fails; a valid location with an unknown count remains
+  // conservative.
+  auto getEndpointExecutionInfo = [&](const PipeReceiverEndpoint &endpoint)
+      -> FailureOr<ReceiverEndpointExecutionInfo> {
+    auto postOp = cast<PipeTransferPostOp>(endpoint.postOp);
+    PipeTransferCreateOp createOp =
+        transferIndex.getTransferCreate(postOp.getOperation());
+    FailureOr<PipeReference> pipeRef =
+        getPipeReference(postOp, createOp.getPipe());
+    assert(succeeded(pipeRef) &&
+           "pipe transfer graph validated pipe references");
+    const PipeTransferNode &transferNode =
+        getPipeTransferNode(endpoint.transferNode);
+    FailureOr<LaunchExecutionLocation> maybeLocation =
+        getPipeGraphExecutionLocation(
+            postOp.getOperation(), getLaunchNodeCoord(endpoint.receiver),
+            transferNode.deviceTransfer, PipeRole::Destination);
+    if (failed(maybeLocation)) {
+      return failure();
+    }
+    return ReceiverEndpointExecutionInfo{
+        *maybeLocation, getConcreteTransferExecutionCount(
+                            postOp.getOperation(), *maybeLocation, *pipeRef,
+                            endpoint.postRecordIndex, analysisState)};
+  };
+
   ReceiverEndpointsByDFB endpointsByReceiverDFB =
       collectReceiverEndpointsByDFB(pipeReceiverEndpoints);
   llvm::DenseSet<PipeReceiverDFBKey> invariantAddressReceiverDFBs;
@@ -822,7 +855,13 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
       invariantAddressReceiverDFBs.insert(receiverDFB);
       for (PipeReceiverEndpointId endpointId : endpoints) {
         PipeReceiverEndpoint &endpoint = pipeReceiverEndpoints[endpointId];
+        FailureOr<ReceiverEndpointExecutionInfo> maybeExecutionInfo =
+            getEndpointExecutionInfo(endpoint);
+        if (failed(maybeExecutionInfo)) {
+          return failure();
+        }
         ReceiverAddressSequenceProof sequence;
+        sequence.executionCount = maybeExecutionInfo->executionCount;
         sequence.recurrence = ReceiverAddressRecurrence{
             /*initialSlot=*/0,
             /*repeatStride=*/0,
@@ -951,15 +990,13 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
       if (invariantAddressReceiverDFBs.contains(receiverDFB)) {
         continue;
       }
-      FailureOr<LaunchExecutionLocation> maybeLocation =
-          getPipeGraphExecutionLocation(
-              postOp.getOperation(), getLaunchNodeCoord(receiver),
-              transferNode.deviceTransfer, PipeRole::Destination);
-      if (failed(maybeLocation)) {
+      FailureOr<ReceiverEndpointExecutionInfo> maybeExecutionInfo =
+          getEndpointExecutionInfo(endpoint);
+      if (failed(maybeExecutionInfo)) {
         return failure();
       }
       ActivePipeNetExecution activeExecution = evaluateActivePipeNetExecution(
-          activeRecords, *maybeLocation, resolveRecordLoop);
+          activeRecords, maybeExecutionInfo->location, resolveRecordLoop);
       if (!activeExecution.mayExecute) {
         continue;
       }
@@ -994,12 +1031,8 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
       } else {
         slot = reserveIt->second;
       }
-      std::optional<std::uint64_t> maybeExecutionCount =
-          getConcreteTransferExecutionCount(postOp.getOperation(),
-                                            *maybeLocation, *pipeRef,
-                                            activeRecordIndex, analysisState);
       endpointAssignment.initialSlot = slot;
-      endpointAssignment.executionCount = maybeExecutionCount;
+      endpointAssignment.executionCount = maybeExecutionInfo->executionCount;
     }
     return success();
   };
@@ -1100,16 +1133,56 @@ LogicalResult PipeGraph::verifyCollectiveReceiverAddresses() const {
   return success();
 }
 
-/// Verify that every receiver destination can hold the sender's DFB block.
+// A transfer node pairs one send with every receiver, allowing this check to
+// compare byte counts, formats, and capacities across all endpoints.
 static LogicalResult
 verifyTransferPayloadCompatibility(const PipeTransferNode &transferNode) {
   auto sendOp = llvm::cast<PipeTransferSendOp>(transferNode.sendOp);
   auto sourceDFBType =
       mlir::cast<CircularBufferType>(sendOp.getSrc().getType());
   int64_t sourceElementCount = sourceDFBType.getElementsPerBlock();
+  IntegerAttr sendByteCount = sendOp.getByteCountAttr();
 
   for (Operation *postOperation : transferNode.receiverPostOps) {
     auto postOp = llvm::cast<PipeTransferPostOp>(postOperation);
+    IntegerAttr postByteCount = postOp.getByteCountAttr();
+    if (static_cast<bool>(sendByteCount) != static_cast<bool>(postByteCount) ||
+        (sendByteCount && sendByteCount.getInt() != postByteCount.getInt())) {
+      auto diag = postOp.emitError(
+          "pipe sender and receiver must use the same byte_count");
+      diag.attachNote(sendOp.getLoc()) << "corresponding pipe send is here";
+      return failure();
+    }
+
+    if (sendByteCount) {
+      Value destinationDFB = getAttachedCB(postOp.getDst());
+      assert(destinationDFB &&
+             "pipe transfer verifier requires an attached receiver DFB");
+      auto destinationDFBType =
+          cast<CircularBufferType>(destinationDFB.getType());
+      auto sourceTile =
+          dyn_cast<ttcore::TileType>(sourceDFBType.getElementType());
+      auto destinationTile =
+          dyn_cast<ttcore::TileType>(destinationDFBType.getElementType());
+      FailureOr<uint64_t> sourceCapacity =
+          getDFBTransferCapacityBytes(sendOp.getSrc());
+      FailureOr<uint64_t> destinationCapacity =
+          getDFBTransferCapacityBytes(postOp.getDst());
+      uint64_t byteCount = static_cast<uint64_t>(sendByteCount.getInt());
+      if (!sourceTile || !destinationTile ||
+          sourceTile.getDataType() != destinationTile.getDataType() ||
+          failed(sourceCapacity) || failed(destinationCapacity) ||
+          byteCount > *sourceCapacity || byteCount > *destinationCapacity) {
+        auto diag = postOp.emitError()
+                    << "pipe receiver cannot accept the sender's byte-counted "
+                       "payload of "
+                    << byteCount << " byte(s)";
+        diag.attachNote(sendOp.getLoc()) << "corresponding pipe send is here";
+        return failure();
+      }
+      continue;
+    }
+
     auto destinationType =
         mlir::dyn_cast<RankedTensorType>(postOp.getDst().getType());
     if (!destinationType || !destinationType.hasStaticShape()) {
