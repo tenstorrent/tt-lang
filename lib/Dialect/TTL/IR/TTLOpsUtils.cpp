@@ -24,9 +24,10 @@ Value getDFBConversionCastSource(Operation *operation) {
     return source;
   }
 
-  // CB lowering materializes a view of an acquired slot from a CB handle.
-  // Keep that bridge, but never infer storage identity from an arbitrary
-  // tensor-to-tensor cast, including a shape or element-type reinterpretation.
+  // CB lowering materializes bridges between TTL values and TTKernel CB
+  // handles. Keep only casts that cross that target-lowering boundary; a
+  // user-authored TTL CB/tensor cast must not establish storage identity.
+  // Tensor-to-tensor reinterpretations are likewise never DFB shape views.
   auto getElementType = [](Type type) -> Type {
     if (auto cb = dyn_cast<CircularBufferType>(type)) {
       return cb.getElementType();
@@ -39,10 +40,11 @@ Value getDFBConversionCastSource(Operation *operation) {
     }
     return {};
   };
-  bool hasCBType = isa<CircularBufferType, ttkernel::CBType>(sourceType) ||
-                   isa<CircularBufferType, ttkernel::CBType>(resultType);
+  bool sourceIsTargetCB = isa<ttkernel::CBType>(sourceType);
+  bool resultIsTargetCB = isa<ttkernel::CBType>(resultType);
+  bool crossesTargetBoundary = sourceIsTargetCB != resultIsTargetCB;
   Type sourceElementType = getElementType(sourceType);
-  if (hasCBType && sourceElementType &&
+  if (crossesTargetBoundary && sourceElementType &&
       sourceElementType == getElementType(resultType)) {
     return source;
   }
