@@ -571,17 +571,16 @@ attached storage may be released before the consumer. With compiler DFBs
 disabled, either condition produces a diagnostic instead of changing the
 lifetime result.
 
-Singleton-rank `squeeze` and `unsqueeze` operations lower to zero-copy
-`tensor.collapse_shape` and `tensor.expand_shape` views. Shared DFB provenance
-accepts only static singleton-dimension changes with identical element types
-and encodings. A direct store of a computed shape
-view cannot become a tile recipe because the view itself performs no compute.
-Intermediate DFB planning therefore materializes the computed input. The
-producer reserves and stores the same number of tiles through its original-rank
-view; consumers attach the published DFB using the requested result rank.
-The immutable plan records the producer and accepted view chain before
-mutation. Application validates those records and removes dead recorded views
-in consumer-first order after all planned rewrites, including shared chains.
+The [block shape-view contract](BlockShapeViews.md) defines the checked views
+accepted by shared DFB provenance. A direct store of a view of a computed
+expression cannot become a tile recipe because the view itself performs no
+compute. Intermediate DFB planning records the innermost view's source operand
+as requiring storage. The existing standalone or atomic compute-result plan
+materializes the producer and rewrites that operand. The retained checked views
+expose the requested tensor shape through the published DFB, including when
+several consumers share a view chain. Producer lifetime and publication ordering
+use the same planning rules as other computed values. Application does not
+retrace or erase shape-view chains; final lowering consumes the checked views.
 
 ## Plan Application
 
