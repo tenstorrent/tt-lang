@@ -18,6 +18,21 @@ using namespace mlir;
 
 namespace mlir::tt::ttl {
 
+// Resolve record-loop transfers before finalizing runtime arguments in either
+// specialization mode. Adjacent function passes share one module traversal.
+static void buildTTKernelRecordCleanupPipeline(OpPassManager &pm) {
+  OpPassManager &functionPasses = pm.nest<func::FuncOp>();
+  functionPasses.addPass(createTTKernelBatchStaticPipeNetReceives());
+  functionPasses.addPass(createTTKernelUnrollStaticPipeNetRecordLoops());
+  // Expose affine index arithmetic before folding tables and scheduling writes.
+  pm.addPass(createLowerAffinePass());
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(createCSEPass());
+  pm.addPass(createTTKernelCleanup());
+  pm.addPass(createTTKernelFinalizeTensorRuntimeArgs());
+  pm.addPass(createCanonicalizerPass());
+}
+
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
   {
@@ -126,11 +141,9 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   if (options.specializeCores) {
     buildTTKernelSpecializationPipeline(pm);
   } else {
-    pm.addPass(createTTKernelFinalizeTensorRuntimeArgs());
-    pm.addPass(createCanonicalizerPass());
+    buildTTKernelRecordCleanupPipeline(pm);
   }
   if (options.lowerToEmitC) {
-    pm.addPass(createLowerAffinePass());
     pm.addPass(::mlir::tt::createConvertTTKernelToEmitC());
     pm.addPass(createCanonicalizerPass());
     pm.addPass(mlir::emitc::createFormExpressionsPass());
@@ -151,8 +164,7 @@ void buildTTKernelSpecializationPipeline(OpPassManager &pm) {
   pm.addPass(createTTKernelSpecializeCores());
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
-  pm.addPass(createTTKernelFinalizeTensorRuntimeArgs());
-  pm.addPass(createCanonicalizerPass());
+  buildTTKernelRecordCleanupPipeline(pm);
   pm.addPass(createTTKernelAnnotateDFBUse());
 }
 
@@ -170,10 +182,15 @@ void registerTTLPipelines() {
                              "Insert auto pop/push and coalesce DFB acquires.",
                              buildTTLAutoSyncPipeline);
   PassPipelineRegistration<>(
+      "ttkernel-cleanup-and-finalize-runtime-args",
+      "Batch and expand static PipeNet records, optimize resolved transfers, "
+      "and finalize surviving runtime arguments.",
+      buildTTKernelRecordCleanupPipeline);
+  PassPipelineRegistration<>(
       "ttkernel-specialize-and-annotate-dfb-use",
-      "Specialize kernels per launch coordinate, fold unused branches, "
-      "compact tensor runtime arguments, and record surviving DFB "
-      "compile-time argument indices.",
+      "Specialize kernels per launch coordinate, fold coordinate-dependent "
+      "control flow, compact tensor runtime arguments, and record surviving "
+      "DFB compile-time argument indices.",
       buildTTKernelSpecializationPipeline);
 }
 

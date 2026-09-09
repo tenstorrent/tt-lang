@@ -35,7 +35,12 @@ def _make_ping_pong_operation(mesh_shape, compiler_options):
         )
     )
 
-    @ttl.operation(grid=(1, 1), device_domain=device_domain, options=compiler_options)
+    @ttl.operation(
+        grid=(1, 1),
+        device_domain=device_domain,
+        mesh_program_placements=[root_device, remote_device],
+        options=compiler_options,
+    )
     def ping_pong(inp, out):
         send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
         forward_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
