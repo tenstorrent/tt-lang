@@ -3,11 +3,29 @@
 // RUN: ttlang-opt %s --split-input-file --ttl-to-ttkernel-pipeline | FileCheck %s --implicit-check-not=tensor.expand_shape --implicit-check-not=tensor.collapse_shape --implicit-check-not=builtin.unrealized_conversion_cast
 
 // A computed BF16 expression can lose a leading singleton before its store.
+// The compiler-created CB must receive the computed tiles before publication,
+// then be waited on, copied to the output, and popped after that copy.
 // CHECK-LABEL: func.func @squeezed_computed_expression
-// CHECK: ttkernel.copy_tile
+// CHECK: %[[SIX_BF16:.*]] = arith.constant 6 : i32
+// CHECK: %[[INPUT_BF16:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<12, !ttcore.tile<32x32, bf16>>
+// CHECK-NEXT: %[[OUTPUT_BF16:.*]] = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<12, !ttcore.tile<32x32, bf16>>
+// CHECK-NEXT: %[[TEMP_BF16:.*]] = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<6, !ttcore.tile<32x32, bf16>>
+// CHECK-NEXT: ttkernel.cb_wait_front(%[[INPUT_BF16]], %[[SIX_BF16]])
+// CHECK-NEXT: ttkernel.cb_reserve_back(%[[TEMP_BF16]], %[[SIX_BF16]])
+// CHECK: ttkernel.copy_tile(%[[INPUT_BF16]],
 // CHECK: ttkernel.exp_tile
-// CHECK: ttkernel.pack_tile
-// CHECK: ttkernel.cb_push_back
+// CHECK: ttkernel.pack_tile_block({{[^,]+}}, %[[TEMP_BF16]],
+// CHECK-NEXT: ttkernel.tile_regs_release()
+// CHECK-NEXT: ttkernel.cb_push_back(%[[TEMP_BF16]], %[[SIX_BF16]])
+// CHECK-NEXT: ttkernel.cb_wait_front(%[[TEMP_BF16]], %[[SIX_BF16]])
+// CHECK-NEXT: ttkernel.cb_reserve_back(%[[OUTPUT_BF16]], %[[SIX_BF16]])
+// CHECK: ttkernel.copy_tile(%[[TEMP_BF16]],
+// CHECK: ttkernel.pack_tile_block({{[^,]+}}, %[[OUTPUT_BF16]],
+// CHECK-NEXT: ttkernel.tile_regs_release()
+// CHECK-NEXT: ttkernel.cb_pop_front(%[[TEMP_BF16]], %[[SIX_BF16]])
+// CHECK-NEXT: ttkernel.cb_pop_front(%[[INPUT_BF16]], %[[SIX_BF16]])
+// CHECK-NEXT: ttkernel.cb_push_back(%[[OUTPUT_BF16]], %[[SIX_BF16]])
+// CHECK-NEXT: return
 // CHECK-LABEL: func.func @squeezed_expression_io
 module attributes {ttl.launch_grid = array<i64: 1, 1>} {
 func.func @squeezed_computed_expression()
@@ -53,11 +71,30 @@ func.func @squeezed_expression_io()
 // -----
 
 // A computed FP32 expression can acquire a trailing singleton before its store.
+// FP32 subblocking must preserve the same intermediate publication and lifetime.
 // CHECK-LABEL: func.func @unsqueezed_computed_expression
-// CHECK: ttkernel.copy_tile
+// CHECK: %[[SIX_FP32:.*]] = arith.constant 6 : i32
+// CHECK: %[[INPUT_FP32:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<12, !ttcore.tile<32x32, f32>>
+// CHECK-NEXT: %[[OUTPUT_FP32:.*]] = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<12, !ttcore.tile<32x32, f32>>
+// CHECK-NEXT: %[[TEMP_FP32:.*]] = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<6, !ttcore.tile<32x32, f32>>
+// CHECK-NEXT: ttkernel.cb_wait_front(%[[INPUT_FP32]], %[[SIX_FP32]])
+// CHECK-NEXT: ttkernel.cb_reserve_back(%[[TEMP_FP32]], %[[SIX_FP32]])
+// CHECK: ttkernel.copy_tile(%[[INPUT_FP32]],
 // CHECK: ttkernel.exp_tile
-// CHECK: ttkernel.pack_tile
-// CHECK: ttkernel.cb_push_back
+// CHECK: ttkernel.pack_tile({{[^,]+}}, %[[TEMP_FP32]],
+// CHECK: ttkernel.tile_regs_release()
+// CHECK-NEXT: } {ttl.subblock_dim
+// CHECK-NEXT: ttkernel.cb_push_back(%[[TEMP_FP32]], %[[SIX_FP32]])
+// CHECK-NEXT: ttkernel.cb_wait_front(%[[TEMP_FP32]], %[[SIX_FP32]])
+// CHECK-NEXT: ttkernel.cb_reserve_back(%[[OUTPUT_FP32]], %[[SIX_FP32]])
+// CHECK: ttkernel.copy_tile(%[[TEMP_FP32]],
+// CHECK: ttkernel.pack_tile({{[^,]+}}, %[[OUTPUT_FP32]],
+// CHECK: ttkernel.tile_regs_release()
+// CHECK-NEXT: } {ttl.subblock_dim
+// CHECK-NEXT: ttkernel.cb_pop_front(%[[TEMP_FP32]], %[[SIX_FP32]])
+// CHECK-NEXT: ttkernel.cb_pop_front(%[[INPUT_FP32]], %[[SIX_FP32]])
+// CHECK-NEXT: ttkernel.cb_push_back(%[[OUTPUT_FP32]], %[[SIX_FP32]])
+// CHECK-NEXT: return
 // CHECK-LABEL: func.func @unsqueezed_expression_io
 module attributes {ttl.launch_grid = array<i64: 1, 1>} {
 func.func @unsqueezed_computed_expression()
