@@ -221,7 +221,7 @@ Wormhole continues to support ordinary compiler-managed allocation, transfer, an
 
 Metal compute uses DFB descriptors to configure tile formats and dimensions. Address-based compute has no descriptor, so each operand type carries its format, byte size, height, width, and direct-to-destination choice. BF16 and FP32 support 1x32, 2x32, 4x32, 8x32, 16x16, 16x32, 32x16, and 32x32 tiles on Blackhole and Wormhole. The shared compute-target interface validates these dimensions; the target adapter supplies architecture-specific LLK arguments.
 
-A kernel may use different tile dimensions in successive operations. The compute context tracks input formats, page sizes, face row heights, and face counts, plus output format and dimensions. An output dimension change requires PACK reconfiguration even when two tiles occupy the same number of bytes.
+Compute setup is shared by operands with equal formats, page sizes, tile dimensions, and direct-to-destination settings; storage addresses and capacities remain per DFB. This avoids repeated hardware setup code in large DFB compositions. A kernel may use different tile dimensions in successive operations. The compute context tracks input formats, page sizes, face row heights, and face counts, plus output format and dimensions. An output dimension change requires PACK reconfiguration even when two tiles occupy the same number of bytes.
 
 ```text
 configureCompute(inputA, inputB, output):

@@ -182,7 +182,11 @@ def test_per_core_receiver_order_is_deterministic(
 
 if __name__ == "__main__":
     directory = Path(__file__).parent
-    tests = [str(Path(__file__)), str(directory / "pipe/test_compiler_l1_pipenet.py")]
+    tests = [
+        str(Path(__file__)),
+        str(directory / "pipe/test_compiler_l1_pipenet.py"),
+        f"{directory / 'test_external_dfb_reuse.py'}::test_compiler_l1_external_composition_exceeds_metal_index_limit",
+    ]
     for test_name in (
         "test_l1_rms_normalization",
         "test_l1_gated_mlp_residual",
