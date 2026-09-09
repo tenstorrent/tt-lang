@@ -82,8 +82,11 @@ apply the validated kernel plan:
 Intermediate DFB insertion uses the same separation. It computes a monotone
 fixed point of exact consumer operands requiring storage, groups those
 requirements by producer, and applies the complete materialization plan only
-after analysis terminates. The final conversion analyzes the modified kernel
-again; plans are never reused after mutation.
+after analysis terminates. The fixed point also closes over the producer
+expressions of planned materializations, so fusion boundaries exposed by one
+materialization are planned without mutating and re-analyzing the kernel. The
+final conversion analyzes the modified kernel again; plans are never reused
+after mutation.
 
 ## Terminology
 
@@ -567,6 +570,17 @@ This rule is not specific to typecast or reduce. Every
 attached storage may be released before the consumer. With compiler DFBs
 disabled, either condition produces a diagnostic instead of changing the
 lifetime result.
+
+The [block shape-view contract](BlockShapeViews.md) defines the checked views
+accepted by shared DFB provenance. A direct store of a view of a computed
+expression cannot become a tile recipe because the view itself performs no
+compute. Intermediate DFB planning records the innermost view's source operand
+as requiring storage. The existing standalone or atomic compute-result plan
+materializes the producer and rewrites that operand. The retained checked views
+expose the requested tensor shape through the published DFB, including when
+several consumers share a view chain. Producer lifetime and publication ordering
+use the same planning rules as other computed values. Application does not
+retrace or erase shape-view chains; final lowering consumes the checked views.
 
 ## Plan Application
 
