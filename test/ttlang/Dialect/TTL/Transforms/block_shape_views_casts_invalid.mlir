@@ -78,3 +78,17 @@ func.func @ttl_cb_result_is_not_conversion_bridge(%tensor: tensor<4x!ttcore.tile
       : tensor<4x!ttcore.tile<32x32, bf16>> to !ttl.cb<[4], !ttcore.tile<32x32, bf16>, 2>
   return
 }
+
+// -----
+
+// A TTKernel-CB-to-TTKernel-CB cast does not cross a lowering boundary.
+func.func @ttkernel_cb_reinterpretation_is_not_conversion_bridge()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %source_cb = builtin.unrealized_conversion_cast
+      to !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+  // expected-error @below {{DFB views cannot use tensor reinterpretation casts; use checked singleton-dimension expand_shape or collapse_shape operations}}
+  %forged_cb = builtin.unrealized_conversion_cast %source_cb
+      : !ttkernel.cb<4, !ttcore.tile<32x32, bf16>>
+        to !ttkernel.cb<8, !ttcore.tile<32x32, bf16>>
+  return
+}

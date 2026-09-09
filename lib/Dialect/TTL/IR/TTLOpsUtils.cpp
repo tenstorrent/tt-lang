@@ -40,8 +40,9 @@ Value getDFBConversionCastSource(Operation *operation) {
     }
     return {};
   };
-  bool crossesTargetBoundary =
-      isa<ttkernel::CBType>(sourceType) || isa<ttkernel::CBType>(resultType);
+  bool sourceIsTargetCB = isa<ttkernel::CBType>(sourceType);
+  bool resultIsTargetCB = isa<ttkernel::CBType>(resultType);
+  bool crossesTargetBoundary = sourceIsTargetCB != resultIsTargetCB;
   Type sourceElementType = getElementType(sourceType);
   if (crossesTargetBoundary && sourceElementType &&
       sourceElementType == getElementType(resultType)) {
