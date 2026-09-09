@@ -18,8 +18,9 @@
 // LOCAL: %[[LOCAL_READY_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[LOCAL_READY]], {{.*}})
 // LOCAL: ttkernel.noc_semaphore_inc(%[[LOCAL_READY_NOC]]
 // LOCAL: %[[LOCAL_COMPLETION:.*]] = ttkernel.get_semaphore(%[[LOCAL_COMPLETION_INDEX]])
-// LOCAL: %[[LOCAL_COMPLETION_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[LOCAL_COMPLETION]], {{.*}})
-// LOCAL: ttkernel.noc_semaphore_inc(%[[LOCAL_COMPLETION_NOC]]
+// LOCAL: ttkernel.noc_async_write_one_packet_with_state
+// LOCAL-NEXT: ttkernel.noc_inline_dw_write({{.*}}, %[[LOCAL_COMPLETION]], {{.*}}) posted true
+// LOCAL-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 // LOCAL-LABEL: func.func @fabric_sender
 // LOCAL-DAG: %[[LOCAL_FABRIC_DONE_INDEX:.*]] = arith.constant 1 : index
 // LOCAL-DAG: %[[LOCAL_FABRIC_READY_INDEX:.*]] = arith.constant 3 : index
@@ -53,8 +54,9 @@
 // GLOBAL: %[[GLOBAL_READY_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[GLOBAL_READY]], {{.*}})
 // GLOBAL: ttkernel.noc_semaphore_inc(%[[GLOBAL_READY_NOC]]
 // GLOBAL: %[[GLOBAL_COMPLETION:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_COMPLETION_INDEX]])
-// GLOBAL: %[[GLOBAL_COMPLETION_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[GLOBAL_COMPLETION]], {{.*}})
-// GLOBAL: ttkernel.noc_semaphore_inc(%[[GLOBAL_COMPLETION_NOC]]
+// GLOBAL: ttkernel.noc_async_write_one_packet_with_state
+// GLOBAL-NEXT: ttkernel.noc_inline_dw_write({{.*}}, %[[GLOBAL_COMPLETION]], {{.*}}) posted true
+// GLOBAL-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
 // GLOBAL-LABEL: func.func @fabric_sender
 // GLOBAL-DAG: %[[GLOBAL_FABRIC_DONE_INDEX:.*]] = arith.constant 2 : index
 // GLOBAL-DAG: %[[GLOBAL_FABRIC_READY_INDEX:.*]] = arith.constant 4 : index

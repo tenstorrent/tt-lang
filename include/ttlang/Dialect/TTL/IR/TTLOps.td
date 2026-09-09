@@ -321,9 +321,9 @@ def TTL_ComputeOp : TTL_Op<"compute", [
   let description = [{
     `ttl.compute` is a structured operation similar to `linalg.generic` but with
     tile-typed block arguments. It iterates over a grid of tiles and applies
-    the body computation to each tile position. Circular buffers are associated
-    to tensor operands/results via `ttl.attach_cb` (one CB per tensor SSA
-    value); `ttl.compute` itself only carries tensor operands.
+    the body computation to each tile position. `ttl.attach_cb` associates one
+    dataflow buffer (DFB) with each tensor SSA operand or result.
+    `ttl.compute` itself carries only tensor operands.
 
     The operation takes tensors of tiles as inputs and outputs. The block
     arguments are individual tiles (`!ttcore.tile<H, W, dtype>`) extracted from
@@ -333,22 +333,64 @@ def TTL_ComputeOp : TTL_Op<"compute", [
     iterator. The accumulator remains resident in DST across the corresponding
     reduction iterations.
 
-    In the pipeline, `ttl.compute` is lowered to `scf.for` loops by
-    `ttl-lower-to-loops` BEFORE bufferization. The `ttl.tile_*` ops in the
-    loop body are then converted to TTKernel ops after bufferization.
+    Every iteration dimension must occur in at least one operand indexing map
+    so its bound is defined. Tensor dimensions may use constant-zero map
+    results only when their extent is one. A zero-rank iteration domain
+    therefore represents one execution over unit-extent tensor operands.
 
     Example:
     ```mlir
-    %result = ttl.compute
-        ins(%a, %b : tensor<4x4x!ttcore.tile<32x32, f32>>,
-                     tensor<4x4x!ttcore.tile<32x32, f32>>)
-        outs(%init : tensor<4x4x!ttcore.tile<32x32, f32>>) {
-      ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
-           %b_tile: !ttcore.tile<32x32, f32>,
-           %out_tile: !ttcore.tile<32x32, f32>):
-        %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-        ttl.yield
-    } -> tensor<4x4x!ttcore.tile<32x32, f32>>
+    #identity = affine_map<(dim0, dim1) -> (dim0, dim1)>
+
+    func.func @add(
+        %lhs: tensor<4x4x!ttcore.tile<32x32, f32>>,
+        %rhs: tensor<4x4x!ttcore.tile<32x32, f32>>,
+        %init: tensor<4x4x!ttcore.tile<32x32, f32>>)
+        -> tensor<4x4x!ttcore.tile<32x32, f32>> {
+      %lhs_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} :
+          !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
+      %rhs_dfb = ttl.bind_cb {cb_index = 1, block_count = 2} :
+          !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
+      %out_dfb = ttl.bind_cb {cb_index = 2, block_count = 2} :
+          !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
+      %lhs_attached = ttl.attach_cb %lhs, %lhs_dfb :
+          (tensor<4x4x!ttcore.tile<32x32, f32>>,
+           !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>)
+          -> tensor<4x4x!ttcore.tile<32x32, f32>>
+      %rhs_attached = ttl.attach_cb %rhs, %rhs_dfb :
+          (tensor<4x4x!ttcore.tile<32x32, f32>>,
+           !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>)
+          -> tensor<4x4x!ttcore.tile<32x32, f32>>
+      %init_attached = ttl.attach_cb %init, %out_dfb :
+          (tensor<4x4x!ttcore.tile<32x32, f32>>,
+           !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>)
+          -> tensor<4x4x!ttcore.tile<32x32, f32>>
+      %out_view = ttl.cb_reserve %out_dfb :
+          <[4, 4], !ttcore.tile<32x32, f32>, 2>
+          -> tensor<4x4x!ttcore.tile<32x32, f32>>
+      %result = ttl.compute
+          ins(%lhs_attached, %rhs_attached :
+              tensor<4x4x!ttcore.tile<32x32, f32>>,
+              tensor<4x4x!ttcore.tile<32x32, f32>>)
+          outs(%init_attached : tensor<4x4x!ttcore.tile<32x32, f32>>)
+          {indexing_maps = [#identity, #identity, #identity],
+           iterator_types = ["parallel", "parallel"]} {
+        ^bb0(%lhs_tile: !ttcore.tile<32x32, f32>,
+             %rhs_tile: !ttcore.tile<32x32, f32>,
+             %out_tile: !ttcore.tile<32x32, f32>):
+          %row = ttl.iter_index 0 : index
+          %column = ttl.iter_index 1 : index
+          %dst = arith.constant 0 : index
+          %sum = ttl.tile_add %lhs_tile, %rhs_tile into dst[%dst] :
+              !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32>
+              -> !ttcore.tile<32x32, f32>
+          ttl.tile_store %sum, %out_view[%row, %column] from dst[%dst] :
+              !ttcore.tile<32x32, f32>,
+              tensor<4x4x!ttcore.tile<32x32, f32>>
+          ttl.yield
+      } -> tensor<4x4x!ttcore.tile<32x32, f32>>
+      func.return %result : tensor<4x4x!ttcore.tile<32x32, f32>>
+    }
     ```
   }];
 
@@ -451,7 +493,13 @@ def TTL_AccumulationScopeOp : TTL_Op<"accumulation_scope", [
     contains one operand for each output whose initial mode is `init`, in output
     order.
 
-    The body uses one block argument per output and yields one value per output.
+    The body uses one state block argument per output and yields one updated
+    state value per output. An `init` state has the init operand's type; an
+    `overwrite` or `accumulate_existing` state has the output's type. Keeping
+    init state distinct from destination storage permits a type-changing
+    packing operation. When the state and output types differ, the body must
+    store the yielded state to the corresponding output.
+
     This form makes
     cross-output data dependence an SSA property: if the yielded value for one
     output uses another output's updated value, normal SSA use-def edges encode
@@ -2100,11 +2148,19 @@ def TTL_StoreOp : TTL_ComputePrimitiveOp<"store", "Passthrough",
     // Accumulating store (from +=):
     ttl.store %result, %reserve {accumulate} : ...
     ```
+
+    When `row_prefix` is set, the source contains one 32x32 tile and the
+    reserve-backed destination contains one tile with the same 32-element
+    width and a supported height no greater than 32. The operation packs the
+    source DST tile directly into the destination tile; rows outside the
+    destination tile are not stored. `row_prefix` supports bf16 and f32 and
+    may be combined with `accumulate`.
   }];
   let arguments = (ins
     AnyRankedTensor:$tensor,
     AnyRankedTensor:$view,
-    OptionalAttr<UnitAttr>:$accumulate
+    OptionalAttr<UnitAttr>:$accumulate,
+    OptionalAttr<UnitAttr>:$row_prefix
   );
   let assemblyFormat = "$tensor `,` $view attr-dict `:` type($tensor) `,` type($view)";
   let hasVerifier = 1;
@@ -2512,6 +2568,11 @@ def TTL_TileStoreOp : TTL_ComputePrimitiveOp<"tile_store", "Passthrough",
     ttl.tile_store %tile, %view[%row, %col] from dst[%c0]
       : !ttcore.tile<32x32, bf16>, tensor<2x3x!ttcore.tile<32x32, bf16>>
     ```
+
+    `row_prefix` preserves the tensor-level decision to store one 32x32 DST
+    tile into one destination tile with the same width and a supported height
+    no greater than 32. Lowering uses the destination tile configuration to
+    omit source rows outside that height.
   }];
   let arguments = (ins
     AnyType:$tile,
@@ -2519,7 +2580,8 @@ def TTL_TileStoreOp : TTL_ComputePrimitiveOp<"tile_store", "Passthrough",
     Variadic<Index>:$indices,
     Index:$dst_index,
     DefaultValuedAttr<TTL_DFBTileStoreKindAttr,
-      "::mlir::tt::ttl::DFBTileStoreKind::Producer">:$store_kind
+      "::mlir::tt::ttl::DFBTileStoreKind::Producer">:$store_kind,
+    OptionalAttr<UnitAttr>:$row_prefix
   );
   let assemblyFormat = "$tile `,` $view `[` $indices `]` `from` `dst` `[` $dst_index `]` attr-dict `:` type($tile) `,` type($view)";
   let hasVerifier = 1;

@@ -278,6 +278,31 @@ class DeviceDomain:
     def component_count(self) -> int:
         return len(self.components)
 
+    @property
+    def flattened_extent(self) -> Coordinate:
+        """Return component extents in runtime mesh-coordinate order."""
+        return tuple(
+            dimension for component in self.components for dimension in component.extent
+        )
+
+    def iter_device_refs(self) -> Iterator[DeviceRef]:
+        """Iterate every device in component-major, row-major order."""
+        component_coordinates = [
+            tuple(itertools.product(*(range(extent) for extent in component.extent)))
+            for component in self.components
+        ]
+        for coordinates in itertools.product(*component_coordinates):
+            yield DeviceRef(*coordinates)
+
+    def flattened_coordinates(self, device: Any) -> Coordinate:
+        """Return one device coordinate in runtime mesh-coordinate order."""
+        device_ref = self.device_ref(device)
+        return tuple(
+            coordinate
+            for component_coordinates in device_ref.coordinates
+            for coordinate in component_coordinates
+        )
+
     def _operation_identity_capture(self) -> tuple:
         return (
             "device-domain",
@@ -569,7 +594,7 @@ class TransferGraph:
 
         assert self.structured is not None
         component_index = self.domain.component_index(self.structured.component_name)
-        devices = tuple(self._iter_domain_devices())
+        devices = tuple(self.domain.iter_device_refs())
 
         if isinstance(self.structured, AxisNeighborTransfer):
             component = self.domain.components[component_index]
@@ -662,17 +687,6 @@ class TransferGraph:
         raise TypeError(
             f"unsupported structured transfer type " f"{type(self.structured).__name__}"
         )
-
-    def _iter_domain_devices(self) -> Iterator[DeviceRef]:
-        component_coordinates = []
-        for component in self.domain.components:
-            component_coordinates.append(
-                tuple(
-                    itertools.product(*(range(extent) for extent in component.extent))
-                )
-            )
-        for coordinates in itertools.product(*component_coordinates):
-            yield DeviceRef(*coordinates)
 
     @staticmethod
     def _default_component(domain: DeviceDomain, component_name: Optional[str]) -> str:
