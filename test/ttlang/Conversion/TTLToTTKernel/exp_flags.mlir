@@ -10,14 +10,14 @@
 // CHECK-LABEL: func.func @tile_exp_flags
 // CHECK: ttkernel.tile_regs_acquire
 // CHECK: ttkernel.exp_tile_init() {{[{].*}}approx = true{{.*}}input_clamping = #ttkernel.input_clamping<none>{{.*}}scale = 1073741824 : i32{{.*[}]}}
-// CHECK: ttkernel.exp_tile({{.*}}) {{[{].*}}approx = true{{.*}}input_clamping = #ttkernel.input_clamping<none>{{.*}}iterations = 4 : i32{{.*}}scale = 1073741824 : i32{{.*[}]}}
+// CHECK: ttkernel.exp_tile({{.*}}) {{[{].*}}approx = true{{.*}}input_clamping = #ttkernel.input_clamping<none>{{.*}}scale = 1073741824 : i32{{.*[}]}}
 // CHECK: ttkernel.tile_regs_release
 func.func @tile_exp_flags(%a: !ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f32> {
   %c0 = arith.constant 0 : index
   ttkernel.tile_regs_acquire() : () -> ()
   %exp = ttl.tile_exp %a into dst[%c0] {approx = true, scale = 2.000000e+00 : f32,
                                         input_clamping = 0 : i32,
-                                        iterations = 4 : i32}
+                                        iterations = 8 : i32}
       : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
   ttkernel.tile_regs_release() : () -> ()
   func.return %exp : !ttcore.tile<32x32, f32>

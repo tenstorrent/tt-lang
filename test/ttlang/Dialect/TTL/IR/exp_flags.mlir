@@ -17,13 +17,13 @@ func.func @exp_no_flags(
 // -----
 
 // CHECK-LABEL: func.func @exp_with_flags
-// CHECK: ttl.exp %{{.*}} {{[{].*}}approx = true{{.*}}input_clamping = 0 : i32{{.*}}iterations = 4 : i32{{.*}}scale = 2.000000e+00 : f32{{.*[}]}} : tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
+// CHECK: ttl.exp %{{.*}} {{[{].*}}approx = true{{.*}}input_clamping = 0 : i32{{.*}}scale = 2.000000e+00 : f32{{.*[}]}} : tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
 func.func @exp_with_flags(
     %arg0: tensor<2x2x!ttcore.tile<32x32, f32>>)
     -> tensor<2x2x!ttcore.tile<32x32, f32>> {
   %0 = ttl.exp %arg0 {approx = true, scale = 2.000000e+00 : f32,
                       input_clamping = 0 : i32,
-                      iterations = 4 : i32}
+                      iterations = 8 : i32}
       : tensor<2x2x!ttcore.tile<32x32, f32>> -> tensor<2x2x!ttcore.tile<32x32, f32>>
   return %0 : tensor<2x2x!ttcore.tile<32x32, f32>>
 }
@@ -43,13 +43,13 @@ func.func @tile_exp_no_flags(%a: !ttcore.tile<32x32, f32>)
 // -----
 
 // CHECK-LABEL: func.func @tile_exp_with_flags
-// CHECK: ttl.tile_exp %{{.*}} into dst[%{{.*}}] {{[{].*}}approx = true{{.*}}input_clamping = 0 : i32{{.*}}iterations = 4 : i32{{.*}}scale = 2.000000e+00 : f32{{.*[}]}} : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
+// CHECK: ttl.tile_exp %{{.*}} into dst[%{{.*}}] {{[{].*}}approx = true{{.*}}input_clamping = 0 : i32{{.*}}scale = 2.000000e+00 : f32{{.*[}]}} : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
 func.func @tile_exp_with_flags(%a: !ttcore.tile<32x32, f32>)
     -> !ttcore.tile<32x32, f32> {
   %c0 = arith.constant 0 : index
   %0 = ttl.tile_exp %a into dst[%c0] {approx = true, scale = 2.000000e+00 : f32,
                                       input_clamping = 0 : i32,
-                                      iterations = 4 : i32}
+                                      iterations = 8 : i32}
        : !ttcore.tile<32x32, f32> -> !ttcore.tile<32x32, f32>
   return %0 : !ttcore.tile<32x32, f32>
 }

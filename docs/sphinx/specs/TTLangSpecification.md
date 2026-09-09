@@ -1424,7 +1424,7 @@ def matmul_read():
 | `ttl.BlockExpr.__abs__(self) -> ttl.BlockExpr`<br><br>`ttl.math.abs(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Absolute value. Example: `abs(a)`, `ttl.math.abs(a)`. |
 | `ttl.BlockExpr.__neg__(self) -> ttl.BlockExpr`<br><br>`ttl.math.neg(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Negation. Example: `-a`, `ttl.math.neg(a)`. |
 | `ttl.BlockExpr.__pow__(self, exponent: ttl.NaturalInt) -> ttl.BlockExpr`<br><br>`ttl.math.pow(expr: ttl.BlockExpr, exponent: ttl.NaturalInt) -> ttl.BlockExpr` | Power with scalar unsigned integer exponent. Example; `a ** 2`, `ttl.math.pow(a, 2)`. |
-| `ttl.math.exp(expr: ttl.BlockExpr, *, approx: bool = False, scale: Optional[float] = None, skip_clamp_check: bool = False, iterations: ttl.PositiveInt = 8) -> ttl.BlockExpr` | Natural base exponential. Computes `e^x` by default. When `scale` is provided, computes `e^(scale * x)`. |
+| `ttl.math.exp(expr: ttl.BlockExpr, *, approx: bool = False, scale: Optional[float] = None, skip_clamp_check: bool = False, iterations: Literal[8] = 8) -> ttl.BlockExpr` | Natural base exponential. Computes `e^x` by default. When `scale` is provided, computes `e^(scale * x)`. |
 | `ttl.math.exp2(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Base 2 exponential (`2^x`) |
 | `ttl.math.expm1(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Natural base exponential minus one (`ttl.math.exp(x) - 1`) |
 | `ttl.math.log(expr: ttl.BlockExpr) -> ttl.BlockExpr` | Natural logarithm |
@@ -1440,8 +1440,9 @@ flag enables approximate exponential evaluation. The `scale` argument applies
 a compile-time scalar multiplier before the exponential. The
 `skip_clamp_check` flag disables clamping of very negative inputs in
 approximate mode. This is faster, but inputs below approximately `-88.5` can
-produce incorrect negative outputs. The `iterations` argument controls the
-number of SFPU lane iterations and defaults to 8.
+produce incorrect negative outputs. The `iterations` argument is retained for
+hardware API parity, but only 8 is supported because this count evaluates one
+complete TT-Lang tile. Other values are rejected before kernel lowering.
 
 ### Trigonometric unary math functions
 
