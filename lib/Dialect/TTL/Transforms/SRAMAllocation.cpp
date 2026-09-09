@@ -285,47 +285,52 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     storageIndexByAllocationRegion.push_back(storageIndex);
     problem.regionBytes.push_back(allocation.allocationBytes);
   }
-  unsigned allocationRegionCount = storageIndexByAllocationRegion.size();
-  problem.conflicts = InterferenceGraph(allocationRegionCount);
-  for (unsigned allocationRegionIndex = 0;
-       allocationRegionIndex < allocationRegionCount; ++allocationRegionIndex) {
-    unsigned storageIndex =
-        storageIndexByAllocationRegion[allocationRegionIndex];
-    const SRAMStorage &allocation = storage[storageIndex];
-    for (unsigned previousRegionIndex = 0;
-         previousRegionIndex < allocationRegionIndex; ++previousRegionIndex) {
-      unsigned previousStorageIndex =
-          storageIndexByAllocationRegion[previousRegionIndex];
-      const SRAMStorage &previousAllocation = storage[previousStorageIndex];
-      bool hasConflict = !reuseStorage;
-      for (unsigned member : allocation.members) {
-        if (hasConflict) {
-          break;
-        }
-        assert(lifecycleIndices.contains(plan[member].logicalId));
-        for (unsigned previousMember : previousAllocation.members) {
-          assert(lifecycleIndices.contains(plan[previousMember].logicalId));
-          if (conflicts.conflicts(
-                  lifecycleIndices.lookup(plan[member].logicalId),
-                  lifecycleIndices.lookup(plan[previousMember].logicalId))) {
-            hasConflict = true;
+  auto buildConflicts = [&](ArrayRef<unsigned> storageIndices,
+                            const DFBPhysicalConflictModel &model) {
+    unsigned allocationRegionCount = storageIndices.size();
+    InterferenceGraph graph(allocationRegionCount);
+    for (unsigned allocationRegionIndex = 0;
+         allocationRegionIndex < allocationRegionCount;
+         ++allocationRegionIndex) {
+      unsigned storageIndex = storageIndices[allocationRegionIndex];
+      const SRAMStorage &allocation = storage[storageIndex];
+      for (unsigned previousRegionIndex = 0;
+           previousRegionIndex < allocationRegionIndex; ++previousRegionIndex) {
+        unsigned previousStorageIndex = storageIndices[previousRegionIndex];
+        const SRAMStorage &previousAllocation = storage[previousStorageIndex];
+        bool hasConflict = !reuseStorage;
+        for (unsigned member : allocation.members) {
+          if (hasConflict) {
             break;
           }
+          assert(lifecycleIndices.contains(plan[member].logicalId));
+          for (unsigned previousMember : previousAllocation.members) {
+            assert(lifecycleIndices.contains(plan[previousMember].logicalId));
+            if (model.conflicts(
+                    lifecycleIndices.lookup(plan[member].logicalId),
+                    lifecycleIndices.lookup(plan[previousMember].logicalId))) {
+              hasConflict = true;
+              break;
+            }
+          }
         }
+        if (!hasConflict) {
+          continue;
+        }
+        graph.addInterference(allocationRegionIndex, previousRegionIndex);
       }
-      if (!hasConflict) {
-        continue;
-      }
-      problem.conflicts.addInterference(allocationRegionIndex,
-                                        previousRegionIndex);
     }
-  }
+    return graph;
+  };
   SmallVector<SRAMAllocationDomainProblem> requests;
+  SmallVector<DFBPhysicalConflictModel> domainConflicts;
   SmallVector<SmallVector<LaunchNodeCoord>> nodeDomains;
   if (allocationMode == "per-node") {
     nodeDomains = collectSRAMNodeDomains(module, liveness.getLaunchNodes());
   }
   if (allocationMode == "uniform") {
+    problem.conflicts =
+        buildConflicts(storageIndexByAllocationRegion, conflicts);
     requests.push_back(
         {std::move(problem), std::move(storageIndexByAllocationRegion)});
   } else {
@@ -334,7 +339,6 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
       request.allocation.alignmentBytes = alignment;
       request.allocation.payloadBaseOffset = *controlBytes;
       request.allocation.budgetBytes = budget;
-      SmallVector<unsigned> sourceRegions;
       for (auto indexedStorage :
            llvm::enumerate(storageIndexByAllocationRegion)) {
         unsigned sourceRegion = indexedStorage.index();
@@ -359,20 +363,14 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
         if (!active) {
           continue;
         }
-        sourceRegions.push_back(sourceRegion);
         request.storageIndices.push_back(storageIndex);
         request.allocation.regionBytes.push_back(
             problem.regionBytes[sourceRegion]);
       }
-      request.allocation.conflicts = InterferenceGraph(sourceRegions.size());
-      for (unsigned left = 0; left < sourceRegions.size(); ++left) {
-        for (unsigned right = 0; right < left; ++right) {
-          if (problem.conflicts.interferes(sourceRegions[left],
-                                           sourceRegions[right])) {
-            request.allocation.conflicts.addInterference(left, right);
-          }
-        }
-      }
+      domainConflicts.push_back(DFBPhysicalConflictModel::buildStorage(
+          liveness, DFBStorageConflictMode::CompilerManaged, nodeDomain));
+      request.allocation.conflicts =
+          buildConflicts(request.storageIndices, domainConflicts.back());
       requests.push_back(std::move(request));
     }
   }
@@ -755,8 +753,15 @@ LogicalResult allocateSRAM(
             owner.allocationBytes = 0;
           }
         }
-        printSRAMAllocationReport(llvm::errs(), domainPlan, liveness, conflicts,
-                                  allocator.getName(), reuseStorage, budget);
+        SmallVector<LaunchNodeCoord> domainNodes;
+        for (const SRAMNodeLayout &domainLayout : domainPlan.nodeLayouts) {
+          domainNodes.push_back(domainLayout.node);
+        }
+        const auto domainConflicts = DFBPhysicalConflictModel::buildStorage(
+            liveness, DFBStorageConflictMode::CompilerManaged, domainNodes);
+        printSRAMAllocationReport(llvm::errs(), domainPlan, liveness,
+                                  domainConflicts, allocator.getName(),
+                                  reuseStorage, budget);
       }
     }
   }
