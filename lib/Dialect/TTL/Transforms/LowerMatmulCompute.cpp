@@ -22,6 +22,7 @@
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/IR/AffineMap.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -255,16 +256,6 @@ static Value createConstantIndex(OpBuilder &builder, Location loc,
   return arith::ConstantIndexOp::create(builder, loc, value);
 }
 
-static SmallVector<int64_t> delinearizeStaticIndex(int64_t linearIndex,
-                                                   ArrayRef<int64_t> shape) {
-  SmallVector<int64_t> coordinates(shape.size());
-  for (int64_t dimension = shape.size(); dimension-- > 0;) {
-    coordinates[dimension] = linearIndex % shape[dimension];
-    linearIndex /= shape[dimension];
-  }
-  return coordinates;
-}
-
 static Value createBatchSlice(OpBuilder &builder, Location loc, Value tensor,
                               ArrayRef<int64_t> batchCoordinates) {
   if (!tensor || batchCoordinates.empty()) {
@@ -475,6 +466,8 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
   int64_t numCols = analysis->numCols;
   auto outputType = cast<RankedTensorType>(op.getOutputs()[0].getType());
   ArrayRef<int64_t> outputShape = outputType.getShape();
+  SmallVector<int64_t> outputStrides = computeStrides(outputShape);
+  SmallVector<int64_t> batchStrides = computeStrides(batchShape);
   int64_t numOutputTiles = outputType.getNumElements();
   Type tileType = mmOp.getResult().getType();
   MatmulAccumulatorInfo accumulatorInfo = analysis->accumulatorInfo;
@@ -505,7 +498,7 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
 
   for (int64_t tileIdx = 0; tileIdx < numOutputTiles; ++tileIdx) {
     SmallVector<int64_t> outputCoordinates =
-        delinearizeStaticIndex(tileIdx, outputShape);
+        delinearize(tileIdx, outputStrides);
     int64_t scratchBase = numOutputTiles + tileIdx * scratchPerTile;
 
     SmallVector<Value> fullIVs(iterTypes.size());
@@ -552,7 +545,7 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
   batchMatmulResults.reserve(numBatches);
   for (int64_t batchIndex = 0; batchIndex < numBatches; ++batchIndex) {
     SmallVector<int64_t> batchCoordinates =
-        delinearizeStaticIndex(batchIndex, batchShape);
+        delinearize(batchIndex, batchStrides);
     Value lhsBatch =
         createBatchSlice(secBuilder, loc, lhsTensor, batchCoordinates);
     Value rhsBatch =
