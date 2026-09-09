@@ -523,11 +523,14 @@ attach_cb                            // tensor SSA view of the waited slot
 cb_pop                               // occupancy: 1 -> 0
 ```
 
-For a zero-copy tensor shape view, the producer-side reserve may use the
-producer rank with an explicit tile count while `attach_cb` exposes the same
-published DFB at the consumer-visible rank. This is valid only when the view
-inserts or removes singleton dimensions while preserving the static element
-type and encoding.
+A compiler-created DFB may expose the same tile sequence through tensor types
+that differ only by singleton dimensions. For example, a producer may store
+`tensor<2x2xtile>` into a four-tile reservation, and the consumer may view those
+same tiles as `tensor<1x2x2xtile>`. The compiler accepts this without data
+rearrangement only for static types with identical element types and encodings.
+It does not treat
+arbitrary reshapes, such as `tensor<2x2xtile>` to `tensor<1x4xtile>`, as zero-copy
+DFB views, even though both types contain four tiles.
 
 The producer side is ordered so the slot is reserved before the compute that
 writes it and published only after the compute has packed the materialized
