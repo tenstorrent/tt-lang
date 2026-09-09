@@ -160,6 +160,10 @@ config.environment["FILECHECK_OPTS"] = "-enable-var-scope --allow-unused-prefixe
 # Pass through TT Metal/MLIR environment variables if set
 for env_var in [
     "HOME",
+    "MESH_DEVICE",
+    "TT_METAL_CACHE",
+    "TT_METAL_EMULE_MODE",
+    "TT_METAL_MOCK_CLUSTER_DESC_PATH",
     "TT_METAL_SIMULATOR",
     "TT_METAL_SLOW_DISPATCH_MODE",
     "TT_METAL_HOME",
@@ -200,8 +204,12 @@ if _ttnn_check.returncode == 0:
     config.available_features.add("ttnn")
 
 # Add tt-device feature if hardware is available (detected by CMake at configure time)
-# Also enable if TT_METAL_SIMULATOR is set (allows running tests in simulation mode)
-if getattr(config, "ttlang_has_device", False) or os.environ.get("TT_METAL_SIMULATOR"):
+# Also enable for either non-silicon runtime.
+if (
+    getattr(config, "ttlang_has_device", False)
+    or os.environ.get("TT_METAL_EMULE_MODE")
+    or os.environ.get("TT_METAL_SIMULATOR")
+):
     config.available_features.add("tt-device")
 
 # Add multi-device feature when at least two Tenstorrent chips are physically present.
