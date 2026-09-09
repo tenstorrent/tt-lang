@@ -34,8 +34,9 @@ printf 'python active:%s visible:%s home:%s runtime:%s metal:%s ld:%s args:%s\n'
 EOF
     cat > "$BIN/python3" <<'EOF'
 #!/usr/bin/env bash
-printf 'python3 active:%s visible:%s args:%s\n' \
-    "${BUILD_ENV_ACTIVE:-}" "${TT_VISIBLE_DEVICES:-}" "$*" >> "$CALLS"
+printf 'python3 active:%s visible:%s args:%s hybrid:%s options:%s\n' \
+    "${BUILD_ENV_ACTIVE:-}" "${TT_VISIBLE_DEVICES:-}" "$*" \
+    "${TT_METAL_ALLOCATOR_MODE_HYBRID:-}" "${TTLANG_COMPILER_OPTIONS:-}" >> "$CALLS"
 EOF
     cat > "$BIN/nproc" <<'EOF'
 #!/usr/bin/env bash
@@ -214,4 +215,14 @@ EOF
 @test "unknown phase fails" {
     run -2 "$SCRIPT" unknown
     assert_output --partial "Unknown hardware test phase: unknown"
+}
+
+@test "SRAM fabric phase enables hybrid allocation before opening the mesh" {
+    TT_VISIBLE_DEVICES=0,1 run -0 "$SCRIPT" sram-fabric-pytests
+
+    run cat "$CALLS"
+    assert_line --partial "python3 active:1 visible: args:-m pytest"
+    assert_line --partial "test/python/fabric/test_ccl.py::test_compiler_l1_point_to_point"
+    assert_line --partial "hybrid:1 options:--ttl-sram-allocation-mode=per-core"
+    assert_line --partial "--junitxml=build/test/pytest-report-sram-fabric.xml"
 }
