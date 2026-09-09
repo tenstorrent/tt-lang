@@ -14,10 +14,12 @@ compute/data-movement routing."""
 import ast
 import copy
 import textwrap
+from types import SimpleNamespace
 
 import pytest
 import ttl
 import ttl.atom as atom_module
+import ttl.dtype_utils as dtype_utils
 import ttl.kernel as kernel_module
 
 from ttl._src import atom_rules
@@ -37,6 +39,12 @@ from ttl.dfb_allocation_group import (
 from ttl.kernel import Kernel, KernelKind, _operation_identity
 
 _GLOBAL_KERNEL_KIND_FOR_IDENTITY = ttl.KernelKind.COMPUTE
+
+
+@pytest.fixture
+def ttnn_dtype_stub(monkeypatch):
+    data_types = SimpleNamespace(BFLOAT16="BFLOAT16")
+    monkeypatch.setattr(dtype_utils, "ttnn", SimpleNamespace(DataType=data_types))
 
 
 def _fn(src: str) -> ast.FunctionDef:
@@ -1411,7 +1419,7 @@ def test_global_dfb_reset_name_can_be_shadowed_by_parameter():
     assert shadowed_reset_operation._spec.params[0].name == "shadowed_dfb_reset"
 
 
-def test_composition_hoists_resources_from_control_flow():
+def test_composition_hoists_resources_from_control_flow(ttnn_dtype_stub):
     """Composed static resources remain operation-level declarations."""
 
     @ttl.operation()
@@ -1524,7 +1532,7 @@ def test_resource_name_collection_excludes_nested_scopes():
     assert atom_module._operation_resource_names(function) == {"operation_dfb"}
 
 
-def test_composition_preserves_one_dfb_allocation_group_identity():
+def test_composition_preserves_one_dfb_allocation_group_identity(ttnn_dtype_stub):
     """Inlining preserves one captured allocation identity across declarations."""
 
     def make_operation():
@@ -1568,7 +1576,7 @@ def test_composition_preserves_one_dfb_allocation_group_identity():
     assert helper_dfb.allocation_group is caller_dfb.allocation_group
 
 
-def test_composition_hoists_allocation_groups_from_control_flow():
+def test_composition_hoists_allocation_groups_from_control_flow(ttnn_dtype_stub):
     """Generated group tokens and members remain operation-level resources."""
 
     def make_operation():
@@ -1656,7 +1664,9 @@ def test_dfb_allocation_group_alias_topology_changes_operation_identity():
     assert shared._spec.operation_identity != independent._spec.operation_identity
 
 
-def test_captured_and_local_dfb_allocation_groups_receive_distinct_ordinals():
+def test_captured_and_local_dfb_allocation_groups_receive_distinct_ordinals(
+    ttnn_dtype_stub,
+):
     """One binding context covers inlined captures and caller declarations."""
 
     def make_operation():

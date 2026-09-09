@@ -24,6 +24,7 @@
 
 module attributes {
   ttl.target_arch = #ttcore.arch<blackhole>,
+  ttl.dfb_allocations = [],
   ttl.dfb_reconfiguration_plan = {
     boundary_ordinals = array<i64: 0>,
     dfbs = []

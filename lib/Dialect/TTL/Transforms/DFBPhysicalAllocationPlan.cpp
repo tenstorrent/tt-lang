@@ -378,6 +378,23 @@ canReconfigureDescriptorAcrossEpochs(const DFBLogicalLifecycle &lhs,
          haveDisjointConfigurationEpochs(lhs, rhs);
 }
 
+static bool
+requiresReconfigurationStorage(const DFBLogicalLifecycle &logicalDFB) {
+  // A changed descriptor uses runtime-provided tensor backing and cannot also
+  // provide static storage for another physical descriptor.
+  auto lifetimeRequiresStorage = [](const DFBPerNodeLifetime &lifetime) {
+    return llvm::any_of(lifetime.epochs, [](const DFBLifecycleEpoch &epoch) {
+      return llvm::any_of(getDescriptorInstallationEpochs(epoch),
+                          [](std::optional<int64_t> configurationEpoch) {
+                            return configurationEpoch.has_value();
+                          });
+    });
+  };
+  return llvm::any_of(logicalDFB.nodeLifetimes, lifetimeRequiresStorage) ||
+         llvm::any_of(logicalDFB.possibleNodeLifetimes,
+                      lifetimeRequiresStorage);
+}
+
 } // namespace
 
 struct DFBPairConflictRequirements {

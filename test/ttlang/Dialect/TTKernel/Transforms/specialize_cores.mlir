@@ -118,9 +118,9 @@ module attributes {ttl.launch_grid = [1 : i64, 3 : i64]} {
 // -----
 
 // -- Test 4: pipe participants are specialized like any other kernel. --------
-// The module used a pipe, so a semaphore op is present. The pass no longer
-// special-cases pipes: because core_y drives an scf.if, the 1x2 grid is cloned
-// per row. The semaphore op is carried into each clone unchanged.
+// A live semaphore operation does not change specialization. Because core_y
+// drives an scf.if, the 1x2 grid is cloned per row, and the semaphore access is
+// retained in each clone.
 
 // CHECK-NOT:   func.func @kpipe()
 // CHECK-LABEL: func.func @kpipe_c0_0
@@ -136,6 +136,9 @@ module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
     %c7 = arith.constant 7 : index
     %c9 = arith.constant 9 : index
     %sem = ttkernel.get_semaphore(%c0) : (index) -> !ttkernel.local_semaphore
+    %sem_ptr = ttkernel.reinterpret_cast(%sem) : (!ttkernel.local_semaphore) -> !ttkernel.l1_addr_ptr
+    %one = arith.constant 1 : i32
+    ttkernel.experimental.semaphore_wait_min(%sem_ptr, %one) : (!ttkernel.l1_addr_ptr, i32) -> ()
     %y = "ttkernel.my_logical_y_"() : () -> index
     %pred = arith.cmpi eq, %y, %c0 : index
     %r = scf.if %pred -> (index) {

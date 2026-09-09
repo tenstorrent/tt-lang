@@ -1,5 +1,5 @@
 // Summary: Reconfigured descriptors reuse non-overlapping runtime storage.
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true})' | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 reuse-user-dfbs=true})' | FileCheck %s
 
 #compute = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "operation">
 #reader = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "operation">
@@ -11,8 +11,10 @@
 // before the second configuration becomes active.
 
 // CHECK: ttl.dfb_allocations = [
-// CHECK-SAME: {allocation_nodes = {{\[\[0, 0\]\]}}, block_count = 1 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32, page_size = 2048 : i32, storage_index = 0 : i32},
-// CHECK-SAME: {allocation_nodes = {{\[\[0, 0\]\]}}, block_count = 1 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<32x32, f32>, num_tiles = 1 : i32, page_size = 4096 : i32, storage_index = 0 : i32}
+// CHECK-SAME: dfb_index = 0 : i32
+// CHECK-SAME: l1_payload_offset = [[SHARED_PAYLOAD:[0-9]+]] : i64
+// CHECK-SAME: dfb_index = 1 : i32
+// CHECK-SAME: l1_payload_offset = [[SHARED_PAYLOAD]] : i64
 
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @compute() attributes {
@@ -71,8 +73,10 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 // descriptor on another launch node from using the same storage index.
 
 // CHECK: ttl.dfb_allocations = [
-// CHECK-SAME: {allocation_nodes = {{\[\[0, 0\]\]}}, block_count = 1 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32, page_size = 2048 : i32, storage_index = 0 : i32},
-// CHECK-SAME: {allocation_nodes = {{\[\[1, 0\]\]}}, block_count = 1 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<32x32, f32>, num_tiles = 1 : i32, page_size = 4096 : i32, storage_index = 0 : i32}
+// CHECK-SAME: dfb_index = 0 : i32
+// CHECK-SAME: l1_payload_offset = [[DISJOINT_PAYLOAD:[0-9]+]] : i64
+// CHECK-SAME: dfb_index = 1 : i32
+// CHECK-SAME: l1_payload_offset = [[DISJOINT_PAYLOAD]] : i64
 
 module attributes {ttl.launch_grid = [2, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @compute_disjoint_nodes() attributes {

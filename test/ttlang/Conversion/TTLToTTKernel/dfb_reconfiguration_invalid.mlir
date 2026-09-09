@@ -3,6 +3,7 @@
 
 module attributes {
   ttl.target_arch = #ttcore.arch<wormhole_b0>,
+  ttl.dfb_allocations = [],
   ttl.dfb_reconfiguration_plan = {
     boundary_ordinals = array<i64: 0>,
     dfbs = []
@@ -22,7 +23,8 @@ module attributes {
 // Verifies that conversion requires the finalized reconfiguration plan.
 // expected-error @below {{requires finalized DFB reconfiguration metadata}}
 module attributes {
-  ttl.target_arch = #ttcore.arch<blackhole>
+  ttl.target_arch = #ttcore.arch<blackhole>,
+  ttl.dfb_allocations = []
 } {
   func.func @missing_plan() attributes {
     ttl.kernel_thread = #ttkernel.thread<compute>
@@ -38,6 +40,7 @@ module attributes {
 // expected-error @below {{boundary ordinal is absent from finalized DFB reconfiguration metadata}}
 module attributes {
   ttl.target_arch = #ttcore.arch<blackhole>,
+  ttl.dfb_allocations = [],
   ttl.dfb_reconfiguration_plan = {
     boundary_ordinals = array<i64: 1>,
     dfbs = []

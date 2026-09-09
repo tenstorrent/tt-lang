@@ -2115,8 +2115,8 @@ def test_runtime_resource_fingerprint_is_stable_across_python_hash_seeds():
             ),
             1,
             (
-                "@ttl.operation 'planned_operation': semaphore id 1 was "
-                "specified more than once"
+                "@ttl.operation 'planned_operation': semaphore id 1 for core "
+                "type WORKER was specified more than once on cores ((0, 0),)"
             ),
         ),
         (
@@ -2234,7 +2234,7 @@ def test_build_kernel_descriptors_binds_compiler_l1_arena(monkeypatch):
         kernel_specs=[spec],
         tensors=[tensor],
         tensor_accessor_args=[0x44, 0x55],
-        core_ranges=object(),
+        core_ranges=_FakeCoreRanges(),
         grid_cols=1,
         grid_rows=1,
         num_cbs=3,
@@ -3971,7 +3971,7 @@ def test_build_kernel_descriptors_checks_pipe_runtime_arg_count(monkeypatch):
         kernel_specs=[spec],
         tensors=[tensor],
         tensor_accessor_args=[],
-        core_ranges=object(),
+        core_ranges=_FakeCoreRanges(),
         grid_cols=1,
         grid_rows=1,
         num_cbs=0,
@@ -3989,7 +3989,7 @@ def test_build_kernel_descriptors_checks_pipe_runtime_arg_count(monkeypatch):
             kernel_specs=[spec],
             tensors=[tensor],
             tensor_accessor_args=[],
-            core_ranges=object(),
+            core_ranges=_FakeCoreRanges(),
             grid_cols=1,
             grid_rows=1,
             num_cbs=0,
@@ -4040,7 +4040,7 @@ def test_build_kernel_descriptors_passes_computed_addresses_as_runtime_args(
         kernel_specs=[spec],
         tensors=[tensor],
         tensor_accessor_args=[0x44, 0x55],
-        core_ranges=object(),
+        core_ranges=_FakeCoreRanges(),
         grid_cols=1,
         grid_rows=1,
         num_cbs=2,
@@ -4084,7 +4084,7 @@ def test_build_kernel_descriptors_appends_per_kernel_runtime_args(monkeypatch):
         kernel_specs=specs,
         tensors=[tensor],
         tensor_accessor_args=[],
-        core_ranges=object(),
+        core_ranges=_FakeCoreRanges(),
         grid_cols=1,
         grid_rows=1,
         num_cbs=0,
@@ -4113,7 +4113,7 @@ def test_build_kernel_descriptors_reserves_fabric_runtime_arg_base(monkeypatch):
         kernel_specs=[spec],
         tensors=[tensor],
         tensor_accessor_args=[],
-        core_ranges=object(),
+        core_ranges=_FakeCoreRanges(),
         grid_cols=1,
         grid_rows=1,
         num_cbs=0,

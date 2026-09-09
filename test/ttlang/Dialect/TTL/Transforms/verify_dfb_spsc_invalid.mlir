@@ -23,7 +23,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     %view = ttl.cb_wait %cb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    // expected-error @below {{logical DFB 0 has multiple consumer kernels active on the same launched node}}
+    // expected-error @below {{logical DFB 0 has multiple read-pointer owner kernels active on the same launched node}}
     // expected-note @below {{example overlapping node: core_x=0, core_y=0}}
     // expected-note @below {{only one kernel may advance a DFB read pointer on each launched node}}
     ttl.cb_pop %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -40,7 +40,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %view = ttl.cb_wait %cb
           : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-      // expected-note @below {{also performed a consumer action here}}
+      // expected-note @below {{also advanced the read pointer here}}
       ttl.cb_pop %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     }
     func.return
@@ -87,7 +87,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
   func.func @first_hidden_consumer() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 42 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    // expected-error @below {{logical DFB 42 has multiple consumer kernels active on the same launched node}}
+    // expected-error @below {{logical DFB 42 has multiple read-pointer owner kernels active on the same launched node}}
     // expected-note @below {{example overlapping node: core_x=0, core_y=0}}
     // expected-note @below {{only one kernel may advance a DFB read pointer on each launched node}}
     ttl.opaque_call "consume_a" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>, #ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "effects.hpp"} : () -> ()
@@ -97,7 +97,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
   func.func @second_hidden_consumer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 42 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    // expected-note @below {{also performed a consumer action here}}
+    // expected-note @below {{also advanced the read pointer here}}
     ttl.opaque_call "consume_b" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>, #ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "effects.hpp"} : () -> ()
     func.return
   }
@@ -151,7 +151,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
     %slot = ttl.cb_wait %dfb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    // expected-error @below {{logical DFB 44 has multiple consumer kernels active on the same launched node}}
+    // expected-error @below {{logical DFB 44 has multiple read-pointer owner kernels active on the same launched node}}
     // expected-note @below {{example overlapping node: core_x=0, core_y=0}}
     // expected-note @below {{only one kernel may advance a DFB read pointer on each launched node}}
     ttl.cb_pop %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -161,7 +161,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
   func.func @hidden_popper() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 44 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    // expected-note @below {{also performed a consumer action here}}
+    // expected-note @below {{also advanced the read pointer here}}
     ttl.opaque_call "pop" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "effects.hpp"} : () -> ()
     func.return
   }
@@ -233,7 +233,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
         %view = ttl.cb_wait %cb
             : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
             -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-        // expected-error @below {{logical DFB 2 has multiple consumer kernels, but SPSC could not be statically proven}}
+        // expected-error @below {{logical DFB 2 has multiple read-pointer owner kernels, but SPSC could not be statically proven}}
         // expected-note @below {{only one kernel may advance a DFB read pointer on each launched node}}
         ttl.cb_pop %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
       }
@@ -247,7 +247,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     %view = ttl.cb_wait %cb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    // expected-note @below {{also performed a consumer action here}}
+    // expected-note @below {{also advanced the read pointer here}}
     ttl.cb_pop %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     func.return
   }

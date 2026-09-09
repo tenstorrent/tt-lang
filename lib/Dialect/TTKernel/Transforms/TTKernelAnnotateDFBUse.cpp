@@ -68,18 +68,6 @@ static void warnDroppedPrint(func::FuncOp func, int32_t dfbIndex) {
   }
 }
 
-static int64_t getFuncDFBCount(func::FuncOp func, int64_t maxDFBCount) {
-  auto module = func->getParentOfType<ModuleOp>();
-  if (auto model = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
-      model && model.getValue() == kCompilerL1MemoryModel) {
-    return module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName).size();
-  }
-  if (auto attr = func->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttrName)) {
-    return attr.getInt();
-  }
-  return maxDFBCount;
-}
-
 // Erase dprint-only gets whose DFB index is absent from the function's
 // recorded uses. Prints of a DFB remain on functions that still have a
 // non-print use of that index (including uses inherited from callees).
