@@ -3,6 +3,95 @@
 Each results section records its own source, binary and timing provenance.
 Dependency pins do not establish the build revision of the installed binaries.
 
+## L1 activation reuse and FP32 packer accumulation
+
+New raw reports and rejected-experiment snapshots are retained outside the
+repository; their upload to the linked artifact archive is pending.
+
+The current operation eliminates gathered-activation DRAM storage and retains
+each M block's full K extent in per-worker L1 across N rounds. Matmul products
+accumulate directly into FP32 L1 through the existing packer-accumulation DSL.
+There is no intermediate BF16 product DFB, conversion DFB or SFPU accumulation
+inside the reduction. The operation now takes activation, weight, bias and
+output only; it does not return a gathered tensor.
+
+The controlled comparison retains the previous transposed 2x5 worker grid,
+M/K/N blocks 2/40/2, two Blackhole participants (IDs 1 and 2), BF16/HiFi2,
+FP32 destinations and bias. Three warmups precede five samples using the
+standard mean device-kernel duration across ranks, with ordinary launches.
+
+| M / full K / per-device N | Previous TT-Lang ms | Current TT-Lang ms (range) | Original native ms (K=2) | Matched native ms (K=40, range) | Current / original native | Current / matched native |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 3072 / 5120 / 1280 | 4.437 | 3.439 (3.434-3.448) | 7.075 | 3.690 (3.687-3.699) | 0.486 | 0.932 |
+| 3072 / 5120 / 3840 | 11.358 | 9.040 (8.959-9.170) | 20.131 | 10.396 (10.311-10.449) | 0.449 | 0.870 |
+
+2026-09-09 23:00:22-23:01:27 UTC; TT-Lang `7ad660d45227` (operation/driver SHA-256 `0718680279f9`/`4351194bcd19`); Metal/LLVM pins `ea042c4ad623`/`37aca9d384347`; compiler/TTNN/Metal binary SHA-256 `a31540fb2fad`/`62edde2b1f61`/`65380f11dc15`; image `6eaf96b4b00d5`; [artifact archive (new reports pending)](https://gist.github.com/brnorris03/79c57b196efe09355699d40165780088). Previous/original columns retain the historical measurements documented below.
+
+TT-Lang improves by 22.5% and 20.4% over the previous implementation and is
+6.8% and 13.0% faster than the matched native configuration. This is not a
+claim against native's best grid/block configuration or its Galaxy trace
+benchmark. Numerical thresholds are unchanged. Maximum TT-Lang output errors
+fall from 0.03892/0.03943 to 0.03282/0.03351; mean errors are approximately
+0.003394/0.003395. Removing the gathered output also removes its separate
+bit-exact check; both complete matmul-plus-bias outputs remain checked.
+
+### Required compiler change
+
+Packer accumulation already exists: `reserved_block += product` lowers to
+packer L1 accumulation. The BF16-only variant failed the full-size accuracy
+bound because each accumulated result rounded to BF16. Selecting an FP32
+reserved block with `+= typecast(activation @ weight, fp32)` previously failed
+the mixed-format compute-argument check.
+
+[`computeDSTCapacity`](../../include/ttlang/Dialect/TTL/IR/TTLOpsUtils.h) now
+accepts mixed-format inputs only when they are existing explicit conversions
+or exclusively matmul source operands. Matmul sources unpack independently
+from the result's pack format; FP32 output still selects FP32 DST capacity.
+Unconverted SFPU inputs remain rejected. The generated BF16-to-FP32 typecast
+has no SFPU instructions on Blackhole; the FP32 output DFB selects the pack
+format. Device tests exercise BF16/BF16, BF16/FP32 and FP32/FP32 packing with
+single-tile, DST-sized and subblocked outputs. No LLVM or TT-Metal change is
+required, and no new compiler option is added.
+
+### Attribution and rejected changes
+
+The updated implementation also benefits from a wider grid. At
+M3072/K5120/per-device N1280, transposed 2x8 workers with M/K/N blocks 2/40/1
+measure 2.793 ms (2.781-2.809), versus native's 3.627 ms (3.625-3.634) with
+identical settings: ratio 0.770. This is 18.8% faster than the current 2x5
+TT-Lang configuration, but changes both worker count and N blocking. Native's
+earlier 2x8, 4/20/1 trial is faster at 3.283 ms; matching TT-Lang's blocks does
+not identify native's best blocks. The 2x8 N3840 case is not measured.
+
+2026-09-09 23:01:34-23:02:00 UTC; same committed sources, compiler/runtime binaries and timing contract as the table above; report `l1_grid2x8_n1280.json` retained outside the repository pending archive upload.
+
+At M3072/K5120/per-device N1280 on the 2x5 grid, disabling activation reuse
+increases TT-Lang from 3.439 to 5.347 ms (+55.5%). Both variants avoid DRAM
+gather storage and use FP32 packer accumulation; the streamed variant repeats
+activation reads, fabric transfers and row multicasts for each N round. It is
+retained as an explicit lower-L1-capacity option, not selected for these results.
+
+Repeated matmul initialization is not a material bottleneck in this workload.
+A compiler experiment removed the per-K initialization only after proving
+invariant operands/dimensions and preserved unpack/math configuration. An
+alternating 20-pair generated-C++ comparison at K=10 measured repeated/hoisted
+medians of 4.684/4.680 ms and a median paired hoisted/repeated ratio of 0.9993.
+The only C++ difference restored the identical initialization call inside K.
+The experiment uses K=10 because keeping both variants' fabric resources
+resident at K=40 exceeded the second compilation's remaining L1 budget.
+A separate K=20 comparison measured 3.797/3.817 ms, a 0.5% regression with
+overlapping ranges. The initialization transformation is not retained; its
+source, tests and measurements are retained locally pending archive upload. The final
+numbers above use the retained compiler, with per-K initialization unchanged.
+
+The complete fabric correctness matrix covers cached/streamed activation,
+BF16/FP32, bias/no bias, transpose, repeated output blocks and several K block
+sizes on the two-device submesh. Larger meshes are not device-tested here.
+The small-workload comparison has not been rerun for this implementation.
+Further device work stopped when another benchmark acquired the devices;
+the attempted 2x10 run failed during UMD initialization before compiling or
+executing the operation. It is not evidence of a grid-specific failure.
+
 ## Operation-only optimization
 
 The original gap has substantial implementation-level causes. No compiler,
@@ -105,14 +194,14 @@ The archive includes `compute_baseline_n1280.cpp`,
 `compute_streamed_n1280.cpp` and `native_compute_installed.cpp` for these counts;
 the historical smoke snapshots below describe a different implementation.
 
-The retained operation still rounds each matmul-block product to BF16 before
-widening to FP32, retains extra conversions and SFPU additions, and stages
-gathered activation through DRAM. Avoiding the first-N-round DRAM reread while
-preserving the required gathered output is an operation-level optimization to
-investigate next. Larger or more deeply buffered blocks must fit the actual L1
-budget; adding workers alone did not improve the measured implementation.
+That earlier operation rounded each matmul-block product to BF16 before
+widening to FP32, retained extra conversions and SFPU additions, and staged
+gathered activation through DRAM. The current implementation above removes
+those costs. Larger or more deeply buffered blocks must fit the actual L1
+budget; adding workers alone did not improve that earlier implementation.
 
-Existing DSL alternatives were tested before proposing compiler work:
+At that earlier revision, existing DSL alternatives were tested before
+proposing compiler work:
 
 | Attempt | Observed limitation | Work needed to enable that specific optimization |
 | --- | --- | --- |
@@ -121,11 +210,11 @@ Existing DSL alternatives were tested before proposing compiler work:
 | Materialize the product, then accumulate its conversion in the same loop | [`collectDFBAccumulationStores`](../../lib/Dialect/TTL/Transforms/TTLInsertAccumulationScopes.cpp) rejects a non-accumulating store inside a packer-accumulation loop (#648). | Model packer accumulation state per store so ordinary product packs cannot accidentally accumulate. |
 | Hold a waited accumulator across K and update it in place | [`ComputeOpCreationPlanning.cpp`](../../lib/Dialect/TTL/Transforms/ComputeOpCreationPlanning.cpp) requires waited replacement to execute in a straight-line entry block. | Prove loop-scoped consumer ownership and repeated replacement before permitting this form. |
 
-No rejected variant is retained in the operation. These are precise limits on
-those particular optimizations, not evidence that compiler changes are required
-for all further performance improvements. Native's FP32 intermediate format is
-confirmed in the installed program factory, not inferred from the destination
-precision flag alone.
+No rejected variant was retained at that revision. The current implementation
+resolves the FP32 packed-result restriction as described above; the other
+limitations are not prerequisites for this optimization. Native's FP32
+intermediate format is confirmed in the installed program factory, not inferred
+from the destination precision flag alone.
 
 ## Original native-sized local comparison
 
