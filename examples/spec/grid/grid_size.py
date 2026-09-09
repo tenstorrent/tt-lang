@@ -22,13 +22,13 @@ import ttl
 @ttl.operation(grid=(8, 8))
 def grid_size_example() -> None:
     # spec:begin
-    # for (8, 8) single chip or SPMD grid gets x_size = 64
+    # flattening grid (8, 8) to one dimension gives x_size = 64
     x_size = ttl.grid_size(dims=1)
 
-    # for (8, 8, 8) multi-chip grid gets x_size = 8, y_size = 64
+    # preserving both grid dimensions gives x_size = 8, y_size = 8
     x_size, y_size = ttl.grid_size(dims=2)
 
-    # for (8, 8) single-chip or SPMD grid gets x_size = 8, y_size = 8, z_size = 1
+    # requesting a third dimension pads it with z_size = 1
     x_size, y_size, z_size = ttl.grid_size(dims=3)
     # spec:end
 

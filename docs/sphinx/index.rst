@@ -21,6 +21,7 @@ TT-Lang Documentation
    :caption: Reference
 
    TT-Lang Spec <specs/TTLangSpecification>
+   reference/implementation-status
    reference/compiler-options
    reference/external-functions
    reference/operation-runtime-resources
