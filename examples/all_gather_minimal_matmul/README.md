@@ -25,8 +25,10 @@ elements.
 
 ## Worker decomposition
 
-The operation uses a `(N workers, M workers)` grid. Every worker computes one
-`m_block_tiles x n_block_tiles` output block.
+The default grid is `(N workers, M workers)`; `transpose=True` exchanges the
+physical axes. An explicit `worker_grid` distributes successive M/N blocks
+cyclically across a fixed set of workers. Each worker computes
+`m_block_tiles x n_block_tiles` blocks, with M rounds outside N rounds.
 
 - Column zero performs the fabric all-gather once for each M block. This avoids
   repeating the same fabric transfer for every N worker.
@@ -36,7 +38,11 @@ The operation uses a `(N workers, M workers)` grid. Every worker computes one
 - Every output block has exactly one writer.
 
 The configuration requires at least two workers on both axes. Tile counts must
-be divisible by their corresponding block counts.
+be divisible by their block extents, and M/N block counts must be divisible by
+the corresponding worker counts. Edge blocks are not padded implicitly.
+The runtime additionally checks available fabric connections and L1 capacity;
+the [benchmark comparison table](../../benchmarks/all_gather_minimal_matmul/README.md#comparison-with-the-native-benchmark)
+records the measured local limits.
 
 ## Run
 
@@ -66,6 +72,7 @@ Implemented:
 - K-sharded activation all-gather;
 - N-sharded matmul output;
 - full-grid M/N worker decomposition;
+- transposed scheduling and repeated output blocks on a fixed worker grid;
 - row-broadcast bias;
 - BF16 and FP32 interfaces;
 - bit-exact gathered-activation validation and PCC output validation.
@@ -76,6 +83,6 @@ Not yet implemented:
 - chunked N output;
 - addcmul;
 - SwiGLU;
-- transpose selection;
+- partially occupied worker grids and edge blocks;
 - fabric link, worker, and channel-buffer controls;
 - FSDP weight gather.

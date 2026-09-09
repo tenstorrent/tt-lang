@@ -76,6 +76,24 @@ def test_invalid_frequency(profiler_data):
         latest_kernel_duration("unused.csv", [1, 2])
 
 
+def test_mean_participant_duration(profiler_data):
+    result = latest_kernel_duration("unused.csv", [1, 2], aggregation="mean")
+    assert result["cycles"] == 20250
+    assert result["us"] == result["mean_device_us"] == 15
+    assert result["max_device_us"] == 20
+    assert result["device_aggregation"] == "mean"
+
+
+def test_empty_participants(profiler_data):
+    with pytest.raises(ValueError, match="at least one participating device"):
+        latest_kernel_duration("unused.csv", [])
+
+
+def test_invalid_aggregation(profiler_data):
+    with pytest.raises(ValueError, match="unsupported device aggregation"):
+        latest_kernel_duration("unused.csv", [1, 2], aggregation="median")
+
+
 def test_missing_participant(profiler_data):
     with pytest.raises(KeyError):
         latest_kernel_duration("unused.csv", [0, 1])

@@ -1,14 +1,47 @@
 # All-gather matmul performance diagnosis
 
-Measured 2026-09-09 on TT-Lang `3e688e1f07b7b16e872923bdaf17c337cc9cd86b`,
-verified equal to `origin/main` at measurement time. The operation and
-benchmark were uncommitted additions when measured. Installed compiler SHA-256 `7f5e02a65e4c`, TTNN
-`62edde2b1f61`, Metal `65380f11dc15`; image v1.1.9,
-ID `sha256:6eaf96b4b00d5e44de5cfcef05052963a2bad563692bc03129c83fbeecae390b`.
-Dependency pins: Metal `ea042c4ad623`, LLVM `37aca9d384347`; these pins do not
-establish installed binary build revisions. No LLVM rebuild was needed.
+Each results section records its own source, binary and timing provenance.
+Dependency pins do not establish the build revision of the installed binaries.
 
-## Measurements
+## Native-sized local comparison
+
+The [configuration table](README.md#comparison-with-the-native-benchmark)
+distinguishes matching settings from the native Galaxy benchmark. The following
+measurements use the native test's plain-bias tensor dimensions, with BF16
+inputs/output, HiFi2 and FP32 destinations. Both implementations use two
+Blackhole devices (IDs 1 and 2), a transposed 2x5 worker grid, 2/2/2 M/K/N tile
+blocks, TILE/interleaved DRAM, and ordinary launches. Native uses one link,
+two workers/link, 24 channel buffers, and 2x2 subblocks. Five samples follow
+three warmups; each sample is the mean device-kernel duration across ranks.
+
+| M / full K / per-device N | TT-Lang median ms (range) | Native median ms (range) | TT-Lang/native |
+| --- | ---: | ---: | ---: |
+| 3072 / 5120 / 1280 | 24.456 (24.450-24.457) | 7.075 (7.071-7.092) | 3.457 |
+| 3072 / 5120 / 3840 | 63.013 (63.010-63.017) | 20.131 (20.122-20.152) | 3.130 |
+
+2026-09-09 20:54:51-20:57:34 UTC; TT-Lang `e0cced786d1e` + local changes (operation SHA-256 `a27b232a779b`, driver `376ade3e8dbd`); Metal/LLVM pins `ea042c4ad623`/`37aca9d384347`; compiler/TTNN/Metal binary SHA-256 `7f5e02a65e4c`/`62edde2b1f61`/`65380f11dc15`; image `6eaf96b4b00d5`; [reports and measured sources](https://gist.github.com/brnorris03/79c57b196efe09355699d40165780088).
+
+TT-Lang is 245.7% and 213.0% slower than this locally constrained native
+configuration. These are not results against native's tuned 12x9 grid or trace
+replay, and are not comparable to the tiny historical cases below as a
+same-workload regression. Native performance is also limited by the shared
+local grid and block settings.
+
+All output and gather checks pass without relaxing tolerances. TT-Lang's mean
+absolute output error is 0.00365 for both cases. The earlier BF16-accumulator
+implementation failed N=1280 with mean absolute error 0.0679 and 2,282,733 of
+7,864,320 elements outside the existing bound. Explicit FP32 accumulator/bias
+DFBs correct that failure; matmul-block products still round to the input dtype
+before FP32 addition, unlike native's packer accumulation.
+
+Unsuccessful larger configurations remain part of the evidence: 8/8/8 blocks
+exceeded L1; twelve M workers exceeded available forwarding connections;
+4/8/8 blocks on the 2x5 grid timed out. The timed-out processes exited before
+the two participant boards were reset, after verifying all devices were idle.
+No timing result is reported for those configurations. The exact cause of the
+4/8/8 stall remains unresolved.
+
+## Historical smoke measurements
 
 M=64/K=64/N=256, two Blackhole devices (IDs 1 and 2), 4x2 compute workers
 per device, 1x1x1 tile blocks, HiFi4, bias enabled. The
@@ -92,10 +125,13 @@ ownership. It also makes the current TT-Lang fabric invocation incompatible
 with trace capture. Correct resource reuse needs a replay-safe initialization
 protocol and stable ownership, not a benchmark-only bypass.
 
-## Generated C++ versus native kernels
+## Historical generated C++ versus native kernels
 
 The source snapshots used for comparison are retained in
 [the measurement archive](https://gist.github.com/brnorris03/79c57b196efe09355699d40165780088).
+They describe the earlier smoke implementation, before fixed-grid output loops
+and explicit FP32 accumulator/bias DFBs. Exact pack counts below do not describe
+the native-sized implementation.
 
 | Mechanism | TT-Lang generated C++ | Native C++ |
 | --- | --- | --- |

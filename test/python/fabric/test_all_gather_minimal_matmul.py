@@ -27,8 +27,9 @@ pytestmark = pytest.mark.multi_device
 
 TILE_SIZE = 32
 MATMUL_DTYPES = [
-    pytest.param(torch.bfloat16, 0.99, id="bf16"),
-    pytest.param(torch.float32, 0.999, id="fp32"),
+    pytest.param(torch.bfloat16, 0.99, False, id="bf16-dst16"),
+    pytest.param(torch.bfloat16, 0.99, True, id="bf16-dst32"),
+    pytest.param(torch.float32, 0.999, True, id="fp32"),
 ]
 
 
@@ -73,28 +74,47 @@ def participant_mesh(fabric_mesh_shape, participant_mesh_shape):
 
 
 @requires_forwarding_link_indices(ttnn)
-@pytest.mark.parametrize("torch_dtype,pcc_threshold", MATMUL_DTYPES)
+@pytest.mark.parametrize("torch_dtype,pcc_threshold,fp32_dest_acc_en", MATMUL_DTYPES)
 @pytest.mark.parametrize(
     "k_tiles_per_device", [1, 4], ids=["one-transfer", "four-transfers"]
 )
 @pytest.mark.parametrize("with_bias", [False, True], ids=["no-bias", "bias"])
+@pytest.mark.parametrize(
+    "m_tiles,n_tiles,worker_grid,transpose",
+    [
+        pytest.param(2, 2, None, False, id="one-block"),
+        pytest.param(4, 6, (3, 2), False, id="repeated-blocks"),
+        pytest.param(4, 6, (2, 3), True, id="transposed-repeated-blocks"),
+    ],
+)
 def test_all_gather_minimal_matmul(
     participant_mesh_shape,
     participant_mesh,
     torch_dtype,
     pcc_threshold,
+    fp32_dest_acc_en,
     k_tiles_per_device,
     with_bias,
+    m_tiles,
+    n_tiles,
+    worker_grid,
+    transpose,
 ):
     """Cover TILE/DRAM tensors for every supported numeric dtype."""
 
     config = AllGatherMinimalMatmulConfig(
         mesh_shape=participant_mesh_shape,
-        m_tiles=2,
+        m_tiles=m_tiles,
         k_tiles_per_device=k_tiles_per_device,
-        n_tiles_per_device=2,
+        n_tiles_per_device=n_tiles,
+        worker_grid=worker_grid,
+        transpose=transpose,
     )
-    operation = make_all_gather_minimal_matmul_operation(config)
+    operation = make_all_gather_minimal_matmul_operation(
+        config,
+        math_fidelity="HiFi2" if torch_dtype == torch.bfloat16 else "HiFi4",
+        fp32_dest_acc_en=fp32_dest_acc_en,
+    )
     torch.manual_seed(0)
 
     m_elements = config.m_tiles * TILE_SIZE

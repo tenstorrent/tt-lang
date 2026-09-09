@@ -28,6 +28,35 @@ the build revision of the installed native binary.
 The [matmul directory](../matmul/README.md) contains the single-device
 SUMMA/K-split comparison.
 
+## Comparison with the native benchmark
+
+The reference is TT-Metal's
+[block-size sweep](https://github.com/tenstorrent/tt-metal/blob/f69f924c6b4f38daa0a6f25716731f36c573dc0e/models/tt_dit/utils/sweep_mm_block_sizes.py)
+and [Wan2.2 operation test](https://github.com/tenstorrent/tt-metal/blob/f69f924c6b4f38daa0a6f25716731f36c573dc0e/models/tt_dit/tests/models/wan2_2/test_all_gather_minimal_matmul_async.py).
+These describe the benchmark methodology, not the installed binary revision.
+The local comparison applies identical workload, arithmetic, worker grid and
+M/K/N blocks to both implementations. It is not an exact Galaxy reproduction.
+
+| Setting | Native Blackhole reference | Local comparison | Difference and consequence |
+| --- | --- | --- | --- |
+| Problem dimensions | Plain bias tests include M=3072, full K=5120, per-device N=1280 or 3840. | CLI supports these dimensions through repeated output blocks; default remains M=64/K=64/per-device N=128. | Default is a smoke test, not a model-performance result. N in the reference is per device, not global output width. |
+| Participants | Default sweep opens a 4x8 parent and uses a 4x1 ring; alternative uses a 1x8 ring. | Discovered 2x2 parent, connected 2x1 submesh, physical IDs recorded per run. | Two participants, not four/eight; local K=2560 for full K=5120, versus K=1280 on four participants. |
+| Worker scheduling | 12x9, transposed; multiple blocks and edge blocks. | Explicit fixed `--worker-grid X Y` and `--transpose`; repeated M/N blocks. | Block counts must divide worker extents. A 12x5 configuration passes that condition but fails local fabric assignment: generated per-worker send/receive managers require distinct forwarding connections, with only four eligible links. Two M workers work locally. Full 12x9 edge scheduling and native mux sharing are not implemented. |
+| M/K/N blocks | Plain M=3072 cases use 8/8/8 tiles in the test; sweep tunes blocks. | Configurable and identical between local implementations; full-size testing uses 2/2/2. | Initial 8/8/8 TT-Lang allocation exceeded L1 (1,998,848 bytes against a 1,461,376-byte budget); the subsequent 4/8/8 attempt timed out. Neither produced a performance result. |
+| Arithmetic | BF16, HiFi2, FP32 destinations, packer L1 accumulation. | BF16 uses HiFi2; the separate FP32 variant uses HiFi4. FP32 destinations and explicit FP32 accumulator/bias DFBs by default. | BF16 matmul-block products are packed to BF16 before conversion and FP32 addition; native uses packer L1 accumulation. Destination precision matches, but intermediate rounding and storage do not. FP32 HiFi2 fails the FP32 error bound; HiFi4 is applied to both implementations. |
+| Subblocks | Test uses 2x2 for the plain M=3072 cases; sweep selects valid subblocks. | Native uses 2 on each evenly divisible block axis, otherwise 1. TT-Lang compiler-selected; a 2x2 output block fits four FP32 DST tiles. | Larger block configurations can still have different register scheduling. |
+| Fabric | Ring, 2 links, 6 workers/link; sweep uses 24 channel buffers, operation test uses 48. | Linear, one link; native workers/link equals M-worker count, 24 channel buffers. TT-Lang uses direct all-to-all PipeNets with two-block send/compute DFBs. | Native mux buffering and TT-Lang DFB capacity describe different protocols; equal buffer counts would not imply equal buffering. |
+| Fabric initialization | Sweep uses STRICT_INIT and 8192-byte router payload; Blackhole operation test uses 4096-byte payload. | RELAXED_INIT, installed runtime's default router payload. | Router configuration and link-health requirements differ. |
+| Timing | Compile/warmup, trace replay, `device_kernel_duration`, mean across devices. | Same device metric and mean across participants; ordinary launches, median across repeated samples. Per-sample maximum also retained. | No trace replay: TT-Lang replaces global-semaphore resources with synchronization. Cross-device dispatch skew can contribute device-side fabric waits. |
+| Profiling implementation | `run_device_profiler`, Tracy signposts and ops-log processing. | `import_log_run_stats` with the standard `device_kernel_duration` analysis; one archived dump per sample. | Same per-device interval definition, different collection workflow; not whole-application latency. |
+| Tensor residency and bias | TILE/interleaved DRAM; row bias. Test replicates each rank's KxN weight and 1xN bias. | TILE/interleaved DRAM; row bias; distinct N shards of weight/bias. | Same per-rank dimensions, different cross-rank values. TT-Lang additionally writes the local activation shard to gather scratch. |
+| Communication/compute overlap | Consume available K blocks while communicating. | Finish gathering each assigned M block into DRAM before computing its N blocks. | Additional DRAM traffic and less overlap are implementation differences included in device timing. |
+
+The sweep's M labels need care: its AGMM allocation multiplies M by the parent
+sequence-parallel extent after selecting a singleton sequence-parallel submesh.
+Use the explicit operation-test tensor dimensions above; do not infer actual
+allocation dimensions from sweep test names alone.
+
 ## Run
 
 Inside the fabric container, after verifying devices are unused:
@@ -56,6 +85,22 @@ Tile/block parameters are exposed by `--help`.
 Native non-transposed scheduling requires M <= per-device N and at least four
 N workers; the driver rejects unsupported configurations.
 
+The native plain-bias dimensions can be measured on the local pair with:
+
+```bash
+timeout 360 python -m benchmarks.all_gather_minimal_matmul \
+    --m-tiles 96 --k-tiles-per-device 80 --n-tiles-per-device 40 \
+    --m-block-tiles 2 --k-tiles-per-transfer 2 --n-block-tiles 2 \
+    --worker-grid 2 5 --transpose \
+    --json /tmp/all_gather_matmul_wan3072_n1280.json \
+    2>&1 | tee /tmp/device_test.log
+```
+
+Use `--n-tiles-per-device 120` for per-device N=3840. These commands match
+the native tensor dimensions, not its four-device ring or 12x9 worker grid.
+The [results](PERFORMANCE.md#native-sized-local-comparison) retain those
+distinctions alongside every reported ratio.
+
 ## Measurement contract
 
 The analysis is the existing TT-Metal
@@ -65,7 +110,9 @@ used by its profiler reports. The processor is the same API used in
 the selected metric includes all worker RISCs, not only TRISC1 math time.
 
 - For each device, the metric spans the earliest kernel start to the latest
-  kernel end across workers. Each sample reports the maximum device duration.
+  kernel end across workers. Each sample reports the mean device duration,
+  matching the native collective sweep. The maximum is retained as a diagnostic;
+  `--device-aggregation max` reproduces the historical aggregation.
   Device clocks are never subtracted across chips.
 - Three warmups precede five measured invocations by default. Each invocation
   is synchronized and its profiler buffers flushed before validation.
@@ -80,17 +127,23 @@ the selected metric includes all worker RISCs, not only TRISC1 math time.
 - This is not whole-application latency or trace replay. Current TT-Lang
   fabric resource replacement synchronizes between invocations, which prevents
   trace capture; neither implementation is measured through trace replay.
-- Inputs, mesh, compute grid, M/K/N blocks, HiFi4, and destination precision
-  match: BF16 destinations for BF16 tensors and FP32 destinations for FP32.
-- Native uses one linear fabric link, two channel buffers, one worker per M
+- Inputs, mesh, compute grid, M/K/N blocks, fidelity (HiFi2 for BF16, HiFi4
+  for FP32), and FP32 destination precision match. `--no-fp32-dest-acc`
+  explicitly selects BF16 accumulation for BF16
+  tensors; it is not the native reference mode and fails numerical checks at
+  large K. Tolerances are not relaxed for that mode.
+- Native uses one linear fabric link, 24 channel buffers, one worker per M
   block, and additional fabric mux cores. TT-Lang uses direct fabric PipeNets
   on column-zero workers. Both use `FABRIC_1D`.
 - TT-Lang writes the complete gathered activation to DRAM. Native scratch holds
   remote shards only; native compute reads its local shard directly. Validation
   checks these respective contracts. Kernel timings include TT-Lang's extra
   local DRAM traffic.
-- Native uses packer L1 accumulation and 1x1 subblocks; TT-Lang uses compiler
-  selected accumulation. Both outputs must pass identical numerical criteria.
+- Native uses packer L1 accumulation. TT-Lang materializes block products,
+  converts them into the accumulation dtype, and sums through explicit DFBs.
+  Bias conversion is separate from addition because the compiler rejects
+  mixed-dtype fusion with an unrelated FP32 accumulator input.
+  Both outputs must pass identical numerical criteria.
 
 BF16 checks PCC >= 0.99 and rtol/atol 0.05; FP32 checks PCC >= 0.999 and
 rtol/atol 0.005. FP32 FPU sources truncate to TF32. This does not claim
@@ -101,6 +154,13 @@ Reports record UTC time, source revision/status and hashes, binary hashes,
 profiler source hashes, topology, device IDs, and compute settings.
 Dependency pins do not prove the revision of installed binaries.
 Set `BENCHMARK_CONTAINER_IMAGE` to the image digest for publication.
+
+Historical HiFi4/two-buffer results use different settings. They must not be
+compared directly with current defaults as a compiler performance regression.
+Use `--math-fidelity HiFi4 --native-channel-buffers 2 --device-aggregation max`
+and, for BF16, `--no-fp32-dest-acc`, with the same workload to reproduce the
+historical settings. The operation implementation has changed; its historical
+source revision is required to reproduce the original generated kernels.
 
 ## Host diagnosis
 

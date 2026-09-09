@@ -27,6 +27,9 @@ from examples.all_gather_minimal_matmul import (
 from ttlang_test_utils import get_fabric_mesh_shape, to_dram
 from utils.correctness import assert_allclose, assert_pcc
 
+REFERENCE_REVISION = "f69f924c6b4f38daa0a6f25716731f36c573dc0e"
+REFERENCE_ROOT = f"https://github.com/tenstorrent/tt-metal/blob/{REFERENCE_REVISION}"
+
 
 def positive_int(value):
     result = int(value)
@@ -41,12 +44,22 @@ def parse_args():
         "--implementation", choices=("both", "ttlang", "ttmetal"), default="both"
     )
     parser.add_argument("--dtype", choices=("bf16", "fp32"), default="bf16")
+    parser.add_argument("--math-fidelity", choices=("HiFi2", "HiFi4"))
+    parser.add_argument(
+        "--fp32-dest-acc", action=argparse.BooleanOptionalAction, default=True
+    )
+    parser.add_argument("--native-channel-buffers", type=positive_int, default=24)
+    parser.add_argument("--device-aggregation", choices=("mean", "max"), default="mean")
     parser.add_argument("--m-tiles", type=positive_int, default=2)
     parser.add_argument("--k-tiles-per-device", type=positive_int, default=1)
     parser.add_argument("--n-tiles-per-device", type=positive_int, default=4)
     parser.add_argument("--m-block-tiles", type=positive_int, default=1)
     parser.add_argument("--k-tiles-per-transfer", type=positive_int, default=1)
     parser.add_argument("--n-block-tiles", type=positive_int, default=1)
+    parser.add_argument("--worker-grid", type=positive_int, nargs=2, metavar=("X", "Y"))
+    parser.add_argument(
+        "--transpose", action=argparse.BooleanOptionalAction, default=False
+    )
     parser.add_argument("--warmup", type=positive_int, default=3)
     parser.add_argument("--samples", type=positive_int, default=5)
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
@@ -54,7 +67,17 @@ def parse_args():
     parser.add_argument(
         "--json", type=Path, default=Path("/tmp/all_gather_minimal_matmul_perf.json")
     )
-    return parser.parse_args()
+    arguments = parser.parse_args()
+    if arguments.math_fidelity is None:
+        arguments.math_fidelity = "HiFi2" if arguments.dtype == "bf16" else "HiFi4"
+    return arguments
+
+
+def native_subblock(config):
+    return tuple(
+        2 if extent % 2 == 0 else 1
+        for extent in (config.m_block_tiles, config.n_block_tiles)
+    )
 
 
 @contextmanager
@@ -93,7 +116,18 @@ def open_participant_mesh():
         ttnn.set_fabric_config(ttnn.FabricConfig.DISABLED)
 
 
-def create_workloads(mesh, config, dtype, cluster_axis, implementation, seed):
+def create_workloads(
+    mesh,
+    config,
+    dtype,
+    cluster_axis,
+    implementation,
+    seed,
+    *,
+    math_fidelity="HiFi2",
+    fp32_dest_acc=True,
+    native_channel_buffers=24,
+):
     torch.manual_seed(seed)
     torch_dtype = torch.bfloat16 if dtype == "bf16" else torch.float32
     m_elements = config.m_tiles * 32
@@ -123,7 +157,7 @@ def create_workloads(mesh, config, dtype, cluster_axis, implementation, seed):
                 mesh_mapper=shard_mapper,
             )
             operation = make_all_gather_minimal_matmul_operation(
-                config, math_fidelity="HiFi4", fp32_dest_acc_en=dtype == "fp32"
+                config, math_fidelity=math_fidelity, fp32_dest_acc_en=fp32_dest_acc
             )
 
             def run_ttlang(operation=operation, gathered=gathered, output=output):
@@ -150,15 +184,15 @@ def create_workloads(mesh, config, dtype, cluster_axis, implementation, seed):
                 M_block_size=config.m_block_tiles,
                 K_block_size=config.k_tiles_per_transfer,
                 N_block_size=config.n_block_tiles,
-                subblock_h=1,
-                subblock_w=1,
+                subblock_h=native_subblock(config)[0],
+                subblock_w=native_subblock(config)[1],
                 compute_with_storage_grid_size=ttnn.CoreCoord(*config.grid),
             )
             compute_config = ttnn.init_device_compute_kernel_config(
                 mesh.arch(),
-                math_fidelity=ttnn.MathFidelity.HiFi4,
+                math_fidelity=getattr(ttnn.MathFidelity, math_fidelity),
                 math_approx_mode=False,
-                fp32_dest_acc_en=dtype == "fp32",
+                fp32_dest_acc_en=fp32_dest_acc,
                 packer_l1_acc=True,
             )
 
@@ -174,10 +208,10 @@ def create_workloads(mesh, config, dtype, cluster_axis, implementation, seed):
                     topology=ttnn.Topology.Linear,
                     cluster_axis=cluster_axis,
                     memory_config=ttnn.DRAM_MEMORY_CONFIG,
-                    force_transpose=False,
+                    force_transpose=config.transpose,
                     num_links=1,
-                    num_workers_per_link=config.grid[1],
-                    num_buffers_per_channel=2,
+                    num_workers_per_link=config.m_workers,
+                    num_buffers_per_channel=native_channel_buffers,
                 )
                 if len(result) != 1:
                     raise RuntimeError(f"expected one native output, got {len(result)}")
@@ -243,7 +277,11 @@ def benchmark(workloads, validate, mesh, arguments):
             # Flush before validation so the newest program is the operation,
             # not a conversion or setup program used by correctness checking.
             profiler_log = read_device_profile(mesh)
-            duration = latest_kernel_duration(profiler_log, mesh.get_device_ids())
+            duration = latest_kernel_duration(
+                profiler_log,
+                mesh.get_device_ids(),
+                aggregation=arguments.device_aggregation,
+            )
             for device_id, device in duration["per_device"].items():
                 run_id = device["run_host_id"]
                 if run_id <= previous_run_ids.get(device_id, -1):
@@ -313,7 +351,7 @@ def run_isolated_variants(arguments):
         )
         reports[name] = json.loads(output_file.read_text())
     combined = {
-        "timing": "ttmetal_device_kernel_duration_max_across_participating_devices",
+        "timing": f"ttmetal_device_kernel_duration_{arguments.device_aggregation}_across_participating_devices",
         "variants": reports,
     }
     if len(reports) == 2:
@@ -349,7 +387,7 @@ def main():
 
     report = {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
-        "timing": "ttmetal_device_kernel_duration_max_across_participating_devices",
+        "timing": f"ttmetal_device_kernel_duration_{arguments.device_aggregation}_across_participating_devices",
         "profiler_directory": os.environ["TT_METAL_PROFILER_DIR"],
         "profiler_source_sha256": {
             module.__file__: file_sha256(module.__file__)
@@ -364,6 +402,10 @@ def main():
             ]
         ),
         "arguments": {**vars(arguments), "json": str(arguments.json)},
+        "methodology_reference": {
+            "sweep": f"{REFERENCE_ROOT}/models/tt_dit/utils/sweep_mm_block_sizes.py",
+            "test": f"{REFERENCE_ROOT}/models/tt_dit/tests/models/wan2_2/test_all_gather_minimal_matmul_async.py",
+        },
     }
     with open_participant_mesh() as (mesh, mesh_shape, cluster_axis, discovered_shape):
         config = AllGatherMinimalMatmulConfig(
@@ -374,12 +416,14 @@ def main():
             m_block_tiles=arguments.m_block_tiles,
             k_tiles_per_transfer=arguments.k_tiles_per_transfer,
             n_block_tiles=arguments.n_block_tiles,
+            worker_grid=arguments.worker_grid,
+            transpose=arguments.transpose,
         )
-        if config.m_tiles > config.n_tiles_per_device:
+        if not config.transpose and config.m_tiles > config.n_tiles_per_device:
             raise ValueError(
                 "matched non-transposed scheduling requires M <= per-device N"
             )
-        if arguments.implementation != "ttlang" and config.grid[0] < 4:
+        if arguments.implementation != "ttlang" and config.n_workers < 4:
             raise ValueError(
                 "native non-transposed all-gather matmul requires at least four "
                 "N workers: its interior receiver range is [1, grid.x - 3]"
@@ -391,11 +435,29 @@ def main():
             device_ids=list(mesh.get_device_ids()),
             arch=str(mesh.arch()),
             compute_grid=config.grid,
-            math_fidelity="HiFi4",
+            math_fidelity=arguments.math_fidelity,
             fabric_config="FABRIC_1D",
-            fp32_dest_acc_en=arguments.dtype == "fp32",
+            fp32_dest_acc_en=arguments.fp32_dest_acc,
+            native_channel_buffers=arguments.native_channel_buffers,
+            device_aggregation=arguments.device_aggregation,
             layout="TILE",
             memory="DRAM",
+            per_device_matmul={
+                "m": config.m_tiles * 32,
+                "gathered_k": config.k_tiles_per_device * config.device_count * 32,
+                "n": config.n_tiles_per_device * 32,
+                "local_k": config.k_tiles_per_device * 32,
+            },
+            native_config={
+                "links": 1,
+                "workers_per_link": config.m_workers,
+                "subblock": list(native_subblock(config)),
+                "channel_buffers": arguments.native_channel_buffers,
+                "packer_l1_acc": True,
+            },
+            execution="ordinary_launch",
+            fabric_reliability="RELAXED_INIT",
+            fabric_router_payload="installed_runtime_default",
         )
         workloads, validate = create_workloads(
             mesh,
@@ -404,6 +466,9 @@ def main():
             cluster_axis,
             arguments.implementation,
             arguments.seed,
+            math_fidelity=arguments.math_fidelity,
+            fp32_dest_acc=arguments.fp32_dest_acc,
+            native_channel_buffers=arguments.native_channel_buffers,
         )
         report["measurements"] = benchmark(workloads, validate, mesh, arguments)
     arguments.json.write_text(json.dumps(report, indent=2) + "\n")
