@@ -118,7 +118,7 @@ tiles. No native implementation code changes. Optimized TT-Lang is 37.3% and
 43.6% faster than the original K=2 native configuration; those ratios compare
 different blocking. The K=40 native column compares matching compute blocks.
 
-The original native configuration is the locally constrained baseline, not
+The original native configuration uses the two-device 2x5 grid and K=2 blocks, not
 upstream's tuned configuration. TT-Lang experiments motivated changing K
 blocking for both implementations; they did not introduce a native algorithm
 or demonstrate an optimization absent upstream. TT-Metal already provides a
@@ -140,8 +140,8 @@ TT-Lang improves by 5.51x and 5.55x, but remains 20.1% and 9.4% slower than
 native with the same K=40 blocks. Accuracy thresholds are unchanged and the
 gather remains bit-exact. Mean absolute output errors are 0.003634/0.003636;
 maximum errors increase from 0.03290/0.03636 to 0.03892/0.03943, still within
-the original bounds. Native's 12x9 Galaxy/trace configuration is not measured
-on this machine.
+the original bounds. Native's 12x9 Galaxy/trace configuration has not been
+measured in this comparison.
 
 A separate alternating 20-pair check of the original and optimized operations
 on the non-transposed M64/K64/per-device N128 smoke case measured medians
@@ -167,7 +167,7 @@ device-kernel milliseconds, not host latency.
 | Publish each gathered K group to compute | 5.083 | 3.696 | Small benefit at this blocking; does not eliminate DRAM staging. |
 | Activation NoC 0, weight NoC 1 | 4.437 | unchanged | Data-movement assignment matters; this also swaps RISCs and fabric-send ownership, not just NoC direction. |
 | Move output writes to the weight thread | 4.661 | 3.696 | **5.1% regression**; rejected. |
-| Separate trial: 2x8 grid, M/K/N=4/20/1, fabric K=20 | 5.323 | 3.283 | TT-Lang is slower despite 16 rather than 10 workers; rejected as the local TT-Lang configuration. |
+| Separate trial: 2x8 grid, M/K/N=4/20/1, fabric K=20 | 5.323 | 3.283 | TT-Lang is slower despite 16 rather than 10 workers; the 2x5 configuration is retained. |
 
 2026-09-09 20:54-21:33 UTC; base `0b4b8840c431` plus operation edits (original baseline `e0cced786d1e` plus edits); source hashes, exact configurations and binary identities are recorded in each [archived report](https://gist.github.com/brnorris03/79c57b196efe09355699d40165780088).
 
@@ -216,7 +216,7 @@ limitations are not prerequisites for this optimization. Native's FP32
 intermediate format is confirmed in the installed program factory, not inferred
 from the destination precision flag alone.
 
-## Original native-sized local comparison
+## Initial two-device comparison with 2/2/2 blocks
 
 The [configuration table](README.md#comparison-with-the-native-benchmark)
 distinguishes matching settings from the native Galaxy benchmark. The following
@@ -234,11 +234,11 @@ three warmups; each sample is the mean device-kernel duration across ranks.
 
 2026-09-09 20:54:51-20:57:34 UTC; TT-Lang `e0cced786d1e` + local changes (operation SHA-256 `a27b232a779b`, driver `376ade3e8dbd`); Metal/LLVM pins `ea042c4ad623`/`37aca9d384347`; compiler/TTNN/Metal binary SHA-256 `7f5e02a65e4c`/`62edde2b1f61`/`65380f11dc15`; image `6eaf96b4b00d5`; [reports and measured sources](https://gist.github.com/brnorris03/79c57b196efe09355699d40165780088).
 
-TT-Lang is 245.7% and 213.0% slower than this locally constrained native
+TT-Lang is 245.7% and 213.0% slower than the two-device native
 configuration. These are not results against native's tuned 12x9 grid or trace
 replay, and are not comparable to the tiny historical cases below as a
 same-workload regression. Native performance is also limited by the shared
-local grid and block settings.
+2x5 grid and 2/2/2 block settings.
 
 All output and gather checks pass without relaxing tolerances. TT-Lang's mean
 absolute output error is 0.00365 for both cases. The earlier BF16-accumulator
