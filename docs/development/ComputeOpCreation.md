@@ -82,8 +82,11 @@ apply the validated kernel plan:
 Intermediate DFB insertion uses the same separation. It computes a monotone
 fixed point of exact consumer operands requiring storage, groups those
 requirements by producer, and applies the complete materialization plan only
-after analysis terminates. The final conversion analyzes the modified kernel
-again; plans are never reused after mutation.
+after analysis terminates. The fixed point also closes over the producer
+expressions of planned materializations, so fusion boundaries exposed by one
+materialization are planned without mutating and re-analyzing the kernel. The
+final conversion analyzes the modified kernel again; plans are never reused
+after mutation.
 
 ## Terminology
 
@@ -567,6 +570,18 @@ This rule is not specific to typecast or reduce. Every
 attached storage may be released before the consumer. With compiler DFBs
 disabled, either condition produces a diagnostic instead of changing the
 lifetime result.
+
+Singleton-rank `squeeze` and `unsqueeze` operations lower to zero-copy
+`tensor.collapse_shape` and `tensor.expand_shape` views. Shared DFB provenance
+accepts only static singleton-dimension changes with identical element types
+and encodings. A direct store of a computed shape
+view cannot become a tile recipe because the view itself performs no compute.
+Intermediate DFB planning therefore materializes the computed input. The
+producer reserves and stores the same number of tiles through its original-rank
+view; consumers attach the published DFB using the requested result rank.
+The immutable plan records the producer and accepted view chain before
+mutation. Application validates those records and removes dead recorded views
+in consumer-first order after all planned rewrites, including shared chains.
 
 ## Plan Application
 

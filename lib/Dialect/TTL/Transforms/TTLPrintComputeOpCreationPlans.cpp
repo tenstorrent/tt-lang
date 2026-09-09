@@ -103,6 +103,8 @@ static StringRef stringifyReason(IntermediateDFBReason reason) {
     return "compute-result-has-materialized-use";
   case IntermediateDFBReason::ComputeOpRequiresMaterializedInput:
     return "compute-op-requires-materialized-input";
+  case IntermediateDFBReason::StoreInputShapeView:
+    return "store-input-shape-view";
   }
   llvm_unreachable("unknown intermediate DFB reason");
 }

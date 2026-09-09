@@ -17,6 +17,11 @@
 
 namespace mlir::tt::ttl {
 
+/// Trace checked singleton-dimension tensor views to their stored producer.
+/// Optionally record the accepted views in consumer-to-producer order.
+Value getDFBMaterializationStoreSource(
+    Value intermediate, SmallVectorImpl<Operation *> *shapeViews = nullptr);
+
 /// Allocates a fresh compiler-managed dataflow buffer and emits its `bind_cb`
 /// at kernel entry, where finalization can assign physical indices
 /// consistently. The provisional index is unique within the kernel;
@@ -42,10 +47,12 @@ AttachCBOp createDFBWaitAndAttach(Value dfb, RankedTensorType tensorType,
 /// Routes a non-`ttl.compute` tensor value through a fresh compiler-allocated
 /// DFB after `insertionAnchor`. The source must dominate the anchor, and the
 /// returned attached value may serve every consumer that the anchor properly
-/// dominates. Compute results are materialized atomically by
+/// dominates. `storeSource` is the prevalidated producer recorded by the plan.
+/// Compute results are materialized atomically by
 /// `TTLInsertIntermediateDFBs` so one producer compute is rebuilt at most once.
-Value materializeToDFB(Value intermediate, Operation *insertionAnchor,
-                       func::FuncOp kernel, OpBuilder &builder);
+Value materializeToDFB(Value intermediate, Value storeSource,
+                       Operation *insertionAnchor, func::FuncOp kernel,
+                       OpBuilder &builder);
 
 } // namespace mlir::tt::ttl
 
