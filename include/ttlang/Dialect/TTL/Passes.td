@@ -1388,9 +1388,11 @@ def TTKernelInsertInits
     Inserts hardware initialization ops required before TTKernel compute
     operations. Two categories of inits are inserted:
 
-    Common inits (`init_sfpu`, `binary_op_init_common`) configure the
-    UNPACK and PACK data format routing for a sync region. These are placed
-    once per sync region, hoisted above any enclosing loops.
+    One `compute_kernel_hw_startup` configures hardware at function entry.
+    The complete function is analyzed before inserting startup. Its CB operands
+    must be entry arguments or compile-time CB IDs that can be moved to entry.
+    Each sync region reconfigures source and pack formats and tile geometry;
+    operation-specific inits preserve DST synchronization.
 
     Per-op inits (`exp_tile_init`, `add_tiles_init`, etc.) configure the
     MATH pipeline for a specific operation type. An init is emitted
@@ -1408,7 +1410,9 @@ def TTKernelInsertInits
     ttkernel.tile_regs_commit
 
     // After:
-    ttkernel.init_sfpu(%cb0, %cb1)
+    ttkernel.compute_kernel_hw_startup(%cb0, %cb0, %cb1)
+    ttkernel.reconfig_data_format(%cb0, %cb0)
+    ttkernel.pack_reconfig_data_format(%cb1)
     ttkernel.tile_regs_acquire
     ttkernel.exp_tile_init
     ttkernel.exp_tile(%c0)
@@ -1428,7 +1432,9 @@ def TTKernelInsertInits
     ttkernel.tile_regs_commit
 
     // After:
-    ttkernel.init_sfpu(%cb0, %cb1)
+    ttkernel.compute_kernel_hw_startup(%cb0, %cb0, %cb1)
+    ttkernel.reconfig_data_format(%cb0, %cb0)
+    ttkernel.pack_reconfig_data_format(%cb1)
     ttkernel.tile_regs_acquire
     ttkernel.exp_tile_init
     ttkernel.exp_tile(%c0)

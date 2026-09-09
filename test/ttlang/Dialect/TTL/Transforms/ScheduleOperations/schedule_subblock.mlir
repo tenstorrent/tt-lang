@@ -25,13 +25,15 @@
 // FPU:           ttkernel.cb_wait_front(%[[CB0]], %[[C6_I32]])
 // FPU-NEXT:      ttkernel.cb_wait_front(%[[CB1]], %[[C6_I32]])
 // FPU-NEXT:      ttkernel.cb_reserve_back(%[[CB_OUT]], %[[C6_I32]])
-// FPU-NEXT:      ttkernel.binary_op_init_common(%[[CB0]], %[[CB1]], %[[CB_OUT]])
+// FPU-NEXT:      ttkernel.reconfig_data_format(%[[CB0]], %[[CB1]])
+// FPU-NEXT:      ttkernel.pack_reconfig_data_format(%[[CB_OUT]])
 // FPU-NEXT:      scf.for %[[IV:.*]] = %[[C0]] to %[[C2]] step %[[C1]] {
 // Per-subblock cb_reserve inside loop (outermost dim subblocked).
 // FPU-NEXT:        ttkernel.cb_reserve_back(%[[CB_OUT]], %[[C3_I32]])
 // FPU-NEXT:        ttkernel.tile_regs_acquire()
 // Grouped within subblock: all add_tiles, then all tanh_tiles
 // FPU-NEXT:        %[[IDX0:.*]] = affine.linearize_index [%[[IV]], %[[C0]]] by (2, 3)
+// FPU-NEXT: ttkernel.reconfig_data_format(
 // FPU-NEXT:        ttkernel.add_tiles_init(%[[CB0]], %[[CB1]])
 // FPU-NEXT:        ttkernel.add_tiles(%[[CB0]], %[[CB1]], %[[IDX0]], %[[IDX0]], %[[C0]])
 // FPU-NEXT:        %[[IDX1:.*]] = affine.linearize_index [%[[IV]], %[[C1]]] by (2, 3)
@@ -65,7 +67,7 @@
 // SFPU-DAG:   %[[SC1:.*]] = arith.constant 1 : index
 // SFPU-DAG:   %[[SC2:.*]] = arith.constant 2 : index
 // SFPU-DAG:   %[[SC3:.*]] = arith.constant 3 : index
-// SFPU: ttkernel.init_sfpu
+// SFPU: ttkernel.compute_kernel_hw_startup
 // SFPU: scf.for %[[IV:.*]] = %[[SC0]] to %[[SC3]] step %[[SC1]]
 // SFPU:   ttkernel.tile_regs_acquire
 // Grouped within subblock: copies from CB0 for both tiles, copies from CB1,

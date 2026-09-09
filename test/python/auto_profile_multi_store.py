@@ -137,8 +137,10 @@ def multi_store_kernel(a, b, out1, out2, out3):
 
 # Compute body: FPU binary add with 3 pack_tiles
 # CHECK-FPU:          DeviceZoneScopedN("compute_L{{[0-9]+}}");
-# CHECK-FPU:          binary_op_init_common(get_compile_time_arg_val(0), get_compile_time_arg_val(1), get_compile_time_arg_val(2));
+# CHECK-FPU:          reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
+# CHECK-FPU-NEXT:     pack_reconfig_data_format<true>(get_compile_time_arg_val(2));
 # CHECK-FPU-NEXT:     tile_regs_acquire();
+# CHECK-FPU-NEXT:     reconfig_data_format<SrcOrder::Regular, true>(
 # CHECK-FPU-NEXT:     add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
 # CHECK-FPU-NEXT:     add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1),
 # CHECK-FPU-NEXT:     tile_regs_commit();

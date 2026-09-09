@@ -253,6 +253,39 @@ func.func @tile_bcast_short_height_f16(
 
 // -----
 
+// The fused binary broadcast inherits the short-height orientation limit.
+func.func @tile_binary_bcast_short_height_row(
+    %lhs: !ttcore.tile<8x32, f32>,
+    %rhs: !ttcore.tile<8x32, f32>,
+    %output: !ttcore.tile<8x32, f32>) -> !ttcore.tile<8x32, f32> {
+  %c0 = arith.constant 0 : index
+  // expected-error @below {{'ttl.tile_binary_bcast' op 8x32 broadcast supports only column broadcast}}
+  %result = ttl.tile_binary_bcast %lhs, %rhs, %output 0 : i32 2 : i32 into dst[%c0]
+      : (!ttcore.tile<8x32, f32>, !ttcore.tile<8x32, f32>,
+         !ttcore.tile<8x32, f32>)
+        -> !ttcore.tile<8x32, f32>
+  func.return %result : !ttcore.tile<8x32, f32>
+}
+
+// -----
+
+// Only rhs is broadcast, so the short-height limits are keyed off rhs rather
+// than lhs: a full-height lhs does not exempt an 8x32 broadcast operand.
+func.func @tile_binary_bcast_short_height_uses_rhs(
+    %lhs: !ttcore.tile<32x32, f32>,
+    %rhs: !ttcore.tile<8x32, f32>,
+    %output: !ttcore.tile<32x32, f32>) -> !ttcore.tile<32x32, f32> {
+  %c0 = arith.constant 0 : index
+  // expected-error @below {{'ttl.tile_binary_bcast' op short-height broadcast supports only matching 8x32 input and result tile types}}
+  %result = ttl.tile_binary_bcast %lhs, %rhs, %output 0 : i32 1 : i32 into dst[%c0]
+      : (!ttcore.tile<32x32, f32>, !ttcore.tile<8x32, f32>,
+         !ttcore.tile<32x32, f32>)
+        -> !ttcore.tile<32x32, f32>
+  func.return %result : !ttcore.tile<32x32, f32>
+}
+
+// -----
+
 // Target selection rejects architectures without implemented LLK capabilities.
 // expected-error @below {{'builtin.module' op Quasar compute LLK capabilities are not implemented by TT-Lang}}
 module attributes {ttl.target_arch = #ttcore.arch<quasar>} {

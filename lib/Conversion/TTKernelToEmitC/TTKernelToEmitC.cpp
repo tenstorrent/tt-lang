@@ -918,6 +918,18 @@ public:
     }
   }
 
+  StringRef
+  getEltwiseBinaryType(ttkernel::EltwiseBinaryType eltwiseBinaryType) const {
+    switch (eltwiseBinaryType) {
+    case ttkernel::EltwiseBinaryType::Add:
+      return "EltwiseBinaryType::ELWADD";
+    case ttkernel::EltwiseBinaryType::Sub:
+      return "EltwiseBinaryType::ELWSUB";
+    case ttkernel::EltwiseBinaryType::Mul:
+      return "EltwiseBinaryType::ELWMUL";
+    }
+  }
+
   StringRef getInputClamping(ttkernel::InputClamping inputClamping) const {
     switch (inputClamping) {
     case ttkernel::InputClamping::None:
@@ -979,9 +991,27 @@ public:
       template_args.push_back(
           datatypeToDataformatEnumNameOpaqueAttr(builder, op.getDataFormat()));
       return ArrayAttr::get(op.getContext(), template_args);
+    } else if constexpr (std::is_same_v<SourceOp,
+                                        ttkernel::ReconfigDataFormatOp>) {
+      return builder.getArrayAttr(
+          {emitc::OpaqueAttr::get(op.getContext(), "SrcOrder::Regular"),
+           emitc::OpaqueAttr::get(op.getContext(), "true")});
     } else if constexpr (std::is_same_v<SourceOp, ttkernel::UnaryBcastInitOp> ||
                          std::is_same_v<SourceOp, ttkernel::UnaryBcastTileOp>) {
       SmallVector<Attribute, 1> template_args;
+      template_args.push_back(emitc::OpaqueAttr::get(
+          op.getContext(), getBroadcastType(op.getBcastType())));
+      return ArrayAttr::get(op.getContext(), template_args);
+    } else if constexpr (std::is_same_v<SourceOp,
+                                        ttkernel::BinaryBcastInitOp> ||
+                         std::is_same_v<SourceOp,
+                                        ttkernel::BinaryBcastTileOp>) {
+      // bcast_init<EltwiseBinaryType, BroadcastType>(icb0, icb1)
+      // any_tiles_bcast<EltwiseBinaryType, BroadcastType>(icb0, icb1, itile0,
+      //                                                   itile1, idst)
+      SmallVector<Attribute, 2> template_args;
+      template_args.push_back(emitc::OpaqueAttr::get(
+          op.getContext(), getEltwiseBinaryType(op.getEltwiseBinaryType())));
       template_args.push_back(emitc::OpaqueAttr::get(
           op.getContext(), getBroadcastType(op.getBcastType())));
       return ArrayAttr::get(op.getContext(), template_args);
@@ -1026,20 +1056,8 @@ public:
                          std::is_same_v<SourceOp,
                                         ttkernel::BinaryDestReuseTilesOp>) {
       SmallVector<Attribute, 2> template_args;
-      StringRef eltwiseType;
-      switch (op.getEltwiseBinaryType()) {
-      case ttkernel::EltwiseBinaryType::Add:
-        eltwiseType = "EltwiseBinaryType::ELWADD";
-        break;
-      case ttkernel::EltwiseBinaryType::Sub:
-        eltwiseType = "EltwiseBinaryType::ELWSUB";
-        break;
-      case ttkernel::EltwiseBinaryType::Mul:
-        eltwiseType = "EltwiseBinaryType::ELWMUL";
-        break;
-      }
-      template_args.push_back(
-          emitc::OpaqueAttr::get(op.getContext(), eltwiseType));
+      template_args.push_back(emitc::OpaqueAttr::get(
+          op.getContext(), getEltwiseBinaryType(op.getEltwiseBinaryType())));
       StringRef reuseType =
           op.getReuseType() == ttkernel::BinaryDestReuseType::DestToSrcA
               ? "EltwiseBinaryReuseDestType::DEST_TO_SRCA"
@@ -1219,9 +1237,20 @@ public:
       resultTypes.push_back(ct);
     }
 
-    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
-        op, resultTypes, getOpName(op), getCallArgs(rewriter, op),
-        getTemplateArgs(rewriter, op), adaptor.getOperands());
+    auto call = emitc::CallOpaqueOp::create(
+        rewriter, op.getLoc(), resultTypes, getOpName(op),
+        getCallArgs(rewriter, op), getTemplateArgs(rewriter, op),
+        adaptor.getOperands());
+    if constexpr (std::is_same_v<SourceOp, ttkernel::CopyTileInitOp>) {
+      // Format reconfiguration restores the FPU zero-substitution default.
+      // Datacopy must preserve signed zero, as the legacy init_sfpu did.
+      emitc::VerbatimOp::create(rewriter, op.getLoc(),
+                                "#ifndef ARCH_QUASAR\n"
+                                "MATH((ckernel::math::_configure_unary_"
+                                "preserve_zero_flag_state_()));\n"
+                                "#endif");
+    }
+    rewriter.replaceOp(op, call.getResults());
 
     return success();
   }
@@ -3001,9 +3030,14 @@ public:
   matchAndRewrite(ttkernel::PackReconfigDataFormatOp op,
                   ttkernel::PackReconfigDataFormatOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
-    rewriter.create<emitc::CallOpaqueOp>(op->getLoc(), TypeRange{},
-                                         "pack_reconfig_data_format",
-                                         ValueRange{adaptor.getOutCb()});
+    ArrayAttr templateArgs;
+    if (op.getTileDimReconfig()) {
+      templateArgs = rewriter.getArrayAttr(
+          {emitc::OpaqueAttr::get(op.getContext(), "true")});
+    }
+    emitc::CallOpaqueOp::create(rewriter, op.getLoc(), TypeRange{},
+                                "pack_reconfig_data_format", ArrayAttr(),
+                                templateArgs, ValueRange{adaptor.getOutCb()});
     rewriter.eraseOp(op);
     return success();
   }
@@ -3260,6 +3294,7 @@ public:
         TTKernelToEmitCOpaqueRewriter<ttkernel::PackTileBlockOp>,
         TTKernelToEmitCPackReconfigL1AccToEmitCRewriter,
         PackReconfigDataFormatOpConversion,
+        TTKernelToEmitCOpaqueRewriter<ttkernel::ReconfigDataFormatOp>,
 
         // FPU Ops
         TTKernelToEmitCOpaqueRewriter<ttkernel::UnaryOpInitCommonOp>,
@@ -3484,6 +3519,13 @@ public:
 
     patterns.add<TTKernelToEmitCOpaqueRewriter<ttkernel::PackWaitedTileOp>>(
         typeConverter, context, "pack_tile");
+
+    // The fused binary broadcast ops keep dialect-level names while metal
+    // exposes them as bcast_init/any_tiles_bcast, so the callee is overridden.
+    patterns.add<TTKernelToEmitCOpaqueRewriter<ttkernel::BinaryBcastInitOp>>(
+        typeConverter, context, "bcast_init");
+    patterns.add<TTKernelToEmitCOpaqueRewriter<ttkernel::BinaryBcastTileOp>>(
+        typeConverter, context, "any_tiles_bcast");
 
     patterns.add<GetDfbIdOpRewriter>(typeConverter, context);
     patterns.add<TTKernelToEmitCCBVoidMethodRewriter<ttkernel::CBPushBackOp>>(

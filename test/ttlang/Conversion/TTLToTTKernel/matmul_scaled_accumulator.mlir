@@ -70,8 +70,8 @@ func.func @scaled_acc_matmul(
 // TTL-LABEL: func.func @flash_broadcast_scaled_acc_multi_v
 // TTL-DAG: %[[C0:.*]] = arith.constant 0 : index
 // TTL-DAG: %[[C1:.*]] = arith.constant 1 : index
-// TTL:     ttl.tile_mul {{.*}} into dst[%[[C0]]]
-// TTL:     ttl.tile_mul {{.*}} into dst[%[[C1]]]
+// TTL:     ttl.tile_binary_bcast {{.*}} into dst[%[[C0]]]
+// TTL:     ttl.tile_binary_bcast {{.*}} into dst[%[[C1]]]
 // TTL:     %[[MM:.*]] = ttl.tile_matmul_block {{.*}} into dst[%[[C0]]]
 // TTL:     %[[FINAL0:.*]] = ttl.dst_index %[[MM]][%[[C0]]]
 // TTL:     %[[FINAL1:.*]] = ttl.dst_index %[[MM]][%[[C1]]]
@@ -90,8 +90,8 @@ func.func @scaled_acc_matmul(
 // TTK-DAG: %[[CB_OLD:.*]] = ttkernel.get_compile_time_arg_val(3)
 // TTK-DAG: %[[CB_OUT:.*]] = ttkernel.get_compile_time_arg_val(4)
 // TTK:     ttkernel.tile_regs_acquire
-// TTK:     ttkernel.mul_binary_tile({{.*}}, {{.*}}, %[[C0]])
-// TTK:     ttkernel.mul_binary_tile({{.*}}, {{.*}}, %[[C1]])
+// TTK:     ttkernel.binary_bcast(%[[CB_OLD]], %[[CB_ALPHA]], %[[C0]], %[[C0]], %[[C0]], <mul>, <col>)
+// TTK:     ttkernel.binary_bcast(%[[CB_OLD]], %[[CB_ALPHA]], %[[C1]], %[[C0]], %[[C1]], <mul>, <col>)
 // TTK:     ttkernel.matmul_block(%[[CB_SCORES]], %[[CB_V]], %[[C0]], %[[C0]], %[[C0]], %[[C0_I32]], %[[C2_I32]], %[[C1_I32]], %[[C1_I32]])
 // TTK:     ttkernel.tile_regs_commit
 // TTK-NEXT: ttkernel.tile_regs_wait

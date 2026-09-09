@@ -4,8 +4,8 @@
 // TTKERNEL-LABEL: func.func @mutate
 // TTKERNEL-DAG: %[[ONE:.*]] = arith.constant 1 : index
 // TTKERNEL-DAG: %[[ZERO:.*]] = arith.constant 0 : index
-// TTKERNEL: %[[OUTPUT:.*]] = ttkernel.get_compile_time_arg_val({{[0-9]+}})
-// TTKERNEL: %[[STATE:.*]] = ttkernel.get_compile_time_arg_val({{[0-9]+}})
+// TTKERNEL-DAG: %[[OUTPUT:.*]] = ttkernel.get_compile_time_arg_val(1)
+// TTKERNEL-DAG: %[[STATE:.*]] = ttkernel.get_compile_time_arg_val(0)
 // TTKERNEL: ttkernel.cb_wait_front(%[[STATE]],
 // TTKERNEL-NOT: ttkernel.cb_reserve_back(%[[STATE]],
 // TTKERNEL: ttkernel.pack_waited_tile({{.*}}, %[[STATE]], %[[ZERO]], true) {acquired_tiles = 2 : i64}

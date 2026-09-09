@@ -25,7 +25,9 @@
 // one DST transaction for all output tiles.
 // TTKERNEL-LABEL: func.func @row_normalization_full_gamma
 // TTKERNEL-NOT:   ttl.bind_cb
-// TTKERNEL:       ttkernel.init_sfpu(%[[INPUT:[a-zA-Z0-9_]+]], %[[OUTPUT:[a-zA-Z0-9_]+]])
+// TTKERNEL:       ttkernel.reconfig_data_format(%[[INPUT:[a-zA-Z0-9_]+]], %[[INPUT:[a-zA-Z0-9_]+]])
+// TTKERNEL:       ttkernel.pack_reconfig_data_format(%[[OUTPUT:[a-zA-Z0-9_]+]])
+// TTKERNEL-NEXT: ttkernel.copy_tile_init(
 // TTKERNEL-NEXT:  ttkernel.tile_regs_acquire
 // TTKERNEL-NEXT:  ttkernel.experimental_row_normalization_block(%[[INPUT]], %[[GAMMA:[a-zA-Z0-9_]+]], %[[OUTPUT]]) num_tiles = 3
 // TTKERNEL-SAME:  has_gamma = true dtype = <bf16>
@@ -37,7 +39,12 @@
 
 // C++ translation retains the single-acquire and block-pack schedule.
 // CPP-LABEL: void kernel_main()
-// CPP:       init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
+// CPP:       reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(0), get_compile_time_arg_val(0));
+// CPP:       pack_reconfig_data_format<true>(get_compile_time_arg_val(2));
+// CPP-NEXT: copy_tile_init(
+// CPP-NEXT: #ifndef ARCH_QUASAR
+// CPP-NEXT: MATH((ckernel::math::_configure_unary_preserve_zero_flag_state_()));
+// CPP-NEXT: #endif
 // CPP-NEXT:  tile_regs_acquire();
 // CPP-NEXT:  experimental::row_normalization_block<3, true, DataFormat::Float16_b>(
 // CPP-SAME:  1020331500U,

@@ -121,7 +121,7 @@ def bcast_multitile_kernel(
 
 # No signpost scopes outside the inner tile loops
 # CHECK-NOT:  DeviceZoneScopedN(
-# CHECK:      init_sfpu(
+# CHECK:      pack_reconfig_data_format<true>(
 # CHECK:      for (size_t [[K:.*]] = [[V6:.*]]; [[K]] < [[V4:.*]]; [[K]] += [[V5:.*]]) {
 # The row offset is invariant in the inner loop; scope nesting remains unchanged.
 # CHECK-NEXT:   size_t [[ROW_OFFSET:.*]] = [[K]] * [[V4]];
@@ -131,13 +131,16 @@ def bcast_multitile_kernel(
 # CHECK-NEXT:     DeviceZoneScopedN("ttl_compute");
 # CHECK-NEXT:     {
 # CHECK-NEXT:     DeviceZoneScopedN("ttl_broadcast");
-# CHECK-NEXT:     unary_bcast_init<BroadcastType::COL>(get_compile_time_arg_val(0), get_compile_time_arg_val(3));
+# CHECK-NEXT:     reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(0), get_compile_time_arg_val(0));
+# CHECK-NEXT:     unary_bcast_init<BroadcastType::COL>(get_compile_time_arg_val(0));
 # CHECK-NEXT:     unary_bcast<BroadcastType::COL>(get_compile_time_arg_val(0), [[K]], [[V6]]);
-# CHECK-NEXT:     unary_bcast_init<BroadcastType::ROW>(get_compile_time_arg_val(1), get_compile_time_arg_val(3));
+# CHECK-NEXT:     reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(1), get_compile_time_arg_val(1));
+# CHECK-NEXT:     unary_bcast_init<BroadcastType::ROW>(get_compile_time_arg_val(1));
 # CHECK-NEXT:     unary_bcast<BroadcastType::ROW>(get_compile_time_arg_val(1), [[L]], [[V5]]);
 # CHECK-NEXT:     mul_binary_tile_init();
 # CHECK-NEXT:     mul_binary_tile([[V6]], [[V5]], [[V6]]);
-# CHECK-NEXT:     unary_bcast_init<BroadcastType::SCALAR>(get_compile_time_arg_val(2), get_compile_time_arg_val(3));
+# CHECK-NEXT:     reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(2), get_compile_time_arg_val(2));
+# CHECK-NEXT:     unary_bcast_init<BroadcastType::SCALAR>(get_compile_time_arg_val(2));
 # CHECK-NEXT:     unary_bcast<BroadcastType::SCALAR>(get_compile_time_arg_val(2), [[V6]], [[V5]]);
 # CHECK-NEXT:     {
 # CHECK-NEXT:     DeviceZoneScopedN("ttl_math");
@@ -170,19 +173,22 @@ def bcast_multitile_kernel(
 
 # No signpost scopes outside the inner subblock loop
 # CHECK-FPU-NOT:  DeviceZoneScopedN(
-# CHECK-FPU:      init_sfpu(
+# CHECK-FPU:      pack_reconfig_data_format<true>(
 # CHECK-FPU:      for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
 # CHECK-FPU-NEXT:   tile_regs_acquire();
 # CHECK-FPU-NEXT:   {
 # CHECK-FPU-NEXT:   DeviceZoneScopedN("ttl_compute");
 # CHECK-FPU-NEXT:   {
 # CHECK-FPU-NEXT:   DeviceZoneScopedN("ttl_broadcast");
+# CHECK-FPU-NEXT:   reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(0), get_compile_time_arg_val(0));
 # CHECK-FPU-NEXT:   unary_bcast_init<BroadcastType::COL>(
 # CHECK-FPU-NEXT:   unary_bcast<BroadcastType::COL>(
+# CHECK-FPU-NEXT:   reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(1), get_compile_time_arg_val(1));
 # CHECK-FPU-NEXT:   unary_bcast_init<BroadcastType::ROW>(
 # CHECK-FPU-NEXT:   unary_bcast<BroadcastType::ROW>(
 # CHECK-FPU-NEXT:   mul_binary_tile_init();
 # CHECK-FPU-NEXT:   mul_binary_tile(
+# CHECK-FPU-NEXT:   reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(2), get_compile_time_arg_val(2));
 # CHECK-FPU-NEXT:   unary_bcast_init<BroadcastType::SCALAR>(
 # CHECK-FPU-NEXT:   unary_bcast<BroadcastType::SCALAR>(
 # CHECK-FPU-NEXT:   {
