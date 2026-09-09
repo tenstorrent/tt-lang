@@ -180,6 +180,82 @@ def test_per_core_receiver_order_is_deterministic(
     assert layouts[0] == layouts[1] == layouts[2]
 
 
+@ttl.operation(grid=(2, 1))
+def core_sensitive_copy(source, destination):
+    first = ttl.make_dataflow_buffer_like(source, shape=(1, 1), block_count=1)
+    second = ttl.make_dataflow_buffer_like(source, shape=(1, 1), block_count=1)
+
+    @ttl.compute()
+    def compute():
+        pass
+
+    @ttl.datamovement()
+    def unused_transfer():
+        pass
+
+    @ttl.datamovement()
+    def transfer():
+        column, row = ttl.node(dims=2)
+        offset = column * 2
+        with first.reserve() as block:
+            ttl.copy(source[offset, 0], block).wait()
+        if column == 0:
+            with first.wait() as block:
+                ttl.copy(block, destination[offset, 0]).wait()
+            with second.reserve() as block:
+                ttl.copy(source[offset + 1, 0], block).wait()
+        else:
+            with second.reserve() as block:
+                ttl.copy(source[offset + 1, 0], block).wait()
+            with first.wait() as block:
+                ttl.copy(block, destination[offset, 0]).wait()
+        with second.wait() as block:
+            ttl.copy(block, destination[offset + 1, 0]).wait()
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "sram"])
+@pytest.mark.parametrize(
+    "strategy",
+    ["first-fit-decreasing", "best-fit-decreasing", "multi-order-decreasing", "exact"],
+)
+@pytest.mark.parametrize("reuse", [True, False], ids=["reuse", "no-reuse"])
+def test_per_core_temporal_reuse(
+    device, dtype, allocator, strategy, reuse, monkeypatch, capfd
+):
+    # Both buffers execute on both cores; only core zero completes the first
+    # buffer before acquiring the second. The two-vertex optimum is one page
+    # on core zero and two pages on core one when reuse is enabled.
+    monkeypatch.delenv("TTLANG_COMPILER_OPTIONS", raising=False)
+    expected = torch.randn(128, 32, dtype=dtype)
+    source = allocator(expected, device)
+    totals = {}
+    for mode in ("uniform", "per-core"):
+        destination = allocator(torch.zeros_like(expected), device)
+        capfd.readouterr()
+        core_sensitive_copy(
+            source,
+            destination,
+            options=f"--ttl-memory-model=compiler-l1 --ttl-sram-allocation-mode={mode} --ttl-l1-allocation-strategy={strategy} {'--ttl-reuse-user-dfbs' if reuse else '--no-ttl-reuse-user-dfbs'} --ttl-sram-allocation-report",
+        )
+        assert_allclose(
+            ttnn.to_torch(destination).float(), expected.float(), rtol=0, atol=0
+        )
+        records = [
+            json.loads(line.split("ttlang-sram-report: ", 1)[1])
+            for line in capfd.readouterr().err.splitlines()
+            if line.startswith("ttlang-sram-report: ")
+        ]
+        runtime = [record for record in records if record["phase"] == "runtime"]
+        assert len(runtime) == (1 if mode == "uniform" else 2)
+        totals[mode] = sum(
+            record["reserved_bytes_on_reference_device"] for record in runtime
+        )
+    assert totals["uniform"] - totals["per-core"] == (
+        32 * 32 * expected.element_size() if reuse else 0
+    )
+
+
 if __name__ == "__main__":
     directory = Path(__file__).parent
     tests = [
