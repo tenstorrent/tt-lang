@@ -29,7 +29,6 @@
 #include "ttlang/Target/TTKernel/LLKs/experimental_semaphore_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_tilize_llks_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_untilize_llks_generated.h"
-#include "ttlang/Target/TTKernel/LLKs/risc_barrier_generated.h"
 #include "ttlang/Target/TTKernel/TTKernelIncludesMap.h"
 
 #include "mlir/Dialect/EmitC/IR/EmitC.h"
@@ -160,12 +159,10 @@ public:
         headers.insert("tt_metal/fabric/hw/inc/fabric_config.h");
       }
       if (callee == "experimental::reset_dfb_interfaces") {
-        emitLlk(risc_barrier_generated, risc_barrier_generated_len);
         emitLlk(experimental_dfb_reset_generated,
                 experimental_dfb_reset_generated_len);
       }
       if (callee == "experimental::reconfigure_dfb_interfaces") {
-        emitLlk(risc_barrier_generated, risc_barrier_generated_len);
         emitLlk(experimental_dfb_reconfiguration_generated,
                 experimental_dfb_reconfiguration_generated_len);
       }

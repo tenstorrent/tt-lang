@@ -7,10 +7,6 @@
 
 #include <cstdint>
 
-#ifndef TTLANG_TARGET_TTKERNEL_LLKS_RISC_BARRIER_H
-#include "ttlang/Target/TTKernel/LLKs/risc_barrier.h"
-#endif
-
 namespace experimental {
 namespace dfb_reconfiguration_detail {
 
@@ -28,22 +24,64 @@ namespace dfb_reconfiguration_detail {
 #define TTL_DFB_RECONFIGURATION_UNPACK
 #endif
 
-#if defined(UCK_CHLKC_MATH) || defined(TRISC_MATH)
-#define TTL_DFB_RECONFIGURATION_MATH
-#endif
-
 #if defined(UCK_CHLKC_PACK) || defined(TRISC_PACK)
 #define TTL_DFB_RECONFIGURATION_PACK
 #endif
 
-// Each core stores 64 four-word interface records, two active masks, four
-// participant state words, and two padding words in shared L1.
+// Each core stores 64 four-word interface records, two active masks, three
+// arrival words, one release word, and two padding words in shared L1.
 constexpr uint32_t lowMaskWord = 256;
 constexpr uint32_t highMaskWord = 257;
 constexpr uint32_t synchronizationWord = 258;
+constexpr uint32_t dm0StateWord = 0;
+constexpr uint32_t unpackStateWord = 1;
+constexpr uint32_t packStateWord = 2;
+constexpr uint32_t releaseWord = 3;
+constexpr uint32_t participantCount = 3;
+constexpr uint32_t entryComplete = 1;
+constexpr uint32_t exitComplete = 2;
 constexpr uint32_t completionMarker = 0xD1FB;
 constexpr uint32_t preserveFifoAddress = 0;
 
+FORCE_INLINE uint32_t
+loadSynchronizationWord(volatile uint32_t tt_l1_ptr *synchronizationWord) {
+  // Blackhole RISC caches are not coherent across processors on the core.
+  asm volatile("fence" ::: "memory");
+  uint32_t value;
+  asm volatile("lw %[value], (%[address])\n\t"
+               "and x0, x0, %[value]"
+               : [value] "=r"(value)
+               : [address] "r"(synchronizationWord)
+               : "memory");
+  return value;
+}
+
+FORCE_INLINE void
+storeSynchronizationWord(volatile uint32_t tt_l1_ptr *synchronizationWord,
+                         uint32_t value) {
+  // The dependent load waits until the store is visible to the other RISCs.
+  asm volatile("sw %[value], (%[address])\n\t"
+               "lw %[value], (%[address])\n\t"
+               "and x0, x0, %[value]"
+               : [value] "+r"(value)
+               : [address] "r"(synchronizationWord)
+               : "memory");
+}
+
+FORCE_INLINE bool
+participantsHaveState(volatile uint32_t tt_l1_ptr *synchronizationState,
+                      uint32_t state) {
+  for (uint32_t participant = 0; participant < participantCount;
+       ++participant) {
+    if (loadSynchronizationWord(&synchronizationState[participant]) != state) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// The completion marker is ordered after prior engine work. Its GPR readback
+// prevents arrival before retirement; TMP0 is temporary across LLK calls.
 FORCE_INLINE void drainComputeEngine() {
 #if defined(TTL_DFB_RECONFIGURATION_UNPACK)
   constexpr uint32_t waitResources = p_stall::UNPACK;
@@ -60,13 +98,62 @@ FORCE_INLINE void drainComputeEngine() {
 #endif
 }
 
-FORCE_INLINE void completeInterfaceWork() {
-#if defined(TTL_DFB_RECONFIGURATION_DM0) ||                                   \
-    defined(TTL_DFB_RECONFIGURATION_DM1)
+FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState) {
+#if defined(TTL_DFB_RECONFIGURATION_DM0)
+  constexpr uint32_t arrivalWord = dm0StateWord;
+#elif defined(TTL_DFB_RECONFIGURATION_UNPACK)
+  constexpr uint32_t arrivalWord = unpackStateWord;
+#elif defined(TTL_DFB_RECONFIGURATION_PACK)
+  constexpr uint32_t arrivalWord = packStateWord;
+#endif
+#if defined(TTL_DFB_RECONFIGURATION_DM0)
   noc_async_full_barrier();
 #elif defined(TTL_DFB_RECONFIGURATION_UNPACK) ||                               \
     defined(TTL_DFB_RECONFIGURATION_PACK)
   drainComputeEngine();
+#endif
+#if defined(TTL_DFB_RECONFIGURATION_DM0) ||                                    \
+    defined(TTL_DFB_RECONFIGURATION_UNPACK) ||                                 \
+    defined(TTL_DFB_RECONFIGURATION_PACK)
+  storeSynchronizationWord(&synchronizationState[arrivalWord], entryComplete);
+  while (loadSynchronizationWord(&synchronizationState[releaseWord]) !=
+         entryComplete) {
+  }
+#elif defined(TTL_DFB_RECONFIGURATION_DM1)
+  noc_async_full_barrier();
+  while (!participantsHaveState(synchronizationState, entryComplete)) {
+  }
+  storeSynchronizationWord(&synchronizationState[releaseWord], entryComplete);
+#endif
+}
+
+// DM1 cannot begin next-epoch work until every other RISC has completed its
+// interface updates.
+FORCE_INLINE void exit(volatile uint32_t tt_l1_ptr *synchronizationState) {
+#if defined(TTL_DFB_RECONFIGURATION_DM0)
+  constexpr uint32_t arrivalWord = dm0StateWord;
+#elif defined(TTL_DFB_RECONFIGURATION_UNPACK)
+  constexpr uint32_t arrivalWord = unpackStateWord;
+#elif defined(TTL_DFB_RECONFIGURATION_PACK)
+  constexpr uint32_t arrivalWord = packStateWord;
+#endif
+#if defined(TTL_DFB_RECONFIGURATION_DM0) ||                                    \
+    defined(TTL_DFB_RECONFIGURATION_UNPACK) ||                                 \
+    defined(TTL_DFB_RECONFIGURATION_PACK)
+  storeSynchronizationWord(&synchronizationState[arrivalWord], exitComplete);
+  while (loadSynchronizationWord(&synchronizationState[releaseWord]) !=
+         exitComplete) {
+  }
+  storeSynchronizationWord(&synchronizationState[arrivalWord], 0);
+  while (loadSynchronizationWord(&synchronizationState[releaseWord]) != 0) {
+  }
+#elif defined(TTL_DFB_RECONFIGURATION_DM1)
+  while (!participantsHaveState(synchronizationState, exitComplete)) {
+  }
+  storeSynchronizationWord(&synchronizationState[releaseWord], exitComplete);
+  while (!participantsHaveState(synchronizationState, 0)) {
+  }
+  storeSynchronizationWord(&synchronizationState[releaseWord], 0);
 #endif
 }
 
@@ -121,9 +208,7 @@ FORCE_INLINE void reconfigure_dfb_interfaces(uint32_t configurationAddress) {
 #if defined(TTL_DFB_RECONFIGURATION_DM1) ||                                    \
     defined(TTL_DFB_RECONFIGURATION_DM0) ||                                    \
     defined(TTL_DFB_RECONFIGURATION_UNPACK) ||                                 \
-    defined(TTL_DFB_RECONFIGURATION_MATH) ||                                   \
     defined(TTL_DFB_RECONFIGURATION_PACK)
-#if !defined(TTL_DFB_RECONFIGURATION_MATH)
 #if defined(TTL_DFB_RECONFIGURATION_DM1)
   constexpr bool updateReadPointer = true;
   constexpr bool updateWritePointer = true;
@@ -145,27 +230,12 @@ FORCE_INLINE void reconfigure_dfb_interfaces(uint32_t configurationAddress) {
   constexpr bool updateWriteTilePointer = true;
   constexpr bool resetStreamCounters = false;
 #endif
-#endif
 
   auto *configuration =
       reinterpret_cast<uint32_t tt_l1_ptr *>(configurationAddress);
   auto *synchronizationState = reinterpret_cast<volatile uint32_t tt_l1_ptr *>(
       &configuration[dfb_reconfiguration_detail::synchronizationWord]);
-  const uint32_t participantStateAddresses[] = {
-      static_cast<uint32_t>(reinterpret_cast<uintptr_t>(
-          &synchronizationState[0])),
-      static_cast<uint32_t>(reinterpret_cast<uintptr_t>(
-          &synchronizationState[1])),
-      static_cast<uint32_t>(reinterpret_cast<uintptr_t>(
-          &synchronizationState[2])),
-      static_cast<uint32_t>(reinterpret_cast<uintptr_t>(
-          &synchronizationState[3])),
-  };
-  dfb_reconfiguration_detail::completeInterfaceWork();
-  ttlang::detail::riscBarrierEnter(
-      participantStateAddresses[0], participantStateAddresses[1],
-      participantStateAddresses[2], participantStateAddresses[3]);
-#if !defined(TTL_DFB_RECONFIGURATION_MATH)
+  dfb_reconfiguration_detail::enter(synchronizationState);
   dfb_reconfiguration_detail::applyMask<updateReadPointer, updateWritePointer,
                                         updateWriteTilePointer,
                                         resetStreamCounters>(
@@ -175,10 +245,7 @@ FORCE_INLINE void reconfigure_dfb_interfaces(uint32_t configurationAddress) {
                                         resetStreamCounters>(
       configuration, configuration[dfb_reconfiguration_detail::highMaskWord],
       32);
-#endif
-  ttlang::detail::riscBarrierExit(
-      participantStateAddresses[0], participantStateAddresses[1],
-      participantStateAddresses[2], participantStateAddresses[3]);
+  dfb_reconfiguration_detail::exit(synchronizationState);
 #else
   (void)configurationAddress;
 #endif
@@ -187,7 +254,6 @@ FORCE_INLINE void reconfigure_dfb_interfaces(uint32_t configurationAddress) {
 #undef TTL_DFB_RECONFIGURATION_DM0
 #undef TTL_DFB_RECONFIGURATION_DM1
 #undef TTL_DFB_RECONFIGURATION_UNPACK
-#undef TTL_DFB_RECONFIGURATION_MATH
 #undef TTL_DFB_RECONFIGURATION_PACK
 
 } // namespace experimental
