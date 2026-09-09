@@ -23,6 +23,7 @@
 // CHECK-NEXT: %[[RECORD:.*]] = arith.addi %[[EDGE_OFFSET]], %[[NODE_INDEX]] : index
 // CHECK-NOT: arith.cmpi
 // CHECK: ttkernel.routing_plane.fused_write_atomic_inc
+// CHECK-NOT: ttl.pipenet_local_record_loop
 
 // Each device is also the destination of one reverse edge. Destination
 // lowering uses the same compact range and row-major record calculation.
@@ -42,6 +43,7 @@
 // CHECK-NEXT: %[[DST_RECORD:.*]] = arith.addi %[[DST_EDGE_OFFSET]], %[[DST_NODE_INDEX]] : index
 // CHECK-NOT: arith.cmpi
 // CHECK: ttkernel.routing_plane.atomic_inc
+// CHECK-NOT: ttl.pipenet_local_record_loop
 
 #domain = #ttl.device_domain<components = <name = "device", extent = [2]>>
 #records = #ttl.pipenet_records<net 0 name "grid_major" pipes [
