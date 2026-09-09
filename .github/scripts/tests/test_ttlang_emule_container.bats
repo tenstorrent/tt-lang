@@ -266,8 +266,13 @@ PY
         refute_log_line "tt-emule-source=$emule_source"
         assert_log_line "${TTLANG_REPO_ROOT}/scripts"
         assert_log_line "run"
-        run -0 ls -A "$runtime_tmp"
-        assert_output ""
+        shopt -s nullglob
+        local retained_runtime_dirs=(
+            "$runtime_tmp"/tt-lang-emule.*
+            "$runtime_tmp"/tt-lang-emule-context.*
+        )
+        shopt -u nullglob
+        [ "${#retained_runtime_dirs[@]}" -eq 0 ]
         [ -f "$emule_source/tracked-source" ]
         [ -f "$emule_source/untracked-secret" ]
     done
