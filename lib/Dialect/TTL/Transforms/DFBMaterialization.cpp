@@ -6,27 +6,12 @@
 
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
-#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
 #include "mlir/IR/Dominance.h"
-#include "llvm/ADT/STLExtras.h"
 
 #include <algorithm>
 
 namespace mlir::tt::ttl {
-
-Value getDFBMaterializationStoreSource(
-    Value intermediate, SmallVectorImpl<Operation *> *shapeViews) {
-  Value source = intermediate;
-  while (Value input =
-             getSingletonDimensionShapeViewSource(source.getDefiningOp())) {
-    if (shapeViews) {
-      shapeViews->push_back(source.getDefiningOp());
-    }
-    source = input;
-  }
-  return source;
-}
 
 /// Return a provisional index unique within `kernel`.
 ///
@@ -83,18 +68,13 @@ BindCBOp createCompilerAllocatedDFB(RankedTensorType tensorType, Location loc,
   return bindDFB;
 }
 
-static StoreOp createDFBStore(Value tensor, Value dfb, IntegerAttr numTiles,
-                              OpBuilder &builder) {
+StoreOp createDFBStore(Value tensor, Value dfb, OpBuilder &builder) {
   auto tensorType = cast<RankedTensorType>(tensor.getType());
   Location loc = tensor.getLoc();
 
-  auto reserve = CBReserveOp::create(builder, loc, tensorType, dfb, numTiles);
+  auto reserve = CBReserveOp::create(builder, loc, tensorType, dfb);
   return StoreOp::create(builder, loc, tensor, reserve.getResult(),
                          /*accumulate=*/nullptr);
-}
-
-StoreOp createDFBStore(Value tensor, Value dfb, OpBuilder &builder) {
-  return createDFBStore(tensor, dfb, /*numTiles=*/nullptr, builder);
 }
 
 AttachCBOp createDFBWaitAndAttach(Value dfb, RankedTensorType tensorType,
@@ -103,9 +83,8 @@ AttachCBOp createDFBWaitAndAttach(Value dfb, RankedTensorType tensorType,
   return AttachCBOp::create(builder, loc, tensorType, wait.getResult(), dfb);
 }
 
-Value materializeToDFB(Value intermediate, Value storeSource,
-                       Operation *insertionAnchor, func::FuncOp kernel,
-                       OpBuilder &builder) {
+Value materializeToDFB(Value intermediate, Operation *insertionAnchor,
+                       func::FuncOp kernel, OpBuilder &builder) {
   auto result = dyn_cast<OpResult>(intermediate);
   assert((!result || !isa<ComputeOp>(result.getOwner())) &&
          "compute results are materialized atomically by "
@@ -124,12 +103,7 @@ Value materializeToDFB(Value intermediate, Value storeSource,
       createCompilerAllocatedDFB(tensorType, loc, kernel, builder);
 
   builder.setInsertionPointAfter(insertionAnchor);
-  IntegerAttr numTiles;
-  if (storeSource != intermediate) {
-    auto storeType = cast<RankedTensorType>(storeSource.getType());
-    numTiles = builder.getI64IntegerAttr(storeType.getNumElements());
-  }
-  createDFBStore(storeSource, bindDFB.getResult(), numTiles, builder);
+  createDFBStore(intermediate, bindDFB.getResult(), builder);
 
   return createDFBWaitAndAttach(bindDFB.getResult(), tensorType, loc, builder)
       .getResult();

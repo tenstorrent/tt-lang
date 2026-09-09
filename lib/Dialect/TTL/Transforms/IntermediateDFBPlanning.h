@@ -114,10 +114,12 @@ struct IntermediateDFBRequirement {
 /// https://github.com/llvm/llvm-project/blob/4279d524cc78d0bac294bb29257c62665121d9f1/mlir/include/mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h
 class DFBMaterializationAnalysisState {
 public:
-  /// Returns whether `operand` must be replaced with a DFB-attached value.
+  /// Returns whether planned storage supplies `operand`, directly or through
+  /// checked singleton views of the stored producer.
   bool requiresMaterialization(const OpOperand &operand) const;
 
   /// Records an independent proof that `operand` requires materialization.
+  /// Singleton views record the innermost view's source operand.
   /// Returns true when this is the first decision for the operand.
   bool requireMaterialization(OpOperand &operand,
                               IntermediateDFBEvidence evidence);
@@ -162,12 +164,6 @@ struct ComputeDFBMaterializationPlan {
 struct StandaloneDFBMaterializationPlan {
   /// Tensor value routed through a compiler-created DFB.
   Value source;
-
-  /// Producer stored before exposing the consumer-visible tensor shape.
-  Value storeSource;
-
-  /// Checked singleton views bypassed by the store, outermost first.
-  SmallVector<Operation *> shapeViews;
 
   /// Static tensor type used by the new DFB lifecycle.
   RankedTensorType tensorType;
