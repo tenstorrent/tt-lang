@@ -1107,29 +1107,53 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(forOp.getBody());
       Value kIdx = forOp.getInductionVar();
-      MLIRContext *ctx = rewriter.getContext();
-
-      // A tile index: base + k.
-      //   affine_map<(k)[base] -> (base + k)>
-      auto in0Map = AffineMap::get(
-          1, 1, getAffineSymbolExpr(0, ctx) + getAffineDimExpr(0, ctx), ctx);
-      Value in0Idx = affine::AffineApplyOp::create(
-          rewriter, loc, in0Map, ValueRange{kIdx, in0TileIndex});
-
-      // B tile index: base + k * bStridePerK.
-      //   affine_map<(k)[base, stride] -> (base + k * stride)>
-      auto in1Map = AffineMap::get(1, 2,
-                                   getAffineSymbolExpr(0, ctx) +
-                                       getAffineDimExpr(0, ctx) *
-                                           getAffineSymbolExpr(1, ctx),
-                                   ctx);
-      Value bStrideVal =
-          arith::ConstantIndexOp::create(rewriter, loc, bStridePerK);
-      Value in1Idx = affine::AffineApplyOp::create(
-          rewriter, loc, in1Map, ValueRange{kIdx, in1TileIndex, bStrideVal});
-
-      ttk::MatmulBlockOp::create(rewriter, loc, *lhsCB, *rhsCB, in0Idx, in1Idx,
-                                 dstIdx, transpose, ctVal, rtVal, ktVal);
+      if (transposeRhs && ct > 1) {
+        // The block unpacker advances output columns by one RHS tile, but
+        // transposed [N, K] columns are K tiles apart. Single-output calls
+        // preserve those strides and the row-major DST layout.
+        Value one = arith::ConstantIntOp::create(rewriter, loc, 1, 32);
+        for (int64_t row = 0; row < rt; ++row) {
+          Value rowOffset =
+              arith::ConstantIndexOp::create(rewriter, loc, row * kt);
+          Value lhsLocal =
+              arith::AddIOp::create(rewriter, loc, rowOffset, kIdx);
+          Value lhsIndex =
+              utils::addSliceOffset(op.getLhs(), lhsLocal, rewriter, loc);
+          for (int64_t column = 0; column < ct; ++column) {
+            Value columnOffset =
+                arith::ConstantIndexOp::create(rewriter, loc, column * kt);
+            Value rhsLocal =
+                arith::AddIOp::create(rewriter, loc, columnOffset, kIdx);
+            Value rhsIndex =
+                utils::addSliceOffset(op.getRhs(), rhsLocal, rewriter, loc);
+            Value outputOffset = arith::ConstantIndexOp::create(
+                rewriter, loc, row * ct + column);
+            Value outputIndex =
+                arith::AddIOp::create(rewriter, loc, dstIdx, outputOffset);
+            ttk::MatmulBlockOp::create(rewriter, loc, *lhsCB, *rhsCB, lhsIndex,
+                                       rhsIndex, outputIndex, transpose, one,
+                                       one, ktVal);
+          }
+        }
+      } else {
+        MLIRContext *ctx = rewriter.getContext();
+        auto in0Map = AffineMap::get(
+            1, 1, getAffineSymbolExpr(0, ctx) + getAffineDimExpr(0, ctx), ctx);
+        Value in0Idx = affine::AffineApplyOp::create(
+            rewriter, loc, in0Map, ValueRange{kIdx, in0TileIndex});
+        auto in1Map = AffineMap::get(1, 2,
+                                     getAffineSymbolExpr(0, ctx) +
+                                         getAffineDimExpr(0, ctx) *
+                                             getAffineSymbolExpr(1, ctx),
+                                     ctx);
+        Value bStrideVal =
+            arith::ConstantIndexOp::create(rewriter, loc, bStridePerK);
+        Value in1Idx = affine::AffineApplyOp::create(
+            rewriter, loc, in1Map, ValueRange{kIdx, in1TileIndex, bStrideVal});
+        ttk::MatmulBlockOp::create(rewriter, loc, *lhsCB, *rhsCB, in0Idx,
+                                   in1Idx, dstIdx, transpose, ctVal, rtVal,
+                                   ktVal);
+      }
     }
 
     rewriter.replaceOp(op, adaptor.getLhs());

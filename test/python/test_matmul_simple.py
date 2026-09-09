@@ -309,14 +309,14 @@ matmul_transpose_kernel = _make_matmul_transpose_kernel(block_count=2)
 
 
 # Transposed RHS: B is stored as [N, K] and the matmul computes A @ B^T.
-# N (output columns) is kept at 1 tile: the hardware matmul_block reads the
-# ct output-column tiles consecutively, which only matches the [N, K] layout
-# for a single output column.
+# Multiple output columns require striding over K in the stored RHS.
 TRANSPOSE_SHAPES = [
     (1, 1, 1),  # Minimal: single tile.
     (2, 1, 1),  # Tall output.
     (1, 2, 1),  # K > 1.
     (2, 4, 1),  # Multi-tile M with K > 1.
+    (2, 3, 2),  # Distinct K and N, both greater than one.
+    (3, 2, 3),  # Multiple output subblocks with nontrivial RHS column offsets.
 ]
 
 

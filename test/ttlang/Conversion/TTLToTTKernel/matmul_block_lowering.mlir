@@ -330,13 +330,12 @@ func.func @matmul_rank3_accumulator_batches(
 
 // =============================================================================
 // Test 6: Transposed RHS. [2,3] @ [2,3]^T -> [2,2]. rhs is stored as [N, K]
-// so N (ct) comes from rhs[0]=2 (not rhs[1]=3), the transpose operand is 1,
-// and the per-K in1 stride is 1 (K is the innermost CB dim), so in1_idx=k.
+// so each output tile uses ct=rt=1 with explicit row/column offsets over K.
+// The four outputs use (lhs, rhs) indices (k,k), (k,k+3), (k+3,k), (k+3,k+3).
 // =============================================================================
 
 // CHECK-LABEL: func.func @matmul_transpose_rhs
 // CHECK-DAG: %[[C1_I32:.*]] = arith.constant 1 : i32
-// CHECK-DAG: %[[C2_I32:.*]] = arith.constant 2 : i32
 // CHECK-DAG: %[[C3_I32:.*]] = arith.constant 3 : i32
 // CHECK-DAG: %[[C0:.*]] = arith.constant 0 : index
 // CHECK-DAG: %[[C1:.*]] = arith.constant 1 : index
@@ -345,14 +344,16 @@ func.func @matmul_rank3_accumulator_batches(
 // CHECK-DAG: %[[CB0:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<12, !ttcore.tile<32x32, bf16>>
 // CHECK-DAG: %[[CB1:.*]] = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<12, !ttcore.tile<32x32, bf16>>
 // CHECK-DAG: %[[CB2:.*]] = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<8, !ttcore.tile<32x32, bf16>>
-// mm_block_init: transpose=1, ct=2, rt=2, kt=3.
-// CHECK:      "ttkernel.mm_block_init"(%[[CB0]], %[[CB1]], %[[CB2]], %[[C1_I32]], %[[C2_I32]], %[[C2_I32]], %[[C3_I32]])
+// mm_block_init: transpose=1, ct=1, rt=1, kt=3.
+// CHECK:      "ttkernel.mm_block_init"(%[[CB0]], %[[CB1]], %[[CB2]], %[[C1_I32]], %[[C1_I32]], %[[C1_I32]], %[[C3_I32]])
 // CHECK:      ttkernel.tile_regs_acquire
-// CHECK-NEXT: "ttkernel.mm_block_init_short"(%[[CB0]], %[[CB1]], %[[C1_I32]], %[[C2_I32]], %[[C2_I32]], %[[C3_I32]])
-// K loop: stride 1 so in1_idx=k (CSE merges with in0_idx=k); transpose operand=1.
+// CHECK-NEXT: "ttkernel.mm_block_init_short"(%[[CB0]], %[[CB1]], %[[C1_I32]], %[[C1_I32]], %[[C1_I32]], %[[C3_I32]])
 // CHECK-NEXT: scf.for %[[K:.*]] = %[[C0]] to %[[C3]] step
-// CHECK:        ttkernel.matmul_block(%[[CB0]], %[[CB1]], %[[K]], %[[K]], %[[C0]],
-// CHECK-SAME:     %[[C1_I32]], %[[C2_I32]], %[[C2_I32]], %[[C3_I32]])
+// CHECK:        ttkernel.matmul_block(%[[CB0]], %[[CB1]], %[[K]], %[[K]], %[[C0]], %[[C1_I32]], %[[C1_I32]], %[[C1_I32]], %[[C3_I32]])
+// CHECK:        %[[ROW1:.*]] = arith.addi %[[K]], %[[C3]] : index
+// CHECK:        ttkernel.matmul_block(%[[CB0]], %[[CB1]], %[[K]], %[[ROW1]], %[[C1]], %[[C1_I32]], %[[C1_I32]], %[[C1_I32]], %[[C3_I32]])
+// CHECK:        ttkernel.matmul_block(%[[CB0]], %[[CB1]], %[[ROW1]], %[[K]], %[[C2]], %[[C1_I32]], %[[C1_I32]], %[[C1_I32]], %[[C3_I32]])
+// CHECK:        ttkernel.matmul_block(%[[CB0]], %[[CB1]], %[[ROW1]], %[[ROW1]], %[[C3]], %[[C1_I32]], %[[C1_I32]], %[[C1_I32]], %[[C3_I32]])
 // CHECK:      }
 // CHECK-NEXT: ttkernel.tile_regs_commit
 func.func @matmul_transpose_rhs(
