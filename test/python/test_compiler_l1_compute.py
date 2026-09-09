@@ -178,7 +178,13 @@ def test_l1_compute_above_descriptor_limit(device, dtype, tmp_path, monkeypatch)
             rtol=0,
             atol=0,
         )
-    offsets = re.findall(r"l1_payload_offset = (\d+)", final_ir.read_text())
+    allocation_ir = final_ir.read_text()
+    offset_pattern = (
+        r"(?<!l1_)payload_offset = (\d+)"
+        if "sram_core_layouts" in allocation_ir
+        else r"l1_payload_offset = (\d+)"
+    )
+    offsets = re.findall(offset_pattern, allocation_ir)
     assert len(offsets) == input_count + 1
     assert len(set(offsets)) == input_count + 1
 

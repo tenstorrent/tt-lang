@@ -289,6 +289,13 @@ struct TTLFinalizeDFBIndicesPass
 
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
+    if (sramAllocationMode != "uniform" &&
+        memoryModel != kCompilerL1MemoryModel) {
+      moduleOp.emitOpError(
+          "per-core SRAM allocation requires memory-model=compiler-l1");
+      signalPassFailure();
+      return;
+    }
     if (failed(validateSynchronizedDFBResetTarget(moduleOp))) {
       signalPassFailure();
       return;
@@ -344,8 +351,9 @@ struct TTLFinalizeDFBIndicesPass
       if (failed(allocateSRAM(
               moduleOp, logicalIdentityAnalysis, l1BudgetOverride,
               reuseUserDFBs, l1AllocationStrategy, l1ExactAllocationSearchLimit,
-              sramAllocationReport, liveness, staticConfigurationConflicts,
-              unsafeAssumeAllocationGroups, assumedAllocationGroups))) {
+              sramAllocationReport, sramAllocationMode, liveness,
+              staticConfigurationConflicts, unsafeAssumeAllocationGroups,
+              assumedAllocationGroups))) {
         signalPassFailure();
         return;
       }

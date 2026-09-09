@@ -5,8 +5,9 @@
 """Python-only tests for ttl.kernel_runner resource allocation helpers."""
 
 from collections import defaultdict
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 import gc
+import itertools
 import os
 from pathlib import Path
 import re
@@ -40,6 +41,8 @@ from ttl.dataflow_buffer import (
     DFBReconfigurationPlan,
     DFBStorageSegment,
     PhysicalDFBConfig,
+    SRAMCoreLayout,
+    SRAMReceiverTarget,
 )
 from ttl.domains import DeviceDomain
 from ttl.ttl import ProgramRuntimeResources as TTLProgramRuntimeResources
@@ -325,6 +328,9 @@ class _FakeTTNN:
                 coords = tuple(coords[0])
             self.coords = tuple(coords)
 
+        def __iter__(self):
+            return iter(self.coords)
+
         def __eq__(self, other):
             return (
                 isinstance(other, _FakeTTNN.MeshCoordinate)
@@ -335,6 +341,15 @@ class _FakeTTNN:
         def __init__(self, start, end):
             self.start = start
             self.end = end
+
+        def __iter__(self):
+            for coordinate in itertools.product(
+                *(
+                    range(start, end + 1)
+                    for start, end in zip(self.start.coords, self.end.coords)
+                )
+            ):
+                yield _FakeTTNN.MeshCoordinate(coordinate)
 
         def __eq__(self, other):
             return (
@@ -8743,3 +8758,162 @@ def test_sram_report_requires_unique_allocation(monkeypatch, matching_count):
         runner._print_sram_runtime_report(
             arena, SimpleNamespace(num_cores=lambda: 1), 64, "test"
         )
+
+
+class _IndependentSRAMArena(_FakeTensor):
+    def device_coords(self):
+        return [(0, 0), (0, 1)]
+
+    def is_per_core_allocated(self):
+        return True
+
+    def buffer_address(self):
+        pytest.fail("independent SRAM has no common buffer address")
+
+    def experimental_per_core_buffer_address(self, device_coordinate, core):
+        return 0x8000 + 0x1000 * device_coordinate.coords[1] + 0x100 * core.x
+
+
+@pytest.mark.parametrize("placement_mode", ["device-domain", "replicated", "selected"])
+def test_independent_sram_binds_each_device(monkeypatch, placement_mode):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    mesh_device = _FakeMeshDevice()
+    arena = _IndependentSRAMArena(mesh_device)
+    allocations = []
+
+    def allocate_arena(ranges, num_bytes, device, *, zero_initialize, per_core):
+        allocations.append((num_bytes, zero_initialize, per_core))
+        return arena
+
+    monkeypatch.setattr(
+        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_arena
+    )
+    config = replace(
+        _compiler_l1_config(),
+        storage_index=0,
+        sram_core_layouts=(SRAMCoreLayout((0, 0), 64, True, 2112, 0),),
+    )
+    kwargs = {}
+    if placement_mode == "device-domain":
+        kwargs["device_domain"] = DeviceDomain((1, 2))
+    elif placement_mode == "selected":
+        kwargs["mesh_program_placements"] = [kernel_runner.MeshProgramPlacement((0, 1))]
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
+        tensors=[_FakeTensor(mesh_device)],
+        cb_configs=[config],
+        core_ranges=_FakeCoreRanges(),
+        device=mesh_device,
+        **kwargs,
+    )
+    programs = result["program"].mesh_programs
+    expected_coordinates = (
+        [(0, 1)] if placement_mode == "selected" else [(0, 0), (0, 1)]
+    )
+    assert len(programs) == len(expected_coordinates)
+    for (mesh_range, program), coordinate in zip(programs, expected_coordinates):
+        assert mesh_range.start.coords == mesh_range.end.coords == coordinate
+        assert (
+            program.kernels[0].common_runtime_args[-1]
+            == 0x8000 + 0x1000 * coordinate[1]
+        )
+        assert ("TTLANG_SRAM_DFB_0_PAYLOAD_OFFSET", "64") in program.kernels[0].defines
+        assert program.cbs == []
+    assert allocations == [(2112, True, True)]
+    assert result["tensors"][0] is arena
+
+
+def test_independent_sram_receiver_uses_destination_device_and_core():
+    from ttl._sram_domains import receiver_base
+
+    arena = _IndependentSRAMArena(_FakeMeshDevice())
+    config = replace(
+        _compiler_l1_config(),
+        storage_index=0,
+        sram_core_layouts=(SRAMCoreLayout((1, 0), 64, True, 2112, 0),),
+    )
+    target = SRAMReceiverTarget(0, (1, 0), (0, 1))
+    assert (
+        receiver_base(_FakeTTNN(), target, [config], {(1, 0): arena}, [], (0, 0))
+        == 0x9140
+    )
+
+
+def test_independent_sram_rejects_unspecialized_kernel_before_allocation(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        lambda *args, **kwargs: pytest.fail("invalid layout created an arena"),
+    )
+    config = replace(
+        _compiler_l1_config(),
+        storage_index=0,
+        sram_core_layouts=(
+            SRAMCoreLayout((0, 0), 64, True, 2112, 0),
+            SRAMCoreLayout((1, 0), 64, True, 2112, 1),
+        ),
+    )
+    with pytest.raises(ValueError, match="compiler-specialized"):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
+            tensors=[],
+            cb_configs=[config],
+            core_ranges=_FakeCoreRanges((((0, 0), (1, 0)),)),
+            device=_FakeMeshDevice(),
+        )
+    assert fake_ttnn.create_calls == []
+    assert fake_ttnn.generic_op_calls == []
+
+
+def test_emitted_runner_preserves_sram_domains_and_receiver_targets(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    config = replace(
+        _compiler_l1_config(),
+        storage_index=0,
+        sram_core_layouts=(SRAMCoreLayout((0, 0), 64, True, 2112, 0),),
+    )
+    target = SRAMReceiverTarget(0, (0, 0), (0, 1))
+    spec = replace(
+        _kernel_spec(KernelKind.COMPUTE),
+        pipe_computed_address_dfb_indices=[0],
+        sram_receiver_targets=[target],
+    )
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[spec],
+        cb_configs=[config],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+    )
+    calls = []
+    namespace = _load_emitted_runner(
+        monkeypatch, source, lambda **kwargs: calls.append(kwargs)
+    )
+    namespace["run"]([_FakeTensor(object())])
+    assert calls[0]["cb_configs"] == [config]
+    assert calls[0]["kernel_specs"][0].sram_receiver_targets == [target]
+    assert calls[0]["kernel_specs"][0].pipe_computed_address_dfb_indices == [0]
+
+
+def test_sram_arena_size_uses_finalized_domain_extents():
+    config = replace(
+        _compiler_l1_config(),
+        storage_index=0,
+        sram_core_layouts=(
+            SRAMCoreLayout((0, 0), 64, True, 2112, 0),
+            SRAMCoreLayout((1, 0), 2112, True, 4160, 1),
+        ),
+    )
+    assert kernel_runner._get_compiler_l1_arena_bytes([config]) == 4160
+
+
+def test_sram_metadata_preserves_kernel_spec_positional_arguments():
+    core_ranges = _FakeCoreRanges()
+    spec = kernel_runner.KernelSpec(
+        "/tmp/kernel.cpp", "noc", [], object(), [], [0], core_ranges
+    )
+    assert spec.core_ranges is core_ranges
+    assert spec.sram_receiver_targets == []

@@ -105,6 +105,10 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::desc("Reuse physical DFB indices when concurrent-kernel "
                      "liveness proves that logical lifetimes do not overlap."),
       llvm::cl::init(true)};
+  Option<std::string> sramAllocationMode{
+      *this, "sram-allocation-mode",
+      llvm::cl::desc("SRAM allocation domains: uniform or per-core"),
+      llvm::cl::init("uniform")};
   Option<bool> sramAllocationReport{
       *this, "sram-allocation-report",
       llvm::cl::desc("Emit a JSON compiler-managed SRAM allocation report."),
@@ -118,8 +122,8 @@ struct TTLToTTKernelPipelineOptions
   Option<std::uint64_t> l1ExactAllocationSearchLimit{
       *this, "l1-exact-allocation-search-limit",
       llvm::cl::desc("Maximum work items examined by exact compiler-l1 "
-                     "placement "
-                     "before reporting an inconclusive result."),
+                     "placement per allocation domain before reporting an "
+                     "inconclusive result."),
       llvm::cl::init(1000000)};
   Option<bool> unsafeAssumeAllocationGroups{
       *this, "unsafe-assume-allocation-groups",

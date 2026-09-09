@@ -32,7 +32,7 @@ inline constexpr llvm::StringLiteral kExactSRAMAllocator = "exact";
 
 /// Strategy-specific limits supplied independently of the allocation problem.
 struct SRAMAllocatorOptions {
-  /// Maximum generated candidate offsets and visited partial placements.
+  /// Maximum generated candidate offsets and partial placements per domain.
   uint64_t exactSearchLimit;
 };
 
@@ -51,6 +51,32 @@ struct SRAMAllocationSolution {
   uint64_t arenaBytes;
 };
 
+/// One independently placed layout. Region indices are local to allocation;
+/// storageIndices maps them to caller-owned storage identities.
+struct SRAMAllocationDomainProblem {
+  SRAMAllocationProblem allocation;
+  llvm::SmallVector<unsigned> storageIndices;
+};
+
+/// One storage owner's payload offset within its domain's arena.
+struct SRAMStoragePlacement {
+  unsigned storageIndex;
+  uint64_t offset;
+};
+
+/// Domain order matches the request; placement order matches storageIndices.
+struct SRAMAllocationDomainSolution {
+  llvm::SmallVector<SRAMStoragePlacement> placements;
+  uint64_t arenaBytes;
+};
+
+/// Valid only on failure: the domain and, when available, its storage owner.
+struct SRAMAllocationDomainFailure {
+  unsigned domainIndex;
+  std::optional<unsigned> storageIndex;
+  std::string reason;
+};
+
 /// Selects payload offsets without inspecting or modifying compiler IR.
 class SRAMAllocator {
 public:
@@ -63,6 +89,15 @@ public:
   allocate(const SRAMAllocationProblem &problem,
            std::optional<unsigned> &failureRegionIndex,
            std::string &failureReason) const;
+
+  /// Allocates independently addressable domains using this strategy. The
+  /// caller proves that domain bindings do not overlap and supplies each
+  /// domain's full conflict relation. All inputs are validated before
+  /// placement; failure returns no partial solution. Control-only domains
+  /// retain their prefix.
+  FailureOr<llvm::SmallVector<SRAMAllocationDomainSolution>>
+  allocateDomains(llvm::ArrayRef<SRAMAllocationDomainProblem> domains,
+                  SRAMAllocationDomainFailure &failureDetail) const;
 
 private:
   virtual FailureOr<SRAMAllocationSolution>

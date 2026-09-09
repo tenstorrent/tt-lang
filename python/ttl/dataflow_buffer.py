@@ -290,6 +290,26 @@ CircularBuffer = DataflowBuffer
 
 
 @dataclass(frozen=True)
+class SRAMReceiverTarget:
+    """A sender runtime argument's destination DFB, core, and logical device."""
+
+    dfb_index: int
+    node: Tuple[int, int]
+    device: Tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class SRAMCoreLayout:
+    """One core's payload placement and total arena reservation requirement."""
+
+    node: Tuple[int, int]
+    payload_offset: int
+    payload_present: bool
+    arena_bytes: int
+    domain: int
+
+
+@dataclass(frozen=True)
 class PhysicalDFBConfig:
     """Runtime configuration for one physical dataflow buffer allocation.
 
@@ -317,6 +337,7 @@ class PhysicalDFBConfig:
     l1_payload_offset: Optional[int] = None
     l1_allocation_bytes: Optional[int] = None
     storage_capacity_pages: Optional[int] = None
+    sram_core_layouts: Tuple[SRAMCoreLayout, ...] = ()
 
 
 @dataclass(frozen=True)

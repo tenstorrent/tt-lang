@@ -4,6 +4,8 @@
 #include "SRAMAllocator.h"
 #include "SRAMAllocator_Internal.h"
 
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/MathExtras.h"
 
@@ -119,6 +121,56 @@ SRAMAllocator::allocate(const SRAMAllocationProblem &problem,
     return failure();
   }
   return solution;
+}
+
+FailureOr<SmallVector<SRAMAllocationDomainSolution>>
+SRAMAllocator::allocateDomains(
+    llvm::ArrayRef<SRAMAllocationDomainProblem> domains,
+    SRAMAllocationDomainFailure &failureDetail) const {
+  for (auto [domainIndex, domain] : llvm::enumerate(domains)) {
+    failureDetail = {static_cast<unsigned>(domainIndex), std::nullopt, ""};
+    if (domain.storageIndices.size() != domain.allocation.regionBytes.size()) {
+      failureDetail.reason =
+          "domain storage count does not match the region count";
+      return failure();
+    }
+    llvm::DenseSet<unsigned> owners;
+    for (unsigned storageIndex : domain.storageIndices) {
+      if (!owners.insert(storageIndex).second) {
+        failureDetail.storageIndex = storageIndex;
+        failureDetail.reason = "domain contains a duplicate storage owner";
+        return failure();
+      }
+    }
+    if (failed(validateProblem(domain.allocation, failureDetail.reason))) {
+      return failure();
+    }
+  }
+
+  SmallVector<SRAMAllocationDomainSolution> result;
+  for (auto [domainIndex, domain] : llvm::enumerate(domains)) {
+    failureDetail = {static_cast<unsigned>(domainIndex), std::nullopt, ""};
+    std::optional<unsigned> failedRegion;
+    auto solution = allocateImpl(domain.allocation, failureDetail.reason);
+    if (failed(solution) ||
+        failed(validateSolution(domain.allocation, *solution, failedRegion,
+                                failureDetail.reason))) {
+      if (failedRegion) {
+        failureDetail.storageIndex = domain.storageIndices[*failedRegion];
+      }
+      return failure();
+    }
+    SRAMAllocationDomainSolution placement;
+    placement.arenaBytes =
+        std::max(domain.allocation.payloadBaseOffset, solution->arenaBytes);
+    for (auto [regionIndex, storageIndex] :
+         llvm::enumerate(domain.storageIndices)) {
+      placement.placements.push_back(
+          {storageIndex, solution->offsets[regionIndex]});
+    }
+    result.push_back(std::move(placement));
+  }
+  return result;
 }
 
 FailureOr<std::unique_ptr<SRAMAllocator>>

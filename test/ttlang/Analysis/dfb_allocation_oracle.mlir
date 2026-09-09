@@ -27,6 +27,7 @@
 // CHECK-NEXT: l1_first_fit_worst_efficiency_basis_points=6666
 // CHECK-NEXT: l1_best_fit_worst_efficiency_basis_points=6666
 // CHECK-NEXT: l1_multi_order_large_cases=160
+// CHECK-NEXT: sram_domain_cases=10
 // CHECK-NEXT: target_capacities=32, 64, 32, 32
 // CHECK-NEXT: system_desc_num_cbs=64, 32
 // CHECK-NEXT: contract_cases=262144
