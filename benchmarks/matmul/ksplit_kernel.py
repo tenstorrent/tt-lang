@@ -72,14 +72,16 @@ def make_kernel(
     @ttl.operation(grid=(COL, ROW), fp32_dest_acc_en=fp32_dest_acc_en)
     def ksplit_matmul(a, w, out):
         a_pipes = [
-            ttl.Pipe(src=(k_p * Np, m_p), dst=(slice(k_p * Np, (k_p + 1) * Np), m_p))
+            ttl.Pipe(
+                src=(k_p * Np, m_p), dst=(slice(k_p * Np + 1, (k_p + 1) * Np), m_p)
+            )
             for k_p in range(Kp)
             for m_p in range(Mp)
         ]
         mcast_a_net = ttl.PipeNet(a_pipes)
 
         b_pipes = [
-            ttl.Pipe(src=(col, 0), dst=(col, slice(0, Mp))) for col in range(COL)
+            ttl.Pipe(src=(col, 0), dst=(col, slice(1, Mp))) for col in range(COL)
         ]
         mcast_b_net = ttl.PipeNet(b_pipes)
 

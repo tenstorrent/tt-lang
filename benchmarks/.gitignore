@@ -1,0 +1,5 @@
+**/results/
+**/profile_log_device*.csv
+/matmul/ksplit_sweep.json
+/matmul/ksplit_sweep.failed.json
+/all_gather_minimal_matmul/*.json

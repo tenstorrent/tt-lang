@@ -4,30 +4,37 @@
 """Sweep the ksplit/SUMMA matmul vs ttnn.matmul across shapes.
 
 Each shape runs WARMUP_RUNS untimed passes to compile and warm caches,
-then TIMED_RUNS timed passes with a short sleep between them. Best (min)
-wall time is recorded; PCC is checked against a torch float reference
+then TIMED_RUNS device-profiled passes. Best (min) TT-Metal device kernel
+duration is recorded; PCC is checked against a torch float reference
 on unpadded output. Results go to OUTPUT_CSV for later plotting.
 
 Dispatch: plans with K_parts == 1 run summa_kernel (no reduce_net);
 plans with K_parts >= 2 run ksplit_kernel (gather partial blocks).
 
-Requires ksplit_kernel.py, summa_kernel.py, and config.py in the same
-directory as this script (use copy-file.sh to stage them on remote /tmp
-before run-test.sh).
+Run from the repository root with `python -m benchmarks.matmul.sweep`.
+Writes CSV, a ratio figure, and JSON provenance; failures retain diagnostics
+in JSON and exit nonzero without publishing a partial figure.
 """
 
+import argparse
 import csv
+import json
+import os
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import torch
 import ttnn
 
-from config import plan_matmul
-from ksplit_kernel import make_kernel as make_ksplit_kernel
-from plot import save_plot
-from summa_kernel import make_kernel as make_summa_kernel
-
+from benchmarks.device_timing import latest_kernel_duration, read_device_profile
+from benchmarks.matmul.config import plan_matmul
+from benchmarks.matmul.ksplit_kernel import make_kernel as make_ksplit_kernel
+from benchmarks.matmul.plot import save_plot
+from benchmarks.matmul.summa_kernel import make_kernel as make_summa_kernel
+from benchmarks.provenance import collect_provenance
+from ttlang_test_utils import to_dram
+from utils.correctness import assert_pcc
 
 # Sorted by M*K*N (rough work size). Annotations in labels flag why a
 # shape is interesting (short K, long K, full grid, etc.).
@@ -91,13 +98,7 @@ FIELDS = (
 
 
 def to_dev(t, device):
-    return ttnn.from_torch(
-        t.contiguous(),
-        dtype=ttnn.bfloat16,
-        layout=ttnn.TILE_LAYOUT,
-        device=device,
-        memory_config=ttnn.DRAM_MEMORY_CONFIG,
-    )
+    return to_dram(t.contiguous(), device)
 
 
 def pad_2d(t, rows, cols):
@@ -127,6 +128,30 @@ def time_runs(thunk, cleanup, device):
     return min(times)
 
 
+def device_runs(thunk, cleanup, device):
+    """Use TT-Metal's device-kernel metric for both implementations."""
+    for _iteration in range(WARMUP_RUNS):
+        cleanup(thunk())
+    ttnn.synchronize_device(device)
+    samples = []
+    previous_run_id = -1
+    for _iteration in range(TIMED_RUNS):
+        result = thunk()
+        ttnn.synchronize_device(device)
+        profiler_log = read_device_profile(device)
+        device_ids = device.get_device_ids()
+        if len(device_ids) != 1:
+            raise ValueError("matmul sweep requires exactly one physical device")
+        duration = latest_kernel_duration(profiler_log, device_ids)
+        run_id = duration["per_device"][str(device_ids[0])]["run_host_id"]
+        if run_id <= previous_run_id:
+            raise ValueError("stale device-profiler sample")
+        previous_run_id = run_id
+        samples.append(duration)
+        cleanup(result)
+    return min(sample["us"] for sample in samples) / 1e6, samples
+
+
 def bench_shape(device, label, M, K, N):
     plan = plan_matmul(M, K, N)
     M_pad, N_pad = plan.padded_dims
@@ -141,21 +166,34 @@ def bench_shape(device, label, M, K, N):
     out_k = to_dev(torch.zeros(M_pad, N_pad, dtype=torch.bfloat16), device)
 
     _, _, Kp = plan.part_cfg
+    worker_grid = device.compute_with_storage_grid_size()
+    if plan.part_cfg[1] * Kp > worker_grid.x or plan.part_cfg[0] > worker_grid.y:
+        raise ValueError(f"plan {plan.part_cfg} exceeds device grid {worker_grid}")
     make_kernel = make_summa_kernel if Kp == 1 else make_ksplit_kernel
     fn = make_kernel(M_pad, K, N_pad, plan.block_cfg, plan.part_cfg)
-    ksplit_s = time_runs(
+    ksplit_s, ksplit_samples = device_runs(
         thunk=lambda: fn(a_k, w_k, out_k),
         cleanup=lambda _r: None,
         device=device,
     )
 
     result = ttnn.to_torch(out_k).float()[:M, :N]
+    assert_pcc(ref, result, threshold=0.99)
     pcc = torch.corrcoef(torch.stack([result.flatten(), ref.flatten()]))[0, 1].item()
 
     a_ref = to_dev(a_t, device)
     w_ref = to_dev(w_t, device)
-    ttnn_s = time_runs(
-        thunk=lambda: ttnn.matmul(a_ref, w_ref, compute_kernel_config=TTNN_CFG),
+    native_config = ttnn.init_device_compute_kernel_config(
+        device.arch(),
+        math_fidelity=ttnn.MathFidelity.HiFi4,
+        fp32_dest_acc_en=FP32_ACC,
+        packer_l1_acc=True,
+    )
+    native_output = ttnn.matmul(a_ref, w_ref, compute_kernel_config=native_config)
+    assert_pcc(ref, ttnn.to_torch(native_output).float(), threshold=0.99)
+    ttnn.deallocate(native_output)
+    ttnn_s, ttnn_samples = device_runs(
+        thunk=lambda: ttnn.matmul(a_ref, w_ref, compute_kernel_config=native_config),
         cleanup=ttnn.deallocate,
         device=device,
     )
@@ -183,23 +221,80 @@ def bench_shape(device, label, M, K, N):
         "ttnn_ms": round(ttnn_s * 1000, 4),
         "ratio": round(ksplit_s / ttnn_s, 4),
         "pcc": round(pcc, 6),
+        "device_samples": {"ttlang": ksplit_samples, "ttnn": ttnn_samples},
     }
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--csv", type=Path, default=OUTPUT_CSV)
+    parser.add_argument("--device-id", type=int, default=0)
+    parser.add_argument(
+        "--shape-index",
+        type=int,
+        action="append",
+        help="run only these zero-based SHAPES entries (repeatable)",
+    )
+    arguments = parser.parse_args()
+    if os.getenv("TT_METAL_DEVICE_PROFILER") != "1":
+        parser.error("requires TT_METAL_DEVICE_PROFILER=1 before Python starts")
+    if os.getenv("TT_METAL_PROFILER_MID_RUN_DUMP") != "1":
+        parser.error("requires TT_METAL_PROFILER_MID_RUN_DUMP=1")
+    if not os.getenv("TT_METAL_PROFILER_DIR"):
+        parser.error("requires a run-specific TT_METAL_PROFILER_DIR")
+    for variable in (
+        "TT_METAL_PROFILER_ACCUMULATE",
+        "TTLANG_COMPILE_ONLY",
+        "TTLANG_AUTO_PROFILE",
+        "TTLANG_PERF_DUMP",
+        "TTLANG_SIGNPOST_PROFILE",
+    ):
+        if os.getenv(variable, "0") not in ("", "0"):
+            parser.error(f"unset {variable} before timing")
+    selected_shapes = (
+        SHAPES
+        if arguments.shape_index is None
+        else tuple(SHAPES[index] for index in arguments.shape_index)
+    )
+    source_directory = Path(__file__).parent
+    metadata = {
+        "started_utc": datetime.now(timezone.utc).isoformat(),
+        "provenance": collect_provenance(
+            [
+                *sorted(source_directory.glob("*.py")),
+                source_directory.parent / "device_timing.py",
+            ]
+        ),
+        "profiler_directory": os.environ["TT_METAL_PROFILER_DIR"],
+        "measurement": {
+            "warmup": WARMUP_RUNS,
+            "runs": TIMED_RUNS,
+            "statistic": "minimum_ttmetal_device_kernel_duration",
+            "dtype": "bf16",
+            "layout": "TILE",
+            "memory": "DRAM",
+            "math_fidelity": "HiFi4",
+            "fp32_dest_acc_en": FP32_ACC,
+        },
+        "requested_shapes": selected_shapes,
+    }
     default_l1 = ttnn.device.get_max_worker_l1_unreserved_size()
     device = ttnn.open_device(
-        device_id=0,
+        device_id=arguments.device_id,
+        worker_l1_size=default_l1 - L1_BUDGET_REDUCTION_BYTES,
+    )
+    worker_grid = device.compute_with_storage_grid_size()
+    metadata.update(
+        arch=str(device.arch()),
+        device_id=arguments.device_id,
+        worker_grid=[worker_grid.x, worker_grid.y],
         worker_l1_size=default_l1 - L1_BUDGET_REDUCTION_BYTES,
     )
     results = []
     try:
-        for M, K, N, label in SHAPES:
-            try:
-                r = bench_shape(device, label, M, K, N)
-            except Exception as e:
-                print(f"{label:<32}  FAIL: {e}", flush=True)
-                continue
+        for M, K, N, label in selected_shapes:
+            print(f"Running {label}", flush=True)
+            r = bench_shape(device, label, M, K, N)
             print(
                 f"{label:<32}  "
                 f"ksplit={r['ksplit_ms']:>8.3f}ms  ttnn={r['ttnn_ms']:>8.3f}ms  "
@@ -209,16 +304,24 @@ def main():
                 flush=True,
             )
             results.append(r)
+    except BaseException as error:
+        metadata["failure"] = {"label": label, "error": str(error)}
+        raise
     finally:
         ttnn.close_device(device)
+        metadata["finished_utc"] = datetime.now(timezone.utc).isoformat()
+        metadata["completed_rows"] = results
+        arguments.csv.with_suffix(
+            ".failed.json" if "failure" in metadata else ".json"
+        ).write_text(json.dumps(metadata, indent=2) + "\n")
 
-    with OUTPUT_CSV.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=FIELDS)
+    with arguments.csv.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=FIELDS, lineterminator="\n")
         writer.writeheader()
-        writer.writerows(results)
-    print(f"\nwrote {len(results)} rows to {OUTPUT_CSV}", flush=True)
+        writer.writerows({field: row[field] for field in FIELDS} for row in results)
+    print(f"\nwrote {len(results)} rows to {arguments.csv}", flush=True)
 
-    save_plot(results, path=str(OUTPUT_CSV.with_suffix(".png")))
+    save_plot(results, path=str(arguments.csv.with_suffix(".png")))
 
 
 if __name__ == "__main__":

@@ -24,11 +24,7 @@ from plot import save_plot
 from summa_kernel import make_kernel as make_summa_kernel
 from sweep import (
     SHAPES,
-    WARMUP_RUNS,
-    TIMED_RUNS,
-    SLEEP_BETWEEN_MS,
     L1_BUDGET_REDUCTION_BYTES,
-    FP32_ACC,
     TTNN_CFG,
     FIELDS,
     to_dev,
