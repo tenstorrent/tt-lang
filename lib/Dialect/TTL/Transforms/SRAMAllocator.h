@@ -32,7 +32,7 @@ inline constexpr llvm::StringLiteral kExactSRAMAllocator = "exact";
 
 /// Strategy-specific limits supplied independently of the allocation problem.
 struct SRAMAllocatorOptions {
-  /// Maximum generated candidate offsets and visited partial placements.
+  /// Maximum generated candidate offsets and partial placements per domain.
   uint64_t exactSearchLimit;
 };
 

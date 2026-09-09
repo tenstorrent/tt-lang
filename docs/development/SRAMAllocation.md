@@ -194,7 +194,7 @@ allocateDomains(domains):
     return all domain placements, or failure without a partial result
 ```
 
-`SRAMAllocatorOptions` contains limits that affect strategy execution but do not change the allocation problem. `exactSearchLimit` bounds the exact strategy's combined subset-sum candidates and partial placements. `createSRAMAllocator` maps stable compiler-option names to implementations and supplies these options. `getName()` identifies the implementation in validation diagnostics. A new implementation derives from `SRAMAllocator`, implements `getName()` and `allocateImpl()`, and registers its name in the factory. It cannot change conflict construction or bypass common validation.
+`SRAMAllocatorOptions` contains limits that affect strategy execution but do not change the allocation problem. `exactSearchLimit` bounds the exact strategy's combined subset-sum candidates and partial placements separately for each allocation domain. With `D` domains, total search work can reach `D` times the configured limit. `createSRAMAllocator` maps stable compiler-option names to implementations and supplies these options. `getName()` identifies the implementation in validation diagnostics. A new implementation derives from `SRAMAllocator`, implements `getName()` and `allocateImpl()`, and registers its name in the factory. It cannot change conflict construction or bypass common validation.
 
 The common interface and validation are in `SRAMAllocator.h` and `SRAMAllocator.cpp`. `SRAMAllocator_Greedy.cpp` shares ordering and gap placement across the three greedy strategies; `SRAMAllocator_Exact.cpp` contains exact search. Private declarations in `SRAMAllocator_Internal.h` connect the factory and allow exact search to reuse greedy upper bounds.
 
@@ -302,7 +302,7 @@ allocateExact(problem, workLimit):
     return the maximum component end as the proven minimum arena size
 ```
 
-The proof above establishes completeness of the candidate offsets. Exhaustive enumeration below the incumbent establishes that no smaller placement exists. Component overlay is valid because different components have no conflict edges. The search is exponential in the worst case. `--ttl-l1-exact-allocation-search-limit` bounds generated subset sums and visited partial assignments; reaching the limit fails compilation rather than returning an unproved result.
+The proof above establishes completeness of the candidate offsets. Exhaustive enumeration below the incumbent establishes that no smaller placement exists. Component overlay is valid because different components have no conflict edges. The search is exponential in the worst case. `--ttl-l1-exact-allocation-search-limit` bounds generated subset sums and visited partial assignments per domain; reaching the limit fails compilation rather than returning an unproved result.
 
 The allocator interface contains no MLIR operations, DFB identities, architecture identities, tensor identities, or target branches. It receives normalized alignment and budget values through the allocation problem. Adding a strategy requires an implementation of the placement interface and a stable factory name. Conflict construction, storage-owner mapping, target queries, validation, metadata emission, and runtime allocation remain unchanged.
 

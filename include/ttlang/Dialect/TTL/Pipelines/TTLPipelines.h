@@ -122,8 +122,8 @@ struct TTLToTTKernelPipelineOptions
   Option<std::uint64_t> l1ExactAllocationSearchLimit{
       *this, "l1-exact-allocation-search-limit",
       llvm::cl::desc("Maximum work items examined by exact compiler-l1 "
-                     "placement "
-                     "before reporting an inconclusive result."),
+                     "placement per allocation domain before reporting an "
+                     "inconclusive result."),
       llvm::cl::init(1000000)};
   Option<bool> unsafeAssumeAllocationGroups{
       *this, "unsafe-assume-allocation-groups",

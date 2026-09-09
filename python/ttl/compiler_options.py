@@ -85,7 +85,7 @@ def _make_parser() -> argparse.ArgumentParser:
         dest="l1_exact_allocation_search_limit",
         type=_positive_int,
         help="Limit exact compiler-owned L1 placement to this many work "
-        "items (default: 1000000).",
+        "items per allocation domain (default: 1000000).",
     )
     p.add_argument(
         "--ttl-maximize-dst",
