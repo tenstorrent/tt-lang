@@ -650,6 +650,34 @@ getFinalizedDFBStorageFootprint(ModuleOp module) {
     }
   }
 
+  if (auto reconfigurationPlan = module->getAttrOfType<DictionaryAttr>(
+          kDFBReconfigurationPlanAttrName)) {
+    auto dfbEntries = reconfigurationPlan.getAs<ArrayAttr>("dfbs");
+    if (!dfbEntries) {
+      module.emitOpError() << kDFBReconfigurationPlanAttrName
+                           << " requires a dfbs array";
+      return failure();
+    }
+    for (auto indexedEntry : llvm::enumerate(dfbEntries)) {
+      auto entry = dyn_cast<DictionaryAttr>(indexedEntry.value());
+      auto physicalIndex =
+          entry ? entry.getAs<IntegerAttr>("dfb_index") : IntegerAttr();
+      auto configurations =
+          entry ? entry.getAs<ArrayAttr>("configurations") : ArrayAttr();
+      if (!entry || !physicalIndex || physicalIndex.getInt() < 0 ||
+          !configurations) {
+        module.emitOpError()
+            << kDFBReconfigurationPlanAttrName << " dfbs entry "
+            << indexedEntry.index()
+            << " requires a nonnegative dfb_index and configurations array";
+        return failure();
+      }
+      if (configurations.size() > 1) {
+        result.reconfiguredPhysicalIndices.insert(physicalIndex.getInt());
+      }
+    }
+  }
+
   bool hasUnknownDomain = llvm::any_of(
       llvm::make_second_range(domainByPhysicalIndex),
       [](const LaunchNodeDomain &domain) { return !domain.known; });
