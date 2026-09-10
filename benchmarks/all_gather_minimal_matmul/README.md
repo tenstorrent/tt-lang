@@ -36,6 +36,7 @@ The performance comparison uses versions 2 and 3 against the native TT-Metal ref
 | [`__main__.py`](__main__.py) | Inputs, correctness checks, device timing and provenance for both implementations. |
 | [`profile.py`](profile.py) | Python dispatch profiling; not used for device-performance results. |
 | [`ccl_comparison.py`](ccl_comparison.py) | Identical activation collective measured alone and within replicated matmul. |
+| [`source_size.py`](source_size.py) | Reproduce the per-version Python/native C++ source-line counts, excluding comments and blank lines. |
 | [`PERFORMANCE.md`](PERFORMANCE.md) | Four-device results and exact measured configurations. |
 | [`images/`](images/) | Four-device dataflow diagrams. |
 | [Examples](../../examples/all_gather_minimal_matmul/README.md) | Separate N-sharded and replicated-output implementations, with shared collectives. |
