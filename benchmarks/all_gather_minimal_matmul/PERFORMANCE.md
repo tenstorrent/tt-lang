@@ -5,7 +5,7 @@ return the same replicated M x N result. Inputs/output are BF16 TILE tensors
 in interleaved DRAM; matmul uses HiFi2, FP32 destinations and packer accumulation,
 with row bias.
 
-Device trace replay, three warmups and five samples (ten for replicated-weight N=1280). Each sample is the mean
+Device trace replay, three warmups and five samples. Each sample is the mean
 across four devices. TT-Lang includes both matmul and output all-gather, from
 the first kernel start to the final kernel end on each device. Native uses its
 fused program. Host preparation and synchronization are outside the interval.
@@ -13,8 +13,8 @@ Parentheses show sample minimum and maximum.
 
 | Global N | N-sharded + gather ms (range) | Replicated weights ms (range) | Native ms (range) | N-sharded / native | Replicated / native |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 1280 | 1.669 (1.668-1.672) | 3.681 (3.671-3.693) | 0.358 (0.357-0.360) | 4.663 | 10.281 |
-| 3840 | 2.698 (2.689-2.720) | 6.238 (6.226-6.250) | 0.688 (0.685-0.691) | 3.921 | 9.066 |
+| 1280 | 1.608 (1.607-1.611) | 3.516 (3.488-3.526) | 0.356 (0.353-0.360) | 4.515 | 9.869 |
+| 3840 | 2.582 (2.576-2.589) | 5.822 (5.758-5.856) | 0.692 (0.686-0.693) | 3.732 | 8.416 |
 
 | Parameter | TT-Lang N=1280 | TT-Lang N=3840 | Native, both N values |
 | --- | --- | --- | --- |
@@ -30,7 +30,7 @@ Replicated-weight TT-Lang uses the same 2x10 grid and 2D fabric, full-K L1 reuse
 and M/K/N blocks 2/10/2 or 2/10/6 for N=1280 or 3840. Activation all-gather is
 direct for N=1280 and ring for N=3840.
 
-Measured 2026-09-10 UTC: native 09:55:09-09:55:36; N-sharded 11:01:07-11:03:28; replicated weights 10:54:53 (N=1280), 10:19:22 (N=3840). TT-Lang `d8072cd17814` plus gather-buffer/message changes (harness/collective SHA-256 `25ea31a414ef`/`656aaa5e4588`); TT-Metal/LLVM source pins `ea042c4ad623`/`37aca9d384347`; TT-Lang CAPI/TTNN/Metal binary SHA-256 prefixes `be08c3e387c69`/`62edde2b1f61`/`65380f11dc15`; IRD v1.1.9.
+Measured 2026-09-10 11:38:33-11:40:42 UTC; TT-Lang `85da7e527797` (clean); TT-Metal/LLVM source pins `ea042c4ad623`/`37aca9d384347`; CAPI/TTNN/Metal SHA-256 prefixes `20a74e405369`/`62edde2b1f61`/`65380f11dc15`; IRD v1.1.9 image digest `6eaf96b4b00d`.
 
 Every measured output replica passes BF16 checks against FP32 PyTorch:
 Pearson correlation >= 0.99 and elementwise relative/absolute tolerances of 0.05.

@@ -97,8 +97,8 @@ For N=3840, change only `--n-tiles 120` and the report filename.
 
 TT-Lang replicated-weight measurements use `--variant replicated`,
 `--reuse-activation`, transposed 2x10, M/K blocks 2/10, and N blocks 2 or 6
-for global N=1280 or 3840. Use direct activation all-gather and ten samples
-for N=1280; `--activation-all-gather ring` and five samples for N=3840.
+for global N=1280 or 3840. Use direct activation all-gather for N=1280 and
+`--activation-all-gather ring` for N=3840; three warmups and five samples for both.
 
 ## Collective comparison
 
