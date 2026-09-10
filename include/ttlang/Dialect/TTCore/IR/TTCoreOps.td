@@ -129,14 +129,17 @@ def TTCore_CPUModuleOp : TTCore_Op<"cpu_module", [
   let hasVerifier = 1;
 }
 
-def TTCore_DeviceOp : TTCore_Op<"device", [Symbol]> {
+def TTCore_DeviceOp
+    : TTCore_Op<"device", [SymbolName, SymbolVisibility, Symbol]> {
   let summary = "Named device";
   let description = [{
   }];
 
-  let arguments = (ins SymbolNameAttr:$sym_name, TTCore_DeviceAttr:$device_attr);
+  let arguments = (ins SymbolNameAttr:$sym_name,
+                       OptionalAttr<StrAttr>:$sym_visibility,
+                       TTCore_DeviceAttr:$device_attr);
 
-  let assemblyFormat = "$sym_name `=` $device_attr attr-dict";
+  let assemblyFormat = "($sym_visibility^)? $sym_name `=` $device_attr attr-dict";
 }
 
 // TODO(dmilinkovic): the decision to make this op Pure should be revisited
@@ -188,15 +191,21 @@ def TTCore_OptimizationBarrierOp : TTCore_Op<"optimization_barrier", [MemoryEffe
   let results = (outs Variadic<AnyRankedTensor>:$results);
 }
 
-def TTCore_GlobalOp : TTCore_Op<"global", [Symbol]> {
+def TTCore_GlobalOp
+    : TTCore_Op<"global", [SymbolName, SymbolVisibility, Symbol]> {
   let summary = "Named global";
   let description = [{
     Declares a global variable with an optional index.
   }];
 
-  let arguments = (ins SymbolNameAttr:$sym_name, TypeAttr:$type, OptionalAttr<SI32Attr>:$index);
+  let arguments = (ins SymbolNameAttr:$sym_name,
+                       OptionalAttr<StrAttr>:$sym_visibility,
+                       TypeAttr:$type,
+                       OptionalAttr<SI32Attr>:$index);
 
-  let assemblyFormat = "$sym_name `=` $type (` ` `[` $index^ `]`)? attr-dict";
+  let assemblyFormat = [{
+    ($sym_visibility^)? $sym_name `=` $type (` ` `[` $index^ `]`)? attr-dict
+  }];
 }
 
 def TTCore_GetGlobalOp : TTCore_Op<"get_global", [Pure]> {

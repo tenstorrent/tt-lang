@@ -123,6 +123,7 @@ static bool verifyTargetDFBIndexCapacities() {
     mlir::tt::ttcore::DeviceOp::create(
         builder, deviceModule->getLoc(),
         mlir::tt::ttcore::getDefaultDeviceName(),
+        /*symVisibility=*/nullptr,
         mlir::tt::ttcore::DeviceAttr::get(&context, systemDesc));
     mlir::FailureOr<mlir::tt::TargetDFBIndexCapacity> deviceCapacity =
         mlir::tt::resolveTargetDFBIndexCapacity(*deviceModule, failureReason);

@@ -1308,7 +1308,8 @@ getOrCreateConstantTableGlobal(ConversionPatternRewriter &rewriter,
   OpBuilder::InsertionGuard guard(rewriter);
   rewriter.setInsertionPointToStart(module.getBody());
   return emitc::GlobalOp::create(rewriter, anchor->getLoc(), symbolName,
-                                 arrayType, initializer,
+                                 /*symVisibility=*/nullptr, arrayType,
+                                 initializer,
                                  /*externSpecifier=*/false,
                                  /*staticSpecifier=*/true,
                                  /*constSpecifier=*/true);
