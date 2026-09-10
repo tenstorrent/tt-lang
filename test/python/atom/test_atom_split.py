@@ -2567,6 +2567,65 @@ def test_producer_with_no_uses_is_rejected():
         split_function_body(fn, dfb_param_names=set(), local_dfb_names={"a_cb"})
 
 
+def test_push_compute_compatibility_spelling_owns_reserve_on_compute():
+    fn = _fn(
+        """
+        def k():
+            block = buffer.reserve()
+            block.push_compute()
+        """
+    )
+
+    result = split_function_body(fn, dfb_param_names={"buffer"})
+    compute = _kind_src(result, KernelKind.COMPUTE)
+    data_movement = _kind_src(result, KernelKind.DATA_MOVEMENT)
+    assert "buffer.reserve()" in compute
+    assert "block.push_compute()" in compute
+    assert "buffer.reserve()" not in data_movement
+
+
+@pytest.mark.parametrize(
+    ("acquire", "release"),
+    [("reserve", "push_ncrisc"), ("wait", "pop_ncrisc")],
+)
+def test_ncrisc_compatibility_spelling_owns_dfb_transaction(acquire, release):
+    fn = _fn(
+        f"""
+        def k():
+            block = buffer.{acquire}()
+            block.{release}()
+        """
+    )
+
+    result = split_function_body(fn, dfb_param_names={"buffer"})
+    data_movement = _kind_src(result, KernelKind.DATA_MOVEMENT)
+    compute = _kind_src(result, KernelKind.COMPUTE)
+    assert f"buffer.{acquire}()" in data_movement
+    assert f"block.{release}()" in data_movement
+    assert f"buffer.{acquire}()" not in compute
+
+
+def test_ncrisc_pop_inside_control_does_not_leak_block_to_compute():
+    """Match the resident K3 handoff shape that crosses a scalar if."""
+    fn = _fn(
+        """
+        def k(result):
+            value = output.wait()
+            if final_iteration:
+                ttl.copy(value, result).wait()
+            value.pop_ncrisc()
+            ttl.fill(0.0, shape=(1, 1))
+        """
+    )
+
+    result = split_function_body(fn, dfb_param_names={"output"})
+    data_movement = _kind_src(result, KernelKind.DATA_MOVEMENT)
+    compute = _kind_src(result, KernelKind.COMPUTE)
+    assert "output.wait()" in data_movement
+    assert "value.pop_ncrisc()" in data_movement
+    assert "output.wait()" not in compute
+
+
 def test_producer_split_across_data_movement_kernels_is_rejected():
     """One reserve cannot feed two distinct data-movement callbacks."""
     fn = _fn(

@@ -117,6 +117,11 @@ _BLOCK_METHODS: Dict[str, Union[KernelKind, _Placement]] = {
     "store": KernelKind.COMPUTE,
     "pop": _Placement.DEFERRED,
     "push": _Placement.DEFERRED,
+    # Compatibility spellings used by resident kernels to make otherwise
+    # opaque DFB ownership explicit without a ``kernel=`` keyword.
+    "push_compute": KernelKind.COMPUTE,
+    "push_ncrisc": KernelKind.DATA_MOVEMENT,
+    "pop_ncrisc": KernelKind.DATA_MOVEMENT,
 }
 
 # Methods on a DFB name that produce a block.
@@ -1734,9 +1739,10 @@ def _collect_block_ownership(
                             sub_external_kernels,
                         )
                     return
-                if receiver in visible and method == "store":
-                    inferred_users[receiver].add(KernelKind.COMPUTE)
-                    block_method_selection = frozenset({KernelKind.COMPUTE})
+                block_method = _BLOCK_METHODS.get(method)
+                if receiver in visible and isinstance(block_method, KernelKind):
+                    inferred_users[receiver].add(block_method)
+                    block_method_selection = frozenset({block_method})
                 if method in _PIPENET_METHODS:
                     callback_kernel = _PIPENET_METHODS[method]
                     sub_data_movement_kernels = frozenset({callback_kernel})
