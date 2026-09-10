@@ -11,9 +11,9 @@ communication independently; equal resource usage is not required. Report
 the selected worker count and configuration for each result.
 
 For M/K/N=9472/5120/15360 on four Blackhole P150b devices, replicated TT-Lang
-uses 130 compute workers/device and takes 10.343 ms; native uses 108 and takes
-6.883 ms (TT-Lang/native: 1.503). N-sharded TT-Lang plus output gather uses
-60 workers/device and takes 24.156 ms. See [results and configurations](PERFORMANCE.md).
+uses 130 compute workers/device and takes 10.248 ms; native uses 108 and takes
+6.883 ms (TT-Lang/native: 1.489). N-sharded TT-Lang plus output gather uses
+60 workers/device and takes 24.154 ms. See [results and configurations](PERFORMANCE.md).
 Performance parity with native has not been established.
 
 ## TT-Lang versions

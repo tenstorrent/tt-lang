@@ -1,7 +1,7 @@
 # All-Gather Minimal Matmul
 
-Four-device M/K/N=9472/5120/15360 device times: replicated TT-Lang 10.343 ms
-(130 compute workers/device), N-sharded plus output gather 24.156 ms (60),
+Four-device M/K/N=9472/5120/15360 device times: replicated TT-Lang 10.248 ms
+(130 compute workers/device), N-sharded plus output gather 24.154 ms (60),
 and native 6.883 ms (108). See the [performance report](../../benchmarks/all_gather_minimal_matmul/PERFORMANCE.md).
 
 | TT-Lang version (oldest to newest) | Entry point and selection | Result on each device |
