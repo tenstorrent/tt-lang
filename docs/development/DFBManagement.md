@@ -128,16 +128,33 @@ convert-ttl-to-ttkernel            (Module) Lower to TTKernel dialect
 ttkernel-insert-inits              (Module) Insert hardware init calls
   ... L1 accumulation, cleanup ...
 ttkernel-specialize-cores          (Module, optional) Clone coordinate-dependent kernels
-canonicalize, cse                  (Module, after specialization) Remove untaken coordinate branches
+canonicalize, cse                  (Module, after specialization) Resolve coordinate-dependent control flow
+ttkernel-batch-static-pipenet-receives
+                                    (FuncOp) Post proven initial receives before waiting
+ttkernel-unroll-static-pipenet-record-loops
+                                    (FuncOp) Unroll static local record loops
+lower-affine                      (Module) Expose index arithmetic for folding
+canonicalize, cse                  (Module) Fold selected record tables
+ttkernel-cleanup                  (Module) Optimize writes with resolved endpoints
 ttkernel-finalize-tensor-runtime-args (Module) Finalize tensor and DFB argument indices
 canonicalize                       (Module) Remove obsolete argument expressions
 ttkernel-annotate-dfb-use          (Module, specialized only) Record surviving physical DFB uses
 ```
 
-Tensor runtime-argument finalization runs with or without per-core
-specialization. Core specialization and DFB-use annotation are optional.
-Annotation follows canonicalization so an eliminated branch cannot keep an
-otherwise-unused DFB live on that clone's launch node.
+Core specialization and DFB-use annotation are optional. [Initial receive
+batching](PipeReceiveBatching.md), record-loop unrolling,
+cleanup, and tensor runtime-argument finalization run in both modes. Finalization
+follows record-loop cleanup so eliminated uses cannot retain obsolete arguments;
+annotation then records only surviving DFB uses on each clone's launch node.
+
+The C++ TTL-to-TTKernel pipeline, standalone specialization pipeline, and
+Python compiler use the same record-cleanup builder. Python selects the
+registered `ttkernel-cleanup-and-finalize-runtime-args` pipeline without
+specialization; `ttkernel-specialize-and-annotate-dfb-use` includes that same
+sequence after specialization. Affine lowering precedes index folding inside
+that sequence; Python lowers signposts to EmitC afterward. Keeping argument
+finalization after record cleanup prevents eliminated
+record-table uses from retaining unnecessary runtime arguments.
 
 `ttl-finalize-dfb-indices` must precede
 `ttl-set-compute-kernel-config` and `ttl-annotate-cb-associations`.

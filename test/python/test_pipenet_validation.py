@@ -73,6 +73,24 @@ def test_operation_pipenets_infers_graph_device_domain():
     assert operation_pipenets.resolve_device_domain(None) == domain
 
 
+def test_operation_pipenets_reports_graph_device_endpoints():
+    domain = ttl.DeviceDomain((1, 3))
+    graph = ttl.TransferGraph.edges(
+        domain,
+        edges=[((0, 0), (0, 1)), ((0, 1), (0, 2))],
+    )
+
+    operation_pipenets = _build_pipenet_graph([ttl.PipeNet(graph=graph)])
+
+    assert operation_pipenets.device_endpoints() == frozenset(
+        {
+            domain.device_ref((0, 0)),
+            domain.device_ref((0, 1)),
+            domain.device_ref((0, 2)),
+        }
+    )
+
+
 def test_operation_pipenets_rejects_mismatched_device_domains():
     graph_domain = ttl.DeviceDomain((1, 2))
     operation_domain = ttl.DeviceDomain((2, 1))
