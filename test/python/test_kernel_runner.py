@@ -4948,6 +4948,105 @@ def test_run_kernel_replaces_global_semaphores_between_invocations(monkeypatch):
     ] == [2, 3]
 
 
+def test_prepare_device_invocation_preserves_global_semaphore_addresses(monkeypatch):
+    fake_ttnn = _LifetimeTrackingTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+    reset_values = []
+    monkeypatch.setattr(
+        fake_ttnn,
+        "reset_global_semaphore_value",
+        lambda semaphore, value: reset_values.append((semaphore.identifier, value)),
+        raising=False,
+    )
+    tensor = _FakeTensor(object())
+    core_ranges = _FakeCoreRanges()
+    cache = kernel_runner.KernelRuntimeResourceCache()
+
+    def run():
+        return kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[tensor],
+            cb_configs=[],
+            core_ranges=core_ranges,
+            num_pipe_global_semaphores=2,
+            runtime_resource_cache=cache,
+        )
+
+    with kernel_runner.prepare_device_invocation(run) as prepared:
+        assert reset_values == [(0, 0), (1, 0)]
+        preparation_events = list(fake_ttnn.events)
+        prepared()
+        assert fake_ttnn.events == preparation_events
+        assert [
+            semaphore.identifier for semaphore in cache.pipe_resources.global_semaphores
+        ] == [0, 1]
+        with pytest.raises(RuntimeError, match="captured once"):
+            prepared()
+
+    run()
+    assert [
+        semaphore.identifier for semaphore in cache.pipe_resources.global_semaphores
+    ] == [2, 3]
+
+
+def test_prepare_device_invocation_rejects_nested_preparation():
+    with kernel_runner.prepare_device_invocation(lambda: None):
+        with pytest.raises(RuntimeError, match="cannot be nested"):
+            with kernel_runner.prepare_device_invocation(lambda: None):
+                pytest.fail("nested preparation must fail before execution")
+
+
+@pytest.mark.parametrize(
+    "change,diagnostic",
+    [
+        ("layout", "changed its runtime resource layout"),
+        ("repeat", "changed its operation order"),
+        ("omit", "omitted a prepared operation"),
+        ("cache", "changed its operation order"),
+    ],
+)
+def test_prepared_invocation_rejects_resource_changes(monkeypatch, change, diagnostic):
+    fake_ttnn = _LifetimeTrackingTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+    monkeypatch.setattr(
+        fake_ttnn, "reset_global_semaphore_value", lambda *_args: None, raising=False
+    )
+    tensor = _FakeTensor(object())
+    core_ranges = _FakeCoreRanges()
+    cache = kernel_runner.KernelRuntimeResourceCache()
+    replacement_cache = kernel_runner.KernelRuntimeResourceCache()
+    modify = False
+
+    def run():
+        if modify and change == "omit":
+            return
+        for _invocation in range(2 if modify and change == "repeat" else 1):
+            kernel_runner.run_kernel_on_device(
+                kernel_specs=[],
+                tensors=[tensor],
+                cb_configs=[],
+                core_ranges=core_ranges,
+                num_pipe_global_semaphores=3 if modify and change == "layout" else 2,
+                runtime_resource_cache=(
+                    replacement_cache if modify and change == "cache" else cache
+                ),
+            )
+
+    with kernel_runner.prepare_device_invocation(run) as prepared:
+        preparation_events = list(fake_ttnn.events)
+        modify = True
+        with pytest.raises(RuntimeError, match=diagnostic):
+            prepared()
+        assert fake_ttnn.events == preparation_events
+    assert kernel_runner._PREPARED_DEVICE_INVOCATION.get() is None
+
+
 def test_run_kernel_allows_concurrent_resource_free_invocations(monkeypatch):
     cache = kernel_runner.KernelRuntimeResourceCache()
     invocation_lock = threading.Lock()

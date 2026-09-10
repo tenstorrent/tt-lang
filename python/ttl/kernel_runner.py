@@ -14,6 +14,8 @@ building and execution.
 """
 
 from dataclasses import dataclass, field, replace
+from contextlib import contextmanager
+from contextvars import ContextVar
 import hashlib
 import json
 import math
@@ -441,6 +443,80 @@ class KernelRuntimeResourceCache:
     owned_l1_buffer_addresses: frozenset[int] = frozenset()
     portable_resource_lifetimes: Tuple[object, ...] = ()
     portable_resource_device: Optional[Any] = None
+
+
+@dataclass
+class _PreparedDeviceInvocation:
+    run: Callable
+    caches: Dict[int, KernelRuntimeResourceCache] = field(default_factory=dict)
+    prepared: bool = False
+    invoked: bool = False
+    captured_cache_count: int = 0
+    preparation_output: Any = None
+
+    def register(self, cache):
+        identity = id(cache)
+        if self.prepared:
+            expected = tuple(self.caches)
+            if (
+                self.captured_cache_count >= len(expected)
+                or expected[self.captured_cache_count] != identity
+            ):
+                raise RuntimeError("captured invocation changed its operation order")
+            self.captured_cache_count += 1
+            return
+        if identity in self.caches:
+            raise ValueError(
+                "trace preparation requires each resource-owning operation once"
+            )
+        cache.lock.acquire()
+        self.caches[identity] = cache
+
+    def __call__(self):
+        if not self.prepared or self.invoked:
+            raise RuntimeError("a prepared device invocation can be captured once")
+        self.invoked = True
+        output = self.run()
+        if self.captured_cache_count != len(self.caches):
+            raise RuntimeError("captured invocation omitted a prepared operation")
+        return output
+
+
+_PREPARED_DEVICE_INVOCATION = ContextVar("prepared_device_invocation", default=None)
+_DEVICE_INVOCATION_PREPARATION_LOCK = threading.Lock()
+
+
+@contextmanager
+def prepare_device_invocation(run):
+    """Execute once, then retain and reset resources for one trace capture/replay.
+
+    The caller captures the yielded callable once and completes that replay
+    before leaving this context. Inputs, outputs and operation order must remain
+    unchanged. Each resource-owning operation may occur only once. Cache locks
+    prevent concurrent calls from replacing allocations embedded in the trace.
+    """
+    if _PREPARED_DEVICE_INVOCATION.get() is not None:
+        raise RuntimeError("device invocation preparation cannot be nested")
+    invocation = _PreparedDeviceInvocation(run)
+    token = _PREPARED_DEVICE_INVOCATION.set(invocation)
+    try:
+        # Serial preparation avoids opposite cache-lock acquisition orders.
+        with _DEVICE_INVOCATION_PREPARATION_LOCK:
+            invocation.preparation_output = run()
+            for cache in invocation.caches.values():
+                if cache.portable_resource_lifetimes:
+                    raise ValueError(
+                        "trace preparation requires compiler-managed runtime resources"
+                    )
+                ttnn.synchronize_device(cache.device)
+                for semaphore in cache.pipe_resources.global_semaphores:
+                    ttnn.reset_global_semaphore_value(semaphore, 0)
+            invocation.prepared = True
+        yield invocation
+    finally:
+        _PREPARED_DEVICE_INVOCATION.reset(token)
+        for cache in reversed(tuple(invocation.caches.values())):
+            cache.lock.release()
 
 
 def _release_portable_runtime_resources_impl(
@@ -2423,9 +2499,16 @@ def _get_cached_runtime_resources_impl(
         and cache.pipe_resources is not None
         and cache.reconfiguration_resources is not None
     ):
-        if num_pipe_global_semaphores == 0:
+        invocation = _PREPARED_DEVICE_INVOCATION.get()
+        if num_pipe_global_semaphores == 0 or (
+            invocation is not None and invocation.prepared
+        ):
             return cache.pipe_resources, cache.reconfiguration_resources
         _release_cached_runtime_resources_impl(cache)
+
+    invocation = _PREPARED_DEVICE_INVOCATION.get()
+    if invocation is not None and invocation.prepared:
+        raise RuntimeError("captured invocation changed its runtime resource layout")
 
     if cache is not None and cache.compatibility_key is not None:
         _release_cached_runtime_resources_impl(cache)
@@ -4407,6 +4490,9 @@ def run_kernel_on_device(
         arguments["runtime_resource_cache"] = None
         return _run_kernel_on_device_impl(**arguments)
 
+    invocation = _PREPARED_DEVICE_INVOCATION.get()
+    if invocation is not None:
+        invocation.register(runtime_resource_cache)
     with runtime_resource_cache.lock:
         return _run_kernel_on_device_impl(**arguments)
 
