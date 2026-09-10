@@ -2,26 +2,46 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compute ``all_gather(activation) @ weight + bias`` across a fabric mesh.
+"""All-gather + matmul + row bias.
 
-Activation is sharded along K; weight, row bias, and output are sharded along N.
-Each device gathers activation blocks into L1, broadcasts them across its N
-workers, and multiplies them by weight blocks broadcast across its M workers.
-Cached activations are reused across N blocks. Compute and data movement run
-in separate concurrent kernels; bias is added after the full K reduction.
-Inputs and outputs use BF16 or FP32 tensors in TILE layout and DRAM storage.
+Interface: BF16/FP32, TILE layout, DRAM tensors.
+Sharding: activation along K; weight, bias, output along N.
+Result: output_shard = all_gather(activation_shard) @ weight_shard + bias_shard
 
-The TT-Lang implementation is the nested ``all_gather_minimal_matmul`` function
-inside ``make_all_gather_minimal_matmul_operation``, below the configuration
-class and worker-network setup. Its three kernels receive activations/write
-outputs, send activations/distribute weights, and compute matmul plus bias.
+Per device, three kernels execute concurrently::
 
-Run from the repository root in an activated, fabric-enabled TT-Lang container,
-with all visible devices idle (the default discovers the participant mesh)::
+    receive_activations_and_write_output:
+        for each M block, N block:
+            if first N block or activation reuse is disabled:
+                receive remote K blocks into L1
+                broadcast gathered K blocks across N workers
+            else:
+                republish cached full-K activation blocks
+            write completed output block to DRAM
+
+    send_activations_and_broadcast_weights:
+        for each M block, N block:
+            if first N block or activation reuse is disabled:
+                send this device's activation K blocks to peer devices
+            broadcast weight K blocks across M workers
+            read row bias
+
+    compute_matmul_and_bias:
+        for each M block, N block:
+            accumulator = 0
+            for each K block from every device:
+                wait for activation and weight blocks
+                accumulator += activation_block @ weight_block
+            output_block = cast(accumulator + broadcast(row_bias))
+
+Implementation: ``all_gather_minimal_matmul`` nested inside
+``make_all_gather_minimal_matmul_operation``, below configuration/network setup.
+
+Run: repository root, activated fabric-enabled container, visible devices idle::
 
     timeout 300 python -m examples.all_gather_minimal_matmul 2>&1 | tee /tmp/device_test.log
 
-See ``README.md`` beside this file for dimensions and mesh selection.
+Dimensions and mesh selection: ``README.md`` beside this file.
 """
 
 from __future__ import annotations
