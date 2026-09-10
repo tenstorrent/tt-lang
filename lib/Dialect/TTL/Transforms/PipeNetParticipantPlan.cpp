@@ -41,11 +41,6 @@ LogicalResult validateLocalPipeNetParticipantPlanInputs(
     PipeNetRecordsAttr records, PipeRole role, int64_t gridX, int64_t gridY,
     llvm::function_ref<InFlightDiagnostic()> emitError) {
   if (gridX <= 0 || gridY <= 0) {
-    if (emitError) {
-      emitError()
-          << "local PipeNet launch grid (" << gridX << ", " << gridY
-          << ") must have two positive extents; correct the launch grid";
-    }
     return failure();
   }
   std::optional<int64_t> maybeGridArea = llvm::checkedMul(gridX, gridY);
@@ -63,12 +58,6 @@ LogicalResult validateLocalPipeNetParticipantPlanInputs(
 
   for (auto [recordIndex, record] : llvm::enumerate(records.getPipes())) {
     if (record.getDeviceTransfer()) {
-      if (emitError) {
-        emitError()
-            << "PipeNet record " << recordIndex
-            << " specifies a logical-device transfer but local planning "
-               "was requested; use logical-device PipeNet lowering";
-      }
       return failure();
     }
     for (const PipeRecordRoleFacts &facts :
