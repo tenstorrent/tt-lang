@@ -132,6 +132,11 @@ def parse_args():
     )
     parser.add_argument("--dtype", choices=("bf16", "fp32"), default="bf16")
     parser.add_argument("--gather-output", action="store_true")
+    parser.add_argument(
+        "--dedicated-communication-workers",
+        type=positive_int,
+        help="reserve column zero for this many ring workers; --worker-grid describes compute workers",
+    )
     parser.add_argument("--collective-only", choices=("activation", "output"))
     parser.add_argument(
         "--compare-activation-ccl",
@@ -379,6 +384,7 @@ def create_workloads(
     gather_output=False,
     variant="n_sharded",
     activation_all_gather="all_to_all",
+    dedicated_communication_workers=None,
     output_all_gather="all_to_all",
     output_gather_block_tiles=None,
     output_gather_m_block_tiles=1,
@@ -432,11 +438,21 @@ def create_workloads(
                 if variant == "replicated"
                 else make_all_gather_minimal_matmul_operation
             )
+            operation_options = {}
+            if dedicated_communication_workers is not None:
+                if variant != "n_sharded":
+                    raise ValueError(
+                        "dedicated communication requires N-sharded compute"
+                    )
+                operation_options["dedicated_communication_workers"] = (
+                    dedicated_communication_workers
+                )
             operation = operation_factory(
                 config,
                 math_fidelity=math_fidelity,
                 fp32_dest_acc_en=fp32_dest_acc,
                 all_gather_algorithm=activation_all_gather,
+                **operation_options,
             )
             activation_gathered = None
             if variant == "replicated" and config.device_count > 1:
@@ -838,6 +854,20 @@ def run_isolated_variants(arguments):
 
 def main():
     arguments = parse_args()
+    if arguments.dedicated_communication_workers is not None:
+        if (
+            arguments.variant != "n_sharded"
+            or arguments.collective_only
+            or arguments.implementation != "ttlang"
+        ):
+            raise ValueError(
+                "dedicated communication requires --implementation ttlang --variant n_sharded"
+            )
+        if not arguments.transpose or arguments.activation_all_gather != "ring":
+            raise ValueError(
+                "dedicated communication requires --transpose --activation-all-gather ring"
+            )
+        arguments.trace = True
     if arguments.compare_activation_ccl:
         if (
             arguments.implementation != "ttlang"
@@ -907,6 +937,8 @@ def main():
                 / "examples/all_gather_minimal_matmul/per_row_all_gather/operation.py",
                 Path(__file__).resolve().parents[2]
                 / "examples/all_gather_minimal_matmul/two_worker_ring/operation.py",
+                Path(__file__).resolve().parents[2]
+                / "examples/all_gather_minimal_matmul/dedicated_communication/operation.py",
                 Path(__file__).resolve().parents[2]
                 / "examples/all_gather_minimal_matmul/replicated/operation.py",
                 Path(__file__).with_name("ccl_comparison.py"),
@@ -988,6 +1020,13 @@ def main():
             device_ids=list(mesh.get_device_ids()),
             arch=str(mesh.arch()),
             compute_grid=config.grid,
+            compute_workers_per_device=prod(config.grid),
+            dedicated_communication_workers=arguments.dedicated_communication_workers,
+            operation_grid=(
+                (config.grid[0] + 1, config.grid[1])
+                if arguments.dedicated_communication_workers is not None
+                else config.grid
+            ),
             math_fidelity=arguments.math_fidelity,
             fabric_config=str(FABRIC_CONFIGS[selected_fabric_name]),
             fp32_dest_acc_en=arguments.fp32_dest_acc,
@@ -1079,6 +1118,7 @@ def main():
                 gather_output=arguments.gather_output,
                 variant=arguments.variant,
                 activation_all_gather=arguments.activation_all_gather,
+                dedicated_communication_workers=arguments.dedicated_communication_workers,
                 output_all_gather=arguments.output_all_gather,
                 output_gather_block_tiles=arguments.output_gather_block_tiles,
                 output_gather_m_block_tiles=arguments.output_gather_m_block_tiles,

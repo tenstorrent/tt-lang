@@ -10,11 +10,11 @@ global inputs, precision and replicated output. Tune compute grids, blocks and
 communication independently; equal resource usage is not required. Report
 the selected worker count and configuration for each result.
 
-For M/K/N=9472/5120/15360 on four Blackhole P150b devices, replicated TT-Lang
-uses 130 compute workers/device and takes 10.248 ms; native uses 108 and takes
-6.883 ms (TT-Lang/native: 1.489). N-sharded TT-Lang plus output gather uses
-60 workers/device and takes 24.154 ms. See [results and configurations](PERFORMANCE.md).
-Performance parity with native has not been established.
+For M/K/N=9472/5120/15360 on four Blackhole P150b devices, TT-Lang V4 takes
+4.870 ms for N-sharded output and 16.012 ms after a separate output gather.
+Replicated TT-Lang V3 takes 10.248 ms; native takes 6.883 ms. The equivalent
+replicated-output ratios are 2.326 and 1.489. See
+[results and configurations](PERFORMANCE.md).
 
 ## TT-Lang versions
 
@@ -25,9 +25,10 @@ Oldest to newest; all remain runnable.
 | 1. Per-row all-gather + matmul | [Operation](../../examples/all_gather_minimal_matmul/per_row_all_gather/operation.py); one communication worker per M-worker row | N-sharded; optionally gathered to replicated output |
 | 2. Two-worker ring + matmul | [Operation](../../examples/all_gather_minimal_matmul/two_worker_ring/operation.py); two communication workers serve all M-worker rows | N-sharded; optionally gathered to replicated output |
 | 3. DRAM all-gather + replicated matmul | [Operation](../../examples/all_gather_minimal_matmul/replicated/operation.py); gather completes before replicated matmul | Replicated output; no final gather |
+| 4. Dedicated communication + N-sharded matmul | [Operation](../../examples/all_gather_minimal_matmul/dedicated_communication/operation.py); activation exchange uses a separate worker column and overlaps matmul | N-sharded; optionally gathered to replicated output |
 
 [Entry points and selection flags](../../examples/all_gather_minimal_matmul/README.md).
-The performance comparison uses versions 2 and 3 against the native TT-Metal reference.
+The performance comparison uses versions 3 and 4 against the native TT-Metal reference.
 
 ## Files
 
@@ -47,7 +48,7 @@ The performance comparison uses versions 2 and 3 against the native TT-Metal ref
 
 `M`, `K` and `N` denote complete matrix dimensions; `D=4`.
 Activations are initially K-sharded. All inputs/output use TILE layout and
-interleaved DRAM. The [N-sharded implementation](../../examples/all_gather_minimal_matmul/two_worker_ring/operation.py)
+interleaved DRAM. The [N-sharded implementation](../../examples/all_gather_minimal_matmul/dedicated_communication/operation.py)
 fuses activation gathering with matmul. The [replicated implementation](../../examples/all_gather_minimal_matmul/replicated/operation.py)
 gathers activations into DRAM first, then computes the complete output on every device.
 
@@ -73,7 +74,7 @@ equivalent to the native replicated output.
 | Precision | BF16 input/output, HiFi2, FP32 destination and packer accumulation | Same |
 | Bias | Included | Included |
 | Timing | Device trace replay; includes final gather when selected | Device trace replay of fused program |
-| Compute workers per device | Replicated: 130 (transposed 13x10); N-sharded: 60 (transposed 6x10) | 108 (transposed 12x9) |
+| Compute workers per device | Replicated: 130 (transposed 13x10); N-sharded: 120 (transposed 12x10) plus four dedicated communication workers | 108 (transposed 12x9) plus 12 communication workers |
 | Blocking | Measured settings in [PERFORMANCE.md](PERFORMANCE.md) | 8/8/8 tiles, 2x2 subblock |
 | Fabric | 2D, strict initialization, 8192-byte payload | 1D ring, strict initialization, 8192-byte payload |
 | Native communication settings | Not applicable | Two links, six workers/link, 24 channel buffers |
@@ -106,20 +107,25 @@ python -m benchmarks.all_gather_minimal_matmul \
     --warmup 3 --samples 5 --json /tmp/ttlang-replicated-n15360.json
 ```
 
-N-sharded compute plus output all-gather:
+N-sharded compute, with optional output all-gather:
 
 ```bash
 python -m benchmarks.all_gather_minimal_matmul \
-    --implementation ttlang --gather-output --mesh-shape 4x1 \
+    --implementation ttlang --mesh-shape 4x1 \
     --fabric-config 2d --fabric-reliability strict --fabric-router-payload 8192 \
     --m-tiles 296 --k-tiles-per-device 40 --n-tiles 480 \
-    --worker-grid 6 10 --transpose \
-    --m-block-tiles 2 --k-block-tiles 8 --n-block-tiles 4 \
-    --reuse-activation --activation-all-gather ring \
-    --output-all-gather all_to_all --output-gather-workers 2 \
-    --output-gather-block-tiles 30 --output-gather-m-block-tiles 2 \
+    --worker-grid 12 10 --transpose --dedicated-communication-workers 4 \
+    --m-block-tiles 2 --k-block-tiles 10 --n-block-tiles 12 \
+    --no-reuse-activation --activation-all-gather ring \
     --math-fidelity HiFi2 --fp32-dest-acc \
-    --warmup 2 --samples 5 --json /tmp/ttlang-n-sharded-n15360.json
+    --warmup 3 --samples 10 --json /tmp/ttlang-n-sharded-n15360.json
+```
+
+Append these options to time the equivalent replicated output:
+
+```bash
+--gather-output --output-all-gather all_to_all --output-gather-workers 2 \
+    --output-gather-block-tiles 30 --output-gather-m-block-tiles 2
 ```
 
 Native replicated output:
@@ -213,12 +219,14 @@ an existing combined report is not replaced.
 
 ## Dataflow
 
-These diagrams show N-sharded TT-Lang matmul with final output gather,
-DRAM all-gather with replicated TT-Lang matmul, and the native operation. Dedicated device DRAM is
-described in the
+These diagrams show both N-sharded TT-Lang implementations, DRAM all-gather
+with replicated TT-Lang matmul, and the native operation. Dedicated device
+DRAM is described in the
 [TT-Metalium architecture introduction](https://github.com/tenstorrent/tt-metal/blob/f69f924c6b4f38daa0a6f25716731f36c573dc0e/docs/source/tt-metalium/tt_metal/labs/matmul/lab1/lab1.rst#L227-L230).
 
 ![TT-Lang four-device dataflow](images/ttlang_four_device.svg)
+
+![TT-Lang dedicated-communication four-device dataflow](images/ttlang_dedicated_communication_four_device.svg)
 
 ![TT-Lang DRAM all-gather and replicated matmul](images/ttlang_replicated_four_device.svg)
 

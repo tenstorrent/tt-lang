@@ -81,6 +81,11 @@ def measure(ttlang_root, native_root, native_revision=NATIVE_REVISION):
         "V1 per-row": [*shared, "operation.py", "per_row_all_gather/operation.py"],
         "V2 two-worker ring": [*shared, "operation.py", "two_worker_ring/operation.py"],
         "V3 replicated": [*shared, "replicated/operation.py"],
+        "V4 dedicated communication": [
+            *shared,
+            "operation.py",
+            "dedicated_communication/operation.py",
+        ],
     }
     native_files = [
         filename

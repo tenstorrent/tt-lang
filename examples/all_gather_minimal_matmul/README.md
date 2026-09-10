@@ -1,14 +1,17 @@
 # All-Gather Minimal Matmul
 
-Four-device M/K/N=9472/5120/15360 device times: replicated TT-Lang 10.248 ms
-(130 compute workers/device), N-sharded plus output gather 24.154 ms (60),
-and native 6.883 ms (108). See the [performance report](../../benchmarks/all_gather_minimal_matmul/PERFORMANCE.md).
+Four-device M/K/N=9472/5120/15360 device times: V4 N-sharded TT-Lang
+4.870 ms (120 compute and four communication workers/device), V4 plus output
+gather 16.012 ms, replicated TT-Lang V3 10.248 ms, and native 6.883 ms. Only
+the latter three return replicated output. See the
+[performance report](../../benchmarks/all_gather_minimal_matmul/PERFORMANCE.md).
 
 | TT-Lang version (oldest to newest) | Entry point and selection | Result on each device | Figures | Source SLOC (TT-Lang/native) |
 | --- | --- | --- | --- | --- |
-| 1. [Per-row all-gather + matmul](per_row_all_gather/operation.py) | [`n_sharded/`](n_sharded/), `--activation-all-gather all_to_all`; also `ring` with at most two M workers | N-sharded `M x N/D`; `--gather-output` returns replicated `M x N`. | [Per-device view](../../benchmarks/all_gather_minimal_matmul/images/ttlang_device.svg) | 641 / 4,677 = 13.7% |
-| 2. [Two-worker ring + matmul](two_worker_ring/operation.py) | [`n_sharded/`](n_sharded/), `--activation-all-gather ring` with more than two M workers | N-sharded `M x N/D`; `--gather-output` returns replicated `M x N`. | [Four devices](../../benchmarks/all_gather_minimal_matmul/images/ttlang_four_device.svg) | 645 / 4,677 = 13.8% |
+| 1. [Per-row all-gather + matmul](per_row_all_gather/operation.py) | [`n_sharded/`](n_sharded/), `--activation-all-gather all_to_all`; also `ring` with at most two M workers | N-sharded `M x N/D`; `--gather-output` returns replicated `M x N`. | [Per-device view](../../benchmarks/all_gather_minimal_matmul/images/ttlang_device.svg) | 653 / 4,677 = 14.0% |
+| 2. [Two-worker ring + matmul](two_worker_ring/operation.py) | [`n_sharded/`](n_sharded/), `--activation-all-gather ring` with more than two M workers | N-sharded `M x N/D`; `--gather-output` returns replicated `M x N`. | [Four devices](../../benchmarks/all_gather_minimal_matmul/images/ttlang_four_device.svg) | 657 / 4,677 = 14.0% |
 | 3. [DRAM all-gather + replicated matmul](replicated/operation.py) | [`replicated/`](replicated/), `--activation-all-gather all_to_all` or `ring` | Replicated `M x N`; no output gather. | [Four devices](../../benchmarks/all_gather_minimal_matmul/images/ttlang_replicated_four_device.svg), [fabric pipes](../../benchmarks/all_gather_minimal_matmul/images/ttlang_replicated_fabric_pipes.svg), [worker-grid pipes](../../benchmarks/all_gather_minimal_matmul/images/ttlang_replicated_worker_pipes.svg) | 516 / 4,677 = 11.0% |
+| 4. [Dedicated communication + N-sharded matmul](dedicated_communication/operation.py) | [`n_sharded/`](n_sharded/), `--dedicated-communication-workers`; communication uses an additional worker column | N-sharded `M x N/D`; `--gather-output` returns replicated `M x N`. | [Four devices](../../benchmarks/all_gather_minimal_matmul/images/ttlang_dedicated_communication_four_device.svg) | 608 / 4,677 = 13.0% |
 
 Source counts exclude blank lines, comments/docstrings, bindings, drivers, tests
 and framework code. TT-Lang includes the selected operation, `config.py`,
@@ -18,9 +21,10 @@ and host setup at `ea042c4ad623`; it also supports additional fusions, so these
 are source-size ratios, not feature-parity claims. Reproduce from the repository
 root with `python benchmarks/all_gather_minimal_matmul/source_size.py --tt-metal /path/to/tt-metal`.
 
-The N-sharded entry point selects between the two communication implementations
-automatically. On one device, activation all-gather is the identity and the
-per-row or replicated matmul executes without fabric communication.
+The N-sharded entry point selects the per-row or two-worker ring implementation
+automatically. `--dedicated-communication-workers` selects version 4. On one
+device, activation all-gather is the identity and the per-row or replicated
+matmul executes without fabric communication.
 
 Comparison reference: [native TT-Metal all-gather matmul](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/ttnn/cpp/ttnn/operations/experimental/ccl/all_gather_minimal_matmul_async/all_gather_minimal_matmul_async.cpp),
 which returns replicated `M x N`; [benchmark commands](../../benchmarks/all_gather_minimal_matmul/README.md#run-the-comparison),
@@ -45,6 +49,9 @@ python -m examples.all_gather_minimal_matmul.replicated --mesh-shape 2x2 --n-til
 communication worker to each M-worker row;
 [`two_worker_ring/operation.py`](two_worker_ring/operation.py) assigns two
 communication workers to all rows when ring forwarding uses more than two M workers.
+[`dedicated_communication/operation.py`](dedicated_communication/operation.py)
+assigns activation exchange to a separate worker column so fabric communication
+overlaps weight distribution and matmul.
 [`replicated/operation.py`](replicated/operation.py) composes activation gathering
 with replicated matmul.
 The [shared benchmark](../../benchmarks/all_gather_minimal_matmul/README.md)
@@ -136,8 +143,12 @@ must provide that padded activation storage.
 With ring all-gather and more than two M workers, two communication workers
 serve all compute rows through NoC multicast. Each communication worker stages
 one block per assigned row in L1. This supports a 13x10 compute grid without
-additional fabric connections; it does not imply better performance than a
-smaller grid.
+additional fabric connections.
+With `--dedicated-communication-workers`, physical column zero performs
+activation exchange and multicasts each block to one compute row. The compute
+grid starts at physical column one, so Blackhole supports at most a 12x10
+compute grid. Communication, weight distribution, and matmul execute
+concurrently through bounded L1 DFBs.
 The runtime additionally checks available fabric connections and L1 capacity;
 the [benchmark comparison table](../../benchmarks/all_gather_minimal_matmul/README.md#comparison-with-the-native-benchmark)
 records the tested hardware and configuration limits.
@@ -161,16 +172,19 @@ Omit `--mesh-shape` to use the control-plane-discovered mesh. `--dtype` accepts
 `--mesh-shape 1x1` to run the same operation with an identity all-gather and
 fabric disabled.
 
-130-worker, four-device example (BF16, TILE/DRAM):
+Four-device version 4 example (BF16, TILE/DRAM):
 
 ```bash
 python -m examples.all_gather_minimal_matmul.n_sharded \
-    --mesh-shape 2x2 --worker-grid 13 10 --transpose \
-    --m-tiles 24 --k-tiles-per-device 2 --n-tiles 80 \
-    --activation-all-gather ring --gather-output --output-gather-workers 2
+    --mesh-shape 2x2 --worker-grid 12 10 --transpose \
+    --dedicated-communication-workers 4 \
+    --m-tiles 24 --k-tiles-per-device 4 --n-tiles-per-device 20 \
+    --m-block-tiles 2 --k-block-tiles 2 --n-block-tiles 2 \
+    --no-reuse-activation --activation-all-gather ring
 ```
 
-Matmul uses 130 workers per device; the subsequent output gather uses two.
+Matmul uses 120 workers per device while four workers exchange activations.
+Add `--gather-output --output-gather-workers 2` for replicated output.
 
 The [device-time benchmark](../../benchmarks/all_gather_minimal_matmul/README.md)
 compares this operation with the original TT-Metal fused operation, including
@@ -192,7 +206,7 @@ correctness checks and TT-Metal device-kernel profiling.
 | Scaled addcmul with row/full multipliers | Not implemented. |
 | SwiGLU | Not implemented. |
 | FSDP weight gather | Not implemented. |
-| Fabric link/worker/channel-buffer controls | Not exposed by this example. |
+| Fabric link/worker/channel-buffer controls | Dedicated communication worker count is exposed; link and channel-buffer controls are not. |
 
 The upstream sweep also covers separate operations: standalone/split matmul,
 strided all-gather matmul, and matmul + reduce-scatter + addcmul. These are not

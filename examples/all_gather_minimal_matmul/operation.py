@@ -35,7 +35,8 @@ Per device, three kernels execute concurrently::
                 accumulator += activation_block @ weight_block
             output_block = cast(accumulator + broadcast(row_bias))
 
-Implementations: ``per_row_all_gather/operation.py`` and ``two_worker_ring/operation.py``.
+Implementations: ``per_row_all_gather/operation.py``,
+``two_worker_ring/operation.py`` and ``dedicated_communication/operation.py``.
 Each defines ``all_gather_minimal_matmul`` below its network configuration.
 
 Run from the repository root with the selected devices idle::
@@ -49,10 +50,12 @@ Run from the repository root with the selected devices idle::
     # Four devices.
     python -m examples.all_gather_minimal_matmul --mesh-shape 2x2
 
-    # Four devices, 130 compute workers/device, replicated output.
+    # Four devices, 120 compute and four communication workers/device, N-sharded output.
     python -m examples.all_gather_minimal_matmul.n_sharded --mesh-shape 2x2 \
-        --worker-grid 13 10 --transpose --m-tiles 24 --k-tiles-per-device 2 \
-        --n-tiles 80 --activation-all-gather ring --gather-output
+        --worker-grid 12 10 --transpose --dedicated-communication-workers 4 \
+        --m-tiles 24 --k-tiles-per-device 4 --n-tiles-per-device 20 \
+        --m-block-tiles 2 --k-block-tiles 2 --n-block-tiles 2 \
+        --no-reuse-activation --activation-all-gather ring
 
 Dimensions and mesh selection: ``README.md`` beside this file.
 """
@@ -60,6 +63,9 @@ Dimensions and mesh selection: ``README.md`` beside this file.
 from collections.abc import Callable
 
 from .config import AllGatherMinimalMatmulConfig
+from .dedicated_communication.operation import (
+    make_all_gather_minimal_matmul_operation as make_dedicated_operation,
+)
 from .per_row_all_gather.operation import (
     make_all_gather_minimal_matmul_operation as make_per_row_operation,
 )
@@ -74,8 +80,17 @@ def make_all_gather_minimal_matmul_operation(
     math_fidelity: str | None = None,
     fp32_dest_acc_en: bool | None = None,
     all_gather_algorithm: str = "all_to_all",
+    dedicated_communication_workers: int | None = None,
 ) -> Callable[..., None]:
-    """Select per-row communication or the two-worker shared ring."""
+    """Select co-located or dedicated activation communication workers."""
+    if dedicated_communication_workers is not None:
+        return make_dedicated_operation(
+            config,
+            math_fidelity=math_fidelity,
+            fp32_dest_acc_en=fp32_dest_acc_en,
+            all_gather_algorithm=all_gather_algorithm,
+            communication_worker_count=dedicated_communication_workers,
+        )
     factory = make_per_row_operation
     if (
         all_gather_algorithm == "ring"

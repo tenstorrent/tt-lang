@@ -6,6 +6,9 @@
 import pytest
 
 from examples.all_gather_minimal_matmul import AllGatherMinimalMatmulConfig
+from examples.all_gather_minimal_matmul.dedicated_communication.operation import (
+    make_all_gather_minimal_matmul_operation as make_dedicated_operation,
+)
 
 
 def test_single_device_configuration():
@@ -127,4 +130,37 @@ def test_reuse_capacity_limit():
             m_tiles=2,
             k_tiles_per_device=64,
             n_tiles_per_device=2,
+        )
+
+
+@pytest.mark.parametrize(
+    "mesh_shape,worker_grid,transpose,algorithm,communication_workers,error",
+    [
+        ((1, 2), (4, 5), False, "ring", 2, "transposed multi-device ring"),
+        ((2, 1), (5, 4), True, "all_to_all", 2, "transposed multi-device ring"),
+        ((2, 1), (5, 4), True, "ring", 4, "at most 2"),
+        ((4, 1), (5, 4), True, "ring", 5, "communication column"),
+    ],
+)
+def test_dedicated_communication_rejects_unsupported_resources(
+    mesh_shape,
+    worker_grid,
+    transpose,
+    algorithm,
+    communication_workers,
+    error,
+):
+    config = AllGatherMinimalMatmulConfig(
+        mesh_shape=mesh_shape,
+        m_tiles=10,
+        k_tiles_per_device=4,
+        n_tiles_per_device=4,
+        worker_grid=worker_grid,
+        transpose=transpose,
+    )
+    with pytest.raises(ValueError, match=error):
+        make_dedicated_operation(
+            config,
+            all_gather_algorithm=algorithm,
+            communication_worker_count=communication_workers,
         )

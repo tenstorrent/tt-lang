@@ -54,6 +54,10 @@ def _make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dtype", choices=("bf16", "fp32"), default="bf16")
     parser.add_argument("--no-bias", action="store_true")
     parser.add_argument("--gather-output", action="store_true")
+    parser.add_argument("--dedicated-communication-workers", type=int)
+    parser.add_argument(
+        "--reuse-activation", action=argparse.BooleanOptionalAction, default=True
+    )
     parser.add_argument(
         "--activation-all-gather", choices=("all_to_all", "ring"), default="all_to_all"
     )
@@ -122,6 +126,8 @@ def main(*, variant="n_sharded") -> None:
         raise ValueError(f"unknown variant: {variant}")
     if replicated and arguments.gather_output:
         raise ValueError("replicated weights already produce replicated output")
+    if replicated and arguments.dedicated_communication_workers is not None:
+        raise ValueError("dedicated communication requires N-sharded compute")
     mesh_shape, parent_mesh_shape = _resolve_mesh_shapes(arguments.mesh_shape)
     n_partitions = 1 if replicated else prod(mesh_shape)
     n_tiles_per_device = arguments.n_tiles_per_device
@@ -141,14 +147,24 @@ def main(*, variant="n_sharded") -> None:
         n_block_tiles=arguments.n_block_tiles,
         worker_grid=arguments.worker_grid,
         transpose=arguments.transpose,
+        reuse_activation=arguments.reuse_activation,
     )
     operation_factory = (
         make_replicated_all_gather_matmul_operation
         if replicated
         else make_all_gather_minimal_matmul_operation
     )
+    operation_options = {}
+    if arguments.dedicated_communication_workers is not None:
+        operation_options.update(
+            dedicated_communication_workers=arguments.dedicated_communication_workers,
+            math_fidelity="HiFi4" if arguments.dtype == "fp32" else "HiFi2",
+            fp32_dest_acc_en=True,
+        )
     operation = operation_factory(
-        config, all_gather_algorithm=arguments.activation_all_gather
+        config,
+        all_gather_algorithm=arguments.activation_all_gather,
+        **operation_options,
     )
 
     torch.manual_seed(arguments.seed)

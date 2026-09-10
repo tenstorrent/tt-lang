@@ -1,0 +1,266 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1320" viewBox="0 0 1600 1320" role="img" aria-labelledby="title description">
+  <title id="title">V4 TT-Lang dedicated communication + N-sharded matmul: Four devices</title>
+  <desc id="description">Four devices exchange activation K shards through a ring using four dedicated communication workers, concurrently compute N-sharded matmul and bias on 120 workers per device, and optionally gather output shards into replicated M by N DRAM tensors.</desc>
+  <defs>
+    <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#15803d"/></marker>
+    <marker id="arrow-orange" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#c2410c"/></marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#1d4ed8"/></marker>
+    <marker id="arrow-purple" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#7e22ce"/></marker>
+    <marker id="arrow-gray" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#475569"/></marker>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, sans-serif; fill: #0f172a; }
+      .title { font-size: 27px; font-weight: 700; }
+      .subtitle { font-size: 15px; fill: #475569; }
+      .section { font-size: 19px; font-weight: 700; }
+      .label { font-size: 14px; font-weight: 650; }
+      .small { font-size: 12px; fill: #334155; }
+      .tiny { font-size: 11px; fill: #475569; }
+      .device { fill: #ffffff; stroke: #475569; stroke-width: 1.7; rx: 9; }
+      .dram { fill: #eef2ff; stroke: #6366f1; stroke-width: 1.4; rx: 6; }
+      .cache { fill: #dcfce7; stroke: #16a34a; stroke-width: 1.4; rx: 6; }
+      .compute { fill: #fef3c7; stroke: #d97706; stroke-width: 1.4; rx: 6; }
+      .output { fill: #f3e8ff; stroke: #9333ea; stroke-width: 1.4; rx: 6; }
+      .fabric { fill: #ffedd5; stroke: #c2410c; stroke-width: 1.7; rx: 8; }
+      .table { fill: #ffffff; stroke: #64748b; stroke-width: 1.2; rx: 6; }
+      .rule { stroke: #cbd5e1; stroke-width: 1; }
+      .route { fill: none; stroke-width: 2.4; stroke-linejoin: round; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="1320" fill="#f8fafc"/>
+  <text x="40" y="42" class="title">V4 TT-Lang dedicated communication + N-sharded matmul: Four devices</text>
+  <text x="40" y="68" class="subtitle">D=4 · M, K, and N denote global matrix dimensions · physical 2×2 mesh; logical 4×1 participants</text>
+
+  <rect x="1085" y="10" width="475" height="108" class="table"/>
+  <text x="1100" y="28" class="label">Tensor placement</text>
+  <text x="1100" y="44" class="tiny">Tensor</text>
+  <text x="1180" y="44" class="tiny">Distribution</text>
+  <text x="1325" y="44" class="tiny">Allocation on device r</text>
+  <path d="M1098 48 H1547" class="rule"/>
+  <text x="1100" y="62" class="tiny">A</text><text x="1180" y="62" class="tiny">K-sharded</text><text x="1325" y="62" class="tiny">Aᵣ: M × K/4</text>
+  <text x="1100" y="78" class="tiny">B</text><text x="1180" y="78" class="tiny">N-sharded</text><text x="1325" y="78" class="tiny">Bᵣ: K × N/4</text>
+  <text x="1100" y="94" class="tiny">bias</text><text x="1180" y="94" class="tiny">N-sharded</text><text x="1325" y="94" class="tiny">biasᵣ: 1 × N/4</text>
+  <text x="1100" y="110" class="tiny">O</text><text x="1180" y="110" class="tiny">Shard / replica</text><text x="1325" y="110" class="tiny">M × N/4 / optional M × N</text>
+
+  <text x="40" y="106" class="section">Initial per-device DRAM allocations</text>
+  <text x="500" y="106" class="tiny">Blue: DRAM · green: L1 DFB · orange: fabric · yellow: worker computation · purple: output</text>
+
+  <g id="device-0-dram">
+    <rect x="40" y="124" width="350" height="116" class="device"/>
+    <text x="58" y="150" class="label">DRAM on Device 0</text>
+    <rect x="58" y="164" width="138" height="58" class="dram"/>
+    <text x="73" y="187" class="label">A₀</text>
+    <text x="73" y="207" class="small">M × K/4</text>
+    <rect x="214" y="164" width="158" height="58" class="dram"/>
+    <text x="229" y="185" class="label">B₀, bias₀, O₀</text>
+    <text x="229" y="202" class="tiny">K × N/4 · 1 × N/4</text>
+    <text x="229" y="217" class="tiny">M × N/4 output allocation</text>
+  </g>
+  <g id="device-1-dram">
+    <rect x="430" y="124" width="350" height="116" class="device"/>
+    <text x="448" y="150" class="label">DRAM on Device 1</text>
+    <rect x="448" y="164" width="138" height="58" class="dram"/>
+    <text x="463" y="187" class="label">A₁</text>
+    <text x="463" y="207" class="small">M × K/4</text>
+    <rect x="604" y="164" width="158" height="58" class="dram"/>
+    <text x="619" y="185" class="label">B₁, bias₁, O₁</text>
+    <text x="619" y="202" class="tiny">K × N/4 · 1 × N/4</text>
+    <text x="619" y="217" class="tiny">M × N/4 output allocation</text>
+  </g>
+  <g id="device-2-dram">
+    <rect x="820" y="124" width="350" height="116" class="device"/>
+    <text x="838" y="150" class="label">DRAM on Device 2</text>
+    <rect x="838" y="164" width="138" height="58" class="dram"/>
+    <text x="853" y="187" class="label">A₂</text>
+    <text x="853" y="207" class="small">M × K/4</text>
+    <rect x="994" y="164" width="158" height="58" class="dram"/>
+    <text x="1009" y="185" class="label">B₂, bias₂, O₂</text>
+    <text x="1009" y="202" class="tiny">K × N/4 · 1 × N/4</text>
+    <text x="1009" y="217" class="tiny">M × N/4 output allocation</text>
+  </g>
+  <g id="device-3-dram">
+    <rect x="1210" y="124" width="350" height="116" class="device"/>
+    <text x="1228" y="150" class="label">DRAM on Device 3</text>
+    <rect x="1228" y="164" width="138" height="58" class="dram"/>
+    <text x="1243" y="187" class="label">A₃</text>
+    <text x="1243" y="207" class="small">M × K/4</text>
+    <rect x="1384" y="164" width="158" height="58" class="dram"/>
+    <text x="1399" y="185" class="label">B₃, bias₃, O₃</text>
+    <text x="1399" y="202" class="tiny">K × N/4 · 1 × N/4</text>
+    <text x="1399" y="217" class="tiny">M × N/4 output allocation</text>
+  </g>
+
+  <text x="40" y="278" class="section">Activation exchange</text>
+  <rect x="40" y="294" width="1520" height="96" class="fabric"/>
+  <text x="800" y="316" class="label" text-anchor="middle">Measured activation ring: D0 → D1 → D2 → D3 → D0; three forwarding rounds</text>
+  <rect x="58" y="328" width="314" height="28" class="cache"/>
+  <text x="215" y="347" class="small" text-anchor="middle">A₀ → D1 → D2 → D3</text>
+  <rect x="448" y="328" width="314" height="28" class="cache"/>
+  <text x="605" y="347" class="small" text-anchor="middle">A₁ → D2 → D3 → D0</text>
+  <rect x="838" y="328" width="314" height="28" class="cache"/>
+  <text x="995" y="347" class="small" text-anchor="middle">A₂ → D3 → D0 → D1</text>
+  <rect x="1228" y="328" width="314" height="28" class="cache"/>
+  <text x="1385" y="347" class="small" text-anchor="middle">A₃ → D0 → D1 → D2</text>
+  <text x="800" y="377" class="tiny" text-anchor="middle">Four workers in physical column 0 receive into L1, multicast to compute rows, and forward to the next device.</text>
+
+  <path d="M127 222 V250 H405 V292" class="route" stroke="#c2410c" marker-end="url(#arrow-orange)"/>
+  <path d="M517 222 V258 H795 V292" class="route" stroke="#c2410c" marker-end="url(#arrow-orange)"/>
+  <path d="M907 222 V258 H1185 V292" class="route" stroke="#c2410c" marker-end="url(#arrow-orange)"/>
+  <path d="M1297 222 V250 H1548 V292" class="route" stroke="#c2410c" marker-end="url(#arrow-orange)"/>
+  <text x="250" y="245" class="tiny">publish A₀</text>
+  <text x="640" y="253" class="tiny">publish A₁</text>
+  <text x="1030" y="253" class="tiny">publish A₂</text>
+  <text x="1405" y="245" class="tiny">publish A₃</text>
+
+  <path d="M165 390 V405" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+  <path d="M555 390 V405" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+  <path d="M945 390 V405" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+  <path d="M1335 390 V405" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+
+  <g id="device-0-compute">
+    <rect x="40" y="410" width="350" height="260" class="device"/>
+    <text x="58" y="438" class="label">Device 0 · 13×10 operation grid</text>
+    <rect x="58" y="454" width="314" height="58" class="cache"/>
+    <text x="215" y="477" class="label" text-anchor="middle">4 communication workers · L1 A blocks</text>
+    <text x="215" y="498" class="small" text-anchor="middle">NoC multicast to 12×10 compute workers</text>
+    <rect x="58" y="532" width="130" height="52" class="dram"/>
+    <text x="123" y="553" class="label" text-anchor="middle">B₀ blocks</text>
+    <text x="123" y="573" class="small" text-anchor="middle">DRAM → L1 DFB</text>
+    <path d="M188 558 H210" class="route" stroke="#1d4ed8" marker-end="url(#arrow-blue)"/>
+    <path d="M292 512 V524" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+    <rect x="212" y="526" width="160" height="64" class="compute"/>
+    <text x="292" y="548" class="label" text-anchor="middle">matmul + bias₀</text>
+    <text x="292" y="568" class="small" text-anchor="middle">120 workers compute</text>
+    <text x="292" y="584" class="tiny" text-anchor="middle">FP32 accumulator in L1</text>
+    <path d="M292 590 V604" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+    <rect x="58" y="606" width="314" height="50" class="output"/>
+    <text x="215" y="628" class="label" text-anchor="middle">O₀ = A × B₀ + bias₀ · M × N/4</text>
+    <text x="215" y="647" class="small" text-anchor="middle">L1 → DRAM</text>
+  </g>
+
+  <g id="device-1-compute">
+    <rect x="430" y="410" width="350" height="260" class="device"/>
+    <text x="448" y="438" class="label">Device 1 · 13×10 operation grid</text>
+    <rect x="448" y="454" width="314" height="58" class="cache"/>
+    <text x="605" y="477" class="label" text-anchor="middle">4 communication workers · L1 A blocks</text>
+    <text x="605" y="498" class="small" text-anchor="middle">NoC multicast to 12×10 compute workers</text>
+    <rect x="448" y="532" width="130" height="52" class="dram"/>
+    <text x="513" y="553" class="label" text-anchor="middle">B₁ blocks</text>
+    <text x="513" y="573" class="small" text-anchor="middle">DRAM → L1 DFB</text>
+    <path d="M578 558 H600" class="route" stroke="#1d4ed8" marker-end="url(#arrow-blue)"/>
+    <path d="M682 512 V524" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+    <rect x="602" y="526" width="160" height="64" class="compute"/>
+    <text x="682" y="548" class="label" text-anchor="middle">matmul + bias₁</text>
+    <text x="682" y="568" class="small" text-anchor="middle">120 workers compute</text>
+    <text x="682" y="584" class="tiny" text-anchor="middle">FP32 accumulator in L1</text>
+    <path d="M682 590 V604" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+    <rect x="448" y="606" width="314" height="50" class="output"/>
+    <text x="605" y="628" class="label" text-anchor="middle">O₁ = A × B₁ + bias₁ · M × N/4</text>
+    <text x="605" y="647" class="small" text-anchor="middle">L1 → DRAM</text>
+  </g>
+
+  <g id="device-2-compute">
+    <rect x="820" y="410" width="350" height="260" class="device"/>
+    <text x="838" y="438" class="label">Device 2 · 13×10 operation grid</text>
+    <rect x="838" y="454" width="314" height="58" class="cache"/>
+    <text x="995" y="477" class="label" text-anchor="middle">4 communication workers · L1 A blocks</text>
+    <text x="995" y="498" class="small" text-anchor="middle">NoC multicast to 12×10 compute workers</text>
+    <rect x="838" y="532" width="130" height="52" class="dram"/>
+    <text x="903" y="553" class="label" text-anchor="middle">B₂ blocks</text>
+    <text x="903" y="573" class="small" text-anchor="middle">DRAM → L1 DFB</text>
+    <path d="M968 558 H990" class="route" stroke="#1d4ed8" marker-end="url(#arrow-blue)"/>
+    <path d="M1072 512 V524" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+    <rect x="992" y="526" width="160" height="64" class="compute"/>
+    <text x="1072" y="548" class="label" text-anchor="middle">matmul + bias₂</text>
+    <text x="1072" y="568" class="small" text-anchor="middle">120 workers compute</text>
+    <text x="1072" y="584" class="tiny" text-anchor="middle">FP32 accumulator in L1</text>
+    <path d="M1072 590 V604" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+    <rect x="838" y="606" width="314" height="50" class="output"/>
+    <text x="995" y="628" class="label" text-anchor="middle">O₂ = A × B₂ + bias₂ · M × N/4</text>
+    <text x="995" y="647" class="small" text-anchor="middle">L1 → DRAM</text>
+  </g>
+
+  <g id="device-3-compute">
+    <rect x="1210" y="410" width="350" height="260" class="device"/>
+    <text x="1228" y="438" class="label">Device 3 · 13×10 operation grid</text>
+    <rect x="1228" y="454" width="314" height="58" class="cache"/>
+    <text x="1385" y="477" class="label" text-anchor="middle">4 communication workers · L1 A blocks</text>
+    <text x="1385" y="498" class="small" text-anchor="middle">NoC multicast to 12×10 compute workers</text>
+    <rect x="1228" y="532" width="130" height="52" class="dram"/>
+    <text x="1293" y="553" class="label" text-anchor="middle">B₃ blocks</text>
+    <text x="1293" y="573" class="small" text-anchor="middle">DRAM → L1 DFB</text>
+    <path d="M1358 558 H1380" class="route" stroke="#1d4ed8" marker-end="url(#arrow-blue)"/>
+    <path d="M1462 512 V524" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+    <rect x="1382" y="526" width="160" height="64" class="compute"/>
+    <text x="1462" y="548" class="label" text-anchor="middle">matmul + bias₃</text>
+    <text x="1462" y="568" class="small" text-anchor="middle">120 workers compute</text>
+    <text x="1462" y="584" class="tiny" text-anchor="middle">FP32 accumulator in L1</text>
+    <path d="M1462 590 V604" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+    <rect x="1228" y="606" width="314" height="50" class="output"/>
+    <text x="1385" y="628" class="label" text-anchor="middle">O₃ = A × B₃ + bias₃ · M × N/4</text>
+    <text x="1385" y="647" class="small" text-anchor="middle">L1 → DRAM</text>
+  </g>
+
+  <text x="40" y="711" class="section">Matmul output shards, followed by output all-gather</text>
+  <rect x="40" y="727" width="380" height="48" class="output"/>
+  <text x="230" y="757" class="label" text-anchor="middle">O₀ · columns [0, N/4)</text>
+  <rect x="420" y="727" width="380" height="48" class="output"/>
+  <text x="610" y="757" class="label" text-anchor="middle">O₁ · columns [N/4, N/2)</text>
+  <rect x="800" y="727" width="380" height="48" class="output"/>
+  <text x="990" y="757" class="label" text-anchor="middle">O₂ · columns [N/2, 3N/4)</text>
+  <rect x="1180" y="727" width="380" height="48" class="output"/>
+  <text x="1370" y="757" class="label" text-anchor="middle">O₃ · columns [3N/4, N)</text>
+  <rect x="40" y="828" width="1520" height="68" class="fabric"/>
+  <text x="800" y="852" class="label" text-anchor="middle">Each device: Read Oᵣ from DRAM → send L1 blocks to all three peers</text>
+  <text x="800" y="876" class="small" text-anchor="middle">Direct fabric transfers · two workers/device · 2×30-tile messages · received L1 blocks copied into DRAM at the source device's N offset</text>
+  <path d="M215 775 V786 H370 V826" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+  <path d="M215 896 V918" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+  <rect x="40" y="922" width="350" height="70" class="output"/>
+  <text x="215" y="946" class="label" text-anchor="middle">Device 0: Replicated O in DRAM</text>
+  <text x="215" y="970" class="small" text-anchor="middle">[ O₀ | O₁ | O₂ | O₃ ] = M × N</text>
+  <path d="M605 775 V786 H760 V826" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+  <path d="M605 896 V918" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+  <rect x="430" y="922" width="350" height="70" class="output"/>
+  <text x="605" y="946" class="label" text-anchor="middle">Device 1: Replicated O in DRAM</text>
+  <text x="605" y="970" class="small" text-anchor="middle">[ O₀ | O₁ | O₂ | O₃ ] = M × N</text>
+  <path d="M995 775 V786 H1150 V826" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+  <path d="M995 896 V918" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+  <rect x="820" y="922" width="350" height="70" class="output"/>
+  <text x="995" y="946" class="label" text-anchor="middle">Device 2: Replicated O in DRAM</text>
+  <text x="995" y="970" class="small" text-anchor="middle">[ O₀ | O₁ | O₂ | O₃ ] = M × N</text>
+  <path d="M1385 775 V786 H1540 V826" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+  <path d="M1385 896 V918" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+  <rect x="1210" y="922" width="350" height="70" class="output"/>
+  <text x="1385" y="946" class="label" text-anchor="middle">Device 3: Replicated O in DRAM</text>
+  <text x="1385" y="970" class="small" text-anchor="middle">[ O₀ | O₁ | O₂ | O₃ ] = M × N</text>
+  <g transform="translate(0,120)">
+  <rect x="40" y="946" width="1520" height="202" class="device"/>
+  <text x="65" y="978" class="section">Dedicated communication overlaps streamed matmul</text>
+  <text x="65" y="1000" class="small">Bars are illustrative; four communication workers and 120 compute workers run concurrently.</text>
+  <text x="70" y="1045" class="label">Communication column</text>
+  <text x="70" y="1091" class="label">Weight DRAM + NoC</text>
+  <text x="70" y="1130" class="label">Compute</text>
+  <path d="M270 1014 H1510" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow-gray)"/>
+  <text x="270" y="1009" class="tiny">time →</text>
+  <rect x="270" y="1027" width="280" height="29" rx="5" fill="#fed7aa" stroke="#c2410c"/>
+  <text x="410" y="1047" class="small" text-anchor="middle">read/send own A; receive remote A</text>
+  <rect x="550" y="1027" width="280" height="29" rx="5" fill="#fed7aa" stroke="#c2410c"/>
+  <text x="690" y="1047" class="small" text-anchor="middle">receive subsequent remote A blocks into L1</text>
+  <rect x="830" y="1027" width="350" height="29" rx="5" fill="#fed7aa" stroke="#c2410c"/>
+  <text x="1005" y="1047" class="small" text-anchor="middle">receive, multicast, and forward next A blocks</text>
+  <rect x="350" y="1073" width="280" height="29" rx="5" fill="#dbeafe" stroke="#1d4ed8"/>
+  <text x="490" y="1093" class="small" text-anchor="middle">relay A; stream matching B</text>
+  <rect x="630" y="1073" width="280" height="29" rx="5" fill="#dbeafe" stroke="#1d4ed8"/>
+  <text x="770" y="1093" class="small" text-anchor="middle">cache/relay next A + stream next B</text>
+  <rect x="1130" y="1073" width="350" height="29" rx="5" fill="#dbeafe" stroke="#1d4ed8"/>
+  <text x="1305" y="1093" class="small" text-anchor="middle">stream subsequent B blocks</text>
+  <rect x="430" y="1112" width="280" height="29" rx="5" fill="#f3e8ff" stroke="#7e22ce"/>
+  <text x="570" y="1132" class="small" text-anchor="middle">matmul current K block</text>
+  <rect x="710" y="1112" width="280" height="29" rx="5" fill="#f3e8ff" stroke="#7e22ce"/>
+  <text x="850" y="1132" class="small" text-anchor="middle">matmul next K block</text>
+  <rect x="1210" y="1112" width="220" height="29" rx="5" fill="#f3e8ff" stroke="#7e22ce"/>
+  <text x="1320" y="1132" class="small" text-anchor="middle">matmul subsequent K block</text>
+
+  <text x="40" y="1180" class="tiny">Source: tt-lang branch bnorris/all-gather-output-replication · dedicated_communication/operation.py · measured 12×10 compute configuration</text>
+  </g>
+</svg>
