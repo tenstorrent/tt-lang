@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compare TT-Lang and TT-Metal all-gather matmul on a local fabric pair."""
+"""Compare TT-Lang and TT-Metal all-gather matmul on two fabric-connected devices."""
 
 import argparse
 import json

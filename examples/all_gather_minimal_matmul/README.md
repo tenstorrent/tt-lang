@@ -69,7 +69,7 @@ be divisible by their block extents, and M/N block counts must be divisible by
 the corresponding worker counts. Edge blocks are not padded implicitly.
 The runtime additionally checks available fabric connections and L1 capacity;
 the [benchmark comparison table](../../benchmarks/all_gather_minimal_matmul/README.md#comparison-with-the-native-benchmark)
-records the measured local limits.
+records the tested hardware and configuration limits.
 
 ## Run
 
@@ -88,7 +88,7 @@ timeout 300 python -m examples.all_gather_minimal_matmul \
 Omit `--mesh-shape` to use the control-plane-discovered mesh. `--dtype` accepts
 `bf16` and `fp32`; `--no-bias` supplies a zero bias tensor.
 
-The [local benchmark](../../benchmarks/all_gather_minimal_matmul/README.md)
+The [device-time benchmark](../../benchmarks/all_gather_minimal_matmul/README.md)
 compares this operation with the original TT-Metal fused operation, including
 correctness checks and TT-Metal device-kernel profiling.
 

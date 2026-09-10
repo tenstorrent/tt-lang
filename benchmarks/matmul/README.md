@@ -30,7 +30,7 @@ compares distributed TT-Lang matmul with the native fused collective operation.
 
 ![ratio plot](ksplit_sweep.png)
 
-2026-09-09 18:39:48-18:41:36 UTC; Blackhole 13x10; TT-Lang `3e688e1f07b7` + local kernel fixes; TT-Metal pin `ea042c4ad623`; LLVM pin `37aca9d384347`; binary SHA-256: compiler `7f5e02a65e4c`, TTNN `62edde2b1f61`, Metal `65380f11dc15` ([archived provenance](https://gist.githubusercontent.com/brnorris03/79c57b196efe09355699d40165780088/raw/65a8900caa9cda4115847a9e27b2711fdec72bee/matmul_device_ksplit_sweep.json)).
+2026-09-09 18:39:48-18:41:36 UTC; Blackhole 13x10; TT-Lang `3e688e1f07b7` + multicast receiver corrections; TT-Metal pin `ea042c4ad623`; LLVM pin `37aca9d384347`; binary SHA-256: compiler `7f5e02a65e4c`, TTNN `62edde2b1f61`, Metal `65380f11dc15` ([archived provenance](https://gist.githubusercontent.com/brnorris03/79c57b196efe09355699d40165780088/raw/65a8900caa9cda4115847a9e27b2711fdec72bee/matmul_device_ksplit_sweep.json)).
 
 Bars show `ttlang / ttnn.matmul` device kernel duration (lower is better). Green < 1.1,
 orange < 1.5, red otherwise. All 22 rows pass PCC >= 0.99 for both implementations.
