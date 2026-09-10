@@ -1,11 +1,24 @@
-// RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s
+// RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s --strict-whitespace
 // RUN: ttlang-opt %s -ttl-verify-pipenet-schedule -o /dev/null
 
 // Repeated incoming peers share callback IR but require distinct post/wait pairs.
+// A single unshared manager stays open across the complete transfer loop.
 // CHECK-LABEL: func.func @sender
+// CHECK-NOT: scf.for
+// CHECK: ttkernel.routing_plane.open_connections
+// CHECK: scf.for
 // CHECK: ttkernel.routing_plane.fused_write_atomic_inc
+// CHECK: {{^    [}]$}}
+// CHECK-NEXT: ttkernel.routing_plane.close_connections
+// CHECK-NEXT: return
 // CHECK-LABEL: func.func @receiver
+// CHECK-NOT: scf.for
+// CHECK: ttkernel.routing_plane.open_connections
+// CHECK: scf.for
 // CHECK: ttkernel.cb_reserve_back
+// CHECK: {{^    [}]$}}
+// CHECK-NEXT: ttkernel.routing_plane.close_connections
+// CHECK-NEXT: return
 
 #domain = #ttl.device_domain<components = <name = "device", extent = [3]>>
 #records = #ttl.pipenet_records<net 0 name "repeated_peers" pipes [
