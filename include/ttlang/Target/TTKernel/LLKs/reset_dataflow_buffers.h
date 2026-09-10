@@ -101,6 +101,7 @@ template <uint32_t Id, uint32_t PageBytes, uint32_t L1Format,
           uint32_t TileHeight, uint32_t TileWidth, uint32_t FaceHeight,
           uint32_t NumFaces, uint32_t UnpackDstFormat, uint32_t PackSrcFormat>
 FORCE_INLINE void reconfigureFormat() {
+#if defined(TTLANG_RUNTIME_DFB_RECONFIGURATION)
 #if defined(TTLANG_DFB_DM0) || defined(TTLANG_DFB_DM1) ||                      \
     defined(TTLANG_DFB_UNPACK) || defined(TTLANG_DFB_MATH)
   unpack_src_format[Id] = L1Format;
@@ -134,6 +135,7 @@ FORCE_INLINE void reconfigureFormat() {
   pack_num_faces_c_dim[Id] =
       NumFaces < TileWidth / 16 ? NumFaces : TileWidth / 16;
   pack_num_faces_r_dim[Id] = NumFaces / pack_num_faces_c_dim[Id];
+#endif
 #endif
 }
 

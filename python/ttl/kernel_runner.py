@@ -276,8 +276,10 @@ def _resolve_per_core_tensor_addresses(
             addresses = []
             for device_index, device_tensor in enumerate(device_tensors):
                 try:
+                    (device_coord,) = device_tensor.device_coords()
                     address = int(
-                        device_tensor.experimental_per_core_buffer_address(core)
+                        device_tensor.experimental_per_core_buffer_address(
+                            device_coord, core)
                     )
                 except Exception as exc:
                     raise ValueError(

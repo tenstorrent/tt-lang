@@ -106,7 +106,11 @@ class _FakePerCoreDeviceTensor:
     def memory_config(self):
         return SimpleNamespace(shard_spec=SimpleNamespace(grid=self._grid))
 
-    def experimental_per_core_buffer_address(self, core):
+    def device_coords(self):
+        return [(0, 0)]
+
+    def experimental_per_core_buffer_address(self, device_coord, core):
+        assert device_coord == (0, 0)
         return self._addresses[(core.x, core.y)]
 
     @staticmethod
