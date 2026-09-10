@@ -4,10 +4,18 @@ Four-device M/K/N=9472/5120/15360 device times: replicated TT-Lang 10.343 ms
 (130 compute workers/device), N-sharded plus output gather 24.156 ms (60),
 and native 6.883 ms (108). See the [performance report](../../benchmarks/all_gather_minimal_matmul/PERFORMANCE.md).
 
-| Entry point | Result on each device |
-| --- | --- |
-| [`n_sharded/`](n_sharded/) | `M x N/D`; add `--gather-output` for replicated `M x N`. |
-| [`replicated/`](replicated/) | Replicated `M x N`, computed independently with replicated weights and bias. |
+| TT-Lang version (oldest to newest) | Entry point and selection | Result on each device |
+| --- | --- | --- |
+| 1. [Per-row all-gather + matmul](per_row_all_gather/operation.py) | [`n_sharded/`](n_sharded/), `--activation-all-gather all_to_all`; also `ring` with at most two M workers | N-sharded `M x N/D`; `--gather-output` returns replicated `M x N`. |
+| 2. [Two-worker ring + matmul](two_worker_ring/operation.py) | [`n_sharded/`](n_sharded/), `--activation-all-gather ring` with more than two M workers | N-sharded `M x N/D`; `--gather-output` returns replicated `M x N`. |
+| 3. [DRAM all-gather + replicated matmul](replicated/operation.py) | [`replicated/`](replicated/), `--activation-all-gather all_to_all` or `ring` | Replicated `M x N`; no output gather. |
+
+The N-sharded entry point selects between the two communication implementations
+automatically. On one device, activation all-gather is the identity and the
+per-row or replicated matmul executes without fabric communication.
+
+Comparison reference: [native TT-Metal all-gather matmul](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/ttnn/cpp/ttnn/operations/experimental/ccl/all_gather_minimal_matmul_async/all_gather_minimal_matmul_async.cpp),
+which returns replicated `M x N`; [benchmark commands](../../benchmarks/all_gather_minimal_matmul/README.md#run-the-comparison).
 
 `N` is the complete output width and `D` is the device count. Weights and bias
 remain N-sharded when output gathering is enabled. The final gather copies

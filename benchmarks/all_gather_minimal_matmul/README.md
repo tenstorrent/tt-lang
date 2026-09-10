@@ -16,6 +16,19 @@ uses 130 compute workers/device and takes 10.343 ms; native uses 108 and takes
 60 workers/device and takes 24.156 ms. See [results and configurations](PERFORMANCE.md).
 Performance parity with native has not been established.
 
+## TT-Lang versions
+
+Oldest to newest; all remain runnable.
+
+| Version | Implementation | Output on each device |
+| --- | --- | --- |
+| 1. Per-row all-gather + matmul | [Operation](../../examples/all_gather_minimal_matmul/per_row_all_gather/operation.py); one communication worker per M-worker row | N-sharded; optionally gathered to replicated output |
+| 2. Two-worker ring + matmul | [Operation](../../examples/all_gather_minimal_matmul/two_worker_ring/operation.py); two communication workers serve all M-worker rows | N-sharded; optionally gathered to replicated output |
+| 3. DRAM all-gather + replicated matmul | [Operation](../../examples/all_gather_minimal_matmul/replicated/operation.py); gather completes before replicated matmul | Replicated output; no final gather |
+
+[Entry points and selection flags](../../examples/all_gather_minimal_matmul/README.md).
+The performance comparison uses versions 2 and 3 against the native TT-Metal reference.
+
 ## Files
 
 | File or directory | Purpose |
