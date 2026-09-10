@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1190" viewBox="0 0 1600 1190" role="img" aria-labelledby="title description">
-  <title id="title">TT-Lang DRAM all-gather + replicated matmul: Four devices</title>
+  <title id="title">V3 TT-Lang DRAM gather + replicated matmul: Four devices</title>
   <desc id="description">Each of four devices all-gathers K-sharded activation into a full DRAM tensor. After the gather program completes, 130 compute workers per device stream gathered activations and replicated weights into L1 and compute the same complete output. There is no output gather.</desc>
   <defs>
     <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#15803d"/></marker>
@@ -27,7 +27,7 @@
     </style>
   </defs>
   <rect width="1600" height="1190" fill="#f8fafc"/>
-  <text x="40" y="42" class="title">TT-Lang DRAM all-gather + replicated matmul: Four devices</text>
+  <text x="40" y="42" class="title">V3 TT-Lang DRAM gather + replicated matmul: Four devices</text>
   <text x="40" y="68" class="subtitle">M/K/N = 9472/5120/15360 · four Blackhole P150b · physical 2×2 mesh; logical 4×1 participants</text>
   <rect x="1085" y="10" width="475" height="108" class="table"/>
   <text x="1100" y="28" class="label">Tensor placement on each device</text>

@@ -1,0 +1,170 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1100" viewBox="0 0 1600 1100" role="img" aria-labelledby="title description">
+  <title id="title">Native TT-Metal all-gather + matmul: Per-device view</title>
+  <desc id="description">One device in the four-device Wan2.2 ring. Remote activation blocks stream through fabric into DRAM gather scratch. Activation and weight blocks are read into L1 and relayed through a 12 by 9 compute grid while computation proceeds.</desc>
+  <defs>
+    <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#15803d"/></marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#1d4ed8"/></marker>
+    <marker id="arrow-orange" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#c2410c"/></marker>
+    <marker id="arrow-purple" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#7e22ce"/></marker>
+    <marker id="arrow-gray" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#475569"/></marker>
+    <pattern id="worker-grid" width="50" height="38" patternUnits="userSpaceOnUse"><rect width="50" height="38" fill="#f8fafc" stroke="#94a3b8" stroke-width="1"/></pattern>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, sans-serif; fill: #0f172a; }
+      .title { font-size: 27px; font-weight: 700; }
+      .subtitle { font-size: 15px; fill: #475569; }
+      .section { font-size: 19px; font-weight: 700; }
+      .label { font-size: 14px; font-weight: 650; }
+      .small { font-size: 12px; fill: #334155; }
+      .tiny { font-size: 11px; fill: #475569; }
+      .box { fill: #ffffff; stroke: #64748b; stroke-width: 1.5; rx: 8; }
+      .dram { fill: #eef2ff; stroke: #6366f1; stroke-width: 1.5; rx: 7; }
+      .l1a { fill: #dcfce7; stroke: #16a34a; stroke-width: 1.5; rx: 6; }
+      .l1b { fill: #dbeafe; stroke: #2563eb; stroke-width: 1.5; rx: 6; }
+      .l1c { fill: #fef3c7; stroke: #d97706; stroke-width: 1.5; rx: 6; }
+      .l1o { fill: #f3e8ff; stroke: #9333ea; stroke-width: 1.5; rx: 6; }
+      .route { fill: none; stroke-width: 2.5; stroke-linejoin: round; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="1100" fill="#f8fafc"/>
+  <text x="40" y="42" class="title">Native TT-Metal all-gather + matmul: Per-device view</text>
+  <text x="40" y="68" class="subtitle">Wan2.2 four-device Blackhole ring · 12×9 compute grid · 8×8×8 tile blocks</text>
+
+  <text x="40" y="106" class="section">Persistent tensors in interleaved DRAM</text>
+  <rect x="40" y="121" width="1520" height="143" class="box"/>
+
+  <rect x="60" y="143" width="210" height="78" class="dram"/>
+  <text x="75" y="167" class="label">Local activation shard</text>
+  <text x="75" y="189" class="small">Aᵣ: M × K/4</text>
+  <text x="75" y="206" class="tiny">Owned K stripe</text>
+
+  <rect x="300" y="143" width="250" height="78" class="dram"/>
+  <text x="315" y="167" class="label">Gather scratch</text>
+  <text x="315" y="189" class="small">M × K allocation per device</text>
+  <text x="315" y="206" class="tiny">Remote 3/4 filled; local stripe unused</text>
+
+  <rect x="580" y="143" width="220" height="78" class="dram"/>
+  <text x="595" y="167" class="label">Weight</text>
+  <text x="595" y="189" class="small">B: K × N per device</text>
+  <text x="595" y="206" class="tiny">Replicated values in this test</text>
+
+  <rect x="830" y="143" width="160" height="78" class="dram"/>
+  <text x="845" y="167" class="label">Row bias</text>
+  <text x="845" y="189" class="small">1 × N</text>
+  <text x="845" y="206" class="tiny">Replicated</text>
+
+  <rect x="1020" y="143" width="210" height="78" class="dram"/>
+  <text x="1035" y="167" class="label">Output</text>
+  <text x="1035" y="189" class="small">M × N per device</text>
+  <text x="1035" y="206" class="tiny">One region per compute core</text>
+
+  <rect x="1290" y="136" width="240" height="94" class="box"/>
+  <text x="1305" y="160" class="label">Fabric interface</text>
+  <text x="1305" y="182" class="small">Receive and forward A blocks</text>
+  <text x="1305" y="201" class="small">Mux packet buffers reside in L1</text>
+  <text x="1305" y="218" class="tiny">Two links × two ring directions</text>
+
+  <path d="M1290 183 H1262 V250 H425 V223" class="route" stroke="#c2410c" marker-end="url(#arrow-orange)"/>
+  <text x="755" y="247" class="tiny">incoming fabric packet → scatter-write remote A tiles to gather DRAM</text>
+
+  <text x="40" y="309" class="section">Worker dataflow on each device</text>
+  <text x="40" y="331" class="small">Forced transpose: x partitions M; y partitions N. All 108 grid cores compute.</text>
+
+  <rect x="60" y="362" width="600" height="342" fill="url(#worker-grid)" stroke="#334155" stroke-width="2"/>
+  <rect x="60" y="362" width="600" height="38" fill="#bbf7d0" fill-opacity="0.78" stroke="#15803d" stroke-width="1.5"/>
+  <rect x="60" y="362" width="50" height="342" fill="#bfdbfe" fill-opacity="0.68" stroke="#1d4ed8" stroke-width="1.5"/>
+  <rect x="60" y="628" width="600" height="76" fill="#fed7aa" fill-opacity="0.38" stroke="#c2410c" stroke-width="1.5"/>
+  <text x="360" y="355" class="small" text-anchor="middle">12 M partitions →</text>
+  <text x="33" y="533" class="small" text-anchor="middle" transform="rotate(-90 33 533)">9 N partitions →</text>
+  <text x="71" y="385" class="tiny">x0,y0</text>
+  <text x="514" y="386" class="tiny">A injectors: y=0</text>
+  <text x="83" y="488" class="tiny" text-anchor="middle" transform="rotate(-90 83 488)">B injectors: x=0</text>
+  <text x="432" y="683" class="tiny">fabric relay clients: y=7,8</text>
+  <text x="281" y="505" class="label">All 108 cores compute</text>
+  <text x="255" y="526" class="small">one padded M/N region per core</text>
+  <path d="M535 379 V602" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+  <text x="545" y="484" class="tiny">A block relay over NoC</text>
+  <path d="M83 593 H626" class="route" stroke="#1d4ed8" marker-end="url(#arrow-blue)"/>
+  <text x="270" y="586" class="tiny">B block relay over NoC</text>
+
+  <path d="M165 223 V274 H24 V381 H58" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+  <text x="29" y="288" class="tiny">local A DRAM read</text>
+  <path d="M425 223 V280 H704 V350 H690 V381 H662" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+  <text x="512" y="276" class="tiny">remote A scratch DRAM read</text>
+  <path d="M690 223 V287 H14 V593 H58" class="route" stroke="#1d4ed8" marker-end="url(#arrow-blue)"/>
+  <text x="19" y="608" class="tiny">weight DRAM read</text>
+  <path d="M1510 646 H1552 V276 H1125 V223" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+  <text x="1542" y="520" class="tiny" text-anchor="middle" transform="rotate(-90 1542 520)">output DFB → DRAM write</text>
+  <path d="M660 673 H805 V736 H1580 V183 H1532" class="route" stroke="#c2410c" marker-end="url(#arrow-orange)"/>
+  <text x="888" y="730" class="tiny">first N pass: forward A blocks to neighboring devices</text>
+
+  <rect x="835" y="340" width="705" height="364" class="box"/>
+  <text x="858" y="371" class="section">L1 on every compute core</text>
+  <text x="858" y="394" class="small">Only current tile blocks reside here; complete tensors remain in DRAM.</text>
+
+  <rect x="858" y="414" width="300" height="68" class="l1a"/>
+  <text x="874" y="438" class="label">c₀ activation DFB · depth 2</text>
+  <text x="874" y="461" class="small">2 × (8×8 BF16 tiles) = 256 KiB</text>
+  <rect x="1210" y="414" width="300" height="68" class="l1b"/>
+  <text x="1226" y="438" class="label">c₁ weight DFB · depth 2</text>
+  <text x="1226" y="461" class="small">2 × (8×8 BF16 tiles) = 256 KiB</text>
+
+  <path d="M1008 482 V500 H1120 V518" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+  <path d="M1360 482 V500 H1240 V518" class="route" stroke="#1d4ed8" marker-end="url(#arrow-blue)"/>
+
+  <rect x="1034" y="520" width="300" height="68" class="l1c"/>
+  <text x="1050" y="544" class="label">c₃ accumulator DFB</text>
+  <text x="1050" y="567" class="small">1 × (8×8 FP32 tiles) = 256 KiB</text>
+
+  <rect x="858" y="612" width="300" height="68" class="box"/>
+  <text x="874" y="636" class="label">c₄ bias DFB</text>
+  <text x="874" y="659" class="small">1 × (1×8 BF16 tiles) = 16 KiB</text>
+  <rect x="1210" y="612" width="300" height="68" class="l1o"/>
+  <text x="1226" y="636" class="label">c₂ output DFB</text>
+  <text x="1226" y="659" class="small">1 × (8×8 BF16 tiles) = 128 KiB</text>
+
+  <path d="M910 223 V292 H814 V646 H856" class="route" stroke="#475569" marker-end="url(#arrow-gray)"/>
+  <text x="804" y="617" class="tiny" text-anchor="end">bias DRAM read</text>
+  <path d="M1184 588 V597 H1182 V646 H1208" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+  <text x="858" y="694" class="tiny">Matrix-block DFB storage: 912 KiB/core, excluding semaphores, kernels, stacks, and mux buffers.</text>
+
+  <rect x="40" y="776" width="1520" height="271" class="box"/>
+  <text x="65" y="809" class="section">Block streaming and overlap</text>
+  <text x="65" y="831" class="small">Conceptual pipeline for one output block; bar widths are illustrative. Twenty sequential K blocks complete the 8×8 output block.</text>
+
+  <text x="70" y="878" class="label">Fabric + gather DRAM</text>
+  <text x="70" y="928" class="label">DRAM reads + NoC relay</text>
+  <text x="70" y="978" class="label">Compute</text>
+  <text x="70" y="1024" class="label">Output DRAM write</text>
+  <path d="M260 850 H1510" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow-gray)"/>
+  <text x="260" y="845" class="tiny">time →</text>
+
+  <rect x="270" y="860" width="270" height="29" rx="5" fill="#fed7aa" stroke="#c2410c"/>
+  <text x="405" y="880" class="small" text-anchor="middle">receive/forward remote Aⱼ; scratch write</text>
+  <rect x="540" y="860" width="270" height="29" rx="5" fill="#fed7aa" stroke="#c2410c"/>
+  <text x="675" y="880" class="small" text-anchor="middle">remote Aⱼ₊₁; scratch write</text>
+  <rect x="810" y="860" width="270" height="29" rx="5" fill="#fed7aa" stroke="#c2410c"/>
+  <text x="945" y="880" class="small" text-anchor="middle">remote Aⱼ₊₂; scratch write</text>
+  <text x="1108" y="880" class="label">…</text>
+
+  <rect x="350" y="910" width="245" height="29" rx="5" fill="#dcfce7" stroke="#15803d"/>
+  <text x="472" y="930" class="small" text-anchor="middle">read + NoC relay Aⱼ and Bⱼ</text>
+  <rect x="595" y="910" width="245" height="29" rx="5" fill="#dcfce7" stroke="#15803d"/>
+  <text x="717" y="930" class="small" text-anchor="middle">relay Aⱼ₊₁ and Bⱼ₊₁</text>
+  <rect x="840" y="910" width="245" height="29" rx="5" fill="#dcfce7" stroke="#15803d"/>
+  <text x="962" y="930" class="small" text-anchor="middle">relay Aⱼ₊₂ and Bⱼ₊₂</text>
+  <text x="1113" y="930" class="label">…</text>
+
+  <rect x="430" y="960" width="245" height="29" rx="5" fill="#f3e8ff" stroke="#7e22ce"/>
+  <text x="552" y="980" class="small" text-anchor="middle">matmul K block j</text>
+  <rect x="675" y="960" width="245" height="29" rx="5" fill="#f3e8ff" stroke="#7e22ce"/>
+  <text x="797" y="980" class="small" text-anchor="middle">matmul K block j+1</text>
+  <rect x="920" y="960" width="245" height="29" rx="5" fill="#f3e8ff" stroke="#7e22ce"/>
+  <text x="1042" y="980" class="small" text-anchor="middle">matmul K block j+2</text>
+  <text x="1193" y="980" class="label">…</text>
+
+  <rect x="1335" y="1006" width="145" height="28" rx="5" fill="#e9d5ff" stroke="#7e22ce"/>
+  <text x="1407" y="1025" class="small" text-anchor="middle">write after block 19</text>
+
+  <text x="40" y="1080" class="tiny">Source: tt-metal f69f924c6b4f · all_gather_minimal_matmul_async · plain-bias M=3072, K=5120, N=1280/3840 configuration</text>
+</svg>

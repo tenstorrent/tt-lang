@@ -4,22 +4,20 @@ Four-device M/K/N=9472/5120/15360 device times: replicated TT-Lang 10.248 ms
 (130 compute workers/device), N-sharded plus output gather 24.154 ms (60),
 and native 6.883 ms (108). See the [performance report](../../benchmarks/all_gather_minimal_matmul/PERFORMANCE.md).
 
-| TT-Lang version (oldest to newest) | Entry point and selection | Result on each device |
-| --- | --- | --- |
-| 1. [Per-row all-gather + matmul](per_row_all_gather/operation.py) | [`n_sharded/`](n_sharded/), `--activation-all-gather all_to_all`; also `ring` with at most two M workers | N-sharded `M x N/D`; `--gather-output` returns replicated `M x N`. |
-| 2. [Two-worker ring + matmul](two_worker_ring/operation.py) | [`n_sharded/`](n_sharded/), `--activation-all-gather ring` with more than two M workers | N-sharded `M x N/D`; `--gather-output` returns replicated `M x N`. |
-| 3. [DRAM all-gather + replicated matmul](replicated/operation.py) | [`replicated/`](replicated/), `--activation-all-gather all_to_all` or `ring` | Replicated `M x N`; no output gather. |
+| TT-Lang version (oldest to newest) | Entry point and selection | Result on each device | Figures |
+| --- | --- | --- | --- |
+| 1. [Per-row all-gather + matmul](per_row_all_gather/operation.py) | [`n_sharded/`](n_sharded/), `--activation-all-gather all_to_all`; also `ring` with at most two M workers | N-sharded `M x N/D`; `--gather-output` returns replicated `M x N`. | [Per-device view](../../benchmarks/all_gather_minimal_matmul/images/ttlang_device.svg) |
+| 2. [Two-worker ring + matmul](two_worker_ring/operation.py) | [`n_sharded/`](n_sharded/), `--activation-all-gather ring` with more than two M workers | N-sharded `M x N/D`; `--gather-output` returns replicated `M x N`. | [Four devices](../../benchmarks/all_gather_minimal_matmul/images/ttlang_four_device.svg) |
+| 3. [DRAM all-gather + replicated matmul](replicated/operation.py) | [`replicated/`](replicated/), `--activation-all-gather all_to_all` or `ring` | Replicated `M x N`; no output gather. | [Four devices](../../benchmarks/all_gather_minimal_matmul/images/ttlang_replicated_four_device.svg), [fabric pipes](../../benchmarks/all_gather_minimal_matmul/images/ttlang_replicated_fabric_pipes.svg), [worker-grid pipes](../../benchmarks/all_gather_minimal_matmul/images/ttlang_replicated_worker_pipes.svg) |
 
 The N-sharded entry point selects between the two communication implementations
 automatically. On one device, activation all-gather is the identity and the
 per-row or replicated matmul executes without fabric communication.
 
 Comparison reference: [native TT-Metal all-gather matmul](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/ttnn/cpp/ttnn/operations/experimental/ccl/all_gather_minimal_matmul_async/all_gather_minimal_matmul_async.cpp),
-which returns replicated `M x N`; [benchmark commands](../../benchmarks/all_gather_minimal_matmul/README.md#run-the-comparison).
-
-Four-device figures: [two-worker ring + output gather](../../benchmarks/all_gather_minimal_matmul/images/ttlang_four_device.svg),
-[DRAM all-gather + replicated matmul](../../benchmarks/all_gather_minimal_matmul/images/ttlang_replicated_four_device.svg),
-[native TT-Metal](../../benchmarks/all_gather_minimal_matmul/images/ttmetal_four_device.svg).
+which returns replicated `M x N`; [benchmark commands](../../benchmarks/all_gather_minimal_matmul/README.md#run-the-comparison),
+[four-device figure](../../benchmarks/all_gather_minimal_matmul/images/ttmetal_four_device.svg),
+[per-device figure](../../benchmarks/all_gather_minimal_matmul/images/ttmetal_device.svg).
 
 `N` is the complete output width and `D` is the device count. Weights and bias
 remain N-sharded when output gathering is enabled. The final gather copies
