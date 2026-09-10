@@ -40,16 +40,13 @@ Implementation: ``all_gather_minimal_matmul`` nested inside
 Run from the repository root with the selected devices idle::
 
     # One device: identity all-gather; fabric disabled.
-    timeout 300 python -m examples.all_gather_minimal_matmul \
-        --mesh-shape 1x1 2>&1 | tee /tmp/device_test.log
+    python -m examples.all_gather_minimal_matmul --mesh-shape 1x1
 
     # Two devices: use 2x1 instead when that is the connected orientation.
-    timeout 300 python -m examples.all_gather_minimal_matmul \
-        --mesh-shape 1x2 2>&1 | tee /tmp/device_test.log
+    python -m examples.all_gather_minimal_matmul --mesh-shape 1x2
 
     # Four devices.
-    timeout 300 python -m examples.all_gather_minimal_matmul \
-        --mesh-shape 2x2 2>&1 | tee /tmp/device_test.log
+    python -m examples.all_gather_minimal_matmul --mesh-shape 2x2
 
 Dimensions and mesh selection: ``README.md`` beside this file.
 """

@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1100" viewBox="0 0 1600 1100" role="img" aria-labelledby="title description">
-  <title id="title">Native TT-Metal four-device all-gather minimal matmul</title>
+  <title id="title">Upstream TT-Metal four-device all-gather minimal matmul</title>
   <desc id="description">Four Blackhole devices form a bidirectional ring. Each device sends its local activation shard, receives and forwards remote shards, writes remote activation tiles to gather-scratch DRAM, and reads local and remote activation blocks while matmul proceeds.</desc>
   <defs>
     <marker id="arrow-orange" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#c2410c"/></marker>
@@ -18,6 +18,7 @@
       .panel { fill: #ffffff; stroke: #64748b; stroke-width: 1.5; rx: 8; }
       .device { fill: #ffffff; stroke: #334155; stroke-width: 1.7; rx: 9; }
       .dram { fill: #eef2ff; stroke: #6366f1; stroke-width: 1.4; rx: 6; }
+      .l1 { fill: #dcfce7; stroke: #16a34a; stroke-width: 1.4; rx: 6; }
       .scratch { fill: #ffedd5; stroke: #c2410c; stroke-width: 1.4; rx: 6; }
       .compute { fill: #fef3c7; stroke: #d97706; stroke-width: 1.4; rx: 6; }
       .output { fill: #f3e8ff; stroke: #9333ea; stroke-width: 1.4; rx: 6; }
@@ -28,7 +29,7 @@
   </defs>
 
   <rect width="1600" height="1100" fill="#f8fafc"/>
-  <text x="40" y="42" class="title">Native TT-Metal all-gather + matmul + bias: four devices</text>
+  <text x="40" y="42" class="title">Upstream TT-Metal all-gather + matmul + bias: four devices</text>
   <text x="40" y="68" class="subtitle">D=4 · M, K, and N denote global matrix dimensions · Wan2.2 Blackhole 4×1 participant ring</text>
 
   <rect x="1085" y="10" width="475" height="108" class="table"/>
@@ -72,6 +73,7 @@
   <text x="800" y="286" class="tiny" text-anchor="middle">ring direction 1 · six fabric workers per link · remote activation packets continue to the next device</text>
 
   <text x="40" y="344" class="section">Per-device DRAM ownership and worker computation</text>
+  <text x="700" y="344" class="tiny">Blue: DRAM · green: L1 DFB · orange: fabric · yellow: worker computation · purple: output</text>
 
   <g id="device-0">
     <rect x="40" y="362" width="350" height="390" class="device"/>
@@ -81,28 +83,30 @@
     <rect x="58" y="466" width="80" height="66" class="dram"/>
     <text x="98" y="489" class="label" text-anchor="middle">A₀</text>
     <text x="98" y="508" class="tiny" text-anchor="middle">M × K/4</text>
-    <text x="98" y="523" class="tiny" text-anchor="middle">local DRAM</text>
-    <rect x="148" y="466" width="134" height="66" class="scratch"/>
+    <text x="98" y="523" class="tiny" text-anchor="middle">DRAM</text>
+    <rect x="148" y="466" width="134" height="66" class="dram"/>
     <text x="215" y="489" class="label" text-anchor="middle">Gather scratch</text>
-    <text x="215" y="508" class="tiny" text-anchor="middle">A₁, A₂, A₃ in DRAM</text>
-    <text x="215" y="523" class="tiny" text-anchor="middle">local 1/4 unused</text>
+    <text x="215" y="508" class="tiny" text-anchor="middle">M × K · DRAM</text>
+    <text x="215" y="523" class="tiny" text-anchor="middle">remote 3/4 used</text>
     <rect x="292" y="466" width="80" height="66" class="dram"/>
     <text x="332" y="489" class="label" text-anchor="middle">B, bias</text>
     <text x="332" y="508" class="tiny" text-anchor="middle">K × N · 1 × N</text>
-    <text x="332" y="523" class="tiny" text-anchor="middle">replicated</text>
+    <text x="332" y="523" class="tiny" text-anchor="middle">DRAM</text>
     <path d="M215 447 V464" class="route" stroke="#c2410c" marker-end="url(#arrow-orange)"/>
-    <path d="M98 532 V550 H132 V568" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
-    <path d="M215 532 V550 H190 V568" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
-    <path d="M332 532 V550 H300 V568" class="route" stroke="#1d4ed8" marker-end="url(#arrow-blue)"/>
-    <rect x="58" y="570" width="314" height="92" class="compute"/>
-    <text x="215" y="594" class="label" text-anchor="middle">all 108 worker cores compute</text>
-    <text x="215" y="615" class="small" text-anchor="middle">A injectors read local A₀ or remote scratch</text>
-    <text x="215" y="634" class="small" text-anchor="middle">NoC-relay A/B blocks; accumulate FP32 in L1</text>
-    <text x="215" y="653" class="tiny" text-anchor="middle">bias and cast after 20 K blocks</text>
-    <path d="M215 662 V676" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
-    <rect x="58" y="678" width="314" height="54" class="output"/>
-    <text x="215" y="700" class="label" text-anchor="middle">O copy on Device 0: M × N</text>
-    <text x="215" y="719" class="small" text-anchor="middle">write to DRAM</text>
+    <path d="M98 532 V548" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+    <path d="M215 532 V548" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+    <path d="M332 532 V548" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+    <rect x="58" y="550" width="314" height="54" class="l1"/>
+    <text x="215" y="573" class="label" text-anchor="middle">L1 DFBs: current A and B blocks</text>
+    <text x="215" y="593" class="small" text-anchor="middle">NoC relay; FP32 accumulator remains in L1</text>
+    <path d="M215 604 V616" class="route" stroke="#475569" marker-end="url(#arrow-gray)"/>
+    <rect x="58" y="618" width="314" height="50" class="compute"/>
+    <text x="215" y="640" class="label" text-anchor="middle">all 108 worker cores compute</text>
+    <text x="215" y="658" class="tiny" text-anchor="middle">bias and BF16 cast after 20 K blocks</text>
+    <path d="M215 668 V680" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+    <rect x="58" y="682" width="314" height="50" class="output"/>
+    <text x="215" y="704" class="label" text-anchor="middle">O copy on Device 0: M × N</text>
+    <text x="215" y="723" class="small" text-anchor="middle">L1 → DRAM</text>
   </g>
 
   <g id="device-1">
@@ -113,28 +117,30 @@
     <rect x="448" y="466" width="80" height="66" class="dram"/>
     <text x="488" y="489" class="label" text-anchor="middle">A₁</text>
     <text x="488" y="508" class="tiny" text-anchor="middle">M × K/4</text>
-    <text x="488" y="523" class="tiny" text-anchor="middle">local DRAM</text>
-    <rect x="538" y="466" width="134" height="66" class="scratch"/>
+    <text x="488" y="523" class="tiny" text-anchor="middle">DRAM</text>
+    <rect x="538" y="466" width="134" height="66" class="dram"/>
     <text x="605" y="489" class="label" text-anchor="middle">Gather scratch</text>
-    <text x="605" y="508" class="tiny" text-anchor="middle">A₀, A₂, A₃ in DRAM</text>
-    <text x="605" y="523" class="tiny" text-anchor="middle">local 1/4 unused</text>
+    <text x="605" y="508" class="tiny" text-anchor="middle">M × K · DRAM</text>
+    <text x="605" y="523" class="tiny" text-anchor="middle">remote 3/4 used</text>
     <rect x="682" y="466" width="80" height="66" class="dram"/>
     <text x="722" y="489" class="label" text-anchor="middle">B, bias</text>
     <text x="722" y="508" class="tiny" text-anchor="middle">K × N · 1 × N</text>
-    <text x="722" y="523" class="tiny" text-anchor="middle">replicated</text>
+    <text x="722" y="523" class="tiny" text-anchor="middle">DRAM</text>
     <path d="M605 447 V464" class="route" stroke="#c2410c" marker-end="url(#arrow-orange)"/>
-    <path d="M488 532 V550 H522 V568" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
-    <path d="M605 532 V550 H580 V568" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
-    <path d="M722 532 V550 H690 V568" class="route" stroke="#1d4ed8" marker-end="url(#arrow-blue)"/>
-    <rect x="448" y="570" width="314" height="92" class="compute"/>
-    <text x="605" y="594" class="label" text-anchor="middle">all 108 worker cores compute</text>
-    <text x="605" y="615" class="small" text-anchor="middle">A injectors read local A₁ or remote scratch</text>
-    <text x="605" y="634" class="small" text-anchor="middle">NoC-relay A/B blocks; accumulate FP32 in L1</text>
-    <text x="605" y="653" class="tiny" text-anchor="middle">bias and cast after 20 K blocks</text>
-    <path d="M605 662 V676" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
-    <rect x="448" y="678" width="314" height="54" class="output"/>
-    <text x="605" y="700" class="label" text-anchor="middle">O copy on Device 1: M × N</text>
-    <text x="605" y="719" class="small" text-anchor="middle">write to DRAM</text>
+    <path d="M488 532 V548" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+    <path d="M605 532 V548" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+    <path d="M722 532 V548" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+    <rect x="448" y="550" width="314" height="54" class="l1"/>
+    <text x="605" y="573" class="label" text-anchor="middle">L1 DFBs: current A and B blocks</text>
+    <text x="605" y="593" class="small" text-anchor="middle">NoC relay; FP32 accumulator remains in L1</text>
+    <path d="M605 604 V616" class="route" stroke="#475569" marker-end="url(#arrow-gray)"/>
+    <rect x="448" y="618" width="314" height="50" class="compute"/>
+    <text x="605" y="640" class="label" text-anchor="middle">all 108 worker cores compute</text>
+    <text x="605" y="658" class="tiny" text-anchor="middle">bias and BF16 cast after 20 K blocks</text>
+    <path d="M605 668 V680" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+    <rect x="448" y="682" width="314" height="50" class="output"/>
+    <text x="605" y="704" class="label" text-anchor="middle">O copy on Device 1: M × N</text>
+    <text x="605" y="723" class="small" text-anchor="middle">L1 → DRAM</text>
   </g>
 
   <g id="device-2">
@@ -145,28 +151,30 @@
     <rect x="838" y="466" width="80" height="66" class="dram"/>
     <text x="878" y="489" class="label" text-anchor="middle">A₂</text>
     <text x="878" y="508" class="tiny" text-anchor="middle">M × K/4</text>
-    <text x="878" y="523" class="tiny" text-anchor="middle">local DRAM</text>
-    <rect x="928" y="466" width="134" height="66" class="scratch"/>
+    <text x="878" y="523" class="tiny" text-anchor="middle">DRAM</text>
+    <rect x="928" y="466" width="134" height="66" class="dram"/>
     <text x="995" y="489" class="label" text-anchor="middle">Gather scratch</text>
-    <text x="995" y="508" class="tiny" text-anchor="middle">A₀, A₁, A₃ in DRAM</text>
-    <text x="995" y="523" class="tiny" text-anchor="middle">local 1/4 unused</text>
+    <text x="995" y="508" class="tiny" text-anchor="middle">M × K · DRAM</text>
+    <text x="995" y="523" class="tiny" text-anchor="middle">remote 3/4 used</text>
     <rect x="1072" y="466" width="80" height="66" class="dram"/>
     <text x="1112" y="489" class="label" text-anchor="middle">B, bias</text>
     <text x="1112" y="508" class="tiny" text-anchor="middle">K × N · 1 × N</text>
-    <text x="1112" y="523" class="tiny" text-anchor="middle">replicated</text>
+    <text x="1112" y="523" class="tiny" text-anchor="middle">DRAM</text>
     <path d="M995 447 V464" class="route" stroke="#c2410c" marker-end="url(#arrow-orange)"/>
-    <path d="M878 532 V550 H912 V568" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
-    <path d="M995 532 V550 H970 V568" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
-    <path d="M1112 532 V550 H1080 V568" class="route" stroke="#1d4ed8" marker-end="url(#arrow-blue)"/>
-    <rect x="838" y="570" width="314" height="92" class="compute"/>
-    <text x="995" y="594" class="label" text-anchor="middle">all 108 worker cores compute</text>
-    <text x="995" y="615" class="small" text-anchor="middle">A injectors read local A₂ or remote scratch</text>
-    <text x="995" y="634" class="small" text-anchor="middle">NoC-relay A/B blocks; accumulate FP32 in L1</text>
-    <text x="995" y="653" class="tiny" text-anchor="middle">bias and cast after 20 K blocks</text>
-    <path d="M995 662 V676" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
-    <rect x="838" y="678" width="314" height="54" class="output"/>
-    <text x="995" y="700" class="label" text-anchor="middle">O copy on Device 2: M × N</text>
-    <text x="995" y="719" class="small" text-anchor="middle">write to DRAM</text>
+    <path d="M878 532 V548" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+    <path d="M995 532 V548" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+    <path d="M1112 532 V548" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+    <rect x="838" y="550" width="314" height="54" class="l1"/>
+    <text x="995" y="573" class="label" text-anchor="middle">L1 DFBs: current A and B blocks</text>
+    <text x="995" y="593" class="small" text-anchor="middle">NoC relay; FP32 accumulator remains in L1</text>
+    <path d="M995 604 V616" class="route" stroke="#475569" marker-end="url(#arrow-gray)"/>
+    <rect x="838" y="618" width="314" height="50" class="compute"/>
+    <text x="995" y="640" class="label" text-anchor="middle">all 108 worker cores compute</text>
+    <text x="995" y="658" class="tiny" text-anchor="middle">bias and BF16 cast after 20 K blocks</text>
+    <path d="M995 668 V680" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+    <rect x="838" y="682" width="314" height="50" class="output"/>
+    <text x="995" y="704" class="label" text-anchor="middle">O copy on Device 2: M × N</text>
+    <text x="995" y="723" class="small" text-anchor="middle">L1 → DRAM</text>
   </g>
 
   <g id="device-3">
@@ -177,28 +185,30 @@
     <rect x="1228" y="466" width="80" height="66" class="dram"/>
     <text x="1268" y="489" class="label" text-anchor="middle">A₃</text>
     <text x="1268" y="508" class="tiny" text-anchor="middle">M × K/4</text>
-    <text x="1268" y="523" class="tiny" text-anchor="middle">local DRAM</text>
-    <rect x="1318" y="466" width="134" height="66" class="scratch"/>
+    <text x="1268" y="523" class="tiny" text-anchor="middle">DRAM</text>
+    <rect x="1318" y="466" width="134" height="66" class="dram"/>
     <text x="1385" y="489" class="label" text-anchor="middle">Gather scratch</text>
-    <text x="1385" y="508" class="tiny" text-anchor="middle">A₀, A₁, A₂ in DRAM</text>
-    <text x="1385" y="523" class="tiny" text-anchor="middle">local 1/4 unused</text>
+    <text x="1385" y="508" class="tiny" text-anchor="middle">M × K · DRAM</text>
+    <text x="1385" y="523" class="tiny" text-anchor="middle">remote 3/4 used</text>
     <rect x="1462" y="466" width="80" height="66" class="dram"/>
     <text x="1502" y="489" class="label" text-anchor="middle">B, bias</text>
     <text x="1502" y="508" class="tiny" text-anchor="middle">K × N · 1 × N</text>
-    <text x="1502" y="523" class="tiny" text-anchor="middle">replicated</text>
+    <text x="1502" y="523" class="tiny" text-anchor="middle">DRAM</text>
     <path d="M1385 447 V464" class="route" stroke="#c2410c" marker-end="url(#arrow-orange)"/>
-    <path d="M1268 532 V550 H1302 V568" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
-    <path d="M1385 532 V550 H1360 V568" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
-    <path d="M1502 532 V550 H1470 V568" class="route" stroke="#1d4ed8" marker-end="url(#arrow-blue)"/>
-    <rect x="1228" y="570" width="314" height="92" class="compute"/>
-    <text x="1385" y="594" class="label" text-anchor="middle">all 108 worker cores compute</text>
-    <text x="1385" y="615" class="small" text-anchor="middle">A injectors read local A₃ or remote scratch</text>
-    <text x="1385" y="634" class="small" text-anchor="middle">NoC-relay A/B blocks; accumulate FP32 in L1</text>
-    <text x="1385" y="653" class="tiny" text-anchor="middle">bias and cast after 20 K blocks</text>
-    <path d="M1385 662 V676" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
-    <rect x="1228" y="678" width="314" height="54" class="output"/>
-    <text x="1385" y="700" class="label" text-anchor="middle">O copy on Device 3: M × N</text>
-    <text x="1385" y="719" class="small" text-anchor="middle">write to DRAM</text>
+    <path d="M1268 532 V548" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+    <path d="M1385 532 V548" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+    <path d="M1502 532 V548" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+    <rect x="1228" y="550" width="314" height="54" class="l1"/>
+    <text x="1385" y="573" class="label" text-anchor="middle">L1 DFBs: current A and B blocks</text>
+    <text x="1385" y="593" class="small" text-anchor="middle">NoC relay; FP32 accumulator remains in L1</text>
+    <path d="M1385 604 V616" class="route" stroke="#475569" marker-end="url(#arrow-gray)"/>
+    <rect x="1228" y="618" width="314" height="50" class="compute"/>
+    <text x="1385" y="640" class="label" text-anchor="middle">all 108 worker cores compute</text>
+    <text x="1385" y="658" class="tiny" text-anchor="middle">bias and BF16 cast after 20 K blocks</text>
+    <path d="M1385 668 V680" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+    <rect x="1228" y="682" width="314" height="50" class="output"/>
+    <text x="1385" y="704" class="label" text-anchor="middle">O copy on Device 3: M × N</text>
+    <text x="1385" y="723" class="small" text-anchor="middle">L1 → DRAM</text>
   </g>
 
   <text x="800" y="775" class="small" text-anchor="middle">B and bias are replicated, so the four O allocations contain the same M × N result; they are not one M × 4N result.</text>
@@ -226,7 +236,7 @@
   <text x="950" y="938" class="label">…</text>
 
   <rect x="430" y="963" width="285" height="29" rx="5" fill="#dcfce7" stroke="#15803d"/>
-  <text x="572" y="983" class="small" text-anchor="middle">read local/scratch Aⱼ + Bⱼ; NoC relay</text>
+  <text x="572" y="983" class="small" text-anchor="middle">read Aᵣ/gather scratch + B; NoC relay</text>
   <rect x="715" y="963" width="285" height="29" rx="5" fill="#dcfce7" stroke="#15803d"/>
   <text x="857" y="983" class="small" text-anchor="middle">read and relay subsequent A/B blocks</text>
   <text x="1030" y="983" class="label">…</text>

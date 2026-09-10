@@ -24,29 +24,43 @@ and TT-Metal's
 
 Both diagrams use `D=4` and global `M`, `K`, and `N` notation. They show tensor
 placement, communication, worker-core use, DRAM traffic, and computation/data
-movement overlap. They do not report four-device timing results.
+movement overlap. They do not report four-device timing results. The
+[TT-Metalium architecture introduction](https://github.com/tenstorrent/tt-metal/blob/f69f924c6b4f38daa0a6f25716731f36c573dc0e/docs/source/tt-metalium/tt_metal/labs/matmul/lab1/lab1.rst#L227-L230)
+describes the dedicated DRAM attached to each device.
 
 ### TT-Lang
 
 ![TT-Lang four-device all-gather, matmul, and bias dataflow](images/ttlang_four_device.svg)
 
-### Native TT-Metal
+### Upstream TT-Metal Wan2.2 test
 
 ![Native TT-Metal four-device all-gather, matmul, and bias dataflow](images/ttmetal_four_device.svg)
 
+The upstream test replicates full `B` and bias values, so its four devices
+produce four copies of the same `M x N` result. The TT-Lang benchmark instead
+N-shards `B`, bias, and output.
+
+| Aspect | TT-Lang | Upstream TT-Metal |
+| --- | --- | --- |
+| Inter-device A transfer | One fabric unicast per source/destination pair | Bidirectional ring forwarding |
+| Remote A storage | Directly in L1 DFBs | Device DRAM scratch, then L1 DFBs |
+| A reuse | Full-K block cached in L1 across N rounds | Current blocks read from DRAM and relayed through L1 |
+| B, bias, output | N-sharded | Replicated |
+
 ## Operation and dimensions
 
-For each participant, the output is `activation @ weight_shard + bias_shard`.
+Let `D` be the participant count. For each participant, the output is
+`activation @ weight_shard + bias_shard`.
 The activation is initially split along the reduction dimension K; all-gather
 makes the full activation available to each participant. Weights, bias, and
 output are split along the output-column dimension N.
 
-| Tensor | Complete tensor | Tensor stored on each of the two devices |
+| Tensor | Complete tensor | Allocation on each participant |
 | --- | --- | --- |
-| Activation | M x full K | M x (full K / 2) |
-| Weight | full K x (2 x per-device N) | full K x per-device N |
-| Row bias | 1 x (2 x per-device N) | 1 x per-device N |
-| Output | M x (2 x per-device N) | M x per-device N |
+| Activation | M x K | M x (K / D) |
+| Weight | K x N | K x (N / D) |
+| Row bias | 1 x N | 1 x (N / D) |
+| Output | M x N | M x (N / D) |
 
 All input/output tensors use tile layout and interleaved DRAM storage.
 The benchmark always includes bias. It generates reproducible random inputs
@@ -58,8 +72,8 @@ Command-line dimensions and blocks are in 32 x 32 tiles, not elements:
 | Argument | Conversion to elements |
 | --- | --- |
 | `--m-tiles 96` | M = 96 x 32 = 3072 |
-| `--k-tiles-per-device 80` | full K = 2 x 80 x 32 = 5120 |
-| `--n-tiles-per-device 40` or `120` | per-device N = 1280 or 3840; complete output width = 2560 or 7680 |
+| `--k-tiles-per-device 80` | K = D x 80 x 32; for D=2, K=5120 |
+| `--n-tiles-per-device 40` or `120` | N / D = 1280 or 3840; for D=2, N=2560 or 7680 |
 | `--m-block-tiles 2 --k-block-tiles 40 --n-block-tiles 2` | Each compute block multiplies a 64 x 1280 activation block by a 1280 x 64 weight block. |
 
 `--worker-grid 2 5 --transpose` selects ten compute workers per device:
@@ -322,20 +336,6 @@ to both TT-Lang and native.
 The sweep multiplies its M parameter by the parent sequence-parallel extent
 when allocating activations. The dimensions above refer to actual tensors
 in the operation test, not sweep case names.
-
-The two implementations also differ internally even with matching CLI settings:
-
-| Implementation detail | TT-Lang | Native TT-Metal |
-| --- | --- | --- |
-| Activation storage | Receives activation blocks into L1 and retains the full K extent for each worker's M block across successive N blocks; no gathered-activation DRAM allocation. | Stores received remote shards in DRAM scratch; reads the device-owned shard directly from its input. |
-| Overlap and reuse | Transfers activation blocks during the first N round, then reuses them from L1; double-buffers weights. | Consumes available K blocks while fabric communication continues. |
-| Data-movement processors, transposed grid | Activation and output: NCRISC/NoC 0. Weight and fabric send: BRISC/NoC 1. | Activation: BRISC/NoC 0. Weight and output: NCRISC/NoC 1. |
-
-BRISC and NCRISC are worker data-movement processors; NoC 0 and NoC 1 are the
-two on-chip networks. These assignments and the different activation-storage
-strategies mean that matching blocks does not make the generated programs
-identical. The measured performance gap does not isolate the contribution
-of each difference.
 
 ### Configuration limits
 

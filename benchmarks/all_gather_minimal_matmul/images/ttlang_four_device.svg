@@ -42,7 +42,8 @@
   <text x="1100" y="94" class="tiny">bias</text><text x="1180" y="94" class="tiny">N-sharded</text><text x="1325" y="94" class="tiny">biasᵣ: 1 × N/4</text>
   <text x="1100" y="110" class="tiny">O</text><text x="1180" y="110" class="tiny">N-sharded</text><text x="1325" y="110" class="tiny">Oᵣ: M × N/4</text>
 
-  <text x="40" y="106" class="section">Per-device DRAM ownership</text>
+  <text x="40" y="106" class="section">Initial per-device DRAM allocations</text>
+  <text x="500" y="106" class="tiny">Blue: DRAM · green: L1 DFB · orange: fabric · yellow: worker computation · purple: output</text>
 
   <g id="device-0-dram">
     <rect x="40" y="124" width="350" height="116" class="device"/>
@@ -120,72 +121,80 @@
     <rect x="40" y="410" width="350" height="260" class="device"/>
     <text x="58" y="438" class="label">Device 0 · 2×5 worker grid</text>
     <rect x="58" y="454" width="314" height="58" class="cache"/>
-    <text x="215" y="477" class="label" text-anchor="middle">L1 activation cache: A₀ | A₁ | A₂ | A₃</text>
-    <text x="215" y="498" class="small" text-anchor="middle">NoC multicast to N workers; no gather DRAM</text>
+    <text x="215" y="477" class="label" text-anchor="middle">L1 DFBs cache full-K A: A₀ | A₁ | A₂ | A₃</text>
+    <text x="215" y="498" class="small" text-anchor="middle">hardware NoC multicast to N workers</text>
     <rect x="58" y="532" width="130" height="52" class="dram"/>
-    <text x="123" y="553" class="label" text-anchor="middle">stream B₀</text>
-    <text x="123" y="573" class="small" text-anchor="middle">from DRAM</text>
+    <text x="123" y="553" class="label" text-anchor="middle">B₀ blocks</text>
+    <text x="123" y="573" class="small" text-anchor="middle">DRAM → L1 DFB</text>
     <path d="M188 558 H210" class="route" stroke="#1d4ed8" marker-end="url(#arrow-blue)"/>
     <rect x="212" y="526" width="160" height="64" class="compute"/>
-    <text x="292" y="550" class="label" text-anchor="middle">matmul + bias₀</text>
-    <text x="292" y="572" class="small" text-anchor="middle">FP32 · 10 worker cores</text>
+    <text x="292" y="548" class="label" text-anchor="middle">matmul + bias₀</text>
+    <text x="292" y="568" class="small" text-anchor="middle">10 worker cores compute</text>
+    <text x="292" y="584" class="tiny" text-anchor="middle">FP32 accumulator in L1</text>
     <path d="M292 590 V604" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
-    <rect x="58" y="606" width="314" height="46" class="output"/>
-    <text x="215" y="634" class="label" text-anchor="middle">O₀ = A × B₀ + bias₀ · M × N/4</text>
+    <rect x="58" y="606" width="314" height="50" class="output"/>
+    <text x="215" y="628" class="label" text-anchor="middle">O₀ = A × B₀ + bias₀ · M × N/4</text>
+    <text x="215" y="647" class="small" text-anchor="middle">L1 → DRAM</text>
   </g>
 
   <g id="device-1-compute">
     <rect x="430" y="410" width="350" height="260" class="device"/>
     <text x="448" y="438" class="label">Device 1 · 2×5 worker grid</text>
     <rect x="448" y="454" width="314" height="58" class="cache"/>
-    <text x="605" y="477" class="label" text-anchor="middle">L1 activation cache: A₀ | A₁ | A₂ | A₃</text>
-    <text x="605" y="498" class="small" text-anchor="middle">NoC multicast to N workers; no gather DRAM</text>
+    <text x="605" y="477" class="label" text-anchor="middle">L1 DFBs cache full-K A: A₀ | A₁ | A₂ | A₃</text>
+    <text x="605" y="498" class="small" text-anchor="middle">hardware NoC multicast to N workers</text>
     <rect x="448" y="532" width="130" height="52" class="dram"/>
-    <text x="513" y="553" class="label" text-anchor="middle">stream B₁</text>
-    <text x="513" y="573" class="small" text-anchor="middle">from DRAM</text>
+    <text x="513" y="553" class="label" text-anchor="middle">B₁ blocks</text>
+    <text x="513" y="573" class="small" text-anchor="middle">DRAM → L1 DFB</text>
     <path d="M578 558 H600" class="route" stroke="#1d4ed8" marker-end="url(#arrow-blue)"/>
     <rect x="602" y="526" width="160" height="64" class="compute"/>
-    <text x="682" y="550" class="label" text-anchor="middle">matmul + bias₁</text>
-    <text x="682" y="572" class="small" text-anchor="middle">FP32 · 10 worker cores</text>
+    <text x="682" y="548" class="label" text-anchor="middle">matmul + bias₁</text>
+    <text x="682" y="568" class="small" text-anchor="middle">10 worker cores compute</text>
+    <text x="682" y="584" class="tiny" text-anchor="middle">FP32 accumulator in L1</text>
     <path d="M682 590 V604" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
-    <rect x="448" y="606" width="314" height="46" class="output"/>
-    <text x="605" y="634" class="label" text-anchor="middle">O₁ = A × B₁ + bias₁ · M × N/4</text>
+    <rect x="448" y="606" width="314" height="50" class="output"/>
+    <text x="605" y="628" class="label" text-anchor="middle">O₁ = A × B₁ + bias₁ · M × N/4</text>
+    <text x="605" y="647" class="small" text-anchor="middle">L1 → DRAM</text>
   </g>
 
   <g id="device-2-compute">
     <rect x="820" y="410" width="350" height="260" class="device"/>
     <text x="838" y="438" class="label">Device 2 · 2×5 worker grid</text>
     <rect x="838" y="454" width="314" height="58" class="cache"/>
-    <text x="995" y="477" class="label" text-anchor="middle">L1 activation cache: A₀ | A₁ | A₂ | A₃</text>
-    <text x="995" y="498" class="small" text-anchor="middle">NoC multicast to N workers; no gather DRAM</text>
+    <text x="995" y="477" class="label" text-anchor="middle">L1 DFBs cache full-K A: A₀ | A₁ | A₂ | A₃</text>
+    <text x="995" y="498" class="small" text-anchor="middle">hardware NoC multicast to N workers</text>
     <rect x="838" y="532" width="130" height="52" class="dram"/>
-    <text x="903" y="553" class="label" text-anchor="middle">stream B₂</text>
-    <text x="903" y="573" class="small" text-anchor="middle">from DRAM</text>
+    <text x="903" y="553" class="label" text-anchor="middle">B₂ blocks</text>
+    <text x="903" y="573" class="small" text-anchor="middle">DRAM → L1 DFB</text>
     <path d="M968 558 H990" class="route" stroke="#1d4ed8" marker-end="url(#arrow-blue)"/>
     <rect x="992" y="526" width="160" height="64" class="compute"/>
-    <text x="1072" y="550" class="label" text-anchor="middle">matmul + bias₂</text>
-    <text x="1072" y="572" class="small" text-anchor="middle">FP32 · 10 worker cores</text>
+    <text x="1072" y="548" class="label" text-anchor="middle">matmul + bias₂</text>
+    <text x="1072" y="568" class="small" text-anchor="middle">10 worker cores compute</text>
+    <text x="1072" y="584" class="tiny" text-anchor="middle">FP32 accumulator in L1</text>
     <path d="M1072 590 V604" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
-    <rect x="838" y="606" width="314" height="46" class="output"/>
-    <text x="995" y="634" class="label" text-anchor="middle">O₂ = A × B₂ + bias₂ · M × N/4</text>
+    <rect x="838" y="606" width="314" height="50" class="output"/>
+    <text x="995" y="628" class="label" text-anchor="middle">O₂ = A × B₂ + bias₂ · M × N/4</text>
+    <text x="995" y="647" class="small" text-anchor="middle">L1 → DRAM</text>
   </g>
 
   <g id="device-3-compute">
     <rect x="1210" y="410" width="350" height="260" class="device"/>
     <text x="1228" y="438" class="label">Device 3 · 2×5 worker grid</text>
     <rect x="1228" y="454" width="314" height="58" class="cache"/>
-    <text x="1385" y="477" class="label" text-anchor="middle">L1 activation cache: A₀ | A₁ | A₂ | A₃</text>
-    <text x="1385" y="498" class="small" text-anchor="middle">NoC multicast to N workers; no gather DRAM</text>
+    <text x="1385" y="477" class="label" text-anchor="middle">L1 DFBs cache full-K A: A₀ | A₁ | A₂ | A₃</text>
+    <text x="1385" y="498" class="small" text-anchor="middle">hardware NoC multicast to N workers</text>
     <rect x="1228" y="532" width="130" height="52" class="dram"/>
-    <text x="1293" y="553" class="label" text-anchor="middle">stream B₃</text>
-    <text x="1293" y="573" class="small" text-anchor="middle">from DRAM</text>
+    <text x="1293" y="553" class="label" text-anchor="middle">B₃ blocks</text>
+    <text x="1293" y="573" class="small" text-anchor="middle">DRAM → L1 DFB</text>
     <path d="M1358 558 H1380" class="route" stroke="#1d4ed8" marker-end="url(#arrow-blue)"/>
     <rect x="1382" y="526" width="160" height="64" class="compute"/>
-    <text x="1462" y="550" class="label" text-anchor="middle">matmul + bias₃</text>
-    <text x="1462" y="572" class="small" text-anchor="middle">FP32 · 10 worker cores</text>
+    <text x="1462" y="548" class="label" text-anchor="middle">matmul + bias₃</text>
+    <text x="1462" y="568" class="small" text-anchor="middle">10 worker cores compute</text>
+    <text x="1462" y="584" class="tiny" text-anchor="middle">FP32 accumulator in L1</text>
     <path d="M1462 590 V604" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
-    <rect x="1228" y="606" width="314" height="46" class="output"/>
-    <text x="1385" y="634" class="label" text-anchor="middle">O₃ = A × B₃ + bias₃ · M × N/4</text>
+    <rect x="1228" y="606" width="314" height="50" class="output"/>
+    <text x="1385" y="628" class="label" text-anchor="middle">O₃ = A × B₃ + bias₃ · M × N/4</text>
+    <text x="1385" y="647" class="small" text-anchor="middle">L1 → DRAM</text>
   </g>
 
   <text x="40" y="711" class="section">Distributed result</text>
