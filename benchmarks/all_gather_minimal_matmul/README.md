@@ -15,7 +15,7 @@ and TT-Metal's
 | [`__main__.py`](__main__.py) | Benchmark runner: constructs inputs, runs both implementations, checks outputs, and writes device timings and provenance. Run with `python -m benchmarks.all_gather_minimal_matmul`. |
 | [`profile.py`](profile.py) | Optional Python `cProfile` helper for host dispatch overhead; its timings are not used in the device-performance comparison. |
 | [`../device_timing.py`](../device_timing.py) | Reads device timings through TT-Metal's existing Tracy profiler analysis. |
-| [`PERFORMANCE.md`](PERFORMANCE.md) | Optimization experiments, earlier results, regressions, and generated-C++ comparisons. |
+| [`PERFORMANCE.md`](PERFORMANCE.md) | Measured results, measurement conditions, provenance, and comparison limits. |
 | [`examples/all_gather_minimal_matmul/`](../../examples/all_gather_minimal_matmul/README.md) | TT-Lang implementation and standalone correctness example. |
 | [`benchmarks/matmul/`](../matmul/README.md) | Single-device matmul benchmarks, without all-gather. |
 
@@ -53,6 +53,26 @@ multiple output blocks. Here `--transpose` changes the worker-grid orientation;
 it does not transpose the input matrices. `--k-block-tiles` also controls
 TT-Lang's activation-transfer size.
 
+## TT-Lang optimizations
+
+The [TT-Lang implementation](https://github.com/tenstorrent/tt-lang/blob/7ad660d452270ddcc44d0fd15864e08237d8af35/examples/all_gather_minimal_matmul/operation.py)
+uses the following optimizations in the measured configuration:
+
+1. Receive gathered activation blocks directly into on-chip L1 memory,
+   eliminating gathered-activation DRAM writes and subsequent DRAM reads.
+2. Cache each worker's M block over full K and reuse it across N blocks,
+   avoiding repeated activation reads, inter-device transfers, and row broadcasts.
+3. Accumulate matmul products directly into FP32 L1 through the packer,
+   eliminating a separate BF16 product buffer, conversion buffer, and per-K
+   vector addition while retaining FP32 intermediate precision.
+4. Use 40-tile K blocks for both compute and activation transfers, amortizing
+   per-block synchronization and dataflow-buffer handoffs. Native uses the same
+   compute blocking in the comparison.
+5. Double-buffer weights so loading a subsequent block can overlap compute.
+6. Assign activation reads to NoC 0 and weight reads to NoC 1, using the two
+   on-chip networks for different operands. Output writes share NoC 0;
+   inter-device sends share the weight-loading processor.
+
 ## Measured results
 
 Both workloads use M=3072, full K=5120, two Blackhole devices, the transposed
@@ -60,26 +80,20 @@ Both workloads use M=3072, full K=5120, two Blackhole devices, the transposed
 FP32 packer accumulation, and bias. Packer accumulation adds successive
 K-block products to intermediate results in on-chip L1 memory.
 
-The primary comparison uses identical M/K/N blocks of 2/40/2 tiles.
-The native 2-tile K-block column preserves the earlier baseline, whose only compute
-configuration difference is M/K/N blocks of 2/2/2; it is not TT-Metal's
-upstream tuned configuration. Native implementation code is unchanged.
+Both implementations use identical M/K/N blocks of 2/40/2 tiles.
 Times are median device-kernel milliseconds; parentheses show sample minimum
 and maximum, not confidence intervals. Ratios below 1 favor TT-Lang.
 
-| Per-device N | TT-Lang ms (range) | Native, 40-tile K blocks: ms (range) | TT-Lang / native (40-tile K blocks) | Earlier native, 2-tile K blocks: ms | TT-Lang / native (2-tile K blocks) |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 1280 | 3.439 (3.434-3.448) | 3.690 (3.687-3.699) | 0.932 | 7.075 | 0.486 |
-| 3840 | 9.040 (8.959-9.170) | 10.396 (10.311-10.449) | 0.870 | 20.131 | 0.449 |
+| Per-device N | TT-Lang ms (range) | Native ms (range) | TT-Lang / native |
+| --- | ---: | ---: | ---: |
+| 1280 | 3.439 (3.434-3.448) | 3.690 (3.687-3.699) | 0.932 |
+| 3840 | 9.040 (8.959-9.170) | 10.396 (10.311-10.449) | 0.870 |
 
-40-tile K-block measurements: 2026-09-09 23:00:22-23:01:27 UTC; TT-Lang `7ad660d45227`; TT-Metal/LLVM source pins `ea042c4ad623`/`37aca9d384347`; compiler/TTNN/Metal binary SHA-256 prefixes `a31540fb2fad`/`62edde2b1f61`/`65380f11dc15`; container digest `6eaf96b4b00d5`; 3 warmups, 5 samples, median of the per-invocation mean across devices.
+Measured 2026-09-09 23:00:22-23:01:27 UTC; TT-Lang `7ad660d45227`; TT-Metal/LLVM source pins `ea042c4ad623`/`37aca9d384347`; compiler/TTNN/Metal binary SHA-256 prefixes `a31540fb2fad`/`62edde2b1f61`/`65380f11dc15`; container digest `6eaf96b4b00d5`; 3 warmups, 5 samples, median of the per-invocation mean across devices.
 
 These results compare the specified configurations, not each implementation's
-best possible configuration. For example, another tested native grid/block
-combination is faster than the native 40-tile K-block result above.
-[Performance analysis](PERFORMANCE.md#l1-activation-reuse-and-fp32-packer-accumulation)
-contains those measurements, rejected optimizations, and the earlier 2-tile K-block
-measurements with their separate timestamps and source identities.
+best possible configuration. The [performance report](PERFORMANCE.md)
+summarizes the measurements and their scope.
 
 ## Reproduce the measurements
 
@@ -190,8 +204,6 @@ The host directory printed as `Host workspace` contains the source tree
 and result directories after the container exits. `/tmp/device_test.log`
 inside the container shows the most recent command's progress.
 
-To repeat the earlier native baseline, use the same arguments with
-`--implementation ttmetal --k-block-tiles 2` and a different JSON filename.
 To run only a small correctness/timing check, omit the dimension, block, grid,
 and `--transpose` arguments; defaults are M=64, full K=64, per-device N=128,
 and a 4x2 compute grid. Default-size results do not reproduce the table above.
@@ -228,11 +240,6 @@ Raw profiler CSVs and individual worker reports remain in unique
 beside the combined JSON. Retain these directories with the report.
 A correctness failure or timeout exits nonzero without replacing the combined
 JSON; partial worker logs can still exist.
-
-Large reports and generated sources belong in an external archive, not in
-Git. The [artifact archive](https://gist.github.com/brnorris03/79c57b196efe09355699d40165780088)
-contains earlier measurements. Raw reports for the latest L1-reuse results
-above are not yet published.
 
 ## Measurement contract
 
@@ -289,7 +296,7 @@ to both TT-Lang and native.
 | Tensor dimensions | Plain-bias operation test: M=3072, full K=5120, per-device N=1280 or 3840. | Same dimensions per matmul; with two participants, each input activation shard has K=2560 instead of K=1280 on four participants. |
 | Device mesh | Default sweep: 4x8 parent with a 4x1 participant ring; alternative: 1x8 participant ring. | Discovered 2x2 parent with a 2x1 participant submesh. Different device count and connectivity. |
 | Compute workers | Transposed 12x9 grid, including edge-block scheduling. | Transposed 2x5 grid; block counts must divide worker extents. Native additionally uses fabric multiplexer cores, so ten compute workers is not a total core count. |
-| M/K/N blocks | Plain M=3072 test: 8/8/8 tiles; sweep varies blocks. | 2/40/2 tiles for the primary comparison; 2/2/2 for the earlier native baseline. These do not reproduce the upstream blocks. |
+| M/K/N blocks | Plain M=3072 test: 8/8/8 tiles; sweep varies blocks. | 2/40/2 tiles for both implementations. These do not reproduce the upstream blocks. |
 | Arithmetic | BF16, HiFi2, FP32 destinations, packer L1 accumulation. | Same settings, with FP32 intermediate storage in both implementations. |
 | Output subblocks | Plain test: 2x2 tiles; sweep varies valid subblocks. | Native: 2x2; TT-Lang: compiler-selected register scheduling for the 2x2 output block. |
 | Fabric transport | Ring, two links, six workers/link; 24 channel buffers in sweep, 48 in operation test. | Native: linear, one link, two workers/link, 24 channel buffers. TT-Lang: direct inter-device PipeNet channels; channel capacities are not equivalent to native's multiplexer buffer counts. |
@@ -312,8 +319,8 @@ The two implementations also differ internally even with matching CLI settings:
 BRISC and NCRISC are worker data-movement processors; NoC 0 and NoC 1 are the
 two on-chip networks. These assignments and the different activation-storage
 strategies mean that matching blocks does not make the generated programs
-identical. The [generated-code analysis](PERFORMANCE.md) explains their
-performance effects.
+identical. The measured performance gap does not isolate the contribution
+of each difference.
 
 ### Configuration limits
 
