@@ -95,10 +95,12 @@ python -m benchmarks.all_gather_minimal_matmul \
 
 For N=3840, change only `--n-tiles 120` and the report filename.
 
-TT-Lang replicated-weight measurements use `--variant replicated`,
-`--reuse-activation`, transposed 2x10, M/K blocks 2/10, and N blocks 2 or 6
-for global N=1280 or 3840. Use direct activation all-gather for N=1280 and
-`--activation-all-gather ring` for N=3840; three warmups and five samples for both.
+TT-Lang replicated-weight measurements use `--variant replicated` and transposed 2x10:
+
+| Global N | M/K/N blocks | Activation flags | Warmups/samples |
+| --- | --- | --- | --- |
+| 1280 | 6/8/4 | `--no-reuse-activation --activation-all-gather all_to_all` | 3/10 |
+| 3840 | 2/10/6 | `--reuse-activation --activation-all-gather ring` | 3/5 |
 
 ## Collective comparison
 
