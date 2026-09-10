@@ -2,7 +2,27 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Fabric all-gather fused with a distributed block matmul and bias."""
+"""Compute ``all_gather(activation) @ weight + bias`` across a fabric mesh.
+
+Activation is sharded along K; weight, row bias, and output are sharded along N.
+Each device gathers activation blocks into L1, broadcasts them across its N
+workers, and multiplies them by weight blocks broadcast across its M workers.
+Cached activations are reused across N blocks. Compute and data movement run
+in separate concurrent kernels; bias is added after the full K reduction.
+Inputs and outputs use BF16 or FP32 tensors in TILE layout and DRAM storage.
+
+The TT-Lang implementation is the nested ``all_gather_minimal_matmul`` function
+inside ``make_all_gather_minimal_matmul_operation``, below the configuration
+class and worker-network setup. Its three kernels receive activations/write
+outputs, send activations/distribute weights, and compute matmul plus bias.
+
+Run from the repository root in an activated, fabric-enabled TT-Lang container,
+with all visible devices idle (the default discovers the participant mesh)::
+
+    timeout 300 python -m examples.all_gather_minimal_matmul 2>&1 | tee /tmp/device_test.log
+
+See ``README.md`` beside this file for dimensions and mesh selection.
+"""
 
 from __future__ import annotations
 
@@ -86,8 +106,7 @@ class AllGatherMinimalMatmulConfig:
         if (self.n_tiles_per_device // self.n_block_tiles) % self.n_workers:
             raise ValueError("N block count must be divisible by the N worker count")
 
-        grid_columns, grid_rows = self.grid
-        if grid_columns < 2 or grid_rows < 2:
+        if min(self.grid) < 2:
             raise ValueError(
                 "full-grid scheduling requires at least two M and two N workers"
             )
@@ -147,27 +166,31 @@ def make_all_gather_minimal_matmul_operation(
         graph=ttl.TransferGraph.all_to_all(device_domain)
     )
 
-    grid_columns, grid_rows = config.n_workers, config.m_workers
+    n_worker_count, m_worker_count = config.n_workers, config.m_workers
 
-    def worker_coordinates(column, row):
-        return (row, column) if config.transpose else (column, row)
+    def physical_worker_coordinates(n_worker, m_worker):
+        return (m_worker, n_worker) if config.transpose else (n_worker, m_worker)
 
     activation_row_net = ttl.PipeNet(
         [
             ttl.Pipe(
-                src=worker_coordinates(0, row_index),
-                dst=worker_coordinates(slice(1, grid_columns), row_index),
+                src=physical_worker_coordinates(0, m_worker_index),
+                dst=physical_worker_coordinates(
+                    slice(1, n_worker_count), m_worker_index
+                ),
             )
-            for row_index in range(grid_rows)
+            for m_worker_index in range(m_worker_count)
         ]
     )
     weight_column_net = ttl.PipeNet(
         [
             ttl.Pipe(
-                src=worker_coordinates(column_index, 0),
-                dst=worker_coordinates(column_index, slice(1, grid_rows)),
+                src=physical_worker_coordinates(n_worker_index, 0),
+                dst=physical_worker_coordinates(
+                    n_worker_index, slice(1, m_worker_count)
+                ),
             )
-            for column_index in range(grid_columns)
+            for n_worker_index in range(n_worker_count)
         ]
     )
 
@@ -177,13 +200,13 @@ def make_all_gather_minimal_matmul_operation(
     device_count = config.device_count
     compute_k_tiles = config.compute_k_tiles
     compute_k_blocks_per_device = k_tiles_per_device // compute_k_tiles
-    m_rounds = config.m_tiles // (m_block_tiles * grid_rows)
-    n_rounds = config.n_tiles_per_device // (n_block_tiles * grid_columns)
+    m_rounds = config.m_tiles // (m_block_tiles * m_worker_count)
+    n_rounds = config.n_tiles_per_device // (n_block_tiles * n_worker_count)
     reuse_activation = config.reuse_activation
     activation_block_count = config.activation_block_count
     activation_read_rounds = 1 if reuse_activation else n_rounds
-    column_axis = 1 if config.transpose else 0
-    row_axis = 0 if config.transpose else 1
+    n_worker_axis = 1 if config.transpose else 0
+    m_worker_axis = 0 if config.transpose else 1
 
     @ttl.operation(
         grid=config.grid,
@@ -197,25 +220,25 @@ def make_all_gather_minimal_matmul_operation(
         bias_shard: ttnn.Tensor,
         output_shard: ttnn.Tensor,
     ) -> None:
-        fabric_send_dfb = ttl.make_dataflow_buffer_like(
+        local_activation_send_dfb = ttl.make_dataflow_buffer_like(
             activation_shard, shape=(m_block_tiles, compute_k_tiles), block_count=1
         )
-        fabric_receive_dfb = ttl.make_dataflow_buffer_like(
+        remote_activation_receive_dfb = ttl.make_dataflow_buffer_like(
             activation_shard,
             shape=(m_block_tiles, compute_k_tiles),
             block_count=device_count - 1,
         )
-        row_receive_dfb = ttl.make_dataflow_buffer_like(
+        broadcast_activation_receive_dfb = ttl.make_dataflow_buffer_like(
             activation_shard,
             shape=(m_block_tiles, compute_k_tiles),
             block_count=1,
         )
-        activation_compute_dfb = ttl.make_dataflow_buffer_like(
+        matmul_activation_dfb = ttl.make_dataflow_buffer_like(
             activation_shard,
             shape=(m_block_tiles, compute_k_tiles),
             block_count=activation_block_count,
         )
-        weight_compute_dfb = ttl.make_dataflow_buffer_like(
+        matmul_weight_dfb = ttl.make_dataflow_buffer_like(
             weight_shard,
             shape=(compute_k_tiles, n_block_tiles),
             block_count=2,
@@ -230,13 +253,13 @@ def make_all_gather_minimal_matmul_operation(
         )
 
         accumulation_dtype = ttnn.float32 if fp32_dest_acc_en else output_shard.dtype
-        accumulator_dfb = ttl.make_dfb(
+        matmul_accumulator_dfb = ttl.make_dfb(
             accumulation_dtype, shape=(m_block_tiles, n_block_tiles), block_count=2
         )
-        partial_dfb = ttl.make_dfb(
+        biased_accumulator_dfb = ttl.make_dfb(
             accumulation_dtype, shape=(m_block_tiles, n_block_tiles), block_count=2
         )
-        converted_bias_dfb = ttl.make_dfb(
+        accumulation_bias_dfb = ttl.make_dfb(
             accumulation_dtype, shape=(1, n_block_tiles), block_count=2
         )
         activation_block_bytes = (
@@ -249,198 +272,189 @@ def make_all_gather_minimal_matmul_operation(
         @ttl.datamovement()
         def receive_activation_and_write_output() -> None:
             physical_column, physical_row = ttl.node(dims=2)
-            node_column = (
-                physical_column * (1 - column_axis) + physical_row * column_axis
+            n_worker_index = (
+                physical_column * (1 - n_worker_axis) + physical_row * n_worker_axis
             )
-            node_row = physical_column * (1 - row_axis) + physical_row * row_axis
+            m_worker_index = (
+                physical_column * (1 - m_worker_axis) + physical_row * m_worker_axis
+            )
             local_device_index = device_domain.current_index()
             for m_round in range(m_rounds):
-                m_begin = (m_round * grid_rows + node_row) * m_block_tiles
+                m_begin = (m_round * m_worker_count + m_worker_index) * m_block_tiles
                 m_end = m_begin + m_block_tiles
                 for n_round in range(n_rounds):
                     for k_block in range(compute_k_blocks_per_device):
                         local_k_begin = k_block * compute_k_tiles
                         local_k_end = local_k_begin + compute_k_tiles
-                        if n_round < activation_read_rounds and node_column == 0:
+                        if n_round < activation_read_rounds and n_worker_index == 0:
 
                             def receive_activation_from_device(pipe) -> None:
-                                with fabric_receive_dfb.reserve() as received_block:
-                                    ttl.copy(pipe, received_block).wait()
+                                received_block = remote_activation_receive_dfb.reserve()
+                                ttl.copy(pipe, received_block).wait()
 
                             activation_all_gather_net.if_dst(
                                 receive_activation_from_device
                             )
-                        for source_index in range(device_count):
+                        for source_device_index in range(device_count):
                             if n_round < activation_read_rounds:
-                                with (
-                                    activation_compute_dfb.reserve() as activation_block
-                                ):
-                                    if node_column == 0:
-                                        if source_index == local_device_index:
-                                            ttl.copy(
-                                                activation_shard[
-                                                    m_begin:m_end,
-                                                    local_k_begin:local_k_end,
-                                                ],
-                                                activation_block,
-                                            ).wait()
-                                        else:
-                                            with (
-                                                fabric_receive_dfb.wait() as received_block
-                                            ):
-                                                ttl.copy(
-                                                    received_block,
-                                                    activation_block,
-                                                    byte_count=activation_block_bytes,
-                                                ).wait()
-
-                                        def send_activation_to_row(pipe) -> None:
-                                            ttl.copy(activation_block, pipe).wait()
-
-                                        activation_row_net.if_src(
-                                            send_activation_to_row
-                                        )
+                                activation_block = matmul_activation_dfb.reserve()
+                                if n_worker_index == 0:
+                                    if source_device_index == local_device_index:
+                                        ttl.copy(
+                                            activation_shard[
+                                                m_begin:m_end,
+                                                local_k_begin:local_k_end,
+                                            ],
+                                            activation_block,
+                                        ).wait()
                                     else:
-
-                                        def receive_activation_from_row(pipe) -> None:
-                                            with (
-                                                row_receive_dfb.reserve() as received_block
-                                            ):
-                                                ttl.copy(pipe, received_block).wait()
-                                            with (
-                                                row_receive_dfb.wait() as received_block
-                                            ):
-                                                ttl.copy(
-                                                    received_block,
-                                                    activation_block,
-                                                    byte_count=activation_block_bytes,
-                                                ).wait()
-
-                                        activation_row_net.if_dst(
-                                            receive_activation_from_row
+                                        received_block = (
+                                            remote_activation_receive_dfb.wait()
                                         )
+                                        ttl.copy(
+                                            received_block,
+                                            activation_block,
+                                            byte_count=activation_block_bytes,
+                                        ).wait()
+
+                                    def send_activation_to_row(pipe) -> None:
+                                        ttl.copy(activation_block, pipe).wait()
+
+                                    activation_row_net.if_src(send_activation_to_row)
+                                else:
+
+                                    def receive_activation_from_row(pipe) -> None:
+                                        received_block = (
+                                            broadcast_activation_receive_dfb.reserve()
+                                        )
+                                        ttl.copy(pipe, received_block).wait()
+                                        received_block = (
+                                            broadcast_activation_receive_dfb.wait()
+                                        )
+                                        ttl.copy(
+                                            received_block,
+                                            activation_block,
+                                            byte_count=activation_block_bytes,
+                                        ).wait()
+
+                                    activation_row_net.if_dst(
+                                        receive_activation_from_row
+                                    )
 
                             else:
                                 # Full-K capacity returns each producer reservation to its cached pages.
-                                with activation_compute_dfb.reserve() as cached_block:
-                                    pass
+                                cached_block = matmul_activation_dfb.reserve()
 
-                    n_begin = (n_round * grid_columns + node_column) * n_block_tiles
+                    n_begin = (
+                        n_round * n_worker_count + n_worker_index
+                    ) * n_block_tiles
                     n_end = n_begin + n_block_tiles
-                    with output_dfb.wait() as output_block:
-                        ttl.copy(
-                            output_block, output_shard[m_begin:m_end, n_begin:n_end]
-                        ).wait()
+                    output_block = output_dfb.wait()
+                    ttl.copy(
+                        output_block, output_shard[m_begin:m_end, n_begin:n_end]
+                    ).wait()
 
         @ttl.datamovement()
         def send_activation_and_distribute_weights() -> None:
             physical_column, physical_row = ttl.node(dims=2)
-            node_column = (
-                physical_column * (1 - column_axis) + physical_row * column_axis
+            n_worker_index = (
+                physical_column * (1 - n_worker_axis) + physical_row * n_worker_axis
             )
-            node_row = physical_column * (1 - row_axis) + physical_row * row_axis
+            m_worker_index = (
+                physical_column * (1 - m_worker_axis) + physical_row * m_worker_axis
+            )
             for m_round in range(m_rounds):
-                m_begin = (m_round * grid_rows + node_row) * m_block_tiles
+                m_begin = (m_round * m_worker_count + m_worker_index) * m_block_tiles
                 m_end = m_begin + m_block_tiles
                 for n_round in range(n_rounds):
-                    n_begin = (n_round * grid_columns + node_column) * n_block_tiles
+                    n_begin = (
+                        n_round * n_worker_count + n_worker_index
+                    ) * n_block_tiles
                     n_end = n_begin + n_block_tiles
                     for k_block in range(compute_k_blocks_per_device):
-                        if n_round < activation_read_rounds and node_column == 0:
-                            with fabric_send_dfb.reserve() as activation_block:
-                                local_k_begin = k_block * compute_k_tiles
-                                local_k_end = local_k_begin + compute_k_tiles
-                                ttl.copy(
-                                    activation_shard[
-                                        m_begin:m_end, local_k_begin:local_k_end
-                                    ],
-                                    activation_block,
-                                ).wait()
-                            with fabric_send_dfb.wait() as activation_block:
+                        if n_round < activation_read_rounds and n_worker_index == 0:
+                            activation_block = local_activation_send_dfb.reserve()
+                            local_k_begin = k_block * compute_k_tiles
+                            local_k_end = local_k_begin + compute_k_tiles
+                            ttl.copy(
+                                activation_shard[
+                                    m_begin:m_end, local_k_begin:local_k_end
+                                ],
+                                activation_block,
+                            ).wait()
+                            activation_block = local_activation_send_dfb.wait()
 
-                                def send_activation_to_device(pipe) -> None:
-                                    ttl.copy(activation_block, pipe).wait()
+                            def send_activation_to_device(pipe) -> None:
+                                ttl.copy(activation_block, pipe).wait()
 
-                                activation_all_gather_net.if_src(
-                                    send_activation_to_device
-                                )
+                            activation_all_gather_net.if_src(send_activation_to_device)
 
-                        for source_index in range(device_count):
+                        for source_device_index in range(device_count):
                             k_begin = (
-                                source_index * k_tiles_per_device
+                                source_device_index * k_tiles_per_device
                                 + k_block * compute_k_tiles
                             )
                             k_end = k_begin + compute_k_tiles
-                            with weight_compute_dfb.reserve() as weight_block:
-                                if node_row == 0:
-                                    ttl.copy(
-                                        weight_shard[k_begin:k_end, n_begin:n_end],
-                                        weight_block,
-                                    ).wait()
+                            weight_block = matmul_weight_dfb.reserve()
+                            if m_worker_index == 0:
+                                ttl.copy(
+                                    weight_shard[k_begin:k_end, n_begin:n_end],
+                                    weight_block,
+                                ).wait()
 
-                                    def send_weight(pipe) -> None:
-                                        ttl.copy(weight_block, pipe).wait()
+                                def broadcast_weight_to_column(pipe) -> None:
+                                    ttl.copy(weight_block, pipe).wait()
 
-                                    weight_column_net.if_src(send_weight)
-                                else:
+                                weight_column_net.if_src(broadcast_weight_to_column)
+                            else:
 
-                                    def receive_weight(pipe) -> None:
-                                        ttl.copy(pipe, weight_block).wait()
+                                def receive_weight_from_column(pipe) -> None:
+                                    ttl.copy(pipe, weight_block).wait()
 
-                                    weight_column_net.if_dst(receive_weight)
-                    with bias_dfb.reserve() as bias_block:
-                        ttl.copy(bias_shard[0:1, n_begin:n_end], bias_block).wait()
+                                weight_column_net.if_dst(receive_weight_from_column)
+                    bias_block = bias_dfb.reserve()
+                    ttl.copy(bias_shard[0:1, n_begin:n_end], bias_block).wait()
 
         @ttl.compute()
-        def compute_output_block() -> None:
+        def compute_matmul_and_bias() -> None:
             for _m_round in range(m_rounds):
                 for _n_round in range(n_rounds):
-                    with accumulator_dfb.reserve() as accumulator_block:
-                        accumulator_block.store(
-                            ttl.block.fill(
-                                0.0,
-                                shape=accumulator_block.shape,
-                                dtype=accumulator_block.dtype,
-                            )
+                    accumulator_block = matmul_accumulator_dfb.reserve()
+                    accumulator_block.store(
+                        ttl.block.fill(
+                            0.0,
+                            shape=accumulator_block.shape,
+                            dtype=accumulator_block.dtype,
                         )
-                        for _k_block in range(
-                            device_count * compute_k_blocks_per_device
-                        ):
-                            with (
-                                activation_compute_dfb.wait() as activation_block,
-                                weight_compute_dfb.wait() as weight_block,
-                            ):
-                                accumulator_block += ttl.math.typecast(
-                                    activation_block @ weight_block,
-                                    accumulator_block.dtype,
-                                )
+                    )
+                    for _k_block in range(device_count * compute_k_blocks_per_device):
+                        activation_block = matmul_activation_dfb.wait()
+                        weight_block = matmul_weight_dfb.wait()
+                        accumulator_block += ttl.math.typecast(
+                            activation_block @ weight_block,
+                            accumulator_block.dtype,
+                        )
 
-                    with (
-                        bias_dfb.wait() as bias_block,
-                        converted_bias_dfb.reserve() as converted_bias,
-                    ):
-                        converted_bias.store(
-                            ttl.math.typecast(bias_block, converted_bias.dtype)
+                    bias_block = bias_dfb.wait()
+                    accumulation_bias_block = accumulation_bias_dfb.reserve()
+                    accumulation_bias_block.store(
+                        ttl.math.typecast(bias_block, accumulation_bias_block.dtype)
+                    )
+                    accumulation_bias_block = accumulation_bias_dfb.wait()
+                    accumulator_block = matmul_accumulator_dfb.wait()
+                    biased_accumulator_block = biased_accumulator_dfb.reserve()
+                    biased_accumulator_block.store(
+                        accumulator_block
+                        + ttl.block.broadcast(
+                            accumulation_bias_block,
+                            dims=[0],
+                            shape=(m_block_tiles, n_block_tiles),
                         )
-                    with (
-                        converted_bias_dfb.wait() as converted_bias,
-                        accumulator_dfb.wait() as accumulator_block,
-                        partial_dfb.reserve() as result_block,
-                    ):
-                        result_block.store(
-                            accumulator_block
-                            + ttl.block.broadcast(
-                                converted_bias,
-                                dims=[0],
-                                shape=(m_block_tiles, n_block_tiles),
-                            )
-                        )
-                    with (
-                        partial_dfb.wait() as result_block,
-                        output_dfb.reserve() as output_block,
-                    ):
-                        output_block.store(
-                            ttl.math.typecast(result_block, output_block.dtype)
-                        )
+                    )
+                    biased_accumulator_block = biased_accumulator_dfb.wait()
+                    output_block = output_dfb.reserve()
+                    output_block.store(
+                        ttl.math.typecast(biased_accumulator_block, output_block.dtype)
+                    )
 
     return all_gather_minimal_matmul
