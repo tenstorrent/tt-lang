@@ -28,6 +28,7 @@
 #include <limits>
 #include <numeric>
 #include <optional>
+#include <utility>
 
 namespace mlir::tt::ttl {
 
@@ -589,6 +590,8 @@ getFinalizedDFBStorageFootprint(ModuleOp module) {
           return failure();
         }
         staticStorageDomain = LaunchNodeDomain{};
+        bool hasUniformTensorBase = !storageSegments.empty();
+        std::optional<std::pair<int64_t, int64_t>> tensorBase;
         for (auto indexedSegment : llvm::enumerate(storageSegments)) {
           auto segment = dyn_cast<DictionaryAttr>(indexedSegment.value());
           if (!segment) {
@@ -625,7 +628,21 @@ getFinalizedDFBStorageFootprint(ModuleOp module) {
           }
           if (!tensorBacking) {
             staticStorageDomain = staticStorageDomain.unionWith(*segmentDomain);
+            hasUniformTensorBase = false;
+            continue;
           }
+          result.tensorBackedPhysicalIndices.insert(physicalIndex);
+          auto backing = cast<TensorBackingAttr>(tensorBacking);
+          std::pair<int64_t, int64_t> segmentBase{backing.getTensorIndex(),
+                                                  backing.getByteOffset()};
+          if (!tensorBase) {
+            tensorBase = segmentBase;
+          } else if (*tensorBase != segmentBase) {
+            hasUniformTensorBase = false;
+          }
+        }
+        if (hasUniformTensorBase) {
+          result.uniformTensorBasePhysicalIndices.insert(physicalIndex);
         }
       }
       domainByPhysicalIndex.try_emplace(physicalIndex,
@@ -683,6 +700,8 @@ getFinalizedDFBStorageFootprint(ModuleOp module) {
 
   WalkResult walkResult = module.walk([&](BindCBOp bindOp) -> WalkResult {
     if (bindOp.getTensorBackingAttr()) {
+      result.tensorBackedPhysicalIndices.insert(
+          bindOp.getCbIndex().getSExtValue());
       return WalkResult::advance();
     }
     int64_t physicalIndex = bindOp.getCbIndex().getSExtValue();
