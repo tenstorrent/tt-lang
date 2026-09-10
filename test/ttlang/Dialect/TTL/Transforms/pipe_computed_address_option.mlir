@@ -286,19 +286,19 @@ module attributes {
      storage_segments = [{nodes = [[1, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4096>}]}],
   ttl.launch_grid = array<i64: 2, 1>
 } {
-  // COMPUTED-LABEL: func.func @tensor_backed_receiver_uses_computed_address
+  // COMPUTED-LABEL: func.func @tensor_backed_receiver
   // COMPUTED-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
   // COMPUTED-NOT: ttkernel.store_to_l1
   // COMPUTED-NOT: ttkernel.load_from_l1
   // COMPUTED: ttkernel.noc_async_write_one_packet_set_state
   // COMPUTED: ttkernel.noc_async_write_one_packet_with_state
 
-  // PUBLISHED-LABEL: func.func @tensor_backed_receiver_uses_computed_address
+  // PUBLISHED-LABEL: func.func @tensor_backed_receiver
   // PUBLISHED-NOT: ttl.pipe_computed_address_dfb_indices
   // PUBLISHED: ttkernel.noc_inline_dw_write
   // PUBLISHED: ttkernel.load_from_l1
   // PUBLISHED: ttkernel.noc_async_write
-  func.func @tensor_backed_receiver_uses_computed_address(
+  func.func @tensor_backed_receiver(
       %tensor: tensor<1x1x!ttcore.tile<32x32, f32>>)
       attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
     %src = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
