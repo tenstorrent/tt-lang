@@ -45,5 +45,6 @@ matmul. N-sharded TT-Lang additionally transfers the complete output across
 devices. These end-to-end timings do not isolate matmul code generation.
 
 [Run commands](README.md#run-the-comparison),
+[raw timing reports](https://gist.github.com/brnorris03/da754d5cef08ed989cc241b023fdaccb),
 [timing definition](README.md#measurement-contract), and
 [native benchmark references](README.md#comparison-with-the-native-benchmark).

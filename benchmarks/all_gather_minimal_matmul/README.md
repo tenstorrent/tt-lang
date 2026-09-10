@@ -212,12 +212,14 @@ an existing combined report is not replaced.
 
 ## Dataflow
 
-These diagrams show N-sharded TT-Lang matmul with optional final output
-gather, and the replicated-weight native operation. Dedicated device DRAM is
+These diagrams show N-sharded TT-Lang matmul with final output gather,
+DRAM all-gather with replicated TT-Lang matmul, and the native operation. Dedicated device DRAM is
 described in the
 [TT-Metalium architecture introduction](https://github.com/tenstorrent/tt-metal/blob/f69f924c6b4f38daa0a6f25716731f36c573dc0e/docs/source/tt-metalium/tt_metal/labs/matmul/lab1/lab1.rst#L227-L230).
 
 ![TT-Lang four-device dataflow](images/ttlang_four_device.svg)
+
+![TT-Lang DRAM all-gather and replicated matmul](images/ttlang_replicated_four_device.svg)
 
 ![TT-Metal four-device dataflow](images/ttmetal_four_device.svg)
 

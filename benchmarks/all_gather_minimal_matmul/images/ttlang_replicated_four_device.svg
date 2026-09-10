@@ -1,0 +1,189 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1190" viewBox="0 0 1600 1190" role="img" aria-labelledby="title description">
+  <title id="title">TT-Lang DRAM all-gather + replicated matmul: Four devices</title>
+  <desc id="description">Each of four devices all-gathers K-sharded activation into a full DRAM tensor. After the gather program completes, 130 compute workers per device stream gathered activations and replicated weights into L1 and compute the same complete output. There is no output gather.</desc>
+  <defs>
+    <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#15803d"/></marker>
+    <marker id="arrow-orange" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#c2410c"/></marker>
+    <marker id="arrow-blue" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#1d4ed8"/></marker>
+    <marker id="arrow-purple" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#7e22ce"/></marker>
+    <marker id="arrow-gray" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#475569"/></marker>
+    <style>
+      text { font-family: Inter, ui-sans-serif, system-ui, sans-serif; fill: #0f172a; }
+      .title { font-size: 27px; font-weight: 700; }
+      .subtitle { font-size: 15px; fill: #475569; }
+      .section { font-size: 19px; font-weight: 700; }
+      .label { font-size: 14px; font-weight: 650; }
+      .small { font-size: 12px; fill: #334155; }
+      .tiny { font-size: 11px; fill: #475569; }
+      .device { fill: #ffffff; stroke: #475569; stroke-width: 1.7; rx: 9; }
+      .dram { fill: #eef2ff; stroke: #6366f1; stroke-width: 1.4; rx: 6; }
+      .cache { fill: #dcfce7; stroke: #16a34a; stroke-width: 1.4; rx: 6; }
+      .compute { fill: #fef3c7; stroke: #d97706; stroke-width: 1.4; rx: 6; }
+      .output { fill: #f3e8ff; stroke: #9333ea; stroke-width: 1.4; rx: 6; }
+      .fabric { fill: #ffedd5; stroke: #c2410c; stroke-width: 1.7; rx: 8; }
+      .table { fill: #ffffff; stroke: #64748b; stroke-width: 1.2; rx: 6; }
+      .rule { stroke: #cbd5e1; stroke-width: 1; }
+      .route { fill: none; stroke-width: 2.4; stroke-linejoin: round; }
+    </style>
+  </defs>
+  <rect width="1600" height="1190" fill="#f8fafc"/>
+  <text x="40" y="42" class="title">TT-Lang DRAM all-gather + replicated matmul: Four devices</text>
+  <text x="40" y="68" class="subtitle">M/K/N = 9472/5120/15360 · four Blackhole P150b · physical 2×2 mesh; logical 4×1 participants</text>
+  <rect x="1085" y="10" width="475" height="108" class="table"/>
+  <text x="1100" y="28" class="label">Tensor placement on each device</text>
+  <text x="1100" y="48" class="tiny">A input: K-sharded M × K/4</text>
+  <text x="1100" y="65" class="tiny">Gathered A: replicated padded-M × K in DRAM</text>
+  <text x="1100" y="82" class="tiny">B, bias: replicated K × N and 1 × N in DRAM</text>
+  <text x="1100" y="99" class="tiny">O: replicated M × N in DRAM</text>
+  <text x="40" y="108" class="section">Initial per-device DRAM allocations</text>
+  <rect x="40" y="124" width="350" height="116" class="device"/>
+  <text x="58" y="150" class="label">DRAM on Device 0</text>
+  <rect x="58" y="164" width="138" height="58" class="dram"/>
+  <text x="127" y="187" class="label" text-anchor="middle">A₀</text>
+  <text x="127" y="207" class="small" text-anchor="middle">M × K/4</text>
+  <rect x="214" y="164" width="158" height="58" class="dram"/>
+  <text x="293" y="186" class="label" text-anchor="middle">B, bias</text>
+  <text x="293" y="207" class="small" text-anchor="middle">K × N; 1 × N</text>
+  <path d="M127 222 V253 H375 V292" class="route" stroke="#c2410c" marker-end="url(#arrow-orange)"/>
+  <rect x="430" y="124" width="350" height="116" class="device"/>
+  <text x="448" y="150" class="label">DRAM on Device 1</text>
+  <rect x="448" y="164" width="138" height="58" class="dram"/>
+  <text x="517" y="187" class="label" text-anchor="middle">A₁</text>
+  <text x="517" y="207" class="small" text-anchor="middle">M × K/4</text>
+  <rect x="604" y="164" width="158" height="58" class="dram"/>
+  <text x="683" y="186" class="label" text-anchor="middle">B, bias</text>
+  <text x="683" y="207" class="small" text-anchor="middle">K × N; 1 × N</text>
+  <path d="M517 222 V253 H765 V292" class="route" stroke="#c2410c" marker-end="url(#arrow-orange)"/>
+  <rect x="820" y="124" width="350" height="116" class="device"/>
+  <text x="838" y="150" class="label">DRAM on Device 2</text>
+  <rect x="838" y="164" width="138" height="58" class="dram"/>
+  <text x="907" y="187" class="label" text-anchor="middle">A₂</text>
+  <text x="907" y="207" class="small" text-anchor="middle">M × K/4</text>
+  <rect x="994" y="164" width="158" height="58" class="dram"/>
+  <text x="1073" y="186" class="label" text-anchor="middle">B, bias</text>
+  <text x="1073" y="207" class="small" text-anchor="middle">K × N; 1 × N</text>
+  <path d="M907 222 V253 H1155 V292" class="route" stroke="#c2410c" marker-end="url(#arrow-orange)"/>
+  <rect x="1210" y="124" width="350" height="116" class="device"/>
+  <text x="1228" y="150" class="label">DRAM on Device 3</text>
+  <rect x="1228" y="164" width="138" height="58" class="dram"/>
+  <text x="1297" y="187" class="label" text-anchor="middle">A₃</text>
+  <text x="1297" y="207" class="small" text-anchor="middle">M × K/4</text>
+  <rect x="1384" y="164" width="158" height="58" class="dram"/>
+  <text x="1463" y="186" class="label" text-anchor="middle">B, bias</text>
+  <text x="1463" y="207" class="small" text-anchor="middle">K × N; 1 × N</text>
+  <path d="M1297 222 V253 H1545 V292" class="route" stroke="#c2410c" marker-end="url(#arrow-orange)"/>
+  <text x="40" y="278" class="section">Activation all-gather</text>
+  <rect x="40" y="294" width="1520" height="96" class="fabric"/>
+  <text x="800" y="316" class="label" text-anchor="middle">Two workers/device: Each device sends its K shard directly to all three peers</text>
+  <text x="800" y="344" class="small" text-anchor="middle">Read own A shard from DRAM → L1 send DFB → fabric → peer L1 receive DFB → peer gathered-A DRAM</text>
+  <text x="800" y="374" class="small" text-anchor="middle">2×40-tile messages · source-device index determines the K offset · gathered A includes own shard and all three remote shards</text>
+  <path d="M215 390 V412" class="route" stroke="#1d4ed8" marker-end="url(#arrow-blue)"/>
+  <rect x="40" y="416" width="350" height="74" class="dram"/>
+  <text x="215" y="439" class="label" text-anchor="middle">Device 0: Gathered A in DRAM</text>
+  <text x="215" y="460" class="small" text-anchor="middle">[ A₀ | A₁ | A₂ | A₃ ] = padded-M × K</text>
+  <text x="215" y="478" class="tiny" text-anchor="middle">9984 padded rows; logical M = 9472</text>
+  <path d="M215 490 V509" class="route" stroke="#475569" marker-end="url(#arrow-gray)"/>
+  <path d="M605 390 V412" class="route" stroke="#1d4ed8" marker-end="url(#arrow-blue)"/>
+  <rect x="430" y="416" width="350" height="74" class="dram"/>
+  <text x="605" y="439" class="label" text-anchor="middle">Device 1: Gathered A in DRAM</text>
+  <text x="605" y="460" class="small" text-anchor="middle">[ A₀ | A₁ | A₂ | A₃ ] = padded-M × K</text>
+  <text x="605" y="478" class="tiny" text-anchor="middle">9984 padded rows; logical M = 9472</text>
+  <path d="M605 490 V509" class="route" stroke="#475569" marker-end="url(#arrow-gray)"/>
+  <path d="M995 390 V412" class="route" stroke="#1d4ed8" marker-end="url(#arrow-blue)"/>
+  <rect x="820" y="416" width="350" height="74" class="dram"/>
+  <text x="995" y="439" class="label" text-anchor="middle">Device 2: Gathered A in DRAM</text>
+  <text x="995" y="460" class="small" text-anchor="middle">[ A₀ | A₁ | A₂ | A₃ ] = padded-M × K</text>
+  <text x="995" y="478" class="tiny" text-anchor="middle">9984 padded rows; logical M = 9472</text>
+  <path d="M995 490 V509" class="route" stroke="#475569" marker-end="url(#arrow-gray)"/>
+  <path d="M1385 390 V412" class="route" stroke="#1d4ed8" marker-end="url(#arrow-blue)"/>
+  <rect x="1210" y="416" width="350" height="74" class="dram"/>
+  <text x="1385" y="439" class="label" text-anchor="middle">Device 3: Gathered A in DRAM</text>
+  <text x="1385" y="460" class="small" text-anchor="middle">[ A₀ | A₁ | A₂ | A₃ ] = padded-M × K</text>
+  <text x="1385" y="478" class="tiny" text-anchor="middle">9984 padded rows; logical M = 9472</text>
+  <path d="M1385 490 V509" class="route" stroke="#475569" marker-end="url(#arrow-gray)"/>
+  <rect x="40" y="514" width="1520" height="36" class="table"/>
+  <text x="800" y="538" class="label" text-anchor="middle">Activation gather completes before the matmul program starts</text>
+  <path d="M215 550 V572" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+  <rect x="40" y="576" width="350" height="270" class="device"/>
+  <text x="58" y="602" class="label">Device 0 · 13×10 compute grid</text>
+  <rect x="58" y="620" width="314" height="62" class="cache"/>
+  <text x="215" y="642" class="label" text-anchor="middle">DRAM → L1 operand DFBs</text>
+  <text x="215" y="660" class="small" text-anchor="middle">A multicast across N workers</text>
+  <text x="215" y="675" class="small" text-anchor="middle">B multicast across M workers</text>
+  <path d="M215 682 V698" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+  <rect x="58" y="702" width="314" height="60" class="compute"/>
+  <text x="215" y="724" class="label" text-anchor="middle">130 workers compute full M × N</text>
+  <text x="215" y="744" class="small" text-anchor="middle">Bias initializes FP32 accumulator in L1</text>
+  <text x="215" y="758" class="tiny" text-anchor="middle">M/K/N blocks: 8/8/8 tiles; packer accumulation</text>
+  <path d="M215 762 V778" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+  <rect x="58" y="782" width="314" height="50" class="output"/>
+  <text x="215" y="804" class="label" text-anchor="middle">O = A × B + bias · M × N</text>
+  <text x="215" y="823" class="small" text-anchor="middle">L1 → DRAM; identical replica on each device</text>
+  <path d="M605 550 V572" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+  <rect x="430" y="576" width="350" height="270" class="device"/>
+  <text x="448" y="602" class="label">Device 1 · 13×10 compute grid</text>
+  <rect x="448" y="620" width="314" height="62" class="cache"/>
+  <text x="605" y="642" class="label" text-anchor="middle">DRAM → L1 operand DFBs</text>
+  <text x="605" y="660" class="small" text-anchor="middle">A multicast across N workers</text>
+  <text x="605" y="675" class="small" text-anchor="middle">B multicast across M workers</text>
+  <path d="M605 682 V698" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+  <rect x="448" y="702" width="314" height="60" class="compute"/>
+  <text x="605" y="724" class="label" text-anchor="middle">130 workers compute full M × N</text>
+  <text x="605" y="744" class="small" text-anchor="middle">Bias initializes FP32 accumulator in L1</text>
+  <text x="605" y="758" class="tiny" text-anchor="middle">M/K/N blocks: 8/8/8 tiles; packer accumulation</text>
+  <path d="M605 762 V778" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+  <rect x="448" y="782" width="314" height="50" class="output"/>
+  <text x="605" y="804" class="label" text-anchor="middle">O = A × B + bias · M × N</text>
+  <text x="605" y="823" class="small" text-anchor="middle">L1 → DRAM; identical replica on each device</text>
+  <path d="M995 550 V572" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+  <rect x="820" y="576" width="350" height="270" class="device"/>
+  <text x="838" y="602" class="label">Device 2 · 13×10 compute grid</text>
+  <rect x="838" y="620" width="314" height="62" class="cache"/>
+  <text x="995" y="642" class="label" text-anchor="middle">DRAM → L1 operand DFBs</text>
+  <text x="995" y="660" class="small" text-anchor="middle">A multicast across N workers</text>
+  <text x="995" y="675" class="small" text-anchor="middle">B multicast across M workers</text>
+  <path d="M995 682 V698" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+  <rect x="838" y="702" width="314" height="60" class="compute"/>
+  <text x="995" y="724" class="label" text-anchor="middle">130 workers compute full M × N</text>
+  <text x="995" y="744" class="small" text-anchor="middle">Bias initializes FP32 accumulator in L1</text>
+  <text x="995" y="758" class="tiny" text-anchor="middle">M/K/N blocks: 8/8/8 tiles; packer accumulation</text>
+  <path d="M995 762 V778" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+  <rect x="838" y="782" width="314" height="50" class="output"/>
+  <text x="995" y="804" class="label" text-anchor="middle">O = A × B + bias · M × N</text>
+  <text x="995" y="823" class="small" text-anchor="middle">L1 → DRAM; identical replica on each device</text>
+  <path d="M1385 550 V572" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+  <rect x="1210" y="576" width="350" height="270" class="device"/>
+  <text x="1228" y="602" class="label">Device 3 · 13×10 compute grid</text>
+  <rect x="1228" y="620" width="314" height="62" class="cache"/>
+  <text x="1385" y="642" class="label" text-anchor="middle">DRAM → L1 operand DFBs</text>
+  <text x="1385" y="660" class="small" text-anchor="middle">A multicast across N workers</text>
+  <text x="1385" y="675" class="small" text-anchor="middle">B multicast across M workers</text>
+  <path d="M1385 682 V698" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
+  <rect x="1228" y="702" width="314" height="60" class="compute"/>
+  <text x="1385" y="724" class="label" text-anchor="middle">130 workers compute full M × N</text>
+  <text x="1385" y="744" class="small" text-anchor="middle">Bias initializes FP32 accumulator in L1</text>
+  <text x="1385" y="758" class="tiny" text-anchor="middle">M/K/N blocks: 8/8/8 tiles; packer accumulation</text>
+  <path d="M1385 762 V778" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+  <rect x="1228" y="782" width="314" height="50" class="output"/>
+  <text x="1385" y="804" class="label" text-anchor="middle">O = A × B + bias · M × N</text>
+  <text x="1385" y="823" class="small" text-anchor="middle">L1 → DRAM; identical replica on each device</text>
+  <text x="800" y="879" class="label" text-anchor="middle">Replicated weights produce replicated output directly; no output all-gather.</text>
+  <rect x="40" y="906" width="1520" height="232" class="device"/>
+  <text x="65" y="936" class="section">Program sequence and overlap within matmul</text>
+  <text x="65" y="958" class="small">Illustrative timeline, not to scale. Fabric gathering and matmul do not overlap in this implementation.</text>
+  <path d="M290 980 H1510" stroke="#94a3b8" stroke-width="1.5" marker-end="url(#arrow-gray)"/>
+  <text x="70" y="1012" class="label">Activation gather</text>
+  <rect x="290" y="994" width="370" height="30" class="fabric"/>
+  <text x="475" y="1015" class="small" text-anchor="middle">DRAM read → fabric → gathered DRAM</text>
+  <path d="M680 985 V1123" stroke="#64748b" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <text x="690" y="1015" class="small">Gather complete</text>
+  <text x="70" y="1060" class="label">Operand DRAM + NoC</text>
+  <rect x="710" y="1042" width="340" height="30" class="cache"/>
+  <text x="880" y="1063" class="small" text-anchor="middle">Read/multicast A and B blocks into L1</text>
+  <rect x="1050" y="1042" width="440" height="30" class="cache"/>
+  <text x="1270" y="1063" class="small" text-anchor="middle">Read/multicast subsequent operand blocks</text>
+  <text x="70" y="1109" class="label">Matmul + output</text>
+  <rect x="790" y="1091" width="700" height="30" class="compute"/>
+  <text x="1140" y="1112" class="small" text-anchor="middle">Accumulate current block while subsequent operands arrive; write output to DRAM</text>
+  <text x="40" y="1170" class="tiny">Source: bnorris/all-gather-output-replication · examples/all_gather_minimal_matmul/replicated/operation.py · validated four-device configuration</text>
+</svg>

@@ -17,6 +17,10 @@ per-row or replicated matmul executes without fabric communication.
 Comparison reference: [native TT-Metal all-gather matmul](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/ttnn/cpp/ttnn/operations/experimental/ccl/all_gather_minimal_matmul_async/all_gather_minimal_matmul_async.cpp),
 which returns replicated `M x N`; [benchmark commands](../../benchmarks/all_gather_minimal_matmul/README.md#run-the-comparison).
 
+Four-device figures: [two-worker ring + output gather](../../benchmarks/all_gather_minimal_matmul/images/ttlang_four_device.svg),
+[DRAM all-gather + replicated matmul](../../benchmarks/all_gather_minimal_matmul/images/ttlang_replicated_four_device.svg),
+[native TT-Metal](../../benchmarks/all_gather_minimal_matmul/images/ttmetal_four_device.svg).
+
 `N` is the complete output width and `D` is the device count. Weights and bias
 remain N-sharded when output gathering is enabled. The final gather copies
 output columns into device order without arithmetic.
