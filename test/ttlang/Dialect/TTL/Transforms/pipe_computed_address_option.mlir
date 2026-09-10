@@ -272,21 +272,33 @@ module attributes {
 
 // -----
 
-// Tensor-backed receiver storage uses the runtime address published by the
-// receiver instead of a separately allocated computed-address base.
-module attributes {ttl.launch_grid = array<i64: 2, 1>} {
-  // COMPUTED-LABEL: func.func @tensor_backed_receiver_uses_published_address
-  // COMPUTED-NOT: ttl.pipe_computed_address_dfb_indices
-  // COMPUTED: ttkernel.noc_inline_dw_write
-  // COMPUTED: ttkernel.load_from_l1
-  // COMPUTED: ttkernel.noc_async_write
+// A static tensor-backed receiver base can be passed directly to the sender.
+module attributes {
+  ttl.dfb_allocations = [
+    {allocation_nodes = [[0, 0]], block_count = 1 : i32,
+     dfb_index = 0 : i32, storage_index = 0 : i32,
+     element_type = !ttcore.tile<32x32, f32>, num_tiles = 1 : i32,
+     page_size = 4096 : i32},
+    {allocation_nodes = [[1, 0]], block_count = 1 : i32,
+     dfb_index = 1 : i32, storage_index = 1 : i32,
+     element_type = !ttcore.tile<32x32, f32>, num_tiles = 1 : i32,
+     page_size = 4096 : i32,
+     storage_segments = [{nodes = [[1, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4096>}]}],
+  ttl.launch_grid = array<i64: 2, 1>
+} {
+  // COMPUTED-LABEL: func.func @tensor_backed_receiver_uses_computed_address
+  // COMPUTED-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
+  // COMPUTED-NOT: ttkernel.store_to_l1
+  // COMPUTED-NOT: ttkernel.load_from_l1
+  // COMPUTED: ttkernel.noc_async_write_one_packet_set_state
+  // COMPUTED: ttkernel.noc_async_write_one_packet_with_state
 
-  // PUBLISHED-LABEL: func.func @tensor_backed_receiver_uses_published_address
+  // PUBLISHED-LABEL: func.func @tensor_backed_receiver_uses_computed_address
   // PUBLISHED-NOT: ttl.pipe_computed_address_dfb_indices
   // PUBLISHED: ttkernel.noc_inline_dw_write
   // PUBLISHED: ttkernel.load_from_l1
   // PUBLISHED: ttkernel.noc_async_write
-  func.func @tensor_backed_receiver_uses_published_address(
+  func.func @tensor_backed_receiver_uses_computed_address(
       %tensor: tensor<1x1x!ttcore.tile<32x32, f32>>)
       attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
     %src = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
