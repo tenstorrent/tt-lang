@@ -19,8 +19,10 @@ python -m examples.all_gather_minimal_matmul.n_sharded --mesh-shape 2x2 --gather
 python -m examples.all_gather_minimal_matmul.replicated --mesh-shape 2x2 --n-tiles 8
 ```
 
-[`collectives.py`](collectives.py) implements output gathering;
-[`operation.py`](operation.py) implements activation gathering and matmul.
+[`collectives.py`](collectives.py) implements activation and output gathering.
+[`operation.py`](operation.py) implements N-sharded fused all-gather matmul;
+[`replicated/operation.py`](replicated/operation.py) composes activation gathering
+with replicated matmul.
 The [shared benchmark](../../benchmarks/all_gather_minimal_matmul/README.md)
 includes the final gather in device timing and reports four-device results
 for both output strategies.
@@ -47,7 +49,20 @@ elements.
 [`__main__.py`](__main__.py) is the standalone correctness driver;
 [`__init__.py`](__init__.py) exports the public configuration and factory.
 
-## Worker decomposition
+## Replicated-output execution
+
+The replicated variant first gathers activation shards into a complete DRAM
+tensor, then runs matmul independently on every device. The caller supplies
+the gathered-activation storage; there is no final output gather. On one device,
+matmul reads the input directly and no collective or scratch tensor is needed.
+
+Matmul multicasts activation blocks across N workers and weights across M workers.
+Bias initializes the L1 accumulator before K accumulation. Streaming receives
+directly into the compute DFB; full-K caching retains separate receive storage
+so republishing cached pages does not change multicast receiver addresses.
+The collective and matmul currently execute sequentially.
+
+## N-sharded worker decomposition
 
 The default grid is `(N workers, M workers)`; `transpose=True` exchanges the
 physical axes. An explicit `worker_grid` distributes successive M/N blocks

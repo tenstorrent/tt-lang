@@ -44,7 +44,8 @@ def main():
         workloads, validate = create_workloads(
             mesh, config, "bf16", cluster_axis, arguments.implementation, 0
         )
-        run, gathered, cleanup = workloads[arguments.implementation]
+        workload = workloads[arguments.implementation]
+        run, gathered, cleanup = workload.run, workload.gathered, workload.cleanup
         for _iteration in range(3):
             output = run()
             ttnn.synchronize_device(mesh)

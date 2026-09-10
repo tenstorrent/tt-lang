@@ -40,6 +40,34 @@ def test_fidelity_allowlist():
         benchmark.MATH_FIDELITIES["__class__"]
 
 
+@pytest.mark.parametrize("program_count", [1, 2])
+def test_timer_uses_workload_program_count(monkeypatch, program_count):
+    observed = []
+    mesh = SimpleNamespace(get_device_ids=lambda: [0])
+    arguments = SimpleNamespace(
+        warmup=0, samples=1, trace=False, device_aggregation="mean"
+    )
+    workload = benchmark.Workload(
+        lambda: object(), None, lambda output: None, program_count
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "measured_invocation",
+        lambda run, cleanup, device, trace: benchmark.nullcontext(run()),
+    )
+    monkeypatch.setattr(benchmark, "read_device_profile", lambda device: "unused.csv")
+
+    def duration(log, device_ids, *, aggregation, program_count):
+        observed.append(program_count)
+        return {"cycles": 1350, "us": 1.0, "per_device": {0: {"run_host_id": 1}}}
+
+    monkeypatch.setattr(benchmark, "latest_kernel_duration", duration)
+    benchmark.benchmark(
+        {"ttlang": workload}, lambda name, output, gathered: {}, mesh, arguments
+    )
+    assert observed == [program_count]
+
+
 def test_trace_replay_retains_output_until_trace_release(monkeypatch):
     events = []
     output = object()

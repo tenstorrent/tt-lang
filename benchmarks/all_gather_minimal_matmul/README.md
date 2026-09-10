@@ -20,7 +20,7 @@ the selected worker count and configuration for each result.
 | [`profile.py`](profile.py) | Python dispatch profiling; not used for device-performance results. |
 | [`PERFORMANCE.md`](PERFORMANCE.md) | Four-device results and exact measured configurations. |
 | [`images/`](images/) | Four-device dataflow diagrams. |
-| [Examples](../../examples/all_gather_minimal_matmul/README.md) | Shared implementation and separate N-sharded/replicated-weight entry points. |
+| [Examples](../../examples/all_gather_minimal_matmul/README.md) | Separate N-sharded and replicated-output implementations, with shared collectives. |
 | [Device timer](../device_timing.py) | TT-Metal profiler analysis and multi-program device intervals. |
 | [Single-device matmul](../matmul/README.md) | Matmul-only benchmarks. |
 
@@ -28,8 +28,9 @@ the selected worker count and configuration for each result.
 
 `M`, `K` and `N` denote complete matrix dimensions; `D=4`.
 Activations are initially K-sharded. All inputs/output use TILE layout and
-interleaved DRAM. Both TT-Lang variants use the same
-[matmul implementation](https://github.com/tenstorrent/tt-lang/blob/bnorris/all-gather-output-replication/examples/all_gather_minimal_matmul/operation.py).
+interleaved DRAM. The [N-sharded implementation](../../examples/all_gather_minimal_matmul/operation.py)
+fuses activation gathering with matmul. The [replicated implementation](../../examples/all_gather_minimal_matmul/replicated/operation.py)
+gathers activations into DRAM first, then computes the complete output on every device.
 
 | Tensor on each of four devices | TT-Lang N-sharded + output gather | TT-Lang replicated weights | Native |
 | --- | --- | --- | --- |
@@ -120,8 +121,8 @@ message's row and column tile counts independently of matmul blocking.
 `--collective-only activation|output --implementation ttlang` measures a
 standalone collective with exact replica checks. Use
 `--n-tiles-per-device` for its output shard width. Standalone activation gather
-writes a complete DRAM result for validation; fused activation gather remains
-in L1. Select collectives using complete-operation timing, not standalone
+writes a complete DRAM result for validation. Replicated matmul also gathers
+into DRAM; N-sharded fused activation gather remains in L1. Select collectives using complete-operation timing, not standalone
 timings alone.
 
 ## Measurement contract
@@ -136,7 +137,9 @@ through `tracy.process_device_log.import_log_run_stats`.
 2. Prepare/reset runtime resources outside capture, then capture and replay
    one invocation. Replicated-output selections enable trace replay automatically.
 3. On each device, measure first kernel start through last kernel end.
-   N-sharded compute plus output gather includes both programs and their gap.
+   Both N-sharded compute plus output gather and replicated activation gather
+   plus matmul include both programs and their gap. The workload records its
+   program count explicitly; single-device replicated matmul has one program.
 4. Average the four device durations, then report the median of five samples.
    `--device-aggregation max` instead selects the slowest device per sample.
 
@@ -162,9 +165,9 @@ described in the
 
 ![TT-Metal four-device dataflow](images/ttmetal_four_device.svg)
 
-| Algorithm | TT-Lang | Native |
+| Algorithm | TT-Lang N-sharded | Native |
 | --- | --- | --- |
 | Activation communication | Direct peer transfers or ring forwarding | Bidirectional ring forwarding |
 | Gathered activation storage | L1 dataflow buffers | DRAM scratch followed by L1 dataflow buffers |
 | Activation reuse | Full-K L1 cache when selected; streaming otherwise | Gathered activation read from DRAM |
-| Output replication | Optional final gather for N-sharded weights; inherent for replicated weights | Inherent with replicated weights |
+| Output replication | Optional final gather | Inherent with replicated weights |

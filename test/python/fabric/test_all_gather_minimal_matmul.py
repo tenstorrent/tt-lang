@@ -16,6 +16,9 @@ from examples.all_gather_minimal_matmul import (
     make_all_gather_minimal_matmul_operation,
 )
 from examples.all_gather_minimal_matmul.collectives import make_column_all_gather
+from examples.all_gather_minimal_matmul.replicated.operation import (
+    make_replicated_all_gather_matmul_operation,
+)
 from ttlang_test_utils import (
     get_fabric_mesh_shape,
     open_fabric_mesh,
@@ -269,11 +272,16 @@ def test_all_gather_matmul_130_workers(
         transpose=True,
         reuse_activation=reuse_activation,
     )
-    operation = make_all_gather_minimal_matmul_operation(
+    operation_factory = (
+        make_replicated_all_gather_matmul_operation
+        if replicated
+        else make_all_gather_minimal_matmul_operation
+    )
+    operation = operation_factory(
         config,
         math_fidelity="HiFi4" if torch_dtype == torch.float32 else "HiFi2",
         fp32_dest_acc_en=fp32_dest_acc_en,
-        all_gather_algorithm="ring",
+        all_gather_algorithm="all_to_all" if replicated else "ring",
     )
     torch.manual_seed(31)
     m_elements = config.m_tiles * TILE_SIZE
@@ -305,8 +313,23 @@ def test_all_gather_matmul_130_workers(
         mesh_mapper=output_mapper,
     )
     expected = activation.float() @ weight.float() + bias.float()
+    gathered_activation = (
+        to_dram(
+            torch.zeros(
+                (config.padded_m_tiles * TILE_SIZE, k_elements), dtype=torch_dtype
+            ),
+            participant_mesh,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(participant_mesh),
+        )
+        if replicated
+        else None
+    )
     for _invocation in range(2):
-        operation(activation_shard, weight_shard, bias_shard, output)
+        operands = (activation_shard, weight_shard, bias_shard, output)
+        if replicated:
+            operation(*operands, gathered_activation)
+        else:
+            operation(*operands)
         actual = ttnn.to_torch(
             output,
             mesh_composer=ttnn.ConcatMeshToTensor(

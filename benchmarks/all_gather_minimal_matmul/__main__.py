@@ -10,6 +10,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -26,6 +27,9 @@ from examples.all_gather_minimal_matmul import (
     make_all_gather_minimal_matmul_operation,
 )
 from examples.all_gather_minimal_matmul.collectives import make_column_all_gather
+from examples.all_gather_minimal_matmul.replicated.operation import (
+    make_replicated_all_gather_matmul_operation,
+)
 from ttlang_test_utils import get_fabric_mesh_shape, to_dram
 from ttl.kernel_runner import prepare_device_invocation
 from utils.correctness import assert_allclose, assert_pcc
@@ -339,6 +343,14 @@ def open_participant_mesh(
         ttnn.set_fabric_config(ttnn.FabricConfig.DISABLED)
 
 
+@dataclass
+class Workload:
+    run: Callable
+    gathered: object
+    cleanup: Callable
+    program_count: int = 1
+
+
 def create_workloads(
     mesh,
     config,
@@ -405,12 +417,26 @@ def create_workloads(
                 mesh,
                 mesh_mapper=output_mapper,
             )
-            operation = make_all_gather_minimal_matmul_operation(
+            operation_factory = (
+                make_replicated_all_gather_matmul_operation
+                if variant == "replicated"
+                else make_all_gather_minimal_matmul_operation
+            )
+            operation = operation_factory(
                 config,
                 math_fidelity=math_fidelity,
                 fp32_dest_acc_en=fp32_dest_acc,
                 all_gather_algorithm=activation_all_gather,
             )
+            activation_gathered = None
+            if variant == "replicated" and config.device_count > 1:
+                activation_gathered = to_dram(
+                    torch.zeros(
+                        (config.padded_m_tiles * 32, k_elements), dtype=torch_dtype
+                    ),
+                    mesh,
+                    mesh_mapper=replicate_mapper,
+                )
             replicated_output = None
             output_gather = None
             if gather_output:
@@ -441,14 +467,24 @@ def create_workloads(
                 replicated_output=replicated_output,
                 output_gather=output_gather,
                 activation_device=activation_device,
+                activation_gathered=activation_gathered,
             ):
-                operation(activation_device, weight_device, bias_device, output)
+                operands = (activation_device, weight_device, bias_device, output)
+                if activation_gathered is not None:
+                    operation(*operands, activation_gathered)
+                else:
+                    operation(*operands)
                 if output_gather is not None:
                     output_gather(output, replicated_output)
                     return replicated_output
                 return output
 
-            workloads[name] = (run_ttlang, gathered, lambda result: None)
+            program_count = (
+                operation.program_count if variant == "replicated" else 1
+            ) + int(output_gather is not None)
+            workloads[name] = Workload(
+                run_ttlang, gathered, lambda result: None, program_count
+            )
         else:
             # Match the upstream operation: every device holds the same weight
             # and bias and produces the same M x N result.
@@ -513,7 +549,7 @@ def create_workloads(
                     raise RuntimeError(f"expected one native output, got {len(result)}")
                 return result[0]
 
-            workloads[name] = (run_ttmetal, gathered, ttnn.deallocate)
+            workloads[name] = Workload(run_ttmetal, gathered, ttnn.deallocate)
 
     def validate(name, output, gathered):
         output_concat_dimension = 1 if name == "ttlang" and not replicated_result else 0
@@ -569,7 +605,8 @@ def create_workloads(
 
 def benchmark(workloads, validate, mesh, arguments):
     correctness = {name: [] for name in workloads}
-    for name, (run, gathered, cleanup) in workloads.items():
+    for name, workload in workloads.items():
+        run, gathered, cleanup = workload.run, workload.gathered, workload.cleanup
         print(f"Compile and validate {name}", flush=True)
         for _iteration in range(arguments.warmup):
             output = run()
@@ -580,7 +617,8 @@ def benchmark(workloads, validate, mesh, arguments):
     samples = {name: [] for name in workloads}
     previous_run_ids = {}
     for sample_index in range(arguments.samples):
-        for name, (run, gathered, cleanup) in workloads.items():
+        for name, workload in workloads.items():
+            run, gathered, cleanup = workload.run, workload.gathered, workload.cleanup
             preparation = (
                 prepare_device_invocation(run)
                 if arguments.trace and name == "ttlang"
@@ -597,9 +635,7 @@ def benchmark(workloads, validate, mesh, arguments):
                     profiler_log,
                     mesh.get_device_ids(),
                     aggregation=arguments.device_aggregation,
-                    program_count=(
-                        2 if name == "ttlang" and arguments.gather_output else 1
-                    ),
+                    program_count=workload.program_count,
                 )
                 correctness[name].append(validate(name, output, gathered))
             for device_id, device in duration["per_device"].items():
@@ -809,6 +845,8 @@ def main():
                 Path(__file__).resolve().parents[1] / "device_timing.py",
                 Path(__file__).resolve().parents[2]
                 / "examples/all_gather_minimal_matmul/operation.py",
+                Path(__file__).resolve().parents[2]
+                / "examples/all_gather_minimal_matmul/replicated/operation.py",
                 Path(__file__).resolve().parents[2]
                 / "examples/all_gather_minimal_matmul/collectives.py",
                 Path(__file__).resolve().parents[2] / "python/ttl/kernel_runner.py",

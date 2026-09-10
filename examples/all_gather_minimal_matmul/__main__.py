@@ -21,6 +21,7 @@ from .operation import (
     AllGatherMinimalMatmulConfig,
     make_all_gather_minimal_matmul_operation,
 )
+from .replicated.operation import make_replicated_all_gather_matmul_operation
 
 TILE_SIZE = 32
 
@@ -141,7 +142,12 @@ def main(*, variant="n_sharded") -> None:
         worker_grid=arguments.worker_grid,
         transpose=arguments.transpose,
     )
-    operation = make_all_gather_minimal_matmul_operation(
+    operation_factory = (
+        make_replicated_all_gather_matmul_operation
+        if replicated
+        else make_all_gather_minimal_matmul_operation
+    )
+    operation = operation_factory(
         config, all_gather_algorithm=arguments.activation_all_gather
     )
 
@@ -188,12 +194,18 @@ def main(*, variant="n_sharded") -> None:
             mesh_mapper=output_mapper,
         )
 
-        operation(
-            activation_shard,
-            weight_shard,
-            bias_shard,
-            output_shard,
-        )
+        operands = (activation_shard, weight_shard, bias_shard, output_shard)
+        if replicated and config.device_count > 1:
+            gathered_activation = to_dram(
+                torch.zeros(
+                    (config.padded_m_tiles * TILE_SIZE, k_elements), dtype=torch_dtype
+                ),
+                mesh_device,
+                mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
+            )
+            operation(*operands, gathered_activation)
+        else:
+            operation(*operands)
 
         if arguments.gather_output:
             replicated_output = to_dram(
