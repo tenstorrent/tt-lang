@@ -16,8 +16,23 @@ and TT-Metal's
 | [`profile.py`](profile.py) | Optional Python `cProfile` helper for host dispatch overhead; its timings are not used in the device-performance comparison. |
 | [`../device_timing.py`](../device_timing.py) | Reads device timings through TT-Metal's existing Tracy profiler analysis. |
 | [`PERFORMANCE.md`](PERFORMANCE.md) | Measured results, measurement conditions, provenance, and comparison limits. |
+| [`images/`](images/) | Four-device TT-Lang and TT-Metal dataflow diagrams. |
 | [`examples/all_gather_minimal_matmul/`](../../examples/all_gather_minimal_matmul/README.md) | TT-Lang implementation and standalone correctness example. |
 | [`benchmarks/matmul/`](../matmul/README.md) | Single-device matmul benchmarks, without all-gather. |
+
+## Four-device dataflow
+
+Both diagrams use `D=4` and global `M`, `K`, and `N` notation. They show tensor
+placement, communication, worker-core use, DRAM traffic, and computation/data
+movement overlap. They do not report four-device timing results.
+
+### TT-Lang
+
+![TT-Lang four-device all-gather, matmul, and bias dataflow](images/ttlang_four_device.svg)
+
+### Native TT-Metal
+
+![Native TT-Metal four-device all-gather, matmul, and bias dataflow](images/ttmetal_four_device.svg)
 
 ## Operation and dimensions
 
