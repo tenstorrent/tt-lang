@@ -6,9 +6,9 @@ in interleaved DRAM; matmul uses HiFi2, FP32 destinations and packer accumulatio
 with row bias.
 
 Device trace replay, three warmups and five samples. Each sample is the mean
-across four devices. TT-Lang includes both matmul and output all-gather, from
-the first kernel start to the final kernel end on each device. Native uses its
-fused program. Host preparation and synchronization are outside the interval.
+across four devices. N-sharded TT-Lang includes matmul and output all-gather,
+from the first kernel start to the final kernel end on each device. Replicated-weight
+TT-Lang and native each use one fused program. Host preparation and synchronization are outside the interval.
 Parentheses show sample minimum and maximum.
 
 | Global N | N-sharded + gather ms (range) | Replicated weights ms (range) | Native ms (range) | N-sharded / native | Replicated / native |

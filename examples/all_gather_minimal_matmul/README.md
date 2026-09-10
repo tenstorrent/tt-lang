@@ -52,8 +52,8 @@ physical axes. An explicit `worker_grid` distributes successive M/N blocks
 cyclically across a fixed set of workers. Each worker computes
 `m_block_tiles x n_block_tiles` blocks, with M rounds outside N rounds.
 
-- Column zero performs the fabric all-gather once for each M block. This avoids
-  repeating the same fabric transfer for every N worker.
+- Column zero performs the fabric all-gather for each M block, repeating it
+  across N rounds only when activation reuse is disabled.
 - A local row PipeNet distributes gathered activation blocks across N workers.
 - Row zero reads each weight block. A local column PipeNet distributes it
   across M workers.
@@ -101,7 +101,7 @@ Run from the repository root in a fabric-enabled TT-Lang environment:
 ```bash
 set -o pipefail
 timeout 300 python -m examples.all_gather_minimal_matmul \
-    --mesh-shape 1x2 \
+    --mesh-shape 2x2 \
     --m-tiles 2 \
     --k-tiles-per-device 1 \
     --n-tiles-per-device 2 \
@@ -119,23 +119,22 @@ correctness checks and TT-Metal device-kernel profiling.
 
 ## TT-Metal feature correspondence
 
-Implemented:
+| Capability | TT-Lang status |
+| --- | --- |
+| K-sharded activation all-gather | Direct transfers and ring forwarding. |
+| N-sharded weights and output | Implemented; optional final gather replicates the result. |
+| Replicated weights, bias and output | Implemented. |
+| Worker decomposition | Fixed M/N grid, optional transpose, repeated output blocks. |
+| Arithmetic | BF16/FP32 TILE tensors, row bias, FP32 packer accumulation. |
+| Activation storage | Full-K L1 reuse or two-block streaming; bounded-K reuse remains to be implemented. |
+| Edge blocks and partially occupied grids | Not implemented. |
+| Exact/approximate GELU | Not implemented. |
+| Two-/three-way and unequal-width N splits | Not implemented. |
+| Scaled addcmul with row/full multipliers | Not implemented. |
+| SwiGLU | Not implemented. |
+| FSDP weight gather | Not implemented. |
+| Fabric link/worker/channel-buffer controls | Not exposed by this example. |
 
-- K-sharded activation all-gather;
-- N-sharded matmul output;
-- full-grid M/N worker decomposition;
-- transposed scheduling and repeated output blocks on a fixed worker grid;
-- row-broadcast bias;
-- BF16 and FP32 interfaces;
-- scratch-free L1 activation caching and packer accumulation;
-- numerical output validation against the full gathered matmul plus bias.
-
-Not yet implemented:
-
-- ReLU, GELU, and SiLU epilogues;
-- chunked N output;
-- addcmul;
-- SwiGLU;
-- partially occupied worker grids and edge blocks;
-- fabric link, worker, and channel-buffer controls;
-- FSDP weight gather.
+The upstream sweep also covers separate operations: standalone/split matmul,
+strided all-gather matmul, and matmul + reduce-scatter + addcmul. These are not
+implemented by this example.
