@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compare TT-Lang and TT-Metal all-gather matmul on two fabric-connected devices."""
+"""Compare TT-Lang and TT-Metal all-gather matmul on a fabric-connected device line."""
 
 import argparse
 import json
@@ -11,8 +11,9 @@ import subprocess
 import sys
 import tempfile
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from math import prod
 from pathlib import Path
 
 import torch
@@ -30,6 +31,67 @@ from utils.correctness import assert_allclose, assert_pcc
 REFERENCE_REVISION = "f69f924c6b4f38daa0a6f25716731f36c573dc0e"
 REFERENCE_ROOT = f"https://github.com/tenstorrent/tt-metal/blob/{REFERENCE_REVISION}"
 MATH_FIDELITIES = {"HiFi2": ttnn.MathFidelity.HiFi2, "HiFi4": ttnn.MathFidelity.HiFi4}
+FABRIC_CONFIGS = {
+    "1d": ttnn.FabricConfig.FABRIC_1D,
+    "1d-ring": ttnn.FabricConfig.FABRIC_1D_RING,
+}
+FABRIC_RELIABILITY_MODES = {
+    "relaxed": ttnn.FabricReliabilityMode.RELAXED_INIT,
+    "strict": ttnn.FabricReliabilityMode.STRICT_INIT,
+}
+
+
+@dataclass(frozen=True)
+class BenchmarkCase:
+    """Tensor dimensions and implementation-independent compute parameters."""
+
+    mesh_shape: tuple[int, int]
+    m_tiles: int
+    k_tiles_per_device: int
+    n_tiles_per_device: int
+    m_block_tiles: int
+    k_block_tiles: int
+    n_block_tiles: int
+    worker_grid: tuple[int, int] | None
+    transpose: bool
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "mesh_shape", tuple(self.mesh_shape))
+        if self.worker_grid is not None:
+            object.__setattr__(self, "worker_grid", tuple(self.worker_grid))
+
+    @property
+    def device_count(self) -> int:
+        return prod(self.mesh_shape)
+
+    @property
+    def grid(self) -> tuple[int, int]:
+        if self.worker_grid is not None:
+            return self.worker_grid
+        logical_grid = (
+            (self.n_tiles_per_device + self.n_block_tiles - 1) // self.n_block_tiles,
+            (self.m_tiles + self.m_block_tiles - 1) // self.m_block_tiles,
+        )
+        return logical_grid[::-1] if self.transpose else logical_grid
+
+    @property
+    def m_workers(self) -> int:
+        return self.grid[0 if self.transpose else 1]
+
+    @property
+    def n_workers(self) -> int:
+        return self.grid[1 if self.transpose else 0]
+
+    @property
+    def compute_k_tiles(self) -> int:
+        return self.k_block_tiles
+
+    def make_ttlang_config(
+        self, reuse_activation: bool
+    ) -> AllGatherMinimalMatmulConfig:
+        return AllGatherMinimalMatmulConfig(
+            **asdict(self), reuse_activation=reuse_activation
+        )
 
 
 def positive_int(value):
@@ -37,6 +99,19 @@ def positive_int(value):
     if result <= 0:
         raise argparse.ArgumentTypeError("must be positive")
     return result
+
+
+def participant_shape(value):
+    try:
+        extents = tuple(int(extent) for extent in value.lower().split("x"))
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("mesh shape must be ROWSxCOLS") from error
+    if len(extents) != 2 or min(extents) != 1 or max(extents) < 2:
+        raise argparse.ArgumentTypeError(
+            "mesh shape must be a device line, such as 2x1 or 1x4; "
+            "native all-gather operates along one axis"
+        )
+    return extents
 
 
 def parse_args():
@@ -50,7 +125,33 @@ def parse_args():
         "--fp32-dest-acc", action=argparse.BooleanOptionalAction, default=True
     )
     parser.add_argument("--native-channel-buffers", type=positive_int, default=24)
+    parser.add_argument("--native-num-links", type=positive_int, default=1)
+    parser.add_argument("--native-workers-per-link", type=positive_int)
+    parser.add_argument(
+        "--native-subblock",
+        type=positive_int,
+        nargs=2,
+        metavar=("HEIGHT", "WIDTH"),
+    )
     parser.add_argument("--device-aggregation", choices=("mean", "max"), default="mean")
+    parser.add_argument(
+        "--mesh-shape",
+        type=participant_shape,
+        help="participant line ROWSxCOLS; default: two devices on a discovered axis",
+    )
+    parser.add_argument("--worker-timeout", type=positive_int, default=180)
+    parser.add_argument(
+        "--fabric-config",
+        choices=("auto", *FABRIC_CONFIGS),
+        default="auto",
+        help="fabric routing; auto selects 1d for two devices and 1d-ring otherwise",
+    )
+    parser.add_argument(
+        "--fabric-reliability",
+        choices=FABRIC_RELIABILITY_MODES,
+        default="relaxed",
+    )
+    parser.add_argument("--fabric-router-payload", type=positive_int)
     parser.add_argument("--m-tiles", type=positive_int, default=2)
     parser.add_argument("--k-tiles-per-device", type=positive_int, default=1)
     parser.add_argument("--n-tiles-per-device", type=positive_int, default=4)
@@ -89,34 +190,121 @@ def native_subblock(config):
     )
 
 
+def validate_native_subblock(config, subblock_shape, fp32_dest_acc):
+    subblock_shape = tuple(subblock_shape)
+    destination_capacity = 4 if fp32_dest_acc else 8
+    if (
+        len(subblock_shape) != 2
+        or min(subblock_shape) <= 0
+        or config.m_block_tiles % subblock_shape[0]
+        or config.n_block_tiles % subblock_shape[1]
+        or prod(subblock_shape) > destination_capacity
+    ):
+        raise ValueError(
+            "native subblock must divide the output block and fit destination registers"
+        )
+    return subblock_shape
+
+
+def mesh_selection(discovered_shape, requested_shape=None):
+    """Keep an existing device line or reshape the parent before taking a submesh."""
+    discovered_shape = tuple(discovered_shape)
+    if len(discovered_shape) != 2 or prod(discovered_shape) < 2:
+        raise ValueError(
+            f"requires a connected two-dimensional mesh: {discovered_shape}"
+        )
+    if requested_shape is None:
+        participant_axis = next(
+            axis for axis, extent in enumerate(discovered_shape) if extent >= 2
+        )
+        requested_shape = tuple(
+            2 if axis == participant_axis else 1 for axis in range(2)
+        )
+    else:
+        requested_shape = participant_shape("x".join(map(str, requested_shape)))
+        participant_axis = next(
+            axis for axis, extent in enumerate(requested_shape) if extent > 1
+        )
+    if prod(requested_shape) > prod(discovered_shape):
+        raise ValueError(
+            f"requested mesh {requested_shape} exceeds discovered mesh {discovered_shape}"
+        )
+    parent_shape = discovered_shape
+    if any(
+        requested > available
+        for requested, available in zip(requested_shape, discovered_shape)
+    ):
+        parent_shape = tuple(
+            prod(discovered_shape) if axis == participant_axis else 1
+            for axis in range(2)
+        )
+    return requested_shape, participant_axis, parent_shape
+
+
+def select_fabric_config(requested_shape, fabric_config):
+    if fabric_config != "auto":
+        return fabric_config
+    requested_device_count = 2 if requested_shape is None else prod(requested_shape)
+    return "1d" if requested_device_count == 2 else "1d-ring"
+
+
+def topology_for_fabric_config(fabric_config):
+    return ttnn.Topology.Ring if fabric_config == "1d-ring" else ttnn.Topology.Linear
+
+
+def create_fabric_router_config(max_payload_size):
+    router_config = ttnn._ttnn.fabric.FabricRouterConfig()
+    router_config.max_packet_payload_size_bytes = max_payload_size
+    return router_config
+
+
 @contextmanager
-def open_participant_mesh():
+def open_participant_mesh(
+    requested_shape=None,
+    fabric_config="auto",
+    fabric_reliability="relaxed",
+    fabric_router_payload=None,
+):
     parent_mesh = None
     participant_mesh = None
     try:
+        selected_fabric_name = select_fabric_config(requested_shape, fabric_config)
+        selected_fabric = FABRIC_CONFIGS[selected_fabric_name]
+        selected_reliability = FABRIC_RELIABILITY_MODES[fabric_reliability]
+        router_config = (
+            create_fabric_router_config(fabric_router_payload)
+            if fabric_router_payload is not None
+            else None
+        )
         discovered_shape = get_fabric_mesh_shape(
-            fabric_config=ttnn.FabricConfig.FABRIC_1D
+            fabric_config=selected_fabric,
+            reliability_mode=selected_reliability,
+            router_config=router_config,
         )
-        ttnn.set_fabric_config(
-            ttnn.FabricConfig.FABRIC_1D,
-            reliability_mode=ttnn.FabricReliabilityMode.RELAXED_INIT,
-        )
-        participant_axis = next(
-            (axis for axis, extent in enumerate(discovered_shape) if extent >= 2), None
-        )
-        if participant_axis is None:
-            raise RuntimeError("benchmark requires a connected two-device fabric")
-        participant_shape = tuple(
-            2 if axis == participant_axis else 1
-            for axis in range(len(discovered_shape))
+        fabric_options = {"reliability_mode": selected_reliability}
+        if router_config is not None:
+            fabric_options["router_config"] = router_config
+        ttnn.set_fabric_config(selected_fabric, **fabric_options)
+        mesh_shape, participant_axis, parent_shape = mesh_selection(
+            discovered_shape, requested_shape
         )
         parent_mesh = ttnn.open_mesh_device(ttnn.MeshShape(discovered_shape))
+        if parent_shape != tuple(discovered_shape):
+            parent_mesh.reshape(ttnn.MeshShape(parent_shape))
         participant_mesh = (
             parent_mesh
-            if participant_shape == tuple(discovered_shape)
-            else parent_mesh.create_submesh(ttnn.MeshShape(participant_shape))
+            if mesh_shape == parent_shape
+            else parent_mesh.create_submesh(ttnn.MeshShape(mesh_shape))
         )
-        yield participant_mesh, participant_shape, participant_axis, discovered_shape
+        if len(participant_mesh.get_device_ids()) != prod(mesh_shape):
+            raise RuntimeError("participant mesh device count does not match its shape")
+        yield (
+            participant_mesh,
+            mesh_shape,
+            participant_axis,
+            discovered_shape,
+            selected_fabric_name,
+        )
     finally:
         if participant_mesh is not None and participant_mesh is not parent_mesh:
             ttnn.close_mesh_device(participant_mesh)
@@ -136,21 +324,27 @@ def create_workloads(
     math_fidelity="HiFi2",
     fp32_dest_acc=True,
     native_channel_buffers=24,
+    native_num_links=1,
+    native_workers_per_link=None,
+    native_subblock_shape=None,
+    native_topology=ttnn.Topology.Linear,
 ):
     torch.manual_seed(seed)
     torch_dtype = torch.bfloat16 if dtype == "bf16" else torch.float32
     m_elements = config.m_tiles * 32
     k_elements = config.device_count * config.k_tiles_per_device * 32
-    n_elements = config.device_count * config.n_tiles_per_device * 32
+    n_elements_per_device = config.n_tiles_per_device * 32
+    n_elements = config.device_count * n_elements_per_device
     activation = torch.randn((m_elements, k_elements), dtype=torch_dtype)
     weight = torch.randn((k_elements, n_elements), dtype=torch_dtype) / k_elements**0.5
     bias = torch.randn((1, n_elements), dtype=torch_dtype) * 0.1
-    expected = activation.float() @ weight.float() + bias.float()
+    expected_ttlang = activation.float() @ weight.float() + bias.float()
+    native_weight = weight[:, :n_elements_per_device]
+    native_bias = bias[:, :n_elements_per_device]
+    expected_ttmetal = activation.float() @ native_weight.float() + native_bias.float()
     shard_mapper = ttnn.ShardTensorToMesh(mesh, dim=1)
     replicate_mapper = ttnn.ReplicateTensorToMesh(mesh)
     activation_device = to_dram(activation, mesh, mesh_mapper=shard_mapper)
-    weight_device = to_dram(weight, mesh, mesh_mapper=shard_mapper)
-    bias_device = to_dram(bias, mesh, mesh_mapper=shard_mapper)
 
     workloads = {}
     for name in (
@@ -158,6 +352,8 @@ def create_workloads(
     ):
         gathered = None
         if name == "ttlang":
+            weight_device = to_dram(weight, mesh, mesh_mapper=shard_mapper)
+            bias_device = to_dram(bias, mesh, mesh_mapper=shard_mapper)
             output = to_dram(
                 torch.zeros((m_elements, n_elements), dtype=torch_dtype),
                 mesh,
@@ -167,12 +363,21 @@ def create_workloads(
                 config, math_fidelity=math_fidelity, fp32_dest_acc_en=fp32_dest_acc
             )
 
-            def run_ttlang(operation=operation, output=output):
+            def run_ttlang(
+                operation=operation,
+                output=output,
+                weight_device=weight_device,
+                bias_device=bias_device,
+            ):
                 operation(activation_device, weight_device, bias_device, output)
                 return output
 
             workloads[name] = (run_ttlang, gathered, lambda result: None)
         else:
+            # Match the upstream operation: every device holds the same weight
+            # and bias and produces the same M x N result.
+            weight_device = to_dram(native_weight, mesh, mesh_mapper=replicate_mapper)
+            bias_device = to_dram(native_bias, mesh, mesh_mapper=replicate_mapper)
             gathered = to_dram(
                 torch.zeros_like(activation), mesh, mesh_mapper=replicate_mapper
             )
@@ -188,12 +393,13 @@ def create_workloads(
             semaphores = [
                 ttnn.create_global_semaphore(mesh, cores, 0) for _index in range(2)
             ]
+            selected_subblock = native_subblock_shape or native_subblock(config)
             native_config = ttnn.MinimalMatmulConfig(
                 M_block_size=config.m_block_tiles,
                 K_block_size=config.compute_k_tiles,
                 N_block_size=config.n_block_tiles,
-                subblock_h=native_subblock(config)[0],
-                subblock_w=native_subblock(config)[1],
+                subblock_h=selected_subblock[0],
+                subblock_w=selected_subblock[1],
                 compute_with_storage_grid_size=ttnn.CoreCoord(*config.grid),
             )
             compute_config = ttnn.init_device_compute_kernel_config(
@@ -204,7 +410,12 @@ def create_workloads(
                 packer_l1_acc=True,
             )
 
-            def run_ttmetal(gathered=gathered, semaphores=semaphores):
+            def run_ttmetal(
+                gathered=gathered,
+                semaphores=semaphores,
+                weight_device=weight_device,
+                bias_device=bias_device,
+            ):
                 result = ttnn.experimental.all_gather_minimal_matmul_async(
                     activation_device,
                     weight_device,
@@ -213,12 +424,12 @@ def create_workloads(
                     compute_kernel_config=compute_config,
                     persistent_output_buffer=gathered,
                     multi_device_global_semaphore=semaphores,
-                    topology=ttnn.Topology.Linear,
+                    topology=native_topology,
                     cluster_axis=cluster_axis,
                     memory_config=ttnn.DRAM_MEMORY_CONFIG,
                     force_transpose=config.transpose,
-                    num_links=1,
-                    num_workers_per_link=config.m_workers,
+                    num_links=native_num_links,
+                    num_workers_per_link=(native_workers_per_link or config.m_workers),
                     num_buffers_per_channel=native_channel_buffers,
                 )
                 if len(result) != 1:
@@ -228,8 +439,10 @@ def create_workloads(
             workloads[name] = (run_ttmetal, gathered, ttnn.deallocate)
 
     def validate(name, output, gathered):
+        output_concat_dimension = 1 if name == "ttlang" else 0
         output_torch = ttnn.to_torch(
-            output, mesh_composer=ttnn.ConcatMeshToTensor(mesh, dim=1)
+            output,
+            mesh_composer=ttnn.ConcatMeshToTensor(mesh, dim=output_concat_dimension),
         ).float()
         if name == "ttmetal":
             gathered_torch = ttnn.to_torch(
@@ -245,16 +458,23 @@ def create_workloads(
                     device_index * local_k : (device_index + 1) * local_k,
                 ] = 0
             assert_allclose(gathered_torch, expected_gather, rtol=0, atol=0)
-        assert_pcc(expected, output_torch, threshold=0.999 if dtype == "fp32" else 0.99)
+            expected_output = expected_ttmetal.repeat(config.device_count, 1)
+        else:
+            expected_output = expected_ttlang
+        assert_pcc(
+            expected_output,
+            output_torch,
+            threshold=0.999 if dtype == "fp32" else 0.99,
+        )
         # The FPU truncates FP32 sources to TF32 even with FP32 destinations.
         tolerance = 0.005 if dtype == "fp32" else 0.05
         assert_allclose(
             output_torch,
-            expected,
+            expected_output,
             rtol=tolerance,
             atol=tolerance,
         )
-        absolute_error = (output_torch - expected).abs()
+        absolute_error = (output_torch - expected_output).abs()
         return {
             "max_abs_error": absolute_error.max().item(),
             "mean_abs_error": absolute_error.mean().item(),
@@ -354,7 +574,7 @@ def run_isolated_variants(arguments):
             ],
             env=environment,
             check=True,
-            timeout=180,
+            timeout=arguments.worker_timeout,
         )
         reports[name] = json.loads(output_file.read_text())
     combined = {
@@ -414,20 +634,42 @@ def main():
             "test": f"{REFERENCE_ROOT}/models/tt_dit/tests/models/wan2_2/test_all_gather_minimal_matmul_async.py",
         },
     }
-    with open_participant_mesh() as (mesh, mesh_shape, cluster_axis, discovered_shape):
-        config = AllGatherMinimalMatmulConfig(
+    with open_participant_mesh(
+        arguments.mesh_shape,
+        arguments.fabric_config,
+        arguments.fabric_reliability,
+        arguments.fabric_router_payload,
+    ) as (
+        mesh,
+        mesh_shape,
+        cluster_axis,
+        discovered_shape,
+        selected_fabric_name,
+    ):
+        benchmark_case = BenchmarkCase(
             mesh_shape=mesh_shape,
             m_tiles=arguments.m_tiles,
             k_tiles_per_device=arguments.k_tiles_per_device,
             n_tiles_per_device=arguments.n_tiles_per_device,
             m_block_tiles=arguments.m_block_tiles,
             k_block_tiles=arguments.k_block_tiles,
-            reuse_activation=(
-                arguments.reuse_activation and arguments.implementation == "ttlang"
-            ),
             n_block_tiles=arguments.n_block_tiles,
             worker_grid=arguments.worker_grid,
             transpose=arguments.transpose,
+        )
+        if benchmark_case.k_tiles_per_device % benchmark_case.k_block_tiles:
+            raise ValueError("k_tiles_per_device must be divisible by k_block_tiles")
+        config = (
+            benchmark_case.make_ttlang_config(arguments.reuse_activation)
+            if arguments.implementation == "ttlang"
+            else benchmark_case
+        )
+        selected_native_topology = topology_for_fabric_config(selected_fabric_name)
+        native_workers_per_link = arguments.native_workers_per_link or config.m_workers
+        selected_native_subblock = validate_native_subblock(
+            config,
+            arguments.native_subblock or native_subblock(config),
+            arguments.fp32_dest_acc,
         )
         if not config.transpose and config.m_tiles > config.n_tiles_per_device:
             raise ValueError(
@@ -446,7 +688,7 @@ def main():
             arch=str(mesh.arch()),
             compute_grid=config.grid,
             math_fidelity=arguments.math_fidelity,
-            fabric_config="FABRIC_1D",
+            fabric_config=str(FABRIC_CONFIGS[selected_fabric_name]),
             fp32_dest_acc_en=arguments.fp32_dest_acc,
             native_channel_buffers=arguments.native_channel_buffers,
             device_aggregation=arguments.device_aggregation,
@@ -458,17 +700,36 @@ def main():
                 "n": config.n_tiles_per_device * 32,
                 "local_k": config.k_tiles_per_device * 32,
             },
+            tensor_placement={
+                "ttlang": {
+                    "activation": "K-sharded",
+                    "weight": "N-sharded",
+                    "bias": "N-sharded",
+                    "output": "N-sharded",
+                },
+                "ttmetal": {
+                    "activation": "K-sharded",
+                    "weight": "replicated",
+                    "bias": "replicated",
+                    "output": "replicated",
+                },
+            },
             native_config={
-                "links": 1,
-                "workers_per_link": config.m_workers,
+                "topology": str(selected_native_topology),
+                "links": arguments.native_num_links,
+                "workers_per_link": native_workers_per_link,
                 "compute_k_tiles": config.compute_k_tiles,
-                "subblock": list(native_subblock(config)),
+                "subblock": list(selected_native_subblock),
                 "channel_buffers": arguments.native_channel_buffers,
                 "packer_l1_acc": True,
             },
             execution="ordinary_launch",
-            fabric_reliability="RELAXED_INIT",
-            fabric_router_payload="installed_runtime_default",
+            fabric_reliability=str(
+                FABRIC_RELIABILITY_MODES[arguments.fabric_reliability]
+            ),
+            fabric_router_payload=(
+                arguments.fabric_router_payload or "installed_runtime_default"
+            ),
         )
         workloads, validate = create_workloads(
             mesh,
@@ -480,6 +741,10 @@ def main():
             math_fidelity=arguments.math_fidelity,
             fp32_dest_acc=arguments.fp32_dest_acc,
             native_channel_buffers=arguments.native_channel_buffers,
+            native_num_links=arguments.native_num_links,
+            native_workers_per_link=native_workers_per_link,
+            native_subblock_shape=selected_native_subblock,
+            native_topology=selected_native_topology,
         )
         report["measurements"] = benchmark(workloads, validate, mesh, arguments)
     arguments.json.write_text(json.dumps(report, indent=2) + "\n")
