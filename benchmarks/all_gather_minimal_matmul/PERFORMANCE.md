@@ -1,5 +1,7 @@
 # All-gather matmul performance
 
+**These committed four-device results use only 20 TT-Lang compute workers per device (2x10), versus native's 108 (12x9). Full-device TT-Lang utilization is work in progress. These results do not establish performance parity with native.**
+
 Four Blackhole P150b devices; global M=3072 and K=5120. Both implementations
 return the same replicated M x N result. Inputs/output are BF16 TILE tensors
 in interleaved DRAM; matmul uses HiFi2, FP32 destinations and packer accumulation,
@@ -11,7 +13,7 @@ from the first kernel start to the final kernel end on each device. Replicated-w
 TT-Lang and native each use one fused program. Host preparation and synchronization are outside the interval.
 Parentheses show sample minimum and maximum.
 
-| Global N | N-sharded + gather ms (range) | Replicated weights ms (range) | Native ms (range) | N-sharded / native | Replicated / native |
+| Global N | TT-Lang N-sharded + gather, 20 workers/device, ms (range) | TT-Lang replicated weights, 20 workers/device, ms (range) | Native, 108 workers/device, ms (range) | N-sharded / native | Replicated / native |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | 1280 | 1.608 (1.607-1.611) | 1.926 (1.920-1.937) | 0.356 (0.353-0.360) | 4.515 | 5.405 |
 | 3840 | 2.582 (2.576-2.589) | 5.822 (5.758-5.856) | 0.692 (0.686-0.693) | 3.732 | 8.416 |

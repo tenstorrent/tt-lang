@@ -1,5 +1,7 @@
 # All-Gather Minimal Matmul
 
+**The committed four-device benchmark uses only 20 TT-Lang compute workers per device, versus native's 108. Full-device TT-Lang utilization is work in progress; these measurements do not establish performance parity with native.**
+
 | Entry point | Result on each device |
 | --- | --- |
 | [`n_sharded/`](n_sharded/) | `M x N/D`; add `--gather-output` for replicated `M x N`. |
