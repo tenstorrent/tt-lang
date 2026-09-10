@@ -15,7 +15,7 @@ from examples.all_gather_minimal_matmul import (
     AllGatherMinimalMatmulConfig,
     make_all_gather_minimal_matmul_operation,
 )
-from examples.all_gather_minimal_matmul.collectives import make_output_all_gather
+from examples.all_gather_minimal_matmul.collectives import make_column_all_gather
 from ttlang_test_utils import (
     get_fabric_mesh_shape,
     open_fabric_mesh,
@@ -44,14 +44,21 @@ def fabric_mesh_shape() -> tuple[int, ...]:
     return mesh_shape
 
 
-@pytest.fixture(scope="module")
-def participant_mesh_shape(fabric_mesh_shape) -> tuple[int, ...]:
-    participant_axis = next(
-        axis for axis, extent in enumerate(fabric_mesh_shape) if extent > 1
-    )
-    return tuple(
-        2 if axis == participant_axis else 1 for axis in range(len(fabric_mesh_shape))
-    )
+@pytest.fixture(scope="module", params=[2, 4], ids=["two-devices", "four-devices"])
+def participant_mesh_shape(fabric_mesh_shape, request) -> tuple[int, ...]:
+    remaining = request.param
+    extents = []
+    for available in fabric_mesh_shape:
+        extent = max(
+            divisor
+            for divisor in range(1, min(available, remaining) + 1)
+            if remaining % divisor == 0
+        )
+        extents.append(extent)
+        remaining //= extent
+    if remaining != 1:
+        pytest.skip(f"requires a {request.param}-device submesh")
+    return tuple(extents)
 
 
 @pytest.fixture(scope="module")
@@ -77,8 +84,9 @@ def participant_mesh(fabric_mesh_shape, participant_mesh_shape):
 @requires_forwarding_link_indices(ttnn)
 @pytest.mark.parametrize("torch_dtype", [torch.bfloat16, torch.float32])
 @pytest.mark.parametrize("block_tiles", [1, 2])
+@pytest.mark.parametrize("algorithm", ["all_to_all", "ring"])
 def test_output_all_gather(
-    participant_mesh, participant_mesh_shape, torch_dtype, block_tiles
+    participant_mesh, participant_mesh_shape, torch_dtype, block_tiles, algorithm
 ):
     """TILE/DRAM gather preserves every payload bit and device-order N placement."""
     device_count = prod(participant_mesh_shape)
@@ -94,12 +102,13 @@ def test_output_all_gather(
         participant_mesh,
         mesh_mapper=ttnn.ReplicateTensorToMesh(participant_mesh),
     )
-    gather = make_output_all_gather(
+    gather = make_column_all_gather(
         participant_mesh_shape,
         m_tiles=4,
         n_tiles_per_device=4,
         worker_count=2,
         block_tiles=block_tiles,
+        algorithm=algorithm,
     )
     for _invocation in range(2):
         gather(output_shard, replicated_output)
@@ -133,6 +142,7 @@ def test_output_all_gather(
         pytest.param(8, 12, (2, 3), True, 2, id="multi-tile-blocks"),
     ],
 )
+@pytest.mark.parametrize("algorithm", ["all_to_all", "ring"])
 def test_all_gather_minimal_matmul(
     participant_mesh_shape,
     participant_mesh,
@@ -148,6 +158,7 @@ def test_all_gather_minimal_matmul(
     worker_grid,
     transpose,
     output_block_tiles,
+    algorithm,
 ):
     """Cover TILE/DRAM tensors for every supported numeric dtype."""
 
@@ -167,6 +178,7 @@ def test_all_gather_minimal_matmul(
         config,
         math_fidelity="HiFi2" if torch_dtype == torch.bfloat16 else "HiFi4",
         fp32_dest_acc_en=fp32_dest_acc_en,
+        all_gather_algorithm=algorithm,
     )
     torch.manual_seed(0)
 

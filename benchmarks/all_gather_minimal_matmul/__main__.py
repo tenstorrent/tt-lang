@@ -10,7 +10,7 @@ import statistics
 import subprocess
 import sys
 import tempfile
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from math import prod
@@ -25,8 +25,9 @@ from examples.all_gather_minimal_matmul import (
     AllGatherMinimalMatmulConfig,
     make_all_gather_minimal_matmul_operation,
 )
-from examples.all_gather_minimal_matmul.collectives import make_output_all_gather
+from examples.all_gather_minimal_matmul.collectives import make_column_all_gather
 from ttlang_test_utils import get_fabric_mesh_shape, to_dram
+from ttl.kernel_runner import prepare_device_invocation
 from utils.correctness import assert_allclose, assert_pcc
 
 REFERENCE_REVISION = "f69f924c6b4f38daa0a6f25716731f36c573dc0e"
@@ -35,6 +36,7 @@ MATH_FIDELITIES = {"HiFi2": ttnn.MathFidelity.HiFi2, "HiFi4": ttnn.MathFidelity.
 FABRIC_CONFIGS = {
     "1d": ttnn.FabricConfig.FABRIC_1D,
     "1d-ring": ttnn.FabricConfig.FABRIC_1D_RING,
+    "2d": ttnn.FabricConfig.FABRIC_2D,
 }
 FABRIC_RELIABILITY_MODES = {
     "relaxed": ttnn.FabricReliabilityMode.RELAXED_INIT,
@@ -122,6 +124,17 @@ def parse_args():
     )
     parser.add_argument("--dtype", choices=("bf16", "fp32"), default="bf16")
     parser.add_argument("--gather-output", action="store_true")
+    parser.add_argument("--collective-only", choices=("activation", "output"))
+    parser.add_argument(
+        "--activation-all-gather", choices=("all_to_all", "ring"), default="all_to_all"
+    )
+    parser.add_argument(
+        "--output-all-gather", choices=("all_to_all", "ring"), default="all_to_all"
+    )
+    parser.add_argument("--output-gather-block-tiles", type=positive_int)
+    parser.add_argument(
+        "--variant", choices=("n_sharded", "replicated"), default="n_sharded"
+    )
     parser.add_argument("--trace", action="store_true", help="time device trace replay")
     parser.add_argument(
         "--n-tiles",
@@ -340,6 +353,10 @@ def create_workloads(
     native_subblock_shape=None,
     native_topology=ttnn.Topology.Linear,
     gather_output=False,
+    variant="n_sharded",
+    activation_all_gather="all_to_all",
+    output_all_gather="all_to_all",
+    output_gather_block_tiles=None,
 ):
     torch.manual_seed(seed)
     torch_dtype = torch.bfloat16 if dtype == "bf16" else torch.float32
@@ -348,15 +365,16 @@ def create_workloads(
     n_elements_per_device = config.n_tiles_per_device * 32
     n_elements = (
         n_elements_per_device
-        if gather_output and implementation == "ttmetal"
+        if variant == "replicated" or (gather_output and implementation == "ttmetal")
         else config.device_count * n_elements_per_device
     )
     activation = torch.randn((m_elements, k_elements), dtype=torch_dtype)
     weight = torch.randn((k_elements, n_elements), dtype=torch_dtype) / k_elements**0.5
     bias = torch.randn((1, n_elements), dtype=torch_dtype) * 0.1
     expected_ttlang = activation.float() @ weight.float() + bias.float()
-    native_weight = weight if gather_output else weight[:, :n_elements_per_device]
-    native_bias = bias if gather_output else bias[:, :n_elements_per_device]
+    replicated_result = gather_output or variant == "replicated"
+    native_weight = weight if replicated_result else weight[:, :n_elements_per_device]
+    native_bias = bias if replicated_result else bias[:, :n_elements_per_device]
     expected_ttmetal = activation.float() @ native_weight.float() + native_bias.float()
     shard_mapper = ttnn.ShardTensorToMesh(mesh, dim=1)
     replicate_mapper = ttnn.ReplicateTensorToMesh(mesh)
@@ -368,15 +386,21 @@ def create_workloads(
     ):
         gathered = None
         if name == "ttlang":
-            weight_device = to_dram(weight, mesh, mesh_mapper=shard_mapper)
-            bias_device = to_dram(bias, mesh, mesh_mapper=shard_mapper)
+            output_mapper = (
+                replicate_mapper if variant == "replicated" else shard_mapper
+            )
+            weight_device = to_dram(weight, mesh, mesh_mapper=output_mapper)
+            bias_device = to_dram(bias, mesh, mesh_mapper=output_mapper)
             output = to_dram(
                 torch.zeros((m_elements, n_elements), dtype=torch_dtype),
                 mesh,
-                mesh_mapper=shard_mapper,
+                mesh_mapper=output_mapper,
             )
             operation = make_all_gather_minimal_matmul_operation(
-                config, math_fidelity=math_fidelity, fp32_dest_acc_en=fp32_dest_acc
+                config,
+                math_fidelity=math_fidelity,
+                fp32_dest_acc_en=fp32_dest_acc,
+                all_gather_algorithm=activation_all_gather,
             )
             replicated_output = None
             output_gather = None
@@ -386,12 +410,13 @@ def create_workloads(
                     mesh,
                     mesh_mapper=replicate_mapper,
                 )
-                output_gather = make_output_all_gather(
+                output_gather = make_column_all_gather(
                     config.mesh_shape,
                     m_tiles=config.m_tiles,
                     n_tiles_per_device=config.n_tiles_per_device,
                     worker_count=config.m_workers,
-                    block_tiles=config.n_block_tiles,
+                    block_tiles=output_gather_block_tiles or config.n_block_tiles,
+                    algorithm=output_all_gather,
                 )
 
             def run_ttlang(
@@ -475,7 +500,7 @@ def create_workloads(
             workloads[name] = (run_ttmetal, gathered, ttnn.deallocate)
 
     def validate(name, output, gathered):
-        output_concat_dimension = 1 if name == "ttlang" and not gather_output else 0
+        output_concat_dimension = 1 if name == "ttlang" and not replicated_result else 0
         output_torch = ttnn.to_torch(
             output,
             mesh_composer=ttnn.ConcatMeshToTensor(mesh, dim=output_concat_dimension),
@@ -498,7 +523,7 @@ def create_workloads(
         else:
             expected_output = (
                 expected_ttlang.repeat(config.device_count, 1)
-                if gather_output
+                if replicated_result
                 else expected_ttlang
             )
         assert_pcc(
@@ -540,9 +565,17 @@ def benchmark(workloads, validate, mesh, arguments):
     previous_run_ids = {}
     for sample_index in range(arguments.samples):
         for name, (run, gathered, cleanup) in workloads.items():
-            with measured_invocation(
-                run, cleanup, mesh, trace=arguments.trace
-            ) as output:
+            preparation = (
+                prepare_device_invocation(run)
+                if arguments.trace and name == "ttlang"
+                else nullcontext(run)
+            )
+            with (
+                preparation as prepared_run,
+                measured_invocation(
+                    prepared_run, cleanup, mesh, trace=arguments.trace
+                ) as output,
+            ):
                 profiler_log = read_device_profile(mesh)
                 duration = latest_kernel_duration(
                     profiler_log,
@@ -576,6 +609,53 @@ def benchmark(workloads, validate, mesh, arguments):
     }
     measurements["correctness"] = correctness
     return measurements
+
+
+def create_collective_workload(mesh, config, arguments):
+    """Measure the same column-sharded payload under either collective algorithm."""
+    activation = arguments.collective_only == "activation"
+    shard_tiles = config.k_tiles_per_device if activation else config.n_tiles_per_device
+    block_tiles = (
+        config.k_block_tiles
+        if activation
+        else arguments.output_gather_block_tiles or config.n_block_tiles
+    )
+    algorithm = (
+        arguments.activation_all_gather if activation else arguments.output_all_gather
+    )
+    dtype = torch.bfloat16 if arguments.dtype == "bf16" else torch.float32
+    torch.manual_seed(arguments.seed)
+    expected = torch.randn(
+        (config.m_tiles * 32, shard_tiles * config.device_count * 32), dtype=dtype
+    )
+    input_shard = to_dram(
+        expected, mesh, mesh_mapper=ttnn.ShardTensorToMesh(mesh, dim=1)
+    )
+    output = to_dram(
+        torch.zeros_like(expected), mesh, mesh_mapper=ttnn.ReplicateTensorToMesh(mesh)
+    )
+    collective = make_column_all_gather(
+        config.mesh_shape,
+        m_tiles=config.m_tiles,
+        n_tiles_per_device=shard_tiles,
+        worker_count=config.m_workers,
+        block_tiles=block_tiles,
+        algorithm=algorithm,
+    )
+
+    def run():
+        collective(input_shard, output)
+        return output
+
+    def validate(name, result, gathered):
+        actual = ttnn.to_torch(
+            result, mesh_composer=ttnn.ConcatMeshToTensor(mesh, dim=0)
+        ).float()
+        for replica in actual.split(config.m_tiles * 32, dim=0):
+            assert_allclose(replica, expected.float(), rtol=0, atol=0)
+        return {"max_abs_error": 0.0, "rtol": 0, "atol": 0}
+
+    return {"ttlang": (run, None, lambda result: None)}, validate
 
 
 @contextmanager
@@ -657,11 +737,21 @@ def run_isolated_variants(arguments):
 
 def main():
     arguments = parse_args()
+    if arguments.collective_only:
+        if arguments.implementation != "ttlang" or arguments.gather_output:
+            raise ValueError(
+                "--collective-only requires --implementation ttlang without --gather-output"
+            )
+        arguments.trace = True
+    if arguments.variant == "replicated" and arguments.gather_output:
+        raise ValueError("replicated weights already produce replicated output")
     if arguments.gather_output:
         if arguments.n_tiles is None:
             raise ValueError(
                 "--gather-output requires --n-tiles (complete output width)"
             )
+        arguments.trace = True
+    elif arguments.variant == "replicated":
         arguments.trace = True
     elif arguments.n_tiles is not None:
         raise ValueError("--n-tiles currently requires --gather-output")
@@ -698,6 +788,9 @@ def main():
                 Path(__file__).resolve().parents[1] / "device_timing.py",
                 Path(__file__).resolve().parents[2]
                 / "examples/all_gather_minimal_matmul/operation.py",
+                Path(__file__).resolve().parents[2]
+                / "examples/all_gather_minimal_matmul/collectives.py",
+                Path(__file__).resolve().parents[2] / "python/ttl/kernel_runner.py",
             ]
         ),
         "arguments": {**vars(arguments), "json": str(arguments.json)},
@@ -722,7 +815,10 @@ def main():
         n_tiles_per_device = arguments.n_tiles_per_device
         if arguments.n_tiles is not None:
             n_partitions = (
-                prod(mesh_shape) if arguments.implementation == "ttlang" else 1
+                prod(mesh_shape)
+                if arguments.implementation == "ttlang"
+                and arguments.variant == "n_sharded"
+                else 1
             )
             if arguments.n_tiles % n_partitions:
                 raise ValueError(
@@ -776,6 +872,12 @@ def main():
             native_channel_buffers=arguments.native_channel_buffers,
             device_aggregation=arguments.device_aggregation,
             gather_output=arguments.gather_output,
+            variant=arguments.variant,
+            activation_all_gather=arguments.activation_all_gather,
+            output_all_gather=arguments.output_all_gather,
+            output_gather_block_tiles=(
+                arguments.output_gather_block_tiles or config.n_block_tiles
+            ),
             global_n_tiles=arguments.n_tiles,
             layout="TILE",
             memory="DRAM",
@@ -788,9 +890,21 @@ def main():
             tensor_placement={
                 "ttlang": {
                     "activation": "K-sharded",
-                    "weight": "N-sharded",
-                    "bias": "N-sharded",
-                    "output": "replicated" if arguments.gather_output else "N-sharded",
+                    "weight": (
+                        "replicated"
+                        if arguments.variant == "replicated"
+                        else "N-sharded"
+                    ),
+                    "bias": (
+                        "replicated"
+                        if arguments.variant == "replicated"
+                        else "N-sharded"
+                    ),
+                    "output": (
+                        "replicated"
+                        if arguments.gather_output or arguments.variant == "replicated"
+                        else "N-sharded"
+                    ),
                 },
                 "ttmetal": {
                     "activation": "K-sharded",
@@ -816,22 +930,29 @@ def main():
                 arguments.fabric_router_payload or "installed_runtime_default"
             ),
         )
-        workloads, validate = create_workloads(
-            mesh,
-            config,
-            arguments.dtype,
-            cluster_axis,
-            arguments.implementation,
-            arguments.seed,
-            math_fidelity=arguments.math_fidelity,
-            fp32_dest_acc=arguments.fp32_dest_acc,
-            native_channel_buffers=arguments.native_channel_buffers,
-            native_num_links=arguments.native_num_links,
-            native_workers_per_link=native_workers_per_link,
-            native_subblock_shape=selected_native_subblock,
-            native_topology=selected_native_topology,
-            gather_output=arguments.gather_output,
-        )
+        if arguments.collective_only:
+            workloads, validate = create_collective_workload(mesh, config, arguments)
+        else:
+            workloads, validate = create_workloads(
+                mesh,
+                config,
+                arguments.dtype,
+                cluster_axis,
+                arguments.implementation,
+                arguments.seed,
+                math_fidelity=arguments.math_fidelity,
+                fp32_dest_acc=arguments.fp32_dest_acc,
+                native_channel_buffers=arguments.native_channel_buffers,
+                native_num_links=arguments.native_num_links,
+                native_workers_per_link=native_workers_per_link,
+                native_subblock_shape=selected_native_subblock,
+                native_topology=selected_native_topology,
+                gather_output=arguments.gather_output,
+                variant=arguments.variant,
+                activation_all_gather=arguments.activation_all_gather,
+                output_all_gather=arguments.output_all_gather,
+                output_gather_block_tiles=arguments.output_gather_block_tiles,
+            )
         report["measurements"] = benchmark(workloads, validate, mesh, arguments)
     arguments.json.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report["measurements"], indent=2), flush=True)

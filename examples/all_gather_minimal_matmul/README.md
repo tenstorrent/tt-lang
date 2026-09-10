@@ -3,20 +3,25 @@
 | Entry point | Result on each device |
 | --- | --- |
 | [`n_sharded/`](n_sharded/) | `M x N/D`; add `--gather-output` for replicated `M x N`. |
+| [`replicated/`](replicated/) | Replicated `M x N`, computed independently with replicated weights and bias. |
 
 `N` is the complete output width and `D` is the device count. Weights and bias
 remain N-sharded when output gathering is enabled. The final gather copies
 output columns into device order without arithmetic.
+`--activation-all-gather` and `--output-all-gather` independently select
+`all_to_all` or `ring`. Ring forwarding uses L1 DFBs. Inside matmul it changes
+K-block accumulation order; correctness uses dtype-specific tolerances.
 
 ```bash
 python -m examples.all_gather_minimal_matmul.n_sharded --mesh-shape 2x2 --gather-output
+python -m examples.all_gather_minimal_matmul.replicated --mesh-shape 2x2 --n-tiles 8
 ```
 
 [`collectives.py`](collectives.py) implements output gathering;
 [`operation.py`](operation.py) implements activation gathering and matmul.
 The [shared benchmark](../../benchmarks/all_gather_minimal_matmul/README.md)
-includes the final gather in device timing. Multi-device validation of the
-output-gather option is pending; it has no published performance result.
+includes the final gather in device timing and reports four-device results
+for both output strategies.
 
 This package models the data dependence of TT-Metal's
 `all_gather_minimal_matmul_async` at the TT-Metal revision pinned by this
@@ -27,9 +32,9 @@ repository:
 The operation accepts:
 
 - an activation tensor sharded across K;
-- a weight tensor sharded across output N;
-- a row-broadcast bias sharded across output N;
-- an output tensor sharded across N.
+- a weight tensor either N-sharded or replicated;
+- row bias with the same N placement as the weights;
+- output with the same N placement as the weights, optionally gathered afterward.
 
 Each device gathers every activation K shard, computes its local N output, and
 adds its local bias. Passing a zero bias tensor selects the unbiased result.
@@ -69,8 +74,8 @@ it uses less L1 but repeats activation communication. Reuse supports at most
 32 K blocks; larger reductions require larger K blocks or streamed activations.
 Actual capacity is also limited by per-worker L1 allocation.
 
-Fabric send and row receive use one staging block each; fabric receive holds
-one block per remote device. Separate row-receive storage preserves the
+Direct fabric receive holds one block per remote device; ring receive and
+forwarding use two-block DFBs. Separate row-receive storage preserves the
 multicast protocol's receiver address sequence while cached compute pages are
 republished. Weight operands remain double-buffered. FP32 destinations select
 FP32 packer accumulation directly from BF16 or FP32 matmul operands, avoiding

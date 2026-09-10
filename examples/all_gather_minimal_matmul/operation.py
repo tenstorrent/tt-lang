@@ -5,7 +5,7 @@
 """All-gather + matmul + row bias.
 
 Interface: BF16/FP32, TILE layout, DRAM tensors.
-Sharding: activation along K; weight, bias, output along N.
+Sharding: activation along K; weight, bias, output either N-sharded or replicated.
 Result: output_shard = all_gather(activation_shard) @ weight_shard + bias_shard
 
 Per device, three kernels execute concurrently::
@@ -23,6 +23,7 @@ Per device, three kernels execute concurrently::
         for each M block, N block:
             if first N block or activation reuse is disabled:
                 send this device's activation K blocks to peer devices
+                with ring selection: forward received blocks to the next device
             broadcast weight K blocks across M workers
             read row bias
 
@@ -59,6 +60,8 @@ from math import prod
 
 import ttl
 import ttnn
+
+from .collectives import make_all_gather_graph
 
 MAX_DEVICE_COUNT = 32
 
@@ -174,11 +177,12 @@ def make_all_gather_minimal_matmul_operation(
     *,
     math_fidelity: str | None = None,
     fp32_dest_acc_en: bool | None = None,
+    all_gather_algorithm: str = "all_to_all",
 ) -> Callable[..., None]:
     """Create ``output = all_gather(activation) @ weight + bias``.
 
-    Activations are K-sharded and weights, bias, and output are N-sharded over
-    ``mesh_shape``. One worker column performs each activation fabric transfer;
+    Activations are K-sharded. Weights, bias, and output may be N-sharded or
+    replicated over ``mesh_shape``. One worker column performs each activation fabric transfer;
     local row broadcasts distribute the gathered blocks across N workers.
     Weight column broadcasts distribute each N block across M workers.
     On one device, all-gather is the identity and no fabric transfers execute.
@@ -189,8 +193,12 @@ def make_all_gather_minimal_matmul_operation(
 
     device_domain = ttl.DeviceDomain(config.mesh_shape)
     activation_all_gather_net = ttl.PipeNet(
-        graph=ttl.TransferGraph.all_to_all(device_domain)
+        graph=make_all_gather_graph(
+            device_domain, config.mesh_shape, all_gather_algorithm
+        )
     )
+    use_ring = all_gather_algorithm == "ring" and config.device_count > 1
+    use_direct = all_gather_algorithm == "all_to_all" and config.device_count > 1
 
     n_worker_count, m_worker_count = config.n_workers, config.m_workers
 
@@ -252,7 +260,14 @@ def make_all_gather_minimal_matmul_operation(
         remote_activation_receive_dfb = ttl.make_dataflow_buffer_like(
             activation_shard,
             shape=(m_block_tiles, compute_k_tiles),
-            block_count=max(1, device_count - 1),
+            block_count=2 if use_ring else max(1, device_count - 1),
+        )
+        activation_relay_dfb = (
+            ttl.make_dataflow_buffer_like(
+                activation_shard, shape=(m_block_tiles, compute_k_tiles), block_count=2
+            )
+            if use_ring
+            else remote_activation_receive_dfb
         )
         broadcast_activation_receive_dfb = ttl.make_dataflow_buffer_like(
             activation_shard,
@@ -313,7 +328,7 @@ def make_all_gather_minimal_matmul_operation(
                         local_k_begin = k_block * compute_k_tiles
                         local_k_end = local_k_begin + compute_k_tiles
                         if (
-                            device_count > 1
+                            use_direct
                             and n_round < activation_read_rounds
                             and n_worker_index == 0
                         ):
@@ -325,7 +340,12 @@ def make_all_gather_minimal_matmul_operation(
                             activation_all_gather_net.if_dst(
                                 receive_activation_from_device
                             )
-                        for source_device_index in range(device_count):
+                        for source_round in range(device_count):
+                            source_device_index = source_round
+                            if use_ring:
+                                source_device_index = (
+                                    local_device_index + device_count - source_round
+                                ) % device_count
                             if n_round < activation_read_rounds:
                                 activation_block = matmul_activation_dfb.reserve()
                                 if n_worker_index == 0:
@@ -340,7 +360,31 @@ def make_all_gather_minimal_matmul_operation(
                                             ],
                                             activation_block,
                                         ).wait()
+                                        if use_ring:
+                                            initial_relay_block = (
+                                                activation_relay_dfb.reserve()
+                                            )
+                                            ttl.copy(
+                                                activation_shard[
+                                                    m_begin:m_end,
+                                                    local_k_begin:local_k_end,
+                                                ],
+                                                initial_relay_block,
+                                            ).wait()
                                     else:
+                                        if use_ring:
+
+                                            def receive_activation_from_previous_device(
+                                                pipe,
+                                            ):
+                                                received_block = (
+                                                    remote_activation_receive_dfb.reserve()
+                                                )
+                                                ttl.copy(pipe, received_block).wait()
+
+                                            activation_all_gather_net.if_dst(
+                                                receive_activation_from_previous_device
+                                            )
                                         received_block = (
                                             remote_activation_receive_dfb.wait()
                                         )
@@ -349,6 +393,13 @@ def make_all_gather_minimal_matmul_operation(
                                             activation_block,
                                             byte_count=activation_block_bytes,
                                         ).wait()
+                                        if use_ring and source_round < device_count - 1:
+                                            relay_block = activation_relay_dfb.reserve()
+                                            ttl.copy(
+                                                received_block,
+                                                relay_block,
+                                                byte_count=activation_block_bytes,
+                                            ).wait()
 
                                     def send_activation_to_row(pipe) -> None:
                                         ttl.copy(activation_block, pipe).wait()
@@ -390,6 +441,7 @@ def make_all_gather_minimal_matmul_operation(
         @ttl.datamovement()
         def send_activation_and_distribute_weights() -> None:
             physical_column, physical_row = ttl.node(dims=2)
+            local_device_index = device_domain.current_index()
             n_worker_index = (
                 physical_column * (1 - n_worker_axis) + physical_row * n_worker_axis
             )
@@ -406,7 +458,7 @@ def make_all_gather_minimal_matmul_operation(
                     n_end = n_begin + n_block_tiles
                     for k_block in range(compute_k_blocks_per_device):
                         if (
-                            device_count > 1
+                            use_direct
                             and n_round < activation_read_rounds
                             and n_worker_index == 0
                         ):
@@ -426,7 +478,26 @@ def make_all_gather_minimal_matmul_operation(
 
                             activation_all_gather_net.if_src(send_activation_to_device)
 
-                        for source_device_index in range(device_count):
+                        for source_round in range(device_count):
+                            source_device_index = source_round
+                            if use_ring:
+                                source_device_index = (
+                                    local_device_index + device_count - source_round
+                                ) % device_count
+                            if (
+                                use_ring
+                                and n_round < activation_read_rounds
+                                and n_worker_index == 0
+                                and source_round < device_count - 1
+                            ):
+                                relay_block = activation_relay_dfb.wait()
+
+                                def forward_activation_to_next_device(pipe):
+                                    ttl.copy(relay_block, pipe).wait()
+
+                                activation_all_gather_net.if_src(
+                                    forward_activation_to_next_device
+                                )
                             k_begin = (
                                 source_device_index * k_tiles_per_device
                                 + k_block * compute_k_tiles

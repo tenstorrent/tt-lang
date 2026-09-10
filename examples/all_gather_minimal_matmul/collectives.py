@@ -1,20 +1,39 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
-"""TILE/DRAM output replication, preserving device-order N shards exactly."""
+"""TILE/DRAM column all-gather, preserving device-order shards exactly."""
 
 from math import prod
+from itertools import product
 
 import ttl
 
 
-def make_output_all_gather(
+def make_all_gather_graph(device_domain, mesh_shape, algorithm):
+    """Select direct peer transfers or forwarding to the next device in index order."""
+    if algorithm not in ("all_to_all", "ring"):
+        raise ValueError(f"unsupported all-gather algorithm: {algorithm}")
+    device_count = prod(mesh_shape)
+    if algorithm == "all_to_all" or device_count == 1:
+        return ttl.TransferGraph.all_to_all(device_domain)
+    coordinates = tuple(product(*(range(extent) for extent in mesh_shape)))
+    return ttl.TransferGraph.edges(
+        device_domain,
+        edges=tuple(
+            (coordinates[source_index], coordinates[(source_index + 1) % device_count])
+            for source_index in range(device_count)
+        ),
+    )
+
+
+def make_column_all_gather(
     mesh_shape: tuple[int, ...],
     *,
     m_tiles: int,
     n_tiles_per_device: int,
     worker_count: int,
     block_tiles: int = 1,
+    algorithm: str = "all_to_all",
 ):
     """Copy each M x N/D shard into every device's M x N output.
 
@@ -31,14 +50,18 @@ def make_output_all_gather(
         raise ValueError("n_tiles_per_device must be divisible by block_tiles")
     device_domain = ttl.DeviceDomain(mesh_shape)
     device_count = prod(mesh_shape)
-    output_all_gather_net = ttl.PipeNet(
-        graph=ttl.TransferGraph.all_to_all(device_domain)
-    )
+    ring = algorithm == "ring" and device_count > 1
+    direct = algorithm == "all_to_all" and device_count > 1
+    graph = make_all_gather_graph(device_domain, mesh_shape, algorithm)
+    output_all_gather_net = ttl.PipeNet(graph=graph)
     row_rounds = m_tiles // worker_count
     column_rounds = n_tiles_per_device // block_tiles
 
     @ttl.operation(grid=(worker_count, 1), device_domain=device_domain)
     def gather_output(output_shard, replicated_output):
+        block_bytes = block_tiles * output_shard.get_tile().get_tile_size(
+            output_shard.dtype
+        )
         send_dfb = ttl.make_dataflow_buffer_like(
             output_shard, shape=(1, block_tiles), block_count=2
         )
@@ -74,6 +97,11 @@ def make_output_all_gather(
                         local_block,
                     ).wait()
                     local_block = local_dfb.wait()
+                    if ring:
+                        initial_send_block = send_dfb.reserve()
+                        ttl.copy(
+                            local_block, initial_send_block, byte_count=block_bytes
+                        ).wait()
                     ttl.copy(
                         local_block,
                         replicated_output[
@@ -97,8 +125,36 @@ def make_output_all_gather(
                             ],
                         ).wait()
 
-                    if device_count > 1:
+                    def receive_from_previous_device(pipe):
+                        for ring_round in range(device_count - 1):
+                            source_index = (
+                                local_device_index + device_count - ring_round - 1
+                            ) % device_count
+                            remote_column = (
+                                source_index * n_tiles_per_device + column_begin
+                            )
+                            receive_block = receive_dfb.reserve()
+                            ttl.copy(pipe, receive_block).wait()
+                            receive_block = receive_dfb.wait()
+                            ttl.copy(
+                                receive_block,
+                                replicated_output[
+                                    row_index : row_index + 1,
+                                    remote_column : remote_column + block_tiles,
+                                ],
+                            ).wait()
+                            if ring_round < device_count - 2:
+                                relay_send_block = send_dfb.reserve()
+                                ttl.copy(
+                                    receive_block,
+                                    relay_send_block,
+                                    byte_count=block_bytes,
+                                ).wait()
+
+                    if direct:
                         output_all_gather_net.if_dst(receive_from_device)
+                    if ring:
+                        output_all_gather_net.if_dst(receive_from_previous_device)
 
         @ttl.datamovement()
         def send_output_shards():
@@ -107,7 +163,7 @@ def make_output_all_gather(
                 row_index = row_round * worker_count + worker_index
                 for column_round in range(column_rounds):
                     column_begin = column_round * block_tiles
-                    if device_count > 1:
+                    if direct:
                         send_block = send_dfb.reserve()
                         ttl.copy(
                             output_shard[
@@ -122,5 +178,13 @@ def make_output_all_gather(
                             ttl.copy(send_block, pipe).wait()
 
                         output_all_gather_net.if_src(send_to_device)
+                    if ring:
+
+                        def forward_to_next_device(pipe):
+                            for ring_round in range(device_count - 1):
+                                forward_block = send_dfb.wait()
+                                ttl.copy(forward_block, pipe).wait()
+
+                        output_all_gather_net.if_src(forward_to_next_device)
 
     return gather_output
