@@ -70,15 +70,15 @@ python -m benchmarks.all_gather_minimal_matmul \
     --fabric-config 2d --fabric-reliability strict --fabric-router-payload 8192 \
     --m-tiles 96 --k-tiles-per-device 40 --n-tiles 40 \
     --worker-grid 2 10 --transpose \
-    --m-block-tiles 4 --k-block-tiles 8 --n-block-tiles 1 \
-    --output-gather-block-tiles 10 --no-reuse-activation \
+    --m-block-tiles 8 --k-block-tiles 10 --n-block-tiles 1 \
+    --output-gather-block-tiles 10 --output-gather-m-block-tiles 4 \
+    --no-reuse-activation \
     --warmup 3 --samples 5 --json /tmp/ttlang-n1280.json
 ```
 
 For the measured N=3840 case, use `--n-tiles 120`,
-`--k-block-tiles 10`, `--n-block-tiles 3`,
-`--output-gather-block-tiles 30`,
-`--activation-all-gather ring --output-all-gather ring`.
+`--m-block-tiles 4`, `--n-block-tiles 3`, and
+`--output-gather-block-tiles 30`.
 
 Native, global N=1280:
 
@@ -96,15 +96,16 @@ python -m benchmarks.all_gather_minimal_matmul \
 For N=3840, change only `--n-tiles 120` and the report filename.
 
 TT-Lang replicated-weight measurements use `--variant replicated`,
-`--activation-all-gather ring --reuse-activation`, transposed 2x10,
-M/K blocks 2/10, and N blocks 2 or 6 for global N=1280 or 3840.
+`--reuse-activation`, transposed 2x10, M/K blocks 2/10, and N blocks 2 or 6
+for global N=1280 or 3840. Use direct activation all-gather and ten samples
+for N=1280; `--activation-all-gather ring` and five samples for N=3840.
 
 ## Collective comparison
 
 `--activation-all-gather all_to_all|ring` selects direct peer transfers or
 ring forwarding. `--output-all-gather` independently selects the final gather.
-`--output-gather-block-tiles` controls its message size independently of
-matmul blocking.
+`--output-gather-m-block-tiles` and `--output-gather-block-tiles` control its
+message's row and column tile counts independently of matmul blocking.
 
 `--collective-only activation|output --implementation ttlang` measures a
 standalone collective with exact replica checks. Use
@@ -119,7 +120,9 @@ The runner uses TT-Metal's
 [`device_kernel_duration` analysis](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/tools/tracy/device_post_proc_config.py)
 through `tracy.process_device_log.import_log_run_stats`.
 
-1. Compile, warm up and validate against FP32 PyTorch.
+1. Allocate the output gather's persistent L1 buffers before matmul's buffers
+   to preserve contiguous matmul workspace. Compile, warm up and validate
+   against FP32 PyTorch.
 2. Prepare/reset runtime resources outside capture, then capture and replay
    one invocation. Replicated-output selections enable trace replay automatically.
 3. On each device, measure first kernel start through last kernel end.

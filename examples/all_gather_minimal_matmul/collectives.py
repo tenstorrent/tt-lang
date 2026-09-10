@@ -33,19 +33,20 @@ def make_column_all_gather(
     n_tiles_per_device: int,
     worker_count: int,
     block_tiles: int = 1,
+    m_block_tiles: int = 1,
     algorithm: str = "all_to_all",
 ):
     """Copy each M x N/D shard into every device's M x N output.
 
-    Workers partition rows; each fabric message contains one row of tiles.
+    Workers partition rows; each fabric message contains a rectangular tile block.
     No arithmetic is applied, including to FP32 payloads.
     """
     if not mesh_shape or any(extent <= 0 for extent in mesh_shape):
         raise ValueError("mesh extents must be positive")
-    if min(m_tiles, n_tiles_per_device, worker_count, block_tiles) <= 0:
+    if min(m_tiles, n_tiles_per_device, worker_count, block_tiles, m_block_tiles) <= 0:
         raise ValueError("tile counts and worker_count must be positive")
-    if m_tiles % worker_count:
-        raise ValueError("m_tiles must be divisible by worker_count")
+    if m_tiles % (worker_count * m_block_tiles):
+        raise ValueError("m_tiles must be divisible by worker_count * m_block_tiles")
     if n_tiles_per_device % block_tiles:
         raise ValueError("n_tiles_per_device must be divisible by block_tiles")
     device_domain = ttl.DeviceDomain(mesh_shape)
@@ -54,22 +55,24 @@ def make_column_all_gather(
     direct = algorithm == "all_to_all" and device_count > 1
     graph = make_all_gather_graph(device_domain, mesh_shape, algorithm)
     output_all_gather_net = ttl.PipeNet(graph=graph)
-    row_rounds = m_tiles // worker_count
+    row_rounds = m_tiles // (worker_count * m_block_tiles)
     column_rounds = n_tiles_per_device // block_tiles
 
     @ttl.operation(grid=(worker_count, 1), device_domain=device_domain)
     def gather_output(output_shard, replicated_output):
-        block_bytes = block_tiles * output_shard.get_tile().get_tile_size(
-            output_shard.dtype
+        block_bytes = (
+            m_block_tiles
+            * block_tiles
+            * output_shard.get_tile().get_tile_size(output_shard.dtype)
         )
         send_dfb = ttl.make_dataflow_buffer_like(
-            output_shard, shape=(1, block_tiles), block_count=2
+            output_shard, shape=(m_block_tiles, block_tiles), block_count=1
         )
         receive_dfb = ttl.make_dataflow_buffer_like(
-            output_shard, shape=(1, block_tiles), block_count=2
+            output_shard, shape=(m_block_tiles, block_tiles), block_count=1
         )
         local_dfb = ttl.make_dataflow_buffer_like(
-            output_shard, shape=(1, block_tiles), block_count=2
+            output_shard, shape=(m_block_tiles, block_tiles), block_count=1
         )
 
         # TTNN generic_op requires a compute kernel even for data movement.
@@ -82,7 +85,7 @@ def make_column_all_gather(
             worker_index, _worker_row = ttl.node(dims=2)
             local_device_index = device_domain.current_index()
             for row_round in range(row_rounds):
-                row_index = row_round * worker_count + worker_index
+                row_index = (row_round * worker_count + worker_index) * m_block_tiles
                 for column_round in range(column_rounds):
                     column_begin = column_round * block_tiles
                     local_column = (
@@ -91,7 +94,7 @@ def make_column_all_gather(
                     local_block = local_dfb.reserve()
                     ttl.copy(
                         output_shard[
-                            row_index : row_index + 1,
+                            row_index : row_index + m_block_tiles,
                             column_begin : column_begin + block_tiles,
                         ],
                         local_block,
@@ -105,7 +108,7 @@ def make_column_all_gather(
                     ttl.copy(
                         local_block,
                         replicated_output[
-                            row_index : row_index + 1,
+                            row_index : row_index + m_block_tiles,
                             local_column : local_column + block_tiles,
                         ],
                     ).wait()
@@ -120,7 +123,7 @@ def make_column_all_gather(
                         ttl.copy(
                             receive_block,
                             replicated_output[
-                                row_index : row_index + 1,
+                                row_index : row_index + m_block_tiles,
                                 remote_column : remote_column + block_tiles,
                             ],
                         ).wait()
@@ -139,7 +142,7 @@ def make_column_all_gather(
                             ttl.copy(
                                 receive_block,
                                 replicated_output[
-                                    row_index : row_index + 1,
+                                    row_index : row_index + m_block_tiles,
                                     remote_column : remote_column + block_tiles,
                                 ],
                             ).wait()
@@ -160,14 +163,14 @@ def make_column_all_gather(
         def send_output_shards():
             worker_index, _worker_row = ttl.node(dims=2)
             for row_round in range(row_rounds):
-                row_index = row_round * worker_count + worker_index
+                row_index = (row_round * worker_count + worker_index) * m_block_tiles
                 for column_round in range(column_rounds):
                     column_begin = column_round * block_tiles
                     if direct:
                         send_block = send_dfb.reserve()
                         ttl.copy(
                             output_shard[
-                                row_index : row_index + 1,
+                                row_index : row_index + m_block_tiles,
                                 column_begin : column_begin + block_tiles,
                             ],
                             send_block,

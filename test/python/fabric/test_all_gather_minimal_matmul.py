@@ -84,9 +84,15 @@ def participant_mesh(fabric_mesh_shape, participant_mesh_shape):
 @requires_forwarding_link_indices(ttnn)
 @pytest.mark.parametrize("torch_dtype", [torch.bfloat16, torch.float32])
 @pytest.mark.parametrize("block_tiles", [1, 2])
+@pytest.mark.parametrize("m_block_tiles", [1, 2])
 @pytest.mark.parametrize("algorithm", ["all_to_all", "ring"])
 def test_output_all_gather(
-    participant_mesh, participant_mesh_shape, torch_dtype, block_tiles, algorithm
+    participant_mesh,
+    participant_mesh_shape,
+    torch_dtype,
+    block_tiles,
+    m_block_tiles,
+    algorithm,
 ):
     """TILE/DRAM gather preserves every payload bit and device-order N placement."""
     device_count = prod(participant_mesh_shape)
@@ -108,6 +114,7 @@ def test_output_all_gather(
         n_tiles_per_device=4,
         worker_count=2,
         block_tiles=block_tiles,
+        m_block_tiles=m_block_tiles,
         algorithm=algorithm,
     )
     for _invocation in range(2):

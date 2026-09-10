@@ -132,6 +132,7 @@ def parse_args():
         "--output-all-gather", choices=("all_to_all", "ring"), default="all_to_all"
     )
     parser.add_argument("--output-gather-block-tiles", type=positive_int)
+    parser.add_argument("--output-gather-m-block-tiles", type=positive_int, default=1)
     parser.add_argument(
         "--variant", choices=("n_sharded", "replicated"), default="n_sharded"
     )
@@ -357,6 +358,7 @@ def create_workloads(
     activation_all_gather="all_to_all",
     output_all_gather="all_to_all",
     output_gather_block_tiles=None,
+    output_gather_m_block_tiles=1,
 ):
     torch.manual_seed(seed)
     torch_dtype = torch.bfloat16 if dtype == "bf16" else torch.float32
@@ -416,8 +418,13 @@ def create_workloads(
                     n_tiles_per_device=config.n_tiles_per_device,
                     worker_count=config.m_workers,
                     block_tiles=output_gather_block_tiles or config.n_block_tiles,
+                    m_block_tiles=output_gather_m_block_tiles,
                     algorithm=output_all_gather,
                 )
+                # Allocate the smaller collective first to preserve contiguous
+                # L1 space below its persistent buffers for matmul.
+                output_gather(output, replicated_output)
+                ttnn.synchronize_device(mesh)
 
             def run_ttlang(
                 operation=operation,
@@ -640,6 +647,11 @@ def create_collective_workload(mesh, config, arguments):
         n_tiles_per_device=shard_tiles,
         worker_count=config.m_workers,
         block_tiles=block_tiles,
+        m_block_tiles=(
+            config.m_block_tiles
+            if activation
+            else arguments.output_gather_m_block_tiles
+        ),
         algorithm=algorithm,
     )
 
@@ -878,6 +890,7 @@ def main():
             output_gather_block_tiles=(
                 arguments.output_gather_block_tiles or config.n_block_tiles
             ),
+            output_gather_m_block_tiles=arguments.output_gather_m_block_tiles,
             global_n_tiles=arguments.n_tiles,
             layout="TILE",
             memory="DRAM",
@@ -952,6 +965,7 @@ def main():
                 activation_all_gather=arguments.activation_all_gather,
                 output_all_gather=arguments.output_all_gather,
                 output_gather_block_tiles=arguments.output_gather_block_tiles,
+                output_gather_m_block_tiles=arguments.output_gather_m_block_tiles,
             )
         report["measurements"] = benchmark(workloads, validate, mesh, arguments)
     arguments.json.write_text(json.dumps(report, indent=2) + "\n")
