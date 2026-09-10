@@ -29,7 +29,7 @@
   </defs>
 
   <rect width="1600" height="1100" fill="#f8fafc"/>
-  <text x="40" y="42" class="title">Upstream TT-Metal all-gather + matmul + bias: four devices</text>
+  <text x="40" y="42" class="title">Upstream TT-Metal all-gather + matmul + bias: Four devices</text>
   <text x="40" y="68" class="subtitle">D=4 · M, K, and N denote global matrix dimensions · Wan2.2 Blackhole 4×1 participant ring</text>
 
   <rect x="1085" y="10" width="475" height="108" class="table"/>
@@ -249,5 +249,5 @@
   <rect x="1320" y="1006" width="170" height="29" rx="5" fill="#e9d5ff" stroke="#7e22ce"/>
   <text x="1405" y="1026" class="small" text-anchor="middle">write after K block 19</text>
 
-  <text x="40" y="1080" class="tiny">Source: tt-metal f69f924c6b4f · all_gather_minimal_matmul_async · M=3072, K=5120, N=1280/3840</text>
+  <text x="40" y="1080" class="tiny">Source: tt-metal f69f924c6b4f · all_gather_minimal_matmul_async · M=9472, K=5120, N=15360</text>
 </svg>

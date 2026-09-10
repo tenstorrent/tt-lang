@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1200" viewBox="0 0 1600 1200" role="img" aria-labelledby="title description">
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1320" viewBox="0 0 1600 1320" role="img" aria-labelledby="title description">
   <title id="title">TT-Lang four-device all-gather minimal matmul</title>
-  <desc id="description">Four devices each publish one K shard of activation through a logical all-to-all PipeNet. Every device receives activation blocks directly into L1, optionally caches them, and multiplies them by its local N shard of the weight while communication and data movement continue.</desc>
+  <desc id="description">Four devices exchange activation K shards through a ring into L1, compute N-sharded matmul and bias on 60 workers per device, then all-gather output shards into replicated M by N DRAM tensors.</desc>
   <defs>
     <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#15803d"/></marker>
     <marker id="arrow-orange" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#c2410c"/></marker>
@@ -27,8 +27,8 @@
     </style>
   </defs>
 
-  <rect width="1600" height="1200" fill="#f8fafc"/>
-  <text x="40" y="42" class="title">TT-Lang all-gather + matmul + bias: four devices</text>
+  <rect width="1600" height="1320" fill="#f8fafc"/>
+  <text x="40" y="42" class="title">TT-Lang all-gather + matmul + bias: Four devices</text>
   <text x="40" y="68" class="subtitle">D=4 · M, K, and N denote global matrix dimensions · physical 2×2 mesh; logical 4×1 participants</text>
 
   <rect x="1085" y="10" width="475" height="108" class="table"/>
@@ -92,16 +92,16 @@
 
   <text x="40" y="278" class="section">Activation exchange</text>
   <rect x="40" y="294" width="1520" height="96" class="fabric"/>
-  <text x="800" y="316" class="label" text-anchor="middle">TransferGraph.all_to_all expands to 12 point-to-point fabric unicasts: three destinations per source</text>
+  <text x="800" y="316" class="label" text-anchor="middle">Measured activation ring: D0 → D1 → D2 → D3 → D0; three forwarding rounds</text>
   <rect x="58" y="328" width="314" height="28" class="cache"/>
-  <text x="215" y="347" class="small" text-anchor="middle">source A₀ → D1 · D2 · D3</text>
+  <text x="215" y="347" class="small" text-anchor="middle">A₀ → D1 → D2 → D3</text>
   <rect x="448" y="328" width="314" height="28" class="cache"/>
-  <text x="605" y="347" class="small" text-anchor="middle">source A₁ → D0 · D2 · D3</text>
+  <text x="605" y="347" class="small" text-anchor="middle">A₁ → D2 → D3 → D0</text>
   <rect x="838" y="328" width="314" height="28" class="cache"/>
-  <text x="995" y="347" class="small" text-anchor="middle">source A₂ → D0 · D1 · D3</text>
+  <text x="995" y="347" class="small" text-anchor="middle">A₂ → D3 → D0 → D1</text>
   <rect x="1228" y="328" width="314" height="28" class="cache"/>
-  <text x="1385" y="347" class="small" text-anchor="middle">source A₃ → D0 · D1 · D2</text>
-  <text x="800" y="377" class="tiny" text-anchor="middle">Each packet has one destination. Fabric routers forward multi-hop packets; only the destination writes its L1 receive DFB.</text>
+  <text x="1385" y="347" class="small" text-anchor="middle">A₃ → D0 → D1 → D2</text>
+  <text x="800" y="377" class="tiny" text-anchor="middle">Two communication workers per device receive into L1, multicast to compute rows, and forward to the next device.</text>
 
   <path d="M127 222 V250 H405 V292" class="route" stroke="#c2410c" marker-end="url(#arrow-orange)"/>
   <path d="M517 222 V258 H795 V292" class="route" stroke="#c2410c" marker-end="url(#arrow-orange)"/>
@@ -119,7 +119,7 @@
 
   <g id="device-0-compute">
     <rect x="40" y="410" width="350" height="260" class="device"/>
-    <text x="58" y="438" class="label">Device 0 · 2×10 worker grid</text>
+    <text x="58" y="438" class="label">Device 0 · 6×10 worker grid</text>
     <rect x="58" y="454" width="314" height="58" class="cache"/>
     <text x="215" y="477" class="label" text-anchor="middle">L1 A blocks; optional full-K cache</text>
     <text x="215" y="498" class="small" text-anchor="middle">hardware NoC multicast to N workers</text>
@@ -127,9 +127,10 @@
     <text x="123" y="553" class="label" text-anchor="middle">B₀ blocks</text>
     <text x="123" y="573" class="small" text-anchor="middle">DRAM → L1 DFB</text>
     <path d="M188 558 H210" class="route" stroke="#1d4ed8" marker-end="url(#arrow-blue)"/>
+    <path d="M292 512 V524" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
     <rect x="212" y="526" width="160" height="64" class="compute"/>
     <text x="292" y="548" class="label" text-anchor="middle">matmul + bias₀</text>
-    <text x="292" y="568" class="small" text-anchor="middle">20 worker cores compute</text>
+    <text x="292" y="568" class="small" text-anchor="middle">60 workers compute</text>
     <text x="292" y="584" class="tiny" text-anchor="middle">FP32 accumulator in L1</text>
     <path d="M292 590 V604" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
     <rect x="58" y="606" width="314" height="50" class="output"/>
@@ -139,7 +140,7 @@
 
   <g id="device-1-compute">
     <rect x="430" y="410" width="350" height="260" class="device"/>
-    <text x="448" y="438" class="label">Device 1 · 2×10 worker grid</text>
+    <text x="448" y="438" class="label">Device 1 · 6×10 worker grid</text>
     <rect x="448" y="454" width="314" height="58" class="cache"/>
     <text x="605" y="477" class="label" text-anchor="middle">L1 A blocks; optional full-K cache</text>
     <text x="605" y="498" class="small" text-anchor="middle">hardware NoC multicast to N workers</text>
@@ -147,9 +148,10 @@
     <text x="513" y="553" class="label" text-anchor="middle">B₁ blocks</text>
     <text x="513" y="573" class="small" text-anchor="middle">DRAM → L1 DFB</text>
     <path d="M578 558 H600" class="route" stroke="#1d4ed8" marker-end="url(#arrow-blue)"/>
+    <path d="M682 512 V524" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
     <rect x="602" y="526" width="160" height="64" class="compute"/>
     <text x="682" y="548" class="label" text-anchor="middle">matmul + bias₁</text>
-    <text x="682" y="568" class="small" text-anchor="middle">20 worker cores compute</text>
+    <text x="682" y="568" class="small" text-anchor="middle">60 workers compute</text>
     <text x="682" y="584" class="tiny" text-anchor="middle">FP32 accumulator in L1</text>
     <path d="M682 590 V604" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
     <rect x="448" y="606" width="314" height="50" class="output"/>
@@ -159,7 +161,7 @@
 
   <g id="device-2-compute">
     <rect x="820" y="410" width="350" height="260" class="device"/>
-    <text x="838" y="438" class="label">Device 2 · 2×10 worker grid</text>
+    <text x="838" y="438" class="label">Device 2 · 6×10 worker grid</text>
     <rect x="838" y="454" width="314" height="58" class="cache"/>
     <text x="995" y="477" class="label" text-anchor="middle">L1 A blocks; optional full-K cache</text>
     <text x="995" y="498" class="small" text-anchor="middle">hardware NoC multicast to N workers</text>
@@ -167,9 +169,10 @@
     <text x="903" y="553" class="label" text-anchor="middle">B₂ blocks</text>
     <text x="903" y="573" class="small" text-anchor="middle">DRAM → L1 DFB</text>
     <path d="M968 558 H990" class="route" stroke="#1d4ed8" marker-end="url(#arrow-blue)"/>
+    <path d="M1072 512 V524" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
     <rect x="992" y="526" width="160" height="64" class="compute"/>
     <text x="1072" y="548" class="label" text-anchor="middle">matmul + bias₂</text>
-    <text x="1072" y="568" class="small" text-anchor="middle">20 worker cores compute</text>
+    <text x="1072" y="568" class="small" text-anchor="middle">60 workers compute</text>
     <text x="1072" y="584" class="tiny" text-anchor="middle">FP32 accumulator in L1</text>
     <path d="M1072 590 V604" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
     <rect x="838" y="606" width="314" height="50" class="output"/>
@@ -179,7 +182,7 @@
 
   <g id="device-3-compute">
     <rect x="1210" y="410" width="350" height="260" class="device"/>
-    <text x="1228" y="438" class="label">Device 3 · 2×10 worker grid</text>
+    <text x="1228" y="438" class="label">Device 3 · 6×10 worker grid</text>
     <rect x="1228" y="454" width="314" height="58" class="cache"/>
     <text x="1385" y="477" class="label" text-anchor="middle">L1 A blocks; optional full-K cache</text>
     <text x="1385" y="498" class="small" text-anchor="middle">hardware NoC multicast to N workers</text>
@@ -187,9 +190,10 @@
     <text x="1293" y="553" class="label" text-anchor="middle">B₃ blocks</text>
     <text x="1293" y="573" class="small" text-anchor="middle">DRAM → L1 DFB</text>
     <path d="M1358 558 H1380" class="route" stroke="#1d4ed8" marker-end="url(#arrow-blue)"/>
+    <path d="M1462 512 V524" class="route" stroke="#15803d" marker-end="url(#arrow-green)"/>
     <rect x="1382" y="526" width="160" height="64" class="compute"/>
     <text x="1462" y="548" class="label" text-anchor="middle">matmul + bias₃</text>
-    <text x="1462" y="568" class="small" text-anchor="middle">20 worker cores compute</text>
+    <text x="1462" y="568" class="small" text-anchor="middle">60 workers compute</text>
     <text x="1462" y="584" class="tiny" text-anchor="middle">FP32 accumulator in L1</text>
     <path d="M1462 590 V604" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
     <rect x="1228" y="606" width="314" height="50" class="output"/>
@@ -197,7 +201,7 @@
     <text x="1385" y="647" class="small" text-anchor="middle">L1 → DRAM</text>
   </g>
 
-  <text x="40" y="711" class="section">Distributed result</text>
+  <text x="40" y="711" class="section">Matmul output shards, followed by output all-gather</text>
   <rect x="40" y="727" width="380" height="48" class="output"/>
   <text x="230" y="757" class="label" text-anchor="middle">O₀ · columns [0, N/4)</text>
   <rect x="420" y="727" width="380" height="48" class="output"/>
@@ -206,12 +210,30 @@
   <text x="990" y="757" class="label" text-anchor="middle">O₂ · columns [N/2, 3N/4)</text>
   <rect x="1180" y="727" width="380" height="48" class="output"/>
   <text x="1370" y="757" class="label" text-anchor="middle">O₃ · columns [3N/4, N)</text>
-  <path d="M230 775 V803 H1370 V775 M610 775 V803 M990 775 V803" class="route" stroke="#7e22ce"/>
-  <path d="M800 803 V813" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
-  <rect x="40" y="815" width="1520" height="80" class="output"/>
-  <text x="800" y="845" class="section" text-anchor="middle">Optional output all-gather: direct transfers or ring forwarding</text>
-  <text x="800" y="870" class="label" text-anchor="middle">Each device reads its DRAM shard, exchanges blocks through L1 DFBs, and writes the same full M × N output to its DRAM.</text>
-
+  <rect x="40" y="828" width="1520" height="68" class="fabric"/>
+  <text x="800" y="852" class="label" text-anchor="middle">Each device: Read Oᵣ from DRAM → send L1 blocks to all three peers</text>
+  <text x="800" y="876" class="small" text-anchor="middle">Direct fabric transfers · two workers/device · 2×30-tile messages · received L1 blocks copied into DRAM at the source device's N offset</text>
+  <path d="M215 775 V786 H370 V826" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+  <path d="M215 896 V918" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+  <rect x="40" y="922" width="350" height="70" class="output"/>
+  <text x="215" y="946" class="label" text-anchor="middle">Device 0: Replicated O in DRAM</text>
+  <text x="215" y="970" class="small" text-anchor="middle">[ O₀ | O₁ | O₂ | O₃ ] = M × N</text>
+  <path d="M605 775 V786 H760 V826" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+  <path d="M605 896 V918" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+  <rect x="430" y="922" width="350" height="70" class="output"/>
+  <text x="605" y="946" class="label" text-anchor="middle">Device 1: Replicated O in DRAM</text>
+  <text x="605" y="970" class="small" text-anchor="middle">[ O₀ | O₁ | O₂ | O₃ ] = M × N</text>
+  <path d="M995 775 V786 H1150 V826" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+  <path d="M995 896 V918" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+  <rect x="820" y="922" width="350" height="70" class="output"/>
+  <text x="995" y="946" class="label" text-anchor="middle">Device 2: Replicated O in DRAM</text>
+  <text x="995" y="970" class="small" text-anchor="middle">[ O₀ | O₁ | O₂ | O₃ ] = M × N</text>
+  <path d="M1385 775 V786 H1540 V826" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+  <path d="M1385 896 V918" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
+  <rect x="1210" y="922" width="350" height="70" class="output"/>
+  <text x="1385" y="946" class="label" text-anchor="middle">Device 3: Replicated O in DRAM</text>
+  <text x="1385" y="970" class="small" text-anchor="middle">[ O₀ | O₁ | O₂ | O₃ ] = M × N</text>
+  <g transform="translate(0,120)">
   <rect x="40" y="946" width="1520" height="202" class="device"/>
   <text x="65" y="978" class="section">Streaming overlap; full-K reuse when enabled</text>
   <text x="65" y="1000" class="small">Each device executes the same pipeline. Bars are illustrative; the three kernels run concurrently.</text>
@@ -240,4 +262,5 @@
   <text x="1320" y="1132" class="small" text-anchor="middle">matmul with cached A</text>
 
   <text x="40" y="1180" class="tiny">Source: tt-lang branch bnorris/all-gather-output-replication · examples/all_gather_minimal_matmul/operation.py · logical four-device configuration</text>
+  </g>
 </svg>

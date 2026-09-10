@@ -10,7 +10,11 @@ global inputs, precision and replicated output. Tune compute grids, blocks and
 communication independently; equal resource usage is not required. Report
 the selected worker count and configuration for each result.
 
-**The published four-device results use 20 TT-Lang compute workers per device (2x10), versus native's 108 (12x9). The operation supports 130 workers; tuning across worker counts is in progress. Performance parity with native has not been established.**
+For M/K/N=9472/5120/15360 on four Blackhole P150b devices, replicated TT-Lang
+uses 130 compute workers/device and takes 10.343 ms; native uses 108 and takes
+6.883 ms (TT-Lang/native: 1.503). N-sharded TT-Lang plus output gather uses
+60 workers/device and takes 24.156 ms. See [results and configurations](PERFORMANCE.md).
+Performance parity with native has not been established.
 
 ## Files
 
@@ -18,6 +22,7 @@ the selected worker count and configuration for each result.
 | --- | --- |
 | [`__main__.py`](__main__.py) | Inputs, correctness checks, device timing and provenance for both implementations. |
 | [`profile.py`](profile.py) | Python dispatch profiling; not used for device-performance results. |
+| [`ccl_comparison.py`](ccl_comparison.py) | Identical activation collective measured alone and within replicated matmul. |
 | [`PERFORMANCE.md`](PERFORMANCE.md) | Four-device results and exact measured configurations. |
 | [`images/`](images/) | Four-device dataflow diagrams. |
 | [Examples](../../examples/all_gather_minimal_matmul/README.md) | Separate N-sharded and replicated-output implementations, with shared collectives. |
@@ -28,7 +33,7 @@ the selected worker count and configuration for each result.
 
 `M`, `K` and `N` denote complete matrix dimensions; `D=4`.
 Activations are initially K-sharded. All inputs/output use TILE layout and
-interleaved DRAM. The [N-sharded implementation](../../examples/all_gather_minimal_matmul/operation.py)
+interleaved DRAM. The [N-sharded implementation](../../examples/all_gather_minimal_matmul/two_worker_ring/operation.py)
 fuses activation gathering with matmul. The [replicated implementation](../../examples/all_gather_minimal_matmul/replicated/operation.py)
 gathers activations into DRAM first, then computes the complete output on every device.
 
@@ -49,12 +54,12 @@ equivalent to the native replicated output.
 | Measurement condition | TT-Lang | Native reference |
 | --- | --- | --- |
 | Devices | Four Blackhole P150b | Same four devices |
-| Global M / K | 3072 / 5120 | 3072 / 5120 |
-| Global N | 1280 or 3840 | 1280 or 3840 |
+| Global M / K | 9472 / 5120 | 9472 / 5120 |
+| Global N | 15360 | 15360 |
 | Precision | BF16 input/output, HiFi2, FP32 destination and packer accumulation | Same |
 | Bias | Included | Included |
 | Timing | Device trace replay; includes final gather when selected | Device trace replay of fused program |
-| Compute workers per device | 20 (transposed 2x10) in the reported measurements | 108 (transposed 12x9) |
+| Compute workers per device | Replicated: 130 (transposed 13x10); N-sharded: 60 (transposed 6x10) | 108 (transposed 12x9) |
 | Blocking | Measured settings in [PERFORMANCE.md](PERFORMANCE.md) | 8/8/8 tiles, 2x2 subblock |
 | Fabric | 2D, strict initialization, 8192-byte payload | 1D ring, strict initialization, 8192-byte payload |
 | Native communication settings | Not applicable | Two links, six workers/link, 24 channel buffers |
@@ -71,45 +76,54 @@ Activate the TT-Lang build environment and ensure the four devices are idle.
 The runner discovers the physical 2x2 mesh and reshapes its logical coordinates
 to 4x1 for the native operation's single collective axis.
 
-N-sharded compute plus replicated output, global N=1280:
+All commands below use global M/K/N=9472/5120/15360.
+
+TT-Lang replicated output:
+
+```bash
+python -m benchmarks.all_gather_minimal_matmul \
+    --implementation ttlang --variant replicated --mesh-shape 4x1 \
+    --fabric-config 2d --fabric-reliability strict --fabric-router-payload 8192 \
+    --m-tiles 296 --k-tiles-per-device 40 --n-tiles 480 \
+    --worker-grid 13 10 --transpose \
+    --m-block-tiles 8 --k-block-tiles 8 --n-block-tiles 8 \
+    --no-reuse-activation --activation-all-gather all_to_all \
+    --math-fidelity HiFi2 --fp32-dest-acc \
+    --warmup 3 --samples 5 --json /tmp/ttlang-replicated-n15360.json
+```
+
+N-sharded compute plus output all-gather:
 
 ```bash
 python -m benchmarks.all_gather_minimal_matmul \
     --implementation ttlang --gather-output --mesh-shape 4x1 \
     --fabric-config 2d --fabric-reliability strict --fabric-router-payload 8192 \
-    --m-tiles 96 --k-tiles-per-device 40 --n-tiles 40 \
-    --worker-grid 2 10 --transpose \
-    --m-block-tiles 8 --k-block-tiles 10 --n-block-tiles 1 \
-    --output-gather-block-tiles 10 --output-gather-m-block-tiles 4 \
-    --no-reuse-activation \
-    --warmup 3 --samples 5 --json /tmp/ttlang-n1280.json
+    --m-tiles 296 --k-tiles-per-device 40 --n-tiles 480 \
+    --worker-grid 6 10 --transpose \
+    --m-block-tiles 2 --k-block-tiles 8 --n-block-tiles 4 \
+    --reuse-activation --activation-all-gather ring \
+    --output-all-gather all_to_all --output-gather-workers 2 \
+    --output-gather-block-tiles 30 --output-gather-m-block-tiles 2 \
+    --math-fidelity HiFi2 --fp32-dest-acc \
+    --warmup 2 --samples 5 --json /tmp/ttlang-n-sharded-n15360.json
 ```
 
-For the measured N=3840 case, use `--n-tiles 120`,
-`--m-block-tiles 4`, `--n-block-tiles 3`, and
-`--output-gather-block-tiles 30`.
-
-Native, global N=1280:
+Native replicated output:
 
 ```bash
 python -m benchmarks.all_gather_minimal_matmul \
     --implementation ttmetal --variant replicated --mesh-shape 4x1 \
-    --fabric-reliability strict --fabric-router-payload 8192 \
+    --fabric-config 1d-ring --fabric-reliability strict --fabric-router-payload 8192 \
     --native-num-links 2 --native-workers-per-link 6 --native-channel-buffers 24 \
-    --m-tiles 96 --k-tiles-per-device 40 --n-tiles 40 \
+    --m-tiles 296 --k-tiles-per-device 40 --n-tiles 480 \
     --worker-grid 12 9 --transpose \
     --m-block-tiles 8 --k-block-tiles 8 --n-block-tiles 8 --native-subblock 2 2 \
-    --warmup 3 --samples 5 --json /tmp/native-n1280.json
+    --warmup 2 --samples 3 --json /tmp/native-n15360.json
 ```
 
-For N=3840, change only `--n-tiles 120` and the report filename.
-
-TT-Lang replicated-weight measurements use `--variant replicated` and transposed 2x10:
-
-| Global N | M/K/N blocks | Activation flags | Warmups/samples |
-| --- | --- | --- | --- |
-| 1280 | 6/8/4 | `--no-reuse-activation --activation-all-gather all_to_all` | 3/10 |
-| 3840 | 2/10/6 | `--reuse-activation --activation-all-gather ring` | 3/5 |
+For the smaller native M/K/N=3072/5120/3840 case, change `--m-tiles 96`,
+`--n-tiles 120`, and the report filename. TT-Lang requires independently tuned
+blocks and grids; the larger-case configurations above are not smaller-case optima.
 
 ## Collective comparison
 
@@ -118,12 +132,41 @@ ring forwarding. `--output-all-gather` independently selects the final gather.
 `--output-gather-m-block-tiles` and `--output-gather-block-tiles` control its
 message's row and column tile counts independently of matmul blocking.
 
-`--collective-only activation|output --implementation ttlang` measures a
-standalone collective with exact replica checks. Use
-`--n-tiles-per-device` for its output shard width. Standalone activation gather
-writes a complete DRAM result for validation. Replicated matmul also gathers
-into DRAM; N-sharded fused activation gather remains in L1. Select collectives using complete-operation timing, not standalone
-timings alone.
+`--compare-activation-ccl --variant replicated --implementation ttlang` measures
+the full operation, its activation collective alone, then the full operation
+again. All three stages reuse the same collective instance and input/output
+tensors; matmul's allocations remain live during the isolated measurement.
+The report records actual collective geometry, including padded M, and saves
+each completed stage. Full timings include the activation gather, matmul and
+device gap; isolated timings include only the collective. Every sample checks
+the replicated result, with exact checks for the collective.
+
+Run each existing algorithm with the same full-operation configuration:
+
+```bash
+for algorithm in all_to_all ring; do
+    python -m benchmarks.all_gather_minimal_matmul \
+        --compare-activation-ccl --implementation ttlang --variant replicated \
+        --mesh-shape 4x1 --fabric-config 2d --fabric-reliability strict \
+        --fabric-router-payload 8192 --activation-all-gather "$algorithm" \
+        --m-tiles 296 --k-tiles-per-device 40 --n-tiles 480 \
+        --worker-grid 13 10 --transpose \
+        --m-block-tiles 8 --k-block-tiles 8 --n-block-tiles 8 \
+        --no-reuse-activation --math-fidelity HiFi2 --fp32-dest-acc \
+        --warmup 2 --samples 5 --worker-timeout 600 \
+        --json "/tmp/activation-ccl-$algorithm.json"
+done
+```
+
+This configuration uses logical M/K/N=9472/5120/15360, padded M=9984,
+130 matmul workers and two collective workers per device, with 2x40-tile
+collective messages. Both algorithms are TT-Lang implementations. The operation
+gathers into DRAM before matmul; this does not measure native's overlapping
+collective or the N-sharded implementation's fused L1 transfers.
+
+`--collective-only activation|output` instead constructs an independent
+standalone collective. Its worker/block flags need not match a full operation;
+use the comparator above when selecting the replicated operation's collective.
 
 ## Measurement contract
 
@@ -140,7 +183,7 @@ through `tracy.process_device_log.import_log_run_stats`.
    Both N-sharded compute plus output gather and replicated activation gather
    plus matmul include both programs and their gap. The workload records its
    program count explicitly; single-device replicated matmul has one program.
-4. Average the four device durations, then report the median of five samples.
+4. Average the four device durations, then report the median of the requested samples.
    `--device-aggregation max` instead selects the slowest device per sample.
 
 Device clocks are independent; timestamps from different devices are never

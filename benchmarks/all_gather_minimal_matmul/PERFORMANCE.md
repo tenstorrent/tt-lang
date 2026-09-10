@@ -1,55 +1,42 @@
 # All-gather matmul performance
 
-**These results use 20 TT-Lang compute workers per device (2x10), versus native's 108 (12x9). The operation also supports 130 workers; tuning across worker counts is in progress. These results do not establish performance parity with native.**
+Four Blackhole P150b devices; global M/K/N=9472/5120/15360. All versions
+return replicated M x N output, including row bias. Inputs/output are BF16
+TILE tensors in interleaved DRAM; matmul uses HiFi2 and FP32 destination/packer
+accumulation. Configurations are tuned independently; these are the best
+measured configurations, not proven optima.
 
-Four Blackhole P150b devices; global M=3072 and K=5120. Both implementations
-return the same replicated M x N result. Inputs/output are BF16 TILE tensors
-in interleaved DRAM; matmul uses HiFi2, FP32 destinations and packer accumulation,
-with row bias.
+| Implementation | Compute workers/device | Device median ms (min-max) | / Native | Warmups/samples |
+| --- | ---: | ---: | ---: | ---: |
+| TT-Lang N-sharded + output gather | 60 | 24.156 (23.011-24.184) | 3.510 | 2/5 |
+| TT-Lang replicated weights | 130 | 10.343 (10.242-10.688) | 1.503 | 3/5 |
+| Native replicated weights | 108 | 6.883 (6.873-6.889) | 1.000 | 2/3 |
 
-Device trace replay, three warmups and five samples (ten for replicated-weight N=1280). Each sample is the mean
-across four devices. N-sharded TT-Lang includes matmul and output all-gather,
-from the first kernel start to the final kernel end on each device. Replicated-weight
-TT-Lang and native each use one fused program. Host preparation and synchronization are outside the interval.
-Parentheses show sample minimum and maximum.
+Device trace replay measures first kernel start through final kernel end,
+including both programs and their gap for TT-Lang; native uses one fused
+program. Each sample averages the four device intervals. Host preparation,
+dispatch and correctness checks are excluded. Every output replica passes
+PCC >= 0.99 and elementwise relative/absolute tolerances of 0.05 against FP32
+PyTorch.
 
-| Global N | TT-Lang N-sharded + gather, 20 workers/device, ms (range) | TT-Lang replicated weights, 20 workers/device, ms (range) | Native, 108 workers/device, ms (range) | N-sharded / native | Replicated / native |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| 1280 | 1.608 (1.607-1.611) | 1.926 (1.920-1.937) | 0.356 (0.353-0.360) | 4.515 | 5.405 |
-| 3840 | 2.582 (2.576-2.589) | 5.822 (5.758-5.856) | 0.692 (0.686-0.693) | 3.732 | 8.416 |
-
-Per-program medians from the same N-sharded traces; the device-clock gap between programs is below 1 us.
-
-| Global N | All-gather + matmul + bias ms | Output all-gather ms |
-| --- | ---: | ---: |
-| 1280 | 1.263 | 0.344 |
-| 3840 | 1.892 | 0.688 |
-
-| Parameter | TT-Lang N=1280 | TT-Lang N=3840 | Native, both N values |
+| Configuration | TT-Lang N-sharded + gather | TT-Lang replicated | Native |
 | --- | --- | --- | --- |
-| Compute grid per device | 2x10 transposed, 20 workers | 2x10 transposed, 20 workers | 12x9 transposed, 108 workers |
-| M/K/N block, tiles | 8/10/1 | 4/10/3 | 8/8/8; 2x2 subblock |
-| Activation/output all-gather | Direct/direct | Direct/direct | Native bidirectional ring |
-| Output-gather message, row x column tiles | 4x10 | 4x30 | Fused operation |
-| Fabric | 2D, strict initialization | 2D, strict initialization | 1D ring, strict initialization |
-| Router payload | 8192 bytes | 8192 bytes | 8192 bytes |
-| Communication workers | 2 | 2 | 6 per link, 2 links, 24 channel buffers |
+| Transposed compute grid | 6x10 | 13x10 | 12x9 |
+| M/K/N blocks, tiles | 2/8/4 | 8/8/8 | 8/8/8; 2x2 subblock |
+| Activation storage | Full-K L1 cache | Gathered DRAM tensor; streaming matmul | Gathered DRAM tensor |
+| Activation collective | Ring, two workers | Direct, two workers; 2x40-tile messages | Bidirectional ring |
+| Final output collective | Direct, two workers; 2x30-tile messages | Not required | Not required |
+| Fabric | 2D | 2D | 1D ring |
+| Fabric initialization/payload | Strict / 8192 bytes | Strict / 8192 bytes | Strict / 8192 bytes |
+| Native link configuration | Not applicable | Not applicable | Two links; six workers/link; 24 channel buffers |
 
-Replicated-weight TT-Lang uses the same 2x10 grid and 2D fabric. N=1280 uses
-6/8/4 blocks, streaming and direct all-gather. N=3840 uses 2/10/6 blocks,
-full-K L1 reuse and ring all-gather.
+Measured 2026-09-10 UTC: native 15:37:07 (`ff72bcb06859`), N-sharded 18:17:56 (`4c1a5677da6c` plus operation-file split), replicated 17:42:29 (`cc5010e45a46` plus changes committed as `4c1a5677d`). TT-Metal/LLVM source pins: `ea042c4ad623`/`37aca9d384347`; CAPI/TTNN/Metal SHA-256 prefixes: `20a74e405369`/`62edde2b1f61`/`65380f11dc15`; IRD v1.1.9 image digest: `6eaf96b4b00d`. [Raw reports](https://gist.github.com/brnorris03/da754d5cef08ed989cc241b023fdaccb) record dirty-tree state and source hashes. The installed native binary's exact build commit is unavailable.
 
-Replicated N=1280 measured 2026-09-10 12:57:31 UTC at TT-Lang `906716f37`; other results measured 2026-09-10 11:38:33-11:40:42 UTC at `85da7e527797`. Shared TT-Metal/LLVM source pins `ea042c4ad623`/`37aca9d384347`; CAPI/TTNN/Metal SHA-256 prefixes `20a74e405369`/`62edde2b1f61`/`65380f11dc15`; IRD v1.1.9 image digest `6eaf96b4b00d`.
+Replicated TT-Lang remains 50.3% slower than native. Its activation gather
+completes before matmul starts; native overlaps activation communication with
+matmul. N-sharded TT-Lang additionally transfers the complete output across
+devices. These end-to-end timings do not isolate matmul code generation.
 
-Every measured output replica passes BF16 checks against FP32 PyTorch:
-Pearson correlation >= 0.99 and elementwise relative/absolute tolerances of 0.05.
-
-N=1280 sweeps tested 294 native and 137 TT-Lang replicated-weight block/cache
-configurations on their respective grids; N=3840 tuning remains incomplete. TT-Lang is
-slower in both cases; the worker-grid and fabric differences prevent attributing
-the entire difference to matmul code generation. The native binaries come from
-the pinned v1.1.9 image; their exact TT-Metal build commit was not recorded.
-
-The README provides [reproduction commands and full binary identities](README.md#reproduce-the-measurements),
-the [timing definition](README.md#measurement-contract), and
-[configuration differences from the upstream benchmark](README.md#comparison-with-the-native-benchmark).
+[Run commands](README.md#run-the-comparison),
+[timing definition](README.md#measurement-contract), and
+[native benchmark references](README.md#comparison-with-the-native-benchmark).

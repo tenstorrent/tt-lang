@@ -22,6 +22,10 @@ import ttnn
 
 from benchmarks.device_timing import latest_kernel_duration, read_device_profile
 from benchmarks.provenance import collect_provenance
+from benchmarks.all_gather_minimal_matmul.ccl_comparison import (
+    ActivationCollectiveWorkload,
+    compare_activation_collective,
+)
 from examples.all_gather_minimal_matmul import (
     AllGatherMinimalMatmulConfig,
     make_all_gather_minimal_matmul_operation,
@@ -129,6 +133,11 @@ def parse_args():
     parser.add_argument("--dtype", choices=("bf16", "fp32"), default="bf16")
     parser.add_argument("--gather-output", action="store_true")
     parser.add_argument("--collective-only", choices=("activation", "output"))
+    parser.add_argument(
+        "--compare-activation-ccl",
+        action="store_true",
+        help="time replicated matmul's identical activation collective alone and in composition",
+    )
     parser.add_argument(
         "--activation-all-gather", choices=("all_to_all", "ring"), default="all_to_all"
     )
@@ -349,6 +358,7 @@ class Workload:
     gathered: object
     cleanup: Callable
     program_count: int = 1
+    activation_collective: ActivationCollectiveWorkload | None = None
 
 
 def create_workloads(
@@ -482,8 +492,42 @@ def create_workloads(
             program_count = (
                 operation.program_count if variant == "replicated" else 1
             ) + int(output_gather is not None)
+            collective_workload = None
+            if activation_gathered is not None:
+
+                def run_activation_collective(
+                    collective=operation.activation_all_gather,
+                    activation_device=activation_device,
+                    activation_gathered=activation_gathered,
+                ):
+                    collective(activation_device, activation_gathered)
+                    return activation_gathered
+
+                def validate_activation_collective(
+                    name, result, gathered, expected=activation_storage
+                ):
+                    actual = ttnn.to_torch(
+                        result, mesh_composer=ttnn.ConcatMeshToTensor(mesh, dim=0)
+                    ).float()
+                    assert_allclose(
+                        actual,
+                        expected.float().repeat(config.device_count, 1),
+                        rtol=0,
+                        atol=0,
+                    )
+                    return {"max_abs_error": 0.0, "rtol": 0, "atol": 0}
+
+                collective_workload = ActivationCollectiveWorkload(
+                    run_activation_collective,
+                    validate_activation_collective,
+                    asdict(operation.activation_gather_config),
+                )
             workloads[name] = Workload(
-                run_ttlang, gathered, lambda result: None, program_count
+                run_ttlang,
+                gathered,
+                lambda result: None,
+                program_count,
+                collective_workload,
             )
         else:
             # Match the upstream operation: every device holds the same weight
@@ -712,7 +756,7 @@ def create_collective_workload(mesh, config, arguments):
             assert_allclose(replica, expected.float(), rtol=0, atol=0)
         return {"max_abs_error": 0.0, "rtol": 0, "atol": 0}
 
-    return {"ttlang": (run, None, lambda result: None)}, validate
+    return {"ttlang": Workload(run, None, lambda result: None)}, validate
 
 
 @contextmanager
@@ -794,6 +838,18 @@ def run_isolated_variants(arguments):
 
 def main():
     arguments = parse_args()
+    if arguments.compare_activation_ccl:
+        if (
+            arguments.implementation != "ttlang"
+            or arguments.variant != "replicated"
+            or arguments.collective_only
+            or arguments.gather_output
+        ):
+            raise ValueError(
+                "--compare-activation-ccl requires --implementation ttlang --variant replicated "
+                "without --collective-only or --gather-output"
+            )
+        arguments.trace = True
     if arguments.collective_only:
         if arguments.implementation != "ttlang" or arguments.gather_output:
             raise ValueError(
@@ -846,7 +902,14 @@ def main():
                 Path(__file__).resolve().parents[2]
                 / "examples/all_gather_minimal_matmul/operation.py",
                 Path(__file__).resolve().parents[2]
+                / "examples/all_gather_minimal_matmul/config.py",
+                Path(__file__).resolve().parents[2]
+                / "examples/all_gather_minimal_matmul/per_row_all_gather/operation.py",
+                Path(__file__).resolve().parents[2]
+                / "examples/all_gather_minimal_matmul/two_worker_ring/operation.py",
+                Path(__file__).resolve().parents[2]
                 / "examples/all_gather_minimal_matmul/replicated/operation.py",
+                Path(__file__).with_name("ccl_comparison.py"),
                 Path(__file__).resolve().parents[2]
                 / "examples/all_gather_minimal_matmul/collectives.py",
                 Path(__file__).resolve().parents[2] / "python/ttl/kernel_runner.py",
@@ -1021,7 +1084,36 @@ def main():
                 output_gather_m_block_tiles=arguments.output_gather_m_block_tiles,
                 output_gather_workers=arguments.output_gather_workers,
             )
-        report["measurements"] = benchmark(workloads, validate, mesh, arguments)
+        if arguments.compare_activation_ccl:
+            collective = workloads["ttlang"].activation_collective
+            if collective is None:
+                raise ValueError("--compare-activation-ccl requires multiple devices")
+            report["activation_ccl_comparison"] = {
+                "complete": False,
+                "collective_config": collective.config,
+                "composition": "activation all-gather into DRAM, then replicated matmul and bias",
+                "same_collective_and_tensor_instances": True,
+                "matmul_allocations_retained": True,
+                "overlap_between_programs": False,
+                "stages": {},
+            }
+
+            def record_stage(stage_name, result):
+                report["activation_ccl_comparison"]["stages"][stage_name] = result
+                arguments.json.write_text(json.dumps(report, indent=2) + "\n")
+
+            comparison = compare_activation_collective(
+                workloads,
+                validate,
+                mesh,
+                arguments,
+                measure=benchmark,
+                record_stage=record_stage,
+            )
+            report["activation_ccl_comparison"]["complete"] = True
+            report["measurements"] = comparison["full_after"]
+        else:
+            report["measurements"] = benchmark(workloads, validate, mesh, arguments)
     arguments.json.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report["measurements"], indent=2), flush=True)
     print(f"Results: {arguments.json}", flush=True)

@@ -1,6 +1,8 @@
 # All-Gather Minimal Matmul
 
-**The published four-device benchmark uses 20 TT-Lang compute workers per device, versus native's 108. The operation supports 130 workers; tuning across worker counts is in progress. These measurements do not establish performance parity with native.**
+Four-device M/K/N=9472/5120/15360 device times: replicated TT-Lang 10.343 ms
+(130 compute workers/device), N-sharded plus output gather 24.156 ms (60),
+and native 6.883 ms (108). See the [performance report](../../benchmarks/all_gather_minimal_matmul/PERFORMANCE.md).
 
 | Entry point | Result on each device |
 | --- | --- |
@@ -20,7 +22,11 @@ python -m examples.all_gather_minimal_matmul.replicated --mesh-shape 2x2 --n-til
 ```
 
 [`collectives.py`](collectives.py) implements activation and output gathering.
-[`operation.py`](operation.py) implements N-sharded fused all-gather matmul;
+[`operation.py`](operation.py) selects the N-sharded fused operation:
+[`per_row_all_gather/operation.py`](per_row_all_gather/operation.py) assigns one
+communication worker to each M-worker row;
+[`two_worker_ring/operation.py`](two_worker_ring/operation.py) assigns two
+communication workers to all rows when ring forwarding uses more than two M workers.
 [`replicated/operation.py`](replicated/operation.py) composes activation gathering
 with replicated matmul.
 The [shared benchmark](../../benchmarks/all_gather_minimal_matmul/README.md)
@@ -45,7 +51,7 @@ adds its local bias. Passing a zero bias tensor selects the unbiased result.
 Inputs and outputs currently support TILE layout in DRAM with BF16 or FP32
 elements.
 
-[`operation.py`](operation.py) contains the configuration and fused operation;
+[`config.py`](config.py) contains the tensor blocking and worker configuration;
 [`__main__.py`](__main__.py) is the standalone correctness driver;
 [`__init__.py`](__init__.py) exports the public configuration and factory.
 

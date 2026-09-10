@@ -40,6 +40,101 @@ def test_fidelity_allowlist():
         benchmark.MATH_FIDELITIES["__class__"]
 
 
+def test_collective_only_returns_workload(monkeypatch):
+    monkeypatch.setattr(benchmark, "to_dram", lambda *arguments, **options: object())
+    monkeypatch.setattr(
+        benchmark.ttnn, "ShardTensorToMesh", lambda *arguments, **options: None
+    )
+    monkeypatch.setattr(
+        benchmark.ttnn, "ReplicateTensorToMesh", lambda *arguments: None
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "make_column_all_gather",
+        lambda *arguments, **options: lambda *tensors: None,
+    )
+    config = SimpleNamespace(
+        m_tiles=2,
+        k_tiles_per_device=1,
+        device_count=2,
+        k_block_tiles=1,
+        mesh_shape=(2, 1),
+        m_workers=2,
+        m_block_tiles=1,
+    )
+    arguments = SimpleNamespace(
+        collective_only="activation",
+        activation_all_gather="all_to_all",
+        dtype="bf16",
+        seed=0,
+    )
+    workloads, validate = benchmark.create_collective_workload(
+        object(), config, arguments
+    )
+    assert isinstance(workloads["ttlang"], benchmark.Workload)
+    assert workloads["ttlang"].program_count == 1
+    assert workloads["ttlang"].run() is not None
+
+
+@pytest.mark.parametrize("dtype", ["bf16", "fp32"])
+def test_replicated_component_reuses_operation_and_tensors(monkeypatch, dtype):
+    from examples.all_gather_minimal_matmul.replicated.operation import (
+        ActivationAllGatherConfig,
+        ReplicatedAllGatherMatmul,
+    )
+
+    calls = []
+    config = benchmark.AllGatherMinimalMatmulConfig(
+        mesh_shape=(2, 1),
+        m_tiles=2,
+        k_tiles_per_device=1,
+        n_tiles_per_device=2,
+        worker_grid=(2, 2),
+    )
+    collective_config = ActivationAllGatherConfig((2, 1), 2, 1, 2, 1, 1, "all_to_all")
+    operation = ReplicatedAllGatherMatmul(
+        collective_config,
+        lambda *tensors: calls.append(("collective", tensors)),
+        lambda *tensors: calls.append(("matmul", tensors)),
+    )
+    monkeypatch.setattr(
+        benchmark,
+        "make_replicated_all_gather_matmul_operation",
+        lambda *arguments, **options: operation,
+    )
+    monkeypatch.setattr(
+        benchmark, "to_dram", lambda tensor, *arguments, **options: tensor
+    )
+    monkeypatch.setattr(
+        benchmark.ttnn, "ShardTensorToMesh", lambda *arguments, **options: None
+    )
+    monkeypatch.setattr(
+        benchmark.ttnn, "ReplicateTensorToMesh", lambda *arguments: None
+    )
+    workloads, validate = benchmark.create_workloads(
+        object(), config, dtype, 0, "ttlang", 0, variant="replicated"
+    )
+    full = workloads["ttlang"]
+    full.run()
+    result = full.activation_collective.run()
+    full.run()
+    assert [name for name, tensors in calls] == [
+        "collective",
+        "matmul",
+        "collective",
+        "collective",
+        "matmul",
+    ]
+    for call_index in (2, 3):
+        assert all(
+            actual is expected
+            for actual, expected in zip(calls[call_index][1], calls[0][1])
+        )
+    assert result is calls[0][1][1]
+    assert full.program_count == 2
+    assert full.activation_collective.config == benchmark.asdict(collective_config)
+
+
 @pytest.mark.parametrize("program_count", [1, 2])
 def test_timer_uses_workload_program_count(monkeypatch, program_count):
     observed = []
