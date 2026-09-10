@@ -53,7 +53,6 @@ def test_inferred_worker_grid(transpose):
     [
         ((0, 2), "two extents"),
         ((2,), "two extents"),
-        ((3, 3), "M block count"),
         ((4, 2), "N block count"),
     ],
 )
@@ -79,6 +78,23 @@ def test_compute_k_block(k_block_tiles):
     )
     assert config.compute_k_tiles == k_block_tiles
     assert config.activation_block_count == 8 // k_block_tiles
+
+
+@pytest.mark.parametrize("m_tiles,padded_tiles", [(96, 104), (104, 104)])
+def test_full_device_row_padding(m_tiles, padded_tiles):
+    config = AllGatherMinimalMatmulConfig(
+        mesh_shape=(2, 2),
+        m_tiles=m_tiles,
+        k_tiles_per_device=40,
+        n_tiles_per_device=10,
+        m_block_tiles=4,
+        k_block_tiles=8,
+        worker_grid=(13, 10),
+        transpose=True,
+        reuse_activation=False,
+    )
+    assert config.m_workers * config.n_workers == 130
+    assert config.padded_m_tiles == padded_tiles
 
 
 @pytest.mark.parametrize("k_block_tiles", [0, -1, 3, 8])

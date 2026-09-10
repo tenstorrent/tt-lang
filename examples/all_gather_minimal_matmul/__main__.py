@@ -47,6 +47,9 @@ def _make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--m-block-tiles", type=int, default=1)
     parser.add_argument("--k-block-tiles", type=int, default=1)
     parser.add_argument("--n-block-tiles", type=int, default=1)
+    parser.add_argument("--worker-grid", type=int, nargs=2)
+    parser.add_argument("--transpose", action="store_true")
+    parser.add_argument("--output-gather-workers", type=int, default=2)
     parser.add_argument("--dtype", choices=("bf16", "fp32"), default="bf16")
     parser.add_argument("--no-bias", action="store_true")
     parser.add_argument("--gather-output", action="store_true")
@@ -135,6 +138,8 @@ def main(*, variant="n_sharded") -> None:
         m_block_tiles=arguments.m_block_tiles,
         k_block_tiles=arguments.k_block_tiles,
         n_block_tiles=arguments.n_block_tiles,
+        worker_grid=arguments.worker_grid,
+        transpose=arguments.transpose,
     )
     operation = make_all_gather_minimal_matmul_operation(
         config, all_gather_algorithm=arguments.activation_all_gather
@@ -160,7 +165,10 @@ def main(*, variant="n_sharded") -> None:
             else ttnn.ShardTensorToMesh(mesh_device, dim=1)
         )
         activation_shard = to_dram(
-            activation_torch,
+            torch.nn.functional.pad(
+                activation_torch,
+                (0, 0, 0, config.padded_m_tiles * TILE_SIZE - m_elements),
+            ),
             mesh_device,
             mesh_mapper=ttnn.ShardTensorToMesh(mesh_device, dim=1),
         )
@@ -197,7 +205,7 @@ def main(*, variant="n_sharded") -> None:
                 mesh_shape,
                 m_tiles=config.m_tiles,
                 n_tiles_per_device=config.n_tiles_per_device,
-                worker_count=config.m_workers,
+                worker_count=arguments.output_gather_workers,
                 block_tiles=config.n_block_tiles,
                 algorithm=arguments.output_all_gather,
             )

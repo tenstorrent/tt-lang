@@ -5,7 +5,7 @@ with TT-Metal's
 [`ttnn.experimental.all_gather_minimal_matmul_async`](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/ttnn/cpp/ttnn/operations/experimental/ccl/all_gather_minimal_matmul_async/all_gather_minimal_matmul_async.cpp).
 Both compared versions return the same replicated output.
 
-**The committed four-device results use only 20 TT-Lang compute workers per device (2x10), versus native's 108 (12x9). Full-device TT-Lang utilization is work in progress; performance parity with native has not been established.**
+**The published four-device results use 20 TT-Lang compute workers per device (2x10), versus native's 108 (12x9). The operation supports 130 workers; tuning across worker counts is in progress. Performance parity with native has not been established.**
 
 ## Files
 
@@ -48,7 +48,7 @@ equivalent to the native replicated output.
 | Precision | BF16 input/output, HiFi2, FP32 destination and packer accumulation | Same |
 | Bias | Included | Included |
 | Timing | Device trace replay; includes final gather when selected | Device trace replay of fused program |
-| Compute workers per device | Only 20 (transposed 2x10); full-device utilization is work in progress | 108 (transposed 12x9) |
+| Compute workers per device | 20 (transposed 2x10) in the reported measurements | 108 (transposed 12x9) |
 | Blocking | Measured settings in [PERFORMANCE.md](PERFORMANCE.md) | 8/8/8 tiles, 2x2 subblock |
 | Fabric | 2D, strict initialization, 8192-byte payload | 1D ring, strict initialization, 8192-byte payload |
 | Native communication settings | Not applicable | Two links, six workers/link, 24 channel buffers |

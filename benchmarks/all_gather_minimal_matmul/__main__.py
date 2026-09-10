@@ -133,6 +133,7 @@ def parse_args():
     )
     parser.add_argument("--output-gather-block-tiles", type=positive_int)
     parser.add_argument("--output-gather-m-block-tiles", type=positive_int, default=1)
+    parser.add_argument("--output-gather-workers", type=positive_int, default=2)
     parser.add_argument(
         "--variant", choices=("n_sharded", "replicated"), default="n_sharded"
     )
@@ -359,6 +360,7 @@ def create_workloads(
     output_all_gather="all_to_all",
     output_gather_block_tiles=None,
     output_gather_m_block_tiles=1,
+    output_gather_workers=2,
 ):
     torch.manual_seed(seed)
     torch_dtype = torch.bfloat16 if dtype == "bf16" else torch.float32
@@ -380,13 +382,18 @@ def create_workloads(
     expected_ttmetal = activation.float() @ native_weight.float() + native_bias.float()
     shard_mapper = ttnn.ShardTensorToMesh(mesh, dim=1)
     replicate_mapper = ttnn.ReplicateTensorToMesh(mesh)
-    activation_device = to_dram(activation, mesh, mesh_mapper=shard_mapper)
 
     workloads = {}
     for name in (
         ("ttlang", "ttmetal") if implementation == "both" else (implementation,)
     ):
         gathered = None
+        activation_storage = activation
+        if name == "ttlang" and config.padded_m_tiles != config.m_tiles:
+            activation_storage = torch.nn.functional.pad(
+                activation, (0, 0, 0, config.padded_m_tiles * 32 - m_elements)
+            )
+        activation_device = to_dram(activation_storage, mesh, mesh_mapper=shard_mapper)
         if name == "ttlang":
             output_mapper = (
                 replicate_mapper if variant == "replicated" else shard_mapper
@@ -416,7 +423,7 @@ def create_workloads(
                     config.mesh_shape,
                     m_tiles=config.m_tiles,
                     n_tiles_per_device=config.n_tiles_per_device,
-                    worker_count=config.m_workers,
+                    worker_count=output_gather_workers,
                     block_tiles=output_gather_block_tiles or config.n_block_tiles,
                     m_block_tiles=output_gather_m_block_tiles,
                     algorithm=output_all_gather,
@@ -433,6 +440,7 @@ def create_workloads(
                 bias_device=bias_device,
                 replicated_output=replicated_output,
                 output_gather=output_gather,
+                activation_device=activation_device,
             ):
                 operation(activation_device, weight_device, bias_device, output)
                 if output_gather is not None:
@@ -479,6 +487,7 @@ def create_workloads(
             )
 
             def run_ttmetal(
+                activation_device=activation_device,
                 gathered=gathered,
                 semaphores=semaphores,
                 weight_device=weight_device,
@@ -891,6 +900,12 @@ def main():
                 arguments.output_gather_block_tiles or config.n_block_tiles
             ),
             output_gather_m_block_tiles=arguments.output_gather_m_block_tiles,
+            output_gather_workers=arguments.output_gather_workers,
+            activation_storage_m=(
+                config.padded_m_tiles * 32
+                if arguments.implementation == "ttlang"
+                else config.m_tiles * 32
+            ),
             global_n_tiles=arguments.n_tiles,
             layout="TILE",
             memory="DRAM",
@@ -966,6 +981,7 @@ def main():
                 output_all_gather=arguments.output_all_gather,
                 output_gather_block_tiles=arguments.output_gather_block_tiles,
                 output_gather_m_block_tiles=arguments.output_gather_m_block_tiles,
+                output_gather_workers=arguments.output_gather_workers,
             )
         report["measurements"] = benchmark(workloads, validate, mesh, arguments)
     arguments.json.write_text(json.dumps(report, indent=2) + "\n")

@@ -1,6 +1,6 @@
 # All-Gather Minimal Matmul
 
-**The committed four-device benchmark uses only 20 TT-Lang compute workers per device, versus native's 108. Full-device TT-Lang utilization is work in progress; these measurements do not establish performance parity with native.**
+**The published four-device benchmark uses 20 TT-Lang compute workers per device, versus native's 108. The operation supports 130 workers; tuning across worker counts is in progress. These measurements do not establish performance parity with native.**
 
 | Entry point | Result on each device |
 | --- | --- |
@@ -90,8 +90,15 @@ transposed Blackhole workload; it is not a claim of optimal placement for
 every grid or architecture.
 
 The configuration requires at least two workers on both axes. Tile counts must
-be divisible by their block extents, and M/N block counts must be divisible by
-the corresponding worker counts. Edge blocks are not padded implicitly.
+be divisible by their block extents, and N block counts must be divisible by
+the N worker count. The runner pads activation rows to `config.padded_m_tiles * 32`
+before allocation; the operation writes only the original M rows. Direct callers
+must provide that padded activation storage.
+With ring all-gather and more than two M workers, two communication workers
+serve all compute rows through NoC multicast. Each communication worker stages
+one block per assigned row in L1. This supports a 13x10 compute grid without
+additional fabric connections; it does not imply better performance than a
+smaller grid.
 The runtime additionally checks available fabric connections and L1 capacity;
 the [benchmark comparison table](../../benchmarks/all_gather_minimal_matmul/README.md#comparison-with-the-native-benchmark)
 records the tested hardware and configuration limits.
@@ -114,6 +121,17 @@ Omit `--mesh-shape` to use the control-plane-discovered mesh. `--dtype` accepts
 `bf16` and `fp32`; `--no-bias` supplies a zero bias tensor. Set
 `--mesh-shape 1x1` to run the same operation with an identity all-gather and
 fabric disabled.
+
+130-worker, four-device example (BF16, TILE/DRAM):
+
+```bash
+python -m examples.all_gather_minimal_matmul.n_sharded \
+    --mesh-shape 2x2 --worker-grid 13 10 --transpose \
+    --m-tiles 25 --k-tiles-per-device 2 --n-tiles 80 \
+    --activation-all-gather ring --gather-output --output-gather-workers 2
+```
+
+Matmul uses 130 workers per device; the subsequent output gather uses two.
 
 The [device-time benchmark](../../benchmarks/all_gather_minimal_matmul/README.md)
 compares this operation with the original TT-Metal fused operation, including

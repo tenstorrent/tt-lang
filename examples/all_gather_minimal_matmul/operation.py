@@ -49,6 +49,11 @@ Run from the repository root with the selected devices idle::
     # Four devices.
     python -m examples.all_gather_minimal_matmul --mesh-shape 2x2
 
+    # Four devices, 130 compute workers/device, replicated output.
+    python -m examples.all_gather_minimal_matmul.n_sharded --mesh-shape 2x2 \
+        --worker-grid 13 10 --transpose --m-tiles 25 --k-tiles-per-device 2 \
+        --n-tiles 80 --activation-all-gather ring --gather-output
+
 Dimensions and mesh selection: ``README.md`` beside this file.
 """
 
@@ -129,8 +134,6 @@ class AllGatherMinimalMatmulConfig:
             object.__setattr__(self, "worker_grid", tuple(self.worker_grid))
             if len(self.worker_grid) != 2 or min(self.worker_grid) < 2:
                 raise ValueError("worker_grid must have two extents of at least two")
-        if (self.m_tiles // self.m_block_tiles) % self.m_workers:
-            raise ValueError("M block count must be divisible by the M worker count")
         if (self.n_tiles_per_device // self.n_block_tiles) % self.n_workers:
             raise ValueError("N block count must be divisible by the N worker count")
 
@@ -138,6 +141,11 @@ class AllGatherMinimalMatmulConfig:
             raise ValueError(
                 "full-grid scheduling requires at least two M and two N workers"
             )
+
+    @property
+    def padded_m_tiles(self) -> int:
+        round_tiles = self.m_block_tiles * self.m_workers
+        return ((self.m_tiles + round_tiles - 1) // round_tiles) * round_tiles
 
     @property
     def device_count(self) -> int:
@@ -201,6 +209,14 @@ def make_all_gather_minimal_matmul_operation(
     use_direct = all_gather_algorithm == "all_to_all" and config.device_count > 1
 
     n_worker_count, m_worker_count = config.n_workers, config.m_workers
+    shared_communication = use_ring and m_worker_count > 2
+    independent_row_ring = use_ring and not shared_communication
+    communication_worker_count = (
+        min(2, m_worker_count) if shared_communication else m_worker_count
+    )
+    served_row_count = (
+        m_worker_count + communication_worker_count - 1
+    ) // communication_worker_count
 
     def physical_worker_coordinates(n_worker, m_worker):
         return (m_worker, n_worker) if config.transpose else (n_worker, m_worker)
@@ -208,9 +224,15 @@ def make_all_gather_minimal_matmul_operation(
     activation_row_net = ttl.PipeNet(
         [
             ttl.Pipe(
-                src=physical_worker_coordinates(0, m_worker_index),
+                src=physical_worker_coordinates(
+                    0, m_worker_index % communication_worker_count
+                ),
                 dst=physical_worker_coordinates(
-                    slice(1, n_worker_count), m_worker_index
+                    slice(
+                        1 if m_worker_index < communication_worker_count else 0,
+                        n_worker_count,
+                    ),
+                    m_worker_index,
                 ),
             )
             for m_worker_index in range(m_worker_count)
@@ -234,7 +256,9 @@ def make_all_gather_minimal_matmul_operation(
     device_count = config.device_count
     compute_k_tiles = config.compute_k_tiles
     compute_k_blocks_per_device = k_tiles_per_device // compute_k_tiles
-    m_rounds = config.m_tiles // (m_block_tiles * m_worker_count)
+    logical_m_tiles = config.m_tiles
+    activation_storage_rows = config.padded_m_tiles * 32
+    m_rounds = config.padded_m_tiles // (m_block_tiles * m_worker_count)
     n_rounds = config.n_tiles_per_device // (n_block_tiles * n_worker_count)
     reuse_activation = config.reuse_activation
     activation_block_count = config.activation_block_count
@@ -254,6 +278,10 @@ def make_all_gather_minimal_matmul_operation(
         bias_shard: ttnn.Tensor,
         output_shard: ttnn.Tensor,
     ) -> None:
+        if activation_shard.shape[0] < activation_storage_rows:
+            raise ValueError(
+                f"Activation storage requires {activation_storage_rows} rows for this worker grid"
+            )
         local_activation_send_dfb = ttl.make_dataflow_buffer_like(
             activation_shard, shape=(m_block_tiles, compute_k_tiles), block_count=1
         )
@@ -264,10 +292,17 @@ def make_all_gather_minimal_matmul_operation(
         )
         activation_relay_dfb = (
             ttl.make_dataflow_buffer_like(
-                activation_shard, shape=(m_block_tiles, compute_k_tiles), block_count=2
+                activation_shard,
+                shape=(m_block_tiles, compute_k_tiles),
+                block_count=max(2, served_row_count),
             )
             if use_ring
             else remote_activation_receive_dfb
+        )
+        activation_row_staging_dfb = ttl.make_dataflow_buffer_like(
+            activation_shard,
+            shape=(m_block_tiles, compute_k_tiles),
+            block_count=served_row_count,
         )
         broadcast_activation_receive_dfb = ttl.make_dataflow_buffer_like(
             activation_shard,
@@ -319,6 +354,9 @@ def make_all_gather_minimal_matmul_operation(
             m_worker_index = (
                 physical_column * (1 - m_worker_axis) + physical_row * m_worker_axis
             )
+            local_served_row_count = (
+                m_worker_count + communication_worker_count - 1 - m_worker_index
+            ) // communication_worker_count
             local_device_index = device_domain.current_index()
             for m_round in range(m_rounds):
                 m_begin = (m_round * m_worker_count + m_worker_index) * m_block_tiles
@@ -348,70 +386,113 @@ def make_all_gather_minimal_matmul_operation(
                                 ) % device_count
                             if n_round < activation_read_rounds:
                                 activation_block = matmul_activation_dfb.reserve()
-                                if n_worker_index == 0:
+                                if shared_communication:
                                     if (
-                                        device_count == 1
-                                        or source_device_index == local_device_index
+                                        n_worker_index == 0
+                                        and m_worker_index < communication_worker_count
                                     ):
-                                        ttl.copy(
-                                            activation_shard[
-                                                m_begin:m_end,
-                                                local_k_begin:local_k_end,
-                                            ],
-                                            activation_block,
-                                        ).wait()
-                                        if use_ring:
-                                            initial_relay_block = (
-                                                activation_relay_dfb.reserve()
+                                        for served_row in range(local_served_row_count):
+                                            target_m_worker = (
+                                                served_row * communication_worker_count
+                                                + m_worker_index
                                             )
-                                            ttl.copy(
-                                                activation_shard[
-                                                    m_begin:m_end,
-                                                    local_k_begin:local_k_end,
-                                                ],
-                                                initial_relay_block,
-                                            ).wait()
-                                    else:
-                                        if use_ring:
-
-                                            def receive_activation_from_previous_device(
-                                                pipe,
+                                            target_m_begin = (
+                                                m_round * m_worker_count
+                                                + target_m_worker
+                                            ) * m_block_tiles
+                                            target_m_end = (
+                                                target_m_begin + m_block_tiles
+                                            )
+                                            row_block = (
+                                                activation_row_staging_dfb.reserve()
+                                            )
+                                            if (
+                                                source_device_index
+                                                == local_device_index
                                             ):
-                                                received_block = (
-                                                    remote_activation_receive_dfb.reserve()
+                                                if served_row == 0:
+                                                    ttl.copy(
+                                                        activation_shard[
+                                                            target_m_begin:target_m_end,
+                                                            local_k_begin:local_k_end,
+                                                        ],
+                                                        activation_block,
+                                                    ).wait()
+                                                ttl.copy(
+                                                    activation_shard[
+                                                        target_m_begin:target_m_end,
+                                                        local_k_begin:local_k_end,
+                                                    ],
+                                                    row_block,
+                                                ).wait()
+                                            else:
+
+                                                def receive_activation_from_source_device(
+                                                    fabric_pipe,
+                                                ):
+                                                    if (
+                                                        use_ring
+                                                        or fabric_pipe.source_device_index
+                                                        == source_device_index
+                                                    ):
+                                                        received_block = (
+                                                            remote_activation_receive_dfb.reserve()
+                                                        )
+                                                        ttl.copy(
+                                                            fabric_pipe, received_block
+                                                        ).wait()
+
+                                                activation_all_gather_net.if_dst(
+                                                    receive_activation_from_source_device
                                                 )
-                                                ttl.copy(pipe, received_block).wait()
+                                                received_block = (
+                                                    remote_activation_receive_dfb.wait()
+                                                )
+                                                if served_row == 0:
+                                                    ttl.copy(
+                                                        received_block,
+                                                        activation_block,
+                                                        byte_count=activation_block_bytes,
+                                                    ).wait()
+                                                ttl.copy(
+                                                    received_block,
+                                                    row_block,
+                                                    byte_count=activation_block_bytes,
+                                                ).wait()
 
-                                            activation_all_gather_net.if_dst(
-                                                receive_activation_from_previous_device
+                                        def broadcast_activation_row(pipe):
+                                            row_block = (
+                                                activation_row_staging_dfb.wait()
                                             )
-                                        received_block = (
-                                            remote_activation_receive_dfb.wait()
+                                            if (
+                                                use_ring
+                                                and source_round < device_count - 1
+                                            ):
+                                                relay_block = (
+                                                    activation_relay_dfb.reserve()
+                                                )
+                                                ttl.copy(
+                                                    row_block,
+                                                    relay_block,
+                                                    byte_count=activation_block_bytes,
+                                                ).wait()
+
+                                            ttl.copy(row_block, pipe).wait()
+
+                                        activation_row_net.if_src(
+                                            broadcast_activation_row
                                         )
-                                        ttl.copy(
-                                            received_block,
-                                            activation_block,
-                                            byte_count=activation_block_bytes,
-                                        ).wait()
-                                        if use_ring and source_round < device_count - 1:
-                                            relay_block = activation_relay_dfb.reserve()
-                                            ttl.copy(
-                                                received_block,
-                                                relay_block,
-                                                byte_count=activation_block_bytes,
-                                            ).wait()
-
-                                    def send_activation_to_row(pipe) -> None:
-                                        ttl.copy(activation_block, pipe).wait()
-
-                                    activation_row_net.if_src(send_activation_to_row)
-                                else:
-
-                                    def receive_activation_from_row(pipe) -> None:
+                                    else:
                                         received_block = (
                                             broadcast_activation_receive_dfb.reserve()
                                         )
-                                        ttl.copy(pipe, received_block).wait()
+
+                                        def receive_activation_from_row(pipe):
+                                            ttl.copy(pipe, received_block).wait()
+
+                                        activation_row_net.if_dst(
+                                            receive_activation_from_row
+                                        )
                                         received_block = (
                                             broadcast_activation_receive_dfb.wait()
                                         )
@@ -420,10 +501,92 @@ def make_all_gather_minimal_matmul_operation(
                                             activation_block,
                                             byte_count=activation_block_bytes,
                                         ).wait()
+                                else:
+                                    if n_worker_index == 0:
+                                        if (
+                                            device_count == 1
+                                            or source_device_index == local_device_index
+                                        ):
+                                            ttl.copy(
+                                                activation_shard[
+                                                    m_begin:m_end,
+                                                    local_k_begin:local_k_end,
+                                                ],
+                                                activation_block,
+                                            ).wait()
+                                            if use_ring:
+                                                initial_relay_block = (
+                                                    activation_relay_dfb.reserve()
+                                                )
+                                                ttl.copy(
+                                                    activation_shard[
+                                                        m_begin:m_end,
+                                                        local_k_begin:local_k_end,
+                                                    ],
+                                                    initial_relay_block,
+                                                ).wait()
+                                        else:
+                                            if use_ring:
 
-                                    activation_row_net.if_dst(
-                                        receive_activation_from_row
-                                    )
+                                                def receive_activation_from_previous_device(
+                                                    pipe,
+                                                ):
+                                                    received_block = (
+                                                        remote_activation_receive_dfb.reserve()
+                                                    )
+                                                    ttl.copy(
+                                                        pipe, received_block
+                                                    ).wait()
+
+                                                activation_all_gather_net.if_dst(
+                                                    receive_activation_from_previous_device
+                                                )
+                                            received_block = (
+                                                remote_activation_receive_dfb.wait()
+                                            )
+                                            ttl.copy(
+                                                received_block,
+                                                activation_block,
+                                                byte_count=activation_block_bytes,
+                                            ).wait()
+                                            if (
+                                                use_ring
+                                                and source_round < device_count - 1
+                                            ):
+                                                relay_block = (
+                                                    activation_relay_dfb.reserve()
+                                                )
+                                                ttl.copy(
+                                                    received_block,
+                                                    relay_block,
+                                                    byte_count=activation_block_bytes,
+                                                ).wait()
+
+                                        def send_activation_to_row(pipe) -> None:
+                                            ttl.copy(activation_block, pipe).wait()
+
+                                        activation_row_net.if_src(
+                                            send_activation_to_row
+                                        )
+                                    else:
+
+                                        def receive_activation_from_row(pipe) -> None:
+                                            received_block = (
+                                                broadcast_activation_receive_dfb.reserve()
+                                            )
+                                            ttl.copy(pipe, received_block).wait()
+                                            received_block = (
+                                                broadcast_activation_receive_dfb.wait()
+                                            )
+                                            ttl.copy(
+                                                received_block,
+                                                activation_block,
+                                                byte_count=activation_block_bytes,
+                                            ).wait()
+
+                                        activation_row_net.if_dst(
+                                            receive_activation_from_row
+                                        )
 
                             else:
                                 # Full-K capacity returns each producer reservation to its cached pages.
@@ -434,9 +597,10 @@ def make_all_gather_minimal_matmul_operation(
                     ) * n_block_tiles
                     n_end = n_begin + n_block_tiles
                     output_block = output_dfb.wait()
-                    ttl.copy(
-                        output_block, output_shard[m_begin:m_end, n_begin:n_end]
-                    ).wait()
+                    if m_begin < logical_m_tiles:
+                        ttl.copy(
+                            output_block, output_shard[m_begin:m_end, n_begin:n_end]
+                        ).wait()
 
         @ttl.datamovement()
         def send_activation_and_distribute_weights() -> None:
@@ -448,6 +612,9 @@ def make_all_gather_minimal_matmul_operation(
             m_worker_index = (
                 physical_column * (1 - m_worker_axis) + physical_row * m_worker_axis
             )
+            local_served_row_count = (
+                m_worker_count + communication_worker_count - 1 - m_worker_index
+            ) // communication_worker_count
             for m_round in range(m_rounds):
                 m_begin = (m_round * m_worker_count + m_worker_index) * m_block_tiles
                 m_end = m_begin + m_block_tiles
@@ -485,7 +652,24 @@ def make_all_gather_minimal_matmul_operation(
                                     local_device_index + device_count - source_round
                                 ) % device_count
                             if (
-                                use_ring
+                                shared_communication
+                                and use_ring
+                                and n_round < activation_read_rounds
+                                and n_worker_index == 0
+                                and m_worker_index < communication_worker_count
+                                and source_round > 0
+                            ):
+                                for _served_row in range(local_served_row_count):
+                                    relay_block = activation_relay_dfb.wait()
+
+                                    def forward_activation_row(pipe):
+                                        ttl.copy(relay_block, pipe).wait()
+
+                                    activation_all_gather_net.if_src(
+                                        forward_activation_row
+                                    )
+                            if (
+                                independent_row_ring
                                 and n_round < activation_read_rounds
                                 and n_worker_index == 0
                                 and source_round < device_count - 1

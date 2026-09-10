@@ -1,6 +1,6 @@
 # All-gather matmul performance
 
-**These committed four-device results use only 20 TT-Lang compute workers per device (2x10), versus native's 108 (12x9). Full-device TT-Lang utilization is work in progress. These results do not establish performance parity with native.**
+**These results use 20 TT-Lang compute workers per device (2x10), versus native's 108 (12x9). The operation also supports 130 workers; tuning across worker counts is in progress. These results do not establish performance parity with native.**
 
 Four Blackhole P150b devices; global M=3072 and K=5120. Both implementations
 return the same replicated M x N result. Inputs/output are BF16 TILE tensors

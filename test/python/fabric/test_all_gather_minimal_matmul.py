@@ -240,3 +240,81 @@ def test_all_gather_minimal_matmul(
     assert_allclose(
         output_result.float(), expected_output, rtol=tolerance, atol=tolerance
     )
+
+
+@requires_forwarding_link_indices(ttnn)
+@pytest.mark.parametrize("torch_dtype,pcc_threshold,fp32_dest_acc_en", MATMUL_DTYPES)
+@pytest.mark.parametrize("reuse_activation", [False, True], ids=["stream", "reuse"])
+@pytest.mark.parametrize("m_tiles", [25, 26], ids=["padded-rows", "aligned-rows"])
+@pytest.mark.parametrize("replicated", [False, True], ids=["n-sharded", "replicated"])
+def test_all_gather_matmul_130_workers(
+    participant_mesh,
+    participant_mesh_shape,
+    torch_dtype,
+    pcc_threshold,
+    fp32_dest_acc_en,
+    reuse_activation,
+    m_tiles,
+    replicated,
+):
+    available_grid = participant_mesh.compute_with_storage_grid_size()
+    if available_grid.x < 13 or available_grid.y < 10:
+        pytest.skip("requires a 13x10 compute grid")
+    config = AllGatherMinimalMatmulConfig(
+        mesh_shape=participant_mesh_shape,
+        m_tiles=m_tiles,
+        k_tiles_per_device=2,
+        n_tiles_per_device=20,
+        worker_grid=(13, 10),
+        transpose=True,
+        reuse_activation=reuse_activation,
+    )
+    operation = make_all_gather_minimal_matmul_operation(
+        config,
+        math_fidelity="HiFi4" if torch_dtype == torch.float32 else "HiFi2",
+        fp32_dest_acc_en=fp32_dest_acc_en,
+        all_gather_algorithm="ring",
+    )
+    torch.manual_seed(31)
+    m_elements = config.m_tiles * TILE_SIZE
+    k_elements = config.device_count * config.k_tiles_per_device * TILE_SIZE
+    n_elements = (
+        config.n_tiles_per_device
+        * TILE_SIZE
+        * (1 if replicated else config.device_count)
+    )
+    activation = torch.randn((m_elements, k_elements), dtype=torch_dtype)
+    weight = torch.randn((k_elements, n_elements), dtype=torch_dtype) / k_elements**0.5
+    bias = torch.randn((1, n_elements), dtype=torch_dtype) * 0.1
+    shard_mapper = ttnn.ShardTensorToMesh(participant_mesh, dim=1)
+    output_mapper = (
+        ttnn.ReplicateTensorToMesh(participant_mesh) if replicated else shard_mapper
+    )
+    activation_shard = to_dram(
+        torch.nn.functional.pad(
+            activation, (0, 0, 0, config.padded_m_tiles * TILE_SIZE - m_elements)
+        ),
+        participant_mesh,
+        mesh_mapper=shard_mapper,
+    )
+    weight_shard = to_dram(weight, participant_mesh, mesh_mapper=output_mapper)
+    bias_shard = to_dram(bias, participant_mesh, mesh_mapper=output_mapper)
+    output = to_dram(
+        torch.zeros((m_elements, n_elements), dtype=torch_dtype),
+        participant_mesh,
+        mesh_mapper=output_mapper,
+    )
+    expected = activation.float() @ weight.float() + bias.float()
+    for _invocation in range(2):
+        operation(activation_shard, weight_shard, bias_shard, output)
+        actual = ttnn.to_torch(
+            output,
+            mesh_composer=ttnn.ConcatMeshToTensor(
+                participant_mesh, dim=0 if replicated else 1
+            ),
+        ).float()
+        replicas = actual.split(m_elements, dim=0) if replicated else (actual,)
+        for replica in replicas:
+            assert_pcc(expected, replica, threshold=pcc_threshold)
+            tolerance = 0.005 if torch_dtype == torch.float32 else 0.05
+            assert_allclose(replica, expected, rtol=tolerance, atol=tolerance)
