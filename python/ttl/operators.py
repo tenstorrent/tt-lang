@@ -115,8 +115,12 @@ def reset_dfbs(reset: DFBReset, /, *, dfbs) -> None:
     raise RuntimeError("ttl.reset_dfbs() is valid only in a compiled kernel")
 
 
-def reset_all_dfbs(reset: DFBReset, /) -> None:
-    """Apply ``reset_dfbs`` semantics to every worker-local DFB interface."""
+def reset_all_dfbs(reset: DFBReset, /, *, preserve=()) -> None:
+    """Reset every worker-local DFB interface except those in ``preserve``.
+
+    Preserving one member of a DFB allocation group preserves every member of
+    that group because they share one L1 allocation.
+    """
     raise RuntimeError("ttl.reset_all_dfbs() is valid only in a compiled kernel")
 
 

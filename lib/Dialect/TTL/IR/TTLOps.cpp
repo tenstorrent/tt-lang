@@ -3316,15 +3316,29 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
   return success();
 }
 
+static bool hasDuplicateDFBs(mlir::ValueRange dfbs) {
+  llvm::DenseSet<mlir::Value> uniqueDFBs;
+  for (mlir::Value dfb : dfbs) {
+    if (!uniqueDFBs.insert(dfb).second) {
+      return true;
+    }
+  }
+  return false;
+}
+
 mlir::LogicalResult mlir::tt::ttl::ResetDFBsOp::verify() {
   if (getDfbs().empty()) {
     return emitOpError("requires at least one DFB");
   }
-  llvm::DenseSet<Value> uniqueDFBs;
-  for (Value dfb : getDfbs()) {
-    if (!uniqueDFBs.insert(dfb).second) {
-      return emitOpError("DFBs must be distinct");
-    }
+  if (hasDuplicateDFBs(getDfbs())) {
+    return emitOpError("DFBs must be distinct");
+  }
+  return success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::ResetAllDFBsOp::verify() {
+  if (hasDuplicateDFBs(getPreservedDfbs())) {
+    return emitOpError("preserved DFBs must be distinct");
   }
   return success();
 }

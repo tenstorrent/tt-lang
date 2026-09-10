@@ -238,13 +238,19 @@ def make_reset_operation():
 reset_operation = make_reset_operation()
 ```
 
-The same `DFBReset` value identifies the three occurrences as one dynamic
-boundary. `ttl.reset_all_dfbs(reset_boundary)` provides the same boundary for
-every allocated physical DFB index. A declaration contains exactly one compute
-kernel and two data movement kernels. It executes once per dispatch and launch
-node, or once per iteration of the same immutable sequential loop nest in all
-participants. Conditional occurrences must use equivalent structured conditions
-on all participants and cannot form a repeated reset run.
+The same `DFBReset` value identifies the three occurrences as one synchronized
+reset. `ttl.reset_all_dfbs(reset_boundary)` resets every allocated DFB
+interface. `ttl.reset_all_dfbs(reset_boundary, preserve=[live_dfb])` leaves
+`live_dfb` unchanged while resetting the other interfaces. Preserving one
+member of an allocation group preserves every member because the group shares
+one L1 allocation. This form is useful when an operation retains one input or
+output across an internal reset but abandons temporary DFB state.
+
+A declaration contains exactly one compute kernel and two data movement
+kernels. It executes once per dispatch and launch node, or once per iteration
+of the same immutable sequential loop nest in all participants. Conditional
+occurrences must use equivalent structured conditions on all participants and
+cannot form a repeated reset run.
 
 Canonical operation kernels can participate without explicit handles. This
 keeps composed operations on the target's canonical worker kernels:

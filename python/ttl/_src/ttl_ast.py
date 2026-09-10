@@ -2858,12 +2858,33 @@ class TTLGenericCompiler(TTCompilerBase):
 
         keyword_values = {keyword.arg: keyword.value for keyword in node.keywords}
         if reset_all:
-            if keyword_values:
+            if not set(keyword_values).issubset({"preserve"}):
                 self._raise_error(
                     node,
-                    "ttl.reset_all_dfbs() does not accept keyword arguments",
+                    "ttl.reset_all_dfbs() accepts only the preserve keyword argument",
                 )
-            return ttl.reset_all_dfbs(reset=reset_attr)
+            preserve_node = keyword_values.get("preserve")
+            if preserve_node is None:
+                preserved_dfbs = []
+            elif not isinstance(preserve_node, ast.List):
+                self._raise_error(
+                    preserve_node,
+                    "ttl.reset_all_dfbs() preserve must be a list",
+                )
+            else:
+                preserved_dfbs = [
+                    self._resolve_dfb_value(element, "preserve", api_name)
+                    for element in preserve_node.elts
+                ]
+            if any(
+                dfb in preserved_dfbs[:dfb_index]
+                for dfb_index, dfb in enumerate(preserved_dfbs)
+            ):
+                self._raise_error(
+                    preserve_node,
+                    "ttl.reset_all_dfbs() preserve DFBs must be distinct",
+                )
+            return ttl.reset_all_dfbs(reset=reset_attr, preserved_dfbs=preserved_dfbs)
 
         if set(keyword_values) != {"dfbs"}:
             self._raise_error(
