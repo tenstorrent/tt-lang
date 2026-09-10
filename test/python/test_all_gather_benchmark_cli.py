@@ -40,6 +40,59 @@ def test_fidelity_allowlist():
         benchmark.MATH_FIDELITIES["__class__"]
 
 
+def test_trace_replay_retains_output_until_trace_release(monkeypatch):
+    events = []
+    output = object()
+    mesh = object()
+    monkeypatch.setattr(
+        benchmark.ttnn,
+        "begin_trace_capture",
+        lambda device, cq_id: events.append("begin") or 7,
+    )
+    monkeypatch.setattr(
+        benchmark.ttnn,
+        "end_trace_capture",
+        lambda device, trace_id, cq_id: events.append("end"),
+    )
+    monkeypatch.setattr(
+        benchmark.ttnn,
+        "execute_trace",
+        lambda device, trace_id, cq_id, blocking: events.append("replay"),
+    )
+    monkeypatch.setattr(
+        benchmark.ttnn,
+        "synchronize_device",
+        lambda device: events.append("sync"),
+    )
+    monkeypatch.setattr(
+        benchmark.ttnn,
+        "release_trace",
+        lambda device, trace_id: events.append("release"),
+    )
+
+    def run():
+        events.append("run")
+        return output
+
+    def cleanup(result):
+        assert result is output
+        events.append("cleanup")
+
+    with benchmark.measured_invocation(run, cleanup, mesh, trace=True) as result:
+        assert result is output
+        events.append("measure")
+    assert events == [
+        "begin",
+        "run",
+        "end",
+        "replay",
+        "sync",
+        "measure",
+        "release",
+        "cleanup",
+    ]
+
+
 @pytest.mark.parametrize(
     "discovered,requested,expected",
     [

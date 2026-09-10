@@ -13,11 +13,13 @@ pytestmark = pytest.mark.requires_device
 
 
 @pytest.mark.parametrize("dtype_name", ["bf16", "fp32"])
-def test_single_device(dtype_name, monkeypatch):
+@pytest.mark.parametrize("gather_output", [False, True], ids=["sharded", "replicated"])
+def test_single_device(dtype_name, gather_output, monkeypatch):
     monkeypatch.setattr(
         sys,
         "argv",
-        ["all_gather_minimal_matmul", "--mesh-shape", "1x1", "--dtype", dtype_name],
+        ["all_gather_minimal_matmul", "--mesh-shape", "1x1", "--dtype", dtype_name]
+        + (["--gather-output"] if gather_output else []),
     )
 
     main()

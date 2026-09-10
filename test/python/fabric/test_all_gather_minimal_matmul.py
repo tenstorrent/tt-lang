@@ -15,6 +15,7 @@ from examples.all_gather_minimal_matmul import (
     AllGatherMinimalMatmulConfig,
     make_all_gather_minimal_matmul_operation,
 )
+from examples.all_gather_minimal_matmul.collectives import make_output_all_gather
 from ttlang_test_utils import (
     get_fabric_mesh_shape,
     open_fabric_mesh,
@@ -71,6 +72,43 @@ def participant_mesh(fabric_mesh_shape, participant_mesh_shape):
         finally:
             if owns_participant_mesh:
                 ttnn.close_mesh_device(mesh_device)
+
+
+@requires_forwarding_link_indices(ttnn)
+@pytest.mark.parametrize("torch_dtype", [torch.bfloat16, torch.float32])
+@pytest.mark.parametrize("block_tiles", [1, 2])
+def test_output_all_gather(
+    participant_mesh, participant_mesh_shape, torch_dtype, block_tiles
+):
+    """TILE/DRAM gather preserves every payload bit and device-order N placement."""
+    device_count = prod(participant_mesh_shape)
+    torch.manual_seed(17)
+    expected = torch.randn((128, 128 * device_count), dtype=torch_dtype)
+    output_shard = to_dram(
+        expected,
+        participant_mesh,
+        mesh_mapper=ttnn.ShardTensorToMesh(participant_mesh, dim=1),
+    )
+    replicated_output = to_dram(
+        torch.zeros_like(expected),
+        participant_mesh,
+        mesh_mapper=ttnn.ReplicateTensorToMesh(participant_mesh),
+    )
+    gather = make_output_all_gather(
+        participant_mesh_shape,
+        m_tiles=4,
+        n_tiles_per_device=4,
+        worker_count=2,
+        block_tiles=block_tiles,
+    )
+    for _invocation in range(2):
+        gather(output_shard, replicated_output)
+        actual = ttnn.to_torch(
+            replicated_output,
+            mesh_composer=ttnn.ConcatMeshToTensor(participant_mesh, dim=0),
+        ).float()
+        for replica in actual.split(128, dim=0):
+            assert_allclose(replica, expected.float(), rtol=0, atol=0)
 
 
 @requires_forwarding_link_indices(ttnn)

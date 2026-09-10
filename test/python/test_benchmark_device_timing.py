@@ -76,6 +76,37 @@ def test_invalid_frequency(profiler_data):
         latest_kernel_duration("unused.csv", [1, 2])
 
 
+def test_sequence_includes_device_time_between_programs(profiler_data):
+    for device_id in (1, 2):
+        operations = profiler_data["devices"][device_id]["cores"]["DEVICE"]["riscs"][
+            "TENSIX"
+        ]["ops"]
+        for operation, start in zip(operations, (1000, 100000)):
+            interval = operation["analysis"]["device_kernel_duration"]["series"][0]
+            interval["start_cycle"] = start
+            interval["end_cycle"] = start + interval["duration_cycles"]
+    result = latest_kernel_duration("unused.csv", [1, 2], program_count=2)
+    assert result["cycles"] == 126000
+    assert result["per_device"]["1"]["cycles"] == 112500
+
+
+def test_sequence_requires_all_programs(profiler_data):
+    with pytest.raises(ValueError, match="missing programs"):
+        latest_kernel_duration("unused.csv", [1, 2], program_count=3)
+
+
+def test_sequence_rejects_overlapping_programs(profiler_data):
+    operations = profiler_data["devices"][1]["cores"]["DEVICE"]["riscs"]["TENSIX"][
+        "ops"
+    ]
+    for operation in operations:
+        interval = operation["analysis"]["device_kernel_duration"]["series"][0]
+        interval["start_cycle"] = 0
+        interval["end_cycle"] = interval["duration_cycles"]
+    with pytest.raises(ValueError, match="not ordered"):
+        latest_kernel_duration("unused.csv", [1], program_count=2)
+
+
 def test_mean_participant_duration(profiler_data):
     result = latest_kernel_duration("unused.csv", [1, 2], aggregation="mean")
     assert result["cycles"] == 20250

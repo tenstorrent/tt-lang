@@ -16,6 +16,7 @@ import ttnn
 from ttlang_test_utils import get_fabric_mesh_shape, open_fabric_mesh, to_dram
 from utils.correctness import assert_pcc
 
+from .collectives import make_output_all_gather
 from .operation import (
     AllGatherMinimalMatmulConfig,
     make_all_gather_minimal_matmul_operation,
@@ -47,6 +48,7 @@ def _make_parser() -> argparse.ArgumentParser:
     parser.add_argument("--n-block-tiles", type=int, default=1)
     parser.add_argument("--dtype", choices=("bf16", "fp32"), default="bf16")
     parser.add_argument("--no-bias", action="store_true")
+    parser.add_argument("--gather-output", action="store_true")
     parser.add_argument("--seed", type=int, default=0)
     return parser
 
@@ -158,15 +160,36 @@ def main() -> None:
             output_shard,
         )
 
+        if arguments.gather_output:
+            replicated_output = to_dram(
+                torch.zeros((m_elements, n_elements), dtype=torch_dtype),
+                mesh_device,
+                mesh_mapper=ttnn.ReplicateTensorToMesh(mesh_device),
+            )
+            gather_output = make_output_all_gather(
+                mesh_shape,
+                m_tiles=config.m_tiles,
+                n_tiles_per_device=config.n_tiles_per_device,
+                worker_count=config.m_workers,
+                block_tiles=config.n_block_tiles,
+            )
+            gather_output(output_shard, replicated_output)
+
         output_result = ttnn.to_torch(
-            output_shard,
-            mesh_composer=ttnn.ConcatMeshToTensor(mesh_device, dim=1),
+            replicated_output if arguments.gather_output else output_shard,
+            mesh_composer=ttnn.ConcatMeshToTensor(
+                mesh_device, dim=0 if arguments.gather_output else 1
+            ),
         )
 
     expected_output = activation_torch.float() @ weight_torch.float()
     expected_output += bias_torch.float()
     threshold = 0.99 if torch_dtype == torch.bfloat16 else 0.999
-    assert_pcc(expected_output, output_result.float(), threshold=threshold)
+    if arguments.gather_output:
+        for device_output in output_result.split(m_elements, dim=0):
+            assert_pcc(expected_output, device_output.float(), threshold=threshold)
+    else:
+        assert_pcc(expected_output, output_result.float(), threshold=threshold)
 
 
 if __name__ == "__main__":

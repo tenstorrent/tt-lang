@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Host/runtime diagnosis, separate from the device-kernel benchmark."""
+"""Profile Python dispatch overhead; device timings come from the benchmark."""
 
 import argparse
 import cProfile
@@ -28,7 +28,13 @@ def main():
     arguments = parser.parse_args()
     if arguments.runs <= 0:
         parser.error("--runs must be positive")
-    with open_participant_mesh() as (mesh, mesh_shape, cluster_axis, _discovered):
+    with open_participant_mesh() as (
+        mesh,
+        mesh_shape,
+        cluster_axis,
+        _discovered,
+        _fabric_config,
+    ):
         config = AllGatherMinimalMatmulConfig(
             mesh_shape=mesh_shape,
             m_tiles=2,

@@ -1,5 +1,23 @@
 # All-Gather Minimal Matmul
 
+| Entry point | Result on each device |
+| --- | --- |
+| [`n_sharded/`](n_sharded/) | `M x N/D`; add `--gather-output` for replicated `M x N`. |
+
+`N` is the complete output width and `D` is the device count. Weights and bias
+remain N-sharded when output gathering is enabled. The final gather copies
+output columns into device order without arithmetic.
+
+```bash
+python -m examples.all_gather_minimal_matmul.n_sharded --mesh-shape 2x2 --gather-output
+```
+
+[`collectives.py`](collectives.py) implements output gathering;
+[`operation.py`](operation.py) implements activation gathering and matmul.
+The [shared benchmark](../../benchmarks/all_gather_minimal_matmul/README.md)
+includes the final gather in device timing. Multi-device validation of the
+output-gather option is pending; it has no published performance result.
+
 This package models the data dependence of TT-Metal's
 `all_gather_minimal_matmul_async` at the TT-Metal revision pinned by this
 repository:

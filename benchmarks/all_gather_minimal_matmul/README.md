@@ -6,7 +6,38 @@ the [TT-Lang operation](../../examples/all_gather_minimal_matmul/operation.py)
 and TT-Metal's
 [`ttnn.experimental.all_gather_minimal_matmul_async`](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/ttnn/cpp/ttnn/operations/experimental/ccl/all_gather_minimal_matmul_async/all_gather_minimal_matmul_async.cpp).
 "Native" below means that TTNN operation, not a separate all-gather plus
-`ttnn.matmul`. Both implementations receive identical inputs and compute settings.
+`ttnn.matmul`.
+
+## Replicated-output comparison
+
+`--gather-output --n-tiles N_TILES` compares identical complete matrices and
+replicated results. `N_TILES` is the complete output width divided by 32.
+
+| Tensor per device | TT-Lang N-sharded compute + output gather | Native |
+| --- | --- | --- |
+| Activation input | `M x K/D` | `M x K/D` |
+| Weight input | `K x N/D` | `K x N` |
+| Bias input | `1 x N/D` | `1 x N` |
+| Computed output | `M x N/D` | `M x N` |
+| Returned output | Replicated `M x N` | Replicated `M x N` |
+
+Both implementations replay device traces. TT-Lang timing spans the first
+matmul kernel start through the final output-gather kernel end on each device,
+including the interval between programs. Native timing spans its fused
+program. Timestamps from different devices are never subtracted. The selected
+cross-device aggregation is applied after each device's interval is measured.
+
+For a four-device correctness and timing smoke test:
+
+```bash
+python -m benchmarks.all_gather_minimal_matmul \
+    --mesh-shape 4x1 --gather-output --n-tiles 16 \
+    --m-tiles 2 --k-tiles-per-device 1 --worker-grid 4 2 \
+    --json /tmp/all-gather-replicated-output.json
+```
+
+This option is awaiting device validation and measurements. Existing results
+below use N-sharded TT-Lang output and do not measure the final output gather.
 
 ## Files and related benchmarks
 

@@ -25,6 +25,7 @@ from examples.all_gather_minimal_matmul import (
     AllGatherMinimalMatmulConfig,
     make_all_gather_minimal_matmul_operation,
 )
+from examples.all_gather_minimal_matmul.collectives import make_output_all_gather
 from ttlang_test_utils import get_fabric_mesh_shape, to_dram
 from utils.correctness import assert_allclose, assert_pcc
 
@@ -120,6 +121,13 @@ def parse_args():
         "--implementation", choices=("both", "ttlang", "ttmetal"), default="both"
     )
     parser.add_argument("--dtype", choices=("bf16", "fp32"), default="bf16")
+    parser.add_argument("--gather-output", action="store_true")
+    parser.add_argument("--trace", action="store_true", help="time device trace replay")
+    parser.add_argument(
+        "--n-tiles",
+        type=positive_int,
+        help="complete output width in tiles; required with --gather-output",
+    )
     parser.add_argument("--math-fidelity", choices=("HiFi2", "HiFi4"))
     parser.add_argument(
         "--fp32-dest-acc", action=argparse.BooleanOptionalAction, default=True
@@ -264,6 +272,7 @@ def open_participant_mesh(
     fabric_config="auto",
     fabric_reliability="relaxed",
     fabric_router_payload=None,
+    trace_region_size=0,
 ):
     parent_mesh = None
     participant_mesh = None
@@ -288,7 +297,9 @@ def open_participant_mesh(
         mesh_shape, participant_axis, parent_shape = mesh_selection(
             discovered_shape, requested_shape
         )
-        parent_mesh = ttnn.open_mesh_device(ttnn.MeshShape(discovered_shape))
+        parent_mesh = ttnn.open_mesh_device(
+            ttnn.MeshShape(discovered_shape), trace_region_size=trace_region_size
+        )
         if parent_shape != tuple(discovered_shape):
             parent_mesh.reshape(ttnn.MeshShape(parent_shape))
         participant_mesh = (
@@ -328,19 +339,24 @@ def create_workloads(
     native_workers_per_link=None,
     native_subblock_shape=None,
     native_topology=ttnn.Topology.Linear,
+    gather_output=False,
 ):
     torch.manual_seed(seed)
     torch_dtype = torch.bfloat16 if dtype == "bf16" else torch.float32
     m_elements = config.m_tiles * 32
     k_elements = config.device_count * config.k_tiles_per_device * 32
     n_elements_per_device = config.n_tiles_per_device * 32
-    n_elements = config.device_count * n_elements_per_device
+    n_elements = (
+        n_elements_per_device
+        if gather_output and implementation == "ttmetal"
+        else config.device_count * n_elements_per_device
+    )
     activation = torch.randn((m_elements, k_elements), dtype=torch_dtype)
     weight = torch.randn((k_elements, n_elements), dtype=torch_dtype) / k_elements**0.5
     bias = torch.randn((1, n_elements), dtype=torch_dtype) * 0.1
     expected_ttlang = activation.float() @ weight.float() + bias.float()
-    native_weight = weight[:, :n_elements_per_device]
-    native_bias = bias[:, :n_elements_per_device]
+    native_weight = weight if gather_output else weight[:, :n_elements_per_device]
+    native_bias = bias if gather_output else bias[:, :n_elements_per_device]
     expected_ttmetal = activation.float() @ native_weight.float() + native_bias.float()
     shard_mapper = ttnn.ShardTensorToMesh(mesh, dim=1)
     replicate_mapper = ttnn.ReplicateTensorToMesh(mesh)
@@ -362,14 +378,34 @@ def create_workloads(
             operation = make_all_gather_minimal_matmul_operation(
                 config, math_fidelity=math_fidelity, fp32_dest_acc_en=fp32_dest_acc
             )
+            replicated_output = None
+            output_gather = None
+            if gather_output:
+                replicated_output = to_dram(
+                    torch.zeros((m_elements, n_elements), dtype=torch_dtype),
+                    mesh,
+                    mesh_mapper=replicate_mapper,
+                )
+                output_gather = make_output_all_gather(
+                    config.mesh_shape,
+                    m_tiles=config.m_tiles,
+                    n_tiles_per_device=config.n_tiles_per_device,
+                    worker_count=config.m_workers,
+                    block_tiles=config.n_block_tiles,
+                )
 
             def run_ttlang(
                 operation=operation,
                 output=output,
                 weight_device=weight_device,
                 bias_device=bias_device,
+                replicated_output=replicated_output,
+                output_gather=output_gather,
             ):
                 operation(activation_device, weight_device, bias_device, output)
+                if output_gather is not None:
+                    output_gather(output, replicated_output)
+                    return replicated_output
                 return output
 
             workloads[name] = (run_ttlang, gathered, lambda result: None)
@@ -439,7 +475,7 @@ def create_workloads(
             workloads[name] = (run_ttmetal, gathered, ttnn.deallocate)
 
     def validate(name, output, gathered):
-        output_concat_dimension = 1 if name == "ttlang" else 0
+        output_concat_dimension = 1 if name == "ttlang" and not gather_output else 0
         output_torch = ttnn.to_torch(
             output,
             mesh_composer=ttnn.ConcatMeshToTensor(mesh, dim=output_concat_dimension),
@@ -460,7 +496,11 @@ def create_workloads(
             assert_allclose(gathered_torch, expected_gather, rtol=0, atol=0)
             expected_output = expected_ttmetal.repeat(config.device_count, 1)
         else:
-            expected_output = expected_ttlang
+            expected_output = (
+                expected_ttlang.repeat(config.device_count, 1)
+                if gather_output
+                else expected_ttlang
+            )
         assert_pcc(
             expected_output,
             output_torch,
@@ -500,27 +540,28 @@ def benchmark(workloads, validate, mesh, arguments):
     previous_run_ids = {}
     for sample_index in range(arguments.samples):
         for name, (run, gathered, cleanup) in workloads.items():
-            output = run()
-            ttnn.synchronize_device(mesh)
-            # Flush before validation so the newest program is the operation,
-            # not a conversion or setup program used by correctness checking.
-            profiler_log = read_device_profile(mesh)
-            duration = latest_kernel_duration(
-                profiler_log,
-                mesh.get_device_ids(),
-                aggregation=arguments.device_aggregation,
-            )
+            with measured_invocation(
+                run, cleanup, mesh, trace=arguments.trace
+            ) as output:
+                profiler_log = read_device_profile(mesh)
+                duration = latest_kernel_duration(
+                    profiler_log,
+                    mesh.get_device_ids(),
+                    aggregation=arguments.device_aggregation,
+                    program_count=(
+                        2 if name == "ttlang" and arguments.gather_output else 1
+                    ),
+                )
+                correctness[name].append(validate(name, output, gathered))
             for device_id, device in duration["per_device"].items():
                 run_id = device["run_host_id"]
                 if run_id <= previous_run_ids.get(device_id, -1):
                     raise ValueError(f"stale profiler data for device {device_id}")
                 previous_run_ids[device_id] = run_id
-            correctness[name].append(validate(name, output, gathered))
-            cleanup(output)
             samples[name].append(duration)
             print(
                 f"{name} sample {sample_index + 1}: {duration['cycles']} cycles, "
-                f"{duration['us']:.3f} us device kernel",
+                f"{duration['us']:.3f} us device interval",
                 flush=True,
             )
     measurements = {
@@ -535,6 +576,29 @@ def benchmark(workloads, validate, mesh, arguments):
     }
     measurements["correctness"] = correctness
     return measurements
+
+
+@contextmanager
+def measured_invocation(run, cleanup, mesh, *, trace):
+    trace_id = None
+    output = None
+    try:
+        if trace:
+            trace_id = ttnn.begin_trace_capture(mesh, cq_id=0)
+            try:
+                output = run()
+            finally:
+                ttnn.end_trace_capture(mesh, trace_id, cq_id=0)
+            ttnn.execute_trace(mesh, trace_id, cq_id=0, blocking=False)
+        else:
+            output = run()
+        ttnn.synchronize_device(mesh)
+        yield output
+    finally:
+        if trace_id is not None:
+            ttnn.release_trace(mesh, trace_id)
+        if output is not None:
+            cleanup(output)
 
 
 def run_isolated_variants(arguments):
@@ -593,6 +657,14 @@ def run_isolated_variants(arguments):
 
 def main():
     arguments = parse_args()
+    if arguments.gather_output:
+        if arguments.n_tiles is None:
+            raise ValueError(
+                "--gather-output requires --n-tiles (complete output width)"
+            )
+        arguments.trace = True
+    elif arguments.n_tiles is not None:
+        raise ValueError("--n-tiles currently requires --gather-output")
     for variable in (
         "TTLANG_COMPILE_ONLY",
         "TTLANG_AUTO_PROFILE",
@@ -639,6 +711,7 @@ def main():
         arguments.fabric_config,
         arguments.fabric_reliability,
         arguments.fabric_router_payload,
+        trace_region_size=4194304 if arguments.trace else 0,
     ) as (
         mesh,
         mesh_shape,
@@ -646,11 +719,21 @@ def main():
         discovered_shape,
         selected_fabric_name,
     ):
+        n_tiles_per_device = arguments.n_tiles_per_device
+        if arguments.n_tiles is not None:
+            n_partitions = (
+                prod(mesh_shape) if arguments.implementation == "ttlang" else 1
+            )
+            if arguments.n_tiles % n_partitions:
+                raise ValueError(
+                    "complete N tile count must be divisible by device count"
+                )
+            n_tiles_per_device = arguments.n_tiles // n_partitions
         benchmark_case = BenchmarkCase(
             mesh_shape=mesh_shape,
             m_tiles=arguments.m_tiles,
             k_tiles_per_device=arguments.k_tiles_per_device,
-            n_tiles_per_device=arguments.n_tiles_per_device,
+            n_tiles_per_device=n_tiles_per_device,
             m_block_tiles=arguments.m_block_tiles,
             k_block_tiles=arguments.k_block_tiles,
             n_block_tiles=arguments.n_block_tiles,
@@ -692,6 +775,8 @@ def main():
             fp32_dest_acc_en=arguments.fp32_dest_acc,
             native_channel_buffers=arguments.native_channel_buffers,
             device_aggregation=arguments.device_aggregation,
+            gather_output=arguments.gather_output,
+            global_n_tiles=arguments.n_tiles,
             layout="TILE",
             memory="DRAM",
             per_device_matmul={
@@ -705,7 +790,7 @@ def main():
                     "activation": "K-sharded",
                     "weight": "N-sharded",
                     "bias": "N-sharded",
-                    "output": "N-sharded",
+                    "output": "replicated" if arguments.gather_output else "N-sharded",
                 },
                 "ttmetal": {
                     "activation": "K-sharded",
@@ -723,7 +808,7 @@ def main():
                 "channel_buffers": arguments.native_channel_buffers,
                 "packer_l1_acc": True,
             },
-            execution="ordinary_launch",
+            execution="trace_replay" if arguments.trace else "ordinary_launch",
             fabric_reliability=str(
                 FABRIC_RELIABILITY_MODES[arguments.fabric_reliability]
             ),
@@ -745,6 +830,7 @@ def main():
             native_workers_per_link=native_workers_per_link,
             native_subblock_shape=selected_native_subblock,
             native_topology=selected_native_topology,
+            gather_output=arguments.gather_output,
         )
         report["measurements"] = benchmark(workloads, validate, mesh, arguments)
     arguments.json.write_text(json.dumps(report, indent=2) + "\n")
