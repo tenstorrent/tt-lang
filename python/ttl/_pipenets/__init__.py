@@ -102,8 +102,6 @@ class OperationPipeNets:
     def add_graph_pipe_net(self, transfer_graph: TransferGraph) -> GraphPipeNetUse:
         """Append a graph PipeNet with one ordered device-edge record set."""
         edges = tuple(transfer_graph.iter_edges())
-        if not edges:
-            raise ValueError("graph-based PipeNet requires at least one transfer edge")
         if any(isinstance(edge.destination, DeviceRange) for edge in edges):
             raise ValueError(
                 "graph-based PipeNet DeviceRange destinations require multicast "

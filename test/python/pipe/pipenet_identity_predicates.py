@@ -8,6 +8,8 @@
 # RUN: FileCheck %s --input-file=%t.identity.mlir --check-prefix=IDENTITY
 # RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.runtime.mlir TTLANG_CASE=runtime %python %s
 # RUN: FileCheck %s --input-file=%t.runtime.mlir --check-prefix=RUNTIME
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.single-device.mlir TTLANG_CASE=single-device %python %s
+# RUN: FileCheck %s --input-file=%t.single-device.mlir --check-prefix=SINGLE-DEVICE
 
 """Frontend IR coverage for runtime-selected graph callback identities."""
 
@@ -21,6 +23,10 @@ pytest.importorskip("ttnn", exc_type=ImportError)
 
 DEVICE_DOMAIN = ttl.DeviceDomain((1, 2))
 EXCHANGE_NET = ttl.PipeNet(graph=ttl.TransferGraph.all_to_all(DEVICE_DOMAIN))
+SINGLE_DEVICE_DOMAIN = ttl.DeviceDomain((1,))
+SINGLE_DEVICE_NET = ttl.PipeNet(
+    graph=ttl.TransferGraph.all_to_all(SINGLE_DEVICE_DOMAIN)
+)
 ROOT_DEVICE_INDEX = 0
 
 
@@ -110,11 +116,39 @@ def compile_runtime_predicate():
         pass
 
 
+@ttl.operation(grid=(1, 1), device_domain=SINGLE_DEVICE_DOMAIN)
+def compile_single_device_collective():
+    @ttl.compute()
+    def query_identity_collective():
+        source_active = SINGLE_DEVICE_NET.is_src()
+        destination_active = SINGLE_DEVICE_NET.is_dst()
+        transfer_active = SINGLE_DEVICE_NET.is_active()
+        destination_count = SINGLE_DEVICE_NET.destination_count()
+
+    @ttl.datamovement()
+    def visit_identity_collective():
+        def visit_destination(selected_pipe):
+            destination_device_index = selected_pipe.destination_device_index
+
+        SINGLE_DEVICE_NET.if_src(visit_destination)
+
+        def visit_source(selected_pipe):
+            source_device_index = selected_pipe.source_device_index
+
+        SINGLE_DEVICE_NET.if_dst(visit_source)
+
+    @ttl.datamovement()
+    def idle_data_movement():
+        pass
+
+
 if __name__ == "__main__":
     if os.environ["TTLANG_CASE"] == "identity":
         compile_identity_predicates()
-    else:
+    elif os.environ["TTLANG_CASE"] == "runtime":
         compile_runtime_predicate()
+    else:
+        compile_single_device_collective()
 
 
 # IDENTITY-LABEL: func.func @identity_dm
@@ -150,3 +184,12 @@ if __name__ == "__main__":
 # RUNTIME-NEXT: %[[RUNTIME_CONDITION:.+]] = arith.cmpi eq, %[[DEVICE]], %[[NODE_X]]
 # RUNTIME-NEXT: scf.if %[[RUNTIME_CONDITION]] {
 # RUNTIME-NEXT: %{{.+}} = ttl.cb_reserve
+
+# SINGLE-DEVICE-LABEL: func.func @query_identity_collective
+# SINGLE-DEVICE-COUNT-3: arith.constant false
+# SINGLE-DEVICE: arith.constant 0 : index
+# SINGLE-DEVICE-NOT: ttl.pipenet
+# SINGLE-DEVICE-LABEL: func.func @visit_identity_collective
+# SINGLE-DEVICE-NOT: ttl.pipenet
+# SINGLE-DEVICE-NOT: ttl.selected_pipe
+# SINGLE-DEVICE: return

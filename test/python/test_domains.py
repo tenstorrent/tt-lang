@@ -287,23 +287,30 @@ def test_component_transfer_rejects_full_product_endpoint():
         lambda: TransferGraph.stencil(
             DeviceDomain((1, 3)), offsets=[(0, 3)], wrap=True
         ),
-        lambda: TransferGraph.gather(DeviceDomain((1,)), 0),
-        lambda: TransferGraph.scatter(DeviceDomain((1,)), 0),
-        lambda: TransferGraph.all_to_all(DeviceDomain((1,))),
     ],
     ids=[
         "axis-neighbor-out-of-bounds",
         "axis-neighbor-wrap-self-transfer",
         "stencil-out-of-bounds",
         "stencil-wrap-self-transfer",
-        "gather-single-device",
-        "scatter-single-device",
-        "all-to-all-single-device",
     ],
 )
 def test_structured_graph_rejects_empty_relation(create_graph):
     with pytest.raises(ValueError, match="relation contains no edges"):
         create_graph()
+
+
+@pytest.mark.parametrize(
+    "create_graph",
+    [
+        lambda: TransferGraph.gather(DeviceDomain((1,)), 0),
+        lambda: TransferGraph.scatter(DeviceDomain((1,)), 0),
+        lambda: TransferGraph.all_to_all(DeviceDomain((1,))),
+    ],
+    ids=["gather", "scatter", "all-to-all"],
+)
+def test_single_device_collective_has_no_transfer_edges(create_graph):
+    assert list(create_graph().iter_edges()) == []
 
 
 def test_all_to_all_edges_preserve_other_product_components():

@@ -70,6 +70,8 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
   pm.addNestedPass<func::FuncOp>(createTTLConvertTTLToCompute());
   pm.addNestedPass<func::FuncOp>(createTTLInsertCBSync());
+  // Remove statically unreachable DFB operations before schedule verification.
+  pm.addPass(createCanonicalizerPass());
   // Verify the complete high-level schedule while logical DFB identities are
   // still distinct and before later transformations rewrite pipe operations.
   buildTTLVerifyPipeNetPipeline(pm);

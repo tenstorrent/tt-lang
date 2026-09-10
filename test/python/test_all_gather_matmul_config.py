@@ -8,6 +8,18 @@ import pytest
 from examples.all_gather_minimal_matmul import AllGatherMinimalMatmulConfig
 
 
+def test_single_device_configuration():
+    config = AllGatherMinimalMatmulConfig(
+        mesh_shape=(1, 1),
+        m_tiles=4,
+        k_tiles_per_device=4,
+        n_tiles_per_device=6,
+    )
+
+    assert config.device_count == 1
+    assert config.activation_block_count == 4
+
+
 @pytest.mark.parametrize("transpose", [False, True])
 def test_fixed_worker_grid(transpose):
     config = AllGatherMinimalMatmulConfig(

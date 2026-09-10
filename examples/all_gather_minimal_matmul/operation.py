@@ -37,9 +37,19 @@ Per device, three kernels execute concurrently::
 Implementation: ``all_gather_minimal_matmul`` nested inside
 ``make_all_gather_minimal_matmul_operation``, below configuration/network setup.
 
-Run: repository root, activated fabric-enabled container, visible devices idle::
+Run from the repository root with the selected devices idle::
 
-    timeout 300 python -m examples.all_gather_minimal_matmul 2>&1 | tee /tmp/device_test.log
+    # One device: identity all-gather; fabric disabled.
+    timeout 300 python -m examples.all_gather_minimal_matmul \
+        --mesh-shape 1x1 2>&1 | tee /tmp/device_test.log
+
+    # Two devices: use 2x1 instead when that is the connected orientation.
+    timeout 300 python -m examples.all_gather_minimal_matmul \
+        --mesh-shape 1x2 2>&1 | tee /tmp/device_test.log
+
+    # Four devices.
+    timeout 300 python -m examples.all_gather_minimal_matmul \
+        --mesh-shape 2x2 2>&1 | tee /tmp/device_test.log
 
 Dimensions and mesh selection: ``README.md`` beside this file.
 """
@@ -75,8 +85,6 @@ class AllGatherMinimalMatmulConfig:
         object.__setattr__(self, "mesh_shape", tuple(self.mesh_shape))
         if not self.mesh_shape or any(extent <= 0 for extent in self.mesh_shape):
             raise ValueError("mesh_shape must contain positive extents")
-        if self.device_count < 2:
-            raise ValueError("all-gather requires at least two devices")
         if self.device_count > MAX_DEVICE_COUNT:
             raise ValueError(f"all-gather supports at most {MAX_DEVICE_COUNT} devices")
 
@@ -176,6 +184,7 @@ def make_all_gather_minimal_matmul_operation(
     ``mesh_shape``. One worker column performs each activation fabric transfer;
     local row broadcasts distribute the gathered blocks across N workers.
     Weight column broadcasts distribute each N block across M workers.
+    On one device, all-gather is the identity and no fabric transfers execute.
 
     Inputs and outputs use TILE layout in DRAM. A zero bias tensor selects the
     unbiased computation without requiring a second compiled operation.
@@ -246,7 +255,7 @@ def make_all_gather_minimal_matmul_operation(
         remote_activation_receive_dfb = ttl.make_dataflow_buffer_like(
             activation_shard,
             shape=(m_block_tiles, compute_k_tiles),
-            block_count=device_count - 1,
+            block_count=max(1, device_count - 1),
         )
         broadcast_activation_receive_dfb = ttl.make_dataflow_buffer_like(
             activation_shard,
@@ -306,7 +315,11 @@ def make_all_gather_minimal_matmul_operation(
                     for k_block in range(compute_k_blocks_per_device):
                         local_k_begin = k_block * compute_k_tiles
                         local_k_end = local_k_begin + compute_k_tiles
-                        if n_round < activation_read_rounds and n_worker_index == 0:
+                        if (
+                            device_count > 1
+                            and n_round < activation_read_rounds
+                            and n_worker_index == 0
+                        ):
 
                             def receive_activation_from_device(pipe) -> None:
                                 received_block = remote_activation_receive_dfb.reserve()
@@ -319,7 +332,10 @@ def make_all_gather_minimal_matmul_operation(
                             if n_round < activation_read_rounds:
                                 activation_block = matmul_activation_dfb.reserve()
                                 if n_worker_index == 0:
-                                    if source_device_index == local_device_index:
+                                    if (
+                                        device_count == 1
+                                        or source_device_index == local_device_index
+                                    ):
                                         ttl.copy(
                                             activation_shard[
                                                 m_begin:m_end,
@@ -392,7 +408,11 @@ def make_all_gather_minimal_matmul_operation(
                     ) * n_block_tiles
                     n_end = n_begin + n_block_tiles
                     for k_block in range(compute_k_blocks_per_device):
-                        if n_round < activation_read_rounds and n_worker_index == 0:
+                        if (
+                            device_count > 1
+                            and n_round < activation_read_rounds
+                            and n_worker_index == 0
+                        ):
                             activation_block = local_activation_send_dfb.reserve()
                             local_k_begin = k_block * compute_k_tiles
                             local_k_end = local_k_begin + compute_k_tiles

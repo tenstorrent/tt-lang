@@ -23,6 +23,7 @@
 // CHECK-NEXT: func.func(
 // CHECK-NEXT:   ttl-insert-cb-sync
 // CHECK-NEXT: ),
+// CHECK-NEXT: canonicalize{{.*}},
 // CHECK-NEXT: ttl-verify-pipenet-guards,
 // CHECK-NEXT: ttl-verify-pipenet-schedule,
 // CHECK-NEXT: ttl-form-pipe-transports{{.*}},

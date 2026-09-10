@@ -86,7 +86,9 @@ timeout 300 python -m examples.all_gather_minimal_matmul \
 ```
 
 Omit `--mesh-shape` to use the control-plane-discovered mesh. `--dtype` accepts
-`bf16` and `fp32`; `--no-bias` supplies a zero bias tensor.
+`bf16` and `fp32`; `--no-bias` supplies a zero bias tensor. Set
+`--mesh-shape 1x1` to run the same operation with an identity all-gather and
+fabric disabled.
 
 The [device-time benchmark](../../benchmarks/all_gather_minimal_matmul/README.md)
 compares this operation with the original TT-Metal fused operation, including

@@ -2863,6 +2863,7 @@ def _lower_program_to_kernel(
             f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
             "func.func(convert-ttl-to-compute)",
             "func.func(ttl-insert-cb-sync)",
+            "canonicalize",
             "ttl-verify-pipenet",
             pipe_transport_pass,
             "func.func(ttl-coalesce-dfb-acquires)",

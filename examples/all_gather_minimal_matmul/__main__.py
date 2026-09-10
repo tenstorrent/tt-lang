@@ -7,6 +7,8 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+from math import prod
 
 import torch
 import ttnn
@@ -49,11 +51,60 @@ def _make_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main() -> None:
-    arguments = _make_parser().parse_args()
-    mesh_shape = arguments.mesh_shape or get_fabric_mesh_shape(
+def _resolve_mesh_shapes(
+    requested_mesh_shape: tuple[int, ...] | None,
+) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    if requested_mesh_shape is not None and prod(requested_mesh_shape) == 1:
+        return requested_mesh_shape, requested_mesh_shape
+
+    discovered_mesh_shape = get_fabric_mesh_shape(
         fabric_config=ttnn.FabricConfig.FABRIC_2D
     )
+    participant_mesh_shape = requested_mesh_shape or discovered_mesh_shape
+    if len(participant_mesh_shape) != len(discovered_mesh_shape) or any(
+        requested > available
+        for requested, available in zip(
+            participant_mesh_shape, discovered_mesh_shape, strict=True
+        )
+    ):
+        raise ValueError(
+            f"requested mesh {participant_mesh_shape} does not fit discovered mesh "
+            f"{discovered_mesh_shape}"
+        )
+    return participant_mesh_shape, discovered_mesh_shape
+
+
+@contextmanager
+def _open_operation_mesh(
+    participant_mesh_shape: tuple[int, ...],
+    parent_mesh_shape: tuple[int, ...],
+):
+    single_device = prod(participant_mesh_shape) == 1
+    with open_fabric_mesh(
+        requested_mesh_shape=parent_mesh_shape,
+        fabric_config=(
+            ttnn.FabricConfig.DISABLED if single_device else ttnn.FabricConfig.FABRIC_2D
+        ),
+        reliability_mode=(
+            None if single_device else ttnn.FabricReliabilityMode.RELAXED_INIT
+        ),
+    ) as parent_mesh:
+        if participant_mesh_shape == parent_mesh_shape:
+            yield parent_mesh
+            return
+
+        participant_mesh = parent_mesh.create_submesh(
+            ttnn.MeshShape(participant_mesh_shape)
+        )
+        try:
+            yield participant_mesh
+        finally:
+            ttnn.close_mesh_device(participant_mesh)
+
+
+def main() -> None:
+    arguments = _make_parser().parse_args()
+    mesh_shape, parent_mesh_shape = _resolve_mesh_shapes(arguments.mesh_shape)
     config = AllGatherMinimalMatmulConfig(
         mesh_shape=mesh_shape,
         m_tiles=arguments.m_tiles,
@@ -78,11 +129,7 @@ def main() -> None:
     if not arguments.no_bias:
         bias_torch = torch.randn((1, n_elements), dtype=torch_dtype)
 
-    with open_fabric_mesh(
-        requested_mesh_shape=mesh_shape,
-        fabric_config=ttnn.FabricConfig.FABRIC_2D,
-        reliability_mode=ttnn.FabricReliabilityMode.RELAXED_INIT,
-    ) as mesh_device:
+    with _open_operation_mesh(mesh_shape, parent_mesh_shape) as mesh_device:
         activation_shard = to_dram(
             activation_torch,
             mesh_device,

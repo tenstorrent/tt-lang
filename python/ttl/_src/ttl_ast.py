@@ -1160,6 +1160,10 @@ class TTLGenericCompiler(TTCompilerBase):
         assert isinstance(pipenet, PipeNet)
         if node.args or node.keywords:
             self._raise_error(node, f"PipeNet.{method}() takes no arguments")
+        if pipenet.is_graph and not pipenet._graph_edges:
+            if method == "destination_count":
+                return arith.ConstantOp(IndexType.get(self.ctx), 0)
+            return arith.ConstantOp(IntegerType.get_signless(1, self.ctx), 0)
         arguments = {
             "pipe_net_id": IntegerAttr.get(
                 IntegerType.get_signless(64, self.ctx), pipenet.pipe_net_id
@@ -1277,6 +1281,9 @@ class TTLGenericCompiler(TTCompilerBase):
                 callback_node,
                 f"PipeNet.{method_name}() requires a lambda or function reference",
             )
+
+        if pipenet.is_graph and not pipenet._graph_edges:
+            return None
 
         decl_file = getattr(pipenet, "_source_file", None)
         decl_line = getattr(pipenet, "_source_line", None)

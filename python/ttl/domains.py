@@ -464,7 +464,9 @@ class TransferGraph:
             raise ValueError("TransferGraph.edges requires at least one edge")
         if structured is not None:
             structured = self._normalize_structured(domain, structured)
-            if not self._structured_has_edges(domain, structured):
+            if not self._structured_has_edges(domain, structured) and not isinstance(
+                structured, (GatherTransfer, ScatterTransfer, AllToAllTransfer)
+            ):
                 raise ValueError("structured transfer relation contains no edges")
             transfer_edges = ()
         else:
