@@ -272,33 +272,100 @@ module attributes {
 
 // -----
 
-// Tensor-backed receiver storage uses the runtime address published by the
-// receiver instead of a separately allocated computed-address base.
-module attributes {ttl.launch_grid = array<i64: 2, 1>} {
-  // COMPUTED-LABEL: func.func @tensor_backed_receiver_uses_published_address
-  // COMPUTED-NOT: ttl.pipe_computed_address_dfb_indices
-  // COMPUTED: ttkernel.noc_inline_dw_write
-  // COMPUTED: ttkernel.load_from_l1
-  // COMPUTED: ttkernel.noc_async_write
+// DFB 1 uses one tensor base on both allocation nodes, so its transfer uses
+// computed addressing even though DFB 4 is reconfigured. DFBs 2 and 3 retain
+// receiver publication because their segments use different tensor bases or
+// mix tensor-backed and compiler-managed storage.
+module attributes {
+  ttl.dfb_allocations = [
+    {allocation_nodes = [[0, 0]], block_count = 1 : i32,
+     dfb_index = 0 : i32, storage_index = 0 : i32,
+     element_type = !ttcore.tile<32x32, f32>, num_tiles = 1 : i32,
+     page_size = 4096 : i32},
+    {allocation_nodes = [[1, 0], [2, 0]], block_count = 1 : i32,
+     dfb_index = 1 : i32, storage_index = 1 : i32,
+     element_type = !ttcore.tile<32x32, f32>, num_tiles = 1 : i32,
+     page_size = 4096 : i32,
+     storage_segments = [
+       {nodes = [[1, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4096>},
+       {nodes = [[2, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4096>}]},
+    {allocation_nodes = [[1, 0], [2, 0]], block_count = 1 : i32,
+     dfb_index = 2 : i32, storage_index = 2 : i32,
+     element_type = !ttcore.tile<32x32, f32>, num_tiles = 1 : i32,
+     page_size = 4096 : i32,
+     storage_segments = [
+       {nodes = [[1, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4096>},
+       {nodes = [[2, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 1, byte_offset = 0, byte_size = 4096>}]},
+    {allocation_nodes = [[1, 0], [2, 0]], block_count = 1 : i32,
+     dfb_index = 3 : i32, storage_index = 3 : i32,
+     element_type = !ttcore.tile<32x32, f32>, num_tiles = 1 : i32,
+     page_size = 4096 : i32,
+     storage_segments = [
+       {nodes = [[1, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4096>},
+       {nodes = [[2, 0]]}]},
+    {allocation_nodes = [[0, 0]], block_count = 2 : i32,
+     dfb_index = 4 : i32, storage_index = 4 : i32,
+     element_type = !ttcore.tile<32x32, f32>, num_tiles = 2 : i32,
+     page_size = 4096 : i32}],
+  ttl.dfb_reconfiguration_plan = {
+    boundary_ordinals = array<i64: 0>,
+    dfbs = [
+      {dfb_index = 0 : i32, configurations = [
+        {block_count = 1 : i32, element_type = !ttcore.tile<32x32, f32>,
+         num_tiles = 1 : i32, page_size = 4096 : i32}]},
+      {dfb_index = 1 : i32, configurations = [
+        {block_count = 1 : i32, element_type = !ttcore.tile<32x32, f32>,
+         num_tiles = 1 : i32, page_size = 4096 : i32,
+         storage_segments = [
+           {nodes = [[1, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4096>},
+           {nodes = [[2, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4096>}]}]},
+      {dfb_index = 2 : i32, configurations = [
+        {block_count = 1 : i32, element_type = !ttcore.tile<32x32, f32>,
+         num_tiles = 1 : i32, page_size = 4096 : i32,
+         storage_segments = [
+           {nodes = [[1, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4096>},
+           {nodes = [[2, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 1, byte_offset = 0, byte_size = 4096>}]}]},
+      {dfb_index = 3 : i32, configurations = [
+        {block_count = 1 : i32, element_type = !ttcore.tile<32x32, f32>,
+         num_tiles = 1 : i32, page_size = 4096 : i32,
+         storage_segments = [
+           {nodes = [[1, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4096>},
+           {nodes = [[2, 0]]}]}]},
+      {dfb_index = 4 : i32, configurations = [
+        {block_count = 1 : i32, element_type = !ttcore.tile<32x32, f32>,
+         num_tiles = 1 : i32, page_size = 4096 : i32},
+        {block_count = 2 : i32,
+         element_type = !ttcore.tile<32x32, f32>,
+         entry_reconfiguration = 0 : i64, num_tiles = 2 : i32,
+         page_size = 4096 : i32}]}]},
+  ttl.launch_grid = array<i64: 3, 1>
+} {
+  // COMPUTED-LABEL: func.func @same_tensor_base_on_all_nodes
+  // COMPUTED-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
+  // COMPUTED-NOT: ttkernel.store_to_l1
+  // COMPUTED-NOT: ttkernel.load_from_l1
+  // COMPUTED: ttkernel.noc_async_write_one_packet_set_state
+  // COMPUTED: ttkernel.noc_async_write_one_packet_with_state
 
-  // PUBLISHED-LABEL: func.func @tensor_backed_receiver_uses_published_address
+  // PUBLISHED-LABEL: func.func @same_tensor_base_on_all_nodes
   // PUBLISHED-NOT: ttl.pipe_computed_address_dfb_indices
   // PUBLISHED: ttkernel.noc_inline_dw_write
   // PUBLISHED: ttkernel.load_from_l1
   // PUBLISHED: ttkernel.noc_async_write
-  func.func @tensor_backed_receiver_uses_published_address(
+  func.func @same_tensor_base_on_all_nodes(
       %tensor: tensor<1x1x!ttcore.tile<32x32, f32>>)
       attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
-    %src = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
+    %source_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+        {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
-    %dst = ttl.bind_cb {cb_index = 1, block_count = 1}
+    %receiver_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
         {dfb_id = 1 : index,
          tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4096>}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
     ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
-      %reserved = ttl.cb_reserve %dst
+      %reserved = ttl.cb_reserve %receiver_dfb
           : <[1, 1], !ttcore.tile<32x32, f32>, 1>
           -> tensor<1x1x!ttcore.tile<32x32, f32>>
       %receive = ttl.copy %pipe, %reserved
@@ -306,12 +373,89 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
              tensor<1x1x!ttcore.tile<32x32, f32>>)
           -> !ttl.receive_request
       ttl.wait %receive : !ttl.receive_request
-      ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+      ttl.cb_push %receiver_dfb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
     }
     ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
-      %send = ttl.copy %src, %pipe
+      %send = ttl.copy %source_dfb, %pipe
           : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
              !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+
+  // COMPUTED-LABEL: func.func @different_tensor_bases
+  // COMPUTED-NOT: ttl.pipe_computed_address_dfb_indices
+  // COMPUTED: ttkernel.noc_inline_dw_write
+  // COMPUTED: ttkernel.load_from_l1
+  // COMPUTED: ttkernel.noc_async_write
+  func.func @different_tensor_bases(
+      %first_tensor: tensor<1x1x!ttcore.tile<32x32, f32>>,
+      %second_tensor: tensor<1x1x!ttcore.tile<32x32, f32>>)
+      attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+    %source_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+        {dfb_id = 2 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %receiver_dfb = ttl.bind_cb {cb_index = 2, block_count = 1}
+        {dfb_id = 3 : index,
+         tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4096>}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 1
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1>
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1> {
+      %reserved = ttl.cb_reserve %receiver_dfb
+          : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %receive = ttl.copy %pipe, %reserved
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1>,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.receive_request
+      ttl.wait %receive : !ttl.receive_request
+      ttl.cb_push %receiver_dfb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    }
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1> {
+      %send = ttl.copy %source_dfb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+
+  // COMPUTED-LABEL: func.func @mixed_tensor_and_compiler_backing
+  // COMPUTED-NOT: ttl.pipe_computed_address_dfb_indices
+  // COMPUTED: ttkernel.noc_inline_dw_write
+  // COMPUTED: ttkernel.load_from_l1
+  // COMPUTED: ttkernel.noc_async_write
+  func.func @mixed_tensor_and_compiler_backing(
+      %tensor: tensor<1x1x!ttcore.tile<32x32, f32>>)
+      attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+    %source_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+        {dfb_id = 4 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %receiver_dfb = ttl.bind_cb {cb_index = 3, block_count = 1}
+        {dfb_id = 5 : index,
+         tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4096>}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 2
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 2>
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 2> {
+      %reserved = ttl.cb_reserve %receiver_dfb
+          : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %receive = ttl.copy %pipe, %reserved
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 2>,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.receive_request
+      ttl.wait %receive : !ttl.receive_request
+      ttl.cb_push %receiver_dfb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    }
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 2> {
+      %send = ttl.copy %source_dfb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 2>)
           -> !ttl.transfer_handle<write>
       ttl.wait %send : !ttl.transfer_handle<write>
     }

@@ -698,6 +698,12 @@ the backing L1 allocation can change between invocations. Keeping the base
 out of compile-time arguments lets the program cache reuse the kernel binary
 without retaining an address from an earlier allocation.
 
+The base may identify compiler-managed storage or tensor-backed storage whose
+finalized segments all use the same tensor index and byte offset. Receiver
+publication remains required when a physical DFB's segments use different
+tensor bases, when the DFB has multiple reconfiguration configurations, or
+when it shares its storage allocation with another physical DFB.
+
 For ordinary point-to-point transfers, `%initial_slot` is usually 0. For
 gather or allgather-style receivers, `PipeGraph` derives it from the complete
 producer reservation schedule for the physical receiver DFB. Producer
