@@ -1445,68 +1445,87 @@ def TTKernelInsertInits
   ];
 }
 
+def TTKernelCleanup : Pass<"ttkernel-cleanup", "::mlir::ModuleOp"> {
+  let summary = "Simplify TTKernel synchronization and invariant hardware configuration";
+  let description = [{
+    Removes redundant barriers, hoists invariant value computations, and
+    replaces eligible writes with one-packet state setup and issue operations.
+    State setup precedes a blocking wait or an invariant loop only when the
+    intervening operations and their callees preserve the write command.
+
+    A statically nonempty copy/pack loop shares one copy initialization when
+    its source DFB is invariant and every operation preserves the copy
+    configuration. Nested control flow, unknown calls, changing sources,
+    and other hardware operations retain per-iteration initialization.
+
+    Running after core specialization and static record-loop expansion exposes
+    constant endpoints and straight-line waits that were unavailable during
+    initial TTL lowering. This pass reuses that lowering's cleanup patterns.
+    Module scope prevents concurrent mutation of functions inspected by
+    callable-effect analysis.
+  }];
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect",
+    "::mlir::tt::ttkernel::TTKernelDialect"
+  ];
+}
+
 def TTKernelSpecializeCores
     : Pass<"ttkernel-specialize-cores", "::mlir::ModuleOp"> {
-  let summary = "Clone kernels per core when control flow branches on a coordinate";
+  let summary = "Clone kernels per core when control flow depends on a coordinate";
   let description = [{
-    Per-core specialization for TTKernel functions. Requires the
-    `ttl.launch_grid` attribute, missing or malformed `ttl.launch_grid` is a hard error.
+    Specializes TTKernel functions using the `ttl.launch_grid` module
+    attribute. Missing or malformed launch extents are errors.
 
-    For each kernel whose scf.if region branches on a core coordinate, clones
-    the function once per launch coordinate, replaces
-    ttkernel.my_logical_x_ / ttkernel.my_logical_y_ with arith.constant's
-    for that core, and tags the cloned function with ttl.core_coord (the coordinate it
-    serves). Downstream canonicalize / cse then fold the now-constant
-    branch conditions and delete untaken regions. The runtime bridge reads
-    ttl.core_coord to build per-kernel core ranges for dispatch.
+    A function is specialized when a structured region branch selector,
+    repetition condition, or loop bound depends on
+    `ttkernel.my_logical_x_` or `ttkernel.my_logical_y_`. This includes
+    `scf.if`, `scf.index_switch`, `scf.for`, and `scf.while`. The pass creates
+    one clone per launch coordinate, replaces coordinate reads with constants,
+    and records the clone's coordinate in `ttl.core_coord`. Canonicalization
+    can then resolve coordinate-dependent control flow. The runtime uses
+    `ttl.core_coord` to dispatch each clone to its assigned core.
 
-    NOTE: functions with symbol uses (e.g. `func.call` targets) are left
-    unspecialized with a warning so erasing the original does not leave dangling
-    `SymbolRefAttr`s; unrelated functions in the module are still specialized.
+    Functions with symbol uses remain unspecialized because replacing them
+    would require rewriting their references. The pass emits a warning for
+    each such function and continues specializing independent functions.
 
-    Example (`ttl.launch_grid = [1, 2]`):
+    For example, this function selects a value using the core's y coordinate:
+
     ```mlir
-    // Before:
-    func.func @k() -> index {
-      %c0 = arith.constant 0 : index
-      %c7 = arith.constant 7 : index
-      %c9 = arith.constant 9 : index
-      %y = ttkernel.my_logical_y_ : () -> index
-      %pred = arith.cmpi eq, %y, %c0 : index
-      %r = scf.if %pred -> (index) {
-        scf.yield %c7 : index
-      } else {
-        scf.yield %c9 : index
+    module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
+      func.func @select_value() -> index {
+        %zero = arith.constant 0 : index
+        %first = arith.constant 7 : index
+        %other = arith.constant 9 : index
+        %core_y = "ttkernel.my_logical_y_"() : () -> index
+        %is_first = arith.cmpi eq, %core_y, %zero : index
+        %value = scf.if %is_first -> (index) {
+          scf.yield %first : index
+        } else {
+          scf.yield %other : index
+        }
+        return %value : index
       }
-      return %r : index
     }
+    ```
 
-    // After:
-    func.func @k_c0_0() -> index attributes {ttl.core_coord = [[0, 0]]} {
-      %c0 = arith.constant 0 : index
-      %c7 = arith.constant 7 : index
-      %c9 = arith.constant 9 : index
-      %y = arith.constant 0 : index
-      %pred = arith.cmpi eq, %y, %c0 : index
-      %r = scf.if %pred -> (index) {
-        scf.yield %c7 : index
-      } else {
-        scf.yield %c9 : index
+    After specialization followed by canonicalization, each clone contains
+    only the value selected on its assigned core:
+
+    ```mlir
+    module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
+      func.func @select_value_c0_0() -> index
+          attributes {ttl.core_coord = [[0, 0]]} {
+        %value = arith.constant 7 : index
+        return %value : index
       }
-      return %r : index
-    }
-    func.func @k_c0_1() -> index attributes {ttl.core_coord = [[0, 1]]} {
-      %c0 = arith.constant 0 : index
-      %c7 = arith.constant 7 : index
-      %c9 = arith.constant 9 : index
-      %y = arith.constant 1 : index
-      %pred = arith.cmpi eq, %y, %c0 : index
-      %r = scf.if %pred -> (index) {
-        scf.yield %c7 : index
-      } else {
-        scf.yield %c9 : index
+      func.func @select_value_c0_1() -> index
+          attributes {ttl.core_coord = [[0, 1]]} {
+        %value = arith.constant 9 : index
+        return %value : index
       }
-      return %r : index
     }
     ```
   }];
@@ -1514,6 +1533,82 @@ def TTKernelSpecializeCores
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
     "::mlir::func::FuncDialect"
+  ];
+}
+
+def TTKernelBatchStaticPipeNetReceives
+    : Pass<"ttkernel-batch-static-pipenet-receives", "::mlir::func::FuncOp"> {
+  let summary = "Post independent PipeNet receives before waiting for payloads";
+  let description = [{
+    Combines reservations for a static, initially empty receive DFB and posts
+    every readiness notification before waiting for individual completions.
+    Sender-computed addresses place each payload in a distinct reserved slot.
+    Completion waits and DFB publication remain in record order.
+
+    For example, three sequential `reserve(1); post(); wait(); push(1)`
+    transactions become `reserve(3); post(); post(); post(); atomic_barrier()`
+    followed by three ordered `wait(); push(1)` transactions. The reservation
+    must fit capacity proven available before the first receive.
+
+    Unknown counts, repeated receive sequences, receiver-published addresses,
+    and additional observable effects retain sequential execution. Temporary
+    initial-capacity annotations are removed whether batching succeeds or not.
+  }];
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::tt::ttkernel::TTKernelDialect"
+  ];
+}
+
+def TTKernelUnrollStaticPipeNetRecordLoops
+    : Pass<"ttkernel-unroll-static-pipenet-record-loops",
+           "::mlir::func::FuncOp"> {
+  let summary = "Unroll static local PipeNet record loops";
+  let description = [{
+    Fully unrolls compiler-marked local PipeNet record loops whose bounds are
+    constant. Per-core specialization makes those bounds constant when they
+    depend on a launch coordinate. Unrolling exposes the selected record index
+    to canonicalization, which can replace immutable record-table lookups with
+    constants.
+
+    A loop with dynamic bounds remains structurally unchanged. Its temporary
+    compiler marker is removed because no later pass consumes it.
+
+    For example, a marked loop selects a destination from a two-record table.
+    Here `@transfer` represents the transfer body for that destination:
+
+    ```mlir
+    func.func private @transfer(index)
+    func.func @send_records() {
+      %lower = arith.constant 0 : index
+      %upper = arith.constant 2 : index
+      %step = arith.constant 1 : index
+      scf.for %record = %lower to %upper step %step {
+        %destination = ttkernel.experimental.constant_table_lookup %record, [3, 5] : index
+        func.call @transfer(%destination) : (index) -> ()
+      } {ttl.pipenet_local_record_loop}
+      return
+    }
+    ```
+
+    After unrolling followed by canonicalization, both destinations are
+    constants and the transfers execute in their original record order:
+
+    ```mlir
+    func.func private @transfer(index)
+    func.func @send_records() {
+      %second_destination = arith.constant 5 : index
+      %first_destination = arith.constant 3 : index
+      func.call @transfer(%first_destination) : (index) -> ()
+      func.call @transfer(%second_destination) : (index) -> ()
+      return
+    }
+    ```
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect"
   ];
 }
 

@@ -1899,6 +1899,104 @@ static FailureOr<WaitedDFBMutationPlan> buildWaitedDFBMutationPlan(
   return plan;
 }
 
+// Plan each output DFB's tensor type and indexing map from `creation`'s stores.
+// Input-free row-prefix outputs also update `creation.iteration` to execute
+// once. Reject incompatible stores or surviving full-tile uses via
+// `failureReason`.
+static FailureOr<SmallVector<ComputeOutputPlan>>
+buildComputeOutputPlans(ComputeOpCreationPlan &creation,
+                        std::string &failureReason) {
+  SmallVector<ComputeOutputPlan> plans;
+  plans.reserve(creation.outputs.dfbs.size());
+  bool changesResultRepresentation = false;
+  bool onlyRowPrefixOutputs = true;
+
+  for (Value outputDFB : creation.outputs.dfbs) {
+    SmallVector<StoreOp> stores;
+    for (const OutputDFBTransaction &transaction :
+         creation.outputs.transactions) {
+      if (transaction.dfb == outputDFB) {
+        llvm::append_range(stores, transaction.stores);
+      }
+    }
+    assert(!stores.empty() && "every output DFB must have a store");
+
+    bool usesRowPrefix = static_cast<bool>(stores.front().getRowPrefix());
+    if (llvm::any_of(stores, [&](StoreOp store) {
+          return static_cast<bool>(store.getRowPrefix()) != usesRowPrefix;
+        })) {
+      failureReason =
+          "one dataflow buffer cannot mix row-prefix and regular stores";
+      return failure();
+    }
+
+    ComputeOutputPlan plan;
+    if (!usesRowPrefix) {
+      onlyRowPrefixOutputs = false;
+      plan.tensorType = creation.resultType;
+      plan.indexingMap = creation.iteration.outputMap;
+    } else {
+      if (creation.rowNormalization) {
+        failureReason =
+            "row-prefix output is unsupported for row-normalization block "
+            "creation";
+        return failure();
+      }
+
+      auto destinationType =
+          cast<RankedTensorType>(stores.front().getView().getType());
+      if (llvm::any_of(stores, [&](StoreOp store) {
+            return store.getView().getType() != destinationType;
+          })) {
+        failureReason = "row-prefix stores to one dataflow buffer require one "
+                        "destination tensor type";
+        return failure();
+      }
+      plan.tensorType = destinationType;
+      plan.indexingMap = buildZeroMap(stores.front().getContext(),
+                                      creation.iteration.iteratorTypes.size(),
+                                      destinationType.getRank());
+      changesResultRepresentation |= plan.tensorType != creation.resultType;
+    }
+
+    if (!plans.empty() && plans.front().tensorType.getElementType() !=
+                              plan.tensorType.getElementType()) {
+      failureReason = "one compute cannot publish output dataflow buffers with "
+                      "different tile types";
+      return failure();
+    }
+    plans.push_back(std::move(plan));
+  }
+
+  if (creation.inputs.empty() && onlyRowPrefixOutputs) {
+    assert(creation.resultType.getNumElements() == 1 &&
+           "row-prefix source must contain one tile");
+    // No operand defines a loop bound. Represent the one-tile source with a
+    // zero-dimensional iteration domain instead of unused unit iterators.
+    creation.iteration.iteratorTypes.clear();
+    creation.iteration.outputMap = buildZeroMap(
+        creation.source->getContext(), 0, creation.resultType.getRank());
+    for (ComputeOutputPlan &plan : plans) {
+      plan.indexingMap = buildZeroMap(creation.source->getContext(), 0,
+                                      plan.tensorType.getRank());
+    }
+  }
+
+  if (changesResultRepresentation &&
+      llvm::any_of(creation.source->getResult(0).getUses(),
+                   [&](OpOperand &use) {
+                     auto store = dyn_cast<StoreOp>(use.getOwner());
+                     return !store || &store.getTensorMutable() != &use ||
+                            !llvm::is_contained(creation.outputs.stores, store);
+                   })) {
+    failureReason =
+        "row-prefix output cannot preserve a non-store use of the full-tile "
+        "result";
+    return failure();
+  }
+  return plans;
+}
+
 static PlanningResult<ComputeOpCreationPlan, ComputeOpCreationRejection>
 buildComputeOpCreationPlan(Operation *source,
                            const DFBValueLifetimeAnalysis &lifetimes,
@@ -2016,6 +2114,15 @@ buildComputeOpCreationPlan(Operation *source,
         outputs.getRejection().message);
   }
   plan.outputs = std::move(outputs).takePlan();
+
+  FailureOr<SmallVector<ComputeOutputPlan>> outputPlans =
+      buildComputeOutputPlans(plan, failureReason);
+  if (failed(outputPlans)) {
+    return rejectComputeOpCreation(
+        source, ComputeOpCreationRejectionKind::UnsupportedOutputPublication,
+        std::move(failureReason));
+  }
+  plan.outputPlans = std::move(*outputPlans);
 
   for (const OutputDFBTransaction &transaction : plan.outputs.transactions) {
     if (!transaction.isWaitedMutation()) {
@@ -2167,12 +2274,21 @@ static FailureOr<PassthroughStorePlan> buildPassthroughStorePlan(
   plan.reserve = reserve;
   plan.outputView = store.getView();
   plan.outputDFB = reserve.getCb();
-  plan.tensorType = tensorType;
-  plan.tileType = tileType;
+  auto outputTensorType = cast<RankedTensorType>(store.getView().getType());
+  auto outputTileType =
+      cast<ttcore::TileType>(outputTensorType.getElementType());
+  plan.computeOutputTensorType = outputTensorType;
+  plan.inputTileType = tileType;
+  plan.outputTileType = outputTileType;
   AffineMap identity = AffineMap::getMultiDimIdentityMap(tensorType.getRank(),
                                                          store->getContext());
   plan.iteration.inputMaps = {identity};
-  plan.iteration.outputMap = identity;
+  if (store.getRowPrefix()) {
+    plan.iteration.outputMap = buildZeroMap(
+        store.getContext(), tensorType.getRank(), outputTensorType.getRank());
+  } else {
+    plan.iteration.outputMap = identity;
+  }
   plan.iteration.iteratorTypes.assign(tensorType.getRank(),
                                       utils::IteratorType::parallel);
   // These associations represent the passthrough result before a result SSA

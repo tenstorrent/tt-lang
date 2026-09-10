@@ -987,6 +987,20 @@ inline TileOp createTileOpWithPlaceholderDstIndex(OpBuilder &builder,
   return tileOp;
 }
 
+/// Store `tile` into producer-owned `view` at `indices`, preserving
+/// `rowPrefix`. Mark the DST index as a placeholder for subsequent register
+/// assignment.
+inline TileStoreOp createTileStoreWithPlaceholderDstIndex(
+    OpBuilder &builder, Location loc, Value tile, Value view,
+    ValueRange indices, UnitAttr rowPrefix = nullptr) {
+  Value dstIndex = createPlaceholderDstIndex(builder, loc);
+  TileStoreOp store =
+      TileStoreOp::create(builder, loc, tile, view, indices, dstIndex,
+                          DFBTileStoreKind::Producer, rowPrefix);
+  addPlaceholderDstIndexAttr(store.getOperation());
+  return store;
+}
+
 /// Collect the dataflow buffer values targeted by pack operations inside a
 /// loop.
 llvm::SmallDenseSet<Value, 2> getPackTileCBs(scf::ForOp loop);

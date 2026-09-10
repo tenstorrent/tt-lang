@@ -400,6 +400,27 @@ class TensorBlock:
         )
         ttl.store(rhs, acquired_view)
 
+    def store_rows(ast_self: TensorBlock, rhs: TensorBlock) -> None:
+        """Pack one 32x32 source tile into one same-width destination tile.
+
+        The source must contain one 32x32 tile. The reserve-backed destination
+        must contain one tile with the same width and a supported height no
+        greater than 32. BF16 and FP32 are supported.
+        """
+        acquired_view = _get_reserve_backed_view(ast_self, "store_rows")
+        _require_row_prefix_store(rhs, acquired_view)
+        ttl.store(rhs, acquired_view, row_prefix=True)
+
+    def accumulate_rows(ast_self: TensorBlock, rhs: TensorBlock) -> None:
+        """Accumulate one 32x32 tile into one same-width destination tile.
+
+        The reserved block must first be initialized by ``store_rows`` before
+        the enclosing loop uses this method for packer L1 accumulation.
+        """
+        acquired_view = _get_reserve_backed_view(ast_self, "accumulate_rows")
+        _require_row_prefix_store(rhs, acquired_view)
+        ttl.store(rhs, acquired_view, accumulate=True, row_prefix=True)
+
     def __iadd__(ast_self: TensorBlock, rhs: TensorBlock) -> TensorBlock:
         """Accumulate into a reserve or replace a previously read wait.
 
@@ -665,6 +686,17 @@ def _get_acquired_view_from_block(block):
     return acquired_view
 
 
+def _get_reserve_backed_view(block, method_name: str):
+    if not _is_block(block):
+        raise ValueError(
+            f"{method_name}() must be called on a block acquired from reserve()"
+        )
+    acquired_view = _get_acquired_view_from_block(block)
+    if _get_acquire_op_name_from_view(acquired_view) != "ttl.cb_reserve":
+        raise ValueError(f"{method_name}() requires a reserve-backed block")
+    return acquired_view
+
+
 def _get_cb_from_block(block):
     """Extract the CB from a block (result of ttl.attach_cb).
 
@@ -703,6 +735,55 @@ def _require_matching_tile_shapes(lhs_elem, rhs_elem, lhs_name: str, rhs_name: s
         raise ValueError(
             f"{lhs_name} tile shape {lhs[0]}x{lhs[1]} must match "
             f"{rhs_name} tile shape {rhs[0]}x{rhs[1]}"
+        )
+
+
+def _require_row_prefix_store(rhs, acquired_view) -> None:
+    """Validate a full source tile and one same-width destination tile."""
+    from math import prod
+
+    from ttl.dialects import ttcore
+
+    source_type = rhs.type
+    destination_type = acquired_view.type
+    if not isinstance(source_type, RankedTensorType) or not isinstance(
+        destination_type, RankedTensorType
+    ):
+        raise ValueError("row-prefix store requires ranked tensor operands")
+
+    source_tile = ttcore.ir.TileType.maybe_downcast(source_type.element_type)
+    destination_tile = ttcore.ir.TileType.maybe_downcast(destination_type.element_type)
+    if source_tile is None or destination_tile is None:
+        raise ValueError("row-prefix store requires tiled operands")
+
+    source_tile_shape = tuple(map(int, source_tile.shape))
+    destination_tile_shape = tuple(map(int, destination_tile.shape))
+    if source_tile_shape != (32, 32):
+        raise ValueError(
+            "row-prefix store source must use 32x32 tiles, got "
+            f"{source_tile_shape[0]}x{source_tile_shape[1]}"
+        )
+    if prod(source_type.shape) != 1:
+        raise ValueError(
+            "row-prefix store source must contain exactly one tile, got "
+            f"shape {tuple(source_type.shape)}"
+        )
+    if source_tile.data_type_as_int != destination_tile.data_type_as_int:
+        raise ValueError("row-prefix store source and destination dtypes must match")
+
+    source_dtype = ttcore.DataType(source_tile.data_type_as_int)
+    if source_dtype not in (ttcore.DataType.BFloat16, ttcore.DataType.Float32):
+        raise ValueError("row-prefix store supports only bf16 and f32 tile data types")
+    destination_tile_count = prod(destination_type.shape)
+    if destination_tile_count != 1:
+        raise ValueError(
+            "row-prefix store destination must contain exactly one tile, got "
+            f"shape {tuple(destination_type.shape)}"
+        )
+    if destination_tile_shape[1] != source_tile_shape[1]:
+        raise ValueError(
+            "row-prefix store destination tile width must equal source width "
+            f"{source_tile_shape[1]}, got {destination_tile_shape[1]}"
         )
 
 
