@@ -272,8 +272,10 @@ module attributes {
 
 // -----
 
-// Computed addressing accepts only fully tensor-backed DFBs with one base
-// across every storage segment. Reconfiguration of another DFB is independent.
+// DFB 1 uses one tensor base on both allocation nodes, so its transfer uses
+// computed addressing even though DFB 4 is reconfigured. DFBs 2 and 3 retain
+// receiver publication because their segments use different tensor bases or
+// mix tensor-backed and compiler-managed storage.
 module attributes {
   ttl.dfb_allocations = [
     {allocation_nodes = [[0, 0]], block_count = 1 : i32,
@@ -338,19 +340,19 @@ module attributes {
          page_size = 4096 : i32}]}]},
   ttl.launch_grid = array<i64: 3, 1>
 } {
-  // COMPUTED-LABEL: func.func @uniform_tensor_backing
+  // COMPUTED-LABEL: func.func @same_tensor_base_on_all_nodes
   // COMPUTED-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
   // COMPUTED-NOT: ttkernel.store_to_l1
   // COMPUTED-NOT: ttkernel.load_from_l1
   // COMPUTED: ttkernel.noc_async_write_one_packet_set_state
   // COMPUTED: ttkernel.noc_async_write_one_packet_with_state
 
-  // PUBLISHED-LABEL: func.func @uniform_tensor_backing
+  // PUBLISHED-LABEL: func.func @same_tensor_base_on_all_nodes
   // PUBLISHED-NOT: ttl.pipe_computed_address_dfb_indices
   // PUBLISHED: ttkernel.noc_inline_dw_write
   // PUBLISHED: ttkernel.load_from_l1
   // PUBLISHED: ttkernel.noc_async_write
-  func.func @uniform_tensor_backing(
+  func.func @same_tensor_base_on_all_nodes(
       %tensor: tensor<1x1x!ttcore.tile<32x32, f32>>)
       attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
     %source_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}

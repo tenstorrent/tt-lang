@@ -4885,13 +4885,14 @@ static ComputedAddressPlan buildComputedAddressPlan(
     bool hasStableTensorStorage =
         !storageFootprint.reconfiguredPhysicalIndices.contains(
             receiverInfo.dfbIndex) &&
-        storageFootprint.uniformTensorBasePhysicalIndices.contains(
+        storageFootprint.singleTensorBasePhysicalIndices.contains(
             receiverInfo.dfbIndex);
-    // Computed addressing passes one invariant base per physical DFB. A
-    // reconfiguration may change its backing or block geometry, while shared
-    // storage is named by a separate storage index.
-    if (sharedStorageDFBIndices.contains(receiverInfo.dfbIndex) ||
-        (usesTensorBacking && !hasStableTensorStorage)) {
+    bool requiresReceiverPublishedAddress =
+        sharedStorageDFBIndices.contains(receiverInfo.dfbIndex) ||
+        (usesTensorBacking && !hasStableTensorStorage);
+    // Use receiver publication when the physical DFB index cannot identify one
+    // address base valid for every storage segment and configuration.
+    if (requiresReceiverPublishedAddress) {
       continue;
     }
     std::optional<PipeComputedAddressInfo> maybeComputedAddress =

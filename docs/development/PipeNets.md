@@ -700,9 +700,9 @@ without retaining an address from an earlier allocation.
 
 The base may identify compiler-managed storage or tensor-backed storage whose
 finalized segments all use the same tensor index and byte offset. Receiver
-publication remains required when a physical DFB has nonuniform tensor
-segments, has multiple reconfiguration configurations, or shares its storage
-allocation with another physical DFB.
+publication remains required when a physical DFB's segments use different
+tensor bases, when the DFB has multiple reconfiguration configurations, or
+when it shares its storage allocation with another physical DFB.
 
 For ordinary point-to-point transfers, `%initial_slot` is usually 0. For
 gather or allgather-style receivers, `PipeGraph` derives it from the complete

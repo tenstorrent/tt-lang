@@ -130,8 +130,8 @@ struct FinalizedDFBStorageFootprint {
   llvm::DenseMap<int64_t, int64_t> storageIndexByPhysicalIndex;
   /// Physical indices backed by a tensor in any binding or storage segment.
   llvm::DenseSet<int64_t> tensorBackedPhysicalIndices;
-  /// Physical indices whose storage segments use one tensor index and offset.
-  llvm::DenseSet<int64_t> uniformTensorBasePhysicalIndices;
+  /// Physical indices whose storage segments share one tensor index and offset.
+  llvm::DenseSet<int64_t> singleTensorBasePhysicalIndices;
   /// Physical indices with more than one finalized epoch configuration.
   llvm::DenseSet<int64_t> reconfiguredPhysicalIndices;
   bool usesPerNodeAccounting = false;

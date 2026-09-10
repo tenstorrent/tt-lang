@@ -590,8 +590,10 @@ getFinalizedDFBStorageFootprint(ModuleOp module) {
           return failure();
         }
         staticStorageDomain = LaunchNodeDomain{};
-        bool hasUniformTensorBase = !storageSegments.empty();
-        std::optional<std::pair<int64_t, int64_t>> tensorBase;
+        // Computed addressing requires one tensor argument and byte offset for
+        // every storage segment of a physical DFB.
+        bool hasSingleTensorBase = !storageSegments.empty();
+        std::optional<std::pair<int64_t, int64_t>> commonTensorBase;
         for (auto indexedSegment : llvm::enumerate(storageSegments)) {
           auto segment = dyn_cast<DictionaryAttr>(indexedSegment.value());
           if (!segment) {
@@ -628,21 +630,21 @@ getFinalizedDFBStorageFootprint(ModuleOp module) {
           }
           if (!tensorBacking) {
             staticStorageDomain = staticStorageDomain.unionWith(*segmentDomain);
-            hasUniformTensorBase = false;
+            hasSingleTensorBase = false;
             continue;
           }
           result.tensorBackedPhysicalIndices.insert(physicalIndex);
           auto backing = cast<TensorBackingAttr>(tensorBacking);
           std::pair<int64_t, int64_t> segmentBase{backing.getTensorIndex(),
                                                   backing.getByteOffset()};
-          if (!tensorBase) {
-            tensorBase = segmentBase;
-          } else if (*tensorBase != segmentBase) {
-            hasUniformTensorBase = false;
+          if (!commonTensorBase) {
+            commonTensorBase = segmentBase;
+          } else if (*commonTensorBase != segmentBase) {
+            hasSingleTensorBase = false;
           }
         }
-        if (hasUniformTensorBase) {
-          result.uniformTensorBasePhysicalIndices.insert(physicalIndex);
+        if (hasSingleTensorBase) {
+          result.singleTensorBasePhysicalIndices.insert(physicalIndex);
         }
       }
       domainByPhysicalIndex.try_emplace(physicalIndex,
