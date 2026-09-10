@@ -4859,7 +4859,6 @@ static ComputedAddressPlan buildComputedAddressPlan(
     MutableArrayRef<PipeTransferAllocationUnit> units,
     const PipeGraph &pipeGraph,
     const FinalizedDFBStorageFootprint &storageFootprint,
-    bool hasReconfiguration,
     const llvm::DenseSet<int64_t> &sharedStorageDFBIndices) {
   ComputedAddressPlan plan;
 
@@ -4883,15 +4882,16 @@ static ComputedAddressPlan buildComputedAddressPlan(
     bool usesTensorBacking =
         storageFootprint.tensorBackedPhysicalIndices.contains(
             receiverInfo.dfbIndex);
-    bool hasInvariantTensorBase =
-        !hasReconfiguration &&
+    bool hasStableTensorStorage =
+        !storageFootprint.reconfiguredPhysicalIndices.contains(
+            receiverInfo.dfbIndex) &&
         storageFootprint.uniformTensorBasePhysicalIndices.contains(
             receiverInfo.dfbIndex);
     // Computed addressing passes one invariant base per physical DFB. A
-    // reconfiguration may replace its backing, while shared storage is named
-    // by a separate storage index.
+    // reconfiguration may change its backing or block geometry, while shared
+    // storage is named by a separate storage index.
     if (sharedStorageDFBIndices.contains(receiverInfo.dfbIndex) ||
-        (usesTensorBacking && !hasInvariantTensorBase)) {
+        (usesTensorBacking && !hasStableTensorStorage)) {
       continue;
     }
     std::optional<PipeComputedAddressInfo> maybeComputedAddress =
@@ -5033,8 +5033,7 @@ LogicalResult buildPipeResourcePlan(
       recordSharedStorage(storageFootprint->globalMembers);
     }
     computedAddressPlan = buildComputedAddressPlan(
-        units, pipeGraph, *storageFootprint,
-        mod->hasAttr(kDFBReconfigurationPlanAttrName), sharedStorageDFBIndices);
+        units, pipeGraph, *storageFootprint, sharedStorageDFBIndices);
   }
   info.computedAddressCounterInitializations =
       computedAddressPlan.counterInitializations;
