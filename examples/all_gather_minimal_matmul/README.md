@@ -127,7 +127,7 @@ fabric disabled.
 ```bash
 python -m examples.all_gather_minimal_matmul.n_sharded \
     --mesh-shape 2x2 --worker-grid 13 10 --transpose \
-    --m-tiles 25 --k-tiles-per-device 2 --n-tiles 80 \
+    --m-tiles 24 --k-tiles-per-device 2 --n-tiles 80 \
     --activation-all-gather ring --gather-output --output-gather-workers 2
 ```
 
@@ -147,7 +147,7 @@ correctness checks and TT-Metal device-kernel profiling.
 | Worker decomposition | Fixed M/N grid, optional transpose, repeated output blocks. |
 | Arithmetic | BF16/FP32 TILE tensors, row bias, FP32 packer accumulation. |
 | Activation storage | Full-K L1 reuse or two-block streaming; bounded-K reuse remains to be implemented. |
-| Edge blocks and partially occupied grids | Not implemented. |
+| Partially occupied M grids | Zero-padded activation rows; stores restricted to logical M. Tile/block alignment remains required. |
 | Exact/approximate GELU | Not implemented. |
 | Two-/three-way and unequal-width N splits | Not implemented. |
 | Scaled addcmul with row/full multipliers | Not implemented. |

@@ -5,6 +5,11 @@ with TT-Metal's
 [`ttnn.experimental.all_gather_minimal_matmul_async`](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/ttnn/cpp/ttnn/operations/experimental/ccl/all_gather_minimal_matmul_async/all_gather_minimal_matmul_async.cpp).
 Both compared versions return the same replicated output.
 
+Compare the best measured configuration of each implementation for identical
+global inputs, precision and replicated output. Tune compute grids, blocks and
+communication independently; equal resource usage is not required. Report
+the selected worker count and configuration for each result.
+
 **The published four-device results use 20 TT-Lang compute workers per device (2x10), versus native's 108 (12x9). The operation supports 130 workers; tuning across worker counts is in progress. Performance parity with native has not been established.**
 
 ## Files

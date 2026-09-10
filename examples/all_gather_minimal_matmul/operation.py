@@ -51,7 +51,7 @@ Run from the repository root with the selected devices idle::
 
     # Four devices, 130 compute workers/device, replicated output.
     python -m examples.all_gather_minimal_matmul.n_sharded --mesh-shape 2x2 \
-        --worker-grid 13 10 --transpose --m-tiles 25 --k-tiles-per-device 2 \
+        --worker-grid 13 10 --transpose --m-tiles 24 --k-tiles-per-device 2 \
         --n-tiles 80 --activation-all-gather ring --gather-output
 
 Dimensions and mesh selection: ``README.md`` beside this file.
