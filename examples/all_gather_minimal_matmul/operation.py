@@ -3,20 +3,20 @@
 
 """N-sharded matmul with dedicated activation communication workers.
 
-    column 0, rows 0..3: exchange activations across devices
-                         forward four rows; relay the other rows locally
-    column 0, rows 4..9: forward two relayed rows each
-    columns 1..M-workers: stream weights -> bias-initialized matmul -> output DRAM
+    column 0, rows 0..3: exchange activations across devices and inject every
+                         activation block directly into its compute chain
+    columns 1..M-workers: forward activations down N-worker compute chains
+                          stream weights -> bias-initialized matmul -> output DRAM
 
     activation blocks enter row 0 and advance through point-to-point node chains
 
     communication and compute execute concurrently through bounded L1 DFBs
     cache full K across N rounds when enabled; otherwise stream K blocks
 
-Run from the repository root (four devices, 120 compute, four fabric and six
-local-distribution workers/device):
+Run from the repository root (four devices, 120 compute and four fabric
+workers/device):
     python -m examples.all_gather_minimal_matmul --mesh-shape 4x1 \
-        --compute-grid 12 10 --communication-workers 10 \
+        --compute-grid 12 10 --communication-workers 4 \
         --activation-all-gather ring --m-tiles 296 --k-tiles-per-device 40 \
         --n-tiles 480 --m-block-tiles 4 --k-block-tiles 10 \
         --n-block-tiles 12 --no-reuse-activation
