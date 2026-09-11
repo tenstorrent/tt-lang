@@ -183,10 +183,10 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="specialize_cores",
         action=argparse.BooleanOptionalAction,
-        help="Clone each kernel whose structured branch or loop control depends on a "
-        "core coordinate once per launch coordinate, const-folding core_x / "
-        "core_y to resolve that control flow (ttkernel-specialize-cores). "
-        "Opt-in (default: disabled).",
+        help="Clone each kernel whose structured control flow or immutable "
+        "constant-table index depends on a core coordinate once per launch "
+        "coordinate, const-folding core_x / core_y and affected table "
+        "columns (ttkernel-specialize-cores). Opt-in (default: disabled).",
     )
     p.add_argument(
         "--ttl-l1-budget",

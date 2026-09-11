@@ -472,6 +472,8 @@ class TransferGraph:
                 self._normalize_edge(domain, edge, edge_index)
                 for edge_index, edge in enumerate(input_edges)
             )
+            if len(set(transfer_edges)) != len(transfer_edges):
+                raise ValueError("TransferGraph edges must be unique")
         object.__setattr__(self, "domain", domain)
         object.__setattr__(self, "transfer_edges", transfer_edges)
         object.__setattr__(self, "structured", structured)
@@ -574,16 +576,86 @@ class TransferGraph:
         return len(self.transfer_edges) if self.is_explicit else None
 
     def metadata_cost(self) -> GraphMetadataCost:
-        compile_time = (
-            "O(E * (C + R)) explicit user edges"
-            if self.is_explicit
-            else "O(1 + C + R) structured descriptor"
-        )
+        if self.is_explicit:
+            compile_time = "O(E * (C + R)) explicit user edges"
+        elif isinstance(self.structured, StencilTransfer):
+            compile_time = "O(K + C + R) structured stencil descriptor"
+        else:
+            compile_time = "O(1 + C + R) structured descriptor"
         return GraphMetadataCost(
             storage_class="compile-time metadata",
             compile_time=compile_time,
             runtime_host="none allocated by TransferGraph",
             device_visible="none allocated by TransferGraph",
+        )
+
+    def _operation_identity_capture(self) -> tuple:
+        """Return the stored graph descriptor used by operation caching."""
+
+        def device_identity(device: DeviceRef) -> tuple:
+            return tuple(tuple(coordinates) for coordinates in device.coordinates)
+
+        if self.is_explicit:
+            relation_identity = (
+                "explicit",
+                tuple(
+                    (
+                        device_identity(edge.source),
+                        (
+                            (
+                                "range",
+                                device_identity(edge.destination.lo),
+                                device_identity(edge.destination.hi),
+                            )
+                            if isinstance(edge.destination, DeviceRange)
+                            else ("device", device_identity(edge.destination))
+                        ),
+                    )
+                    for edge in self.transfer_edges
+                ),
+            )
+        else:
+            structured = self.structured
+            assert structured is not None
+            if isinstance(structured, AxisNeighborTransfer):
+                relation_identity = (
+                    "axis-neighbor",
+                    structured.component_name,
+                    structured.axis,
+                    structured.offset,
+                    structured.wrap,
+                )
+            elif isinstance(structured, StencilTransfer):
+                relation_identity = (
+                    "stencil",
+                    structured.component_name,
+                    tuple(structured.offsets),
+                    structured.wrap,
+                )
+            elif isinstance(structured, GatherTransfer):
+                relation_identity = (
+                    "gather",
+                    structured.component_name,
+                    device_identity(structured.root),
+                )
+            elif isinstance(structured, ScatterTransfer):
+                relation_identity = (
+                    "scatter",
+                    structured.component_name,
+                    device_identity(structured.source),
+                )
+            elif isinstance(structured, AllToAllTransfer):
+                relation_identity = ("all-to-all", structured.component_name)
+            else:
+                raise TypeError(
+                    f"unsupported structured transfer type "
+                    f"{type(structured).__name__}"
+                )
+
+        return (
+            "transfer-graph",
+            self.domain._operation_identity_capture(),
+            relation_identity,
         )
 
     def iter_edges(self) -> Iterator[TransferEdge]:
@@ -806,11 +878,25 @@ class TransferGraph:
         if isinstance(structured, StencilTransfer):
             if not isinstance(structured.wrap, bool):
                 raise TypeError(f"wrap must be a bool, got {structured.wrap!r}")
+            offsets = _normalize_stencil_offsets(
+                structured.offsets, len(component.extent)
+            )
+            if structured.wrap:
+                effective_offsets = []
+                seen_offsets = set()
+                for offset in offsets:
+                    effective_offset = tuple(
+                        delta % extent
+                        for delta, extent in zip(offset, component.extent)
+                    )
+                    if not any(effective_offset) or effective_offset in seen_offsets:
+                        continue
+                    seen_offsets.add(effective_offset)
+                    effective_offsets.append(effective_offset)
+                offsets = tuple(effective_offsets)
             return StencilTransfer(
                 component_name=structured.component_name,
-                offsets=_normalize_stencil_offsets(
-                    structured.offsets, len(component.extent)
-                ),
+                offsets=offsets,
                 wrap=structured.wrap,
             )
 

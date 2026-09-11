@@ -734,6 +734,70 @@ def test_operation_identity_encodes_graph_pipenet_topology():
     assert identity_for((0, 1)) != identity_for((0, 2))
 
 
+def test_operation_identity_encodes_graph_pipenet_node_pipes():
+    """Graph PipeNet identity includes its launch-node relation."""
+
+    def identity_for(source):
+        domain = ttl.DeviceDomain((1, 2))
+        graph = ttl.TransferGraph.all_to_all(domain)
+        pipe_net = ttl.PipeNet(
+            graph=graph,
+            pipes=[ttl.Pipe(src=source, dst=(0, 0))],
+        )
+
+        def selected_operation():
+            return pipe_net
+
+        return _operation_identity(selected_operation)
+
+    assert identity_for((1, 0)) == identity_for((1, 0))
+    assert identity_for((1, 0)) != identity_for((2, 0))
+
+
+def test_operation_identity_encodes_graph_pipenet_mapping_order():
+    """Graph PipeNet identity preserves mapping and callback order."""
+    domain = ttl.DeviceDomain((1, 3))
+    first = ttl.PipeMapping(
+        graph=ttl.TransferGraph.edges(domain, [((0, 0), (0, 1))]),
+        pipes=[ttl.Pipe(src=(1, 0), dst=(0, 0))],
+    )
+    second = ttl.PipeMapping(
+        graph=ttl.TransferGraph.edges(domain, [((0, 1), (0, 2))]),
+        pipes=[ttl.Pipe(src=(2, 0), dst=(0, 0))],
+    )
+
+    def identity_for(mappings):
+        pipe_net = ttl.PipeNet(mappings=mappings)
+
+        def selected_operation():
+            return pipe_net
+
+        return _operation_identity(selected_operation)
+
+    assert identity_for([first, second]) == identity_for([first, second])
+    assert identity_for([first, second]) != identity_for([second, first])
+
+
+def test_operation_identity_does_not_expand_structured_graph(monkeypatch):
+    """Structured graph identity uses its descriptor rather than its edges."""
+    domain = ttl.DeviceDomain((32,))
+    graph = ttl.TransferGraph.all_to_all(domain)
+    pipe_net = ttl.PipeNet(
+        graph=graph,
+        pipes=[ttl.Pipe(src=(1, 0), dst=(0, 0))],
+    )
+
+    def reject_edge_expansion(self):
+        raise AssertionError("structured graph identity expanded its edges")
+
+    monkeypatch.setattr(ttl.TransferGraph, "iter_edges", reject_edge_expansion)
+
+    def selected_operation():
+        return pipe_net
+
+    _operation_identity(selected_operation)
+
+
 def test_operation_identity_encodes_device_domain():
     """Device-domain components distinguish factory-created operations."""
 

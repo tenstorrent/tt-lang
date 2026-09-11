@@ -149,6 +149,36 @@ module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
 
 // -----
 
+// -- Test 9: coordinate-indexed tables require specialization. --------------
+// A constant-table lookup selects worker-specific metadata even when its result
+// does not control a region. Specialization preserves one table entry in each
+// per-core clone; canonicalization then replaces the lookup with that entry.
+
+// CHECK-NOT:   func.func @ktable_data()
+// CHECK-LABEL: func.func @ktable_data_c0_0
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 0]]
+// CHECK:         ttkernel.experimental.constant_table_lookup
+// CHECK-LABEL: func.func @ktable_data_c0_1
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 1]]
+// CHECK:         ttkernel.experimental.constant_table_lookup
+
+// FOLDED-LABEL: func.func @ktable_data_c0_0
+// FOLDED-NEXT:    %[[FIRST:.*]] = arith.constant 17 : index
+// FOLDED-NEXT:    return %[[FIRST]] : index
+// FOLDED-LABEL: func.func @ktable_data_c0_1
+// FOLDED-NEXT:    %[[SECOND:.*]] = arith.constant 29 : index
+// FOLDED-NEXT:    return %[[SECOND]] : index
+
+module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
+  func.func @ktable_data() -> index {
+    %core_y = "ttkernel.my_logical_y_"() : () -> index
+    %value = ttkernel.experimental.constant_table_lookup %core_y, [17, 29] : index
+    return %value : index
+  }
+}
+
+// -----
+
 // Coordinate-dependent selectors and loop conditions require specialization.
 // This covers region control flow beyond scf.if and scf.for.
 

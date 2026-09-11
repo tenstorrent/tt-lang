@@ -5,9 +5,9 @@
 //===----------------------------------------------------------------------===//
 //
 // Per-core specialization of TTKernel functions. Coordinate-dependent control
-// flow is identified through MLIR backward slices and control-flow value
-// origins. Each clone substitutes its assigned coordinates so subsequent
-// canonicalization can simplify branches and loop bounds.
+// flow and constant-table indices are identified through MLIR backward slices
+// and control-flow value origins. Each clone substitutes its assigned
+// coordinates so subsequent canonicalization can simplify the affected IR.
 //
 //===----------------------------------------------------------------------===//
 
@@ -146,14 +146,23 @@ regionBranchDependsOnCore(RegionBranchOpInterface branch,
   return false;
 }
 
-// Return whether any structured branch or loop in `function` requires per-core
-// specialization, sharing one origin analysis across its control-flow checks.
-static bool functionControlFlowDependsOnCore(func::FuncOp function) {
+// Return whether coordinate substitution can simplify control flow or an
+// immutable table in `function`, sharing one origin analysis across all uses.
+static bool functionRequiresCoreSpecialization(func::FuncOp function) {
   ValueOriginAnalysis originAnalysis(function);
-  auto result = function.walk([&](RegionBranchOpInterface branch) {
-    return regionBranchDependsOnCore(branch, originAnalysis)
-               ? WalkResult::interrupt()
-               : WalkResult::advance();
+  auto result = function.walk([&](Operation *operation) {
+    if (auto branch = dyn_cast<RegionBranchOpInterface>(operation);
+        branch && regionBranchDependsOnCore(branch, originAnalysis)) {
+      return WalkResult::interrupt();
+    }
+    if (auto lookup = dyn_cast<ttk::ConstantTableLookupOp>(operation)) {
+      llvm::DenseSet<Value> visitedValues;
+      if (valueDependsOnCore(lookup.getIndex(), originAnalysis,
+                             visitedValues)) {
+        return WalkResult::interrupt();
+      }
+    }
+    return WalkResult::advance();
   });
   return result.wasInterrupted();
 }
@@ -224,7 +233,7 @@ struct TTKernelSpecializeCoresPass
     // functions still get specialized.
     SmallVector<func::FuncOp> targets;
     for (auto func : module.getOps<func::FuncOp>()) {
-      if (!functionControlFlowDependsOnCore(func)) {
+      if (!functionRequiresCoreSpecialization(func)) {
         continue;
       }
       if (auto uses = SymbolTable::getSymbolUses(func, module);
