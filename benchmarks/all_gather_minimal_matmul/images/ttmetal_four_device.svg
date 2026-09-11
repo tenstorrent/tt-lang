@@ -79,7 +79,7 @@
     <rect x="40" y="362" width="350" height="390" class="device"/>
     <text x="58" y="389" class="label">Device 0 · 12×9 worker grid</text>
     <rect x="58" y="405" width="314" height="42" class="scratch"/>
-    <text x="215" y="431" class="tiny" text-anchor="middle">fabric receive + forward; write remote A to scratch</text>
+    <text x="215" y="431" class="tiny" text-anchor="middle">24/108 grid nodes are fabric clients; four mux-only nodes</text>
     <rect x="58" y="466" width="80" height="66" class="dram"/>
     <text x="98" y="489" class="label" text-anchor="middle">A₀</text>
     <text x="98" y="508" class="tiny" text-anchor="middle">M × K/4</text>
@@ -113,7 +113,7 @@
     <rect x="430" y="362" width="350" height="390" class="device"/>
     <text x="448" y="389" class="label">Device 1 · 12×9 worker grid</text>
     <rect x="448" y="405" width="314" height="42" class="scratch"/>
-    <text x="605" y="431" class="tiny" text-anchor="middle">fabric receive + forward; write remote A to scratch</text>
+    <text x="605" y="431" class="tiny" text-anchor="middle">24/108 grid nodes are fabric clients; four mux-only nodes</text>
     <rect x="448" y="466" width="80" height="66" class="dram"/>
     <text x="488" y="489" class="label" text-anchor="middle">A₁</text>
     <text x="488" y="508" class="tiny" text-anchor="middle">M × K/4</text>
@@ -147,7 +147,7 @@
     <rect x="820" y="362" width="350" height="390" class="device"/>
     <text x="838" y="389" class="label">Device 2 · 12×9 worker grid</text>
     <rect x="838" y="405" width="314" height="42" class="scratch"/>
-    <text x="995" y="431" class="tiny" text-anchor="middle">fabric receive + forward; write remote A to scratch</text>
+    <text x="995" y="431" class="tiny" text-anchor="middle">24/108 grid nodes are fabric clients; four mux-only nodes</text>
     <rect x="838" y="466" width="80" height="66" class="dram"/>
     <text x="878" y="489" class="label" text-anchor="middle">A₂</text>
     <text x="878" y="508" class="tiny" text-anchor="middle">M × K/4</text>
@@ -181,7 +181,7 @@
     <rect x="1210" y="362" width="350" height="390" class="device"/>
     <text x="1228" y="389" class="label">Device 3 · 12×9 worker grid</text>
     <rect x="1228" y="405" width="314" height="42" class="scratch"/>
-    <text x="1385" y="431" class="tiny" text-anchor="middle">fabric receive + forward; write remote A to scratch</text>
+    <text x="1385" y="431" class="tiny" text-anchor="middle">24/108 grid nodes are fabric clients; four mux-only nodes</text>
     <rect x="1228" y="466" width="80" height="66" class="dram"/>
     <text x="1268" y="489" class="label" text-anchor="middle">A₃</text>
     <text x="1268" y="508" class="tiny" text-anchor="middle">M × K/4</text>
@@ -249,5 +249,5 @@
   <rect x="1320" y="1006" width="170" height="29" rx="5" fill="#e9d5ff" stroke="#7e22ce"/>
   <text x="1405" y="1026" class="small" text-anchor="middle">write after K block 19</text>
 
-  <text x="40" y="1080" class="tiny">Source: tt-metal f69f924c6b4f · all_gather_minimal_matmul_async · M=9472, K=5120, N=15360</text>
+  <text x="40" y="1080" class="tiny">Source: tt-metal ea042c4ad623 · all_gather_minimal_matmul_async · M=9472, K=5120, N=15360</text>
 </svg>

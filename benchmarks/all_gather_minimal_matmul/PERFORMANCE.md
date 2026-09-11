@@ -9,11 +9,11 @@ configuration; equal worker counts and blocks are not required.
 
 These implementations return `M x N` on every device, including row bias.
 
-| Implementation | Compute + communication workers/device | Device median ms (min-max) | / Native | Warmups/samples |
+| Implementation | Worker roles/device | Device median ms (min-max) | / Native | Warmups/samples |
 | --- | ---: | ---: | ---: | ---: |
 | TT-Lang V4 N-sharded matmul + output gather | 120 + 4; gather: 2 | 15.540 (14.402-15.589) | 2.258 | 3/10 |
 | TT-Lang V3 replicated weights | 130 + 2 | 10.248 (10.151-10.713) | 1.489 | 1 per group / 4 |
-| Native replicated weights | 108 + 12 | 6.883 (6.873-6.889) | 1.000 | 2/3 |
+| Native replicated weights | 108 compute; 24 also fabric clients; 4 mux-only | 6.883 (6.873-6.889) | 1.000 | 2/3 |
 
 V4 computes N-sharded output, then runs a separate output all-gather. The
 complete two-program device interval is reported, including the interval
@@ -27,7 +27,7 @@ the four shards contain one complete output, but no device has a replicated
 `M x N` tensor; comparison with the native replicated-output result is not
 equivalent.
 
-| TT-Lang implementation | Compute + communication workers/device | M/K/N blocks, tiles | Device median ms (min-max) | Warmups/samples |
+| TT-Lang implementation | Worker roles/device | M/K/N blocks, tiles | Device median ms (min-max) | Warmups/samples |
 | --- | ---: | ---: | ---: | ---: |
 | V2 two-worker ring | 60 + 2 | 2/8/4 | 13.488 (13.432-13.509) | 2/5 |
 | V4 dedicated communication | 120 + 4 | 2/10/12 | 4.849 (4.838-4.896) | 3/10 |
@@ -64,7 +64,7 @@ when a required page is unavailable.
 | Transposed compute grid | 12x10 | 12x10 | 13x10 | 12x9 |
 | M/K/N blocks, tiles | 2/10/12 | 2/10/12 | 8/8/8 | 8/8/8; 2x2 subblock |
 | Activation storage | Streamed L1 DFBs | Streamed L1 DFBs | Gathered DRAM tensor | Gathered DRAM tensor |
-| Activation collective | Ring, four dedicated workers | Ring, four dedicated workers | Direct, two workers; 2x40-tile messages | Bidirectional ring, 12 workers |
+| Activation collective | Ring, four dedicated workers | Ring, four dedicated workers | Direct, two workers; 2x40-tile messages | Bidirectional ring; 24 compute workers as fabric clients, four mux-only workers |
 | Final output collective | None | Direct, two workers; 2x30-tile messages | None | None |
 | Fabric | 2D | 2D | 2D | 1D ring |
 | Fabric initialization/payload | Strict / 8192 bytes | Strict / 8192 bytes | Strict / 8192 bytes | Strict / 8192 bytes |

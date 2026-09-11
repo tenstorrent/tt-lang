@@ -74,10 +74,28 @@ equivalent to the native replicated output.
 | Precision | BF16 input/output, HiFi2, FP32 destination and packer accumulation | Same |
 | Bias | Included | Included |
 | Timing | Device trace replay; includes final gather when selected | Device trace replay of fused program |
-| Compute workers per device | Replicated: 130 (transposed 13x10); N-sharded: 120 (transposed 12x10) plus four dedicated communication workers | 108 (transposed 12x9) plus 12 communication workers |
+| Worker roles per device | Replicated: 130 compute (transposed 13x10) plus two communication; N-sharded: 120 compute (transposed 12x10) plus four communication | 108 compute (transposed 12x9); 24 also exchange activation blocks over fabric; four additional mux-only workers |
 | Blocking | Measured settings in [PERFORMANCE.md](PERFORMANCE.md) | 8/8/8 tiles, 2x2 subblock |
 | Fabric | 2D, strict initialization, 8192-byte payload | 1D ring, strict initialization, 8192-byte payload |
 | Native communication settings | Not applicable | Two links, six workers/link, 24 channel buffers |
+
+## Native per-device worker organization
+
+The native 12x9 rectangle is not compute-only. Every node runs matmul and both operand data-movement kernels concurrently. The activation and weight roles below overlap; only the four fabric mux nodes are outside the compute rectangle.
+
+| Function | Logical nodes | Count | Data movement |
+| --- | --- | ---: | --- |
+| Matmul and output | `x=0..11, y=0..8` | 108 | Consume activation and weight DFBs, accumulate FP32, and write each node's assigned M/N tile region to DRAM. |
+| Activation injection | `x=0..11, y=0` | 12 | Read the current local activation block or an arrived remote block from gather-scratch DRAM, then inject it down one column. |
+| Activation on-device relay | `x=0..11, y=1..6` | 72 | Forward the activation block through the column's L1 DFB chain. |
+| Activation fabric clients | `x=0..11, y=7..8` | 24 | Continue the column relay and send the block in one ring direction during the first N-block pass; 12 clients serve each direction. |
+| Weight injection | `x=0, y=0..8` | 9 | Read one replicated-weight N stripe and bias from DRAM, then inject blocks across one row. |
+| Weight relay | `x=1..11, y=0..8` | 99 | Forward weight blocks through the row's L1 DFB chain. |
+| Fabric mux | `(5,9), (6,9), (11,9), (12,9)` | 4 | One mux per link and ring direction; each mux serves six activation fabric clients. These nodes do not compute matmul. |
+
+Remote activation packets scatter-write into each destination device's private `M x K` gather-scratch DRAM allocation and increment a readiness semaphore. A column injector reads a block after it arrives, while the 108 compute nodes process earlier blocks. Fabric transmission occurs only on the first N-block pass; later N blocks reuse the gathered activation from DRAM. This avoids repeated fabric traffic when the full K dimension cannot remain in L1, at the cost of one DRAM write and later reads for remote activation tiles.
+
+The assignments follow the pinned native [core ranges](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/ttnn/cpp/ttnn/operations/experimental/ccl/all_gather_minimal_matmul_async/device/all_gather_minimal_matmul_async_program_factory.cpp#L396-L413), [fabric mux placement](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/ttnn/cpp/ttnn/operations/experimental/ccl/all_gather_minimal_matmul_async/device/all_gather_minimal_matmul_async_program_factory.cpp#L478-L596), and [activation streaming loop](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/ttnn/cpp/ttnn/operations/experimental/ccl/all_gather_minimal_matmul_async/device/kernels/dm_in0_sender.cpp#L290-L594). The [per-device figure](images/ttmetal_device.svg) shows these overlapping roles.
 
 Reference sources:
 [Wan2.2 test](https://github.com/tenstorrent/tt-metal/blob/f69f924c6b4f38daa0a6f25716731f36c573dc0e/models/tt_dit/tests/models/wan2_2/test_all_gather_minimal_matmul_async.py)
