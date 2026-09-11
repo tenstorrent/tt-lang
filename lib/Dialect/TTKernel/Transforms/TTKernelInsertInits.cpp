@@ -45,6 +45,8 @@ namespace ttk = mlir::tt::ttkernel;
 
 namespace {
 
+constexpr llvm::StringLiteral kInitInserted("ttk.init_inserted");
+
 //===----------------------------------------------------------------------===//
 // Compute-to-Init mapping
 //===----------------------------------------------------------------------===//
@@ -329,13 +331,15 @@ static bool isSyncBoundary(Operation *op) {
 struct SyncRegionAnalysis {
   bool hasFPUBinary = false;
   bool hasMatmul = false;
+  Operation *firstPerOpInitCompute = nullptr;
   // For matmul: block dimensions from the first matmul_block op found.
   Value matmulTranspose, matmulCt, matmulRt, matmulKt;
 };
 
-static FailureOr<SyncRegionAnalysis>
-analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
-                  Value &in0CB, Value &in1CB, Value &outputCB) {
+static FailureOr<SyncRegionAnalysis> analyzeSyncRegion(
+    ttk::TileRegsAcquireOp acquireOp, Value &inputCB, Value &in0CB,
+    Value &in1CB, Value &outputCB,
+    const llvm::DenseMap<mlir::TypeID, InitOpInfo> &computeToInit) {
   Block *block = acquireOp->getBlock();
   SyncRegionAnalysis result;
   bool foundRelease = false;
@@ -350,6 +354,10 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
 
     // Walk this op and all nested regions (e.g., scf.for bodies).
     (&*it)->walk([&](Operation *inner) {
+      if (!result.firstPerOpInitCompute &&
+          computeToInit.contains(inner->getName().getTypeID())) {
+        result.firstPerOpInitCompute = inner;
+      }
       if (auto copy = dyn_cast<ttk::CopyTileOp>(inner)) {
         // copy_tile always precedes SFPU ops -- data must enter DST from a
         // CB before any SFPU/bcast compute can operate on it.
@@ -470,12 +478,14 @@ static Operation *hoistAboveCompilerLoops(Operation *op) {
 
 /// Insert common init ops (init_sfpu or binary_op_init_common) before each
 /// sync region. These configure UNPACK + PACK data format routing.
-static LogicalResult insertCommonInits(ModuleOp moduleOp) {
+static LogicalResult insertCommonInits(
+    ModuleOp moduleOp,
+    const llvm::DenseMap<mlir::TypeID, InitOpInfo> &computeToInit) {
   bool hadError = false;
   moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
     Value inputCB, in0CB, in1CB, outputCB;
-    auto analysisResult =
-        analyzeSyncRegion(acquireOp, inputCB, in0CB, in1CB, outputCB);
+    auto analysisResult = analyzeSyncRegion(acquireOp, inputCB, in0CB, in1CB,
+                                            outputCB, computeToInit);
     if (failed(analysisResult)) {
       hadError = true;
       return;
@@ -529,6 +539,12 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
       ttk::MatmulBlockInitOp::create(
           builder, loc, in0CB, in1CB, outputCB, analysis.matmulTranspose,
           analysis.matmulCt, analysis.matmulRt, analysis.matmulKt);
+      // The full init includes the first matmul's operation-specific init.
+      // Retaining the duplicate short init also resets packer L1 accumulation.
+      if (isa_and_nonnull<ttk::MatmulBlockOp>(analysis.firstPerOpInitCompute)) {
+        analysis.firstPerOpInitCompute->setAttr(
+            kInitInserted, UnitAttr::get(moduleOp.getContext()));
+      }
     } else if (analysis.hasFPUBinary && in0CB && in1CB) {
       ttk::BinaryOpInitCommonOp::create(builder, loc, in0CB, in1CB, outputCB);
     } else if (inputCB) {
@@ -547,14 +563,12 @@ struct TTKernelInsertInitsPass
 
   void runOnOperation() override {
     auto moduleOp = getOperation();
-    constexpr llvm::StringLiteral kInitInserted("ttk.init_inserted");
+    auto computeToInit = buildComputeToInitMap();
 
-    if (failed(insertCommonInits(moduleOp))) {
+    if (failed(insertCommonInits(moduleOp, computeToInit))) {
       signalPassFailure();
       return;
     }
-
-    auto computeToInit = buildComputeToInitMap();
 
     auto emitReduceUninit = [](OpBuilder &builder, Location loc,
                                ttk::ReduceTileOp) {
@@ -580,7 +594,7 @@ struct TTKernelInsertInitsPass
           return WalkResult::advance();
         }
         InitKey key = computeInitKey(inner);
-        if (!prevKey || *prevKey != key) {
+        if (!inner->hasAttr(kInitInserted) && (!prevKey || *prevKey != key)) {
           if (prevKey &&
               prevKey->typeId == mlir::TypeID::get<ttk::ReduceTileOp>() &&
               key.typeId != mlir::TypeID::get<ttk::ReduceTileOp>()) {
