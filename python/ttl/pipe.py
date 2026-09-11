@@ -341,8 +341,9 @@ class PipeNet:
     Args:
         pipes: Ordered node-level pipes. Without ``graph``, these define a
             local PipeNet. With ``graph``, each graph edge uses every pipe.
-        graph: Logical-device transfer relation. Omitting ``pipes`` applies an
-            identity node pipe to every launch node.
+        graph: Logical-device transfer relation. When ``pipes`` is omitted,
+            every graph edge connects matching source and destination node
+            coordinates throughout the launch grid.
 
     Example:
         # Gather pattern from work extent ROWS x COLS:
