@@ -138,7 +138,6 @@ def test_reuse_capacity_limit():
     [
         ((1, 2), (4, 5), False, "ring", 2, "transposed multi-device ring"),
         ((2, 1), (5, 4), True, "all_to_all", 2, "transposed multi-device ring"),
-        ((2, 1), (5, 4), True, "ring", 4, "at most 2"),
         ((4, 1), (5, 4), True, "ring", 5, "communication column"),
     ],
 )
@@ -164,3 +163,33 @@ def test_dedicated_communication_rejects_unsupported_resources(
             all_gather_algorithm=algorithm,
             communication_worker_count=communication_workers,
         )
+
+
+@pytest.mark.parametrize(
+    "mesh_shape,worker_grid,communication_workers",
+    [
+        ((2, 1), (5, 4), 4),
+        ((2, 2), (12, 10), 10),
+    ],
+)
+def test_dedicated_communication_supports_local_distribution_workers(
+    mesh_shape, worker_grid, communication_workers
+):
+    config = AllGatherMinimalMatmulConfig(
+        mesh_shape=mesh_shape,
+        m_tiles=2 * worker_grid[0],
+        k_tiles_per_device=4,
+        n_tiles_per_device=2 * worker_grid[1],
+        m_block_tiles=2,
+        k_block_tiles=2,
+        n_block_tiles=1,
+        worker_grid=worker_grid,
+        transpose=True,
+        reuse_activation=False,
+    )
+
+    make_dedicated_operation(
+        config,
+        all_gather_algorithm="ring",
+        communication_worker_count=communication_workers,
+    )

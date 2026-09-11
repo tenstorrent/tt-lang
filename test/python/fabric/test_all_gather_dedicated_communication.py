@@ -73,3 +73,41 @@ def test_dedicated_communication(
         ttnn.synchronize_device(mesh)
         validate("ttlang", output, workload.gathered)
         workload.cleanup(output)
+
+
+def test_full_grid_local_distribution_workers():
+    mesh_shape = (4, 1)
+    worker_grid = (12, 10)
+    with open_participant_mesh(mesh_shape, "2d", "strict", 8192) as opened:
+        mesh = opened[0]
+        config = AllGatherMinimalMatmulConfig(
+            mesh_shape=mesh_shape,
+            m_tiles=2 * worker_grid[0],
+            k_tiles_per_device=4,
+            n_tiles_per_device=2 * worker_grid[1],
+            m_block_tiles=2,
+            k_block_tiles=2,
+            n_block_tiles=1,
+            worker_grid=worker_grid,
+            transpose=True,
+            reuse_activation=False,
+        )
+        workloads, validate = create_workloads(
+            mesh,
+            config,
+            "bf16",
+            0,
+            "ttlang",
+            19,
+            math_fidelity="HiFi2",
+            fp32_dest_acc=True,
+            activation_all_gather="ring",
+            dedicated_communication_workers=10,
+            gather_output=False,
+        )
+        workload = workloads["ttlang"]
+        for _invocation in range(2):
+            output = workload.run()
+            ttnn.synchronize_device(mesh)
+            validate("ttlang", output, workload.gathered)
+            workload.cleanup(output)

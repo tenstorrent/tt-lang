@@ -3,17 +3,18 @@
 
 """N-sharded matmul with dedicated activation communication workers.
 
-    physical column 0: receive activation rows -> multicast to compute rows
-                       forward rows to the next device through the existing ring
+    column 0, rows 0..3: exchange activations across devices
+                         multicast four rows; relay the other rows locally
+    column 0, rows 4..9: multicast two relayed rows each
     columns 1..M-workers: stream weights -> bias-initialized matmul -> output DRAM
 
     communication and compute execute concurrently through bounded L1 DFBs
     cache full K across N rounds when enabled; otherwise stream K blocks
 
-Run from the repository root (four devices, 120 compute and four communication
-workers/device):
+Run from the repository root (four devices, 120 compute, four fabric and six
+local-distribution workers/device):
     python -m examples.all_gather_minimal_matmul.n_sharded --mesh-shape 2x2 \
-        --worker-grid 12 10 --transpose --dedicated-communication-workers 4 \
+        --worker-grid 12 10 --transpose --dedicated-communication-workers 10 \
         --activation-all-gather ring --m-tiles 24 --k-tiles-per-device 4 \
         --n-tiles-per-device 20 --m-block-tiles 4 --k-block-tiles 2 \
         --n-block-tiles 2 --no-reuse-activation
@@ -49,29 +50,66 @@ def make_all_gather_minimal_matmul_operation(
         )
     if not 1 <= communication_worker_count <= min(config.n_workers, config.m_workers):
         raise ValueError("communication workers must fit the communication column")
-    maximum_communication_workers = 2 if config.device_count == 2 else 4
-    if communication_worker_count > maximum_communication_workers:
-        raise ValueError(
-            f"{config.device_count}-device ring supports at most "
-            f"{maximum_communication_workers} dedicated communication workers"
-        )
     device_domain = ttl.DeviceDomain(config.mesh_shape)
+    # Direct managers require distinct forwarding links; additional workers
+    # distribute received rows without opening fabric connections.
+    direct_fabric_worker_limit = 2 if config.device_count == 2 else 4
+    fabric_worker_count = min(communication_worker_count, direct_fabric_worker_limit)
+    distribution_worker_count = communication_worker_count - fabric_worker_count
     activation_all_gather_net = ttl.PipeNet(
         graph=make_all_gather_graph(device_domain, config.mesh_shape, "ring")
     )
     n_worker_count, m_worker_count = config.n_workers, config.m_workers
-    served_row_count = (
-        m_worker_count + communication_worker_count - 1
-    ) // communication_worker_count
-    activation_row_net = ttl.PipeNet(
+    fabric_served_row_count = (
+        m_worker_count + fabric_worker_count - 1
+    ) // fabric_worker_count
+    distribution_served_row_count = (
+        (m_worker_count - fabric_worker_count + distribution_worker_count - 1)
+        // distribution_worker_count
+        if distribution_worker_count > 0
+        else 0
+    )
+    direct_activation_row_net = ttl.PipeNet(
         [
             ttl.Pipe(
-                src=(0, m_worker_index % communication_worker_count),
+                src=(0, m_worker_index % fabric_worker_count),
                 dst=(m_worker_index + 1, slice(0, n_worker_count)),
             )
-            for m_worker_index in range(m_worker_count)
+            for m_worker_index in range(
+                fabric_worker_count if distribution_worker_count > 0 else m_worker_count
+            )
         ]
     )
+    if distribution_worker_count > 0:
+        fabric_to_distribution_net = ttl.PipeNet(
+            [
+                ttl.Pipe(
+                    src=(0, m_worker_index % fabric_worker_count),
+                    dst=(
+                        0,
+                        fabric_worker_count
+                        + m_worker_index % distribution_worker_count,
+                    ),
+                )
+                for m_worker_index in range(fabric_worker_count, m_worker_count)
+            ]
+        )
+        relayed_activation_row_net = ttl.PipeNet(
+            [
+                ttl.Pipe(
+                    src=(
+                        0,
+                        fabric_worker_count
+                        + m_worker_index % distribution_worker_count,
+                    ),
+                    dst=(m_worker_index + 1, slice(0, n_worker_count)),
+                )
+                for m_worker_index in range(fabric_worker_count, m_worker_count)
+            ]
+        )
+    else:
+        fabric_to_distribution_net = direct_activation_row_net
+        relayed_activation_row_net = direct_activation_row_net
     weight_column_net = ttl.PipeNet(
         [
             ttl.Pipe(
@@ -114,12 +152,17 @@ def make_all_gather_minimal_matmul_operation(
         activation_relay_dfb = ttl.make_dataflow_buffer_like(
             activation_shard,
             shape=(m_block_tiles, compute_k_tiles),
-            block_count=max(2, served_row_count),
+            block_count=max(2, fabric_served_row_count),
         )
         activation_row_staging_dfb = ttl.make_dataflow_buffer_like(
             activation_shard,
             shape=(m_block_tiles, compute_k_tiles),
-            block_count=served_row_count,
+            block_count=fabric_served_row_count,
+        )
+        local_distribution_receive_dfb = ttl.make_dataflow_buffer_like(
+            activation_shard,
+            shape=(m_block_tiles, compute_k_tiles),
+            block_count=max(1, distribution_served_row_count),
         )
         broadcast_activation_receive_dfb = ttl.make_dataflow_buffer_like(
             activation_shard, shape=(m_block_tiles, compute_k_tiles), block_count=1
@@ -154,10 +197,10 @@ def make_all_gather_minimal_matmul_operation(
         @ttl.datamovement()
         def receive_activations_and_write_output():
             physical_column, physical_row = ttl.node(dims=2)
-            if physical_column == 0 and physical_row < communication_worker_count:
+            if physical_column == 0 and physical_row < fabric_worker_count:
                 local_served_row_count = (
-                    m_worker_count + communication_worker_count - 1 - physical_row
-                ) // communication_worker_count
+                    m_worker_count + fabric_worker_count - 1 - physical_row
+                ) // fabric_worker_count
                 for m_round in range(m_rounds):
                     for _activation_round in range(activation_read_rounds):
                         for k_block in range(compute_k_blocks_per_device):
@@ -166,8 +209,7 @@ def make_all_gather_minimal_matmul_operation(
                             for source_round in range(device_count):
                                 for served_row in range(local_served_row_count):
                                     target_m_worker = (
-                                        served_row * communication_worker_count
-                                        + physical_row
+                                        served_row * fabric_worker_count + physical_row
                                     )
                                     m_begin = (
                                         m_round * m_worker_count + target_m_worker
@@ -199,7 +241,7 @@ def make_all_gather_minimal_matmul_operation(
                                             byte_count=activation_block_bytes,
                                         ).wait()
 
-                                def multicast_to_compute_row(pipe):
+                                def send_activation_row(pipe):
                                     row_block = activation_row_staging_dfb.wait()
                                     if source_round < device_count - 1:
                                         relay = activation_relay_dfb.reserve()
@@ -210,7 +252,37 @@ def make_all_gather_minimal_matmul_operation(
                                         ).wait()
                                     ttl.copy(row_block, pipe).wait()
 
-                                activation_row_net.if_src(multicast_to_compute_row)
+                                direct_activation_row_net.if_src(send_activation_row)
+                                if distribution_worker_count > 0:
+                                    fabric_to_distribution_net.if_src(
+                                        send_activation_row
+                                    )
+            if (
+                distribution_worker_count > 0
+                and physical_column == 0
+                and physical_row >= fabric_worker_count
+                and physical_row < communication_worker_count
+            ):
+                for _m_round in range(m_rounds):
+                    for _activation_round in range(activation_read_rounds):
+                        for _k_block in range(compute_k_blocks_per_device):
+                            for _source_round in range(device_count):
+
+                                def receive_from_fabric_worker(pipe):
+                                    received = local_distribution_receive_dfb.reserve()
+                                    ttl.copy(pipe, received).wait()
+
+                                fabric_to_distribution_net.if_dst(
+                                    receive_from_fabric_worker
+                                )
+
+                                def multicast_to_compute_row(pipe):
+                                    received = local_distribution_receive_dfb.wait()
+                                    ttl.copy(received, pipe).wait()
+
+                                relayed_activation_row_net.if_src(
+                                    multicast_to_compute_row
+                                )
             if physical_column > 0:
                 m_worker_index = physical_column - 1
                 n_worker_index = physical_row
@@ -237,9 +309,17 @@ def make_all_gather_minimal_matmul_operation(
                                         byte_count=activation_block_bytes,
                                     ).wait()
 
-                                activation_row_net.if_dst(
-                                    receive_from_communication_worker
-                                )
+                                if (
+                                    distribution_worker_count > 0
+                                    and m_worker_index >= fabric_worker_count
+                                ):
+                                    relayed_activation_row_net.if_dst(
+                                        receive_from_communication_worker
+                                    )
+                                else:
+                                    direct_activation_row_net.if_dst(
+                                        receive_from_communication_worker
+                                    )
                         n_begin = (
                             n_round * n_worker_count + n_worker_index
                         ) * n_block_tiles
@@ -257,10 +337,10 @@ def make_all_gather_minimal_matmul_operation(
         def forward_activations_and_distribute_weights():
             physical_column, physical_row = ttl.node(dims=2)
             local_device_index = device_domain.current_index()
-            if physical_column == 0 and physical_row < communication_worker_count:
+            if physical_column == 0 and physical_row < fabric_worker_count:
                 local_served_row_count = (
-                    m_worker_count + communication_worker_count - 1 - physical_row
-                ) // communication_worker_count
+                    m_worker_count + fabric_worker_count - 1 - physical_row
+                ) // fabric_worker_count
                 for m_round in range(m_rounds):
                     for _activation_round in range(activation_read_rounds):
                         for k_block in range(compute_k_blocks_per_device):
