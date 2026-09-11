@@ -1,12 +1,11 @@
 // RUN: ttlang-opt --convert-ttl-to-ttkernel --ttkernel-insert-inits %s | FileCheck %s
 // RUN: ttlang-opt --ttkernel-insert-inits %s | FileCheck %s --check-prefix=FPU
 // RUN: ttlang-opt --ttkernel-insert-inits %s | FileCheck %s --check-prefix=COMMON
+// RUN: ttlang-opt --ttkernel-insert-inits %s | FileCheck %s --check-prefix=MATMUL
 // Summary: Tests for ttkernel-insert-inits pass.
 //
-// Phase 1 (common init): Inserts init_sfpu or binary_op_init_common before
-// each sync region (tile_regs_acquire ... tile_regs_release).
-// Phase 2 (per-op init): Consecutive same-type compute ops share a single
-// init op, while type switches get separate inits.
+// Common initialization configures the compute type before each sync region.
+// Operation initialization is shared by consecutive compatible compute ops.
 
 // Test 1: 4 consecutive exp ops -> only 1 init
 // CHECK-LABEL: func.func @four_consecutive_exp
@@ -150,7 +149,7 @@ func.func @fpu_binary_consolidation() {
 }
 
 // =============================================================================
-// Phase 1 tests: common init insertion before sync regions
+// Common init insertion before sync regions
 // =============================================================================
 
 // Test 6: SFPU sync region -> init_sfpu inserted before acquire
@@ -197,6 +196,35 @@ func.func @common_init_fpu_binary() {
   ttkernel.tile_regs_acquire() : () -> ()
   ttkernel.add_tiles(%cb0, %cb1, %c0, %c0, %c0) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index, index) -> ()
   ttkernel.pack_tile(%c0, %cb2, %c0, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  func.return
+}
+
+// The full matmul init includes the first matmul's operation initialization.
+// A later matmul still needs the short init after an intervening SFPU op.
+// MATMUL-LABEL: func.func @matmul_full_init_replaces_first_short_init
+// MATMUL-DAG: %[[INPUT0:.*]] = ttkernel.get_compile_time_arg_val(0)
+// MATMUL-DAG: %[[INPUT1:.*]] = ttkernel.get_compile_time_arg_val(1)
+// MATMUL-DAG: %[[OUTPUT:.*]] = ttkernel.get_compile_time_arg_val(2)
+// MATMUL: "ttkernel.mm_block_init"(%[[INPUT0]], %[[INPUT1]], %[[OUTPUT]],
+// MATMUL-NEXT: ttkernel.tile_regs_acquire
+// MATMUL-NEXT: ttkernel.matmul_block
+// MATMUL-NEXT: ttkernel.exp_tile_init
+// MATMUL-NEXT: ttkernel.exp_tile
+// MATMUL-NEXT: "ttkernel.mm_block_init_short"
+// MATMUL-NEXT: ttkernel.matmul_block
+func.func @matmul_full_init_replaces_first_short_init() {
+  %input0 = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %input1 = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %output = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<4, !ttcore.tile<32x32, f32>>
+  %zero_index = arith.constant 0 : index
+  %zero_i32 = arith.constant 0 : i32
+  %one_i32 = arith.constant 1 : i32
+  ttkernel.tile_regs_acquire() : () -> ()
+  ttkernel.matmul_block(%input0, %input1, %zero_index, %zero_index, %zero_index, %zero_i32, %one_i32, %one_i32, %one_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index, index, i32, i32, i32, i32) -> ()
+  ttkernel.exp_tile(%zero_index) : (index) -> ()
+  ttkernel.matmul_block(%input0, %input1, %zero_index, %zero_index, %zero_index, %zero_i32, %one_i32, %one_i32, %one_i32) : (!ttkernel.cb<4, !ttcore.tile<32x32, f32>>, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index, index, index, i32, i32, i32, i32) -> ()
+  ttkernel.pack_tile(%zero_index, %output, %zero_index, false) : (index, !ttkernel.cb<4, !ttcore.tile<32x32, f32>>, index) -> ()
   ttkernel.tile_regs_release() : () -> ()
   func.return
 }
