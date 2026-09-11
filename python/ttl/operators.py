@@ -1302,7 +1302,9 @@ def _resolve_transpose_flag(val) -> bool:
     raise ValueError("transpose_rhs must be a compile-time boolean constant")
 
 
-def _build_matmul(lhs: TensorBlock, rhs: TensorBlock, *, transpose_rhs: bool):
+def _build_matmul(
+    lhs: TensorBlock, rhs: TensorBlock, *, transpose_rhs: bool, dtype=None
+):
     """Build a ttl.matmul op, computing the result shape from the operands.
 
     For the non-transposed form ``rhs`` is ``[K, N]``; for the transposed
@@ -1365,8 +1367,16 @@ def _build_matmul(lhs: TensorBlock, rhs: TensorBlock, *, transpose_rhs: bool):
     n = rhs_shape[0] if transpose else rhs_shape[1]
     result_shape = [lhs_shape[0], n]
     result_tile_width = rhs_tile_height if transpose else rhs_tile_width
+    if dtype is None:
+        result_dtype = lhs_dtype
+    elif isinstance(dtype, ttcore.DataType):
+        result_dtype = dtype
+    else:
+        from .dtype_utils import tensor_dtype_to_ttcore_datatype
+
+        result_dtype = tensor_dtype_to_ttcore_datatype(dtype)
     result_tile = ttcore.ir.TileType.get(
-        lhs_type.context, lhs_tile_height, result_tile_width, lhs_dtype
+        lhs_type.context, lhs_tile_height, result_tile_width, result_dtype
     )
     result_type = RankedTensorType.get(result_shape, result_tile, lhs_type.encoding)
     if transpose:
@@ -1375,14 +1385,19 @@ def _build_matmul(lhs: TensorBlock, rhs: TensorBlock, *, transpose_rhs: bool):
 
 
 @syntax("matmul")
-def matmul(lhs: TensorBlock, rhs: TensorBlock, *, transpose_rhs=False) -> TensorBlock:
+def matmul(
+    lhs: TensorBlock, rhs: TensorBlock, *, transpose_rhs=False, dtype=None
+) -> TensorBlock:
     """Matrix multiply two CB-attached tensors of tiles.
 
     Computes ``C[M, N] = A[M, K] * B[K, N]``. When ``transpose_rhs`` is set,
     ``rhs`` is provided as ``[N, K]`` and the matmul computes
     ``C[M, N] = A[M, K] * B[N, K]^T`` using the hardware transpose path.
+
+    ``dtype`` selects the result and packer data type. BF16 operands support
+    BF16 or FP32 results; FP32 operands require an FP32 result.
     """
-    return _build_matmul(lhs, rhs, transpose_rhs=transpose_rhs)
+    return _build_matmul(lhs, rhs, transpose_rhs=transpose_rhs, dtype=dtype)
 
 
 @syntax("transpose")

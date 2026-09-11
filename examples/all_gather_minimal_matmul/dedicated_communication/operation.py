@@ -342,8 +342,10 @@ def make_all_gather_minimal_matmul_operation(
                         ):
                             activation_block = matmul_activation_dfb.wait()
                             weight_block = matmul_weight_dfb.wait()
-                            accumulator += ttl.math.typecast(
-                                activation_block @ weight_block, accumulator.dtype
+                            accumulator += ttl.math.matmul(
+                                activation_block,
+                                weight_block,
+                                dtype=accumulator.dtype,
                             )
                         accumulator = matmul_accumulator_dfb.wait()
                         output_block = output_dfb.reserve()

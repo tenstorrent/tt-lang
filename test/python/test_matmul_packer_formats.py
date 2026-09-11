@@ -39,8 +39,10 @@ def make_packer_matmul(block_tiles, k_block_tiles, k_blocks):
                         activation_dfb.wait() as activation_block,
                         weight_dfb.wait() as weight_block,
                     ):
-                        output_block += ttl.math.typecast(
-                            activation_block @ weight_block, output_block.dtype
+                        output_block += ttl.math.matmul(
+                            activation_block,
+                            weight_block,
+                            dtype=output_block.dtype,
                         )
 
         @ttl.datamovement()
