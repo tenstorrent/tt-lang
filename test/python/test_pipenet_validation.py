@@ -22,11 +22,11 @@ def test_pipenet_requires_a_representation():
     domain = ttl.DeviceDomain((1, 2))
     graph = ttl.TransferGraph.edges(domain, edges=[((0, 0), (0, 1))])
 
-    with pytest.raises(ValueError, match="requires pipes, graph, or mappings"):
+    with pytest.raises(ValueError, match="requires pipes or graph"):
         ttl.PipeNet()
 
 
-def test_pipenet_accepts_factorized_graph_and_node_pipes():
+def test_pipenet_accepts_graph_and_node_pipes():
     domain = ttl.DeviceDomain((1, 2))
     graph = ttl.TransferGraph.edges(domain, edges=[((0, 0), (0, 1))])
     pipe = ttl.Pipe(src=(1, 0), dst=(0, 0))
@@ -36,83 +36,77 @@ def test_pipenet_accepts_factorized_graph_and_node_pipes():
     assert net.is_graph
     assert net.graph is graph
     assert net.pipes == [pipe]
-    assert net.mappings == (ttl.PipeMapping(graph=graph, pipes=[pipe]),)
+    graph_use = _build_pipenet_graph([net]).graph_pipe_nets[0]
+    assert graph_use.mappings[0].transfer_graph is graph
+    assert graph_use.mappings[0].pipes is not None
+    assert len(graph_use.mappings[0].pipes) == 1
 
 
-def test_pipe_mapping_rejects_invalid_graph_and_pipe_values():
-    domain = ttl.DeviceDomain((1, 2))
-    graph = ttl.TransferGraph.edges(domain, edges=[((0, 0), (0, 1))])
+def test_pipenet_accepts_complete_pipes_with_distinct_device_relations():
+    devices = ttl.DeviceDomain((1, 3))
+    first_pipe = ttl.Pipe(devices[0, 0].at_node(1, 0), devices[0, 1].at_node(0, 0))
+    second_pipe = ttl.Pipe(devices[0, 1].at_node(2, 0), devices[0, 2].at_node(3, 0))
 
-    with pytest.raises(TypeError, match="graph must be a TransferGraph"):
-        ttl.PipeMapping(graph=object(), pipes=[ttl.Pipe(src=(1, 0), dst=(0, 0))])
-    with pytest.raises(ValueError, match="requires at least one pipe"):
-        ttl.PipeMapping(graph=graph, pipes=[])
-    with pytest.raises(TypeError, match="only Pipe values"):
-        ttl.PipeMapping(graph=graph, pipes=[object()])
-
-
-def test_pipenet_accepts_ordered_mapping_union():
-    domain = ttl.DeviceDomain((1, 3))
-    first_graph = ttl.TransferGraph.edges(domain, edges=[((0, 0), (0, 1))])
-    second_graph = ttl.TransferGraph.edges(domain, edges=[((0, 1), (0, 2))])
-    first_pipe = ttl.Pipe(src=(1, 0), dst=(0, 0))
-    second_pipe = ttl.Pipe(src=(2, 0), dst=(3, 0))
-    mappings = [
-        ttl.PipeMapping(graph=first_graph, pipes=[first_pipe]),
-        ttl.PipeMapping(graph=second_graph, pipes=[second_pipe]),
-    ]
-
-    net = ttl.PipeNet(mappings=mappings)
+    net = ttl.PipeNet([first_pipe, second_pipe])
 
     assert net.is_graph
     assert net.graph is None
-    assert net.pipes == []
-    assert net.mappings == tuple(mappings)
+    assert net.pipes == [first_pipe, second_pipe]
+    graph_use = _build_pipenet_graph([net]).graph_pipe_nets[0]
+    assert len(graph_use.mappings) == 2
 
 
-def test_graph_mapping_rejects_duplicate_node_pipes():
+def test_pipenet_groups_adjacent_equal_device_relations():
+    devices = ttl.DeviceDomain((1, 2))
+    first_pipe = ttl.Pipe(devices[0, 0].at_node(1, 0), devices[0, 1].at_node(0, 0))
+    second_pipe = ttl.Pipe(devices[0, 0].at_node(2, 0), devices[0, 1].at_node(3, 0))
+
+    operation_pipenets = _build_pipenet_graph([ttl.PipeNet([first_pipe, second_pipe])])
+
+    assert len(operation_pipenets.graph_pipe_nets[0].mappings) == 1
+    assert len(operation_pipenets.graph_pipe_nets[0].mappings[0].pipes) == 2
+
+
+def test_pipenet_does_not_reorder_separated_equal_device_relations():
+    devices = ttl.DeviceDomain((1, 3))
+    first_pipe = ttl.Pipe(devices[0, 0].at_node(1, 0), devices[0, 1].at_node(0, 0))
+    intervening_pipe = ttl.Pipe(
+        devices[0, 1].at_node(2, 0), devices[0, 2].at_node(3, 0)
+    )
+    final_pipe = ttl.Pipe(devices[0, 0].at_node(4, 0), devices[0, 1].at_node(5, 0))
+
+    operation_pipenets = _build_pipenet_graph(
+        [ttl.PipeNet([first_pipe, intervening_pipe, final_pipe])]
+    )
+
+    assert len(operation_pipenets.graph_pipe_nets[0].mappings) == 3
+
+
+def test_graph_relation_rejects_duplicate_node_pipes():
     domain = ttl.DeviceDomain((1, 2))
     graph = ttl.TransferGraph.edges(domain, edges=[((0, 0), (0, 1))])
     pipe = ttl.Pipe(src=(1, 0), dst=(0, 0))
 
     with pytest.raises(ValueError, match="duplicate node pipe"):
-        _build_pipenet_graph(
-            [ttl.PipeNet(mappings=[ttl.PipeMapping(graph=graph, pipes=[pipe, pipe])])]
-        )
+        ttl.PipeNet(graph=graph, pipes=[pipe, pipe])
 
 
-def test_graph_mapping_union_rejects_duplicate_complete_pipe():
+def test_graph_relation_union_rejects_duplicate_complete_pipe():
     domain = ttl.DeviceDomain((1, 3))
-    first_graph = ttl.TransferGraph.edges(domain, edges=[((0, 0), (0, 1))])
-    second_graph = ttl.TransferGraph.edges(
-        domain,
-        edges=[((0, 0), (0, 1)), ((0, 1), (0, 2))],
-    )
-    pipe = ttl.Pipe(src=(1, 0), dst=(0, 0))
+    first_pipe = ttl.Pipe(domain[0, 0].at_node(1, 0), domain[0, 1].at_node(0, 0))
+    duplicate_pipe = ttl.Pipe(domain[0, 0].at_node(1, 0), domain[0, 1].at_node(0, 0))
 
     with pytest.raises(ValueError, match="duplicate complete pipe"):
-        _build_pipenet_graph(
-            [
-                ttl.PipeNet(
-                    mappings=[
-                        ttl.PipeMapping(graph=first_graph, pipes=[pipe]),
-                        ttl.PipeMapping(graph=second_graph, pipes=[pipe]),
-                    ]
-                )
-            ]
-        )
+        ttl.PipeNet([first_pipe, duplicate_pipe])
 
 
-def test_pipenet_rejects_mapping_and_concise_arguments():
+def test_pipenet_rejects_complete_endpoints_with_graph_argument():
     domain = ttl.DeviceDomain((1, 2))
     graph = ttl.TransferGraph.edges(domain, edges=[((0, 0), (0, 1))])
-    pipe = ttl.Pipe(src=(1, 0), dst=(0, 0))
-    mapping = ttl.PipeMapping(graph=graph, pipes=[pipe])
+    pipe = ttl.Pipe(domain[0, 0].at_node(1, 0), domain[0, 1].at_node(0, 0))
 
     with pytest.raises(ValueError, match="cannot be combined"):
-        ttl.PipeNet(pipes=[pipe], mappings=[mapping])
-    with pytest.raises(ValueError, match="cannot be combined"):
-        ttl.PipeNet(graph=graph, mappings=[mapping])
+        ttl.PipeNet(pipes=[pipe], graph=graph)
 
 
 def test_graph_pipenet_rejects_node_collective_mapping():
@@ -135,7 +129,6 @@ def test_pipenet_accepts_transfer_graph():
     assert net.is_graph
     assert net.graph is graph
     assert net.pipes == []
-    assert net.mappings == ()
 
 
 def test_graph_pipenet_rejects_device_range_until_multicast_lowering():

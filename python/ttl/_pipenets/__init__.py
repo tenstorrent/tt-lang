@@ -73,7 +73,7 @@ class PipeNetUse:
 
 @dataclass(frozen=True)
 class GraphPipeMappingUse:
-    """One factorized device graph and node-pipe relation."""
+    """One device graph and its node-pipe list."""
 
     transfer_graph: TransferGraph
     pipes: Optional[Tuple[PipeUse, ...]]
@@ -113,7 +113,7 @@ class OperationPipeNets:
         *,
         uses_grid_identity: bool = False,
     ) -> GraphPipeNetUse:
-        """Append an ordered union of factorized graph/node-pipe mappings."""
+        """Append an ordered union of device-graph and node-pipe groups."""
         normalized_mappings = []
         for transfer_graph, pipes in mappings:
             if transfer_graph.is_explicit and any(
@@ -131,7 +131,7 @@ class OperationPipeNets:
                 )
             )
         if not normalized_mappings:
-            raise ValueError("graph-based PipeNet requires at least one mapping")
+            raise ValueError("graph-based PipeNet requires at least one relation")
         use = GraphPipeNetUse(
             pipe_net_id=self._next_pipe_net_id(),
             mappings=tuple(normalized_mappings),
@@ -293,7 +293,7 @@ def _validate_graph_mapping_duplicates(net: GraphPipeNetUse) -> None:
             continue
         mapping_pipes = set(mapping.pipes)
         if len(mapping_pipes) != len(mapping.pipes):
-            raise ValueError("graph PipeNet mapping contains a duplicate node pipe")
+            raise ValueError("graph PipeNet relation contains a duplicate node pipe")
         current_edges = None
         for previous_mapping, previous_pipes in previous_mappings:
             if mapping_pipes.isdisjoint(previous_pipes):
@@ -303,7 +303,7 @@ def _validate_graph_mapping_duplicates(net: GraphPipeNetUse) -> None:
                 current_edges = set(mapping.transfer_graph.iter_edges())
             if not previous_edges.isdisjoint(current_edges):
                 raise ValueError(
-                    "graph PipeNet mappings contain a duplicate complete pipe"
+                    "graph PipeNet relations contain a duplicate complete pipe"
                 )
         previous_mappings.append((mapping, mapping_pipes))
 

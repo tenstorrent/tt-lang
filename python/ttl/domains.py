@@ -1014,8 +1014,6 @@ class TransferGraph:
                 )
         else:
             destination = domain.device_ref(edge.destination)
-            if source == destination:
-                raise ValueError("transfer edge source must differ from destination")
         return TransferEdge(source, destination)
 
     @staticmethod

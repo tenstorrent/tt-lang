@@ -754,20 +754,20 @@ def test_operation_identity_encodes_graph_pipenet_node_pipes():
     assert identity_for((1, 0)) != identity_for((2, 0))
 
 
-def test_operation_identity_encodes_graph_pipenet_mapping_order():
-    """Graph PipeNet identity preserves mapping and callback order."""
+def test_operation_identity_encodes_graph_pipenet_relation_order():
+    """Graph PipeNet identity preserves complete-pipe order."""
     domain = ttl.DeviceDomain((1, 3))
-    first = ttl.PipeMapping(
-        graph=ttl.TransferGraph.edges(domain, [((0, 0), (0, 1))]),
-        pipes=[ttl.Pipe(src=(1, 0), dst=(0, 0))],
+    first = ttl.Pipe(
+        domain[0, 0].at_node(1, 0),
+        domain[0, 1].at_node(0, 0),
     )
-    second = ttl.PipeMapping(
-        graph=ttl.TransferGraph.edges(domain, [((0, 1), (0, 2))]),
-        pipes=[ttl.Pipe(src=(2, 0), dst=(0, 0))],
+    second = ttl.Pipe(
+        domain[0, 1].at_node(2, 0),
+        domain[0, 2].at_node(0, 0),
     )
 
-    def identity_for(mappings):
-        pipe_net = ttl.PipeNet(mappings=mappings)
+    def identity_for(pipes):
+        pipe_net = ttl.PipeNet(pipes)
 
         def selected_operation():
             return pipe_net

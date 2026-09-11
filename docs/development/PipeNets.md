@@ -25,6 +25,13 @@ nodes, the kernel reads out-of-bounds tensor regions and corrupts the
 pipe synchronization protocol; this failure mode is the one the
 verifier guards against (see issue #541).
 
+For multi-device operations, a `DeviceSelection` identifies source or
+destination devices, `at_node(x, y)` selects one Tensix node on every selected
+device, and `Pipe` connects the resulting endpoints. `PipeNet` is the ordered
+collection of those transfers and provides the source and destination
+callbacks. A local `Pipe` omits device selections and connects nodes on one
+device.
+
 The launch grid is the grid that `@ttl.operation(grid=...)` schedules
 onto. The work extent is the per-axis bounding box of every pipe
 coordinate in the user's PipeNets. The launch grid and work extent are
@@ -65,13 +72,13 @@ net = ttl.PipeNet(
 
 The graph-only form applies every logical-device edge to an identity pipe on
 every launch node. It remains available for operations in which the sending
-and receiving worker coordinate is the same:
+and receiving node coordinate is the same:
 
 ```python
 net = ttl.PipeNet(graph=graph)
 ```
 
-When the source and destination worker coordinates differ, `graph` and
+When the source and destination node coordinates differ, `graph` and
 `pipes` declare both endpoint relations explicitly:
 
 ```python
@@ -88,32 +95,41 @@ node pipes. One complete logical transfer is
 (source device, source node) -> (destination device, destination node)
 ```
 
-Different node placements for different device relations use an ordered union
-of factorized mappings:
+Device-indexed endpoints let each `Pipe` contain both relations directly:
 
 ```python
+devices = ttl.DeviceDomain((8, 4))
 net = ttl.PipeNet(
-    mappings=[
-        ttl.PipeMapping(graph=clockwise, pipes=[clockwise_pipe]),
-        ttl.PipeMapping(
-            graph=counterclockwise,
-            pipes=[counterclockwise_pipe],
+    [
+        ttl.Pipe(
+            src=devices[0, 0].at_node(1, 0),
+            dst=devices[0, 1].at_node(0, 0),
         ),
-    ],
+        ttl.Pipe(
+            src=devices[7, 3].at_node(2, 0),
+            dst=devices[6, 3].at_node(3, 0),
+        ),
+    ]
 )
 ```
+
+`PipeNet` preserves the ordered list of complete pipes. Users do not construct
+a separate object that pairs a device relation with node endpoints.
 
 The declaration determines topology. `if_src` and `if_dst` iterate the
 declared transfers. `is_src`, `is_dst`, `is_active`, and equivalent coordinate
 conditions restrict execution to declared endpoint roles; guards do not add
 connectivity.
 
-The compiler retains each device graph and node-pipe list independently in
-TTL IR instead of materializing their Cartesian product. Structured graph
+The compiler stores each device graph together with its associated node-pipe
+list. The group denotes every combination of one graph edge and one node pipe,
+so the graph is not duplicated for each node pipe. Adjacent complete pipes
+with the same device relation share a group; separated occurrences remain
+separate to preserve callback order. Structured graph
 callback lowering enumerates only edges incident to the current logical
 device. Explicit graphs use `O(V + E)` indexed adjacency. Resource tables
 remain aligned with global transfer indices during generic lowering. When
-core specialization is enabled, it removes worker-coordinate dimensions that
+core specialization is enabled, it removes node-coordinate dimensions that
 become constant. Runtime work remains proportional to the concrete transfers
 that execute.
 
@@ -153,8 +169,8 @@ TTKernel conversion uses three representations:
   represents the current record inside the loop. This table-driven form emits
   one callback and transfer protocol body; only the immutable table contents
   grow with the number of records.
-- For graph mappings, conversion emits one loop over the current logical
-  device's incident edges and the mapping's node pipes. Structured graphs
+- For grouped graph relations, conversion emits one loop over the current
+  logical device's incident edges and the group's node pipes. Structured graphs
   derive endpoints from their descriptors and use compact per-device prefix
   tables only when edge counts vary by device. Explicit graphs use indexed
   adjacency tables.

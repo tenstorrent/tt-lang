@@ -49,3 +49,22 @@ def test_pairwise_sparse_sets_require_explicit_correspondence():
     sparse = devices.select([devices[0, 0], devices[7, 3]])
     with pytest.raises(TypeError, match="coordinate-structured"):
         Pipe.pairwise(src=sparse.at_node(1, 0), dst=devices[1, :2].at_node(0, 0))
+
+
+def test_all_to_all_requires_boolean_include_self():
+    devices = DeviceDomain((8, 4))
+    with pytest.raises(TypeError, match="include_self must be a boolean"):
+        Pipe.all_to_all(
+            src=devices[0, :].at_node(1, 0),
+            dst=devices[0, :].at_node(0, 0),
+            include_self=1,
+        )
+
+
+def test_all_to_all_rejects_an_empty_relation():
+    devices = DeviceDomain((1,))
+    with pytest.raises(ValueError, match="at least one transfer"):
+        Pipe.all_to_all(
+            src=devices[:].at_node(1, 0),
+            dst=devices[:].at_node(0, 0),
+        )

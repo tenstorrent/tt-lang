@@ -1,6 +1,6 @@
 // RUN: ttlang-opt %s | FileCheck %s
 
-// Summary: Verifies factorized graph PipeNet attributes remain compact.
+// Summary: Verifies grouped graph PipeNet attributes remain compact.
 
 // The graph and node-pipe relation print separately instead of as concrete
 // device-edge by node-pipe records.
@@ -55,7 +55,7 @@ func.func @graph_kinds() attributes {
   return
 }
 
-// Mapping order remains callback order for an ordered union.
+// Group order remains callback order for an ordered union.
 // CHECK-LABEL: func.func @mapping_union
 // CHECK-SAME: kind = gather
 // CHECK-SAME: pipes[<srcX = 1, srcY = 0
@@ -72,6 +72,21 @@ func.func @mapping_union() attributes {
         kind = scatter, componentName = "device",
         properties = {source = #ttl.device_ref<coordinates = [0]>}>,
        pipes[<srcX = 2, srcY = 0, dstStartX = 0, dstStartY = 0,
+              dstEndX = 0, dstEndY = 0>]>>} {
+  return
+}
+
+// A graph may identify a transfer between two nodes on the same device.
+// CHECK-LABEL: func.func @same_device_transfer
+// CHECK-SAME: source = <coordinates = [2]>
+// CHECK-SAME: destination = <coordinates = [2]>
+func.func @same_device_transfer() attributes {
+    test.records = #ttl.pipenet_records<net 10 mappings
+      <graph = <domain = <components = <name = "device", extent = [4]>>,
+        kind = explicit, properties = {
+          edges = [#ttl.transfer_edge<source = <coordinates = [2]>,
+                                      destination = <coordinates = [2]>>]}>,
+       pipes[<srcX = 1, srcY = 0, dstStartX = 0, dstStartY = 0,
               dstEndX = 0, dstEndY = 0>]>>} {
   return
 }

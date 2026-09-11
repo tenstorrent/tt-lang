@@ -1804,16 +1804,18 @@ def _build_pipenet_graph(nets):
                 net_use = graph.add_graph_pipe_net(
                     tuple(
                         (
-                            mapping.graph,
-                            tuple(_pipe_to_pipe_use(pipe) for pipe in mapping.pipes),
+                            relation_graph,
+                            tuple(_pipe_to_pipe_use(pipe) for pipe in relation_pipes),
                         )
-                        for mapping in net.mappings
+                        for relation_graph, relation_pipes in net._device_relations
                     )
                 )
             net.pipe_net_id = net_use.pipe_net_id
-            for mapping in net.mappings:
-                for pipe in mapping.pipes:
+            for _, relation_pipes in net._device_relations:
+                for pipe in relation_pipes:
                     pipe.pipe_net_id = net_use.pipe_net_id
+            for pipe in net.pipes:
+                pipe.pipe_net_id = net_use.pipe_net_id
             continue
         net_use = graph.add_pipe_net(_pipe_to_pipe_use(p) for p in net.pipes)
         net.pipe_net_id = net_use.id

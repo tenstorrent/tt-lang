@@ -15,7 +15,6 @@ PipeNet supports the spec's callback API:
 
 import inspect
 import warnings
-from dataclasses import dataclass
 from typing import Callable, Iterable, List, Optional, Tuple, Union
 
 from .domains import DevicePoint, DeviceView, NodeSelection, TransferGraph
@@ -113,7 +112,7 @@ class Pipe:
         src: Union[CoreCoord, NodeSelection],
         dst: Union[CoreCoord, CoreRange, NodeSelection],
     ):
-        self._device_graph = None
+        self._device_graphs = ()
         if isinstance(src, NodeSelection) or isinstance(dst, NodeSelection):
             if not isinstance(src, NodeSelection) or not isinstance(dst, NodeSelection):
                 raise TypeError("both Pipe endpoints must specify devices and nodes")
@@ -125,9 +124,9 @@ class Pipe:
                 raise ValueError(
                     "Pipe requires point endpoints; use a relation constructor for device selections"
                 )
-            self._device_graph = TransferGraph.edges(
+            self._device_graphs = self._graphs_for_edges(
                 src.devices.domain,
-                [(src.devices.reference, dst.devices.reference)],
+                ((src.devices.reference, dst.devices.reference),),
             )
             src, dst = src.node, dst.node
         if len(src) != 2:
@@ -154,11 +153,52 @@ class Pipe:
         if src.devices.shape != dst.devices.shape:
             raise ValueError("pairwise device views must have equal extents")
         pipe = cls(src.node, dst.node)
-        pipe._device_graph = TransferGraph.edges(
+        pipe._device_graphs = cls._graphs_for_edges(
             src.devices.domain,
             zip(src.devices.iter_device_refs(), dst.devices.iter_device_refs()),
         )
         return pipe
+
+    @classmethod
+    def all_to_all(
+        cls,
+        *,
+        src: NodeSelection,
+        dst: NodeSelection,
+        include_self: bool = False,
+    ) -> "Pipe":
+        """Connect every selected source device to every selected destination."""
+        if not isinstance(src, NodeSelection) or not isinstance(dst, NodeSelection):
+            raise TypeError("all_to_all requires complete node endpoint selections")
+        if src.devices.domain != dst.devices.domain:
+            raise ValueError("Pipe endpoints must share a parent device domain")
+        if not isinstance(include_self, bool):
+            raise TypeError("include_self must be a boolean")
+        edges = (
+            (source, destination)
+            for source in src.devices.iter_device_refs()
+            for destination in dst.devices.iter_device_refs()
+            if include_self or source != destination
+        )
+        pipe = cls(src.node, dst.node)
+        pipe._device_graphs = cls._graphs_for_edges(src.devices.domain, edges)
+        return pipe
+
+    @staticmethod
+    def _graphs_for_edges(domain, edges) -> Tuple[TransferGraph, ...]:
+        local_edges = []
+        remote_edges = []
+        for source, destination in edges:
+            target = local_edges if source == destination else remote_edges
+            target.append((source, destination))
+        graphs = []
+        if local_edges:
+            graphs.append(TransferGraph.edges(domain, local_edges))
+        if remote_edges:
+            graphs.append(TransferGraph.edges(domain, remote_edges))
+        if not graphs:
+            raise ValueError("Pipe relation must contain at least one transfer")
+        return tuple(graphs)
 
     @staticmethod
     def _validate_slice(s: slice, name: str):
@@ -249,11 +289,13 @@ class Pipe:
             tuple(self.dst_end),
             self.is_collective,
         )
-        if self._device_graph is not None:
+        if self._device_graphs:
             return (
                 "device-pipe",
                 identity,
-                self._device_graph._operation_identity_capture(),
+                tuple(
+                    graph._operation_identity_capture() for graph in self._device_graphs
+                ),
             )
         return identity
 
@@ -271,47 +313,6 @@ def _pipe_to_pipe_use(pipe: Pipe):
             hi=(pipe.dst_end[0] + 1, pipe.dst_end[1] + 1),
         )
     return PipeUse(src=src, dst=dst)
-
-
-@dataclass(frozen=True)
-class PipeMapping:
-    """Factorized device and launch-node relations for a graph PipeNet.
-
-    Every logical device edge in ``graph`` is combined with every node-level
-    pipe in ``pipes``. Multiple mappings in one PipeNet form an ordered union.
-    """
-
-    graph: "TransferGraph"
-    pipes: Tuple[Pipe, ...]
-
-    def __init__(self, *, graph: "TransferGraph", pipes: Iterable[Pipe]):
-        from .domains import TransferGraph
-
-        if not isinstance(graph, TransferGraph):
-            raise TypeError(
-                f"PipeMapping graph must be a TransferGraph, "
-                f"got {type(graph).__name__}"
-            )
-        normalized_pipes = tuple(pipes)
-        if not normalized_pipes:
-            raise ValueError("PipeMapping requires at least one pipe")
-        if any(not isinstance(pipe, Pipe) for pipe in normalized_pipes):
-            raise TypeError("PipeMapping pipes must contain only Pipe values")
-        if any(pipe.is_collective for pipe in normalized_pipes):
-            raise ValueError(
-                "graph PipeNet node pipes must be point-to-point; "
-                "node collective destinations require graph multicast lowering"
-            )
-        object.__setattr__(self, "graph", graph)
-        object.__setattr__(self, "pipes", normalized_pipes)
-
-    def _operation_identity_capture(self) -> tuple:
-        """Return the graph and node-pipe relation used by operation caching."""
-        return (
-            "pipe-mapping",
-            self.graph._operation_identity_capture(),
-            tuple(pipe._operation_identity_capture() for pipe in self.pipes),
-        )
 
 
 class PipeNet:
@@ -340,8 +341,6 @@ class PipeNet:
             local PipeNet. With ``graph``, each graph edge uses every pipe.
         graph: Logical-device transfer relation. Omitting ``pipes`` applies an
             identity node pipe to every launch node.
-        mappings: Ordered graph and node-pipe relations. This form cannot be
-            combined with top-level ``graph`` or ``pipes`` arguments.
 
     Example:
         # Gather pattern from work extent ROWS x COLS:
@@ -361,84 +360,84 @@ class PipeNet:
         pipes: Optional[Iterable[Pipe]] = None,
         *,
         graph: Optional["TransferGraph"] = None,
-        mappings: Optional[Iterable[PipeMapping]] = None,
     ):
         from ._pipenets import OperationPipeNets
         from .domains import TransferGraph
 
         normalized_pipes = tuple(pipes) if pipes is not None else None
-        if normalized_pipes and any(
-            isinstance(pipe, Pipe) and pipe._device_graph is not None
-            for pipe in normalized_pipes
-        ):
-            if graph is not None or mappings is not None:
+        if normalized_pipes is not None:
+            if not normalized_pipes:
+                raise ValueError("PipeNet requires at least one pipe")
+            if any(not isinstance(pipe, Pipe) for pipe in normalized_pipes):
+                raise TypeError("PipeNet pipes must contain only Pipe values")
+        if normalized_pipes and any(pipe._device_graphs for pipe in normalized_pipes):
+            if graph is not None:
                 raise ValueError(
-                    "complete Pipe endpoints cannot be combined with graph or mappings"
+                    "complete Pipe endpoints cannot be combined with a PipeNet graph"
                 )
-            if any(
-                not isinstance(pipe, Pipe) or pipe._device_graph is None
-                for pipe in normalized_pipes
-            ):
+            if any(not pipe._device_graphs for pipe in normalized_pipes):
                 raise ValueError(
                     "PipeNet cannot mix complete endpoints with device-relative pipes"
                 )
-            mappings = tuple(
-                PipeMapping(
-                    graph=pipe._device_graph,
-                    pipes=[Pipe(src=pipe.src, dst=pipe.dst)],
-                )
-                for pipe in normalized_pipes
+            complete_pipe_identities = [
+                pipe._operation_identity_capture() for pipe in normalized_pipes
+            ]
+            if len(set(complete_pipe_identities)) != len(complete_pipe_identities):
+                raise ValueError("PipeNet contains a duplicate complete pipe")
+            grouped_relations: List[Tuple[TransferGraph, List[Pipe]]] = []
+            for pipe in normalized_pipes:
+                for device_graph in pipe._device_graphs:
+                    relative_pipe = Pipe(src=pipe.src, dst=pipe.dst)
+                    if grouped_relations and grouped_relations[-1][0] == device_graph:
+                        grouped_relations[-1][1].append(relative_pipe)
+                    else:
+                        # Only adjacent equal relations can be combined without
+                        # changing callback order.
+                        grouped_relations.append((device_graph, [relative_pipe]))
+            normalized_relations = tuple(
+                (device_graph, tuple(relation_pipes))
+                for device_graph, relation_pipes in grouped_relations
             )
-            normalized_pipes = None
-            pipes = None
-        if mappings is not None:
-            if graph is not None or pipes is not None:
-                raise ValueError(
-                    "PipeNet mappings cannot be combined with graph or pipes"
-                )
-            normalized_mappings = tuple(mappings)
-            if not normalized_mappings:
-                raise ValueError("PipeNet mappings require at least one mapping")
-            if any(
-                not isinstance(mapping, PipeMapping) for mapping in normalized_mappings
-            ):
-                raise TypeError("PipeNet mappings must contain only PipeMapping values")
+            complete_pipes = normalized_pipes
         elif graph is not None:
             if not isinstance(graph, TransferGraph):
                 raise TypeError(
                     f"PipeNet graph must be a TransferGraph, "
                     f"got {type(graph).__name__}"
                 )
-            normalized_mappings = (
-                (PipeMapping(graph=graph, pipes=normalized_pipes),)
-                if normalized_pipes is not None
-                else ()
+            if normalized_pipes is not None and any(
+                pipe.is_collective for pipe in normalized_pipes
+            ):
+                raise ValueError(
+                    "graph PipeNet node pipes must be point-to-point; "
+                    "node collective destinations require graph multicast lowering"
+                )
+            normalized_relations = (
+                ((graph, normalized_pipes),) if normalized_pipes is not None else ()
             )
+            complete_pipes = ()
         else:
-            normalized_mappings = ()
+            normalized_relations = ()
+            complete_pipes = ()
             if normalized_pipes is None:
-                raise ValueError("PipeNet requires pipes, graph, or mappings")
+                raise ValueError("PipeNet requires pipes or graph")
         # Operation-local id assigned by the OperationPipeNets builder
         # before AST emission (see _build_operation_pipenets).
         self.pipe_net_id = 0
         self.pipes: List[Pipe] = []
         self.graph: Optional["TransferGraph"] = None
-        self.mappings: Tuple[PipeMapping, ...] = ()
+        self._device_relations: Tuple[Tuple["TransferGraph", Tuple[Pipe, ...]], ...] = (
+            normalized_relations
+        )
         self._uses_grid_identity = graph is not None and pipes is None
-        if mappings is not None:
-            self.mappings = normalized_mappings
-            if len(normalized_mappings) == 1:
-                self.graph = normalized_mappings[0].graph
-                self.pipes = list(normalized_mappings[0].pipes)
+        if complete_pipes:
+            self.pipes = list(complete_pipes)
         elif graph is not None:
             self.graph = graph
-            self.mappings = normalized_mappings
-            if normalized_mappings:
-                self.pipes = list(normalized_mappings[0].pipes)
+            if normalized_pipes is not None:
+                self.pipes = list(normalized_pipes)
         else:
             assert normalized_pipes is not None
-            if not normalized_pipes:
-                raise ValueError("PipeNet requires at least one pipe")
             self.pipes = list(normalized_pipes)
 
         validation_graph = OperationPipeNets()
@@ -451,10 +450,10 @@ class PipeNet:
             validation_graph.add_graph_pipe_net(
                 (
                     (
-                        mapping.graph,
-                        tuple(_pipe_to_pipe_use(pipe) for pipe in mapping.pipes),
+                        relation_graph,
+                        tuple(_pipe_to_pipe_use(pipe) for pipe in relation_pipes),
                     )
-                    for mapping in self.mappings
+                    for relation_graph, relation_pipes in self._device_relations
                 )
             )
         else:
@@ -476,7 +475,7 @@ class PipeNet:
 
     @property
     def is_graph(self) -> bool:
-        return self.graph is not None or bool(self.mappings)
+        return self.graph is not None or bool(self._device_relations)
 
     def _operation_identity_capture(self) -> tuple:
         if not self.is_graph:
@@ -491,8 +490,14 @@ class PipeNet:
                 self.graph._operation_identity_capture(),
             )
         return (
-            "graph-pipenet-mappings",
-            tuple(mapping._operation_identity_capture() for mapping in self.mappings),
+            "graph-pipenet-relations",
+            tuple(
+                (
+                    graph._operation_identity_capture(),
+                    tuple(pipe._operation_identity_capture() for pipe in pipes),
+                )
+                for graph, pipes in self._device_relations
+            ),
         )
 
     def if_src(self, callback: Callable[["SrcPipeIdentity"], None]) -> None:
