@@ -140,10 +140,10 @@ def make_all_gather_minimal_matmul_operation(
         )
         accumulation_dtype = ttnn.float32 if fp32_dest_acc_en else output_shard.dtype
         matmul_accumulator_dfb = ttl.make_dfb(
-            accumulation_dtype, shape=(m_block_tiles, n_block_tiles), block_count=2
+            accumulation_dtype, shape=(m_block_tiles, n_block_tiles), block_count=1
         )
         accumulation_bias_dfb = ttl.make_dfb(
-            accumulation_dtype, shape=(1, n_block_tiles), block_count=2
+            accumulation_dtype, shape=(1, n_block_tiles), block_count=1
         )
         activation_block_bytes = (
             m_block_tiles
