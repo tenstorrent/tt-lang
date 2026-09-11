@@ -58,8 +58,8 @@ consumer wait; they isolate communication and local distribution from matmul.
 
 | Experiment | Device median ms (min-max) | Warmups/samples | Change | Result |
 | --- | ---: | ---: | ---: | --- |
-| Complete operation: 10 communication workers, row multicast | 3.577 (3.540-3.603) | 3/10 | control | Rejected. |
-| Complete operation: 10 communication workers, point-to-point row forwarding | 3.416 (3.312-3.435) | 3/10 | -4.5% vs multicast | Point-to-point replaced multicast. |
+| Complete operation: 10 communication workers, row multicast | 3.577 (3.540-3.603) | 3/10 | control | Rejected; point-to-point was 4.5% faster. |
+| Complete operation: 10 communication workers, point-to-point row forwarding | 3.416 (3.312-3.435) | 3/10 | -4.5% vs multicast | Accepted in place of multicast. |
 | Activation only: 10 communication workers, row multicast | 2.943 (2.834-2.993) | 3/10 | control | Matched local-distribution control. |
 | Activation only: 10 communication workers, point-to-point row forwarding | 2.847 (2.700-2.883) | 3/10 | -3.3% vs multicast | Confirms that multicast underperforms point-to-point without matmul. |
 | Activation only: 4 communication workers, direct fabric-to-compute injection | 2.521 (2.511-2.575) | 1/3 | -11.5% vs 10 workers | Selected for complete-operation measurement. |
@@ -70,6 +70,14 @@ consumer wait; they isolate communication and local distribution from matmul.
 | Complete operation: 10 communication workers, post-candidate control | 3.393 (3.382-3.451) | 1/3 | control | Adjacent control confirms a 5.7% four-worker reduction. |
 | Split M-worker rows between both ring directions | 3.869 (3.852-3.908) | 3/10 | +8.2% vs one direction | Rejected. Each M group requires its own weight stream; this does not reproduce native's K-half exchange. |
 | Reduce the compute K block from ten to five tiles | 4.547 (4.535-4.560) | 3/10 | +27.1% vs ten tiles | Rejected. The smaller block doubles DFB and matmul message granularity. |
+| Alternate complete ten-tile K blocks across both ring directions | not measured | full-size compile | n/a | Rejected. The small four-device BF16 streaming case passed, but the full workload required 1,474,560 L1 bytes, 13,184 bytes over the 1,461,376-byte budget. |
+
+In the multicast implementation, each compute-row head sent every activation
+block to the other nine workers in that row. Point-to-point forwarding sent
+each block once per adjacent worker. With identical ten-worker fabric and
+compute configurations, point-to-point reduced activation-only time by 3.3%
+and complete-operation time by 4.5%; multicast therefore underperformed and
+was removed.
 
 The four-worker result removes the separate L1 distribution stage. Its 2.521 ms
 activation-only screening result still exceeds the 2.109 ms isolated matmul
