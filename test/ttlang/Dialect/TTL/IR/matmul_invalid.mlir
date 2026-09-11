@@ -69,11 +69,11 @@ func.func @matmul_dynamic_lhs(
 
 // Test: result data type must match the supported input combination.
 func.func @matmul_result_element_mismatch(
-    %a: tensor<2x3x!ttcore.tile<32x32, bf16>>,
-    %b: tensor<3x4x!ttcore.tile<32x32, bf16>>) -> tensor<2x4x!ttcore.tile<32x32, f32>> {
-  // expected-error @below {{unsupported matmul element data type combination: lhs has !ttcore.tile<32x32, bf16>, rhs has !ttcore.tile<32x32, bf16>, and result has !ttcore.tile<32x32, f32>}}
-  %r = ttl.matmul %a, %b : tensor<2x3x!ttcore.tile<32x32, bf16>>, tensor<3x4x!ttcore.tile<32x32, bf16>> -> tensor<2x4x!ttcore.tile<32x32, f32>>
-  return %r : tensor<2x4x!ttcore.tile<32x32, f32>>
+    %a: tensor<2x3x!ttcore.tile<32x32, f32>>,
+    %b: tensor<3x4x!ttcore.tile<32x32, f32>>) -> tensor<2x4x!ttcore.tile<32x32, bf16>> {
+  // expected-error @below {{unsupported matmul element data type combination: lhs has !ttcore.tile<32x32, f32>, rhs has !ttcore.tile<32x32, f32>, and result has !ttcore.tile<32x32, bf16>}}
+  %r = ttl.matmul %a, %b : tensor<2x3x!ttcore.tile<32x32, f32>>, tensor<3x4x!ttcore.tile<32x32, f32>> -> tensor<2x4x!ttcore.tile<32x32, bf16>>
+  return %r : tensor<2x4x!ttcore.tile<32x32, bf16>>
 }
 
 // -----

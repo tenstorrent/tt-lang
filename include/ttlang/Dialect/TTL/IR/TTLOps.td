@@ -1915,8 +1915,9 @@ def TTL_MatmulOp : TTL_ComputePrimitiveOp<"matmul", "Matmul", [Pure,
     `[lhs.tile.height, rhs.tile.width]`. With `transpose_rhs`, the rhs tile
     width is contracted and the result tile width is the rhs tile height.
     The supported element data type combinations are equal lhs, rhs, and result
-    types, or BF16 lhs and result types with a BFP4_B or BFP8_B rhs. The
-    mixed-format form does not support rhs transposition.
+    types; BF16 lhs and rhs with a BF16 or FP32 result; or BF16 lhs and result
+    types with a BFP4_B or BFP8_B rhs. The block-float form does not support rhs
+    transposition.
   }];
   let arguments = (ins AnyRankedTensor:$lhs, AnyRankedTensor:$rhs,
                        UnitAttr:$transpose_rhs);
@@ -1949,9 +1950,10 @@ def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block", "Matmul",
 
     The lhs, rhs, and result tile types may have different dimensions. Their
     physical dimensions follow the same contraction relation as `ttl.matmul`.
-    The supported mixed-format form is BF16 lhs by BFP4_B or BFP8_B rhs with
-    BF16 output and no rhs transpose. Destination accumulation precision
-    remains a compute-kernel configuration property.
+    BF16 lhs and rhs support a BF16 or FP32 result. The supported block-float
+    form is BF16 lhs by BFP4_B or BFP8_B rhs with BF16 output and no rhs
+    transpose. Destination accumulation precision remains a compute-kernel
+    configuration property.
   }];
   let arguments = (ins TTL_TileOrTensor:$lhs, TTL_TileOrTensor:$rhs,
                        Optional<TTL_TileOrTensor>:$accumulator,
