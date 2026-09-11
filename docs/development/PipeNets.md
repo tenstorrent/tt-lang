@@ -130,11 +130,11 @@ so the graph is not duplicated for each node pipe. Adjacent complete pipes
 with the same device relation share a group; separated occurrences remain
 separate to preserve callback order. Structured graph
 callback lowering enumerates only edges where the current logical device is the
-source or destination. Explicit graphs use `O(V + E)` indexed adjacency.
-Resource tables remain aligned with global transfer indices during generic
-lowering. When core specialization is enabled, it removes node-coordinate
-dimensions that become constant. Runtime work remains proportional to the
-concrete transfers that execute.
+source or destination. Explicit graphs store `O(V + E)` per-device edge-index
+tables. Generic lowering assigns each concrete transfer a stable index and uses
+it to select the corresponding resource-table entries. When core specialization
+is enabled, it removes node-coordinate dimensions that become constant. Runtime
+work remains proportional to the concrete transfers that execute.
 
 Transfer topology is compile-time information, but this does not require one
 source algorithm per device count. A CCL factory accepts a domain extent and
@@ -178,10 +178,10 @@ TTKernel conversion uses three representations:
   grow with the number of records.
 - For grouped graph relations, conversion emits one loop over the graph edges
   where the current logical device is the source or destination, then over the
-  group's node pipes. Structured graphs
-  derive endpoints from their descriptors and use compact per-device prefix
-  tables only when edge counts vary by device. Explicit graphs use indexed
-  adjacency tables.
+  group's node pipes. Structured graphs derive endpoints from their descriptors.
+  When devices have different edge counts, a cumulative-start table identifies
+  each device's edge interval. Explicit graphs store per-device edge-index
+  tables.
 
 The immutable tables become bit-packed C++ template arguments stored outside
 the kernel stack. A selected-pipe type identifies whether iteration selected

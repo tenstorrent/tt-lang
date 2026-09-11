@@ -244,10 +244,9 @@ The graph does not state whether the target uses a line, ring, torus, mesh, or
 another interconnect. It also does not require `(0, 0)` and `(0, 3)` to be one
 hardware packet apart.
 
-Structured transfers share common domain and component properties through
-`StructuredTransfer`. Current derived forms include axis-neighbor, gather, and
-scatter relations. Additional collectives should add semantic transfer forms
-such as all-to-all without adding target topology fields.
+`TransferGraph` supports explicit edge lists and structured axis-neighbor,
+stencil, gather, scatter, and all-to-all relations. Additional common relations
+should describe communication semantics without adding target topology fields.
 
 ### Shared pipe protocol
 
@@ -392,12 +391,13 @@ A graph PipeNet lowers to one `PipeNetRecordsAttr` containing graph groups and
 one callback region for each source or destination role. The
 callback receives a selected record containing node coordinates and logical
 device indices. Structured `TransferGraph` specializations derive endpoints
-from their descriptors and use compact per-device prefix tables only when edge
-counts vary by device. Explicit graphs use indexed adjacency. Each logical
-device iterates only edges where it is the source or destination. Resource
-tables remain aligned with global transfer indices. When core specialization
-is enabled, it removes constant node-coordinate dimensions. The compiler does
-not emit the device-edge by node-pipe product as frontend or TTL IR.
+from their descriptors. When devices have different edge counts, a
+cumulative-start table identifies each device's edge interval. Explicit graphs
+store per-device edge-index tables. Each logical device iterates only edges
+where it is the source or destination. Every concrete transfer has a stable
+index used to select its resource-table entries. When core specialization is
+enabled, it removes constant node-coordinate dimensions. The compiler does not
+emit the device-edge by node-pipe product as frontend or TTL IR.
 
 One compiled operation fixes its logical domain extents. Source-level CCL
 factories remain extent-parameterized and construct the same structured graph
