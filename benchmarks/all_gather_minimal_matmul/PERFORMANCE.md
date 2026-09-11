@@ -11,7 +11,7 @@ Four Blackhole P150b devices; global `M/K/N=9472/5120/15360`; per-device
 
 | Implementation | Device median ms (min-max) | TT-Lang/native | Warmups/samples |
 | --- | ---: | ---: | ---: |
-| TT-Lang | 3.577 (3.540-3.603) | 1.812 | 3/10 |
+| TT-Lang | 3.416 (3.312-3.435) | 1.731 | 3/10 |
 | Native `all_gather_minimal_matmul_async` | 1.974 (1.959-2.004) | 1.000 | 3/10 |
 
 Both results passed PCC >= 0.99 and elementwise relative/absolute tolerances of
@@ -31,7 +31,7 @@ configuration. Equal resource use is not required.
 | Compute grid | `12 x 10`; 120 compute workers | `12 x 9`; 108 compute workers |
 | M/K/N blocks | `4/10/12` tiles | `7/5/16` tiles |
 | Output subblock | `1 x 4` tiles; direct FP32 packer accumulation | `1 x 2` tiles |
-| Communication workers | 4 fabric; 6 L1 distribution | 24 compute workers are fabric clients; 4 mux-only workers |
+| Communication workers | 4 fabric; 6 L1 distribution; point-to-point forwarding through each 10-node compute row | 24 compute workers are fabric clients; 4 mux-only workers |
 | Activation collective | one-direction TT-Lang ring into L1 | bidirectional native ring into gathered-activation DRAM storage |
 | Fabric configuration | 2D, strict initialization | 1D ring, strict initialization |
 | Payload | 8192 bytes | 8192 bytes |
@@ -48,6 +48,29 @@ approximate-math setting. Validation concatenates the three adjacent native
 chunks on the host; that untimed concatenation reconstructs the same N shard
 that TT-Lang returns as one tensor.
 
+## Optimization experiments
+
+All rows use the four-device workload and timing definition above. Complete
+operations use three warmups and ten samples. Activation-only measurements keep
+the same activation transport and DFB sequence, then discard each block after
+the consumer wait; they isolate communication and local distribution from
+matmul.
+
+| Experiment | Device median ms (min-max) | Change | Result |
+| --- | ---: | ---: | --- |
+| Complete operation: multicast each activation block to all ten nodes in its compute row | 3.577 (3.540-3.603) | control | Replaced because local multicast limited activation distribution. |
+| Complete operation: forward each activation block point-to-point through its compute row | 3.416 (3.312-3.435) | -4.5% | Accepted. Output and all other benchmark parameters are unchanged. |
+| Activation only: row multicast | 2.943 (2.834-2.993) | control | Matched control for the local distribution mechanism. |
+| Activation only: point-to-point row forwarding | 2.847 (2.700-2.883) | -3.3% | Confirms that point-to-point outperforms multicast without matmul. |
+| Split M-worker rows between both ring directions | 3.869 (3.852-3.908) | +8.2% | Rejected. Each M group requires its own weight stream; this does not reproduce native's K-half exchange. |
+| Reduce the compute K block from ten to five tiles | 4.547 (4.535-4.560) | +27.1% | Rejected. The smaller block doubles DFB and matmul message granularity. |
+
+The point-to-point result improves local distribution, but activation movement
+remains the primary limit: its 2.847 ms isolated time exceeds the 2.109 ms
+isolated matmul time. The complete operation is 0.569 ms above their maximum,
+so communication-compute overlap and backpressure also remain optimization
+targets.
+
 ## TT-Lang matmul kernel
 
 The compute kernel converts each bias block to FP32 and broadcasts it into the
@@ -63,8 +86,9 @@ Device profiling measures first kernel start through final kernel end, averaged
 across the four devices. Host tensor creation, compilation, dispatch,
 correctness checks, and profiler processing are excluded.
 
-Measured 2026-09-11 18:40-18:41 UTC: TT-Lang source `d9c8fee3c`, operation
-SHA-256 `7ef4767cded3`, comparison runner SHA-256 `8f27dcbf7d4b`; TT-Metal
+Measured 2026-09-11 20:13-20:14 UTC (TT-Lang) and 18:40-18:41 UTC (native):
+TT-Lang source `56f217031`, operation SHA-256 `639b6d92e539`, comparison
+runner SHA-256 `8f27dcbf7d4b`; TT-Metal
 `ea042c4ad623`; LLVM `37aca9d384347`; firmware 18.12.1; IRD v1.1.9.
 
 [Raw device-profiler reports](https://gist.github.com/brnorris03/fa7ab25c12872de92dc0727f28f16104).
