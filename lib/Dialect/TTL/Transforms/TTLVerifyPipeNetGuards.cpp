@@ -423,17 +423,14 @@ struct ModuleState {
         allowedDomain =
             allowedDomain.intersectWith(getPipeRecordsRoleLaunchNodeDomain(
                 selected->records, PipeRole::Destination));
-        forEachPipeRecord(selected->records,
-                          [&](std::uint64_t recordIndex,
-                              PipeRecordAttr record) {
-                            alternatives.push_back(
-                                {getPipeTypeFromRecord(
-                                     selected->records.getContext(), record,
+        forEachPipeRecord(selected->records, [&](std::uint64_t recordIndex,
+                                                 PipeRecordAttr record) {
+          alternatives.push_back(
+              {getPipeTypeFromRecord(selected->records.getContext(), record,
                                      selected->records.getPipeNetId()),
-                                 record.getDeviceTransfer(), post,
-                                 selected->maybeForeachOp,
-                                 static_cast<int64_t>(recordIndex)});
-                          });
+               record.getDeviceTransfer(), post, selected->maybeForeachOp,
+               static_cast<int64_t>(recordIndex)});
+        });
       }
     }
     assert(!alternatives.empty() && "wait-any requires a candidate");

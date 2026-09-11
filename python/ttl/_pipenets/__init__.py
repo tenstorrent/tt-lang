@@ -287,9 +287,7 @@ def _validate_graph_mapping_duplicates(net: GraphPipeNetUse) -> None:
 
     def get_edges(mapping: GraphPipeMappingUse) -> Set:
         if mapping.transfer_graph not in edge_sets:
-            edge_sets[mapping.transfer_graph] = set(
-                mapping.transfer_graph.iter_edges()
-            )
+            edge_sets[mapping.transfer_graph] = set(mapping.transfer_graph.iter_edges())
         return edge_sets[mapping.transfer_graph]
 
     previous_mappings = []

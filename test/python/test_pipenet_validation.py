@@ -195,9 +195,7 @@ def test_operation_pipenets_gets_all_to_all_endpoints_without_expanding_edges(
 
     monkeypatch.setattr(ttl.TransferGraph, "iter_edges", reject_edge_expansion)
 
-    assert operation_pipenets.device_endpoints() == frozenset(
-        domain.iter_device_refs()
-    )
+    assert operation_pipenets.device_endpoints() == frozenset(domain.iter_device_refs())
 
 
 def test_operation_pipenets_rejects_mismatched_device_domains():

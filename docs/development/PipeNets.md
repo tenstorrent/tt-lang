@@ -15,11 +15,14 @@ writes and semaphore increments.
 
 ## Overview
 
-`ttl.PipeNet` describes a logical communication pattern between nodes. A
-pipe carries data from a source coordinate (`src`) to either a single
-destination (point-to-point) or a contiguous coordinate range
-(collective). When the launch grid is larger than the union of all pipe
-sources and destinations, the extra nodes have no role in the
+`ttl.PipeNet` describes a logical communication pattern between nodes. A pipe
+carries data from one source to one destination (point-to-point) or multiple
+destinations (collective). The current on-device `Pipe(dst=...)` syntax encodes
+a collective destination as one axis-aligned, unit-stride coordinate range
+because that representation maps directly to TT-Metal NoC multicast. This is a
+restriction of the current representation, not a semantic requirement that
+collective participants be contiguous. When the launch grid is larger than the
+nodes referenced by all pipes, the extra nodes have no role in the
 communication. If the user fails to guard pipe-coupled work from those
 nodes, the kernel reads out-of-bounds tensor regions and corrupts the
 pipe synchronization protocol; this failure mode is the one the
@@ -143,7 +146,8 @@ selection remain target-binding decisions and are not encoded in the graph.
 ## PipeNet callbacks and generated code
 
 A local PipeNet record is one `ttl.Pipe` declaration: one source coordinate and
-one point-to-point destination or collective destination range. A graph
+one point-to-point destination or one rectangular collective destination, the
+only multi-destination representation currently supported. A graph
 PipeNet record is one logical-device edge paired with one node pipe. The Python
 frontend represents `net.if_src(callback)` and `net.if_dst(callback)` with one
 `ttl.pipenet_foreach_src` or `ttl.pipenet_foreach_dst` region. The region owns

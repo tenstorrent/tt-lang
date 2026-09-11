@@ -2020,30 +2020,26 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
           std::optional<std::uint64_t> sendInductionValue =
               getPipeNetRecordLoopInductionValue(
                   analysisState.pipeRecordLoops.at(sendRecordLoop),
-                  *maybeSendLocation,
-                  *candidates.sends[sendIndex].recordIndex);
+                  *maybeSendLocation, *candidates.sends[sendIndex].recordIndex);
           std::optional<std::uint64_t> postInductionValue =
               getPipeNetRecordLoopInductionValue(
                   analysisState.pipeRecordLoops.at(postRecordLoop),
-                  *maybePostLocation,
-                  *postsIt->second[sendIndex].recordIndex);
+                  *maybePostLocation, *postsIt->second[sendIndex].recordIndex);
           assert(sendInductionValue && postInductionValue &&
                  "selected pipe candidates must execute in their record loops");
           PipeRecordAttr sendRecord = *candidates.sends[sendIndex].record;
           PipeRecordAttr postRecord = *postsIt->second[sendIndex].record;
           auto evaluateSendContextValue = [&](Value value) {
             if (value == sendForOp.getInductionVar()) {
-              return std::optional<llvm::APInt>(
-                  llvm::APInt(IndexType::kInternalStorageBitWidth,
-                              *sendInductionValue));
+              return std::optional<llvm::APInt>(llvm::APInt(
+                  IndexType::kInternalStorageBitWidth, *sendInductionValue));
             }
             return evaluateSelectedPipeRecordValue(value, sendRecord);
           };
           auto evaluatePostContextValue = [&](Value value) {
             if (value == postForOp.getInductionVar()) {
-              return std::optional<llvm::APInt>(
-                  llvm::APInt(IndexType::kInternalStorageBitWidth,
-                              *postInductionValue));
+              return std::optional<llvm::APInt>(llvm::APInt(
+                  IndexType::kInternalStorageBitWidth, *postInductionValue));
             }
             return evaluateSelectedPipeRecordValue(value, postRecord);
           };
