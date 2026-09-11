@@ -1,6 +1,7 @@
 // RUN: ttlang-opt %s | FileCheck %s
 
-// Summary: Verifies factorized graph PipeNet attributes remain compact.
+// Summary: Verifies graph PipeNet attributes store graph and node relations
+// separately.
 
 // The graph and node-pipe relation print separately instead of as concrete
 // device-edge by node-pipe records.
@@ -55,13 +56,13 @@ func.func @graph_kinds() attributes {
   return
 }
 
-// Mapping order remains callback order for an ordered union.
-// CHECK-LABEL: func.func @mapping_union
+// Mapping order determines callback order when relations use different pipes.
+// CHECK-LABEL: func.func @mapping_order
 // CHECK-SAME: kind = gather
 // CHECK-SAME: pipes[<srcX = 1, srcY = 0
 // CHECK-SAME: kind = scatter
 // CHECK-SAME: pipes[<srcX = 2, srcY = 0
-func.func @mapping_union() attributes {
+func.func @mapping_order() attributes {
     test.records = #ttl.pipenet_records<net 9 mappings
       <graph = <domain = <components = <name = "device", extent = [4]>>,
         kind = gather, componentName = "device",

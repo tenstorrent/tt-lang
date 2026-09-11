@@ -21,14 +21,15 @@ namespace mlir::tt::ttl {
 struct PipeForeachLoweringInfo;
 
 /// Immutable lowering inputs for one graph mapping. `records` contains only
-/// this mapping; identity mappings derive node coordinates without tables.
+/// this mapping. Same-coordinate mappings derive node coordinates without
+/// tables.
 struct GraphPipeMappingForeachPlan {
   PipeNetRecordsAttr records;
   PipeRecordTables nodePipeTables;
   std::unique_ptr<TransferGraph> graph;
   int64_t nodePipeCount = 0;
   int64_t launchGridX = 0;
-  bool usesLaunchGridIdentity = false;
+  bool usesMatchingNodeCoordinates = false;
 };
 
 using GraphPipeMappingForeachPlans =

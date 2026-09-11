@@ -66,7 +66,7 @@ if __name__ == "__main__":
     compile_cross_node_exchange()
 
 
-# The transfer graph and launch-node relation remain factorized in initial IR.
+# Initial IR stores the transfer graph and launch-node relation separately.
 # Callback control flow does not encode endpoint placement.
 # CHECK-INITIAL-LABEL: func.func @send_data_movement
 # CHECK-INITIAL: ttl.pipenet_foreach_src

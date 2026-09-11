@@ -1,6 +1,6 @@
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics
 
-// Summary: Verifies invalid factorized graph PipeNet attributes are rejected.
+// Summary: Verifies invalid graph and node-pipe mappings are rejected.
 
 // A mapping's node pipe cannot bind another logical-device transfer.
 func.func @device_bound_node_pipe() attributes {
@@ -51,9 +51,9 @@ func.func @mismatched_mapping_domains() attributes {
 
 // -----
 
-// Mapping unions cannot repeat the same graph edge and node pipe.
-func.func @duplicate_complete_pipe() attributes {
-    // expected-error @below {{graph mappings contain a duplicate complete pipe}}
+// Separate mappings cannot repeat the same device edge and node pipe.
+func.func @duplicate_edge_and_node_pipe() attributes {
+    // expected-error @below {{graph mappings repeat the same device edge and node pipe}}
     test.records = #ttl.pipenet_records<net 0 mappings
       <graph = <domain = <components = <name = "device", extent = [2]>>,
         kind = all_to_all, componentName = "device", properties = {}>,

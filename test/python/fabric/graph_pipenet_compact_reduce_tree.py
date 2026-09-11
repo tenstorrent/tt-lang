@@ -8,7 +8,7 @@
 # RUN: FileCheck %s --check-prefix=CHECK-INITIAL --implicit-check-not=deviceTransfer --implicit-check-not='array<1920x' --implicit-check-not='array<960x' --implicit-check-not='array<480x' --implicit-check-not='array<240x' --implicit-check-not='array<120x' < %t.initial.mlir
 # RUN: %python %s --check-generated-tables < %t.output | FileCheck %s --check-prefix=CHECK-TABLES
 
-"""Compile a realistic graph PipeNet relation without Cartesian expansion."""
+"""Compile a realistic graph PipeNet without enumerating edge/pipe pairs."""
 
 import re
 import sys
@@ -98,7 +98,7 @@ PARTIAL_NET_3 = ttl.PipeNet(
     device_domain=DEVICE_DOMAIN,
     options="--ttl-specialize-cores",
 )
-def compile_factorized_reduce_tree():
+def compile_compact_reduce_tree():
     template = BFloat16Tensor()
     send_dfb = ttl.make_dataflow_buffer_like(template, shape=(1, 1), block_count=1)
     receive_dfb = ttl.make_dataflow_buffer_like(template, shape=(1, 1), block_count=1)
@@ -137,7 +137,7 @@ def compile_factorized_reduce_tree():
 
 
 def check_generated_tables(output):
-    """Reject constant tables sized as expanded graph/worker products."""
+    """Reject tables with one row per graph-edge and node-pipe pair."""
     table_sizes = {
         int(match.group("size"))
         for match in re.finditer(
@@ -156,10 +156,10 @@ if __name__ == "__main__":
         check_generated_tables(sys.stdin.read())
     else:
         assert len(sys.argv) == 1
-        compile_factorized_reduce_tree()
+        compile_compact_reduce_tree()
 
 
-# Each of the five PipeNets remains factorized in its source and destination op.
+# Each source and destination operation stores five compact graph PipeNets.
 # CHECK-INITIAL-COUNT-10: #ttl.pipenet_records<
 
 # CHECK-TABLES: EXPANDED-PIPE-TABLES: none

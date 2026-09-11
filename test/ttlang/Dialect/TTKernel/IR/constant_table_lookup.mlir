@@ -40,6 +40,20 @@ func.func @slice_constant_column(%row: index) -> index {
   return %value : index
 }
 
+// A zero column offset may be folded out before the table is sliced.
+// CHECK-LABEL: func.func @slice_first_column
+// CHECK-SAME: (%[[ROW:.*]]: index)
+// CHECK-NEXT: %[[VALUE:.*]] = ttkernel.experimental.constant_table_lookup
+// CHECK-SAME: %[[ROW]], [0, 4, 8] : index
+// CHECK-NEXT: return %[[VALUE]] : index
+func.func @slice_first_column(%row: index) -> index {
+  %c4 = arith.constant 4 : index
+  %row_offset = arith.muli %row, %c4 : index
+  %value = ttkernel.experimental.constant_table_lookup %row_offset,
+      [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] : index
+  return %value : index
+}
+
 // An incomplete final row prevents column slicing.
 // CHECK-LABEL: func.func @retain_incomplete_table
 // CHECK-SAME: (%[[ROW:.*]]: index)

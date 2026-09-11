@@ -205,9 +205,9 @@ buildGraphRecordInductionValues(PipeNetRecordsAttr records, PipeRole role) {
   return inductionValues;
 }
 
-// Map each concrete transfer to its incident-edge iteration for identity node
-// mappings, where the launch coordinate selects the node pipe.
-static RecordInductionMap buildGraphIdentityRecordInductionValues(
+// Map each same-coordinate transfer to its position among graph edges that
+// select the same logical device and endpoint role.
+static RecordInductionMap buildGraphSameCoordinateRecordInductionValues(
     PipeNetRecordsAttr records, PipeRole role, std::uint64_t nodePipeCount) {
   RecordInductionMap inductionValues =
       buildGraphRecordInductionValues(records, role);
@@ -262,7 +262,7 @@ tryLowerLocalPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
   rewriter.setInsertionPointToStart(forOp.getBody());
   Value recordIndex = buildConstantIndexTableLookup(
       rewriter, loc, participantPlan->recordIndices, forOp.getInductionVar());
-  PipeRecordTables recordTables = buildPipeRecordTables(records);
+  PipeRecordTables recordTables = buildPipeRecordTables(records.getPipes());
   Value sourceDeviceIndex = buildConstantIndexTableLookup(
       rewriter, loc, recordTables.sourceDeviceIndex, recordIndex);
   Value destinationDeviceIndex = buildConstantIndexTableLookup(
@@ -440,15 +440,15 @@ buildGraphPipeMappingForeachPlans(PipeNetRecordsAttr records,
     PipeNetRecordsAttr mappingRecords = PipeNetRecordsAttr::get(
         records.getContext(), records.getPipeNetId(), records.getPipeNetName(),
         ArrayRef<PipeRecordAttr>(), ArrayRef<PipeMappingAttr>{mapping});
-    bool usesLaunchGridIdentity = isLaunchGridIdentityPipeMapping(
+    bool usesMatchingNodeCoordinates = hasMatchingPipeForEveryLaunchNode(
         mapping.getPipes(), launchGrid.first, launchGrid.second);
     PipeRecordTables nodePipeTables =
-        usesLaunchGridIdentity ? PipeRecordTables()
-                               : buildPipeRecordTables(mapping.getPipes());
+        usesMatchingNodeCoordinates ? PipeRecordTables()
+                                    : buildPipeRecordTables(mapping.getPipes());
     plans.push_back(GraphPipeMappingForeachPlan{
         mappingRecords, std::move(nodePipeTables), std::move(graph),
         static_cast<int64_t>(nodePipeCount), launchGrid.first,
-        usesLaunchGridIdentity});
+        usesMatchingNodeCoordinates});
   }
   return plans;
 }
@@ -482,7 +482,7 @@ lowerGraphPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
     Value nodePipeCount =
         arith::ConstantIndexOp::create(rewriter, loc, plan.nodePipeCount);
     Value lower = arith::ConstantIndexOp::create(rewriter, loc, 0);
-    Value upper = plan.usesLaunchGridIdentity
+    Value upper = plan.usesMatchingNodeCoordinates
                       ? incidentEdgeCount
                       : Value(arith::MulIOp::create(
                             rewriter, loc, incidentEdgeCount, nodePipeCount));
@@ -490,8 +490,8 @@ lowerGraphPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
     auto forOp = scf::ForOp::create(rewriter, loc, lower, upper, step);
     foreachLoweringInfo.recordLoops[forOp] = {
         plan.records, recordSelection,
-        plan.usesLaunchGridIdentity
-            ? buildGraphIdentityRecordInductionValues(
+        plan.usesMatchingNodeCoordinates
+            ? buildGraphSameCoordinateRecordInductionValues(
                   plan.records, role,
                   static_cast<std::uint64_t>(plan.nodePipeCount))
             : buildGraphRecordInductionValues(plan.records, role)};
@@ -500,7 +500,7 @@ lowerGraphPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
     Value localRecordIndex = forOp.getInductionVar();
     Value incidentEdgeIndex;
     Value nodePipeIndex;
-    if (plan.usesLaunchGridIdentity) {
+    if (plan.usesMatchingNodeCoordinates) {
       incidentEdgeIndex = localRecordIndex;
       Value gridX =
           arith::ConstantIndexOp::create(rewriter, loc, plan.launchGridX);
@@ -521,7 +521,7 @@ lowerGraphPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
     Value recordIndex =
         arith::AddIOp::create(rewriter, loc, edgeRecordBase, nodePipeIndex);
     auto selectedPipe = [&]() -> SelectOp {
-      if (!plan.usesLaunchGridIdentity) {
+      if (!plan.usesMatchingNodeCoordinates) {
         return buildSelectedPipe<SelectOp, SelectedPipeType>(
             rewriter, loc, plan.records, plan.nodePipeTables, recordIndex,
             nodePipeIndex, edgeIndices.sourceDeviceIndex,
@@ -537,7 +537,7 @@ lowerGraphPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
           edgeIndices.destinationDeviceIndex, plan.records);
     }();
     foreachLoweringInfo.controlOps.push_back(forOp);
-    if (plan.usesLaunchGridIdentity) {
+    if (plan.usesMatchingNodeCoordinates) {
       clonePipeForeachBody(op, selectedPipe.getPipe(), rewriter,
                            foreachWorklist);
       rewriter.setInsertionPointAfter(forOp);
@@ -598,7 +598,7 @@ lowerPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
     return success();
   }
 
-  PipeRecordTables tables = buildPipeRecordTables(records);
+  PipeRecordTables tables = buildPipeRecordTables(records.getPipes());
   Value lower = arith::ConstantIndexOp::create(rewriter, loc, 0);
   Value upper =
       arith::ConstantIndexOp::create(rewriter, loc, records.getPipes().size());

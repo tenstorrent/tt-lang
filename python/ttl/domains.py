@@ -658,6 +658,29 @@ class TransferGraph:
             relation_identity,
         )
 
+    def device_endpoints(self) -> frozenset[DeviceRef]:
+        """Return devices used as a source or destination by an edge."""
+        structured = self.structured
+        if isinstance(structured, (GatherTransfer, ScatterTransfer, AllToAllTransfer)):
+            return frozenset(self.domain.iter_device_refs())
+        if isinstance(structured, AxisNeighborTransfer) and structured.wrap:
+            return frozenset(self.domain.iter_device_refs())
+        if isinstance(structured, StencilTransfer) and structured.wrap:
+            return frozenset(self.domain.iter_device_refs())
+
+        endpoints = set()
+        for edge in self.iter_edges():
+            endpoints.add(edge.source)
+            if isinstance(edge.destination, DeviceRange):
+                endpoints.update(
+                    device
+                    for device in self.domain.iter_device_refs()
+                    if self._range_contains(edge.destination, device)
+                )
+            else:
+                endpoints.add(edge.destination)
+        return frozenset(endpoints)
+
     def iter_edges(self) -> Iterator[TransferEdge]:
         """Iterate the transfer relation without changing its stored form."""
         if self.is_explicit:
