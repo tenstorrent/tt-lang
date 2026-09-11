@@ -108,7 +108,7 @@ else:
         ReceiveRequest,
         TensorBlock,
     )
-    from ttl.pipe import Pipe, PipeNet
+    from ttl.pipe import Pipe, PipeMapping, PipeNet
 
     __all__ = [
         "__version__",
@@ -141,6 +141,7 @@ else:
         "ReceiveRequest",
         "ReadyReceive",
         "Pipe",
+        "PipeMapping",
         "PipeNet",
         "AllToAllTransfer",
         "AxisNeighborTransfer",

@@ -125,6 +125,16 @@ def test_transfer_graph_rejects_exact_self_transfer():
         TransferGraph.edges(domain, edges=[(1, 1)])
 
 
+def test_transfer_graph_rejects_duplicate_edges():
+    domain = DeviceDomain((1, 2))
+
+    with pytest.raises(ValueError, match="edges must be unique"):
+        TransferGraph.edges(
+            domain,
+            edges=[((0, 0), (0, 1)), ((0, 0), (0, 1))],
+        )
+
+
 def test_structured_axis_neighbor_remains_compact():
     domain = DeviceDomain((1024, 1024))
     graph = TransferGraph.axis_neighbor(domain, axis=1, offset=1)

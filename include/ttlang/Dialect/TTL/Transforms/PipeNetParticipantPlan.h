@@ -28,16 +28,14 @@ struct LocalPipeNetParticipantPlan {
   SmallVector<int64_t> recordIndices;
 };
 
-/// Check that `records` selects local nodes within (`gridX`, `gridY`) for
-/// `role` and that the grid area and record count fit signed 64-bit indices.
-/// Report invalid inputs through `emitError` when supplied, without building
-/// the node tables; optional optimizations may omit diagnostics.
-LogicalResult validateLocalPipeNetParticipantPlanInputs(
+/// Check that the node endpoints selected by `records` and `role` are within
+/// (`gridX`, `gridY`) and that indexing the relation fits signed 64-bit values.
+/// Report invalid inputs through `emitError` when supplied.
+LogicalResult validatePipeNetLaunchNodeRelation(
     PipeNetRecordsAttr records, PipeRole role, int64_t gridX, int64_t gridY,
     llvm::function_ref<InFlightDiagnostic()> emitError = {});
 
-/// Group `records` by nodes with `role` in the grid (`gridX`, `gridY`).
-/// Fail if the inputs do not satisfy validateLocalPipeNetParticipantPlanInputs.
+/// Group a verified local PipeNet's records by nodes with `role` in the grid.
 FailureOr<LocalPipeNetParticipantPlan>
 buildLocalPipeNetParticipantPlan(PipeNetRecordsAttr records, PipeRole role,
                                  int64_t gridX, int64_t gridY);

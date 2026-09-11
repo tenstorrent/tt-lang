@@ -736,7 +736,8 @@ struct ReceiverProducerState {
 static std::optional<std::uint64_t> getConcreteTransferExecutionCount(
     Operation *op, const LaunchExecutionLocation &location,
     const PipeReference &pipeRef, std::optional<std::uint64_t> recordIndex,
-    PipeGraphAnalysisState &analysisState);
+    PipeGraphAnalysisState &analysisState,
+    std::optional<PipeRecordAttr> selectedRecord = std::nullopt);
 
 static InFlightDiagnostic
 emitReceiverReservationPastDFBEnd(const ReceiverDFBInfo &receiverInfo,
@@ -945,18 +946,20 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
       auto transferIt = transferNodeIdByProtocolOpAndRecord.find(
           std::make_pair(postOp.getOperation(), *activeRecordIndex));
       if (transferIt == transferNodeIdByProtocolOpAndRecord.end()) {
-        PipeRecordAttr record =
-            pipeRef->getRecords().getPipes()[*activeRecordIndex];
+        FailureOr<PipeRecordAttr> record =
+            getPipeRecord(pipeRef->getRecords(), *activeRecordIndex);
+        assert(succeeded(record) &&
+               "active PipeNet record index must be in bounds");
         FailureOr<LaunchExecutionLocation> maybeLocation =
             getPipeGraphExecutionLocation(postOp.getOperation(), coord,
-                                          record.getDeviceTransfer(),
+                                          record->getDeviceTransfer(),
                                           PipeRole::Destination);
         assert(succeeded(maybeLocation) &&
                "selected receiver record must have an execution location");
         std::optional<std::uint64_t> maybeExecutionCount =
-            getConcreteTransferExecutionCount(postOp.getOperation(),
-                                              *maybeLocation, *pipeRef,
-                                              activeRecordIndex, analysisState);
+            getConcreteTransferExecutionCount(
+                postOp.getOperation(), *maybeLocation, *pipeRef,
+                activeRecordIndex, analysisState, *record);
         assert(maybeExecutionCount && *maybeExecutionCount == 0 &&
                "executing selected receiver record must have a transfer node");
         return success();
@@ -1594,9 +1597,12 @@ getSelectedRecordLoop(const PipeReference &pipeRef,
 static std::optional<std::uint64_t> getSelectedRecordExecutionCount(
     Operation *op, const LaunchExecutionLocation &location,
     const PipeReference &pipeRef, std::uint64_t recordIndex,
-    PipeGraphAnalysisState &analysisState) {
-  assert(pipeRef.isSelected() &&
-         recordIndex < pipeRef.getRecords().getPipes().size() &&
+    PipeGraphAnalysisState &analysisState,
+    std::optional<PipeRecordAttr> selectedRecord) {
+  FailureOr<std::uint64_t> recordCount =
+      getPipeRecordCount(pipeRef.getRecords());
+  assert(pipeRef.isSelected() && succeeded(recordCount) &&
+         recordIndex < *recordCount &&
          "selected pipe execution requires a valid record index");
   Operation *recordLoop = getSelectedRecordLoop(pipeRef, analysisState);
   auto forOp = cast<scf::ForOp>(recordLoop);
@@ -1606,6 +1612,13 @@ static std::optional<std::uint64_t> getSelectedRecordExecutionCount(
       getPipeNetRecordLoopInductionValue(recordLoopInfo, location, recordIndex);
   if (!maybeInductionValue) {
     return std::nullopt;
+  }
+
+  if (!selectedRecord) {
+    FailureOr<PipeRecordAttr> record =
+        getPipeRecord(pipeRef.getRecords(), recordIndex);
+    assert(succeeded(record) && "selected record index must be in bounds");
+    selectedRecord = *record;
   }
 
   auto &recordCache = analysisState.recordExecutionCountAnalyses[recordLoop];
@@ -1619,13 +1632,12 @@ static std::optional<std::uint64_t> getSelectedRecordExecutionCount(
         Value inductionVariable = forOp.getInductionVar();
         llvm::APInt inductionValue(IndexType::kInternalStorageBitWidth,
                                    *maybeInductionValue);
-        PipeRecordAttr record = pipeRef.getRecords().getPipes()[recordIndex];
         return std::make_unique<ExecutionCountAnalysis>(
             *recordCache.sharedState,
-            [inductionVariable, inductionValue, record, location,
+            [inductionVariable, inductionValue, selectedRecord, location,
              &analysisState](Value value) -> std::optional<llvm::APInt> {
               if (std::optional<llvm::APInt> recordValue =
-                      evaluateSelectedPipeRecordValue(value, record)) {
+                      evaluateSelectedPipeRecordValue(value, *selectedRecord)) {
                 return recordValue;
               }
               if (value == inductionVariable) {
@@ -1645,7 +1657,8 @@ static std::optional<std::uint64_t> getSelectedRecordExecutionCount(
 static std::optional<std::uint64_t> getConcreteTransferExecutionCount(
     Operation *op, const LaunchExecutionLocation &location,
     const PipeReference &pipeRef, std::optional<std::uint64_t> recordIndex,
-    PipeGraphAnalysisState &analysisState) {
+    PipeGraphAnalysisState &analysisState,
+    std::optional<PipeRecordAttr> selectedRecord) {
   if (pipeRef.isStatic()) {
     assert(!recordIndex && "static pipe execution has no record index");
     return getExactExecutionCountAtLaunchLocation(op, location, analysisState);
@@ -1658,7 +1671,7 @@ static std::optional<std::uint64_t> getConcreteTransferExecutionCount(
                                              analysisState);
   std::optional<std::uint64_t> maybeRecordCount =
       getSelectedRecordExecutionCount(op, location, pipeRef, *recordIndex,
-                                      analysisState);
+                                      analysisState, selectedRecord);
   return maybeLoopInvocationCount && maybeRecordCount
              ? llvm::checkedMulUnsigned(*maybeLoopInvocationCount,
                                         *maybeRecordCount)
@@ -1670,7 +1683,37 @@ template <typename ProtocolOp>
 struct PipeProtocolCandidate {
   ProtocolOp op;
   std::optional<std::uint64_t> recordIndex;
+  std::optional<PipeRecordAttr> record;
 };
+
+static LogicalResult forEachPipeReferenceRecord(
+    MLIRContext *context, const PipeReference &pipeRef,
+    DeviceTransferAttr staticDeviceTransfer,
+    llvm::function_ref<LogicalResult(std::uint64_t, PipeType,
+                                     DeviceTransferAttr,
+                                     std::optional<PipeRecordAttr>)>
+        callback) {
+  // Stream selected records so this traversal does not allocate a second
+  // complete graph/node-pipe array before constructing protocol proof state.
+  if (pipeRef.isStatic()) {
+    return callback(0, pipeRef.getStaticPipeType(), staticDeviceTransfer,
+                    std::nullopt);
+  }
+
+  LogicalResult result = success();
+  PipeNetRecordsAttr records = pipeRef.getRecords();
+  forEachPipeRecord(records, [&](std::uint64_t recordIndex,
+                                 PipeRecordAttr record) {
+    if (failed(result)) {
+      return;
+    }
+    result =
+        callback(recordIndex,
+                 getPipeTypeFromRecord(context, record, records.getPipeNetId()),
+                 record.getDeviceTransfer(), record);
+  });
+  return result;
+}
 
 void PipeGraph::recordTransferNodeForProtocolRecord(
     Operation *op, std::optional<std::uint64_t> recordIndex,
@@ -1722,45 +1765,51 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
           createOp.getDeviceTransferAttr();
       LaunchNodeDomain sendDomain =
           lookupOperationLaunchDomain(sendOp.getOperation(), analysisState);
-      SmallVector<PipeType> pipeTypes =
-          getPipeTypesFromReference(sendOp.getContext(), *pipeRef);
-      for (auto [recordIndex, pipeType] : llvm::enumerate(pipeTypes)) {
-        std::optional<std::uint64_t> selectedRecordIndex =
-            pipeRef->isSelected() ? std::optional<std::uint64_t>(recordIndex)
-                                  : std::nullopt;
-        DeviceTransferAttr deviceTransfer = getPipeRecordDeviceTransfer(
-            *pipeRef, recordIndex, staticDeviceTransfer);
-        PipeKey pipeKey = getPipeKey(pipeType);
-        LaunchNodeCoord source{pipeKey.srcX, pipeKey.srcY};
-        if (pipeRef->isStatic() && analysisState.hasLaunchGrid &&
-            !sendDomain.isUpperBoundSubsetOf(
-                getSingleLaunchNodeDomain(source))) {
-          sendOp.emitError(
-              "cannot prove that this pipe send executes only on its source "
-              "node");
-          return failure();
-        }
-        if (sendDomain.known &&
-            !knownLaunchNodeDomainContains(sendDomain, source)) {
-          continue;
-        }
-        FailureOr<LaunchExecutionLocation> maybeLocation =
-            getPipeGraphExecutionLocation(sendOp.getOperation(), source,
-                                          deviceTransfer, PipeRole::Source);
-        if (failed(maybeLocation)) {
-          return failure();
-        }
-        std::optional<std::uint64_t> maybeExecutionCount =
-            getConcreteTransferExecutionCount(
-                sendOp.getOperation(), *maybeLocation, *pipeRef,
-                selectedRecordIndex, analysisState);
-        if (maybeExecutionCount && *maybeExecutionCount == 0) {
-          continue;
-        }
-        PipeTransferCandidates &candidates =
-            candidatesByPipe[{pipeKey, deviceTransfer}];
-        candidates.deviceTransfer = deviceTransfer;
-        candidates.sends.push_back({sendOp, selectedRecordIndex});
+      if (failed(forEachPipeReferenceRecord(
+              sendOp.getContext(), *pipeRef, staticDeviceTransfer,
+              [&](std::uint64_t recordIndex, PipeType pipeType,
+                  DeviceTransferAttr deviceTransfer,
+                  std::optional<PipeRecordAttr> record) -> LogicalResult {
+                std::optional<std::uint64_t> selectedRecordIndex =
+                    pipeRef->isSelected()
+                        ? std::optional<std::uint64_t>(recordIndex)
+                        : std::nullopt;
+                PipeKey pipeKey = getPipeKey(pipeType);
+                LaunchNodeCoord source{pipeKey.srcX, pipeKey.srcY};
+                if (pipeRef->isStatic() && analysisState.hasLaunchGrid &&
+                    !sendDomain.isUpperBoundSubsetOf(
+                        getSingleLaunchNodeDomain(source))) {
+                  sendOp.emitError(
+                      "cannot prove that this pipe send executes only on its "
+                      "source node");
+                  return failure();
+                }
+                if (sendDomain.known &&
+                    !knownLaunchNodeDomainContains(sendDomain, source)) {
+                  return success();
+                }
+                FailureOr<LaunchExecutionLocation> maybeLocation =
+                    getPipeGraphExecutionLocation(sendOp.getOperation(), source,
+                                                  deviceTransfer,
+                                                  PipeRole::Source);
+                if (failed(maybeLocation)) {
+                  return failure();
+                }
+                std::optional<std::uint64_t> maybeExecutionCount =
+                    getConcreteTransferExecutionCount(
+                        sendOp.getOperation(), *maybeLocation, *pipeRef,
+                        selectedRecordIndex, analysisState, record);
+                if (maybeExecutionCount && *maybeExecutionCount == 0) {
+                  return success();
+                }
+                PipeTransferCandidates &candidates =
+                    candidatesByPipe[{pipeKey, deviceTransfer}];
+                candidates.deviceTransfer = deviceTransfer;
+                candidates.sends.push_back(
+                    {sendOp, selectedRecordIndex, record});
+                return success();
+              }))) {
+        return failure();
       }
       continue;
     }
@@ -1779,59 +1828,65 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
     DeviceTransferAttr staticDeviceTransfer = createOp.getDeviceTransferAttr();
     LaunchNodeDomain postDomain =
         lookupOperationLaunchDomain(postOp.getOperation(), analysisState);
-    SmallVector<PipeType> pipeTypes =
-        getPipeTypesFromReference(postOp.getContext(), *pipeRef);
-    for (auto [recordIndex, pipeType] : llvm::enumerate(pipeTypes)) {
-      DeviceTransferAttr deviceTransfer = getPipeRecordDeviceTransfer(
-          *pipeRef, recordIndex, staticDeviceTransfer);
-      std::optional<std::uint64_t> selectedRecordIndex =
-          pipeRef->isSelected() ? std::optional<std::uint64_t>(recordIndex)
-                                : std::nullopt;
-      PipeKey pipeKey = getPipeKey(pipeType);
-      if (pipeRef->isStatic() && analysisState.hasLaunchGrid &&
-          !postDomain.isUpperBoundSubsetOf(getPipeDestinationLaunchNodeDomain(
-              pipeType, analysisState.baseDomain))) {
-        postOp.emitError(
-            "cannot prove that this pipe receiver post executes only on its "
-            "destination nodes");
-        return failure();
-      }
-      PipeTransferCandidates &candidates =
-          candidatesByPipe[{pipeKey, deviceTransfer}];
-      candidates.deviceTransfer = deviceTransfer;
-      LogicalResult receiverResult = success();
-      pipeKey.forEachReceiver([&](PipeReceiverCoord receiver) {
-        if (failed(receiverResult)) {
-          return;
-        }
-        LaunchNodeCoord receiverCoord = getLaunchNodeCoord(receiver);
-        if (postDomain.known &&
-            !knownLaunchNodeDomainContains(postDomain, receiverCoord)) {
-          return;
-        }
-        FailureOr<LaunchExecutionLocation> maybeLocation =
-            getPipeGraphExecutionLocation(postOp.getOperation(), receiverCoord,
-                                          deviceTransfer,
-                                          PipeRole::Destination);
-        if (failed(maybeLocation)) {
-          receiverResult = failure();
-          return;
-        }
-        std::optional<std::uint64_t> maybeExecutionCount =
-            getConcreteTransferExecutionCount(
-                postOp.getOperation(), *maybeLocation, *pipeRef,
-                selectedRecordIndex, analysisState);
-        if (!maybeExecutionCount || *maybeExecutionCount != 0) {
-          candidates.postsByReceiver[receiver].push_back(
-              {postOp, selectedRecordIndex});
-        }
-      });
-      if (failed(receiverResult)) {
-        return failure();
-      }
-      if (candidates.postsByReceiver.empty() && candidates.sends.empty()) {
-        candidatesByPipe.erase({pipeKey, deviceTransfer});
-      }
+    if (failed(forEachPipeReferenceRecord(
+            postOp.getContext(), *pipeRef, staticDeviceTransfer,
+            [&](std::uint64_t recordIndex, PipeType pipeType,
+                DeviceTransferAttr deviceTransfer,
+                std::optional<PipeRecordAttr> record) -> LogicalResult {
+              std::optional<std::uint64_t> selectedRecordIndex =
+                  pipeRef->isSelected()
+                      ? std::optional<std::uint64_t>(recordIndex)
+                      : std::nullopt;
+              PipeKey pipeKey = getPipeKey(pipeType);
+              if (pipeRef->isStatic() && analysisState.hasLaunchGrid &&
+                  !postDomain.isUpperBoundSubsetOf(
+                      getPipeDestinationLaunchNodeDomain(
+                          pipeType, analysisState.baseDomain))) {
+                postOp.emitError(
+                    "cannot prove that this pipe receiver post executes only "
+                    "on its destination nodes");
+                return failure();
+              }
+              PipeTransferCandidates &candidates =
+                  candidatesByPipe[{pipeKey, deviceTransfer}];
+              candidates.deviceTransfer = deviceTransfer;
+              LogicalResult receiverResult = success();
+              pipeKey.forEachReceiver([&](PipeReceiverCoord receiver) {
+                if (failed(receiverResult)) {
+                  return;
+                }
+                LaunchNodeCoord receiverCoord = getLaunchNodeCoord(receiver);
+                if (postDomain.known &&
+                    !knownLaunchNodeDomainContains(postDomain, receiverCoord)) {
+                  return;
+                }
+                FailureOr<LaunchExecutionLocation> maybeLocation =
+                    getPipeGraphExecutionLocation(postOp.getOperation(),
+                                                  receiverCoord, deviceTransfer,
+                                                  PipeRole::Destination);
+                if (failed(maybeLocation)) {
+                  receiverResult = failure();
+                  return;
+                }
+                std::optional<std::uint64_t> maybeExecutionCount =
+                    getConcreteTransferExecutionCount(
+                        postOp.getOperation(), *maybeLocation, *pipeRef,
+                        selectedRecordIndex, analysisState, record);
+                if (!maybeExecutionCount || *maybeExecutionCount != 0) {
+                  candidates.postsByReceiver[receiver].push_back(
+                      {postOp, selectedRecordIndex, record});
+                }
+              });
+              if (failed(receiverResult)) {
+                return failure();
+              }
+              if (candidates.postsByReceiver.empty() &&
+                  candidates.sends.empty()) {
+                candidatesByPipe.erase({pipeKey, deviceTransfer});
+              }
+              return success();
+            }))) {
+      return failure();
     }
   }
 
@@ -1919,11 +1974,13 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
         std::optional<std::uint64_t> maybeSendCount =
             getConcreteTransferExecutionCount(
                 sendOp.getOperation(), *maybeSendLocation, *sendPipeRef,
-                candidates.sends[sendIndex].recordIndex, analysisState);
+                candidates.sends[sendIndex].recordIndex, analysisState,
+                candidates.sends[sendIndex].record);
         std::optional<std::uint64_t> maybePostCount =
             getConcreteTransferExecutionCount(
                 postOp.getOperation(), *maybePostLocation, *postPipeRef,
-                postsIt->second[sendIndex].recordIndex, analysisState);
+                postsIt->second[sendIndex].recordIndex, analysisState,
+                postsIt->second[sendIndex].record);
         if (maybeSendCount && maybePostCount) {
           haveEqualExecutionCounts = *maybeSendCount == *maybePostCount;
         }
@@ -1940,11 +1997,13 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
           std::optional<std::uint64_t> maybeSendRecordCount =
               getSelectedRecordExecutionCount(
                   sendOp.getOperation(), *maybeSendLocation, *sendPipeRef,
-                  *candidates.sends[sendIndex].recordIndex, analysisState);
+                  *candidates.sends[sendIndex].recordIndex, analysisState,
+                  candidates.sends[sendIndex].record);
           std::optional<std::uint64_t> maybePostRecordCount =
               getSelectedRecordExecutionCount(
                   postOp.getOperation(), *maybePostLocation, *postPipeRef,
-                  *postsIt->second[sendIndex].recordIndex, analysisState);
+                  *postsIt->second[sendIndex].recordIndex, analysisState,
+                  postsIt->second[sendIndex].record);
           Operation *sendRecordLoop =
               getSelectedRecordLoop(*sendPipeRef, analysisState);
           Operation *postRecordLoop =
@@ -1955,14 +2014,11 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
           };
           auto sendForOp = cast<scf::ForOp>(sendRecordLoop);
           auto postForOp = cast<scf::ForOp>(postRecordLoop);
-          PipeRecordAttr sendRecord =
-              (*sendPipeRef)
-                  .getRecords()
-                  .getPipes()[*candidates.sends[sendIndex].recordIndex];
-          PipeRecordAttr postRecord =
-              (*postPipeRef)
-                  .getRecords()
-                  .getPipes()[*postsIt->second[sendIndex].recordIndex];
+          assert(candidates.sends[sendIndex].record &&
+                 postsIt->second[sendIndex].record &&
+                 "selected pipe candidates must retain their records");
+          PipeRecordAttr sendRecord = *candidates.sends[sendIndex].record;
+          PipeRecordAttr postRecord = *postsIt->second[sendIndex].record;
           auto evaluateSendContextValue = [&](Value value) {
             if (value == sendForOp.getInductionVar()) {
               return std::optional<llvm::APInt>(
@@ -2177,33 +2233,6 @@ getPipeReferenceForProtocolOp(Operation *protocolOp,
                               const PipeTransferIndex &transferIndex) {
   return getPipeReference(
       protocolOp, transferIndex.getTransferCreate(protocolOp).getPipe());
-}
-
-SmallVector<PipeType> getPipeTypesFromReference(MLIRContext *context,
-                                                const PipeReference &ref) {
-  if (ref.isStatic()) {
-    return SmallVector<PipeType>{ref.getStaticPipeType()};
-  }
-  SmallVector<PipeType> pipeTypes;
-  PipeNetRecordsAttr records = ref.getRecords();
-  pipeTypes.reserve(records.getPipes().size());
-  for (PipeRecordAttr record : records.getPipes()) {
-    pipeTypes.push_back(
-        getPipeTypeFromRecord(context, record, records.getPipeNetId()));
-  }
-  return pipeTypes;
-}
-
-DeviceTransferAttr
-getPipeRecordDeviceTransfer(const PipeReference &ref, std::size_t recordIndex,
-                            DeviceTransferAttr staticDeviceTransfer) {
-  if (ref.isStatic()) {
-    assert(recordIndex == 0 && "static pipe has exactly one record");
-    return staticDeviceTransfer;
-  }
-  ArrayRef<PipeRecordAttr> records = ref.getRecords().getPipes();
-  assert(recordIndex < records.size() && "selected record index out of range");
-  return records[recordIndex].getDeviceTransfer();
 }
 
 static LogicalResult

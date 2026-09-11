@@ -228,7 +228,8 @@ struct ModuleState {
                                 SmallVectorImpl<PipeEvent> &events) {
     PipeRole role =
         kind == PipeEventKind::Send ? PipeRole::Source : PipeRole::Destination;
-    for (auto [recordIndex, record] : llvm::enumerate(records.getPipes())) {
+    forEachPipeRecord(records, [&](std::uint64_t recordIndex,
+                                   PipeRecordAttr record) {
       PipeType pipeType = getPipeTypeFromRecord(records.getContext(), record,
                                                 records.getPipeNetId());
       LaunchNodeDomain roleDomain =
@@ -237,7 +238,7 @@ struct ModuleState {
           makePipeEvent(op, pipe, pipeType, record.getDeviceTransfer(), kind,
                         domain, roleDomain, unanalyzableOp, receivePost,
                         foreachOp, static_cast<int64_t>(recordIndex)));
-    }
+    });
   }
 
   /// Return the direct or selected-record events represented by `copyOp`.
@@ -2441,7 +2442,7 @@ validatePipeEndpoints(ModuleOp module,
     if (!records || !validatedRecordTables.insert(records).second) {
       return;
     }
-    for (PipeRecordAttr record : records.getPipes()) {
+    forEachNodePipeRecord(records, [&](PipeRecordAttr record) {
       PipeType pipeType = PipeType::get(
           records.getContext(), record.getSrcX(), record.getSrcY(),
           record.getDstStartX(), record.getDstStartY(), record.getDstEndX(),
@@ -2450,7 +2451,7 @@ validatePipeEndpoints(ModuleOp module,
                                                launchDomains.baseDomain))) {
         result = failure();
       }
-    }
+    });
   });
   return result;
 }

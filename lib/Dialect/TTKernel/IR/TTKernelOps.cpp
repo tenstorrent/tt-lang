@@ -841,6 +841,47 @@ static FailureOr<int64_t> lookupConstantTableValue(int64_t index,
   return values[index];
 }
 
+struct StridedTableIndex {
+  Value varyingIndex;
+  std::size_t stride;
+  std::size_t offset;
+};
+
+// Match `varyingIndex * stride + offset` when it selects one fixed column from
+// a complete row-major table.
+static std::optional<StridedTableIndex>
+matchStridedTableIndex(Value index, std::size_t tableSize) {
+  Value product = index;
+  int64_t offset = 0;
+  if (auto add = index.getDefiningOp<arith::AddIOp>()) {
+    std::optional<int64_t> lhs = getConstantIntValue(add.getLhs());
+    std::optional<int64_t> rhs = getConstantIntValue(add.getRhs());
+    if (lhs.has_value() == rhs.has_value()) {
+      return std::nullopt;
+    }
+    offset = lhs ? *lhs : *rhs;
+    product = lhs ? add.getRhs() : add.getLhs();
+  }
+
+  auto multiply = product.getDefiningOp<arith::MulIOp>();
+  if (!multiply) {
+    return std::nullopt;
+  }
+  std::optional<int64_t> lhs = getConstantIntValue(multiply.getLhs());
+  std::optional<int64_t> rhs = getConstantIntValue(multiply.getRhs());
+  if (lhs.has_value() == rhs.has_value()) {
+    return std::nullopt;
+  }
+  int64_t stride = lhs ? *lhs : *rhs;
+  Value varyingIndex = lhs ? multiply.getRhs() : multiply.getLhs();
+  if (stride <= 1 || offset < 0 || offset >= stride ||
+      tableSize % static_cast<std::size_t>(stride) != 0) {
+    return std::nullopt;
+  }
+  return StridedTableIndex{varyingIndex, static_cast<std::size_t>(stride),
+                           static_cast<std::size_t>(offset)};
+}
+
 OpFoldResult ConstantTableLookupOp::fold(FoldAdaptor adaptor) {
   auto indexAttr = dyn_cast_or_null<IntegerAttr>(adaptor.getIndex());
   if (!indexAttr) {
@@ -871,6 +912,28 @@ void ConstantTableLookupOp::getCanonicalizationPatterns(
     }
 
     rewriter.replaceOpWithNewOp<arith::ConstantIndexOp>(lookupOp, *tableValue);
+    return success();
+  });
+  patterns.add(+[](ConstantTableLookupOp lookupOp,
+                   PatternRewriter &rewriter) -> LogicalResult {
+    std::optional<StridedTableIndex> index = matchStridedTableIndex(
+        lookupOp.getIndex(), lookupOp.getValues().size());
+    if (!index) {
+      return rewriter.notifyMatchFailure(
+          lookupOp,
+          "index does not select one fixed column from a row-major table");
+    }
+
+    SmallVector<int64_t> values;
+    for (std::size_t tableIndex = index->offset;
+         tableIndex < lookupOp.getValues().size();
+         tableIndex += index->stride) {
+      values.push_back(lookupOp.getValues()[tableIndex]);
+    }
+    auto slicedLookup = ConstantTableLookupOp::create(
+        rewriter, lookupOp.getLoc(), lookupOp.getType(), index->varyingIndex,
+        rewriter.getDenseI64ArrayAttr(values));
+    rewriter.replaceOp(lookupOp, slicedLookup.getResult());
     return success();
   });
 }
