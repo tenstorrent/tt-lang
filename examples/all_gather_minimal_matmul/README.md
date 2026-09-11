@@ -9,18 +9,18 @@ output shards collectively contain one `M x N` result.
 ```text
 for each M block:
     forward each device's activation K shard around the device ring
-    forward local and received activation blocks point-to-point across its compute row
+    forward local and received activation blocks along its compute chain
     multicast each N-sharded weight block down its compute column
     initialize the FP32 accumulator from the local bias shard
     accumulate every global K block while communication continues
     convert once to the output dtype and write the local N shard to DRAM
 ```
 
-Four workers per device communicate over fabric. Six additional communication
-workers relay activation rows in L1. Each activation block then advances through
-the ten compute nodes in its row. The `12 x 10` compute grid uses 120 workers per
-device. Bounded dataflow buffers provide backpressure between data movement and
-compute; the operation does not allocate gathered-activation DRAM.
+Four workers per device communicate over fabric and inject activation blocks
+directly into the 12 compute chains. Each block then advances through the ten
+compute nodes in its chain. The `12 x 10` compute grid uses 120 workers per device.
+Bounded dataflow buffers provide backpressure between data movement and compute;
+the operation does not allocate gathered-activation DRAM.
 
 ## Run
 
@@ -36,7 +36,7 @@ Wan2.2 QKV dimensions, with per-device `M/K/N=9472/1280/3840`:
 python -m examples.all_gather_minimal_matmul \
     --mesh-shape 4x1 \
     --compute-grid 12 10 \
-    --communication-workers 10 \
+    --communication-workers 4 \
     --m-tiles 296 \
     --k-tiles-per-device 40 \
     --n-tiles 480 \
