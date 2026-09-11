@@ -233,7 +233,7 @@ net = ttl.PipeNet(
 )
 ```
 
-The complete logical transfer is `(source device, source node) ->
+Each transfer is `(source device, source node) ->
 (destination device, destination node)`. Device-indexed `ttl.Pipe` endpoints
 allow one `PipeNet` to contain different device and node relations without a
 separate public association type. PipeNet guards restrict which declared
@@ -378,30 +378,30 @@ The TTL dialect defines:
 - `DeviceTransferAttr` for binding a logical device edge to a node-level
   pipe;
 - `TransferGraphAttr` for explicit or structured logical-device relations;
-- `PipeMappingAttr` for an internal group containing one graph and a node-pipe
-  list; the group denotes their Cartesian product without duplicating the graph;
+- `PipeMappingAttr` for one device graph and its list of node Pipes; every
+  graph edge is combined with every listed Pipe;
 - `PipeNetRecordsAttr` for a local record list or an ordered list of graph
-  groups;
+  mappings;
 - `CurrentDeviceIndexOp` for the current member's row-major logical index.
 
 These attributes contain no target route fields. Their verifiers check domain
 membership, coordinate rank, and transfer structure.
 
-A graph PipeNet lowers to one `PipeNetRecordsAttr` containing graph groups and
-one callback region for each source or destination role. The
-callback receives a selected record containing node coordinates and logical
-device indices. Structured `TransferGraph` specializations derive endpoints
-from their descriptors. When devices have different edge counts, a
-cumulative-start table identifies each device's edge interval. Explicit graphs
-store per-device edge-index tables. Each logical device iterates only edges
-where it is the source or destination. Every concrete transfer has a stable
-index used to select its resource-table entries. When core specialization is
-enabled, it removes constant node-coordinate dimensions. The compiler does not
-emit the device-edge by node-pipe product as frontend or TTL IR.
+A graph PipeNet lowers to one `PipeNetRecordsAttr` containing its mappings and
+one callback region for each source or destination role. The callback receives
+one selected transfer with node coordinates and logical device indices.
+Structured `TransferGraph` values calculate endpoints from their parameters.
+For an explicit graph, an offset and count locate the source or destination
+edge-index entries for each logical device. Each device iterates only edges for
+which it is the source or destination. Every transfer has a stable index used
+to select its resource-table entries. Core specialization removes
+node-coordinate table columns whose value is constant on that core. The
+frontend and TTL IR do not store a separate record for every combination of
+device edge and node Pipe.
 
-One compiled operation fixes its logical domain extents. Source-level CCL
-factories remain extent-parameterized and construct the same structured graph
-for any supported device count. Transfer graphs remain logical; host target
+One compiled operation fixes its logical domain extents. A multi-device
+collective factory may accept an extent and construct the corresponding graph
+for each supported device count. Transfer graphs remain logical; host target
 binding resolves physical placement, routes, and forwarding links.
 
 ### Pipe lowering
