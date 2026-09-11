@@ -156,7 +156,7 @@ class Pipe:
         if not isinstance(src.devices, DeviceView) or not isinstance(
             dst.devices, DeviceView
         ):
-            raise TypeError("pairwise requires coordinate-structured device views")
+            raise TypeError("pairwise requires rectangular device views")
         if src.devices.shape != dst.devices.shape:
             raise ValueError("pairwise device views must have equal extents")
         pipe = cls(src.node, dst.node)

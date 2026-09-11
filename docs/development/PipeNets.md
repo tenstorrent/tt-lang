@@ -81,8 +81,7 @@ constructors store parameters for common relations instead of an edge list:
 | `scatter(..., source=...)` | The selected source sends to every other device within each fixed combination of the other component coordinates. | Destination devices in row-major order. |
 | `all_to_all(...)` | Every device sends to every other device within each fixed combination of the other component coordinates. | Sources in row-major order, then destinations in row-major order. |
 
-The five structured constructors in the table omit self-transfers.
-`component=` selects the
+These five constructors omit self-transfers. `component=` selects the
 `DeviceDomain` component whose coordinates change; coordinates in other
 components remain fixed.
 
@@ -141,9 +140,10 @@ Pipes in list order.
 For an explicit graph, the compiler stores source and destination edge-index
 lists. An offset and count locate the entries for each logical device, so a
 device kernel iterates only edges for which that device is the source or
-destination. Structured graphs store their constructor parameters. Every
-resulting transfer receives a stable resource index. Core specialization
-removes node-coordinate table columns whose value is constant on that core.
+destination. Graphs built with the five constructors above store their
+parameters. Every resulting transfer receives a stable resource index. Core
+specialization removes node-coordinate table columns whose value is constant
+on that core.
 
 Transfer topology is compile-time information, but one source implementation
 can support several device counts. A multi-device collective factory accepts a
@@ -184,9 +184,9 @@ TTKernel conversion uses three representations:
   grow with the number of records.
 - For graph PipeNets, conversion emits one loop over device edges where the
   current logical device is the source or destination, then one loop over the
-  associated node Pipes. Structured graphs calculate endpoints from their
-  parameters. For explicit graphs, an offset and count locate the source or
-  destination edge-index entries for the current device.
+  associated node Pipes. The five standard graph constructors calculate
+  endpoints from their parameters. For explicit graphs, an offset and count
+  locate the source or destination edge-index entries for the current device.
 
 The immutable tables become bit-packed C++ template arguments stored outside
 the kernel stack. A selected-pipe type identifies whether iteration selected
