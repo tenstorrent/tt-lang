@@ -50,9 +50,9 @@ Run from the repository root with the selected devices idle::
     # Four devices.
     python -m examples.all_gather_minimal_matmul --mesh-shape 2x2
 
-    # Four devices, 120 compute and four communication workers/device, N-sharded output.
+    # Four devices: 120 compute, four fabric, six local-distribution workers/device.
     python -m examples.all_gather_minimal_matmul.n_sharded --mesh-shape 2x2 \
-        --worker-grid 12 10 --transpose --dedicated-communication-workers 4 \
+        --worker-grid 12 10 --transpose --dedicated-communication-workers 10 \
         --m-tiles 24 --k-tiles-per-device 4 --n-tiles-per-device 20 \
         --m-block-tiles 4 --k-block-tiles 2 --n-block-tiles 2 \
         --no-reuse-activation --activation-all-gather ring

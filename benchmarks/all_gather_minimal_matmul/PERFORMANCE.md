@@ -11,9 +11,9 @@ These implementations return `M x N` on every device, including row bias.
 
 | Implementation | Worker roles/device | Device median ms (min-max) | / Native | Warmups/samples |
 | --- | ---: | ---: | ---: | ---: |
-| TT-Lang V4 N-sharded matmul + output gather | 120 compute; 4 activation exchange; gather: 2 | 14.572 (13.238-14.680) | 2.117 | 3/10 |
-| TT-Lang V3 replicated weights | 130 compute; 2 activation exchange | 10.248 (10.151-10.713) | 1.489 | 1 per group / 4 |
-| Native replicated weights | 108 compute; 24 also fabric clients; 4 mux-only | 6.883 (6.873-6.889) | 1.000 | 2/3 |
+| TT-Lang V4 N-sharded matmul + output gather | 120 compute; 4 fabric; 6 local distribution; gather: 2 | 14.498 (13.204-14.685) | 2.096 | 3/10 |
+| TT-Lang V3 replicated weights | 130 compute; 2 activation exchange | 10.248 (10.151-10.713) | 1.482 | 1 per group / 4 |
+| Native replicated weights | 108 compute; 24 also fabric clients; 4 mux-only | 6.916 (6.900-6.989) | 1.000 | 2/3 |
 
 V4 computes N-sharded output, then runs a separate output all-gather. The
 complete two-program device interval is reported, including the interval
@@ -30,21 +30,16 @@ equivalent.
 | TT-Lang implementation | Worker roles/device | M/K/N blocks, tiles | Device median ms (min-max) | Warmups/samples |
 | --- | ---: | ---: | ---: | ---: |
 | V2 two-worker ring | 60 compute; 2 activation exchange | 2/8/4 | 13.488 (13.432-13.509) | 2/5 |
-| V4 dedicated communication | 120 compute; 4 activation exchange | 4/10/12 | 3.863 (3.847-3.871) | 3/10 |
+| V4 dedicated communication | 120 compute; 4 fabric; 6 local distribution | 4/10/12 | 3.792 (3.753-3.808) | 3/10 |
 
-V4 is 71.4% faster than V2. It assigns activation exchange to four workers in
-a separate physical column. The other 120 workers concurrently distribute
-weights, initialize accumulators from bias, accumulate matmul in L1, and write
-N-sharded output. Bounded L1 DFBs provide backpressure; this configuration
-streams K and does not allocate gathered-activation DRAM storage. Compute-private
-bias-conversion and accumulation DFBs each hold one block, permitting four-row
-M blocks within the per-node L1 budget.
-
-An instrumented 4/10/12 replay recorded 500 activation fabric-send intervals
-and 40,320 matmul marker intervals on each device. Every recorded send interval
-overlapped matmul; 97.7-100.0% of the recorded send interval time was concurrent
-with matmul. Instrumented timings are excluded from the tables. The compact
-report is in the [timing archive](https://gist.github.com/brnorris03/da754d5cef08ed989cc241b023fdaccb).
+V4 is 71.9% faster than V2. Four column-zero workers exchange activations over
+fabric and multicast four compute rows directly. Six more column-zero workers
+multicast the other eight rows after local relays. The 120 compute workers
+concurrently distribute weights, initialize accumulators from bias, accumulate
+matmul in L1, and write N-sharded output. Bounded L1 DFBs provide backpressure;
+this configuration streams K and does not allocate gathered-activation DRAM
+storage. Compute-private bias-conversion and accumulation DFBs each hold one
+block, permitting four-row M blocks within the per-node L1 budget.
 
 ## Matmul lowering
 
@@ -66,7 +61,7 @@ required page is unavailable.
 | Transposed compute grid | 12x10 | 12x10 | 13x10 | 12x9 |
 | M/K/N blocks, tiles | 4/10/12 | 4/10/12 | 8/8/8 | 8/8/8; 2x2 subblock |
 | Activation storage | Streamed L1 DFBs | Streamed L1 DFBs | Gathered DRAM tensor | Gathered DRAM tensor |
-| Activation collective | Ring, four dedicated workers | Ring, four dedicated workers | Direct, two workers; 2x40-tile messages | Bidirectional ring; 24 compute workers as fabric clients, four mux-only workers |
+| Activation collective | Ring, four fabric workers and six local distribution workers | Ring, four fabric workers and six local distribution workers | Direct, two workers; 2x40-tile messages | Bidirectional ring; 24 compute workers as fabric clients, four mux-only workers |
 | Final output collective | None | Direct, two workers; 2x30-tile messages | None | None |
 | Fabric | 2D | 2D | 2D | 1D ring |
 | Fabric initialization/payload | Strict / 8192 bytes | Strict / 8192 bytes | Strict / 8192 bytes | Strict / 8192 bytes |
@@ -78,10 +73,10 @@ dispatch, correctness checks, and profiler processing are excluded. Every
 result passes PCC >= 0.99 and elementwise relative/absolute tolerances of 0.05
 against FP32 PyTorch.
 
-Measured 2026-09-10/11 UTC: native 15:37:07 (`ff72bcb06859`), V2 23:10:01
-(`bf55d854e3c1` plus source hashes in its report), V3 18:24:46 (`e1aef7532`),
-V4 N-sharded 01:50:51 (`6cf90000bfc7`), and V4 with output gather 00:44:55
-(`5c92c550f178`). TT-Metal/LLVM source pins:
+Measured 2026-09-10/11 UTC: V2 23:10:01 (`bf55d854e3c1` plus source hashes in
+its report), V3 18:24:46 (`e1aef7532`), native 09:12:02 (`0546a5523`), V4
+N-sharded 10:21:33 (`30fca6753`), and V4 with output gather 10:23:14
+(`30fca6753`). TT-Metal/LLVM source pins:
 `ea042c4ad623`/`37aca9d384347`; CAPI/TTNN/Metal SHA-256 prefixes:
 `3b10ee20db65`/`62edde2b1f61`/`65380f11dc15`; IRD v1.1.9 image digest:
 `6eaf96b4b00d`. [Full reports and hashes](https://gist.github.com/brnorris03/da754d5cef08ed989cc241b023fdaccb).

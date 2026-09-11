@@ -11,9 +11,9 @@ communication independently; equal resource usage is not required. Report
 the selected worker count and configuration for each result.
 
 For M/K/N=9472/5120/15360 on four Blackhole P150b devices, TT-Lang V4 takes
-3.863 ms for N-sharded output and 14.572 ms after a separate output gather.
-Replicated TT-Lang V3 takes 10.248 ms; native takes 6.883 ms. The equivalent
-replicated-output ratios are 2.117 and 1.489. See
+3.792 ms for N-sharded output and 14.498 ms after a separate output gather.
+Replicated TT-Lang V3 takes 10.248 ms; native takes 6.916 ms. The equivalent
+replicated-output ratios are 2.096 and 1.482. See
 [results and configurations](PERFORMANCE.md).
 
 ## TT-Lang versions
@@ -74,7 +74,7 @@ equivalent to the native replicated output.
 | Precision | BF16 input/output, HiFi2, FP32 destination and packer accumulation | Same |
 | Bias | Included | Included |
 | Timing | Device trace replay; includes final gather when selected | Device trace replay of fused program |
-| Worker roles per device | Replicated: 130 compute (transposed 13x10) plus two communication; N-sharded: 120 compute (transposed 12x10) plus four communication | 108 compute (transposed 12x9); 24 also exchange activation blocks over fabric; four additional mux-only workers |
+| Worker roles per device | Replicated: 130 compute (transposed 13x10) plus two communication; N-sharded: 120 compute, four fabric and six local distribution (transposed 13x10 operation grid) | 108 compute (transposed 12x9); 24 also exchange activation blocks over fabric; four additional mux-only workers |
 | Blocking | Measured settings in [PERFORMANCE.md](PERFORMANCE.md) | 8/8/8 tiles, 2x2 subblock |
 | Fabric | 2D, strict initialization, 8192-byte payload | 1D ring, strict initialization, 8192-byte payload |
 | Native communication settings | Not applicable | Two links, six workers/link, 24 channel buffers |
@@ -132,7 +132,7 @@ python -m benchmarks.all_gather_minimal_matmul \
     --implementation ttlang --mesh-shape 4x1 \
     --fabric-config 2d --fabric-reliability strict --fabric-router-payload 8192 \
     --m-tiles 296 --k-tiles-per-device 40 --n-tiles-per-device 120 \
-    --worker-grid 12 10 --transpose --dedicated-communication-workers 4 \
+    --worker-grid 12 10 --transpose --dedicated-communication-workers 10 \
     --m-block-tiles 4 --k-block-tiles 10 --n-block-tiles 12 \
     --no-reuse-activation --activation-all-gather ring \
     --math-fidelity HiFi2 --fp32-dest-acc \
