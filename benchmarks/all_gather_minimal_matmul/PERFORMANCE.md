@@ -80,6 +80,7 @@ consumer wait; they isolate communication and local distribution from matmul.
 | Bidirectional exchange with five-tile K blocks | 7.002 (6.961-7.033) | 1/3 | +118.8% vs selected result | Rejected. It passed full-size correctness but the doubled matmul and DFB granularity exceeded the benefit of the second fabric direction. |
 | Bidirectional exchange with two K halves assembled into each ten-tile matmul block | 4.349 (4.323-4.362) | 1/3 | +36.7% vs 3.182 adjacent control | Rejected. It passed full-grid and full-size correctness but required eight row-segment L1 copies per activation block. |
 | Unchanged four-worker implementation after K-half assembly experiment | 3.182 (3.161-3.204) | 1/3 | control | Adjacent control confirms the K-half assembly regression. |
+| Bidirectional K halves received directly into ten-tile matmul-block subviews | 10.963 (10.879-10.969) | 1/3 | +242.6% vs selected result | Rejected. Eight receive/forward transactions per activation block cost more than the eight eliminated L1 assembly copies. |
 
 In the multicast implementation, each compute-row head sent every activation
 block to the other nine workers in that row. Point-to-point forwarding sent
@@ -99,6 +100,13 @@ the matmul into five-tile blocks is correct but slow; retaining ten-tile matmul
 granularity requires receiver offsets within one reserved DFB block. The
 subview prototype restored that granularity, but its row-segment assembly still
 measured 36.7% slower than the adjacent one-direction control.
+
+Receiving directly into the final activation-block subviews removed the local
+assembly copies. It instead issued eight receive/forward transactions per
+activation block: four M rows for each of two K halves, with 10,240 bytes per
+transaction in the measured configuration. The 10.963 ms result shows that the
+additional address-publication and synchronization work exceeded the removed
+L1-copy cost.
 
 ## TT-Lang matmul kernel
 
