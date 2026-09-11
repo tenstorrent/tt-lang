@@ -81,9 +81,6 @@ verifyTransferEdgeInDomain(DeviceDomainAttr domain, TransferEdgeAttr edge,
             (llvm::Twine(context) + ".destination").str()))) {
       return failure();
     }
-    if (destination == edge.getSource()) {
-      return emitError() << context << " source must differ from destination";
-    }
     return success();
   }
 

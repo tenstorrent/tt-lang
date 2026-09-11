@@ -756,6 +756,11 @@ LogicalResult buildFabricRoutePlan(
     }
 
     DeviceRefAttr source = transfer.getEdge().getSource();
+    // A same-device graph edge uses the existing NoC transport. Recording it
+    // here would incorrectly select fabric transport for the complete pipe.
+    if (source == destination) {
+      continue;
+    }
     FuncOp sendFunc = send->getParentOfType<FuncOp>();
     FailureOr<FunctionFabricRoutePlan *> maybeSendFunctionPlan =
         getFunctionFabricRoutePlan(sendFunc, transfer.getDomain(), send, plan);
