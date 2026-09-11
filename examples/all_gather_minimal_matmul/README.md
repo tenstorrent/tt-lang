@@ -9,17 +9,18 @@ output shards collectively contain one `M x N` result.
 ```text
 for each M block:
     forward each device's activation K shard around the device ring
-    multicast local and received activation blocks across its compute row
+    forward local and received activation blocks point-to-point across its compute row
     multicast each N-sharded weight block down its compute column
     initialize the FP32 accumulator from the local bias shard
     accumulate every global K block while communication continues
     convert once to the output dtype and write the local N shard to DRAM
 ```
 
-Four workers per device communicate over fabric. Additional communication
-workers distribute received rows in L1. The `12 x 10` compute grid uses 120
-workers per device. Bounded dataflow buffers provide backpressure between data
-movement and compute; the operation does not allocate gathered-activation DRAM.
+Four workers per device communicate over fabric. Six additional communication
+workers relay activation rows in L1. Each activation block then advances through
+the ten compute nodes in its row. The `12 x 10` compute grid uses 120 workers per
+device. Bounded dataflow buffers provide backpressure between data movement and
+compute; the operation does not allocate gathered-activation DRAM.
 
 ## Run
 
