@@ -8,7 +8,7 @@
 # RUN: FileCheck %s --check-prefix=CHECK-INITIAL < %t.initial.mlir
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
 
-"""Compile complete all-to-all endpoints with local and remote transfers."""
+"""Compile device-selected all-to-all endpoints with local and remote transfers."""
 
 import pytest
 import torch
@@ -34,7 +34,7 @@ ROW_ALL_TO_ALL = ttl.PipeNet(
 
 
 @ttl.operation(grid=(1, 1), device_domain=DEVICE_DOMAIN)
-def compile_complete_all_to_all():
+def compile_device_selected_all_to_all():
     template = BFloat16Tensor()
     send_dfb = ttl.make_dataflow_buffer_like(template, shape=(1, 1), block_count=1)
     receive_dfb = ttl.make_dataflow_buffer_like(template, shape=(1, 1), block_count=1)
@@ -65,11 +65,11 @@ def compile_complete_all_to_all():
 
 
 if __name__ == "__main__":
-    compile_complete_all_to_all()
+    compile_device_selected_all_to_all()
 
 
-# The first graph group contains four same-device edges. The second contains
-# the twelve distinct-device edges. Both retain node (0, 0) endpoints.
+# The first mapping contains four same-device edges. The second contains the
+# twelve distinct-device edges. Both use node (0, 0) at each endpoint.
 # CHECK-INITIAL-LABEL: func.func @sender
 # CHECK-INITIAL: ttl.pipenet_foreach_src
 # CHECK-INITIAL-SAME: name "ROW_ALL_TO_ALL" mappings

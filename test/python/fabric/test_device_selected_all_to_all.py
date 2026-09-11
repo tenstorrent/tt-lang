@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Device coverage for complete Pipe endpoints containing local and fabric transfers."""
+"""Device coverage for selected endpoints containing local and fabric transfers."""
 
 from math import prod
 
@@ -26,10 +26,10 @@ def _second_device(mesh_shape):
         if mesh_shape[axis] > 1:
             coordinates[axis] = 1
             return tuple(coordinates)
-    raise ValueError("complete all-to-all device test requires at least two devices")
+    raise ValueError("device-selected all-to-all test requires at least two devices")
 
 
-def _make_complete_allgather(mesh_shape):
+def _make_selected_allgather(mesh_shape):
     device_domain = ttl.DeviceDomain(mesh_shape)
     first_device = tuple(0 for _extent in mesh_shape)
     second_device = _second_device(mesh_shape)
@@ -51,7 +51,7 @@ def _make_complete_allgather(mesh_shape):
         device_domain=device_domain,
         mesh_program_placements=[first_device, second_device],
     )
-    def complete_allgather(inp, out):
+    def selected_allgather(inp, out):
         send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
         receive_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
 
@@ -80,7 +80,7 @@ def _make_complete_allgather(mesh_shape):
 
             allgather_net.if_dst(receive)
 
-    return complete_allgather
+    return selected_allgather
 
 
 def _mesh_tensor(mesh, tensor, memory_config):
@@ -105,14 +105,14 @@ def _mesh_tensor(mesh, tensor, memory_config):
         pytest.param(ttnn.L1_MEMORY_CONFIG, id="l1"),
     ],
 )
-def test_complete_all_to_all_uses_local_and_fabric_transfers(
+def test_device_selected_all_to_all_uses_local_and_fabric_transfers(
     torch_dtype, rtol, atol, memory_config
 ):
     mesh_shape = get_fabric_mesh_shape(fabric_config=ttnn.FabricConfig.FABRIC_2D)
     device_count = prod(mesh_shape)
     if device_count < 2:
         pytest.skip("requires multiple devices")
-    complete_allgather = _make_complete_allgather(mesh_shape)
+    selected_allgather = _make_selected_allgather(mesh_shape)
 
     input_shape = (device_count * TILE_SIZE, TILE_SIZE)
     output_shape = (device_count * 2 * TILE_SIZE, TILE_SIZE)
@@ -126,7 +126,7 @@ def test_complete_all_to_all_uses_local_and_fabric_transfers(
         inp = _mesh_tensor(mesh, input_torch, memory_config)
         out = _mesh_tensor(mesh, output_torch, memory_config)
 
-        complete_allgather(inp, out)
+        selected_allgather(inp, out)
 
         result = ttnn.to_torch(
             out,

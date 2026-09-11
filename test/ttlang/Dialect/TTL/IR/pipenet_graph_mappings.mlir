@@ -1,9 +1,10 @@
 // RUN: ttlang-opt %s | FileCheck %s
 
-// Summary: Verifies grouped graph PipeNet attributes remain compact.
+// Summary: Verifies graph PipeNet attributes store graphs and node Pipes
+// separately.
 
-// The graph and node-pipe relation print separately instead of as concrete
-// device-edge by node-pipe records.
+// The graph and node-level Pipes print separately instead of one record for
+// every combination of device edge and Pipe.
 // CHECK-LABEL: func.func @all_to_all_mapping
 // CHECK-SAME: test.records = #ttl.pipenet_records<net 7 name "exchange" mappings
 // CHECK-SAME: kind = all_to_all
@@ -55,13 +56,13 @@ func.func @graph_kinds() attributes {
   return
 }
 
-// Group order remains callback order for an ordered union.
-// CHECK-LABEL: func.func @mapping_union
+// Mapping order determines callback order when relations use different Pipes.
+// CHECK-LABEL: func.func @mapping_order
 // CHECK-SAME: kind = gather
 // CHECK-SAME: pipes[<srcX = 1, srcY = 0
 // CHECK-SAME: kind = scatter
 // CHECK-SAME: pipes[<srcX = 2, srcY = 0
-func.func @mapping_union() attributes {
+func.func @mapping_order() attributes {
     test.records = #ttl.pipenet_records<net 9 mappings
       <graph = <domain = <components = <name = "device", extent = [4]>>,
         kind = gather, componentName = "device",

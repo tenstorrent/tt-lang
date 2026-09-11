@@ -756,8 +756,7 @@ LogicalResult buildFabricRoutePlan(
     }
 
     DeviceRefAttr source = transfer.getEdge().getSource();
-    // A same-device graph edge uses the existing NoC transport. Recording it
-    // here would incorrectly select fabric transport for the complete pipe.
+    // Same-device graph edges use NoC and require no fabric route.
     if (source == destination) {
       continue;
     }

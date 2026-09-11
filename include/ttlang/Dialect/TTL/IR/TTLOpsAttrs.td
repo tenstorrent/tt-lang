@@ -514,11 +514,11 @@ def TTL_PipeRecordAttr : TTL_Attr<"PipeRecord", "pipe_record"> {
 }
 
 def TTL_PipeMappingAttr : TTL_Attr<"PipeMapping", "pipe_mapping"> {
-  let summary = "Device graph and node-pipe group";
+  let summary = "Device graph with node-level Pipes";
   let description = [{
-    Combines every logical device edge in `graph` with every node-level pipe
-    in `pipes`. The ordered groups of one PipeNet form a union. Storing the
-    graph once avoids duplicating it for every node-level pipe.
+    Associates one logical-device graph with an ordered list of node-level
+    Pipes. Every graph edge is combined with every Pipe in the list. Storing
+    the graph and Pipe list separately avoids one attribute per combination.
   }];
   let parameters = (ins
     "TransferGraphAttr":$graph,
@@ -533,13 +533,13 @@ def TTL_PipeNetRecordsAttr : TTL_Attr<"PipeNetRecords", "pipenet_records"> {
   let description = [{
     Identifies a PipeNet by id. A local PipeNet uses `pipes` as its ordered
     list of `#ttl.pipe_record` attributes. A graph PipeNet uses `mappings` as
-    an ordered list of groups. Each group contains one logical-device graph
-    and one node-pipe list. Exactly one representation is nonempty.
+    an ordered list of `#ttl.pipe_mapping` attributes. Exactly one
+    representation is nonempty.
 
     PipeNet foreach operations use this attribute to represent callback
     iteration without cloning a source-level callback body. Local records are
-    ordered by pipe construction. Graph records are ordered by group, graph
-    edge, then node pipe. A launch node that matches multiple records executes
+    ordered by Pipe construction. Graph records are ordered by mapping, graph
+    edge, then node Pipe. A launch node that matches multiple records executes
     them in this order.
   }];
 
