@@ -1,7 +1,7 @@
 # All-Gather Minimal Matmul
 
 Four-device M/K/N=9472/5120/15360 device times: V4 N-sharded TT-Lang
-3.857 ms (120 compute and four communication workers/device), V4 plus output
+3.863 ms (120 compute and four communication workers/device), V4 plus output
 gather 14.572 ms, replicated TT-Lang V3 10.248 ms, and native 6.883 ms. Only
 the latter three return replicated output. See the
 [performance report](../../benchmarks/all_gather_minimal_matmul/PERFORMANCE.md).
@@ -11,7 +11,7 @@ the latter three return replicated output. See the
 | 1. [Per-row all-gather + matmul](per_row_all_gather/operation.py) | [`n_sharded/`](n_sharded/), `--activation-all-gather all_to_all`; also `ring` with at most two M workers | N-sharded `M x N/D`; `--gather-output` returns replicated `M x N`. | [Per-device view](../../benchmarks/all_gather_minimal_matmul/images/ttlang_device.svg) | 653 / 4,677 = 14.0% |
 | 2. [Two-worker ring + matmul](two_worker_ring/operation.py) | [`n_sharded/`](n_sharded/), `--activation-all-gather ring` with more than two M workers | N-sharded `M x N/D`; `--gather-output` returns replicated `M x N`. | [Four devices](../../benchmarks/all_gather_minimal_matmul/images/ttlang_four_device.svg) | 657 / 4,677 = 14.0% |
 | 3. [DRAM all-gather + replicated matmul](replicated/operation.py) | [`replicated/`](replicated/), `--activation-all-gather all_to_all` or `ring` | Replicated `M x N`; no output gather. | [Four devices](../../benchmarks/all_gather_minimal_matmul/images/ttlang_replicated_four_device.svg), [fabric pipes](../../benchmarks/all_gather_minimal_matmul/images/ttlang_replicated_fabric_pipes.svg), [worker-grid pipes](../../benchmarks/all_gather_minimal_matmul/images/ttlang_replicated_worker_pipes.svg) | 516 / 4,677 = 11.0% |
-| 4. [Dedicated communication + N-sharded matmul](dedicated_communication/operation.py) | [`n_sharded/`](n_sharded/), `--dedicated-communication-workers`; communication uses an additional worker column | N-sharded `M x N/D`; `--gather-output` returns replicated `M x N`. | [Four devices](../../benchmarks/all_gather_minimal_matmul/images/ttlang_dedicated_communication_four_device.svg) | 608 / 4,677 = 13.0% |
+| 4. [Dedicated communication + N-sharded matmul](dedicated_communication/operation.py) | [`n_sharded/`](n_sharded/), `--dedicated-communication-workers`; communication uses an additional worker column | N-sharded `M x N/D`; `--gather-output` returns replicated `M x N`. | [Four devices](../../benchmarks/all_gather_minimal_matmul/images/ttlang_dedicated_communication_four_device.svg) | 610 / 4,677 = 13.0% |
 
 Source counts exclude blank lines, comments/docstrings, bindings, drivers, tests
 and framework code. TT-Lang includes the selected operation, `config.py`,

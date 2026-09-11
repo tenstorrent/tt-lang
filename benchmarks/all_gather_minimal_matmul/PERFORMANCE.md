@@ -30,7 +30,7 @@ equivalent.
 | TT-Lang implementation | Worker roles/device | M/K/N blocks, tiles | Device median ms (min-max) | Warmups/samples |
 | --- | ---: | ---: | ---: | ---: |
 | V2 two-worker ring | 60 compute; 2 activation exchange | 2/8/4 | 13.488 (13.432-13.509) | 2/5 |
-| V4 dedicated communication | 120 compute; 4 activation exchange | 4/10/12 | 3.857 (3.845-3.866) | 3/10 |
+| V4 dedicated communication | 120 compute; 4 activation exchange | 4/10/12 | 3.863 (3.847-3.871) | 3/10 |
 
 V4 is 71.4% faster than V2. It assigns activation exchange to four workers in
 a separate physical column. The other 120 workers concurrently distribute
@@ -48,16 +48,16 @@ report is in the [timing archive](https://gist.github.com/brnorris03/da754d5cef0
 
 ## Matmul lowering
 
-Each V4 compute worker initializes an FP32 accumulator by broadcasting its
-BF16 row-bias block, then consumes matching activation and weight DFB pages for
-each K block. TT-Lang lowers `activation_block @ weight_block` to
-`matmul_block_init` and `matmul_block`, followed by an SFPU BF16-to-FP32
-typecast. `llk_pack_reconfig_l1_acc` accumulates those FP32 partials in L1; the
-completed accumulator is converted once to BF16. The
+Each V4 compute worker converts its BF16 row-bias block to FP32, broadcasts it
+into the accumulator, then consumes matching activation and weight DFB pages
+for each K block. `ttl.math.matmul(..., dtype=accumulator.dtype)` lowers the
+BF16 operands to `matmul_block_init` and `matmul_block` with direct FP32
+packing. `llk_pack_reconfig_l1_acc` accumulates subsequent K blocks in the same
+L1 DFB; the completed accumulator is converted once to BF16. The
 [native compute kernel](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/ttnn/cpp/ttnn/operations/experimental/ccl/all_gather_minimal_matmul_async/device/kernels/compute.cpp#L472-L525)
-instead packs matmul results directly into its accumulation DFB. The V4
-data-movement kernels produce operand pages concurrently, so compute waits only
-when a required page is unavailable.
+uses the same direct-packing accumulation mechanism. The V4 data-movement
+kernels produce operand pages concurrently, so compute waits only when a
+required page is unavailable.
 
 ## Measured configurations
 
@@ -80,10 +80,10 @@ against FP32 PyTorch.
 
 Measured 2026-09-10/11 UTC: native 15:37:07 (`ff72bcb06859`), V2 23:10:01
 (`bf55d854e3c1` plus source hashes in its report), V3 18:24:46 (`e1aef7532`),
-V4 N-sharded 00:43:16 (`5c92c550f178`), and V4 with output gather 00:44:55
+V4 N-sharded 01:50:51 (`6cf90000bfc7`), and V4 with output gather 00:44:55
 (`5c92c550f178`). TT-Metal/LLVM source pins:
 `ea042c4ad623`/`37aca9d384347`; CAPI/TTNN/Metal SHA-256 prefixes:
-`20a74e405369`/`62edde2b1f61`/`65380f11dc15`; IRD v1.1.9 image digest:
+`3b10ee20db65`/`62edde2b1f61`/`65380f11dc15`; IRD v1.1.9 image digest:
 `6eaf96b4b00d`. [Full reports and hashes](https://gist.github.com/brnorris03/da754d5cef08ed989cc241b023fdaccb).
 
 [Run commands](README.md#run-the-comparison),

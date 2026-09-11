@@ -11,7 +11,7 @@ communication independently; equal resource usage is not required. Report
 the selected worker count and configuration for each result.
 
 For M/K/N=9472/5120/15360 on four Blackhole P150b devices, TT-Lang V4 takes
-3.857 ms for N-sharded output and 14.572 ms after a separate output gather.
+3.863 ms for N-sharded output and 14.572 ms after a separate output gather.
 Replicated TT-Lang V3 takes 10.248 ms; native takes 6.883 ms. The equivalent
 replicated-output ratios are 2.117 and 1.489. See
 [results and configurations](PERFORMANCE.md).
