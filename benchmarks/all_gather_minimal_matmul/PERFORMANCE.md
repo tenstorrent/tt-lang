@@ -11,8 +11,8 @@ Four Blackhole P150b devices; global `M/K/N=9472/5120/15360`; per-device
 
 | Implementation | Device median ms (min-max) | TT-Lang/native | Warmups/samples |
 | --- | ---: | ---: | ---: |
-| TT-Lang dedicated communication | 3.536 (3.505-3.576) | 1.814 | 3/10 |
-| Native `all_gather_minimal_matmul_async` | 1.950 (1.940-1.970) | 1.000 | 3/10 |
+| TT-Lang | 3.577 (3.540-3.603) | 1.812 | 3/10 |
+| Native `all_gather_minimal_matmul_async` | 1.974 (1.959-2.004) | 1.000 | 3/10 |
 
 Both results passed PCC >= 0.99 and elementwise relative/absolute tolerances of
 0.05 against FP32 PyTorch for every warmup and sample.
@@ -63,10 +63,9 @@ Device profiling measures first kernel start through final kernel end, averaged
 across the four devices. Host tensor creation, compilation, dispatch,
 correctness checks, and profiler processing are excluded.
 
-Measured 2026-09-11 17:21-17:35 UTC: TT-Lang head `c6726fe1a`, operation
-SHA-256 `0242a4652c1d`, TT-Lang benchmark SHA-256 `3dc18a4e1047`, native
-benchmark SHA-256 `6644daeb14d0`; TT-Metal `ea042c4ad623`; LLVM
-`37aca9d384347`; firmware 18.12.1; IRD v1.1.9.
+Measured 2026-09-11 18:40-18:41 UTC: TT-Lang source `d9c8fee3c`, operation
+SHA-256 `7ef4767cded3`, comparison runner SHA-256 `8f27dcbf7d4b`; TT-Metal
+`ea042c4ad623`; LLVM `37aca9d384347`; firmware 18.12.1; IRD v1.1.9.
 
 [Raw device-profiler reports](https://gist.github.com/brnorris03/fa7ab25c12872de92dc0727f28f16104).
 [Reproduction command and timing definition](README.md#run-the-comparison).
