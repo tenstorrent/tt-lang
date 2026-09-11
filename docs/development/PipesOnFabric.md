@@ -221,9 +221,9 @@ transfers = ttl.TransferGraph.edges(
 net = ttl.PipeNet(graph=transfers)
 ```
 
-Graph-only construction applies the transfer relation to an identity pipe on
-every launch node. A transfer between distinct worker coordinates declares the
-node relation separately:
+Graph-only construction sends from each node to the same node coordinate on the
+destination logical device. A transfer between distinct node coordinates
+declares the node relation separately:
 
 ```python
 net = ttl.PipeNet(
@@ -232,20 +232,20 @@ net = ttl.PipeNet(
 )
 ```
 
-The complete logical transfer is `(source device, source node) ->
-(destination device, destination node)`. `ttl.PipeMapping` permits an ordered
-union when different graph relations require different node pipes. PipeNet
-guards restrict which declared endpoints execute protocol operations; they do
-not infer or modify the relation.
+The complete transfer is `(source device, source node) -> (destination device,
+destination node)`. When different graph relations require different node
+pipes, `ttl.PipeMapping` lists each pairing in callback execution order.
+PipeNet guards restrict which declared endpoints execute protocol operations;
+they do not infer or modify the relation.
 
 The graph does not state whether the target uses a line, ring, torus, mesh, or
 another interconnect. It also does not require `(0, 0)` and `(0, 3)` to be one
 hardware packet apart.
 
-Structured transfers share common domain and component properties through
-`StructuredTransfer`. Current derived forms include axis-neighbor, gather, and
-scatter relations. Additional collectives should add semantic transfer forms
-such as all-to-all without adding target topology fields.
+`axis_neighbor`, `stencil`, `gather`, `scatter`, and `all_to_all` store the
+parameters of common device communication patterns instead of explicit edge
+lists. New common patterns should add a named `TransferGraph` constructor
+without adding physical interconnect fields.
 
 ### Shared pipe protocol
 
@@ -377,24 +377,26 @@ The TTL dialect defines:
 - `DeviceTransferAttr` for binding a logical device edge to a node-level
   pipe;
 - `TransferGraphAttr` for explicit or structured logical-device relations;
-- `PipeMappingAttr` for a factorized graph and node-pipe relation;
-- `PipeNetRecordsAttr` for a local record list or an ordered union of graph
+- `PipeMappingAttr` for a device graph paired with node-pipe records;
+- `PipeNetRecordsAttr` for a local record list or an ordered list of graph
   mappings;
 - `CurrentDeviceIndexOp` for the current member's row-major logical index.
 
 These attributes contain no target route fields. Their verifiers check domain
 membership, coordinate rank, and transfer structure.
 
-A graph PipeNet lowers to one `PipeNetRecordsAttr` containing factorized graph
+A graph PipeNet lowers to one `PipeNetRecordsAttr` containing separate graph
 mappings and one callback region for each source or destination role. The
 callback receives a selected record containing node coordinates and logical
-device indices. Structured `TransferGraph` specializations derive endpoints
-from their descriptors and use compact per-device prefix tables only when edge
-counts vary by device. Explicit graphs use indexed adjacency. Each logical
-device iterates only its incident edges. Resource tables remain aligned with
-global transfer indices; when core specialization is enabled, it removes
-constant worker-coordinate dimensions. The compiler does not emit the
-device-edge by node-pipe product as frontend or TTL IR.
+device indices. Named `TransferGraph` forms compute endpoints from their
+parameters. When devices have different numbers of matching edges, one table
+stores a cumulative edge count for each logical device. Explicit graphs use
+indexed source and destination tables. Each logical device iterates only graph
+edges for which it is the source or destination. Resource ordering follows
+mapping, graph-edge, and node-pipe declaration order. When core specialization
+is enabled, it removes worker-coordinate table columns that have one value on a
+given core. The frontend and TTL IR do not create one record for every
+device-edge and node-pipe pair.
 
 One compiled operation fixes its logical domain extents. Source-level CCL
 factories remain extent-parameterized and construct the same structured graph
