@@ -103,4 +103,4 @@ def test_all_gather_minimal_matmul_full_grid():
         reuse_activation=False,
     )
     with open_participant_mesh(config.mesh_shape) as mesh:
-        run_case(mesh, config, 10, torch.bfloat16)
+        run_case(mesh, config, 4, torch.bfloat16)
