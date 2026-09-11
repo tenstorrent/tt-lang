@@ -4,9 +4,11 @@
 """N-sharded matmul with dedicated activation communication workers.
 
     column 0, rows 0..3: exchange activations across devices
-                         multicast four rows; relay the other rows locally
-    column 0, rows 4..9: multicast two relayed rows each
+                         forward four rows; relay the other rows locally
+    column 0, rows 4..9: forward two relayed rows each
     columns 1..M-workers: stream weights -> bias-initialized matmul -> output DRAM
+
+    activation blocks enter row 0 and advance through point-to-point node chains
 
     communication and compute execute concurrently through bounded L1 DFBs
     cache full K across N rounds when enabled; otherwise stream K blocks
@@ -59,11 +61,11 @@ def make_all_gather_minimal_matmul_operation(
         if distribution_worker_count > 0
         else 0
     )
-    direct_activation_row_net = ttl.PipeNet(
+    direct_activation_entry_net = ttl.PipeNet(
         [
             ttl.Pipe(
                 src=(0, m_worker_index % fabric_worker_count),
-                dst=(m_worker_index + 1, slice(0, n_worker_count)),
+                dst=(m_worker_index + 1, 0),
             )
             for m_worker_index in range(
                 fabric_worker_count if distribution_worker_count > 0 else m_worker_count
@@ -84,7 +86,7 @@ def make_all_gather_minimal_matmul_operation(
                 for m_worker_index in range(fabric_worker_count, m_worker_count)
             ]
         )
-        relayed_activation_row_net = ttl.PipeNet(
+        relayed_activation_entry_net = ttl.PipeNet(
             [
                 ttl.Pipe(
                     src=(
@@ -92,14 +94,28 @@ def make_all_gather_minimal_matmul_operation(
                         fabric_worker_count
                         + m_worker_index % distribution_worker_count,
                     ),
-                    dst=(m_worker_index + 1, slice(0, n_worker_count)),
+                    dst=(m_worker_index + 1, 0),
                 )
                 for m_worker_index in range(fabric_worker_count, m_worker_count)
             ]
         )
     else:
-        fabric_to_distribution_net = direct_activation_row_net
-        relayed_activation_row_net = direct_activation_row_net
+        fabric_to_distribution_net = direct_activation_entry_net
+        relayed_activation_entry_net = direct_activation_entry_net
+    activation_compute_chain_net = (
+        ttl.PipeNet(
+            [
+                ttl.Pipe(
+                    src=(m_worker_index + 1, n_worker_index),
+                    dst=(m_worker_index + 1, n_worker_index + 1),
+                )
+                for m_worker_index in range(m_worker_count)
+                for n_worker_index in range(n_worker_count - 1)
+            ]
+        )
+        if n_worker_count > 1
+        else direct_activation_entry_net
+    )
     weight_column_net = ttl.PipeNet(
         [
             ttl.Pipe(
@@ -156,7 +172,7 @@ def make_all_gather_minimal_matmul_operation(
             shape=(m_block_tiles, compute_k_tiles),
             block_count=max(1, distribution_served_row_count),
         )
-        broadcast_activation_receive_dfb = ttl.make_dataflow_buffer_like(
+        activation_chain_receive_dfb = ttl.make_dataflow_buffer_like(
             activation_shard, shape=(m_block_tiles, compute_k_tiles), block_count=1
         )
         matmul_activation_dfb = ttl.make_dataflow_buffer_like(
@@ -242,7 +258,7 @@ def make_all_gather_minimal_matmul_operation(
                                             ).wait()
                                         ttl.copy(row_block, pipe).wait()
 
-                                    direct_activation_row_net.if_src(
+                                    direct_activation_entry_net.if_src(
                                         send_local_activation_row
                                     )
                                     if distribution_worker_count > 0:
@@ -262,7 +278,7 @@ def make_all_gather_minimal_matmul_operation(
                                             ).wait()
                                         ttl.copy(received, pipe).wait()
 
-                                    direct_activation_row_net.if_src(
+                                    direct_activation_entry_net.if_src(
                                         send_remote_activation_row
                                     )
                                     if distribution_worker_count > 0:
@@ -293,12 +309,12 @@ def make_all_gather_minimal_matmul_operation(
                                         receive_from_fabric_worker
                                     )
 
-                                def multicast_to_compute_row(pipe):
+                                def forward_to_compute_entry(pipe):
                                     received = local_distribution_receive_dfb.wait()
                                     ttl.copy(received, pipe).wait()
 
-                                relayed_activation_row_net.if_src(
-                                    multicast_to_compute_row
+                                relayed_activation_entry_net.if_src(
+                                    forward_to_compute_entry
                                 )
             if physical_column > 0:
                 m_worker_index = physical_column - 1
@@ -312,37 +328,102 @@ def make_all_gather_minimal_matmul_operation(
                             for source_round in range(device_count):
                                 activation_block = matmul_activation_dfb.reserve()
                                 if n_round < activation_read_rounds:
+                                    direct_entry = (
+                                        distribution_worker_count == 0
+                                        or m_worker_index < fabric_worker_count
+                                    )
+                                    if direct_entry and source_round == 0:
+                                        received_activation = (
+                                            activation_chain_receive_dfb.reserve()
+                                        )
 
-                                    def receive_from_communication_worker(pipe):
-                                        received = (
-                                            broadcast_activation_receive_dfb.reserve()
-                                        )
-                                        ttl.copy(pipe, received).wait()
-                                        received = (
-                                            broadcast_activation_receive_dfb.wait()
-                                        )
-                                        ttl.copy(
-                                            received,
-                                            activation_block,
-                                            byte_count=activation_block_bytes,
-                                        ).wait()
+                                        def receive_local_activation(pipe):
+                                            ttl.copy(pipe, received_activation).wait()
 
-                                    if (
-                                        distribution_worker_count > 0
-                                        and m_worker_index >= fabric_worker_count
-                                    ):
-                                        relayed_activation_row_net.if_dst(
-                                            receive_from_communication_worker
-                                        )
-                                    else:
-                                        if source_round == 0:
-                                            direct_activation_row_net.if_dst(
-                                                receive_from_communication_worker
+                                        if n_worker_index == 0:
+                                            direct_activation_entry_net.if_dst(
+                                                receive_local_activation
                                             )
                                         else:
-                                            direct_activation_row_net.if_dst(
-                                                receive_from_communication_worker
+                                            activation_compute_chain_net.if_dst(
+                                                receive_local_activation
                                             )
+
+                                        if n_worker_index < n_worker_count - 1:
+
+                                            def forward_local_activation(pipe):
+                                                ttl.copy(
+                                                    received_activation, pipe
+                                                ).wait()
+
+                                            activation_compute_chain_net.if_src(
+                                                forward_local_activation
+                                            )
+                                        received_activation.push()
+                                    elif direct_entry:
+                                        received_activation = (
+                                            activation_chain_receive_dfb.reserve()
+                                        )
+
+                                        def receive_remote_activation(pipe):
+                                            ttl.copy(pipe, received_activation).wait()
+
+                                        if n_worker_index == 0:
+                                            direct_activation_entry_net.if_dst(
+                                                receive_remote_activation
+                                            )
+                                        else:
+                                            activation_compute_chain_net.if_dst(
+                                                receive_remote_activation
+                                            )
+
+                                        if n_worker_index < n_worker_count - 1:
+
+                                            def forward_remote_activation(pipe):
+                                                ttl.copy(
+                                                    received_activation, pipe
+                                                ).wait()
+
+                                            activation_compute_chain_net.if_src(
+                                                forward_remote_activation
+                                            )
+                                        received_activation.push()
+                                    else:
+                                        received_activation = (
+                                            activation_chain_receive_dfb.reserve()
+                                        )
+
+                                        def receive_relayed_activation(pipe):
+                                            ttl.copy(pipe, received_activation).wait()
+
+                                        if n_worker_index == 0:
+                                            relayed_activation_entry_net.if_dst(
+                                                receive_relayed_activation
+                                            )
+                                        else:
+                                            activation_compute_chain_net.if_dst(
+                                                receive_relayed_activation
+                                            )
+
+                                        if n_worker_index < n_worker_count - 1:
+
+                                            def forward_relayed_activation(pipe):
+                                                ttl.copy(
+                                                    received_activation, pipe
+                                                ).wait()
+
+                                            activation_compute_chain_net.if_src(
+                                                forward_relayed_activation
+                                            )
+                                        received_activation.push()
+                                    received_activation = (
+                                        activation_chain_receive_dfb.wait()
+                                    )
+                                    ttl.copy(
+                                        received_activation,
+                                        activation_block,
+                                        byte_count=activation_block_bytes,
+                                    ).wait()
                         n_begin = (
                             n_round * n_worker_count + n_worker_index
                         ) * n_block_tiles
