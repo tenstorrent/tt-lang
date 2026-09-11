@@ -11,9 +11,9 @@ communication independently; equal resource usage is not required. Report
 the selected worker count and configuration for each result.
 
 For M/K/N=9472/5120/15360 on four Blackhole P150b devices, TT-Lang V4 takes
-4.849 ms for N-sharded output and 15.540 ms after a separate output gather.
+3.857 ms for N-sharded output and 14.572 ms after a separate output gather.
 Replicated TT-Lang V3 takes 10.248 ms; native takes 6.883 ms. The equivalent
-replicated-output ratios are 2.258 and 1.489. See
+replicated-output ratios are 2.117 and 1.489. See
 [results and configurations](PERFORMANCE.md).
 
 ## TT-Lang versions
@@ -131,15 +131,16 @@ N-sharded compute, with optional output all-gather:
 python -m benchmarks.all_gather_minimal_matmul \
     --implementation ttlang --mesh-shape 4x1 \
     --fabric-config 2d --fabric-reliability strict --fabric-router-payload 8192 \
-    --m-tiles 296 --k-tiles-per-device 40 --n-tiles 480 \
+    --m-tiles 296 --k-tiles-per-device 40 --n-tiles-per-device 120 \
     --worker-grid 12 10 --transpose --dedicated-communication-workers 4 \
-    --m-block-tiles 2 --k-block-tiles 10 --n-block-tiles 12 \
+    --m-block-tiles 4 --k-block-tiles 10 --n-block-tiles 12 \
     --no-reuse-activation --activation-all-gather ring \
     --math-fidelity HiFi2 --fp32-dest-acc \
     --warmup 3 --samples 10 --json /tmp/ttlang-n-sharded-n15360.json
 ```
 
-Append these options to time the equivalent replicated output:
+Replace `--n-tiles-per-device 120` with `--n-tiles 480` and append these
+options to time the equivalent replicated output:
 
 ```bash
 --gather-output --output-all-gather all_to_all --output-gather-workers 2 \
