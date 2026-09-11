@@ -70,7 +70,16 @@ consumer wait; they isolate communication and local distribution from matmul.
 | Complete operation: 10 communication workers, post-candidate control | 3.393 (3.382-3.451) | 1/3 | control | Adjacent control confirms a 5.7% four-worker reduction. |
 | Split M-worker rows between both ring directions | 3.869 (3.852-3.908) | 3/10 | +8.2% vs one direction | Rejected. Each M group requires its own weight stream; this does not reproduce native's K-half exchange. |
 | Reduce the compute K block from ten to five tiles | 4.547 (4.535-4.560) | 3/10 | +27.1% vs ten tiles | Rejected. The smaller block doubles DFB and matmul message granularity. |
+| Remove the compute-chain receive DFB and its local copy; three-block activation DFB | 3.200 (3.179-3.232) | 3/10 | +0.6% vs 3.180 adjacent control | Rejected. The result is statistically equivalent and provides no complete-operation benefit. |
+| Unchanged four-worker implementation after direct-DFB experiment | 3.180 (3.155-3.243) | 3/10 | control | Confirms no measurable benefit from removing the local copy. |
 | Alternate complete ten-tile K blocks across both ring directions | not measured | full-size compile | n/a | Rejected. The small four-device BF16 streaming case passed, but the full workload required 1,474,560 L1 bytes, 13,184 bytes over the 1,461,376-byte budget. |
+| Eight direct fabric managers to reduce per-manager DFB capacity | not measured | full-size launch | n/a | Rejected. Compilation and PipeNet verification passed, but four physical forwarding links could not bind eight interfering managers. |
+| Four bidirectional managers with two-block receive and relay DFBs | not measured | full-size launch | n/a | Rejected. The local relay filled while fabric sends waited for peers to post receives, producing a protocol deadlock. |
+| Four bidirectional managers with one-row local staging and six-block receive and relay DFBs | not measured | full-size compile | n/a | Rejected. The small full-grid case passed; at full size a 491,520-byte communication DFB had only 313,600 bytes available. |
+| Per-row bidirectional exchange with one-block staging/receive and two-block relay DFBs | not measured | small correctness | n/a | Rejected. Four-device PCC was 0.257; a two-device diagnostic proved that remote K weights were paired with a repeated local activation shard. |
+| Bidirectional exchange with five-tile K blocks | 7.002 (6.961-7.033) | 1/3 | +118.8% vs selected result | Rejected. It passed full-size correctness but the doubled matmul and DFB granularity exceeded the benefit of the second fabric direction. |
+| Bidirectional exchange with two K halves assembled into each ten-tile matmul block | 4.349 (4.323-4.362) | 1/3 | +36.7% vs 3.182 adjacent control | Rejected. It passed full-grid and full-size correctness but required eight row-segment L1 copies per activation block. |
+| Unchanged four-worker implementation after K-half assembly experiment | 3.182 (3.161-3.204) | 1/3 | control | Adjacent control confirms the K-half assembly regression. |
 
 In the multicast implementation, each compute-row head sent every activation
 block to the other nine workers in that row. Point-to-point forwarding sent
@@ -83,6 +92,13 @@ The four-worker result removes the separate L1 distribution stage. Its 2.521 ms
 activation-only screening result still exceeds the 2.109 ms isolated matmul
 time. The complete operation is 0.679 ms above their maximum, so activation
 communication and communication-compute overlap remain optimization targets.
+
+The bidirectional experiments require both directions to populate one ten-tile
+activation block and the matching two weight slices before one matmul. Splitting
+the matmul into five-tile blocks is correct but slow; retaining ten-tile matmul
+granularity requires receiver offsets within one reserved DFB block. The
+subview prototype restored that granularity, but its row-segment assembly still
+measured 36.7% slower than the adjacent one-direction control.
 
 ## TT-Lang matmul kernel
 
