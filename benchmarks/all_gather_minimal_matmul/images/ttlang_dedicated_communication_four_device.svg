@@ -212,7 +212,7 @@
   <text x="1370" y="757" class="label" text-anchor="middle">O₃ · columns [3N/4, N)</text>
   <rect x="40" y="828" width="1520" height="68" class="fabric"/>
   <text x="800" y="852" class="label" text-anchor="middle">Each device: Read Oᵣ from DRAM → send L1 blocks to all three peers</text>
-  <text x="800" y="876" class="small" text-anchor="middle">Direct fabric transfers · two workers/device · 2×30-tile messages · received L1 blocks copied into DRAM at the source device's N offset</text>
+  <text x="800" y="876" class="small" text-anchor="middle">Direct fabric transfers · two workers/device · 1×5-tile messages · received L1 blocks copied into DRAM at the source device's N offset</text>
   <path d="M215 775 V786 H370 V826" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
   <path d="M215 896 V918" class="route" stroke="#7e22ce" marker-end="url(#arrow-purple)"/>
   <rect x="40" y="922" width="350" height="70" class="output"/>

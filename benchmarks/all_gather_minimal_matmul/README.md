@@ -1,9 +1,10 @@
 # All-gather matmul: TT-Lang vs TT-Metal
 
-This benchmark compares all-gather, matrix multiplication and row-bias addition
-with TT-Metal's
+This benchmark measures TT-Lang all-gather, matrix multiplication and row-bias
+addition against TT-Metal's
 [`ttnn.experimental.all_gather_minimal_matmul_async`](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/ttnn/cpp/ttnn/operations/experimental/ccl/all_gather_minimal_matmul_async/all_gather_minimal_matmul_async.cpp).
-Both compared versions return the same replicated output.
+V3 and native return replicated output directly. V4 returns N-sharded output;
+its optional output all-gather can produce the same replicated output.
 
 Compare the best measured configuration of each implementation for identical
 global inputs, precision and replicated output. Tune compute grids, blocks and
@@ -11,9 +12,9 @@ communication independently; equal resource usage is not required. Report
 the selected worker count and configuration for each result.
 
 For M/K/N=9472/5120/15360 on four Blackhole P150b devices, TT-Lang V4 takes
-3.792 ms for N-sharded output and 14.498 ms after a separate output gather.
+3.548 ms for N-sharded output and 52.025 ms with its optional output gather.
 Replicated TT-Lang V3 takes 10.248 ms; native takes 6.916 ms. The equivalent
-replicated-output ratios are 2.096 and 1.482. See
+replicated-output ratios are 7.522 for V4 plus gather and 1.482 for V3. See
 [results and configurations](PERFORMANCE.md).
 
 ## TT-Lang versions
@@ -28,7 +29,8 @@ Oldest to newest; all remain runnable.
 | 4. Dedicated communication + N-sharded matmul | [Operation](../../examples/all_gather_minimal_matmul/dedicated_communication/operation.py); activation exchange uses a separate worker column and overlaps matmul | N-sharded; optionally gathered to replicated output |
 
 [Entry points and selection flags](../../examples/all_gather_minimal_matmul/README.md).
-The performance comparison uses versions 3 and 4 against the native TT-Metal reference.
+The performance report compares version 3 with native replicated output and
+reports version 4 N-sharded output separately.
 
 ## Files
 
@@ -144,7 +146,7 @@ options to time the equivalent replicated output:
 
 ```bash
 --gather-output --output-all-gather all_to_all --output-gather-workers 2 \
-    --output-gather-block-tiles 30 --output-gather-m-block-tiles 2
+    --output-gather-block-tiles 5 --output-gather-m-block-tiles 1
 ```
 
 Native replicated output:

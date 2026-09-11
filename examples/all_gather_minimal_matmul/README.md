@@ -1,8 +1,8 @@
 # All-Gather Minimal Matmul
 
 Four-device M/K/N=9472/5120/15360 device times: V4 N-sharded TT-Lang
-3.792 ms (120 compute, four fabric and six local distribution workers/device),
-V4 plus output gather 14.498 ms, replicated TT-Lang V3 10.248 ms, and native
+3.548 ms (120 compute, four fabric and six local-distribution workers/device),
+V4 plus output gather 52.025 ms, replicated TT-Lang V3 10.248 ms, and native
 6.916 ms. Only the latter three return replicated output. See the
 [performance report](../../benchmarks/all_gather_minimal_matmul/PERFORMANCE.md).
 
@@ -11,7 +11,7 @@ V4 plus output gather 14.498 ms, replicated TT-Lang V3 10.248 ms, and native
 | 1. [Per-row all-gather + matmul](per_row_all_gather/operation.py) | [`n_sharded/`](n_sharded/), `--activation-all-gather all_to_all`; also `ring` with at most two M workers | N-sharded `M x N/D`; `--gather-output` returns replicated `M x N`. | [Per-device view](../../benchmarks/all_gather_minimal_matmul/images/ttlang_device.svg) | 653 / 4,677 = 14.0% |
 | 2. [Two-worker ring + matmul](two_worker_ring/operation.py) | [`n_sharded/`](n_sharded/), `--activation-all-gather ring` with more than two M workers | N-sharded `M x N/D`; `--gather-output` returns replicated `M x N`. | [Four devices](../../benchmarks/all_gather_minimal_matmul/images/ttlang_four_device.svg) | 657 / 4,677 = 14.0% |
 | 3. [DRAM all-gather + replicated matmul](replicated/operation.py) | [`replicated/`](replicated/), `--activation-all-gather all_to_all` or `ring` | Replicated `M x N`; no output gather. | [Four devices](../../benchmarks/all_gather_minimal_matmul/images/ttlang_replicated_four_device.svg), [fabric pipes](../../benchmarks/all_gather_minimal_matmul/images/ttlang_replicated_fabric_pipes.svg), [worker-grid pipes](../../benchmarks/all_gather_minimal_matmul/images/ttlang_replicated_worker_pipes.svg) | 516 / 4,677 = 11.0% |
-| 4. [Dedicated communication + N-sharded matmul](dedicated_communication/operation.py) | [`n_sharded/`](n_sharded/), `--dedicated-communication-workers`; communication uses an additional worker column | N-sharded `M x N/D`; `--gather-output` returns replicated `M x N`. | [Four devices](../../benchmarks/all_gather_minimal_matmul/images/ttlang_dedicated_communication_four_device.svg) | 683 / 4,677 = 14.6% |
+| 4. [Dedicated communication + N-sharded matmul](dedicated_communication/operation.py) | [`n_sharded/`](n_sharded/), `--dedicated-communication-workers`; communication uses an additional worker column | N-sharded `M x N/D`; `--gather-output` returns replicated `M x N`. | [Four devices](../../benchmarks/all_gather_minimal_matmul/images/ttlang_dedicated_communication_four_device.svg) | 713 / 4,677 = 15.2% |
 
 Source counts exclude blank lines, comments/docstrings, bindings, drivers, tests
 and framework code. TT-Lang includes the selected operation, `config.py`,
@@ -122,13 +122,12 @@ it uses less L1 but repeats activation communication. Reuse supports at most
 32 K blocks; larger reductions require larger K blocks or streamed activations.
 Actual capacity is also limited by per-worker L1 allocation.
 
-Direct fabric receive holds one block per remote device; ring receive and
-forwarding use two-block DFBs. Separate row-receive storage preserves the
-multicast protocol's receiver address sequence while cached compute pages are
-republished. Weight operands remain double-buffered. FP32 destinations select
-FP32 packer accumulation directly from BF16 or FP32 matmul operands, avoiding
-intermediate BF16 rounding and SFPU accumulation. Bias is converted and added
-after the reduction, followed by output conversion.
+The dedicated version holds one remote block per M row served by each fabric
+worker and multicasts directly from that receive DFB. A separate relay DFB
+forwards blocks to the next device. Weight operands remain double-buffered.
+FP32 destinations select FP32 packer accumulation directly from BF16 or FP32
+matmul operands, avoiding intermediate BF16 rounding and SFPU accumulation.
+Bias is converted and added after the reduction, followed by output conversion.
 
 The activation reader is declared first to select NoC 0, with weight traffic
 on NoC 1. This assignment is measured on the
