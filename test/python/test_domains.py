@@ -118,11 +118,14 @@ def test_direct_transfer_graph_construction_validates_edges():
         )
 
 
-def test_transfer_graph_rejects_exact_self_transfer():
+def test_transfer_graph_accepts_exact_self_transfer():
     domain = DeviceDomain((4,))
 
-    with pytest.raises(ValueError, match="source must differ from destination"):
-        TransferGraph.edges(domain, edges=[(1, 1)])
+    graph = TransferGraph.edges(domain, edges=[(1, 1)])
+
+    assert tuple(graph.iter_edges()) == (
+        TransferEdge(DeviceRef((1,)), DeviceRef((1,))),
+    )
 
 
 def test_transfer_graph_rejects_duplicate_edges():

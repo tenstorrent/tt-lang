@@ -557,7 +557,7 @@ class TTLGenericCompiler(TTCompilerBase):
         else:
             graph_mappings = tuple(
                 (
-                    mapping.graph,
+                    relation_graph,
                     tuple(
                         (
                             pipe.src,
@@ -565,10 +565,10 @@ class TTLGenericCompiler(TTCompilerBase):
                             pipe.dst_end,
                             pipe.is_collective,
                         )
-                        for pipe in mapping.pipes
+                        for pipe in relation_pipes
                     ),
                 )
-                for mapping in pipenet.mappings
+                for relation_graph, relation_pipes in pipenet._device_relations
             )
         mappings = []
         for graph, mapping_pipes in graph_mappings:

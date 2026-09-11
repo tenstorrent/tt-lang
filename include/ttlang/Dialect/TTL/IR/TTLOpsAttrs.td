@@ -317,8 +317,8 @@ def TTL_TransferGraphAttr : TTL_Attr<"TransferGraph", "transfer_graph"> {
 
     Explicit graphs preserve edge-array order. Structured graphs use
     row-major device order. Stencils order edges by source device and then by
-    the declared offset list; all-to-all orders first by source and then by
-    destination. PipeNet callbacks observe this order.
+    the declared offset list; all-to-all orders each source before its
+    destinations. PipeNet callbacks observe this order.
 
     Domain extents are fixed for one compiled operation instance. A source
     operation factory may construct the same relation for any supported
@@ -514,12 +514,11 @@ def TTL_PipeRecordAttr : TTL_Attr<"PipeRecord", "pipe_record"> {
 }
 
 def TTL_PipeMappingAttr : TTL_Attr<"PipeMapping", "pipe_mapping"> {
-  let summary = "Device graph paired with worker-coordinate pipes";
+  let summary = "Device graph and node-pipe group";
   let description = [{
     Combines every logical device edge in `graph` with every node-level pipe
-    in `pipes`. Multiple mappings are processed in attribute order. The graph
-    and node-pipe relation remain separate in frontend and TTL IR instead of
-    storing one record for every edge and pipe combination.
+    in `pipes`. The ordered groups of one PipeNet form a union. Storing the
+    graph once avoids duplicating it for every node-level pipe.
   }];
   let parameters = (ins
     "TransferGraphAttr":$graph,
@@ -534,12 +533,12 @@ def TTL_PipeNetRecordsAttr : TTL_Attr<"PipeNetRecords", "pipenet_records"> {
   let description = [{
     Identifies a PipeNet by id. A local PipeNet uses `pipes` as its ordered
     list of `#ttl.pipe_record` attributes. A graph PipeNet uses `mappings` as
-    an ordered list of logical-device graphs paired with node-level pipe lists.
-    Exactly one representation is nonempty.
+    an ordered list of groups. Each group contains one logical-device graph
+    and one node-pipe list. Exactly one representation is nonempty.
 
     PipeNet foreach operations use this attribute to represent callback
     iteration without cloning a source-level callback body. Local records are
-    ordered by pipe construction. Graph records are ordered by mapping, graph
+    ordered by pipe construction. Graph records are ordered by group, graph
     edge, then node pipe. A launch node that matches multiple records executes
     them in this order.
   }];

@@ -12,6 +12,7 @@ allocates runtime host state or device-visible communication memory.
 from __future__ import annotations
 
 import itertools
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from math import prod
 from typing import Any, Iterable, Iterator, Optional, Sequence, Tuple, Union
@@ -274,6 +275,23 @@ class DeviceDomain:
     def component_names(self) -> Tuple[str, ...]:
         return tuple(component.name for component in self.components)
 
+    def __getitem__(self, index: Any) -> DeviceView | DevicePoint:
+        return DeviceView(
+            self, tuple(range(extent) for extent in self.flattened_extent)
+        )[index]
+
+    def at_node(self, node_x: int, node_y: int) -> NodeSelection:
+        return self[:].at_node(node_x, node_y)
+
+    def select(self, points: Iterable[DevicePoint]) -> DeviceSet:
+        """Select explicit members, removing duplicates in parent coordinate order."""
+        references = []
+        for point in points:
+            if not isinstance(point, DevicePoint) or point.domain != self:
+                raise ValueError("selected points must belong to the parent domain")
+            references.append(point.reference)
+        return DeviceSet(self, tuple(references))
+
     @property
     def component_count(self) -> int:
         return len(self.components)
@@ -440,6 +458,180 @@ class DeviceDomain:
                     f"{context} component {component.name!r} axis {axis} "
                     f"requires 0 <= coord {relation} {extent}, got {value}"
                 )
+
+
+class DeviceSelection(ABC):
+    """Device membership with coordinates resolved in one parent domain."""
+
+    domain: DeviceDomain
+
+    @abstractmethod
+    def iter_device_refs(self) -> Iterator[DeviceRef]:
+        """Iterate selected parent-domain references in deterministic order."""
+
+    @abstractmethod
+    def _operation_identity_capture(self) -> tuple:
+        """Return the immutable selection contract used for compilation identity."""
+
+    def at_node(self, node_x: int, node_y: int) -> NodeSelection:
+        return NodeSelection(self, (node_x, node_y))
+
+    def __or__(self, other: DeviceSelection) -> DeviceSet:
+        if not isinstance(other, DeviceSelection) or self.domain != other.domain:
+            raise ValueError("device selections must share a parent domain")
+        return DeviceSet(
+            self.domain,
+            tuple(itertools.chain(self.iter_device_refs(), other.iter_device_refs())),
+        )
+
+
+@dataclass(frozen=True)
+class DevicePoint(DeviceSelection):
+    """One device reference together with its parent domain."""
+
+    domain: DeviceDomain
+    reference: DeviceRef
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "reference", self.domain.resolve_device_ref(self.reference)
+        )
+
+    def iter_device_refs(self) -> Iterator[DeviceRef]:
+        yield self.reference
+
+    def _operation_identity_capture(self) -> tuple:
+        return (
+            "device-point",
+            self.domain._operation_identity_capture(),
+            self.reference.coordinates,
+        )
+
+
+@dataclass(frozen=True)
+class DeviceView(DeviceSelection):
+    """An indexed device view stored as one integer or range per parent axis.
+
+    Integers fix parent axes; ranges map the remaining view axes to parent
+    coordinates. Slicing composes these maps without enumerating devices.
+    """
+
+    domain: DeviceDomain
+    axes: Tuple[int | range, ...]
+
+    def __post_init__(self) -> None:
+        axes = tuple(self.axes)
+        if len(axes) != len(self.domain.flattened_extent):
+            raise ValueError("device view must specify every parent axis")
+        for axis, extent in zip(axes, self.domain.flattened_extent):
+            if isinstance(axis, range):
+                if axis and (
+                    min(axis[0], axis[-1]) < 0 or max(axis[0], axis[-1]) >= extent
+                ):
+                    raise ValueError("device view range is outside the parent domain")
+            else:
+                coordinate = _require_int(axis, "device view coordinate")
+                if not 0 <= coordinate < extent:
+                    raise ValueError(
+                        "device view coordinate is outside the parent domain"
+                    )
+        object.__setattr__(self, "axes", axes)
+
+    @property
+    def shape(self) -> Coordinate:
+        return tuple(len(axis) for axis in self.axes if isinstance(axis, range))
+
+    def __getitem__(self, index: Any) -> DeviceView | DevicePoint:
+        indices = index if isinstance(index, tuple) else (index,)
+        rank = len(self.shape)
+        if len(indices) > rank:
+            raise IndexError(f"device view has rank {rank}, got {len(indices)} indices")
+        indices = iter(indices + (slice(None),) * (rank - len(indices)))
+        axes = []
+        for axis in self.axes:
+            if isinstance(axis, range):
+                selection = next(indices)
+                if not isinstance(selection, slice):
+                    _require_int(selection, "device index")
+                axis = axis[selection]
+            axes.append(axis)
+        if any(isinstance(axis, range) for axis in axes):
+            return DeviceView(self.domain, tuple(axes))
+        return DevicePoint(self.domain, self._parent_reference(tuple(axes)))
+
+    def _parent_reference(self, coordinates: Coordinate) -> DeviceRef:
+        components = []
+        offset = 0
+        for component in self.domain.components:
+            component_rank = len(component.extent)
+            components.append(coordinates[offset : offset + component_rank])
+            offset += component_rank
+        return DeviceRef(*components)
+
+    def iter_device_refs(self) -> Iterator[DeviceRef]:
+        for coordinates in itertools.product(
+            *(axis if isinstance(axis, range) else (axis,) for axis in self.axes)
+        ):
+            yield self._parent_reference(coordinates)
+
+    def _operation_identity_capture(self) -> tuple:
+        return (
+            "device-view",
+            self.domain._operation_identity_capture(),
+            tuple(
+                (axis.start, axis.stop, axis.step) if isinstance(axis, range) else axis
+                for axis in self.axes
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class DeviceSet(DeviceSelection):
+    """Explicit device membership in parent coordinate order."""
+
+    domain: DeviceDomain
+    references: Tuple[DeviceRef, ...]
+
+    def __post_init__(self) -> None:
+        references = {
+            self.domain.resolve_device_ref(reference) for reference in self.references
+        }
+        object.__setattr__(
+            self, "references", tuple(sorted(references, key=self.domain.index_order))
+        )
+
+    def iter_device_refs(self) -> Iterator[DeviceRef]:
+        yield from self.references
+
+    def _operation_identity_capture(self) -> tuple:
+        return (
+            "device-set",
+            self.domain._operation_identity_capture(),
+            tuple(reference.coordinates for reference in self.references),
+        )
+
+
+@dataclass(frozen=True)
+class NodeSelection:
+    """A logical Tensix node on each selected device.
+
+    Coordinates are nonnegative. Operation placement must additionally verify
+    that this node exists on every selected device before dispatch.
+    """
+
+    devices: DeviceSelection
+    node: Coordinate
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.devices, DeviceSelection):
+            raise TypeError("node selection requires a device selection")
+        node = _normalize_coordinate(self.node, "node coordinate")
+        if len(node) != 2:
+            raise ValueError("node coordinate must have rank two")
+        object.__setattr__(self, "node", node)
+
+    def _operation_identity_capture(self) -> tuple:
+        return ("node-selection", self.devices._operation_identity_capture(), self.node)
 
 
 @dataclass(frozen=True, init=False)
@@ -845,8 +1037,6 @@ class TransferGraph:
                 )
         else:
             destination = domain.device_ref(edge.destination)
-            if source == destination:
-                raise ValueError("transfer edge source must differ from destination")
         return TransferEdge(source, destination)
 
     @staticmethod

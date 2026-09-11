@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Device coverage for graph transfers between different worker coordinates."""
+"""Device coverage for graph transfers between different node coordinates."""
 
 from math import prod
 
@@ -20,7 +20,7 @@ pytestmark = pytest.mark.multi_device
 TILE_SIZE = 32
 
 
-def _make_cross_worker_copy(mesh_shape):
+def _make_cross_node_copy(mesh_shape):
     device_domain = ttl.DeviceDomain(mesh_shape)
     source_device = tuple(0 for _extent in mesh_shape)
     destination_device = tuple(extent - 1 for extent in mesh_shape)
@@ -36,7 +36,7 @@ def _make_cross_worker_copy(mesh_shape):
         device_domain=device_domain,
         mesh_program_placements=[source_device, destination_device],
     )
-    def cross_worker_copy(inp, out):
+    def cross_node_copy(inp, out):
         send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
         receive_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
 
@@ -64,7 +64,7 @@ def _make_cross_worker_copy(mesh_shape):
 
             transfer_net.if_dst(receive)
 
-    return cross_worker_copy
+    return cross_node_copy
 
 
 @pytest.mark.parametrize(
@@ -81,14 +81,14 @@ def _make_cross_worker_copy(mesh_shape):
         pytest.param(ttnn.L1_MEMORY_CONFIG, id="l1"),
     ],
 )
-def test_graph_pipe_crosses_worker_coordinates(
+def test_graph_pipe_crosses_node_coordinates(
     torch_dtype, ttnn_dtype, rtol, atol, memory_config
 ):
     mesh_shape = get_fabric_mesh_shape(fabric_config=ttnn.FabricConfig.FABRIC_2D)
     device_count = prod(mesh_shape)
     if device_count < 2:
         pytest.skip("requires multiple devices")
-    cross_worker_copy = _make_cross_worker_copy(mesh_shape)
+    cross_node_copy = _make_cross_node_copy(mesh_shape)
 
     logical_shape = (device_count * TILE_SIZE, TILE_SIZE)
     inp_torch = torch.randn(logical_shape, dtype=torch_dtype)
@@ -116,7 +116,7 @@ def test_graph_pipe_crosses_worker_coordinates(
             mesh_mapper=mesh_mapper,
         )
 
-        cross_worker_copy(inp, out)
+        cross_node_copy(inp, out)
 
         result = ttnn.to_torch(
             out,
