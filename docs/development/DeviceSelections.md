@@ -69,6 +69,12 @@ once and stores the shared source and destination node coordinates once.
 Equivalent endpoints have the same compilation identity, including when they
 are obtained through nested views.
 
+When a pairwise or all-to-all relation contains both same-device and remote
+transfers, callbacks process the same-device transfers first because they use
+NoC rather than fabric synchronization. Within each set, pairwise transfers
+retain pair order; all-to-all transfers use source order, then destination
+order.
+
 `Pipe.all_to_all(...)` connects every selected source device to every selected
 destination device. This per-row allgather uses four devices in each row of an
 8-by-4 domain:
@@ -89,10 +95,7 @@ row_allgathers = [
 
 Each PipeNet has 16 transfers. Every device sends to four devices and receives
 from four devices. `include_self=True` adds four same-device transfers; the
-other 12 use fabric. The compiler stores the local transfers separately because
-they lower to NoC operations, while transfers between devices lower to fabric
-operations. Local transfers execute before remote transfers. Within each set,
-sources and destinations follow the selections' coordinate order.
+other 12 use fabric.
 
 `Pipe.all_to_all(...)` stores one explicit device edge per transfer. It is
 appropriate for selected subsets such as one row. For an all-to-all relation

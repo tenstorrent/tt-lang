@@ -126,6 +126,11 @@ endpoints. `Pipe.pairwise(...)` connects corresponding members of two
 rectangular device selections. `Pipe.all_to_all(...)` connects every selected
 source device to every selected destination device.
 
+If either constructor produces both same-device and remote transfers, it
+places the same-device transfers first because NoC and fabric use different
+synchronization protocols. Within each set, pairwise transfers retain pair
+order; all-to-all transfers use source order, then destination order.
+
 The declaration determines topology. `if_src` and `if_dst` iterate the
 declared transfers. `is_src`, `is_dst`, `is_active`, and equivalent coordinate
 conditions restrict execution to declared endpoint roles; guards do not add
