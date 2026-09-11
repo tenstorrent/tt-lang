@@ -207,6 +207,8 @@ struct StencilOffsetDescriptor {
   std::uint64_t sourceCount = 0;
 };
 
+// Normalize stencil offsets and precompute the valid source domain for each
+// retained offset.
 FailureOr<SmallVector<StencilOffsetDescriptor>>
 getStencilOffsetDescriptors(DeviceDomainComponentAttr component,
                             ArrayAttr offsets, bool wrap) {
@@ -372,8 +374,8 @@ public:
   }
 
   TransferGraphEdgeIndexValues
-  buildEdgeIndexValues(OpBuilder &builder, Location loc,
-                       Value edgeIndex) const override {
+  buildExplicitEdgeIndexValues(OpBuilder &builder, Location loc,
+                               Value edgeIndex) const {
     return buildEdgeIndexTableLookups(getDomain(), getEdges(), builder, loc,
                                       edgeIndex);
   }
@@ -399,7 +401,7 @@ public:
         arith::AddIOp::create(builder, loc, deviceOffset, incidentEdgeIndex);
     Value edgeOrdinal = buildIndexTableLookup(builder, loc, tables.edgeOrdinals,
                                               flattenedIndex);
-    return buildEdgeIndexValues(builder, loc, edgeOrdinal);
+    return buildExplicitEdgeIndexValues(builder, loc, edgeOrdinal);
   }
 };
 
@@ -578,6 +580,8 @@ protected:
     return arith::SelectOp::create(builder, loc, predicate, count, zero);
   }
 
+  // Map a device index to its order after omitting one coordinate from the
+  // selected component.
   Value compressDeviceOrdinalExcludingComponent(
       OpBuilder &builder, Location loc, Value deviceIndex,
       std::uint64_t excludedComponentIndex) const {
@@ -639,52 +643,8 @@ protected:
                                  replacementOffset);
   }
 
-  Value
-  expandComponentOrdinalExcluding(OpBuilder &builder, Location loc,
-                                  Value compressedIndex,
-                                  std::uint64_t excludedComponentIndex) const {
-    FailureOr<std::uint64_t> componentSize = getComponentSize();
-    FailureOr<std::uint64_t> trailingSize = getTrailingComponentSize();
-    assert(succeeded(componentSize) && succeeded(trailingSize) &&
-           *componentSize > 1 &&
-           "edge count validation must reject invalid structured domains");
-    std::uint64_t compressedBlockSize = (*componentSize - 1) * *trailingSize;
-    Value blockSize = arith::ConstantIndexOp::create(
-        builder, loc, static_cast<int64_t>(compressedBlockSize));
-    Value componentExtent = arith::ConstantIndexOp::create(
-        builder, loc, static_cast<int64_t>(*componentSize));
-    Value trailing = arith::ConstantIndexOp::create(
-        builder, loc, static_cast<int64_t>(*trailingSize));
-    Value outerIndex =
-        arith::DivSIOp::create(builder, loc, compressedIndex, blockSize);
-    Value blockRemainder =
-        arith::RemSIOp::create(builder, loc, compressedIndex, blockSize);
-    Value compressedComponentIndex =
-        arith::DivSIOp::create(builder, loc, blockRemainder, trailing);
-    Value suffix =
-        arith::RemSIOp::create(builder, loc, blockRemainder, trailing);
-    Value excluded = arith::ConstantIndexOp::create(
-        builder, loc, static_cast<int64_t>(excludedComponentIndex));
-    Value one = arith::ConstantIndexOp::create(builder, loc, 1);
-    Value componentAfterExcluded =
-        arith::AddIOp::create(builder, loc, compressedComponentIndex, one);
-    Value isAtOrAfterExcluded =
-        arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::sge,
-                              compressedComponentIndex, excluded);
-    Value expandedComponentIndex = arith::SelectOp::create(
-        builder, loc, isAtOrAfterExcluded, componentAfterExcluded,
-        compressedComponentIndex);
-    Value completeBlockSize =
-        arith::MulIOp::create(builder, loc, componentExtent, trailing);
-    Value outerOffset =
-        arith::MulIOp::create(builder, loc, outerIndex, completeBlockSize);
-    Value componentOffset =
-        arith::MulIOp::create(builder, loc, expandedComponentIndex, trailing);
-    Value withComponent =
-        arith::AddIOp::create(builder, loc, outerOffset, componentOffset);
-    return arith::AddIOp::create(builder, loc, withComponent, suffix);
-  }
-
+  // Map a reduced component index back to its coordinate while skipping the
+  // excluded coordinate.
   Value
   expandComponentIndexExcluding(OpBuilder &builder, Location loc,
                                 Value compressedComponentIndex,
@@ -798,75 +758,6 @@ public:
     return (*deviceCount / axisExtent) * (axisExtent - offset);
   }
 
-  TransferGraphEdgeIndexValues
-  buildEdgeIndexValues(OpBuilder &builder, Location loc,
-                       Value edgeIndex) const override {
-    int64_t axis = getProperties().getAs<IntegerAttr>("axis").getInt();
-    int64_t offset = getProperties().getAs<IntegerAttr>("offset").getInt();
-    bool wrap = getProperties().getAs<BoolAttr>("wrap").getValue();
-    std::uint64_t axisStride = 1;
-    for (int64_t extent :
-         component.getExtent().asArrayRef().drop_front(axis + 1)) {
-      axisStride *= extent;
-    }
-    FailureOr<std::uint64_t> trailingSize = getTrailingComponentSize();
-    assert(succeeded(trailingSize) &&
-           "edge count validation must reject overflowing domain extents");
-    axisStride *= *trailingSize;
-
-    int64_t axisExtent = component.getExtent()[axis];
-    if (wrap) {
-      offset %= axisExtent;
-    }
-    Value stride = arith::ConstantIndexOp::create(
-        builder, loc, static_cast<int64_t>(axisStride));
-    Value extent = arith::ConstantIndexOp::create(builder, loc, axisExtent);
-    Value source;
-    if (wrap) {
-      source = edgeIndex;
-    } else {
-      int64_t validAxisExtent = axisExtent - offset;
-      Value validBlockSize = arith::ConstantIndexOp::create(
-          builder, loc, validAxisExtent * static_cast<int64_t>(axisStride));
-      Value completeBlockSize = arith::ConstantIndexOp::create(
-          builder, loc, axisExtent * static_cast<int64_t>(axisStride));
-      Value outerIndex =
-          arith::DivSIOp::create(builder, loc, edgeIndex, validBlockSize);
-      Value blockRemainder =
-          arith::RemSIOp::create(builder, loc, edgeIndex, validBlockSize);
-      Value outerOffset =
-          arith::MulIOp::create(builder, loc, outerIndex, completeBlockSize);
-      source = arith::AddIOp::create(builder, loc, outerOffset, blockRemainder);
-    }
-
-    Value sourceAxisWithInner =
-        arith::DivSIOp::create(builder, loc, source, stride);
-    Value sourceAxis =
-        arith::RemSIOp::create(builder, loc, sourceAxisWithInner, extent);
-    Value offsetValue = arith::ConstantIndexOp::create(builder, loc, offset);
-    Value translatedAxis =
-        arith::AddIOp::create(builder, loc, sourceAxis, offsetValue);
-    if (wrap) {
-      Value threshold =
-          arith::ConstantIndexOp::create(builder, loc, axisExtent - offset);
-      Value wraps = arith::CmpIOp::create(
-          builder, loc, arith::CmpIPredicate::sge, sourceAxis, threshold);
-      Value wrapped =
-          arith::SubIOp::create(builder, loc, sourceAxis, threshold);
-      translatedAxis =
-          arith::SelectOp::create(builder, loc, wraps, wrapped, translatedAxis);
-    }
-    Value sourceAxisOffset =
-        arith::MulIOp::create(builder, loc, sourceAxis, stride);
-    Value axisBase =
-        arith::SubIOp::create(builder, loc, source, sourceAxisOffset);
-    Value destinationAxisOffset =
-        arith::MulIOp::create(builder, loc, translatedAxis, stride);
-    Value destination =
-        arith::AddIOp::create(builder, loc, axisBase, destinationAxisOffset);
-    return {edgeIndex, source, destination};
-  }
-
   Value buildIncidentEdgeCount(OpBuilder &builder, Location loc,
                                Value deviceIndex,
                                PipeRole role) const override {
@@ -893,7 +784,7 @@ public:
 
   TransferGraphEdgeIndexValues
   buildIncidentEdgeIndexValues(OpBuilder &builder, Location loc,
-                               Value deviceIndex, Value incidentEdgeIndex,
+                               Value deviceIndex, Value,
                                PipeRole role) const override {
     assert(role != PipeRole::Active &&
            "dynamic incident iteration requires one endpoint role");
@@ -1087,55 +978,6 @@ public:
       edgeCount = *updatedEdgeCount;
     }
     return edgeCount;
-  }
-
-  TransferGraphEdgeIndexValues
-  buildEdgeIndexValues(OpBuilder &builder, Location loc,
-                       Value edgeIndex) const override {
-    SmallVector<int64_t> sourceEdgeOffsets = getSourceEdgeOffsets();
-    Value source = arith::ConstantIndexOp::create(builder, loc, 0);
-    Value sourceEdgeBase = arith::ConstantIndexOp::create(builder, loc, 0);
-    for (std::size_t sourceIndex = 0; sourceIndex < getDevices().size();
-         ++sourceIndex) {
-      Value start = arith::ConstantIndexOp::create(
-          builder, loc, sourceEdgeOffsets[sourceIndex]);
-      Value end = arith::ConstantIndexOp::create(
-          builder, loc, sourceEdgeOffsets[sourceIndex + 1]);
-      Value afterStart = arith::CmpIOp::create(
-          builder, loc, arith::CmpIPredicate::sge, edgeIndex, start);
-      Value beforeEnd = arith::CmpIOp::create(
-          builder, loc, arith::CmpIPredicate::slt, edgeIndex, end);
-      Value selectsSource =
-          arith::AndIOp::create(builder, loc, afterStart, beforeEnd);
-      Value sourceIndexValue = arith::ConstantIndexOp::create(
-          builder, loc, static_cast<int64_t>(sourceIndex));
-      source = arith::SelectOp::create(builder, loc, selectsSource,
-                                       sourceIndexValue, source);
-      sourceEdgeBase = arith::SelectOp::create(builder, loc, selectsSource,
-                                               start, sourceEdgeBase);
-    }
-
-    Value sourceLocalEdgeIndex =
-        arith::SubIOp::create(builder, loc, edgeIndex, sourceEdgeBase);
-    Value destination = source;
-    Value validOffsetCount = arith::ConstantIndexOp::create(builder, loc, 0);
-    for (auto [descriptorIndex, descriptor] :
-         llvm::enumerate(getDescriptors())) {
-      DynamicStencilEdge candidate = buildIncidentCandidate(
-          builder, loc, source, PipeRole::Source, descriptor, descriptorIndex);
-      Value hasSelectedOrdinal =
-          arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::eq,
-                                sourceLocalEdgeIndex, validOffsetCount);
-      Value selectsCandidate = arith::AndIOp::create(
-          builder, loc, candidate.isValid, hasSelectedOrdinal);
-      destination = arith::SelectOp::create(builder, loc, selectsCandidate,
-                                            candidate.destination, destination);
-      Value contribution =
-          buildCountFromPredicate(builder, loc, candidate.isValid);
-      validOffsetCount =
-          arith::AddIOp::create(builder, loc, validOffsetCount, contribution);
-    }
-    return {edgeIndex, source, destination};
   }
 
   Value buildIncidentEdgeCount(OpBuilder &builder, Location loc,
@@ -1475,20 +1317,6 @@ public:
     return (*deviceCount / *componentSize) * (*componentSize - 1);
   }
 
-  TransferGraphEdgeIndexValues
-  buildEdgeIndexValues(OpBuilder &builder, Location loc,
-                       Value edgeIndex) const override {
-    DeviceRefAttr root = getProperties().getAs<DeviceRefAttr>("root");
-    std::uint64_t rootIndex =
-        getComponentLinearIndex(root.getCoordinates().front());
-    Value source =
-        expandComponentOrdinalExcluding(builder, loc, edgeIndex, rootIndex);
-    Value rootValue = arith::ConstantIndexOp::create(
-        builder, loc, static_cast<int64_t>(rootIndex));
-    Value destination = replaceComponentIndex(builder, loc, source, rootValue);
-    return {edgeIndex, source, destination};
-  }
-
   Value buildIncidentEdgeCount(OpBuilder &builder, Location loc,
                                Value deviceIndex,
                                PipeRole role) const override {
@@ -1584,22 +1412,6 @@ public:
       return failure();
     }
     return (*deviceCount / *componentSize) * (*componentSize - 1);
-  }
-
-  TransferGraphEdgeIndexValues
-  buildEdgeIndexValues(OpBuilder &builder, Location loc,
-                       Value edgeIndex) const override {
-    DeviceRefAttr sourceEndpoint =
-        getProperties().getAs<DeviceRefAttr>("source");
-    std::uint64_t sourceIndex =
-        getComponentLinearIndex(sourceEndpoint.getCoordinates().front());
-    Value destination =
-        expandComponentOrdinalExcluding(builder, loc, edgeIndex, sourceIndex);
-    Value sourceValue = arith::ConstantIndexOp::create(
-        builder, loc, static_cast<int64_t>(sourceIndex));
-    Value source =
-        replaceComponentIndex(builder, loc, destination, sourceValue);
-    return {edgeIndex, source, destination};
   }
 
   Value buildIncidentEdgeCount(OpBuilder &builder, Location loc,
@@ -1707,35 +1519,7 @@ public:
     return *edgeCount;
   }
 
-  TransferGraphEdgeIndexValues
-  buildEdgeIndexValues(OpBuilder &builder, Location loc,
-                       Value edgeIndex) const override {
-    FailureOr<std::uint64_t> componentSize = getComponentSize();
-    assert(succeeded(componentSize) && *componentSize > 1 &&
-           "edge count validation must reject invalid all-to-all domains");
-    Value peersPerSource = arith::ConstantIndexOp::create(
-        builder, loc, static_cast<int64_t>(*componentSize - 1));
-    Value source =
-        arith::DivSIOp::create(builder, loc, edgeIndex, peersPerSource);
-    Value compressedDestination =
-        arith::RemSIOp::create(builder, loc, edgeIndex, peersPerSource);
-    Value sourceComponent = getComponentIndex(builder, loc, source);
-    Value one = arith::ConstantIndexOp::create(builder, loc, 1);
-    Value destinationAfterSource =
-        arith::AddIOp::create(builder, loc, compressedDestination, one);
-    Value isAtOrAfterSource =
-        arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::sge,
-                              compressedDestination, sourceComponent);
-    Value destinationComponent =
-        arith::SelectOp::create(builder, loc, isAtOrAfterSource,
-                                destinationAfterSource, compressedDestination);
-    Value destination =
-        replaceComponentIndex(builder, loc, source, destinationComponent);
-    return {edgeIndex, source, destination};
-  }
-
-  Value buildIncidentEdgeCount(OpBuilder &builder, Location loc,
-                               Value deviceIndex,
+  Value buildIncidentEdgeCount(OpBuilder &builder, Location loc, Value,
                                PipeRole role) const override {
     assert(role != PipeRole::Active &&
            "dynamic incident iteration requires one endpoint role");

@@ -262,7 +262,7 @@ tryLowerLocalPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
   rewriter.setInsertionPointToStart(forOp.getBody());
   Value recordIndex = buildConstantIndexTableLookup(
       rewriter, loc, participantPlan->recordIndices, forOp.getInductionVar());
-  PipeRecordTables recordTables = buildPipeRecordTables(records);
+  PipeRecordTables recordTables = buildPipeRecordTables(records.getPipes());
   Value sourceDeviceIndex = buildConstantIndexTableLookup(
       rewriter, loc, recordTables.sourceDeviceIndex, recordIndex);
   Value destinationDeviceIndex = buildConstantIndexTableLookup(
@@ -598,7 +598,7 @@ lowerPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
     return success();
   }
 
-  PipeRecordTables tables = buildPipeRecordTables(records);
+  PipeRecordTables tables = buildPipeRecordTables(records.getPipes());
   Value lower = arith::ConstantIndexOp::create(rewriter, loc, 0);
   Value upper =
       arith::ConstantIndexOp::create(rewriter, loc, records.getPipes().size());

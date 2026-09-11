@@ -142,14 +142,16 @@ selection remain target-binding decisions and are not encoded in the graph.
 
 ## PipeNet callbacks and generated code
 
-A PipeNet record is one `ttl.Pipe` declaration: one source coordinate and one
-point-to-point destination or collective destination range. The Python
+A local PipeNet record is one `ttl.Pipe` declaration: one source coordinate and
+one point-to-point destination or collective destination range. A graph
+PipeNet record is one logical-device edge paired with one node pipe. The Python
 frontend represents `net.if_src(callback)` and `net.if_dst(callback)` with one
 `ttl.pipenet_foreach_src` or `ttl.pipenet_foreach_dst` region. The region owns
-the ordered record list and contains one copy of the callback body. At runtime,
-each launch node executes that body once for every record in which the node has
-the requested source or destination role. Multiple matching records execute in
-PipeNet construction order.
+the ordered local records or compact graph groups and contains one copy of
+the callback body. At runtime, each launch node executes that body once for
+every concrete record in which the node and logical device have the requested
+source or destination role. Multiple matching records execute in PipeNet
+construction order.
 
 `net.destination_count()` returns the number of records that select the
 current node as a destination. It counts records, including duplicate endpoint

@@ -33,10 +33,10 @@ static PipeTransferKind getPipeTransferKind(PipeTransferContract contract) {
                                         : PipeTransferKind::PointToPoint;
 }
 
-/// Return the common transfer contract guaranteed by a verified record set.
+// Return the common transfer contract guaranteed by a verified record set.
 static FailureOr<PipeTransferContract>
 getPipeTransferContractForRecords(PipeNetRecordsAttr records) {
-  FailureOr<PipeRecordAttr> firstRecord = getFirstPipeRecord(records);
+  FailureOr<PipeRecordAttr> firstRecord = getFirstNodePipeRecord(records);
   if (failed(firstRecord)) {
     return failure();
   }

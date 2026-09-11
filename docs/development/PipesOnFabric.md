@@ -750,5 +750,5 @@ still requires:
 - Jointly score legal routes and links by hop count, availability, estimated
   contention, connection reuse, and barrier cost.
 - Measure destination-table decoding, host connection setup, connection reuse,
-  packetization, and worker placement against specialized communication
+  packetization, and node placement against specialized communication
   kernels.

@@ -66,14 +66,6 @@ buildPipeRecordTables(ArrayRef<PipeRecordAttr> records) {
   return tables;
 }
 
-inline PipeRecordTables buildPipeRecordTables(PipeNetRecordsAttr records) {
-  PipeRecordTables tables;
-  forEachPipeRecord(records, [&](std::uint64_t, PipeRecordAttr record) {
-    appendPipeRecordTableEntry(tables, record);
-  });
-  return tables;
-}
-
 /// Return whether `records` contains one `(x, y) -> (x, y)` pipe per launch
 /// node in row-major order.
 inline bool isLaunchGridIdentityPipeMapping(ArrayRef<PipeRecordAttr> records,

@@ -18,6 +18,64 @@ module {
 
 // -----
 
+// Each graph callback iteration must match its wait to the receive post for
+// the same logical-device edge. The second gather source has no send.
+
+#gather_records = #ttl.pipenet_records<net 0 name "gather" mappings
+  <graph = <domain = <components = <name = "device", extent = [3]>>,
+    kind = gather, componentName = "device",
+    properties = {root = #ttl.device_ref<coordinates = [0]>}>,
+   pipes[<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
+          dstEndX = 0, dstEndY = 0>]>>
+
+module attributes {ttl.launch_grid = array<i64: 1, 1>} {
+  func.func @selected_gather_sender() attributes {
+      ttl.kernel_thread = #ttkernel.thread<noc>,
+      ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %first_source = arith.constant 1 : index
+    ttl.pipenet_foreach_src attributes {records = #gather_records} {
+    ^bb0(%pipe: !ttl.selected_pipe_src):
+      %source = ttl.current_device_index
+          <components = <name = "device", extent = [3]>> : index
+      %is_first_source = arith.cmpi eq, %source, %first_source : index
+      scf.if %is_first_source {
+        %send = ttl.copy %dfb, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>,
+               !ttl.selected_pipe_src) -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+      ttl.yield
+    }
+    func.return
+  }
+
+  func.func @selected_gather_receiver() attributes {
+      ttl.kernel_thread = #ttkernel.thread<noc>,
+      ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>} {
+    %dfb = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %start = arith.constant 0 : index
+    ttl.pipenet_foreach_dst attributes {records = #gather_records} {
+    ^bb0(%pipe: !ttl.selected_pipe_dst):
+      %block = ttl.cb_reserve %dfb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %request = ttl.copy %pipe, %block
+          : (!ttl.selected_pipe_dst,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>) -> !ttl.receive_request
+      // expected-error @below {{receive wait-any has no candidate send corresponding to a defining receiver post at core_x=0, core_y=0}}
+      %ready = ttl.wait_any %request start %start
+          : (!ttl.receive_request, index) -> !ttl.ready_receive
+      ttl.yield
+    }
+    func.return
+  }
+}
+
+// -----
+
 // Pipe endpoints must refer to cores instantiated by the module launch grid.
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
@@ -709,7 +767,6 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
           -> !ttl.receive_request
       %start = arith.constant 0 : index
       // expected-error @below {{receive wait-any has no candidate send corresponding to a defining receiver post at core_x=1, core_y=0}}
-      // expected-error @below {{receive wait-any can block with every candidate send ordered after the selection at core_x=1, core_y=0}}
       %ready = ttl.wait_any %recv start %start
           : (!ttl.receive_request, index) -> !ttl.ready_receive
     }

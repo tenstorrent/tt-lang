@@ -317,15 +317,17 @@ def _pipe_to_pipe_use(pipe: Pipe):
 
 class PipeNet:
     """
-    A network of pipes for multi-core communication patterns.
+    A local or multi-device communication relation.
 
-    PipeNet groups multiple pipes and provides if_src/if_dst methods
-    for conditional execution based on core coordinates.
+    A local PipeNet contains node-level pipes. A graph PipeNet combines every
+    logical-device edge with every node pipe in each internal group. ``if_src``
+    and ``if_dst`` execute once for each matching complete transfer.
 
-    Active set: the union of every pipe's source coordinate and destination
-    range. Cores outside the active set do not participate in pipe
-    communication; under grid="full" or any explicit launch wider than the
-    work extent, the user must guard pipe-coupled regions with
+    The launch-node active set is the union of every node pipe's source
+    coordinate and destination range. Nodes outside the active set do not
+    participate in pipe communication; under grid="full" or any explicit
+    launch wider than the work extent, the program must guard pipe-coupled
+    regions with
     `if net.is_src()`, `if net.is_dst()`, or `if net.is_active()` so the
     `ttl-verify-pipenet-guards` pass accepts the program. Pipe coordinates
     should be sized from the operation's work extent, not the launch extent.

@@ -2017,13 +2017,25 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
           assert(candidates.sends[sendIndex].record &&
                  postsIt->second[sendIndex].record &&
                  "selected pipe candidates must retain their records");
+          std::optional<std::uint64_t> sendInductionValue =
+              getPipeNetRecordLoopInductionValue(
+                  analysisState.pipeRecordLoops.at(sendRecordLoop),
+                  *maybeSendLocation,
+                  *candidates.sends[sendIndex].recordIndex);
+          std::optional<std::uint64_t> postInductionValue =
+              getPipeNetRecordLoopInductionValue(
+                  analysisState.pipeRecordLoops.at(postRecordLoop),
+                  *maybePostLocation,
+                  *postsIt->second[sendIndex].recordIndex);
+          assert(sendInductionValue && postInductionValue &&
+                 "selected pipe candidates must execute in their record loops");
           PipeRecordAttr sendRecord = *candidates.sends[sendIndex].record;
           PipeRecordAttr postRecord = *postsIt->second[sendIndex].record;
           auto evaluateSendContextValue = [&](Value value) {
             if (value == sendForOp.getInductionVar()) {
               return std::optional<llvm::APInt>(
                   llvm::APInt(IndexType::kInternalStorageBitWidth,
-                              *candidates.sends[sendIndex].recordIndex));
+                              *sendInductionValue));
             }
             return evaluateSelectedPipeRecordValue(value, sendRecord);
           };
@@ -2031,7 +2043,7 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
             if (value == postForOp.getInductionVar()) {
               return std::optional<llvm::APInt>(
                   llvm::APInt(IndexType::kInternalStorageBitWidth,
-                              *postsIt->second[sendIndex].recordIndex));
+                              *postInductionValue));
             }
             return evaluateSelectedPipeRecordValue(value, postRecord);
           };

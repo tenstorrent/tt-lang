@@ -217,10 +217,7 @@ class OperationPipeNets:
         endpoints: Set[DeviceRef] = set()
         for pipe_net in self.graph_pipe_nets:
             for mapping in pipe_net.mappings:
-                for edge in mapping.transfer_graph.iter_edges():
-                    assert isinstance(edge.destination, DeviceRef)
-                    endpoints.add(edge.source)
-                    endpoints.add(edge.destination)
+                endpoints.update(mapping.transfer_graph.device_endpoints())
         return frozenset(endpoints)
 
 
@@ -286,6 +283,15 @@ def _validate_no_mixed_kinds(pipes: Tuple[PipeUse, ...]) -> None:
 
 def _validate_graph_mapping_duplicates(net: GraphPipeNetUse) -> None:
     """Reject repeated complete pipes without constructing graph/pipe products."""
+    edge_sets = {}
+
+    def get_edges(mapping: GraphPipeMappingUse) -> Set:
+        if mapping.transfer_graph not in edge_sets:
+            edge_sets[mapping.transfer_graph] = set(
+                mapping.transfer_graph.iter_edges()
+            )
+        return edge_sets[mapping.transfer_graph]
+
     previous_mappings = []
     for mapping in net.mappings:
         assert mapping.pipes is not None or net.uses_grid_identity
@@ -298,9 +304,9 @@ def _validate_graph_mapping_duplicates(net: GraphPipeNetUse) -> None:
         for previous_mapping, previous_pipes in previous_mappings:
             if mapping_pipes.isdisjoint(previous_pipes):
                 continue
-            previous_edges = set(previous_mapping.transfer_graph.iter_edges())
+            previous_edges = get_edges(previous_mapping)
             if current_edges is None:
-                current_edges = set(mapping.transfer_graph.iter_edges())
+                current_edges = get_edges(mapping)
             if not previous_edges.isdisjoint(current_edges):
                 raise ValueError(
                     "graph PipeNet relations contain a duplicate complete pipe"

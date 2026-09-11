@@ -1,6 +1,6 @@
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics
 
-// Summary: Verifies invalid factorized graph PipeNet attributes are rejected.
+// Summary: Verifies invalid graph and node-pipe mappings are rejected.
 
 // A mapping's node pipe cannot bind another logical-device transfer.
 func.func @device_bound_node_pipe() attributes {

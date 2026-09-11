@@ -107,11 +107,6 @@ public:
   /// Return the number of graph edges without constructing node-pipe records.
   virtual FailureOr<std::uint64_t> getEdgeCount() const = 0;
 
-  /// Build compact source and destination indices for one edge ordinal.
-  virtual TransferGraphEdgeIndexValues
-  buildEdgeIndexValues(OpBuilder &builder, Location loc,
-                       Value edgeIndex) const = 0;
-
   /// Build the number of edges incident to one dynamic logical device.
   virtual Value buildIncidentEdgeCount(OpBuilder &builder, Location loc,
                                        Value deviceIndex,
@@ -123,9 +118,11 @@ public:
                                Value deviceIndex, Value incidentEdgeIndex,
                                PipeRole role) const = 0;
 
+  /// Return graph edges in deterministic callback iteration order.
   SmallVector<TransferEdgeAttr> getEdges() const;
 
 protected:
+  /// Verify that the graph edge count is nonzero and index-representable.
   LogicalResult verifyNonemptyEdgeCount(
       llvm::function_ref<InFlightDiagnostic()> emitError) const;
 
@@ -145,7 +142,8 @@ std::unique_ptr<TransferGraph> createTransferGraph(DeviceDomainAttr domain,
                                                    StringAttr componentName,
                                                    DictionaryAttr properties);
 
-/// Return the number of concrete transfers without constructing their product.
+/// Return the number of concrete transfers without constructing one record for
+/// every graph edge and node pipe.
 FailureOr<std::uint64_t> getPipeRecordCount(PipeNetRecordsAttr records);
 
 /// Enumerate declared node-pipe records without repeating them per graph edge.
@@ -155,7 +153,7 @@ void forEachNodePipeRecord(PipeNetRecordsAttr records,
 /// Return the first declared node-pipe record without enumerating graph edges.
 FailureOr<PipeRecordAttr> getFirstNodePipeRecord(PipeNetRecordsAttr records);
 
-/// Enumerate concrete transfers without storing the graph/node-pipe product.
+/// Enumerate concrete transfers without storing all records at once.
 void forEachPipeRecord(
     PipeNetRecordsAttr records,
     llvm::function_ref<void(std::uint64_t, PipeRecordAttr)> callback);

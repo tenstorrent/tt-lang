@@ -183,6 +183,23 @@ def test_operation_pipenets_reports_graph_device_endpoints():
     )
 
 
+def test_operation_pipenets_gets_all_to_all_endpoints_without_expanding_edges(
+    monkeypatch,
+):
+    domain = ttl.DeviceDomain((1, 4))
+    graph = ttl.TransferGraph.all_to_all(domain)
+    operation_pipenets = _build_pipenet_graph([ttl.PipeNet(graph=graph)])
+
+    def reject_edge_expansion(self):
+        raise AssertionError("device endpoint discovery expanded graph edges")
+
+    monkeypatch.setattr(ttl.TransferGraph, "iter_edges", reject_edge_expansion)
+
+    assert operation_pipenets.device_endpoints() == frozenset(
+        domain.iter_device_refs()
+    )
+
+
 def test_operation_pipenets_rejects_mismatched_device_domains():
     graph_domain = ttl.DeviceDomain((1, 2))
     operation_domain = ttl.DeviceDomain((2, 1))

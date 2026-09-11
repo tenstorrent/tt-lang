@@ -98,7 +98,7 @@ PARTIAL_NET_3 = ttl.PipeNet(
     device_domain=DEVICE_DOMAIN,
     options="--ttl-specialize-cores",
 )
-def compile_factorized_reduce_tree():
+def compile_compact_reduce_tree():
     template = BFloat16Tensor()
     send_dfb = ttl.make_dataflow_buffer_like(template, shape=(1, 1), block_count=1)
     receive_dfb = ttl.make_dataflow_buffer_like(template, shape=(1, 1), block_count=1)
@@ -156,10 +156,10 @@ if __name__ == "__main__":
         check_generated_tables(sys.stdin.read())
     else:
         assert len(sys.argv) == 1
-        compile_factorized_reduce_tree()
+        compile_compact_reduce_tree()
 
 
-# Each of the five PipeNets remains factorized in its source and destination op.
+# Each source and destination operation stores five compact graph PipeNets.
 # CHECK-INITIAL-COUNT-10: #ttl.pipenet_records<
 
 # CHECK-TABLES: EXPANDED-PIPE-TABLES: none
