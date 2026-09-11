@@ -34,3 +34,15 @@ def test_selection_rejects_incompatible_parent_domains():
         first.select([second[0, 0, 0]])
     with pytest.raises(ValueError, match="parent domain"):
         first[:] | second[:]
+
+
+def test_selection_rejects_non_point_members():
+    domain = DeviceDomain((8, 4))
+    with pytest.raises(TypeError, match="DevicePoint"):
+        domain.select([(0, 0)])
+
+
+def test_selection_union_rejects_non_selection_operand():
+    domain = DeviceDomain((8, 4))
+    with pytest.raises(TypeError, match="another selection"):
+        domain[:] | (0, 0)
