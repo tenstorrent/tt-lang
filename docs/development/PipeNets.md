@@ -30,10 +30,11 @@ verifier guards against (see issue #541).
 
 For multi-device operations, a `DeviceSelection` identifies source or
 destination devices, `at_node(x, y)` selects one Tensix node on every selected
-device, and `Pipe` connects the resulting endpoints. `PipeNet` is the ordered
-collection of those transfers and provides the source and destination
-callbacks. A local `Pipe` omits device selections and connects nodes on one
-device.
+device, and `Pipe` connects the resulting endpoints. [Device selections and
+Pipe endpoints](DeviceSelections.md) defines the indexing and endpoint API.
+`PipeNet` is the ordered collection of those transfers and provides the source
+and destination callbacks. A local `Pipe` omits device selections and connects
+nodes on one device.
 
 The launch grid is the grid that `@ttl.operation(grid=...)` schedules
 onto. The work extent is the per-axis bounding box of every pipe
@@ -128,12 +129,12 @@ list. The group denotes every combination of one graph edge and one node pipe,
 so the graph is not duplicated for each node pipe. Adjacent complete pipes
 with the same device relation share a group; separated occurrences remain
 separate to preserve callback order. Structured graph
-callback lowering enumerates only edges incident to the current logical
-device. Explicit graphs use `O(V + E)` indexed adjacency. Resource tables
-remain aligned with global transfer indices during generic lowering. When
-core specialization is enabled, it removes node-coordinate dimensions that
-become constant. Runtime work remains proportional to the concrete transfers
-that execute.
+callback lowering enumerates only edges where the current logical device is the
+source or destination. Explicit graphs use `O(V + E)` indexed adjacency.
+Resource tables remain aligned with global transfer indices during generic
+lowering. When core specialization is enabled, it removes node-coordinate
+dimensions that become constant. Runtime work remains proportional to the
+concrete transfers that execute.
 
 Transfer topology is compile-time information, but this does not require one
 source algorithm per device count. A CCL factory accepts a domain extent and
@@ -156,13 +157,14 @@ every concrete record in which the node and logical device have the requested
 source or destination role. Multiple matching records execute in PipeNet
 construction order.
 
-`net.destination_count()` returns the number of records that select the
-current node as a destination. It counts records, including duplicate endpoint
-relations, rather than distinct sources or destination coordinates. The result
-therefore equals the number of `net.if_dst(callback)` executions on that node
-and can be used as a receive-loop bound. It does not perform synchronization.
-Local PipeNets lower the count to one launch-node-indexed constant-table lookup;
-graph PipeNets also match each record's logical destination device.
+`net.destination_count()` returns the number of records that select the current
+node as a destination. It counts repeated local Pipe records separately rather
+than counting distinct sources or destination coordinates. Graph PipeNet
+construction rejects duplicate complete transfers. The result therefore equals
+the number of `net.if_dst(callback)` executions on that node and can be used as
+a receive-loop bound. It does not perform synchronization. Local PipeNets lower
+the count to one launch-node-indexed constant-table lookup; graph PipeNets also
+match each record's logical destination device.
 
 TTKernel conversion uses three representations:
 
