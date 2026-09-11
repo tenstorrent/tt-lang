@@ -17,7 +17,6 @@ pytestmark = pytest.mark.multi_device
 
 
 @pytest.fixture(
-    scope="module",
     params=[(2, 2), (4, 2), (4, 4)],
     ids=[
         "two-devices-two-workers",
