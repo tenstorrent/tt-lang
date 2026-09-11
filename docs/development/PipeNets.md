@@ -5,8 +5,8 @@ scheduling, simulator behavior, and test coverage in tt-lang. Both the
 compiler and the simulator consume the same operation-level PipeNet
 collection described in [Operation PipeNets](#operation-pipenets).
 
-A node is one execution coordinate in the launched device grid. A
-dataflow buffer (DFB) is the user-visible payload buffer used by
+A node is a Tensix unit identified by one coordinate in the operation's launch
+grid. A dataflow buffer (DFB) is the user-visible payload buffer used by
 producer, consumer, and pipe transfer code. A pipe-coupled operation is
 an operation whose legality depends on a PipeNet role, such as a
 pipe-typed `ttl.copy` or a DFB wait whose producer is PipeNet-routed.
@@ -73,9 +73,8 @@ net = ttl.PipeNet(
 )
 ```
 
-The graph-only form applies every logical-device edge to an identity pipe on
-every launch node. It remains available for operations in which the sending
-and receiving node coordinate is the same:
+The graph-only form applies every logical-device edge to every launch node. For
+each transfer, the source and destination use the same node coordinate:
 
 ```python
 net = ttl.PipeNet(graph=graph)
@@ -175,8 +174,9 @@ TTKernel conversion uses three representations:
   represents the current record inside the loop. This table-driven form emits
   one callback and transfer protocol body; only the immutable table contents
   grow with the number of records.
-- For grouped graph relations, conversion emits one loop over the current
-  logical device's incident edges and the group's node pipes. Structured graphs
+- For grouped graph relations, conversion emits one loop over the graph edges
+  where the current logical device is the source or destination, then over the
+  group's node pipes. Structured graphs
   derive endpoints from their descriptors and use compact per-device prefix
   tables only when edge counts vary by device. Explicit graphs use indexed
   adjacency tables.

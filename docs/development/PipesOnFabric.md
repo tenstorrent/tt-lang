@@ -221,9 +221,10 @@ transfers = ttl.TransferGraph.edges(
 net = ttl.PipeNet(graph=transfers)
 ```
 
-Graph-only construction applies the transfer relation to an identity pipe on
-every launch node. A transfer between distinct node coordinates declares the
-node relation separately:
+Graph-only construction applies the transfer relation to every launch node. For
+each transfer, the source and destination use the same node coordinate. A
+transfer between distinct node coordinates declares the node relation
+separately:
 
 ```python
 net = ttl.PipeNet(
@@ -393,10 +394,10 @@ callback receives a selected record containing node coordinates and logical
 device indices. Structured `TransferGraph` specializations derive endpoints
 from their descriptors and use compact per-device prefix tables only when edge
 counts vary by device. Explicit graphs use indexed adjacency. Each logical
-device iterates only its incident edges. Resource tables remain aligned with
-global transfer indices; when core specialization is enabled, it removes
-constant node-coordinate dimensions. The compiler does not emit the
-device-edge by node-pipe product as frontend or TTL IR.
+device iterates only edges where it is the source or destination. Resource
+tables remain aligned with global transfer indices. When core specialization
+is enabled, it removes constant node-coordinate dimensions. The compiler does
+not emit the device-edge by node-pipe product as frontend or TTL IR.
 
 One compiled operation fixes its logical domain extents. Source-level CCL
 factories remain extent-parameterized and construct the same structured graph
