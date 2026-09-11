@@ -1,7 +1,7 @@
 // RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s --implicit-check-not='array<12xi64>'
 
-// Summary: Verifies every structured graph kind lowers incident-edge
-// iteration without an expanded device-edge table.
+// Summary: Verifies every structured graph kind lowers by examining only the
+// graph edges matching the current device role.
 
 #axis_records = #ttl.pipenet_records<net 0 mappings
   <graph = <domain = <components = <name = "device", extent = [4]>>,

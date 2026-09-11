@@ -228,10 +228,10 @@ def _pipe_to_pipe_use(pipe: Pipe):
 
 @dataclass(frozen=True)
 class PipeMapping:
-    """Factorized device and launch-node relations for a graph PipeNet.
+    """A device graph paired with a worker-coordinate pipe list.
 
     Every logical device edge in ``graph`` is combined with every node-level
-    pipe in ``pipes``. Multiple mappings in one PipeNet form an ordered union.
+    pipe in ``pipes``. Multiple mappings are processed in list order.
     """
 
     graph: "TransferGraph"
@@ -269,15 +269,17 @@ class PipeMapping:
 
 class PipeNet:
     """
-    A network of pipes for multi-core communication patterns.
+    A local or multi-device communication relation.
 
-    PipeNet groups multiple pipes and provides if_src/if_dst methods
-    for conditional execution based on core coordinates.
+    A local PipeNet contains node-level pipes. A graph PipeNet combines every
+    logical-device edge with every node pipe in each mapping. ``if_src`` and
+    ``if_dst`` execute once for each matching complete transfer.
 
-    Active set: the union of every pipe's source coordinate and destination
-    range. Cores outside the active set do not participate in pipe
+    For a PipeNet with node pipes, the launch-node active set is the union of
+    their source coordinates and destination ranges. A graph-only PipeNet uses
+    every launch node. Nodes outside the active set do not participate in pipe
     communication; under grid="full" or any explicit launch wider than the
-    work extent, the user must guard pipe-coupled regions with
+    work extent, the program must guard pipe-coupled regions with
     `if net.is_src()`, `if net.is_dst()`, or `if net.is_active()` so the
     `ttl-verify-pipenet-guards` pass accepts the program. Pipe coordinates
     should be sized from the operation's work extent, not the launch extent.
@@ -291,8 +293,8 @@ class PipeNet:
     Args:
         pipes: Ordered node-level pipes. Without ``graph``, these define a
             local PipeNet. With ``graph``, each graph edge uses every pipe.
-        graph: Logical-device transfer relation. Omitting ``pipes`` applies an
-            identity node pipe to every launch node.
+        graph: Logical-device transfer relation. Omitting ``pipes`` transfers
+            between the same node coordinate on each logical-device edge.
         mappings: Ordered graph and node-pipe relations. This form cannot be
             combined with top-level ``graph`` or ``pipes`` arguments.
 
@@ -353,7 +355,7 @@ class PipeNet:
         self.pipes: List[Pipe] = []
         self.graph: Optional["TransferGraph"] = None
         self.mappings: Tuple[PipeMapping, ...] = ()
-        self._uses_grid_identity = graph is not None and pipes is None
+        self._uses_matching_node_coordinates = graph is not None and pipes is None
         if mappings is not None:
             self.mappings = normalized_mappings
             if len(normalized_mappings) == 1:
@@ -371,10 +373,10 @@ class PipeNet:
             self.pipes = list(normalized_pipes)
 
         validation_graph = OperationPipeNets()
-        if self._uses_grid_identity:
+        if self._uses_matching_node_coordinates:
             assert self.graph is not None
             validation_graph.add_graph_pipe_net(
-                ((self.graph, None),), uses_grid_identity=True
+                ((self.graph, None),), uses_matching_node_coordinates=True
             )
         elif self.is_graph:
             validation_graph.add_graph_pipe_net(
@@ -413,10 +415,10 @@ class PipeNet:
                 "pipenet",
                 tuple(pipe._operation_identity_capture() for pipe in self.pipes),
             )
-        if self._uses_grid_identity:
+        if self._uses_matching_node_coordinates:
             assert self.graph is not None
             return (
-                "graph-pipenet-grid-identity",
+                "graph-pipenet-matching-node-coordinates",
                 self.graph._operation_identity_capture(),
             )
         return (

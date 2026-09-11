@@ -546,7 +546,7 @@ class TTLGenericCompiler(TTCompilerBase):
 
     def _graph_pipe_mapping_attrs(self, pipenet):
         grid_cols, grid_rows = self.context.grid
-        if pipenet._uses_grid_identity:
+        if pipenet._uses_matching_node_coordinates:
             assert pipenet.graph is not None
             mapping_pipes = tuple(
                 ((node_x, node_y), (node_x, node_y), (node_x, node_y), False)

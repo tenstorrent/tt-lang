@@ -3938,7 +3938,9 @@ buildDevicePipeRoleTables(PipeNetRecordsAttr records, PipeRole role,
   using PipeRoleRecord =
       std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t>;
   SmallVector<PipeRoleRecord> roleRecords;
-  forEachPipeRecord(records, [&](std::uint64_t, PipeRecordAttr record) {
+  assert(records.getMappings().empty() &&
+         "table-based device queries require materialized records");
+  for (PipeRecordAttr record : records.getPipes()) {
     for (const PipeRecordRoleFacts &facts :
          getPipeRecordRoleFacts(record, role)) {
       assert(facts.device &&
@@ -3947,7 +3949,7 @@ buildDevicePipeRoleTables(PipeNetRecordsAttr records, PipeRole role,
           facts.minX, facts.minY, facts.maxX, facts.maxY,
           getLogicalDeviceIndex(facts.deviceDomain, facts.device));
     }
-  });
+  }
   llvm::sort(roleRecords);
   if (deduplicateRecords) {
     roleRecords.erase(std::unique(roleRecords.begin(), roleRecords.end()),
@@ -3976,10 +3978,9 @@ static Value lowerDeviceRoleQuery(
   Location loc = op->getLoc();
   DevicePipeRoleTables tables =
       buildDevicePipeRoleTables(records, role, deduplicateRecords);
-  FailureOr<PipeRecordAttr> firstRecord = getFirstPipeRecord(records);
-  assert(succeeded(firstRecord) &&
-         "selected device role requires a nonempty record set");
-  DeviceTransferAttr transfer = firstRecord->getDeviceTransfer();
+  assert(records.getMappings().empty() && !records.getPipes().empty() &&
+         "table-based device queries require materialized records");
+  DeviceTransferAttr transfer = records.getPipes().front().getDeviceTransfer();
   assert(transfer && "selected device role requires device transfer records");
 
   Value nodeX =
@@ -4072,7 +4073,7 @@ static Value lowerGraphPipeRolePredicate(Operation *op,
   for (PipeMappingAttr mapping : records.getMappings()) {
     std::unique_ptr<TransferGraph> graph =
         createTransferGraph(mapping.getGraph());
-    bool usesLaunchGridIdentity = isLaunchGridIdentityPipeMapping(
+    bool usesMatchingNodeCoordinates = hasMatchingPipeForEveryLaunchNode(
         mapping.getPipes(), launchGrid->first, launchGrid->second);
     auto buildEndpointMatch = [&](PipeRole endpointRole) {
       Value count = graph->buildIncidentEdgeCount(rewriter, loc, currentDevice,
@@ -4081,7 +4082,7 @@ static Value lowerGraphPipeRolePredicate(Operation *op,
       Value deviceMatches = arith::CmpIOp::create(
           rewriter, loc, arith::CmpIPredicate::sgt, count, zero);
       Value nodeMatches =
-          usesLaunchGridIdentity
+          usesMatchingNodeCoordinates
               ? Value(arith::ConstantIntOp::create(rewriter, loc, 1, 1))
               : buildNodePipeRolePredicate(rewriter, loc, mapping.getPipes(),
                                            endpointRole, nodeX, nodeY);
@@ -4122,15 +4123,15 @@ lowerGraphPipeDestinationCount(Operation *op, PipeNetRecordsAttr records,
   for (PipeMappingAttr mapping : records.getMappings()) {
     std::unique_ptr<TransferGraph> graph =
         createTransferGraph(mapping.getGraph());
-    bool usesLaunchGridIdentity = isLaunchGridIdentityPipeMapping(
+    bool usesMatchingNodeCoordinates = hasMatchingPipeForEveryLaunchNode(
         mapping.getPipes(), launchGrid->first, launchGrid->second);
     Value incomingEdgeCount = graph->buildIncidentEdgeCount(
         rewriter, loc, currentDevice, PipeRole::Destination);
     Value matchingNodePipeCount = arith::ConstantIndexOp::create(
-        rewriter, loc, usesLaunchGridIdentity ? 1 : 0);
+        rewriter, loc, usesMatchingNodeCoordinates ? 1 : 0);
     Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
     Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
-    if (!usesLaunchGridIdentity) {
+    if (!usesMatchingNodeCoordinates) {
       for (PipeRecordAttr nodePipe : mapping.getPipes()) {
         Value nodeMatches = buildNodePipeRoleMatch(
             rewriter, loc, nodePipe, PipeRole::Destination, nodeX, nodeY);

@@ -1795,10 +1795,10 @@ def _build_pipenet_graph(nets):
     graph = OperationPipeNets()
     for net in nets:
         if net.is_graph:
-            if net._uses_grid_identity:
+            if net._uses_matching_node_coordinates:
                 assert net.graph is not None
                 net_use = graph.add_graph_pipe_net(
-                    ((net.graph, None),), uses_grid_identity=True
+                    ((net.graph, None),), uses_matching_node_coordinates=True
                 )
             else:
                 net_use = graph.add_graph_pipe_net(

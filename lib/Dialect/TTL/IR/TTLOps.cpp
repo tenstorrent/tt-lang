@@ -674,8 +674,8 @@ llvm::LogicalResult PipeNetRecordsAttr::verify(
         if (llvm::any_of(currentEdges, [&](TransferEdgeAttr edge) {
               return previousEdges.contains(edge);
             })) {
-          return emitError()
-                 << "graph mappings contain a duplicate complete pipe";
+          return emitError() << "graph mappings repeat the same device edge "
+                                "and node pipe";
         }
       }
       previousMappings.push_back(std::move(currentRelation));

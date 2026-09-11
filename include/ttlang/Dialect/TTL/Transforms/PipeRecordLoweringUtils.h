@@ -66,18 +66,10 @@ buildPipeRecordTables(ArrayRef<PipeRecordAttr> records) {
   return tables;
 }
 
-inline PipeRecordTables buildPipeRecordTables(PipeNetRecordsAttr records) {
-  PipeRecordTables tables;
-  forEachPipeRecord(records, [&](std::uint64_t, PipeRecordAttr record) {
-    appendPipeRecordTableEntry(tables, record);
-  });
-  return tables;
-}
-
-/// Return whether `records` contains one `(x, y) -> (x, y)` pipe per launch
-/// node in row-major order.
-inline bool isLaunchGridIdentityPipeMapping(ArrayRef<PipeRecordAttr> records,
-                                            int64_t gridX, int64_t gridY) {
+/// Return whether `records` maps every launch node to the same coordinate on
+/// the destination device, in row-major order.
+inline bool hasMatchingPipeForEveryLaunchNode(ArrayRef<PipeRecordAttr> records,
+                                              int64_t gridX, int64_t gridY) {
   std::optional<int64_t> gridArea = llvm::checkedMul(gridX, gridY);
   if (!gridArea || *gridArea <= 0 ||
       records.size() != static_cast<std::size_t>(*gridArea)) {
