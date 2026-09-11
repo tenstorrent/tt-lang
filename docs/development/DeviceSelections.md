@@ -42,7 +42,7 @@ transfer = Pipe(
 )
 ```
 
-Complete endpoints normalize to the existing graph PipeNet representation. Point pipes store one device edge; pairwise construction stores one edge per device pair and keeps the node specification separate. Equivalent parent endpoints have the same compilation identity, including when obtained through nested views.
+The compiler represents complete endpoints with the existing graph PipeNet IR. Point pipes store one device edge. Pairwise construction stores each device-pair edge once and stores the shared source and destination node coordinates once. Equivalent parent endpoints have the same compilation identity, including when obtained through nested views.
 
 `all_to_all` connects every source selection member to every destination selection member. This per-row allgather uses four devices in each row of an 8-by-4 domain:
 
