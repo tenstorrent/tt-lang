@@ -2,13 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Complete Pipe endpoints normalize to parent device and node coordinates."""
+"""Device-selected Pipe endpoints retain device and node coordinates."""
 
 from ttl.domains import DeviceDomain
 from ttl.pipe import Pipe, PipeNet
 
 
-def test_two_galaxy_pipe_preserves_complete_endpoints():
+def test_two_galaxy_pipe_preserves_device_selected_endpoints():
     cluster = DeviceDomain((2, 8, 4))
     pipe = Pipe(
         src=cluster[0, 3, 2].at_node(11, 9),

@@ -43,7 +43,7 @@ def test_pipenet_accepts_graph_and_node_pipes():
     assert len(graph_use.mappings[0].pipes) == 1
 
 
-def test_pipenet_accepts_complete_pipes_with_distinct_device_relations():
+def test_pipenet_accepts_device_selected_pipes_with_distinct_relations():
     devices = ttl.DeviceDomain((1, 3))
     first_pipe = ttl.Pipe(devices[0, 0].at_node(1, 0), devices[0, 1].at_node(0, 0))
     second_pipe = ttl.Pipe(devices[0, 1].at_node(2, 0), devices[0, 2].at_node(3, 0))
@@ -57,7 +57,7 @@ def test_pipenet_accepts_complete_pipes_with_distinct_device_relations():
     assert len(graph_use.mappings) == 2
 
 
-def test_pipenet_groups_adjacent_equal_device_relations():
+def test_pipenet_combines_adjacent_equal_single_edge_relations():
     devices = ttl.DeviceDomain((1, 2))
     first_pipe = ttl.Pipe(devices[0, 0].at_node(1, 0), devices[0, 1].at_node(0, 0))
     second_pipe = ttl.Pipe(devices[0, 0].at_node(2, 0), devices[0, 1].at_node(3, 0))
@@ -66,6 +66,25 @@ def test_pipenet_groups_adjacent_equal_device_relations():
 
     assert len(operation_pipenets.graph_pipe_nets[0].mappings) == 1
     assert len(operation_pipenets.graph_pipe_nets[0].mappings[0].pipes) == 2
+
+
+def test_pipenet_preserves_pipe_order_for_equal_multi_edge_relations():
+    devices = ttl.DeviceDomain((1, 3))
+    first_pipe = ttl.Pipe.pairwise(
+        src=devices[0, :2].at_node(1, 0),
+        dst=devices[0, 1:].at_node(0, 0),
+    )
+    second_pipe = ttl.Pipe.pairwise(
+        src=devices[0, :2].at_node(2, 0),
+        dst=devices[0, 1:].at_node(3, 0),
+    )
+
+    operation_pipenets = _build_pipenet_graph([ttl.PipeNet([first_pipe, second_pipe])])
+
+    mappings = operation_pipenets.graph_pipe_nets[0].mappings
+    assert len(mappings) == 2
+    assert mappings[0].pipes[0].src.coords == (1, 0)
+    assert mappings[1].pipes[0].src.coords == (2, 0)
 
 
 def test_pipenet_does_not_reorder_separated_equal_device_relations():
@@ -92,12 +111,12 @@ def test_graph_relation_rejects_duplicate_node_pipes():
         ttl.PipeNet(graph=graph, pipes=[pipe, pipe])
 
 
-def test_graph_relation_union_rejects_duplicate_complete_pipe():
+def test_graph_relation_rejects_duplicate_device_selected_pipe():
     domain = ttl.DeviceDomain((1, 3))
     first_pipe = ttl.Pipe(domain[0, 0].at_node(1, 0), domain[0, 1].at_node(0, 0))
     duplicate_pipe = ttl.Pipe(domain[0, 0].at_node(1, 0), domain[0, 1].at_node(0, 0))
 
-    with pytest.raises(ValueError, match="duplicate complete pipe"):
+    with pytest.raises(ValueError, match="duplicate device-selected Pipe"):
         ttl.PipeNet([first_pipe, duplicate_pipe])
 
 
@@ -121,7 +140,7 @@ def test_operation_pipenets_requires_node_pipes_for_explicit_relation():
         operation_pipenets.add_graph_pipe_net(((graph, None),))
 
 
-def test_pipenet_rejects_complete_endpoints_with_graph_argument():
+def test_pipenet_rejects_device_selected_endpoints_with_graph_argument():
     domain = ttl.DeviceDomain((1, 2))
     graph = ttl.TransferGraph.edges(domain, edges=[((0, 0), (0, 1))])
     pipe = ttl.Pipe(domain[0, 0].at_node(1, 0), domain[0, 1].at_node(0, 0))

@@ -2,7 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Reject ambiguous or incompatible complete Pipe endpoints."""
+"""Reject ambiguous or incompatible device-selected Pipe endpoints."""
 
 import pytest
 
@@ -29,11 +29,11 @@ def test_ambiguous_device_selections_rejected():
         Pipe(devices[0, :].at_node(1, 0), devices[1, :].at_node(0, 0))
 
 
-def test_mixed_relative_and_complete_pipes_rejected():
+def test_mixed_node_only_and_device_selected_pipes_rejected():
     devices = DeviceDomain((8, 4))
-    complete = Pipe(devices[0, 0].at_node(1, 0), devices[0, 1].at_node(0, 0))
-    with pytest.raises(ValueError, match="mix complete endpoints"):
-        PipeNet([complete, Pipe((1, 0), (0, 0))])
+    selected = Pipe(devices[0, 0].at_node(1, 0), devices[0, 1].at_node(0, 0))
+    with pytest.raises(ValueError, match="device-selected Pipes with node-only Pipes"):
+        PipeNet([selected, Pipe((1, 0), (0, 0))])
 
 
 def test_pairwise_equal_counts_do_not_imply_equal_extents():

@@ -287,7 +287,9 @@ class DeviceDomain:
         """Select explicit members, removing duplicates in parent coordinate order."""
         references = []
         for point in points:
-            if not isinstance(point, DevicePoint) or point.domain != self:
+            if not isinstance(point, DevicePoint):
+                raise TypeError("selected points must be DevicePoint values")
+            if point.domain != self:
                 raise ValueError("selected points must belong to the parent domain")
             references.append(point.reference)
         return DeviceSet(self, tuple(references))
@@ -477,7 +479,11 @@ class DeviceSelection(ABC):
         return NodeSelection(self, (node_x, node_y))
 
     def __or__(self, other: DeviceSelection) -> DeviceSet:
-        if not isinstance(other, DeviceSelection) or self.domain != other.domain:
+        if not isinstance(other, DeviceSelection):
+            raise TypeError(
+                "device selections can be combined only with another selection"
+            )
+        if self.domain != other.domain:
             raise ValueError("device selections must share a parent domain")
         return DeviceSet(
             self.domain,

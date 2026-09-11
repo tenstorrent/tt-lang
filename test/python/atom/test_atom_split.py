@@ -755,7 +755,7 @@ def test_operation_identity_encodes_graph_pipenet_node_pipes():
 
 
 def test_operation_identity_encodes_graph_pipenet_relation_order():
-    """Graph PipeNet identity preserves complete-pipe order."""
+    """Graph PipeNet identity preserves device-selected Pipe order."""
     domain = ttl.DeviceDomain((1, 3))
     first = ttl.Pipe(
         domain[0, 0].at_node(1, 0),

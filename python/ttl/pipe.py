@@ -17,7 +17,14 @@ import inspect
 import warnings
 from typing import Callable, Iterable, List, Optional, Tuple, Union
 
-from .domains import DevicePoint, DeviceView, NodeSelection, TransferGraph
+from .domains import (
+    DeviceDomain,
+    DevicePoint,
+    DeviceRef,
+    DeviceView,
+    NodeSelection,
+    TransferGraph,
+)
 
 # Type aliases matching the spec
 CoreCoord = Tuple[int, int]
@@ -124,7 +131,7 @@ class Pipe:
                 raise ValueError(
                     "Pipe requires point endpoints; use a relation constructor for device selections"
                 )
-            self._device_graphs = self._graphs_for_edges(
+            self._device_graphs = self._partition_edges_by_transport(
                 src.devices.domain,
                 ((src.devices.reference, dst.devices.reference),),
             )
@@ -143,7 +150,7 @@ class Pipe:
     def pairwise(cls, *, src: NodeSelection, dst: NodeSelection) -> "Pipe":
         """Connect equal view coordinates using the specified source/destination nodes."""
         if not isinstance(src, NodeSelection) or not isinstance(dst, NodeSelection):
-            raise TypeError("pairwise requires complete node endpoint selections")
+            raise TypeError("pairwise requires device and node selections")
         if src.devices.domain != dst.devices.domain:
             raise ValueError("Pipe endpoints must share a parent device domain")
         if not isinstance(src.devices, DeviceView) or not isinstance(
@@ -153,7 +160,7 @@ class Pipe:
         if src.devices.shape != dst.devices.shape:
             raise ValueError("pairwise device views must have equal extents")
         pipe = cls(src.node, dst.node)
-        pipe._device_graphs = cls._graphs_for_edges(
+        pipe._device_graphs = cls._partition_edges_by_transport(
             src.devices.domain,
             zip(src.devices.iter_device_refs(), dst.devices.iter_device_refs()),
         )
@@ -169,7 +176,7 @@ class Pipe:
     ) -> "Pipe":
         """Connect every selected source device to every selected destination."""
         if not isinstance(src, NodeSelection) or not isinstance(dst, NodeSelection):
-            raise TypeError("all_to_all requires complete node endpoint selections")
+            raise TypeError("all_to_all requires device and node selections")
         if src.devices.domain != dst.devices.domain:
             raise ValueError("Pipe endpoints must share a parent device domain")
         if not isinstance(include_self, bool):
@@ -181,11 +188,17 @@ class Pipe:
             if include_self or source != destination
         )
         pipe = cls(src.node, dst.node)
-        pipe._device_graphs = cls._graphs_for_edges(src.devices.domain, edges)
+        pipe._device_graphs = cls._partition_edges_by_transport(
+            src.devices.domain, edges
+        )
         return pipe
 
     @staticmethod
-    def _graphs_for_edges(domain, edges) -> Tuple[TransferGraph, ...]:
+    def _partition_edges_by_transport(
+        domain: DeviceDomain,
+        edges: Iterable[Tuple[DeviceRef, DeviceRef]],
+    ) -> Tuple[TransferGraph, ...]:
+        """Partition ``edges`` so each graph uses one synchronization protocol."""
         local_edges = []
         remote_edges = []
         for source, destination in edges:
@@ -320,8 +333,8 @@ class PipeNet:
     A local or multi-device communication relation.
 
     A local PipeNet contains node-level pipes. A graph PipeNet combines every
-    logical-device edge with every node pipe in each internal group. ``if_src``
-    and ``if_dst`` execute once for each matching complete transfer.
+    logical-device edge with every corresponding node-level pipe. ``if_src``
+    and ``if_dst`` execute once for each matching transfer.
 
     The launch-node active set is the union of every node pipe's source
     coordinate and destination range. Nodes outside the active set do not
@@ -376,32 +389,38 @@ class PipeNet:
         if normalized_pipes and any(pipe._device_graphs for pipe in normalized_pipes):
             if graph is not None:
                 raise ValueError(
-                    "complete Pipe endpoints cannot be combined with a PipeNet graph"
+                    "device-selected Pipe endpoints cannot be combined with a "
+                    "PipeNet graph"
                 )
             if any(not pipe._device_graphs for pipe in normalized_pipes):
                 raise ValueError(
-                    "PipeNet cannot mix complete endpoints with device-relative pipes"
+                    "PipeNet cannot mix device-selected Pipes with node-only Pipes"
                 )
-            complete_pipe_identities = [
+            selected_pipe_identities = [
                 pipe._operation_identity_capture() for pipe in normalized_pipes
             ]
-            if len(set(complete_pipe_identities)) != len(complete_pipe_identities):
-                raise ValueError("PipeNet contains a duplicate complete pipe")
+            if len(set(selected_pipe_identities)) != len(selected_pipe_identities):
+                raise ValueError("PipeNet contains a duplicate device-selected Pipe")
             grouped_relations: List[Tuple[TransferGraph, List[Pipe]]] = []
             for pipe in normalized_pipes:
                 for device_graph in pipe._device_graphs:
                     relative_pipe = Pipe(src=pipe.src, dst=pipe.dst)
-                    if grouped_relations and grouped_relations[-1][0] == device_graph:
+                    combine_with_previous = (
+                        bool(grouped_relations)
+                        and grouped_relations[-1][0] == device_graph
+                        and device_graph.explicit_edge_count == 1
+                    )
+                    if combine_with_previous:
                         grouped_relations[-1][1].append(relative_pipe)
                     else:
-                        # Only adjacent equal relations can be combined without
-                        # changing callback order.
+                        # Combining a multi-edge graph would change callbacks from
+                        # Pipe declaration order to graph-edge order.
                         grouped_relations.append((device_graph, [relative_pipe]))
             normalized_relations = tuple(
                 (device_graph, tuple(relation_pipes))
                 for device_graph, relation_pipes in grouped_relations
             )
-            complete_pipes = normalized_pipes
+            device_selected_pipes = normalized_pipes
         elif graph is not None:
             if not isinstance(graph, TransferGraph):
                 raise TypeError(
@@ -418,10 +437,10 @@ class PipeNet:
             normalized_relations = (
                 ((graph, normalized_pipes),) if normalized_pipes is not None else ()
             )
-            complete_pipes = ()
+            device_selected_pipes = ()
         else:
             normalized_relations = ()
-            complete_pipes = ()
+            device_selected_pipes = ()
             if normalized_pipes is None:
                 raise ValueError("PipeNet requires pipes or graph")
         # Operation-local id assigned by the OperationPipeNets builder
@@ -433,8 +452,8 @@ class PipeNet:
             normalized_relations
         )
         self._uses_matching_node_coordinates = graph is not None and pipes is None
-        if complete_pipes:
-            self.pipes = list(complete_pipes)
+        if device_selected_pipes:
+            self.pipes = list(device_selected_pipes)
         elif graph is not None:
             self.graph = graph
             if normalized_pipes is not None:

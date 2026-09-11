@@ -73,7 +73,7 @@ class PipeNetUse:
 
 @dataclass(frozen=True)
 class GraphPipeMappingUse:
-    """One device graph and its node-pipe list."""
+    """One device graph and its list of node-level Pipes."""
 
     transfer_graph: TransferGraph
     pipes: Optional[Tuple[PipeUse, ...]]
@@ -113,7 +113,7 @@ class OperationPipeNets:
         *,
         uses_matching_node_coordinates: bool = False,
     ) -> GraphPipeNetUse:
-        """Append an ordered union of device-graph and node-pipe groups."""
+        """Append device graphs and their node Pipes in callback execution order."""
         normalized_mappings = []
         for transfer_graph, pipes in mappings:
             if transfer_graph.is_explicit and any(
@@ -154,10 +154,10 @@ class OperationPipeNets:
         return use
 
     def active_node_set(self, grid: Tuple[int, ...]) -> Optional[Set[int]]:
-        """Linearized active node set across every PipeNet in the graph.
+        """Return the linearized nodes used by the operation's PipeNets.
 
-        Returns None when the graph is empty, signaling that no active-set
-        filtering should be applied (every node participates).
+        None means that no PipeNet restricts participation or that a graph-only
+        PipeNet uses every launch node.
         """
         if any(net.uses_matching_node_coordinates for net in self.graph_pipe_nets):
             return None
@@ -295,7 +295,7 @@ def _validate_no_mixed_kinds(pipes: Tuple[PipeUse, ...]) -> None:
 
 
 def _validate_graph_mapping_duplicates(net: GraphPipeNetUse) -> None:
-    """Reject repeated complete pipes without constructing graph/pipe products."""
+    """Reject repeated device-edge and node-Pipe pairs without expanding them."""
     edge_sets = {}
 
     def get_edges(mapping: GraphPipeMappingUse) -> Set:
@@ -320,7 +320,8 @@ def _validate_graph_mapping_duplicates(net: GraphPipeNetUse) -> None:
                 current_edges = get_edges(mapping)
             if not previous_edges.isdisjoint(current_edges):
                 raise ValueError(
-                    "graph PipeNet relations contain a duplicate complete pipe"
+                    "graph PipeNet relations contain a duplicate device-edge and "
+                    "node-Pipe pair"
                 )
         previous_mappings.append((mapping, mapping_pipes))
 
