@@ -6,6 +6,7 @@
 
 import pytest
 
+import ttl.domains as domains
 from ttl.domains import DeviceDomain, DevicePoint, DeviceView
 
 
@@ -95,3 +96,13 @@ def test_partial_indexing_and_direct_domain_node_selection():
     assert devices.at_node(1, 0) == devices[:, :].at_node(1, 0)
     assert isinstance(devices[2, 3], DevicePoint)
     assert isinstance(devices[2], DeviceView)
+
+
+def test_selection_types_are_exported_from_domains():
+    assert {
+        "DevicePoint",
+        "DeviceSelection",
+        "DeviceSet",
+        "DeviceView",
+        "NodeSelection",
+    }.issubset(domains.__all__)
