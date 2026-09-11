@@ -16,10 +16,9 @@ PipeNet supports the spec's callback API:
 import inspect
 import warnings
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Iterable, List, Optional, Tuple, Union
+from typing import Callable, Iterable, List, Optional, Tuple, Union
 
-if TYPE_CHECKING:
-    from .domains import TransferGraph
+from .domains import DevicePoint, DeviceView, NodeSelection, TransferGraph
 
 # Type aliases matching the spec
 CoreCoord = Tuple[int, int]
@@ -109,7 +108,28 @@ class Pipe:
         pipe = ttl.Pipe(src=(0, 0), dst=(1, slice(0, 4)))
     """
 
-    def __init__(self, src: CoreCoord, dst: Union[CoreCoord, CoreRange]):
+    def __init__(
+        self,
+        src: Union[CoreCoord, NodeSelection],
+        dst: Union[CoreCoord, CoreRange, NodeSelection],
+    ):
+        self._device_graph = None
+        if isinstance(src, NodeSelection) or isinstance(dst, NodeSelection):
+            if not isinstance(src, NodeSelection) or not isinstance(dst, NodeSelection):
+                raise TypeError("both Pipe endpoints must specify devices and nodes")
+            if src.devices.domain != dst.devices.domain:
+                raise ValueError("Pipe endpoints must share a parent device domain")
+            if not isinstance(src.devices, DevicePoint) or not isinstance(
+                dst.devices, DevicePoint
+            ):
+                raise ValueError(
+                    "Pipe requires point endpoints; use a relation constructor for device selections"
+                )
+            self._device_graph = TransferGraph.edges(
+                src.devices.domain,
+                [(src.devices.reference, dst.devices.reference)],
+            )
+            src, dst = src.node, dst.node
         if len(src) != 2:
             raise ValueError(f"src must be a 2-tuple, got {src}")
 
@@ -119,6 +139,26 @@ class Pipe:
         # before AST emission (see _build_operation_pipenets).
         self.pipe_net_id = 0
         self._parse_dst()
+
+    @classmethod
+    def pairwise(cls, *, src: NodeSelection, dst: NodeSelection) -> "Pipe":
+        """Connect equal view coordinates using the specified source/destination nodes."""
+        if not isinstance(src, NodeSelection) or not isinstance(dst, NodeSelection):
+            raise TypeError("pairwise requires complete node endpoint selections")
+        if src.devices.domain != dst.devices.domain:
+            raise ValueError("Pipe endpoints must share a parent device domain")
+        if not isinstance(src.devices, DeviceView) or not isinstance(
+            dst.devices, DeviceView
+        ):
+            raise TypeError("pairwise requires coordinate-structured device views")
+        if src.devices.shape != dst.devices.shape:
+            raise ValueError("pairwise device views must have equal extents")
+        pipe = cls(src.node, dst.node)
+        pipe._device_graph = TransferGraph.edges(
+            src.devices.domain,
+            zip(src.devices.iter_device_refs(), dst.devices.iter_device_refs()),
+        )
+        return pipe
 
     @staticmethod
     def _validate_slice(s: slice, name: str):
@@ -202,13 +242,20 @@ class Pipe:
         return self.is_collective
 
     def _operation_identity_capture(self) -> tuple:
-        return (
+        identity = (
             "pipe",
             tuple(self.src),
             tuple(self.dst_start),
             tuple(self.dst_end),
             self.is_collective,
         )
+        if self._device_graph is not None:
+            return (
+                "device-pipe",
+                identity,
+                self._device_graph._operation_identity_capture(),
+            )
+        return identity
 
 
 def _pipe_to_pipe_use(pipe: Pipe):
@@ -320,6 +367,30 @@ class PipeNet:
         from .domains import TransferGraph
 
         normalized_pipes = tuple(pipes) if pipes is not None else None
+        if normalized_pipes and any(
+            isinstance(pipe, Pipe) and pipe._device_graph is not None
+            for pipe in normalized_pipes
+        ):
+            if graph is not None or mappings is not None:
+                raise ValueError(
+                    "complete Pipe endpoints cannot be combined with graph or mappings"
+                )
+            if any(
+                not isinstance(pipe, Pipe) or pipe._device_graph is None
+                for pipe in normalized_pipes
+            ):
+                raise ValueError(
+                    "PipeNet cannot mix complete endpoints with device-relative pipes"
+                )
+            mappings = tuple(
+                PipeMapping(
+                    graph=pipe._device_graph,
+                    pipes=[Pipe(src=pipe.src, dst=pipe.dst)],
+                )
+                for pipe in normalized_pipes
+            )
+            normalized_pipes = None
+            pipes = None
         if mappings is not None:
             if graph is not None or pipes is not None:
                 raise ValueError(
