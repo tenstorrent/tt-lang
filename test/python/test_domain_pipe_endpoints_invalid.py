@@ -47,7 +47,7 @@ def test_pairwise_equal_counts_do_not_imply_equal_extents():
 def test_pairwise_sparse_sets_require_explicit_correspondence():
     devices = DeviceDomain((8, 4))
     sparse = devices.select([devices[0, 0], devices[7, 3]])
-    with pytest.raises(TypeError, match="coordinate-structured"):
+    with pytest.raises(TypeError, match="rectangular device views"):
         Pipe.pairwise(src=sparse.at_node(1, 0), dst=devices[1, :2].at_node(0, 0))
 
 
