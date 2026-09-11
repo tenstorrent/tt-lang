@@ -176,7 +176,7 @@ def make_all_gather_minimal_matmul_operation(
             weight_shard, shape=(compute_k_tiles, n_block_tiles), block_count=2
         )
         bias_dfb = ttl.make_dataflow_buffer_like(
-            bias_shard, shape=(1, n_block_tiles), block_count=2
+            bias_shard, shape=(1, n_block_tiles), block_count=1
         )
         output_dfb = ttl.make_dataflow_buffer_like(
             output_shard, shape=(m_block_tiles, n_block_tiles), block_count=2
