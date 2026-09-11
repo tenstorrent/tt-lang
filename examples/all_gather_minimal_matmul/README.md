@@ -179,7 +179,7 @@ python -m examples.all_gather_minimal_matmul.n_sharded \
     --mesh-shape 2x2 --worker-grid 12 10 --transpose \
     --dedicated-communication-workers 4 \
     --m-tiles 24 --k-tiles-per-device 4 --n-tiles-per-device 20 \
-    --m-block-tiles 2 --k-block-tiles 2 --n-block-tiles 2 \
+    --m-block-tiles 4 --k-block-tiles 2 --n-block-tiles 2 \
     --no-reuse-activation --activation-all-gather ring
 ```
 
