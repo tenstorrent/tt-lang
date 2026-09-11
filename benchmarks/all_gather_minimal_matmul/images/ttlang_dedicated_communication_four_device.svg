@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1320" viewBox="0 0 1600 1320" role="img" aria-labelledby="title description">
   <title id="title">V4 TT-Lang dedicated communication + N-sharded matmul: Four devices</title>
-  <desc id="description">Four devices exchange activation K shards through a ring using four dedicated communication workers, concurrently compute N-sharded matmul and bias on 120 workers per device, and optionally gather output shards into replicated M by N DRAM tensors.</desc>
+  <desc id="description">Four devices exchange activation K shards through a ring using four fabric workers and six local distribution workers, concurrently compute N-sharded matmul and bias on 120 workers per device, and optionally gather output shards into replicated M by N DRAM tensors.</desc>
   <defs>
     <marker id="arrow-green" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#15803d"/></marker>
     <marker id="arrow-orange" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L0,6 L9,3 z" fill="#c2410c"/></marker>
@@ -101,7 +101,7 @@
   <text x="995" y="347" class="small" text-anchor="middle">A₂ → D3 → D0 → D1</text>
   <rect x="1228" y="328" width="314" height="28" class="cache"/>
   <text x="1385" y="347" class="small" text-anchor="middle">A₃ → D0 → D1 → D2</text>
-  <text x="800" y="377" class="tiny" text-anchor="middle">Four workers in physical column 0 receive into L1, multicast to compute rows, and forward to the next device.</text>
+  <text x="800" y="377" class="tiny" text-anchor="middle">Four fabric workers receive and forward; ten column-0 workers distribute activation rows through L1.</text>
 
   <path d="M127 222 V250 H405 V292" class="route" stroke="#c2410c" marker-end="url(#arrow-orange)"/>
   <path d="M517 222 V258 H795 V292" class="route" stroke="#c2410c" marker-end="url(#arrow-orange)"/>
@@ -121,8 +121,8 @@
     <rect x="40" y="410" width="350" height="260" class="device"/>
     <text x="58" y="438" class="label">Device 0 · 13×10 operation grid</text>
     <rect x="58" y="454" width="314" height="58" class="cache"/>
-    <text x="215" y="477" class="label" text-anchor="middle">4 communication workers · L1 A blocks</text>
-    <text x="215" y="498" class="small" text-anchor="middle">NoC multicast to 12×10 compute workers</text>
+    <text x="215" y="477" class="label" text-anchor="middle">4 fabric + 6 distribution workers · L1 A</text>
+    <text x="215" y="498" class="small" text-anchor="middle">4 direct rows + 8 relayed rows → compute</text>
     <rect x="58" y="532" width="130" height="52" class="dram"/>
     <text x="123" y="553" class="label" text-anchor="middle">B₀ blocks</text>
     <text x="123" y="573" class="small" text-anchor="middle">DRAM → L1 DFB</text>
@@ -142,8 +142,8 @@
     <rect x="430" y="410" width="350" height="260" class="device"/>
     <text x="448" y="438" class="label">Device 1 · 13×10 operation grid</text>
     <rect x="448" y="454" width="314" height="58" class="cache"/>
-    <text x="605" y="477" class="label" text-anchor="middle">4 communication workers · L1 A blocks</text>
-    <text x="605" y="498" class="small" text-anchor="middle">NoC multicast to 12×10 compute workers</text>
+    <text x="605" y="477" class="label" text-anchor="middle">4 fabric + 6 distribution workers · L1 A</text>
+    <text x="605" y="498" class="small" text-anchor="middle">4 direct rows + 8 relayed rows → compute</text>
     <rect x="448" y="532" width="130" height="52" class="dram"/>
     <text x="513" y="553" class="label" text-anchor="middle">B₁ blocks</text>
     <text x="513" y="573" class="small" text-anchor="middle">DRAM → L1 DFB</text>
@@ -163,8 +163,8 @@
     <rect x="820" y="410" width="350" height="260" class="device"/>
     <text x="838" y="438" class="label">Device 2 · 13×10 operation grid</text>
     <rect x="838" y="454" width="314" height="58" class="cache"/>
-    <text x="995" y="477" class="label" text-anchor="middle">4 communication workers · L1 A blocks</text>
-    <text x="995" y="498" class="small" text-anchor="middle">NoC multicast to 12×10 compute workers</text>
+    <text x="995" y="477" class="label" text-anchor="middle">4 fabric + 6 distribution workers · L1 A</text>
+    <text x="995" y="498" class="small" text-anchor="middle">4 direct rows + 8 relayed rows → compute</text>
     <rect x="838" y="532" width="130" height="52" class="dram"/>
     <text x="903" y="553" class="label" text-anchor="middle">B₂ blocks</text>
     <text x="903" y="573" class="small" text-anchor="middle">DRAM → L1 DFB</text>
@@ -184,8 +184,8 @@
     <rect x="1210" y="410" width="350" height="260" class="device"/>
     <text x="1228" y="438" class="label">Device 3 · 13×10 operation grid</text>
     <rect x="1228" y="454" width="314" height="58" class="cache"/>
-    <text x="1385" y="477" class="label" text-anchor="middle">4 communication workers · L1 A blocks</text>
-    <text x="1385" y="498" class="small" text-anchor="middle">NoC multicast to 12×10 compute workers</text>
+    <text x="1385" y="477" class="label" text-anchor="middle">4 fabric + 6 distribution workers · L1 A</text>
+    <text x="1385" y="498" class="small" text-anchor="middle">4 direct rows + 8 relayed rows → compute</text>
     <rect x="1228" y="532" width="130" height="52" class="dram"/>
     <text x="1293" y="553" class="label" text-anchor="middle">B₃ blocks</text>
     <text x="1293" y="573" class="small" text-anchor="middle">DRAM → L1 DFB</text>
@@ -236,7 +236,7 @@
   <g transform="translate(0,120)">
   <rect x="40" y="946" width="1520" height="202" class="device"/>
   <text x="65" y="978" class="section">Dedicated communication overlaps streamed matmul</text>
-  <text x="65" y="1000" class="small">Bars are illustrative; four communication workers and 120 compute workers run concurrently.</text>
+  <text x="65" y="1000" class="small">Bars are illustrative; four fabric, six local distribution, and 120 compute workers run concurrently.</text>
   <text x="70" y="1045" class="label">Communication column</text>
   <text x="70" y="1091" class="label">Weight DRAM + NoC</text>
   <text x="70" y="1130" class="label">Compute</text>
