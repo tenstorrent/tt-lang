@@ -48,6 +48,29 @@ func.func @matmul_1x1_f32(
 
 // -----
 
+// BF16 operands may request an FP32 result so matmul packs directly into FP32
+// accumulation storage.
+// CHECK-LABEL: func.func @matmul_bf16_to_f32
+func.func @matmul_bf16_to_f32(
+    %arg0: tensor<1x1x!ttcore.tile<32x32, bf16>>,
+    %arg1: tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, f32>> {
+  // CHECK: ttl.compute
+  // CHECK: %[[MM:.*]] = ttl.tile_matmul_block
+  // CHECK-SAME: !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, f32>
+  // CHECK: ttl.tile_store %[[MM]]
+  %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %cb2 = ttl.bind_cb {cb_index = 2, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %a = ttl.attach_cb %arg0, %cb0 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %b = ttl.attach_cb %arg1, %cb1 : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %reserve = ttl.cb_reserve %cb2 : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  %mm = ttl.matmul %a, %b : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  ttl.store %mm, %reserve : tensor<1x1x!ttcore.tile<32x32, f32>>, tensor<1x1x!ttcore.tile<32x32, f32>>
+  func.return %mm : tensor<1x1x!ttcore.tile<32x32, f32>>
+}
+
+// -----
+
 // The Kimi 1x32 BF16 activation/output tiles and 32x32 BFP4_B weight tiles
 // retain their distinct formats through lowering.
 // CHECK-LABEL: func.func @matmul_bf16_bfp4

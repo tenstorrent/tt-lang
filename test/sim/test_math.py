@@ -1043,6 +1043,21 @@ def test_matmul_result_shape_2x3_times_3x4():
     assert len(result.to_list()) == 8
 
 
+def test_matmul_explicit_result_dtype():
+    """matmul records the requested packer/result dtype."""
+    activation = Block.from_list(
+        [Tensor(torch.ones((32, 32)), dtype=torch.bfloat16)], shape=(1, 1)
+    )
+    weight = Block.from_list(
+        [Tensor(torch.eye(32), dtype=torch.bfloat16)], shape=(1, 1)
+    )
+
+    result = ttl.math.matmul(activation, weight, dtype=torch.float32)
+
+    assert result.to_tensor().dtype == torch.float32
+    assert torch.allclose(result.to_tensor().to_torch(), torch.ones((32, 32)))
+
+
 def test_matmul_values_identity():
     """matmul against an identity-like tile produces the original tile values."""
     rows, cols = 32, 32
