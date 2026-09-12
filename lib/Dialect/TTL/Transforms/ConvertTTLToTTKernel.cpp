@@ -1175,6 +1175,9 @@ static LogicalResult lowerTensorCBCopy(
         cbTileIdxOp->setAttr(kExpandLinearizeIndexAttr,
                              loopBuilder.getUnitAttr());
         Value cbTileIdx = cbTileIdxOp.getResult();
+        Value dfbEndpoint = isRead ? op.getDst() : op.getSrc();
+        cbTileIdx =
+            utils::addSliceOffset(dfbEndpoint, cbTileIdx, loopBuilder, bodyLoc);
 
         // Compute CB address: cbPtr + cbTileIdx * pageSize
         Value byteOffset =
@@ -1303,35 +1306,36 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
       return lowerDFBToDFBCopy(op, rewriter, *typeConverter);
     }
 
-    // Non-pipe transfers: validate exactly one TensorSlice and one CB.
-    if (!((srcIsSlice && dstIsCB) || (srcIsCB && dstIsSlice))) {
+    // Non-pipe transfers require one tensor slice and one DFB endpoint.
+    if (!((srcIsSlice && (dstIsCB || dstIsDFBAttachedTensor)) ||
+          ((srcIsCB || srcIsDFBAttachedTensor) && dstIsSlice))) {
       return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
-        diag << "ttl.copy requires one tensor_slice and one circular_buffer, "
+        diag << "ttl.copy requires one tensor_slice and one DFB endpoint, "
              << "got src=" << src.getType() << " dst=" << dst.getType();
       });
     }
 
-    // TensorSlice -> CB: read tiles from tensor into circular buffer.
-    if (srcIsSlice && dstIsCB) {
+    // TensorSlice -> DFB: read tiles from tensor into DFB storage.
+    if (srcIsSlice && (dstIsCB || dstIsDFBAttachedTensor)) {
       auto sliceOp = src.getDefiningOp<TensorSliceOp>();
       if (!sliceOp) {
         return rewriter.notifyMatchFailure(
             op, "tensor_slice source must come from ttl.tensor_slice op");
       }
-      return lowerTensorCBCopy(op, sliceOp, adaptor.getDst(),
-                               NocCopyDirection::Read,
+      Value dstDFB = dstIsCB ? adaptor.getDst() : getAttachedCB(dst);
+      return lowerTensorCBCopy(op, sliceOp, dstDFB, NocCopyDirection::Read,
                                pipeTransportPlan.lookupStorageAccess(op),
                                slotCounters, rewriter, *typeConverter);
     }
 
-    // CB -> TensorSlice: write tiles from circular buffer to tensor.
+    // DFB -> TensorSlice: write tiles from DFB storage to tensor.
     auto sliceOp = dst.getDefiningOp<TensorSliceOp>();
     if (!sliceOp) {
       return rewriter.notifyMatchFailure(
           op, "tensor_slice destination must come from ttl.tensor_slice op");
     }
-    return lowerTensorCBCopy(op, sliceOp, adaptor.getSrc(),
-                             NocCopyDirection::Write,
+    Value srcDFB = srcIsCB ? adaptor.getSrc() : getAttachedCB(src);
+    return lowerTensorCBCopy(op, sliceOp, srcDFB, NocCopyDirection::Write,
                              pipeTransportPlan.lookupStorageAccess(op),
                              slotCounters, rewriter, *typeConverter);
   }

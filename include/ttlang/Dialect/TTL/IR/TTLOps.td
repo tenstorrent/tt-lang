@@ -141,11 +141,13 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     This operation is non-blocking. The destination is not safe to use until a
     corresponding `ttl.wait` has completed.
 
-    A tensor transfer has exactly one DFB (`!ttl.cb`) operand and one ranked
-    tensor operand with TTL layout encoding. A pipe send has a DFB source and a
-    pipe destination. A pipe receive has a pipe source and a destination block
-    reserved from a DFB. The copy transfers the complete payload in row-major
-    tile order.
+    A tensor transfer has one DFB endpoint and one ranked tensor operand with
+    TTL layout encoding. The DFB endpoint is either a `!ttl.cb` or a statically
+    shaped, unit-stride `tensor.extract_slice` view of an acquired block. Reads
+    require a reserved destination; writes require a waited source. A pipe send
+    has a DFB source and a pipe destination. A pipe receive has a pipe source
+    and a destination block reserved from a DFB. The copy transfers the
+    complete endpoint payload in row-major tile order.
 
     The tensor shape normally equals one dataflow buffer block. A copy may span
     consecutive blocks by extending the tensor's innermost dimension by an
