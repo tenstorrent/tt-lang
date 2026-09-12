@@ -40,7 +40,7 @@ python -m examples.all_gather_minimal_matmul \
     --m-tiles 296 \
     --k-tiles-per-device 40 \
     --n-tiles 480 \
-    --m-block-tiles 4 \
+    --m-block-tiles 5 \
     --k-block-tiles 10 \
     --n-block-tiles 12 \
     --no-reuse-activation

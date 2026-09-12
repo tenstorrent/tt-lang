@@ -42,7 +42,6 @@ class AllGatherMinimalMatmulConfig:
                 raise ValueError(f"{field_name} must be positive")
 
         for total_name, block_name in (
-            ("m_tiles", "m_block_tiles"),
             ("k_tiles_per_device", "k_block_tiles"),
             ("n_tiles_per_device", "n_block_tiles"),
         ):

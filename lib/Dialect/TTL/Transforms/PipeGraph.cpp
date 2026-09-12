@@ -589,20 +589,24 @@ isBeforeInReceiverControlContext(Operation *before, Operation *after,
   return false;
 }
 
-/// Return true when `before` precedes `after` directly or before an enclosing
-/// runtime region containing `after`.
+// Return true when structured execution completes `before` before `after`.
+// Projecting both operations to sequential enclosing operations proves order
+// across completed loops and conditionals without assuming either executes.
 static bool
 isBeforeInReceiverExecution(Operation *before, Operation *after,
                             const LaunchExecutionLocation &location,
                             const PipeGraphAnalysisState &analysisState) {
-  Operation *enclosing = after;
-  while (enclosing) {
-    if (isBeforeInReceiverControlContext(before, enclosing, location,
-                                         analysisState)) {
-      return true;
+  for (Operation *beforeAncestor = before; beforeAncestor;) {
+    for (Operation *afterAncestor = after; afterAncestor;) {
+      if (isBeforeInReceiverControlContext(beforeAncestor, afterAncestor,
+                                           location, analysisState)) {
+        return true;
+      }
+      Block *afterBlock = afterAncestor->getBlock();
+      afterAncestor = afterBlock ? afterBlock->getParentOp() : nullptr;
     }
-    Block *block = enclosing->getBlock();
-    enclosing = block ? block->getParentOp() : nullptr;
+    Block *beforeBlock = beforeAncestor->getBlock();
+    beforeAncestor = beforeBlock ? beforeBlock->getParentOp() : nullptr;
   }
   return false;
 }
