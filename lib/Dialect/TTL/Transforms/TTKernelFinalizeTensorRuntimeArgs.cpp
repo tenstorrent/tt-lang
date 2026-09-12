@@ -250,6 +250,17 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
   }
 
   int64_t removedCount = tensorCount - retainedGlobalIndices.size();
+  if (auto fabricBase = function->getAttrOfType<IntegerAttr>(
+          kFabricRuntimeArgBaseCommonIndexAttrName)) {
+    if (fabricBase.getInt() < tensorCount) {
+      function.emitOpError() << kFabricRuntimeArgBaseCommonIndexAttrName
+                             << " must follow every tensor runtime argument";
+      return failure();
+    }
+    function->setAttr(
+        kFabricRuntimeArgBaseCommonIndexAttrName,
+        builder.getI64IntegerAttr(fabricBase.getInt() - removedCount));
+  }
   llvm::DenseMap<Operation *, Value> remappedTables;
   for (CommonArgIndexUse &use : commonArgUses) {
     if (use.table) {
