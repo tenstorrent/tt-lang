@@ -9,9 +9,10 @@ Per-core specialization is opt-in via the compiler option `specialize_cores`
 module pass (`ttkernel-specialize-cores`) run at the TTKernel level right
 before EmitC: for each kernel whose conditional or loop bounds depend on a core
 coordinate it emits one clone per launch coordinate, replacing the coordinate
-reads with constants and tagging each clone with `ttl.core_coord`. The runtime
-bridge (`_compile_ttnn_kernel`) gives each distinct generated kernel one
-descriptor covering every coordinate with the same code and runtime metadata.
+reads with constants and tagging each clone with `ttl.core_coord`. The Python
+kernel builder (`_compile_ttnn_kernel`) gives each distinct generated kernel
+one descriptor covering every coordinate with the same code and runtime
+metadata.
 
 Op bodies are built by `_make_matmul_op` / `_make_branch_swap_op` so default
 and specialized runs get distinct op objects (and compilation caches) without
