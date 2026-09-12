@@ -1168,9 +1168,10 @@ def _write_kernel_to_tmp(name: str, source: str) -> str:
                 os.unlink(temp_path)
             except FileNotFoundError:
                 pass
-    print(f"=== {name} kernel written to {path} ===")
-    print(source)
-    print("=" * 60)
+    if os.environ.get("TTLANG_VERBOSE_KERNELS", "1") != "0":
+        print(f"=== {name} kernel written to {path} ===")
+        print(source)
+        print("=" * 60)
     return str(path)
 
 
