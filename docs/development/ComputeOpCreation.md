@@ -599,6 +599,45 @@ the rewrite stage mechanical and keeps policy in the immutable planner.
 
 ## Correctness Argument
 
+### Native output tiles
+
+The planner records a `ComputeOutputPlan` for each output DFB before changing
+IR. An ordinary store retains the source result type and indexing map. A
+`row_prefix` store instead records the acquired destination's tensor type and
+a constant-zero indexing map: one full 32x32 source tile supplies the rows of
+one destination tile, rather than one output tile per source row.
+
+All stores into the same DFB must agree on ordinary versus row-prefix storage
+and on the destination tensor type. Outputs of one compute must have the same
+tile type. A representation-changing result may have only the stores assigned
+to that plan as users; a surviving full-tile use would observe a different
+value. Row-normalization block creation does not support row-prefix outputs.
+
+For an input-free recipe with only row-prefix outputs, no input tensor supplies
+iteration bounds. The planner records a zero-dimensional iteration domain and
+maps each output to its single tile. Loop lowering executes the recipe once
+in one DST section. Application uses the recorded result types and maps; it
+does not infer them again after rewriting stores.
+
+The destination tile type determines its physical page size. Both tensor and
+tile stores require a producer-reserved, single-tile destination, and their
+shared verifier checks the source geometry, dtype, and destination width.
+The generated store uses tile index zero in that acquired view. DFB descriptor
+materialization uses the destination type, not the 32x32 source type, so the
+packer and allocation agree on the complete page size. The removed compact
+`pack_rows` operation's arbitrary byte-count and page-offset parameters have
+no counterparts in this generated store. This is a construction invariant of
+generated row-prefix stores, not a general bounds proof for arbitrary indexed
+TTKernel packing operations.
+
+This contract supports native short tiles, not an array of compact 1x32 pages.
+For example, fourteen valid rows in a 16x32 tile retain the native tile's
+padding and physical layout; they are not an 896-byte contiguous buffer.
+Packing and recurrence details are documented in
+[AccumulatingComputeLowering.md](AccumulatingComputeLowering.md).
+
+### Preserved properties
+
 The design preserves these properties:
 
 1. **Tensor value.** Each direct or fused recipe records the tile operation,

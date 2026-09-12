@@ -153,6 +153,21 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     remain equal to the block shape. The span must not exceed the dataflow
     buffer's block count.
 
+    An explicit positive `byte_count` copies exactly that many consecutive
+    bytes starting at byte offset zero between two acquired dataflow-buffer
+    blocks with different tile geometry. The source must be the exact block
+    returned by `ttl.cb_wait`, and the destination must be the exact block
+    returned by `ttl.cb_reserve`. Both dataflow buffers must use the same
+    element data format, and the count must fit both acquired blocks. Later
+    destination bytes remain unchanged.
+
+    Pipe copies may also specify `byte_count` to transfer exactly that many
+    consecutive bytes starting at byte offset zero of one source block.
+    Byte-counted pipe transfers require a one-block transfer span. The sender
+    and every receiver must specify the same count, and the count must fit both
+    endpoint blocks and the unsigned 32-bit NoC transfer size. Omitting
+    `byte_count` transfers the entire block.
+
     TODO(ttl): Add an optional TRID attribute (range 0..15) when TRID-specific
     TTKernel NOC ops are available. Issue: #87.
 
@@ -175,7 +190,9 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
   }];
   let arguments = (ins
     AnyType:$src,
-    AnyType:$dst
+    AnyType:$dst,
+    ConfinedAttr<OptionalAttr<I64Attr>,
+                 [IntPositive, IntMaxValue<4294967295>]>:$byte_count
   );
   // The verifier selects the result type from the transfer direction.
   let results = (outs AnyType:$xf);
@@ -304,9 +321,9 @@ def TTL_ComputeOp : TTL_Op<"compute", [
   let description = [{
     `ttl.compute` is a structured operation similar to `linalg.generic` but with
     tile-typed block arguments. It iterates over a grid of tiles and applies
-    the body computation to each tile position. Circular buffers are associated
-    to tensor operands/results via `ttl.attach_cb` (one CB per tensor SSA
-    value); `ttl.compute` itself only carries tensor operands.
+    the body computation to each tile position. `ttl.attach_cb` associates one
+    dataflow buffer (DFB) with each tensor SSA operand or result.
+    `ttl.compute` itself carries only tensor operands.
 
     The operation takes tensors of tiles as inputs and outputs. The block
     arguments are individual tiles (`!ttcore.tile<H, W, dtype>`) extracted from
@@ -316,22 +333,64 @@ def TTL_ComputeOp : TTL_Op<"compute", [
     iterator. The accumulator remains resident in DST across the corresponding
     reduction iterations.
 
-    In the pipeline, `ttl.compute` is lowered to `scf.for` loops by
-    `ttl-lower-to-loops` BEFORE bufferization. The `ttl.tile_*` ops in the
-    loop body are then converted to TTKernel ops after bufferization.
+    Every iteration dimension must occur in at least one operand indexing map
+    so its bound is defined. Tensor dimensions may use constant-zero map
+    results only when their extent is one. A zero-rank iteration domain
+    therefore represents one execution over unit-extent tensor operands.
 
     Example:
     ```mlir
-    %result = ttl.compute
-        ins(%a, %b : tensor<4x4x!ttcore.tile<32x32, f32>>,
-                     tensor<4x4x!ttcore.tile<32x32, f32>>)
-        outs(%init : tensor<4x4x!ttcore.tile<32x32, f32>>) {
-      ^bb0(%a_tile: !ttcore.tile<32x32, f32>,
-           %b_tile: !ttcore.tile<32x32, f32>,
-           %out_tile: !ttcore.tile<32x32, f32>):
-        %sum = ttl.tile_add %a_tile, %b_tile : !ttcore.tile<32x32, f32>
-        ttl.yield
-    } -> tensor<4x4x!ttcore.tile<32x32, f32>>
+    #identity = affine_map<(dim0, dim1) -> (dim0, dim1)>
+
+    func.func @add(
+        %lhs: tensor<4x4x!ttcore.tile<32x32, f32>>,
+        %rhs: tensor<4x4x!ttcore.tile<32x32, f32>>,
+        %init: tensor<4x4x!ttcore.tile<32x32, f32>>)
+        -> tensor<4x4x!ttcore.tile<32x32, f32>> {
+      %lhs_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} :
+          !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
+      %rhs_dfb = ttl.bind_cb {cb_index = 1, block_count = 2} :
+          !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
+      %out_dfb = ttl.bind_cb {cb_index = 2, block_count = 2} :
+          !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>
+      %lhs_attached = ttl.attach_cb %lhs, %lhs_dfb :
+          (tensor<4x4x!ttcore.tile<32x32, f32>>,
+           !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>)
+          -> tensor<4x4x!ttcore.tile<32x32, f32>>
+      %rhs_attached = ttl.attach_cb %rhs, %rhs_dfb :
+          (tensor<4x4x!ttcore.tile<32x32, f32>>,
+           !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>)
+          -> tensor<4x4x!ttcore.tile<32x32, f32>>
+      %init_attached = ttl.attach_cb %init, %out_dfb :
+          (tensor<4x4x!ttcore.tile<32x32, f32>>,
+           !ttl.cb<[4, 4], !ttcore.tile<32x32, f32>, 2>)
+          -> tensor<4x4x!ttcore.tile<32x32, f32>>
+      %out_view = ttl.cb_reserve %out_dfb :
+          <[4, 4], !ttcore.tile<32x32, f32>, 2>
+          -> tensor<4x4x!ttcore.tile<32x32, f32>>
+      %result = ttl.compute
+          ins(%lhs_attached, %rhs_attached :
+              tensor<4x4x!ttcore.tile<32x32, f32>>,
+              tensor<4x4x!ttcore.tile<32x32, f32>>)
+          outs(%init_attached : tensor<4x4x!ttcore.tile<32x32, f32>>)
+          {indexing_maps = [#identity, #identity, #identity],
+           iterator_types = ["parallel", "parallel"]} {
+        ^bb0(%lhs_tile: !ttcore.tile<32x32, f32>,
+             %rhs_tile: !ttcore.tile<32x32, f32>,
+             %out_tile: !ttcore.tile<32x32, f32>):
+          %row = ttl.iter_index 0 : index
+          %column = ttl.iter_index 1 : index
+          %dst = arith.constant 0 : index
+          %sum = ttl.tile_add %lhs_tile, %rhs_tile into dst[%dst] :
+              !ttcore.tile<32x32, f32>, !ttcore.tile<32x32, f32>
+              -> !ttcore.tile<32x32, f32>
+          ttl.tile_store %sum, %out_view[%row, %column] from dst[%dst] :
+              !ttcore.tile<32x32, f32>,
+              tensor<4x4x!ttcore.tile<32x32, f32>>
+          ttl.yield
+      } -> tensor<4x4x!ttcore.tile<32x32, f32>>
+      func.return %result : tensor<4x4x!ttcore.tile<32x32, f32>>
+    }
     ```
   }];
 
@@ -434,7 +493,13 @@ def TTL_AccumulationScopeOp : TTL_Op<"accumulation_scope", [
     contains one operand for each output whose initial mode is `init`, in output
     order.
 
-    The body uses one block argument per output and yields one value per output.
+    The body uses one state block argument per output and yields one updated
+    state value per output. An `init` state has the init operand's type; an
+    `overwrite` or `accumulate_existing` state has the output's type. Keeping
+    init state distinct from destination storage permits a type-changing
+    packing operation. When the state and output types differ, the body must
+    store the yielded state to the corresponding output.
+
     This form makes
     cross-output data dependence an SSA property: if the yielded value for one
     output uses another output's updated value, normal SSA use-def edges encode
@@ -961,11 +1026,16 @@ def TTL_PipeTransferPostOp : TTL_Op<"pipe_transfer.post",
     Registers the receiver-owned destination DFB slot for a pipe transfer and
     returns the token that represents receiver-side completion. The selected
     address and synchronization protocols determine whether lowering publishes
-    the address or signals sender readiness.
+    the address or signals sender readiness. When `byte_count` is present, the
+    matching sender writes exactly that many consecutive bytes starting at byte
+    offset zero of the reserved destination block. Later bytes remain
+    unchanged.
   }];
   let arguments = (ins
     TTL_PipeTransfer:$transfer,
-    AnyType:$dst
+    AnyType:$dst,
+    ConfinedAttr<OptionalAttr<I64Attr>,
+                 [IntPositive, IntMaxValue<4294967295>]>:$byte_count
   );
   let results = (outs TTL_PipeToken:$token);
   let assemblyFormat = "$transfer `,` $dst attr-dict `:` functional-type(operands, results)";
@@ -978,11 +1048,15 @@ def TTL_PipeTransferSendOp : TTL_Op<"pipe_transfer.send",
     Waits until the selected synchronization condition is satisfied, then
     writes the source DFB payload to the receiver-owned destination storage and
     signals receiver completion. The returned write handle preserves the
-    existing `ttl.wait` ordering contract for send-side code.
+    existing `ttl.wait` ordering contract for send-side code. When `byte_count`
+    is present, the send reads exactly that many consecutive bytes starting at
+    byte offset zero of each source block.
   }];
   let arguments = (ins
     TTL_PipeTransfer:$transfer,
-    TTL_CircularBuffer:$src
+    TTL_CircularBuffer:$src,
+    ConfinedAttr<OptionalAttr<I64Attr>,
+                 [IntPositive, IntMaxValue<4294967295>]>:$byte_count
   );
   let results = (outs TTL_TransferHandle:$xf);
   let assemblyFormat = "$transfer `,` $src attr-dict `:` functional-type(operands, results)";
@@ -1042,13 +1116,14 @@ def TTL_PipeNetScopeOp : TTL_Op<"pipenet_scope",
 
 def TTL_IsSrcOp : TTL_Op<"is_src",
     [Pure, DeclareOpInterfaceMethods<TTL_PipeNetPredicateOpInterface>]> {
-  let summary = "Predicate: current node is a source of any pipe in the PipeNet";
+  let summary = "Return whether the current node is a PipeNet source";
   let description = [{
     Returns `true` on nodes that match the `src` of at least one pipe in the
     named PipeNet, `false` elsewhere. The value-returning sibling of
     `ttl.if_src`; used as the condition of an `scf.if` to guard pipe-coupled
-    work without entering a region. When `records` is present, the current
-    logical device must also match the source endpoint in a record.
+    work without entering a region. When `records` is present, the operation
+    uses those records directly; logical-device records also require the
+    current device to match the source endpoint.
   }];
   let arguments = (ins I64Attr:$pipe_net_id,
                         OptionalAttr<TTL_PipeNetRecordsAttr>:$records);
@@ -1059,13 +1134,13 @@ def TTL_IsSrcOp : TTL_Op<"is_src",
 
 def TTL_IsDstOp : TTL_Op<"is_dst",
     [Pure, DeclareOpInterfaceMethods<TTL_PipeNetPredicateOpInterface>]> {
-  let summary = "Predicate: current node is a destination of any pipe in the PipeNet";
+  let summary = "Return whether the current node is a PipeNet destination";
   let description = [{
     Returns `true` on nodes whose coordinate falls within the `dst` range of
     at least one pipe in the named PipeNet, `false` elsewhere. The
     value-returning sibling of `ttl.if_dst`. When `records` is present, the
-    current logical device must also match the destination endpoint in a
-    record.
+    operation uses those records directly; logical-device records also require
+    the current device to match the destination endpoint.
   }];
   let arguments = (ins I64Attr:$pipe_net_id,
                         OptionalAttr<TTL_PipeNetRecordsAttr>:$records);
@@ -1074,14 +1149,31 @@ def TTL_IsDstOp : TTL_Op<"is_dst",
   let hasVerifier = 1;
 }
 
+def TTL_PipeNetDestinationCountOp
+    : TTL_Op<"pipenet_destination_count", [Pure]> {
+  let summary = "Count PipeNet records targeting the current node";
+  let description = [{
+    Returns the number of records in the named PipeNet whose destination range
+    contains the current node. The count equals the number of times a
+    `ttl.pipenet_foreach_dst` region for the same PipeNet executes on that node.
+    For graph PipeNets, destination matching includes the current logical
+    device.
+  }];
+  let arguments = (ins I64Attr:$pipe_net_id,
+                        TTL_PipeNetRecordsAttr:$records);
+  let results = (outs Index:$result);
+  let assemblyFormat = "attr-dict `:` type($result)";
+  let hasVerifier = 1;
+}
+
 def TTL_IsActiveOp : TTL_Op<"is_active",
     [Pure, DeclareOpInterfaceMethods<TTL_PipeNetPredicateOpInterface>]> {
-  let summary = "Predicate: current node is a source or destination in the PipeNet";
+  let summary = "Return whether the current node participates in a PipeNet";
   let description = [{
     Returns `true` on nodes that are either a source or a destination of at
     least one pipe in the named PipeNet (the union of `is_src` and `is_dst`).
-    When `records` is present, node roles also include the corresponding
-    logical-device endpoints.
+    When `records` is present, the operation uses those records directly;
+    logical-device records also require the corresponding endpoint device.
   }];
   let arguments = (ins I64Attr:$pipe_net_id,
                         OptionalAttr<TTL_PipeNetRecordsAttr>:$records);
@@ -2056,11 +2148,19 @@ def TTL_StoreOp : TTL_ComputePrimitiveOp<"store", "Passthrough",
     // Accumulating store (from +=):
     ttl.store %result, %reserve {accumulate} : ...
     ```
+
+    When `row_prefix` is set, the source contains one 32x32 tile and the
+    reserve-backed destination contains one tile with the same 32-element
+    width and a supported height no greater than 32. The operation packs the
+    source DST tile directly into the destination tile; rows outside the
+    destination tile are not stored. `row_prefix` supports bf16 and f32 and
+    may be combined with `accumulate`.
   }];
   let arguments = (ins
     AnyRankedTensor:$tensor,
     AnyRankedTensor:$view,
-    OptionalAttr<UnitAttr>:$accumulate
+    OptionalAttr<UnitAttr>:$accumulate,
+    OptionalAttr<UnitAttr>:$row_prefix
   );
   let assemblyFormat = "$tensor `,` $view attr-dict `:` type($tensor) `,` type($view)";
   let hasVerifier = 1;
@@ -2181,7 +2281,8 @@ def TTL_RawAddrOp : TTL_Op<"raw_addr", [Pure]> {
     Every kernel that references the tensor receives its buffer base as a common
     runtime argument. Unlike a tensor operand to `ttl.opaque_call`, this op does
     not materialize a `TensorAccessor` or require its compile-time arguments.
-    Slice/view operands are unsupported.
+    The result carries no tensor layout, distribution, page size, alignment,
+    extent, or identity metadata. Slice/view operands are unsupported.
   }];
   let arguments = (ins TTLLayoutTensor:$tensor);
   let results = (outs I32:$result);
@@ -2242,20 +2343,23 @@ def TTL_DFBReconfigurationOp : TTL_Op<"dfb_reconfiguration",
     [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Enter the next worker-local DFB configuration epoch";
   let description = [{
-    `ttl.dfb_reconfiguration` is a worker-local synchronization boundary shared
-    by the logical kernels named by `boundary`. Every participant executes the
-    same zero-or-one dynamic boundary instance per dispatch and launch node and
-    executes boundary sites in the same order. Every boundary in one module
-    declares the same participant set. DFB-interface work ordered before the
-    boundary completes before the runtime installs the next epoch's
-    configuration. DFB-interface work ordered after the boundary begins after
-    installation. Independent math and SFPU work may overlap the boundary.
+    `ttl.dfb_reconfiguration` synchronizes the logical kernels named by
+    `boundary` before installing the next DFB configuration. On each launch
+    node, all participants execute the operation under equivalent control flow:
+    either the same static count and loop trip-count sequence or the same
+    conditional execution. Multiple reconfiguration operations execute in the
+    same order and declare the same participant set. DFB-interface work before
+    each execution completes before installation, and DFB-interface work after
+    it begins after installation. Independent math and SFPU work may overlap
+    the operation.
 
     The source operation does not name physical DFB indices or enumerate the
     interfaces that change. Allocation analysis derives the configuration for
     each epoch from logical DFB lifetimes. Live protocol state retains its
-    physical index, storage, and interface configuration across the boundary;
-    reassignment requires a complete protocol and synchronization proof.
+    physical index, storage, and interface configuration across the operation;
+    reassignment requires a complete protocol and synchronization proof unless
+    the operation declares that unread producer payload and opaque external
+    protocol state may be discarded.
 
     Runtime execution is currently supported only on Blackhole. Compilation
     rejects a resolved non-Blackhole target. Shared-L1 synchronization state
@@ -2299,6 +2403,18 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     occurrence, each descriptor template-argument occurrence, then each
     dependency-only operand. Operand adaptation may map distinct occurrences to
     the same DFB without merging them.
+
+    A base tensor argument is converted according to the enclosing logical
+    kernel and its `ttl.layout`. Data-movement kernels receive a
+    `TensorAccessor` for device DRAM or SRAM, including ND-sharded storage.
+    `L1` and `L1Small` identify the corresponding TTNN SRAM buffer types;
+    `L1Small` requires sharded storage.
+    Compute kernels receive a byte-addressable `LocalTensorAccessor<uint8_t>`
+    only for height-, width-, or block-sharded SRAM. Tensor slices and views are
+    invalid. Repeated occurrences of one tensor share one accessor object while
+    remaining distinct positional C++ arguments. The callee
+    accepts the accessor by `const&` and must not retain its address or
+    reference after the enclosing kernel function returns.
 
     The ordered `dfb_effects` list describes reserve, push, wait, and pop
     actions completed synchronously before the external call returns. Each
@@ -2357,7 +2473,6 @@ def TTL_OpaqueCallOp : TTL_Op<"opaque_call",
     access a DFB, declare DFB effects or non-transactional accesses, or declare
     unknown DFB access because condition evaluation is stable and repeat-safe
     rather than stateful.
-
     `fabric_manager_effects` declares ownership effects for external fabric
     connection managers. The enclosing operation binds each claim to one
     logical kernel. Nonlocal verification requires balanced ownership and
@@ -2453,6 +2568,11 @@ def TTL_TileStoreOp : TTL_ComputePrimitiveOp<"tile_store", "Passthrough",
     ttl.tile_store %tile, %view[%row, %col] from dst[%c0]
       : !ttcore.tile<32x32, bf16>, tensor<2x3x!ttcore.tile<32x32, bf16>>
     ```
+
+    `row_prefix` preserves the tensor-level decision to store one 32x32 DST
+    tile into one destination tile with the same width and a supported height
+    no greater than 32. Lowering uses the destination tile configuration to
+    omit source rows outside that height.
   }];
   let arguments = (ins
     AnyType:$tile,
@@ -2460,7 +2580,8 @@ def TTL_TileStoreOp : TTL_ComputePrimitiveOp<"tile_store", "Passthrough",
     Variadic<Index>:$indices,
     Index:$dst_index,
     DefaultValuedAttr<TTL_DFBTileStoreKindAttr,
-      "::mlir::tt::ttl::DFBTileStoreKind::Producer">:$store_kind
+      "::mlir::tt::ttl::DFBTileStoreKind::Producer">:$store_kind,
+    OptionalAttr<UnitAttr>:$row_prefix
   );
   let assemblyFormat = "$tile `,` $view `[` $indices `]` `from` `dst` `[` $dst_index `]` attr-dict `:` type($tile) `,` type($view)";
   let hasVerifier = 1;

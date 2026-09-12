@@ -369,12 +369,22 @@ inline std::optional<int64_t> getCBIndex(mlir::Value cb) {
 /// Returns failure when `cb` does not resolve to a declaration with `dfb_id`.
 FailureOr<int64_t> getDFBId(mlir::Value cb);
 
+/// Return DFB dependency occurrence indices without an access contract.
+///
+/// Each returned occurrence may perform arbitrary protocol actions inside the
+/// external callee and remains incomplete for lifecycle analysis.
+SmallVector<unsigned> getOpaqueDFBDependencyIndices(OpaqueCallOp call);
+
 /// Returns the number of pages in one DFB block.
 FailureOr<uint64_t> getDFBPagesPerBlock(CircularBufferType type);
 
 /// Returns the hardware page size for a DFB element type.
 /// Scalar elements must occupy a positive whole number of bytes.
 FailureOr<uint64_t> getDFBPageSizeBytes(CircularBufferType type);
+
+/// Returns one block's capacity for a DFB operand and the static view capacity
+/// for an acquired DFB block operand.
+FailureOr<uint64_t> getDFBTransferCapacityBytes(Value endpoint);
 
 /// Selects the identity contract diagnosed by verifyDFBOperandIdentities.
 enum class DFBIdentityRequirement {
@@ -975,6 +985,20 @@ inline TileOp createTileOpWithPlaceholderDstIndex(OpBuilder &builder,
       TileOp::create(builder, loc, std::forward<Args>(args)..., dstIndex);
   addPlaceholderDstIndexAttr(tileOp.getOperation());
   return tileOp;
+}
+
+/// Store `tile` into producer-owned `view` at `indices`, preserving
+/// `rowPrefix`. Mark the DST index as a placeholder for subsequent register
+/// assignment.
+inline TileStoreOp createTileStoreWithPlaceholderDstIndex(
+    OpBuilder &builder, Location loc, Value tile, Value view,
+    ValueRange indices, UnitAttr rowPrefix = nullptr) {
+  Value dstIndex = createPlaceholderDstIndex(builder, loc);
+  TileStoreOp store =
+      TileStoreOp::create(builder, loc, tile, view, indices, dstIndex,
+                          DFBTileStoreKind::Producer, rowPrefix);
+  addPlaceholderDstIndexAttr(store.getOperation());
+  return store;
 }
 
 /// Collect the dataflow buffer values targeted by pack operations inside a

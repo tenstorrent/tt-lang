@@ -11,10 +11,11 @@ DFB behavior is declared rather than inferred: `ttl.opaque_call` exposes
 dependencies, ordered protocol effects, typed non-transactional accesses, and
 unknown access through `DFBAccessOpInterface`. Every declared effect action
 completes before return, but associated asynchronous interface work may remain
-live until the terminal consumer release or a synchronized reset. A dependency
-occurrence with neither a listed effect nor a non-transactional access remains
-opaque until a synchronized reset proves completion. A complete access contract
-can establish the lifecycle facts required for physical-index reuse.
+live until the terminal consumer release, a synchronized reset, or a
+reconfiguration declared with `discard_dfb_state=True`. A dependency occurrence
+with neither a listed effect nor a non-transactional access remains opaque until
+one of those state-discarding boundaries proves completion. A complete access
+contract can establish the lifecycle facts required for physical-index reuse.
 
 The Python interface supports void calls and one i32 or i64 scalar result.
 
@@ -220,7 +221,7 @@ argument.
 | Integer or boolean in `template_args` | Signed integer or boolean constant | Must be compile-time evaluable. |
 | Float in `template_args` | Unsigned IEEE-754 f32 bit-pattern constant | Must be compile-time evaluable. |
 | Scalar in `func_args` | Lowered scalar parameter | Follows the TT-Metal kernel scalar convention. |
-| Base tensor in `func_args` | `TensorAccessor` parameter | Supports tiled bf16 and fp32 tensors only in NOC kernels. |
+| Base tensor in `func_args` | Typed tensor accessor | Data movement accepts device DRAM or SRAM; compute accepts height-, width-, or block-sharded SRAM. |
 | `ttl.raw_addr(base_tensor)` in `func_args` | `uint32_t` runtime tensor buffer address | Supports NOC and compute kernels; slices and derived tensor values are rejected. |
 | Captured `ttnn.GlobalSemaphore` | `uint32_t` address literal or parameter | The address is fixed for the compiled operation. |
 
@@ -233,10 +234,10 @@ The [external-functions reference](../sphinx/reference/external-functions.md)
 defines the Python API and static-expression rules. Every statically known DFB
 accessed by external code must be declared as a dependency. Protocol and
 non-transactional summaries are optional. A dependency occurrence with neither
-kind of summary remains an opaque access until a synchronized reset proves
-completion. Without that reset, its reuse contract is incomplete. A complete,
-accurate contract can prove a bounded lifecycle and permit physical-index
-reuse.
+kind of summary remains an opaque access until a synchronized reset or a
+reconfiguration declared with `discard_dfb_state=True` proves completion.
+Without such a boundary, its reuse contract is incomplete. A complete, accurate
+contract can prove a bounded lifecycle and permit physical-index reuse.
 
 `OpaqueCallOp::getDFBDependencyOperands()` returns dependency occurrences in
 this order:
@@ -347,24 +348,23 @@ create executable TTL operations. Every listed action must execute on every
 execution of the call and complete before return. Conditional external actions
 require corresponding TTL control flow around a call with an unconditional
 summary. The effect list does not state when associated hardware interface work
-completes; the declared protocol terminal or a synchronized reset must complete
-that work before storage reuse.
+completes; the declared protocol terminal or a state-discarding boundary must
+complete that work before storage reuse.
 
 An occurrence with neither a protocol effect nor a non-transactional access is
-a possible read and write beginning at call entry. A synchronized reset ordered
-after the call through the same
-participating logical kernel terminates a named opaque access and canonicalizes
-its protocol state. The reset implementation must complete earlier interface
-work before publishing arrival. Ordinary storage accesses between summarized
-acquisitions and releases remain inside the corresponding lifetime. A partial
-effect sequence is valid metadata but cannot prove a bounded lifecycle for that
-DFB. When the same DFB has multiple dependency occurrences, every occurrence
-requires an explicit contract or a reset that terminates the opaque access. For
-allocation, `unknown_dfb_access` conservatively adds the call as an opaque
-occurrence on
-every user-managed DFB, including listed DFBs, in each affected allocation
-scope. The compiler does not infer facts from the callee name, header, emitted
-C++, or integer DFB identity.
+a possible read and write beginning at call entry. A synchronized reset or a
+reconfiguration declared with `discard_dfb_state=True`, ordered after the call
+through the same participating logical kernel, terminates a named opaque access
+and establishes empty protocol state. The boundary implementation must complete
+earlier interface work before publishing arrival. Ordinary storage accesses
+between summarized acquisitions and releases remain inside the corresponding
+lifetime. A partial effect sequence is valid metadata but cannot prove a bounded
+lifecycle for that DFB. When the same DFB has multiple dependency occurrences,
+every occurrence requires an explicit contract or a state-discarding boundary.
+For allocation, `unknown_dfb_access` conservatively adds the call as an opaque
+occurrence on every user-managed DFB, including listed DFBs, in each affected
+allocation scope. The compiler does not infer facts from the callee name,
+header, emitted C++, or integer DFB identity.
 
 Native `ttl.copy` operations use the acquire and release operations around the
 transferred slot as their ownership contract. They do not require external
@@ -440,19 +440,30 @@ C++ function argument.
 
 ## Tensor arguments
 
-A base tensor in `func_args` becomes a `TensorAccessor` containing the runtime
-buffer address and compile-time accessor configuration. The interface supports
-tiled bf16 and fp32 tensors in DRAM and L1. Only NOC kernels receive the
-required accessor compile-time arguments. Compute and Ethernet kernels must use
-a supported scalar interface instead.
+A base tensor in `func_args` preserves its TTL layout and storage. A data-
+movement kernel receives a `TensorAccessor` containing the runtime buffer
+address and compile-time accessor configuration for device DRAM or SRAM. A
+compute kernel receives a byte-addressable `LocalTensorAccessor<uint8_t>` only
+for height-, width-, or block-sharded SRAM. The runtime checks that each
+executing core has a local shard.
+
+TTL retains the `L1` and `L1Small` enum spellings to match TTNN buffer types.
+Both select worker SRAM. `L1Small` corresponds to TTNN `L1_SMALL`, a separately
+reserved SRAM region that supports only sharded allocations.
+Both accessor forms support TILE and ROW_MAJOR tensors. TILE accepts FLOAT32,
+BFLOAT16, BFLOAT8_B, BFLOAT4_B, INT32, UINT32, UINT16, and UINT8. ROW_MAJOR
+accepts FLOAT32, BFLOAT16, INT32, UINT32, UINT16, and UINT8. Ethernet tensor
+operands are rejected.
+External functions accept generated accessors by `const&` and must not retain
+their address or reference after the enclosing kernel function returns.
 
 `ttl.raw_addr(tensor)` reads the runtime tensor buffer address directly from the
 NOC or compute kernel common arguments. It does not construct a
 `TensorAccessor` or consume accessor compile-time arguments. The operand must be
 an argument of the enclosing kernel-thread function with TTL layout encoding. A
 nested region argument, slice, view, or computed tensor has no defined
-runtime-argument mapping and is rejected. A raw address provides no layout,
-view offset, page size, alignment, or bounds metadata.
+runtime-argument mapping and is rejected. A raw address provides no tensor
+identity, layout, view offset, page size, alignment, or bounds metadata.
 
 ## Global semaphores
 
@@ -472,8 +483,11 @@ operand segments for template, dependency-only, and function-argument DFBs.
 Dependency occurrences, protocol effects, non-transactional accesses, and
 unknown access remain in TTL for analysis and verification. TTL to TTKernel
 conversion resolves DFB indices and materializes descriptor metadata before the
-DFB type loses its block geometry; it discards dependency-only operands and
-access-contract metadata because those facts do not alter the C++ call.
+DFB type loses its block geometry. It records the required physical descriptors
+in `dfb_resource_indices` on the resulting `ttkernel.opaque_call`. After core
+specialization, `ttkernel-annotate-dfb-use` includes requirements from
+surviving calls in `ttl.used_dfb_indices`. Dependency-only operands and access-
+contract metadata do not alter the C++ call and are not emitted.
 TTKernel to EmitC resolves constants and descriptor types, and C++ emission
 inserts the required prelude and header during its existing operation scan.
 

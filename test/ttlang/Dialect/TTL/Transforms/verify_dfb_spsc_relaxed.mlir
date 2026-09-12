@@ -1,6 +1,12 @@
-// Summary: Verifies the explicit external DFB domain proof override.
+// Summary: Verifies the explicit external DFB domain-check override.
 
-// RUN: env TTL_RELAX_DFB_SPSC=1 ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices,ttl-verify-dfb-spsc)' -o /dev/null
+// RUN: env TTL_RELAX_DFB_SPSC=1 ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices,ttl-verify-dfb-spsc,ttl-verify-pipenet-guards)' 2>%t.warning | FileCheck %s
+// RUN: FileCheck %s --check-prefix=WARNING < %t.warning
+
+// Both relaxed verifiers record one shared audit marker and warning.
+// CHECK: ttl.relaxed_dfb_protocol_domain_verification
+// WARNING-COUNT-1: warning: `TTL_RELAX_DFB_SPSC` disables per-launch-node DFB producer, consumer, and wait correspondence checks
+// WARNING-NOT: warning: `TTL_RELAX_DFB_SPSC`
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @consumer_all_nodes()
@@ -35,6 +41,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     %block = ttl.cb_reserve %dfb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     func.return
   }
 
@@ -49,7 +56,26 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %block = ttl.cb_reserve %dfb
           : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     }
+    func.return
+  }
+
+  func.func @hidden_producer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dfb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.opaque_call "produce" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>, #ttl.dfb_protocol_effect<push, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    func.return
+  }
+
+  func.func @hidden_consumer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %dfb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %block = ttl.cb_wait %dfb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     func.return
   }
 }

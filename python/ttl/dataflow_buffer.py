@@ -299,6 +299,8 @@ class PhysicalDFBConfig:
     `tile` is present only when the DFB element type is a TTCore tile.
     `allocation_nodes` distinguishes an unknown domain (`None`) from an exact,
     possibly empty, launch-node set.
+    `storage_index` identifies the backing L1 allocation and may be shared by
+    physical DFBs that are never used concurrently on the same launch node.
     """
 
     dfb_index: int
@@ -309,6 +311,7 @@ class PhysicalDFBConfig:
     tile: Optional[Tuple[int, int]]
     storage_segments: Tuple["DFBStorageSegment", ...] = ()
     allocation_nodes: Optional[Tuple[Tuple[int, int], ...]] = None
+    storage_index: Optional[int] = None
 
 
 @dataclass(frozen=True)

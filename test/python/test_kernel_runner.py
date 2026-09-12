@@ -19,6 +19,7 @@ from typing import NamedTuple
 import weakref
 
 import pytest
+import ttl.layouts as ttl_layouts
 
 from ttl import (
     CoreRuntimeArgs,
@@ -2147,6 +2148,138 @@ def test_build_kernel_descriptors_materializes_planned_resources(monkeypatch):
     assert descriptors[0].runtime_args[1][0] == [4, 5]
 
 
+def _local_tensor_test_environment():
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.TensorMemoryLayout = SimpleNamespace(
+        HEIGHT_SHARDED="height",
+        WIDTH_SHARDED="width",
+        BLOCK_SHARDED="block",
+    )
+    fake_ttnn.BufferType = SimpleNamespace(L1="l1", L1_SMALL="l1-small", DRAM="dram")
+    return fake_ttnn
+
+
+class _LocalTensorTestDouble:
+    def __init__(self, buffer_type, memory_layout, shard_grid):
+        self._memory_config = SimpleNamespace(
+            buffer_type=buffer_type,
+            memory_layout=memory_layout,
+            shard_spec=(
+                None if shard_grid is None else SimpleNamespace(grid=shard_grid)
+            ),
+        )
+
+    def memory_config(self):
+        return self._memory_config
+
+    @staticmethod
+    def buffer_address():
+        return 0x2000
+
+
+def test_build_kernel_descriptors_accepts_complete_local_tensor_shards(monkeypatch):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    tensor = _LocalTensorTestDouble("l1-small", "block", full_grid)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="compute",
+        tensor_indices=[0],
+        local_tensor_indices=[0],
+        config=object(),
+    )
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        tensor_accessor_args=[],
+        core_ranges=full_grid,
+        grid_cols=2,
+        grid_rows=1,
+        num_cbs=0,
+    )
+
+    assert descriptors[0].common_runtime_args == [0x2000]
+
+
+def test_local_tensor_access_requires_runtime_address_metadata(monkeypatch):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    tensor = _LocalTensorTestDouble("l1", "height", full_grid)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="compute",
+        tensor_indices=[],
+        local_tensor_indices=[0],
+        config=object(),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="local tensor indices must also appear in tensor runtime arguments",
+    ):
+        kernel_runner._validate_local_tensor_access(spec, [tensor], full_grid)
+
+
+def test_local_tensor_access_rejects_out_of_range_tensor_index(monkeypatch):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    tensor = _LocalTensorTestDouble("l1", "height", full_grid)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="compute",
+        tensor_indices=[1],
+        local_tensor_indices=[1],
+        config=object(),
+    )
+
+    with pytest.raises(ValueError, match="local tensor index 1 is outside"):
+        kernel_runner._validate_local_tensor_access(spec, [tensor], full_grid)
+
+
+@pytest.mark.parametrize(
+    ("buffer_type", "memory_layout", "shard_grid", "message"),
+    [
+        ("dram", "height", _FakeExplicitCoreRanges((0, 0), (1, 0)), "sharded SRAM"),
+        (
+            "l1",
+            "interleaved",
+            _FakeExplicitCoreRanges((0, 0), (1, 0)),
+            "height-, width-, or block-sharded",
+        ),
+        ("l1", "height", None, "has no shard specification"),
+        (
+            "l1",
+            "height",
+            _FakeExplicitCoreRanges((0, 0), (0, 0)),
+            "no shard on executing cores.*\\(1, 0\\)",
+        ),
+    ],
+    ids=["dram", "interleaved", "missing-spec", "missing-core"],
+)
+def test_local_tensor_access_rejects_invalid_runtime_storage(
+    monkeypatch, buffer_type, memory_layout, shard_grid, message
+):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    tensor = _LocalTensorTestDouble(buffer_type, memory_layout, shard_grid)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="compute",
+        tensor_indices=[0],
+        local_tensor_indices=[0],
+        config=object(),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        kernel_runner._validate_local_tensor_access(
+            spec, [tensor], _FakeExplicitCoreRanges((0, 0), (1, 0))
+        )
+
+
 # Reconfiguration addresses follow caller runtime arguments without renumbering them.
 def test_build_kernel_descriptors_composes_reconfiguration_runtime_args(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
@@ -2729,6 +2862,58 @@ def test_reconfiguration_scratch_uses_exact_node_union(monkeypatch):
     } == {(1, 0)}
 
 
+def test_reconfiguration_scratch_excludes_unmodified_descriptors(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.uint32 = "uint32"
+    fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
+    fake_ttnn.ShardOrientation = type("ShardOrientation", (), {"ROW_MAJOR": 0})
+    fake_ttnn.TensorMemoryLayout = type("TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0})
+    fake_ttnn.BufferType = type("BufferType", (), {"L1": 0})
+    fake_ttnn.ShardSpec = lambda *args: args
+    fake_ttnn.MemoryConfig = lambda *args: args
+    device = object()
+    scratch_allocations = []
+
+    def allocate_scratch(core_ranges, num_bytes, allocation_device):
+        scratch_allocations.append((core_ranges, num_bytes, allocation_device))
+        return _FakeTensor(allocation_device, address=0x8000)
+
+    fake_ttnn.from_torch = lambda *_args, **_kwargs: _FakeTensor(device, address=0x9000)
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_scratch
+    )
+    monkeypatch.setattr(
+        kernel_runner,
+        "_l1_buffer_addresses_by_core",
+        lambda tensor, _device: {(0, 0): tensor.buffer_address()},
+    )
+
+    reconfigured = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32))
+    unchanged = PhysicalDFBConfig(1, 1, "float32", 1, 4096, (32, 32))
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (
+                DFBConfigurationEpoch(None, reconfigured),
+                DFBConfigurationEpoch(7, reconfigured),
+            ),
+            (DFBConfigurationEpoch(None, unchanged),),
+        ),
+    )
+
+    resources = kernel_runner.build_dfb_reconfiguration_runtime_resources(
+        tensors=[],
+        core_ranges=_FakeCoreRanges(),
+        plan=plan,
+        device=device,
+    )
+
+    assert set(resources.scratch_tensors) == {0}
+    assert len(scratch_allocations) == 1
+    assert scratch_allocations[0][1:] == (2048, device)
+
+
 def test_reconfiguration_rejects_undersized_pipe_backing(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     device = object()
@@ -2977,6 +3162,79 @@ def test_device_domain_builds_per_device_runtime_coordinates(monkeypatch):
     assert mesh_programs[0][1] is not mesh_programs[1][1]
     assert mesh_programs[0][1].kernels[0].common_runtime_args == [0x2000, 0, 0]
     assert mesh_programs[1][1].kernels[0].common_runtime_args == [0x2000, 0, 1]
+
+
+@pytest.mark.parametrize(
+    ("placements", "expected_coordinates"),
+    [
+        ([(0, 0), (3, 7)], [(0, 0), (3, 7)]),
+        (
+            [kernel_runner.MeshProgramPlacement((1, 2), (2, 3))],
+            [(1, 2), (1, 3), (2, 2), (2, 3)],
+        ),
+    ],
+    ids=("coordinates", "inclusive-range"),
+)
+def test_device_domain_builds_only_explicit_mesh_program_placements(
+    monkeypatch, placements, expected_coordinates
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+    tensor = _FakeTensor(object(), address=0x2000)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[0],
+        config=object(),
+    )
+
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        cb_configs=[],
+        core_ranges=_FakeCoreRanges(),
+        device_domain=DeviceDomain((4, 8)),
+        mesh_program_placements=placements,
+    )
+
+    mesh_programs = result["program"].mesh_programs
+    assert len(mesh_programs) == len(expected_coordinates)
+    assert [
+        tuple(program.kernels[0].common_runtime_args[1:])
+        for _, program in mesh_programs
+    ] == expected_coordinates
+
+
+@pytest.mark.parametrize(
+    "placement, message",
+    [
+        ((0,), "rank must match"),
+        ((-1, 0), "axis 0 must be non-negative"),
+        ((4, 0), "inside the device domain"),
+    ],
+)
+def test_device_domain_rejects_invalid_mesh_program_placement(
+    monkeypatch, placement, message
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+
+    with pytest.raises(ValueError, match=message):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[_FakeTensor(object())],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            device_domain=DeviceDomain((4, 8)),
+            mesh_program_placements=[placement],
+            runtime_resource_factory=lambda **_kwargs: pytest.fail(
+                "invalid placement reached runtime resource planning"
+            ),
+        )
 
 
 def test_routing_plane_runtime_args_are_dense_per_device(monkeypatch):
@@ -4450,6 +4708,33 @@ def test_run_kernel_with_mesh_program_descriptor(monkeypatch):
     assert first_program.custom_program_hash == 5
 
 
+@pytest.mark.parametrize(
+    ("placements", "message"),
+    [
+        ([(-1, 0)], "axis 0 must be non-negative"),
+        ([(0, 0), (0, 0, 0)], "placement 1 has rank 3, expected rank 2"),
+        ([(0, 0), (0, 0)], "indices 0 and 1 must not overlap"),
+    ],
+    ids=("negative", "mixed-rank", "overlap"),
+)
+def test_run_kernel_rejects_invalid_mesh_placements_before_resource_planning(
+    monkeypatch, placements, message
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+
+    with pytest.raises(ValueError, match=message):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            mesh_program_placements=placements,
+            runtime_resource_factory=lambda **_kwargs: pytest.fail(
+                "invalid placement reached runtime resource planning"
+            ),
+        )
+
+
 def test_build_mesh_program_descriptor_rejects_empty_placements(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
 
@@ -5235,13 +5520,13 @@ def test_reconfiguration_encodes_physical_index_32_in_high_mask(monkeypatch):
         plan=plan,
     )
 
-    assert len(scratch_addresses) == 33
+    assert len(scratch_addresses) == 1
     assert len(host_configurations) == 1
     encoded = host_configurations[0][0]
     assert int(encoded[256]) == 0
     assert int(encoded[257]) == 1
     assert tuple(int(value) for value in encoded[128:132]) == (
-        scratch_addresses[32],
+        scratch_addresses[0],
         12288,
         6,
         2048,
@@ -5453,6 +5738,139 @@ def test_allocation_nodes_scope_unspecialized_dfb_descriptor(monkeypatch):
                 1,
                 2048,
                 (32, 32),
+                allocation_nodes=((1, 0),),
+            )
+        ],
+        core_ranges=full_grid,
+        kernel_specs=[_specialized_spec(full_grid, None)],
+    )
+
+    assert len(descriptors) == 1
+    assert _descriptor_cores(descriptors[0]) == {(1, 0)}
+
+
+def test_physical_dfb_uses_one_descriptor_across_residency_signatures(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    configs = [
+        PhysicalDFBConfig(
+            0,
+            1,
+            "bfloat16",
+            1,
+            2048,
+            (32, 32),
+            allocation_nodes=((0, 0),),
+        ),
+        PhysicalDFBConfig(
+            1,
+            1,
+            "bfloat16",
+            1,
+            2048,
+            (32, 32),
+            allocation_nodes=((0, 0), (1, 0)),
+        ),
+    ]
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=configs,
+        core_ranges=full_grid,
+        kernel_specs=[_specialized_spec(full_grid, None)],
+    )
+
+    assert len(descriptors) == 2
+    descriptors_by_index = {
+        descriptor.format_descriptors[0].buffer_index: descriptor
+        for descriptor in descriptors
+    }
+    assert _descriptor_cores(descriptors_by_index[0]) == {(0, 0)}
+    assert _descriptor_cores(descriptors_by_index[1]) == {(0, 0), (1, 0)}
+
+
+def test_storage_group_uses_one_lcm_aligned_descriptor(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    configs = [
+        PhysicalDFBConfig(0, 3, "bfloat16", 1, 3072, None, storage_index=4),
+        PhysicalDFBConfig(1, 2, "bfloat16", 1, 4096, None, storage_index=4),
+    ]
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=configs,
+        core_ranges=_FakeCoreRanges(),
+    )
+
+    assert len(descriptors) == 1
+    assert descriptors[0].total_size == 12288
+    assert [
+        descriptor.buffer_index for descriptor in descriptors[0].format_descriptors
+    ] == [0, 1]
+
+
+def test_storage_group_partitions_disjoint_residency_signatures(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    configs = [
+        PhysicalDFBConfig(
+            0,
+            1,
+            "bfloat16",
+            1,
+            2048,
+            (32, 32),
+            allocation_nodes=((0, 0),),
+            storage_index=2,
+        ),
+        PhysicalDFBConfig(
+            1,
+            1,
+            "float32",
+            1,
+            4096,
+            (32, 32),
+            allocation_nodes=((1, 0),),
+            storage_index=2,
+        ),
+    ]
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=configs,
+        core_ranges=full_grid,
+        kernel_specs=[_specialized_spec(full_grid, None)],
+    )
+
+    assert len(descriptors) == 2
+    descriptors_by_index = {
+        descriptor.format_descriptors[0].buffer_index: descriptor
+        for descriptor in descriptors
+    }
+    assert descriptors_by_index[0].total_size == 2048
+    assert _descriptor_cores(descriptors_by_index[0]) == {(0, 0)}
+    assert descriptors_by_index[1].total_size == 4096
+    assert _descriptor_cores(descriptors_by_index[1]) == {(1, 0)}
+
+
+# An unspecialized kernel still restricts a segmented descriptor to its nodes.
+def test_allocation_nodes_scope_unspecialized_segmented_dfb_descriptor(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=[
+            PhysicalDFBConfig(
+                0,
+                1,
+                "bfloat16",
+                1,
+                2048,
+                (32, 32),
+                storage_segments=(DFBStorageSegment(nodes=((1, 0),)),),
                 allocation_nodes=((1, 0),),
             )
         ],
@@ -7054,6 +7472,55 @@ def test_emit_runner_source_uses_shared_pipe_resource_helpers(monkeypatch):
     assert "ttnn.create_global_semaphore(device, core_ranges, 0)" not in source
 
 
+def test_emit_runner_source_validates_tensor_configurations(monkeypatch):
+    expected_configuration = ((32, 32), "bfloat16", "l1-height-sharded")
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[],
+        cb_configs=[],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+        tensor_configurations=(expected_configuration,),
+    )
+    calls = []
+
+    def record_run(**kwargs):
+        calls.append(kwargs)
+        return "executed"
+
+    monkeypatch.setattr(
+        ttl_layouts,
+        "get_tensor_configuration",
+        lambda tensor: tensor.configuration,
+    )
+    emitted_runner = _load_emitted_runner(monkeypatch, source, record_run)
+
+    with pytest.raises(ValueError, match="Expected 1 tensor arguments, got 0"):
+        emitted_runner["run"]([], device=object())
+
+    matching_tensor = SimpleNamespace(configuration=expected_configuration)
+    assert emitted_runner["run"]([matching_tensor], device=object()) == "executed"
+    assert len(calls) == 1
+
+    mismatched_tensor = SimpleNamespace(
+        configuration=((32, 32), "bfloat16", "l1-width-sharded")
+    )
+    with pytest.raises(ValueError, match=r"mismatch at indices \[0\]"):
+        emitted_runner["run"]([mismatched_tensor], device=object())
+
+
+def test_emit_runner_source_rejects_wrong_tensor_configuration_count():
+    with pytest.raises(ValueError, match="expected 2, got 1"):
+        kernel_runner.emit_runner_source(
+            kernel_specs=[],
+            cb_configs=[],
+            grid_cols=1,
+            grid_rows=1,
+            num_tensors=2,
+            tensor_configurations=(("first",),),
+        )
+
+
 def test_emitted_runner_without_resources_executes_shared_runner(monkeypatch):
     calls = []
 
@@ -7470,13 +7937,25 @@ def test_emit_runner_source_preserves_positional_options():
         2,
         64,
         3,
+        4,
+        123,
+        [(0, 0)],
+        None,
+        [],
+        False,
+        None,
     )
 
     assert '"""Auto-generated runner for legacy_kernel."""' in source
-    assert "PROGRAM_HASH = None" in source
+    assert "PROGRAM_HASH = 123" in source
+    assert "TENSOR_CONFIGURATIONS = None" in source
+    assert "MESH_PROGRAM_PLACEMENTS = [" in source
+    assert "    (0, 0)," in source
+    assert "KERNEL_FABRIC_ROUTES = []" in source
     assert "NUM_PIPE_SYNC_SEMAPHORES = 2" in source
     assert "PIPE_SRAM_SCRATCH_BYTES = 64" in source
     assert "NUM_PIPE_GLOBAL_SEMAPHORES = 3" in source
+    assert "NUM_DFB_RESETS = 4" in source
 
 
 def test_emit_runner_file_preserves_positional_options(tmp_path):
@@ -7493,15 +7972,27 @@ def test_emit_runner_file_preserves_positional_options(tmp_path):
         2,
         64,
         3,
+        4,
+        123,
+        [(0, 0)],
+        None,
+        [],
+        False,
+        None,
     )
 
     assert result_path == str(output_path)
     source = output_path.read_text()
     assert '"""Auto-generated runner for legacy_kernel."""' in source
-    assert "PROGRAM_HASH = None" in source
+    assert "PROGRAM_HASH = 123" in source
+    assert "TENSOR_CONFIGURATIONS = None" in source
+    assert "MESH_PROGRAM_PLACEMENTS = [" in source
+    assert "    (0, 0)," in source
+    assert "KERNEL_FABRIC_ROUTES = []" in source
     assert "NUM_PIPE_SYNC_SEMAPHORES = 2" in source
     assert "PIPE_SRAM_SCRATCH_BYTES = 64" in source
     assert "NUM_PIPE_GLOBAL_SEMAPHORES = 3" in source
+    assert "NUM_DFB_RESETS = 4" in source
 
 
 def test_emit_runner_source_with_mesh_program_placements():

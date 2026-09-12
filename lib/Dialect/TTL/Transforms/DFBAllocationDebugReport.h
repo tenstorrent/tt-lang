@@ -18,6 +18,11 @@ void printDFBAllocationDebugReport(
     const DFBConcurrentKernelLivenessAnalysis &liveness,
     const DFBPhysicalConflictModel &conflictModel);
 
+/// Print deterministic conflict facts used only for storage assignment.
+void printDFBStorageConflictDebugReport(
+    llvm::raw_ostream &output,
+    const DFBPhysicalConflictModel &storageConflictModel);
+
 } // namespace mlir::tt::ttl
 
 #endif // TTLANG_DIALECT_TTL_TRANSFORMS_DFBALLOCATIONDEBUGREPORT_H

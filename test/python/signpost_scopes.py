@@ -7,6 +7,8 @@
 # RUN: FileCheck %s < %t.output
 # RUN: %python %s > %t.fpu.output 2>&1
 # RUN: FileCheck %s --check-prefix=CHECK-FPU < %t.fpu.output
+# RUN: %python %s --ttl-specialize-cores > %t.specialized.output 2>&1
+# RUN: FileCheck %s --check-prefix=CHECK-FPU < %t.specialized.output
 
 """
 Broadcast multitile blocks kernel - verifies user-defined signpost scopes
@@ -85,11 +87,29 @@ def bcast_multitile_kernel(
 
     @ttl.datamovement()
     def demo_read():
-        pass
+        with c_dfb.reserve() as c_block:
+            ttl.copy(c[0, 0], c_block).wait()
+        for row in range(rows):
+            row_begin = row * row_tiles_per_block
+            row_end = row_begin + row_tiles_per_block
+            for col in range(cols):
+                col_begin = col * col_tiles_per_block
+                col_end = col_begin + col_tiles_per_block
+                with a_dfb.reserve() as a_block:
+                    ttl.copy(a[row_begin:row_end, 0:1], a_block).wait()
+                with b_dfb.reserve() as b_block:
+                    ttl.copy(b[0:1, col_begin:col_end], b_block).wait()
 
     @ttl.datamovement()
     def demo_write():
-        pass
+        for row in range(rows):
+            row_begin = row * row_tiles_per_block
+            row_end = row_begin + row_tiles_per_block
+            for col in range(cols):
+                col_begin = col * col_tiles_per_block
+                col_end = col_begin + col_tiles_per_block
+                with y_dfb.wait() as y_block:
+                    ttl.copy(y_block, y[row_begin:row_end, col_begin:col_end]).wait()
 
 
 # =============================================================================
@@ -103,6 +123,8 @@ def bcast_multitile_kernel(
 # CHECK-NOT:  DeviceZoneScopedN(
 # CHECK:      init_sfpu(
 # CHECK:      for (size_t [[K:.*]] = [[V6:.*]]; [[K]] < [[V4:.*]]; [[K]] += [[V5:.*]]) {
+# The row offset is invariant in the inner loop; scope nesting remains unchanged.
+# CHECK-NEXT:   size_t [[ROW_OFFSET:.*]] = [[K]] * [[V4]];
 # CHECK-NEXT:   for (size_t [[L:.*]] = [[V6]]; [[L]] < [[V4]]; [[L]] += [[V5]]) {
 # CHECK-NEXT:     tile_regs_acquire();
 # CHECK-NEXT:     {
@@ -125,10 +147,8 @@ def bcast_multitile_kernel(
 # CHECK-NEXT:     DeviceZoneScopedN("ttl_store");
 # CHECK-NEXT:     tile_regs_commit();
 # CHECK-NEXT:     tile_regs_wait();
-# CHECK-NEXT:     size_t [[V12:.*]] = 4;
-# CHECK-NEXT:     size_t [[V13:.*]] = [[K]] * [[V12]];
-# CHECK-NEXT:     size_t [[V14:.*]] = [[V13]] + [[L]];
-# CHECK-NEXT:     pack_tile<true>([[V6]], get_compile_time_arg_val(3), [[V14]]);
+# CHECK-NEXT:     size_t [[V13:.*]] = [[ROW_OFFSET]] + [[L]];
+# CHECK-NEXT:     pack_tile<true>([[V6]], get_compile_time_arg_val(3), [[V13]]);
 # CHECK-NEXT:     }
 # CHECK-NEXT:     }
 # CHECK-NEXT:     }
@@ -137,6 +157,7 @@ def bcast_multitile_kernel(
 # CHECK-NEXT:   }
 # CHECK-NEXT: }
 # CHECK-NOT:  DeviceZoneScopedN(
+# CHECK: === demo_read kernel written to {{.*}} ===
 
 # =============================================================================
 # FPU path checks (default: --ttl-maximize-dst --ttl-fpu-binary-ops)
@@ -191,6 +212,7 @@ def bcast_multitile_kernel(
 # CHECK-FPU-NEXT:   tile_regs_release();
 # CHECK-FPU-NEXT: }
 # CHECK-FPU-NOT:  DeviceZoneScopedN(
+# CHECK-FPU: === demo_read kernel written to {{.*}} ===
 
 
 if __name__ == "__main__":

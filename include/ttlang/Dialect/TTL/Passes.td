@@ -898,8 +898,12 @@ def TTLVerifyPipeNetGuards
 
     When `TTL_RELAX_DFB_SPSC` is set, this pass skips the check that each DFB
     wait has a producer on the same dynamically active launch nodes. The
-    program must enforce that correspondence. PipeNet endpoint guards, transfer
-    correspondence, and synchronization schedules remain mandatory.
+    program must enforce that correspondence. The later SPSC verifier still
+    rejects a waited DFB with neither a compiler-visible push nor uncontracted
+    external access that may contain one. PipeNet endpoint guards, transfer
+    correspondence, and synchronization schedules remain mandatory. The
+    compiler emits a warning and records
+    `ttl.relaxed_dfb_protocol_domain_verification` on the module.
   }];
 }
 
@@ -977,35 +981,40 @@ def TTLVerifyTransferProvenance
 
 def TTLVerifyDFBSPSC
     : Pass<"ttl-verify-dfb-spsc", "::mlir::ModuleOp"> {
-  let summary = "Reject DFBs with overlapping producer or consumer launch domains";
+  let summary = "Verify DFB producers and consumers across launch domains";
   let description = [{
-    Walks every `ttl.cb_reserve` and `ttl.cb_wait`, groups them by module-wide
-    logical `dfb_id` and enclosing `ttl.kernel_thread`-tagged `func.func`, and
-    tracks the launch-node domain for each producer or consumer participant.
-    A DFB is valid when, for each launched node, at most one producer kernel
-    reserves it and at most one consumer kernel waits on it. Disjoint domains
-    across different kernel functions are accepted. Distinct logical DFBs
-    remain separate when physical allocation assigns them the same `cb_index`.
+    Walks DFB protocol actions exposed through `DFBAccessOpInterface`, groups
+    them by module-wide logical `dfb_id` and enclosing
+    `ttl.kernel_thread`-tagged `func.func`, and tracks the launch-node domain for
+    each producer or consumer participant. The pass requires every waited DFB
+    to have a compiler-visible push or uncontracted external access that may
+    contain one and, for each launched node, at most one producer kernel and at
+    most one consumer kernel. Disjoint domains across different kernel
+    functions are accepted. Distinct logical DFBs remain separate when physical
+    allocation assigns them the same `cb_index`.
 
     tt-metal circular buffers expose a counter pair (`pages_received`,
     `pages_acked`) that is not multi-writer safe on either side, so the
     per-launched-node single-producer single-consumer property is required for
     correctness; see `docs/development/DFBManagement.md` for the runtime
-    contract. The pass emits an error for overlapping producer or consumer
-    domains, and for unknown domains when multiple threads participate and SPSC
-    cannot be proven statically.
+    contract. The pass emits an error for waits without any possible producer,
+    overlapping producer or consumer domains, and unknown domains when
+    multiple threads participate and SPSC cannot be proven statically.
 
     The module must contain the `ttl.dfb_allocations` metadata emitted by
     `ttl-finalize-dfb-indices`, and every DFB declaration and lifecycle operand
     must resolve to a `ttl.bind_cb` with `dfb_id`. Modules with DFB acquire ops
     must also carry a valid `ttl.launch_grid` attribute.
 
-    Setting `TTL_RELAX_DFB_SPSC` skips compiler verification that each DFB has
-    one producer and one consumer per dynamically active launch node. The
-    program must enforce that ownership contract through synchronization not
-    represented in the IR. Finalized DFB identity, physical-index, and
-    launch-grid preconditions remain mandatory. Strict verification is the
-    default.
+    Setting `TTL_RELAX_DFB_SPSC` skips per-launch-node producer and consumer
+    ownership verification. The program must enforce that ownership contract
+    through synchronization not represented in the IR. The verifier still
+    rejects every waited DFB without a compiler-visible push or uncontracted
+    external access that may contain one. Finalized DFB identity,
+    physical-index, and launch-grid preconditions remain mandatory. Strict
+    verification is the default. When relaxation is enabled, the compiler
+    emits a warning and records
+    `ttl.relaxed_dfb_protocol_domain_verification` on the module.
   }];
 
   let dependentDialects = [];
@@ -1082,6 +1091,18 @@ def TTLFinalizeDFBIndices
     different geometry or storage. A DFB with live protocol state crosses a
     reconfiguration unchanged and remains active in every epoch it spans, so
     its physical index cannot be reassigned at those boundaries.
+
+    Physical-index coloring and storage coloring enforce different contracts.
+    A physical index identifies one active hardware descriptor and therefore
+    requires compatible page format and protocol state. After selecting the
+    physical indices, the pass may assign distinct physical descriptors to one
+    `storage_index` when every use of one descriptor completes before any use
+    of the other begins on every launch node where both are resident. The
+    descriptors may use different element types, page sizes, or capacities
+    because each retains its own runtime descriptor.
+    The shared backing allocation uses the maximum required byte capacity with
+    an alignment divisible by every member page size. Tensor-backed descriptors
+    and descriptors without a proven storage-lifetime order remain separate.
 
     One unresolved structured condition is supported when every active DFB
     access belongs to one reserve, push, wait, and pop transaction controlled
@@ -1192,8 +1213,9 @@ def TTLFinalizeDFBIndices
 
     Disabling `reuse-user-dfbs` compacts distinct provisional user indices
     without introducing new sharing between user DFBs, then assigns only
-    compiler-created DFBs. Both modes use the same lifetime proof and conflict
-    relation for every DFB whose index they select.
+    compiler-created DFBs. It also assigns separate storage to every physical
+    descriptor. Both modes use the same lifetime proof and conflict relation
+    for every DFB whose index they select.
 
     Every used compiler-created DFB must contain `ttl.cb_reserve`,
     `ttl.cb_push`, `ttl.cb_wait`, and `ttl.cb_pop`. An unused declaration is
@@ -1206,18 +1228,26 @@ def TTLFinalizeDFBIndices
     missing compiler-created logical IDs, and builds `ttl.dfb_allocations` for
     the Python runtime. The attribute contains one descriptor per physical
     index, including user-declared and compiler-created DFBs, and records the
-    page size computed from the finalized element type. A descriptor also
-    records the exact union of launch nodes that access its physical index when
-    that domain is known. An exact empty domain causes the runtime to install no
-    DFB descriptor; omitted domain metadata requires conservative whole-grid
-    allocation. See
+    page size computed from the finalized element type. Its `storage_index`
+    identifies the byte allocation used by that descriptor; multiple distinct
+    descriptors may share one storage index only when their storage lifetimes
+    are proven disjoint. A descriptor also records the exact union of launch
+    nodes that access its physical index when that domain is known. An exact
+    empty domain causes the runtime to install no DFB descriptor; omitted domain
+    metadata requires conservative whole-grid allocation. See
     docs/development/DFBManagement.md.
+
+    Storage assignment processes descriptors by decreasing target-rounded
+    size. For each descriptor, it selects the legal storage index with the
+    lowest current maximum allocation over launch nodes, then the lowest global
+    allocation. A descriptor contributes only on nodes in its known allocation
+    domain; an unknown domain contributes on every launch node.
   }];
 
   let options = [
     Option<"reuseUserDFBs", "reuse-user-dfbs", "bool", "true",
-           "Reuse physical DFB indices for logical DFBs with proven "
-           "non-overlapping lifetimes across concurrent kernels.">,
+           "Reuse physical DFB indices and compiler-managed storage for "
+           "lifetimes proven not to overlap across concurrent kernels.">,
     Option<"unsafeAssumeAllocationGroups", "unsafe-assume-allocation-groups",
            "bool", "false",
            "Trust explicit DFB allocation groups when runtime handoff cannot "
@@ -1238,20 +1268,25 @@ def TTLValidateCBBudget
   let description = [{
     Module-level pass that runs after `ttl-finalize-dfb-indices`, before
     `convert-ttl-to-ttkernel`. It sums one target-allocation-aligned maximum
-    static backing-store size per physical DFB index, allocator-rounded
-    synchronized-reset state, and one target-aligned configuration tensor per
-    synchronized reconfiguration boundary. Tensor-backed DFB storage is
-    excluded because the tensor allocator owns that allocation.
+    static backing-store size per compiler-selected DFB storage index on each
+    launch node, allocator-rounded synchronized-reset state, and one
+    target-aligned configuration tensor per synchronized reconfiguration
+    boundary, then compares the maximum node result against a per-core L1
+    budget. Tensor-backed DFB storage is excluded because the tensor allocator
+    owns that allocation. Unknown allocation domains conservatively contribute
+    to every launch node; missing residency metadata uses the global descriptor
+    sum.
 
     For each `BindCBOp`, the pass computes:
       dfb_payload_bytes = total_elements * tile_size_bytes
       dfb_allocation_bytes = align_to_target_quantum(dfb_payload_bytes)
 
-    When the same `cb_index` appears in multiple functions (e.g. compute
-    and data-movement kernels sharing a DFB slot), only the largest allocation
-    for that index is counted.
+    When multiple physical `cb_index` descriptors use the same `storage_index`,
+    the pass computes one compatible byte capacity and alignment for that
+    storage allocation. Repeated declarations of one physical index contribute
+    only their largest allocation.
 
-    On overflow the pass emits an error with a per-DFB breakdown and a
+    On overflow the pass emits an error with a per-storage breakdown and a
     hint to reduce block shapes or block counts.
 
     L1 budget is taken from the module's TTCore system descriptor and
@@ -1260,10 +1295,11 @@ def TTLValidateCBBudget
     the same static per-core DFB region limit as Wormhole and Blackhole
     (total L1 minus reserved kernel space).
 
-    This is a static DFB and fixed-state check. Pipe transport formation and
-    final conversion validate the same backing together with PipeNet, reset,
-    semaphore, and reconfiguration resources. These checks do not model kernel
-    binaries, stacks, or unrelated runtime allocations.
+    This is a static DFB and fixed-state check. After exact PipeNet planning,
+    `convert-ttl-to-ttkernel` validates the same maximum finalized per-node DFB,
+    reset, and reconfiguration footprint together with target-aligned PipeNet
+    scratch and one target allocation quantum per GlobalSemaphore. Neither
+    check models kernel binaries, stacks, or unrelated runtime allocations.
   }];
 
   let options = [
@@ -1409,68 +1445,87 @@ def TTKernelInsertInits
   ];
 }
 
+def TTKernelCleanup : Pass<"ttkernel-cleanup", "::mlir::ModuleOp"> {
+  let summary = "Simplify TTKernel synchronization and invariant hardware configuration";
+  let description = [{
+    Removes redundant barriers, hoists invariant value computations, and
+    replaces eligible writes with one-packet state setup and issue operations.
+    State setup precedes a blocking wait or an invariant loop only when the
+    intervening operations and their callees preserve the write command.
+
+    A statically nonempty copy/pack loop shares one copy initialization when
+    its source DFB is invariant and every operation preserves the copy
+    configuration. Nested control flow, unknown calls, changing sources,
+    and other hardware operations retain per-iteration initialization.
+
+    Running after core specialization and static record-loop expansion exposes
+    constant endpoints and straight-line waits that were unavailable during
+    initial TTL lowering. This pass reuses that lowering's cleanup patterns.
+    Module scope prevents concurrent mutation of functions inspected by
+    callable-effect analysis.
+  }];
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect",
+    "::mlir::tt::ttkernel::TTKernelDialect"
+  ];
+}
+
 def TTKernelSpecializeCores
     : Pass<"ttkernel-specialize-cores", "::mlir::ModuleOp"> {
-  let summary = "Clone kernels per core when control flow branches on a coordinate";
+  let summary = "Clone kernels per core when control flow depends on a coordinate";
   let description = [{
-    Per-core specialization for TTKernel functions. Requires the
-    `ttl.launch_grid` attribute, missing or malformed `ttl.launch_grid` is a hard error.
+    Specializes TTKernel functions using the `ttl.launch_grid` module
+    attribute. Missing or malformed launch extents are errors.
 
-    For each kernel whose scf.if region branches on a core coordinate, clones
-    the function once per launch coordinate, replaces
-    ttkernel.my_logical_x_ / ttkernel.my_logical_y_ with arith.constant's
-    for that core, and tags the cloned function with ttl.core_coord (the coordinate it
-    serves). Downstream canonicalize / cse then fold the now-constant
-    branch conditions and delete untaken regions. The runtime bridge reads
-    ttl.core_coord to build per-kernel core ranges for dispatch.
+    A function is specialized when a structured region branch selector,
+    repetition condition, or loop bound depends on
+    `ttkernel.my_logical_x_` or `ttkernel.my_logical_y_`. This includes
+    `scf.if`, `scf.index_switch`, `scf.for`, and `scf.while`. The pass creates
+    one clone per launch coordinate, replaces coordinate reads with constants,
+    and records the clone's coordinate in `ttl.core_coord`. Canonicalization
+    can then resolve coordinate-dependent control flow. The runtime uses
+    `ttl.core_coord` to dispatch each clone to its assigned core.
 
-    NOTE: functions with symbol uses (e.g. `func.call` targets) are left
-    unspecialized with a warning so erasing the original does not leave dangling
-    `SymbolRefAttr`s; unrelated functions in the module are still specialized.
+    Functions with symbol uses remain unspecialized because replacing them
+    would require rewriting their references. The pass emits a warning for
+    each such function and continues specializing independent functions.
 
-    Example (`ttl.launch_grid = [1, 2]`):
+    For example, this function selects a value using the core's y coordinate:
+
     ```mlir
-    // Before:
-    func.func @k() -> index {
-      %c0 = arith.constant 0 : index
-      %c7 = arith.constant 7 : index
-      %c9 = arith.constant 9 : index
-      %y = ttkernel.my_logical_y_ : () -> index
-      %pred = arith.cmpi eq, %y, %c0 : index
-      %r = scf.if %pred -> (index) {
-        scf.yield %c7 : index
-      } else {
-        scf.yield %c9 : index
+    module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
+      func.func @select_value() -> index {
+        %zero = arith.constant 0 : index
+        %first = arith.constant 7 : index
+        %other = arith.constant 9 : index
+        %core_y = "ttkernel.my_logical_y_"() : () -> index
+        %is_first = arith.cmpi eq, %core_y, %zero : index
+        %value = scf.if %is_first -> (index) {
+          scf.yield %first : index
+        } else {
+          scf.yield %other : index
+        }
+        return %value : index
       }
-      return %r : index
     }
+    ```
 
-    // After:
-    func.func @k_c0_0() -> index attributes {ttl.core_coord = [[0, 0]]} {
-      %c0 = arith.constant 0 : index
-      %c7 = arith.constant 7 : index
-      %c9 = arith.constant 9 : index
-      %y = arith.constant 0 : index
-      %pred = arith.cmpi eq, %y, %c0 : index
-      %r = scf.if %pred -> (index) {
-        scf.yield %c7 : index
-      } else {
-        scf.yield %c9 : index
+    After specialization followed by canonicalization, each clone contains
+    only the value selected on its assigned core:
+
+    ```mlir
+    module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
+      func.func @select_value_c0_0() -> index
+          attributes {ttl.core_coord = [[0, 0]]} {
+        %value = arith.constant 7 : index
+        return %value : index
       }
-      return %r : index
-    }
-    func.func @k_c0_1() -> index attributes {ttl.core_coord = [[0, 1]]} {
-      %c0 = arith.constant 0 : index
-      %c7 = arith.constant 7 : index
-      %c9 = arith.constant 9 : index
-      %y = arith.constant 1 : index
-      %pred = arith.cmpi eq, %y, %c0 : index
-      %r = scf.if %pred -> (index) {
-        scf.yield %c7 : index
-      } else {
-        scf.yield %c9 : index
+      func.func @select_value_c0_1() -> index
+          attributes {ttl.core_coord = [[0, 1]]} {
+        %value = arith.constant 9 : index
+        return %value : index
       }
-      return %r : index
     }
     ```
   }];
@@ -1478,6 +1533,82 @@ def TTKernelSpecializeCores
   let dependentDialects = [
     "::mlir::arith::ArithDialect",
     "::mlir::func::FuncDialect"
+  ];
+}
+
+def TTKernelBatchStaticPipeNetReceives
+    : Pass<"ttkernel-batch-static-pipenet-receives", "::mlir::func::FuncOp"> {
+  let summary = "Post independent PipeNet receives before waiting for payloads";
+  let description = [{
+    Combines reservations for a static, initially empty receive DFB and posts
+    every readiness notification before waiting for individual completions.
+    Sender-computed addresses place each payload in a distinct reserved slot.
+    Completion waits and DFB publication remain in record order.
+
+    For example, three sequential `reserve(1); post(); wait(); push(1)`
+    transactions become `reserve(3); post(); post(); post(); atomic_barrier()`
+    followed by three ordered `wait(); push(1)` transactions. The reservation
+    must fit capacity proven available before the first receive.
+
+    Unknown counts, repeated receive sequences, receiver-published addresses,
+    and additional observable effects retain sequential execution. Temporary
+    initial-capacity annotations are removed whether batching succeeds or not.
+  }];
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::tt::ttkernel::TTKernelDialect"
+  ];
+}
+
+def TTKernelUnrollStaticPipeNetRecordLoops
+    : Pass<"ttkernel-unroll-static-pipenet-record-loops",
+           "::mlir::func::FuncOp"> {
+  let summary = "Unroll static local PipeNet record loops";
+  let description = [{
+    Fully unrolls compiler-marked local PipeNet record loops whose bounds are
+    constant. Per-core specialization makes those bounds constant when they
+    depend on a launch coordinate. Unrolling exposes the selected record index
+    to canonicalization, which can replace immutable record-table lookups with
+    constants.
+
+    A loop with dynamic bounds remains structurally unchanged. Its temporary
+    compiler marker is removed because no later pass consumes it.
+
+    For example, a marked loop selects a destination from a two-record table.
+    Here `@transfer` represents the transfer body for that destination:
+
+    ```mlir
+    func.func private @transfer(index)
+    func.func @send_records() {
+      %lower = arith.constant 0 : index
+      %upper = arith.constant 2 : index
+      %step = arith.constant 1 : index
+      scf.for %record = %lower to %upper step %step {
+        %destination = ttkernel.experimental.constant_table_lookup %record, [3, 5] : index
+        func.call @transfer(%destination) : (index) -> ()
+      } {ttl.pipenet_local_record_loop}
+      return
+    }
+    ```
+
+    After unrolling followed by canonicalization, both destinations are
+    constants and the transfers execute in their original record order:
+
+    ```mlir
+    func.func private @transfer(index)
+    func.func @send_records() {
+      %second_destination = arith.constant 5 : index
+      %first_destination = arith.constant 3 : index
+      func.call @transfer(%first_destination) : (index) -> ()
+      func.call @transfer(%second_destination) : (index) -> ()
+      return
+    }
+    ```
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect"
   ];
 }
 
@@ -1489,11 +1620,17 @@ def TTKernelAnnotateDFBUse
     For each `ttkernel.thread` function, records the
     sorted physical DFB indices reached through surviving
     `ttkernel.get_compile_time_arg_val` operations below
-    `ttl.base_cta_index` in `ttl.used_dfb_indices`. Helpers stay in the
-    call-graph analysis so their uses propagate to kernel entries.
+    `ttl.base_cta_index` and `dfb_resource_indices` metadata on surviving
+    `ttkernel.opaque_call` operations in `ttl.used_dfb_indices`. The metadata
+    preserves resource requirements after lowering replaces DFB operands with
+    static values. Helpers stay in the call-graph analysis so their uses
+    propagate to kernel entries.
     Declarations are not annotated. The compile-time ABI places
     every DFB before tensor-accessor arguments, including DFB ids passed to
     opaque externs as scalar values.
+
+    Resource indices must be within the enclosing function's DFB compile-time
+    argument range.
 
     Calls are resolved through the MLIR call graph. Uses are propagated from
     callees to callers in SCC order, including recursive calls. An unknown or
@@ -1510,6 +1647,32 @@ def TTKernelAnnotateDFBUse
   }];
 
   let dependentDialects = [];
+}
+
+def TTKernelFinalizeTensorRuntimeArgs
+    : Pass<"ttkernel-finalize-tensor-runtime-args", "::mlir::ModuleOp"> {
+  let summary = "Finalize tensor common runtime arguments";
+  let description = [{
+    Compacts each kernel function's tensor-address prefix after dead-code
+    elimination. Surviving `ttkernel.get_common_arg_val` indices are rewritten
+    to the compact prefix, compiler-managed indices following that prefix are
+    shifted by the number of removed tensor addresses, and
+    `ttl.crta_indices` retains the corresponding global tensor indices.
+
+    The pass also records the surviving tensors used to construct
+    `LocalTensorAccessor` values in `ttl.local_tensor_indices`. The runtime uses
+    this metadata to require local tensor shards on every executing core.
+
+    Dynamic common-argument indices represented by
+    `ttkernel.experimental.constant_table_lookup` are rewritten with the same
+    mapping. Functions containing common-argument accesses hidden in verbatim
+    C++ retain the complete tensor prefix because those indices cannot be
+    analyzed structurally.
+  }];
+
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect"
+  ];
 }
 
 def TTKernelCombinePackTiles

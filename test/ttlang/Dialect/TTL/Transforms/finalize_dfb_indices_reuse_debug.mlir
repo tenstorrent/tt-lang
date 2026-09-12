@@ -15,10 +15,14 @@
 // REPORT-SAME: earliest_accesses=[0, 2] terminal_accesses=[3]
 // REPORT: DFB conflict lhs=0 rhs=1 reason=pointer-owner-mismatch node=(0,0)
 // REPORT: DFB allocation liveness report end
+// REPORT-NEXT: DFB storage conflict report
+// REPORT: DFB conflict lhs=0 rhs=1 reason=concurrent-lifetime
+// REPORT: DFB conflict lhs=1 rhs=2 reason=concurrent-lifetime
+// REPORT-NEXT: DFB storage conflict report end
 // REPORT-NEXT: Total DFB count: 2
-// REPORT-NEXT: DFB assignment: logical DFB 0 -> physical index 0 (bounded)
-// REPORT-NEXT: DFB assignment: logical DFB 1 -> physical index 1 (bounded)
-// REPORT-NEXT: DFB assignment: logical DFB 2 -> physical index 0 (bounded)
+// REPORT-NEXT: DFB assignment: logical DFB 0 -> physical index 0 storage index 0 (bounded)
+// REPORT-NEXT: DFB assignment: logical DFB 1 -> physical index 1 storage index 1 (bounded)
+// REPORT-NEXT: DFB assignment: logical DFB 2 -> physical index 0 storage index 0 (bounded)
 // REPORT: DFB conflict {{.*}} reason=storage-mismatch
 
 // NO-REPORT-NOT: DFB allocation liveness report

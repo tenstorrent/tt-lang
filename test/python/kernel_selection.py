@@ -35,6 +35,11 @@ def selected_external_calls(inp):
         "compute_entry",
         template_args=[ttl.dfb_descriptor(descriptor_dfb), -3, True],
         func_args=[ttl.raw_addr(inp), 7],
+        dfb_dependencies=[drain_dfb],
+        dfb_effects=[
+            ttl.DFBEffect.reserve(drain_dfb, tiles=1),
+            ttl.DFBEffect.push(drain_dfb, tiles=1),
+        ],
         include_paths=["/tmp"],
         kernel=ttl.KernelKind.COMPUTE,
     )

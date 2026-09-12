@@ -289,56 +289,85 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
 // GLOBAL: scf.if
 // GLOBAL: scf.while
 // GLOBAL: ttkernel.experimental.semaphore_reached
+// The remote candidate merges two post origins into one completion-counter
+// group. Per-origin counts do not prove that the complete group has one update,
+// so both branches retain cumulative atomic completion.
+// RECEIVER-POST-LABEL: func.func @merged_request_origins
+// RECEIVER-POST: scf.if
+// RECEIVER-POST: ttkernel.noc_async_write %{{.*}} : (
+// RECEIVER-POST: ttkernel.noc_async_write_barrier
+// RECEIVER-POST: ttkernel.noc_semaphore_inc
+// RECEIVER-POST: ttkernel.noc_async_atomic_barrier
+// RECEIVER-POST: } else {
+// RECEIVER-POST: ttkernel.noc_async_write %{{.*}} : (
+// RECEIVER-POST: ttkernel.noc_async_write_barrier
+// RECEIVER-POST: ttkernel.noc_semaphore_inc
+// RECEIVER-POST: ttkernel.noc_async_atomic_barrier
+// RECEIVER-POST-NOT: posted true
+// RECEIVER-POST: scf.while
 
-module attributes {ttl.launch_grid = array<i64: 1, 1>} {
-  func.func @merged_request_origins(%condition: i1) -> index
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @merged_request_origins(%condition: i1)
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %source = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %landing = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
-    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
-        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
-    %request = scf.if %condition -> (!ttl.receive_request) {
-      %dst = ttl.cb_reserve %landing
-          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
-          -> tensor<1x1x!ttcore.tile<32x32, f32>>
-      %then_request = ttl.copy %pipe, %dst
-          : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
-             tensor<1x1x!ttcore.tile<32x32, f32>>)
-          -> !ttl.receive_request
-      %send = ttl.copy %source, %pipe
-          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
-             !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
-          -> !ttl.transfer_handle<write>
-      ttl.wait %send : !ttl.transfer_handle<write>
-      scf.yield %then_request : !ttl.receive_request
-    } else {
-      %dst = ttl.cb_reserve %landing
-          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
-          -> tensor<1x1x!ttcore.tile<32x32, f32>>
-      %else_request = ttl.copy %pipe, %dst
-          : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
-             tensor<1x1x!ttcore.tile<32x32, f32>>)
-          -> !ttl.receive_request
-      %send = ttl.copy %source, %pipe
-          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
-             !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
-          -> !ttl.transfer_handle<write>
-      ttl.wait %send : !ttl.transfer_handle<write>
-      scf.yield %else_request : !ttl.receive_request
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    ttl.if_src %pipe
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      scf.if %condition {
+        %send = ttl.copy %source, %pipe {byte_count = 2048 : i64}
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+               !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      } else {
+        %send = ttl.copy %source, %pipe {byte_count = 2048 : i64}
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+               !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
     }
-    %start = arith.constant 0 : index
-    %ready = ttl.wait_any %request start %start
-        : (!ttl.receive_request, index) -> !ttl.ready_receive
-    %selected = ttl.ready_receive_index %ready : !ttl.ready_receive
-    %zero = arith.constant 0 : index
-    %is_not_selected = arith.cmpi ne, %selected, %zero : index
-    scf.if %is_not_selected {
-    } else {
-      ttl.cb_push %landing
-          : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    ttl.if_dst %pipe
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %request = scf.if %condition -> (!ttl.receive_request) {
+        %dst = ttl.cb_reserve %landing
+            : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, f32>>
+        %then_request = ttl.copy %pipe, %dst {byte_count = 2048 : i64}
+            : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+               tensor<1x1x!ttcore.tile<32x32, f32>>)
+            -> !ttl.receive_request
+        scf.yield %then_request : !ttl.receive_request
+      } else {
+        %dst = ttl.cb_reserve %landing
+            : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, f32>>
+        %else_request = ttl.copy %pipe, %dst {byte_count = 2048 : i64}
+            : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+               tensor<1x1x!ttcore.tile<32x32, f32>>)
+            -> !ttl.receive_request
+        scf.yield %else_request : !ttl.receive_request
+      }
+      %start = arith.constant 0 : index
+      %ready = ttl.wait_any %request start %start
+          : (!ttl.receive_request, index) -> !ttl.ready_receive
+      %selected = ttl.ready_receive_index %ready : !ttl.ready_receive
+      %zero = arith.constant 0 : index
+      %is_selected = arith.cmpi eq, %selected, %zero : index
+      scf.if %is_selected {
+        ttl.cb_push %landing
+            : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+        %block = ttl.cb_wait %landing
+            : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, f32>>
+        ttl.cb_pop %landing
+            : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      }
     }
-    func.return %selected : index
+    func.return
   }
 }

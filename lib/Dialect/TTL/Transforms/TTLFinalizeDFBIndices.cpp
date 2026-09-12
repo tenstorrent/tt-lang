@@ -90,7 +90,8 @@ applyPhysicalAllocationPlan(ModuleOp moduleOp, OpBuilder &builder,
     }
     LLVM_DEBUG({
       llvm::dbgs() << "DFB assignment: logical DFB " << assignment.logicalId
-                   << " -> physical index " << assignment.physicalIndex;
+                   << " -> physical index " << assignment.physicalIndex
+                   << " storage index " << assignment.storageIndex;
       if (assignment.allocationGroup) {
         llvm::dbgs() << " allocation_group=" << assignment.allocationGroup;
       }
@@ -139,6 +140,8 @@ applyPhysicalAllocationPlan(ModuleOp moduleOp, OpBuilder &builder,
     SmallVector<NamedAttribute> entryAttributes;
     entryAttributes.push_back(builder.getNamedAttr(
         "dfb_index", builder.getI32IntegerAttr(descriptor.physicalIndex)));
+    entryAttributes.push_back(builder.getNamedAttr(
+        "storage_index", builder.getI32IntegerAttr(descriptor.storageIndex)));
     entryAttributes.push_back(builder.getNamedAttr(
         "num_tiles", builder.getI32IntegerAttr(descriptor.numTiles)));
     entryAttributes.push_back(builder.getNamedAttr(

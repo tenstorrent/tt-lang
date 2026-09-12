@@ -7,7 +7,7 @@
 // The acknowledgment DFB orders B's reserve and wait after A's pop. A and B may
 // share physical index 0; the acknowledgment requires physical index 1.
 
-// REUSE: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}, {block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}]}
+// REUSE: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32, storage_index = 0 : i32}, {block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32, storage_index = 1 : i32}]}
 // REUSE-LABEL: func.func @synchronized_dm
 // REUSE-SAME: ttl.base_cta_index = 2 : i32
 // REUSE: %[[DM_A:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
@@ -36,7 +36,7 @@
 // REPEAT: ttl.bind_cb{cb_index = 1, block_count = 2} {dfb_id = 1 : index}
 // REPEAT: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 2 : index}
 
-// DISABLED: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}, {block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}, {block_count = 2 : i32, dfb_index = 2 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32}]}
+// DISABLED: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32, storage_index = 0 : i32}, {block_count = 2 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32, storage_index = 1 : i32}, {block_count = 2 : i32, dfb_index = 2 : i32, element_type = !ttcore.tile<1x16, bf16>, num_tiles = 1 : i32, page_size = 32 : i32, storage_index = 2 : i32}]}
 // DISABLED-LABEL: func.func @synchronized_dm
 // DISABLED-SAME: ttl.base_cta_index = 3 : i32
 // DISABLED: ttl.bind_cb{cb_index = 0,
@@ -361,6 +361,55 @@ func.func @loop_lifecycle()
   ttl.cb_push %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   %b_consumer = ttl.cb_wait %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   ttl.cb_pop %b : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  return
+}
+
+// -----
+
+// Every access without a proved predecessor constrains the lifetime start.
+// Selecting one arbitrary bind use could otherwise treat the post-loop wait as
+// the first access and incorrectly alias two DFBs that overlap in the loop.
+
+// REUSE: module attributes {ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, {{.*}}}, {block_count = 2 : i32, dfb_index = 1 : i32, {{.*}}}]}
+// REUSE-LABEL: func.func @loop_and_post_loop_access
+// REUSE-SAME: ttl.base_cta_index = 2 : i32
+// REUSE: ttl.bind_cb{cb_index = 0,
+// REUSE: ttl.bind_cb{cb_index = 1,
+// DISABLED-LABEL: func.func @loop_and_post_loop_access
+// DISABLED-SAME: ttl.base_cta_index = 2 : i32
+// DISABLED: ttl.bind_cb{cb_index = 0,
+// DISABLED: ttl.bind_cb{cb_index = 1,
+// REPEAT-LABEL: func.func @loop_and_post_loop_access
+// REPEAT-SAME: ttl.base_cta_index = 2 : i32
+// REPEAT: ttl.bind_cb{cb_index = 0,
+// REPEAT: ttl.bind_cb{cb_index = 1,
+
+func.func @loop_and_post_loop_access()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
+                ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+  %total = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %partial = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %lower_bound = arith.constant 0 : index
+  %upper_bound = arith.constant 4 : index
+  %step = arith.constant 1 : index
+  scf.for %iteration = %lower_bound to %upper_bound step %step {
+    %first_iteration = arith.cmpi eq, %iteration, %lower_bound : index
+    scf.if %first_iteration {
+      %initial_total_view = ttl.cb_reserve %total : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_push %total : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    } else {
+      %partial_producer_view = ttl.cb_reserve %partial : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_push %partial : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      %total_consumer_view = ttl.cb_wait %total : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %next_total_view = ttl.cb_reserve %total : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %partial_consumer_view = ttl.cb_wait %partial : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_pop %partial : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      ttl.cb_pop %total : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      ttl.cb_push %total : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+  }
+  %final_total_view = ttl.cb_wait %total : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.cb_pop %total : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
   return
 }
 

@@ -7,8 +7,8 @@
 // CHECK: epochs=[{accesses=[0, 1],transactions=[1],write_cursor_runs=[1],read_cursor_runs=[],write_owner=(0,0):noc0:write,read_owner=unknown,entry_reconfiguration=initial,active_configurations=[initial],terminal_reset=0,terminal_reconfiguration=none,terminal_state=canonical}]
 // CHECK: DFB logical_id=1 bounded=1
 // CHECK: Total DFB count: 1
-// CHECK: DFB assignment: logical DFB 0 -> physical index 0 (bounded)
-// CHECK: DFB assignment: logical DFB 1 -> physical index 0 (bounded)
+// CHECK: DFB assignment: logical DFB 0 -> physical index 0 storage index 0 (bounded)
+// CHECK: DFB assignment: logical DFB 1 -> physical index 0 storage index 0 (bounded)
 
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @unconditional_reset_producer()
@@ -815,8 +815,8 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 // CHECK: epochs=[{executions=4,accesses=[0, 1, 2, 3],transactions=[2]
 // CHECK: DFB logical_id=1 bounded=1
 // CHECK: Total DFB count: 1
-// CHECK: DFB assignment: logical DFB 0 -> physical index 0 allocation_group=#ttl.dfb_allocation_group<0> (bounded)
-// CHECK: DFB assignment: logical DFB 1 -> physical index 0 allocation_group=#ttl.dfb_allocation_group<0> (bounded)
+// CHECK: DFB assignment: logical DFB 0 -> physical index 0 storage index 0 allocation_group=#ttl.dfb_allocation_group<0> (bounded)
+// CHECK: DFB assignment: logical DFB 1 -> physical index 0 storage index 0 allocation_group=#ttl.dfb_allocation_group<0> (bounded)
 
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @repeated_reset_lifetime_compute()

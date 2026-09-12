@@ -5,6 +5,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
+#include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/raw_ostream.h"
@@ -126,6 +127,27 @@ FailureOr<int64_t> getDFBId(Value cb) {
   return dfbId->getSExtValue();
 }
 
+SmallVector<unsigned> getOpaqueDFBDependencyIndices(OpaqueCallOp call) {
+  SmallVector<Value> dependencies = call.getDFBDependencyOperands();
+  llvm::BitVector describedDependencies(dependencies.size());
+  for (const DFBProtocolEffect &effect : call.getDFBProtocolEffects()) {
+    describedDependencies.set(effect.dependencyIndex);
+  }
+  for (const DFBNonTransactionalAccess &access :
+       call.getDFBNonTransactionalAccesses()) {
+    describedDependencies.set(access.dependencyIndex);
+  }
+
+  SmallVector<unsigned> opaqueDependencies;
+  for (unsigned dependencyIndex = 0;
+       dependencyIndex < describedDependencies.size(); ++dependencyIndex) {
+    if (!describedDependencies.test(dependencyIndex)) {
+      opaqueDependencies.push_back(dependencyIndex);
+    }
+  }
+  return opaqueDependencies;
+}
+
 FailureOr<uint64_t> getDFBPagesPerBlock(CircularBufferType type) {
   uint64_t pagesPerBlock = 1;
   for (int64_t dimension : type.getShape()) {
@@ -155,6 +177,40 @@ FailureOr<uint64_t> getDFBPageSizeBytes(CircularBufferType type) {
     return failure();
   }
   return bitWidth / 8;
+}
+
+FailureOr<uint64_t> getDFBTransferCapacityBytes(Value endpoint) {
+  auto dfbType = dyn_cast<CircularBufferType>(endpoint.getType());
+  uint64_t pageCount;
+  if (dfbType) {
+    FailureOr<uint64_t> pagesPerBlock = getDFBPagesPerBlock(dfbType);
+    if (failed(pagesPerBlock)) {
+      return failure();
+    }
+    pageCount = *pagesPerBlock;
+  } else {
+    auto viewType = dyn_cast<RankedTensorType>(endpoint.getType());
+    Value dfb = getAttachedCB(endpoint);
+    if (!viewType || !viewType.hasStaticShape() || !dfb ||
+        viewType.getNumElements() < 0) {
+      return failure();
+    }
+    dfbType = dyn_cast<CircularBufferType>(dfb.getType());
+    pageCount = static_cast<uint64_t>(viewType.getNumElements());
+  }
+  if (!dfbType) {
+    return failure();
+  }
+  FailureOr<uint64_t> pageSizeBytes = getDFBPageSizeBytes(dfbType);
+  if (failed(pageSizeBytes)) {
+    return failure();
+  }
+  std::optional<uint64_t> capacityBytes =
+      llvm::checkedMulUnsigned(pageCount, *pageSizeBytes);
+  if (!capacityBytes) {
+    return failure();
+  }
+  return *capacityBytes;
 }
 
 LogicalResult verifyDFBOperandIdentities(

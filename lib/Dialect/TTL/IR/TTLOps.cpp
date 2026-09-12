@@ -74,6 +74,45 @@ static auto getLogicalKernelSortKey(LogicalKernelAttr participant) {
                          valueOrEmpty(participant.getRole()));
 }
 
+// Tiled layouts encode their data format in TileType. Scalar layouts use the
+// exact element types accepted by TTNN row-major tensors.
+static bool isSupportedLayoutElementType(Type elementType) {
+  if (isa<ttcore::TileType>(elementType)) {
+    return true;
+  }
+  if (isa<Float32Type, BFloat16Type>(elementType)) {
+    return true;
+  }
+  auto integerType = dyn_cast<IntegerType>(elementType);
+  if (!integerType) {
+    return false;
+  }
+  if (integerType.isSigned()) {
+    return integerType.getWidth() == 32;
+  }
+  if (!integerType.isUnsigned()) {
+    return false;
+  }
+  return integerType.getWidth() == 8 || integerType.getWidth() == 16 ||
+         integerType.getWidth() == 32;
+}
+
+// These layouts carry TTNN shard metadata over a core grid.
+static bool isShardedMemoryLayout(TensorMemoryLayout memoryLayout) {
+  return memoryLayout == TensorMemoryLayout::HeightSharded ||
+         memoryLayout == TensorMemoryLayout::WidthSharded ||
+         memoryLayout == TensorMemoryLayout::BlockSharded ||
+         memoryLayout == TensorMemoryLayout::NdSharded;
+}
+
+// LocalTensorAccessor represents one core-local bank base. ND sharding requires
+// the distributed metadata represented by TensorAccessor.
+static bool isComputeLocalMemoryLayout(TensorMemoryLayout memoryLayout) {
+  return memoryLayout == TensorMemoryLayout::HeightSharded ||
+         memoryLayout == TensorMemoryLayout::WidthSharded ||
+         memoryLayout == TensorMemoryLayout::BlockSharded;
+}
+
 static bool hasRequiredDFBSynchronizationParticipants(
     ArrayRef<LogicalKernelAttr> participants) {
   unsigned computeParticipants =
@@ -192,7 +231,7 @@ SynchronizedDFBResetAttr SynchronizedDFBResetAttr::getCheckedInstance(
 
 llvm::LogicalResult DFBReconfigurationAttr::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError, int64_t ordinal,
-    ArrayRef<LogicalKernelAttr> participants) {
+    ArrayRef<LogicalKernelAttr> participants, bool) {
   if (ordinal < 0) {
     return emitError() << "DFB reconfiguration ordinal must be nonnegative";
   }
@@ -217,10 +256,10 @@ llvm::LogicalResult DFBReconfigurationAttr::verify(
 
 DFBReconfigurationAttr DFBReconfigurationAttr::getCheckedInstance(
     Location location, MLIRContext *context, int64_t ordinal,
-    ArrayRef<LogicalKernelAttr> participants) {
+    ArrayRef<LogicalKernelAttr> participants, bool discardDfbState) {
   return DFBReconfigurationAttr::getChecked(
       [location]() { return emitError(location); }, context, ordinal,
-      participants);
+      participants, discardDfbState);
 }
 
 void TTLDialect::registerAttributes() {
@@ -567,6 +606,11 @@ LayoutAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                    ArrayRef<int64_t> shape, Type elementType,
                    BufferType bufferType, ArrayRef<int64_t> grid,
                    TensorMemoryLayout memoryLayout) {
+  if (!isSupportedLayoutElementType(elementType)) {
+    return emitError() << "layout element type must be a ttcore tile or one of "
+                          "f32, bf16, si32, ui32, ui16, or ui8, got "
+                       << elementType;
+  }
   if (shape.empty()) {
     return emitError() << "layout shape must not be empty";
   }
@@ -759,6 +803,54 @@ mlir::LogicalResult mlir::tt::ttl::TensorSliceOp::verify() {
   return mlir::success();
 }
 
+// A DFB operand denotes one complete block; an acquired view may denote less.
+static mlir::LogicalResult
+verifyByteCountFitsDFBEndpoint(mlir::Operation *operation, mlir::Value endpoint,
+                               uint64_t byteCount,
+                               llvm::StringRef endpointName) {
+  const bool isDFBBlock =
+      mlir::isa<mlir::tt::ttl::CircularBufferType>(endpoint.getType());
+  const llvm::StringRef capacityKind =
+      isDFBBlock ? "dataflow-buffer block" : "acquired dataflow-buffer view";
+  mlir::FailureOr<uint64_t> capacityBytes =
+      mlir::tt::ttl::getDFBTransferCapacityBytes(endpoint);
+  if (mlir::failed(capacityBytes)) {
+    return operation->emitOpError() << "cannot determine " << endpointName
+                                    << " " << capacityKind << " size";
+  }
+  if (byteCount > *capacityBytes) {
+    return operation->emitOpError()
+           << "byte_count " << byteCount << " exceeds " << endpointName << " "
+           << capacityKind << " capacity " << *capacityBytes;
+  }
+  return mlir::success();
+}
+
+// Raw byte copies may change tile geometry but cannot reinterpret data formats.
+static mlir::LogicalResult verifyByteCopyDataFormats(mlir::Operation *operation,
+                                                     mlir::Value srcDFB,
+                                                     mlir::Value dstDFB) {
+  auto srcType =
+      mlir::cast<mlir::tt::ttl::CircularBufferType>(srcDFB.getType());
+  auto dstType =
+      mlir::cast<mlir::tt::ttl::CircularBufferType>(dstDFB.getType());
+  auto srcTile =
+      mlir::dyn_cast<mlir::tt::ttcore::TileType>(srcType.getElementType());
+  auto dstTile =
+      mlir::dyn_cast<mlir::tt::ttcore::TileType>(dstType.getElementType());
+  if (!srcTile || !dstTile) {
+    return operation->emitOpError(
+        "byte-counted dataflow-buffer copies require tiled element types");
+  }
+  if (srcTile.getDataType() != dstTile.getDataType()) {
+    return operation->emitOpError()
+           << "byte-counted copy data formats must match; got source "
+           << srcType.getElementType() << " and destination "
+           << dstType.getElementType();
+  }
+  return mlir::success();
+}
+
 mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   auto srcTy = getSrc().getType();
   auto dstTy = getDst().getType();
@@ -771,6 +863,55 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
       mlir::isa<PipeType, SelectedPipeSrcType, SelectedPipeDstType>(srcTy);
   const bool dstIsPipe =
       mlir::isa<PipeType, SelectedPipeSrcType, SelectedPipeDstType>(dstTy);
+  Value srcAttachedDFB = getAttachedCB(getSrc());
+  Value dstAttachedDFB = getAttachedCB(getDst());
+  IntegerAttr byteCountAttr = getByteCountAttr();
+  uint64_t byteCount =
+      byteCountAttr ? static_cast<uint64_t>(byteCountAttr.getInt()) : 0;
+
+  if (srcAttachedDFB && dstAttachedDFB) {
+    if (!byteCountAttr) {
+      return emitOpError(
+          "dataflow-buffer block copies require an explicit byte_count");
+    }
+    auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
+    if (!handleType || handleType.getKind() != TransferKind::read) {
+      return emitOpError() << "dataflow-buffer block copy requires "
+                              "!ttl.transfer_handle<read> result";
+    }
+    auto srcAttach = getSrc().getDefiningOp<AttachCBOp>();
+    auto dstAttach = getDst().getDefiningOp<AttachCBOp>();
+    mlir::Operation *srcAcquire =
+        srcAttach ? traceUnrealizedCasts(srcAttach.getTensor()).getDefiningOp()
+                  : nullptr;
+    mlir::Operation *dstAcquire =
+        dstAttach ? traceUnrealizedCasts(dstAttach.getTensor()).getDefiningOp()
+                  : nullptr;
+    if (!mlir::isa_and_nonnull<CBWaitOp>(srcAcquire)) {
+      return emitOpError(
+          "dataflow-buffer copy source must be the exact view returned by "
+          "ttl.cb_wait");
+    }
+    if (!mlir::isa_and_nonnull<CBReserveOp>(dstAcquire)) {
+      return emitOpError(
+          "dataflow-buffer copy destination must be the exact view returned "
+          "by ttl.cb_reserve");
+    }
+    if (srcAttachedDFB == dstAttachedDFB) {
+      return emitOpError(
+          "byte-counted copy requires distinct source and destination "
+          "dataflow buffers");
+    }
+    if (failed(verifyByteCopyDataFormats(getOperation(), srcAttachedDFB,
+                                         dstAttachedDFB)) ||
+        failed(verifyByteCountFitsDFBEndpoint(getOperation(), getSrc(),
+                                              byteCount, "source")) ||
+        failed(verifyByteCountFitsDFBEndpoint(getOperation(), getDst(),
+                                              byteCount, "destination"))) {
+      return failure();
+    }
+    return success();
+  }
 
   if (srcIsPipe || dstIsPipe) {
     if (srcIsPipe && dstIsPipe) {
@@ -794,7 +935,9 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
         return emitOpError()
                << "pipe send requires !ttl.transfer_handle<write> result";
       }
-      return success();
+      return byteCountAttr ? verifyByteCountFitsDFBEndpoint(
+                                 getOperation(), getSrc(), byteCount, "source")
+                           : success();
     }
     if (!findCBReserveForPipeReceive(getDst())) {
       return emitOpError() << "pipe receive requires a cb_reserve destination";
@@ -803,7 +946,16 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
       return emitOpError()
              << "pipe receive requires !ttl.receive_request result";
     }
-    return success();
+    return byteCountAttr
+               ? verifyByteCountFitsDFBEndpoint(getOperation(), getDst(),
+                                                byteCount, "destination")
+               : success();
+  }
+
+  if (byteCountAttr) {
+    return emitOpError(
+        "byte_count is supported only for dataflow-buffer block copies and "
+        "pipe copies");
   }
 
   auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
@@ -1191,9 +1343,11 @@ mlir::tt::ttl::TileTypecastOp::fold(FoldAdaptor /*adaptor*/) {
 
 void mlir::tt::ttl::ComputeOp::print(mlir::OpAsmPrinter &p) {
   p << " ins(";
-  p.printOperands(getInputs());
-  p << " : ";
-  llvm::interleaveComma(getInputs().getTypes(), p);
+  if (!getInputs().empty()) {
+    p.printOperands(getInputs());
+    p << " : ";
+    llvm::interleaveComma(getInputs().getTypes(), p);
+  }
   p << ")";
 
   p << " outs(";
@@ -1680,21 +1834,6 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   auto iteratorCount = getIteratorTypes().size();
   auto maps = mapsAttr;
 
-  // The iteration domain (from iterator_types) must be at least as large as the
-  // maximum operand rank. Extra dimensions are reduction dims that do not
-  // appear in any operand's shape (e.g., the K dimension in matmul: rank-2
-  // operands with a 3D [M, N, K] iteration space).
-  int64_t maxTensorRank = 0;
-  for (Value operand : llvm::concat<Value>(getInputs(), getOutputs())) {
-    auto ty = cast<RankedTensorType>(operand.getType());
-    maxTensorRank = std::max(maxTensorRank, ty.getRank());
-  }
-  if (iteratorCount < static_cast<size_t>(maxTensorRank)) {
-    return emitOpError("iterator_types count (")
-           << iteratorCount << ") must be >= maximum tensor rank ("
-           << maxTensorRank << ")";
-  }
-
   auto verifyMapCommon = [&](AffineMap map,
                              size_t expectedResults) -> mlir::LogicalResult {
     if (map.getNumDims() != iteratorCount) {
@@ -1719,28 +1858,48 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   // require the corresponding tensor dimension to be 1.
   // Examples of invalid maps: (d0, d1)->(d0 + d1), (d0, d1)->(1),
   // (d0, d1, d2)->(d0, d0), (d0)[s0]->(d0 + s0).
-  auto validateMapStructure =
-      [&](AffineMap map, RankedTensorType tensorTy, StringRef kind, size_t idx,
-          SmallVectorImpl<bool> *dimsReferenced) -> mlir::LogicalResult {
-    if (!map.isProjectedPermutation(/*allowZeroInResults=*/true)) {
+  auto validateMapStructure = [&](AffineMap map, RankedTensorType tensorTy,
+                                  StringRef kind,
+                                  size_t idx) -> mlir::LogicalResult {
+    if (map.getNumSymbols() != 0) {
       return emitOpError() << kind << " " << idx
-                           << " indexing map must be a projected permutation"
-                              " (unique dims or 0 constants)";
+                           << " indexing map must not contain symbols";
     }
+    llvm::SmallBitVector referencedDims(map.getNumDims(), false);
     for (auto [resIdx, expr] : llvm::enumerate(map.getResults())) {
       if (auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr)) {
-        if (dimsReferenced) {
-          (*dimsReferenced)[dimExpr.getPosition()] = true;
+        if (referencedDims.test(dimExpr.getPosition())) {
+          return emitOpError()
+                 << kind << " " << idx
+                 << " indexing map must not repeat an iterator dimension";
         }
-      } else if (auto cstExpr =
+        referencedDims.set(dimExpr.getPosition());
+      } else if (auto constantExpr =
                      mlir::dyn_cast<mlir::AffineConstantExpr>(expr)) {
+        if (constantExpr.getValue() != 0) {
+          return emitOpError() << kind << " " << idx
+                               << " indexing map constants must be zero";
+        }
         if (tensorTy.getDimSize(resIdx) != 1) {
           return emitOpError() << kind << " " << idx << " broadcast dim "
                                << resIdx << " must have size 1";
         }
+      } else {
+        return emitOpError()
+               << kind << " " << idx
+               << " indexing map results must be unique dimensions or zero "
+                  "constants";
       }
     }
     return success();
+  };
+  auto recordReferencedDims = [](AffineMap map,
+                                 SmallVectorImpl<bool> &dimsReferenced) {
+    for (AffineExpr expr : map.getResults()) {
+      if (auto dimExpr = mlir::dyn_cast<mlir::AffineDimExpr>(expr)) {
+        dimsReferenced[dimExpr.getPosition()] = true;
+      }
+    }
   };
 
   auto requireAttachedCB = [&](Value tensor, size_t idx,
@@ -1755,6 +1914,7 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
   };
 
   SmallVector<bool> dimsReferencedByInputs(iteratorCount, false);
+  SmallVector<bool> dimsReferencedByOperands(iteratorCount, false);
   for (size_t i = 0; i < numInputs; ++i) {
     auto tensorTy = mlir::cast<RankedTensorType>(getInputs()[i].getType());
     if (!tensorTy.hasStaticShape()) {
@@ -1767,10 +1927,11 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     if (failed(verifyMapCommon(map, tensorTy.getRank()))) {
       return failure();
     }
-    if (failed(validateMapStructure(map, tensorTy, "input", i,
-                                    &dimsReferencedByInputs))) {
+    if (failed(validateMapStructure(map, tensorTy, "input", i))) {
       return failure();
     }
+    recordReferencedDims(map, dimsReferencedByInputs);
+    recordReferencedDims(map, dimsReferencedByOperands);
   }
 
   DenseSet<Value> outputDFBs;
@@ -1794,10 +1955,10 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
     if (failed(verifyMapCommon(map, tensorTy.getRank()))) {
       return failure();
     }
-    if (failed(validateMapStructure(map, tensorTy, "output", i,
-                                    /*dimsReferenced=*/nullptr))) {
+    if (failed(validateMapStructure(map, tensorTy, "output", i))) {
       return failure();
     }
+    recordReferencedDims(map, dimsReferencedByOperands);
 
     // Reduction dims must not appear in output maps. Like linalg.generic,
     // reduction dimensions are contracted: the body accumulates into the
@@ -1819,6 +1980,13 @@ mlir::LogicalResult mlir::tt::ttl::ComputeOp::verify() {
       return emitOpError()
              << "reduction dimension " << d
              << " must be referenced by at least one input indexing map";
+    }
+  }
+  for (size_t dimension = 0; dimension < iteratorCount; ++dimension) {
+    if (!dimsReferencedByOperands[dimension]) {
+      return emitOpError() << "iterator dimension " << dimension
+                           << " must be referenced by at least one indexing "
+                              "map";
     }
   }
 
@@ -2141,22 +2309,20 @@ mlir::LogicalResult mlir::tt::ttl::AccumulationScopeOp::verify() {
            << " init modes";
   }
 
-  // The operand segment contains only init operands. This preserves the
-  // output-to-policy correspondence without unused operands for overwrite and
-  // accumulate-existing outputs.
+  // The operand segment contains only init operands. An init-mode state is
+  // seeded by its init operand, while other modes read or overwrite the
+  // destination and therefore use its type as their state type.
   size_t initIndex = 0;
+  mlir::SmallVector<mlir::Type> stateTypes;
+  stateTypes.reserve(outputCount);
   for (auto [outputIndex, mode] : llvm::enumerate(initialModes)) {
+    mlir::Value output = getOutputs()[outputIndex];
     if (mode != AccumulationInitialMode::Init) {
+      stateTypes.push_back(output.getType());
       continue;
     }
-    mlir::Value output = getOutputs()[outputIndex];
     mlir::Value init = getInits()[initIndex++];
-    if (output.getType() != init.getType()) {
-      return emitOpError("init operand ")
-             << (initIndex - 1) << " type " << init.getType()
-             << " must match output " << outputIndex << " type "
-             << output.getType();
-    }
+    stateTypes.push_back(init.getType());
   }
 
   if (getBody().getBlocks().size() != 1) {
@@ -2185,20 +2351,34 @@ mlir::LogicalResult mlir::tt::ttl::AccumulationScopeOp::verify() {
            << " outputs";
   }
 
-  for (auto [outputIndex, output] : llvm::enumerate(getOutputs())) {
-    mlir::Type expectedType = output.getType();
+  for (auto [outputIndex, stateType] : llvm::enumerate(stateTypes)) {
     mlir::Type bodyArgType = bodyBlock.getArgument(outputIndex).getType();
-    if (bodyArgType != expectedType) {
+    if (bodyArgType != stateType) {
       return emitOpError("body argument ")
              << outputIndex << " type " << bodyArgType
-             << " must match output type " << expectedType;
+             << " must match state type " << stateType;
     }
 
     mlir::Value yieldedValue = yield.getValues()[outputIndex];
-    if (yieldedValue.getType() != expectedType) {
+    if (yieldedValue.getType() != stateType) {
       return emitOpError("yielded value ")
              << outputIndex << " type " << yieldedValue.getType()
-             << " must match output type " << expectedType;
+             << " must match state type " << stateType;
+    }
+    mlir::Value output = getOutputs()[outputIndex];
+    if (stateType != output.getType()) {
+      bool publishesState =
+          llvm::any_of(bodyBlock.getOps<mlir::tt::ttl::StoreOp>(),
+                       [&](mlir::tt::ttl::StoreOp store) {
+                         return store.getTensor() == yieldedValue &&
+                                store.getView() == output;
+                       });
+      if (!publishesState) {
+        return emitOpError("state ")
+               << outputIndex << " type " << stateType
+               << " differs from output type " << output.getType()
+               << "; the body must store the yielded state to that output";
+      }
     }
   }
 
@@ -2306,42 +2486,99 @@ mlir::LogicalResult mlir::tt::ttl::CBPopOp::verify() {
   return success();
 }
 
+// Verify that `sourceType` contains one 32x32 tile and `destinationType`
+// contains one 32-column tile with the same BF16 or FP32 dtype. Report
+// violations on `operation` and return failure.
+static mlir::LogicalResult
+verifyRowPrefixStore(mlir::Operation *operation,
+                     mlir::RankedTensorType sourceType,
+                     mlir::RankedTensorType destinationType) {
+  auto sourceTile =
+      mlir::dyn_cast<mlir::tt::ttcore::TileType>(sourceType.getElementType());
+  auto destinationTile = mlir::dyn_cast<mlir::tt::ttcore::TileType>(
+      destinationType.getElementType());
+  if (!sourceTile || !destinationTile) {
+    return operation->emitOpError(
+        "row_prefix requires tiled source and destination tensors");
+  }
+  if (sourceTile.getHeight() != mlir::tt::ttl::kDefaultTileHeight ||
+      sourceTile.getWidth() != mlir::tt::ttl::kDefaultTileWidth) {
+    return operation->emitOpError()
+           << "row_prefix source must use 32x32 tiles, got "
+           << sourceTile.getHeight() << "x" << sourceTile.getWidth();
+  }
+  if (sourceTile.getDataType() != destinationTile.getDataType()) {
+    return operation->emitOpError()
+           << "row_prefix source and destination data types must match";
+  }
+  if (sourceTile.getDataType() != mlir::tt::ttcore::DataType::BFloat16 &&
+      sourceTile.getDataType() != mlir::tt::ttcore::DataType::Float32) {
+    return operation->emitOpError(
+        "row_prefix supports only bf16 and f32 tile data types");
+  }
+  if (sourceType.getNumElements() != 1) {
+    return operation->emitOpError()
+           << "row_prefix source must contain exactly one tile, got "
+           << sourceType.getNumElements();
+  }
+  if (destinationType.getNumElements() != 1) {
+    return operation->emitOpError()
+           << "row_prefix destination must contain exactly one tile, got "
+           << destinationType.getNumElements();
+  }
+  if (destinationTile.getWidth() != sourceTile.getWidth()) {
+    return operation->emitOpError()
+           << "row_prefix destination tile width must equal source width "
+           << sourceTile.getWidth() << ", got " << destinationTile.getWidth();
+  }
+  return mlir::success();
+}
+
 mlir::LogicalResult mlir::tt::ttl::StoreOp::verify() {
   auto tensorTy = mlir::cast<RankedTensorType>(getTensor().getType());
   auto viewTy = mlir::cast<RankedTensorType>(getView().getType());
 
-  // CB->CB identity stores (dst.reserve().store(src.wait())) must use the same
-  // tile shape; mismatched tilization is not a supported retile.
-  if (failed(emitIfTileShapeMismatch(getOperation(), tensorTy.getElementType(),
-                                     viewTy.getElementType(), "source",
-                                     "destination CB"))) {
-    return failure();
-  }
+  if (getRowPrefix()) {
+    if (failed(verifyRowPrefixStore(getOperation(), tensorTy, viewTy))) {
+      return failure();
+    }
+  } else {
+    // DFB-to-DFB identity stores must not implicitly retile.
+    if (failed(emitIfTileShapeMismatch(
+            getOperation(), tensorTy.getElementType(), viewTy.getElementType(),
+            "source", "destination CB"))) {
+      return failure();
+    }
 
-  if (tensorTy.getElementType() != viewTy.getElementType()) {
-    return emitOpError() << "tensor element type (" << tensorTy.getElementType()
-                         << ") must match view element type ("
-                         << viewTy.getElementType() << ")";
-  }
+    if (tensorTy.getElementType() != viewTy.getElementType()) {
+      return emitOpError() << "tensor element type ("
+                           << tensorTy.getElementType()
+                           << ") must match view element type ("
+                           << viewTy.getElementType() << ")";
+    }
 
-  if (tensorTy.getRank() != viewTy.getRank()) {
-    return emitOpError() << "tensor rank (" << tensorTy.getRank()
-                         << ") must match view rank (" << viewTy.getRank()
-                         << ")";
-  }
+    if (tensorTy.getRank() != viewTy.getRank()) {
+      return emitOpError() << "tensor rank (" << tensorTy.getRank()
+                           << ") must match view rank (" << viewTy.getRank()
+                           << ")";
+    }
 
-  for (int64_t i = 0; i < tensorTy.getRank(); ++i) {
-    if (tensorTy.getDimSize(i) != viewTy.getDimSize(i)) {
-      return emitOpError() << "tensor shape dimension " << i << " ("
-                           << tensorTy.getDimSize(i)
-                           << ") must match view shape dimension ("
-                           << viewTy.getDimSize(i) << ")";
+    for (int64_t dimension = 0; dimension < tensorTy.getRank(); ++dimension) {
+      if (tensorTy.getDimSize(dimension) != viewTy.getDimSize(dimension)) {
+        return emitOpError() << "tensor shape dimension " << dimension << " ("
+                             << tensorTy.getDimSize(dimension)
+                             << ") must match view shape dimension ("
+                             << viewTy.getDimSize(dimension) << ")";
+      }
     }
   }
 
   Operation *acquire = findCBAcquireOp(getView(), getOperation());
   if (!acquire) {
     return emitOpError() << "view must come from ttl.cb_reserve or ttl.cb_wait";
+  }
+  if (getRowPrefix() && !isa<CBReserveOp>(acquire)) {
+    return emitOpError("row_prefix requires a ttl.cb_reserve-backed view");
   }
   if (getAccumulate() && isa<CBWaitOp>(acquire)) {
     return emitOpError()
@@ -2360,13 +2597,22 @@ mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
 
   auto viewTy = mlir::cast<RankedTensorType>(getView().getType());
   auto viewElemTy = viewTy.getElementType();
-  if (viewElemTy != tileType) {
+  if (getRowPrefix()) {
+    auto sourceTensorType = RankedTensorType::get({1, 1}, tileType);
+    if (failed(
+            verifyRowPrefixStore(getOperation(), sourceTensorType, viewTy))) {
+      return failure();
+    }
+  } else if (viewElemTy != tileType) {
     return emitOpError() << "view element type (" << viewElemTy
                          << ") must match tile type (" << tileType << ")";
   }
 
   Operation *acquire = findCBAcquireOp(getView(), getOperation());
   bool isWaitBacked = isa_and_nonnull<CBWaitOp>(acquire);
+  if (getRowPrefix() && !isa_and_nonnull<CBReserveOp>(acquire)) {
+    return emitOpError("row_prefix requires a producer-reserved view");
+  }
   if (getStoreKind() == DFBTileStoreKind::ConsumerReplacement &&
       !isWaitBacked) {
     return emitOpError(
@@ -3037,8 +3283,9 @@ mlir::LogicalResult mlir::tt::ttl::RawAddrOp::verify() {
 // PipeNetPredicateOpInterface implementations.
 //===----------------------------------------------------------------------===//
 
-template <typename PredicateOp>
-static mlir::LogicalResult verifyPipeNetPredicate(PredicateOp op) {
+// The ID and expanded records redundantly identify one PipeNet and must agree.
+template <typename PipeNetReferenceOp>
+static mlir::LogicalResult verifyPipeNetRecordIdentity(PipeNetReferenceOp op) {
   mlir::tt::ttl::PipeNetRecordsAttr records = op.getRecordsAttr();
   int64_t pipeNetId = op.getPipeNetIdAttr().getInt();
   if (records && records.getPipeNetId() != pipeNetId) {
@@ -3046,23 +3293,23 @@ static mlir::LogicalResult verifyPipeNetPredicate(PredicateOp op) {
            << "record table identifies PipeNet " << records.getPipeNetId()
            << ", but pipe_net_id is " << pipeNetId;
   }
-  if (records && !records.getPipes().front().getDeviceTransfer()) {
-    return op.emitOpError()
-           << "record table must identify logical-device transfers";
-  }
   return mlir::success();
 }
 
 mlir::LogicalResult mlir::tt::ttl::IsSrcOp::verify() {
-  return verifyPipeNetPredicate(*this);
+  return verifyPipeNetRecordIdentity(*this);
 }
 
 mlir::LogicalResult mlir::tt::ttl::IsDstOp::verify() {
-  return verifyPipeNetPredicate(*this);
+  return verifyPipeNetRecordIdentity(*this);
+}
+
+mlir::LogicalResult mlir::tt::ttl::PipeNetDestinationCountOp::verify() {
+  return verifyPipeNetRecordIdentity(*this);
 }
 
 mlir::LogicalResult mlir::tt::ttl::IsActiveOp::verify() {
-  return verifyPipeNetPredicate(*this);
+  return verifyPipeNetRecordIdentity(*this);
 }
 
 int64_t mlir::tt::ttl::IsSrcOp::getReferencedPipeNetId() {
@@ -3163,14 +3410,9 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
           getOperation(), getUnsignedArgIndices(), getArgOperands()))) {
     return failure();
   }
-  if (!isNocKernelThread(getOperation()) &&
-      llvm::any_of(getArgOperands(), [](Value operand) {
-        return isa<RankedTensorType>(operand.getType());
-      })) {
-    return emitOpError(
-        "tensor function arguments require a data movement (noc) thread");
-  }
-  for (Value operand : getArgOperands()) {
+  std::optional<ttkernel::ThreadType> kernelThread =
+      getKernelThreadType(getEnclosingKernelThread(getOperation()));
+  for (auto [operandIndex, operand] : llvm::enumerate(getArgOperands())) {
     auto tensorType = mlir::dyn_cast<RankedTensorType>(operand.getType());
     if (!tensorType) {
       continue;
@@ -3181,13 +3423,43 @@ mlir::LogicalResult mlir::tt::ttl::OpaqueCallOp::verify() {
                          "slices/views are not supported");
     }
     auto layout = mlir::cast<tt::ttl::LayoutAttr>(tensorType.getEncoding());
-    auto tileType =
-        mlir::dyn_cast<tt::ttcore::TileType>(layout.getElementType());
-    if (!tileType ||
-        (tileType.getDataType() != tt::ttcore::DataType::BFloat16 &&
-         tileType.getDataType() != tt::ttcore::DataType::Float32)) {
-      return emitOpError(
-          "TensorAccessor operands support only bf16 and f32 tile types");
+    if (!kernelThread || (*kernelThread != ttkernel::ThreadType::Noc &&
+                          *kernelThread != ttkernel::ThreadType::Compute)) {
+      return emitOpError("tensor operands require a compute or data movement "
+                         "kernel");
+    }
+    BufferType bufferType = layout.getBufferType();
+    TensorMemoryLayout memoryLayout = layout.getMemoryLayout();
+    if (*kernelThread == ttkernel::ThreadType::Noc) {
+      if (bufferType == BufferType::SystemMemory) {
+        return emitOpError("tensor operand ")
+               << operandIndex
+               << " in a data movement kernel uses SystemMemory storage; "
+                  "data movement tensor accessors require device DRAM or "
+                  "SRAM";
+      }
+      if (bufferType == BufferType::L1Small &&
+          !isShardedMemoryLayout(memoryLayout)) {
+        return emitOpError("tensor operand ")
+               << operandIndex
+               << " in a data movement kernel uses non-sharded SRAM with "
+                  "L1Small buffer type; L1Small requires sharded storage";
+      }
+      continue;
+    }
+    if (bufferType != BufferType::L1 && bufferType != BufferType::L1Small) {
+      return emitOpError("tensor operand ")
+             << operandIndex << " in a compute kernel uses "
+             << (bufferType == BufferType::DRAM ? "DRAM" : "SystemMemory")
+             << " storage; compute tensor accessors require sharded SRAM "
+                "(L1 or L1Small buffer type)";
+    }
+    if (!isComputeLocalMemoryLayout(memoryLayout)) {
+      return emitOpError("tensor operand ")
+             << operandIndex
+             << " in a compute kernel uses an unsupported memory layout; "
+                "compute tensor accessors require height-, width-, or "
+                "block-sharded SRAM";
     }
   }
   std::optional<ArrayAttr> templateArgs = getTemplateArgs();

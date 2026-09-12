@@ -4,8 +4,8 @@
 // TTKERNEL-LABEL: func.func @mutate
 // TTKERNEL-DAG: %[[ONE:.*]] = arith.constant 1 : index
 // TTKERNEL-DAG: %[[ZERO:.*]] = arith.constant 0 : index
-// TTKERNEL: %[[OUTPUT:.*]] = ttkernel.get_compile_time_arg_val(0)
-// TTKERNEL: %[[STATE:.*]] = ttkernel.get_compile_time_arg_val(1)
+// TTKERNEL: %[[OUTPUT:.*]] = ttkernel.get_compile_time_arg_val({{[0-9]+}})
+// TTKERNEL: %[[STATE:.*]] = ttkernel.get_compile_time_arg_val({{[0-9]+}})
 // TTKERNEL: ttkernel.cb_wait_front(%[[STATE]],
 // TTKERNEL-NOT: ttkernel.cb_reserve_back(%[[STATE]],
 // TTKERNEL: ttkernel.pack_waited_tile({{.*}}, %[[STATE]], %[[ZERO]], true) {acquired_tiles = 2 : i64}
@@ -28,6 +28,25 @@ module attributes {
   ttl.launch_grid = [1, 1],
   ttl.target_arch = #ttcore.arch<blackhole>
 } {
+  // The real pipeline publishes input state from a data-movement thread.
+  func.func @produce_state() attributes {
+    ttl.base_cta_index = 2 : i32,
+    ttl.crta_indices = [],
+    ttl.kernel_thread = #ttkernel.thread<noc>,
+    ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>,
+    ttl.noc_index = 0 : i32
+  } {
+    %state_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 2], !ttcore.tile<32x32, bf16>, 1>
+    %block = ttl.cb_reserve %state_dfb
+        : <[1, 2], !ttcore.tile<32x32, bf16>, 1>
+          -> tensor<1x2x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %state_dfb
+        : <[1, 2], !ttcore.tile<32x32, bf16>, 1>
+    return
+  }
+
   func.func @mutate() attributes {
     ttl.base_cta_index = 2 : i32,
     ttl.crta_indices = [],

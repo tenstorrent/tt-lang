@@ -155,8 +155,9 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="reuse_user_dfbs",
         action=argparse.BooleanOptionalAction,
-        help="Reuse physical DFB indices only for logical lifetimes proven "
-        "not to overlap across concurrent kernels (default: enabled).",
+        help="Reuse physical DFB indices and compiler-managed storage only "
+        "for lifetimes proven not to overlap across concurrent kernels "
+        "(default: enabled).",
     )
     p.add_argument(
         "--ttl-unsafe-assume-dfb-allocation-groups",
@@ -182,9 +183,10 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="specialize_cores",
         action=argparse.BooleanOptionalAction,
-        help="Clone each kernel that branches on a core coordinate once per "
-        "launch coordinate, const-folding core_x / core_y so dead branches are "
-        "removed (ttkernel-specialize-cores). Opt-in (default: disabled).",
+        help="Clone each kernel whose structured branch or loop control depends on a "
+        "core coordinate once per launch coordinate, const-folding core_x / "
+        "core_y to resolve that control flow (ttkernel-specialize-cores). "
+        "Opt-in (default: disabled).",
     )
     p.add_argument(
         "--ttl-l1-budget",

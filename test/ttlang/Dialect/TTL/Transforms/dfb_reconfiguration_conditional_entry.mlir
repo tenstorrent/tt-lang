@@ -12,10 +12,10 @@
 // CHECK: DFB logical_id=1 bounded=0
 // CHECK: lifecycle_completion=unsupported-control-flow
 // CHECK: Total DFB count: 2
-// CHECK: DFB assignment: logical DFB 0 -> physical index 0 (bounded)
-// CHECK: DFB assignment: logical DFB 1 -> physical index 1 (unbounded)
+// CHECK: DFB assignment: logical DFB 0 -> physical index 0 storage index 1 (bounded)
+// CHECK: DFB assignment: logical DFB 1 -> physical index 1 storage index 0 (unbounded)
 
-module attributes {ttl.launch_grid = [1, 1]} {
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @compute() attributes {
     ttl.kernel_thread = #ttkernel.thread<compute>,
     ttl.logical_kernel = #compute

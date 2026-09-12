@@ -530,6 +530,7 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
                     participant_tokens.append(f"kernel:{participant_name}")
                 encoded = (
                     f"dfb-reconfiguration:{ordinal}:"
+                    f"discard_dfb_state={int(value.discard_dfb_state)}:"
                     + ",".join(sorted(participant_tokens))
                 ).encode("utf-8")
             else:

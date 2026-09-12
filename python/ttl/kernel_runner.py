@@ -15,8 +15,8 @@ building and execution.
 
 from dataclasses import dataclass, field, replace
 import hashlib
-import itertools
 import json
+import math
 import operator
 import os
 import threading
@@ -57,7 +57,11 @@ from .constants import (
     SUPPORTED_TENSOR_BACKED_DFB_DATA_FORMATS,
 )
 from . import dtype_utils
-from .domains import DeviceRef
+from .domains import (
+    DeviceDomain,
+    DeviceRef,
+    _normalize_coordinate as _normalize_domain_coordinate,
+)
 from .fabric import FabricManagerClaim
 from ._src.fabric_target import (
     FabricManagerIntervalKind,
@@ -128,6 +132,13 @@ def _validate_physical_dfb_config(
         raise ValueError(
             f"DFB config at physical index {physical_index} has dfb_index "
             f"{config.dfb_index}"
+        )
+    if config.storage_index is not None and (
+        type(config.storage_index) is not int or config.storage_index < 0
+    ):
+        raise ValueError(
+            f"DFB[{config.dfb_index}] storage_index must be a nonnegative "
+            f"integer, got {config.storage_index!r}"
         )
     allocation_nodes = None
     if config.allocation_nodes is not None:
@@ -338,6 +349,8 @@ class KernelSpec:
         used_dfb_indices: Physical DFB slots referenced by the final kernel body.
             None means metadata is unavailable and conservatively uses every DFB;
             an empty list means this kernel uses no DFBs.
+        local_tensor_indices: Global tensor indices whose local SRAM shards are
+            accessed directly by this kernel.
     """
 
     path: str
@@ -352,6 +365,7 @@ class KernelSpec:
     logical_kernel: Optional[KernelSelector] = None
     fabric_manager_intervals: Tuple[FabricManagerIntervalSpec, ...] = ()
     used_dfb_indices: Optional[List[int]] = None
+    local_tensor_indices: List[int] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -577,12 +591,129 @@ def _synchronize_or_retain_runtime_resources(
         raise
 
 
+def _normalize_mesh_program_coordinate(
+    coordinate: Any, endpoint: str
+) -> Tuple[int, ...]:
+    """Validate a coordinate sequence; use endpoint to identify invalid input."""
+    if not isinstance(coordinate, (tuple, list)):
+        raise TypeError(f"mesh program placement {endpoint} must be a coordinate tuple")
+    return _normalize_domain_coordinate(
+        coordinate, f"mesh program placement {endpoint}"
+    )
+
+
 @dataclass(frozen=True)
 class MeshProgramPlacement:
-    """Device range for one program inside a mesh descriptor."""
+    """Inclusive device range for one program inside a mesh descriptor."""
 
-    start: Any
-    end: Optional[Any] = None
+    start: Tuple[int, ...]
+    end: Optional[Tuple[int, ...]] = None
+
+    def __post_init__(self) -> None:
+        start = _normalize_mesh_program_coordinate(self.start, "start")
+        end = (
+            None
+            if self.end is None
+            else _normalize_mesh_program_coordinate(self.end, "end")
+        )
+        if end is not None and len(start) != len(end):
+            raise ValueError(
+                "mesh program placement start and end must have the same rank"
+            )
+        if end is not None and any(
+            start_coordinate > end_coordinate
+            for start_coordinate, end_coordinate in zip(start, end)
+        ):
+            raise ValueError("mesh program placement start must not exceed its end")
+        object.__setattr__(self, "start", start)
+        object.__setattr__(self, "end", end)
+
+    def contains(self, coordinate: Sequence[int]) -> bool:
+        """Test coordinate against this inclusive range; differing ranks return false."""
+        end = self.start if self.end is None else self.end
+        return len(coordinate) == len(self.start) and all(
+            start_value <= coordinate_value <= end_value
+            for coordinate_value, start_value, end_value in zip(
+                coordinate, self.start, end
+            )
+        )
+
+
+def _mesh_program_placements_intersect(
+    first: MeshProgramPlacement, second: MeshProgramPlacement
+) -> bool:
+    """Test overlap of first and second; the caller must establish equal ranks."""
+    first_end = first.start if first.end is None else first.end
+    second_end = second.start if second.end is None else second.end
+    return all(
+        first_start <= second_end_value and second_start <= first_end_value
+        for first_start, first_end_value, second_start, second_end_value in zip(
+            first.start, first_end, second.start, second_end
+        )
+    )
+
+
+def normalize_mesh_program_placements(
+    mesh_program_placements: Optional[Sequence[Any]],
+    *,
+    extent: Optional[Sequence[int]] = None,
+    extent_name: str = "mesh",
+) -> Optional[Tuple[MeshProgramPlacement, ...]]:
+    """Return immutable, equal-rank, disjoint placements within an optional extent."""
+    if mesh_program_placements is None:
+        return None
+    if not isinstance(mesh_program_placements, (tuple, list)):
+        raise TypeError("mesh_program_placements must be a tuple or list")
+    if not mesh_program_placements:
+        raise ValueError("mesh_program_placements must not be empty")
+
+    normalized: List[MeshProgramPlacement] = []
+    for placement in mesh_program_placements:
+        if isinstance(placement, MeshProgramPlacement):
+            normalized_placement = placement
+        elif isinstance(placement, (tuple, list)):
+            normalized_placement = MeshProgramPlacement(placement)
+        else:
+            raise TypeError(
+                "mesh program placements must be coordinate tuples or "
+                "MeshProgramPlacement values"
+            )
+        normalized.append(normalized_placement)
+
+    if extent is not None:
+        normalized_extent = tuple(extent)
+        for placement in normalized:
+            end = placement.start if placement.end is None else placement.end
+            if len(placement.start) != len(normalized_extent):
+                raise ValueError(
+                    f"mesh program placement rank must match {extent_name} rank"
+                )
+            if any(
+                end_value >= dimension
+                for end_value, dimension in zip(end, normalized_extent)
+            ):
+                raise ValueError(
+                    f"mesh program placement must be inside the {extent_name}"
+                )
+
+    expected_rank = len(normalized[0].start)
+    for placement_index, placement in enumerate(normalized[1:], start=1):
+        placement_rank = len(placement.start)
+        if placement_rank != expected_rank:
+            raise ValueError(
+                f"mesh program placement {placement_index} has rank "
+                f"{placement_rank}, expected rank {expected_rank} from placement 0"
+            )
+        for previous_index, previous_placement in enumerate(
+            normalized[:placement_index]
+        ):
+            if _mesh_program_placements_intersect(previous_placement, placement):
+                raise ValueError(
+                    "mesh program placements at indices "
+                    f"{previous_index} and {placement_index} must not overlap"
+                )
+
+    return tuple(normalized)
 
 
 def _format_logical_kernel(kernel: LogicalKernelId) -> str:
@@ -1588,6 +1719,61 @@ def _build_reconfiguration_descriptor_variants(
     return descriptor_variants
 
 
+def _validate_local_tensor_access(
+    spec: KernelSpec, tensors: List[Any], kernel_ranges: Any
+) -> None:
+    """Require a local tensor shard on every core that executes the kernel."""
+    if not spec.local_tensor_indices:
+        return
+
+    missing_runtime_addresses = sorted(
+        set(spec.local_tensor_indices) - set(spec.tensor_indices)
+    )
+    if missing_runtime_addresses:
+        raise ValueError(
+            "local tensor indices must also appear in tensor runtime arguments; "
+            f"missing {missing_runtime_addresses}"
+        )
+
+    executing_cores = _core_range_coordinates(
+        kernel_ranges, label=f"{spec.thread_type} kernel core ranges"
+    )
+    sharded_layouts = {
+        ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+        ttnn.TensorMemoryLayout.WIDTH_SHARDED,
+        ttnn.TensorMemoryLayout.BLOCK_SHARDED,
+    }
+    local_buffer_types = {ttnn.BufferType.L1, ttnn.BufferType.L1_SMALL}
+    for tensor_index in spec.local_tensor_indices:
+        if tensor_index < 0 or tensor_index >= len(tensors):
+            raise ValueError(
+                f"local tensor index {tensor_index} is outside the tensor list"
+            )
+        memory_config = tensors[tensor_index].memory_config()
+        if memory_config.buffer_type not in local_buffer_types:
+            raise ValueError(
+                f"local tensor {tensor_index} for {spec.thread_type} kernel "
+                "must use sharded SRAM (L1 or L1Small buffer type)"
+            )
+        if memory_config.memory_layout not in sharded_layouts:
+            raise ValueError(
+                f"local tensor {tensor_index} for {spec.thread_type} kernel "
+                "must use height-, width-, or block-sharded memory"
+            )
+        shard_spec = memory_config.shard_spec
+        if shard_spec is None:
+            raise ValueError(f"local tensor {tensor_index} has no shard specification")
+        shard_cores = _core_range_coordinates(
+            shard_spec.grid, label=f"local tensor {tensor_index} shard grid"
+        )
+        missing_cores = sorted(executing_cores - shard_cores)
+        if missing_cores:
+            raise ValueError(
+                f"local tensor {tensor_index} has no shard on executing cores "
+                f"{missing_cores}"
+            )
+
+
 def build_kernel_descriptors(
     kernel_specs: List[KernelSpec],
     tensors: List[Any],
@@ -1662,6 +1848,11 @@ def build_kernel_descriptors(
         )
 
     for kernel_spec_index, spec in enumerate(kernel_specs):
+        kernel_ranges = (
+            spec.core_ranges if spec.core_ranges is not None else core_ranges
+        )
+        _validate_local_tensor_access(spec, tensors, kernel_ranges)
+
         # Build common_runtime_args using tensor_indices.
         # C++ indexes by function-local position, we provide addresses in that order.
         common_runtime_args = [
@@ -1689,11 +1880,6 @@ def build_kernel_descriptors(
         common_runtime_args.extend(device_coordinates or [])
         common_runtime_args.extend(spec.extra_common_runtime_args or [])
 
-        # Prefer per-kernel core_ranges (specialize-cores clones); otherwise
-        # fall back to the whole-grid core_ranges.
-        kernel_ranges = (
-            spec.core_ranges if spec.core_ranges is not None else core_ranges
-        )
         runtime_args = []
         defines = []
         if descriptor_resource_plans is not None:
@@ -2353,6 +2539,8 @@ def build_dfb_reconfiguration_runtime_resources(
     scratch_bytes_by_index = {}
     scratch_nodes_by_index = {}
     for dfb_index, epochs in enumerate(plan.dfb_epochs):
+        if not any(epoch.entry_reconfiguration_ordinal is not None for epoch in epochs):
+            continue
         scratch_bytes = 0
         scratch_nodes = set()
         for epoch in epochs:
@@ -3028,6 +3216,30 @@ def _order_static_dfb_descriptor_plans(
             break
         current_score, current_order, current_result = next_candidate
 
+    # A relocation can improve an ordering when no improving pairwise swap
+    # exists because it changes every intervening allocation position.
+    while current_score[0] > 0:
+        next_candidate = None
+        for source_position in range(len(current_order)):
+            shortened_order = list(current_order)
+            moved_plan_index = shortened_order.pop(source_position)
+            for destination_position in range(len(current_order)):
+                if destination_position == source_position:
+                    continue
+                candidate_order_list = list(shortened_order)
+                candidate_order_list.insert(destination_position, moved_plan_index)
+                candidate_order = tuple(candidate_order_list)
+                candidate_result = evaluate_order(candidate_order)
+                candidate_score = packing_score(candidate_result)
+                if candidate_score >= current_score:
+                    continue
+                candidate = (candidate_score, candidate_order, candidate_result)
+                if next_candidate is None or candidate < next_candidate:
+                    next_candidate = candidate
+        if next_candidate is None:
+            break
+        current_score, current_order, current_result = next_candidate
+
     def apply_order(order: Tuple[int, ...]) -> List[_DFBDescriptorPlan]:
         ordered_plans = list(descriptor_plans)
         for destination_index, source_index in zip(static_plan_indices, order):
@@ -3186,6 +3398,21 @@ def _order_static_dfb_descriptor_plans(
     )
 
 
+def _physical_dfb_storage_index(config: PhysicalDFBConfig) -> int:
+    return config.dfb_index if config.storage_index is None else config.storage_index
+
+
+def _shared_static_storage_size(
+    member_indices: Sequence[int],
+    allocations: Sequence[_DFBAllocation],
+) -> int:
+    page_alignment = math.lcm(
+        *(allocations[index].page_size for index in member_indices)
+    )
+    maximum_size = max(allocations[index].total_size for index in member_indices)
+    return _align_up(maximum_size, page_alignment)
+
+
 def _build_dfb_descriptors(
     tensors: List[Any],
     cb_configs: List[PhysicalDFBConfig],
@@ -3195,6 +3422,15 @@ def _build_dfb_descriptors(
     remaining_bytes_by_core: Dict[Tuple[int, int], int],
 ) -> List[Any]:
     """Build exact-source descriptors and order their static L1 storage."""
+
+    static_members_by_storage_by_core: Dict[int, Dict[Tuple[int, int], set[int]]] = {}
+    for dfb_index, placement in enumerate(placements):
+        for core, (storage_kind, _) in placement.items():
+            if storage_kind == "static":
+                storage_index = _physical_dfb_storage_index(cb_configs[dfb_index])
+                static_members_by_storage_by_core.setdefault(
+                    storage_index, {}
+                ).setdefault(core, set()).add(dfb_index)
 
     descriptor_plans = []
     for dfb_index, placement in enumerate(placements):
@@ -3211,6 +3447,8 @@ def _build_dfb_descriptors(
         for source in ordered_sources:
             source_cores = cores_by_source[source]
             kind, segment_index = source
+            if kind == "static":
+                continue
             allocation = allocations[dfb_index]
             format_descriptor = _cb_format_descriptor(dfb_index, allocation)
             source_ranges = _make_singleton_core_ranges(sorted(source_cores))
@@ -3227,6 +3465,7 @@ def _build_dfb_descriptors(
                     core_ranges=source_ranges,
                 )
             else:
+                assert kind in ("backing", "computed")
                 descriptor = ttnn.CBDescriptor(
                     total_size=allocation.total_size,
                     core_ranges=source_ranges,
@@ -3246,7 +3485,33 @@ def _build_dfb_descriptors(
                     physical_index=dfb_index,
                     total_size=allocation.total_size,
                     nodes=tuple(sorted(source_cores)),
-                    has_static_storage=kind == "static",
+                    has_static_storage=False,
+                )
+            )
+
+    for _, members_by_core in sorted(static_members_by_storage_by_core.items()):
+        cores_by_member_indices: Dict[Tuple[int, ...], set[Tuple[int, int]]] = {}
+        for core, member_set in members_by_core.items():
+            member_indices = tuple(sorted(member_set))
+            cores_by_member_indices.setdefault(member_indices, set()).add(core)
+        for member_indices, source_core_set in sorted(cores_by_member_indices.items()):
+            source_cores = tuple(sorted(source_core_set))
+            total_size = _shared_static_storage_size(member_indices, allocations)
+            descriptor = ttnn.CBDescriptor(
+                total_size=total_size,
+                core_ranges=_make_singleton_core_ranges(source_cores),
+                format_descriptors=[
+                    _cb_format_descriptor(index, allocations[index])
+                    for index in member_indices
+                ],
+            )
+            descriptor_plans.append(
+                _DFBDescriptorPlan(
+                    descriptor=descriptor,
+                    physical_index=min(member_indices),
+                    total_size=total_size,
+                    nodes=source_cores,
+                    has_static_storage=True,
                 )
             )
     descriptor_plans = _order_static_dfb_descriptor_plans(
@@ -3405,25 +3670,45 @@ def build_cb_descriptors(
     allocation_quantum_bytes = _get_l1_allocation_quantum_bytes(device)
 
     allocations = []
-    static_cb_bytes = 0
-    static_allocation_summaries = []
+    whole_static_members_by_storage: Dict[int, List[int]] = {}
+    separately_allocated_static_indices = []
     for physical_index, config in enumerate(cb_configs):
         allocation = _get_dfb_allocation(config)
         _validate_physical_dfb_config(config, physical_index)
-        aligned_bytes = _align_up(allocation.total_size, allocation_quantum_bytes)
-        allocation_summary = (
-            f"  DFB[{physical_index}]: num_tiles={allocation.num_tiles} "
-            f"block_count={allocation.block_count} "
-            f"format={config.data_format} tile={allocation.tile} -> "
-            f"{aligned_bytes} bytes"
-        )
         allocations.append(allocation)
         has_static_storage = not config.storage_segments or any(
             not segment.is_tensor_backed for segment in config.storage_segments
         )
         if physical_index not in backing_tensors and has_static_storage:
-            static_cb_bytes += aligned_bytes
-            static_allocation_summaries.append(allocation_summary)
+            if not config.storage_segments:
+                whole_static_members_by_storage.setdefault(
+                    _physical_dfb_storage_index(config), []
+                ).append(physical_index)
+            else:
+                separately_allocated_static_indices.append(physical_index)
+
+    static_cb_bytes = sum(
+        _align_up(
+            _shared_static_storage_size(member_indices, allocations),
+            allocation_quantum_bytes,
+        )
+        for member_indices in whole_static_members_by_storage.values()
+    ) + sum(
+        _align_up(allocations[index].total_size, allocation_quantum_bytes)
+        for index in separately_allocated_static_indices
+    )
+    static_allocation_summaries = [
+        f"  storage[{storage_index}] DFBs={member_indices} -> "
+        f"{_align_up(_shared_static_storage_size(member_indices, allocations), allocation_quantum_bytes)} bytes"
+        for storage_index, member_indices in sorted(
+            whole_static_members_by_storage.items()
+        )
+    ]
+    static_allocation_summaries.extend(
+        f"  DFB[{index}] segmented static storage -> "
+        f"{_align_up(allocations[index].total_size, allocation_quantum_bytes)} bytes"
+        for index in separately_allocated_static_indices
+    )
 
     placements = _resolve_dfb_placements(
         cb_configs, core_ranges, backing_tensors, kernel_specs
@@ -3463,7 +3748,7 @@ def build_cb_descriptors(
             f"{static_cb_bytes} bytes) exceeds L1 budget ({remaining_bytes} bytes). "
             "This checks static DFB backing store only (not all L1 on core).\n"
             + breakdown
-            + "\n  hint: reduce DFB shapes or block_count."
+            + "\n  hint: reduce DFB shapes, block_count, or concurrently used DFB storage."
         )
 
     cb_descriptors = []
@@ -3471,13 +3756,13 @@ def build_cb_descriptors(
         config = cb_configs[cb_index]
         cb_format = _cb_format_descriptor(cb_index, allocation)
         if not config.storage_segments:
-            descriptor = ttnn.CBDescriptor(
-                total_size=allocation.total_size,
-                core_ranges=core_ranges,
-                format_descriptors=[cb_format],
-            )
             backing_tensor = backing_tensors.get(cb_index)
             if backing_tensor is not None:
+                descriptor = ttnn.CBDescriptor(
+                    total_size=allocation.total_size,
+                    core_ranges=core_ranges,
+                    format_descriptors=[cb_format],
+                )
                 backing_descriptor = ttnn.cb_descriptor_from_sharded_tensor(
                     cb_index,
                     backing_tensor,
@@ -3485,7 +3770,7 @@ def build_cb_descriptors(
                     core_ranges=core_ranges,
                 )
                 descriptor.set_buffer_from_cb(backing_descriptor)
-            cb_descriptors.append(descriptor)
+                cb_descriptors.append(descriptor)
             continue
 
         for segment in config.storage_segments:
@@ -3520,6 +3805,18 @@ def build_cb_descriptors(
                     core_ranges=segment_core_ranges,
                 )
             )
+
+    for member_indices in whole_static_members_by_storage.values():
+        cb_descriptors.append(
+            ttnn.CBDescriptor(
+                total_size=_shared_static_storage_size(member_indices, allocations),
+                core_ranges=core_ranges,
+                format_descriptors=[
+                    _cb_format_descriptor(index, allocations[index])
+                    for index in member_indices
+                ],
+            )
+        )
 
     return cb_descriptors
 
@@ -3616,17 +3913,14 @@ def build_mesh_program_descriptor(
     return mesh_program_descriptor
 
 
-def _iter_device_domain_coordinates(device_domain):
-    component_coordinates = []
-    for component in device_domain.components:
-        component_coordinates.append(
-            tuple(itertools.product(*(range(extent) for extent in component.extent)))
-        )
-    for coordinates in itertools.product(*component_coordinates):
-        runtime_coordinates = [
-            value for coordinate in coordinates for value in coordinate
-        ]
-        yield tuple(runtime_coordinates), runtime_coordinates
+def _iter_device_domain_coordinates(device_domain, mesh_program_placements=None):
+    for device_ref in device_domain.iter_device_refs():
+        mesh_coordinate = device_domain.flattened_coordinates(device_ref)
+        if mesh_program_placements is not None and not any(
+            placement.contains(mesh_coordinate) for placement in mesh_program_placements
+        ):
+            continue
+        yield mesh_coordinate, list(mesh_coordinate)
 
 
 def build_device_mesh_program_descriptor(
@@ -3896,7 +4190,7 @@ def _run_kernel_on_device_impl(
         program_descriptors = {}
         fabric_binding_plans = {}
         for mesh_coordinate, runtime_coordinates in _iter_device_domain_coordinates(
-            device_domain
+            device_domain, mesh_program_placements
         ):
             device_program = build_device_program(runtime_coordinates)
             program_descriptors[mesh_coordinate] = device_program
@@ -4066,6 +4360,16 @@ def run_kernel_on_device(
     device: Optional[Any] = None,
 ) -> Any:
     """Execute a kernel, serializing use of persistent runtime resources."""
+    if device_domain is not None and not isinstance(device_domain, DeviceDomain):
+        raise TypeError(
+            f"device_domain must be a DeviceDomain, got "
+            f"{type(device_domain).__name__}"
+        )
+    mesh_program_placements = normalize_mesh_program_placements(
+        mesh_program_placements,
+        extent=(None if device_domain is None else device_domain.flattened_extent),
+        extent_name="device domain",
+    )
     arguments = {
         "kernel_specs": kernel_specs,
         "tensors": tensors,
@@ -4238,6 +4542,8 @@ def _append_physical_dfb_config_source(
     lines.append(f"{indent}    block_count={config.block_count},")
     lines.append(f"{indent}    page_size={config.page_size},")
     lines.append(f"{indent}    tile={config.tile!r},")
+    if config.storage_index is not None:
+        lines.append(f"{indent}    storage_index={config.storage_index},")
     if config.allocation_nodes is not None:
         lines.append(f"{indent}    allocation_nodes={config.allocation_nodes!r},")
     if config.storage_segments:
@@ -4302,6 +4608,7 @@ def emit_runner_source(
     kernel_fabric_routes: Optional[List[List[FabricRouteSpec]]] = None,
     requires_runtime_resource_factory: bool = False,
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
+    tensor_configurations: Optional[Sequence[tuple]] = None,
 ) -> str:
     """
     Emit Python source code for a standalone runner that invokes ttnn.generic_op.
@@ -4314,7 +4621,15 @@ def emit_runner_source(
     emitted runner's tt-metal program-cache key.
     mesh_program_placements, if provided, selects the device ranges that run
     the emitted program.
+    tensor_configurations records the compilation inputs so the fixed cache key
+    cannot be reused with incompatible tensors.
     """
+    if tensor_configurations is not None and len(tensor_configurations) != num_tensors:
+        raise ValueError(
+            "tensor_configurations must contain one entry per tensor: "
+            f"expected {num_tensors}, got {len(tensor_configurations)}"
+        )
+
     lines = []
 
     lines.append("# SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC")
@@ -4330,6 +4645,7 @@ def emit_runner_source(
     lines.append("from ttl.dataflow_buffer import PhysicalDFBConfig")
     lines.append("from ttl.domains import DeviceDomain")
     lines.append("from ttl.kernel import Kernel, KernelKind")
+    lines.append("from ttl.layouts import get_tensor_configuration")
     lines.append("from ttl.kernel_runner import (")
     lines.append("    FabricManagerIntervalKind,")
     lines.append("    FabricManagerIntervalSpec,")
@@ -4347,6 +4663,7 @@ def emit_runner_source(
     lines.append(f"NUM_TENSORS = {num_tensors}")
     lines.append(f"OPERATION_NAME = {kernel_name!r}")
     lines.append(f"PROGRAM_HASH = {normalize_program_hash(program_hash)!r}")
+    lines.append(f"TENSOR_CONFIGURATIONS = {tensor_configurations!r}")
     lines.append(f"NUM_PIPE_SYNC_SEMAPHORES = {num_pipe_sync_semaphores}")
     lines.append(f"NUM_DFB_RESETS = {num_dfb_resets}")
     lines.append(f"PIPE_SRAM_SCRATCH_BYTES = {pipe_sram_scratch_bytes}")
@@ -4388,6 +4705,12 @@ def emit_runner_source(
     lines.append("KERNEL_TENSOR_INDICES = [")
     for spec in kernel_specs:
         lines.append(f"    {spec.tensor_indices!r},  # {spec.thread_type}")
+    lines.append("]")
+    lines.append("")
+
+    lines.append("KERNEL_LOCAL_TENSOR_INDICES = [")
+    for spec in kernel_specs:
+        lines.append(f"    {spec.local_tensor_indices!r},  # {spec.thread_type}")
     lines.append("]")
     lines.append("")
 
@@ -4457,9 +4780,30 @@ def emit_runner_source(
     else:
         lines.append("def run(tensors, device=None):")
     lines.append(f'    """Run the {kernel_name} on device."""')
+    lines.append(f"    if len(tensors) != {num_tensors}:")
     lines.append(
-        f"    assert len(tensors) == {num_tensors}, f'Expected {num_tensors} tensors, got {{len(tensors)}}'"
+        f"        raise ValueError(f'Expected {num_tensors} tensor arguments, got {{len(tensors)}}')"
     )
+    lines.append("    if TENSOR_CONFIGURATIONS is not None:")
+    lines.append("        actual_configurations = tuple(")
+    lines.append("            get_tensor_configuration(tensor) for tensor in tensors")
+    lines.append("        )")
+    lines.append("        if actual_configurations != tuple(TENSOR_CONFIGURATIONS):")
+    lines.append("            mismatched_indices = [")
+    lines.append("                tensor_index")
+    lines.append("                for tensor_index, (actual, expected) in enumerate(")
+    lines.append(
+        "                    zip(actual_configurations, TENSOR_CONFIGURATIONS)"
+    )
+    lines.append("                )")
+    lines.append("                if actual != expected")
+    lines.append("            ]")
+    lines.append("            raise ValueError(")
+    lines.append(
+        "                f'Emitted runner tensor configuration mismatch at indices '"
+    )
+    lines.append("                f'{mismatched_indices}'")
+    lines.append("            )")
     if requires_runtime_resource_factory:
         lines.append("    if runtime_resource_factory is None:")
         lines.append(
@@ -4516,6 +4860,9 @@ def emit_runner_source(
     lines.append("                path=kernel_path,")
     lines.append("                thread_type=thread_type,")
     lines.append("                tensor_indices=KERNEL_TENSOR_INDICES[kernel_idx],")
+    lines.append(
+        "                local_tensor_indices=KERNEL_LOCAL_TENSOR_INDICES[kernel_idx],"
+    )
     lines.append("                config=config,")
     lines.append(
         "                pipe_computed_address_dfb_indices=KERNEL_PIPE_COMPUTED_ADDRESS_DFB_INDICES[kernel_idx],"
@@ -4592,6 +4939,7 @@ def emit_runner_file(
     kernel_fabric_routes: Optional[List[List[FabricRouteSpec]]] = None,
     requires_runtime_resource_factory: bool = False,
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
+    tensor_configurations: Optional[Sequence[tuple]] = None,
 ) -> str:
     """
     Emit a Python runner file for the compiled kernel.
@@ -4600,6 +4948,8 @@ def emit_runner_file(
     normalized tt-metal program-cache key.
     mesh_program_placements, if provided, is forwarded as the emitted
     program's device ranges.
+    tensor_configurations is forwarded so the emitted runner
+    can validate tensors before using its fixed tt-metal program-cache key.
 
     Returns the output path.
     """
@@ -4612,6 +4962,7 @@ def emit_runner_file(
         grid_rows=grid_rows,
         num_tensors=num_tensors,
         program_hash=program_hash,
+        tensor_configurations=tensor_configurations,
         kernel_name=kernel_name,
         num_pipe_sync_semaphores=num_pipe_sync_semaphores,
         num_dfb_resets=num_dfb_resets,
@@ -4653,6 +5004,7 @@ __all__ = [
     "get_cached_runtime_resources",
     "build_dfb_reconfiguration_runtime_resources",
     "build_pipe_sync_semaphore_descriptors",
+    "normalize_mesh_program_placements",
     "normalize_program_hash",
     "combine_program_hash_with_runtime_resources",
     "build_generic_op_io_tensors",

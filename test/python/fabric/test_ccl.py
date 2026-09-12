@@ -19,6 +19,7 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
 from examples.multidevice_all_reduce import make_structured_all_reduce_operation
 from ttlang_test_utils import (
+    FabricMeshUnavailable,
     get_fabric_mesh_shape,
     open_fabric_mesh,
     requires_forwarding_link_indices,
@@ -249,6 +250,52 @@ def _make_point_to_point_operation(
             point_to_point_net.if_dst(receive)
 
     return point_to_point
+
+
+def _make_graph_destination_count_operation(mesh_shape: tuple[int, ...]):
+    """Build a gather whose root consumes every expanded destination record."""
+    device_count = prod(mesh_shape)
+    maximum_destination_count = device_count - 1
+    device_domain = ttl.DeviceDomain(mesh_shape)
+    root_device = tuple(0 for _extent in mesh_shape)
+    gather_net = ttl.PipeNet(
+        graph=ttl.TransferGraph.gather(device_domain, root=root_device)
+    )
+
+    @ttl.operation(grid=(1, 1), device_domain=device_domain)
+    def graph_destination_count(inp, out):
+        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        receive_dfb = ttl.make_dataflow_buffer_like(
+            out, shape=(1, 1), block_count=maximum_destination_count
+        )
+
+        @ttl.compute()
+        def idle_compute():
+            pass
+
+        @ttl.datamovement()
+        def sender_node():
+            def send(pipe):
+                with send_dfb.reserve() as send_block:
+                    ttl.copy(inp[0, 0], send_block).wait()
+                with send_dfb.wait() as send_block:
+                    ttl.copy(send_block, pipe).wait()
+
+            gather_net.if_src(send)
+
+        @ttl.datamovement()
+        def receiver_node():
+            def receive(pipe):
+                with receive_dfb.reserve() as receive_block:
+                    ttl.copy(pipe, receive_block).wait()
+
+            gather_net.if_dst(receive)
+
+            for receive_index in range(gather_net.destination_count()):
+                with receive_dfb.wait() as receive_block:
+                    ttl.copy(receive_block, out[receive_index, 0]).wait()
+
+    return graph_destination_count
 
 
 def _flatten_device_index(coordinates, mesh_shape: tuple[int, ...]) -> int:
@@ -826,9 +873,12 @@ def _route_mesh_options(fabric_config):
 
 
 def _get_route_mesh_shape(fabric_config):
-    return get_fabric_mesh_shape(
-        fabric_config=fabric_config, **_route_mesh_options(fabric_config)
-    )
+    try:
+        return get_fabric_mesh_shape(
+            fabric_config=fabric_config, **_route_mesh_options(fabric_config)
+        )
+    except FabricMeshUnavailable as error:
+        pytest.skip(str(error))
 
 
 def _open_route_mesh(mesh_shape: tuple[int, ...], fabric_config):
@@ -883,6 +933,52 @@ def test_point_to_point(
     assert len(set(program_cache_entry_counts)) == 1
     expected = torch.zeros_like(inp_torch)
     expected[(device_count - 1) * TILE_SIZE :, :] = inp_torch[:TILE_SIZE, :]
+    assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+
+
+# Graph counts must select every record received by the gather root.
+@pytest.mark.parametrize("torch_dtype,ttnn_dtype,rtol,atol", FABRIC_DTYPES)
+def test_graph_destination_count(
+    fabric_mesh_shape,
+    torch_dtype,
+    ttnn_dtype,
+    rtol,
+    atol,
+):
+    device_count = prod(fabric_mesh_shape)
+    operation = _make_graph_destination_count_operation(fabric_mesh_shape)
+    inp_torch = torch.cat(
+        [
+            torch.full(
+                (TILE_SIZE, TILE_SIZE),
+                fill_value=device_index + 1,
+                dtype=torch_dtype,
+            )
+            for device_index in range(device_count)
+        ]
+    )
+    maximum_destination_count = device_count - 1
+    out_torch = torch.zeros(
+        device_count * maximum_destination_count * TILE_SIZE,
+        TILE_SIZE,
+        dtype=torch_dtype,
+    )
+
+    with _open_collective_mesh(fabric_mesh_shape) as mesh:
+        inp = _mesh_tensor(mesh, inp_torch, ttnn_dtype)
+        out = _mesh_tensor(mesh, out_torch, ttnn_dtype)
+
+        operation(inp, out)
+
+        result = _compose(mesh, out)
+
+    expected = torch.zeros_like(out_torch)
+    for receive_index, source_device_index in enumerate(range(1, device_count)):
+        source_value = source_device_index + 1
+        expected[
+            receive_index * TILE_SIZE : (receive_index + 1) * TILE_SIZE,
+            :,
+        ] = source_value
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
 
 

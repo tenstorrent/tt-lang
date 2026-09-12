@@ -8,8 +8,8 @@
 // REPORT: possible_nodes lifecycle_completion=complete domain_assumption=unknown-possible may_be_active=1 conditional_execution=1 node_count=1 nodes={(1,0)}
 // REPORT: DFB logical_id=1 bounded=0 compiler_created=0 conditionally_bounded=1
 // REPORT-SAME: domain=unknown
-// REPORT: DFB assignment: logical DFB 0 -> physical index 0 (bounded)
-// REPORT-NEXT: DFB assignment: logical DFB 1 -> physical index 0 (bounded)
+// REPORT: DFB assignment: logical DFB 0 -> physical index 0 storage index 0 (bounded)
+// REPORT-NEXT: DFB assignment: logical DFB 1 -> physical index 0 storage index 0 (bounded)
 
 // Separate regions controlled by one opaque predicate preserve one 0-or-1
 // transaction for each DFB and permit sequential physical-index reuse.

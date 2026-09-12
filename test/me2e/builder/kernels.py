@@ -17,6 +17,7 @@ from typing import List, Tuple
 from ttl.ir import Module, ArrayAttr, DenseI32ArrayAttr, IntegerAttr
 from ttl.passes import ttkernel_to_cpp_by_name, get_ttkernel_names
 from ttl.dialects import func
+from ttl._mlir_libs._ttlang import ttl_ir
 
 
 class ThreadType(Enum):
@@ -39,6 +40,7 @@ class KernelSpec:
     fp32_dest_acc_en: bool = False
     dst_full_sync_en: bool = False
     unpack_to_dest_fp32: List[int] = field(default_factory=list)
+    local_tensor_indices: List[int] = field(default_factory=list)
 
 
 def _get_kernel_func(module: Module, kernel_name: str) -> func.FuncOp:
@@ -49,26 +51,33 @@ def _get_kernel_func(module: Module, kernel_name: str) -> func.FuncOp:
     raise ValueError(f"Kernel function '{kernel_name}' not found")
 
 
-def _get_kernel_tensor_indices(module: Module, kernel_name: str) -> List[int]:
-    """
-    Extract tensor indices from a kernel function's ttl.crta_indices attribute.
-
-    The ttl.crta_indices attribute on each function specifies which global
-    tensor indices that kernel accesses for building common_runtime_args.
-
-    Args:
-        module: Compiled module containing the kernel function.
-        kernel_name: Name of the kernel function.
-
-    Returns:
-        List of global tensor indices accessed by the kernel.
-    """
+def _get_kernel_index_array_attribute(
+    module: Module, kernel_name: str, attribute_name: str
+) -> List[int]:
     operation = _get_kernel_func(module, kernel_name)
-    if "ttl.crta_indices" in operation.attributes:
-        crta_attr = operation.attributes["ttl.crta_indices"]
-        if isinstance(crta_attr, ArrayAttr):
-            return [int(IntegerAttr(index).value) for index in crta_attr]
-    return []
+    attribute = operation.attributes.get(attribute_name)
+    if attribute is None:
+        return []
+    if not isinstance(attribute, ArrayAttr):
+        raise ValueError(
+            f"Expected ArrayAttr for '{attribute_name}' on kernel "
+            f"'{kernel_name}', got {attribute}"
+        )
+    return [int(IntegerAttr(index).value) for index in attribute]
+
+
+def _get_kernel_tensor_indices(module: Module, kernel_name: str) -> List[int]:
+    """Extract global tensor indices used to build common runtime arguments."""
+    return _get_kernel_index_array_attribute(
+        module, kernel_name, ttl_ir.CRTA_INDICES_ATTR
+    )
+
+
+def _get_kernel_local_tensor_indices(module: Module, kernel_name: str) -> List[int]:
+    """Extract global tensor indices that require core-local L1 shards."""
+    return _get_kernel_index_array_attribute(
+        module, kernel_name, ttl_ir.LOCAL_TENSOR_INDICES_ATTR
+    )
 
 
 def _get_kernel_bool_attr(module: Module, kernel_name: str, attr_name: str) -> bool:
@@ -144,12 +153,14 @@ def translate_module_to_kernels(
 
         # Extract tensor indices from MLIR attributes.
         tensor_indices = _get_kernel_tensor_indices(module, name)
+        local_tensor_indices = _get_kernel_local_tensor_indices(module, name)
 
         spec = KernelSpec(
             name=name,
             thread_type=thread_type,
             source=cpp,
             tensor_indices=tensor_indices,
+            local_tensor_indices=local_tensor_indices,
         )
 
         if thread_type == ThreadType.COMPUTE:
@@ -214,6 +225,7 @@ def write_kernels(
         metadata[kernel.name] = {
             "thread_type": kernel.thread_type.value,
             "tensor_indices": kernel.tensor_indices,
+            "local_tensor_indices": kernel.local_tensor_indices,
             "fp32_dest_acc_en": kernel.fp32_dest_acc_en,
             "dst_full_sync_en": kernel.dst_full_sync_en,
             "unpack_to_dest_fp32": kernel.unpack_to_dest_fp32,
