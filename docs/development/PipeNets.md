@@ -64,11 +64,26 @@ net = ttl.PipeNet(
 ```
 
 The graph-only form applies every logical-device edge to every launch node. For
-each transfer, the source and destination use the same node coordinate:
+example, this PipeNet transfers from device 0 to device 1:
 
 ```python
+devices = ttl.DeviceDomain((2,))
+graph = ttl.TransferGraph.edges(devices, edges=[(0, 1)])
 net = ttl.PipeNet(graph=graph)
 ```
+
+In an operation with a `(2, 2)` launch grid, it describes these four
+transfers:
+
+```text
+device 0, node (0, 0) -> device 1, node (0, 0)
+device 0, node (0, 1) -> device 1, node (0, 1)
+device 0, node (1, 0) -> device 1, node (1, 0)
+device 0, node (1, 1) -> device 1, node (1, 1)
+```
+
+Supplying `pipes=[ttl.Pipe(src=(1, 0), dst=(0, 0))]` instead describes one
+transfer from node `(1, 0)` on device 0 to node `(0, 0)` on device 1.
 
 `TransferGraph.edges(...)` lists device edges explicitly. The other
 constructors store parameters for common relations instead of an edge list:
