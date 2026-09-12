@@ -13,7 +13,7 @@
 // CHECK-NEXT: routing_plane_write(
 // CHECK: packet_header->to_noc_unicast_write(
 // CHECK: sender.send_payload_without_header_non_blocking_from_address(source_address,
-// CHECK-LABEL: static __attribute__((noinline)) void routing_plane_scatter_write(
+// CHECK-LABEL: FORCE_INLINE void routing_plane_scatter_write(
 // CHECK: packetHeader->to_noc_unicast_scatter_write(
 // CHECK: fabric_unicast_noc_scatter_write_with_state<
 // CHECK: noc_async_writes_flushed();
