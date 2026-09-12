@@ -8,14 +8,15 @@ from itertools import product
 import ttl
 
 
-def make_ring_graph(device_domain, mesh_shape):
+def make_ring_graph(device_domain, mesh_shape, *, reverse=False):
     coordinates = tuple(product(*(range(extent) for extent in mesh_shape)))
+    direction = -1 if reverse else 1
     return ttl.TransferGraph.edges(
         device_domain,
         edges=tuple(
             (
                 coordinates[source_index],
-                coordinates[(source_index + 1) % len(coordinates)],
+                coordinates[(source_index + direction) % len(coordinates)],
             )
             for source_index in range(len(coordinates))
         ),
