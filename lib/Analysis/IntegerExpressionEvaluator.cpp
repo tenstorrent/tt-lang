@@ -4,6 +4,7 @@
 
 #include "ttlang/Analysis/IntegerExpressionEvaluator.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/EmitC/IR/EmitC.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinAttributes.h"
@@ -157,8 +158,7 @@ IntegerExpressionEvaluator::evaluate(Value requestedValue) {
       }
       worklist.push_back(
           {task.value, EvaluationTaskKind::ResolveReplacement, replacement});
-      worklist.push_back(
-          {replacement, EvaluationTaskKind::Discover, Value()});
+      worklist.push_back({replacement, EvaluationTaskKind::Discover, Value()});
       continue;
     }
 
@@ -173,6 +173,34 @@ IntegerExpressionEvaluator::evaluate(Value requestedValue) {
       activeValues.erase(task.value);
       cache.try_emplace(task.value, result);
       continue;
+    }
+
+    if (isa<arith::AndIOp, arith::OrIOp>(operation)) {
+      bool isConjunction = isa<arith::AndIOp>(operation);
+      // An absorbing operand determines the result when the other operand is
+      // unknown.
+      bool hasAbsorbingOperand =
+          llvm::any_of(operation->getOperands(), [&](Value operand) {
+            auto knownValue = cache.find(operand);
+            if (knownValue == cache.end() || !knownValue->second) {
+              return false;
+            }
+            return isConjunction ? knownValue->second->isZero()
+                                 : knownValue->second->isAllOnes();
+          });
+      if (hasAbsorbingOperand) {
+        std::optional<std::uint32_t> resultBitWidth =
+            getIntegerBitWidth(task.value.getType());
+        activeValues.erase(task.value);
+        cache.try_emplace(
+            task.value,
+            resultBitWidth
+                ? std::optional(isConjunction
+                                    ? llvm::APInt(*resultBitWidth, 0)
+                                    : llvm::APInt::getAllOnes(*resultBitWidth))
+                : std::nullopt);
+        continue;
+      }
     }
 
     // Fold a detached clone because a fold hook may modify its operation in

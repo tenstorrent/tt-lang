@@ -1455,12 +1455,13 @@ def TTKernelSpecializeCores
     `ttl.launch_grid` attribute, missing or malformed `ttl.launch_grid` is a hard error.
 
     For each kernel whose scf.if region branches on a core coordinate, clones
-    the function once per launch coordinate, replaces
-    ttkernel.my_logical_x_ / ttkernel.my_logical_y_ with arith.constant's
-    for that core, and tags the cloned function with ttl.core_coord (the coordinate it
-    serves). Downstream canonicalize / cse then fold the now-constant
-    branch conditions and delete untaken regions. The runtime bridge reads
-    ttl.core_coord to build per-kernel core ranges for dispatch.
+    the function once per launch coordinate and replaces
+    ttkernel.my_logical_x_ / ttkernel.my_logical_y_ with arith.constant operations for
+    that core. It then evaluates exact integer conditions and removes untaken
+    scf.if regions. This includes a conjunction or disjunction whose result is
+    fixed by one known operand even when another operand remains runtime-dependent.
+    Each clone is tagged with ttl.core_coord, which the runtime bridge uses to
+    build per-kernel core ranges for dispatch.
 
     NOTE: functions with symbol uses (e.g. `func.call` targets) are left
     unspecialized with a warning so erasing the original does not leave dangling
