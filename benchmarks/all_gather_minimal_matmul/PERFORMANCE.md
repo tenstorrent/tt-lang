@@ -17,6 +17,32 @@ Four Blackhole P150b devices; global `M/K/N=9472/5120/15360`; per-device
 Both results passed PCC >= 0.99 and elementwise relative/absolute tolerances of
 0.05 against FP32 PyTorch for every warmup and sample.
 
+## Component measurements
+
+These isolated measurements identify which component accounts for the fused
+performance difference. They are not additive: the complete operation overlaps
+activation movement with matmul, and each row retains the configuration stated
+below.
+
+| Measured operation | Devices | TT-Lang device median ms (min-max) | TT-Metal device median ms (min-max) | TT-Lang/TT-Metal | Warmups/samples |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Standalone matmul, `M/K/N=9472/5120/3840` | 1 | 2.813 (2.806-2.824) | 3.003 (2.999-3.009) | 0.937 | 3/10 |
+| TT-Lang activation all-gather and compute-grid distribution | 4 | 2.521 (2.511-2.575) | -- | -- | 1/3 |
+
+The standalone comparison uses BF16 DRAM inputs and output, HiFi4, FP32
+destination accumulation, and packer L1 accumulation. TT-Lang uses 120 workers,
+a `12x10` grid, M/K/N blocks `8/8/5`, and pads M from 9472 to 10240; native
+[`ttnn.matmul`](https://github.com/tenstorrent/tt-metal/tree/ea042c4ad6237678103cd7cbceb346e060f0f9a3/ttnn/cpp/ttnn/operations/matmul)
+uses automatic program selection without that padding. Both standalone matmul
+implementations measure first kernel start through final kernel end and pass
+PCC >= 0.99 against FP32 PyTorch.
+
+The activation-only measurement uses four communication workers, a `12x10`
+compute grid, and four-tile M blocks. It runs the complete activation
+all-gather and L1 distribution sequence, then discards each block after its
+consumer wait. The composed operation validates the same data movement through
+its matmul output. No isolated native activation result was measured.
+
 ## Configurations
 
 Each implementation uses its selected grid, blocking, and communication
