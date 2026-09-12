@@ -222,9 +222,19 @@ net = ttl.PipeNet(graph=transfers)
 ```
 
 Graph-only construction applies the transfer relation to every launch node. For
-each transfer, the source and destination use the same node coordinate. A
-transfer between distinct node coordinates declares the node relation
-separately:
+example, in an operation with a `(2, 2)` launch grid, the graph above describes
+these four transfers:
+
+```text
+device (0, 0), node (0, 0) -> device (0, 3), node (0, 0)
+device (0, 0), node (0, 1) -> device (0, 3), node (0, 1)
+device (0, 0), node (1, 0) -> device (0, 3), node (1, 0)
+device (0, 0), node (1, 1) -> device (0, 3), node (1, 1)
+```
+
+Each transfer uses the same node coordinate on its source and destination
+device. A transfer between distinct node coordinates declares the node
+relation separately:
 
 ```python
 net = ttl.PipeNet(
