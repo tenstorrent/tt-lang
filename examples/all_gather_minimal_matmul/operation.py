@@ -17,7 +17,7 @@ Run from the repository root (four devices, 120 compute and four fabric
 workers/device):
     python -m examples.all_gather_minimal_matmul --mesh-shape 4x1 \
         --compute-grid 12 10 --communication-workers 4 \
-        --activation-all-gather ring --m-tiles 296 --k-tiles-per-device 40 \
+        --m-tiles 296 --k-tiles-per-device 40 \
         --n-tiles 480 --m-block-tiles 5 --k-block-tiles 10 \
         --n-block-tiles 12 --no-reuse-activation
 
