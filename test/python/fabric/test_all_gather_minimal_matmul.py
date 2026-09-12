@@ -90,6 +90,25 @@ def test_all_gather_minimal_matmul(
         run_case(mesh, config, communication_workers, torch_dtype)
 
 
+@pytest.mark.parametrize(
+    "torch_dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"]
+)
+def test_all_gather_minimal_matmul_partial_m_block(torch_dtype):
+    config = AllGatherMinimalMatmulConfig(
+        mesh_shape=(2, 1),
+        m_tiles=9,
+        k_tiles_per_device=4,
+        n_tiles_per_device=8,
+        compute_grid=(5, 4),
+        m_block_tiles=2,
+        k_block_tiles=2,
+        n_block_tiles=1,
+        reuse_activation=False,
+    )
+    with open_participant_mesh(config.mesh_shape) as mesh:
+        run_case(mesh, config, 2, torch_dtype)
+
+
 def test_all_gather_minimal_matmul_full_grid():
     config = AllGatherMinimalMatmulConfig(
         mesh_shape=(4, 1),

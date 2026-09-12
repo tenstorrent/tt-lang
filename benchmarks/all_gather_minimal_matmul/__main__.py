@@ -125,7 +125,7 @@ def parse_args() -> argparse.Namespace:
         "--ttlang-compute-grid", type=positive_int, nargs=2, default=(12, 10)
     )
     parser.add_argument("--ttlang-communication-workers", type=positive_int, default=4)
-    parser.add_argument("--ttlang-m-block-tiles", type=positive_int, default=4)
+    parser.add_argument("--ttlang-m-block-tiles", type=positive_int, default=5)
     parser.add_argument("--ttlang-k-block-tiles", type=positive_int, default=10)
     parser.add_argument("--ttlang-n-block-tiles", type=positive_int, default=12)
     parser.add_argument(
