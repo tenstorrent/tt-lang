@@ -18,7 +18,7 @@ workers/device):
     python -m examples.all_gather_minimal_matmul --mesh-shape 4x1 \
         --compute-grid 12 10 --communication-workers 4 \
         --activation-all-gather ring --m-tiles 296 --k-tiles-per-device 40 \
-        --n-tiles 480 --m-block-tiles 4 --k-block-tiles 10 \
+        --n-tiles 480 --m-block-tiles 5 --k-block-tiles 10 \
         --n-block-tiles 12 --no-reuse-activation
 
 Kernels: all_gather_minimal_matmul below the network and DFB declarations.
@@ -172,9 +172,6 @@ def make_all_gather_minimal_matmul_operation(
             shape=(m_block_tiles, compute_k_tiles),
             block_count=max(1, distribution_served_row_count),
         )
-        activation_chain_receive_dfb = ttl.make_dataflow_buffer_like(
-            activation_shard, shape=(m_block_tiles, compute_k_tiles), block_count=1
-        )
         matmul_activation_dfb = ttl.make_dataflow_buffer_like(
             activation_shard,
             shape=(m_block_tiles, compute_k_tiles),
@@ -187,7 +184,7 @@ def make_all_gather_minimal_matmul_operation(
             bias_shard, shape=(1, n_block_tiles), block_count=1
         )
         output_dfb = ttl.make_dataflow_buffer_like(
-            output_shard, shape=(m_block_tiles, n_block_tiles), block_count=2
+            output_shard, shape=(m_block_tiles, n_block_tiles), block_count=1
         )
         accumulation_dtype = ttnn.float32 if fp32_dest_acc_en else output_shard.dtype
         matmul_accumulator_dfb = ttl.make_dfb(
@@ -333,9 +330,7 @@ def make_all_gather_minimal_matmul_operation(
                                         or m_worker_index < fabric_worker_count
                                     )
                                     if direct_entry and source_round == 0:
-                                        received_activation = (
-                                            activation_chain_receive_dfb.reserve()
-                                        )
+                                        received_activation = activation_block
 
                                         def receive_local_activation(pipe):
                                             ttl.copy(pipe, received_activation).wait()
@@ -359,11 +354,8 @@ def make_all_gather_minimal_matmul_operation(
                                             activation_compute_chain_net.if_src(
                                                 forward_local_activation
                                             )
-                                        received_activation.push()
                                     elif direct_entry:
-                                        received_activation = (
-                                            activation_chain_receive_dfb.reserve()
-                                        )
+                                        received_activation = activation_block
 
                                         def receive_remote_activation(pipe):
                                             ttl.copy(pipe, received_activation).wait()
@@ -387,11 +379,8 @@ def make_all_gather_minimal_matmul_operation(
                                             activation_compute_chain_net.if_src(
                                                 forward_remote_activation
                                             )
-                                        received_activation.push()
                                     else:
-                                        received_activation = (
-                                            activation_chain_receive_dfb.reserve()
-                                        )
+                                        received_activation = activation_block
 
                                         def receive_relayed_activation(pipe):
                                             ttl.copy(pipe, received_activation).wait()
@@ -415,20 +404,11 @@ def make_all_gather_minimal_matmul_operation(
                                             activation_compute_chain_net.if_src(
                                                 forward_relayed_activation
                                             )
-                                        received_activation.push()
-                                    received_activation = (
-                                        activation_chain_receive_dfb.wait()
-                                    )
-                                    ttl.copy(
-                                        received_activation,
-                                        activation_block,
-                                        byte_count=activation_block_bytes,
-                                    ).wait()
                         n_begin = (
                             n_round * n_worker_count + n_worker_index
                         ) * n_block_tiles
                         output_block = output_dfb.wait()
-                        if m_begin < logical_m_tiles:
+                        if m_begin + m_block_tiles <= logical_m_tiles:
                             ttl.copy(
                                 output_block,
                                 output_shard[
@@ -436,6 +416,24 @@ def make_all_gather_minimal_matmul_operation(
                                     n_begin : n_begin + n_block_tiles,
                                 ],
                             ).wait()
+                        else:
+                            for output_row in range(m_block_tiles):
+                                if m_begin + output_row < logical_m_tiles:
+                                    output_row_block = ttl.block.subview(
+                                        output_block,
+                                        offsets=(output_row, 0),
+                                        shape=(1, n_block_tiles),
+                                    )
+                                    ttl.copy(
+                                        output_row_block,
+                                        output_shard[
+                                            m_begin
+                                            + output_row : m_begin
+                                            + output_row
+                                            + 1,
+                                            n_begin : n_begin + n_block_tiles,
+                                        ],
+                                    ).wait()
 
         @ttl.datamovement()
         def forward_activations_and_distribute_weights():
