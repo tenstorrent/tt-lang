@@ -4,6 +4,7 @@
 
 """Unit tests for TT device options used by the TTL Python wrapper."""
 
+from dataclasses import replace
 from unittest import mock
 
 import pytest
@@ -649,6 +650,101 @@ class TestKernelI32ArrayAttr:
                 ttl_api._get_kernel_i32_array_attr(
                     module, "compute_kernel", "ttl.unpack_to_dest_fp32"
                 )
+
+
+class TestSpecializedKernelGrouping:
+    def test_groups_only_matching_specialized_kernels(self):
+        cpp_sources = ["same", "same", "same", "different", "same"]
+        descriptor_metadata_keys = [
+            ("same",),
+            ("same",),
+            ("different",),
+            ("same",),
+            ("same",),
+        ]
+        core_coordinates = [[(0, 0)], [(0, 1)], [(1, 0)], [(1, 1)], None]
+
+        groups = ttl_api._group_equivalent_specialized_kernels(
+            cpp_sources, descriptor_metadata_keys, core_coordinates
+        )
+
+        assert groups == [[0, 1], [2], [3], [4]]
+
+    def test_runtime_metadata_changes_prevent_grouping(self):
+        metadata = ttl_api._KernelDescriptorMetadata(
+            runtime_arg_spec=("arg",),
+            configuration=ttl_api._KernelConfigurationMetadata(
+                thread_type="noc", noc_role=0
+            ),
+            pipe_computed_address_dfb_indices=(1,),
+            used_dfb_indices=(2,),
+            tensor_indices=(3,),
+            local_tensor_indices=(4,),
+            fabric_routes=("route",),
+            fabric_runtime_arg_base_common_index=5,
+            fabric_manager_intervals=("interval",),
+            logical_selector=ttl.KernelKind.DATA_MOVEMENT,
+        )
+        changed_values = {
+            "runtime_arg_spec": ("other",),
+            "pipe_computed_address_dfb_indices": (6,),
+            "used_dfb_indices": None,
+            "tensor_indices": (7,),
+            "local_tensor_indices": (8,),
+            "fabric_routes": ("other",),
+            "fabric_runtime_arg_base_common_index": 9,
+            "fabric_manager_intervals": ("other",),
+            "logical_selector": ttl.KernelKind.COMPUTE,
+        }
+
+        for field_name, changed_value in changed_values.items():
+            changed = replace(metadata, **{field_name: changed_value})
+            assert changed.equivalence_key() != metadata.equivalence_key()
+
+        configuration_changes = {
+            "thread_type": "compute",
+            "math_fidelity": "HiFi4",
+            "fp32_dest_acc_en": True,
+            "dst_full_sync_en": True,
+            "unpack_to_dest_fp32": (1,),
+            "noc_role": 1,
+        }
+        for field_name, changed_value in configuration_changes.items():
+            configuration = replace(
+                metadata.configuration, **{field_name: changed_value}
+            )
+            changed = replace(metadata, configuration=configuration)
+            assert changed.equivalence_key() != metadata.equivalence_key()
+
+        first_selector = ttl.Kernel._from_metadata(
+            ttl.KernelKind.DATA_MOVEMENT, "reader", "first_operation"
+        )
+        second_selector = ttl.Kernel._from_metadata(
+            ttl.KernelKind.DATA_MOVEMENT, "reader", "second_operation"
+        )
+        first = replace(metadata, logical_selector=first_selector)
+        second = replace(metadata, logical_selector=second_selector)
+        assert first.equivalence_key() != second.equivalence_key()
+
+    def test_rejects_misaligned_grouping_inputs(self):
+        with pytest.raises(
+            ValueError, match="kernel grouping inputs must have the same length"
+        ):
+            ttl_api._group_equivalent_specialized_kernels(["source"], [], [[(0, 0)]])
+
+    @pytest.mark.parametrize(
+        "core_coordinates",
+        [[[(0, 0), (0, 0)]], [[(0, 0)], [(0, 0)]]],
+        ids=["within-kernel", "between-kernels"],
+    )
+    def test_rejects_overlapping_specialized_coordinates(self, core_coordinates):
+        kernel_count = len(core_coordinates)
+        with pytest.raises(ValueError, match="duplicate|overlapping"):
+            ttl_api._group_equivalent_specialized_kernels(
+                ["source"] * kernel_count,
+                [("metadata",)] * kernel_count,
+                core_coordinates,
+            )
 
 
 class TestMathFidelity:
