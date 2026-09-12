@@ -95,6 +95,9 @@ constexpr llvm::StringLiteral kKernelThreadAttrName("ttl.kernel_thread");
 /// Func-level target-independent logical-kernel identity.
 constexpr llvm::StringLiteral kLogicalKernelAttrName("ttl.logical_kernel");
 
+/// Launch coordinates assigned to a core-specialized function.
+constexpr llvm::StringLiteral kCoreCoordAttrName("ttl.core_coord");
+
 /// Global tensor indices represented by the function's common runtime-argument
 /// prefix.
 constexpr llvm::StringLiteral kCRTAIndicesAttrName("ttl.crta_indices");

@@ -14,6 +14,7 @@ import random
 import sys
 import threading
 from dataclasses import dataclass
+from enum import Enum, IntEnum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Union
 
@@ -1096,7 +1097,7 @@ def _write_kernel_to_tmp(name: str, source: str) -> str:
 
 
 def _lookup_kernel_func_op(module, kernel_name: str, *, symbol_table=None):
-    """Return the func.func operation for a kernel symbol."""
+    """Return a kernel's ``func.func``, using ``symbol_table`` when supplied."""
     if symbol_table is None:
         symbol_table = SymbolTable(module.operation)
     try:
@@ -1112,6 +1113,7 @@ def _lookup_kernel_func_op(module, kernel_name: str, *, symbol_table=None):
 
 
 def _get_kernel_attributes(module, kernel_name: str, kernel_operation=None):
+    """Return attributes from a resolved kernel or its symbol name."""
     operation = (
         _lookup_kernel_func_op(module, kernel_name)
         if kernel_operation is None
@@ -1210,22 +1212,19 @@ def _get_kernel_optional_i32_array_attr(
 
 
 def _get_kernel_core_coords(module, kernel_name: str, *, kernel_operation=None):
-    """Read the `ttl.core_coord` attribute set by `ttkernel-specialize-cores`.
+    """Return a specialized kernel's ``(x, y)`` launch coordinates.
 
-    We expect the array to be of length 2 since node dim currently only supports 2D.
-    The attribute is the launch coordinates a kernel is dispatched to.
-
-    Returns the list of `(x, y)` launch coordinates for a specialized clone, or
-    None when the kernel was not specialized (the whole-grid default path).
+    Returns ``None`` when the function serves the complete launch grid. Each
+    coordinate has two dimensions because worker launch grids are two-dimensional.
     """
     attr = _get_kernel_attributes(module, kernel_name, kernel_operation).get(
-        "ttl.core_coord", None
+        _ttl_ir.CORE_COORD_ATTR, None
     )
     if attr is None:
         return None
     if not isinstance(attr, ArrayAttr):
         raise ValueError(
-            f"Expected an array for 'ttl.core_coord' on kernel "
+            f"Expected an array for '{_ttl_ir.CORE_COORD_ATTR}' on kernel "
             f"'{kernel_name}', got {attr}"
         )
     coords = []
@@ -1233,7 +1232,8 @@ def _get_kernel_core_coords(module, kernel_name: str, *, kernel_operation=None):
         pair = ArrayAttr(pair)
         if len(pair) != 2:
             raise ValueError(
-                f"Expected length-2 [x, y] entries in 'ttl.core_coord' on "
+                f"Expected length-2 [x, y] entries in "
+                f"'{_ttl_ir.CORE_COORD_ATTR}' on "
                 f"kernel '{kernel_name}', got {pair}"
             )
         coords.append(
@@ -1274,20 +1274,95 @@ def _get_kernel_logical_selector(
     )
 
 
-def _get_kernel_noc_index(module, kernel_name: str, *, kernel_operation=None):
-    """Read the `ttl.noc_index` attribute (0 = reader, 1 = writer).
+class _KernelThreadType(str, Enum):
+    """Worker-kernel execution thread supported by TTNN descriptors."""
 
-    The frontend tags every datamovement thread with this attribute, required here so
-    reader/writer role assignment is attribute-based rather than positional.
+    NOC = "noc"
+    COMPUTE = "compute"
+
+
+class _DataMovementRole(IntEnum):
+    """Reader or writer role assigned to a NOC data-movement kernel."""
+
+    READER = 0
+    WRITER = 1
+
+
+def _get_kernel_data_movement_role(module, kernel_name: str, *, kernel_operation=None):
+    """Return the reader or writer role encoded by `ttl.noc_index`.
+
+    Reading the role from the function attribute keeps descriptor selection
+    independent of function ordering.
     """
     attr = _get_kernel_attributes(module, kernel_name, kernel_operation).get(
-        "ttl.noc_index", None
+        _ttl_ir.NOC_INDEX_ATTR, None
     )
     if attr is None:
         raise ValueError(
-            f"Missing 'ttl.noc_index' on datamovement kernel '{kernel_name}'"
+            f"Missing '{_ttl_ir.NOC_INDEX_ATTR}' on datamovement kernel "
+            f"'{kernel_name}'"
         )
-    return int(IntegerAttr(attr).value)
+    raw_role = int(IntegerAttr(attr).value)
+    try:
+        return _DataMovementRole(raw_role)
+    except ValueError as error:
+        raise ValueError(
+            f"Invalid '{_ttl_ir.NOC_INDEX_ATTR}' value {raw_role} on "
+            f"datamovement kernel '{kernel_name}'; expected 0 for reader or "
+            "1 for writer"
+        ) from error
+
+
+@dataclass(frozen=True)
+class _TTKernelFunction:
+    """TTKernel function with metadata needed before EmitC conversion.
+
+    Attributes:
+        name: MLIR symbol name.
+        thread_type: Execution thread selected by ``ttkernel.thread``.
+        operation: Resolved ``func.func`` operation.
+        core_coordinates: Launch coordinates assigned by core specialization,
+            or ``None`` when the function serves the complete launch grid.
+        logical_selector: Source-level kernel used to resolve runtime resources.
+    """
+
+    name: str
+    thread_type: _KernelThreadType
+    operation: Any
+    core_coordinates: Optional[tuple[tuple[int, int], ...]]
+    logical_selector: Optional[KernelSelector]
+
+
+def _collect_ttkernel_functions(module) -> list[_TTKernelFunction]:
+    """Resolve each TTKernel symbol before EmitC removes function attributes."""
+    symbol_table = SymbolTable(module.operation)
+    kernel_functions = []
+    for kernel_name, raw_thread_type in get_ttkernel_names(module):
+        operation = _lookup_kernel_func_op(
+            module, kernel_name, symbol_table=symbol_table
+        )
+        try:
+            thread_type = _KernelThreadType(raw_thread_type)
+        except ValueError as error:
+            raise ValueError(
+                f"Invalid TTKernel thread type {raw_thread_type!r} on kernel "
+                f"'{kernel_name}'"
+            ) from error
+        coordinates = _get_kernel_core_coords(
+            module, kernel_name, kernel_operation=operation
+        )
+        kernel_functions.append(
+            _TTKernelFunction(
+                name=kernel_name,
+                thread_type=thread_type,
+                operation=operation,
+                core_coordinates=(None if coordinates is None else tuple(coordinates)),
+                logical_selector=_get_kernel_logical_selector(
+                    module, kernel_name, kernel_operation=operation
+                ),
+            )
+        )
+    return kernel_functions
 
 
 def _get_kernel_index_array_attribute(
@@ -1298,6 +1373,11 @@ def _get_kernel_index_array_attribute(
     required: bool = False,
     kernel_operation=None,
 ):
+    """Return integer values from a kernel ``ArrayAttr``.
+
+    Missing optional attributes return an empty list. Missing required
+    attributes or non-array values raise ``ValueError``.
+    """
     attribute = _get_kernel_attributes(module, kernel_name, kernel_operation).get(
         attribute_name, None
     )
@@ -1340,6 +1420,7 @@ def _get_kernel_local_tensor_indices(
 
 
 def _get_kernel_fabric_routes(module, kernel_name: str, *, kernel_operation=None):
+    """Return runtime fabric routes recorded on a kernel function."""
     attr = _get_kernel_attributes(module, kernel_name, kernel_operation).get(
         _ttl_ir.FABRIC_ROUTES_ATTR, None
     )
@@ -1378,6 +1459,7 @@ def _get_kernel_fabric_routes(module, kernel_name: str, *, kernel_operation=None
 def _get_kernel_fabric_runtime_arg_base_common_index(
     module, kernel_name: str, *, kernel_operation=None
 ):
+    """Return the common-argument index for fabric runtime arguments."""
     attr = _get_kernel_attributes(module, kernel_name, kernel_operation).get(
         _ttl_ir.FABRIC_RUNTIME_ARG_BASE_COMMON_INDEX_ATTR, None
     )
@@ -1387,6 +1469,7 @@ def _get_kernel_fabric_runtime_arg_base_common_index(
 def _get_kernel_fabric_manager_intervals(
     module, kernel_name: str, *, kernel_operation=None
 ):
+    """Return fabric-manager ownership intervals recorded on a kernel."""
     attr = _get_kernel_attributes(module, kernel_name, kernel_operation).get(
         _ttl_ir.FABRIC_MANAGER_INTERVALS_ATTR, None
     )
@@ -1434,40 +1517,76 @@ def _get_kernel_fabric_manager_intervals(
 
 @dataclass(frozen=True)
 class _KernelConfigurationMetadata:
-    """Effective TT-Metal configuration for one generated kernel."""
+    """Effective TT-Metal configuration for one generated kernel.
 
-    thread_type: str
+    Attributes:
+        thread_type: TTKernel execution thread.
+        math_fidelity: Compute math-fidelity override.
+        fp32_dest_acc_en: Whether compute accumulates into FP32 destinations.
+        dst_full_sync_en: Whether compute uses full destination synchronization.
+        unpack_to_dest_fp32: DFB indices unpacked directly into FP32 destinations.
+        data_movement_role: Reader or writer role for a NOC thread; unset for
+            compute threads.
+    """
+
+    thread_type: _KernelThreadType
     math_fidelity: Optional[str] = None
     fp32_dest_acc_en: Optional[bool] = None
     dst_full_sync_en: Optional[bool] = None
     unpack_to_dest_fp32: tuple[int, ...] = ()
-    noc_role: Optional[int] = None
+    data_movement_role: Optional[_DataMovementRole] = None
 
 
-_KERNEL_DESCRIPTOR_IDENTITY_ATTRIBUTES = frozenset(
+_SYMBOL_NAME_ATTR = "sym_name"
+_FUNCTION_ATTRIBUTES_EXCLUDED_FROM_DESCRIPTOR_EQUIVALENCE = frozenset(
     {
-        "sym_name",
-        "ttl.core_coord",
+        _SYMBOL_NAME_ATTR,
+        _ttl_ir.CORE_COORD_ATTR,
     }
 )
 
 
-def _kernel_descriptor_attribute_key(attributes) -> tuple[tuple[str, str], ...]:
-    """Return attributes that must match when sharing a kernel descriptor."""
+def _descriptor_relevant_function_attributes(
+    attributes,
+) -> tuple[tuple[str, str], ...]:
+    """Return function attributes that must match for descriptor sharing.
+
+    The result excludes `sym_name`, which identifies the cloned function, and
+    `ttl.core_coord`, which selects its launch cores. Neither attribute changes
+    the TT-Metal descriptor constructed for the generated kernel.
+    """
     return tuple(
         sorted(
             (str(name), str(value))
             for name, value in attributes.items()
-            if str(name) not in _KERNEL_DESCRIPTOR_IDENTITY_ATTRIBUTES
+            if str(name)
+            not in _FUNCTION_ATTRIBUTES_EXCLUDED_FROM_DESCRIPTOR_EQUIVALENCE
         )
     )
 
 
 @dataclass(frozen=True)
 class _KernelDescriptorMetadata:
-    """Host runtime properties associated with one generated kernel."""
+    """Properties that must agree before generated kernels share a descriptor.
 
-    runtime_arg_spec: Any
+    Attributes:
+        runtime_arg_spec: Ordered runtime arguments.
+        configuration: TT-Metal kernel type and processor settings.
+        pipe_computed_address_dfb_indices: DFB addresses supplied as common
+            runtime arguments.
+        used_dfb_indices: Referenced DFBs, or ``None`` when this set is unknown.
+        tensor_indices: Global tensor arguments.
+        local_tensor_indices: Tensors accessed through core-local L1 addresses.
+        fabric_routes: Fabric routes used by the kernel.
+        fabric_runtime_arg_base_common_index: Common runtime-argument index for
+            compiler-managed fabric arguments.
+        fabric_manager_intervals: Fabric-manager ownership intervals.
+        logical_selector: Source-level kernel used to resolve runtime resources.
+        function_attributes: Function attributes other than the symbol name and
+            launch coordinates. Any difference prevents descriptor sharing.
+    """
+
+    runtime_arg_spec: tuple
     configuration: _KernelConfigurationMetadata
     pipe_computed_address_dfb_indices: tuple[int, ...]
     used_dfb_indices: Optional[tuple[int, ...]]
@@ -1477,7 +1596,7 @@ class _KernelDescriptorMetadata:
     fabric_runtime_arg_base_common_index: Optional[int]
     fabric_manager_intervals: tuple
     logical_selector: Optional[KernelSelector]
-    attribute_key: tuple[tuple[str, str], ...]
+    function_attributes: tuple[tuple[str, str], ...]
 
     def equivalence_key(self) -> tuple:
         """Return metadata that must match before kernels share a descriptor."""
@@ -1502,49 +1621,183 @@ class _KernelDescriptorMetadata:
             self.fabric_runtime_arg_base_common_index,
             self.fabric_manager_intervals,
             logical_selector_key,
-            self.attribute_key,
+            self.function_attributes,
         )
 
 
+def _snapshot_kernel_descriptor_metadata(
+    module,
+    function: _TTKernelFunction,
+    *,
+    math_fidelity: Optional[str],
+    fp32_dest_acc_en: Optional[bool],
+    dst_full_sync_en: Optional[bool],
+) -> _KernelDescriptorMetadata:
+    """Capture descriptor properties before EmitC removes function attributes."""
+    kernel_name = function.name
+    kernel_operation = function.operation
+    pipe_computed_address_dfb_indices = (
+        _get_kernel_optional_i32_array_attr(
+            module,
+            kernel_name,
+            _ttl_ir.PIPE_COMPUTED_ADDRESS_DFB_INDICES_ATTR,
+            kernel_operation=kernel_operation,
+        )
+        or []
+    )
+    used_dfb_indices = _get_kernel_optional_i32_array_attr(
+        module,
+        kernel_name,
+        _ttl_ir.USED_DFB_INDICES_ATTR,
+        kernel_operation=kernel_operation,
+    )
+
+    raw_arg_spec = kernel_operation.attributes.get(ttkernel.ir.ARG_SPEC_ATTR, None)
+    arg_spec = (
+        None
+        if raw_arg_spec is None
+        else ttkernel.ir.ArgSpecAttr.maybe_downcast(raw_arg_spec)
+    )
+    runtime_arg_spec = tuple(arg_spec.rt_args) if arg_spec else ()
+
+    if function.thread_type == _KernelThreadType.COMPUTE:
+        configuration = _KernelConfigurationMetadata(
+            thread_type=function.thread_type,
+            math_fidelity=math_fidelity,
+            fp32_dest_acc_en=(
+                fp32_dest_acc_en
+                if fp32_dest_acc_en is not None
+                else _get_kernel_bool_attr(
+                    module,
+                    kernel_name,
+                    _ttl_ir.FP32_DEST_ACC_EN_ATTR,
+                    kernel_operation=kernel_operation,
+                )
+            ),
+            dst_full_sync_en=(
+                dst_full_sync_en
+                if dst_full_sync_en is not None
+                else _get_kernel_bool_attr(
+                    module,
+                    kernel_name,
+                    _ttl_ir.DST_FULL_SYNC_EN_ATTR,
+                    kernel_operation=kernel_operation,
+                )
+            ),
+            unpack_to_dest_fp32=tuple(
+                _get_kernel_i32_array_attr(
+                    module,
+                    kernel_name,
+                    _ttl_ir.UNPACK_TO_DEST_FP32_ATTR,
+                    kernel_operation=kernel_operation,
+                )
+            ),
+        )
+    else:
+        assert function.thread_type == _KernelThreadType.NOC
+        configuration = _KernelConfigurationMetadata(
+            thread_type=function.thread_type,
+            data_movement_role=_get_kernel_data_movement_role(
+                module, kernel_name, kernel_operation=kernel_operation
+            ),
+        )
+
+    return _KernelDescriptorMetadata(
+        runtime_arg_spec=runtime_arg_spec,
+        configuration=configuration,
+        pipe_computed_address_dfb_indices=tuple(pipe_computed_address_dfb_indices),
+        used_dfb_indices=(
+            None if used_dfb_indices is None else tuple(used_dfb_indices)
+        ),
+        tensor_indices=tuple(
+            _get_kernel_crta_indices(
+                module, kernel_name, kernel_operation=kernel_operation
+            )
+        ),
+        local_tensor_indices=tuple(
+            _get_kernel_local_tensor_indices(
+                module, kernel_name, kernel_operation=kernel_operation
+            )
+        ),
+        fabric_routes=tuple(
+            _get_kernel_fabric_routes(
+                module, kernel_name, kernel_operation=kernel_operation
+            )
+        ),
+        fabric_runtime_arg_base_common_index=(
+            _get_kernel_fabric_runtime_arg_base_common_index(
+                module, kernel_name, kernel_operation=kernel_operation
+            )
+        ),
+        fabric_manager_intervals=_get_kernel_fabric_manager_intervals(
+            module, kernel_name, kernel_operation=kernel_operation
+        ),
+        logical_selector=function.logical_selector,
+        function_attributes=_descriptor_relevant_function_attributes(
+            kernel_operation.attributes
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class _KernelDescriptorCandidate:
+    """Generated kernel considered for descriptor sharing.
+
+    Attributes:
+        name: Specialized function symbol used for diagnostics and filenames.
+        core_coordinates: Launch coordinates served by the function, or
+            ``None`` for an unspecialized function.
+        cpp_source: Generated C++ compiled by TT-Metal.
+        descriptor_metadata: Runtime requirements that determine whether the
+            descriptor can be shared.
+    """
+
+    name: str
+    core_coordinates: Optional[tuple[tuple[int, int], ...]]
+    cpp_source: str
+    descriptor_metadata: _KernelDescriptorMetadata
+
+
 def _group_equivalent_specialized_kernels(
-    cpp_sources: List[str],
-    descriptor_metadata_keys: List[tuple],
-    core_coordinates: List[Optional[List[tuple[int, int]]]],
-) -> List[List[int]]:
-    """Return kernel indices that can share one TT-Metal descriptor.
+    candidates: List[_KernelDescriptorCandidate],
+) -> List[List[_KernelDescriptorCandidate]]:
+    """Group generated kernels that can share one TT-Metal descriptor.
 
     Coordinate-specialized kernels share a group only when their generated C++
     and runtime contracts match. Unspecialized kernels remain separate because
     each already represents its complete launch range.
     """
-    if not (len(cpp_sources) == len(descriptor_metadata_keys) == len(core_coordinates)):
-        raise ValueError("kernel grouping inputs must have the same length")
-
-    groups: List[List[int]] = []
+    groups: List[List[_KernelDescriptorCandidate]] = []
     group_coordinates: List[set[tuple[int, int]]] = []
     group_index_by_signature = {}
-    for kernel_index, (cpp_source, descriptor_metadata_key, coordinates) in enumerate(
-        zip(cpp_sources, descriptor_metadata_keys, core_coordinates)
-    ):
-        normalized_coordinates = coordinates or ()
-        coordinate_set = set(normalized_coordinates)
-        if len(coordinate_set) != len(normalized_coordinates):
+    for candidate in candidates:
+        coordinates = candidate.core_coordinates
+        if coordinates is None:
+            groups.append([candidate])
+            group_coordinates.append(set())
+            continue
+
+        coordinate_set = set(coordinates)
+        if len(coordinate_set) != len(coordinates):
             raise ValueError(
-                f"specialized kernel {kernel_index} has duplicate launch coordinates"
+                f"specialized kernel {candidate.name!r} has duplicate "
+                "launch coordinates"
             )
-        unshared_kernel_index = kernel_index if coordinates is None else None
-        signature = (cpp_source, descriptor_metadata_key, unshared_kernel_index)
+        signature = (
+            candidate.cpp_source,
+            candidate.descriptor_metadata.equivalence_key(),
+        )
         group_index = group_index_by_signature.get(signature)
         if group_index is None:
             group_index_by_signature[signature] = len(groups)
-            groups.append([kernel_index])
+            groups.append([candidate])
             group_coordinates.append(coordinate_set)
             continue
         if group_coordinates[group_index] & coordinate_set:
             raise ValueError(
                 "equivalent specialized kernels have overlapping launch coordinates"
             )
-        groups[group_index].append(kernel_index)
+        groups[group_index].append(candidate)
         group_coordinates[group_index].update(coordinate_set)
     return groups
 
@@ -1593,13 +1846,7 @@ def _compile_ttnn_kernel(
     Returns:
         CompiledTTNNKernel ready for execution
     """
-    # Get kernel info from module
-    kernel_info = get_ttkernel_names(module)
-    kernel_symbol_table = SymbolTable(module.operation)
-    kernel_operations = [
-        _lookup_kernel_func_op(module, name, symbol_table=kernel_symbol_table)
-        for name, _ in kernel_info
-    ]
+    kernel_functions = _collect_ttkernel_functions(module)
 
     # Validate tensor types: must be all TTNN or all torch, not mixed.
     # Mixed tensors would generate ToLayoutOps for host tensors, creating extra
@@ -1622,22 +1869,17 @@ def _compile_ttnn_kernel(
             except ValueError as error:
                 raise ValueError(f"Invalid TTNN tensor {i}: {error}") from error
 
-    # Detect the per-core specialization path: ttkernel-specialize-cores tags each
-    # clone with ttl.core_coord (the list of coordinates the clone serves).
-    # When present, get_ttkernel_names returns per-coordinate clones instead of
-    # a single (compute + reader + writer) triple.
-    kernel_coords = [
-        _get_kernel_core_coords(module, name, kernel_operation=kernel_operation)
-        for (name, _), kernel_operation in zip(kernel_info, kernel_operations)
-    ]
-    kernel_logical_selectors = [
-        _get_kernel_logical_selector(module, name, kernel_operation=kernel_operation)
-        for (name, _), kernel_operation in zip(kernel_info, kernel_operations)
-    ]
-    specialize_cores = any(coords is not None for coords in kernel_coords)
+    specialize_cores = any(
+        function.core_coordinates is not None for function in kernel_functions
+    )
 
-    compute_count = sum(1 for _, t in kernel_info if t == "compute")
-    dm_count = sum(1 for _, t in kernel_info if t == "noc")
+    compute_count = sum(
+        function.thread_type == _KernelThreadType.COMPUTE
+        for function in kernel_functions
+    )
+    dm_count = sum(
+        function.thread_type == _KernelThreadType.NOC for function in kernel_functions
+    )
     kernel_capacities = _backend_kernel_capacities(target_arch)
     kernel_counts = {
         KernelKind.COMPUTE: compute_count,
@@ -1647,9 +1889,10 @@ def _compile_ttnn_kernel(
         for kind in KernelKind:
             if kernel_counts[kind] > kernel_capacities[kind]:
                 selected = tuple(
-                    selector
-                    for selector in kernel_logical_selectors
-                    if selector is not None and _selector_kind(selector) == kind
+                    function.logical_selector
+                    for function in kernel_functions
+                    if function.logical_selector is not None
+                    and _selector_kind(function.logical_selector) == kind
                 )
                 if len(selected) != kernel_counts[kind]:
                     selected = (kind,) * kernel_counts[kind]
@@ -1674,13 +1917,17 @@ def _compile_ttnn_kernel(
         grid_cols, grid_rows = grid
         all_cores = [(x, y) for y in range(grid_rows) for x in range(grid_cols)]
         per_core_counts = {}
-        for (name, thread_type), coords in zip(kernel_info, kernel_coords):
-            covered = coords if coords is not None else all_cores
+        for function in kernel_functions:
+            covered = (
+                function.core_coordinates
+                if function.core_coordinates is not None
+                else all_cores
+            )
             for coord in covered:
                 counts = per_core_counts.setdefault(tuple(coord), [0, 0])
-                if thread_type == "compute":
+                if function.thread_type == _KernelThreadType.COMPUTE:
                     counts[0] += 1
-                elif thread_type == "noc":
+                elif function.thread_type == _KernelThreadType.NOC:
                     counts[1] += 1
         for coord, (n_compute, n_noc) in per_core_counts.items():
             if (
@@ -1700,11 +1947,11 @@ def _compile_ttnn_kernel(
         print("=" * 60)
         print("TTNN INTEROP: Compiling kernel")
         print("=" * 60)
-        print(f"Found {len(kernel_info)} kernels:")
+        print(f"Found {len(kernel_functions)} kernels:")
 
     if verbose:
-        for name, thread_type in kernel_info:
-            print(f"  - {name} ({thread_type})")
+        for function in kernel_functions:
+            print(f"  - {function.name} ({function.thread_type.value})")
 
     _ensure_ttnn()
     if ttnn is None:
@@ -1723,130 +1970,36 @@ def _compile_ttnn_kernel(
 
     # EmitC conversion removes TTKernel attributes, so collect the complete
     # descriptor contract before translating any function.
-    kernel_descriptor_metadata = []
-    for kernel_index, ((name, thread_type), kernel_operation) in enumerate(
-        zip(kernel_info, kernel_operations)
-    ):
-        pipe_computed_address_dfb_indices = (
-            _get_kernel_optional_i32_array_attr(
-                module,
-                name,
-                _ttl_ir.PIPE_COMPUTED_ADDRESS_DFB_INDICES_ATTR,
-                kernel_operation=kernel_operation,
-            )
-            or []
-        )
-        used_dfb_indices = _get_kernel_optional_i32_array_attr(
+    descriptor_metadata_by_name = {
+        function.name: _snapshot_kernel_descriptor_metadata(
             module,
-            name,
-            _ttl_ir.USED_DFB_INDICES_ATTR,
-            kernel_operation=kernel_operation,
+            function,
+            math_fidelity=math_fidelity,
+            fp32_dest_acc_en=fp32_dest_acc_en,
+            dst_full_sync_en=dst_full_sync_en,
         )
+        for function in kernel_functions
+    }
 
-        raw_arg_spec = kernel_operation.attributes.get("arg_spec", None)
-        arg_spec = (
-            None
-            if raw_arg_spec is None
-            else ttkernel.ir.ArgSpecAttr.maybe_downcast(raw_arg_spec)
-        )
-        runtime_arg_spec = arg_spec.rt_args if arg_spec else []
-
-        if thread_type == "compute":
-            configuration = _KernelConfigurationMetadata(
-                thread_type=thread_type,
-                math_fidelity=math_fidelity,
-                fp32_dest_acc_en=(
-                    fp32_dest_acc_en
-                    if fp32_dest_acc_en is not None
-                    else _get_kernel_bool_attr(
-                        module,
-                        name,
-                        "fp32_dest_acc_en",
-                        kernel_operation=kernel_operation,
-                    )
-                ),
-                dst_full_sync_en=(
-                    dst_full_sync_en
-                    if dst_full_sync_en is not None
-                    else _get_kernel_bool_attr(
-                        module,
-                        name,
-                        "dst_full_sync_en",
-                        kernel_operation=kernel_operation,
-                    )
-                ),
-                unpack_to_dest_fp32=tuple(
-                    _get_kernel_i32_array_attr(
-                        module,
-                        name,
-                        "ttl.unpack_to_dest_fp32",
-                        kernel_operation=kernel_operation,
-                    )
-                ),
-            )
-        elif thread_type == "noc":
-            configuration = _KernelConfigurationMetadata(
-                thread_type=thread_type,
-                noc_role=_get_kernel_noc_index(
-                    module, name, kernel_operation=kernel_operation
-                ),
-            )
-        else:
-            configuration = _KernelConfigurationMetadata(thread_type=thread_type)
-
-        kernel_descriptor_metadata.append(
-            _KernelDescriptorMetadata(
-                runtime_arg_spec=runtime_arg_spec,
-                configuration=configuration,
-                pipe_computed_address_dfb_indices=tuple(
-                    pipe_computed_address_dfb_indices
-                ),
-                used_dfb_indices=(
-                    None if used_dfb_indices is None else tuple(used_dfb_indices)
-                ),
-                tensor_indices=tuple(
-                    _get_kernel_crta_indices(
-                        module, name, kernel_operation=kernel_operation
-                    )
-                ),
-                local_tensor_indices=tuple(
-                    _get_kernel_local_tensor_indices(
-                        module, name, kernel_operation=kernel_operation
-                    )
-                ),
-                fabric_routes=tuple(
-                    _get_kernel_fabric_routes(
-                        module, name, kernel_operation=kernel_operation
-                    )
-                ),
-                fabric_runtime_arg_base_common_index=(
-                    _get_kernel_fabric_runtime_arg_base_common_index(
-                        module, name, kernel_operation=kernel_operation
-                    )
-                ),
-                fabric_manager_intervals=_get_kernel_fabric_manager_intervals(
-                    module, name, kernel_operation=kernel_operation
-                ),
-                logical_selector=kernel_logical_selectors[kernel_index],
-                attribute_key=_kernel_descriptor_attribute_key(
-                    kernel_operation.attributes
-                ),
-            )
-        )
-
-    cpp_sources = ttkernels_to_cpp(module, [name for name, _ in kernel_info])
-    if len(cpp_sources) != len(kernel_info):
+    cpp_sources = ttkernels_to_cpp(
+        module, [function.name for function in kernel_functions]
+    )
+    if len(cpp_sources) != len(kernel_functions):
         raise RuntimeError(
             "TTKernel translation returned "
-            f"{len(cpp_sources)} sources for {len(kernel_info)} kernels"
+            f"{len(cpp_sources)} sources for {len(kernel_functions)} kernels"
         )
 
-    descriptor_metadata_keys = [
-        metadata.equivalence_key() for metadata in kernel_descriptor_metadata
+    descriptor_candidates = [
+        _KernelDescriptorCandidate(
+            name=function.name,
+            core_coordinates=function.core_coordinates,
+            cpp_source=cpp_source,
+            descriptor_metadata=descriptor_metadata_by_name[function.name],
+        )
+        for function, cpp_source in zip(kernel_functions, cpp_sources, strict=True)
     ]
-    kernel_groups = _group_equivalent_specialized_kernels(
-        cpp_sources, descriptor_metadata_keys, kernel_coords
-    )
+    kernel_groups = _group_equivalent_specialized_kernels(descriptor_candidates)
 
     kernel_paths = []
     kernel_configs = []
@@ -1864,13 +2017,14 @@ def _compile_ttnn_kernel(
     thread_to_kernel = {}
 
     for kernel_group in kernel_groups:
-        kernel_index = kernel_group[0]
-        name, thread_type = kernel_info[kernel_index]
-        cpp_source = cpp_sources[kernel_index]
-        descriptor_metadata = kernel_descriptor_metadata[kernel_index]
+        representative = kernel_group[0]
+        name = representative.name
+        cpp_source = representative.cpp_source
+        descriptor_metadata = representative.descriptor_metadata
         configuration = descriptor_metadata.configuration
+        thread_type = configuration.thread_type
         kernel_path = _write_kernel_to_tmp(name, cpp_source)
-        kernel_paths.append((kernel_path, thread_type))
+        kernel_paths.append((kernel_path, thread_type.value))
         kernel_pipe_computed_address_dfb_indices.append(
             list(descriptor_metadata.pipe_computed_address_dfb_indices)
         )
@@ -1890,10 +2044,10 @@ def _compile_ttnn_kernel(
         kernel_local_tensor_indices.append(
             list(descriptor_metadata.local_tensor_indices)
         )
-        kernel_arg_specs.append(descriptor_metadata.runtime_arg_spec)
+        kernel_arg_specs.append(list(descriptor_metadata.runtime_arg_spec))
         grouped_kernel_logical_selectors.append(descriptor_metadata.logical_selector)
 
-        if thread_type == "compute":
+        if thread_type == _KernelThreadType.COMPUTE:
             config = ttnn.ComputeConfigDescriptor()
             if configuration.math_fidelity is not None:
                 _set_math_fidelity(config, ttnn, configuration.math_fidelity)
@@ -1907,23 +2061,24 @@ def _compile_ttnn_kernel(
             thread_to_kernel["TRISC_0"] = name
             thread_to_kernel["TRISC_1"] = name
             thread_to_kernel["TRISC_2"] = name
-        elif thread_type == "noc":
-            noc_role = configuration.noc_role
-            if noc_role == 0:
+        else:
+            assert thread_type == _KernelThreadType.NOC
+            data_movement_role = configuration.data_movement_role
+            assert data_movement_role is not None
+            if data_movement_role == _DataMovementRole.READER:
                 config = ttnn.ReaderConfigDescriptor()
                 thread_to_kernel["NCRISC"] = name
             else:
+                assert data_movement_role == _DataMovementRole.WRITER
                 config = ttnn.WriterConfigDescriptor()
                 thread_to_kernel["BRISC"] = name
-        else:
-            config = ttnn.ReaderConfigDescriptor()
         kernel_configs.append(config)
 
-        coordinates = kernel_coords[kernel_index]
+        coordinates = representative.core_coordinates
         if coordinates is not None:
             grouped_coordinates = []
-            for grouped_kernel_index in kernel_group:
-                kernel_coordinates = kernel_coords[grouped_kernel_index]
+            for grouped_kernel in kernel_group:
+                kernel_coordinates = grouped_kernel.core_coordinates
                 assert kernel_coordinates is not None
                 grouped_coordinates.extend(kernel_coordinates)
             coordinates = sorted(
@@ -1943,8 +2098,6 @@ def _compile_ttnn_kernel(
             )
         else:
             kernel_core_ranges.append(None)
-
-    kernel_logical_selectors = grouped_kernel_logical_selectors
 
     compiled_kernel = CompiledTTNNKernel(
         kernel_paths=kernel_paths,
@@ -1975,7 +2128,7 @@ def _compile_ttnn_kernel(
         kernel_fabric_manager_intervals=kernel_fabric_manager_intervals,
         mesh_program_placements=mesh_program_placements,
         device_domain=device_domain,
-        kernel_logical_selectors=kernel_logical_selectors,
+        kernel_logical_selectors=grouped_kernel_logical_selectors,
         operation_name=operation_name,
         runtime_resource_factory=runtime_resource_factory,
         runtime_resource_cache=runtime_resource_cache,
@@ -2004,7 +2157,7 @@ def _compile_ttnn_kernel(
                 fabric_runtime_arg_base_common_index=(
                     kernel_fabric_runtime_arg_base_common_indices[kernel_idx]
                 ),
-                logical_kernel=kernel_logical_selectors[kernel_idx],
+                logical_kernel=grouped_kernel_logical_selectors[kernel_idx],
                 fabric_manager_intervals=kernel_fabric_manager_intervals[kernel_idx],
                 used_dfb_indices=kernel_used_dfb_indices[kernel_idx],
                 local_tensor_indices=kernel_local_tensor_indices[kernel_idx],
@@ -2993,18 +3146,18 @@ def _lower_program_to_kernel(
             # kernel-wide configuration analysis resolves automatic choices.
             if ct.kernel_type == "compute":
                 if fp32_dest_acc_en is not None:
-                    ct.func_entry.attributes["fp32_dest_acc_en"] = BoolAttr.get(
-                        fp32_dest_acc_en, ctx
+                    ct.func_entry.attributes[_ttl_ir.FP32_DEST_ACC_EN_ATTR] = (
+                        BoolAttr.get(fp32_dest_acc_en, ctx)
                     )
                 if dst_full_sync_en is not None:
-                    ct.func_entry.attributes["dst_full_sync_en"] = BoolAttr.get(
-                        dst_full_sync_en, ctx
+                    ct.func_entry.attributes[_ttl_ir.DST_FULL_SYNC_EN_ATTR] = (
+                        BoolAttr.get(dst_full_sync_en, ctx)
                     )
 
             # Tag noc functions with their index so pipe semaphore allocation
             # and TTNN reader/writer role assignment can distinguish threads.
             if ct.kernel_type == "datamovement":
-                ct.func_entry.attributes["ttl.noc_index"] = IntegerAttr.get(
+                ct.func_entry.attributes[_ttl_ir.NOC_INDEX_ATTR] = IntegerAttr.get(
                     IntegerType.get_signless(32, ctx), noc_kernel_idx
                 )
                 noc_kernel_idx += 1

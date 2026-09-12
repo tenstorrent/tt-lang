@@ -14,6 +14,7 @@
 #include "ttlang/Analysis/ValueOriginAnalysis.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Analysis/SliceAnalysis.h"
@@ -45,7 +46,6 @@ namespace {
 // frontend, and Python kernel construction reads `ttl.core_coord` to assign
 // each specialized function's launch coordinates.
 constexpr llvm::StringLiteral LaunchGridAttrName = "ttl.launch_grid";
-constexpr llvm::StringLiteral CoreCoordAttrName = "ttl.core_coord";
 
 /// Parse the launch extent from an i64 array attribute into (gridX, gridY).
 ///
@@ -186,7 +186,7 @@ static void emitCoreClone(func::FuncOp func, int64_t x, int64_t y,
   replaceCoordReads<ttk::MyLogicalYOp>(clone, y);
 
   clone->setAttr(
-      CoreCoordAttrName,
+      kCoreCoordAttrName,
       moduleBuilder.getArrayAttr({moduleBuilder.getI64ArrayAttr({x, y})}));
   moduleBuilder.insert(clone);
 }
