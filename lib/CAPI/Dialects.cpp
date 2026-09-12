@@ -24,6 +24,7 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/PassManager.h"
@@ -70,7 +71,7 @@ void ttlangRegisterUpstreamDialects(MlirDialectRegistry registry) {
       ->insert<func::FuncDialect, arith::ArithDialect, memref::MemRefDialect,
                scf::SCFDialect, cf::ControlFlowDialect, affine::AffineDialect,
                emitc::EmitCDialect, index::IndexDialect, ub::UBDialect,
-               math::MathDialect>();
+               math::MathDialect, tensor::TensorDialect>();
 }
 
 void ttlangRegisterPasses() {
