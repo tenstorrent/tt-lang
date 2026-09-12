@@ -13,6 +13,10 @@
 // CHECK-NEXT: routing_plane_write(
 // CHECK: packet_header->to_noc_unicast_write(
 // CHECK: sender.send_payload_without_header_non_blocking_from_address(source_address,
+// CHECK-LABEL: static __attribute__((noinline)) void routing_plane_scatter_write(
+// CHECK: packetHeader->to_noc_unicast_scatter_write(
+// CHECK: fabric_unicast_noc_scatter_write_with_state<
+// CHECK: noc_async_writes_flushed();
 // CHECK-LABEL: static __attribute__((noinline)) void routing_plane_fused_write_atomic_inc(
 // CHECK: const uint32_t [[MAX_PACKET_SIZE:.*]] = tt::tt_fabric::get_fabric_max_packet_size();
 // CHECK: while (sizeBytes > [[MAX_PACKET_SIZE]]) {
@@ -36,6 +40,7 @@
 // CHECK-NEXT: [[ROUTE_ID]] = PacketHeaderPool::allocate_header_n([[COUNT]]);
 // CHECK: experimental::routing_plane_atomic_inc([[MANAGER]], [[ROUTE_ID]], [[INDEX:[^,]+]], [[DEST_DEVICE:[^,]+]], [[DEST_MESH:[^,]+]], [[HOPS:[^,]+]],
 // CHECK: experimental::routing_plane_write([[MANAGER]], [[ROUTE_ID]], [[INDEX]], [[DEST_DEVICE]], [[DEST_MESH]], [[HOPS]],
+// CHECK: experimental::routing_plane_scatter_write([[MANAGER]], [[ROUTE_ID]], [[INDEX]], [[DEST_DEVICE]], [[DEST_MESH]], [[HOPS]],
 // CHECK: experimental::routing_plane_fused_write_atomic_inc([[MANAGER]], [[ROUTE_ID]], [[INDEX]], [[DEST_DEVICE]], [[DEST_MESH]], [[HOPS]],
 // CHECK: if ([[COUNT]] != 0) {
 // CHECK-NEXT: close_connections([[MANAGER]]);
@@ -79,6 +84,15 @@ module {
       %destination_address)
       : (!ttkernel.routing_plane_connection_manager, i32, i32, i32, i32, i32,
          i32, i32, !ttkernel.noc_addr) -> ()
+    %chunk_count = arith.constant 4 : i32
+    ttkernel.routing_plane.scatter_write(
+      %manager, %route_id, %connection_index, %destination_device_id,
+      %destination_mesh_id, %destination_hop_count, %source, %size,
+      %chunk_count, %destination_address, %destination_address,
+      %destination_address, %destination_address)
+      : (!ttkernel.routing_plane_connection_manager, i32, i32, i32, i32, i32,
+         i32, i32, i32, !ttkernel.noc_addr, !ttkernel.noc_addr,
+         !ttkernel.noc_addr, !ttkernel.noc_addr) -> ()
     ttkernel.routing_plane.fused_write_atomic_inc(
       %manager, %route_id, %connection_index, %destination_device_id,
       %destination_mesh_id, %destination_hop_count, %source, %size,

@@ -4692,6 +4692,37 @@ def TTKernel_RoutingPlaneWriteOp :
   }];
 }
 
+def TTKernel_RoutingPlaneScatterWriteOp :
+    TTKernel_Op<"routing_plane.scatter_write"> {
+  let summary = "Scatter contiguous source chunks through one fabric connection";
+  let description = [{
+    Sends `chunkCount` consecutive `chunkSizeBytes` chunks from local L1 memory
+    to the corresponding destination addresses through the connection selected
+    by `connectionIndex`. `chunkCount` is between one and four. The transport
+    combines chunks in one scatter packet when permitted by the active fabric
+    packet limit and uses a unicast packet for a single remaining chunk. This
+    operation does not signal receiver completion.
+  }];
+  let arguments = (ins
+    TTKernel_RoutingPlaneConnectionManager:$manager,
+    I32:$routeId,
+    I32:$connectionIndex,
+    I32:$destinationDeviceId,
+    I32:$destinationMeshId,
+    I32:$destinationHopCount,
+    I32:$sourceAddress,
+    I32:$chunkSizeBytes,
+    I32:$chunkCount,
+    TTKernel_NocAddr:$destinationAddress0,
+    TTKernel_NocAddr:$destinationAddress1,
+    TTKernel_NocAddr:$destinationAddress2,
+    TTKernel_NocAddr:$destinationAddress3
+  );
+  let assemblyFormat = [{
+    `(` operands `)` attr-dict `:` functional-type(operands, results)
+  }];
+}
+
 def TTKernel_RoutingPlaneFusedWriteAtomicIncOp :
     TTKernel_Op<"routing_plane.fused_write_atomic_inc"> {
   let summary = "Write a payload and increment a remote semaphore";
