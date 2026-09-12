@@ -146,6 +146,7 @@ public:
                 experimental_constant_table_generated_len);
       }
       if (callee == "experimental::routing_plane_atomic_inc" ||
+          callee == "experimental::routing_plane_scatter_write" ||
           callee == "experimental::routing_plane_fused_write_atomic_inc") {
         emitLlk(experimental_routing_plane_generated,
                 experimental_routing_plane_generated_len);
