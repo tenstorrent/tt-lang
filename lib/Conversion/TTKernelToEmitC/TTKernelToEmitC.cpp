@@ -2706,6 +2706,40 @@ public:
   }
 };
 
+class TTKernelRoutingPlaneWriteOpRewriter
+    : public OpConversionPattern<ttkernel::RoutingPlaneWriteOp> {
+  using Op = ttkernel::RoutingPlaneWriteOp;
+
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(Op op, Op::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange(), "experimental::routing_plane_write", nullptr, nullptr,
+        adaptor.getOperands());
+    return success();
+  }
+};
+
+class TTKernelRoutingPlaneScatterWriteOpRewriter
+    : public OpConversionPattern<ttkernel::RoutingPlaneScatterWriteOp> {
+  using Op = ttkernel::RoutingPlaneScatterWriteOp;
+
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(Op op, Op::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange(), "experimental::routing_plane_scatter_write", nullptr,
+        nullptr, adaptor.getOperands());
+    return success();
+  }
+};
+
 class TTKernelRoutingPlaneFusedWriteAtomicIncOpRewriter
     : public OpConversionPattern<ttkernel::RoutingPlaneFusedWriteAtomicIncOp> {
   using Op = ttkernel::RoutingPlaneFusedWriteAtomicIncOp;
@@ -2858,6 +2892,29 @@ public:
     rewriter.replaceOpWithNewOp<arith::DivSIOp>(op, op.getResult().getType(),
                                                 op.getOperands());
 
+    return success();
+  }
+};
+
+template <typename SourceOp, typename EmitCOp>
+class ArithIndexUnsignedBinaryRewriter : public OpConversionPattern<SourceOp> {
+public:
+  using OpConversionPattern<SourceOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    if (!isa<IndexType>(op.getResult().getType())) {
+      return failure();
+    }
+    Type resultType =
+        this->getTypeConverter()->convertType(op.getResult().getType());
+    if (!resultType) {
+      return failure();
+    }
+    ValueRange operands = adaptor.getOperands();
+    rewriter.replaceOpWithNewOp<EmitCOp>(op, resultType, operands[0],
+                                         operands[1]);
     return success();
   }
 };
@@ -3563,6 +3620,8 @@ public:
                  TTKernelOpenRoutingPlaneConnectionsOpRewriter>(typeConverter,
                                                                 context, state);
     patterns.add<TTKernelRoutingPlaneAtomicIncOpRewriter,
+                 TTKernelRoutingPlaneWriteOpRewriter,
+                 TTKernelRoutingPlaneScatterWriteOpRewriter,
                  TTKernelRoutingPlaneFusedWriteAtomicIncOpRewriter,
                  TTKernelCloseRoutingPlaneConnectionsOpRewriter>(typeConverter,
                                                                  context);
@@ -3577,12 +3636,14 @@ public:
         TTKernelClassMethodRewriter<ttkernel::TensorAccessorIsLocalShardOp>>(
         typeConverter, context, state);
 
-    patterns
-        .add<ArithFloorDivRewriter, ArithBitcastRewriter, ArithMaxUIRewriter,
-             ArithMinUIRewriter, ArithMaxSIRewriter, ArithMinSIRewriter,
-             ArithBoolBinaryRewriter<arith::AndIOp, emitc::LogicalAndOp>,
-             ArithBoolBinaryRewriter<arith::OrIOp, emitc::LogicalOrOp>>(
-            typeConverter, context);
+    patterns.add<ArithFloorDivRewriter,
+                 ArithIndexUnsignedBinaryRewriter<arith::DivUIOp, emitc::DivOp>,
+                 ArithIndexUnsignedBinaryRewriter<arith::RemUIOp, emitc::RemOp>,
+                 ArithBitcastRewriter, ArithMaxUIRewriter, ArithMinUIRewriter,
+                 ArithMaxSIRewriter, ArithMinSIRewriter,
+                 ArithBoolBinaryRewriter<arith::AndIOp, emitc::LogicalAndOp>,
+                 ArithBoolBinaryRewriter<arith::OrIOp, emitc::LogicalOrOp>>(
+        typeConverter, context);
 
     return FrozenRewritePatternSet(std::move(patterns));
   }

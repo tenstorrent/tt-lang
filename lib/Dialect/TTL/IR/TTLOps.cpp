@@ -940,7 +940,33 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
                            : success();
     }
     if (!findCBReserveForPipeReceive(getDst())) {
-      return emitOpError() << "pipe receive requires a cb_reserve destination";
+      auto destinationSlice = getDst().getDefiningOp<TensorSliceOp>();
+      if (!destinationSlice) {
+        return emitOpError()
+               << "pipe receive requires a cb_reserve or tensor_slice "
+                  "destination";
+      }
+      if (byteCountAttr) {
+        return emitOpError("pipe receive tensor_slice destination does not "
+                           "support byte_count");
+      }
+      auto tensorType =
+          mlir::cast<RankedTensorType>(destinationSlice.getTensor().getType());
+      auto sliceType = mlir::cast<RankedTensorType>(getDst().getType());
+      auto layout =
+          mlir::dyn_cast_or_null<LayoutAttr>(tensorType.getEncoding());
+      if (!layout || layout.getBufferType() != BufferType::DRAM ||
+          layout.getMemoryLayout() != TensorMemoryLayout::Interleaved) {
+        return emitOpError(
+            "pipe receive tensor_slice destination requires interleaved DRAM "
+            "storage");
+      }
+      if (!sliceType.hasStaticShape() || sliceType.getNumElements() <= 0 ||
+          !mlir::isa<ttcore::TileType>(sliceType.getElementType())) {
+        return emitOpError(
+            "pipe receive tensor_slice destination requires a non-empty "
+            "static tile shape");
+      }
     }
     if (!mlir::isa<ReceiveRequestType>(getXf().getType())) {
       return emitOpError()

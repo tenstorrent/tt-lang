@@ -193,8 +193,8 @@ struct PipeWaitPlan {};
 /// wait-any candidates.
 class PipeResourceAccessPlan {
 public:
-  using Resources =
-      std::variant<PipeResourceInfo, SmallVector<PipeResourceInfo>>;
+  using ResourceTable = SmallVector<PipeResourceInfo>;
+  using Resources = std::variant<PipeResourceInfo, ResourceTable>;
 
   PipeResourceAccessPlan(PipeReference pipeReference, Resources resources)
       : pipeReference(std::move(pipeReference)),
@@ -203,7 +203,7 @@ public:
   const PipeReference &getPipeReference() const { return pipeReference; }
 
   bool isSelected() const {
-    return std::holds_alternative<SmallVector<PipeResourceInfo>>(resources);
+    return std::holds_alternative<ResourceTable>(resources);
   }
 
   const PipeResourceInfo &getResources() const {
@@ -215,7 +215,7 @@ public:
   ArrayRef<PipeResourceInfo> getSelectedResources() const {
     assert(isSelected() &&
            "record-selected resources requested for a static pipe");
-    return std::get<SmallVector<PipeResourceInfo>>(resources);
+    return std::get<ResourceTable>(resources);
   }
 
 private:

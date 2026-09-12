@@ -501,33 +501,6 @@ static Value getCommonRuntimeArg(unsigned argIdx, Location loc,
       .getResult();
 }
 
-/// Build a TensorAccessor using tt-metal's constexpr CTA offset chaining.
-///
-/// The CTA offset for tensor N is computed at device compile time via
-/// get_tensor_accessor_args_cta_offset<N, baseCTA>(). This chains through
-/// all preceding tensors' configs to find the correct offset, regardless of
-/// whether each tensor is interleaved (2 CTAs) or sharded (variable CTAs).
-static Value buildTensorAccessor(Location loc,
-                                 ConversionPatternRewriter &rewriter,
-                                 int32_t baseCTA, int32_t globalTensorIdx,
-                                 int32_t crtaIndex, Value bankBase,
-                                 Value pageSize = Value()) {
-  std::string ctaExpr =
-      "tensor_accessor::detail::get_tensor_accessor_args_cta_offset<" +
-      std::to_string(globalTensorIdx) + ", " + std::to_string(baseCTA) + ">()";
-
-  // Verifier requires cta_base even when cta_expr is set; EmitC ignores it.
-  auto dummyCTA = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
-  auto crtaConst = arith::ConstantIntOp::create(rewriter, loc, crtaIndex, 32);
-  auto args = ttk::TensorAccessorArgsOp::create(
-      rewriter, loc, dummyCTA.getResult(), crtaConst.getResult(),
-      /*prev_args=*/Value(), rewriter.getStringAttr(ctaExpr),
-      /*crta_expr=*/nullptr);
-  auto accessor = ttk::TensorAccessorOp::create(rewriter, loc, args.getResult(),
-                                                bankBase, pageSize);
-  return accessor.getResult();
-}
-
 template <typename FuncLike>
 static bool eraseUnusedArguments(FuncLike funcLike) {
   if (funcLike.getNumArguments() == 0) {
@@ -975,9 +948,9 @@ static Value materializeTensorAccessor(Value tensor, Value bankBase,
   auto pageSize =
       arith::ConstantIntOp::create(rewriter, loc, info.pageSizeBytes, 32);
 
-  return buildTensorAccessor(loc, rewriter, info.baseCTA, info.globalTensorIdx,
-                             static_cast<int32_t>(info.argIdx), bankBase,
-                             pageSize);
+  return buildDistributedTensorAccessor(
+      loc, rewriter, info.baseCTA, info.globalTensorIdx,
+      static_cast<int32_t>(info.argIdx), bankBase, pageSize);
 }
 
 /// Extract tile grid shape from a Value with a static ranked tensor type.
@@ -1945,9 +1918,9 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
       Value accessor;
       if (tensor.ctaInfo) {
         auto [baseCTA, globalTensorIdx] = *tensor.ctaInfo;
-        accessor =
-            buildTensorAccessor(location, rewriter, baseCTA, globalTensorIdx,
-                                static_cast<int32_t>(tensor.argIdx), bankBase);
+        accessor = buildDistributedTensorAccessor(
+            location, rewriter, baseCTA, globalTensorIdx,
+            static_cast<int32_t>(tensor.argIdx), bankBase);
       } else {
         accessor =
             ttk::LocalTensorAccessorOp::create(rewriter, location, bankBase)
@@ -2530,6 +2503,9 @@ static LogicalResult lowerTTLOpsToTTKernel(
                            ? PipeGraphLaunchDomainMode::WhenPipesPresent
                            : PipeGraphLaunchDomainMode::Required);
   if (failed(pipeGraphOrErr)) {
+    return failure();
+  }
+  if (failed(preparePipeTensorDestinationRuntimeArguments(*pipeGraphOrErr))) {
     return failure();
   }
 

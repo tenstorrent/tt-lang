@@ -903,7 +903,9 @@ def _copy_byte_count_attr(byte_count, ctx):
 
 
 @syntax("copy")
-def copy(src, dst, *, byte_count=None) -> Union[CopyTransferHandler, ReceiveRequest]:
+def copy(
+    src, dst, *, byte_count=None, shape=None
+) -> Union[CopyTransferHandler, ReceiveRequest]:
     """
     Initiate an asynchronous data transfer using ttl.copy.
 
@@ -912,6 +914,9 @@ def copy(src, dst, *, byte_count=None) -> Union[CopyTransferHandler, ReceiveRequ
         dst: Destination block (for reads), tensor/slice (for writes), or Pipe (for pipe send)
         byte_count: Positive static byte count for DFB block-to-block and pipe
             transfers. Tensor-slice transfers always copy complete tiles.
+        shape: Static tile shape of a pipe-to-DRAM tensor-slice receive. The
+            argument is required because tensor subscripts retain start indices
+            but not range extents.
 
     Returns:
         ReceiveRequest for a PipeNet receive; CopyTransferHandler otherwise.
@@ -922,6 +927,8 @@ def copy(src, dst, *, byte_count=None) -> Union[CopyTransferHandler, ReceiveRequ
     For pipe transfers:
         ttl.copy(block, pipe) - send from DFB block to pipe
         ttl.copy(pipe, block) - receive from pipe to DFB block
+        ttl.copy(pipe, tensor[r0:r1, c0:c1], shape=(r1-r0, c1-c0)) - receive
+            directly into a DRAM tensor region
     """
     # Check for pipe operands first
     src_is_pipe = _is_pipe(src)
@@ -938,6 +945,10 @@ def copy(src, dst, *, byte_count=None) -> Union[CopyTransferHandler, ReceiveRequ
                 raise ValueError(
                     "copy() to pipe requires block src (from cb.reserve() or cb.wait())"
                 )
+            if shape is not None:
+                raise ValueError(
+                    "copy() shape is supported only for pipe-to-tensor receives"
+                )
             src_cb = _get_cb_from_block(src)
             pipe_val = _get_pipe_mlir_value(dst)
             ctx = src_cb.type.context
@@ -949,20 +960,45 @@ def copy(src, dst, *, byte_count=None) -> Union[CopyTransferHandler, ReceiveRequ
                 byte_count=_copy_byte_count_attr(byte_count, ctx),
             )
         else:
-            # Pipe -> DFB receive. The sender writes into the receiver-owned block.
-            if not _is_block(dst):
+            # A pipe receive writes either a reserved DFB block or an explicitly
+            # sized DRAM tensor region owned by the receiver.
+            if _is_block(dst):
+                if shape is not None:
+                    raise ValueError(
+                        "copy() shape is supported only for pipe-to-tensor receives"
+                    )
+                destination = dst
+            elif isinstance(dst, tuple):
+                if byte_count is not None:
+                    raise ValueError(
+                        "copy() byte_count is not supported for pipe-to-tensor receives"
+                    )
+                if shape is None:
+                    raise ValueError(
+                        "copy() from pipe to tensor subscript requires shape"
+                    )
+                tile_shape = tuple(_get_constant_int(dimension) for dimension in shape)
+                if not tile_shape or any(dimension <= 0 for dimension in tile_shape):
+                    raise ValueError(
+                        f"copy() pipe-to-tensor shape must contain positive dimensions, got {tile_shape}"
+                    )
+                destination = _process_tensor_subscript(dst, tile_shape)
+            else:
                 raise ValueError(
-                    "copy() from pipe requires block dst (from cb.reserve() or cb.wait())"
+                    "copy() from pipe requires a reserved block or tensor subscript destination"
                 )
             pipe_val = _get_pipe_mlir_value(src)
-            ctx = dst.type.context
+            ctx = destination.type.context
             xf_type = ttl.ReceiveRequestType.get(ctx)
             return ttl.copy(
                 xf_type,
                 pipe_val,
-                dst,
+                destination,
                 byte_count=_copy_byte_count_attr(byte_count, ctx),
             )
+
+    if shape is not None:
+        raise ValueError("copy() shape is supported only for pipe-to-tensor receives")
 
     src_is_block = _is_block(src)
     dst_is_block = _is_block(dst)
