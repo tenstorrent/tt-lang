@@ -10,8 +10,8 @@ module pass (`ttkernel-specialize-cores`) run at the TTKernel level right
 before EmitC: for each kernel whose conditional or loop bounds depend on a core
 coordinate it emits one clone per launch coordinate, replacing the coordinate
 reads with constants and tagging each clone with `ttl.core_coord`. The runtime
-bridge (`_compile_ttnn_kernel`) turns each `ttl.core_coord` into a per-kernel
-core range for dispatch.
+bridge (`_compile_ttnn_kernel`) gives each distinct generated kernel one
+descriptor covering every coordinate with the same code and runtime metadata.
 
 Op bodies are built by `_make_matmul_op` / `_make_branch_swap_op` so default
 and specialized runs get distinct op objects (and compilation caches) without
@@ -31,8 +31,8 @@ Coverage:
     Checks bf16/fp32 exact results and per-core clones for both kernels.
   * emit_runner_no_crash: `TTLANG_EMIT_RUNNER` must not IndexError when
     kernels are cloned (per-clone tensor indices / core ranges).
-  * emit_runner_executes: emitted runner, run cold, reproduces the swap
-    (per-kernel core ranges and NOC roles baked into the template).
+  * emit_runner_executes: equivalent reader clones share descriptors across
+    rows, and the emitted runner preserves correctness on a cold cache.
   * subset_dfb: an extra DFB is reserved and waited only on column-0 cores.
     Specialization folds that use away on the other cores; the kernel still
     runs on device. Clone `ttl.used_dfb_indices` values are checked against a
@@ -224,6 +224,56 @@ def _make_swap_inputs(device):
     expected = torch.cat([right, left], dim=1).contiguous()
     a = to_dram(a_torch, device)
     return a, expected
+
+
+def _make_branch_broadcast_op():
+    """Build an operation whose reader depends on x but not y."""
+
+    @ttl.operation(grid=(GRID_X, GRID_Y))
+    def branch_broadcast(input_tensor, output_tensor):
+        input_dfb = ttl.make_dataflow_buffer_like(
+            input_tensor, shape=(1, 1), block_count=2
+        )
+        output_dfb = ttl.make_dataflow_buffer_like(
+            output_tensor, shape=(1, 1), block_count=2
+        )
+
+        @ttl.compute()
+        def compute_fn():
+            with input_dfb.wait() as input_tile, output_dfb.reserve() as output_block:
+                output_block.store(input_tile)
+
+        @ttl.datamovement()
+        def dm_read():
+            node_x, _node_y = ttl.node(dims=2)
+            with input_dfb.reserve() as input_block:
+                if node_x == 0:
+                    ttl.copy(input_tensor[0, 1], input_block).wait()
+                else:
+                    ttl.copy(input_tensor[0, 0], input_block).wait()
+
+        @ttl.datamovement()
+        def dm_write():
+            node_x, node_y = ttl.node(dims=2)
+            with output_dfb.wait() as output_block:
+                ttl.copy(output_block, output_tensor[node_y, node_x]).wait()
+
+    return branch_broadcast
+
+
+def _make_broadcast_inputs(device):
+    tensor_shape = (GRID_Y * TILE_SIZE, GRID_X * TILE_SIZE)
+    input_host = torch.randn(tensor_shape, dtype=torch.bfloat16)
+    first_tile_row = input_host[:TILE_SIZE]
+    expected_tile_row = torch.cat(
+        (
+            first_tile_row[:, TILE_SIZE:],
+            first_tile_row[:, :TILE_SIZE],
+        ),
+        dim=1,
+    )
+    expected = expected_tile_row.repeat(GRID_Y, 1).contiguous()
+    return to_dram(input_host, device), expected
 
 
 def _assert_reader_cloned(final_mlir_path):
@@ -470,25 +520,32 @@ def test_specialize_cores_emit_runner_no_crash(device, monkeypatch, tmp_path):
 
 
 def test_specialize_cores_emit_runner_executes(device, monkeypatch, tmp_path):
-    """The emitted runner, run standalone on a cold cache, must reproduce the swap.
+    """Equivalent reader clones share descriptors and run correctly when cold.
 
     Compile-only so the op never executes and warms the program cache; otherwise
     the runner's custom_program_hash could reuse a cached in-process program and
-    mask a template bug. The emitted runner must carry per-kernel core ranges
-    and NOC roles so clones dispatch correctly when built cold.
+    mask a template bug.
     """
     import importlib.util
 
     monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
     runner_path = tmp_path / "runner.py"
     monkeypatch.setenv("TTLANG_EMIT_RUNNER", str(runner_path))
-    a, expected = _make_swap_inputs(device)
+    a, expected = _make_broadcast_inputs(device)
     out = to_dram(torch.zeros_like(expected), device)
-    _make_branch_swap_op()(a, out, options="--ttl-specialize-cores")
+    _make_branch_broadcast_op()(a, out, options="--ttl-specialize-cores")
 
     spec = importlib.util.spec_from_file_location("emitted_runner", str(runner_path))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    # Compute and writer cover the whole grid. The two reader descriptors each
+    # cover both y coordinates for one x-dependent branch result.
+    assert len(module.KERNEL_PATHS) == 4
+    specialized_ranges = [
+        ranges for ranges in module.KERNEL_CORE_RANGES if ranges is not None
+    ]
+    assert len(specialized_ranges) == 2
+    assert sorted(len(ranges) for ranges in specialized_ranges) == [2, 2]
     monkeypatch.delenv("TTLANG_COMPILE_ONLY", raising=False)
     module.run([a, out], device=device)
     assert_pcc(expected, ttnn.to_torch(out))
