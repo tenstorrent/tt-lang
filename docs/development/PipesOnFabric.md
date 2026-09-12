@@ -646,14 +646,15 @@ source and destination `FabricNodeId`. The cache is cleared when the mesh
 object or active fabric configuration changes. The binder first collects every
 connection required by one source device. Within a manager, destinations with
 the same direction reuse one connection only when their eligible-link sets
-intersect. Across managers, the compiler records ownership intervals and an
-interference graph. Deterministic graph coloring permits a proven
-receiver/sender ownership pair to reuse a forwarding link and assigns distinct
-links to all other managers. An external manager may reserve a fixed link
-through operation runtime resources; tt-lang validates the reservation but does
-not interpret or modify the external manager's runtime arguments. The complete
-plan is validated before program descriptors, semaphores, or runtime arguments
-are modified.
+intersect. Managers on different worker nodes may use the same physical link,
+as supported by TT-Metal's routing-plane connection API. For managers on one
+worker node, the compiler records ownership intervals and an interference
+graph. Deterministic graph coloring permits a proven receiver/sender ownership
+pair to reuse a forwarding link and assigns distinct links to overlapping
+managers. An external manager may reserve a fixed link through operation runtime
+resources; tt-lang validates the reservation but does not interpret or modify
+the external manager's runtime arguments. The complete plan is validated before
+program descriptors, semaphores, or runtime arguments are modified.
 
 An external scoped manager call inside structured control flow records its
 compiler-proven launch-node domain. Runtime binding resolves each kernel
