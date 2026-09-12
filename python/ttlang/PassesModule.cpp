@@ -13,6 +13,8 @@
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 
+#include <cstdlib>
+
 using namespace mlir;
 
 static void prepareTTKernelToEmitC(MlirModule module) {
@@ -31,6 +33,18 @@ static void prepareTTKernelToEmitC(MlirModule module) {
   }
 }
 
+static std::string translateTTKernelFunction(MlirModule module,
+                                             const std::string &kernelName) {
+  char *result = ttlangTranslateKernelToCpp(module, kernelName.c_str());
+  if (!result) {
+    throw std::runtime_error("Failed to translate kernel '" + kernelName +
+                             "' to C++");
+  }
+  std::string output(result);
+  std::free(result);
+  return output;
+}
+
 void populatePassesModule(nb::module_ &m) {
 
   m.def(
@@ -40,18 +54,24 @@ void populatePassesModule(nb::module_ &m) {
       "Run the whole-module TTKernelToEmitC preparation exactly once.");
 
   m.def(
+      "ttkernels_to_cpp",
+      [](MlirModule module, const std::vector<std::string> &kernelNames) {
+        prepareTTKernelToEmitC(module);
+        std::vector<std::string> outputs;
+        outputs.reserve(kernelNames.size());
+        for (const std::string &kernelName : kernelNames) {
+          outputs.push_back(translateTTKernelFunction(module, kernelName));
+        }
+        return outputs;
+      },
+      nb::arg("module"), nb::arg("kernel_names"),
+      "Lower TTKernel to EmitC once and translate the requested kernels.");
+
+  m.def(
       "ttkernel_to_cpp_by_name",
       [](MlirModule module, const std::string &kernelName) -> std::string {
         prepareTTKernelToEmitC(module);
-
-        char *result = ttlangTranslateKernelToCpp(module, kernelName.c_str());
-        if (!result) {
-          throw std::runtime_error("Failed to translate kernel '" + kernelName +
-                                   "' to C++");
-        }
-        std::string output(result);
-        free(result);
-        return output;
+        return translateTTKernelFunction(module, kernelName);
       },
       nb::arg("module"), nb::arg("kernel_name"),
       "Translate a named TTKernel function to C++ string.");
