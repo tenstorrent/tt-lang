@@ -83,3 +83,24 @@ func.func @preserve_unresolved_index(%index: index)
   %arg = ttkernel.get_common_arg_val(%index) : (index) -> i32
   return
 }
+
+// -----
+
+// Fabric arguments remain immediately after the compacted tensor prefix.
+// CHECK-LABEL: func.func @remap_fabric_runtime_base
+// CHECK-SAME: ttl.crta_indices = [52 : i32]
+// CHECK-SAME: ttl.fabric_runtime_arg_base_common_index = 3 : i64
+func.func @remap_fabric_runtime_base()
+    attributes {
+      ttl.crta_indices = [50, 51, 52],
+      ttl.fabric_runtime_arg_base_common_index = 5 : i64,
+      ttl.kernel_thread = #ttkernel.thread<noc>
+    } {
+  %tensor_index = arith.constant 2 : index
+  %tensor_address = ttkernel.get_common_arg_val(%tensor_index) : (index) -> i32
+  %local = ttkernel.LocalTensorAccessor(%tensor_address)
+      : (i32) -> !ttkernel.LocalTensorAccessor
+  %compiler_index = arith.constant 4 : index
+  %compiler_arg = ttkernel.get_common_arg_val(%compiler_index) : (index) -> i32
+  return
+}

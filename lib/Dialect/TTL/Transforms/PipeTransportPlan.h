@@ -116,19 +116,38 @@ struct PipeTransportPacketization {
   int64_t getPayloadSizeBytes() const { return payloadSizeBytes; }
 };
 
+/// DFB storage decisions for one receiver endpoint.
+struct PipeTransportDFBDestination {
+  PipeReceiverDFBKey receiverDFB;
+  int64_t slotSpanBlocks = 1;
+  int64_t blockCount = 1;
+  int64_t scratchByteOffset = 0;
+  int64_t scratchBytes = 0;
+  PipeTransportStorageOwnership ownership = PipeTransportStorageOwnership::DFB;
+  ReceiverAddressSequenceProof addressSequence;
+};
+
 /// Destination storage and address sequence for one receiver endpoint.
 struct PipeTransportEndpoint {
   PipeReceiverEndpointId endpoint = 0;
   PipeReceiverCoord destination;
-  PipeReceiverDFBKey receiverDFB;
-  int64_t slotSpanBlocks = 1;
-  int64_t blockCount = 1;
+  std::variant<PipeTransportDFBDestination, ReceiverTensorRegionInfo> storage;
   int64_t groupDepth = 1;
-  int64_t scratchByteOffset = 0;
-  int64_t scratchBytes = 0;
-  PipeTransportStorageOwnership ownership = PipeTransportStorageOwnership::DFB;
   PipeTransportIterationDomain iterationDomain;
-  ReceiverAddressSequenceProof addressSequence;
+
+  bool hasDFBDestination() const {
+    return std::holds_alternative<PipeTransportDFBDestination>(storage);
+  }
+
+  const PipeTransportDFBDestination &getDFBDestination() const {
+    assert(hasDFBDestination() && "transport endpoint does not target a DFB");
+    return std::get<PipeTransportDFBDestination>(storage);
+  }
+
+  PipeTransportDFBDestination &getDFBDestination() {
+    assert(hasDFBDestination() && "transport endpoint does not target a DFB");
+    return std::get<PipeTransportDFBDestination>(storage);
+  }
 };
 
 /// Transfers that must complete before source storage can be reused.

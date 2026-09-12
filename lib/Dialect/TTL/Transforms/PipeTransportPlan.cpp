@@ -131,15 +131,21 @@ static bool supportsOverlappedSchedule(const PipeTransportStream &stream) {
   }
   return llvm::all_of(
       stream.getEndpoints(), [](const PipeTransportEndpoint &endpoint) {
-        if (endpoint.groupDepth < 2 || !endpoint.addressSequence.recurrence ||
-            !endpoint.addressSequence.executionCount ||
-            *endpoint.addressSequence.executionCount < 2) {
+        if (!endpoint.hasDFBDestination()) {
+          return false;
+        }
+        const PipeTransportDFBDestination &destination =
+            endpoint.getDFBDestination();
+        if (endpoint.groupDepth < 2 ||
+            !destination.addressSequence.recurrence ||
+            !destination.addressSequence.executionCount ||
+            *destination.addressSequence.executionCount < 2) {
           return false;
         }
         const ReceiverAddressRecurrence &recurrence =
-            *endpoint.addressSequence.recurrence;
+            *destination.addressSequence.recurrence;
         return recurrence.repeatStride != 0 &&
-               recurrence.blockCount >= 2 * endpoint.slotSpanBlocks;
+               recurrence.blockCount >= 2 * destination.slotSpanBlocks;
       });
 }
 
@@ -195,17 +201,25 @@ void PipeTransportStream::print(llvm::raw_ostream &os) const {
 
   for (const PipeTransportEndpoint &endpoint : endpoints) {
     os << "PipeTransport:   endpoint " << endpoint.endpoint << " dst("
-       << endpoint.destination.x << ", " << endpoint.destination.y << ") DFB "
-       << endpoint.receiverDFB.dfbIndex
-       << " block_count=" << endpoint.blockCount
-       << " slot_span=" << endpoint.slotSpanBlocks
-       << " group_depth=" << endpoint.groupDepth
-       << " ownership=" << stringifyStorageOwnership(endpoint.ownership)
-       << " scratch_offset=" << endpoint.scratchByteOffset
-       << " scratch_bytes=" << endpoint.scratchBytes
-       << " loops=" << endpoint.iterationDomain.enclosingLoops.size()
-       << " address=";
-    printAddressSequence(os, endpoint.addressSequence);
+       << endpoint.destination.x << ", " << endpoint.destination.y << ") ";
+    if (endpoint.hasDFBDestination()) {
+      const PipeTransportDFBDestination &destination =
+          endpoint.getDFBDestination();
+      os << "DFB " << destination.receiverDFB.dfbIndex
+         << " block_count=" << destination.blockCount
+         << " slot_span=" << destination.slotSpanBlocks
+         << " group_depth=" << endpoint.groupDepth
+         << " ownership=" << stringifyStorageOwnership(destination.ownership)
+         << " scratch_offset=" << destination.scratchByteOffset
+         << " scratch_bytes=" << destination.scratchBytes
+         << " loops=" << endpoint.iterationDomain.enclosingLoops.size()
+         << " address=";
+      printAddressSequence(os, destination.addressSequence);
+    } else {
+      const ReceiverTensorRegionInfo &destination =
+          std::get<ReceiverTensorRegionInfo>(endpoint.storage);
+      os << "DRAM tensor region " << destination.sliceType;
+    }
     os << "\n";
   }
 
@@ -361,9 +375,20 @@ FailureOr<PipeTransportPlan> buildPipeTransportPlan(
       PipeTransportEndpoint endpoint;
       endpoint.endpoint = graphEndpoint.id;
       endpoint.destination = graphEndpoint.receiver;
-      endpoint.receiverDFB = graphEndpoint.receiverDFB;
-      endpoint.slotSpanBlocks =
-          graphEndpoint.receiverDFBInfo.receiverSlotSpanBlocks;
+      endpoint.iterationDomain = getIterationDomain(graphEndpoint.postOp);
+      if (!graphEndpoint.hasDFBDestination()) {
+        endpoint.storage = graphEndpoint.getTensorRegionDestination();
+        endpoint.groupDepth = transferNode.destinationGroupDepth;
+        stream.endpoints.push_back(std::move(endpoint));
+        stream.completionGroup.endpoints.push_back(endpointId);
+        continue;
+      }
+      const PipeReceiverDFBDestination &graphDestination =
+          graphEndpoint.getDFBDestination();
+      PipeTransportDFBDestination destination;
+      destination.receiverDFB = graphDestination.receiverDFB;
+      destination.slotSpanBlocks =
+          graphDestination.receiverDFBInfo.receiverSlotSpanBlocks;
       bool transportOwnsEndpoint = succeeded(storageOwnership) &&
                                    storageOwnership->endpoint == endpointId;
       int64_t selectedGroupDepth =
@@ -372,33 +397,33 @@ FailureOr<PipeTransportPlan> buildPipeTransportPlan(
               ? 1
               : transferNode.destinationGroupDepth;
       std::optional<int64_t> requiredReceiverBlocks =
-          llvm::checkedMul(endpoint.slotSpanBlocks, selectedGroupDepth);
+          llvm::checkedMul(destination.slotSpanBlocks, selectedGroupDepth);
       if (!requiredReceiverBlocks) {
         sendOp.emitError("receiver storage size exceeds int64_t");
         return failure();
       }
-      endpoint.blockCount = transportOwnsEndpoint
-                                ? *requiredReceiverBlocks
-                                : graphEndpoint.receiverDFBInfo.blockCount;
-      if (endpoint.blockCount < *requiredReceiverBlocks) {
+      destination.blockCount =
+          transportOwnsEndpoint ? *requiredReceiverBlocks
+                                : graphDestination.receiverDFBInfo.blockCount;
+      if (destination.blockCount < *requiredReceiverBlocks) {
         sendOp.emitError(
             "receiver DFB cannot store every destination transfer group");
         return failure();
       }
       endpoint.groupDepth = selectedGroupDepth;
-      endpoint.iterationDomain = getIterationDomain(graphEndpoint.postOp);
       if (transportOwnsEndpoint) {
         std::optional<APInt> tripCount =
             storageOwnership->loop.getStaticTripCount();
         assert(tripCount && "transport ownership requires a static loop");
-        endpoint.addressSequence = ReceiverAddressSequenceProof{
+        destination.addressSequence = ReceiverAddressSequenceProof{
             tripCount->getZExtValue(),
             ReceiverAddressRecurrence{/*initialSlot=*/0,
-                                      endpoint.slotSpanBlocks,
-                                      endpoint.blockCount}};
+                                      destination.slotSpanBlocks,
+                                      destination.blockCount}};
       } else {
-        endpoint.addressSequence = graphEndpoint.addressSequence;
+        destination.addressSequence = graphDestination.addressSequence;
       }
+      endpoint.storage = std::move(destination);
       stream.endpoints.push_back(std::move(endpoint));
       stream.completionGroup.endpoints.push_back(endpointId);
     }
@@ -462,10 +487,12 @@ FailureOr<PipeTransportPlan> buildPipeTransportPlan(
         stream.sourceStorage.scratchByteOffset = *scratchOffset;
         stream.sourceStorage.scratchBytes =
             stream.packetization.payloadSizeBytes;
-        stream.endpoints.front().ownership =
+        PipeTransportDFBDestination &transportDestination =
+            stream.endpoints.front().getDFBDestination();
+        transportDestination.ownership =
             PipeTransportStorageOwnership::Transport;
-        stream.endpoints.front().scratchByteOffset = *scratchOffset;
-        stream.endpoints.front().scratchBytes = *destinationBytes;
+        transportDestination.scratchByteOffset = *scratchOffset;
+        transportDestination.scratchBytes = *destinationBytes;
         plan.sramScratchBytes = *alignedScratchEnd;
         recordStorageSelection(sourceStorage);
         recordStorageSelection(destinationStorage);
