@@ -164,7 +164,7 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
       ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
     }
     ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
-      // expected-error @below {{fabric pipe transfer requires computed receiver DFB addresses}}
+      // expected-error @below {{fabric pipe transfer requires computed receiver addresses}}
       %send = ttl.copy %src, %pipe
           : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
              !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
