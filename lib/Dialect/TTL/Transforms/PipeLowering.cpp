@@ -2363,6 +2363,20 @@ public:
         destinationAddress);
   }
 
+  void emitScatterWrite(Value sourceAddress, Value chunkSizeBytes,
+                        Value chunkCount,
+                        ArrayRef<Value> destinationAddresses) {
+    assert(destinationAddresses.size() == 4 &&
+           "fabric scatter writes require four destination operands");
+    FabricRouteTarget target = buildRouteTarget();
+    ttk::RoutingPlaneScatterWriteOp::create(
+        rewriter, loc, runtime.manager, runtime.routeId, buildConnectionIndex(),
+        target.destinationDeviceId, target.destinationMeshId,
+        target.destinationHopCount, sourceAddress, chunkSizeBytes, chunkCount,
+        destinationAddresses[0], destinationAddresses[1],
+        destinationAddresses[2], destinationAddresses[3]);
+  }
+
   void emitFusedWriteAtomicIncrement(Value sourceAddress,
                                      Value destinationAddress, Value sizeBytes,
                                      Value semaphoreAddress, Value increment) {
@@ -3151,6 +3165,72 @@ static Value linearizeIndices(Location loc, ValueRange indices,
   return linearIndex;
 }
 
+static SmallVector<Value> delinearizeIndex(Location loc, Value linearIndex,
+                                           ArrayRef<int64_t> bounds,
+                                           OpBuilder &builder) {
+  assert(!bounds.empty() && "delinearization requires at least one bound");
+  SmallVector<Value> indices(bounds.size());
+  Value remainingIndex = linearIndex;
+  for (std::size_t reverseDimension = 0; reverseDimension < bounds.size();
+       ++reverseDimension) {
+    std::size_t dimension = bounds.size() - reverseDimension - 1;
+    if (dimension == 0) {
+      indices[dimension] = remainingIndex;
+      continue;
+    }
+    Value bound =
+        arith::ConstantIndexOp::create(builder, loc, bounds[dimension]);
+    indices[dimension] =
+        arith::RemUIOp::create(builder, loc, remainingIndex, bound);
+    remainingIndex =
+        arith::DivUIOp::create(builder, loc, remainingIndex, bound);
+  }
+  return indices;
+}
+
+static Value
+buildComputedTensorPageAddress(Location loc, Value regionPageIndex,
+                               const PipeComputedTensorAddressInfo &addressInfo,
+                               Value tensorAccessor, Value noc,
+                               OpBuilder &builder) {
+  SmallVector<Value> regionIndices =
+      delinearizeIndex(loc, regionPageIndex, addressInfo.regionShape, builder);
+  SmallVector<Value> tensorIndices;
+  tensorIndices.reserve(addressInfo.tensorGridShape.size());
+  int64_t rankDifference =
+      addressInfo.tensorGridShape.size() - addressInfo.regionShape.size();
+  for (int64_t dimension = 0;
+       dimension < static_cast<int64_t>(addressInfo.tensorGridShape.size());
+       ++dimension) {
+    Value tensorIndex = arith::ConstantIndexOp::create(
+        builder, loc, addressInfo.startIndices[dimension]);
+    if (dimension >= rankDifference) {
+      tensorIndex = arith::AddIOp::create(
+          builder, loc, tensorIndex, regionIndices[dimension - rankDifference]);
+    }
+    tensorIndices.push_back(tensorIndex);
+  }
+  Value tensorPageIndex = linearizeIndices(
+      loc, tensorIndices, addressInfo.tensorGridShape, builder);
+  Value tensorPageIndexI32 = arith::IndexCastOp::create(
+      builder, loc, builder.getI32Type(), tensorPageIndex);
+  Value zeroI32 = arith::ConstantIntOp::create(builder, loc, 0, 32);
+  return ttk::TensorAccessorGetNocAddrOp::create(
+      builder, loc, tensorAccessor, tensorPageIndexI32, zeroI32, noc);
+}
+
+static Value buildSourcePageAddress(Location loc, Value sourceAddress,
+                                    Value sourcePageIndex,
+                                    int64_t pageSizeBytes, OpBuilder &builder) {
+  Value sourcePageOffset = arith::MulIOp::create(
+      builder, loc, sourcePageIndex,
+      arith::ConstantIndexOp::create(builder, loc, pageSizeBytes));
+  return arith::AddIOp::create(builder, loc, sourceAddress,
+                               arith::IndexCastOp::create(builder, loc,
+                                                          builder.getI32Type(),
+                                                          sourcePageOffset));
+}
+
 static LogicalResult emitComputedTensorFabricWrite(
     PipeTransferSendOp op, Value sourceAddress,
     Value receiverCompletionCounterAddress, Value receiverX, Value receiverY,
@@ -3172,16 +3252,6 @@ static LogicalResult emitComputedTensorFabricWrite(
       loc, rewriter, addressInfo.baseCTA, addressInfo.globalTensorIndex,
       addressInfo.senderTensorArgumentIndex, bankBase, pageSize);
   FabricRouteEmitter routeEmitter(op, routeIndex, fabricRuntime, rewriter);
-  Value completionNocAddress = routeEmitter.getRemoteNocAddress(
-      receiverX, receiverY, receiverCompletionCounterAddress);
-  Value zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
-  Value oneIndex = arith::ConstantIndexOp::create(rewriter, loc, 1);
-  SmallVector<Value> lowerBounds(addressInfo.regionShape.size(), zeroIndex);
-  SmallVector<Value> upperBounds = llvm::map_to_vector(
-      addressInfo.regionShape, [&](int64_t extent) -> Value {
-        return arith::ConstantIndexOp::create(rewriter, loc, extent);
-      });
-  SmallVector<Value> steps(addressInfo.regionShape.size(), oneIndex);
   int64_t pageCount = 1;
   for (int64_t extent : addressInfo.regionShape) {
     std::optional<int64_t> product = llvm::checkedMul(pageCount, extent);
@@ -3190,72 +3260,88 @@ static LogicalResult emitComputedTensorFabricWrite(
     }
     pageCount = *product;
   }
-  Value lastPageIndex =
-      arith::ConstantIndexOp::create(rewriter, loc, pageCount - 1);
-  Value zeroI32 = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
   Value oneI32 = arith::ConstantIntOp::create(rewriter, loc, 1, 32);
   int64_t nocIndex = getNocIndex(op);
   Value noc = arith::ConstantIntOp::create(rewriter, loc, nocIndex, 8);
-  int64_t rankDifference =
-      addressInfo.tensorGridShape.size() - addressInfo.regionShape.size();
 
-  scf::buildLoopNest(
-      rewriter, loc, lowerBounds, upperBounds, steps,
-      [&](OpBuilder &bodyBuilder, Location bodyLoc, ValueRange regionIndices) {
-        Value sourcePageIndex = linearizeIndices(
-            bodyLoc, regionIndices, addressInfo.regionShape, bodyBuilder);
-        SmallVector<Value> tensorIndices;
-        tensorIndices.reserve(addressInfo.tensorGridShape.size());
-        for (int64_t dimension = 0;
-             dimension <
-             static_cast<int64_t>(addressInfo.tensorGridShape.size());
-             ++dimension) {
-          Value start = arith::ConstantIndexOp::create(
-              bodyBuilder, bodyLoc, addressInfo.startIndices[dimension]);
-          if (dimension >= rankDifference) {
-            start = arith::AddIOp::create(
-                bodyBuilder, bodyLoc, start,
-                regionIndices[dimension - rankDifference]);
-          }
-          tensorIndices.push_back(start);
-        }
-        Value tensorPageIndex = linearizeIndices(
-            bodyLoc, tensorIndices, addressInfo.tensorGridShape, bodyBuilder);
-        Value tensorPageIndexI32 = arith::IndexCastOp::create(
-            bodyBuilder, bodyLoc, bodyBuilder.getI32Type(), tensorPageIndex);
-        Value destinationNocAddress = ttk::TensorAccessorGetNocAddrOp::create(
-            bodyBuilder, bodyLoc, tensorAccessor, tensorPageIndexI32, zeroI32,
-            noc);
-        Value sourcePageOffset = arith::MulIOp::create(
-            bodyBuilder, bodyLoc, sourcePageIndex,
-            arith::ConstantIndexOp::create(bodyBuilder, bodyLoc,
-                                           addressInfo.pageSizeBytes));
-        Value sourcePageAddress = arith::AddIOp::create(
-            bodyBuilder, bodyLoc, sourceAddress,
-            arith::IndexCastOp::create(bodyBuilder, bodyLoc,
-                                       bodyBuilder.getI32Type(),
-                                       sourcePageOffset));
-        Value isLastPage = arith::CmpIOp::create(
-            bodyBuilder, bodyLoc, arith::CmpIPredicate::eq, sourcePageIndex,
-            lastPageIndex);
-        auto finalWrite = scf::IfOp::create(bodyBuilder, bodyLoc, isLastPage,
-                                            /*withElseRegion=*/true);
-        {
-          OpBuilder::InsertionGuard guard(bodyBuilder);
-          bodyBuilder.setInsertionPointToStart(
-              &finalWrite.getThenRegion().front());
-          routeEmitter.emitFusedWriteAtomicIncrement(
-              sourcePageAddress, destinationNocAddress, pageSize,
-              completionNocAddress, oneI32);
-        }
-        {
-          OpBuilder::InsertionGuard guard(bodyBuilder);
-          bodyBuilder.setInsertionPointToStart(
-              &finalWrite.getElseRegion().front());
-          routeEmitter.emitWrite(sourcePageAddress, destinationNocAddress,
-                                 pageSize);
-        }
-      });
+  Value zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  if (pageCount == 1) {
+    Value destinationAddress = buildComputedTensorPageAddress(
+        loc, zeroIndex, addressInfo, tensorAccessor, noc, rewriter);
+    Value completionNocAddress = routeEmitter.getRemoteNocAddress(
+        receiverX, receiverY, receiverCompletionCounterAddress);
+    routeEmitter.emitFusedWriteAtomicIncrement(sourceAddress,
+                                               destinationAddress, pageSize,
+                                               completionNocAddress, oneI32);
+    return success();
+  }
+
+  constexpr int64_t maxScatterChunkCount = 4;
+  int64_t fullPacketCount = pageCount / maxScatterChunkCount;
+  Value oneIndex = arith::ConstantIndexOp::create(rewriter, loc, 1);
+  if (fullPacketCount > 0) {
+    Value packetCount =
+        arith::ConstantIndexOp::create(rewriter, loc, fullPacketCount);
+    auto packetLoop =
+        scf::ForOp::create(rewriter, loc, zeroIndex, packetCount, oneIndex);
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(packetLoop.getBody());
+      Value firstSourcePage = arith::MulIOp::create(
+          rewriter, loc, packetLoop.getInductionVar(),
+          arith::ConstantIndexOp::create(rewriter, loc, maxScatterChunkCount));
+      SmallVector<Value> destinationAddresses;
+      destinationAddresses.reserve(maxScatterChunkCount);
+      for (int64_t chunkIndex = 0; chunkIndex < maxScatterChunkCount;
+           ++chunkIndex) {
+        Value sourcePageIndex = arith::AddIOp::create(
+            rewriter, loc, firstSourcePage,
+            arith::ConstantIndexOp::create(rewriter, loc, chunkIndex));
+        destinationAddresses.push_back(buildComputedTensorPageAddress(
+            loc, sourcePageIndex, addressInfo, tensorAccessor, noc, rewriter));
+      }
+      Value packetSourceAddress =
+          buildSourcePageAddress(loc, sourceAddress, firstSourcePage,
+                                 addressInfo.pageSizeBytes, rewriter);
+      Value chunkCount =
+          arith::ConstantIntOp::create(rewriter, loc, maxScatterChunkCount, 32);
+      routeEmitter.emitScatterWrite(packetSourceAddress, pageSize, chunkCount,
+                                    destinationAddresses);
+    }
+  }
+
+  int64_t remainingPageCount = pageCount % maxScatterChunkCount;
+  if (remainingPageCount > 0) {
+    Value firstSourcePage = arith::ConstantIndexOp::create(
+        rewriter, loc, fullPacketCount * maxScatterChunkCount);
+    Value packetSourceAddress =
+        buildSourcePageAddress(loc, sourceAddress, firstSourcePage,
+                               addressInfo.pageSizeBytes, rewriter);
+    SmallVector<Value> destinationAddresses;
+    destinationAddresses.reserve(maxScatterChunkCount);
+    for (int64_t chunkIndex = 0; chunkIndex < remainingPageCount;
+         ++chunkIndex) {
+      Value sourcePageIndex = arith::AddIOp::create(
+          rewriter, loc, firstSourcePage,
+          arith::ConstantIndexOp::create(rewriter, loc, chunkIndex));
+      destinationAddresses.push_back(buildComputedTensorPageAddress(
+          loc, sourcePageIndex, addressInfo, tensorAccessor, noc, rewriter));
+    }
+    if (remainingPageCount == 1) {
+      routeEmitter.emitWrite(packetSourceAddress, destinationAddresses.front(),
+                             pageSize);
+    } else {
+      destinationAddresses.resize(maxScatterChunkCount,
+                                  destinationAddresses.back());
+      Value chunkCount =
+          arith::ConstantIntOp::create(rewriter, loc, remainingPageCount, 32);
+      routeEmitter.emitScatterWrite(packetSourceAddress, pageSize, chunkCount,
+                                    destinationAddresses);
+    }
+  }
+
+  routeEmitter.emitAtomicIncrement(receiverX, receiverY,
+                                   receiverCompletionCounterAddress, oneI32);
   return success();
 }
 
