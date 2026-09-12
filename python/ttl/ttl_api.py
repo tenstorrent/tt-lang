@@ -1569,6 +1569,9 @@ def _descriptor_relevant_function_attributes(
 class _KernelDescriptorMetadata:
     """Properties that must agree before generated kernels share a descriptor.
 
+    Frozen-dataclass equality includes every field, so additions participate in
+    descriptor comparison unless explicitly excluded at their declaration.
+
     Attributes:
         runtime_arg_spec: Ordered runtime arguments.
         configuration: TT-Metal kernel type and processor settings.
@@ -1598,32 +1601,6 @@ class _KernelDescriptorMetadata:
     logical_selector: Optional[KernelSelector]
     function_attributes: tuple[tuple[str, str], ...]
 
-    def equivalence_key(self) -> tuple:
-        """Return metadata that must match before kernels share a descriptor."""
-        logical_selector_key = None
-        if isinstance(self.logical_selector, Kernel):
-            logical_selector_key = (
-                self.logical_selector.kind,
-                self.logical_selector.identity,
-                self.logical_selector._operation_identity,
-                self.logical_selector._implicit_role,
-            )
-        elif self.logical_selector is not None:
-            logical_selector_key = (self.logical_selector,)
-        return (
-            self.configuration,
-            str(self.runtime_arg_spec),
-            self.pipe_computed_address_dfb_indices,
-            self.used_dfb_indices,
-            self.tensor_indices,
-            self.local_tensor_indices,
-            self.fabric_routes,
-            self.fabric_runtime_arg_base_common_index,
-            self.fabric_manager_intervals,
-            logical_selector_key,
-            self.function_attributes,
-        )
-
 
 def _snapshot_kernel_descriptor_metadata(
     module,
@@ -1633,7 +1610,12 @@ def _snapshot_kernel_descriptor_metadata(
     fp32_dest_acc_en: Optional[bool],
     dst_full_sync_en: Optional[bool],
 ) -> _KernelDescriptorMetadata:
-    """Capture descriptor properties before EmitC removes function attributes."""
+    """Capture descriptor properties before EmitC removes function attributes.
+
+    Typed fields construct the TTNN descriptor. Comparison also includes every
+    function attribute except the symbol and launch coordinates, including
+    attributes added later.
+    """
     kernel_name = function.name
     kernel_operation = function.operation
     pipe_computed_address_dfb_indices = (
@@ -1785,7 +1767,7 @@ def _group_equivalent_specialized_kernels(
             )
         signature = (
             candidate.cpp_source,
-            candidate.descriptor_metadata.equivalence_key(),
+            candidate.descriptor_metadata,
         )
         group_index = group_index_by_signature.get(signature)
         if group_index is None:

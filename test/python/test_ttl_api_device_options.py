@@ -672,7 +672,10 @@ def _make_descriptor_metadata():
 
 
 def _make_descriptor_candidate(
-    name, cpp_source, core_coordinates, descriptor_metadata=None
+    name,
+    cpp_source,
+    core_coordinates,
+    descriptor_metadata=None,
 ):
     if descriptor_metadata is None:
         descriptor_metadata = _make_descriptor_metadata()
@@ -820,7 +823,7 @@ class TestSpecializedKernelGrouping:
 
         for field_name, changed_value in changed_values.items():
             changed = replace(metadata, **{field_name: changed_value})
-            assert changed.equivalence_key() != metadata.equivalence_key()
+            assert changed != metadata
 
         configuration_changes = {
             "thread_type": ttl_api._KernelThreadType.COMPUTE,
@@ -838,7 +841,7 @@ class TestSpecializedKernelGrouping:
                 metadata.configuration, **{field_name: changed_value}
             )
             changed = replace(metadata, configuration=configuration)
-            assert changed.equivalence_key() != metadata.equivalence_key()
+            assert changed != metadata
 
         selector = ttl.Kernel._from_metadata(
             ttl.KernelKind.DATA_MOVEMENT,
@@ -850,9 +853,11 @@ class TestSpecializedKernelGrouping:
             "reader",
             operation_identity="operation",
         )
-        assert (
-            replace(metadata, logical_selector=selector).equivalence_key()
-            == replace(metadata, logical_selector=equivalent_selector).equivalence_key()
+        assert replace(metadata, logical_selector=selector) == replace(
+            metadata, logical_selector=equivalent_selector
+        )
+        assert hash(replace(metadata, logical_selector=selector)) == hash(
+            replace(metadata, logical_selector=equivalent_selector)
         )
         selector_changes = [
             ttl.Kernel._from_metadata(
@@ -880,7 +885,7 @@ class TestSpecializedKernelGrouping:
         original = replace(metadata, logical_selector=selector)
         for changed_selector in selector_changes:
             changed = replace(metadata, logical_selector=changed_selector)
-            assert changed.equivalence_key() != original.equivalence_key()
+            assert changed != original
 
         implicit_selector = ttl.Kernel._from_metadata(
             ttl.KernelKind.DATA_MOVEMENT,
@@ -894,9 +899,8 @@ class TestSpecializedKernelGrouping:
             None,
             implicit_role="destination",
         )
-        assert (
-            replace(metadata, logical_selector=implicit_selector).equivalence_key()
-            != replace(metadata, logical_selector=changed_role).equivalence_key()
+        assert replace(metadata, logical_selector=implicit_selector) != replace(
+            metadata, logical_selector=changed_role
         )
 
     def test_unknown_function_attribute_prevents_grouping(self):
