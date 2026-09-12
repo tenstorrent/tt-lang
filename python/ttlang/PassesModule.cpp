@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 // SPDX-License-Identifier: Apache-2.0
 
+#include "mlir/Bindings/Python/IRCore.h"
 #include "mlir/CAPI/IR.h"
 #include "mlir/IR/BuiltinOps.h"
 
@@ -16,10 +17,16 @@
 #include <cstdlib>
 
 using namespace mlir;
+namespace mlirPython = mlir::python::MLIR_BINDINGS_PYTHON_DOMAIN;
 
 static void lowerTTKernelModuleToEmitC(MlirModule module) {
+  MlirContext context = mlirOperationGetContext(mlirModuleGetOperation(module));
+  mlirPython::PyMlirContext::ErrorCapture errors(
+      mlirPython::PyMlirContext::forContext(context));
   if (!ttlangRunTTKernelToEmitC(module)) {
-    throw std::runtime_error("Failed to run TTKernelToEmitC pass");
+    throw mlirPython::MLIRError(
+        "TTKernel-to-EmitC conversion failed; correct the reported IR error",
+        errors.take());
   }
 }
 
@@ -40,7 +47,6 @@ void populatePassesModule(nb::module_ &m) {
   m.def(
       "ttkernels_to_cpp",
       [](MlirModule module, const std::vector<std::string> &kernelNames) {
-        // Per-function conversion would repeatedly rewrite the complete module.
         lowerTTKernelModuleToEmitC(module);
         std::vector<std::string> outputs;
         outputs.reserve(kernelNames.size());
@@ -70,22 +76,12 @@ void populatePassesModule(nb::module_ &m) {
         mod.walk([&](mlir::func::FuncOp funcOp) {
           auto threadAttr =
               funcOp->getAttrOfType<mlir::tt::ttkernel::ThreadTypeAttr>(
-                  "ttkernel.thread");
+                  mlir::tt::ttkernel::ThreadTypeAttr::name);
           if (threadAttr) {
-            auto threadType = threadAttr.getValue();
-            std::string threadStr;
-            switch (threadType) {
-            case mlir::tt::ttkernel::ThreadType::Noc:
-              threadStr = "noc";
-              break;
-            case mlir::tt::ttkernel::ThreadType::Compute:
-              threadStr = "compute";
-              break;
-            default:
-              threadStr = "unknown";
-              break;
-            }
-            result.emplace_back(funcOp.getName().str(), threadStr);
+            result.emplace_back(
+                funcOp.getName().str(),
+                mlir::tt::ttkernel::stringifyThreadType(threadAttr.getValue())
+                    .str());
           }
         });
         return result;
@@ -101,8 +97,8 @@ void populatePassesModule(nb::module_ &m) {
         if (!func) {
           return nb::none();
         }
-        auto argSpecAttr =
-            func->getAttrOfType<mlir::tt::ttkernel::ArgSpecAttr>("arg_spec");
+        auto argSpecAttr = func->getAttrOfType<mlir::tt::ttkernel::ArgSpecAttr>(
+            mlir::tt::ttkernel::kArgSpecAttrName);
         if (!argSpecAttr) {
           return nb::none();
         }
