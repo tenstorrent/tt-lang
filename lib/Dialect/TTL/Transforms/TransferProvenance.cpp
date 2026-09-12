@@ -214,8 +214,10 @@ LogicalResult verifyWait(WaitOp op, ValueOriginAnalysis &analysis) {
 }
 
 LogicalResult verifyPost(PipeTransferPostOp op, ValueOriginAnalysis &analysis) {
-  if (!findCBReserveForPipeReceive(op.getDst())) {
-    return op.emitOpError() << "requires a cb_reserve destination";
+  if (!findCBReserveForPipeReceive(op.getDst()) &&
+      !op.getDst().getDefiningOp<TensorSliceOp>()) {
+    return op.emitOpError()
+           << "requires a cb_reserve or tensor_slice destination";
   }
   FailureOr<PipeTransferCreateOp> create =
       findPipeTransferCreateForTransfer(analysis, op.getTransfer());

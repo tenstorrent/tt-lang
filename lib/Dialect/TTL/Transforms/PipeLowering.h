@@ -20,6 +20,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 
 #include <cstddef>
+#include <memory>
 #include <optional>
 
 namespace mlir::tt {
@@ -29,6 +30,13 @@ class ValueOriginAnalysis;
 namespace mlir::tt::ttl {
 
 class PipeTransferIndex;
+
+/// Build a TTKernel tensor accessor from the global tensor descriptor and its
+/// function-local common runtime argument.
+Value buildDistributedTensorAccessor(Location loc, OpBuilder &builder,
+                                     int32_t baseCTA, int32_t globalTensorIndex,
+                                     int32_t commonRuntimeArgIndex,
+                                     Value bankBase, Value pageSize = Value());
 
 /// One logical device route used by `sourceNodes` in a kernel function.
 /// `routeIndex` identifies the connection within `localDevice`.
@@ -145,7 +153,19 @@ struct PipeComputedAddressInfo {
 enum class PipeAddressMode {
   ReceiverPublishedAddressTable,
   ComputedReceiverDFB,
+  ComputedReceiverTensor,
   TransportScratch,
+};
+
+/// Static tensor-region formula materialized by the sender for a fabric write.
+struct PipeComputedTensorAddressInfo {
+  int32_t baseCTA = 0;
+  int32_t globalTensorIndex = 0;
+  int64_t senderTensorArgumentIndex = 0;
+  SmallVector<int64_t> tensorGridShape;
+  SmallVector<int64_t> startIndices;
+  SmallVector<int64_t> regionShape;
+  int64_t pageSizeBytes = 0;
 };
 
 struct PipeResourcePlan;
@@ -171,19 +191,27 @@ struct PipeAddressStorageInfo {
   receiverPublishedAddressTable(PipeSramAddressTableInfo sramAddressTable) {
     return PipeAddressStorageInfo{
         PipeAddressMode::ReceiverPublishedAddressTable, sramAddressTable,
-        std::nullopt};
+        std::nullopt, nullptr};
   }
 
   static PipeAddressStorageInfo
   computedReceiverDFB(PipeComputedAddressInfo computedAddress) {
     return PipeAddressStorageInfo{PipeAddressMode::ComputedReceiverDFB,
-                                  std::nullopt, computedAddress};
+                                  std::nullopt, computedAddress, nullptr};
+  }
+
+  static PipeAddressStorageInfo
+  computedReceiverTensor(PipeComputedTensorAddressInfo computedTensorAddress) {
+    return PipeAddressStorageInfo{
+        PipeAddressMode::ComputedReceiverTensor, std::nullopt, std::nullopt,
+        std::make_shared<const PipeComputedTensorAddressInfo>(
+            std::move(computedTensorAddress))};
   }
 
   static PipeAddressStorageInfo
   transportScratch(PipeComputedAddressInfo computedAddress) {
     return PipeAddressStorageInfo{PipeAddressMode::TransportScratch,
-                                  std::nullopt, computedAddress};
+                                  std::nullopt, computedAddress, nullptr};
   }
 
   bool usesComputedReceiverAddress() const {
@@ -194,6 +222,10 @@ struct PipeAddressStorageInfo {
     return mode == PipeAddressMode::ComputedReceiverDFB;
   }
 
+  bool usesComputedReceiverTensor() const {
+    return mode == PipeAddressMode::ComputedReceiverTensor;
+  }
+
   bool usesTransportScratch() const {
     return mode == PipeAddressMode::TransportScratch;
   }
@@ -201,6 +233,7 @@ struct PipeAddressStorageInfo {
   PipeAddressMode mode = PipeAddressMode::ReceiverPublishedAddressTable;
   std::optional<PipeSramAddressTableInfo> sramAddressTable;
   std::optional<PipeComputedAddressInfo> computedAddress;
+  std::shared_ptr<const PipeComputedTensorAddressInfo> computedTensorAddress;
 };
 
 /// Lowering information shared by one transfer definition's send, receiver
@@ -329,6 +362,11 @@ LogicalResult buildPipeResourcePlan(
     PipeCounterAllocationPolicy counterPolicy =
         PipeCounterAllocationPolicy::LocalThenGlobal,
     const PipeSynchronizationSelection *synchronizationSelection = nullptr);
+
+/// Ensure each fabric sender has the tensor runtime argument needed to compute
+/// its receiver's DRAM page addresses.
+LogicalResult
+preparePipeTensorDestinationRuntimeArguments(PipeGraph &pipeGraph);
 
 /// Replace grouped transport DFB backing with compiler-managed SRAM scratch.
 ///
