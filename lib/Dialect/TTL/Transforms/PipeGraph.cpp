@@ -589,20 +589,59 @@ isBeforeInReceiverControlContext(Operation *before, Operation *after,
   return false;
 }
 
-/// Return true when `before` precedes `after` directly or before an enclosing
-/// runtime region containing `after`.
+/// Return true when execution of `before` guarantees later execution of
+/// `after`. An executed nested operation completes before subsequent enclosing
+/// operations. A nested `after` may be projected outward only through control
+/// that is statically selected at the receiver location.
+static bool
+executionGuaranteesLaterExecution(Operation *before, Operation *after,
+                                  const LaunchExecutionLocation &location,
+                                  const PipeGraphAnalysisState &analysisState) {
+  for (Operation *beforeAncestor = before; beforeAncestor;) {
+    for (Operation *afterAncestor = after; afterAncestor;) {
+      if (isBeforeInReceiverControlContext(beforeAncestor, afterAncestor,
+                                           location, analysisState)) {
+        return true;
+      }
+      Block *afterBlock = afterAncestor->getBlock();
+      Operation *parent = afterBlock ? afterBlock->getParentOp() : nullptr;
+      if (!parent) {
+        break;
+      }
+      std::optional<ReceiverControlContext> afterContext =
+          getReceiverControlContext(afterAncestor, location, analysisState);
+      std::optional<ReceiverControlContext> parentContext =
+          getReceiverControlContext(parent, location, analysisState);
+      if (!afterContext || afterContext != parentContext) {
+        break;
+      }
+      afterAncestor = parent;
+    }
+
+    Block *beforeBlock = beforeAncestor->getBlock();
+    beforeAncestor = beforeBlock ? beforeBlock->getParentOp() : nullptr;
+  }
+  return false;
+}
+
+/// Return true when `before` completes before `after` whenever both execute.
+/// Projecting either operation through enclosing structured control preserves
+/// this order without asserting that a runtime-selected region executes.
 static bool
 isBeforeInReceiverExecution(Operation *before, Operation *after,
                             const LaunchExecutionLocation &location,
                             const PipeGraphAnalysisState &analysisState) {
-  Operation *enclosing = after;
-  while (enclosing) {
-    if (isBeforeInReceiverControlContext(before, enclosing, location,
-                                         analysisState)) {
-      return true;
+  for (Operation *beforeAncestor = before; beforeAncestor;) {
+    for (Operation *afterAncestor = after; afterAncestor;) {
+      if (isBeforeInReceiverControlContext(beforeAncestor, afterAncestor,
+                                           location, analysisState)) {
+        return true;
+      }
+      Block *afterBlock = afterAncestor->getBlock();
+      afterAncestor = afterBlock ? afterBlock->getParentOp() : nullptr;
     }
-    Block *block = enclosing->getBlock();
-    enclosing = block ? block->getParentOp() : nullptr;
+    Block *beforeBlock = beforeAncestor->getBlock();
+    beforeAncestor = beforeBlock ? beforeBlock->getParentOp() : nullptr;
   }
   return false;
 }
@@ -619,8 +658,8 @@ static bool hasMatchingReceiveWaitBeforePush(
   auto waitIt = waitsByPost.find(postOp.getOperation());
   if (waitIt != waitsByPost.end() &&
       llvm::any_of(waitIt->second, [&](PipeTransferWaitOp waitOp) {
-        return isBeforeInReceiverExecution(postOp, waitOp, location,
-                                           analysisState) &&
+        return executionGuaranteesLaterExecution(postOp, waitOp, location,
+                                                 analysisState) &&
                isBeforeInReceiverExecution(waitOp, pushOp, location,
                                            analysisState);
       })) {

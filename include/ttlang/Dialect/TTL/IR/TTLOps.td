@@ -141,11 +141,13 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     This operation is non-blocking. The destination is not safe to use until a
     corresponding `ttl.wait` has completed.
 
-    A tensor transfer has exactly one DFB (`!ttl.cb`) operand and one ranked
-    tensor operand with TTL layout encoding. A pipe send has a DFB source and a
-    pipe destination. A pipe receive has a pipe source and a destination block
-    reserved from a DFB. The copy transfers the complete payload in row-major
-    tile order.
+    A tensor transfer has one DFB endpoint and one ranked tensor operand with
+    TTL layout encoding. The DFB endpoint is either a `!ttl.cb` or a statically
+    shaped, unit-stride `tensor.extract_slice` view of an acquired block. Reads
+    require a reserved destination; writes require a waited source. A pipe send
+    has a DFB source and a pipe destination. A pipe receive has a pipe source
+    and a destination block reserved from a DFB. The copy transfers the
+    complete endpoint payload in row-major tile order.
 
     The tensor shape normally equals one dataflow buffer block. A copy may span
     consecutive blocks by extending the tensor's innermost dimension by an
@@ -1915,8 +1917,9 @@ def TTL_MatmulOp : TTL_ComputePrimitiveOp<"matmul", "Matmul", [Pure,
     `[lhs.tile.height, rhs.tile.width]`. With `transpose_rhs`, the rhs tile
     width is contracted and the result tile width is the rhs tile height.
     The supported element data type combinations are equal lhs, rhs, and result
-    types, or BF16 lhs and result types with a BFP4_B or BFP8_B rhs. The
-    mixed-format form does not support rhs transposition.
+    types; BF16 lhs and rhs with a BF16 or FP32 result; or BF16 lhs and result
+    types with a BFP4_B or BFP8_B rhs. The block-float form does not support rhs
+    transposition.
   }];
   let arguments = (ins AnyRankedTensor:$lhs, AnyRankedTensor:$rhs,
                        UnitAttr:$transpose_rhs);
@@ -1949,9 +1952,10 @@ def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block", "Matmul",
 
     The lhs, rhs, and result tile types may have different dimensions. Their
     physical dimensions follow the same contraction relation as `ttl.matmul`.
-    The supported mixed-format form is BF16 lhs by BFP4_B or BFP8_B rhs with
-    BF16 output and no rhs transpose. Destination accumulation precision
-    remains a compute-kernel configuration property.
+    BF16 lhs and rhs support a BF16 or FP32 result. The supported block-float
+    form is BF16 lhs by BFP4_B or BFP8_B rhs with BF16 output and no rhs
+    transpose. Destination accumulation precision remains a compute-kernel
+    configuration property.
   }];
   let arguments = (ins TTL_TileOrTensor:$lhs, TTL_TileOrTensor:$rhs,
                        Optional<TTL_TileOrTensor>:$accumulator,

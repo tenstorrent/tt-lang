@@ -24,6 +24,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -842,7 +843,16 @@ inline bool isConsumedByTileTypecast(Value value) {
   return false;
 }
 
-/// Compute DST capacity for a compute op. Fails for mixed f32/non-f32 args.
+/// Matmul source operands unpack independently of the DST result format.
+inline bool isExclusivelyMatmulSource(Value value) {
+  return !value.use_empty() &&
+         llvm::all_of(value.getUses(), [](OpOperand &use) {
+           return isa<TileMatmulBlockOp>(use.getOwner()) &&
+                  use.getOperandNumber() < 2;
+         });
+}
+
+/// Compute DST capacity, validating mixed-format input consumers.
 inline FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
   bool fullSyncEn = getKernelBoolAttr(computeOp, kDstFullSyncEnAttrName);
   bool fp32DestAccEn = getKernelBoolAttr(computeOp, kFp32DestAccEnAttrName);
@@ -873,7 +883,7 @@ inline FailureOr<std::uint32_t> computeDSTCapacity(ComputeOp computeOp) {
       if (!getTileElementType(arg.getType())) {
         continue;
       }
-      if (!isConsumedByTileTypecast(arg)) {
+      if (!isConsumedByTileTypecast(arg) && !isExclusivelyMatmulSource(arg)) {
         return computeOp.emitOpError(
             "mixed f32 and non-f32 tile arguments; DST capacity uses f32 "
             "limits (4 tiles) which may produce incorrect results");
@@ -938,6 +948,7 @@ FailureOr<SmallVector<int64_t>> getConstantDstWriteIndices(Operation *op);
 struct ReadyReceiveSelection {
   Operation *waitAny = nullptr;
   int64_t candidateIndex = 0;
+  std::size_t candidateCount = 0;
   bool selectedWhenTrue = true;
 };
 

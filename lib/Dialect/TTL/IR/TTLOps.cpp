@@ -964,21 +964,37 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
            << "non-pipe copy requires a direction-typed transfer handle result";
   }
 
-  if (srcIsCb == dstIsCb) {
+  const bool srcIsDFBEndpoint = srcIsCb || static_cast<bool>(srcAttachedDFB);
+  const bool dstIsDFBEndpoint = dstIsCb || static_cast<bool>(dstAttachedDFB);
+  if (srcIsDFBEndpoint == dstIsDFBEndpoint) {
     return emitOpError()
-           << "expects exactly one operand to be !ttl.cb; got src=" << srcTy
+           << "expects exactly one dataflow-buffer endpoint; got src=" << srcTy
            << " dst=" << dstTy;
   }
 
-  // Extract the transfer tensor type from the non-CB operand. For slices, this
-  // is the slice result type because ttl.copy moves one DFB block at a time.
-  Type nonCbTy = srcIsCb ? dstTy : srcTy;
-  RankedTensorType transferTensorTy = mlir::dyn_cast<RankedTensorType>(nonCbTy);
+  Value dfbEndpoint = srcIsDFBEndpoint ? getSrc() : getDst();
+  Value dfb = srcIsDFBEndpoint ? (srcIsCb ? getSrc() : srcAttachedDFB)
+                               : (dstIsCb ? getDst() : dstAttachedDFB);
+  Value tensorEndpoint = srcIsDFBEndpoint ? getDst() : getSrc();
+  RankedTensorType transferTensorTy =
+      mlir::dyn_cast<RankedTensorType>(tensorEndpoint.getType());
   if (!transferTensorTy) {
     return emitOpError()
-           << "expects the non-CB operand to be a ranked tensor or "
+           << "expects the non-DFB operand to be a ranked tensor or "
               "tensor_slice result; got "
-           << nonCbTy;
+           << tensorEndpoint.getType();
+  }
+
+  if (!mlir::isa<CircularBufferType>(dfbEndpoint.getType())) {
+    Operation *acquire = findCBAcquireOp(dfbEndpoint, getOperation());
+    if (srcIsDFBEndpoint && !mlir::isa_and_nonnull<CBWaitOp>(acquire)) {
+      return emitOpError(
+          "tensor copy source DFB view must come from ttl.cb_wait");
+    }
+    if (dstIsDFBEndpoint && !mlir::isa_and_nonnull<CBReserveOp>(acquire)) {
+      return emitOpError(
+          "tensor copy destination DFB view must come from ttl.cb_reserve");
+    }
   }
 
   // TT-Lang programs require a TTL layout encoding on tensors so lowering can
@@ -999,9 +1015,23 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
            << layoutTensorTy;
   }
 
-  auto cbTy = mlir::cast<CircularBufferType>(srcIsCb ? srcTy : dstTy);
+  auto cbTy = mlir::cast<CircularBufferType>(dfb.getType());
   auto cbShape = cbTy.getShape();
   auto tensorShape = transferTensorTy.getShape();
+
+  if (!mlir::isa<CircularBufferType>(dfbEndpoint.getType())) {
+    auto viewTy = mlir::dyn_cast<RankedTensorType>(dfbEndpoint.getType());
+    if (!viewTy) {
+      return emitOpError() << "DFB view must be a ranked tensor; got "
+                           << dfbEndpoint.getType();
+    }
+    if (viewTy.getShape() != tensorShape) {
+      return emitOpError() << "tensor shape " << tensorShape
+                           << " must match DFB view shape "
+                           << viewTy.getShape();
+    }
+    cbShape = viewTy.getShape();
+  }
 
   if (cbShape.size() != tensorShape.size()) {
     return emitOpError() << "tensor rank (" << tensorShape.size()

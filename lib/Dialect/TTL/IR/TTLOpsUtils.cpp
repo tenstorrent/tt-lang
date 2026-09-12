@@ -46,7 +46,7 @@ std::optional<ReadyReceiveSelection> getReadyReceiveSelection(Value predicate) {
   if (static_cast<std::size_t>(*selectedIndex) >= candidateCount) {
     return std::nullopt;
   }
-  return ReadyReceiveSelection{waitAny, *selectedIndex,
+  return ReadyReceiveSelection{waitAny, *selectedIndex, candidateCount,
                                compare.getPredicate() ==
                                    arith::CmpIPredicate::eq};
 }
@@ -60,13 +60,17 @@ bool isInReadyReceiveSelectionRegion(
     if (ifOp) {
       std::optional<ReadyReceiveSelection> selection =
           getReadyReceiveSelection(ifOp.getCondition());
-      bool inSelectedRegion =
-          selection && ((selection->selectedWhenTrue &&
-                         block->getParent() == &ifOp.getThenRegion()) ||
-                        (!selection->selectedWhenTrue &&
-                         block->getParent() == &ifOp.getElseRegion()));
-      if (inSelectedRegion && selection->candidateIndex == candidateIndex &&
-          selection->waitAny == waitAny &&
+      bool inThenRegion = block->getParent() == &ifOp.getThenRegion();
+      bool selectsComparedCandidate =
+          selection && inThenRegion == selection->selectedWhenTrue;
+      bool selectsComplementCandidate =
+          selection && selection->candidateCount == 2 &&
+          inThenRegion != selection->selectedWhenTrue;
+      bool selectsCandidate = (selectsComparedCandidate &&
+                               selection->candidateIndex == candidateIndex) ||
+                              (selectsComplementCandidate &&
+                               selection->candidateIndex != candidateIndex);
+      if (selectsCandidate && selection->waitAny == waitAny &&
           isOrderedBefore(waitAny, ifOp.getOperation())) {
         return true;
       }
@@ -316,12 +320,17 @@ LogicalResult verifyMatmulTileTypes(ttcore::TileType lhsType,
   ttcore::DataType resultDataType = resultType.getDataType();
   bool hasMatchingDataTypes =
       lhsDataType == rhsDataType && lhsDataType == resultDataType;
+  bool isBFloat16WithFloat32Result =
+      lhsDataType == ttcore::DataType::BFloat16 &&
+      rhsDataType == ttcore::DataType::BFloat16 &&
+      resultDataType == ttcore::DataType::Float32;
   bool isBFloat16ByBFP = !transposeRhs &&
                          lhsDataType == ttcore::DataType::BFloat16 &&
                          (rhsDataType == ttcore::DataType::BFP_BFloat4 ||
                           rhsDataType == ttcore::DataType::BFP_BFloat8) &&
                          resultDataType == ttcore::DataType::BFloat16;
-  if (!hasMatchingDataTypes && !isBFloat16ByBFP) {
+  if (!hasMatchingDataTypes && !isBFloat16WithFloat32Result &&
+      !isBFloat16ByBFP) {
     diagnostic << "unsupported matmul element data type combination: lhs has "
                << lhsType << ", rhs has " << rhsType << ", and result has "
                << resultType;

@@ -22,7 +22,7 @@ from ttl import operators
 
 # Operations the specification places under ttl.block and the compiler
 # implements.
-IMPLEMENTED = ["broadcast", "fill", "transpose"]
+IMPLEMENTED = ["broadcast", "fill", "subview", "transpose"]
 
 # Operations the specification places under ttl.block that the compiler does
 # not implement. They are absent rather than bound to a stub, so that a kernel

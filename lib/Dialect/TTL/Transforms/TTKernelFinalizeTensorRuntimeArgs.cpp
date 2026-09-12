@@ -187,6 +187,12 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
     return failure();
   }
   int64_t tensorCount = globalTensorIndices.size();
+  auto fabricBaseIndex = function->getAttrOfType<IntegerAttr>(
+      kFabricRuntimeArgBaseCommonIndexAttrName);
+  if (fabricBaseIndex && fabricBaseIndex.getInt() < tensorCount) {
+    return function.emitOpError(
+        "fabric runtime argument base must follow tensor arguments");
+  }
   BitVector liveTensorSlots(tensorCount);
   SmallVector<CommonArgIndexUse> commonArgUses;
   SmallVector<TensorAccessorArgsIndexUse> tensorAccessorArgsUses;
@@ -250,6 +256,12 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
   }
 
   int64_t removedCount = tensorCount - retainedGlobalIndices.size();
+  if (fabricBaseIndex) {
+    function->setAttr(
+        kFabricRuntimeArgBaseCommonIndexAttrName,
+        builder.getIntegerAttr(fabricBaseIndex.getType(),
+                               fabricBaseIndex.getInt() - removedCount));
+  }
   llvm::DenseMap<Operation *, Value> remappedTables;
   for (CommonArgIndexUse &use : commonArgUses) {
     if (use.table) {

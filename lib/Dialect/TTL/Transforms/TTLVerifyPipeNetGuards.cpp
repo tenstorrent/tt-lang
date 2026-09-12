@@ -932,6 +932,21 @@ bool haveSamePipeCallSites(ArrayRef<PipeCallSite> lhs,
          });
 }
 
+/// A use of a captured post may add nested record selections, but every
+/// selection active at the post must identify the same dynamic occurrence.
+bool pipeRecordSelectionsArePrefix(ArrayRef<ActivePipeNetRecord> postRecords,
+                                   ArrayRef<ActivePipeNetRecord> useRecords) {
+  return postRecords.size() <= useRecords.size() &&
+         llvm::all_of(
+             llvm::zip(postRecords, useRecords.take_front(postRecords.size())),
+             [](auto records) {
+               return std::get<0>(records).loopOp ==
+                          std::get<1>(records).loopOp &&
+                      std::get<0>(records).recordIndex ==
+                          std::get<1>(records).recordIndex;
+             });
+}
+
 /// Return the receiver-post node whose token is observed by `waitNode`.
 std::optional<PipeScheduleNodeId>
 findReceivePostNodeForWait(ArrayRef<PipeScheduleNode> nodes,
@@ -946,7 +961,9 @@ findReceivePostNodeForWait(ArrayRef<PipeScheduleNode> nodes,
         return postNode.op == waitNode.receivePost &&
                postNode.location == waitNode.location &&
                postNode.kernelFunction == waitNode.kernelFunction &&
-               haveSamePipeCallSites(postNode.callSites, waitNode.callSites);
+               haveSamePipeCallSites(postNode.callSites, waitNode.callSites) &&
+               pipeRecordSelectionsArePrefix(postNode.activeRecords,
+                                             waitNode.activeRecords);
       });
   return postIt == candidatePostNodes.end()
              ? std::nullopt
@@ -966,6 +983,8 @@ std::optional<PipeScheduleNodeId> findReceivePostNodeForWaitAnyAlternative(
                postNode.location == waitNode.location &&
                postNode.kernelFunction == waitNode.kernelFunction &&
                haveSamePipeCallSites(postNode.callSites, waitNode.callSites) &&
+               pipeRecordSelectionsArePrefix(postNode.activeRecords,
+                                             waitNode.activeRecords) &&
                postNode.pipeType == alternative.pipeType;
       });
   return postIt == candidatePostNodes.end()
@@ -1583,6 +1602,8 @@ private:
     const PipeScheduleNode &completion = nodes[completionNodeId];
     return post.kernelFunction == completion.kernelFunction &&
            haveSamePipeCallSites(post.callSites, completion.callSites) &&
+           pipeRecordSelectionsArePrefix(post.activeRecords,
+                                         completion.activeRecords) &&
            post.op->getBlock() == completion.op->getBlock() &&
            post.op->isBeforeInBlock(completion.op) &&
            proveEqualPipeScheduleNodeCounts(post, completion, state);

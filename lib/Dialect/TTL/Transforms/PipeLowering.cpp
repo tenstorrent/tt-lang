@@ -511,9 +511,7 @@ static void coalesceUnserializedFabricRuntimeIntervals(FabricRoutePlan &plan) {
   SmallVector<bool> removed(plan.runtimeIntervals.size());
   for (const auto &entry : candidatesByBlock) {
     ArrayRef<FabricRuntimeCoalescingCandidate> candidates = entry.second;
-    if (candidates.size() > 1) {
-      coalesceFabricRuntimeCandidates(candidates, plan, removed);
-    }
+    coalesceFabricRuntimeCandidates(candidates, plan, removed);
   }
 
   SmallVector<FabricRuntimeIntervalPlan> coalescedIntervals;

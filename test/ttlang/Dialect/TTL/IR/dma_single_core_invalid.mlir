@@ -8,7 +8,7 @@
 
 module {
   func.func @tensor_to_tensor_invalid(%arg0: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>, %arg1: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    // expected-error @below {{expects exactly one operand to be !ttl.cb}}
+    // expected-error @below {{expects exactly one dataflow-buffer endpoint}}
     %xf = ttl.copy %arg0, %arg1 : (tensor<1x1x!ttcore.tile<32x32, f32>, #layout>, tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) -> !ttl.transfer_handle<read>
     ttl.wait %xf : !ttl.transfer_handle<read>
     func.return
@@ -22,7 +22,7 @@ module {
   func.func @cb_to_cb_invalid() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %cb0 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], f32, 2>
     %cb1 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], f32, 2>
-    // expected-error @below {{expects exactly one operand to be !ttl.cb}}
+    // expected-error @below {{expects exactly one dataflow-buffer endpoint}}
     %xf = ttl.copy %cb0, %cb1 : (!ttl.cb<[1, 1], f32, 2>, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %xf : !ttl.transfer_handle<read>
     func.return
@@ -45,12 +45,12 @@ module {
 
 // -----
 
-// Non-CB operand must be a ranked tensor.
+// Non-DFB operand must be a ranked tensor.
 module {
   func.func @non_tensor_operand_invalid() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], f32, 2>
     %int_val = arith.constant 0 : i32
-    // expected-error @below {{expects the non-CB operand to be a ranked tensor}}
+    // expected-error @below {{expects the non-DFB operand to be a ranked tensor}}
     %xf = ttl.copy %int_val, %cb : (i32, !ttl.cb<[1, 1], f32, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %xf : !ttl.transfer_handle<read>
     func.return
