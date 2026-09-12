@@ -1473,14 +1473,14 @@ def TTKernelCleanup : Pass<"ttkernel-cleanup", "::mlir::ModuleOp"> {
 
 def TTKernelSpecializeCores
     : Pass<"ttkernel-specialize-cores", "::mlir::ModuleOp"> {
-  let summary = "Clone kernels per core for coordinate-dependent control or table indices";
+  let summary = "Specialize kernels whose behavior depends on logical core coordinates";
   let description = [{
     Specializes TTKernel functions using the `ttl.launch_grid` module
     attribute. Missing or malformed launch extents are errors.
 
-    A function is specialized when a structured region branch selector,
-    repetition condition, loop bound, or immutable constant-table index depends
-    on `ttkernel.my_logical_x_` or `ttkernel.my_logical_y_`. This includes
+    A function is specialized when a branch condition, loop condition or
+    bound, or lookup in a compile-time constant table depends on
+    `ttkernel.my_logical_x_` or `ttkernel.my_logical_y_`. This includes
     `scf.if`, `scf.index_switch`, `scf.for`, and `scf.while`. The pass creates
     one clone per launch coordinate, replaces coordinate reads with constants,
     and records the clone's coordinate in `ttl.core_coord`. Canonicalization
