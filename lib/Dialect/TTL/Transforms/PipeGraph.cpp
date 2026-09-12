@@ -11,6 +11,7 @@
 #include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Diagnostics.h"
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
@@ -229,9 +230,12 @@ recordReceiverPost(PipeTransferPostOp postOp, PipeGraphAnalysisState &state,
 
   state.transferProtocolOps.push_back(postOp.getOperation());
   state.receiverPosts.push_back(postOp);
+  Value receiverDFB = getAttachedCB(postOp.getDst());
+  if (!receiverDFB && postOp.getDst().getDefiningOp<TensorSliceOp>()) {
+    return success();
+  }
   FailureOr<PipeReceiverDFBStreamKey> maybeStreamKey = getReceiverDFBStreamKey(
-      getAttachedCB(postOp.getDst()), getReceiverDevice(createOp),
-      *state.dfbLogicalIdentities);
+      receiverDFB, getReceiverDevice(createOp), *state.dfbLogicalIdentities);
   if (failed(maybeStreamKey)) {
     return postOp.emitError(
         "could not resolve receiver DFB logical and physical identity");
@@ -384,7 +388,8 @@ findPostReceiverEndpoint(PipeTransferPostOp postOp,
       const PipeReceiverEndpoint &endpoint =
           pipeGraph.getPipeReceiverEndpoint(endpointId);
       if (endpoint.postOp == postOp.getOperation() &&
-          endpoint.receiverDFB == receiverDFB) {
+          endpoint.hasDFBDestination() &&
+          endpoint.getDFBDestination().receiverDFB == receiverDFB) {
         return &endpoint;
       }
     }
@@ -413,12 +418,16 @@ getPostsOwnedByReserve(CBReserveOp reserveOp,
 
 static std::optional<int64_t> getReceiverSlotSpanBlocksForPost(
     PipeTransferPostOp postOp,
-    const llvm::MapVector<Operation *, ReceiverDFBInfo> &receiverDFBByPost) {
-  auto receiverIt = receiverDFBByPost.find(postOp.getOperation());
-  if (receiverIt == receiverDFBByPost.end()) {
+    const llvm::MapVector<Operation *, PipeReceiverDestinationInfo>
+        &receiverDestinationByPost) {
+  auto receiverIt = receiverDestinationByPost.find(postOp.getOperation());
+  if (receiverIt == receiverDestinationByPost.end()) {
     return std::nullopt;
   }
-  return receiverIt->second.receiverSlotSpanBlocks;
+  const auto *receiverDFB = std::get_if<ReceiverDFBInfo>(&receiverIt->second);
+  return receiverDFB
+             ? std::optional<int64_t>(receiverDFB->receiverSlotSpanBlocks)
+             : std::nullopt;
 }
 
 static void
@@ -646,8 +655,8 @@ isBeforeInReceiverExecution(Operation *before, Operation *after,
   return false;
 }
 
-static bool hasMatchingReceiveWaitBeforePush(
-    PipeTransferPostOp postOp, CBPushOp pushOp,
+static bool hasMatchingReceiveWaitBeforeUse(
+    PipeTransferPostOp postOp, Operation *consumer,
     const llvm::DenseMap<Operation *, SmallVector<PipeTransferWaitOp>>
         &waitsByPost,
     const llvm::DenseMap<Operation *,
@@ -660,7 +669,7 @@ static bool hasMatchingReceiveWaitBeforePush(
       llvm::any_of(waitIt->second, [&](PipeTransferWaitOp waitOp) {
         return executionGuaranteesLaterExecution(postOp, waitOp, location,
                                                  analysisState) &&
-               isBeforeInReceiverExecution(waitOp, pushOp, location,
+               isBeforeInReceiverExecution(waitOp, consumer, location,
                                            analysisState);
       })) {
     return true;
@@ -670,8 +679,9 @@ static bool hasMatchingReceiveWaitBeforePush(
   if (waitAnyIt == waitAnysByPost.end()) {
     return false;
   }
-  for (PipeGraphAnalysisState::ReceiveWaitAnyUse use : waitAnyIt->second) {
-    if (!isBeforeInReceiverControlContext(postOp, use.wait, location,
+  for (PipeGraphAnalysisState::ReceiveWaitAnyUse waitAnyUse :
+       waitAnyIt->second) {
+    if (!isBeforeInReceiverControlContext(postOp, waitAnyUse.wait, location,
                                           analysisState)) {
       continue;
     }
@@ -680,12 +690,26 @@ static bool hasMatchingReceiveWaitBeforePush(
                                               analysisState);
     };
     if (isInReadyReceiveSelectionRegion(
-            pushOp, use.wait, static_cast<int64_t>(use.candidateIndex),
-            isOrderedBefore)) {
+            consumer, waitAnyUse.wait,
+            static_cast<int64_t>(waitAnyUse.candidateIndex), isOrderedBefore)) {
       return true;
     }
   }
   return false;
+}
+
+static bool hasMatchingReceiveWaitBeforePush(
+    PipeTransferPostOp postOp, CBPushOp pushOp,
+    const llvm::DenseMap<Operation *, SmallVector<PipeTransferWaitOp>>
+        &waitsByPost,
+    const llvm::DenseMap<Operation *,
+                         SmallVector<PipeGraphAnalysisState::ReceiveWaitAnyUse>>
+        &waitAnysByPost,
+    const LaunchExecutionLocation &location,
+    const PipeGraphAnalysisState &analysisState) {
+  return hasMatchingReceiveWaitBeforeUse(postOp, pushOp.getOperation(),
+                                         waitsByPost, waitAnysByPost, location,
+                                         analysisState);
 }
 
 /// Group endpoints by logical DFB lifecycle. Physical aliases from other
@@ -694,7 +718,10 @@ static ReceiverEndpointsByDFB
 collectReceiverEndpointsByDFB(ArrayRef<PipeReceiverEndpoint> endpoints) {
   ReceiverEndpointsByDFB endpointsByReceiverDFB;
   for (const PipeReceiverEndpoint &endpoint : endpoints) {
-    endpointsByReceiverDFB[endpoint.receiverDFB].push_back(endpoint.id);
+    if (endpoint.hasDFBDestination()) {
+      endpointsByReceiverDFB[endpoint.getDFBDestination().receiverDFB]
+          .push_back(endpoint.id);
+    }
   }
   return endpointsByReceiverDFB;
 }
@@ -887,7 +914,9 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
     bool everyReservationSpansFullBuffer =
         llvm::all_of(endpoints, [&](PipeReceiverEndpointId endpointId) {
           const ReceiverDFBInfo &receiverInfo =
-              getPipeReceiverEndpoint(endpointId).receiverDFBInfo;
+              getPipeReceiverEndpoint(endpointId)
+                  .getDFBDestination()
+                  .receiverDFBInfo;
           return receiverInfo.receiverSlotSpanBlocks == receiverInfo.blockCount;
         });
     if (everyReservationSpansFullBuffer) {
@@ -904,13 +933,13 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
         sequence.recurrence = ReceiverAddressRecurrence{
             /*initialSlot=*/0,
             /*repeatStride=*/0,
-            endpoint.receiverDFBInfo.blockCount,
+            endpoint.getDFBDestination().receiverDFBInfo.blockCount,
         };
         if (failed(verifyReceiverReservationSequence(
-                sequence, endpoint.receiverDFBInfo))) {
+                sequence, endpoint.getDFBDestination().receiverDFBInfo))) {
           return failure();
         }
-        endpoint.addressSequence = std::move(sequence);
+        endpoint.getDFBDestination().addressSequence = std::move(sequence);
       }
       continue;
     }
@@ -947,6 +976,13 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
   auto processPost =
       [&](PipeTransferPostOp postOp, LaunchNodeCoord coord,
           ArrayRef<ActivePipeNetRecord> activeRecords) -> LogicalResult {
+    auto destinationIt = receiverDestinationByPost.find(postOp.getOperation());
+    assert(destinationIt != receiverDestinationByPost.end() &&
+           "receiver post must have destination information");
+    if (std::holds_alternative<ReceiverTensorRegionInfo>(
+            destinationIt->second)) {
+      return success();
+    }
     LaunchNodeDomain postDomain =
         lookupOperationLaunchDomain(postOp.getOperation(), analysisState);
     if (postDomain.known && !knownLaunchNodeDomainContains(postDomain, coord)) {
@@ -1024,8 +1060,13 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
              "pipe transfer node is missing a receiver endpoint");
       const PipeReceiverEndpoint &endpoint =
           getPipeReceiverEndpoint(*endpointIt);
-      const ReceiverDFBInfo &receiverInfo = endpoint.receiverDFBInfo;
-      const PipeReceiverDFBKey &receiverDFB = endpoint.receiverDFB;
+      if (!endpoint.hasDFBDestination()) {
+        continue;
+      }
+      const PipeReceiverDFBDestination &dfbDestination =
+          endpoint.getDFBDestination();
+      const ReceiverDFBInfo &receiverInfo = dfbDestination.receiverDFBInfo;
+      const PipeReceiverDFBKey &receiverDFB = dfbDestination.receiverDFB;
       if (invariantAddressReceiverDFBs.contains(receiverDFB)) {
         continue;
       }
@@ -1100,8 +1141,9 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
   }
 
   for (PipeReceiverEndpoint &endpoint : pipeReceiverEndpoints) {
-    if (endpoint.addressSequence.getKind() !=
-        ReceiverAddressSequenceProofKind::FullyDynamic) {
+    if (!endpoint.hasDFBDestination() ||
+        endpoint.getDFBDestination().addressSequence.getKind() !=
+            ReceiverAddressSequenceProofKind::FullyDynamic) {
       continue;
     }
     auto assignmentIt = assignmentByEndpoint.find(endpoint.id);
@@ -1109,12 +1151,13 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
         !assignmentIt->second.valid || !assignmentIt->second.initialSlot) {
       continue;
     }
-    auto producerStateIt =
-        producerStateByReceiverDFB.find(endpoint.receiverDFB);
+    auto producerStateIt = producerStateByReceiverDFB.find(
+        endpoint.getDFBDestination().receiverDFB);
     if (producerStateIt == producerStateByReceiverDFB.end()) {
       continue;
     }
-    const ReceiverDFBInfo &receiverInfo = endpoint.receiverDFBInfo;
+    const ReceiverDFBInfo &receiverInfo =
+        endpoint.getDFBDestination().receiverDFBInfo;
     ReceiverAddressRecurrence recurrence{
         *assignmentIt->second.initialSlot,
         producerStateIt->second.nextSlot,
@@ -1126,7 +1169,7 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
     if (failed(verifyReceiverReservationSequence(sequence, receiverInfo))) {
       return failure();
     }
-    endpoint.addressSequence = std::move(sequence);
+    endpoint.getDFBDestination().addressSequence = std::move(sequence);
   }
   return success();
 }
@@ -1147,19 +1190,25 @@ LogicalResult PipeGraph::verifyCollectiveReceiverAddresses() const {
            getPipeReceiverEndpoints(transferNode.id)) {
         const PipeReceiverEndpoint &endpoint =
             getPipeReceiverEndpoint(endpointId);
+        assert(endpoint.hasDFBDestination() &&
+               "collective tensor destinations are rejected during graph "
+               "construction");
+        const PipeReceiverDFBDestination &dfbDestination =
+            endpoint.getDFBDestination();
         const PipeReceiverDFBNode &receiverDFBNode =
-            getReceiverDFBNode(endpoint.receiverDFBNode);
+            getReceiverDFBNode(dfbDestination.receiverDFBNode);
         if (!receiverDFBNode.hasProvenComputedAddressProducerPhase) {
-          diag.attachNote(endpoint.receiverDFBInfo.loc)
+          diag.attachNote(dfbDestination.receiverDFBInfo.loc)
               << "receiver core_x=" << endpoint.receiver.x
               << ", core_y=" << endpoint.receiver.y << " uses "
-              << getReceiverDFBIdentityString(endpoint.receiverDFB) << ": "
+              << getReceiverDFBIdentityString(dfbDestination.receiverDFB)
+              << ": "
               << receiverDFBNode.computedAddressProducerPhaseFailureReason;
           break;
         }
-        if (endpoint.addressSequence.getKind() ==
+        if (dfbDestination.addressSequence.getKind() ==
             ReceiverAddressSequenceProofKind::FullyDynamic) {
-          diag.attachNote(endpoint.receiverDFBInfo.loc)
+          diag.attachNote(dfbDestination.receiverDFBInfo.loc)
               << "receiver core_x=" << endpoint.receiver.x
               << ", core_y=" << endpoint.receiver.y
               << " has no proven receiver address sequence";
@@ -1172,6 +1221,307 @@ LogicalResult PipeGraph::verifyCollectiveReceiverAddresses() const {
   return success();
 }
 
+struct TensorRegionBounds {
+  int64_t globalTensorIndex = 0;
+  SmallVector<int64_t> tensorGridShape;
+  SmallVector<int64_t> startIndices;
+  SmallVector<int64_t> extents;
+  Location loc;
+};
+
+static TensorRegionBounds
+getTensorRegionBounds(const ReceiverTensorRegionInfo &region) {
+  int64_t rankDifference =
+      region.tensorGridShape.size() - region.sliceType.getRank();
+  SmallVector<int64_t> extents(region.tensorGridShape.size(), 1);
+  for (int64_t dimension = rankDifference;
+       dimension < static_cast<int64_t>(region.tensorGridShape.size());
+       ++dimension) {
+    extents[dimension] =
+        region.sliceType.getDimSize(dimension - rankDifference);
+  }
+  return TensorRegionBounds{region.globalTensorIndex, region.tensorGridShape,
+                            region.startIndices, std::move(extents),
+                            region.loc};
+}
+
+static FailureOr<TensorRegionBounds>
+getTensorRegionBounds(TensorSliceOp slice, Operation *diagnosticOwner) {
+  auto tensorArgument = dyn_cast<BlockArgument>(slice.getTensor());
+  func::FuncOp function =
+      tensorArgument
+          ? dyn_cast<func::FuncOp>(tensorArgument.getOwner()->getParentOp())
+          : func::FuncOp();
+  auto crtaIndices =
+      function ? function->getAttrOfType<ArrayAttr>(kCRTAIndicesAttrName)
+               : ArrayAttr();
+  if (!tensorArgument || !function || !crtaIndices ||
+      tensorArgument.getOwner() != &function.getBody().front() ||
+      tensorArgument.getArgNumber() >= crtaIndices.size()) {
+    diagnosticOwner->emitOpError(
+        "cannot resolve tensor identity while verifying pipe destination "
+        "ownership");
+    return failure();
+  }
+
+  auto tensorType = cast<RankedTensorType>(slice.getTensor().getType());
+  auto sliceType = cast<RankedTensorType>(slice.getType());
+  SmallVector<int64_t> startIndices;
+  startIndices.reserve(slice.getIndices().size());
+  for (Value index : slice.getIndices()) {
+    std::optional<int64_t> staticIndex = getConstantIntValue(index);
+    if (!staticIndex) {
+      diagnosticOwner->emitOpError(
+          "cannot prove ownership of a dynamic tensor slice that shares a "
+          "tensor with a pipe receive destination");
+      return failure();
+    }
+    startIndices.push_back(*staticIndex);
+  }
+  int64_t rankDifference = tensorType.getRank() - sliceType.getRank();
+  SmallVector<int64_t> extents(tensorType.getRank(), 1);
+  for (int64_t dimension = rankDifference; dimension < tensorType.getRank();
+       ++dimension) {
+    extents[dimension] = sliceType.getDimSize(dimension - rankDifference);
+  }
+  return TensorRegionBounds{
+      cast<IntegerAttr>(crtaIndices[tensorArgument.getArgNumber()]).getInt(),
+      SmallVector<int64_t>(tensorType.getShape()), std::move(startIndices),
+      std::move(extents), diagnosticOwner->getLoc()};
+}
+
+static bool tensorRegionsOverlap(const TensorRegionBounds &lhs,
+                                 const TensorRegionBounds &rhs) {
+  if (lhs.tensorGridShape != rhs.tensorGridShape ||
+      lhs.startIndices.size() != rhs.startIndices.size() ||
+      lhs.extents.size() != rhs.extents.size()) {
+    return true;
+  }
+  for (int64_t dimension = 0;
+       dimension < static_cast<int64_t>(lhs.tensorGridShape.size());
+       ++dimension) {
+    int64_t lhsEnd = lhs.startIndices[dimension] + lhs.extents[dimension];
+    int64_t rhsEnd = rhs.startIndices[dimension] + rhs.extents[dimension];
+    if (lhsEnd <= rhs.startIndices[dimension] ||
+        rhsEnd <= lhs.startIndices[dimension]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+LogicalResult PipeGraph::verifyTensorRegionDestinations(
+    ModuleOp mod, const PipeGraphAnalysisState &analysisState) const {
+  SmallVector<const PipeReceiverEndpoint *> tensorEndpoints;
+  for (const PipeReceiverEndpoint &endpoint : pipeReceiverEndpoints) {
+    if (!endpoint.hasTensorRegionDestination()) {
+      continue;
+    }
+    if (endpoint.executionCount != 1) {
+      emitError(endpoint.getTensorRegionDestination().loc)
+          << "pipe receive tensor_slice destination currently requires "
+             "exactly one statically proven transfer occurrence";
+      return failure();
+    }
+    tensorEndpoints.push_back(&endpoint);
+  }
+  if (tensorEndpoints.empty()) {
+    return success();
+  }
+
+  auto receiverDevice = [&](const PipeReceiverEndpoint &endpoint) {
+    DeviceTransferAttr transfer =
+        getPipeTransferNode(endpoint.transferNode).deviceTransfer;
+    return transfer ? transfer.getEdge().getDestination() : DeviceRefAttr();
+  };
+  for (std::size_t lhsIndex = 0; lhsIndex < tensorEndpoints.size();
+       ++lhsIndex) {
+    const PipeReceiverEndpoint &lhsEndpoint = *tensorEndpoints[lhsIndex];
+    TensorRegionBounds lhs =
+        getTensorRegionBounds(lhsEndpoint.getTensorRegionDestination());
+    for (std::size_t rhsIndex = lhsIndex + 1; rhsIndex < tensorEndpoints.size();
+         ++rhsIndex) {
+      const PipeReceiverEndpoint &rhsEndpoint = *tensorEndpoints[rhsIndex];
+      TensorRegionBounds rhs =
+          getTensorRegionBounds(rhsEndpoint.getTensorRegionDestination());
+      DeviceRefAttr lhsDevice = receiverDevice(lhsEndpoint);
+      DeviceRefAttr rhsDevice = receiverDevice(rhsEndpoint);
+      bool provenDifferentDevices =
+          lhsDevice && rhsDevice && lhsDevice != rhsDevice;
+      if (!provenDifferentDevices &&
+          lhs.globalTensorIndex == rhs.globalTensorIndex &&
+          tensorRegionsOverlap(lhs, rhs)) {
+        auto diagnostic = emitError(rhs.loc)
+                          << "pipe receive tensor_slice overlaps another pipe "
+                             "destination for tensor "
+                          << rhs.globalTensorIndex;
+        diagnostic.attachNote(lhs.loc) << "overlapping destination is here";
+        return failure();
+      }
+    }
+  }
+
+  auto enclosingPipeDevice = [](Operation *operation) {
+    for (Operation *ancestor = operation->getParentOp(); ancestor;
+         ancestor = ancestor->getParentOp()) {
+      Value pipe;
+      PipeRole role;
+      if (auto ifDestination = dyn_cast<IfDstOp>(ancestor)) {
+        pipe = ifDestination.getPipe();
+        role = PipeRole::Destination;
+      } else if (auto ifSource = dyn_cast<IfSrcOp>(ancestor)) {
+        pipe = ifSource.getPipe();
+        role = PipeRole::Source;
+      } else {
+        continue;
+      }
+      auto createPipe = pipe.getDefiningOp<CreatePipeOp>();
+      if (!createPipe || !createPipe.getDeviceTransferAttr()) {
+        return DeviceRefAttr();
+      }
+      TransferEdgeAttr edge = createPipe.getDeviceTransferAttr().getEdge();
+      return role == PipeRole::Destination ? edge.getDestination()
+                                           : edge.getSource();
+    }
+    return DeviceRefAttr();
+  };
+  auto mayExecuteOnSameDevice = [&](Operation *operation,
+                                    const PipeReceiverEndpoint &endpoint) {
+    DeviceRefAttr operationDevice = enclosingPipeDevice(operation);
+    DeviceRefAttr endpointDevice = receiverDevice(endpoint);
+    return !operationDevice || !endpointDevice ||
+           operationDevice == endpointDevice;
+  };
+
+  for (func::FuncOp function : mod.getOps<func::FuncOp>()) {
+    auto crtaIndices = function->getAttrOfType<ArrayAttr>(kCRTAIndicesAttrName);
+    if (!crtaIndices || crtaIndices.size() != function.getNumArguments()) {
+      continue;
+    }
+    for (auto indexedArgument : llvm::enumerate(function.getArguments())) {
+      auto globalTensorIndex =
+          dyn_cast<IntegerAttr>(crtaIndices[indexedArgument.index()]);
+      if (!globalTensorIndex) {
+        continue;
+      }
+      SmallVector<const PipeReceiverEndpoint *> aliasingEndpoints =
+          llvm::filter_to_vector(
+              tensorEndpoints, [&](const PipeReceiverEndpoint *endpoint) {
+                return endpoint->getTensorRegionDestination()
+                           .globalTensorIndex == globalTensorIndex.getInt();
+              });
+      if (aliasingEndpoints.empty()) {
+        continue;
+      }
+      for (Operation *tensorUser : indexedArgument.value().getUsers()) {
+        auto slice = dyn_cast<TensorSliceOp>(tensorUser);
+        if (!slice) {
+          auto endpoint = llvm::find_if(
+              aliasingEndpoints, [&](const PipeReceiverEndpoint *candidate) {
+                return mayExecuteOnSameDevice(tensorUser, *candidate);
+              });
+          if (endpoint == aliasingEndpoints.end()) {
+            continue;
+          }
+          const ReceiverTensorRegionInfo &pipeRegion =
+              (*endpoint)->getTensorRegionDestination();
+          auto diagnostic = tensorUser->emitOpError(
+              "uses a tensor owned by a pipe receive destination through an "
+              "unsupported operation");
+          diagnostic.attachNote(pipeRegion.loc) << "pipe destination is here";
+          return failure();
+        }
+        for (Operation *sliceUser : slice.getResult().getUsers()) {
+          if (isa<CopyOp, PipeTransferPostOp>(sliceUser)) {
+            continue;
+          }
+          auto endpoint = llvm::find_if(
+              aliasingEndpoints, [&](const PipeReceiverEndpoint *candidate) {
+                return mayExecuteOnSameDevice(sliceUser, *candidate);
+              });
+          if (endpoint == aliasingEndpoints.end()) {
+            continue;
+          }
+          const ReceiverTensorRegionInfo &pipeRegion =
+              (*endpoint)->getTensorRegionDestination();
+          auto diagnostic = sliceUser->emitOpError(
+              "uses a pipe receive destination tensor region through an "
+              "unsupported operation");
+          diagnostic.attachNote(pipeRegion.loc) << "pipe destination is here";
+          return failure();
+        }
+      }
+    }
+  }
+
+  LogicalResult copyResult = success();
+  mod.walk([&](CopyOp copy) {
+    if (failed(copyResult)) {
+      return WalkResult::interrupt();
+    }
+    bool isPipeReceive = mlir::isa<PipeType>(copy.getSrc().getType());
+    TensorSliceOp accessedSlice =
+        isPipeReceive ? TensorSliceOp()
+                      : copy.getDst().getDefiningOp<TensorSliceOp>();
+    bool isWrite = static_cast<bool>(accessedSlice);
+    if (!accessedSlice && !isPipeReceive) {
+      accessedSlice = copy.getSrc().getDefiningOp<TensorSliceOp>();
+    }
+    if (!accessedSlice) {
+      return WalkResult::advance();
+    }
+    FailureOr<TensorRegionBounds> maybeAccessedRegion =
+        getTensorRegionBounds(accessedSlice, copy);
+    if (failed(maybeAccessedRegion)) {
+      copyResult = failure();
+      return WalkResult::interrupt();
+    }
+    for (const PipeReceiverEndpoint *endpoint : tensorEndpoints) {
+      TensorRegionBounds pipeRegion =
+          getTensorRegionBounds(endpoint->getTensorRegionDestination());
+      if (maybeAccessedRegion->globalTensorIndex !=
+              pipeRegion.globalTensorIndex ||
+          !mayExecuteOnSameDevice(copy, *endpoint) ||
+          !tensorRegionsOverlap(*maybeAccessedRegion, pipeRegion)) {
+        continue;
+      }
+      if (isWrite) {
+        auto diagnostic = copy.emitOpError()
+                          << "writes a tensor region also owned by a pipe "
+                             "receive destination";
+        diagnostic.attachNote(pipeRegion.loc) << "pipe destination is here";
+        copyResult = failure();
+        return WalkResult::interrupt();
+      }
+
+      const PipeTransferNode &transferNode =
+          getPipeTransferNode(endpoint->transferNode);
+      FailureOr<LaunchExecutionLocation> maybeLocation =
+          getPipeGraphExecutionLocation(
+              copy, getLaunchNodeCoord(endpoint->receiver),
+              transferNode.deviceTransfer, PipeRole::Destination);
+      if (failed(maybeLocation)) {
+        copyResult = failure();
+        return WalkResult::interrupt();
+      }
+      auto postOp = cast<PipeTransferPostOp>(endpoint->postOp);
+      if (!hasMatchingReceiveWaitBeforeUse(postOp, copy.getOperation(),
+                                           analysisState.receiveWaitsByPost,
+                                           analysisState.receiveWaitAnysByPost,
+                                           *maybeLocation, analysisState)) {
+        auto diagnostic = copy.emitOpError()
+                          << "reads a pipe destination tensor region before "
+                             "the matching receive wait";
+        diagnostic.attachNote(pipeRegion.loc) << "pipe destination is here";
+        copyResult = failure();
+        return WalkResult::interrupt();
+      }
+    }
+    return WalkResult::advance();
+  });
+  return copyResult;
+}
+
 // A transfer node pairs one send with every receiver, allowing this check to
 // compare byte counts, formats, and capacities across all endpoints.
 static LogicalResult
@@ -1179,7 +1529,8 @@ verifyTransferPayloadCompatibility(const PipeTransferNode &transferNode) {
   auto sendOp = llvm::cast<PipeTransferSendOp>(transferNode.sendOp);
   auto sourceDFBType =
       mlir::cast<CircularBufferType>(sendOp.getSrc().getType());
-  int64_t sourceElementCount = sourceDFBType.getElementsPerBlock();
+  int64_t sourceElementCount =
+      sourceDFBType.getElementsPerBlock() * transferNode.blockSpan;
   IntegerAttr sendByteCount = sendOp.getByteCountAttr();
 
   for (Operation *postOperation : transferNode.receiverPostOps) {
@@ -1231,8 +1582,14 @@ verifyTransferPayloadCompatibility(const PipeTransferNode &transferNode) {
       diag.attachNote(sendOp.getLoc()) << "corresponding pipe send is here";
       return failure();
     }
+    bool destinationIsTensorRegion =
+        static_cast<bool>(postOp.getDst().getDefiningOp<TensorSliceOp>());
+    bool destinationElementCountMismatch =
+        destinationIsTensorRegion
+            ? destinationType.getNumElements() != sourceElementCount
+            : destinationType.getNumElements() < sourceElementCount;
     if (destinationType.getElementType() != sourceDFBType.getElementType() ||
-        destinationType.getNumElements() < sourceElementCount) {
+        destinationElementCountMismatch) {
       auto diag = postOp.emitError()
                   << "pipe receiver destination " << destinationType
                   << " cannot hold sender DFB block with " << sourceElementCount
@@ -1287,10 +1644,14 @@ PipeGraph::proveReceiverProducerStreams(PipeGraphAnalysisState &analysisState) {
     }
     assert(!receiverLocations.empty() &&
            "receiver DFB must have a matching post");
-    auto receiverInfoIt = receiverDFBByPost.find(posts.front().getOperation());
-    assert(receiverInfoIt != receiverDFBByPost.end() &&
+    auto receiverInfoIt =
+        receiverDestinationByPost.find(posts.front().getOperation());
+    assert(receiverInfoIt != receiverDestinationByPost.end() &&
            "receiver post must have DFB geometry");
-    int64_t physicalBlockCount = receiverInfoIt->second.blockCount;
+    const auto *receiverInfo =
+        std::get_if<ReceiverDFBInfo>(&receiverInfoIt->second);
+    assert(receiverInfo && "DFB stream post must have DFB geometry");
+    int64_t physicalBlockCount = receiverInfo->blockCount;
 
     bool pipeOnlyValid = true;
     bool computedAddressPhaseValid = true;
@@ -1415,8 +1776,8 @@ PipeGraph::proveReceiverProducerStreams(PipeGraphAnalysisState &analysisState) {
               result = failure();
               return;
             }
-            std::optional<int64_t> maybeSpan =
-                getReceiverSlotSpanBlocksForPost(postOp, receiverDFBByPost);
+            std::optional<int64_t> maybeSpan = getReceiverSlotSpanBlocksForPost(
+                postOp, receiverDestinationByPost);
             if (!maybeSpan) {
               rejectBoth("post has no receiver slot span");
               return;
@@ -1493,7 +1854,10 @@ PipeGraph::getDFBAcquireReleaseIndex(Operation *operation) const {
 static std::optional<int64_t>
 getReceiverAddressByteOffset(const PipeReceiverEndpoint &endpoint,
                              int64_t slot) {
-  const ReceiverDFBInfo &info = endpoint.receiverDFBInfo;
+  if (!endpoint.hasDFBDestination()) {
+    return std::nullopt;
+  }
+  const ReceiverDFBInfo &info = endpoint.getDFBDestination().receiverDFBInfo;
   if (!info.hasStaticTileOffset || slot < 0 || slot >= info.blockCount) {
     return std::nullopt;
   }
@@ -1545,8 +1909,15 @@ getCombinedReceiverSequencePeriod(const ReceiverAddressSequenceProof &lhs,
 static bool
 havePointwiseEqualReceiverAddressSequences(const PipeReceiverEndpoint &lhs,
                                            const PipeReceiverEndpoint &rhs) {
-  const ReceiverAddressSequenceProof &lhsSequence = lhs.addressSequence;
-  const ReceiverAddressSequenceProof &rhsSequence = rhs.addressSequence;
+  if (!lhs.hasDFBDestination() || !rhs.hasDFBDestination()) {
+    return false;
+  }
+  const PipeReceiverDFBDestination &lhsDestination = lhs.getDFBDestination();
+  const PipeReceiverDFBDestination &rhsDestination = rhs.getDFBDestination();
+  const ReceiverAddressSequenceProof &lhsSequence =
+      lhsDestination.addressSequence;
+  const ReceiverAddressSequenceProof &rhsSequence =
+      rhsDestination.addressSequence;
   if (lhsSequence.getKind() == ReceiverAddressSequenceProofKind::FullyDynamic ||
       rhsSequence.getKind() == ReceiverAddressSequenceProofKind::FullyDynamic ||
       lhsSequence.executionCount != rhsSequence.executionCount) {
@@ -1556,7 +1927,8 @@ havePointwiseEqualReceiverAddressSequences(const PipeReceiverEndpoint &lhs,
     return true;
   }
   // Each finalized DFB index is bound to one runtime base common argument.
-  if (lhs.receiverDFBInfo.dfbIndex != rhs.receiverDFBInfo.dfbIndex) {
+  if (lhsDestination.receiverDFBInfo.dfbIndex !=
+      rhsDestination.receiverDFBInfo.dfbIndex) {
     return false;
   }
 
@@ -1601,10 +1973,15 @@ const PipeReceiverEndpoint *PipeGraph::getProvenReceiverAddressEndpoint(
   for (PipeReceiverEndpointId endpointId :
        getPipeReceiverEndpoints(transferNodeId)) {
     const PipeReceiverEndpoint &endpoint = getPipeReceiverEndpoint(endpointId);
+    if (!endpoint.hasDFBDestination()) {
+      return nullptr;
+    }
+    const PipeReceiverDFBDestination &dfbDestination =
+        endpoint.getDFBDestination();
     const PipeReceiverDFBNode &receiverDFBNode =
-        getReceiverDFBNode(endpoint.receiverDFBNode);
+        getReceiverDFBNode(dfbDestination.receiverDFBNode);
     if (!receiverDFBNode.hasProvenComputedAddressProducerPhase ||
-        endpoint.addressSequence.getKind() ==
+        dfbDestination.addressSequence.getKind() ==
             ReceiverAddressSequenceProofKind::FullyDynamic) {
       return nullptr;
     }
@@ -1709,6 +2086,7 @@ template <typename ProtocolOp>
 struct PipeProtocolCandidate {
   ProtocolOp op;
   std::optional<std::uint64_t> recordIndex;
+  std::optional<std::uint64_t> executionCount;
 };
 
 void PipeGraph::recordTransferNodeForProtocolRecord(
@@ -1799,7 +2177,8 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
         PipeTransferCandidates &candidates =
             candidatesByPipe[{pipeKey, deviceTransfer}];
         candidates.deviceTransfer = deviceTransfer;
-        candidates.sends.push_back({sendOp, selectedRecordIndex});
+        candidates.sends.push_back(
+            {sendOp, selectedRecordIndex, maybeExecutionCount});
       }
       continue;
     }
@@ -1862,7 +2241,7 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
                 selectedRecordIndex, analysisState);
         if (!maybeExecutionCount || *maybeExecutionCount != 0) {
           candidates.postsByReceiver[receiver].push_back(
-              {postOp, selectedRecordIndex});
+              {postOp, selectedRecordIndex, maybeExecutionCount});
         }
       });
       if (failed(receiverResult)) {
@@ -2140,12 +2519,13 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
           sendOp.getOperation(), sendCandidate.recordIndex, transferNodeId);
       llvm::SmallSetVector<Operation *, 4> uniquePostOps;
 
-      for (auto [receiver, postCandidate] : endpointsBySend[sendIndex]) {
+      for (const auto &receiverAndPost : endpointsBySend[sendIndex]) {
+        PipeReceiverCoord receiver = receiverAndPost.first;
+        const PipePostCandidate &postCandidate = receiverAndPost.second;
         PipeTransferPostOp postOp = postCandidate.op;
-        auto infoIt = receiverDFBByPost.find(postOp.getOperation());
-        assert(infoIt != receiverDFBByPost.end() &&
-               "receiver post must have DFB geometry");
-        const ReceiverDFBInfo &receiverInfo = infoIt->second;
+        auto infoIt = receiverDestinationByPost.find(postOp.getOperation());
+        assert(infoIt != receiverDestinationByPost.end() &&
+               "receiver post must have destination information");
         uniquePostOps.insert(postOp.getOperation());
         SmallVector<PipeTransferNodeId> &postTransferNodeIds =
             transferNodeIdsByProtocolOp[postOp.getOperation()];
@@ -2154,37 +2534,43 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
         }
         recordTransferNodeForProtocolRecord(
             postOp.getOperation(), postCandidate.recordIndex, transferNodeId);
-        DeviceRefAttr receiverDevice =
-            deviceTransfer ? deviceTransfer.getEdge().getDestination()
-                           : DeviceRefAttr();
-        PipeReceiverDFBKey receiverDFB{receiverDevice, receiver,
-                                       receiverInfo.dfbIndex,
-                                       receiverInfo.dfbId};
-        auto nodeIt = nodeIdByReceiverDFB.find(receiverDFB);
-        PipeReceiverDFBNodeId receiverDFBNodeId = 0;
-        if (nodeIt == nodeIdByReceiverDFB.end()) {
-          receiverDFBNodeId = receiverDFBNodes.size();
-          nodeIdByReceiverDFB.insert({receiverDFB, receiverDFBNodeId});
-          receiverDFBNodes.push_back(PipeReceiverDFBNode{
-              receiverDFBNodeId, receiverDFB, {}, false, {}, false, {}});
-        } else {
-          receiverDFBNodeId = nodeIt->second;
-        }
+        PipeReceiverDestination destination = [&]() -> PipeReceiverDestination {
+          if (const auto *receiverInfo =
+                  std::get_if<ReceiverDFBInfo>(&infoIt->second)) {
+            DeviceRefAttr receiverDevice =
+                deviceTransfer ? deviceTransfer.getEdge().getDestination()
+                               : DeviceRefAttr();
+            PipeReceiverDFBKey receiverDFB{receiverDevice, receiver,
+                                           receiverInfo->dfbIndex,
+                                           receiverInfo->dfbId};
+            auto nodeIt = nodeIdByReceiverDFB.find(receiverDFB);
+            PipeReceiverDFBNodeId receiverDFBNodeId = 0;
+            if (nodeIt == nodeIdByReceiverDFB.end()) {
+              receiverDFBNodeId = receiverDFBNodes.size();
+              nodeIdByReceiverDFB.insert({receiverDFB, receiverDFBNodeId});
+              receiverDFBNodes.push_back(PipeReceiverDFBNode{
+                  receiverDFBNodeId, receiverDFB, {}, false, {}, false, {}});
+            } else {
+              receiverDFBNodeId = nodeIt->second;
+            }
+            return PipeReceiverDFBDestination{
+                receiverDFBNodeId, receiverDFB, *receiverInfo, {}};
+          }
+          return std::make_shared<ReceiverTensorRegionInfo>(
+              std::get<ReceiverTensorRegionInfo>(infoIt->second));
+        }();
 
         PipeReceiverEndpointId endpointId = pipeReceiverEndpoints.size();
-        pipeReceiverEndpoints.push_back(
-            PipeReceiverEndpoint{endpointId,
-                                 transferNodeId,
-                                 receiverDFBNodeId,
-                                 receiver,
-                                 receiverDFB,
-                                 receiverInfo,
-                                 postCandidate.recordIndex,
-                                 postOp.getOperation(),
-                                 {}});
+        pipeReceiverEndpoints.push_back(PipeReceiverEndpoint{
+            endpointId, transferNodeId, receiver, std::move(destination),
+            postCandidate.recordIndex, postCandidate.executionCount,
+            postOp.getOperation()});
         transferNode.receiverEndpoints.push_back(endpointId);
-        receiverDFBNodes[receiverDFBNodeId].writerEndpoints.push_back(
-            endpointId);
+        PipeReceiverEndpoint &insertedEndpoint = pipeReceiverEndpoints.back();
+        if (insertedEndpoint.hasDFBDestination()) {
+          receiverDFBNodes[insertedEndpoint.getDFBDestination().receiverDFBNode]
+              .writerEndpoints.push_back(endpointId);
+        }
       }
       transferNode.receiverPostOps.assign(uniquePostOps.begin(),
                                           uniquePostOps.end());
@@ -2392,6 +2778,77 @@ PipeGraph::addPipeReceiver(Operation *op, PipeTransferCreateOp transferCreateOp,
                            const DFBLogicalIdentityAnalysis &dfbIds) {
   PipeTransferContract transferContract =
       getPipeTransferContract(transferCreateOp);
+  if (auto slice = dst.getDefiningOp<TensorSliceOp>()) {
+    if (isCollectiveTransfer(transferContract)) {
+      return op->emitError(
+          "pipe receive tensor_slice destination currently supports only "
+          "point-to-point transfers");
+    }
+    auto sliceType = mlir::cast<RankedTensorType>(slice.getType());
+    auto tensorType = mlir::cast<RankedTensorType>(slice.getTensor().getType());
+    auto tensorArgument = mlir::dyn_cast<BlockArgument>(slice.getTensor());
+    func::FuncOp receiverFunction =
+        tensorArgument ? mlir::dyn_cast<func::FuncOp>(
+                             tensorArgument.getOwner()->getParentOp())
+                       : func::FuncOp();
+    if (!receiverFunction || receiverFunction.isDeclaration() ||
+        tensorArgument.getOwner() != &receiverFunction.getBody().front()) {
+      return op->emitError(
+          "pipe receive tensor_slice tensor must be an argument of the "
+          "receiver kernel function");
+    }
+    auto baseCTA =
+        receiverFunction->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttrName);
+    auto crtaIndices =
+        receiverFunction->getAttrOfType<ArrayAttr>(kCRTAIndicesAttrName);
+    unsigned tensorArgumentIndex = tensorArgument.getArgNumber();
+    if (!baseCTA || !crtaIndices || tensorArgumentIndex >= crtaIndices.size()) {
+      return op->emitError(
+          "pipe receive tensor_slice cannot resolve tensor runtime metadata");
+    }
+    SmallVector<int64_t> startIndices;
+    startIndices.reserve(slice.getIndices().size());
+    for (Value index : slice.getIndices()) {
+      std::optional<int64_t> staticIndex = getConstantIntValue(index);
+      if (!staticIndex) {
+        return op->emitError(
+            "pipe receive tensor_slice currently requires static start "
+            "indices");
+      }
+      startIndices.push_back(*staticIndex);
+    }
+    SmallVector<int64_t> tensorGridShape(tensorType.getShape());
+    int64_t rankDifference = tensorType.getRank() - sliceType.getRank();
+    for (int64_t dimension = 0; dimension < tensorType.getRank(); ++dimension) {
+      int64_t regionExtent =
+          dimension < rankDifference
+              ? 1
+              : sliceType.getDimSize(dimension - rankDifference);
+      if (startIndices[dimension] < 0 || regionExtent <= 0 ||
+          startIndices[dimension] > tensorGridShape[dimension] - regionExtent) {
+        return op->emitError(
+            "pipe receive tensor_slice region is outside the destination "
+            "tensor tile grid");
+      }
+    }
+    auto tileType = mlir::cast<ttcore::TileType>(sliceType.getElementType());
+    bool inserted =
+        receiverDestinationByPost
+            .insert(
+                {op,
+                 ReceiverTensorRegionInfo{
+                     slice, sliceType,
+                     static_cast<int32_t>(mlir::cast<IntegerAttr>(
+                                              crtaIndices[tensorArgumentIndex])
+                                              .getInt()),
+                     static_cast<int32_t>(baseCTA.getInt()),
+                     std::move(tensorGridShape), std::move(startIndices),
+                     static_cast<int64_t>(tileType.getSizeBytes()),
+                     std::nullopt, op->getLoc()}})
+            .second;
+    assert(inserted && "receiver post visited more than once");
+    return success();
+  }
   Value dstDFB = getAttachedCB(dst);
   if (!dstDFB) {
     return op->emitError("pipe receive destination is not attached to a DFB");
@@ -2442,7 +2899,7 @@ PipeGraph::addPipeReceiver(Operation *op, PipeTransferCreateOp transferCreateOp,
       *slotSpanBlocks,
       dfbType.getBlockCount(),
       op->getLoc()};
-  bool inserted = receiverDFBByPost.insert({op, receiverInfo}).second;
+  bool inserted = receiverDestinationByPost.insert({op, receiverInfo}).second;
   assert(inserted && "receiver post visited more than once");
   return success();
 }
@@ -2507,6 +2964,9 @@ PipeGraph::build(ModuleOp mod, const PipeTransferIndex &transferIndex,
   }
 
   if (failed(graph.rebuildEndpointGraph(transferIndex, analysisState))) {
+    return failure();
+  }
+  if (failed(graph.verifyTensorRegionDestinations(mod, analysisState))) {
     return failure();
   }
   if (failed(graph.assignReceiverAddressSequences(mod, transferIndex,

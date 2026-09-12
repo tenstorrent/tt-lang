@@ -92,14 +92,16 @@ getCapacityEndpointFacts(const PipeGraph &pipeGraph,
                          const PipeReceiverEndpoint &receiverEndpoint) {
   const PipeTransferNode &transferNode =
       pipeGraph.getPipeTransferNode(receiverEndpoint.transferNode);
+  const PipeReceiverDFBDestination &destination =
+      receiverEndpoint.getDFBDestination();
   return PipeCapacityEndpointFacts{
       transferNode.id,
       receiverEndpoint.id,
-      receiverEndpoint.receiverDFBNode,
-      receiverEndpoint.receiverDFB,
+      destination.receiverDFBNode,
+      destination.receiverDFB,
       PipeCapacityReleaseTarget{transferNode.pipe.srcX, transferNode.pipe.srcY},
-      receiverEndpoint.receiverDFBInfo.blockCount,
-      receiverEndpoint.receiverDFBInfo.receiverSlotSpanBlocks,
+      destination.receiverDFBInfo.blockCount,
+      destination.receiverDFBInfo.receiverSlotSpanBlocks,
       false,
       PipeTransferSendOp(),
       {},
@@ -110,13 +112,14 @@ static bool isReceiverPostForDFB(PipeTransferPostOp postOp,
                                  const PipeTransferNode &transferNode,
                                  const PipeReceiverDFBKey &receiverDFB,
                                  const PipeGraph &pipeGraph) {
-  return llvm::any_of(transferNode.receiverEndpoints,
-                      [&](PipeReceiverEndpointId endpointId) {
-                        const PipeReceiverEndpoint &endpoint =
-                            pipeGraph.getPipeReceiverEndpoint(endpointId);
-                        return endpoint.postOp == postOp.getOperation() &&
-                               endpoint.receiverDFB == receiverDFB;
-                      });
+  return llvm::any_of(
+      transferNode.receiverEndpoints, [&](PipeReceiverEndpointId endpointId) {
+        const PipeReceiverEndpoint &endpoint =
+            pipeGraph.getPipeReceiverEndpoint(endpointId);
+        return endpoint.postOp == postOp.getOperation() &&
+               endpoint.hasDFBDestination() &&
+               endpoint.getDFBDestination().receiverDFB == receiverDFB;
+      });
 }
 
 static bool checkPosts(const PipeCapacityEndpointFacts &endpointFacts,
@@ -278,6 +281,9 @@ PipeCapacityAnalysisResult analyzePipeCapacity(const PipeGraph &pipeGraph) {
 
   for (const PipeReceiverEndpoint &receiverEndpoint :
        pipeGraph.getPipeReceiverEndpoints()) {
+    if (!receiverEndpoint.hasDFBDestination()) {
+      continue;
+    }
     PipeCapacityEndpointFacts endpointFacts =
         getCapacityEndpointFacts(pipeGraph, receiverEndpoint);
     debugCandidateEndpoint(endpointFacts);

@@ -172,7 +172,8 @@ buildPipeSendPlan(PipeTransferSendOp sendOp, const DominanceInfo &dominanceInfo,
 
   bool readFromDFB =
       llvm::any_of(sendOp.getSrc().getUsers(), [&](Operation *user) {
-        return isa<CBWaitOp>(user) && user->getOperand(0) == sendOp.getSrc() &&
+        return isa<CBWaitOp, CBPushOp>(user) &&
+               user->getOperand(0) == sendOp.getSrc() &&
                dominanceInfo.dominates(user, sendOp);
       });
 
@@ -228,14 +229,14 @@ buildPipePostPlan(PipeTransferPostOp postOp,
 }
 
 template <typename Resources>
-static bool allUseComputedReceiverDFB(const Resources &resources) {
+static bool allUseComputedReceiverAddresses(const Resources &resources) {
   if (const auto *staticResources = std::get_if<PipeResourceInfo>(&resources)) {
-    return staticResources->addressStorage.usesComputedReceiverDFB();
+    return staticResources->addressStorage.usesComputedReceiverAddress();
   }
   return llvm::all_of(
-      std::get<SmallVector<PipeResourceInfo>>(resources),
+      std::get<PipeResourceAccessPlan::ResourceTable>(resources),
       [](const PipeResourceInfo &resource) {
-        return resource.addressStorage.usesComputedReceiverDFB();
+        return resource.addressStorage.usesComputedReceiverAddress();
       });
 }
 
@@ -576,9 +577,9 @@ FailureOr<PipeModulePlan> buildPipeModulePlan(
         usesFabricProtocol     ? PipeSynchronizationProtocol::Fabric
         : usesCapacityProtocol ? PipeSynchronizationProtocol::Capacity
                                : PipeSynchronizationProtocol::ReceiverPost;
-    if (usesFabricProtocol && !allUseComputedReceiverDFB(resources)) {
+    if (usesFabricProtocol && !allUseComputedReceiverAddresses(resources)) {
       auto diagnostic = operation->emitError(
-          "fabric pipe transfer requires computed receiver DFB addresses");
+          "fabric pipe transfer requires computed receiver addresses");
       ArrayRef<PipeTransferNodeId> transferNodeIds =
           pipeGraph.getPipeTransferNodeIdsForProtocolOp(operation);
       bool attachedReason = false;
@@ -589,21 +590,30 @@ FailureOr<PipeModulePlan> buildPipeModulePlan(
              pipeGraph.getPipeReceiverEndpoints(transferNode.id)) {
           const PipeReceiverEndpoint &endpoint =
               pipeGraph.getPipeReceiverEndpoint(endpointId);
+          if (!endpoint.hasDFBDestination()) {
+            diagnostic.attachNote(endpoint.getTensorRegionDestination().loc)
+                << "receiver tensor-region address planning is unavailable";
+            attachedReason = true;
+            break;
+          }
+          const PipeReceiverDFBDestination &destination =
+              endpoint.getDFBDestination();
           const PipeReceiverDFBNode &receiverDFB =
-              pipeGraph.getReceiverDFBNode(endpoint.receiverDFBNode);
+              pipeGraph.getReceiverDFBNode(destination.receiverDFBNode);
           if (!receiverDFB.hasProvenComputedAddressProducerPhase) {
             Diagnostic &note =
-                diagnostic.attachNote(endpoint.receiverDFBInfo.loc);
-            note << getReceiverDFBIdentityString(endpoint.receiverDFB) << ": "
+                diagnostic.attachNote(destination.receiverDFBInfo.loc);
+            note << getReceiverDFBIdentityString(destination.receiverDFB)
+                 << ": "
                  << receiverDFB.computedAddressProducerPhaseFailureReason;
             attachedReason = true;
             break;
           }
-          if (endpoint.addressSequence.getKind() ==
+          if (destination.addressSequence.getKind() ==
               ReceiverAddressSequenceProofKind::FullyDynamic) {
             Diagnostic &note =
-                diagnostic.attachNote(endpoint.receiverDFBInfo.loc);
-            note << getReceiverDFBIdentityString(endpoint.receiverDFB)
+                diagnostic.attachNote(destination.receiverDFBInfo.loc);
+            note << getReceiverDFBIdentityString(destination.receiverDFB)
                  << " has no proven receiver address sequence";
             attachedReason = true;
             break;
@@ -623,7 +633,11 @@ FailureOr<PipeModulePlan> buildPipeModulePlan(
         const PipeReceiverEndpoint &endpoint =
             pipeGraph.getPipeReceiverEndpoint(
                 transferNode.receiverEndpoints.front());
-        diagnostic.attachNote(endpoint.receiverDFBInfo.loc)
+        Location receiverLocation =
+            endpoint.hasDFBDestination()
+                ? endpoint.getDFBDestination().receiverDFBInfo.loc
+                : endpoint.getTensorRegionDestination().loc;
+        diagnostic.attachNote(receiverLocation)
             << "receiver address sequences are not proven equal for every "
                "transfer occurrence";
       }
@@ -660,7 +674,7 @@ FailureOr<PipeModulePlan> buildPipeModulePlan(
               fabricRoutePlan);
         }
         return buildPipePostPlan(
-            postOp, std::get<SmallVector<PipeResourceInfo>>(resources),
+            postOp, std::get<PipeResourceAccessPlan::ResourceTable>(resources),
             fabricRoutePlan);
       }();
       if (failed(maybePostPlan)) {
@@ -689,8 +703,9 @@ FailureOr<PipeModulePlan> buildPipeModulePlan(
         }
         assert(maybePipeReference->isSelected() &&
                "selected resources require a selected pipe reference");
-        return addTransferPlan(operation, std::move(*maybePipeReference),
-                               SmallVector<PipeResourceInfo>(resources));
+        return addTransferPlan(
+            operation, std::move(*maybePipeReference),
+            PipeResourceAccessPlan::ResourceTable(resources));
       });
   if (failed(traversalResult)) {
     return failure();

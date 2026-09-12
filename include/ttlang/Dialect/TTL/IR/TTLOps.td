@@ -135,7 +135,7 @@ def TTL_TensorSliceOp : TTL_Op<"tensor_slice", [Pure]> {
 def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Asynchronous copy involving a tensor, DFB, or pipe";
   let description = [{
-    `ttl.copy` initiates an asynchronous transfer. Pipe-to-DFB receives return
+    `ttl.copy` initiates an asynchronous transfer. Pipe receives return
     `!ttl.receive_request`; other copies return `!ttl.transfer_handle`.
 
     This operation is non-blocking. The destination is not safe to use until a
@@ -146,8 +146,9 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     shaped, unit-stride `tensor.extract_slice` view of an acquired block. Reads
     require a reserved destination; writes require a waited source. A pipe send
     has a DFB source and a pipe destination. A pipe receive has a pipe source
-    and a destination block reserved from a DFB. The copy transfers the
-    complete endpoint payload in row-major tile order.
+    and either a destination block reserved from a DFB or a statically shaped
+    DRAM tensor slice. The copy transfers the complete endpoint payload in
+    row-major tile order.
 
     The tensor shape normally equals one dataflow buffer block. A copy may span
     consecutive blocks by extending the tensor's innermost dimension by an
@@ -1025,13 +1026,15 @@ def TTL_PipeTransferPostOp : TTL_Op<"pipe_transfer.post",
     [MemoryEffects<[MemRead, MemWrite]>]> {
   let summary = "Post a pipe receive destination";
   let description = [{
-    Registers the receiver-owned destination DFB slot for a pipe transfer and
-    returns the token that represents receiver-side completion. The selected
-    address and synchronization protocols determine whether lowering publishes
-    the address or signals sender readiness. When `byte_count` is present, the
-    matching sender writes exactly that many consecutive bytes starting at byte
-    offset zero of the reserved destination block. Later bytes remain
-    unchanged.
+    Registers receiver-owned destination storage for a pipe transfer and
+    returns the token that represents receiver-side completion. The destination
+    is either a reserved DFB block or a statically shaped DRAM tensor slice.
+    The selected address and synchronization protocols determine whether
+    lowering publishes or computes the destination addresses and how it signals
+    sender readiness. When `byte_count` is present, the matching sender writes
+    exactly that many consecutive bytes starting at byte offset zero of the
+    reserved destination block. Later bytes remain unchanged. Tensor-slice
+    destinations always transfer complete tiles and do not accept `byte_count`.
   }];
   let arguments = (ins
     TTL_PipeTransfer:$transfer,

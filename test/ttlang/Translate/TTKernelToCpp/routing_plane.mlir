@@ -9,6 +9,10 @@
 // CHECK: routing_plane_atomic_inc(
 // CHECK: packet_header->to_noc_unicast_atomic_inc(
 // CHECK: sender.send_payload_flush_blocking_from_address(
+// CHECK: static __attribute__((noinline)) void
+// CHECK-NEXT: routing_plane_write(
+// CHECK: packet_header->to_noc_unicast_write(
+// CHECK: sender.send_payload_without_header_non_blocking_from_address(source_address,
 // CHECK-LABEL: static __attribute__((noinline)) void routing_plane_fused_write_atomic_inc(
 // CHECK: const uint32_t [[MAX_PACKET_SIZE:.*]] = tt::tt_fabric::get_fabric_max_packet_size();
 // CHECK: while (sizeBytes > [[MAX_PACKET_SIZE]]) {
@@ -31,6 +35,7 @@
 // CHECK-NEXT: PacketHeaderPool::reset();
 // CHECK-NEXT: [[ROUTE_ID]] = PacketHeaderPool::allocate_header_n([[COUNT]]);
 // CHECK: experimental::routing_plane_atomic_inc([[MANAGER]], [[ROUTE_ID]], [[INDEX:[^,]+]], [[DEST_DEVICE:[^,]+]], [[DEST_MESH:[^,]+]], [[HOPS:[^,]+]],
+// CHECK: experimental::routing_plane_write([[MANAGER]], [[ROUTE_ID]], [[INDEX]], [[DEST_DEVICE]], [[DEST_MESH]], [[HOPS]],
 // CHECK: experimental::routing_plane_fused_write_atomic_inc([[MANAGER]], [[ROUTE_ID]], [[INDEX]], [[DEST_DEVICE]], [[DEST_MESH]], [[HOPS]],
 // CHECK: if ([[COUNT]] != 0) {
 // CHECK-NEXT: close_connections([[MANAGER]]);
@@ -68,6 +73,12 @@ module {
       %increment)
       : (!ttkernel.routing_plane_connection_manager, i32, i32, i32, i32, i32,
          !ttkernel.noc_addr, i32) -> ()
+    ttkernel.routing_plane.write(
+      %manager, %route_id, %connection_index, %destination_device_id,
+      %destination_mesh_id, %destination_hop_count, %source, %size,
+      %destination_address)
+      : (!ttkernel.routing_plane_connection_manager, i32, i32, i32, i32, i32,
+         i32, i32, !ttkernel.noc_addr) -> ()
     ttkernel.routing_plane.fused_write_atomic_inc(
       %manager, %route_id, %connection_index, %destination_device_id,
       %destination_mesh_id, %destination_hop_count, %source, %size,

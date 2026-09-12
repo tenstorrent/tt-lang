@@ -2445,11 +2445,117 @@ The shared graph and proof must preserve these fabric invariants:
 * corresponding send and receiver-post declarations identify the same logical
   device transfer;
 * fabric transfers require a proven computed receiver address;
-* fabric senders do not wait for receiver-post readiness, so a receiver pop does
-  not make the assigned slot available to another fabric transfer in the same
-  invocation;
+* fabric senders wait for receiver-post readiness, but receiver pops do not
+  return capacity for reuse by another fabric transfer in the same invocation;
 * fabric completion uses remotely addressable synchronization storage;
 * `CC` capacity counters are not selected for fabric transfers.
+
+### Computed DRAM tensor destinations
+
+A fabric pipe receive may store its payload in a statically assigned region of
+an interleaved DRAM tensor rather than a receiver DFB. `CLA/RP` and `CDA/RP`
+refine `CA/RP` by identifying L1 and DRAM destinations. Fabric transport still
+uses receiver-post synchronization; routing-plane flow control is not a
+replacement for the receiver post.
+
+| Protocol | Destination address | Send condition | Transport |
+| --- | --- | --- | --- |
+| `RA/RP` | Receiver publishes its reserved L1 DFB address. | Every required receiver has posted. | NoC |
+| `CA/RP` | Sender computes the reserved L1 DFB address. | Every required receiver has posted. | NoC |
+| `CA/CC` | Sender computes the L1 DFB slot address. | The receiver has available DFB capacity. | NoC |
+| `CLA/RP` | Sender computes an L1 DFB slot address. | Every required receiver has posted. | Fabric |
+| `CDA/RP` | Sender computes a DRAM tensor-region address. | Every required receiver has posted. | Fabric |
+
+| Protocol event or property | `RA/RP` | `CA/RP` | `CA/CC` | `CLA/RP` | `CDA/RP` |
+| --- | --- | --- | --- | --- | --- |
+| Receiver reserves a destination DFB block | Yes | Yes | Yes | Yes | No |
+| Receiver publishes the destination address | Yes | No | No | No | No |
+| Sender waits for a receiver post | Yes | Yes | No | Yes | Yes |
+| Sender waits for reusable destination capacity | Through the receiver post | Through the receiver post | Yes | Through the receiver post | No; regions are not reused |
+| Sender computes the destination address | No | Yes | Yes | Yes | Yes |
+| Destination storage | L1 DFB | L1 DFB | L1 DFB | L1 DFB | DRAM tensor region |
+| Payload admission | Receiver post | Receiver post | Capacity counter | Receiver post and fabric flow control | Receiver post and fabric flow control |
+| Receiver-visible completion | Completion notification after the payload is visible | Completion notification after the payload is visible | Completion counter after the payload is visible | Remote completion counter after the payload is visible | Remote completion counter after the payload is visible |
+| Consumer returns capacity | No | No | Yes | No | No |
+| Storage reuse within one invocation | Receiver selects the reserved slot | Receiver selects the reserved slot | Sender reuses a slot after receiving a credit | A pop does not make an assigned slot available to another fabric transfer | Each transfer has a distinct tensor region |
+
+The protocols have the following equivalent pseudocode. `complete` becomes
+observable only after the payload write is visible at the receiver.
+
+`RA/RP`:
+
+```text
+receiver: slot = reserve_dfb()
+receiver: publish_address(slot); post_to_sender()
+sender:   wait_for_post(); address = read_published_address()
+sender:   write_payload(address); complete()
+receiver: wait_for_completion(); consume(slot); pop_dfb()
+```
+
+`CA/RP`:
+
+```text
+receiver: slot = reserve_dfb(); post_to_sender()
+sender:   wait_for_post(); address = compute_dfb_slot_address()
+sender:   write_payload(address); complete()
+receiver: wait_for_completion(); consume(slot); pop_dfb()
+```
+
+`CA/CC`:
+
+```text
+sender:   wait_for_capacity_credit()
+sender:   address = compute_dfb_slot_address()
+sender:   write_payload(address); complete()
+receiver: slot = reserve_dfb(); wait_for_completion()
+receiver: consume(slot); pop_dfb(); return_capacity_credit()
+```
+
+Fabric `CLA/RP`:
+
+```text
+receiver: slot = reserve_assigned_dfb_block(); post_to_sender()
+sender:   wait_for_post()
+sender:   address = compute_l1_dfb_slot_address()
+sender:   fabric_write_payload(address); complete_remotely()
+receiver: wait_for_completion()
+receiver: consume(slot); pop_dfb()
+```
+
+Fabric `CDA/RP`:
+
+```text
+receiver: post_to_sender()
+sender:   wait_for_post()
+sender:   address = compute_dram_tensor_region_address()
+sender:   fabric_write_payload(address); complete_remotely()
+receiver: wait_for_completion(); read_region_into_local_dfb()
+receiver: compute(); pop_local_dfb()
+```
+
+For `CDA/RP`, the sender computes each remote DRAM page address from the
+destination tensor metadata and static tile coordinates. The last fabric write
+atomically increments the receiver's completion counter after the payload is
+visible. The receiver waits for that counter before reading the region. Each
+transfer has a distinct tensor region; reusing a region would require a
+capacity protocol.
+
+This mechanism must remain within the existing proof sequence. Planning must
+prove:
+
+1. every transfer maps to an in-bounds static destination tensor region;
+2. transfers on the same device do not write overlapping regions;
+3. every destination has exactly one statically proven transfer occurrence;
+4. the completion increment follows payload visibility;
+5. each consumer read follows the corresponding completion observation; and
+6. the destination tensor, completion storage, route, and fabric-manager
+   ownership remain live for the transfer interval.
+
+An opaque external call that declares only DFB effects and fabric-manager
+ownership does not establish these properties. It can measure hardware
+feasibility, but a production implementation must represent tensor-region
+transfers declaratively so `PipeGraph`, transport planning, resource planning,
+and schedule verification can validate them before lowering.
 
 ## Future work
 

@@ -2706,6 +2706,23 @@ public:
   }
 };
 
+class TTKernelRoutingPlaneWriteOpRewriter
+    : public OpConversionPattern<ttkernel::RoutingPlaneWriteOp> {
+  using Op = ttkernel::RoutingPlaneWriteOp;
+
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(Op op, Op::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange(), "experimental::routing_plane_write", nullptr, nullptr,
+        adaptor.getOperands());
+    return success();
+  }
+};
+
 class TTKernelRoutingPlaneFusedWriteAtomicIncOpRewriter
     : public OpConversionPattern<ttkernel::RoutingPlaneFusedWriteAtomicIncOp> {
   using Op = ttkernel::RoutingPlaneFusedWriteAtomicIncOp;
@@ -3563,6 +3580,7 @@ public:
                  TTKernelOpenRoutingPlaneConnectionsOpRewriter>(typeConverter,
                                                                 context, state);
     patterns.add<TTKernelRoutingPlaneAtomicIncOpRewriter,
+                 TTKernelRoutingPlaneWriteOpRewriter,
                  TTKernelRoutingPlaneFusedWriteAtomicIncOpRewriter,
                  TTKernelCloseRoutingPlaneConnectionsOpRewriter>(typeConverter,
                                                                  context);

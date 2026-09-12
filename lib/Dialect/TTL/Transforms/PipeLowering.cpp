@@ -12,6 +12,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/IR/Dominance.h"
@@ -57,6 +58,24 @@ namespace mlir::tt::ttl {
 
 using mlir::func::FuncOp;
 namespace ttk = mlir::tt::ttkernel;
+
+Value buildDistributedTensorAccessor(Location loc, OpBuilder &builder,
+                                     int32_t baseCTA, int32_t globalTensorIndex,
+                                     int32_t commonRuntimeArgIndex,
+                                     Value bankBase, Value pageSize) {
+  std::string ctaExpression =
+      "tensor_accessor::detail::get_tensor_accessor_args_cta_offset<" +
+      std::to_string(globalTensorIndex) + ", " + std::to_string(baseCTA) +
+      ">()";
+  Value dummyCTA = arith::ConstantIntOp::create(builder, loc, 0, 32);
+  Value crtaBase =
+      arith::ConstantIntOp::create(builder, loc, commonRuntimeArgIndex, 32);
+  Value accessorArgs = ttk::TensorAccessorArgsOp::create(
+      builder, loc, dummyCTA, crtaBase, /*prev_args=*/Value(),
+      builder.getStringAttr(ctaExpression), /*crta_expr=*/nullptr);
+  return ttk::TensorAccessorOp::create(builder, loc, accessorArgs, bankBase,
+                                       pageSize);
+}
 
 //===----------------------------------------------------------------------===//
 // Helpers
@@ -2320,12 +2339,42 @@ public:
                                      Value destinationAddress, Value sizeBytes,
                                      Value semaphoreAddress, Value increment) {
     FabricRouteTarget target = buildRouteTarget();
+    Value connectionIndex = buildConnectionIndex();
+    Value destinationNocAddress =
+        buildRemoteNocAddress(remoteX, remoteY, destinationAddress);
+    Value semaphoreNocAddress =
+        buildRemoteNocAddress(remoteX, remoteY, semaphoreAddress);
     ttk::RoutingPlaneFusedWriteAtomicIncOp::create(
+        rewriter, loc, runtime.manager, runtime.routeId, connectionIndex,
+        target.destinationDeviceId, target.destinationMeshId,
+        target.destinationHopCount, sourceAddress, sizeBytes,
+        destinationNocAddress, semaphoreNocAddress, increment);
+  }
+
+  void emitWrite(Value sourceAddress, Value destinationAddress,
+                 Value sizeBytes) {
+    FabricRouteTarget target = buildRouteTarget();
+    ttk::RoutingPlaneWriteOp::create(
         rewriter, loc, runtime.manager, runtime.routeId, buildConnectionIndex(),
         target.destinationDeviceId, target.destinationMeshId,
         target.destinationHopCount, sourceAddress, sizeBytes,
-        buildRemoteNocAddress(remoteX, remoteY, destinationAddress),
-        buildRemoteNocAddress(remoteX, remoteY, semaphoreAddress), increment);
+        destinationAddress);
+  }
+
+  void emitFusedWriteAtomicIncrement(Value sourceAddress,
+                                     Value destinationAddress, Value sizeBytes,
+                                     Value semaphoreAddress, Value increment) {
+    FabricRouteTarget target = buildRouteTarget();
+    Value connectionIndex = buildConnectionIndex();
+    ttk::RoutingPlaneFusedWriteAtomicIncOp::create(
+        rewriter, loc, runtime.manager, runtime.routeId, connectionIndex,
+        target.destinationDeviceId, target.destinationMeshId,
+        target.destinationHopCount, sourceAddress, sizeBytes,
+        destinationAddress, semaphoreAddress, increment);
+  }
+
+  Value getRemoteNocAddress(Value remoteX, Value remoteY, Value address) {
+    return buildRemoteNocAddress(remoteX, remoteY, address);
   }
 
 private:
@@ -2811,6 +2860,25 @@ static bool hasOneShotRemoteFixedReceiver(const PipeResourceInfo &resource) {
          !computedAddress->usesDynamicSlotCounter();
 }
 
+static bool
+haveEqualComputedTensorAddresses(const PipeComputedTensorAddressInfo &lhs,
+                                 const PipeComputedTensorAddressInfo &rhs) {
+  return lhs.baseCTA == rhs.baseCTA &&
+         lhs.globalTensorIndex == rhs.globalTensorIndex &&
+         lhs.senderTensorArgumentIndex == rhs.senderTensorArgumentIndex &&
+         lhs.tensorGridShape == rhs.tensorGridShape &&
+         lhs.startIndices == rhs.startIndices &&
+         lhs.regionShape == rhs.regionShape &&
+         lhs.pageSizeBytes == rhs.pageSizeBytes;
+}
+
+static LogicalResult emitComputedTensorFabricWrite(
+    PipeTransferSendOp op, Value sourceAddress,
+    Value receiverCompletionCounterAddress, Value receiverX, Value receiverY,
+    Value routeIndex, const PipeComputedTensorAddressInfo &addressInfo,
+    const FabricRuntimeInfo &fabricRuntime,
+    ConversionPatternRewriter &rewriter);
+
 static LogicalResult lowerSelectedPipeTransferSend(
     PipeTransferSendOp op, Value srcCB, const PipeTransferPlan &transferPlan,
     const PipeResourcePlan &pipeResourcePlan,
@@ -2933,6 +3001,56 @@ static LogicalResult lowerSelectedPipeTransferSend(
       rewriter.getI32IntegerAttr(sendPlan.payloadSizeBytes));
   transport->preparePayloadWrite();
 
+  bool anyUseComputedTensorAddress =
+      llvm::any_of(resources, [](const PipeResourceInfo &resource) {
+        return resource.addressStorage.usesComputedReceiverTensor();
+      });
+  bool allUseComputedTensorAddress =
+      llvm::all_of(resources, [](const PipeResourceInfo &resource) {
+        return resource.addressStorage.usesComputedReceiverTensor();
+      });
+  if (anyUseComputedTensorAddress && !allUseComputedTensorAddress) {
+    return op.emitError(
+        "selected pipe records cannot mix tensor-region and DFB destinations");
+  }
+  if (allUseComputedTensorAddress) {
+    if (!usesFabric || fields.isCollective) {
+      return op.emitError(
+          "computed DRAM destinations require point-to-point fabric records");
+    }
+    const PipeComputedTensorAddressInfo &addressInfo =
+        *resources.front().addressStorage.computedTensorAddress;
+    if (!llvm::all_of(resources, [&](const PipeResourceInfo &resource) {
+          return resource.addressStorage.computedTensorAddress &&
+                 haveEqualComputedTensorAddresses(
+                     addressInfo,
+                     *resource.addressStorage.computedTensorAddress);
+        })) {
+      return op.emitError(
+          "selected pipe records require one computed DRAM region formula");
+    }
+    auto runtimeIt = fabricRuntime.find(op.getOperation());
+    assert(runtimeIt != fabricRuntime.end() &&
+           "fabric runtime was validated before source lowering");
+    Value routeIndex = buildSelectedRouteIndex(loc, sendPlan.fabricRouteIndices,
+                                               fields.recordIndex, rewriter);
+    SmallVector<PipeCounterInfo> completionCounters =
+        llvm::map_to_vector(resources, [](const PipeResourceInfo &resource) {
+          return resource.completion.counter;
+        });
+    Value completionCounterAddress = buildSelectedPipeCounterAddress(
+        op, loc, completionCounters, fields.recordIndex, pipeResourcePlan,
+        rewriter);
+    if (failed(emitComputedTensorFabricWrite(
+            op, srcAddr, completionCounterAddress, fields.dstStartX,
+            fields.dstStartY, routeIndex, addressInfo, runtimeIt->second,
+            rewriter))) {
+      return failure();
+    }
+    rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
+    return success();
+  }
+
   Value dstAddr;
   bool allUseComputedAddress =
       llvm::all_of(resources, [](const PipeResourceInfo &resource) {
@@ -3016,6 +3134,129 @@ shouldEmitPayloadPageWrites(PipeTransferSendOp op, PipeType pipeType,
          packetization.getPayloadSizeBytes() > maxBurstBytes;
 }
 
+static Value linearizeIndices(Location loc, ValueRange indices,
+                              ArrayRef<int64_t> bounds, OpBuilder &builder) {
+  assert(indices.size() == bounds.size() && !indices.empty() &&
+         "linearization requires one index per dimension");
+  Value linearIndex = indices.front();
+  for (std::size_t dimension = 1; dimension < indices.size(); ++dimension) {
+    Value bound =
+        arith::ConstantIndexOp::create(builder, loc, bounds[dimension]);
+    linearIndex = arith::AddIOp::create(
+        builder, loc, arith::MulIOp::create(builder, loc, linearIndex, bound),
+        indices[dimension]);
+  }
+  return linearIndex;
+}
+
+static LogicalResult emitComputedTensorFabricWrite(
+    PipeTransferSendOp op, Value sourceAddress,
+    Value receiverCompletionCounterAddress, Value receiverX, Value receiverY,
+    Value routeIndex, const PipeComputedTensorAddressInfo &addressInfo,
+    const FabricRuntimeInfo &fabricRuntime,
+    ConversionPatternRewriter &rewriter) {
+  Location loc = op.getLoc();
+  if (addressInfo.regionShape.empty() ||
+      addressInfo.startIndices.size() != addressInfo.tensorGridShape.size() ||
+      addressInfo.regionShape.size() > addressInfo.tensorGridShape.size()) {
+    return op.emitError("invalid computed DRAM tensor-region address plan");
+  }
+
+  Value bankBase = buildPipeRuntimeCommonArg(
+      loc, rewriter, addressInfo.senderTensorArgumentIndex);
+  Value pageSize = arith::ConstantIntOp::create(rewriter, loc,
+                                                addressInfo.pageSizeBytes, 32);
+  Value tensorAccessor = buildDistributedTensorAccessor(
+      loc, rewriter, addressInfo.baseCTA, addressInfo.globalTensorIndex,
+      addressInfo.senderTensorArgumentIndex, bankBase, pageSize);
+  FabricRouteEmitter routeEmitter(op, routeIndex, fabricRuntime, rewriter);
+  Value completionNocAddress = routeEmitter.getRemoteNocAddress(
+      receiverX, receiverY, receiverCompletionCounterAddress);
+  Value zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  Value oneIndex = arith::ConstantIndexOp::create(rewriter, loc, 1);
+  SmallVector<Value> lowerBounds(addressInfo.regionShape.size(), zeroIndex);
+  SmallVector<Value> upperBounds = llvm::map_to_vector(
+      addressInfo.regionShape, [&](int64_t extent) -> Value {
+        return arith::ConstantIndexOp::create(rewriter, loc, extent);
+      });
+  SmallVector<Value> steps(addressInfo.regionShape.size(), oneIndex);
+  int64_t pageCount = 1;
+  for (int64_t extent : addressInfo.regionShape) {
+    std::optional<int64_t> product = llvm::checkedMul(pageCount, extent);
+    if (!product) {
+      return op.emitError("computed DRAM tensor-region size exceeds int64_t");
+    }
+    pageCount = *product;
+  }
+  Value lastPageIndex =
+      arith::ConstantIndexOp::create(rewriter, loc, pageCount - 1);
+  Value zeroI32 = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
+  Value oneI32 = arith::ConstantIntOp::create(rewriter, loc, 1, 32);
+  int64_t nocIndex = getNocIndex(op);
+  Value noc = arith::ConstantIntOp::create(rewriter, loc, nocIndex, 8);
+  int64_t rankDifference =
+      addressInfo.tensorGridShape.size() - addressInfo.regionShape.size();
+
+  scf::buildLoopNest(
+      rewriter, loc, lowerBounds, upperBounds, steps,
+      [&](OpBuilder &bodyBuilder, Location bodyLoc, ValueRange regionIndices) {
+        Value sourcePageIndex = linearizeIndices(
+            bodyLoc, regionIndices, addressInfo.regionShape, bodyBuilder);
+        SmallVector<Value> tensorIndices;
+        tensorIndices.reserve(addressInfo.tensorGridShape.size());
+        for (int64_t dimension = 0;
+             dimension <
+             static_cast<int64_t>(addressInfo.tensorGridShape.size());
+             ++dimension) {
+          Value start = arith::ConstantIndexOp::create(
+              bodyBuilder, bodyLoc, addressInfo.startIndices[dimension]);
+          if (dimension >= rankDifference) {
+            start = arith::AddIOp::create(
+                bodyBuilder, bodyLoc, start,
+                regionIndices[dimension - rankDifference]);
+          }
+          tensorIndices.push_back(start);
+        }
+        Value tensorPageIndex = linearizeIndices(
+            bodyLoc, tensorIndices, addressInfo.tensorGridShape, bodyBuilder);
+        Value tensorPageIndexI32 = arith::IndexCastOp::create(
+            bodyBuilder, bodyLoc, bodyBuilder.getI32Type(), tensorPageIndex);
+        Value destinationNocAddress = ttk::TensorAccessorGetNocAddrOp::create(
+            bodyBuilder, bodyLoc, tensorAccessor, tensorPageIndexI32, zeroI32,
+            noc);
+        Value sourcePageOffset = arith::MulIOp::create(
+            bodyBuilder, bodyLoc, sourcePageIndex,
+            arith::ConstantIndexOp::create(bodyBuilder, bodyLoc,
+                                           addressInfo.pageSizeBytes));
+        Value sourcePageAddress = arith::AddIOp::create(
+            bodyBuilder, bodyLoc, sourceAddress,
+            arith::IndexCastOp::create(bodyBuilder, bodyLoc,
+                                       bodyBuilder.getI32Type(),
+                                       sourcePageOffset));
+        Value isLastPage = arith::CmpIOp::create(
+            bodyBuilder, bodyLoc, arith::CmpIPredicate::eq, sourcePageIndex,
+            lastPageIndex);
+        auto finalWrite = scf::IfOp::create(bodyBuilder, bodyLoc, isLastPage,
+                                            /*withElseRegion=*/true);
+        {
+          OpBuilder::InsertionGuard guard(bodyBuilder);
+          bodyBuilder.setInsertionPointToStart(
+              &finalWrite.getThenRegion().front());
+          routeEmitter.emitFusedWriteAtomicIncrement(
+              sourcePageAddress, destinationNocAddress, pageSize,
+              completionNocAddress, oneI32);
+        }
+        {
+          OpBuilder::InsertionGuard guard(bodyBuilder);
+          bodyBuilder.setInsertionPointToStart(
+              &finalWrite.getElseRegion().front());
+          routeEmitter.emitWrite(sourcePageAddress, destinationNocAddress,
+                                 pageSize);
+        }
+      });
+  return success();
+}
+
 void lowerInactivePipeTransferSend(PipeTransferSendOp op,
                                    ConversionPatternRewriter &rewriter) {
   rewriter.replaceOp(op, makeZeroI32(op.getLoc(), rewriter));
@@ -3061,9 +3302,9 @@ LogicalResult lowerPipeTransferSend(
          "fabric transfer plan is missing its route");
   assert((!usesFabric || sendPlan.fabricRouteIndices.size() == 1) &&
          "static fabric send must have one route");
-  assert(
-      (!usesFabric || pipeResource.addressStorage.usesComputedReceiverDFB()) &&
-      "fabric transfer plan uses a receiver-published address");
+  assert((!usesFabric ||
+          pipeResource.addressStorage.usesComputedReceiverAddress()) &&
+         "fabric transfer plan uses a receiver-published address");
 
   bool usePageWrites =
       !usesFabric && shouldEmitPayloadPageWrites(op, pipeType, transportStream);
@@ -3237,6 +3478,31 @@ LogicalResult lowerPipeTransferSend(
 
   Value srcAddr = arith::IndexCastOp::create(rewriter, loc, i32Ty, srcPtrIdx);
 
+  if (pipeResource.addressStorage.usesComputedReceiverTensor()) {
+    assert(usesFabric && sendPlan.fabricRouteIndices.size() == 1 &&
+           pipeResource.addressStorage.computedTensorAddress &&
+           "computed tensor destinations require one fabric route");
+    auto runtimeIt = fabricRuntime.find(op.getOperation());
+    assert(runtimeIt != fabricRuntime.end() &&
+           "fabric runtime was validated before source lowering");
+    Value receiverX =
+        arith::ConstantIndexOp::create(rewriter, loc, pipeType.getDstStartX());
+    Value receiverY =
+        arith::ConstantIndexOp::create(rewriter, loc, pipeType.getDstStartY());
+    Value routeIndex = arith::ConstantIndexOp::create(
+        rewriter, loc, sendPlan.fabricRouteIndices.front());
+    Value receiverCompletionCounterAddr = buildPipeCounterAddress(
+        loc, senderFunc, completionInfo.counter, pipeResourcePlan, rewriter);
+    if (failed(emitComputedTensorFabricWrite(
+            op, srcAddr, receiverCompletionCounterAddr, receiverX, receiverY,
+            routeIndex, *pipeResource.addressStorage.computedTensorAddress,
+            runtimeIt->second, rewriter))) {
+      return failure();
+    }
+    rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
+    return success();
+  }
+
   Value dstAddr;
   if (pipeResource.addressStorage.usesComputedReceiverAddress()) {
     dstAddr = buildComputedReceiverDFBDestinationAddress(
@@ -3326,15 +3592,15 @@ lowerSelectedPipeTransferPost(PipeTransferPostOp op, Value dst,
       postPlan.addressModes, PipeAddressMode::ReceiverPublishedAddressTable);
   bool allUseComputedAddress =
       llvm::all_of(postPlan.addressModes, [](PipeAddressMode mode) {
-        return mode == PipeAddressMode::ComputedReceiverDFB;
+        return mode == PipeAddressMode::ComputedReceiverDFB ||
+               mode == PipeAddressMode::ComputedReceiverTensor;
       });
   bool anyUseComputedAddress = llvm::is_contained(
       postPlan.addressModes, PipeAddressMode::ComputedReceiverDFB);
   assert(anyUsePublishedAddress == postPlan.addressPublication.has_value() &&
          "selected post address publication plan does not match its records");
   if (usesFabric && !allUseComputedAddress) {
-    op.emitError(
-        "fabric pipe transfer requires a computed receiver DFB address");
+    op.emitError("fabric pipe transfer requires a computed receiver address");
     return failure();
   }
 
@@ -4723,8 +4989,14 @@ getCompletionCounterLocations(const PipeTransferAllocationUnit &unit,
        pipeGraph.getPipeReceiverEndpoints(unit.transferNodeId)) {
     const PipeReceiverEndpoint &endpoint =
         pipeGraph.getPipeReceiverEndpoint(endpointId);
-    PipeCounterLocation location{endpoint.receiverDFB.receiverDevice,
-                                 endpoint.receiver.x, endpoint.receiver.y};
+    const PipeTransferNode &transferNode =
+        pipeGraph.getPipeTransferNode(endpoint.transferNode);
+    DeviceRefAttr receiverDevice =
+        transferNode.deviceTransfer
+            ? transferNode.deviceTransfer.getEdge().getDestination()
+            : DeviceRefAttr();
+    PipeCounterLocation location{receiverDevice, endpoint.receiver.x,
+                                 endpoint.receiver.y};
     if (!llvm::is_contained(locations, location)) {
       locations.push_back(location);
     }
@@ -4741,7 +5013,7 @@ static bool executesOnceAtEveryReceiver(const PipeTransferAllocationUnit &unit,
                       [&](PipeReceiverEndpointId endpointId) {
                         const PipeReceiverEndpoint &endpoint =
                             pipeGraph.getPipeReceiverEndpoint(endpointId);
-                        return endpoint.addressSequence.executionCount == 1;
+                        return endpoint.executionCount == 1;
                       });
 }
 
@@ -4781,6 +5053,89 @@ getSingleSenderFunc(const PipeTransferAllocationUnit &unit) {
   return senderFunc ? std::optional<FuncOp>(senderFunc) : std::nullopt;
 }
 
+LogicalResult
+preparePipeTensorDestinationRuntimeArguments(PipeGraph &pipeGraph) {
+  for (const PipeTransferNode &transferNode :
+       pipeGraph.getPipeTransferNodes()) {
+    SmallVector<PipeReceiverEndpointId> tensorEndpoints =
+        llvm::filter_to_vector(transferNode.receiverEndpoints,
+                               [&](PipeReceiverEndpointId endpointId) {
+                                 return pipeGraph
+                                     .getPipeReceiverEndpoint(endpointId)
+                                     .hasTensorRegionDestination();
+                               });
+    if (tensorEndpoints.empty()) {
+      continue;
+    }
+    auto sendOp = dyn_cast<PipeTransferSendOp>(transferNode.sendOp);
+    if (!sendOp || tensorEndpoints.size() != 1 ||
+        transferNode.receiverEndpoints.size() != 1) {
+      transferNode.sendOp->emitError(
+          "computed DRAM pipe destination requires one point-to-point "
+          "receiver per transfer record");
+      return failure();
+    }
+    PipeReceiverEndpoint &endpoint =
+        pipeGraph.getPipeReceiverEndpoint(tensorEndpoints.front());
+    ReceiverTensorRegionInfo &tensorRegion =
+        endpoint.getTensorRegionDestination();
+    FuncOp senderFunction = sendOp->getParentOfType<FuncOp>();
+    if (!senderFunction) {
+      sendOp.emitError("computed DRAM pipe sender is not inside a function");
+      return failure();
+    }
+    auto crtaIndices =
+        senderFunction->getAttrOfType<ArrayAttr>(kCRTAIndicesAttrName);
+    if (!crtaIndices ||
+        crtaIndices.size() != senderFunction.getNumArguments()) {
+      senderFunction.emitOpError()
+          << kCRTAIndicesAttrName
+          << " must map every kernel tensor argument before computed DRAM "
+             "destination planning";
+      return failure();
+    }
+    std::optional<int64_t> existingArgumentIndex;
+    for (auto indexedAttribute : llvm::enumerate(crtaIndices)) {
+      auto tensorIndex = dyn_cast<IntegerAttr>(indexedAttribute.value());
+      if (tensorIndex &&
+          tensorIndex.getInt() == tensorRegion.globalTensorIndex) {
+        existingArgumentIndex = indexedAttribute.index();
+        break;
+      }
+    }
+    if (existingArgumentIndex) {
+      if (senderFunction.getArgument(*existingArgumentIndex).getType() !=
+          tensorRegion.slice.getTensor().getType()) {
+        senderFunction.emitOpError(
+            "computed DRAM destination tensor type differs between sender "
+            "and receiver metadata");
+        return failure();
+      }
+      tensorRegion.senderTensorArgumentIndex = *existingArgumentIndex;
+      continue;
+    }
+
+    int64_t argumentIndex = senderFunction.getNumArguments();
+    if (failed(senderFunction.insertArgument(
+            argumentIndex, tensorRegion.slice.getTensor().getType(),
+            DictionaryAttr(), tensorRegion.loc))) {
+      senderFunction.emitOpError(
+          "failed to add the computed DRAM destination tensor argument");
+      return failure();
+    }
+    SmallVector<Attribute> updatedIndices(crtaIndices.begin(),
+                                          crtaIndices.end());
+    updatedIndices.push_back(
+        IntegerAttr::get(IntegerType::get(senderFunction.getContext(), 32),
+                         tensorRegion.globalTensorIndex));
+    senderFunction->setAttr(
+        kCRTAIndicesAttrName,
+        ArrayAttr::get(senderFunction.getContext(), updatedIndices));
+    tensorRegion.senderTensorArgumentIndex = argumentIndex;
+  }
+  return success();
+}
+
 static int64_t getReceiverDFBBlockStrideBytes(const ReceiverDFBInfo &info) {
   auto tileType = llvm::cast<ttcore::TileType>(info.dfbType.getElementType());
   return info.dfbType.getElementsPerBlock() * tileType.getSizeBytes();
@@ -4795,7 +5150,12 @@ static int64_t getReceiverDFBStaticByteOffset(const ReceiverDFBInfo &info) {
 /// The caller uses receiver-published addresses when this proof fails.
 static std::optional<PipeComputedAddressInfo>
 getComputedAddressInfo(const PipeReceiverEndpoint &receiverEndpoint) {
-  const ReceiverDFBInfo &receiverInfo = receiverEndpoint.receiverDFBInfo;
+  if (!receiverEndpoint.hasDFBDestination()) {
+    return std::nullopt;
+  }
+  const PipeReceiverDFBDestination &destination =
+      receiverEndpoint.getDFBDestination();
+  const ReceiverDFBInfo &receiverInfo = destination.receiverDFBInfo;
   if (receiverInfo.isTensorBacked || !receiverInfo.hasStaticTileOffset) {
     return std::nullopt;
   }
@@ -4806,8 +5166,7 @@ getComputedAddressInfo(const PipeReceiverEndpoint &receiverEndpoint) {
   // assignment. Non-pipe DFB traffic can advance the hardware ring without a
   // pipe post, so computed addressing requires the graph to prove that the
   // receiver stream contains only pipe-delivered blocks.
-  const ReceiverAddressSequenceProof &sequence =
-      receiverEndpoint.addressSequence;
+  const ReceiverAddressSequenceProof &sequence = destination.addressSequence;
   if (sequence.getKind() == ReceiverAddressSequenceProofKind::FullyDynamic) {
     return std::nullopt;
   }
@@ -4848,6 +5207,8 @@ getComputedAddressInfo(const PipeReceiverEndpoint &receiverEndpoint) {
 /// coloring builds the final plan.
 struct ComputedAddressPlan {
   llvm::DenseMap<std::size_t, PipeComputedAddressInfo> infoByUnitIndex;
+  llvm::DenseMap<std::size_t, PipeComputedTensorAddressInfo>
+      tensorInfoByUnitIndex;
   llvm::MapVector<FuncOp, SmallVector<PipeComputedAddressCounterInitInfo>>
       counterInitializations;
   llvm::MapVector<FuncOp, SmallVector<int32_t>> dfbIndices;
@@ -4877,12 +5238,37 @@ static ComputedAddressPlan buildComputedAddressPlan(
 
   for (auto indexedUnit : llvm::enumerate(units)) {
     PipeTransferAllocationUnit &unit = indexedUnit.value();
+    const PipeTransferNode &transferNode =
+        pipeGraph.getPipeTransferNode(unit.transferNodeId);
+    if (transferNode.receiverEndpoints.size() == 1) {
+      const PipeReceiverEndpoint &endpoint = pipeGraph.getPipeReceiverEndpoint(
+          transferNode.receiverEndpoints.front());
+      if (endpoint.hasTensorRegionDestination()) {
+        const ReceiverTensorRegionInfo &tensorRegion =
+            endpoint.getTensorRegionDestination();
+        assert(tensorRegion.senderTensorArgumentIndex &&
+               "tensor runtime arguments must be prepared before resource "
+               "planning");
+        plan.tensorInfoByUnitIndex[indexedUnit.index()] =
+            PipeComputedTensorAddressInfo{
+                tensorRegion.baseCTA,
+                tensorRegion.globalTensorIndex,
+                *tensorRegion.senderTensorArgumentIndex,
+                tensorRegion.tensorGridShape,
+                tensorRegion.startIndices,
+                SmallVector<int64_t>(tensorRegion.sliceType.getShape()),
+                tensorRegion.pageSizeBytes,
+            };
+        continue;
+      }
+    }
     const PipeReceiverEndpoint *receiverEndpoint =
         pipeGraph.getProvenReceiverAddressEndpoint(unit.transferNodeId);
     if (!receiverEndpoint) {
       continue;
     }
-    const ReceiverDFBInfo &receiverInfo = receiverEndpoint->receiverDFBInfo;
+    const ReceiverDFBInfo &receiverInfo =
+        receiverEndpoint->getDFBDestination().receiverDFBInfo;
     // One common runtime argument supplies the physical DFB base. Tensor-backed
     // or shared storage does not provide one stable compiler-owned base.
     if (tensorBackedDFBIndices.contains(receiverInfo.dfbIndex) ||
@@ -4940,7 +5326,7 @@ static ComputedAddressPlan buildComputedAddressPlan(
     assert(receiverEndpoint &&
            "computed-address unit missing receiver address proof");
     const ReceiverAddressSequenceProof &sequence =
-        receiverEndpoint->addressSequence;
+        receiverEndpoint->getDFBDestination().addressSequence;
     bool canRepeat =
         sequence.getKind() != ReceiverAddressSequenceProofKind::KnownCount ||
         *sequence.executionCount > 1;
@@ -5146,8 +5532,8 @@ LogicalResult buildPipeResourcePlan(
 
   auto [addressColorBySourceColor, maxAddressColorsPerSource] =
       compactColors(colorUsersBySource, [&](std::size_t unitIndex) {
-        return computedAddressPlan.infoByUnitIndex.find(unitIndex) ==
-               computedAddressPlan.infoByUnitIndex.end();
+        return !computedAddressPlan.infoByUnitIndex.contains(unitIndex) &&
+               !computedAddressPlan.tensorInfoByUnitIndex.contains(unitIndex);
       });
   int64_t maxAddressTableBytes =
       maxAddressColorsPerSource * kPipeAddressWordBytes;
@@ -5177,10 +5563,16 @@ LogicalResult buildPipeResourcePlan(
 
     auto computedIt =
         computedAddressPlan.infoByUnitIndex.find(indexedUnit.index());
+    auto computedTensorIt =
+        computedAddressPlan.tensorInfoByUnitIndex.find(indexedUnit.index());
     PipeAddressStorageInfo addressStorage;
     if (computedIt != computedAddressPlan.infoByUnitIndex.end()) {
       addressStorage =
           PipeAddressStorageInfo::computedReceiverDFB(computedIt->second);
+    } else if (computedTensorIt !=
+               computedAddressPlan.tensorInfoByUnitIndex.end()) {
+      addressStorage = PipeAddressStorageInfo::computedReceiverTensor(
+          computedTensorIt->second);
     } else {
       auto sourceIt = addressColorBySourceColor.find(sourceKey);
       assert(sourceIt != addressColorBySourceColor.end());
@@ -5265,13 +5657,18 @@ void finalizePipeTransportResources(const PipeTransportPlan &transportPlan,
   for (const PipeTransportStream &stream : transportPlan.getStreams()) {
     if (stream.getSourceStorage().ownership !=
             PipeTransportStorageOwnership::Transport ||
-        stream.getEndpoints().size() != 1 ||
-        stream.getEndpoints().front().ownership !=
-            PipeTransportStorageOwnership::Transport) {
+        stream.getEndpoints().size() != 1) {
       continue;
     }
 
     const PipeTransportEndpoint &endpoint = stream.getEndpoints().front();
+    if (!endpoint.hasDFBDestination() ||
+        endpoint.getDFBDestination().ownership !=
+            PipeTransportStorageOwnership::Transport) {
+      continue;
+    }
+    const PipeTransportDFBDestination &destination =
+        endpoint.getDFBDestination();
     std::optional<int64_t> dynamicSlotCounterIndex;
     if (stream.getSchedule() == PipeTransportSchedule::Overlapped) {
       auto sendResource =
@@ -5304,9 +5701,9 @@ void finalizePipeTransportResources(const PipeTransportPlan &transportPlan,
             ? endpoint.groupDepth
             : 1;
     PipeComputedAddressInfo computedAddress{
-        endpoint.receiverDFB.dfbIndex,
+        destination.receiverDFB.dfbIndex,
         /*baseRuntimeCommonArgIndex=*/0,
-        endpoint.scratchByteOffset,
+        destination.scratchByteOffset,
         /*initialSlot=*/0,
         /*repeatStride=*/destinationGroupDepth > 1 ? 1 : 0,
         /*blockCount=*/destinationGroupDepth,

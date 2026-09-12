@@ -80,3 +80,16 @@ func.func @negative_tensor_accessor_runtime_index()
   %args = ttkernel.TensorAccessorArgs(%cta, %crta)
   return
 }
+
+// -----
+
+// Fabric runtime arguments cannot overlap the tensor prefix.
+// expected-error @below {{'func.func' op ttl.fabric_runtime_arg_base_common_index must follow every tensor runtime argument}}
+func.func @fabric_runtime_base_inside_tensor_prefix()
+    attributes {
+      ttl.crta_indices = [0, 1],
+      ttl.fabric_runtime_arg_base_common_index = 1 : i64,
+      ttl.kernel_thread = #ttkernel.thread<noc>
+    } {
+  return
+}
