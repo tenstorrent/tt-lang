@@ -10,6 +10,9 @@
 # RUN: not env TTLANG_COMPILE_ONLY=1 %python %s raw 2>&1 | FileCheck %s --check-prefix=RAW
 # RUN: not env TTLANG_COMPILE_ONLY=1 %python %s missing-dfbs 2>&1 | FileCheck %s --check-prefix=MISSING-DFBS
 # RUN: not env TTLANG_COMPILE_ONLY=1 %python %s all-dfbs 2>&1 | FileCheck %s --check-prefix=ALL-DFBS
+# RUN: not env TTLANG_COMPILE_ONLY=1 %python %s preserve-type 2>&1 | FileCheck %s --check-prefix=PRESERVE-TYPE
+# RUN: not env TTLANG_COMPILE_ONLY=1 %python %s duplicate-preserve 2>&1 | FileCheck %s --check-prefix=DUPLICATE-PRESERVE
+# RUN: not env TTLANG_COMPILE_ONLY=1 %python %s non-dfb-preserve 2>&1 | FileCheck %s --check-prefix=NON-DFB-PRESERVE
 # RUN: not env TTLANG_COMPILE_ONLY=1 %python %s empty 2>&1 | FileCheck %s --check-prefix=EMPTY
 # RUN: not env TTLANG_COMPILE_ONLY=1 %python %s duplicate-dfbs 2>&1 | FileCheck %s --check-prefix=DUPLICATE-DFBS
 # RUN: not env TTLANG_COMPILE_ONLY=1 %python %s non-dfb 2>&1 | FileCheck %s --check-prefix=NON-DFB
@@ -31,7 +34,7 @@ MODE = sys.argv[1]
 if MODE == "declaration":
     ttl.DFBReset(participants=[ttl.KernelKind.COMPUTE])
 elif MODE == "element":
-    ttl.DFBReset(participants=(ttl.KernelKind.COMPUTE,))
+    ttl.DFBReset(participants=(17,))
 elif MODE == "duplicate":
     duplicate_compute = ttl.Kernel(ttl.KernelKind.COMPUTE)
     reader = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
@@ -73,6 +76,26 @@ def make_invalid_operation(mode):
         def invalid_operation(input_tensor):
             ttl.reset_dfbs(reset, dfbs=[])
 
+    elif mode == "preserve-type":
+
+        @ttl.operation(grid=(1, 1))
+        def invalid_operation(input_tensor):
+            target = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+            ttl.reset_all_dfbs(reset, preserve=(target,))
+
+    elif mode == "duplicate-preserve":
+
+        @ttl.operation(grid=(1, 1))
+        def invalid_operation(input_tensor):
+            target = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+            ttl.reset_all_dfbs(reset, preserve=[target, target])
+
+    elif mode == "non-dfb-preserve":
+
+        @ttl.operation(grid=(1, 1))
+        def invalid_operation(input_tensor):
+            ttl.reset_all_dfbs(reset, preserve=[1])
+
     elif mode == "duplicate-dfbs":
 
         @ttl.operation(grid=(1, 1))
@@ -110,12 +133,15 @@ elif MODE not in {"declaration", "element", "duplicate", "participants"}:
 
 
 # DECLARATION: TypeError: DFBReset participants must be a nonempty tuple
-# ELEMENT: TypeError: DFBReset participants must contain only Kernel values, got KernelKind
+# ELEMENT: TypeError: DFBReset participants must contain only KernelKind or Kernel values, got int
 # DUPLICATE: ValueError: DFBReset participants must be distinct
 # PARTICIPANTS: ValueError: DFBReset participants must contain one compute kernel and two data movement kernels
 # RAW: ValueError: @ttl.operation split: ttl.reset_dfbs reset must be a DFBReset captured by the enclosing operation
 # MISSING-DFBS: TTLangCompileError: error: ttl.reset_dfbs() requires the dfbs keyword argument
-# ALL-DFBS: TTLangCompileError: error: ttl.reset_all_dfbs() does not accept keyword arguments
+# ALL-DFBS: TTLangCompileError: error: ttl.reset_all_dfbs() accepts only the preserve keyword argument
+# PRESERVE-TYPE: TTLangCompileError: error: ttl.reset_all_dfbs() preserve must be a list
+# DUPLICATE-PRESERVE: TTLangCompileError: error: ttl.reset_all_dfbs() preserve DFBs must be distinct
+# NON-DFB-PRESERVE: TTLangCompileError: error: ttl.reset_all_dfbs() preserve element must be a DFB
 # EMPTY: TTLangCompileError: error: ttl.reset_dfbs() dfbs must be a nonempty list
 # DUPLICATE-DFBS: TTLangCompileError: error: ttl.reset_dfbs() dfbs must be distinct
 # NON-DFB: TTLangCompileError: error: ttl.reset_dfbs() dfbs element must be a DFB

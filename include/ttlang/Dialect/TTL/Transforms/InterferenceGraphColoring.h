@@ -233,7 +233,9 @@ struct ExactInterferenceGraphWeightColoring {
 /// Proves the minimum weighted allocation within `colorLimit` colors.
 ///
 /// `initialColors` must be a valid coloring and supplies the first upper bound.
-/// Reaching `searchStateLimit` is inconclusive and returns no coloring.
+/// Reaching `searchStateLimit` is inconclusive but returns the best valid
+/// coloring found, including the initial coloring when no improvement was
+/// found.
 ExactInterferenceGraphWeightColoring colorInterferenceGraphMinimumWeightExactly(
     const InterferenceGraph &graph, llvm::ArrayRef<std::uint64_t> vertexWeights,
     unsigned colorLimit, llvm::ArrayRef<unsigned> initialColors,

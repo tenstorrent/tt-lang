@@ -3,20 +3,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //===----------------------------------------------------------------------===//
-// TTKernelSpecializeCores (per-core specialization)
 //
-// A single module pass that runs at the TTKernel level, right before EmitC
-// conversion. For every kernel function whose control flow branches on a core
-// coordinate (i.e. an `scf.if` whose condition is derived from
-// `ttkernel.my_logical_x_` / `ttkernel.my_logical_y_`), the pass clones the
-// function once per launch coordinate. In each clone, the coordinate reads are
-// replaced by `arith.constant`s for that core, so the following
-// `canonicalize` / `cse` fold the now-constant branch conditions and delete the
-// untaken regions. Each clone is tagged with a `ttl.core_coord` attribute (the
-// coordinate it serves) and the runtime bridge (ttl_api.py) turns that into a
-// per-kernel core range for dispatch.
+// Per-core specialization of TTKernel functions. Each clone substitutes its
+// assigned coordinates so exact evaluation and canonicalization can simplify
+// coordinate-dependent branches.
+//
 //===----------------------------------------------------------------------===//
 
+#include "ttlang/Analysis/IntegerExpressionEvaluator.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Dialect/TTL/Passes.h"
@@ -26,8 +20,11 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/Matchers.h"
+#include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Support/LogicalResult.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
@@ -58,13 +55,13 @@ static FailureOr<std::pair<int64_t, int64_t>> readGrid(ArrayAttr attr) {
   if (!attr || attr.size() != 2) {
     return failure();
   }
-  auto x = llvm::dyn_cast<IntegerAttr>(attr[0]);
-  auto y = llvm::dyn_cast<IntegerAttr>(attr[1]);
-  if (!x || !y) {
+  auto gridXAttr = llvm::dyn_cast<IntegerAttr>(attr[0]);
+  auto gridYAttr = llvm::dyn_cast<IntegerAttr>(attr[1]);
+  if (!gridXAttr || !gridYAttr) {
     return failure();
   }
-  int64_t gridX = x.getInt();
-  int64_t gridY = y.getInt();
+  int64_t gridX = gridXAttr.getInt();
+  int64_t gridY = gridYAttr.getInt();
   if (gridX <= 0 || gridY <= 0) {
     return failure();
   }
@@ -113,31 +110,88 @@ static void replaceCoordReads(func::FuncOp clone, int64_t coord) {
   SmallVector<CoordOp> reads;
   clone.walk([&](CoordOp op) { reads.push_back(op); });
   for (CoordOp op : reads) {
-    OpBuilder b(op);
-    Value cst =
-        arith::ConstantOp::create(b, op.getLoc(), b.getIndexAttr(coord));
-    op.getResult().replaceAllUsesWith(cst);
+    OpBuilder builder(op);
+    Value coordinateConstant = arith::ConstantOp::create(
+        builder, op.getLoc(), builder.getIndexAttr(coord));
+    op.getResult().replaceAllUsesWith(coordinateConstant);
     op.erase();
   }
 }
 
-/// Emit one clone of func for core (x, y), replacing every coordinate read
-/// with the matching constant and tagging the clone with ttl.core_coord.
+/// Expose exact conditions to the standard `scf.if` canonicalization patterns.
+struct MaterializeExactIfCondition : OpRewritePattern<scf::IfOp> {
+  using OpRewritePattern<scf::IfOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::IfOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    Attribute constant;
+    if (matchPattern(ifOp.getCondition(), m_Constant(&constant))) {
+      return failure();
+    }
+
+    IntegerExpressionEvaluator evaluator;
+    std::optional<llvm::APInt> exactValue =
+        evaluator.evaluate(ifOp.getCondition());
+    if (!exactValue) {
+      return failure();
+    }
+
+    Value conditionConstant = arith::ConstantOp::create(
+        rewriter, ifOp.getLoc(),
+        rewriter.getBoolAttr(exactValue->getBoolValue()));
+    rewriter.modifyOpInPlace(ifOp,
+                             [&] { ifOp->setOperand(0, conditionConstant); });
+    return success();
+  }
+};
+
+static LogicalResult foldExactBranchConditions(func::FuncOp clone) {
+  RewritePatternSet patterns(clone.getContext());
+  patterns.add<MaterializeExactIfCondition>(clone.getContext());
+  scf::IfOp::getCanonicalizationPatterns(patterns, clone.getContext());
+  return applyPatternsGreedily(clone, std::move(patterns));
+}
+
+/// Build one detached clone for a core, replacing every coordinate read with
+/// the matching constant and tagging the clone with ttl.core_coord.
 /// TODO: See if we can leverage LaunchDomainAnalysis in an earlier pass
 /// to further minimize clones.
-static void emitCoreClone(func::FuncOp func, int64_t x, int64_t y,
-                          OpBuilder &moduleBuilder) {
+static FailureOr<func::FuncOp> buildCoreClone(func::FuncOp func, int64_t coreX,
+                                              int64_t coreY,
+                                              Builder &attributeBuilder) {
   func::FuncOp clone = func.clone();
   clone.setSymName(
-      (func.getSymName() + "_c" + Twine(x) + "_" + Twine(y)).str());
+      (func.getSymName() + "_c" + Twine(coreX) + "_" + Twine(coreY)).str());
 
-  replaceCoordReads<ttk::MyLogicalXOp>(clone, x);
-  replaceCoordReads<ttk::MyLogicalYOp>(clone, y);
+  replaceCoordReads<ttk::MyLogicalXOp>(clone, coreX);
+  replaceCoordReads<ttk::MyLogicalYOp>(clone, coreY);
+  if (failed(foldExactBranchConditions(clone))) {
+    clone->destroy();
+    return failure();
+  }
 
-  clone->setAttr(
-      CoreCoordAttrName,
-      moduleBuilder.getArrayAttr({moduleBuilder.getI64ArrayAttr({x, y})}));
-  moduleBuilder.insert(clone);
+  clone->setAttr(CoreCoordAttrName,
+                 attributeBuilder.getArrayAttr(
+                     {attributeBuilder.getI64ArrayAttr({coreX, coreY})}));
+  return clone;
+}
+
+struct FunctionSpecialization {
+  func::FuncOp original;
+  SmallVector<func::FuncOp> clones;
+};
+
+static void
+destroyDetachedClones(ArrayRef<FunctionSpecialization> specializations,
+                      ArrayRef<func::FuncOp> pendingClones = {}) {
+  for (func::FuncOp clone : pendingClones) {
+    clone->destroy();
+  }
+  for (const FunctionSpecialization &specialization : specializations) {
+    for (func::FuncOp clone : specialization.clones) {
+      clone->destroy();
+    }
+  }
 }
 
 struct TTKernelSpecializeCoresPass
@@ -185,14 +239,32 @@ struct TTKernelSpecializeCoresPass
       targets.push_back(func);
     }
 
+    Builder attributeBuilder(module.getContext());
+    SmallVector<FunctionSpecialization> specializations;
     for (func::FuncOp func : targets) {
-      OpBuilder moduleBuilder(func);
-      for (int64_t y = 0; y < gridY; ++y) {
-        for (int64_t x = 0; x < gridX; ++x) {
-          emitCoreClone(func, x, y, moduleBuilder);
+      SmallVector<func::FuncOp> clones;
+      for (int64_t coreY = 0; coreY < gridY; ++coreY) {
+        for (int64_t coreX = 0; coreX < gridX; ++coreX) {
+          FailureOr<func::FuncOp> clone =
+              buildCoreClone(func, coreX, coreY, attributeBuilder);
+          if (failed(clone)) {
+            func.emitOpError("failed to simplify exact per-core conditions");
+            destroyDetachedClones(specializations, clones);
+            signalPassFailure();
+            return;
+          }
+          clones.push_back(*clone);
         }
       }
-      func.erase();
+      specializations.push_back({func, std::move(clones)});
+    }
+
+    for (FunctionSpecialization &specialization : specializations) {
+      OpBuilder moduleBuilder(specialization.original);
+      for (func::FuncOp clone : specialization.clones) {
+        moduleBuilder.insert(clone);
+      }
+      specialization.original.erase();
     }
   }
 };

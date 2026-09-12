@@ -333,20 +333,6 @@ canReconfigureDescriptorAcrossEpochs(const DFBLogicalLifecycle &lhs,
          haveDisjointConfigurationEpochs(lhs, rhs);
 }
 
-static bool
-requiresReconfigurationStorage(const DFBLogicalLifecycle &logicalDFB) {
-  // The runtime gives changed descriptors hidden tensor backing, which cannot
-  // also provide static storage for a distinct physical descriptor.
-  auto lifetimeRequiresStorage = [](const DFBPerNodeLifetime &lifetime) {
-    return llvm::any_of(lifetime.epochs, [](const DFBLifecycleEpoch &epoch) {
-      return epoch.entryReconfigurationOrdinal.has_value();
-    });
-  };
-  return llvm::any_of(logicalDFB.nodeLifetimes, lifetimeRequiresStorage) ||
-         llvm::any_of(logicalDFB.possibleNodeLifetimes,
-                      lifetimeRequiresStorage);
-}
-
 } // namespace
 
 struct DFBPairConflictRequirements {
@@ -356,7 +342,7 @@ struct DFBPairConflictRequirements {
   bool requireMatchingPointerOwners = true;
   bool useAllocationGroupEpochs = false;
   bool allowCapacityEnvelope = false;
-  bool requireStaticStorageOwnership = false;
+  bool allowEpochSeparatedScratchStorage = false;
 };
 
 class DFBPhysicalConflictModelBuilder {
@@ -447,7 +433,7 @@ public:
         requirements.requireMatchingElementType = false;
         requirements.requireMatchingTransactions = false;
         requirements.requireMatchingPointerOwners = false;
-        requirements.requireStaticStorageOwnership = true;
+        requirements.allowEpochSeparatedScratchStorage = true;
         addPairConflicts(model, liveness, lhsIndex, rhsIndex, requirements);
       }
     }
@@ -534,6 +520,13 @@ private:
       }
       return;
     }
+    if (requirements.allowEpochSeparatedScratchStorage &&
+        !lhs.tensorBacking && !rhs.tensorBacking &&
+        lhs.accessCompletionProven && rhs.accessCompletionProven &&
+        lhs.lifecycleCompletionProven && rhs.lifecycleCompletionProven &&
+        haveDisjointConfigurationEpochs(lhs, rhs)) {
+      return;
+    }
     bool useConditionalProof =
         !lhs.launchDomain.known && !rhs.launchDomain.known &&
         lhs.conditionallyBounded && rhs.conditionallyBounded;
@@ -554,14 +547,6 @@ private:
       llvm::append_range(sharedNodes, exactSharedNodes.nodes);
     }
     if (sharedNodes.empty()) {
-      return;
-    }
-    if (requirements.requireStaticStorageOwnership &&
-        (requiresReconfigurationStorage(lhs) ||
-         requiresReconfigurationStorage(rhs))) {
-      addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
-                  DFBConflictReason::StorageMismatch, sharedNodes.front(),
-                  lhs.declarations.front(), rhs.declarations.front());
       return;
     }
     if (!lhs.accessCompletionProven || !rhs.accessCompletionProven) {
@@ -1492,13 +1477,15 @@ static FailureOr<ConcurrentAssignmentResult> computeConcurrentAssignments(
               interferenceGraph, vertexWeights, availableIndices,
               selectedColors, remainingSearchStates);
       exactSearchStateCount += minimum.exploredStateCount;
-      if (minimum.isOptimal()) {
+      if (minimum.status !=
+          ExactInterferenceGraphWeightStatus::AllocationWeightOverflow) {
         selectedColors = std::move(minimum.colors);
         colorCount = minimum.colorCount;
         minimumProven = false;
-      } else if (minimum.status ==
-                 ExactInterferenceGraphWeightStatus::SearchLimitReached) {
-        if (allocationByteLimit && allocationBytes > *allocationByteLimit) {
+        if (minimum.status ==
+                ExactInterferenceGraphWeightStatus::SearchLimitReached &&
+            allocationByteLimit &&
+            minimum.allocationWeight > *allocationByteLimit) {
           exactSearchLimitReached = true;
         }
       } else {

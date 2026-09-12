@@ -484,3 +484,94 @@ module attributes {ttl.launch_grid = array<i64: 2, 1>} {
     return
   }
 }
+
+// -----
+
+// Logical negation preserves complementary per-node access domains.
+
+// REUSE-LABEL: func.func @logical_not_domains
+// REUSE: %[[FIRST:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 40 : index}
+// REUSE-NEXT: %[[SECOND:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 41 : index}
+
+// REPORT: DFB logical_id=40 bounded=0 compiler_created=0
+// REPORT-SAME: domain={(0,0)}
+// REPORT: DFB logical_id=41 bounded=0 compiler_created=0
+// REPORT-SAME: domain={(1,0)}
+// REPORT-NOT: DFB conflict lhs=40 rhs=41
+
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @logical_not_domains()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.noc_index = 0 : i32} {
+    %first_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {dfb_id = 40 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
+    %second_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+        {dfb_id = 41 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
+    %core_x = ttl.core_x : index
+    %zero = arith.constant 0 : index
+    %first_node = arith.cmpi eq, %core_x, %zero : index
+    %second_node = "emitc.logical_not"(%first_node) : (i1) -> i1
+    scf.if %first_node {
+      ttl.opaque_call "first_access" (%first_dfb)
+          {header = "access.hpp"}
+          : (!ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>) -> ()
+    }
+    scf.if %second_node {
+      ttl.opaque_call "second_access" (%second_dfb)
+          {header = "access.hpp"}
+          : (!ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>) -> ()
+    }
+    return
+  }
+}
+
+// -----
+
+// An exact scf.if result retains the domain of its selected yielded value.
+
+// REUSE-LABEL: func.func @exact_if_result_domains
+// REUSE: %[[FIRST:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 50 : index}
+// REUSE-NEXT: %[[SECOND:.*]] = ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 51 : index}
+
+// REPORT: DFB logical_id=50 bounded=0 compiler_created=0
+// REPORT-SAME: domain={(0,0)}
+// REPORT: DFB logical_id=51 bounded=0 compiler_created=0
+// REPORT-SAME: domain={(1,0)}
+// REPORT-NOT: DFB conflict lhs=50 rhs=51
+
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @exact_if_result_domains()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
+                  ttl.noc_index = 0 : i32} {
+    %first_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {dfb_id = 50 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
+    %second_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+        {dfb_id = 51 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>
+    %core_x = ttl.core_x : index
+    %zero = arith.constant 0 : index
+    %is_first_node = arith.cmpi eq, %core_x, %zero : index
+    %selected = scf.if %is_first_node -> (i1) {
+      %true = arith.constant true
+      scf.yield %true : i1
+    } else {
+      %false = arith.constant false
+      scf.yield %false : i1
+    }
+    %not_selected = "emitc.logical_not"(%selected) : (i1) -> i1
+    scf.if %selected {
+      ttl.opaque_call "first_access" (%first_dfb)
+          {header = "access.hpp"}
+          : (!ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>) -> ()
+    }
+    scf.if %not_selected {
+      ttl.opaque_call "second_access" (%second_dfb)
+          {header = "access.hpp"}
+          : (!ttl.cb<[1, 1], !ttcore.tile<1x16, bf16>, 2>) -> ()
+    }
+    return
+  }
+}

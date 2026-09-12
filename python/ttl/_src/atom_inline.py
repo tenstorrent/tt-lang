@@ -34,6 +34,16 @@ _NESTED_SCOPES = (
 )
 
 
+def _copy_dfb_source_occurrence(
+    source: ast.AST,
+    destination: ast.AST,
+    default_occurrence: Optional[str] = None,
+) -> None:
+    occurrence = getattr(source, _DFB_SOURCE_OCCURRENCE, default_occurrence)
+    if occurrence is not None:
+        setattr(destination, _DFB_SOURCE_OCCURRENCE, occurrence)
+
+
 class _OuterLocalCollector(ast.NodeVisitor):
     def __init__(self):
         self.names: Set[str] = set()
@@ -106,6 +116,7 @@ class _SubstituteTransformer(ast.NodeTransformer):
         self.rename_map = rename_map
         self.callee_name = callee_name
         self.caller_name = caller_name
+        self.inline_suffix = inline_suffix
         self.dfb_parameter_occurrences = {
             name: f"{inline_suffix}:{name}" for name in dfb_parameter_names
         }
@@ -127,20 +138,81 @@ class _SubstituteTransformer(ast.NodeTransformer):
                     f"{node.id!r}"
                 )
             replacement = copy.deepcopy(self.bindings[node.id])
-            if node.id in self.dfb_parameter_occurrences:
-                # The marker distinguishes formal dependency occurrences after
-                # different parameters adapt to the same caller DFB.
-                occurrence = getattr(
-                    node,
-                    _DFB_SOURCE_OCCURRENCE,
-                    self.dfb_parameter_occurrences[node.id],
-                )
-                setattr(replacement, _DFB_SOURCE_OCCURRENCE, occurrence)
+            # Preserve a nested formal dependency occurrence, or create one
+            # when this substitution binds the current operation's DFB parameter.
+            _copy_dfb_source_occurrence(
+                node,
+                replacement,
+                self.dfb_parameter_occurrences.get(node.id),
+            )
             return ast.copy_location(replacement, node)
         if node.id not in self.rename_map:
             return node
         replacement = ast.Name(id=self.rename_map[node.id], ctx=node.ctx)
+        _copy_dfb_source_occurrence(node, replacement)
         return ast.copy_location(replacement, node)
+
+    def visit_Subscript(self, node):
+        transformed_node = self.generic_visit(node)
+        if not isinstance(transformed_node.value, (ast.Tuple, ast.List)):
+            return transformed_node
+        try:
+            sequence_index = ast.literal_eval(transformed_node.slice)
+        except (TypeError, ValueError, SyntaxError):
+            return transformed_node
+        if not isinstance(sequence_index, int) or isinstance(sequence_index, bool):
+            return transformed_node
+        try:
+            element = transformed_node.value.elts[sequence_index]
+        except IndexError:
+            return transformed_node
+        _copy_dfb_source_occurrence(transformed_node, element)
+        return ast.copy_location(element, transformed_node)
+
+    def visit_For(self, node):
+        transformed_node = self.generic_visit(node)
+        if not isinstance(transformed_node.iter, (ast.Tuple, ast.List)):
+            return transformed_node
+
+        unrolled_body = []
+        for element in transformed_node.iter.elts:
+            loop_bindings = {}
+            self._bind_loop_target(transformed_node.target, element, loop_bindings)
+            loop_transformer = _SubstituteTransformer(
+                loop_bindings,
+                {},
+                self.callee_name,
+                self.caller_name,
+                set(),
+                self.inline_suffix,
+            )
+            for statement in transformed_node.body:
+                transformed_statement = loop_transformer.visit(
+                    copy.deepcopy(statement)
+                )
+                if isinstance(transformed_statement, list):
+                    unrolled_body.extend(transformed_statement)
+                else:
+                    unrolled_body.append(transformed_statement)
+        unrolled_body.extend(transformed_node.orelse)
+        return unrolled_body
+
+    def _bind_loop_target(self, target, value, bindings):
+        if isinstance(target, ast.Name):
+            bindings[target.id] = value
+            return
+        if (
+            isinstance(target, (ast.Tuple, ast.List))
+            and isinstance(value, (ast.Tuple, ast.List))
+            and len(target.elts) == len(value.elts)
+        ):
+            for target_element, value_element in zip(target.elts, value.elts):
+                self._bind_loop_target(target_element, value_element, bindings)
+            return
+        raise ValueError(
+            f"@ttl.operation: captured sequence loop in {self.callee_name!r} "
+            "has incompatible target and element structures"
+        )
 
 
 def inline_atom_calls(
@@ -192,6 +264,82 @@ def inline_atom_calls(
         dfb_resets,
         dfb_reconfigurations,
     )
+
+
+def _static_boolean_value(
+    expression: ast.expr,
+    static_booleans: Dict[str, bool],
+) -> Optional[bool]:
+    if isinstance(expression, ast.Constant) and type(expression.value) is bool:
+        return expression.value
+    if isinstance(expression, ast.Name):
+        return static_booleans.get(expression.id)
+    if isinstance(expression, ast.UnaryOp) and isinstance(expression.op, ast.Not):
+        operand = _static_boolean_value(expression.operand, static_booleans)
+        return None if operand is None else not operand
+    if isinstance(expression, ast.BoolOp):
+        operands = [
+            _static_boolean_value(value, static_booleans) for value in expression.values
+        ]
+        if any(operand is None for operand in operands):
+            return None
+        if isinstance(expression.op, ast.And):
+            return all(operands)
+        if isinstance(expression.op, ast.Or):
+            return any(operands)
+    return None
+
+
+class _StaticBooleanBranchSpecializer(ast.NodeTransformer):
+    def __init__(self, captured_values: Dict[str, object]):
+        self.static_booleans = {
+            name: value
+            for name, value in captured_values.items()
+            if type(value) is bool
+        }
+
+    def _visit_function(self, node):
+        enclosing_booleans = self.static_booleans
+        self.static_booleans = {
+            name: value
+            for name, value in enclosing_booleans.items()
+            if name not in _nested_binding_names(node)
+        }
+        try:
+            transformed = self.generic_visit(node)
+            if not transformed.body:
+                transformed.body = [ast.copy_location(ast.Pass(), transformed)]
+            return transformed
+        finally:
+            self.static_booleans = enclosing_booleans
+
+    def visit_FunctionDef(self, node):
+        return self._visit_function(node)
+
+    def visit_AsyncFunctionDef(self, node):
+        return self._visit_function(node)
+
+    def visit_If(self, node):
+        condition = _static_boolean_value(node.test, self.static_booleans)
+        if condition is None:
+            return self.generic_visit(node)
+        selected = node.body if condition else node.orelse
+        specialized = []
+        for statement in selected:
+            replacement = self.visit(statement)
+            if isinstance(replacement, list):
+                specialized.extend(replacement)
+            elif replacement is not None:
+                specialized.append(replacement)
+        return specialized
+
+
+def specialize_static_boolean_branches(
+    fn_def: ast.FunctionDef,
+    captured_values: Dict[str, object],
+) -> None:
+    """Remove branches selected by captured or inlined boolean literals."""
+    _StaticBooleanBranchSpecializer(captured_values).visit(fn_def)
 
 
 def _inline_statements(
@@ -472,10 +620,16 @@ def _expand_call(
     result: List[ast.stmt] = []
     for statement in spec.fn_ast.body:
         cloned_statement = copy.deepcopy(statement)
-        inlined_statement = transformer.visit(cloned_statement)
-        ast.fix_missing_locations(inlined_statement)
-        setattr(inlined_statement, _INLINED_OPERATION_STATEMENT, True)
-        result.append(inlined_statement)
+        transformed_statement = transformer.visit(cloned_statement)
+        inlined_statements = (
+            transformed_statement
+            if isinstance(transformed_statement, list)
+            else [transformed_statement]
+        )
+        for inlined_statement in inlined_statements:
+            ast.fix_missing_locations(inlined_statement)
+            setattr(inlined_statement, _INLINED_OPERATION_STATEMENT, True)
+            result.append(inlined_statement)
     return result
 
 

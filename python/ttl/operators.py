@@ -70,9 +70,10 @@ def call_extern_func(
             arguments. Entries must identify distinct source occurrences and
             must not repeat an automatic dependency source in ``func_args`` or
             DFB descriptor template arguments.
-        dfb_effects: Optional call-wide sequence of synchronous DFB protocol
-            actions performed on every call execution. A complete summary can
-            permit physical-index reuse and does not emit protocol calls.
+        dfb_effects: Optional sequence of synchronous DFB protocol actions
+            performed on every selected kernel, or a mapping from individual
+            kernel selectors to their respective sequences. A complete summary
+            can permit physical-index reuse and does not emit protocol calls.
         dfb_accesses: Optional synchronous DFB inspections performed by the
             call without publishing, consuming, or changing DFB state.
         unknown_dfb_access: Whether external C++ may access unlisted
@@ -114,8 +115,12 @@ def reset_dfbs(reset: DFBReset, /, *, dfbs) -> None:
     raise RuntimeError("ttl.reset_dfbs() is valid only in a compiled kernel")
 
 
-def reset_all_dfbs(reset: DFBReset, /) -> None:
-    """Apply ``reset_dfbs`` semantics to every worker-local DFB interface."""
+def reset_all_dfbs(reset: DFBReset, /, *, preserve=()) -> None:
+    """Reset every worker-local DFB interface except those in ``preserve``.
+
+    Preserving one member of a DFB allocation group preserves every member of
+    that group because they share one L1 allocation.
+    """
     raise RuntimeError("ttl.reset_all_dfbs() is valid only in a compiled kernel")
 
 

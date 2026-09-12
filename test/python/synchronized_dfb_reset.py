@@ -27,25 +27,24 @@ ttl_api._device_target_arch = _blackhole_compile_target
 
 
 def make_reset_operation():
-    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
-    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
-    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
-    selected_reset = ttl.DFBReset(
-        participants=(compute_kernel, reader_kernel, writer_kernel)
+    participants = (
+        ttl.KernelKind.COMPUTE,
+        ttl.KernelKind.DATA_MOVEMENT,
+        ttl.PIPE_SOURCE_KERNEL,
     )
-    all_reset = ttl.DFBReset(
-        participants=(compute_kernel, reader_kernel, writer_kernel)
-    )
+    selected_reset = ttl.DFBReset(participants=participants)
+    all_reset = ttl.DFBReset(participants=participants)
 
     @ttl.operation()
-    def reset_helper(target: ttl.DFB):
+    def reset_helper(target: ttl.DFB, preserved: ttl.DFB):
         ttl.reset_dfbs(selected_reset, dfbs=[target])
-        ttl.reset_all_dfbs(all_reset)
+        ttl.reset_all_dfbs(all_reset, preserve=[preserved])
 
     @ttl.operation(grid=(1, 1))
     def synchronized_reset_operation(input_tensor):
         target = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
-        reset_helper(target)
+        preserved = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
+        reset_helper(target, preserved)
 
     return synchronized_reset_operation
 
@@ -56,17 +55,17 @@ synchronized_reset_operation = make_reset_operation()
 # One source call is replicated to exactly its three logical-kernel
 # participants. Participant representation is canonical despite source order.
 # INITIAL-LABEL: func.func @synchronized_reset_operation__trisc
-# INITIAL-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "dfb_reset_participant_compute_0_1_0"
-# INITIAL: ttl.reset_dfbs <{{[0-9]+}}, participants[<kind = compute, identity = "dfb_reset_participant_compute_0_1_0"
-# INITIAL-NEXT: ttl.reset_all_dfbs <{{[0-9]+}}, participants[<kind = compute, identity = "dfb_reset_participant_compute_0_1_0"
+# INITIAL-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = compute>
+# INITIAL: ttl.reset_dfbs <{{[0-9]+}}, participants[<kind = compute>, <kind = data_movement>, <kind = data_movement, identity = "<pipe_source>", role = "pipe_source">]
+# INITIAL-NEXT: ttl.reset_all_dfbs <{{[0-9]+}}, participants[<kind = compute>, <kind = data_movement>, <kind = data_movement, identity = "<pipe_source>", role = "pipe_source">]> preserve %{{.*}} : !ttl.cb
 # INITIAL-LABEL: func.func @synchronized_reset_operation__ncrisc
-# INITIAL-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "dfb_reset_participant_data_movement_0_1_0"
-# INITIAL: ttl.reset_dfbs <{{[0-9]+}}, participants[<kind = compute, identity = "dfb_reset_participant_compute_0_1_0"
-# INITIAL-NEXT: ttl.reset_all_dfbs <{{[0-9]+}}, participants[<kind = compute, identity = "dfb_reset_participant_compute_0_1_0"
+# INITIAL-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>
+# INITIAL: ttl.reset_dfbs <{{[0-9]+}}, participants[<kind = compute>, <kind = data_movement>, <kind = data_movement, identity = "<pipe_source>", role = "pipe_source">]
+# INITIAL-NEXT: ttl.reset_all_dfbs <{{[0-9]+}}, participants[<kind = compute>, <kind = data_movement>, <kind = data_movement, identity = "<pipe_source>", role = "pipe_source">]> preserve %{{.*}} : !ttl.cb
 # INITIAL-LABEL: func.func @synchronized_reset_operation__brisc
-# INITIAL-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "dfb_reset_participant_data_movement_0_1_1"
-# INITIAL: ttl.reset_dfbs <{{[0-9]+}}, participants[<kind = compute, identity = "dfb_reset_participant_compute_0_1_0"
-# INITIAL-NEXT: ttl.reset_all_dfbs <{{[0-9]+}}, participants[<kind = compute, identity = "dfb_reset_participant_compute_0_1_0"
+# INITIAL-SAME: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "<pipe_source>", role = "pipe_source">
+# INITIAL: ttl.reset_dfbs <{{[0-9]+}}, participants[<kind = compute>, <kind = data_movement>, <kind = data_movement, identity = "<pipe_source>", role = "pipe_source">]
+# INITIAL-NEXT: ttl.reset_all_dfbs <{{[0-9]+}}, participants[<kind = compute>, <kind = data_movement>, <kind = data_movement, identity = "<pipe_source>", role = "pipe_source">]> preserve %{{.*}} : !ttl.cb
 
 # The built-in lowering supplies the shared state address and physical-index
 # masks; no user reset helper is required.
