@@ -69,7 +69,7 @@ routing_plane_write(tt::tt_fabric::RoutingPlaneConnectionManager &manager,
   }
 }
 
-static __attribute__((noinline)) void routing_plane_scatter_write(
+FORCE_INLINE void routing_plane_scatter_write(
     tt::tt_fabric::RoutingPlaneConnectionManager &manager, uint32_t routeId,
     uint32_t connectionIndex, uint32_t destinationDeviceId,
     uint32_t destinationMeshId, uint32_t destinationHopCount,
