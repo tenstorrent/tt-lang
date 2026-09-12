@@ -300,6 +300,40 @@ def TTL_DeviceTransferAttr : TTL_Attr<"DeviceTransfer", "device_transfer"> {
   let genVerifyDecl = 1;
 }
 
+def TTL_TransferGraphAttr : TTL_Attr<"TransferGraph", "transfer_graph"> {
+  let summary = "Logical-device transfer relation";
+  let description = [{
+    Defines a logical transfer relation without binding it to launch-node
+    endpoints. `kind` selects the relation semantics. For every kind except
+    `explicit`, `componentName` identifies the domain component whose
+    coordinates change. `properties` contains only parameters specific to
+    that relation:
+
+    - `explicit`: `edges` as an array of `#ttl.transfer_edge` attributes;
+    - `axis_neighbor`: `axis`, positive `offset`, and `wrap`;
+    - `stencil`: `offsets` and `wrap`;
+    - `gather`: component-local `root`;
+    - `scatter`: component-local `source`;
+    - `all_to_all`: no additional properties.
+
+    Explicit graphs preserve edge-array order. The other kinds use row-major
+    device order. Stencils order edges by source device and then by the
+    declared offset list; all-to-all orders each source before its
+    destinations. PipeNet callbacks observe this order.
+
+    Domain extents are fixed for one compiled operation instance. Programs may
+    instantiate the same relation kind with different domain extents.
+  }];
+  let parameters = (ins
+    "DeviceDomainAttr":$domain,
+    "TransferGraphKind":$kind,
+    OptionalParameter<"StringAttr">:$componentName,
+    "DictionaryAttr":$properties
+  );
+  let assemblyFormat = "`<` struct(params) `>`";
+  let genVerifyDecl = 1;
+}
+
 def TTL_TileExecutionStrategyAttr
     : TTL_Attr<"TileExecutionStrategy", "tile_execution_strategy"> {
   let summary = "Selected tile execution strategy";
@@ -479,27 +513,46 @@ def TTL_PipeRecordAttr : TTL_Attr<"PipeRecord", "pipe_record"> {
   let genVerifyDecl = 1;
 }
 
-def TTL_PipeNetRecordsAttr : TTL_Attr<"PipeNetRecords", "pipenet_records"> {
-  let summary = "Identifies a PipeNet and contains its static pipe records";
+def TTL_PipeMappingAttr : TTL_Attr<"PipeMapping", "pipe_mapping"> {
+  let summary = "Device graph with node-level Pipes";
   let description = [{
-    Identifies a PipeNet by id and contains the ordered list of
-    `#ttl.pipe_record` attributes that make up the net. PipeNet foreach ops use
-    this attribute to represent callback iteration without creating one
-    source-level operation per record.
+    Associates one logical-device graph with an ordered list of node-level
+    Pipes. Every graph edge is combined with every Pipe in the list. Storing
+    the graph and Pipe list separately avoids one attribute per combination.
+  }];
+  let parameters = (ins
+    "TransferGraphAttr":$graph,
+    ArrayRefParameter<"::mlir::tt::ttl::PipeRecordAttr">:$pipes
+  );
+  let assemblyFormat = "`<` `graph` `=` $graph `,` `pipes` `[` $pipes `]` `>`";
+  let genVerifyDecl = 1;
+}
 
-    `pipes` is in user PipeNet construction order. A launch node that matches
-    multiple records executes them in this order. Duplicate records are
-    distinct entries and execute as separate callback invocations.
+def TTL_PipeNetRecordsAttr : TTL_Attr<"PipeNetRecords", "pipenet_records"> {
+  let summary = "Identifies a PipeNet and contains its pipe relation";
+  let description = [{
+    Identifies a PipeNet by id. A local PipeNet uses `pipes` as its ordered
+    list of `#ttl.pipe_record` attributes. A graph PipeNet uses `mappings` as
+    an ordered list of `#ttl.pipe_mapping` attributes. Exactly one
+    representation is nonempty.
+
+    PipeNet foreach operations use this attribute to represent callback
+    iteration without cloning a source-level callback body. Local records are
+    ordered by Pipe construction. Graph records are ordered by mapping, graph
+    edge, then node Pipe. A launch node that matches multiple records executes
+    them in this order.
   }];
 
   let parameters = (ins
     "int64_t":$pipeNetId,
     OptionalParameter<"::mlir::StringAttr">:$pipeNetName,
-    ArrayRefParameter<"::mlir::tt::ttl::PipeRecordAttr">:$pipes
+    OptionalArrayRefParameter<"::mlir::tt::ttl::PipeRecordAttr">:$pipes,
+    OptionalArrayRefParameter<"::mlir::tt::ttl::PipeMappingAttr">:$mappings
   );
 
   let assemblyFormat = "`<` `net` $pipeNetId (`name` $pipeNetName^)? "
-                       "`pipes` `[` $pipes `]` `>`";
+                       "(`pipes` `[` $pipes^ `]`)? "
+                       "(`mappings` $mappings^)? `>`";
   let genVerifyDecl = 1;
 }
 

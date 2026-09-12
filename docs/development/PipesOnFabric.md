@@ -221,14 +221,42 @@ transfers = ttl.TransferGraph.edges(
 net = ttl.PipeNet(graph=transfers)
 ```
 
+Graph-only construction applies the transfer relation to every launch node. For
+example, in an operation with a `(2, 2)` launch grid, the graph above describes
+these four transfers:
+
+```text
+device (0, 0), node (0, 0) -> device (0, 3), node (0, 0)
+device (0, 0), node (0, 1) -> device (0, 3), node (0, 1)
+device (0, 0), node (1, 0) -> device (0, 3), node (1, 0)
+device (0, 0), node (1, 1) -> device (0, 3), node (1, 1)
+```
+
+Each transfer uses the same node coordinate on its source and destination
+device. A transfer between distinct node coordinates declares the node
+relation separately:
+
+```python
+net = ttl.PipeNet(
+    graph=transfers,
+    pipes=[ttl.Pipe(src=(1, 0), dst=(0, 0))],
+)
+```
+
+Each transfer is `(source device, source node) ->
+(destination device, destination node)`. Device-indexed `ttl.Pipe` endpoints
+allow one `PipeNet` to contain different device and node relations without a
+separate public association type. PipeNet guards restrict which declared
+endpoints execute protocol operations; they do not infer or modify the
+relation.
+
 The graph does not state whether the target uses a line, ring, torus, mesh, or
 another interconnect. It also does not require `(0, 0)` and `(0, 3)` to be one
 hardware packet apart.
 
-Structured transfers share common domain and component properties through
-`StructuredTransfer`. Current derived forms include axis-neighbor, gather, and
-scatter relations. Additional collectives should add semantic transfer forms
-such as all-to-all without adding target topology fields.
+`TransferGraph` supports explicit edge lists and parameter-based axis-neighbor,
+stencil, gather, scatter, and all-to-all relations. Additional common relations
+should describe communication semantics without adding target topology fields.
 
 ### Shared pipe protocol
 
@@ -358,21 +386,34 @@ The TTL dialect defines:
 - `DeviceRangeAttr` for a logical device range;
 - `TransferEdgeAttr` for one logical transfer relation;
 - `DeviceTransferAttr` for binding a logical device edge to a node-level
-  pipe.
+  pipe;
+- `TransferGraphAttr` for explicit edge lists or parameter-based
+  logical-device relations;
+- `PipeMappingAttr` for one device graph and its list of node Pipes; every
+  graph edge is combined with every listed Pipe;
+- `PipeNetRecordsAttr` for a local record list or an ordered list of graph
+  mappings;
 - `CurrentDeviceIndexOp` for the current member's row-major logical index.
 
 These attributes contain no target route fields. Their verifiers check domain
 membership, coordinate rank, and transfer structure.
 
-A graph PipeNet lowers to one ordered `PipeNetRecordsAttr` and one callback
-region for each source or destination role. The callback receives a selected
-record whose coordinate and logical-device fields come from immutable tables.
-This keeps callback code independent of the global edge count; it does not
-clone the callback for every transfer edge. The current representation still
-stores one metadata row per edge and launch node combination and scans the
-table on each logical device. Per-device record indices can reduce the scan
-cost, while target-level structured descriptors can reduce metadata, without
-changing the domain or callback semantics.
+A graph PipeNet lowers to one `PipeNetRecordsAttr` containing its mappings and
+one callback region for each source or destination role. The callback receives
+one selected transfer with node coordinates and logical device indices. Graphs
+created with `axis_neighbor`, `stencil`, `gather`, `scatter`, or `all_to_all`
+calculate endpoints from their stored parameters. For an explicit graph, an
+offset and count locate the source or destination edge-index entries for each
+logical device. Each device iterates only edges for which it is the source or
+destination. Every transfer has a stable index used to select its
+resource-table entries. Core specialization removes node-coordinate table
+columns whose value is constant on that core. The frontend and TTL IR do not
+store a separate record for every combination of device edge and node Pipe.
+
+One compiled operation fixes its logical domain extents. A Python function may
+accept domain extents and construct the corresponding graph for each supported
+device count. Transfer graphs remain logical; host target binding resolves
+physical placement, routes, and forwarding links.
 
 ### Pipe lowering
 
@@ -437,7 +478,7 @@ The comparison uses these execution-location markers:
 - `[C]`: compiler work performed before invocation;
 - `[H]`: host runtime work performed while constructing program descriptors,
   before `ttnn.generic_op(...)` submission;
-- `[D]`: worker-kernel work performed on a TENSIX node.
+- `[D]`: kernel work performed on a Tensix node.
 
 Route-decision work occurs at different locations and frequencies:
 
@@ -615,14 +656,15 @@ source and destination `FabricNodeId`. The cache is cleared when the mesh
 object or active fabric configuration changes. The binder first collects every
 connection required by one source device. Within a manager, destinations with
 the same direction reuse one connection only when their eligible-link sets
-intersect. Across managers, the compiler records ownership intervals and an
-interference graph. Deterministic graph coloring permits a proven
-receiver/sender ownership pair to reuse a forwarding link and assigns distinct
-links to all other managers. An external manager may reserve a fixed link
-through operation runtime resources; tt-lang validates the reservation but does
-not interpret or modify the external manager's runtime arguments. The complete
-plan is validated before program descriptors, semaphores, or runtime arguments
-are modified.
+intersect. Managers on different worker nodes may use the same physical link,
+as supported by TT-Metal's routing-plane connection API. For managers on one
+worker node, the compiler records ownership intervals and an interference
+graph. Deterministic graph coloring permits a proven receiver/sender ownership
+pair to reuse a forwarding link and assigns distinct links to overlapping
+managers. An external manager may reserve a fixed link through operation runtime
+resources; tt-lang validates the reservation but does not interpret or modify
+the external manager's runtime arguments. The complete plan is validated before
+program descriptors, semaphores, or runtime arguments are modified.
 
 An external scoped manager call inside structured control flow records its
 compiler-proven launch-node domain. Runtime binding resolves each kernel
@@ -721,5 +763,5 @@ still requires:
 - Jointly score legal routes and links by hop count, availability, estimated
   contention, connection reuse, and barrier cost.
 - Measure destination-table decoding, host connection setup, connection reuse,
-  packetization, and worker placement against specialized communication
+  packetization, and node placement against specialized communication
   kernels.

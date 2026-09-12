@@ -118,14 +118,27 @@ def test_direct_transfer_graph_construction_validates_edges():
         )
 
 
-def test_transfer_graph_rejects_exact_self_transfer():
+def test_transfer_graph_accepts_exact_self_transfer():
     domain = DeviceDomain((4,))
 
-    with pytest.raises(ValueError, match="source must differ from destination"):
-        TransferGraph.edges(domain, edges=[(1, 1)])
+    graph = TransferGraph.edges(domain, edges=[(1, 1)])
+
+    assert tuple(graph.iter_edges()) == (
+        TransferEdge(DeviceRef((1,)), DeviceRef((1,))),
+    )
 
 
-def test_structured_axis_neighbor_remains_compact():
+def test_transfer_graph_rejects_duplicate_edges():
+    domain = DeviceDomain((1, 2))
+
+    with pytest.raises(ValueError, match="edges must be unique"):
+        TransferGraph.edges(
+            domain,
+            edges=[((0, 0), (0, 1)), ((0, 0), (0, 1))],
+        )
+
+
+def test_axis_neighbor_stores_parameters_instead_of_explicit_edges():
     domain = DeviceDomain((1024, 1024))
     graph = TransferGraph.axis_neighbor(domain, axis=1, offset=1)
 
@@ -134,7 +147,7 @@ def test_structured_axis_neighbor_remains_compact():
     assert graph.transfer_edges == ()
     assert graph.structured.component_name == "device"
     assert graph.structured.axis == 1
-    assert "structured descriptor" in graph.metadata_cost().compile_time
+    assert "domain and relation parameters" in graph.metadata_cost().compile_time
 
 
 def test_axis_neighbor_edges_are_materialized_from_compact_relation():

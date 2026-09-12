@@ -3914,6 +3914,27 @@ def test_routing_plane_reuses_link_for_noninterfering_manager_intervals(monkeypa
     assert [call[2] for call in fake_ttnn.fabric_setup_calls] == [[0], [0]]
 
 
+def test_routing_plane_shares_link_across_worker_nodes(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(1)
+    program.kernels[0].core_ranges = _make_fake_core_ranges((1, 0))
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0), (1, 0)), 0)
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
+        kernel_fabric_manager_intervals=[(_fabric_manager_interval("distributed"),)],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=2,
+        grid_rows=1,
+    )
+
+    assert [call[2] for call in fake_ttnn.fabric_setup_calls] == [[0], [0]]
+
+
 def test_routing_plane_separates_interfering_manager_intervals(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)

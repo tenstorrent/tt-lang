@@ -437,12 +437,17 @@ def _assign_fabric_links(
     manager_requests: List[_FabricManagerRequest],
     interference_by_interval: Dict[str, frozenset[str]],
 ) -> Dict[Tuple[int, int], Optional[int]]:
-    connections_by_direction = {}
+    """Assign links, separating overlapping managers only on the same worker node."""
+    connections_by_worker_node_and_direction = {}
     for manager_index, manager_request in enumerate(manager_requests):
         for connection_index, connection in enumerate(manager_request.connections):
-            connections_by_direction.setdefault(connection.direction, []).append(
-                (manager_index, connection_index)
+            worker_node_and_direction = (
+                manager_request.node_coordinates,
+                connection.direction,
             )
+            connections_by_worker_node_and_direction.setdefault(
+                worker_node_and_direction, []
+            ).append((manager_index, connection_index))
 
     def connections_interfere(lhs_key, rhs_key):
         lhs_manager_index, lhs_connection_index = lhs_key
@@ -462,7 +467,11 @@ def _assign_fabric_links(
         return False
 
     selected_links = {}
-    for direction, connection_keys in connections_by_direction.items():
+    for (
+        worker_node_and_direction,
+        connection_keys,
+    ) in connections_by_worker_node_and_direction.items():
+        node_coordinates, direction = worker_node_and_direction
         adjacency = {connection_key: set() for connection_key in connection_keys}
         for connection_position, lhs_key in enumerate(connection_keys):
             for rhs_key in connection_keys[connection_position + 1 :]:
@@ -583,7 +592,8 @@ def _assign_fabric_links(
             )
             raise ValueError(
                 "fabric connection plan cannot assign distinct forwarding "
-                f"links to interfering managers in direction {direction}; "
+                f"links to interfering managers at node {node_coordinates} "
+                f"in direction {direction}; "
                 f"participants: {'; '.join(participants)}; "
                 f"interference: {interference}"
             )

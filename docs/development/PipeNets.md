@@ -5,8 +5,8 @@ scheduling, simulator behavior, and test coverage in tt-lang. Both the
 compiler and the simulator consume the same operation-level PipeNet
 collection described in [Operation PipeNets](#operation-pipenets).
 
-A node is one execution coordinate in the launched device grid. A
-dataflow buffer (DFB) is the user-visible payload buffer used by
+A node is a Tensix unit identified by one coordinate in the operation's launch
+grid. A dataflow buffer (DFB) is the user-visible payload buffer used by
 producer, consumer, and pipe transfer code. A pipe-coupled operation is
 an operation whose legality depends on a PipeNet role, such as a
 pipe-typed `ttl.copy` or a DFB wait whose producer is PipeNet-routed.
@@ -15,64 +15,186 @@ writes and semaphore increments.
 
 ## Overview
 
-`ttl.PipeNet` describes a logical communication pattern between nodes. A
-pipe carries data from a source coordinate (`src`) to either a single
-destination (point-to-point) or a contiguous coordinate range
-(collective). When the launch grid is larger than the union of all pipe
-sources and destinations, the extra nodes have no role in the
-communication. If the user fails to guard pipe-coupled work from those
-nodes, the kernel reads out-of-bounds tensor regions and corrupts the
-pipe synchronization protocol; this failure mode is the one the
-verifier guards against (see issue #541).
+`ttl.PipeNet` describes communication between Tensix nodes. A `Pipe` carries
+data from one source node to one destination node (point-to-point) or to a
+range of destination nodes (collective). The current collective syntax accepts
+one axis-aligned, unit-stride node range because it lowers directly to TT-Metal
+NoC multicast.
+
+For multi-device operations, a `DeviceSelection` identifies source or
+destination devices, `at_node(x, y)` selects one Tensix node on every selected
+device, and `Pipe` connects the resulting endpoints. [Device selections and
+Pipe endpoints](DeviceSelections.md) defines the indexing and endpoint API.
+`PipeNet` contains the Pipe declarations and invokes source and destination
+callbacks for their transfers. A local `Pipe` omits device selections and
+connects nodes on one device.
 
 The launch grid is the grid that `@ttl.operation(grid=...)` schedules
-onto. The work extent is the per-axis bounding box of every pipe
-coordinate in the user's PipeNets. The launch grid and work extent are
-separate: the launch may cover more nodes than the communication uses.
-The `grid=` argument selects the launch:
+onto. The work extent is the per-axis bounding box of every Pipe coordinate.
+The launch grid and work extent are separate: the launch may cover more nodes
+than the communication uses. The `grid=` argument selects the launch:
 
 - `grid="full"` launches on the device compute grid.
 - `grid="auto"` is currently an alias for `"full"`.
 - An explicit tuple is used verbatim.
 
 A PipeNet's active nodes are the union of its source and destination
-coordinates. This is the node set tested by `net.is_active()`. Whenever
-the launch is wider than those active nodes, the user must guard
-pipe-coupled regions with `net.is_src()`, `net.is_dst()`,
-`net.is_active()`, or coordinate comparisons that test the same source or
-destination membership. The verifier rejects any pipe-coupled operation
-reachable from a node outside its declared role. The diagnostic names the offending
-operation, an example offending coordinate, the contributing PipeNet or
-PipeNets, and a suggested guard.
+coordinates. This is the set tested by `net.is_active()`. Whenever the launch
+grid includes other nodes, the program must guard pipe-coupled regions with
+`net.is_src()`, `net.is_dst()`, `net.is_active()`, or equivalent coordinate
+conditions. Otherwise an unrelated node could execute a transfer, access the
+wrong tensor region, or modify synchronization state. The verifier rejects
+such operations and reports an offending coordinate and a suitable guard.
 
 The compiler verifies user-written guards: each pipe-coupled operation
 must be reachable only from the nodes permitted by its role
-(`ttl.copy(buffer, pipe)` only from `pipe.src`;
-`ttl.copy(pipe, buffer)` only from `pipe.dst`; `cb_wait` reachable
-only within the static producer domain for that DFB index). The
-verifier reads the IR and emits diagnostics; it does not rewrite the
-program.
+(`ttl.copy(buffer, pipe)` only from `pipe.src`; `ttl.copy(pipe, buffer)` only
+from `pipe.dst`; and a DFB wait only from a node that may execute the DFB
+producer). The verifier reads the IR and reports invalid programs; it does not
+insert guards.
+
+### Graph PipeNet endpoints
+
+A local PipeNet specifies launch-node endpoints directly:
+
+```python
+net = ttl.PipeNet(
+    pipes=[ttl.Pipe(src=(1, 0), dst=(0, 0))],
+)
+```
+
+The graph-only form applies every logical-device edge to every launch node. For
+example, this PipeNet transfers from device 0 to device 1:
+
+```python
+devices = ttl.DeviceDomain((2,))
+graph = ttl.TransferGraph.edges(devices, edges=[(0, 1)])
+net = ttl.PipeNet(graph=graph)
+```
+
+In an operation with a `(2, 2)` launch grid, it describes these four
+transfers:
+
+```text
+device 0, node (0, 0) -> device 1, node (0, 0)
+device 0, node (0, 1) -> device 1, node (0, 1)
+device 0, node (1, 0) -> device 1, node (1, 0)
+device 0, node (1, 1) -> device 1, node (1, 1)
+```
+
+Supplying `pipes=[ttl.Pipe(src=(1, 0), dst=(0, 0))]` instead describes one
+transfer from node `(1, 0)` on device 0 to node `(0, 0)` on device 1.
+
+`TransferGraph.edges(...)` lists device edges explicitly. The other
+constructors store parameters for common relations instead of an edge list:
+
+| Constructor | Device transfers | Order |
+| --- | --- | --- |
+| `axis_neighbor(...)` | Each device sends to the device at one offset along an axis. `wrap=True` connects the ends. | Source devices in row-major order. |
+| `stencil(...)` | Each device sends to the declared coordinate offsets. Out-of-domain destinations are omitted unless `wrap=True`. | Source devices in row-major order, then offsets in declaration order. |
+| `gather(..., root=...)` | Every non-root device sends to the selected root within each fixed combination of the other component coordinates. | Source devices in row-major order. |
+| `scatter(..., source=...)` | The selected source sends to every other device within each fixed combination of the other component coordinates. | Destination devices in row-major order. |
+| `all_to_all(...)` | Every device sends to every other device within each fixed combination of the other component coordinates. | Sources in row-major order, then destinations in row-major order. |
+
+These five constructors omit self-transfers. `component=` selects the
+`DeviceDomain` component whose coordinates change; coordinates in other
+components remain fixed.
+
+When the source and destination node coordinates differ, `graph` and
+`pipes` declare both endpoint relations explicitly:
+
+```python
+net = ttl.PipeNet(
+    graph=graph,
+    pipes=[ttl.Pipe(src=(1, 0), dst=(0, 0))],
+)
+```
+
+Every graph edge is combined with every listed node Pipe. For example, two
+device edges and three node Pipes describe six transfers. Each transfer has
+the following endpoints:
+
+```text
+(source device, source node) -> (destination device, destination node)
+```
+
+A `Pipe` may instead specify both device and node coordinates directly:
+
+```python
+devices = ttl.DeviceDomain((8, 4))
+net = ttl.PipeNet(
+    [
+        ttl.Pipe(
+            src=devices[0, 0].at_node(1, 0),
+            dst=devices[0, 1].at_node(0, 0),
+        ),
+        ttl.Pipe(
+            src=devices[7, 3].at_node(2, 0),
+            dst=devices[6, 3].at_node(3, 0),
+        ),
+    ]
+)
+```
+
+This form avoids a separate `TransferGraph` when each Pipe has its own device
+endpoints. `Pipe.pairwise(...)` connects corresponding members of two
+rectangular device selections. `Pipe.all_to_all(...)` connects every selected
+source device to every selected destination device.
+
+If either constructor produces both same-device and remote transfers, it
+places the same-device transfers first because NoC and fabric use different
+synchronization protocols. Within each set, pairwise transfers follow the
+positions in their source and destination views. All-to-all transfers process
+sources in parent-domain order and, for each source, destinations in
+parent-domain order.
+
+The declaration determines topology. `if_src` and `if_dst` iterate the
+declared transfers. `is_src`, `is_dst`, `is_active`, and equivalent coordinate
+conditions restrict execution to declared endpoint roles; guards do not add
+connectivity.
+
+TTL IR stores each device graph once beside its associated list of node Pipes.
+It does not create a separate IR record for every combination of device edge
+and node Pipe. Lowering processes these entries in declaration order. Within
+one entry, it processes device edges in the graph's documented order, then node
+Pipes in list order.
+
+For an explicit graph, the compiler stores source and destination edge-index
+lists. Each logical device has an offset and count identifying its entries, so
+its kernel iterates only edges for which that device is the source or
+destination. Graphs built with the five constructors above store their
+parameters. Every transfer receives a stable integer used to select its address
+and synchronization resources. Core specialization removes node-coordinate
+table columns whose value is constant on that core.
+
+Transfer topology is compile-time information, but one Python function can
+construct a collective for several device counts. The function accepts domain
+extents and constructs the corresponding `DeviceDomain` and `TransferGraph`.
+Each compiled operation instance has fixed logical domain extents. Runtime
+binding determines physical device placement and fabric routes; the graph does
+not encode them.
 
 ## PipeNet callbacks and generated code
 
-A PipeNet record is one `ttl.Pipe` declaration: one source coordinate and one
-point-to-point destination or collective destination range. The Python
-frontend represents `net.if_src(callback)` and `net.if_dst(callback)` with one
-`ttl.pipenet_foreach_src` or `ttl.pipenet_foreach_dst` region. The region owns
-the ordered record list and contains one copy of the callback body. At runtime,
-each launch node executes that body once for every record in which the node has
-the requested source or destination role. Multiple matching records execute in
-PipeNet construction order.
+A local PipeNet record is one `ttl.Pipe` declaration. A graph PipeNet record is
+one device edge combined with one node Pipe. The Python frontend represents
+`net.if_src(callback)` and `net.if_dst(callback)` with one
+`ttl.pipenet_foreach_src` or `ttl.pipenet_foreach_dst` region containing one
+copy of the callback body. At runtime, a node executes that body once for each
+record in which its node coordinate and logical device have the requested
+source or destination role.
 
-`net.destination_count()` returns the number of records that select the
-current node as a destination. It counts records, including duplicate endpoint
-relations, rather than distinct sources or destination coordinates. The result
-therefore equals the number of `net.if_dst(callback)` executions on that node
-and can be used as a receive-loop bound. It does not perform synchronization.
-Local PipeNets lower the count to one launch-node-indexed constant-table lookup;
-graph PipeNets also match each record's logical destination device.
+`net.destination_count()` returns the number of records that select the current
+node as a destination. It counts repeated local Pipe records separately rather
+than counting distinct sources or destination coordinates. Graph PipeNet
+construction rejects duplicate combinations of device edge and node Pipe. The
+result therefore equals the number of `net.if_dst(callback)` executions on
+that node and can be used as a receive-loop bound. It does not perform
+synchronization. Local PipeNets lower the count to one node-indexed constant
+table lookup; graph PipeNets also match each record's logical destination
+device.
 
-TTKernel conversion uses two representations:
+TTKernel conversion uses three representations:
 
 - For one to four records, conversion emits one static pipe and one coordinate
   condition per record. This avoids loop and table-lookup overhead for small
@@ -82,13 +204,25 @@ TTKernel conversion uses two representations:
   represents the current record inside the loop. This table-driven form emits
   one callback and transfer protocol body; only the immutable table contents
   grow with the number of records.
+- For graph PipeNets, conversion emits one loop over device edges where the
+  current logical device is the source or destination, then one loop over the
+  associated node Pipes. The five standard graph constructors calculate
+  endpoints from their parameters. For explicit graphs, an offset and count
+  locate the source or destination edge-index entries for the current device.
 
 The immutable tables become bit-packed C++ template arguments stored outside
-the kernel stack. Pipe graph analysis still creates one transfer node per
-record. A selected-pipe type identifies whether iteration selected the record
-by its source or destination coordinates; copy operand position determines
-whether that record is used for a send or receive. Launch-domain verification
-proves that the selected callback executes on the required endpoint.
+the kernel stack. Inside a callback loop, `ttl.select_pipe_src` or
+`ttl.select_pipe_dst` represents the current transfer and the endpoint role
+that selected it. Copying from a DFB to that value sends data; copying from that
+value to a DFB receives data. Launch-domain verification proves that the
+callback executes on the required endpoint.
+
+PipeGraph enumerates transfers while proving protocol schedules. It retains
+one compiler-only transfer node for each combination of device edge and node
+Pipe because address sequences, lifetimes, and resource requirements may
+differ for each transfer. The compiler discards this analysis state before
+code emission; it does not appear in generated source, program descriptors, or
+device constants.
 
 Resource planning stores each record's address-table entry and synchronization
 indices in record order, and the loop index selects the corresponding values.

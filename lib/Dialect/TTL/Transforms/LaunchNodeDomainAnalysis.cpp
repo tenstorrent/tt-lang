@@ -335,18 +335,19 @@ LaunchNodeDomain getPipeRecordRoleLaunchNodeDomain(PipeRecordAttr record,
 LaunchNodeDomain getPipeRecordsRoleLaunchNodeDomain(PipeNetRecordsAttr records,
                                                     PipeRole role) {
   LaunchNodeDomain result;
-  for (PipeRecordAttr record : records.getPipes()) {
+  forEachNodePipeRecord(records, [&](PipeRecordAttr record) {
     LaunchNodeDomain recordDomain =
         getPipeRecordRoleLaunchNodeDomain(record, role);
     result = result.unionWith(recordDomain);
-  }
+  });
   return result;
 }
 
 // Return true if `records` specifies logical-device transfers, and false for
 // absent or local records. Attribute verification ensures all entries agree.
 static bool hasDeviceQualifiedPipeNetRecords(PipeNetRecordsAttr records) {
-  return records && records.getPipes().front().getDeviceTransfer();
+  return records && (!records.getMappings().empty() ||
+                     records.getPipes().front().getDeviceTransfer());
 }
 
 // Return the source, destination, or combined node coordinates requested by
@@ -465,7 +466,7 @@ void LaunchNodeDomainState::recordPipeNetRecords(PipeNetRecordsAttr records,
     name = attr.getValue();
   }
   int64_t pipeNetId = records.getPipeNetId();
-  for (PipeRecordAttr record : records.getPipes()) {
+  forEachNodePipeRecord(records, [&](PipeRecordAttr record) {
     PipeType pipeType =
         PipeType::get(records.getContext(), record.getSrcX(), record.getSrcY(),
                       record.getDstStartX(), record.getDstStartY(),
@@ -479,7 +480,7 @@ void LaunchNodeDomainState::recordPipeNetRecords(PipeNetRecordsAttr records,
     netDestinationDomains[pipeNetId] =
         netDestinationDomains[pipeNetId].unionWith(
             getPipeDestinationLaunchNodeDomain(pipeType, baseDomain));
-  }
+  });
   // One location identifies the declaration; recording it per row would
   // duplicate every diagnostic note for the same PipeNet.
   pipeNetLocs[pipeNetId].push_back(loc);
@@ -583,15 +584,17 @@ static std::optional<bool> evaluatePipeNetPredicateAtLaunchLocation(
     return std::nullopt;
   }
   bool selected = false;
-  for (PipeRecordAttr record : records.getPipes()) {
+  bool unknown = false;
+  forEachPipeRecord(records, [&](std::uint64_t, PipeRecordAttr record) {
     std::optional<bool> recordMatches = pipeRecordRoleMatchesAtLaunchLocation(
         record, predicate.getReferencedRole(), location);
     if (!recordMatches) {
-      return std::nullopt;
+      unknown = true;
+      return;
     }
     selected |= *recordMatches;
-  }
-  return selected;
+  });
+  return unknown ? std::nullopt : std::optional<bool>(selected);
 }
 
 // Return no result unless every record's role is known at this location.
@@ -600,15 +603,17 @@ evaluatePipeNetRoleRecordCountAtLaunchLocation(
     PipeNetRecordsAttr records, PipeRole role,
     const LaunchExecutionLocation &location) {
   std::uint64_t count = 0;
-  for (PipeRecordAttr record : records.getPipes()) {
+  bool unknown = false;
+  forEachPipeRecord(records, [&](std::uint64_t, PipeRecordAttr record) {
     std::optional<bool> recordMatches =
         pipeRecordRoleMatchesAtLaunchLocation(record, role, location);
     if (!recordMatches) {
-      return std::nullopt;
+      unknown = true;
+      return;
     }
     count += *recordMatches;
-  }
-  return count;
+  });
+  return unknown ? std::nullopt : std::optional<std::uint64_t>(count);
 }
 
 static std::optional<llvm::APInt>

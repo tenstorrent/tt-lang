@@ -4,6 +4,7 @@ add_mlir_dialect_library(MLIRTTLDialect
     TTLOpsEnums.cpp
     TTLOpsUtils.cpp
     TTLOpsVerifyUtils.cpp
+    TransferGraph.cpp
 
     ADDITIONAL_HEADER_DIRS
     ${PROJECT_SOURCE_DIR}/include/ttlang
