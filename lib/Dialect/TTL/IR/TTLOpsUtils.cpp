@@ -46,7 +46,7 @@ std::optional<ReadyReceiveSelection> getReadyReceiveSelection(Value predicate) {
   if (static_cast<std::size_t>(*selectedIndex) >= candidateCount) {
     return std::nullopt;
   }
-  return ReadyReceiveSelection{waitAny, *selectedIndex,
+  return ReadyReceiveSelection{waitAny, *selectedIndex, candidateCount,
                                compare.getPredicate() ==
                                    arith::CmpIPredicate::eq};
 }
@@ -60,13 +60,17 @@ bool isInReadyReceiveSelectionRegion(
     if (ifOp) {
       std::optional<ReadyReceiveSelection> selection =
           getReadyReceiveSelection(ifOp.getCondition());
-      bool inSelectedRegion =
-          selection && ((selection->selectedWhenTrue &&
-                         block->getParent() == &ifOp.getThenRegion()) ||
-                        (!selection->selectedWhenTrue &&
-                         block->getParent() == &ifOp.getElseRegion()));
-      if (inSelectedRegion && selection->candidateIndex == candidateIndex &&
-          selection->waitAny == waitAny &&
+      bool inThenRegion = block->getParent() == &ifOp.getThenRegion();
+      bool selectsComparedCandidate =
+          selection && inThenRegion == selection->selectedWhenTrue;
+      bool selectsComplementCandidate =
+          selection && selection->candidateCount == 2 &&
+          inThenRegion != selection->selectedWhenTrue;
+      bool selectsCandidate = (selectsComparedCandidate &&
+                               selection->candidateIndex == candidateIndex) ||
+                              (selectsComplementCandidate &&
+                               selection->candidateIndex != candidateIndex);
+      if (selectsCandidate && selection->waitAny == waitAny &&
           isOrderedBefore(waitAny, ifOp.getOperation())) {
         return true;
       }
