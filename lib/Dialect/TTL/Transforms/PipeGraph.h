@@ -245,6 +245,19 @@ struct ReceiverDFBInfo {
   Location loc;
 };
 
+/// Receiver-owned DRAM tensor region for one transfer definition.
+struct ReceiverTensorRegionInfo {
+  TensorSliceOp slice;
+  RankedTensorType sliceType;
+  int32_t globalTensorIndex = 0;
+  int32_t baseCTA = 0;
+  SmallVector<int64_t> tensorGridShape;
+  SmallVector<int64_t> startIndices;
+  int64_t pageSizeBytes = 0;
+  std::optional<int64_t> senderTensorArgumentIndex;
+  Location loc;
+};
+
 using PipeTransferNodeId = std::size_t;
 using PipeReceiverEndpointId = std::size_t;
 using PipeReceiverDFBNodeId = std::size_t;
@@ -302,17 +315,60 @@ struct PipeTransferNode {
   SmallVector<PipeReceiverEndpointId> receiverEndpoints;
 };
 
+/// DFB destination state used only by receiver-local ring analyses.
+struct PipeReceiverDFBDestination {
+  PipeReceiverDFBNodeId receiverDFBNode = 0;
+  PipeReceiverDFBKey receiverDFB;
+  ReceiverDFBInfo receiverDFBInfo;
+  ReceiverAddressSequenceProof addressSequence;
+};
+
+using PipeReceiverDestination =
+    std::variant<PipeReceiverDFBDestination,
+                 std::shared_ptr<ReceiverTensorRegionInfo>>;
+using PipeReceiverDestinationInfo =
+    std::variant<ReceiverDFBInfo, ReceiverTensorRegionInfo>;
+
 /// One receiver connection for a transfer definition.
 struct PipeReceiverEndpoint {
   PipeReceiverEndpointId id = 0;
   PipeTransferNodeId transferNode = 0;
-  PipeReceiverDFBNodeId receiverDFBNode = 0;
   PipeReceiverCoord receiver;
-  PipeReceiverDFBKey receiverDFB;
-  ReceiverDFBInfo receiverDFBInfo;
+  PipeReceiverDestination destination;
   std::optional<std::uint64_t> postRecordIndex;
+  std::optional<std::uint64_t> executionCount;
   Operation *postOp = nullptr;
-  ReceiverAddressSequenceProof addressSequence;
+
+  bool hasDFBDestination() const {
+    return std::holds_alternative<PipeReceiverDFBDestination>(destination);
+  }
+
+  const PipeReceiverDFBDestination &getDFBDestination() const {
+    assert(hasDFBDestination() && "receiver endpoint does not target a DFB");
+    return std::get<PipeReceiverDFBDestination>(destination);
+  }
+
+  PipeReceiverDFBDestination &getDFBDestination() {
+    assert(hasDFBDestination() && "receiver endpoint does not target a DFB");
+    return std::get<PipeReceiverDFBDestination>(destination);
+  }
+
+  bool hasTensorRegionDestination() const {
+    return std::holds_alternative<std::shared_ptr<ReceiverTensorRegionInfo>>(
+        destination);
+  }
+
+  const ReceiverTensorRegionInfo &getTensorRegionDestination() const {
+    assert(hasTensorRegionDestination() &&
+           "receiver endpoint does not target a tensor region");
+    return *std::get<std::shared_ptr<ReceiverTensorRegionInfo>>(destination);
+  }
+
+  ReceiverTensorRegionInfo &getTensorRegionDestination() {
+    assert(hasTensorRegionDestination() &&
+           "receiver endpoint does not target a tensor region");
+    return *std::get<std::shared_ptr<ReceiverTensorRegionInfo>>(destination);
+  }
 };
 
 /// One receiver-local dataflow buffer node in the PipeNet graph.
@@ -524,6 +580,12 @@ public:
     return pipeReceiverEndpoints[id];
   }
 
+  PipeReceiverEndpoint &getPipeReceiverEndpoint(PipeReceiverEndpointId id) {
+    assert(id < pipeReceiverEndpoints.size() &&
+           "invalid pipe receiver endpoint id");
+    return pipeReceiverEndpoints[id];
+  }
+
   ArrayRef<PipeReceiverDFBNode> getReceiverDFBNodes() const {
     return receiverDFBNodes;
   }
@@ -564,7 +626,7 @@ private:
                                       std::optional<std::uint64_t> recordIndex,
                                       PipeTransferNodeId transferNodeId);
 
-  /// Record the DFB geometry and destination offset for one receive post.
+  /// Record the destination storage represented by one receive post.
   LogicalResult addPipeReceiver(Operation *op,
                                 PipeTransferCreateOp transferCreateOp,
                                 Value dst,
@@ -583,7 +645,13 @@ private:
 
   LogicalResult proveReceiverProducerStreams(PipeGraphAnalysisState &state);
 
-  llvm::MapVector<Operation *, ReceiverDFBInfo> receiverDFBByPost;
+  /// Verify static bounds, unique ownership, and execution counts for DRAM
+  /// tensor-region destinations.
+  LogicalResult verifyTensorRegionDestinations(
+      ModuleOp mod, const PipeGraphAnalysisState &analysisState) const;
+
+  llvm::MapVector<Operation *, PipeReceiverDestinationInfo>
+      receiverDestinationByPost;
   SmallVector<PipeTransferNode, 0> pipeTransferNodes;
   // A table-driven protocol operation represents one transfer node per record.
   llvm::DenseMap<Operation *, SmallVector<PipeTransferNodeId>>
