@@ -24,6 +24,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -1119,6 +1120,7 @@ FailureOr<SmallVector<int64_t>> getConstantDstWriteIndices(Operation *op);
 struct ReadyReceiveSelection {
   Operation *waitAny = nullptr;
   int64_t candidateIndex = 0;
+  std::size_t candidateCount = 0;
   bool selectedWhenTrue = true;
 };
 
