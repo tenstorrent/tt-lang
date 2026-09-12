@@ -128,8 +128,10 @@ source device to every selected destination device.
 
 If either constructor produces both same-device and remote transfers, it
 places the same-device transfers first because NoC and fabric use different
-synchronization protocols. Within each set, pairwise transfers retain pair
-order; all-to-all transfers use source order, then destination order.
+synchronization protocols. Within each set, pairwise transfers follow the
+positions in their source and destination views. All-to-all transfers process
+sources in parent-domain order and, for each source, destinations in
+parent-domain order.
 
 The declaration determines topology. `if_src` and `if_dst` iterate the
 declared transfers. `is_src`, `is_dst`, `is_active`, and equivalent coordinate
@@ -143,19 +145,19 @@ one entry, it processes device edges in the graph's documented order, then node
 Pipes in list order.
 
 For an explicit graph, the compiler stores source and destination edge-index
-lists. An offset and count locate the entries for each logical device, so a
-device kernel iterates only edges for which that device is the source or
+lists. Each logical device has an offset and count identifying its entries, so
+its kernel iterates only edges for which that device is the source or
 destination. Graphs built with the five constructors above store their
-parameters. Every resulting transfer receives a stable resource index. Core
-specialization removes node-coordinate table columns whose value is constant
-on that core.
+parameters. Every transfer receives a stable integer used to select its address
+and synchronization resources. Core specialization removes node-coordinate
+table columns whose value is constant on that core.
 
-Transfer topology is compile-time information, but one source implementation
-can support several device counts. A multi-device collective factory accepts a
-domain extent and constructs the corresponding `DeviceDomain` and
-`TransferGraph`. Each compiled operation instance has fixed logical domain
-extents. Runtime binding determines physical device placement and fabric
-routes; the graph does not encode them.
+Transfer topology is compile-time information, but one Python function can
+construct a collective for several device counts. The function accepts domain
+extents and constructs the corresponding `DeviceDomain` and `TransferGraph`.
+Each compiled operation instance has fixed logical domain extents. Runtime
+binding determines physical device placement and fabric routes; the graph does
+not encode them.
 
 ## PipeNet callbacks and generated code
 
@@ -194,11 +196,11 @@ TTKernel conversion uses three representations:
   locate the source or destination edge-index entries for the current device.
 
 The immutable tables become bit-packed C++ template arguments stored outside
-the kernel stack. A selected-pipe type identifies whether iteration selected
-the record by its source or destination coordinates; copy operand position
-determines whether that record is used for a send or receive. Launch-domain
-verification proves that the selected callback executes on the required
-endpoint.
+the kernel stack. Inside a callback loop, `ttl.select_pipe_src` or
+`ttl.select_pipe_dst` represents the current transfer and the endpoint role
+that selected it. Copying from a DFB to that value sends data; copying from that
+value to a DFB receives data. Launch-domain verification proves that the
+callback executes on the required endpoint.
 
 PipeGraph enumerates transfers while proving protocol schedules. It retains
 one compiler-only transfer node for each combination of device edge and node

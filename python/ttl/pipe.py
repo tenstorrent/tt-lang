@@ -148,7 +148,7 @@ class Pipe:
 
     @classmethod
     def pairwise(cls, *, src: NodeSelection, dst: NodeSelection) -> "Pipe":
-        """Connect equal view coordinates using the specified source/destination nodes."""
+        """Connect corresponding positions in two equal-sized device views."""
         if not isinstance(src, NodeSelection) or not isinstance(dst, NodeSelection):
             raise TypeError("pairwise requires device and node selections")
         if src.devices.domain != dst.devices.domain:
@@ -333,8 +333,8 @@ class PipeNet:
     A local or multi-device communication relation.
 
     A local PipeNet contains node-level pipes. A graph PipeNet combines every
-    logical-device edge with every corresponding node-level pipe. ``if_src``
-    and ``if_dst`` execute once for each matching transfer.
+    logical-device edge with every node-level pipe in the same mapping.
+    ``if_src`` and ``if_dst`` execute once for each matching transfer.
 
     The launch-node active set is the union of every node pipe's source
     coordinate and destination range. Nodes outside the active set do not

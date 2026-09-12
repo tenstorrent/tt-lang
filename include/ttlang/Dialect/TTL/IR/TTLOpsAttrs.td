@@ -304,9 +304,10 @@ def TTL_TransferGraphAttr : TTL_Attr<"TransferGraph", "transfer_graph"> {
   let summary = "Logical-device transfer relation";
   let description = [{
     Defines a logical transfer relation without binding it to launch-node
-    endpoints. `kind` selects the relation semantics. `componentName`
-    identifies the affected domain component for structured relations.
-    `properties` contains only parameters specific to that relation:
+    endpoints. `kind` selects the relation semantics. For every kind except
+    `explicit`, `componentName` identifies the domain component whose
+    coordinates change. `properties` contains only parameters specific to
+    that relation:
 
     - `explicit`: `edges` as an array of `#ttl.transfer_edge` attributes;
     - `axis_neighbor`: `axis`, positive `offset`, and `wrap`;
@@ -315,14 +316,13 @@ def TTL_TransferGraphAttr : TTL_Attr<"TransferGraph", "transfer_graph"> {
     - `scatter`: component-local `source`;
     - `all_to_all`: no additional properties.
 
-    Explicit graphs preserve edge-array order. Structured graphs use
-    row-major device order. Stencils order edges by source device and then by
-    the declared offset list; all-to-all orders each source before its
+    Explicit graphs preserve edge-array order. The other kinds use row-major
+    device order. Stencils order edges by source device and then by the
+    declared offset list; all-to-all orders each source before its
     destinations. PipeNet callbacks observe this order.
 
-    Domain extents are fixed for one compiled operation instance. A source
-    operation factory may construct the same relation for any supported
-    domain extents.
+    Domain extents are fixed for one compiled operation instance. Programs may
+    instantiate the same relation kind with different domain extents.
   }];
   let parameters = (ins
     "DeviceDomainAttr":$domain,

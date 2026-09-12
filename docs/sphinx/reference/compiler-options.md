@@ -376,25 +376,27 @@ ttlang-opt input.mlir -p 'ttl-dump-cb-flow-graph{output="/tmp/cb_graph.json"}'
 
 #### `ttkernel-specialize-cores`
 
-Clone TTKernel functions whose structured control flow or immutable
-constant-table indexing depends on a core coordinate once per launch
-coordinate. Requires a module-level `ttl.launch_grid` attribute (an i64 array
-of length 2 with positive entries). Missing or malformed `ttl.launch_grid` is a
-hard error. A valid single-core grid (product <= 1) skips specialization.
+Create one TTKernel function per launch coordinate when its behavior depends on
+the logical core coordinate. The pass requires a module-level `ttl.launch_grid`
+attribute: an i64 array of length two with positive entries. Missing or
+malformed extents are errors. A single-core grid requires no specialization.
 
-Any structured region branch selector, repetition condition, loop bound, or
-`ttkernel.experimental.constant_table_lookup` index derived from
-`ttkernel.my_logical_x_` / `ttkernel.my_logical_y_` triggers cloning. Covered
-SCF operations include `scf.if`, `scf.index_switch`, `scf.for`, and
-`scf.while`.
-Functions with symbol uses (for example `func.call` targets) are left
-unspecialized with a warning so erasing the original does not leave dangling
-`SymbolRefAttr`s; unrelated functions in the module are still specialized.
-Each clone replaces coordinate reads with `arith.constant`s and is tagged with
-`ttl.core_coord` for runtime dispatch. Downstream `canonicalize` / `cse` fold
-the now-constant conditions, loop bounds, and row-major table columns. Static
-local PipeNet record loops are then fully unrolled so record-table lookups can
-fold to constants.
+A function is specialized when a branch condition, loop condition or bound, or
+index passed to `ttkernel.experimental.constant_table_lookup` depends on
+`ttkernel.my_logical_x_` or `ttkernel.my_logical_y_`. The lookup operation reads
+one value from a compile-time table; a coordinate-dependent index may select a
+different value on each core. Supported control-flow operations include
+`scf.if`, `scf.index_switch`, `scf.for`, and `scf.while`.
+
+A function referenced by another symbol, such as a `func.call` target, cannot
+be replaced without also selecting a coordinate-specific callee at each use.
+The pass leaves that function unchanged, emits a warning, and continues with
+independent functions. Each specialized function replaces coordinate reads
+with `arith.constant`s and records its dispatch coordinate in `ttl.core_coord`.
+Downstream `canonicalize` and `cse` remove unreachable control flow and fold
+table lookups. Static local PipeNet callback loops are then fully unrolled so
+each iteration's table lookup can also become constant.
+
 `ttkernel-annotate-dfb-use` then records surviving DFB compile-time arguments,
 synchronized resets, and external-call dependencies on each specialized
 function. Debug prints of a DFB remain only on cores that still have a

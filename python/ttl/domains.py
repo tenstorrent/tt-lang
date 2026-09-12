@@ -5,8 +5,9 @@
 """Logical device domains and device-level transfer graphs.
 
 This module contains architecture-neutral frontend metadata. Explicit graphs
-store O(E) user edges. Structured graphs store O(1) descriptors. Neither form
-allocates runtime host state or device-visible communication memory.
+store O(E) user edges. Axis-neighbor, gather, scatter, and all-to-all graphs
+store only their domain and constructor parameters; stencil graphs also store
+their offsets. No graph allocates runtime host state or device-visible memory.
 """
 
 from __future__ import annotations
@@ -182,7 +183,7 @@ class TransferEdge:
 
 @dataclass(frozen=True)
 class StructuredTransfer:
-    """Base class for compact transfer relations."""
+    """Base class for relations stored by constructor parameters, not edge lists."""
 
     component_name: str
 
@@ -284,7 +285,7 @@ class DeviceDomain:
         return self[:].at_node(node_x, node_y)
 
     def select(self, points: Iterable[DevicePoint]) -> DeviceSet:
-        """Select explicit members, removing duplicates in parent coordinate order."""
+        """Return the selected devices once each in parent-domain row-major order."""
         references = []
         for point in points:
             if not isinstance(point, DevicePoint):
@@ -518,8 +519,9 @@ class DevicePoint(DeviceSelection):
 class DeviceView(DeviceSelection):
     """An indexed device view stored as one integer or range per parent axis.
 
-    Integers fix parent axes; ranges map the remaining view axes to parent
-    coordinates. Slicing composes these maps without enumerating devices.
+    An integer selects one parent coordinate and removes that axis from the
+    view. A range preserves the axis for later indexing. Nested slicing updates
+    these selections without enumerating devices.
     """
 
     domain: DeviceDomain
@@ -593,7 +595,7 @@ class DeviceView(DeviceSelection):
 
 @dataclass(frozen=True)
 class DeviceSet(DeviceSelection):
-    """Explicit device membership in parent coordinate order."""
+    """Selected devices stored once each in parent-domain row-major order."""
 
     domain: DeviceDomain
     references: Tuple[DeviceRef, ...]
@@ -642,7 +644,7 @@ class NodeSelection:
 
 @dataclass(frozen=True, init=False)
 class TransferGraph:
-    """Explicit or structured transfer relation over a `DeviceDomain`."""
+    """Device transfers stored as explicit edges or constructor parameters."""
 
     domain: DeviceDomain
     transfer_edges: Tuple[TransferEdge, ...]
@@ -777,9 +779,9 @@ class TransferGraph:
         if self.is_explicit:
             compile_time = "O(E * (C + R)) explicit user edges"
         elif isinstance(self.structured, StencilTransfer):
-            compile_time = "O(K + C + R) structured stencil descriptor"
+            compile_time = "O(K + C + R) stencil offsets and domain parameters"
         else:
-            compile_time = "O(1 + C + R) structured descriptor"
+            compile_time = "O(1 + C + R) domain and relation parameters"
         return GraphMetadataCost(
             storage_class="compile-time metadata",
             compile_time=compile_time,

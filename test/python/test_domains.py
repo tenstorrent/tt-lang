@@ -138,7 +138,7 @@ def test_transfer_graph_rejects_duplicate_edges():
         )
 
 
-def test_structured_axis_neighbor_remains_compact():
+def test_axis_neighbor_stores_parameters_instead_of_explicit_edges():
     domain = DeviceDomain((1024, 1024))
     graph = TransferGraph.axis_neighbor(domain, axis=1, offset=1)
 
@@ -147,7 +147,7 @@ def test_structured_axis_neighbor_remains_compact():
     assert graph.transfer_edges == ()
     assert graph.structured.component_name == "device"
     assert graph.structured.axis == 1
-    assert "structured descriptor" in graph.metadata_cost().compile_time
+    assert "domain and relation parameters" in graph.metadata_cost().compile_time
 
 
 def test_axis_neighbor_edges_are_materialized_from_compact_relation():
