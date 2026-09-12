@@ -81,7 +81,16 @@ def _make_direct_dram_receive(mesh_shape, block_shape):
         pytest.param(torch.float32, ttnn.float32, 1e-5, 1e-5, id="fp32"),
     ],
 )
-@pytest.mark.parametrize("block_shape", [(1, 1), (2, 2)], ids=["one-tile", "2x2"])
+@pytest.mark.parametrize(
+    "block_shape",
+    [(1, 1), (2, 2), (1, 5), (2, 3)],
+    ids=[
+        "one-tile",
+        "one-scatter-packet",
+        "scatter-plus-unicast",
+        "two-scatter-packets",
+    ],
+)
 def test_pipe_receive_to_dram_region(torch_dtype, ttnn_dtype, rtol, atol, block_shape):
     mesh_shape = get_fabric_mesh_shape(fabric_config=ttnn.FabricConfig.FABRIC_2D)
     device_count = prod(mesh_shape)
