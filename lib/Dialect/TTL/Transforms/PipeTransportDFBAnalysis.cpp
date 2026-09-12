@@ -268,13 +268,19 @@ analyzePipeTransportDFBOwnership(const PipeTransferNode &transferNode,
   PipeReceiverEndpointId endpointId = transferNode.receiverEndpoints.front();
   const PipeReceiverEndpoint &endpoint =
       pipeGraph.getPipeReceiverEndpoint(endpointId);
+  if (!endpoint.hasDFBDestination()) {
+    reason = "transport-owned DFB storage requires a DFB receiver";
+    return failure();
+  }
+  const PipeReceiverDFBDestination &dfbDestination =
+      endpoint.getDFBDestination();
   if (transferNode.pipe.srcX == endpoint.receiver.x &&
       transferNode.pipe.srcY == endpoint.receiver.y) {
     reason = "transport storage cannot alias source and destination nodes";
     return failure();
   }
-  if (!endpoint.receiverDFBInfo.hasStaticTileOffset ||
-      endpoint.receiverDFBInfo.staticTileOffset != 0) {
+  if (!dfbDestination.receiverDFBInfo.hasStaticTileOffset ||
+      dfbDestination.receiverDFBInfo.staticTileOffset != 0) {
     reason = "transport storage requires a zero receiver tile offset";
     return failure();
   }
