@@ -24,7 +24,9 @@ from benchmarks.device_timing import latest_kernel_duration, read_device_profile
 from benchmarks.provenance import collect_provenance
 from examples.all_gather_minimal_matmul import (
     AllGatherMinimalMatmulConfig,
-    make_all_gather_minimal_matmul_operation,
+)
+from examples.all_gather_minimal_matmul.operation_bidirectional_dram import (
+    make_bidirectional_dram_all_gather_matmul_operation,
 )
 from ttlang_test_utils import get_fabric_mesh_shape, to_dram
 from utils.correctness import assert_allclose, assert_pcc
@@ -321,7 +323,18 @@ def create_ttlang_workload(mesh, common, ttlang):
         mesh,
         mesh_mapper=shard_mapper,
     )
-    operation = make_all_gather_minimal_matmul_operation(
+    gathered_activation = to_dram(
+        torch.zeros(
+            (
+                operation_config.padded_m_tiles * 32,
+                common.device_count * common.k_tiles_per_device * 32,
+            ),
+            dtype=torch_dtype,
+        ),
+        mesh,
+        mesh_mapper=ttnn.ReplicateTensorToMesh(mesh),
+    )
+    operation = make_bidirectional_dram_all_gather_matmul_operation(
         operation_config,
         math_fidelity=common.math_fidelity,
         fp32_dest_acc_en=common.fp32_dest_acc,
@@ -329,7 +342,7 @@ def create_ttlang_workload(mesh, common, ttlang):
     )
 
     def run():
-        operation(activation, weight, bias, output)
+        operation(activation, gathered_activation, weight, bias, output)
         return output
 
     def validate(result):
@@ -515,7 +528,7 @@ def run_worker(arguments):
                     __file__,
                     Path(__file__).resolve().parents[1] / "device_timing.py",
                     Path(__file__).resolve().parents[2]
-                    / "examples/all_gather_minimal_matmul/operation.py",
+                    / "examples/all_gather_minimal_matmul/operation_bidirectional_dram.py",
                 ]
             ),
             "references": {
