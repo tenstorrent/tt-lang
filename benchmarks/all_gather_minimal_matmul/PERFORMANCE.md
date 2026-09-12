@@ -82,6 +82,8 @@ consumer wait; they isolate communication and local distribution from matmul.
 | Bidirectional exchange with two K halves assembled into each ten-tile matmul block | 4.349 (4.323-4.362) | 1/3 | +36.7% vs 3.182 adjacent control | Rejected. It passed full-grid and full-size correctness but required eight row-segment L1 copies per activation block. |
 | Unchanged four-worker implementation after K-half assembly experiment | 3.182 (3.161-3.204) | 1/3 | control | Adjacent control confirms the K-half assembly regression. |
 | Bidirectional K halves received directly into ten-tile matmul-block subviews | 10.963 (10.879-10.969) | 1/3 | +242.6% vs selected result | Rejected. Eight receive/forward transactions per activation block cost more than the eight eliminated L1 assembly copies. |
+| Bidirectional K halves assembled at each compute-row head, then forwarded as one ten-tile block | 4.134 (4.127-4.143) | 1/3 | +29.7% vs 3.186 adjacent control | Rejected. Row-head-only assembly improved the 4.349 ms all-node assembly result by 4.9%, but remained slower than one-direction transport. |
+| Unchanged four-worker implementation after row-head assembly experiment | 3.186 (3.177-3.213) | 1/3 | control | Adjacent control confirms the row-head assembly regression. |
 
 In the multicast implementation, each compute-row head sent every activation
 block to the other nine workers in that row. Point-to-point forwarding sent
@@ -108,6 +110,12 @@ activation block: four M rows for each of two K halves, with 10,240 bytes per
 transaction in the measured configuration. The 10.963 ms result shows that the
 additional address-publication and synchronization work exceeded the removed
 L1-copy cost.
+
+Assembling both K halves only at each compute-row head reduced assembly from
+ten nodes per row to one. Each row head then forwarded one complete ten-tile
+block through the row. This reduced the all-node assembly time from 4.349 ms to
+4.134 ms, but the two half-block fabric streams and their synchronization still
+exceeded the one-direction implementation's cost.
 
 The per-entry-pipe full-block revision reordered each manager's exchange from
 six buffered M rows per source device to all source devices for one M row. This
