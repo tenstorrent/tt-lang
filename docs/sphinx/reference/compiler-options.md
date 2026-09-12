@@ -399,8 +399,8 @@ function. Debug prints of a DFB remain only on cores that still have a
 non-print use of that DFB; a print whose DFB was folded away is dropped rather
 than keeping the descriptor alive for debugging.
 
-Before TTNN program construction, the runtime bridge lowers the module to
-EmitC once and compares the generated C++ and runtime metadata of specialized
+Before TTNN program construction, the Python kernel builder lowers the module
+to EmitC once and compares the generated C++ and runtime metadata of specialized
 functions. Matching functions share one kernel descriptor whose core range is
 the union of their `ttl.core_coord` values. Different code, runtime arguments,
 tensor and DFB use, compute configuration, or fabric metadata retain separate
@@ -409,8 +409,8 @@ descriptors.
 For example, consider a reader on a `2x2` launch grid whose only
 coordinate-dependent branch tests `x`. Specialization creates one reader
 function per coordinate, but both `x=0` functions generate the same code and
-both `x=1` functions generate the same code. The runtime bridge emits two
-reader descriptors: one for `{(0,0), (0,1)}` and one for `{(1,0), (1,1)}`.
+both `x=1` functions generate the same code. The Python kernel builder emits
+two reader descriptors: one for `{(0,0), (0,1)}` and one for `{(1,0), (1,1)}`.
 Unmodified compute and writer functions retain their whole-grid descriptors.
 
 This pass is off by default. Enable it through the pipeline option

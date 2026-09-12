@@ -42,8 +42,8 @@ namespace {
 // Attribute names. These are part of the frontend / runtime contract and keep
 // the `ttl.` prefix even though this pass runs at the TTKernel level:
 // `ttl.launch_grid` (the launch extent) is set on the module by the Python
-// frontend, and `ttl.core_coord` is read back by the ttnn runtime bridge for
-// dispatch.
+// frontend, and Python kernel construction reads `ttl.core_coord` to assign
+// each specialized function's launch coordinates.
 constexpr llvm::StringLiteral LaunchGridAttrName = "ttl.launch_grid";
 constexpr llvm::StringLiteral CoreCoordAttrName = "ttl.core_coord";
 
