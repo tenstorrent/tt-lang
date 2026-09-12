@@ -105,9 +105,9 @@ def external_metadata_kernel(inp):
 # CHECK-CPP-NOT: cb_wait
 # CHECK-CPP-NOT: cb_pop
 
-# Core specialization clones the selected call without adding C++ arguments or
-# protocol calls.
-# SPECIALIZED-CPP-COUNT-2: external_stage<{{[0-9]+}}U>(get_compile_time_arg_val({{[0-9]+}}));
+# Both launch coordinates produce the same C++ and descriptor metadata, so
+# they share one emitted kernel descriptor.
+# SPECIALIZED-CPP-COUNT-1: external_stage<{{[0-9]+}}U>(get_compile_time_arg_val({{[0-9]+}}));
 # SPECIALIZED-CPP-NOT: cb_reserve
 # SPECIALIZED-CPP-NOT: cb_push
 # SPECIALIZED-CPP-NOT: cb_wait

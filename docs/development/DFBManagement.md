@@ -146,6 +146,9 @@ batching](PipeReceiveBatching.md), record-loop unrolling,
 cleanup, and tensor runtime-argument finalization run in both modes. Finalization
 follows record-loop cleanup so eliminated uses cannot retain obsolete arguments;
 annotation then records only surviving DFB uses on each clone's launch node.
+The runtime bridge combines specialized clones only when their generated C++
+and complete runtime descriptor metadata match, then dispatches the shared
+descriptor to the union of their recorded launch coordinates.
 
 The C++ TTL-to-TTKernel pipeline, standalone specialization pipeline, and
 Python compiler use the same record-cleanup builder. Python selects the
