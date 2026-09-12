@@ -2527,18 +2527,20 @@ Fabric `CDA/RP`:
 ```text
 receiver: post_to_sender()
 sender:   wait_for_post()
-sender:   address = compute_dram_tensor_region_address()
-sender:   fabric_write_payload(address); complete_remotely()
+sender:   addresses = compute_dram_tensor_page_addresses()
+sender:   fabric_scatter_write_pages(addresses); complete_remotely()
 receiver: wait_for_completion(); read_region_into_local_dfb()
 receiver: compute(); pop_local_dfb()
 ```
 
 For `CDA/RP`, the sender computes each remote DRAM page address from the
-destination tensor metadata and static tile coordinates. The last fabric write
-atomically increments the receiver's completion counter after the payload is
-visible. The receiver waits for that counter before reading the region. Each
-transfer has a distinct tensor region; reusing a region would require a
-capacity protocol.
+destination tensor metadata and static tile coordinates. Consecutive source
+pages are grouped into fabric scatter writes of up to four pages, subject to
+the active fabric packet-size limit. A multi-page transfer performs one ordered
+remote completion increment after all scatter writes. A one-page transfer uses
+one fused payload write and completion increment. The receiver waits for the
+completion counter before reading the region. Each transfer has a distinct
+tensor region; reusing a region would require a capacity protocol.
 
 This mechanism must remain within the existing proof sequence. Planning must
 prove:
