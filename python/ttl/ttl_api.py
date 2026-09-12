@@ -1444,6 +1444,25 @@ class _KernelConfigurationMetadata:
     noc_role: Optional[int] = None
 
 
+_KERNEL_DESCRIPTOR_IDENTITY_ATTRIBUTES = frozenset(
+    {
+        "sym_name",
+        "ttl.core_coord",
+    }
+)
+
+
+def _kernel_descriptor_attribute_key(attributes) -> tuple[tuple[str, str], ...]:
+    """Return attributes that must match when sharing a kernel descriptor."""
+    return tuple(
+        sorted(
+            (str(name), str(value))
+            for name, value in attributes.items()
+            if str(name) not in _KERNEL_DESCRIPTOR_IDENTITY_ATTRIBUTES
+        )
+    )
+
+
 @dataclass(frozen=True)
 class _KernelDescriptorMetadata:
     """Host runtime properties associated with one generated kernel."""
@@ -1458,6 +1477,7 @@ class _KernelDescriptorMetadata:
     fabric_runtime_arg_base_common_index: Optional[int]
     fabric_manager_intervals: tuple
     logical_selector: Optional[KernelSelector]
+    attribute_key: tuple[tuple[str, str], ...]
 
     def equivalence_key(self) -> tuple:
         """Return metadata that must match before kernels share a descriptor."""
@@ -1482,6 +1502,7 @@ class _KernelDescriptorMetadata:
             self.fabric_runtime_arg_base_common_index,
             self.fabric_manager_intervals,
             logical_selector_key,
+            self.attribute_key,
         )
 
 
@@ -1505,17 +1526,14 @@ def _group_equivalent_specialized_kernels(
     for kernel_index, (cpp_source, descriptor_metadata_key, coordinates) in enumerate(
         zip(cpp_sources, descriptor_metadata_keys, core_coordinates)
     ):
-        if coordinates is None:
-            groups.append([kernel_index])
-            group_coordinates.append(set())
-            continue
-
-        coordinate_set = set(coordinates)
-        if len(coordinate_set) != len(coordinates):
+        normalized_coordinates = coordinates or ()
+        coordinate_set = set(normalized_coordinates)
+        if len(coordinate_set) != len(normalized_coordinates):
             raise ValueError(
                 f"specialized kernel {kernel_index} has duplicate launch coordinates"
             )
-        signature = (cpp_source, descriptor_metadata_key)
+        unshared_kernel_index = kernel_index if coordinates is None else None
+        signature = (cpp_source, descriptor_metadata_key, unshared_kernel_index)
         group_index = group_index_by_signature.get(signature)
         if group_index is None:
             group_index_by_signature[signature] = len(groups)
@@ -1810,6 +1828,9 @@ def _compile_ttnn_kernel(
                     module, name, kernel_operation=kernel_operation
                 ),
                 logical_selector=kernel_logical_selectors[kernel_index],
+                attribute_key=_kernel_descriptor_attribute_key(
+                    kernel_operation.attributes
+                ),
             )
         )
 

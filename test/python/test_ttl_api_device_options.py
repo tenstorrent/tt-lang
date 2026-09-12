@@ -684,6 +684,7 @@ class TestSpecializedKernelGrouping:
             fabric_runtime_arg_base_common_index=5,
             fabric_manager_intervals=("interval",),
             logical_selector=ttl.KernelKind.DATA_MOVEMENT,
+            attribute_key=(("new.descriptor_property", "value"),),
         )
         changed_values = {
             "runtime_arg_spec": ("other",),
@@ -695,6 +696,7 @@ class TestSpecializedKernelGrouping:
             "fabric_runtime_arg_base_common_index": 9,
             "fabric_manager_intervals": ("other",),
             "logical_selector": ttl.KernelKind.COMPUTE,
+            "attribute_key": (("new.descriptor_property", "other"),),
         }
 
         for field_name, changed_value in changed_values.items():
@@ -725,6 +727,32 @@ class TestSpecializedKernelGrouping:
         first = replace(metadata, logical_selector=first_selector)
         second = replace(metadata, logical_selector=second_selector)
         assert first.equivalence_key() != second.equivalence_key()
+
+    def test_all_non_identity_attributes_prevent_grouping(self):
+        first = ttl_api._kernel_descriptor_attribute_key(
+            {
+                "sym_name": "reader_c0_0",
+                "ttl.core_coord": "[0, 0]",
+                "new.descriptor_property": "first",
+            }
+        )
+        second = ttl_api._kernel_descriptor_attribute_key(
+            {
+                "sym_name": "reader_c0_1",
+                "ttl.core_coord": "[0, 1]",
+                "new.descriptor_property": "second",
+            }
+        )
+        identity_only_change = ttl_api._kernel_descriptor_attribute_key(
+            {
+                "sym_name": "reader_c1_1",
+                "ttl.core_coord": "[1, 1]",
+                "new.descriptor_property": "first",
+            }
+        )
+
+        assert first == identity_only_change
+        assert first != second
 
     def test_rejects_misaligned_grouping_inputs(self):
         with pytest.raises(
