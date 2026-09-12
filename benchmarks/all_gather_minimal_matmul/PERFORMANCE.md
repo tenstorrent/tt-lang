@@ -77,6 +77,7 @@ consumer wait; they isolate communication and local distribution from matmul.
 | Four bidirectional managers with two-block receive and relay DFBs | not measured | full-size launch | n/a | Rejected. The local relay filled while fabric sends waited for peers to post receives, producing a protocol deadlock. |
 | Four bidirectional managers with one-row local staging and six-block receive and relay DFBs | not measured | full-size compile | n/a | Rejected. The small full-grid case passed; at full size a 491,520-byte communication DFB had only 313,600 bytes available. |
 | Per-entry-pipe full-block bidirectional exchange with one receive and two relay blocks | not measured | full-size launch | n/a | Rejected. The small full-grid case passed and the full configuration fit L1, but the full workload did not complete within 60 seconds after compilation. |
+| Direction-major consumption of per-entry-pipe full blocks | not measured | small correctness | n/a | Rejected. It compiled at the full 12x10 grid, but the four-device small case did not complete within 180 seconds. Grouping K blocks by direction did not resolve the protocol stall. |
 | Per-row bidirectional exchange with one-block staging/receive and two-block relay DFBs | not measured | small correctness | n/a | Rejected. Four-device PCC was 0.257; a two-device diagnostic proved that remote K weights were paired with a repeated local activation shard. |
 | Bidirectional exchange with five-tile K blocks | 7.002 (6.961-7.033) | 1/3 | +118.8% vs selected result | Rejected. It passed full-size correctness but the doubled matmul and DFB granularity exceeded the benefit of the second fabric direction. |
 | Bidirectional exchange with two K halves assembled into each ten-tile matmul block | 4.349 (4.323-4.362) | 1/3 | +36.7% vs 3.182 adjacent control | Rejected. It passed full-grid and full-size correctness but required eight row-segment L1 copies per activation block. |
@@ -123,7 +124,9 @@ reduced activation storage per manager from thirteen full blocks (six receive,
 six relay, and one staging) to four (one receive, two relay, and one staging).
 The small full-grid case passed, and the full configuration compiled within the
 L1 budget. The full workload did not complete, so the protocol was rejected
-without reporting a device time.
+without reporting a device time. Consuming all increasing-direction K blocks
+before decreasing-direction K blocks also stalled, including on the small
+four-device case; producer-consumer ordering alone is not the cause.
 
 ## TT-Lang matmul kernel
 
