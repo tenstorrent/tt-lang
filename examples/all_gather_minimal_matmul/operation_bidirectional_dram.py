@@ -182,6 +182,7 @@ def make_bidirectional_dram_all_gather_matmul_operation(
                                             relay,
                                         ).wait()
                                     else:
+                                        source_device_index = local_device_index
                                         if transfer_index == 1:
                                             source_device_index = (
                                                 local_device_index + device_count - 1
@@ -360,9 +361,8 @@ def make_bidirectional_dram_all_gather_matmul_operation(
                         ).wait()
                         for k_block in range(compute_k_blocks_per_device):
                             for transfer_index in range(device_count):
-                                if transfer_index == 0:
-                                    source_device_index = local_device_index
-                                elif transfer_index == 1:
+                                source_device_index = local_device_index
+                                if transfer_index == 1:
                                     source_device_index = (
                                         local_device_index + device_count - 1
                                     ) % device_count
