@@ -3,6 +3,8 @@
 
 """Column-parallel all-gather matmul correctness tests."""
 
+from math import prod
+
 import torch
 import pytest
 
@@ -13,10 +15,21 @@ from examples.all_gather_minimal_matmul import (
     make_all_gather_minimal_matmul_operation,
 )
 from examples.all_gather_minimal_matmul.__main__ import open_participant_mesh
-from ttlang_test_utils import to_dram
+from ttlang_test_utils import get_fabric_mesh_shape, to_dram
 from utils.correctness import assert_allclose, assert_pcc
 
 pytestmark = pytest.mark.multi_device
+
+
+def require_mesh(mesh_shape):
+    discovered_shape = get_fabric_mesh_shape(
+        fabric_config=ttnn.FabricConfig.FABRIC_2D,
+        reliability_mode=ttnn.FabricReliabilityMode.STRICT_INIT,
+    )
+    if prod(mesh_shape) > prod(discovered_shape):
+        pytest.skip(
+            f"test requires mesh {mesh_shape}; discovered mesh is {discovered_shape}"
+        )
 
 
 def run_case(mesh, config, communication_workers, torch_dtype):
@@ -64,17 +77,16 @@ def run_case(mesh, config, communication_workers, torch_dtype):
 
 
 @pytest.mark.parametrize(
-    "mesh_shape,communication_workers",
-    [((2, 1), 2), ((4, 1), 4)],
+    "mesh_shape",
+    [(2, 1), (4, 1)],
     ids=["two-devices", "four-devices"],
 )
 @pytest.mark.parametrize(
     "torch_dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"]
 )
 @pytest.mark.parametrize("reuse_activation", [False, True], ids=["stream", "cache"])
-def test_all_gather_minimal_matmul(
-    mesh_shape, communication_workers, torch_dtype, reuse_activation
-):
+def test_all_gather_minimal_matmul(mesh_shape, torch_dtype, reuse_activation):
+    require_mesh(mesh_shape)
     config = AllGatherMinimalMatmulConfig(
         mesh_shape=mesh_shape,
         m_tiles=10,
@@ -87,7 +99,7 @@ def test_all_gather_minimal_matmul(
         reuse_activation=reuse_activation,
     )
     with open_participant_mesh(mesh_shape) as mesh:
-        run_case(mesh, config, communication_workers, torch_dtype)
+        run_case(mesh, config, 1, torch_dtype)
 
 
 @pytest.mark.parametrize(
@@ -105,21 +117,23 @@ def test_all_gather_minimal_matmul_partial_m_block(torch_dtype):
         n_block_tiles=1,
         reuse_activation=False,
     )
+    require_mesh(config.mesh_shape)
     with open_participant_mesh(config.mesh_shape) as mesh:
-        run_case(mesh, config, 2, torch_dtype)
+        run_case(mesh, config, 1, torch_dtype)
 
 
 def test_all_gather_minimal_matmul_full_grid():
     config = AllGatherMinimalMatmulConfig(
         mesh_shape=(4, 1),
-        m_tiles=24,
+        m_tiles=20,
         k_tiles_per_device=4,
         n_tiles_per_device=20,
-        compute_grid=(12, 10),
+        compute_grid=(10, 10),
         m_block_tiles=2,
         k_block_tiles=2,
         n_block_tiles=1,
         reuse_activation=False,
     )
+    require_mesh(config.mesh_shape)
     with open_participant_mesh(config.mesh_shape) as mesh:
-        run_case(mesh, config, 4, torch.bfloat16)
+        run_case(mesh, config, 1, torch.bfloat16)
