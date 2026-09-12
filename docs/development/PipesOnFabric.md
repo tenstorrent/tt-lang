@@ -244,7 +244,7 @@ The graph does not state whether the target uses a line, ring, torus, mesh, or
 another interconnect. It also does not require `(0, 0)` and `(0, 3)` to be one
 hardware packet apart.
 
-`TransferGraph` supports explicit edge lists and structured axis-neighbor,
+`TransferGraph` supports explicit edge lists and parameter-based axis-neighbor,
 stencil, gather, scatter, and all-to-all relations. Additional common relations
 should describe communication semantics without adding target topology fields.
 
@@ -377,7 +377,8 @@ The TTL dialect defines:
 - `TransferEdgeAttr` for one logical transfer relation;
 - `DeviceTransferAttr` for binding a logical device edge to a node-level
   pipe;
-- `TransferGraphAttr` for explicit or structured logical-device relations;
+- `TransferGraphAttr` for explicit edge lists or parameter-based
+  logical-device relations;
 - `PipeMappingAttr` for one device graph and its list of node Pipes; every
   graph edge is combined with every listed Pipe;
 - `PipeNetRecordsAttr` for a local record list or an ordered list of graph
@@ -389,20 +390,20 @@ membership, coordinate rank, and transfer structure.
 
 A graph PipeNet lowers to one `PipeNetRecordsAttr` containing its mappings and
 one callback region for each source or destination role. The callback receives
-one selected transfer with node coordinates and logical device indices.
-Structured `TransferGraph` values calculate endpoints from their parameters.
-For an explicit graph, an offset and count locate the source or destination
-edge-index entries for each logical device. Each device iterates only edges for
-which it is the source or destination. Every transfer has a stable index used
-to select its resource-table entries. Core specialization removes
-node-coordinate table columns whose value is constant on that core. The
-frontend and TTL IR do not store a separate record for every combination of
-device edge and node Pipe.
+one selected transfer with node coordinates and logical device indices. Graphs
+created with `axis_neighbor`, `stencil`, `gather`, `scatter`, or `all_to_all`
+calculate endpoints from their stored parameters. For an explicit graph, an
+offset and count locate the source or destination edge-index entries for each
+logical device. Each device iterates only edges for which it is the source or
+destination. Every transfer has a stable index used to select its
+resource-table entries. Core specialization removes node-coordinate table
+columns whose value is constant on that core. The frontend and TTL IR do not
+store a separate record for every combination of device edge and node Pipe.
 
-One compiled operation fixes its logical domain extents. A multi-device
-collective factory may accept an extent and construct the corresponding graph
-for each supported device count. Transfer graphs remain logical; host target
-binding resolves physical placement, routes, and forwarding links.
+One compiled operation fixes its logical domain extents. A Python function may
+accept domain extents and construct the corresponding graph for each supported
+device count. Transfer graphs remain logical; host target binding resolves
+physical placement, routes, and forwarding links.
 
 ### Pipe lowering
 
