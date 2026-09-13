@@ -2452,11 +2452,11 @@ The shared graph and proof must preserve these fabric invariants:
 
 ### Computed DRAM tensor destinations
 
-A fabric pipe receive may store its payload in a statically assigned region of
-an interleaved DRAM tensor rather than a receiver DFB. `CLA/RP` and `CDA/RP`
-refine `CA/RP` by identifying L1 and DRAM destinations. Fabric transport still
-uses receiver-post synchronization; routing-plane flow control is not a
-replacement for the receiver post.
+A fabric pipe receive may store its payload in a receiver-coordinate-resolved
+region of an interleaved DRAM tensor rather than a receiver DFB. `CLA/RP` and
+`CDA/RP` refine `CA/RP` by identifying L1 and DRAM destinations. Fabric
+transport still uses receiver-post synchronization; routing-plane flow control
+does not replace the receiver post.
 
 | Protocol | Destination address | Send condition | Transport |
 | --- | --- | --- | --- |
@@ -2471,13 +2471,13 @@ replacement for the receiver post.
 | Receiver reserves a destination DFB block | Yes | Yes | Yes | Yes | No |
 | Receiver publishes the destination address | Yes | No | No | No | No |
 | Sender waits for a receiver post | Yes | Yes | No | Yes | Yes |
-| Sender waits for reusable destination capacity | Through the receiver post | Through the receiver post | Yes | Through the receiver post | No; regions are not reused |
+| Sender waits for reusable destination capacity | Through the receiver post | Through the receiver post | Yes | Through the receiver post | Through the receiver post |
 | Sender computes the destination address | No | Yes | Yes | Yes | Yes |
 | Destination storage | L1 DFB | L1 DFB | L1 DFB | L1 DFB | DRAM tensor region |
 | Payload admission | Receiver post | Receiver post | Capacity counter | Receiver post and fabric flow control | Receiver post and fabric flow control |
 | Receiver-visible completion | Completion notification after the payload is visible | Completion notification after the payload is visible | Completion counter after the payload is visible | Remote completion counter after the payload is visible | Remote completion counter after the payload is visible |
 | Consumer returns capacity | No | No | Yes | No | No |
-| Storage reuse within one invocation | Receiver selects the reserved slot | Receiver selects the reserved slot | Sender reuses a slot after receiving a credit | A pop does not make an assigned slot available to another fabric transfer | Each transfer has a distinct tensor region |
+| Storage reuse within one invocation | Receiver selects the reserved slot | Receiver selects the reserved slot | Sender reuses a slot after receiving a credit | A pop does not make an assigned slot available to another fabric transfer | Allowed after the completed payload has been read before the next post |
 
 The protocols have the following equivalent pseudocode. `complete` becomes
 observable only after the payload write is visible at the receiver.
@@ -2529,25 +2529,29 @@ receiver: post_to_sender()
 sender:   wait_for_post()
 sender:   addresses = compute_dram_tensor_page_addresses()
 sender:   fabric_scatter_write_pages(addresses); complete_remotely()
-receiver: wait_for_completion(); read_region_into_local_dfb()
-receiver: compute(); pop_local_dfb()
+receiver: wait_for_completion(); read_region_into_local_dfb(); wait_for_read()
+receiver: compute(); pop_local_dfb(); repeat_or_finish()
 ```
 
 For `CDA/RP`, the sender computes each remote DRAM page address from the
-destination tensor metadata and static tile coordinates. Consecutive source
-pages are grouped into fabric scatter writes of up to four pages, subject to
-the active fabric packet-size limit. A multi-page transfer performs one ordered
-remote completion increment after all scatter writes. A one-page transfer uses
-one fused payload write and completion increment. The receiver waits for the
-completion counter before reading the region. Each transfer has a distinct
-tensor region; reusing a region would require a capacity protocol.
+destination tensor metadata and tile coordinates resolved for each receiver
+node. Consecutive source pages are grouped into fabric scatter writes of up to
+four pages, subject to the active fabric packet-size limit. A multi-page
+transfer performs one ordered remote completion increment after all scatter
+writes. A one-page transfer uses one fused payload write and completion
+increment. The receiver waits for completion before reading the region. A
+region may be reused when the same sequential control context completes that
+read before posting the next transfer; otherwise transfers require disjoint
+regions.
 
 This mechanism must remain within the existing proof sequence. Planning must
 prove:
 
-1. every transfer maps to an in-bounds static destination tensor region;
-2. transfers on the same device do not write overlapping regions;
-3. every destination has exactly one statically proven transfer occurrence;
+1. every transfer maps to an in-bounds destination tensor region resolved at
+   each receiver node;
+2. different transfers on the same device do not write overlapping regions;
+3. every destination has a positive statically proven transfer count, and a
+   repeated region is read completely before its next receiver post;
 4. the completion increment follows payload visibility;
 5. each consumer read follows the corresponding completion observation; and
 6. the destination tensor, completion storage, route, and fabric-manager
