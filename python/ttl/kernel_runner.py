@@ -1829,6 +1829,69 @@ def _validate_local_tensor_access(
             )
 
 
+def _partition_core_ranges_by_per_core_tensor_addresses(
+    core_ranges: Any,
+    spec: KernelSpec,
+    tensors: List[Any],
+    mesh_coordinate: Optional[Tuple[int, ...]],
+) -> List[Tuple[Any, Optional[Tuple[int, int]]]]:
+    per_core_tensor_indices = list(
+        dict.fromkeys(
+            tensor_index
+            for tensor_index in spec.tensor_indices
+            if tensors[tensor_index].is_per_core_allocated()
+        )
+    )
+    if not per_core_tensor_indices:
+        return [(core_ranges, None)]
+
+    from ._sram_domains import tensor_base
+
+    coordinates_by_addresses: Dict[Tuple[int, ...], List[Tuple[int, int]]] = {}
+    for core in ttnn.corerange_to_cores(core_ranges, row_wise=True):
+        coordinate = (int(core.x), int(core.y))
+        addresses = tuple(
+            tensor_base(
+                ttnn,
+                tensors[tensor_index],
+                coordinate,
+                mesh_coordinate,
+            )
+            for tensor_index in per_core_tensor_indices
+        )
+        coordinates_by_addresses.setdefault(addresses, []).append(coordinate)
+
+    return [
+        (_make_singleton_core_ranges(coordinates), coordinates[0])
+        for coordinates in coordinates_by_addresses.values()
+    ]
+
+
+def _bind_per_core_tensor_runtime_addresses(
+    common_runtime_args: List[int],
+    spec: KernelSpec,
+    tensors: List[Any],
+    coordinate: Optional[Tuple[int, int]],
+    mesh_coordinate: Optional[Tuple[int, ...]],
+) -> None:
+    from ._sram_domains import tensor_base
+
+    for argument_index, tensor_index in enumerate(spec.tensor_indices):
+        tensor = tensors[tensor_index]
+        if not tensor.is_per_core_allocated():
+            continue
+        if coordinate is None:
+            raise ValueError(
+                "per-core tensor address binding requires an executing core"
+            )
+        common_runtime_args[argument_index] = tensor_base(
+            ttnn,
+            tensor,
+            coordinate,
+            mesh_coordinate,
+        )
+
+
 def build_kernel_descriptors(
     kernel_specs: List[KernelSpec],
     tensors: List[Any],
@@ -1918,7 +1981,12 @@ def build_kernel_descriptors(
         # Build common_runtime_args using tensor_indices.
         # C++ indexes by function-local position, we provide addresses in that order.
         common_runtime_args = [
-            tensors[idx].buffer_address() for idx in spec.tensor_indices
+            (
+                0
+                if tensors[tensor_index].is_per_core_allocated()
+                else tensors[tensor_index].buffer_address()
+            )
+            for tensor_index in spec.tensor_indices
         ]
         computed_address_base_args = []
         for target_index, dfb_index in enumerate(
@@ -2014,6 +2082,24 @@ def build_kernel_descriptors(
                 descriptor_partitions = _partition_core_ranges_by_sram_domain(
                     descriptor_variant.core_ranges, sram_configs
                 )
+            address_partitions = []
+            for partition_ranges, representative_coordinate in descriptor_partitions:
+                for (
+                    address_ranges,
+                    address_coordinate,
+                ) in _partition_core_ranges_by_per_core_tensor_addresses(
+                    partition_ranges,
+                    spec,
+                    tensors,
+                    sram_mesh_coordinate,
+                ):
+                    address_partitions.append(
+                        (
+                            address_ranges,
+                            address_coordinate or representative_coordinate,
+                        )
+                    )
+            descriptor_partitions = address_partitions
             for partition_ranges, representative_coordinate in descriptor_partitions:
                 partition_runtime_args = descriptor_variant.runtime_args
                 if representative_coordinate is not None:
@@ -2025,18 +2111,26 @@ def build_kernel_descriptors(
                         for core, values in descriptor_variant.runtime_args
                         if (int(core.x), int(core.y)) in partition_coordinates
                     ]
+                partition_common_runtime_args = list(common_runtime_args)
+                _bind_per_core_tensor_runtime_addresses(
+                    partition_common_runtime_args,
+                    spec,
+                    tensors,
+                    representative_coordinate,
+                    sram_mesh_coordinate,
+                )
                 kernel_descriptor_args = dict(
                     kernel_source=spec.path,
                     core_ranges=partition_ranges,
                     compile_time_args=descriptor_variant.compile_time_args,
                     defines=defines,
-                    common_runtime_args=common_runtime_args,
+                    common_runtime_args=partition_common_runtime_args,
                     config=spec.config,
                     compiler_include_paths=spec.compiler_include_paths,
                 )
                 if partition_runtime_args:
                     kernel_descriptor_args["runtime_args"] = partition_runtime_args
-                if representative_coordinate is not None:
+                if sram_core_arenas:
                     from ._sram_domains import payload_defines, tensor_base
 
                     arena = sram_core_arenas[representative_coordinate]
@@ -2045,9 +2139,6 @@ def build_kernel_descriptors(
                         arena,
                         representative_coordinate,
                         sram_mesh_coordinate,
-                    )
-                    kernel_descriptor_args["common_runtime_args"] = list(
-                        common_runtime_args
                     )
                     kernel_descriptor_args["common_runtime_args"][
                         storage_runtime_base
