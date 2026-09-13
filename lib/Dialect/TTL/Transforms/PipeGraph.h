@@ -253,6 +253,10 @@ struct ReceiverTensorRegionInfo {
   int32_t baseCTA = 0;
   SmallVector<int64_t> tensorGridShape;
   SmallVector<int64_t> startIndices;
+  /// Destination starts in receiver execution order. More than one entry is
+  /// present only when every occurrence can be evaluated statically.
+  SmallVector<SmallVector<int64_t>> occurrenceStartIndices;
+  bool hasDisjointOccurrences = false;
   int64_t pageSizeBytes = 0;
   std::optional<int64_t> senderTensorArgumentIndex;
   Location loc;
@@ -647,8 +651,9 @@ private:
 
   /// Verify static bounds, unique ownership, and execution counts for DRAM
   /// tensor-region destinations.
-  LogicalResult verifyTensorRegionDestinations(
-      ModuleOp mod, const PipeGraphAnalysisState &analysisState) const;
+  LogicalResult
+  verifyTensorRegionDestinations(ModuleOp mod,
+                                 const PipeGraphAnalysisState &analysisState);
 
   llvm::MapVector<Operation *, PipeReceiverDestinationInfo>
       receiverDestinationByPost;

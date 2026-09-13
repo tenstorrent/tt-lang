@@ -33,6 +33,11 @@ bool PipeSynchronizationSelection::usesFabricProtocol(Operation *op) const {
   return fabricTransferOps.contains(op);
 }
 
+bool PipeSynchronizationSelection::usesNoRendezvousProtocol(
+    Operation *op) const {
+  return noRendezvousTransferOps.contains(op);
+}
+
 ArrayRef<PipeCapacityAcquireInfo>
 PipeCapacityPlan::lookupAcquires(PipeTransferSendOp op) const {
   auto acquireIt = acquires.find(op.getOperation());
@@ -145,8 +150,18 @@ FailureOr<PipeTransferPayload> getPipeTransferPayload(PipeTransferSendOp sendOp,
                                /*sizeBytes=*/byteCount};
   }
 
+  int64_t elementsPerTransfer = dfbType.getElementsPerBlock();
+  if (auto sourceViewType =
+          dyn_cast<RankedTensorType>(sendOp.getSrc().getType())) {
+    if (!sourceViewType.hasStaticShape() || blockSpan != 1) {
+      sendOp.emitError(
+          "pipe send DFB subviews require one logical transfer block");
+      return failure();
+    }
+    elementsPerTransfer = sourceViewType.getNumElements();
+  }
   std::optional<int64_t> maybePageCount =
-      llvm::checkedMul(dfbType.getElementsPerBlock(), blockSpan);
+      llvm::checkedMul(elementsPerTransfer, blockSpan);
   if (!maybePageCount) {
     sendOp.emitError("pipe transfer page count exceeds int64_t");
     return failure();
@@ -170,12 +185,14 @@ buildPipeSendPlan(PipeTransferSendOp sendOp, const DominanceInfo &dominanceInfo,
     return failure();
   }
 
-  bool readFromDFB =
-      llvm::any_of(sendOp.getSrc().getUsers(), [&](Operation *user) {
-        return isa<CBWaitOp, CBPushOp>(user) &&
-               user->getOperand(0) == sendOp.getSrc() &&
-               dominanceInfo.dominates(user, sendOp);
-      });
+  Value sourceDFB = isa<CircularBufferType>(sendOp.getSrc().getType())
+                        ? sendOp.getSrc()
+                        : getAttachedCB(sendOp.getSrc());
+  assert(sourceDFB && "verified pipe send must have a source DFB");
+  bool readFromDFB = llvm::any_of(sourceDFB.getUsers(), [&](Operation *user) {
+    return isa<CBWaitOp, CBPushOp>(user) && user->getOperand(0) == sourceDFB &&
+           dominanceInfo.dominates(user, sendOp);
+  });
 
   ArrayRef<std::size_t> fabricRouteIndices =
       fabricRoutePlan
@@ -422,6 +439,12 @@ FailureOr<PipeModulePlan> buildPipeModulePlan(
       assert(!routeIndices.empty() && "fabric route table must not be empty");
       synchronizationSelection.fabricTransferOps.insert(operation);
     }
+    synchronizationSelection.fabricTransferOps.insert(
+        fabricRoutePlan->noRendezvousProtocolOps.begin(),
+        fabricRoutePlan->noRendezvousProtocolOps.end());
+    synchronizationSelection.noRendezvousTransferOps.insert(
+        fabricRoutePlan->noRendezvousProtocolOps.begin(),
+        fabricRoutePlan->noRendezvousProtocolOps.end());
   }
 
   if (options.enableCapacitySynchronization) {
@@ -479,7 +502,9 @@ FailureOr<PipeModulePlan> buildPipeModulePlan(
         pipeGraph.getPipeTransferNode(transferNodeId);
     auto sendOp = cast<PipeTransferSendOp>(transferNode.sendOp);
     if (synchronizationSelection.usesFabricProtocol(sendOp)) {
-      return PipeSynchronizationProtocol::Fabric;
+      return synchronizationSelection.usesNoRendezvousProtocol(sendOp)
+                 ? PipeSynchronizationProtocol::FabricNoRendezvous
+                 : PipeSynchronizationProtocol::Fabric;
     }
     return synchronizationSelection.usesCapacityProtocol(sendOp)
                ? PipeSynchronizationProtocol::Capacity
@@ -574,7 +599,10 @@ FailureOr<PipeModulePlan> buildPipeModulePlan(
         (sendOp || postOp) &&
         synchronizationSelection.usesCapacityProtocol(operation);
     PipeSynchronizationProtocol synchronizationProtocol =
-        usesFabricProtocol     ? PipeSynchronizationProtocol::Fabric
+        usesFabricProtocol
+            ? (synchronizationSelection.usesNoRendezvousProtocol(operation)
+                   ? PipeSynchronizationProtocol::FabricNoRendezvous
+                   : PipeSynchronizationProtocol::Fabric)
         : usesCapacityProtocol ? PipeSynchronizationProtocol::Capacity
                                : PipeSynchronizationProtocol::ReceiverPost;
     if (usesFabricProtocol && !allUseComputedReceiverAddresses(resources)) {
