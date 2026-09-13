@@ -1740,6 +1740,13 @@ class _KernelDescriptorCandidate:
     descriptor_metadata: _KernelDescriptorMetadata
 
 
+def _kernel_processor_name(configuration: _KernelConfigurationMetadata) -> str:
+    if configuration.thread_type == _KernelThreadType.COMPUTE:
+        return "compute processor"
+    assert configuration.data_movement_role is not None
+    return f"{configuration.data_movement_role.name.lower()} data-movement processor"
+
+
 def _group_equivalent_specialized_kernels(
     candidates: List[_KernelDescriptorCandidate],
 ) -> List[List[_KernelDescriptorCandidate]]:
@@ -1750,13 +1757,12 @@ def _group_equivalent_specialized_kernels(
     each already represents its complete launch range.
     """
     groups: List[List[_KernelDescriptorCandidate]] = []
-    group_coordinates: List[set[tuple[int, int]]] = []
     group_index_by_signature = {}
+    coordinate_owners_by_processor = {}
     for candidate in candidates:
         coordinates = candidate.core_coordinates
         if coordinates is None:
             groups.append([candidate])
-            group_coordinates.append(set())
             continue
 
         coordinate_set = set(coordinates)
@@ -1765,6 +1771,22 @@ def _group_equivalent_specialized_kernels(
                 f"specialized kernel {candidate.name!r} has duplicate "
                 "launch coordinates"
             )
+        configuration = candidate.descriptor_metadata.configuration
+        processor = (
+            configuration.thread_type,
+            configuration.data_movement_role,
+        )
+        coordinate_owners = coordinate_owners_by_processor.setdefault(processor, {})
+        for coordinate in coordinates:
+            previous_owner = coordinate_owners.get(coordinate)
+            if previous_owner is not None:
+                raise ValueError(
+                    f"specialized kernels {previous_owner!r} and "
+                    f"{candidate.name!r} both assign the "
+                    f"{_kernel_processor_name(configuration)} to launch "
+                    f"coordinate {coordinate}"
+                )
+            coordinate_owners[coordinate] = candidate.name
         signature = (
             candidate.cpp_source,
             candidate.descriptor_metadata,
@@ -1773,14 +1795,8 @@ def _group_equivalent_specialized_kernels(
         if group_index is None:
             group_index_by_signature[signature] = len(groups)
             groups.append([candidate])
-            group_coordinates.append(coordinate_set)
             continue
-        if group_coordinates[group_index] & coordinate_set:
-            raise ValueError(
-                "equivalent specialized kernels have overlapping launch coordinates"
-            )
         groups[group_index].append(candidate)
-        group_coordinates[group_index].update(coordinate_set)
     return groups
 
 

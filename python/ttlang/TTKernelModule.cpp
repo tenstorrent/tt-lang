@@ -14,8 +14,8 @@
 using namespace mlir;
 
 void populateTTKernelModule(nb::module_ &m) {
-  m.attr("ARG_SPEC_ATTR") = nb::str(tt::ttkernel::kArgSpecAttrName.data(),
-                                    tt::ttkernel::kArgSpecAttrName.size());
+  m.attr("ARG_SPEC_ATTR") = nb::str(tt::ttkernel::ArgSpecAttr::name.data(),
+                                    tt::ttkernel::ArgSpecAttr::name.size());
 
   tt_type_class<tt::ttkernel::CBType>(m, "CBType")
       .def_static("get",
@@ -127,16 +127,16 @@ void populateTTKernelModule(nb::module_ &m) {
                           })
       .def_prop_ro("rt_args",
                    [](tt::ttkernel::ArgSpecAttr &self) {
-                     std::vector<tt::ttkernel::ArgAttr> result;
+                     std::vector<MlirAttribute> result;
                      for (const auto &arg : self.getRtArgs()) {
-                       result.push_back(arg);
+                       result.push_back(wrap(arg));
                      }
                      return result;
                    })
       .def_prop_ro("ct_args", [](tt::ttkernel::ArgSpecAttr &self) {
-        std::vector<tt::ttkernel::ArgAttr> result;
+        std::vector<MlirAttribute> result;
         for (const auto &arg : self.getCtArgs()) {
-          result.push_back(arg);
+          result.push_back(wrap(arg));
         }
         return result;
       });
