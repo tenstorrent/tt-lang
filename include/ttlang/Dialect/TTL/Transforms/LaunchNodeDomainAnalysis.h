@@ -275,6 +275,13 @@ getExactExecutionCountAtLaunchLocation(Operation *op,
 bool hasExactEmptyLaunchDomain(Operation *op,
                                const LaunchNodeDomainState &state);
 
+/// Refine an unknown launch domain when execution counts are exact on every
+/// launch node. Return `domain` unchanged if any count is unknown.
+LaunchNodeDomain
+refineLaunchNodeDomainFromExecutionCounts(Operation *op,
+                                          const LaunchNodeDomain &domain,
+                                          const LaunchNodeDomainState &state);
+
 /// Prove that two operations with unknown exact counts have equivalent
 /// control flow at their launch nodes.
 ///

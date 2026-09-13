@@ -393,7 +393,6 @@ requiresReconfigurationStorage(const DFBLogicalLifecycle &logicalDFB) {
          llvm::any_of(logicalDFB.possibleNodeLifetimes,
                       lifetimeRequiresStorage);
 }
-
 } // namespace
 
 struct DFBPairConflictRequirements {
@@ -584,6 +583,13 @@ private:
                     DFBConflictReason::StorageMismatch, std::nullopt,
                     lhs.declarations.front(), rhs.declarations.front());
       }
+      return;
+    }
+    if (requirements.allowEpochSeparatedScratchStorage &&
+        !lhs.tensorBacking && !rhs.tensorBacking &&
+        lhs.accessCompletionProven && rhs.accessCompletionProven &&
+        lhs.lifecycleCompletionProven && rhs.lifecycleCompletionProven &&
+        haveDisjointConfigurationEpochs(lhs, rhs)) {
       return;
     }
     bool useConditionalProof =
@@ -1565,13 +1571,15 @@ static FailureOr<ConcurrentAssignmentResult> computeConcurrentAssignments(
               interferenceGraph, vertexWeights, availableIndices,
               selectedColors, remainingSearchStates);
       exactSearchStateCount += minimum.exploredStateCount;
-      if (minimum.isOptimal()) {
+      if (minimum.status !=
+          ExactInterferenceGraphWeightStatus::AllocationWeightOverflow) {
         selectedColors = std::move(minimum.colors);
         colorCount = minimum.colorCount;
         minimumProven = false;
-      } else if (minimum.status ==
-                 ExactInterferenceGraphWeightStatus::SearchLimitReached) {
-        if (allocationByteLimit && allocationBytes > *allocationByteLimit) {
+        if (minimum.status ==
+                ExactInterferenceGraphWeightStatus::SearchLimitReached &&
+            allocationByteLimit &&
+            minimum.allocationWeight > *allocationByteLimit) {
           exactSearchLimitReached = true;
         }
       } else {

@@ -4,6 +4,9 @@
 
 #include "ttlang/Analysis/IntegerExpressionEvaluator.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/EmitC/IR/EmitC.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Operation.h"
@@ -96,7 +99,9 @@ IntegerExpressionEvaluator::evaluate(Value requestedValue) {
 
       auto result = dyn_cast<OpResult>(task.value);
       Operation *operation = task.value.getDefiningOp();
-      if (!result || !operation || operation->getNumRegions() != 0 ||
+      bool supportedIf = isa_and_nonnull<scf::IfOp>(operation);
+      if (!result || !operation ||
+          (operation->getNumRegions() != 0 && !supportedIf) ||
           operation->getNumSuccessors() != 0) {
         cache.try_emplace(task.value, std::nullopt);
         continue;
@@ -107,6 +112,11 @@ IntegerExpressionEvaluator::evaluate(Value requestedValue) {
       }
 
       worklist.push_back({task.value, EvaluationTaskKind::Fold, Value()});
+      if (auto ifOp = dyn_cast<scf::IfOp>(operation)) {
+        worklist.push_back(
+            {ifOp.getCondition(), EvaluationTaskKind::Discover, Value()});
+        continue;
+      }
       for (Value operand : llvm::reverse(operation->getOperands())) {
         if (operand.getType().isIntOrIndex()) {
           worklist.push_back({operand, EvaluationTaskKind::Discover, Value()});
@@ -126,6 +136,72 @@ IntegerExpressionEvaluator::evaluate(Value requestedValue) {
 
     Operation *operation = task.value.getDefiningOp();
     assert(operation && "fold task requires a defining operation");
+
+    if (auto ifOp = dyn_cast<scf::IfOp>(operation)) {
+      auto condition = cache.find(ifOp.getCondition());
+      if (condition == cache.end() || !condition->second) {
+        activeValues.erase(task.value);
+        cache.try_emplace(task.value, std::nullopt);
+        continue;
+      }
+      Region &selectedRegion = condition->second->getBoolValue()
+                                   ? ifOp.getThenRegion()
+                                   : ifOp.getElseRegion();
+      auto yieldOp = cast<scf::YieldOp>(selectedRegion.front().getTerminator());
+      Value replacement =
+          yieldOp->getOperand(cast<OpResult>(task.value).getResultNumber());
+      auto cachedReplacement = cache.find(replacement);
+      if (cachedReplacement != cache.end()) {
+        activeValues.erase(task.value);
+        cache.try_emplace(task.value, cachedReplacement->second);
+        continue;
+      }
+      worklist.push_back(
+          {task.value, EvaluationTaskKind::ResolveReplacement, replacement});
+      worklist.push_back({replacement, EvaluationTaskKind::Discover, Value()});
+      continue;
+    }
+
+    if (auto logicalNot = dyn_cast<emitc::LogicalNotOp>(operation)) {
+      std::optional<llvm::APInt> result;
+      auto operand = cache.find(logicalNot.getOperand());
+      std::optional<std::uint32_t> resultBitWidth =
+          getIntegerBitWidth(task.value.getType());
+      if (operand != cache.end() && operand->second && resultBitWidth) {
+        result = llvm::APInt(*resultBitWidth, operand->second->isZero());
+      }
+      activeValues.erase(task.value);
+      cache.try_emplace(task.value, result);
+      continue;
+    }
+
+    if (isa<arith::AndIOp, arith::OrIOp>(operation)) {
+      bool isConjunction = isa<arith::AndIOp>(operation);
+      // An absorbing operand determines the result when the other operand is
+      // unknown.
+      bool hasAbsorbingOperand =
+          llvm::any_of(operation->getOperands(), [&](Value operand) {
+            auto knownValue = cache.find(operand);
+            if (knownValue == cache.end() || !knownValue->second) {
+              return false;
+            }
+            return isConjunction ? knownValue->second->isZero()
+                                 : knownValue->second->isAllOnes();
+          });
+      if (hasAbsorbingOperand) {
+        std::optional<std::uint32_t> resultBitWidth =
+            getIntegerBitWidth(task.value.getType());
+        activeValues.erase(task.value);
+        cache.try_emplace(
+            task.value,
+            resultBitWidth
+                ? std::optional(isConjunction
+                                    ? llvm::APInt(*resultBitWidth, 0)
+                                    : llvm::APInt::getAllOnes(*resultBitWidth))
+                : std::nullopt);
+        continue;
+      }
+    }
 
     // Fold a detached clone because a fold hook may modify its operation in
     // place. Repeat after a modification until the fold returns a constant or

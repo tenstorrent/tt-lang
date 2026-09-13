@@ -2,7 +2,8 @@
 
 // Summary: Negative tests for per-launch-node DFB SPSC verification.
 
-// Two consumer threads overlap on core (0, 0), so the DFB is not SPSC.
+// Two kernels pop the same DFB on core (0, 0), so both would advance its read
+// pointer.
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -19,12 +20,13 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @consumer_all_nodes() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    // expected-error @below {{logical DFB 0 has multiple consumer kernels active on the same launched node}}
-    // expected-note @below {{example overlapping node: core_x=0, core_y=0}}
-    // expected-note @below {{tt-metal CBs are single-producer single-consumer; allocate one DFB per consumer}}
     %view = ttl.cb_wait %cb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    // expected-error @below {{logical DFB 0 has multiple consumer kernels active on the same launched node}}
+    // expected-note @below {{example overlapping node: core_x=0, core_y=0}}
+    // expected-note @below {{only one kernel may advance a DFB read pointer on each launched node}}
+    ttl.cb_pop %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     func.return
   }
 
@@ -35,10 +37,11 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     %zero = arith.constant 0 : index
     %is_x0 = arith.cmpi eq, %core_x, %zero : index
     scf.if %is_x0 {
-      // expected-note @below {{also performed a consumer action here}}
       %view = ttl.cb_wait %cb
           : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      // expected-note @below {{also performed a consumer action here}}
+      ttl.cb_pop %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     }
     func.return
   }
@@ -54,7 +57,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     // expected-error @below {{logical DFB 41 has multiple producer kernels active on the same launched node}}
     // expected-note @below {{example overlapping node: core_x=0, core_y=0}}
-    // expected-note @below {{tt-metal CBs are single-producer single-consumer; allocate one DFB per producer}}
+    // expected-note @below {{only one kernel may produce a DFB on each launched node}}
     ttl.opaque_call "produce_a" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>] () {header = "effects.hpp"} : () -> ()
     func.return
   }
@@ -70,7 +73,8 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // -----
 
-// Hidden wait effects in two overlapping kernels violate SPSC.
+// Hidden pop effects in two overlapping kernels violate read-pointer
+// ownership.
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
   func.func @hidden_producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     // expected-note @+1 {{dataflow buffer declared here}}
@@ -85,8 +89,8 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     // expected-error @below {{logical DFB 42 has multiple consumer kernels active on the same launched node}}
     // expected-note @below {{example overlapping node: core_x=0, core_y=0}}
-    // expected-note @below {{tt-metal CBs are single-producer single-consumer; allocate one DFB per consumer}}
-    ttl.opaque_call "consume_a" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    // expected-note @below {{only one kernel may advance a DFB read pointer on each launched node}}
+    ttl.opaque_call "consume_a" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>, #ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "effects.hpp"} : () -> ()
     func.return
   }
 
@@ -94,7 +98,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
     %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 42 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     // expected-note @below {{also performed a consumer action here}}
-    ttl.opaque_call "consume_b" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    ttl.opaque_call "consume_b" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>, #ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "effects.hpp"} : () -> ()
     func.return
   }
 }
@@ -110,7 +114,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     // expected-error @below {{logical DFB 43 has multiple producer kernels active on the same launched node}}
     // expected-note @below {{example overlapping node: core_x=0, core_y=0}}
-    // expected-note @below {{tt-metal CBs are single-producer single-consumer; allocate one DFB per producer}}
+    // expected-note @below {{only one kernel may produce a DFB on each launched node}}
     %slot = ttl.cb_reserve %dfb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -128,8 +132,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // -----
 
-// A hidden pop is a consumer action and cannot run in a different thread from
-// the wait on the same DFB.
+// Two kernels cannot pop the same DFB, including a hidden pop.
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
   func.func @producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     // expected-note @+1 {{dataflow buffer declared here}}
@@ -145,12 +148,13 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
   func.func @waiter() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 44 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    // expected-error @below {{logical DFB 44 has multiple consumer kernels active on the same launched node}}
-    // expected-note @below {{example overlapping node: core_x=0, core_y=0}}
-    // expected-note @below {{tt-metal CBs are single-producer single-consumer; allocate one DFB per consumer}}
     %slot = ttl.cb_wait %dfb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    // expected-error @below {{logical DFB 44 has multiple consumer kernels active on the same launched node}}
+    // expected-note @below {{example overlapping node: core_x=0, core_y=0}}
+    // expected-note @below {{only one kernel may advance a DFB read pointer on each launched node}}
+    ttl.cb_pop %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     func.return
   }
 
@@ -174,7 +178,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     // expected-error @below {{logical DFB 1 has multiple producer kernels active on the same launched node}}
     // expected-note @below {{example overlapping node: core_x=1, core_y=0}}
-    // expected-note @below {{tt-metal CBs are single-producer single-consumer; allocate one DFB per producer}}
+    // expected-note @below {{only one kernel may produce a DFB on each launched node}}
     %slot = ttl.cb_reserve %cb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
@@ -199,8 +203,9 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
-// Unknown coord-dependent predicates are rejected when multiple consumers
-// participate because the verifier cannot prove their domains are disjoint.
+// Unknown coord-dependent predicates are rejected when multiple read-pointer
+// owners participate because the verifier cannot prove their domains are
+// disjoint.
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -225,11 +230,12 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     scf.if %cond {
       %is_x0 = arith.cmpi eq, %core_x, %zero : index
       scf.if %is_x0 {
-        // expected-error @below {{logical DFB 2 has multiple consumer kernels, but SPSC could not be statically proven}}
-        // expected-note @below {{tt-metal CBs are single-producer single-consumer; allocate one DFB per consumer}}
         %view = ttl.cb_wait %cb
             : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
             -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        // expected-error @below {{logical DFB 2 has multiple consumer kernels, but SPSC could not be statically proven}}
+        // expected-note @below {{only one kernel may advance a DFB read pointer on each launched node}}
+        ttl.cb_pop %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
       }
     }
     func.return
@@ -238,10 +244,11 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @other_consumer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 2 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    // expected-note @below {{also performed a consumer action here}}
     %view = ttl.cb_wait %cb
         : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
         -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    // expected-note @below {{also performed a consumer action here}}
+    ttl.cb_pop %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     func.return
   }
 }
@@ -265,7 +272,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %is_x0 = arith.cmpi eq, %core_x, %zero : index
       scf.if %is_x0 {
         // expected-error @below {{logical DFB 6 has multiple producer kernels, but SPSC could not be statically proven}}
-        // expected-note @below {{tt-metal CBs are single-producer single-consumer; allocate one DFB per producer}}
+        // expected-note @below {{only one kernel may produce a DFB on each launched node}}
         %slot = ttl.cb_reserve %cb
             : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
             -> tensor<1x1x!ttcore.tile<32x32, bf16>>

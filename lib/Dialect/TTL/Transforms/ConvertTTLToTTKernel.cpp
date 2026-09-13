@@ -54,6 +54,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <utility>
@@ -1621,6 +1622,7 @@ struct DFBSynchronizationLoweringPlan {
   DenseMap<Operation *, SmallVector<int32_t>> resetDFBsByOperation;
   DenseMap<int64_t, int64_t> stateOffsetByReconfiguration;
   DenseMap<int64_t, SmallVector<int32_t>> resetDFBsByReconfiguration;
+  DenseMap<int64_t, SmallVector<int32_t>> dfbIndicesByAllocationGroup;
   DenseMap<int32_t, Type> dfbTypesByIndex;
   DenseMap<int32_t, uint32_t> dfbStateOffsetsByIndex;
   SmallVector<int32_t> allDFBIndices;
@@ -1630,6 +1632,34 @@ struct DFBSynchronizationLoweringPlan {
   uint64_t allDFBMask = 0;
   bool compilerL1 = false;
 };
+
+static FailureOr<SmallVector<int32_t>> getExpandedPhysicalDFBIndices(
+    ValueRange dfbs, Operation *operation,
+    const DFBSynchronizationLoweringPlan &plan) {
+  FailureOr<SmallVector<int32_t>> indices =
+      getValidatedPhysicalDFBIndices(dfbs, operation);
+  if (failed(indices)) {
+    return failure();
+  }
+  for (Value dfb : dfbs) {
+    BindCBOp declaration = getDFBDeclaration(dfb);
+    if (!declaration) {
+      return operation->emitError("cannot resolve DFB declaration");
+    }
+    DFBAllocationGroupAttr allocationGroup =
+        declaration.getAllocationGroupAttr();
+    if (!allocationGroup) {
+      continue;
+    }
+    auto groupIt =
+        plan.dfbIndicesByAllocationGroup.find(allocationGroup.getOrdinal());
+    assert(groupIt != plan.dfbIndicesByAllocationGroup.end() &&
+           "finalized allocation group must be present in reset plan");
+    llvm::append_range(*indices, groupIt->second);
+  }
+  sortAndDeduplicateDFBIndices(*indices);
+  return indices;
+}
 
 static FailureOr<DFBSynchronizationLoweringPlan>
 buildDFBSynchronizationLoweringPlan(ModuleOp module) {
@@ -1782,15 +1812,25 @@ buildDFBSynchronizationLoweringPlan(ModuleOp module) {
       }
       plan.allDFBMask |= uint64_t{1} << static_cast<unsigned>(index);
     }
+    if (DFBAllocationGroupAttr allocationGroup =
+            bind.getAllocationGroupAttr()) {
+      plan.dfbIndicesByAllocationGroup[allocationGroup.getOrdinal()].push_back(
+          index);
+    }
     return WalkResult::advance();
   });
   if (allocationResult.wasInterrupted()) {
     return failure();
   }
 
+  llvm::sort(plan.allDFBIndices);
+  for (auto &groupEntry : plan.dfbIndicesByAllocationGroup) {
+    sortAndDeduplicateDFBIndices(groupEntry.second);
+  }
+
   WalkResult resetResult = module.walk([&](ResetDFBsOp reset) -> WalkResult {
     FailureOr<SmallVector<int32_t>> indices =
-        getValidatedPhysicalDFBIndices(reset.getDfbs(), reset);
+        getExpandedPhysicalDFBIndices(reset.getDfbs(), reset, plan);
     if (failed(indices)) {
       return WalkResult::interrupt();
     }
@@ -1798,6 +1838,26 @@ buildDFBSynchronizationLoweringPlan(ModuleOp module) {
     return WalkResult::advance();
   });
   if (resetResult.wasInterrupted()) {
+    return failure();
+  }
+
+  WalkResult resetAllResult =
+      module.walk([&](ResetAllDFBsOp reset) -> WalkResult {
+        FailureOr<SmallVector<int32_t>> preservedIndices =
+            getExpandedPhysicalDFBIndices(reset.getPreservedDfbs(), reset,
+                                          plan);
+        if (failed(preservedIndices)) {
+          return WalkResult::interrupt();
+        }
+        SmallVector<int32_t> resetIndices;
+        std::set_difference(plan.allDFBIndices.begin(),
+                            plan.allDFBIndices.end(), preservedIndices->begin(),
+                            preservedIndices->end(),
+                            std::back_inserter(resetIndices));
+        plan.resetDFBsByOperation.try_emplace(reset, std::move(resetIndices));
+        return WalkResult::advance();
+      });
+  if (resetAllResult.wasInterrupted()) {
     return failure();
   }
 
@@ -1811,7 +1871,6 @@ buildDFBSynchronizationLoweringPlan(ModuleOp module) {
     }
   }
 
-  llvm::sort(plan.allDFBIndices);
   return plan;
 }
 
@@ -1927,6 +1986,23 @@ static LogicalResult lowerDFBReset(Operation *operation,
   return success();
 }
 
+static LogicalResult lowerPlannedDFBReset(
+    Operation *operation, SynchronizedDFBResetAttr reset,
+    const DFBSynchronizationLoweringPlan &plan,
+    ConversionPatternRewriter &rewriter) {
+  auto indicesIt = plan.resetDFBsByOperation.find(operation);
+  assert(indicesIt != plan.resetDFBsByOperation.end() &&
+         "reset must be present in the immutable lowering plan");
+  ArrayRef<int32_t> dfbIndices = indicesIt->second;
+  uint64_t dfbMask = 0;
+  if (!plan.compilerL1) {
+    for (int32_t dfbIndex : dfbIndices) {
+      dfbMask |= uint64_t{1} << static_cast<unsigned>(dfbIndex);
+    }
+  }
+  return lowerDFBReset(operation, reset, dfbMask, dfbIndices, plan, rewriter);
+}
+
 struct ResetDFBsLowering : OpConversionPattern<ResetDFBsOp> {
   ResetDFBsLowering(TypeConverter &typeConverter, MLIRContext *context,
                     const DFBSynchronizationLoweringPlan &plan)
@@ -1935,18 +2011,7 @@ struct ResetDFBsLowering : OpConversionPattern<ResetDFBsOp> {
   LogicalResult
   matchAndRewrite(ResetDFBsOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto indicesIt = plan.resetDFBsByOperation.find(op);
-    assert(indicesIt != plan.resetDFBsByOperation.end() &&
-           "reset operands must be present in the immutable lowering plan");
-    ArrayRef<int32_t> dfbIndices = indicesIt->second;
-    uint64_t dfbMask = 0;
-    if (!plan.compilerL1) {
-      for (int32_t dfbIndex : dfbIndices) {
-        dfbMask |= uint64_t{1} << static_cast<unsigned>(dfbIndex);
-      }
-    }
-    return lowerDFBReset(op, op.getReset(), dfbMask, dfbIndices, plan,
-                         rewriter);
+    return lowerPlannedDFBReset(op, op.getReset(), plan, rewriter);
   }
 
 private:
@@ -1961,8 +2026,7 @@ struct ResetAllDFBsLowering : OpConversionPattern<ResetAllDFBsOp> {
   LogicalResult
   matchAndRewrite(ResetAllDFBsOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    return lowerDFBReset(op, op.getReset(), plan.allDFBMask, plan.allDFBIndices,
-                         plan, rewriter);
+    return lowerPlannedDFBReset(op, op.getReset(), plan, rewriter);
   }
 
 private:

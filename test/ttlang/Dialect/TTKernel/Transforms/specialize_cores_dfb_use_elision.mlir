@@ -23,7 +23,10 @@
 // CHECK-NOT: scf.if
 // CHECK: return
 
-module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
+module attributes {
+  ttl.dfb_allocations = [{}],
+  ttl.launch_grid = [1 : i64, 2 : i64]
+} {
   func.func @conditional_dfb_user() attributes {
       ttl.base_cta_index = 2 : i32,
       ttkernel.thread = #ttkernel.thread<noc>} {
