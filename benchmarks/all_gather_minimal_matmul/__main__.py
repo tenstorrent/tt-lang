@@ -326,8 +326,8 @@ def create_ttlang_workload(mesh, common, ttlang):
     gathered_activation = to_dram(
         torch.zeros(
             (
-                operation_config.padded_m_tiles * 32,
-                common.device_count * common.k_tiles_per_device * 32,
+                ttlang.communication_workers * operation_config.m_block_tiles * 32,
+                4 * operation_config.k_block_tiles * 32,
             ),
             dtype=torch_dtype,
         ),
