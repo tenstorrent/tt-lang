@@ -62,7 +62,8 @@ module attributes {ttl.launch_grid = [1, 1]} {
 
 // -----
 
-// Reusing one static tensor destination would overwrite its first transfer.
+// Reusing one static tensor destination without reading each transfer would
+// overwrite an unconsumed payload.
 
 #layout5 = #ttl.layout<
   shape = [32, 32], element_type = !ttcore.tile<32x32, bf16>,
@@ -94,7 +95,7 @@ module attributes {ttl.launch_grid = [1, 1]} {
           : tensor<1x1x!ttcore.tile<32x32, bf16>, #layout5>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>, #layout5>
       scf.for %iteration = %zero to %two step %one {
-        // expected-error @below {{pipe receive tensor_slice destination currently requires exactly one statically proven transfer occurrence}}
+        // expected-error @below {{repeated pipe receive tensor_slice destination requires exactly one matching read before reuse}}
         %receive = ttl.copy %pipe, %output_slice
             : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
                tensor<1x1x!ttcore.tile<32x32, bf16>, #layout5>)
@@ -215,10 +216,10 @@ module attributes {ttl.launch_grid = [1, 1]} {
     ttl.if_dst %pipe
         : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0> {
       %zero = arith.constant 0 : index
+      // expected-error @below {{pipe receive tensor_slice requires start indices that are constant at each receiver execution location}}
       %output_slice = ttl.tensor_slice %output[%start, %zero]
           : tensor<2x1x!ttcore.tile<32x32, bf16>, #layout2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>, #layout2>
-      // expected-error @below {{pipe receive tensor_slice currently requires static start indices}}
       %receive = ttl.copy %pipe, %output_slice
           : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>, #layout2>)
