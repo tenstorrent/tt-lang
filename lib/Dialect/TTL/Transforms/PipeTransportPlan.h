@@ -42,6 +42,7 @@ enum class PipeSynchronizationProtocol {
   ReceiverPost,
   Capacity,
   Fabric,
+  FabricNoRendezvous,
 };
 
 /// Backend-independent schedule selected for one transfer stream.

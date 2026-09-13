@@ -66,6 +66,11 @@ getPipeNetRecordLoopInductionValue(const PipeNetRecordLoop &recordLoop,
   }
   auto iteration =
       recordLoop.indirectInductionValues.find({location, recordIndex});
+  if (iteration == recordLoop.indirectInductionValues.end() &&
+      location.device) {
+    iteration = recordLoop.indirectInductionValues.find(
+        {LaunchExecutionLocation(location.node), recordIndex});
+  }
   return iteration == recordLoop.indirectInductionValues.end()
              ? std::nullopt
              : std::optional<std::uint64_t>(iteration->second);

@@ -298,14 +298,21 @@ analyzePipeTransportDFBOwnership(const PipeTransferNode &transferNode,
     return failure();
   }
 
+  Value sourceDFB = isa<CircularBufferType>(sendOp.getSrc().getType())
+                        ? sendOp.getSrc()
+                        : getAttachedCB(sendOp.getSrc());
   Value receiverDFB = getAttachedCB(postOp.getDst());
-  if (!receiverDFB || receiverDFB == sendOp.getSrc()) {
+  if (!sourceDFB || sourceDFB != sendOp.getSrc()) {
+    reason = "transport storage requires a complete source DFB block";
+    return failure();
+  }
+  if (!receiverDFB || receiverDFB == sourceDFB) {
     reason = "transport storage requires distinct source and destination DFBs";
     return failure();
   }
 
   FailureOr<PipeTransportDFBUse> source = analyzePipeTransportDFBUse(
-      sendLoop, sendOp.getSrc(), PipeTransportDFBRole::Source, transferNode.id,
+      sendLoop, sourceDFB, PipeTransportDFBRole::Source, transferNode.id,
       pipeGraph, reason);
   if (failed(source) || !hasPrivatePipeTransportDFBViews(*source, pipeGraph)) {
     if (succeeded(source)) {

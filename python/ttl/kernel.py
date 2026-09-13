@@ -327,6 +327,16 @@ def _encode_identity_capture(
         return encoded
     if isinstance(value, KernelKind):
         return f"kernel-kind:{value.value}".encode("utf-8")
+    if isinstance(value, tuple):
+        elements = []
+        for index, element in enumerate(value):
+            encoded_element = _encode_identity_capture(
+                f"{name}[{index}]", element, active_functions
+            )
+            elements.append(
+                f"{len(encoded_element)}:".encode("ascii") + encoded_element
+            )
+        return b"capture-tuple:" + b"".join(elements)
     if isinstance(value, Kernel):
         if value._implicit_role is not None:
             return (

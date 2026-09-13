@@ -78,6 +78,8 @@ stringifySynchronizationProtocol(PipeSynchronizationProtocol protocol) {
     return "capacity";
   case PipeSynchronizationProtocol::Fabric:
     return "fabric";
+  case PipeSynchronizationProtocol::FabricNoRendezvous:
+    return "fabric_no_rendezvous";
   }
   llvm_unreachable("unknown pipe synchronization protocol");
 }
@@ -342,7 +344,11 @@ FailureOr<PipeTransportPlan> buildPipeTransportPlan(
     FailureOr<PipeTransportDFBOwnership> storageOwnership =
         analyzePipeTransportDFBOwnership(transferNode, pipeGraph,
                                          ownershipFailure);
-    auto sourceDFBType = cast<CircularBufferType>(sendOp.getSrc().getType());
+    Value sourceDFB = isa<CircularBufferType>(sendOp.getSrc().getType())
+                          ? sendOp.getSrc()
+                          : getAttachedCB(sendOp.getSrc());
+    assert(sourceDFB && "verified pipe send must have a source DFB");
+    auto sourceDFBType = cast<CircularBufferType>(sourceDFB.getType());
 
     PipeTransportStream stream;
     stream.id = plan.streams.size();
