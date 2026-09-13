@@ -526,20 +526,6 @@ getReceiverControlContext(Operation *op,
       context.function = function;
       break;
     }
-    // The graph already represents each PipeNet record separately. Ignoring
-    // generated foreach control preserves the callback's order relative to
-    // operations before and after it.
-    if (analysisState.pipeRecordControlOps.contains(parent)) {
-      current = parent;
-      continue;
-    }
-    if (parent &&
-        isTransparentReceiverScope(
-            parent, PipeReceiverCoord{location.node.x, location.node.y},
-            analysisState)) {
-      current = parent;
-      continue;
-    }
     if (auto ifOp = mlir::dyn_cast_if_present<scf::IfOp>(parent)) {
       if (std::optional<bool> maybeSelected = evaluatePredicateAtLaunchLocation(
               ifOp.getCondition(), location, analysisState)) {
@@ -550,6 +536,21 @@ getReceiverControlContext(Operation *op,
         current = parent;
         continue;
       }
+    }
+    // The graph already represents each PipeNet record separately. Ignoring
+    // generated foreach control preserves the callback's order relative to
+    // operations before and after it. Evaluate generated predicates first so
+    // operations in records excluded at this location do not participate.
+    if (analysisState.pipeRecordControlOps.contains(parent)) {
+      current = parent;
+      continue;
+    }
+    if (parent &&
+        isTransparentReceiverScope(
+            parent, PipeReceiverCoord{location.node.x, location.node.y},
+            analysisState)) {
+      current = parent;
+      continue;
     }
     context.dynamicRegionBlocks.push_back(block);
     if (!parent) {
@@ -1208,38 +1209,273 @@ getTensorRegionBounds(const ReceiverTensorRegionInfo &region) {
                             region.loc};
 }
 
+static Operation *
+getSelectedRecordLoop(const PipeReference &pipeRef,
+                      const PipeGraphAnalysisState &analysisState);
+
+static Value getSelectedPipeQueryOperand(Value value) {
+  if (auto sourceDevice =
+          value.getDefiningOp<SelectedPipeSourceDeviceIndexOp>()) {
+    return sourceDevice.getPipe();
+  }
+  if (auto destinationDevice =
+          value.getDefiningOp<SelectedPipeDestinationDeviceIndexOp>()) {
+    return destinationDevice.getPipe();
+  }
+  if (auto sourceCoordinates =
+          value.getDefiningOp<SelectedPipeSourceCoordinatesOp>()) {
+    return sourceCoordinates.getPipe();
+  }
+  if (auto destinationCoordinates =
+          value.getDefiningOp<SelectedPipeDestinationCoordinatesOp>()) {
+    return destinationCoordinates.getPipe();
+  }
+  return {};
+}
+
 static LogicalResult
 resolveTensorRegionStartIndices(ReceiverTensorRegionInfo &region,
                                 const LaunchExecutionLocation &receiverLocation,
+                                const PipeReference &pipeReference,
+                                std::optional<std::uint64_t> recordIndex,
+                                std::uint64_t expectedExecutionCount,
                                 const PipeGraphAnalysisState &analysisState) {
-  region.startIndices.clear();
-  region.startIndices.reserve(region.slice.getIndices().size());
-  for (Value index : region.slice.getIndices()) {
-    std::optional<llvm::APInt> resolvedIndex =
-        evaluateIntegerAtLaunchLocation(index, receiverLocation, analysisState);
-    if (!resolvedIndex || !resolvedIndex->isSignedIntN(64)) {
-      return region.slice.emitError(
-          "pipe receive tensor_slice requires start indices that are constant "
-          "at each receiver execution location");
-    }
-    region.startIndices.push_back(resolvedIndex->getSExtValue());
+  std::optional<PipeRecordAttr> selectedRecord;
+  Value selectedRecordInductionVariable;
+  std::uint64_t selectedRecordInductionValue = 0;
+  if (pipeReference.isSelected()) {
+    assert(recordIndex &&
+           *recordIndex < pipeReference.getRecords().getPipes().size() &&
+           "selected tensor destination requires a valid record");
+    selectedRecord = pipeReference.getRecords().getPipes()[*recordIndex];
+    Operation *selectedRecordLoop =
+        getSelectedRecordLoop(pipeReference, analysisState);
+    selectedRecordInductionVariable =
+        cast<scf::ForOp>(selectedRecordLoop).getInductionVar();
+    std::optional<std::uint64_t> inductionValue =
+        getPipeNetRecordLoopInductionValue(
+            analysisState.pipeRecordLoops.at(selectedRecordLoop),
+            receiverLocation, *recordIndex);
+    assert(inductionValue &&
+           "selected receiver record must execute at its launch location");
+    selectedRecordInductionValue = *inductionValue;
   }
+
+  auto evaluateContextValue = [&](Value value) -> std::optional<llvm::APInt> {
+    if (selectedRecord && value == selectedRecordInductionVariable) {
+      return llvm::APInt(IndexType::kInternalStorageBitWidth,
+                         selectedRecordInductionValue);
+    }
+    Value queryPipe = getSelectedPipeQueryOperand(value);
+    if (selectedRecord && queryPipe) {
+      FailureOr<PipeReference> queryReference =
+          getPipeReference(value.getDefiningOp(), queryPipe);
+      if (succeeded(queryReference) && queryReference->isSelected() &&
+          getSelectedRecordLoop(*queryReference, analysisState) ==
+              getSelectedRecordLoop(pipeReference, analysisState)) {
+        if (std::optional<llvm::APInt> selectedValue =
+                evaluateSelectedPipeRecordValue(value, *selectedRecord)) {
+          return selectedValue;
+        }
+      }
+    }
+    return evaluateIntegerAtLaunchLocation(value, receiverLocation,
+                                           analysisState);
+  };
+  IntegerExpressionEvaluator contextEvaluator(evaluateContextValue);
+
+  SmallVector<scf::ForOp> dynamicLoops;
+  for (Operation *ancestor = region.slice->getParentOp(); ancestor;
+       ancestor = ancestor->getParentOp()) {
+    auto loop = dyn_cast<scf::ForOp>(ancestor);
+    if (loop && !contextEvaluator.evaluate(loop.getInductionVar())) {
+      dynamicLoops.push_back(loop);
+    }
+    if (isa<func::FuncOp>(ancestor)) {
+      break;
+    }
+  }
+  std::reverse(dynamicLoops.begin(), dynamicLoops.end());
+
+  struct LoopRange {
+    Value inductionVariable;
+    int64_t lowerBound = 0;
+    int64_t upperBound = 0;
+    int64_t step = 1;
+  };
+  SmallVector<LoopRange> loopRanges;
+  loopRanges.reserve(dynamicLoops.size());
+  for (scf::ForOp loop : dynamicLoops) {
+    std::optional<llvm::APInt> lowerBound =
+        contextEvaluator.evaluate(loop.getLowerBound());
+    std::optional<llvm::APInt> upperBound =
+        contextEvaluator.evaluate(loop.getUpperBound());
+    std::optional<llvm::APInt> step = contextEvaluator.evaluate(loop.getStep());
+    if (!lowerBound || !upperBound || !step || !lowerBound->isSignedIntN(64) ||
+        !upperBound->isSignedIntN(64) || !step->isSignedIntN(64) ||
+        step->getSExtValue() <= 0) {
+      return region.slice.emitError(
+          "pipe receive tensor_slice requires statically enumerable enclosing "
+          "loops");
+    }
+    loopRanges.push_back(
+        LoopRange{loop.getInductionVar(), lowerBound->getSExtValue(),
+                  upperBound->getSExtValue(), step->getSExtValue()});
+  }
+
+  SmallVector<std::pair<scf::IfOp, unsigned>> enclosingBranches;
+  Operation *nestedOperation = region.slice;
+  for (Operation *ancestor = region.slice->getParentOp(); ancestor;
+       ancestor = ancestor->getParentOp()) {
+    if (auto branch = dyn_cast<scf::IfOp>(ancestor)) {
+      enclosingBranches.push_back(
+          {branch,
+           nestedOperation->getBlock()->getParent()->getRegionNumber()});
+    }
+    nestedOperation = ancestor;
+    if (isa<func::FuncOp>(ancestor)) {
+      break;
+    }
+  }
+
+  llvm::DenseMap<Value, llvm::APInt> inductionValues;
+  region.occurrenceStartIndices.clear();
+  std::string enumerationFailureReason;
+  std::function<LogicalResult(std::size_t)> enumerate =
+      [&](std::size_t loopIndex) -> LogicalResult {
+    if (loopIndex != loopRanges.size()) {
+      const LoopRange &range = loopRanges[loopIndex];
+      for (int64_t value = range.lowerBound; value < range.upperBound;) {
+        inductionValues[range.inductionVariable] = llvm::APInt(
+            IndexType::kInternalStorageBitWidth, value, /*isSigned=*/true);
+        if (failed(enumerate(loopIndex + 1))) {
+          return failure();
+        }
+        std::optional<int64_t> nextValue = llvm::checkedAdd(value, range.step);
+        if (!nextValue || *nextValue <= value) {
+          return region.slice.emitError(
+              "pipe receive tensor_slice loop enumeration overflowed");
+        }
+        value = *nextValue;
+      }
+      inductionValues.erase(range.inductionVariable);
+      return success();
+    }
+
+    IntegerExpressionEvaluator occurrenceEvaluator(
+        [&](Value value) -> std::optional<llvm::APInt> {
+          auto inductionIt = inductionValues.find(value);
+          if (inductionIt != inductionValues.end()) {
+            return inductionIt->second;
+          }
+          Value queryPipe = getSelectedPipeQueryOperand(value);
+          if (queryPipe) {
+            FailureOr<PipeReference> queryReference =
+                getPipeReference(value.getDefiningOp(), queryPipe);
+            if (succeeded(queryReference) && queryReference->isSelected()) {
+              Operation *queryLoop =
+                  getSelectedRecordLoop(*queryReference, analysisState);
+              auto queryFor = cast<scf::ForOp>(queryLoop);
+              auto queryInductionIt =
+                  inductionValues.find(queryFor.getInductionVar());
+              if (queryInductionIt != inductionValues.end()) {
+                const PipeNetRecordLoop &queryLoopInfo =
+                    analysisState.pipeRecordLoops.at(queryLoop);
+                ArrayRef<PipeRecordAttr> records =
+                    queryReference->getRecords().getPipes();
+                for (std::uint64_t queryRecordIndex = 0;
+                     queryRecordIndex < records.size(); ++queryRecordIndex) {
+                  std::optional<std::uint64_t> inductionValue =
+                      getPipeNetRecordLoopInductionValue(
+                          queryLoopInfo, receiverLocation, queryRecordIndex);
+                  if (inductionValue &&
+                      *inductionValue ==
+                          queryInductionIt->second.getZExtValue()) {
+                    return evaluateSelectedPipeRecordValue(
+                        value, records[queryRecordIndex]);
+                  }
+                }
+                enumerationFailureReason =
+                    "the selected PipeNet iteration does not identify a "
+                    "record at this launch location";
+              } else {
+                enumerationFailureReason =
+                    "the selected PipeNet iteration is not enclosed by the "
+                    "destination region";
+              }
+            }
+          }
+          return evaluateContextValue(value);
+        });
+    for (auto [branch, selectedRegion] : enclosingBranches) {
+      std::optional<llvm::APInt> condition =
+          occurrenceEvaluator.evaluate(branch.getCondition());
+      if (!condition || condition->getBitWidth() != 1) {
+        return region.slice.emitError(
+            "pipe receive tensor_slice requires statically enumerable "
+            "enclosing conditions");
+      }
+      if (condition->getBoolValue() != (selectedRegion == 0)) {
+        return success();
+      }
+    }
+
+    SmallVector<int64_t> startIndices;
+    startIndices.reserve(region.slice.getIndices().size());
+    for (auto [dimension, index] : llvm::enumerate(region.slice.getIndices())) {
+      std::optional<llvm::APInt> resolvedIndex =
+          occurrenceEvaluator.evaluate(index);
+      if (!resolvedIndex || !resolvedIndex->isSignedIntN(64)) {
+        return region.slice.emitError()
+               << "pipe receive tensor_slice start index in dimension "
+               << dimension << " is not statically enumerable"
+               << (enumerationFailureReason.empty()
+                       ? ""
+                       : ": " + enumerationFailureReason);
+      }
+      startIndices.push_back(resolvedIndex->getSExtValue());
+    }
+    if (region.occurrenceStartIndices.size() >= expectedExecutionCount) {
+      return region.slice.emitError(
+          "pipe receive tensor_slice enumeration exceeds its proven transfer "
+          "count");
+    }
+    region.occurrenceStartIndices.push_back(std::move(startIndices));
+    return success();
+  };
+  if (failed(enumerate(0))) {
+    return failure();
+  }
+  if (dynamicLoops.empty() && region.occurrenceStartIndices.size() == 1) {
+    region.occurrenceStartIndices.resize(expectedExecutionCount,
+                                         region.occurrenceStartIndices.front());
+  }
+  if (region.occurrenceStartIndices.size() != expectedExecutionCount) {
+    return region.slice.emitError(
+        "pipe receive tensor_slice enumeration does not match its proven "
+        "transfer count");
+  }
+  region.startIndices = region.occurrenceStartIndices.front();
 
   int64_t rankDifference =
       region.tensorGridShape.size() - region.sliceType.getRank();
-  for (int64_t dimension = 0;
-       dimension < static_cast<int64_t>(region.tensorGridShape.size());
-       ++dimension) {
-    int64_t regionExtent =
-        dimension < rankDifference
-            ? 1
-            : region.sliceType.getDimSize(dimension - rankDifference);
-    if (region.startIndices[dimension] < 0 || regionExtent <= 0 ||
-        region.startIndices[dimension] >
-            region.tensorGridShape[dimension] - regionExtent) {
-      return region.slice.emitError(
-          "pipe receive tensor_slice region is outside the destination tensor "
-          "tile grid");
+  for (ArrayRef<int64_t> startIndices : region.occurrenceStartIndices) {
+    for (int64_t dimension = 0;
+         dimension < static_cast<int64_t>(region.tensorGridShape.size());
+         ++dimension) {
+      int64_t regionExtent =
+          dimension < rankDifference
+              ? 1
+              : region.sliceType.getDimSize(dimension - rankDifference);
+      if (startIndices[dimension] < 0 || regionExtent <= 0 ||
+          startIndices[dimension] >
+              region.tensorGridShape[dimension] - regionExtent) {
+        return region.slice.emitError()
+               << "pipe receive tensor_slice region in dimension " << dimension
+               << " starts at " << startIndices[dimension] << " with extent "
+               << regionExtent << ", outside the destination tensor tile grid "
+               << region.tensorGridShape[dimension];
+      }
     }
   }
   return success();
@@ -1330,11 +1566,83 @@ static bool tensorRegionsOverlap(const TensorRegionBounds &lhs,
   return true;
 }
 
+static TensorRegionBounds
+getTensorOccurrenceBounds(const ReceiverTensorRegionInfo &region,
+                          ArrayRef<int64_t> startIndices) {
+  TensorRegionBounds bounds = getTensorRegionBounds(region);
+  bounds.startIndices.assign(startIndices.begin(), startIndices.end());
+  return bounds;
+}
+
+static bool
+tensorRegionOccurrencesOverlap(const ReceiverTensorRegionInfo &lhs,
+                               const ReceiverTensorRegionInfo &rhs) {
+  return llvm::any_of(
+      lhs.occurrenceStartIndices, [&](ArrayRef<int64_t> lhsStart) {
+        TensorRegionBounds lhsBounds = getTensorOccurrenceBounds(lhs, lhsStart);
+        return llvm::any_of(
+            rhs.occurrenceStartIndices, [&](ArrayRef<int64_t> rhsStart) {
+              return tensorRegionsOverlap(
+                  lhsBounds, getTensorOccurrenceBounds(rhs, rhsStart));
+            });
+      });
+}
+
+static bool
+tensorRegionHasOverlappingOccurrences(const ReceiverTensorRegionInfo &region) {
+  for (std::size_t lhsIndex = 0;
+       lhsIndex < region.occurrenceStartIndices.size(); ++lhsIndex) {
+    TensorRegionBounds lhs = getTensorOccurrenceBounds(
+        region, region.occurrenceStartIndices[lhsIndex]);
+    for (std::size_t rhsIndex = lhsIndex + 1;
+         rhsIndex < region.occurrenceStartIndices.size(); ++rhsIndex) {
+      if (tensorRegionsOverlap(
+              lhs, getTensorOccurrenceBounds(
+                       region, region.occurrenceStartIndices[rhsIndex]))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+static bool isSerializedReuseOfTensorDestination(
+    const PipeReceiverEndpoint &lhs, const PipeReceiverEndpoint &rhs,
+    const PipeGraph &pipeGraph, const PipeGraphAnalysisState &analysisState) {
+  if (!(lhs.receiver == rhs.receiver)) {
+    return false;
+  }
+  const PipeTransferNode &lhsTransfer =
+      pipeGraph.getPipeTransferNode(lhs.transferNode);
+  const PipeTransferNode &rhsTransfer =
+      pipeGraph.getPipeTransferNode(rhs.transferNode);
+  if (lhsTransfer.deviceTransfer != rhsTransfer.deviceTransfer) {
+    return false;
+  }
+  auto lhsPost = cast<PipeTransferPostOp>(lhs.postOp);
+  auto rhsPost = cast<PipeTransferPostOp>(rhs.postOp);
+  FailureOr<LaunchExecutionLocation> maybeLocation =
+      getPipeGraphExecutionLocation(lhsPost, getLaunchNodeCoord(lhs.receiver),
+                                    lhsTransfer.deviceTransfer,
+                                    PipeRole::Destination);
+  if (failed(maybeLocation)) {
+    return false;
+  }
+  return hasMatchingReceiveWaitBeforeUse(lhsPost, rhsPost,
+                                         analysisState.receiveWaitsByPost,
+                                         analysisState.receiveWaitAnysByPost,
+                                         *maybeLocation, analysisState) ||
+         hasMatchingReceiveWaitBeforeUse(rhsPost, lhsPost,
+                                         analysisState.receiveWaitsByPost,
+                                         analysisState.receiveWaitAnysByPost,
+                                         *maybeLocation, analysisState);
+}
+
 LogicalResult PipeGraph::verifyTensorRegionDestinations(
-    ModuleOp mod, const PipeGraphAnalysisState &analysisState) const {
-  SmallVector<const PipeReceiverEndpoint *> tensorEndpoints;
-  SmallVector<const PipeReceiverEndpoint *> repeatedTensorEndpoints;
-  for (const PipeReceiverEndpoint &endpoint : pipeReceiverEndpoints) {
+    ModuleOp mod, const PipeGraphAnalysisState &analysisState) {
+  SmallVector<PipeReceiverEndpoint *> tensorEndpoints;
+  SmallVector<PipeReceiverEndpoint *> repeatedTensorEndpoints;
+  for (PipeReceiverEndpoint &endpoint : pipeReceiverEndpoints) {
     if (!endpoint.hasTensorRegionDestination()) {
       continue;
     }
@@ -1344,6 +1652,10 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
              "a positive statically proven transfer count";
       return failure();
     }
+    ReceiverTensorRegionInfo &tensorRegion =
+        endpoint.getTensorRegionDestination();
+    tensorRegion.hasDisjointOccurrences =
+        !tensorRegionHasOverlappingOccurrences(tensorRegion);
     tensorEndpoints.push_back(&endpoint);
     if (*endpoint.executionCount > 1) {
       repeatedTensorEndpoints.push_back(&endpoint);
@@ -1360,26 +1672,33 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
   };
   for (std::size_t lhsIndex = 0; lhsIndex < tensorEndpoints.size();
        ++lhsIndex) {
-    const PipeReceiverEndpoint &lhsEndpoint = *tensorEndpoints[lhsIndex];
-    TensorRegionBounds lhs =
-        getTensorRegionBounds(lhsEndpoint.getTensorRegionDestination());
+    PipeReceiverEndpoint &lhsEndpoint = *tensorEndpoints[lhsIndex];
+    ReceiverTensorRegionInfo &lhsRegion =
+        lhsEndpoint.getTensorRegionDestination();
     for (std::size_t rhsIndex = lhsIndex + 1; rhsIndex < tensorEndpoints.size();
          ++rhsIndex) {
-      const PipeReceiverEndpoint &rhsEndpoint = *tensorEndpoints[rhsIndex];
-      TensorRegionBounds rhs =
-          getTensorRegionBounds(rhsEndpoint.getTensorRegionDestination());
+      PipeReceiverEndpoint &rhsEndpoint = *tensorEndpoints[rhsIndex];
+      ReceiverTensorRegionInfo &rhsRegion =
+          rhsEndpoint.getTensorRegionDestination();
       DeviceRefAttr lhsDevice = receiverDevice(lhsEndpoint);
       DeviceRefAttr rhsDevice = receiverDevice(rhsEndpoint);
       bool provenDifferentDevices =
           lhsDevice && rhsDevice && lhsDevice != rhsDevice;
-      if (!provenDifferentDevices &&
-          lhs.globalTensorIndex == rhs.globalTensorIndex &&
-          tensorRegionsOverlap(lhs, rhs)) {
-        auto diagnostic = emitError(rhs.loc)
+      if (provenDifferentDevices ||
+          lhsRegion.globalTensorIndex != rhsRegion.globalTensorIndex ||
+          !tensorRegionOccurrencesOverlap(lhsRegion, rhsRegion)) {
+        continue;
+      }
+      lhsRegion.hasDisjointOccurrences = false;
+      rhsRegion.hasDisjointOccurrences = false;
+      if (!isSerializedReuseOfTensorDestination(lhsEndpoint, rhsEndpoint, *this,
+                                                analysisState)) {
+        auto diagnostic = emitError(rhsRegion.loc)
                           << "pipe receive tensor_slice overlaps another pipe "
                              "destination for tensor "
-                          << rhs.globalTensorIndex;
-        diagnostic.attachNote(lhs.loc) << "overlapping destination is here";
+                          << rhsRegion.globalTensorIndex;
+        diagnostic.attachNote(lhsRegion.loc)
+            << "overlapping destination is here";
         return failure();
       }
     }
@@ -1428,7 +1747,7 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
       if (!globalTensorIndex) {
         continue;
       }
-      SmallVector<const PipeReceiverEndpoint *> aliasingEndpoints =
+      SmallVector<PipeReceiverEndpoint *> aliasingEndpoints =
           llvm::filter_to_vector(
               tensorEndpoints, [&](const PipeReceiverEndpoint *endpoint) {
                 return endpoint->getTensorRegionDestination()
@@ -1502,9 +1821,23 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
       copyResult = failure();
       return WalkResult::interrupt();
     }
+    SmallVector<const PipeReceiverEndpoint *> indexedPipeEndpoints;
+    for (const PipeReceiverEndpoint *candidate : tensorEndpoints) {
+      const ReceiverTensorRegionInfo &candidateRegion =
+          candidate->getTensorRegionDestination();
+      if (candidateRegion.globalTensorIndex == *accessedTensorIndex &&
+          candidateRegion.sliceType.getShape() ==
+              cast<RankedTensorType>(accessedSlice.getType()).getShape() &&
+          llvm::equal(accessedSlice.getIndices(),
+                      TensorSliceOp(candidateRegion.slice).getIndices()) &&
+          mayExecuteOnSameDevice(copy, *candidate)) {
+        indexedPipeEndpoints.push_back(candidate);
+      }
+    }
     for (const PipeReceiverEndpoint *endpoint : tensorEndpoints) {
-      TensorRegionBounds pipeRegion =
-          getTensorRegionBounds(endpoint->getTensorRegionDestination());
+      const ReceiverTensorRegionInfo &tensorRegion =
+          endpoint->getTensorRegionDestination();
+      TensorRegionBounds pipeRegion = getTensorRegionBounds(tensorRegion);
       if (*accessedTensorIndex != pipeRegion.globalTensorIndex ||
           !mayExecuteOnSameDevice(copy, *endpoint)) {
         continue;
@@ -1519,14 +1852,55 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
         copyResult = failure();
         return WalkResult::interrupt();
       }
-      FailureOr<TensorRegionBounds> maybeAccessedRegion = getTensorRegionBounds(
-          accessedSlice, copy, *maybeLocation, analysisState);
-      if (failed(maybeAccessedRegion)) {
-        copyResult = failure();
-        return WalkResult::interrupt();
-      }
-      if (!tensorRegionsOverlap(*maybeAccessedRegion, pipeRegion)) {
+      std::optional<std::uint64_t> accessExecutionCount =
+          getExactExecutionCountAtLaunchLocation(copy, *maybeLocation,
+                                                 analysisState);
+      if (accessExecutionCount && *accessExecutionCount == 0) {
         continue;
+      }
+      bool usesDestinationIndices =
+          llvm::equal(accessedSlice.getIndices(),
+                      TensorSliceOp(tensorRegion.slice).getIndices());
+      if (!usesDestinationIndices) {
+        bool overlapsAnyOccurrence = false;
+        if (!indexedPipeEndpoints.empty()) {
+          overlapsAnyOccurrence = llvm::any_of(
+              indexedPipeEndpoints,
+              [&](const PipeReceiverEndpoint *accessedEndpoint) {
+                if (accessedEndpoint->receiver.x != endpoint->receiver.x ||
+                    accessedEndpoint->receiver.y != endpoint->receiver.y) {
+                  return false;
+                }
+                DeviceRefAttr accessedDevice =
+                    receiverDevice(*accessedEndpoint);
+                DeviceRefAttr endpointDevice = receiverDevice(*endpoint);
+                if (accessedDevice && endpointDevice &&
+                    accessedDevice != endpointDevice) {
+                  return false;
+                }
+                return tensorRegionOccurrencesOverlap(
+                    accessedEndpoint->getTensorRegionDestination(),
+                    tensorRegion);
+              });
+        } else {
+          FailureOr<TensorRegionBounds> maybeAccessedRegion =
+              getTensorRegionBounds(accessedSlice, copy, *maybeLocation,
+                                    analysisState);
+          if (failed(maybeAccessedRegion)) {
+            copyResult = failure();
+            return WalkResult::interrupt();
+          }
+          overlapsAnyOccurrence = llvm::any_of(
+              tensorRegion.occurrenceStartIndices,
+              [&](ArrayRef<int64_t> occurrenceStart) {
+                return tensorRegionsOverlap(
+                    *maybeAccessedRegion,
+                    getTensorOccurrenceBounds(tensorRegion, occurrenceStart));
+              });
+        }
+        if (!overlapsAnyOccurrence) {
+          continue;
+        }
       }
       if (isWrite) {
         auto diagnostic = copy.emitOpError()
@@ -1537,11 +1911,60 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
         return WalkResult::interrupt();
       }
 
+      // Serialized receives may reuse one tensor region. Associate the read
+      // with the last completed receive rather than every future owner of the
+      // same storage.
       auto postOp = cast<PipeTransferPostOp>(endpoint->postOp);
-      if (!hasMatchingReceiveWaitBeforeUse(postOp, copy.getOperation(),
-                                           analysisState.receiveWaitsByPost,
-                                           analysisState.receiveWaitAnysByPost,
-                                           *maybeLocation, analysisState)) {
+      bool completedBeforeRead = hasMatchingReceiveWaitBeforeUse(
+          postOp, copy.getOperation(), analysisState.receiveWaitsByPost,
+          analysisState.receiveWaitAnysByPost, *maybeLocation, analysisState);
+      bool hasSerializedAlias = false;
+      bool supersededBeforeRead = false;
+      for (const PipeReceiverEndpoint *otherEndpoint : tensorEndpoints) {
+        if (otherEndpoint == endpoint ||
+            !mayExecuteOnSameDevice(copy, *otherEndpoint)) {
+          continue;
+        }
+        const ReceiverTensorRegionInfo &otherRegion =
+            otherEndpoint->getTensorRegionDestination();
+        if (otherRegion.globalTensorIndex != pipeRegion.globalTensorIndex ||
+            !tensorRegionOccurrencesOverlap(tensorRegion, otherRegion) ||
+            !isSerializedReuseOfTensorDestination(*endpoint, *otherEndpoint,
+                                                  *this, analysisState)) {
+          continue;
+        }
+        hasSerializedAlias = true;
+        auto otherPost = cast<PipeTransferPostOp>(otherEndpoint->postOp);
+        FailureOr<LaunchExecutionLocation> otherLocation =
+            getPipeGraphExecutionLocation(
+                otherPost, getLaunchNodeCoord(otherEndpoint->receiver),
+                getPipeTransferNode(otherEndpoint->transferNode).deviceTransfer,
+                PipeRole::Destination);
+        if (failed(otherLocation) || !hasMatchingReceiveWaitBeforeUse(
+                                         otherPost, copy.getOperation(),
+                                         analysisState.receiveWaitsByPost,
+                                         analysisState.receiveWaitAnysByPost,
+                                         *otherLocation, analysisState)) {
+          continue;
+        }
+        supersededBeforeRead = hasMatchingReceiveWaitBeforeUse(
+            postOp, otherPost, analysisState.receiveWaitsByPost,
+            analysisState.receiveWaitAnysByPost, *maybeLocation, analysisState);
+        if (supersededBeforeRead) {
+          break;
+        }
+      }
+      if (supersededBeforeRead) {
+        continue;
+      }
+      if (!completedBeforeRead) {
+        bool readPrecedesFutureOwner =
+            hasSerializedAlias &&
+            isBeforeInReceiverExecution(copy.getOperation(), postOp,
+                                        *maybeLocation, analysisState);
+        if (readPrecedesFutureOwner) {
+          continue;
+        }
         auto diagnostic = copy.emitOpError()
                           << "reads a pipe destination tensor region before "
                              "the matching receive wait";
@@ -1602,10 +2025,18 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
 static LogicalResult
 verifyTransferPayloadCompatibility(const PipeTransferNode &transferNode) {
   auto sendOp = llvm::cast<PipeTransferSendOp>(transferNode.sendOp);
-  auto sourceDFBType =
-      mlir::cast<CircularBufferType>(sendOp.getSrc().getType());
-  int64_t sourceElementCount =
-      sourceDFBType.getElementsPerBlock() * transferNode.blockSpan;
+  Value sourceDFB = mlir::isa<CircularBufferType>(sendOp.getSrc().getType())
+                        ? sendOp.getSrc()
+                        : getAttachedCB(sendOp.getSrc());
+  assert(sourceDFB && "verified pipe send must have a source DFB");
+  auto sourceDFBType = mlir::cast<CircularBufferType>(sourceDFB.getType());
+  int64_t sourceElementCount = sourceDFBType.getElementsPerBlock();
+  if (auto sourceViewType =
+          dyn_cast<RankedTensorType>(sendOp.getSrc().getType())) {
+    sourceElementCount = sourceViewType.getNumElements();
+  } else {
+    sourceElementCount *= transferNode.blockSpan;
+  }
   IntegerAttr sendByteCount = sendOp.getByteCountAttr();
 
   for (Operation *postOperation : transferNode.receiverPostOps) {
@@ -2678,6 +3109,8 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
         PipeReceiverCoord receiver = receiverAndPost.first;
         const PipePostCandidate &postCandidate = receiverAndPost.second;
         PipeTransferPostOp postOp = postCandidate.op;
+        PipeTransferCreateOp postCreate =
+            transferIndex.getTransferCreate(postOp.getOperation());
         auto infoIt = receiverDestinationByPost.find(postOp.getOperation());
         assert(infoIt != receiverDestinationByPost.end() &&
                "receiver post must have destination information");
@@ -2693,13 +3126,22 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
         if (const auto *unresolvedRegion =
                 std::get_if<ReceiverTensorRegionInfo>(&infoIt->second)) {
           tensorRegion = *unresolvedRegion;
+          FailureOr<PipeReference> postPipeReference =
+              getPipeReference(postOp, postCreate.getPipe());
           FailureOr<LaunchExecutionLocation> maybeLocation =
               getPipeGraphExecutionLocation(
                   postOp.getOperation(), getLaunchNodeCoord(receiver),
                   deviceTransfer, PipeRole::Destination);
-          if (failed(maybeLocation) ||
+          if (!postCandidate.executionCount) {
+            return postOp.emitError(
+                "pipe receive tensor_slice destination requires a statically "
+                "proven transfer count");
+          }
+          if (failed(postPipeReference) || failed(maybeLocation) ||
               failed(resolveTensorRegionStartIndices(
-                  *tensorRegion, *maybeLocation, analysisState))) {
+                  *tensorRegion, *maybeLocation, *postPipeReference,
+                  postCandidate.recordIndex, *postCandidate.executionCount,
+                  analysisState))) {
             return failure();
           }
         }
@@ -2963,6 +3405,8 @@ PipeGraph::addPipeReceiver(Operation *op, PipeTransferCreateOp transferCreateOp,
                      static_cast<int32_t>(baseCTA.getInt()),
                      std::move(tensorGridShape),
                      {},
+                     {},
+                     false,
                      static_cast<int64_t>(tileType.getSizeBytes()),
                      std::nullopt,
                      op->getLoc()}})
