@@ -215,6 +215,8 @@ def make_bidirectional_dram_all_gather_matmul_operation(
                                                 ),
                                             )
                                             receive_request.wait()
+                                            relay = activation_relay_dfb.reserve()
+                                            ttl.copy(forward_staging, relay).wait()
 
                                         def receive_backward(pipe):
                                             receive_request = ttl.copy(
@@ -226,6 +228,8 @@ def make_bidirectional_dram_all_gather_matmul_operation(
                                                 ),
                                             )
                                             receive_request.wait()
+                                            relay = activation_relay_dfb.reserve()
+                                            ttl.copy(backward_staging, relay).wait()
 
                                         def receive_opposite_forward(pipe):
                                             receive_request = ttl.copy(
@@ -237,6 +241,10 @@ def make_bidirectional_dram_all_gather_matmul_operation(
                                                 ),
                                             )
                                             receive_request.wait()
+                                            relay = activation_relay_dfb.reserve()
+                                            ttl.copy(
+                                                opposite_forward_staging, relay
+                                            ).wait()
 
                                         def receive_opposite_backward(pipe):
                                             receive_request = ttl.copy(
@@ -248,6 +256,10 @@ def make_bidirectional_dram_all_gather_matmul_operation(
                                                 ),
                                             )
                                             receive_request.wait()
+                                            relay = activation_relay_dfb.reserve()
+                                            ttl.copy(
+                                                opposite_backward_staging, relay
+                                            ).wait()
 
                                         if transfer_index == 1:
                                             activation_forward_net.if_dst(
@@ -265,19 +277,6 @@ def make_bidirectional_dram_all_gather_matmul_operation(
                                             activation_backward_net.if_dst(
                                                 receive_opposite_backward
                                             )
-                                        relay = activation_relay_dfb.reserve()
-                                        if transfer_index == 1:
-                                            ttl.copy(forward_staging, relay).wait()
-                                        elif transfer_index == 2:
-                                            ttl.copy(backward_staging, relay).wait()
-                                        elif k_block % 2 == 0:
-                                            ttl.copy(
-                                                opposite_forward_staging, relay
-                                            ).wait()
-                                        else:
-                                            ttl.copy(
-                                                opposite_backward_staging, relay
-                                            ).wait()
             if physical_column > 0:
                 m_worker_index = physical_column - 1
                 n_worker_index = physical_row
@@ -393,7 +392,7 @@ def make_bidirectional_dram_all_gather_matmul_operation(
                                     source_device_index = (
                                         local_device_index + 1
                                     ) % device_count
-                                else:
+                                elif transfer_index == 3:
                                     source_device_index = (
                                         local_device_index + 2
                                     ) % device_count
