@@ -33,6 +33,10 @@ static __attribute__((noinline)) void routing_plane_atomic_inc(
       reinterpret_cast<uint32_t>(packet_header), sizeof(PACKET_HEADER_TYPE));
 }
 
+// Adapt the TTKernel operation's runtime byte count and selected connection to
+// TT-Metal's packet-oriented fabric interface. TT-Metal provides the packet
+// header and sender operations; this helper only selects the route and splits a
+// transfer that exceeds the active packet limit.
 static __attribute__((noinline)) void
 routing_plane_write(tt::tt_fabric::RoutingPlaneConnectionManager &manager,
                     uint32_t route_id, uint32_t connection_index,
@@ -69,6 +73,10 @@ routing_plane_write(tt::tt_fabric::RoutingPlaneConnectionManager &manager,
   }
 }
 
+// Adapt the TTKernel operation's runtime chunk count to TT-Metal's unicast and
+// scatter-write primitives. A packet contains as many equal-sized chunks as the
+// active packet limit permits, preserving the contiguous source layout across
+// packets.
 FORCE_INLINE void routing_plane_scatter_write(
     tt::tt_fabric::RoutingPlaneConnectionManager &manager, uint32_t routeId,
     uint32_t connectionIndex, uint32_t destinationDeviceId,
