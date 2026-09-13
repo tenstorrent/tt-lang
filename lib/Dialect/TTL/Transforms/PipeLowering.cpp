@@ -2877,13 +2877,13 @@ static bool hasOneShotRemoteFixedReceiver(const PipeResourceInfo &resource) {
 }
 
 static bool
-haveEqualComputedTensorAddresses(const PipeComputedTensorAddressInfo &lhs,
-                                 const PipeComputedTensorAddressInfo &rhs) {
+haveEqualComputedTensorMetadata(const PipeComputedTensorAddressInfo &lhs,
+                                const PipeComputedTensorAddressInfo &rhs) {
   return lhs.baseCTA == rhs.baseCTA &&
          lhs.globalTensorIndex == rhs.globalTensorIndex &&
          lhs.senderTensorArgumentIndex == rhs.senderTensorArgumentIndex &&
          lhs.tensorGridShape == rhs.tensorGridShape &&
-         lhs.startIndices == rhs.startIndices &&
+         lhs.startIndices.size() == rhs.startIndices.size() &&
          lhs.regionShape == rhs.regionShape &&
          lhs.pageSizeBytes == rhs.pageSizeBytes;
 }
@@ -2892,7 +2892,7 @@ static LogicalResult emitComputedTensorFabricWrite(
     PipeTransferSendOp op, Value sourceAddress,
     Value receiverCompletionCounterAddress, Value receiverX, Value receiverY,
     Value routeIndex, const PipeComputedTensorAddressInfo &addressInfo,
-    const FabricRuntimeInfo &fabricRuntime,
+    ValueRange startIndices, const FabricRuntimeInfo &fabricRuntime,
     ConversionPatternRewriter &rewriter);
 
 static LogicalResult lowerSelectedPipeTransferSend(
@@ -3038,12 +3038,25 @@ static LogicalResult lowerSelectedPipeTransferSend(
         *resources.front().addressStorage.computedTensorAddress;
     if (!llvm::all_of(resources, [&](const PipeResourceInfo &resource) {
           return resource.addressStorage.computedTensorAddress &&
-                 haveEqualComputedTensorAddresses(
+                 haveEqualComputedTensorMetadata(
                      addressInfo,
                      *resource.addressStorage.computedTensorAddress);
         })) {
       return op.emitError(
-          "selected pipe records require one computed DRAM region formula");
+          "selected pipe records require compatible computed DRAM tensor "
+          "metadata");
+    }
+    SmallVector<Value> selectedStartIndices;
+    selectedStartIndices.reserve(addressInfo.startIndices.size());
+    for (std::size_t dimension = 0; dimension < addressInfo.startIndices.size();
+         ++dimension) {
+      SmallVector<int64_t> values =
+          llvm::map_to_vector(resources, [&](const PipeResourceInfo &resource) {
+            return resource.addressStorage.computedTensorAddress
+                ->startIndices[dimension];
+          });
+      selectedStartIndices.push_back(
+          loadIndexTableEntry(loc, values, fields.recordIndex, rewriter));
     }
     auto runtimeIt = fabricRuntime.find(op.getOperation());
     assert(runtimeIt != fabricRuntime.end() &&
@@ -3059,8 +3072,8 @@ static LogicalResult lowerSelectedPipeTransferSend(
         rewriter);
     if (failed(emitComputedTensorFabricWrite(
             op, srcAddr, completionCounterAddress, fields.dstStartX,
-            fields.dstStartY, routeIndex, addressInfo, runtimeIt->second,
-            rewriter))) {
+            fields.dstStartY, routeIndex, addressInfo, selectedStartIndices,
+            runtimeIt->second, rewriter))) {
       return failure();
     }
     rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
@@ -3191,8 +3204,8 @@ static SmallVector<Value> delinearizeIndex(Location loc, Value linearIndex,
 static Value
 buildComputedTensorPageAddress(Location loc, Value regionPageIndex,
                                const PipeComputedTensorAddressInfo &addressInfo,
-                               Value tensorAccessor, Value noc,
-                               OpBuilder &builder) {
+                               ValueRange startIndices, Value tensorAccessor,
+                               Value noc, OpBuilder &builder) {
   SmallVector<Value> regionIndices =
       delinearizeIndex(loc, regionPageIndex, addressInfo.regionShape, builder);
   SmallVector<Value> tensorIndices;
@@ -3202,8 +3215,7 @@ buildComputedTensorPageAddress(Location loc, Value regionPageIndex,
   for (int64_t dimension = 0;
        dimension < static_cast<int64_t>(addressInfo.tensorGridShape.size());
        ++dimension) {
-    Value tensorIndex = arith::ConstantIndexOp::create(
-        builder, loc, addressInfo.startIndices[dimension]);
+    Value tensorIndex = startIndices[dimension];
     if (dimension >= rankDifference) {
       tensorIndex = arith::AddIOp::create(
           builder, loc, tensorIndex, regionIndices[dimension - rankDifference]);
@@ -3235,11 +3247,11 @@ static LogicalResult emitComputedTensorFabricWrite(
     PipeTransferSendOp op, Value sourceAddress,
     Value receiverCompletionCounterAddress, Value receiverX, Value receiverY,
     Value routeIndex, const PipeComputedTensorAddressInfo &addressInfo,
-    const FabricRuntimeInfo &fabricRuntime,
+    ValueRange startIndices, const FabricRuntimeInfo &fabricRuntime,
     ConversionPatternRewriter &rewriter) {
   Location loc = op.getLoc();
   if (addressInfo.regionShape.empty() ||
-      addressInfo.startIndices.size() != addressInfo.tensorGridShape.size() ||
+      startIndices.size() != addressInfo.tensorGridShape.size() ||
       addressInfo.regionShape.size() > addressInfo.tensorGridShape.size()) {
     return op.emitError("invalid computed DRAM tensor-region address plan");
   }
@@ -3267,7 +3279,8 @@ static LogicalResult emitComputedTensorFabricWrite(
   Value zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
   if (pageCount == 1) {
     Value destinationAddress = buildComputedTensorPageAddress(
-        loc, zeroIndex, addressInfo, tensorAccessor, noc, rewriter);
+        loc, zeroIndex, addressInfo, startIndices, tensorAccessor, noc,
+        rewriter);
     Value completionNocAddress = routeEmitter.getRemoteNocAddress(
         receiverX, receiverY, receiverCompletionCounterAddress);
     routeEmitter.emitFusedWriteAtomicIncrement(sourceAddress,
@@ -3298,7 +3311,8 @@ static LogicalResult emitComputedTensorFabricWrite(
             rewriter, loc, firstSourcePage,
             arith::ConstantIndexOp::create(rewriter, loc, chunkIndex));
         destinationAddresses.push_back(buildComputedTensorPageAddress(
-            loc, sourcePageIndex, addressInfo, tensorAccessor, noc, rewriter));
+            loc, sourcePageIndex, addressInfo, startIndices, tensorAccessor,
+            noc, rewriter));
       }
       Value packetSourceAddress =
           buildSourcePageAddress(loc, sourceAddress, firstSourcePage,
@@ -3325,7 +3339,8 @@ static LogicalResult emitComputedTensorFabricWrite(
           rewriter, loc, firstSourcePage,
           arith::ConstantIndexOp::create(rewriter, loc, chunkIndex));
       destinationAddresses.push_back(buildComputedTensorPageAddress(
-          loc, sourcePageIndex, addressInfo, tensorAccessor, noc, rewriter));
+          loc, sourcePageIndex, addressInfo, startIndices, tensorAccessor, noc,
+          rewriter));
     }
     if (remainingPageCount == 1) {
       routeEmitter.emitWrite(packetSourceAddress, destinationAddresses.front(),
@@ -3581,10 +3596,16 @@ LogicalResult lowerPipeTransferSend(
         rewriter, loc, sendPlan.fabricRouteIndices.front());
     Value receiverCompletionCounterAddr = buildPipeCounterAddress(
         loc, senderFunc, completionInfo.counter, pipeResourcePlan, rewriter);
+    const PipeComputedTensorAddressInfo &addressInfo =
+        *pipeResource.addressStorage.computedTensorAddress;
+    SmallVector<Value> startIndices = llvm::map_to_vector(
+        addressInfo.startIndices, [&](int64_t startIndex) -> Value {
+          return arith::ConstantIndexOp::create(rewriter, loc, startIndex);
+        });
     if (failed(emitComputedTensorFabricWrite(
             op, srcAddr, receiverCompletionCounterAddr, receiverX, receiverY,
-            routeIndex, *pipeResource.addressStorage.computedTensorAddress,
-            runtimeIt->second, rewriter))) {
+            routeIndex, addressInfo, startIndices, runtimeIt->second,
+            rewriter))) {
       return failure();
     }
     rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
