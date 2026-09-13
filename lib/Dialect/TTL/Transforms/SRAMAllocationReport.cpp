@@ -9,6 +9,7 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/JSON.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
 #include <utility>
@@ -180,9 +181,11 @@ void printSRAMAllocationReport(
     }
     report["cores"] = std::move(cores);
   }
-  output << "ttlang-sram-report: ";
-  llvm::json::OStream json(output);
+  // Avoid one write to the unbuffered diagnostic stream per JSON token.
+  llvm::buffer_ostream bufferedOutput(output);
+  bufferedOutput << "ttlang-sram-report: ";
+  llvm::json::OStream json(bufferedOutput);
   json.value(std::move(report));
-  output << "\n";
+  bufferedOutput << "\n";
 }
 } // namespace mlir::tt::ttl
