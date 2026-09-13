@@ -24,9 +24,13 @@ from benchmarks.device_timing import latest_kernel_duration, read_device_profile
 from benchmarks.provenance import collect_provenance
 from examples.all_gather_minimal_matmul import (
     AllGatherMinimalMatmulConfig,
+    make_all_gather_minimal_matmul_operation,
 )
 from examples.all_gather_minimal_matmul.operation_bidirectional_dram import (
     make_bidirectional_dram_all_gather_matmul_operation,
+)
+from examples.all_gather_minimal_matmul.operation_grouped_rows import (
+    make_grouped_row_all_gather_matmul_operation,
 )
 from ttlang_test_utils import get_fabric_mesh_shape, to_dram
 from utils.correctness import assert_allclose, assert_pcc
@@ -60,6 +64,7 @@ class CommonConfig:
 
 @dataclass(frozen=True)
 class TTLangConfig:
+    activation_strategy: str
     compute_grid: tuple[int, int]
     communication_workers: int
     m_block_tiles: int
@@ -126,6 +131,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--ttlang-compute-grid", type=positive_int, nargs=2, default=(12, 10)
     )
+    parser.add_argument(
+        "--ttlang-activation-strategy",
+        choices=("direct-l1", "grouped-row-l1", "bidirectional-dram"),
+        default="grouped-row-l1",
+    )
     parser.add_argument("--ttlang-communication-workers", type=positive_int, default=4)
     parser.add_argument("--ttlang-m-block-tiles", type=positive_int, default=5)
     parser.add_argument("--ttlang-k-block-tiles", type=positive_int, default=10)
@@ -178,6 +188,7 @@ def make_configs(arguments):
         seed=arguments.seed,
     )
     ttlang = TTLangConfig(
+        activation_strategy=arguments.ttlang_activation_strategy,
         compute_grid=tuple(arguments.ttlang_compute_grid),
         communication_workers=arguments.ttlang_communication_workers,
         m_block_tiles=arguments.ttlang_m_block_tiles,
@@ -323,27 +334,45 @@ def create_ttlang_workload(mesh, common, ttlang):
         mesh,
         mesh_mapper=shard_mapper,
     )
-    gathered_activation = to_dram(
-        torch.zeros(
-            (
-                ttlang.communication_workers * operation_config.m_block_tiles * 32,
-                6 * operation_config.k_block_tiles * 32,
+    if ttlang.activation_strategy == "bidirectional-dram":
+        gathered_activation = to_dram(
+            torch.zeros(
+                (
+                    operation_config.padded_m_tiles * 32,
+                    common.device_count * common.k_tiles_per_device * 32,
+                ),
+                dtype=torch_dtype,
             ),
-            dtype=torch_dtype,
-        ),
-        mesh,
-        mesh_mapper=ttnn.ReplicateTensorToMesh(mesh),
-    )
-    operation = make_bidirectional_dram_all_gather_matmul_operation(
-        operation_config,
-        math_fidelity=common.math_fidelity,
-        fp32_dest_acc_en=common.fp32_dest_acc,
-        communication_worker_count=ttlang.communication_workers,
-    )
+            mesh,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(mesh),
+        )
+        operation = make_bidirectional_dram_all_gather_matmul_operation(
+            operation_config,
+            math_fidelity=common.math_fidelity,
+            fp32_dest_acc_en=common.fp32_dest_acc,
+            communication_worker_count=ttlang.communication_workers,
+        )
 
-    def run():
-        operation(activation, gathered_activation, weight, bias, output)
-        return output
+        def run():
+            operation(activation, gathered_activation, weight, bias, output)
+            return output
+
+    else:
+        operation_factory = (
+            make_grouped_row_all_gather_matmul_operation
+            if ttlang.activation_strategy == "grouped-row-l1"
+            else make_all_gather_minimal_matmul_operation
+        )
+        operation = operation_factory(
+            operation_config,
+            math_fidelity=common.math_fidelity,
+            fp32_dest_acc_en=common.fp32_dest_acc,
+            communication_worker_count=ttlang.communication_workers,
+        )
+
+        def run():
+            operation(activation, weight, bias, output)
+            return output
 
     def validate(result):
         actual = ttnn.to_torch(
@@ -528,7 +557,11 @@ def run_worker(arguments):
                     __file__,
                     Path(__file__).resolve().parents[1] / "device_timing.py",
                     Path(__file__).resolve().parents[2]
+                    / "examples/all_gather_minimal_matmul/operation.py",
+                    Path(__file__).resolve().parents[2]
                     / "examples/all_gather_minimal_matmul/operation_bidirectional_dram.py",
+                    Path(__file__).resolve().parents[2]
+                    / "examples/all_gather_minimal_matmul/operation_grouped_rows.py",
                 ]
             ),
             "references": {

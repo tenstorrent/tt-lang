@@ -14,6 +14,7 @@ from ttlang_test_utils import get_fabric_mesh_shape, open_fabric_mesh, to_dram
 from utils.correctness import assert_allclose, assert_pcc
 
 from .config import AllGatherMinimalMatmulConfig
+from .operation_grouped_rows import make_grouped_row_all_gather_matmul_operation
 from .operation import make_all_gather_minimal_matmul_operation
 
 
@@ -39,7 +40,12 @@ def positive_int(value: str) -> int:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--mesh-shape", type=parse_mesh_shape, required=True)
-    parser.add_argument("--compute-grid", type=positive_int, nargs=2, default=(5, 4))
+    parser.add_argument(
+        "--activation-strategy",
+        choices=("grouped-row-l1", "direct-l1"),
+        default="grouped-row-l1",
+    )
+    parser.add_argument("--compute-grid", type=positive_int, nargs=2, default=(4, 4))
     parser.add_argument("--communication-workers", type=positive_int, default=4)
     parser.add_argument("--m-tiles", type=positive_int, default=8)
     parser.add_argument("--k-tiles-per-device", type=positive_int, default=4)
@@ -113,7 +119,12 @@ def main() -> None:
         n_block_tiles=arguments.n_block_tiles,
         reuse_activation=arguments.reuse_activation,
     )
-    operation = make_all_gather_minimal_matmul_operation(
+    operation_factory = (
+        make_grouped_row_all_gather_matmul_operation
+        if arguments.activation_strategy == "grouped-row-l1"
+        else make_all_gather_minimal_matmul_operation
+    )
+    operation = operation_factory(
         config,
         math_fidelity="HiFi2" if arguments.dtype == "bf16" else "HiFi4",
         fp32_dest_acc_en=True,
