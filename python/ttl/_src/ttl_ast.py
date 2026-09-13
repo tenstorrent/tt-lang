@@ -485,20 +485,31 @@ class TTLGenericCompiler(TTCompilerBase):
     def _graph_pipe_record_attrs(self, pipenet):
         records = []
         grid_cols, grid_rows = self.context.grid
+        local_nodes = pipenet.local_nodes
+        if local_nodes is None:
+            local_nodes = tuple(
+                (node_x, node_y)
+                for node_y in range(grid_rows)
+                for node_x in range(grid_cols)
+            )
+        for node_x, node_y in local_nodes:
+            if node_x >= grid_cols or node_y >= grid_rows:
+                raise ValueError(
+                    f"PipeNet local node {(node_x, node_y)} is outside "
+                    f"operation grid {(grid_cols, grid_rows)}"
+                )
         for edge in pipenet._graph_edges:
             device_transfer = self._device_transfer_attr(pipenet.graph.domain, edge)
-            for node_y in range(grid_rows):
-                for node_x in range(grid_cols):
-                    node = (node_x, node_y)
-                    records.append(
-                        self._pipe_record_attr(
-                            node,
-                            node,
-                            node,
-                            False,
-                            device_transfer=device_transfer,
-                        )
+            for node in local_nodes:
+                records.append(
+                    self._pipe_record_attr(
+                        node,
+                        node,
+                        node,
+                        False,
+                        device_transfer=device_transfer,
                     )
+                )
         return records
 
     def _get_pipe_net_records_attr(self, pipenet):
@@ -826,6 +837,34 @@ class TTLGenericCompiler(TTCompilerBase):
         node.keywords = [
             keyword for keyword in node.keywords if keyword.arg != "kernel"
         ]
+
+    def visit_For(self, node):
+        sequence = self._evaluate_sequence_expression(node.iter)
+        if not isinstance(sequence, _SequenceExpressionValue):
+            return super().visit_For(node)
+
+        if not isinstance(sequence.value, tuple):
+            self._raise_error(
+                node.iter,
+                "static kernel iteration requires an immutable tuple",
+            )
+        if not isinstance(node.target, ast.Name):
+            self._raise_error(
+                node.target,
+                "static kernel iteration requires a plain variable target",
+            )
+        if node.orelse:
+            self._raise_error(
+                node,
+                "static kernel iteration does not support a for-else clause",
+            )
+        self._reject_unsupported_language_constructs(node.body)
+
+        for element in sequence.value:
+            self._set_var(node.target.id, element)
+            for statement in node.body:
+                self.visit(statement)
+            self._on_scope_exit()
 
     def visit_AugAssign(self, node):
         """Handle augmented assignment on tensor values.
@@ -1942,6 +1981,12 @@ class TTLGenericCompiler(TTCompilerBase):
                     # Shape and axis lists are consumed by the Python-level API,
                     # exactly as an inline literal would be.
                     self._set_var(name, val)
+                    if isinstance(val, tuple):
+                        for index, element in enumerate(val):
+                            if isinstance(element, PipeNet):
+                                self._pipe_net_names.setdefault(
+                                    id(element), f"{name}[{index}]"
+                                )
                 elif isinstance(val, DataflowBuffer):
                     self._set_var(name, self._emit_cb_from_capture(val))
                 elif isinstance(val, Pipe):

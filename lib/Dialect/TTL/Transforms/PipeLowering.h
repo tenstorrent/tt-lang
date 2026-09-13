@@ -92,6 +92,9 @@ struct FabricRoutePlan {
   /// Connection indices in selected-record order. Static operations have one
   /// entry.
   llvm::MapVector<Operation *, SmallVector<std::size_t>> routeIndices;
+  /// Fabric protocol operations whose disjoint DRAM destination requires no
+  /// receiver-to-sender readiness signal.
+  llvm::SmallPtrSet<Operation *, 16> noRendezvousProtocolOps;
   /// Non-overlapping connection ownership intervals.
   SmallVector<FabricRuntimeIntervalPlan> runtimeIntervals;
   /// Generated and external manager intervals used by target binding.
@@ -164,6 +167,8 @@ struct PipeComputedTensorAddressInfo {
   int64_t senderTensorArgumentIndex = 0;
   SmallVector<int64_t> tensorGridShape;
   SmallVector<int64_t> startIndices;
+  SmallVector<SmallVector<int64_t>> occurrenceStartIndices;
+  std::optional<int64_t> occurrenceCounterIndex;
   SmallVector<int64_t> regionShape;
   int64_t pageSizeBytes = 0;
 };
