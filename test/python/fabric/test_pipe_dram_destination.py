@@ -4,6 +4,7 @@
 
 """Point-to-point PipeNet receives into receiver-owned DRAM regions."""
 
+from itertools import product
 from math import prod
 
 import pytest
@@ -74,7 +75,9 @@ def _make_direct_dram_receive(mesh_shape, block_shape):
     return direct_dram_receive
 
 
-def _make_repeated_direct_dram_receive(mesh_shape, block_shape, repeat_count):
+def _make_repeated_direct_dram_receive(
+    mesh_shape, block_shape, repeat_count, disjoint_destinations
+):
     source_device = tuple(0 for _extent in mesh_shape)
     destination_device = tuple(extent - 1 for extent in mesh_shape)
     device_domain = ttl.DeviceDomain(mesh_shape)
@@ -84,6 +87,8 @@ def _make_repeated_direct_dram_receive(mesh_shape, block_shape, repeat_count):
         )
     )
     block_rows, block_columns = block_shape
+    destinations_per_physical_row = repeat_count if disjoint_destinations else 1
+    occurrence_stride = 1 if disjoint_destinations else 0
 
     @ttl.operation(grid=(1, 2), device_domain=device_domain)
     def repeated_direct_dram_receive(inp, staging, observed):
@@ -117,13 +122,18 @@ def _make_repeated_direct_dram_receive(mesh_shape, block_shape, repeat_count):
         @ttl.datamovement()
         def receiver_node():
             _, physical_row = ttl.node(dims=2)
-            staging_region = staging[
-                physical_row * block_rows : (physical_row + 1) * block_rows,
-                0:block_columns,
-            ]
 
             def receive(pipe):
                 for repeat_index in range(repeat_count):
+                    staging_row = (
+                        physical_row * destinations_per_physical_row
+                        + repeat_index * occurrence_stride
+                    )
+                    staging_row_begin = staging_row * block_rows
+                    staging_region = staging[
+                        staging_row_begin : staging_row_begin + block_rows,
+                        0:block_columns,
+                    ]
                     receive_request = ttl.copy(
                         pipe,
                         staging_region,
@@ -132,12 +142,12 @@ def _make_repeated_direct_dram_receive(mesh_shape, block_shape, repeat_count):
                     receive_request.wait()
                     with readback_dfb.reserve() as readback_block:
                         ttl.copy(staging_region, readback_block).wait()
-                    row_begin = repeat_index * block_rows
+                    observed_row_begin = repeat_index * block_rows
                     with readback_dfb.wait() as readback_block:
                         ttl.copy(
                             readback_block,
                             observed[
-                                row_begin : row_begin + block_rows,
+                                observed_row_begin : observed_row_begin + block_rows,
                                 0:block_columns,
                             ],
                         ).wait()
@@ -145,6 +155,77 @@ def _make_repeated_direct_dram_receive(mesh_shape, block_shape, repeat_count):
             transfer_net.if_dst(receive)
 
     return repeated_direct_dram_receive
+
+
+def _make_concurrent_bidirectional_direct_dram_receive(mesh_shape, worker_count):
+    device_domain = ttl.DeviceDomain(mesh_shape)
+    source_devices = tuple(product(*(range(extent) for extent in mesh_shape)))
+    destination_devices = source_devices[1:] + source_devices[:1]
+    worker_nodes = tuple((0, worker_index) for worker_index in range(worker_count))
+    forward_net = ttl.PipeNet(
+        graph=ttl.TransferGraph.edges(
+            device_domain,
+            edges=list(zip(source_devices, destination_devices, strict=True)),
+        ),
+        local_nodes=worker_nodes,
+    )
+    reverse_net = ttl.PipeNet(
+        graph=ttl.TransferGraph.edges(
+            device_domain,
+            edges=list(zip(destination_devices, source_devices, strict=True)),
+        ),
+        local_nodes=worker_nodes,
+    )
+
+    @ttl.operation(grid=(1, worker_count), device_domain=device_domain)
+    def concurrent_bidirectional_direct_dram_receive(inp, staging, observed):
+        send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
+        readback_dfb = ttl.make_dataflow_buffer_like(
+            staging, shape=(1, 1), block_count=1
+        )
+
+        @ttl.compute()
+        def idle_compute():
+            pass
+
+        @ttl.datamovement()
+        def sender_node():
+            _, physical_row = ttl.node(dims=2)
+
+            def send(pipe):
+                with send_dfb.reserve() as send_block:
+                    ttl.copy(
+                        inp[physical_row : physical_row + 1, 0:1], send_block
+                    ).wait()
+                with send_dfb.wait() as send_block:
+                    ttl.copy(send_block, pipe).wait()
+
+            if physical_row % 2 == 0:
+                forward_net.if_src(send)
+            else:
+                reverse_net.if_src(send)
+
+        @ttl.datamovement()
+        def receiver_node():
+            _, physical_row = ttl.node(dims=2)
+            destination = staging[physical_row : physical_row + 1, 0:1]
+
+            def receive(pipe):
+                ttl.copy(pipe, destination, shape=(1, 1)).wait()
+                with readback_dfb.reserve() as readback_block:
+                    ttl.copy(destination, readback_block).wait()
+                with readback_dfb.wait() as readback_block:
+                    ttl.copy(
+                        readback_block,
+                        observed[physical_row : physical_row + 1, 0:1],
+                    ).wait()
+
+            if physical_row % 2 == 0:
+                forward_net.if_dst(receive)
+            else:
+                reverse_net.if_dst(receive)
+
+    return concurrent_bidirectional_direct_dram_receive
 
 
 @pytest.mark.parametrize(
@@ -235,8 +316,13 @@ def test_pipe_receive_to_dram_region(torch_dtype, ttnn_dtype, rtol, atol, block_
     [(1, 1), (1, 5)],
     ids=["one-tile", "scatter-plus-unicast"],
 )
-def test_repeated_pipe_receive_to_reused_dram_region(
-    torch_dtype, ttnn_dtype, rtol, atol, block_shape
+@pytest.mark.parametrize(
+    "disjoint_destinations",
+    [False, True],
+    ids=["reused-destination", "disjoint-destinations"],
+)
+def test_repeated_pipe_receive_to_dram_region(
+    torch_dtype, ttnn_dtype, rtol, atol, block_shape, disjoint_destinations
 ):
     mesh_shape = get_fabric_mesh_shape(fabric_config=ttnn.FabricConfig.FABRIC_2D)
     device_count = prod(mesh_shape)
@@ -248,7 +334,11 @@ def test_repeated_pipe_receive_to_reused_dram_region(
         repeat_count * block_rows * TILE_SIZE,
         block_columns * TILE_SIZE,
     )
-    staging_shard_shape = (2 * block_rows * TILE_SIZE, block_columns * TILE_SIZE)
+    destination_count = repeat_count if disjoint_destinations else 1
+    staging_shard_shape = (
+        2 * destination_count * block_rows * TILE_SIZE,
+        block_columns * TILE_SIZE,
+    )
     inp_torch = torch.randn(
         (device_count * input_shard_shape[0], input_shard_shape[1]),
         dtype=torch_dtype,
@@ -259,7 +349,7 @@ def test_repeated_pipe_receive_to_reused_dram_region(
     )
     observed_torch = torch.zeros_like(inp_torch)
     repeated_direct_dram_receive = _make_repeated_direct_dram_receive(
-        mesh_shape, block_shape, repeat_count
+        mesh_shape, block_shape, repeat_count, disjoint_destinations
     )
 
     with open_fabric_mesh(
@@ -302,3 +392,75 @@ def test_repeated_pipe_receive_to_reused_dram_region(
     expected = torch.zeros_like(inp_torch)
     expected[-input_shard_shape[0] :, :] = inp_torch[: input_shard_shape[0], :]
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
+
+
+def test_concurrent_bidirectional_pipe_receive_to_disjoint_dram_regions():
+    mesh_shape = get_fabric_mesh_shape(fabric_config=ttnn.FabricConfig.FABRIC_2D)
+    if mesh_shape[0] < 2:
+        pytest.skip("requires a one-dimensional multi-device mesh")
+    worker_count = 4
+    shard_shape = (worker_count * TILE_SIZE, TILE_SIZE)
+    logical_shape = (prod(mesh_shape) * shard_shape[0], shard_shape[1])
+    input_device_shards = torch.empty(
+        (prod(mesh_shape), *shard_shape), dtype=torch.bfloat16
+    )
+    for device_index in range(prod(mesh_shape)):
+        for worker_index in range(worker_count):
+            row_begin = worker_index * TILE_SIZE
+            input_device_shards[device_index, row_begin : row_begin + TILE_SIZE, :] = (
+                device_index * worker_count + worker_index + 1
+            )
+    inp_torch = input_device_shards.reshape(logical_shape)
+    zero_torch = torch.zeros(logical_shape, dtype=torch.bfloat16)
+    concurrent_direct_dram_receive = _make_concurrent_bidirectional_direct_dram_receive(
+        mesh_shape, worker_count
+    )
+
+    with open_fabric_mesh(
+        requested_mesh_shape=mesh_shape,
+        fabric_config=ttnn.FabricConfig.FABRIC_2D,
+    ) as mesh:
+        mesh_mapper = ttnn.ShardTensorToMesh(mesh, dim=0)
+        inp = ttnn.from_torch(
+            inp_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=mesh,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh_mapper=mesh_mapper,
+        )
+        staging = ttnn.from_torch(
+            zero_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=mesh,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh_mapper=mesh_mapper,
+        )
+        observed = ttnn.from_torch(
+            zero_torch,
+            dtype=ttnn.bfloat16,
+            layout=ttnn.TILE_LAYOUT,
+            device=mesh,
+            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh_mapper=mesh_mapper,
+        )
+
+        concurrent_direct_dram_receive(inp, staging, observed)
+        result = ttnn.to_torch(
+            observed,
+            mesh_composer=ttnn.ConcatMeshToTensor(mesh, dim=0),
+        )
+
+    input_worker_tiles = input_device_shards.reshape(
+        prod(mesh_shape), worker_count, TILE_SIZE, TILE_SIZE
+    )
+    expected_worker_tiles = torch.empty_like(input_worker_tiles)
+    expected_worker_tiles[:, 0::2] = torch.roll(
+        input_worker_tiles[:, 0::2], shifts=1, dims=0
+    )
+    expected_worker_tiles[:, 1::2] = torch.roll(
+        input_worker_tiles[:, 1::2], shifts=-1, dims=0
+    )
+    expected = expected_worker_tiles.reshape(logical_shape)
+    assert_allclose(result.float(), expected.float(), rtol=0.05, atol=1.0)

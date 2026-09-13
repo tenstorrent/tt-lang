@@ -70,6 +70,9 @@ public:
   /// Return whether `op` uses routing-plane fabric synchronization.
   bool usesFabricProtocol(Operation *op) const;
 
+  /// Return whether `op` uses fabric without receiver readiness.
+  bool usesNoRendezvousProtocol(Operation *op) const;
+
 private:
   friend FailureOr<PipeModulePlan>
   buildPipeModulePlan(ModuleOp, ValueOriginAnalysis &,
@@ -78,6 +81,7 @@ private:
 
   llvm::SmallPtrSet<Operation *, 16> capacityTransferOps;
   llvm::SmallPtrSet<Operation *, 16> fabricTransferOps;
+  llvm::SmallPtrSet<Operation *, 16> noRendezvousTransferOps;
 };
 
 /// Capacity consumed by one sender before issuing a payload write.

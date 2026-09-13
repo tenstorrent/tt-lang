@@ -15,7 +15,7 @@ PipeNet supports the spec's callback API:
 
 import inspect
 import warnings
-from typing import Callable, List, Optional, Tuple, Union
+from typing import Callable, Iterable, List, Optional, Tuple, Union
 
 # Type aliases matching the spec
 CoreCoord = Tuple[int, int]
@@ -227,7 +227,8 @@ class PipeNet:
     A network of pipes for multi-core communication patterns.
 
     PipeNet groups multiple pipes and provides if_src/if_dst methods
-    for conditional execution based on core coordinates.
+    for conditional execution based on node coordinates. A graph-based PipeNet
+    applies each device-transfer edge to every operation node by default.
 
     Active set: the union of every pipe's source coordinate and destination
     range. Cores outside the active set do not participate in pipe
@@ -245,6 +246,8 @@ class PipeNet:
 
     Args:
         pipes: List of Pipe objects defining the network
+        graph: Device-transfer graph applied between equal node coordinates.
+        local_nodes: Optional node coordinates that instantiate each graph edge.
 
     Example:
         # Gather pattern from work extent ROWS x COLS:
@@ -259,7 +262,13 @@ class PipeNet:
         net.if_dst(lambda pipe: ttl.copy(pipe, blk).wait())
     """
 
-    def __init__(self, pipes: Optional[List[Pipe]] = None, *, graph=None):
+    def __init__(
+        self,
+        pipes: Optional[List[Pipe]] = None,
+        *,
+        graph=None,
+        local_nodes: Optional[Iterable[CoreCoord]] = None,
+    ):
         # Validate at construction time by building a one-net graph and
         # delegating to OperationPipeNets.validate(). Single source of
         # truth for empty/overlap/mixed-kind rules; the same graph is
@@ -269,11 +278,14 @@ class PipeNet:
 
         if (pipes is None) == (graph is None):
             raise ValueError("PipeNet requires exactly one of pipes or graph")
+        if graph is None and local_nodes is not None:
+            raise ValueError("PipeNet local_nodes requires a graph")
         # Operation-local id assigned by the OperationPipeNets builder
         # before AST emission (see _build_operation_pipenets).
         self.pipe_net_id = 0
         self.pipes: List[Pipe] = []
         self.graph: Optional[TransferGraph] = None
+        self.local_nodes: Optional[tuple[CoreCoord, ...]] = None
         self._graph_edges = ()
         if graph is not None:
             if not isinstance(graph, TransferGraph):
@@ -282,6 +294,22 @@ class PipeNet:
                     f"got {type(graph).__name__}"
                 )
             self.graph = graph
+            if local_nodes is not None:
+                normalized_nodes = tuple(tuple(node) for node in local_nodes)
+                if not normalized_nodes:
+                    raise ValueError("PipeNet local_nodes requires at least one node")
+                if len(set(normalized_nodes)) != len(normalized_nodes):
+                    raise ValueError("PipeNet local_nodes contains duplicate nodes")
+                for node in normalized_nodes:
+                    if len(node) != 2 or any(
+                        not isinstance(coordinate, int) or coordinate < 0
+                        for coordinate in node
+                    ):
+                        raise ValueError(
+                            "PipeNet local_nodes must contain non-negative "
+                            f"(x, y) integer coordinates, got {node}"
+                        )
+                self.local_nodes = normalized_nodes
         else:
             assert pipes is not None
             if not pipes:
@@ -329,6 +357,7 @@ class PipeNet:
         return (
             "graph-pipenet",
             self.graph.domain._operation_identity_capture(),
+            self.local_nodes,
             tuple(
                 (
                     device_identity(edge.source),
