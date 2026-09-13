@@ -1218,6 +1218,41 @@ def test_scalar_type_capture_changes_operation_identity():
     )
 
 
+def test_kernel_kind_capture_selects_canonical_kernel():
+    """A factory may select a canonical kernel without declaring a new kernel."""
+
+    def make_operation(kernel_kind):
+        @ttl.operation()
+        def selected_operation():
+            ttl.call_extern_func(
+                "work.hpp",
+                "work",
+                kernel=kernel_kind,
+            )
+
+        return selected_operation
+
+    compute_operation = make_operation(ttl.KernelKind.COMPUTE)
+    data_movement_operation = make_operation(ttl.KernelKind.DATA_MOVEMENT)
+
+    assert (
+        compute_operation._spec.operation_identity
+        != data_movement_operation._spec.operation_identity
+    )
+    for operation, expected_kind in (
+        (compute_operation, KernelKind.COMPUTE),
+        (data_movement_operation, KernelKind.DATA_MOVEMENT),
+    ):
+        result = split_function_body(
+            operation._spec.fn_ast,
+            dfb_param_names=set(),
+            logical_kernels=operation._spec.logical_kernels,
+            selector_scope=operation._spec.frozen_scope,
+            kernel_capacities=_backend_kernel_capacities(),
+        )
+        assert result.kernels == (expected_kind,)
+
+
 def test_composition_preserves_one_dispatch_condition_identity():
     """Inlining preserves one captured condition across logical kernels."""
     condition = ttl.DispatchCondition(ttl.ScalarType.I64)

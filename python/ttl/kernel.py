@@ -307,6 +307,8 @@ def _encode_identity_literal(value) -> Optional[bytes]:
         return f"str:{len(encoded)}:".encode("ascii") + encoded
     if isinstance(value, ScalarType):
         return f"scalar:{value.name}".encode("ascii")
+    if isinstance(value, KernelKind):
+        return f"kernel-kind:{value.value}".encode("utf-8")
     if isinstance(value, (tuple, list)):
         elements = []
         for element in value:

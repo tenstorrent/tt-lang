@@ -510,7 +510,9 @@ def _bind_logical_kernels(
 def _is_compile_time_literal(value: Any) -> bool:
     if value is ScalarType:
         return True
-    if value is None or isinstance(value, (bool, int, float, str, ScalarType)):
+    if value is None or isinstance(
+        value, (bool, int, float, str, ScalarType, KernelKind)
+    ):
         return True
     if isinstance(value, (tuple, list)):
         return all(_is_compile_time_literal(element) for element in value)
