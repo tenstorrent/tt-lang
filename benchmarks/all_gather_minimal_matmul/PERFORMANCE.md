@@ -11,7 +11,7 @@ Four Blackhole P150b devices; global `M/K/N=9472/5120/15360`; per-device
 
 | Implementation | Device median ms (min-max) | TT-Lang/native | Warmups/samples |
 | --- | ---: | ---: | ---: |
-| TT-Lang | 2.631 (2.593-2.688) | 1.333 | 3/10 |
+| TT-Lang grouped-row L1 | 2.306 (2.268-2.318) | 1.168 | 3/10 |
 | Native `all_gather_minimal_matmul_async` | 1.974 (1.959-2.004) | 1.000 | 3/10 |
 
 Both results passed PCC >= 0.99 and elementwise relative/absolute tolerances of
@@ -57,8 +57,8 @@ configuration. Equal resource use is not required.
 | Compute grid | `12 x 10`; 120 compute workers | `12 x 9`; 108 compute workers |
 | M/K/N blocks | `5/10/12` tiles | `7/5/16` tiles |
 | Output subblock | `1 x 4` tiles; direct FP32 packer accumulation | `1 x 2` tiles |
-| Communication workers | 4 fabric workers directly inject activation blocks; point-to-point forwarding through each 10-node compute chain | 24 compute workers are fabric clients; 4 mux-only workers |
-| Activation collective | one-direction TT-Lang ring into L1 | bidirectional native ring into gathered-activation DRAM storage |
+| Communication workers | 4 fabric workers; each serves 3 compute rows and injects their activation subviews into separate 10-node compute chains | 24 compute workers are fabric clients; 4 mux-only workers |
+| Activation collective | one-direction TT-Lang ring; each transfer contains three contiguous M blocks in L1 | bidirectional native ring into gathered-activation DRAM storage |
 | Fabric configuration | 2D, strict initialization | 1D ring, strict initialization |
 | Payload | 8192 bytes | 8192 bytes |
 | Links/workers/channel buffers | one directed ring connection per fabric worker | 2 links; 6 workers/link; 24 buffers/channel |
@@ -98,6 +98,7 @@ consumer wait; they isolate communication and local distribution from matmul.
 | Reduce the compute K block from ten to five tiles | 4.547 (4.535-4.560) | 3/10 | +27.1% vs ten tiles | Rejected. The smaller block doubles DFB and matmul message granularity. |
 | Direct fabric-to-compute publication and one-block output DFB; four-tile M block | 3.189 (3.153-3.215) | 1/3 | control | Direct publication alone is statistically equivalent to the preceding four-worker result. |
 | Same DFB configuration; five-tile M block with a partial final block | 2.631 (2.593-2.688) | 3/10 | -17.5% vs adjacent control | Accepted. Reduces M rounds from seven to five and padded M tiles from 336 to 300. |
+| Group three compute rows per fabric transfer and inject DFB subviews | 2.306 (2.268-2.318) | 3/10 | -11.8% vs 2.613 ms adjacent control | Accepted. Reduces each communication worker's fabric transfers from 180 to 60 without changing payload bytes or matmul blocking. |
 | Alternate complete ten-tile K blocks across both ring directions | not measured | full-size compile | n/a | Rejected. The small four-device BF16 streaming case passed, but the full workload required 1,474,560 L1 bytes, 13,184 bytes over the 1,461,376-byte budget. |
 | Eight direct fabric managers to reduce per-manager DFB capacity | not measured | full-size launch | n/a | Rejected. Compilation and PipeNet verification passed, but four physical forwarding links could not bind eight interfering managers. |
 | Four bidirectional managers with two-block receive and relay DFBs | not measured | full-size launch | n/a | Rejected. The local relay filled while fabric sends waited for peers to post receives, producing the finite-capacity protocol deadlock reported in [#1037](https://github.com/tenstorrent/tt-lang/issues/1037). |
@@ -119,12 +120,12 @@ compute configurations, point-to-point reduced activation-only time by 3.3%
 and complete-operation time by 4.5%; multicast therefore underperformed and
 was removed.
 
-The accepted result publishes received activation blocks directly to the
-matmul DFB and uses five-tile M blocks. The adjacent four-tile control measured
-3.189 ms, so the 17.5% reduction comes from reducing M rounds from seven to
-five and padded M tiles from 336 to 300; removing the local copy alone did not
-produce a measurable reduction. The earlier 2.521 ms activation-only and
-2.109 ms isolated-matmul measurements used four-tile M blocks.
+The selected implementation groups the three contiguous M blocks served by
+each communication worker into one fabric transfer. It extracts three L1 DFB
+subviews after reception and injects one into each compute-row chain. This
+retains the five-tile M block and identical fabric payload bytes while reducing
+each communication worker's fabric transfers from 180 to 60. The adjacent
+direct-L1 control measured 2.613 ms (2.605-2.616), an 11.8% difference.
 
 The bidirectional experiments require both directions to populate one ten-tile
 activation block and the matching two weight slices before one matmul. Splitting
@@ -171,9 +172,9 @@ Device profiling measures first kernel start through final kernel end, averaged
 across the four devices. Host tensor creation, compilation, dispatch,
 correctness checks, and profiler processing are excluded.
 
-TT-Lang measured 2026-09-12 09:57-09:58 UTC; native measured 2026-09-11
-18:40-18:41 UTC. TT-Lang base `99f10aae99d2`, operation SHA-256
-`6dad67c4b3e2`, comparison runner SHA-256 `4055a010ff27`; TT-Metal
+TT-Lang measured 2026-09-13 17:47-17:49 UTC; native measured 2026-09-11
+18:40-18:41 UTC. TT-Lang base `9e58cb38ce30`, operation SHA-256
+`45e6b6022745`, comparison runner SHA-256 `ac35dd780ad2`; TT-Metal
 `ea042c4ad623`; LLVM `37aca9d384347`; firmware 18.12.1; IRD v1.1.9.
 
 [Raw device-profiler reports](https://gist.github.com/brnorris03/fa7ab25c12872de92dc0727f28f16104).
