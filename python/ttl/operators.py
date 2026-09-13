@@ -886,7 +886,8 @@ def copy(
     Initiate an asynchronous data transfer using ttl.copy.
 
     Args:
-        src: Source tensor/slice (for reads), block (for writes), or Pipe (for pipe receive)
+        src: Source tensor/slice (for reads), block or block subview (for
+            writes), or Pipe (for pipe receive)
         dst: Destination block (for reads), tensor/slice (for writes), or Pipe (for pipe send)
         byte_count: Positive static byte count for DFB block-to-block and pipe
             transfers. Tensor-slice transfers always copy complete tiles.
@@ -902,6 +903,8 @@ def copy(
 
     For pipe transfers:
         ttl.copy(block, pipe) - send from DFB block to pipe
+        ttl.copy(block_subview, pipe) - send a contiguous DFB block region to
+            pipe
         ttl.copy(pipe, block) - receive from pipe to DFB block
         ttl.copy(pipe, tensor[r0:r1, c0:c1], shape=(r1-r0, c1-c0)) - receive
             directly into a DRAM tensor region
@@ -917,21 +920,21 @@ def copy(
 
         if dst_is_pipe:
             # DFB -> Pipe send.
-            if not _is_block(src):
+            if not _is_block_or_subview(src):
                 raise ValueError(
-                    "copy() to pipe requires block src (from cb.reserve() or cb.wait())"
+                    "copy() to pipe requires a block or block subview source"
                 )
             if shape is not None:
                 raise ValueError(
                     "copy() shape is supported only for pipe-to-tensor receives"
                 )
-            src_cb = _get_cb_from_block(src)
             pipe_val = _get_pipe_mlir_value(dst)
-            ctx = src_cb.type.context
+            ctx = src.type.context
             xf_type = Type.parse("!ttl.transfer_handle<write>", ctx)
+            source = src if _is_block_subview(src) else _get_cb_from_block(src)
             return ttl.copy(
                 xf_type,
-                src_cb,
+                source,
                 pipe_val,
                 byte_count=_copy_byte_count_attr(byte_count, ctx),
             )

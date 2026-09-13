@@ -28,6 +28,12 @@ inline FailureOr<CircularBufferType> getTTLCircularBufferType(Value value) {
   if (auto dfbType = mlir::dyn_cast<CircularBufferType>(value.getType())) {
     return dfbType;
   }
+  if (auto slice = value.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
+    return getTTLCircularBufferType(slice.getSource());
+  }
+  if (auto attach = value.getDefiningOp<AttachCBOp>()) {
+    return getTTLCircularBufferType(attach.getCb());
+  }
   if (auto castOp = value.getDefiningOp<UnrealizedConversionCastOp>()) {
     if (castOp.getInputs().size() == 1 && castOp.getOutputs().size() == 1) {
       if (auto dfbType = mlir::dyn_cast<CircularBufferType>(

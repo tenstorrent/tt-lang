@@ -1366,14 +1366,18 @@ struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
         fabricRuntime(fabricRuntime) {}
 
   LogicalResult
-  matchAndRewrite(PipeTransferSendOp op, OpAdaptor adaptor,
+  matchAndRewrite(PipeTransferSendOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
     if (pipeResourcePlan.staticallyInactiveOps.contains(op.getOperation())) {
       lowerInactivePipeTransferSend(op, rewriter);
       return success();
     }
+    Value sourceDFB = isa<CircularBufferType>(op.getSrc().getType())
+                          ? op.getSrc()
+                          : getAttachedCB(op.getSrc());
+    assert(sourceDFB && "verified pipe send must have a source DFB");
     return lowerPipeTransferSend(
-        op, adaptor.getSrc(), pipeModulePlan.getTransferPlan(op.getOperation()),
+        op, sourceDFB, pipeModulePlan.getTransferPlan(op.getOperation()),
         pipeModulePlan.getTransportPlan(), pipeResourcePlan, pipeCapacityPlan,
         senderCapacityCounters, fabricReadyCounters, computedAddressCounters,
         fabricRuntime, rewriter);
