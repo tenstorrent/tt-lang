@@ -23,3 +23,13 @@ func.func @retain_dynamic_index(%index : index) -> index {
   %value = ttkernel.experimental.constant_table_lookup %index, [3, 5, 8] : index
   return %value : index
 }
+
+// A splat table does not require a runtime lookup or table storage.
+// CHECK-LABEL: func.func @canonicalize_splat_table
+// CHECK-SAME: (%[[INDEX:.*]]: index)
+// CHECK-NEXT:    %[[VALUE:.*]] = arith.constant 7 : index
+// CHECK-NEXT:    return %[[VALUE]] : index
+func.func @canonicalize_splat_table(%index : index) -> index {
+  %value = ttkernel.experimental.constant_table_lookup %index, [7, 7, 7] : index
+  return %value : index
+}
