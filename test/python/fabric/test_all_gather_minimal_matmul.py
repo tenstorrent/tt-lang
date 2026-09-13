@@ -13,6 +13,7 @@ ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 from examples.all_gather_minimal_matmul import (
     AllGatherMinimalMatmulConfig,
     make_all_gather_minimal_matmul_operation,
+    make_grouped_row_all_gather_matmul_operation,
 )
 from examples.all_gather_minimal_matmul.__main__ import open_participant_mesh
 from ttlang_test_utils import get_fabric_mesh_shape, to_dram
@@ -32,7 +33,13 @@ def require_mesh(mesh_shape):
         )
 
 
-def run_case(mesh, config, communication_workers, torch_dtype):
+def run_case(
+    mesh,
+    config,
+    communication_workers,
+    torch_dtype,
+    operation_factory=make_all_gather_minimal_matmul_operation,
+):
     torch.manual_seed(19)
     m_elements = config.m_tiles * 32
     k_elements = config.device_count * config.k_tiles_per_device * 32
@@ -56,7 +63,7 @@ def run_case(mesh, config, communication_workers, torch_dtype):
         mesh,
         mesh_mapper=shard_mapper,
     )
-    operation = make_all_gather_minimal_matmul_operation(
+    operation = operation_factory(
         config,
         math_fidelity="HiFi2" if torch_dtype == torch.bfloat16 else "HiFi4",
         fp32_dest_acc_en=True,
@@ -137,3 +144,29 @@ def test_all_gather_minimal_matmul_full_grid():
     require_mesh(config.mesh_shape)
     with open_participant_mesh(config.mesh_shape) as mesh:
         run_case(mesh, config, 1, torch.bfloat16)
+
+
+@pytest.mark.parametrize(
+    "torch_dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"]
+)
+def test_grouped_row_all_gather_minimal_matmul(torch_dtype):
+    config = AllGatherMinimalMatmulConfig(
+        mesh_shape=(4, 1),
+        m_tiles=16,
+        k_tiles_per_device=4,
+        n_tiles_per_device=8,
+        compute_grid=(8, 4),
+        m_block_tiles=2,
+        k_block_tiles=2,
+        n_block_tiles=1,
+        reuse_activation=False,
+    )
+    require_mesh(config.mesh_shape)
+    with open_participant_mesh(config.mesh_shape) as mesh:
+        run_case(
+            mesh,
+            config,
+            4,
+            torch_dtype,
+            operation_factory=make_grouped_row_all_gather_matmul_operation,
+        )
