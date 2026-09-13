@@ -109,4 +109,13 @@ module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [
     ttkernel.cb_push_back(%storage, %capacity) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, i32) -> ()
     return
   }
+
+  // Frontend Boolean negation is a pure expression and does not obscure DFB effects.
+  // CHECK-LABEL: func.func @logical_not
+  // CHECK: emitc.logical_not
+  func.func @logical_not() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+    %condition = arith.constant true
+    %negated = emitc.logical_not %condition : i1
+    return
+  }
 }
