@@ -60,6 +60,11 @@ namespace mlir::tt::ttl {
 using mlir::func::FuncOp;
 namespace ttk = mlir::tt::ttkernel;
 
+static bool usesFabricTransport(PipeSynchronizationProtocol protocol) {
+  return protocol == PipeSynchronizationProtocol::Fabric ||
+         protocol == PipeSynchronizationProtocol::FabricNoRendezvous;
+}
+
 Value buildDistributedTensorAccessor(Location loc, OpBuilder &builder,
                                      int32_t baseCTA, int32_t globalTensorIndex,
                                      int32_t commonRuntimeArgIndex,
@@ -717,6 +722,23 @@ static void planFabricManagerOwnership(
   coalesceUnserializedFabricRuntimeIntervals(plan);
 }
 
+/// A statically enumerated sequence of disjoint DRAM regions cannot overwrite
+/// unconsumed receiver storage, so it needs completion notification but no
+/// receiver-to-sender readiness signal.
+static bool
+canOmitFabricReceiverRendezvous(const PipeTransferNode &transferNode,
+                                const PipeGraph &pipeGraph) {
+  if (!transferNode.deviceTransfer ||
+      transferNode.transferContract != PipeTransferContract::PointToPoint ||
+      transferNode.receiverEndpoints.size() != 1) {
+    return false;
+  }
+  const PipeReceiverEndpoint &endpoint =
+      pipeGraph.getPipeReceiverEndpoint(transferNode.receiverEndpoints.front());
+  return endpoint.hasTensorRegionDestination() && endpoint.executionCount &&
+         endpoint.getTensorRegionDestination().hasDisjointOccurrences;
+}
+
 LogicalResult buildFabricRoutePlan(
     ModuleOp module, const PipeTransferIndex &transferIndex,
     const PipeGraph &pipeGraph, const PipeForeachLoweringInfo &foreachInfo,
@@ -724,6 +746,28 @@ LogicalResult buildFabricRoutePlan(
     bool enableLocalManagerOwnership, FabricRoutePlan &plan) {
   LogicalResult result = success();
   RecordAlignedTableBuilder<std::size_t> routeIndices;
+
+  llvm::SmallSetVector<Operation *, 16> fabricProtocolOps;
+  for (const PipeTransferNode &transferNode :
+       pipeGraph.getPipeTransferNodes()) {
+    if (!transferNode.deviceTransfer) {
+      continue;
+    }
+    fabricProtocolOps.insert(transferNode.sendOp);
+    for (Operation *postOp : transferNode.receiverPostOps) {
+      fabricProtocolOps.insert(postOp);
+    }
+  }
+  for (Operation *operation : fabricProtocolOps) {
+    ArrayRef<PipeTransferNodeId> transferNodeIds =
+        pipeGraph.getPipeTransferNodeIdsForProtocolOp(operation);
+    if (llvm::all_of(transferNodeIds, [&](PipeTransferNodeId transferNodeId) {
+          return canOmitFabricReceiverRendezvous(
+              pipeGraph.getPipeTransferNode(transferNodeId), pipeGraph);
+        })) {
+      plan.noRendezvousProtocolOps.insert(operation);
+    }
+  }
 
   auto recordRouteIndex = [&](Operation *operation,
                               std::optional<std::uint64_t> recordIndex,
@@ -799,6 +843,9 @@ LogicalResult buildFabricRoutePlan(
       const PipeReceiverEndpoint &endpoint =
           pipeGraph.getPipeReceiverEndpoint(endpointId);
       Operation *postOp = endpoint.postOp;
+      if (plan.noRendezvousProtocolOps.contains(postOp)) {
+        continue;
+      }
       FuncOp postFunc = postOp->getParentOfType<FuncOp>();
       FailureOr<FunctionFabricRoutePlan *> maybePostFunctionPlan =
           getFunctionFabricRoutePlan(postFunc, transfer.getDomain(), postOp,
@@ -1184,6 +1231,68 @@ static Value buildPipeCounterPtr(Location loc, FuncOp func,
 static Value loadIndexTableEntry(Location loc, ArrayRef<int64_t> values,
                                  Value recordIndex, OpBuilder &builder) {
   return buildConstantIndexTableLookup(builder, loc, values, recordIndex);
+}
+
+struct PeriodicAffineSequence {
+  int64_t period = 0;
+  int64_t cycleStride = 0;
+  SmallVector<int64_t> cycleValues;
+};
+
+/// Compress a repeated cycle whose corresponding elements advance by one
+/// fixed non-negative stride. Exact validation retains table lowering for all
+/// other statically enumerated sequences.
+static std::optional<PeriodicAffineSequence>
+findPeriodicAffineSequence(ArrayRef<int64_t> values) {
+  for (int64_t period = 1; period < static_cast<int64_t>(values.size());
+       ++period) {
+    if (values.size() % period != 0) {
+      continue;
+    }
+    int64_t cycleStride = 0;
+    if (__builtin_sub_overflow(values[period], values.front(), &cycleStride) ||
+        cycleStride < 0) {
+      continue;
+    }
+    bool matches =
+        llvm::all_of(llvm::enumerate(values), [&](auto indexedValue) {
+          int64_t cycleIndex = indexedValue.index() / period;
+          int64_t cycleOffset = indexedValue.index() % period;
+          std::optional<int64_t> expected =
+              llvm::checkedMulAdd(cycleIndex, cycleStride, values[cycleOffset]);
+          return expected && *expected == indexedValue.value();
+        });
+    if (matches) {
+      return PeriodicAffineSequence{
+          period, cycleStride, SmallVector<int64_t>(values.take_front(period))};
+    }
+  }
+  return std::nullopt;
+}
+
+static Value buildPeriodicAffineSequenceValue(
+    Location loc, const PeriodicAffineSequence &sequence, Value occurrence,
+    ConversionPatternRewriter &rewriter) {
+  Value cycleOffset;
+  if (sequence.period == 1) {
+    cycleOffset = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  } else {
+    Value period =
+        arith::ConstantIndexOp::create(rewriter, loc, sequence.period);
+    cycleOffset = arith::RemUIOp::create(rewriter, loc, occurrence, period);
+  }
+  Value cycleValue =
+      loadIndexTableEntry(loc, sequence.cycleValues, cycleOffset, rewriter);
+  if (sequence.cycleStride == 0) {
+    return cycleValue;
+  }
+  Value period = arith::ConstantIndexOp::create(rewriter, loc, sequence.period);
+  Value cycleIndex = arith::DivUIOp::create(rewriter, loc, occurrence, period);
+  Value cycleStride =
+      arith::ConstantIndexOp::create(rewriter, loc, sequence.cycleStride);
+  Value cycleBase =
+      arith::MulIOp::create(rewriter, loc, cycleIndex, cycleStride);
+  return arith::AddIOp::create(rewriter, loc, cycleValue, cycleBase);
 }
 
 static Value buildSelectedRouteIndex(Location loc,
@@ -2727,13 +2836,24 @@ void initializePipeComputedAddressCounters(
                   const PipeComputedAddressCounterInitInfo &rhs) {
                  return lhs.counterIndex < rhs.counterIndex;
                });
+    assert(!sortedInitializations.empty() &&
+           "computed-address counter table must not be empty");
+    assert(sortedInitializations.front().counterIndex >= 0 &&
+           "computed-address counter index must be nonnegative");
+    for (auto adjacent :
+         llvm::zip_equal(ArrayRef(sortedInitializations).drop_back(),
+                         ArrayRef(sortedInitializations).drop_front())) {
+      assert(std::get<0>(adjacent).counterIndex <
+                 std::get<1>(adjacent).counterIndex &&
+             "computed-address counter indices must be unique");
+    }
 
     OpBuilder builder(func.getContext());
     builder.setInsertionPointToStart(&func.getBody().front());
     Location loc = func.getLoc();
+    int64_t counterCount = sortedInitializations.back().counterIndex + 1;
     auto counterMemrefTy =
-        MemRefType::get({static_cast<int64_t>(sortedInitializations.size())},
-                        builder.getI32Type());
+        MemRefType::get({counterCount}, builder.getI32Type());
     Value counters = memref::AllocaOp::create(builder, loc, counterMemrefTy);
     for (const PipeComputedAddressCounterInitInfo &init :
          sortedInitializations) {
@@ -2885,8 +3005,170 @@ haveEqualComputedTensorMetadata(const PipeComputedTensorAddressInfo &lhs,
          lhs.senderTensorArgumentIndex == rhs.senderTensorArgumentIndex &&
          lhs.tensorGridShape == rhs.tensorGridShape &&
          lhs.startIndices.size() == rhs.startIndices.size() &&
+         lhs.occurrenceStartIndices.size() ==
+             rhs.occurrenceStartIndices.size() &&
+         lhs.occurrenceCounterIndex == rhs.occurrenceCounterIndex &&
          lhs.regionShape == rhs.regionShape &&
          lhs.pageSizeBytes == rhs.pageSizeBytes;
+}
+
+static SmallVector<Value> buildComputedTensorStartIndices(
+    PipeTransferSendOp op, Location loc,
+    const PipeComputedTensorAddressInfo &addressInfo,
+    const PipeComputedAddressCounterMap &computedAddressCounters,
+    ConversionPatternRewriter &rewriter) {
+  if (!addressInfo.occurrenceCounterIndex) {
+    return llvm::map_to_vector(
+        addressInfo.startIndices, [&](int64_t startIndex) -> Value {
+          return arith::ConstantIndexOp::create(rewriter, loc, startIndex);
+        });
+  }
+
+  Value counters = lookupComputedAddressCounter(op, computedAddressCounters);
+  Value counterIndex = arith::ConstantIndexOp::create(
+      rewriter, loc, *addressInfo.occurrenceCounterIndex);
+  Value occurrenceI32 =
+      memref::LoadOp::create(rewriter, loc, counters, ValueRange{counterIndex});
+  Value occurrence = arith::IndexCastOp::create(
+      rewriter, loc, rewriter.getIndexType(), occurrenceI32);
+  SmallVector<Value> startIndices;
+  startIndices.reserve(addressInfo.startIndices.size());
+  for (std::size_t dimension = 0; dimension < addressInfo.startIndices.size();
+       ++dimension) {
+    SmallVector<int64_t> dimensionStarts =
+        llvm::map_to_vector(addressInfo.occurrenceStartIndices,
+                            [&](ArrayRef<int64_t> occurrenceStart) {
+                              return occurrenceStart[dimension];
+                            });
+    std::optional<PeriodicAffineSequence> sequence =
+        findPeriodicAffineSequence(dimensionStarts);
+    startIndices.push_back(
+        sequence
+            ? buildPeriodicAffineSequenceValue(loc, *sequence, occurrence,
+                                               rewriter)
+            : loadIndexTableEntry(loc, dimensionStarts, occurrence, rewriter));
+  }
+  Value one = arith::ConstantIntOp::create(rewriter, loc, 1, 32);
+  Value nextOccurrence =
+      arith::AddIOp::create(rewriter, loc, occurrenceI32, one);
+  memref::StoreOp::create(rewriter, loc, nextOccurrence, counters,
+                          ValueRange{counterIndex});
+  return startIndices;
+}
+
+static SmallVector<Value> buildSelectedComputedTensorStartIndices(
+    PipeTransferSendOp op, Location loc, ArrayRef<PipeResourceInfo> resources,
+    Value recordIndex,
+    const PipeComputedAddressCounterMap &computedAddressCounters,
+    ConversionPatternRewriter &rewriter) {
+  const PipeComputedTensorAddressInfo &firstAddress =
+      *resources.front().addressStorage.computedTensorAddress;
+  if (!firstAddress.occurrenceCounterIndex) {
+    SmallVector<Value> startIndices;
+    startIndices.reserve(firstAddress.startIndices.size());
+    for (std::size_t dimension = 0;
+         dimension < firstAddress.startIndices.size(); ++dimension) {
+      SmallVector<int64_t> values =
+          llvm::map_to_vector(resources, [&](const PipeResourceInfo &resource) {
+            return resource.addressStorage.computedTensorAddress
+                ->startIndices[dimension];
+          });
+      startIndices.push_back(
+          loadIndexTableEntry(loc, values, recordIndex, rewriter));
+    }
+    return startIndices;
+  }
+
+  Value counters = lookupComputedAddressCounter(op, computedAddressCounters);
+  Value counterIndex = arith::ConstantIndexOp::create(
+      rewriter, loc, *firstAddress.occurrenceCounterIndex);
+  Value occurrenceI32 =
+      memref::LoadOp::create(rewriter, loc, counters, ValueRange{counterIndex});
+  Value occurrence = arith::IndexCastOp::create(
+      rewriter, loc, rewriter.getIndexType(), occurrenceI32);
+  int64_t occurrenceCount = firstAddress.occurrenceStartIndices.size();
+  Value occurrenceCountValue =
+      arith::ConstantIndexOp::create(rewriter, loc, occurrenceCount);
+  Value recordOffset =
+      arith::MulIOp::create(rewriter, loc, recordIndex, occurrenceCountValue);
+  Value tableIndex =
+      arith::AddIOp::create(rewriter, loc, recordOffset, occurrence);
+
+  SmallVector<Value> startIndices;
+  startIndices.reserve(firstAddress.startIndices.size());
+  for (std::size_t dimension = 0; dimension < firstAddress.startIndices.size();
+       ++dimension) {
+    SmallVector<PeriodicAffineSequence> sequences;
+    sequences.reserve(resources.size());
+    bool allSequencesUseOnePeriod = true;
+    for (const PipeResourceInfo &resource : resources) {
+      SmallVector<int64_t> values = llvm::map_to_vector(
+          resource.addressStorage.computedTensorAddress->occurrenceStartIndices,
+          [&](ArrayRef<int64_t> occurrenceStart) {
+            return occurrenceStart[dimension];
+          });
+      std::optional<PeriodicAffineSequence> sequence =
+          findPeriodicAffineSequence(values);
+      if (!sequence || (!sequences.empty() &&
+                        sequence->period != sequences.front().period)) {
+        allSequencesUseOnePeriod = false;
+        break;
+      }
+      sequences.push_back(std::move(*sequence));
+    }
+    if (!allSequencesUseOnePeriod) {
+      SmallVector<int64_t> values;
+      values.reserve(resources.size() * occurrenceCount);
+      for (const PipeResourceInfo &resource : resources) {
+        for (ArrayRef<int64_t> occurrenceStart :
+             resource.addressStorage.computedTensorAddress
+                 ->occurrenceStartIndices) {
+          values.push_back(occurrenceStart[dimension]);
+        }
+      }
+      startIndices.push_back(
+          loadIndexTableEntry(loc, values, tableIndex, rewriter));
+      continue;
+    }
+
+    int64_t period = sequences.front().period;
+    Value periodValue = arith::ConstantIndexOp::create(rewriter, loc, period);
+    Value cycleOffset;
+    if (period == 1) {
+      cycleOffset = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    } else {
+      cycleOffset =
+          arith::RemUIOp::create(rewriter, loc, occurrence, periodValue);
+    }
+    Value recordOffset =
+        arith::MulIOp::create(rewriter, loc, recordIndex, periodValue);
+    Value cycleValueIndex =
+        arith::AddIOp::create(rewriter, loc, recordOffset, cycleOffset);
+    SmallVector<int64_t> cycleValues;
+    SmallVector<int64_t> cycleStrides;
+    cycleValues.reserve(resources.size() * period);
+    cycleStrides.reserve(resources.size());
+    for (const PeriodicAffineSequence &sequence : sequences) {
+      llvm::append_range(cycleValues, sequence.cycleValues);
+      cycleStrides.push_back(sequence.cycleStride);
+    }
+    Value cycleValue =
+        loadIndexTableEntry(loc, cycleValues, cycleValueIndex, rewriter);
+    Value cycleStride =
+        loadIndexTableEntry(loc, cycleStrides, recordIndex, rewriter);
+    Value cycleIndex =
+        arith::DivUIOp::create(rewriter, loc, occurrence, periodValue);
+    Value cycleBase =
+        arith::MulIOp::create(rewriter, loc, cycleIndex, cycleStride);
+    startIndices.push_back(
+        arith::AddIOp::create(rewriter, loc, cycleValue, cycleBase));
+  }
+  Value one = arith::ConstantIntOp::create(rewriter, loc, 1, 32);
+  Value nextOccurrence =
+      arith::AddIOp::create(rewriter, loc, occurrenceI32, one);
+  memref::StoreOp::create(rewriter, loc, nextOccurrence, counters,
+                          ValueRange{counterIndex});
+  return startIndices;
 }
 
 static LogicalResult emitComputedTensorFabricWrite(
@@ -2895,6 +3177,28 @@ static LogicalResult emitComputedTensorFabricWrite(
     Value routeIndex, const PipeComputedTensorAddressInfo &addressInfo,
     ValueRange startIndices, const FabricRuntimeInfo &fabricRuntime,
     ConversionPatternRewriter &rewriter);
+
+/// Add a waited block subview's byte offset to the current DFB pointer.
+static Value
+addPipeSendSourceSubviewOffset(PipeTransferSendOp op, Value sourcePointer,
+                               ConversionPatternRewriter &rewriter) {
+  if (isa<CircularBufferType>(op.getSrc().getType())) {
+    return sourcePointer;
+  }
+  Value sourceDFB = getAttachedCB(op.getSrc());
+  assert(sourceDFB && "verified pipe send subview must have a source DFB");
+  FailureOr<uint64_t> pageSizeBytes =
+      getDFBPageSizeBytes(cast<CircularBufferType>(sourceDFB.getType()));
+  assert(succeeded(pageSizeBytes) && "verified source DFB must have page size");
+  Location loc = op.getLoc();
+  Value sourceTileOffset = utils::addSliceOffset(
+      op.getSrc(), arith::ConstantIndexOp::create(rewriter, loc, 0), rewriter,
+      loc);
+  Value sourceByteOffset = arith::MulIOp::create(
+      rewriter, loc, sourceTileOffset,
+      arith::ConstantIndexOp::create(rewriter, loc, *pageSizeBytes));
+  return arith::AddIOp::create(rewriter, loc, sourcePointer, sourceByteOffset);
+}
 
 static LogicalResult lowerSelectedPipeTransferSend(
     PipeTransferSendOp op, Value srcCB, const PipeTransferPlan &transferPlan,
@@ -2911,8 +3215,11 @@ static LogicalResult lowerSelectedPipeTransferSend(
   ArrayRef<PipeResourceInfo> resources =
       resourceAccessPlan.getSelectedResources();
   const PipeSendPlan &sendPlan = transferPlan.getSend();
-  bool usesFabric = transferPlan.getSynchronizationProtocol() ==
-                    PipeSynchronizationProtocol::Fabric;
+  PipeSynchronizationProtocol synchronizationProtocol =
+      transferPlan.getSynchronizationProtocol();
+  bool usesFabric = usesFabricTransport(synchronizationProtocol);
+  bool usesNoRendezvous = synchronizationProtocol ==
+                          PipeSynchronizationProtocol::FabricNoRendezvous;
   assert(usesFabric == !sendPlan.fabricRouteIndices.empty() &&
          "selected fabric transfer plan is missing its routes");
   assert(
@@ -2955,8 +3262,6 @@ static LogicalResult lowerSelectedPipeTransferSend(
         op, fields, useOrderedPostedProtocol, rewriter);
   }
 
-  Value senderSemAddr = buildSelectedReadyCounterAddress(
-      op, loc, resources, fields.recordIndex, pipeResourcePlan, rewriter);
   Value expectedSignals;
   if (fields.isCollective) {
     expectedSignals = arith::IndexCastOp::create(
@@ -2964,7 +3269,9 @@ static LogicalResult lowerSelectedPipeTransferSend(
   } else {
     expectedSignals = arith::ConstantIntOp::create(rewriter, loc, 1, 32);
   }
-  if (usesFabric) {
+  if (usesFabric && !usesNoRendezvous) {
+    Value senderSemAddr = buildSelectedReadyCounterAddress(
+        op, loc, resources, fields.recordIndex, pipeResourcePlan, rewriter);
     FuncOp func = op->getParentOfType<FuncOp>();
     auto readyTableIt = fabricReadyCounters.find(func);
     assert(readyTableIt != fabricReadyCounters.end() &&
@@ -2990,7 +3297,9 @@ static LogicalResult lowerSelectedPipeTransferSend(
     auto senderSemPtr =
         ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, senderSemAddr);
     ttk::SemaphoreWaitMinOp::create(rewriter, loc, senderSemPtr, expectedReady);
-  } else {
+  } else if (!usesFabric) {
+    Value senderSemAddr = buildSelectedReadyCounterAddress(
+        op, loc, resources, fields.recordIndex, pipeResourcePlan, rewriter);
     auto senderSemPtr =
         ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, senderSemAddr);
     ttk::SemaphoreWaitOp::create(rewriter, loc, senderSemPtr, expectedSignals);
@@ -3010,6 +3319,7 @@ static LogicalResult lowerSelectedPipeTransferSend(
     srcPtrIdx = arith::IndexCastOp::create(
         rewriter, loc, rewriter.getIndexType(), srcWritePtr);
   }
+  srcPtrIdx = addPipeSendSourceSubviewOffset(op, srcPtrIdx, rewriter);
 
   Value srcAddr = arith::IndexCastOp::create(rewriter, loc,
                                              rewriter.getI32Type(), srcPtrIdx);
@@ -3047,18 +3357,10 @@ static LogicalResult lowerSelectedPipeTransferSend(
           "selected pipe records require compatible computed DRAM tensor "
           "metadata");
     }
-    SmallVector<Value> selectedStartIndices;
-    selectedStartIndices.reserve(addressInfo.startIndices.size());
-    for (std::size_t dimension = 0; dimension < addressInfo.startIndices.size();
-         ++dimension) {
-      SmallVector<int64_t> values =
-          llvm::map_to_vector(resources, [&](const PipeResourceInfo &resource) {
-            return resource.addressStorage.computedTensorAddress
-                ->startIndices[dimension];
-          });
-      selectedStartIndices.push_back(
-          loadIndexTableEntry(loc, values, fields.recordIndex, rewriter));
-    }
+    SmallVector<Value> selectedStartIndices =
+        buildSelectedComputedTensorStartIndices(
+            op, loc, resources, fields.recordIndex, computedAddressCounters,
+            rewriter);
     auto runtimeIt = fabricRuntime.find(op.getOperation());
     assert(runtimeIt != fabricRuntime.end() &&
            "fabric runtime was validated before source lowering");
@@ -3400,8 +3702,11 @@ LogicalResult lowerPipeTransferSend(
   PipeCompletionInfo completionInfo = pipeResource.completion;
   auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
 
-  bool usesFabric = transferPlan.getSynchronizationProtocol() ==
-                    PipeSynchronizationProtocol::Fabric;
+  PipeSynchronizationProtocol synchronizationProtocol =
+      transferPlan.getSynchronizationProtocol();
+  bool usesFabric = usesFabricTransport(synchronizationProtocol);
+  bool usesNoRendezvous = synchronizationProtocol ==
+                          PipeSynchronizationProtocol::FabricNoRendezvous;
   assert(usesFabric == !sendPlan.fabricRouteIndices.empty() &&
          "fabric transfer plan is missing its route");
   assert((!usesFabric || sendPlan.fabricRouteIndices.size() == 1) &&
@@ -3501,7 +3806,7 @@ LogicalResult lowerPipeTransferSend(
       ttk::SemaphoreWaitMinOp::create(rewriter, loc, capacityCounterPtr,
                                       nextAcquired);
     }
-  } else if (usesFabric) {
+  } else if (usesFabric && !usesNoRendezvous) {
     assert(pipeResource.readyCounter &&
            "fabric sender is missing its readiness counter");
     FailureOr<PipeCounterTableEntry> maybeReadyProgress =
@@ -3528,7 +3833,7 @@ LogicalResult lowerPipeTransferSend(
                             pipeResourcePlan, rewriter);
     ttk::SemaphoreWaitMinOp::create(rewriter, loc, readyCounterPtr,
                                     expectedReady);
-  } else {
+  } else if (!usesFabric) {
     assert(pipeResource.readyCounter &&
            "sender-ready protocol selected without a sender-ready counter");
     int64_t expectedReceiverPosts =
@@ -3571,6 +3876,7 @@ LogicalResult lowerPipeTransferSend(
           arith::IndexCastOp::create(rewriter, loc, indexTy, srcWritePtr);
     }
   }
+  srcPtrIdx = addPipeSendSourceSubviewOffset(op, srcPtrIdx, rewriter);
   transport->preparePayloadWrite();
 
   // Transfer the entire block in one NoC write. Tiles are contiguous in the
@@ -3599,10 +3905,8 @@ LogicalResult lowerPipeTransferSend(
         loc, senderFunc, completionInfo.counter, pipeResourcePlan, rewriter);
     const PipeComputedTensorAddressInfo &addressInfo =
         *pipeResource.addressStorage.computedTensorAddress;
-    SmallVector<Value> startIndices = llvm::map_to_vector(
-        addressInfo.startIndices, [&](int64_t startIndex) -> Value {
-          return arith::ConstantIndexOp::create(rewriter, loc, startIndex);
-        });
+    SmallVector<Value> startIndices = buildComputedTensorStartIndices(
+        op, loc, addressInfo, computedAddressCounters, rewriter);
     if (failed(emitComputedTensorFabricWrite(
             op, srcAddr, receiverCompletionCounterAddr, receiverX, receiverY,
             routeIndex, addressInfo, startIndices, runtimeIt->second,
@@ -3689,13 +3993,17 @@ lowerSelectedPipeTransferPost(PipeTransferPostOp op, Value dst,
         return resource.completion.counter;
       });
   const PipePostPlan &postPlan = transferPlan.getPost();
-  bool usesFabric = transferPlan.getSynchronizationProtocol() ==
-                    PipeSynchronizationProtocol::Fabric;
-  assert(usesFabric == !postPlan.fabricRouteIndices.empty() &&
-         "selected fabric post plan is missing its routes");
-  assert(
-      (!usesFabric || postPlan.fabricRouteIndices.size() == resources.size()) &&
-      "selected fabric route table must match the resource table");
+  PipeSynchronizationProtocol synchronizationProtocol =
+      transferPlan.getSynchronizationProtocol();
+  bool usesFabric = usesFabricTransport(synchronizationProtocol);
+  bool usesNoRendezvous = synchronizationProtocol ==
+                          PipeSynchronizationProtocol::FabricNoRendezvous;
+  assert((usesFabric && !usesNoRendezvous) ==
+             !postPlan.fabricRouteIndices.empty() &&
+         "selected fabric receiver-post plan disagrees with its routes");
+  assert((!usesFabric || usesNoRendezvous ||
+          postPlan.fabricRouteIndices.size() == resources.size()) &&
+         "selected fabric route table must match the resource table");
   assert(postPlan.addressModes.size() == resources.size() &&
          "selected post address modes must match the resource table");
   bool anyUsePublishedAddress = llvm::is_contained(
@@ -3715,7 +4023,7 @@ lowerSelectedPipeTransferPost(PipeTransferPostOp op, Value dst,
   }
 
   const FabricRuntimeInfo *fabricRuntimeInfo = nullptr;
-  if (usesFabric) {
+  if (usesFabric && !usesNoRendezvous) {
     auto runtimeIt = fabricRuntime.find(op.getOperation());
     if (runtimeIt == fabricRuntime.end()) {
       op.emitError("fabric pipe receiver has no initialized routing-plane "
@@ -3732,9 +4040,9 @@ lowerSelectedPipeTransferPost(PipeTransferPostOp op, Value dst,
     fabricRuntimeInfo = &runtimeIt->second;
   }
 
-  Value senderSemAddr = buildSelectedReadyCounterAddress(
-      op, loc, resources, fields.recordIndex, pipeResourcePlan, rewriter);
-  if (usesFabric) {
+  if (usesFabric && !usesNoRendezvous) {
+    Value senderSemAddr = buildSelectedReadyCounterAddress(
+        op, loc, resources, fields.recordIndex, pipeResourcePlan, rewriter);
     Value routeIndex = buildSelectedRouteIndex(loc, postPlan.fabricRouteIndices,
                                                fields.recordIndex, rewriter);
     FabricRouteEmitter routeEmitter(op, routeIndex, *fabricRuntimeInfo,
@@ -3742,7 +4050,9 @@ lowerSelectedPipeTransferPost(PipeTransferPostOp op, Value dst,
     routeEmitter.emitAtomicIncrement(
         fields.srcX, fields.srcY, senderSemAddr,
         arith::ConstantIntOp::create(rewriter, loc, 1, 32));
-  } else {
+  } else if (!usesFabric) {
+    Value senderSemAddr = buildSelectedReadyCounterAddress(
+        op, loc, resources, fields.recordIndex, pipeResourcePlan, rewriter);
     SelectedNocPipeTransportEmitter transport(
         op, fields, /*useOrderedPostedProtocol=*/false, rewriter);
     if (anyUsePublishedAddress) {
@@ -3831,11 +4141,16 @@ lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
   }
   Value sequenceCounter = maybeSequenceCounter->values;
 
-  bool usesFabric = transferPlan.getSynchronizationProtocol() ==
-                    PipeSynchronizationProtocol::Fabric;
-  assert(usesFabric == !postPlan.fabricRouteIndices.empty() &&
-         "fabric receiver post plan is missing its reverse route");
-  assert((!usesFabric || postPlan.fabricRouteIndices.size() == 1) &&
+  PipeSynchronizationProtocol synchronizationProtocol =
+      transferPlan.getSynchronizationProtocol();
+  bool usesFabric = usesFabricTransport(synchronizationProtocol);
+  bool usesNoRendezvous = synchronizationProtocol ==
+                          PipeSynchronizationProtocol::FabricNoRendezvous;
+  assert((usesFabric && !usesNoRendezvous) ==
+             !postPlan.fabricRouteIndices.empty() &&
+         "fabric receiver-post plan disagrees with its reverse route");
+  assert((!usesFabric || usesNoRendezvous ||
+          postPlan.fabricRouteIndices.size() == 1) &&
          "static fabric receiver post must have one route");
   assert(postPlan.addressModes.size() == 1 &&
          "static receiver post must have one address mode");
@@ -3845,7 +4160,7 @@ lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
     return failure();
   }
 
-  if (usesFabric) {
+  if (usesFabric && !usesNoRendezvous) {
     assert(pipeResource.readyCounter &&
            pipeResource.readyCounter->getStorage() ==
                PipeCounterStorage::GlobalSemaphore &&
@@ -3875,7 +4190,7 @@ lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
     routeEmitter.emitAtomicIncrement(
         sourceX, sourceY, senderReadyCounterAddress,
         arith::ConstantIntOp::create(rewriter, loc, 1, 32));
-  } else {
+  } else if (!usesFabric) {
     NocPipeTransportEmitter transport(op, pipeType,
                                       /*useOrderedPostedProtocol=*/false,
                                       rewriter);
@@ -5222,12 +5537,16 @@ buildWaitAnyCompletionGroups(ModuleOp module,
 static bool usesSenderReadyCounter(
     const PipeTransferAllocationUnit &unit,
     const PipeSynchronizationSelection *synchronizationSelection) {
+  PipeTransferSendOp sendOp = llvm::cast<PipeTransferSendOp>(unit.sendOp);
+  if (synchronizationSelection &&
+      synchronizationSelection->usesNoRendezvousProtocol(sendOp)) {
+    return false;
+  }
   // Selected transfers use record-indexed receiver-post synchronization, so
   // the sender must wait for the matching receiver reservation.
   if (!synchronizationSelection || isSelectedTransferUnit(unit)) {
     return true;
   }
-  PipeTransferSendOp sendOp = llvm::cast<PipeTransferSendOp>(unit.sendOp);
   return !synchronizationSelection->usesCapacityProtocol(sendOp);
 }
 
@@ -5484,6 +5803,12 @@ static ComputedAddressPlan buildComputedAddressPlan(
     PipeComputedAddressInfo computedAddress;
   };
   SmallVector<Candidate> candidates;
+  struct TensorCandidate {
+    std::size_t unitIndex = 0;
+    FuncOp senderFunc;
+    PipeComputedTensorAddressInfo computedAddress;
+  };
+  SmallVector<TensorCandidate, 0> tensorCandidates;
   llvm::MapVector<FuncOp, llvm::SmallSetVector<int64_t, 4>> dfbIndicesByFunc;
 
   for (auto indexedUnit : llvm::enumerate(units)) {
@@ -5499,16 +5824,23 @@ static ComputedAddressPlan buildComputedAddressPlan(
         assert(tensorRegion.senderTensorArgumentIndex &&
                "tensor runtime arguments must be prepared before resource "
                "planning");
-        plan.tensorInfoByUnitIndex[indexedUnit.index()] =
+        std::optional<FuncOp> senderFunc = getSingleSenderFunc(unit);
+        if (!senderFunc) {
+          continue;
+        }
+        tensorCandidates.push_back(TensorCandidate{
+            indexedUnit.index(), *senderFunc,
             PipeComputedTensorAddressInfo{
                 tensorRegion.baseCTA,
                 tensorRegion.globalTensorIndex,
                 *tensorRegion.senderTensorArgumentIndex,
                 tensorRegion.tensorGridShape,
                 tensorRegion.startIndices,
+                tensorRegion.occurrenceStartIndices,
+                std::nullopt,
                 SmallVector<int64_t>(tensorRegion.sliceType.getShape()),
                 tensorRegion.pageSizeBytes,
-            };
+            }});
         continue;
       }
     }
@@ -5539,7 +5871,7 @@ static ComputedAddressPlan buildComputedAddressPlan(
     dfbIndicesByFunc[*maybeSenderFunc].insert(receiverInfo.dfbIndex);
   }
 
-  if (candidates.empty()) {
+  if (candidates.empty() && tensorCandidates.empty()) {
     return plan;
   }
 
@@ -5588,6 +5920,34 @@ static ComputedAddressPlan buildComputedAddressPlan(
                                              computedAddress.initialSlot});
     }
     plan.infoByUnitIndex[candidate.unitIndex] = computedAddress;
+  }
+
+  llvm::DenseMap<Operation *, int64_t> occurrenceCounterBySend;
+  for (const TensorCandidate &candidate : tensorCandidates) {
+    PipeComputedTensorAddressInfo computedAddress = candidate.computedAddress;
+    bool variesByOccurrence = !llvm::all_of(
+        computedAddress.occurrenceStartIndices,
+        [&](ArrayRef<int64_t> startIndices) {
+          return startIndices == ArrayRef(computedAddress.startIndices);
+        });
+    if (variesByOccurrence) {
+      Operation *sendOp = units[candidate.unitIndex].sendOp;
+      auto counterIt = occurrenceCounterBySend.find(sendOp);
+      bool inserted = counterIt == occurrenceCounterBySend.end();
+      if (inserted) {
+        int64_t counterIndex =
+            nextDynamicSlotCounterIndexByFunc[candidate.senderFunc]++;
+        counterIt =
+            occurrenceCounterBySend.try_emplace(sendOp, counterIndex).first;
+      }
+      computedAddress.occurrenceCounterIndex = counterIt->second;
+      if (inserted) {
+        plan.counterInitializations[candidate.senderFunc].push_back(
+            PipeComputedAddressCounterInitInfo{counterIt->second, 0});
+      }
+    }
+    plan.tensorInfoByUnitIndex[candidate.unitIndex] =
+        std::move(computedAddress);
   }
 
   return plan;

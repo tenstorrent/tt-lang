@@ -2617,9 +2617,10 @@ The shared graph and proof must preserve these fabric invariants:
   device transfer;
 * fabric transfers require a proven computed receiver address;
 * fabric receiver posts publish readiness with a reverse-route atomic increment,
-  and senders wait for the corresponding cumulative ready count before writing;
-* fabric senders wait for receiver-post readiness, but receiver pops do not
-  return capacity for reuse by another fabric transfer in the same invocation;
+  and senders wait for the corresponding cumulative ready count before writing,
+  unless the destination is a one-shot, statically disjoint DRAM region;
+* receiver pops do not return capacity for reuse by another fabric transfer in
+  the same invocation;
 * fabric completion uses remotely addressable synchronization storage;
 * `CC` capacity counters are not selected for fabric transfers.
 
@@ -2627,9 +2628,9 @@ The shared graph and proof must preserve these fabric invariants:
 
 A fabric pipe receive may store its payload in a receiver-coordinate-resolved
 region of an interleaved DRAM tensor rather than a receiver DFB. `CLA/RP` and
-`CDA/RP` refine `CA/RP` by identifying L1 and DRAM destinations. Fabric
-transport still uses receiver-post synchronization; routing-plane flow control
-does not replace the receiver post.
+`CDA/RP` refine `CA/RP` by identifying L1 and DRAM destinations. `CDA/NR`
+omits receiver rendezvous when the destination cannot be reused during the
+invocation. Routing-plane flow control does not make reused storage safe.
 
 | Protocol | Destination address | Send condition | Transport |
 | --- | --- | --- | --- |
@@ -2638,19 +2639,20 @@ does not replace the receiver post.
 | `CA/CC` | Sender computes the L1 DFB slot address. | The receiver has available DFB capacity. | NoC |
 | `CLA/RP` | Sender computes an L1 DFB slot address. | Every required receiver has posted. | Fabric |
 | `CDA/RP` | Sender computes a DRAM tensor-region address. | Every required receiver has posted. | Fabric |
+| `CDA/NR` | Sender computes a DRAM tensor-region address. | No receiver readiness condition; the destination is disjoint for the invocation. | Fabric |
 
-| Protocol event or property | `RA/RP` | `CA/RP` | `CA/CC` | `CLA/RP` | `CDA/RP` |
-| --- | --- | --- | --- | --- | --- |
-| Receiver reserves a destination DFB block | Yes | Yes | Yes | Yes | No |
-| Receiver publishes the destination address | Yes | No | No | No | No |
-| Sender waits for a receiver post | Yes | Yes | No | Yes | Yes |
-| Sender waits for reusable destination capacity | Through the receiver post | Through the receiver post | Yes | Through the receiver post | Through the receiver post |
-| Sender computes the destination address | No | Yes | Yes | Yes | Yes |
-| Destination storage | L1 DFB | L1 DFB | L1 DFB | L1 DFB | DRAM tensor region |
-| Payload admission | Receiver post | Receiver post | Capacity counter | Receiver post and fabric flow control | Receiver post and fabric flow control |
-| Receiver-visible completion | Completion notification after the payload is visible | Completion notification after the payload is visible | Completion counter after the payload is visible | Remote completion counter after the payload is visible | Remote completion counter after the payload is visible |
-| Consumer returns capacity | No | No | Yes | No | No |
-| Storage reuse within one invocation | Receiver selects the reserved slot | Receiver selects the reserved slot | Sender reuses a slot after receiving a credit | A pop does not make an assigned slot available to another fabric transfer | Allowed after the completed payload has been read before the next post |
+| Protocol event or property | `RA/RP` | `CA/RP` | `CA/CC` | `CLA/RP` | `CDA/RP` | `CDA/NR` |
+| --- | --- | --- | --- | --- | --- | --- |
+| Receiver reserves a destination DFB block | Yes | Yes | Yes | Yes | No | No |
+| Receiver publishes the destination address | Yes | No | No | No | No | No |
+| Sender waits for a receiver post | Yes | Yes | No | Yes | Yes | No |
+| Sender waits for reusable destination capacity | Through the receiver post | Through the receiver post | Yes | Through the receiver post | Through the receiver post | Not applicable |
+| Sender computes the destination address | No | Yes | Yes | Yes | Yes | Yes |
+| Destination storage | L1 DFB | L1 DFB | L1 DFB | L1 DFB | DRAM tensor region | DRAM tensor region |
+| Payload admission | Receiver post | Receiver post | Capacity counter | Receiver post and fabric flow control | Receiver post and fabric flow control | Disjoint destination and fabric flow control |
+| Receiver-visible completion | Completion notification after the payload is visible | Completion notification after the payload is visible | Completion counter after the payload is visible | Remote completion counter after the payload is visible | Remote completion counter after the payload is visible | Remote completion counter after the payload is visible |
+| Consumer returns capacity | No | No | Yes | No | No | No |
+| Storage reuse within one invocation | Receiver selects the reserved slot | Receiver selects the reserved slot | Sender reuses a slot after receiving a credit | A pop does not make an assigned slot available to another fabric transfer | Allowed after the completed payload has been read before the next post | Prohibited |
 
 The protocols have the following equivalent pseudocode. `complete` becomes
 observable only after the payload write is visible at the receiver.
@@ -2706,6 +2708,15 @@ receiver: wait_for_completion(); read_region_into_local_dfb(); wait_for_read()
 receiver: compute(); pop_local_dfb(); repeat_or_finish()
 ```
 
+Fabric `CDA/NR`:
+
+```text
+sender:   addresses = compute_disjoint_dram_tensor_page_addresses()
+sender:   fabric_scatter_write_pages(addresses); complete_remotely()
+receiver: wait_for_completion(); read_region_into_local_dfb(); wait_for_read()
+receiver: compute(); pop_local_dfb(); finish()
+```
+
 For `CDA/RP`, the sender computes each remote DRAM page address from the
 destination tensor metadata and tile coordinates resolved for each receiver
 node. Consecutive source pages are grouped into fabric scatter writes of up to
@@ -2716,6 +2727,11 @@ increment. The receiver waits for completion before reading the region. A
 region may be reused when the same sequential control context completes that
 read before posting the next transfer; otherwise transfers require disjoint
 regions.
+
+For `CDA/NR`, the compiler omits the readiness counter and reverse fabric
+manager only when one point-to-point transfer writes a statically disjoint DRAM
+region exactly once. The receiver declaration still creates the completion
+token consumed by `wait`.
 
 This mechanism must remain within the existing proof sequence. Planning must
 prove:
