@@ -1693,6 +1693,29 @@ def _make_singleton_core_ranges(coordinates: Iterable[Tuple[int, int]]) -> Any:
     )
 
 
+def _partition_core_ranges_by_sram_domain(
+    core_ranges: Any, configs: Sequence[PhysicalDFBConfig]
+) -> List[Tuple[Any, Tuple[int, int]]]:
+    """Partition a descriptor so each part uses one SRAM arena and layout."""
+    from ._sram_domains import core_domains
+
+    remaining = _core_range_coordinates(
+        core_ranges, label="kernel descriptor core ranges"
+    )
+    partitions = []
+    for domain in core_domains(configs):
+        coordinates = sorted(remaining.intersection(domain))
+        if not coordinates:
+            continue
+        partitions.append((_make_singleton_core_ranges(coordinates), coordinates[0]))
+        remaining.difference_update(coordinates)
+    if remaining:
+        raise ValueError(
+            "per-core SRAM kernel references a core outside the allocation domains"
+        )
+    return partitions
+
+
 def _build_reconfiguration_descriptor_variants(
     kernel_ranges: Any,
     cb_indices: List[int],
@@ -1974,41 +1997,55 @@ def build_kernel_descriptors(
             )
 
         for descriptor_variant in descriptor_variants:
-            kernel_descriptor_args = dict(
-                kernel_source=spec.path,
-                core_ranges=descriptor_variant.core_ranges,
-                compile_time_args=descriptor_variant.compile_time_args,
-                defines=defines,
-                common_runtime_args=common_runtime_args,
-                config=spec.config,
-                compiler_include_paths=spec.compiler_include_paths,
-            )
-            if descriptor_variant.runtime_args:
-                kernel_descriptor_args["runtime_args"] = descriptor_variant.runtime_args
+            descriptor_partitions = [(descriptor_variant.core_ranges, None)]
             if sram_core_arenas:
-                from ._sram_domains import payload_defines, tensor_base
-
-                cores = ttnn.corerange_to_cores(
-                    descriptor_variant.core_ranges, row_wise=True
+                descriptor_partitions = _partition_core_ranges_by_sram_domain(
+                    descriptor_variant.core_ranges, sram_configs
                 )
-                if len(cores) != 1:
-                    raise ValueError(
-                        "per-core SRAM requires compiler-specialized kernels"
+            for partition_ranges, representative_coordinate in descriptor_partitions:
+                partition_runtime_args = descriptor_variant.runtime_args
+                if representative_coordinate is not None:
+                    partition_coordinates = _core_range_coordinates(
+                        partition_ranges, label="kernel descriptor SRAM partition"
                     )
-                core = cores[0]
-                coordinate = (int(core.x), int(core.y))
-                arena = sram_core_arenas[coordinate]
-                address = tensor_base(ttnn, arena, coordinate, sram_mesh_coordinate)
-                kernel_descriptor_args["common_runtime_args"] = list(
-                    common_runtime_args
+                    partition_runtime_args = [
+                        (core, values)
+                        for core, values in descriptor_variant.runtime_args
+                        if (int(core.x), int(core.y)) in partition_coordinates
+                    ]
+                kernel_descriptor_args = dict(
+                    kernel_source=spec.path,
+                    core_ranges=partition_ranges,
+                    compile_time_args=descriptor_variant.compile_time_args,
+                    defines=defines,
+                    common_runtime_args=common_runtime_args,
+                    config=spec.config,
+                    compiler_include_paths=spec.compiler_include_paths,
                 )
-                kernel_descriptor_args["common_runtime_args"][
-                    storage_runtime_base
-                ] = address
-                kernel_descriptor_args["defines"] = list(defines) + payload_defines(
-                    sram_configs, coordinate
+                if partition_runtime_args:
+                    kernel_descriptor_args["runtime_args"] = partition_runtime_args
+                if representative_coordinate is not None:
+                    from ._sram_domains import payload_defines, tensor_base
+
+                    arena = sram_core_arenas[representative_coordinate]
+                    address = tensor_base(
+                        ttnn,
+                        arena,
+                        representative_coordinate,
+                        sram_mesh_coordinate,
+                    )
+                    kernel_descriptor_args["common_runtime_args"] = list(
+                        common_runtime_args
+                    )
+                    kernel_descriptor_args["common_runtime_args"][
+                        storage_runtime_base
+                    ] = address
+                    kernel_descriptor_args["defines"] = list(defines) + payload_defines(
+                        sram_configs, representative_coordinate
+                    )
+                kernel_descriptors.append(
+                    ttnn.KernelDescriptor(**kernel_descriptor_args)
                 )
-            kernel_descriptors.append(ttnn.KernelDescriptor(**kernel_descriptor_args))
 
     return kernel_descriptors
 
@@ -4286,8 +4323,6 @@ def _run_kernel_on_device_impl(
                 (int(core.x), int(core.y))
                 for core in ttnn.corerange_to_cores(kernel_ranges, row_wise=True)
             }
-            if len(kernel_nodes) != 1:
-                raise ValueError("per-core SRAM requires compiler-specialized kernels")
             if not kernel_nodes.issubset(sram_core_sizes):
                 raise ValueError(
                     "per-core SRAM kernel references a core outside the allocation domains"
