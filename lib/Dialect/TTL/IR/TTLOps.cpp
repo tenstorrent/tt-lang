@@ -851,6 +851,30 @@ static mlir::LogicalResult verifyByteCopyDataFormats(mlir::Operation *operation,
   return mlir::success();
 }
 
+static mlir::LogicalResult verifyPipeSendSubview(mlir::Operation *operation,
+                                                 mlir::Value source) {
+  mlir::Value view = mlir::tt::ttl::traceUnrealizedCasts(source);
+  auto slice = view.getDefiningOp<mlir::tensor::ExtractSliceOp>();
+  auto viewType = mlir::dyn_cast<mlir::RankedTensorType>(view.getType());
+  if (!slice || !viewType || !viewType.hasStaticShape() ||
+      viewType.getNumElements() <= 0) {
+    return operation->emitOpError(
+        "pipe send DFB view must be a non-empty static extract_slice");
+  }
+  if (llvm::any_of(slice.getMixedStrides(), [](mlir::OpFoldResult stride) {
+        std::optional<int64_t> constantStride = getConstantIntValue(stride);
+        return !constantStride || *constantStride != 1;
+      })) {
+    return operation->emitOpError("pipe send DFB view must have unit strides");
+  }
+  if (!mlir::isa_and_nonnull<mlir::tt::ttl::CBWaitOp>(
+          mlir::tt::ttl::findCBAcquireOp(source, operation))) {
+    return operation->emitOpError(
+        "pipe send source DFB view must come from ttl.cb_wait");
+  }
+  return mlir::success();
+}
+
 mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   auto srcTy = getSrc().getType();
   auto dstTy = getDst().getType();
@@ -926,9 +950,14 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
                 "ttl.pipenet_foreach_dst";
     }
     if (dstIsPipe) {
-      if (!srcIsCb) {
+      if (!srcIsCb && !srcAttachedDFB) {
         return emitOpError()
-               << "pipe send requires source operand to be !ttl.cb";
+               << "pipe send requires a DFB block or block subview source";
+      }
+      if (!srcIsCb) {
+        if (failed(verifyPipeSendSubview(getOperation(), getSrc()))) {
+          return failure();
+        }
       }
       auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
       if (!handleType || handleType.getKind() != TransferKind::write) {
@@ -1304,6 +1333,21 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferSendOp::verify() {
   auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
   if (!handleType || handleType.getKind() != TransferKind::write) {
     return emitOpError() << "requires a write transfer handle result";
+  }
+
+  bool sourceIsDFB = mlir::isa<CircularBufferType>(getSrc().getType());
+  if (!sourceIsDFB && !getAttachedCB(getSrc())) {
+    return emitOpError("requires a DFB block or block subview source");
+  }
+  if (!sourceIsDFB) {
+    if (failed(verifyPipeSendSubview(getOperation(), getSrc()))) {
+      return failure();
+    }
+    if (getByteCountAttr() &&
+        failed(verifyByteCountFitsDFBEndpoint(
+            getOperation(), getSrc(), getByteCountAttr().getInt(), "source"))) {
+      return failure();
+    }
   }
 
   return success();

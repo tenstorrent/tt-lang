@@ -78,6 +78,7 @@ class GraphPipeNetUse:
     pipe_net_id: int
     edges: Tuple[TransferEdge, ...]
     transfer_graph: TransferGraph
+    local_nodes: Optional[Tuple[Tuple[int, int], ...]]
 
 
 @dataclass
@@ -99,7 +100,11 @@ class OperationPipeNets:
         self.pipe_nets.append(use)
         return use
 
-    def add_graph_pipe_net(self, transfer_graph: TransferGraph) -> GraphPipeNetUse:
+    def add_graph_pipe_net(
+        self,
+        transfer_graph: TransferGraph,
+        local_nodes: Optional[Tuple[Tuple[int, int], ...]] = None,
+    ) -> GraphPipeNetUse:
         """Append a graph PipeNet with one ordered device-edge record set."""
         edges = tuple(transfer_graph.iter_edges())
         if not edges:
@@ -113,6 +118,7 @@ class OperationPipeNets:
             pipe_net_id=self._next_pipe_net_id(),
             edges=edges,
             transfer_graph=transfer_graph,
+            local_nodes=local_nodes,
         )
         self.graph_pipe_nets.append(use)
         return use
@@ -123,7 +129,9 @@ class OperationPipeNets:
         Returns None when the graph is empty, signaling that no active-set
         filtering should be applied (every node participates).
         """
-        if self.graph_pipe_nets or not self.pipe_nets:
+        if not self.graph_pipe_nets and not self.pipe_nets:
+            return None
+        if any(pipe_net.local_nodes is None for pipe_net in self.graph_pipe_nets):
             return None
         active: Set[int] = set()
         for net in self.pipe_nets:
@@ -131,6 +139,10 @@ class OperationPipeNets:
                 active.add(_linearize(pipe.src.coords, grid))
                 for coord in _expand_dst(pipe.dst):
                     active.add(_linearize(coord, grid))
+        for pipe_net in self.graph_pipe_nets:
+            assert pipe_net.local_nodes is not None
+            for coordinates in pipe_net.local_nodes:
+                active.add(_linearize(coordinates, grid))
         return active
 
     def validate(self) -> None:

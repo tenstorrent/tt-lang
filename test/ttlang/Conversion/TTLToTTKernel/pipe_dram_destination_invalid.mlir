@@ -129,7 +129,7 @@ module attributes {ttl.launch_grid = [1, 1]} {
   domain = #domain4,
   edge = <source = <coordinates = [0]>, destination = <coordinates = [1]>>>
 
-module attributes {ttl.launch_grid = [1, 1]} {
+module attributes {ttl.launch_grid = [1, 2]} {
   func.func @overlapping_pipe_destinations(
       %output: tensor<1x1x!ttcore.tile<32x32, bf16>, #layout4>)
       attributes {
@@ -142,9 +142,9 @@ module attributes {ttl.launch_grid = [1, 1]} {
     %pipe0 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0 {
         deviceTransfer = #transfer4}
         : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
-    %pipe1 = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 1 {
+    %pipe1 = ttl.create_pipe src(0, 0) dst(0, 1) to(0, 1) net 1 {
         deviceTransfer = #transfer4}
-        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>
+        : !ttl.pipe<src(0, 0) dst(0, 1) to(0, 1) net 1>
     %zero = arith.constant 0 : index
     %output_slice = ttl.tensor_slice %output[%zero, %zero]
         : tensor<1x1x!ttcore.tile<32x32, bf16>, #layout4>
@@ -159,10 +159,10 @@ module attributes {ttl.launch_grid = [1, 1]} {
       ttl.wait %receive0 : !ttl.receive_request
     }
     ttl.if_dst %pipe1
-        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1> {
+        : !ttl.pipe<src(0, 0) dst(0, 1) to(0, 1) net 1> {
       // expected-error @below {{pipe receive tensor_slice overlaps another pipe destination for tensor 0}}
       %receive1 = ttl.copy %pipe1, %output_slice
-          : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>,
+          : (!ttl.pipe<src(0, 0) dst(0, 1) to(0, 1) net 1>,
              tensor<1x1x!ttcore.tile<32x32, bf16>, #layout4>)
           -> !ttl.receive_request
       ttl.wait %receive1 : !ttl.receive_request
@@ -176,10 +176,10 @@ module attributes {ttl.launch_grid = [1, 1]} {
       ttl.wait %send0 : !ttl.transfer_handle<write>
     }
     ttl.if_src %pipe1
-        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1> {
+        : !ttl.pipe<src(0, 0) dst(0, 1) to(0, 1) net 1> {
       %send1 = ttl.copy %send_dfb, %pipe1
           : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>,
-             !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 1>)
+               !ttl.pipe<src(0, 0) dst(0, 1) to(0, 1) net 1>)
           -> !ttl.transfer_handle<write>
       ttl.wait %send1 : !ttl.transfer_handle<write>
     }
@@ -216,7 +216,7 @@ module attributes {ttl.launch_grid = [1, 1]} {
     ttl.if_dst %pipe
         : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0> {
       %zero = arith.constant 0 : index
-      // expected-error @below {{pipe receive tensor_slice requires start indices that are constant at each receiver execution location}}
+      // expected-error @below {{pipe receive tensor_slice start index in dimension 0 is not statically enumerable}}
       %output_slice = ttl.tensor_slice %output[%start, %zero]
           : tensor<2x1x!ttcore.tile<32x32, bf16>, #layout2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>, #layout2>

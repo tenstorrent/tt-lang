@@ -503,7 +503,8 @@ inline bool isPipeReceiveCopy(CopyOp op) {
 
 /// Returns true when `op` sends from a DFB into a pipe.
 inline bool isPipeSendCopy(CopyOp op) {
-  return mlir::isa<CircularBufferType>(op.getSrc().getType()) &&
+  return (mlir::isa<CircularBufferType>(op.getSrc().getType()) ||
+          getAttachedCB(op.getSrc())) &&
          mlir::isa<PipeType, SelectedPipeSrcType, SelectedPipeDstType>(
              op.getDst().getType());
 }

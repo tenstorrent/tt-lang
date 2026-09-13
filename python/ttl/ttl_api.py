@@ -2189,14 +2189,22 @@ def _build_operation_pipenets(f: Callable, threads):
     """
     seen: Dict[int, PipeNet] = {}
 
+    def visit_value(value):
+        if isinstance(value, PipeNet):
+            if id(value) not in seen:
+                seen[id(value)] = value
+            return
+        if isinstance(value, tuple):
+            for element in value:
+                visit_value(element)
+
     def visit(func):
         if func is None:
             return
         closure_vars = inspect.getclosurevars(func)
         for namespace in (closure_vars.nonlocals, closure_vars.globals):
             for value in namespace.values():
-                if isinstance(value, PipeNet) and id(value) not in seen:
-                    seen[id(value)] = value
+                visit_value(value)
 
     visit(f)
     for thread in threads:
@@ -2216,7 +2224,7 @@ def _build_pipenet_graph(nets):
     graph = OperationPipeNets()
     for net in nets:
         if net.is_graph:
-            net_use = graph.add_graph_pipe_net(net.graph)
+            net_use = graph.add_graph_pipe_net(net.graph, net.local_nodes)
             net._graph_edges = net_use.edges
             net.pipe_net_id = net_use.pipe_net_id
             continue
@@ -2271,10 +2279,15 @@ def _collect_captures(
             return val
         elif isinstance(val, FabricManagerClaim):
             return val
+        elif isinstance(val, tuple):
+            return tuple(
+                convert(f"{name}[{index}]", element)
+                for index, element in enumerate(val)
+            )
         # A tuple or list of scalars is a compile-time shape or axis list. It
         # reaches the same consumers as the equivalent literal written inline,
         # so it stays a Python value rather than becoming an SSA operand.
-        elif isinstance(val, (tuple, list)) and all(
+        elif isinstance(val, list) and all(
             isinstance(elt, (int, float)) for elt in val
         ):
             return val
