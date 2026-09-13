@@ -1245,8 +1245,53 @@ getTensorRegionBounds(const ReceiverTensorRegionInfo &region) {
                             region.loc};
 }
 
-static FailureOr<TensorRegionBounds>
-getTensorRegionBounds(TensorSliceOp slice, Operation *diagnosticOwner) {
+static LogicalResult
+resolveTensorRegionStartIndices(ReceiverTensorRegionInfo &region,
+                                const LaunchExecutionLocation &receiverLocation,
+                                const PipeGraphAnalysisState &analysisState) {
+  region.startIndices.clear();
+  region.startIndices.reserve(region.slice.getIndices().size());
+  for (Value index : region.slice.getIndices()) {
+    std::optional<llvm::APInt> resolvedIndex =
+        evaluateIntegerAtLaunchLocation(index, receiverLocation, analysisState);
+    if (!resolvedIndex || !resolvedIndex->isSignedIntN(64)) {
+      return region.slice.emitError(
+          "pipe receive tensor_slice requires start indices that are constant "
+          "at each receiver execution location");
+    }
+    region.startIndices.push_back(resolvedIndex->getSExtValue());
+  }
+
+  int64_t rankDifference =
+      region.tensorGridShape.size() - region.sliceType.getRank();
+  for (int64_t dimension = 0;
+       dimension < static_cast<int64_t>(region.tensorGridShape.size());
+       ++dimension) {
+    int64_t regionExtent =
+        dimension < rankDifference
+            ? 1
+            : region.sliceType.getDimSize(dimension - rankDifference);
+    if (region.startIndices[dimension] < 0 || regionExtent <= 0 ||
+        region.startIndices[dimension] >
+            region.tensorGridShape[dimension] - regionExtent) {
+      return region.slice.emitError(
+          "pipe receive tensor_slice region is outside the destination tensor "
+          "tile grid");
+    }
+  }
+  return success();
+}
+
+static bool hasGuaranteedCopyCompletionBeforeBlockExit(CopyOp copy) {
+  return llvm::any_of(copy.getXf().getUsers(), [&](Operation *user) {
+    auto wait = dyn_cast<WaitOp>(user);
+    return wait && wait->getBlock() == copy->getBlock() &&
+           copy->isBeforeInBlock(wait);
+  });
+}
+
+static FailureOr<int64_t> getTensorGlobalIndex(TensorSliceOp slice,
+                                               Operation *diagnosticOwner) {
   auto tensorArgument = dyn_cast<BlockArgument>(slice.getTensor());
   func::FuncOp function =
       tensorArgument
@@ -1263,20 +1308,33 @@ getTensorRegionBounds(TensorSliceOp slice, Operation *diagnosticOwner) {
         "ownership");
     return failure();
   }
+  return cast<IntegerAttr>(crtaIndices[tensorArgument.getArgNumber()]).getInt();
+}
+
+static FailureOr<TensorRegionBounds>
+getTensorRegionBounds(TensorSliceOp slice, Operation *diagnosticOwner,
+                      const LaunchExecutionLocation &location,
+                      const PipeGraphAnalysisState &analysisState) {
+  FailureOr<int64_t> globalTensorIndex =
+      getTensorGlobalIndex(slice, diagnosticOwner);
+  if (failed(globalTensorIndex)) {
+    return failure();
+  }
 
   auto tensorType = cast<RankedTensorType>(slice.getTensor().getType());
   auto sliceType = cast<RankedTensorType>(slice.getType());
   SmallVector<int64_t> startIndices;
   startIndices.reserve(slice.getIndices().size());
   for (Value index : slice.getIndices()) {
-    std::optional<int64_t> staticIndex = getConstantIntValue(index);
-    if (!staticIndex) {
+    std::optional<llvm::APInt> resolvedIndex =
+        evaluateIntegerAtLaunchLocation(index, location, analysisState);
+    if (!resolvedIndex || !resolvedIndex->isSignedIntN(64)) {
       diagnosticOwner->emitOpError(
-          "cannot prove ownership of a dynamic tensor slice that shares a "
-          "tensor with a pipe receive destination");
+          "cannot prove ownership of a tensor slice whose start depends on "
+          "runtime values");
       return failure();
     }
-    startIndices.push_back(*staticIndex);
+    startIndices.push_back(resolvedIndex->getSExtValue());
   }
   int64_t rankDifference = tensorType.getRank() - sliceType.getRank();
   SmallVector<int64_t> extents(tensorType.getRank(), 1);
@@ -1285,9 +1343,8 @@ getTensorRegionBounds(TensorSliceOp slice, Operation *diagnosticOwner) {
     extents[dimension] = sliceType.getDimSize(dimension - rankDifference);
   }
   return TensorRegionBounds{
-      cast<IntegerAttr>(crtaIndices[tensorArgument.getArgNumber()]).getInt(),
-      SmallVector<int64_t>(tensorType.getShape()), std::move(startIndices),
-      std::move(extents), diagnosticOwner->getLoc()};
+      *globalTensorIndex, SmallVector<int64_t>(tensorType.getShape()),
+      std::move(startIndices), std::move(extents), diagnosticOwner->getLoc()};
 }
 
 static bool tensorRegionsOverlap(const TensorRegionBounds &lhs,
@@ -1313,17 +1370,21 @@ static bool tensorRegionsOverlap(const TensorRegionBounds &lhs,
 LogicalResult PipeGraph::verifyTensorRegionDestinations(
     ModuleOp mod, const PipeGraphAnalysisState &analysisState) const {
   SmallVector<const PipeReceiverEndpoint *> tensorEndpoints;
+  SmallVector<const PipeReceiverEndpoint *> repeatedTensorEndpoints;
   for (const PipeReceiverEndpoint &endpoint : pipeReceiverEndpoints) {
     if (!endpoint.hasTensorRegionDestination()) {
       continue;
     }
-    if (endpoint.executionCount != 1) {
+    if (!endpoint.executionCount || *endpoint.executionCount == 0) {
       emitError(endpoint.getTensorRegionDestination().loc)
           << "pipe receive tensor_slice destination currently requires "
-             "exactly one statically proven transfer occurrence";
+             "a positive statically proven transfer count";
       return failure();
     }
     tensorEndpoints.push_back(&endpoint);
+    if (*endpoint.executionCount > 1) {
+      repeatedTensorEndpoints.push_back(&endpoint);
+    }
   }
   if (tensorEndpoints.empty()) {
     return success();
@@ -1454,6 +1515,8 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
     }
   }
 
+  llvm::DenseMap<PipeReceiverEndpointId, SmallVector<CopyOp>>
+      readsByRepeatedEndpoint;
   LogicalResult copyResult = success();
   mod.walk([&](CopyOp copy) {
     if (failed(copyResult)) {
@@ -1470,19 +1533,36 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
     if (!accessedSlice) {
       return WalkResult::advance();
     }
-    FailureOr<TensorRegionBounds> maybeAccessedRegion =
-        getTensorRegionBounds(accessedSlice, copy);
-    if (failed(maybeAccessedRegion)) {
+    FailureOr<int64_t> accessedTensorIndex =
+        getTensorGlobalIndex(accessedSlice, copy);
+    if (failed(accessedTensorIndex)) {
       copyResult = failure();
       return WalkResult::interrupt();
     }
     for (const PipeReceiverEndpoint *endpoint : tensorEndpoints) {
       TensorRegionBounds pipeRegion =
           getTensorRegionBounds(endpoint->getTensorRegionDestination());
-      if (maybeAccessedRegion->globalTensorIndex !=
-              pipeRegion.globalTensorIndex ||
-          !mayExecuteOnSameDevice(copy, *endpoint) ||
-          !tensorRegionsOverlap(*maybeAccessedRegion, pipeRegion)) {
+      if (*accessedTensorIndex != pipeRegion.globalTensorIndex ||
+          !mayExecuteOnSameDevice(copy, *endpoint)) {
+        continue;
+      }
+      const PipeTransferNode &transferNode =
+          getPipeTransferNode(endpoint->transferNode);
+      FailureOr<LaunchExecutionLocation> maybeLocation =
+          getPipeGraphExecutionLocation(
+              copy, getLaunchNodeCoord(endpoint->receiver),
+              transferNode.deviceTransfer, PipeRole::Destination);
+      if (failed(maybeLocation)) {
+        copyResult = failure();
+        return WalkResult::interrupt();
+      }
+      FailureOr<TensorRegionBounds> maybeAccessedRegion = getTensorRegionBounds(
+          accessedSlice, copy, *maybeLocation, analysisState);
+      if (failed(maybeAccessedRegion)) {
+        copyResult = failure();
+        return WalkResult::interrupt();
+      }
+      if (!tensorRegionsOverlap(*maybeAccessedRegion, pipeRegion)) {
         continue;
       }
       if (isWrite) {
@@ -1494,16 +1574,6 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
         return WalkResult::interrupt();
       }
 
-      const PipeTransferNode &transferNode =
-          getPipeTransferNode(endpoint->transferNode);
-      FailureOr<LaunchExecutionLocation> maybeLocation =
-          getPipeGraphExecutionLocation(
-              copy, getLaunchNodeCoord(endpoint->receiver),
-              transferNode.deviceTransfer, PipeRole::Destination);
-      if (failed(maybeLocation)) {
-        copyResult = failure();
-        return WalkResult::interrupt();
-      }
       auto postOp = cast<PipeTransferPostOp>(endpoint->postOp);
       if (!hasMatchingReceiveWaitBeforeUse(postOp, copy.getOperation(),
                                            analysisState.receiveWaitsByPost,
@@ -1516,10 +1586,52 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
         copyResult = failure();
         return WalkResult::interrupt();
       }
+      if (endpoint->executionCount && *endpoint->executionCount > 1) {
+        readsByRepeatedEndpoint[endpoint->id].push_back(copy);
+      }
     }
     return WalkResult::advance();
   });
-  return copyResult;
+  if (failed(copyResult)) {
+    return failure();
+  }
+
+  for (const PipeReceiverEndpoint *endpoint : repeatedTensorEndpoints) {
+    auto postOp = cast<PipeTransferPostOp>(endpoint->postOp);
+    const PipeTransferNode &transferNode =
+        getPipeTransferNode(endpoint->transferNode);
+    FailureOr<LaunchExecutionLocation> maybeLocation =
+        getPipeGraphExecutionLocation(
+            postOp.getOperation(), getLaunchNodeCoord(endpoint->receiver),
+            transferNode.deviceTransfer, PipeRole::Destination);
+    if (failed(maybeLocation)) {
+      return failure();
+    }
+    ArrayRef<CopyOp> reads = readsByRepeatedEndpoint[endpoint->id];
+    if (reads.size() != 1) {
+      return postOp.emitError(
+          "repeated pipe receive tensor_slice destination requires exactly "
+          "one matching read before reuse");
+    }
+    CopyOp read = reads.front();
+    std::optional<std::uint64_t> readCount =
+        getExactExecutionCountAtLaunchLocation(read, *maybeLocation,
+                                               analysisState);
+    std::optional<ReceiverControlContext> postContext =
+        getReceiverControlContext(postOp, *maybeLocation, analysisState);
+    std::optional<ReceiverControlContext> readContext =
+        getReceiverControlContext(read, *maybeLocation, analysisState);
+    if (!readCount || readCount != endpoint->executionCount || !postContext ||
+        postContext != readContext ||
+        !hasGuaranteedCopyCompletionBeforeBlockExit(read)) {
+      auto diagnostic = postOp.emitError(
+          "cannot prove that a repeated pipe receive tensor_slice is read "
+          "before its next transfer");
+      diagnostic.attachNote(read.getLoc()) << "matching tensor read is here";
+      return failure();
+    }
+  }
+  return success();
 }
 
 // A transfer node pairs one send with every receiver, allowing this check to
@@ -2534,6 +2646,20 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
         }
         recordTransferNodeForProtocolRecord(
             postOp.getOperation(), postCandidate.recordIndex, transferNodeId);
+        std::optional<ReceiverTensorRegionInfo> tensorRegion;
+        if (const auto *unresolvedRegion =
+                std::get_if<ReceiverTensorRegionInfo>(&infoIt->second)) {
+          tensorRegion = *unresolvedRegion;
+          FailureOr<LaunchExecutionLocation> maybeLocation =
+              getPipeGraphExecutionLocation(
+                  postOp.getOperation(), getLaunchNodeCoord(receiver),
+                  deviceTransfer, PipeRole::Destination);
+          if (failed(maybeLocation) ||
+              failed(resolveTensorRegionStartIndices(
+                  *tensorRegion, *maybeLocation, analysisState))) {
+            return failure();
+          }
+        }
         PipeReceiverDestination destination = [&]() -> PipeReceiverDestination {
           if (const auto *receiverInfo =
                   std::get_if<ReceiverDFBInfo>(&infoIt->second)) {
@@ -2557,7 +2683,7 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
                 receiverDFBNodeId, receiverDFB, *receiverInfo, {}};
           }
           return std::make_shared<ReceiverTensorRegionInfo>(
-              std::get<ReceiverTensorRegionInfo>(infoIt->second));
+              std::move(*tensorRegion));
         }();
 
         PipeReceiverEndpointId endpointId = pipeReceiverEndpoints.size();
@@ -2806,45 +2932,24 @@ PipeGraph::addPipeReceiver(Operation *op, PipeTransferCreateOp transferCreateOp,
       return op->emitError(
           "pipe receive tensor_slice cannot resolve tensor runtime metadata");
     }
-    SmallVector<int64_t> startIndices;
-    startIndices.reserve(slice.getIndices().size());
-    for (Value index : slice.getIndices()) {
-      std::optional<int64_t> staticIndex = getConstantIntValue(index);
-      if (!staticIndex) {
-        return op->emitError(
-            "pipe receive tensor_slice currently requires static start "
-            "indices");
-      }
-      startIndices.push_back(*staticIndex);
-    }
     SmallVector<int64_t> tensorGridShape(tensorType.getShape());
-    int64_t rankDifference = tensorType.getRank() - sliceType.getRank();
-    for (int64_t dimension = 0; dimension < tensorType.getRank(); ++dimension) {
-      int64_t regionExtent =
-          dimension < rankDifference
-              ? 1
-              : sliceType.getDimSize(dimension - rankDifference);
-      if (startIndices[dimension] < 0 || regionExtent <= 0 ||
-          startIndices[dimension] > tensorGridShape[dimension] - regionExtent) {
-        return op->emitError(
-            "pipe receive tensor_slice region is outside the destination "
-            "tensor tile grid");
-      }
-    }
     auto tileType = mlir::cast<ttcore::TileType>(sliceType.getElementType());
     bool inserted =
         receiverDestinationByPost
             .insert(
                 {op,
                  ReceiverTensorRegionInfo{
-                     slice, sliceType,
+                     slice,
+                     sliceType,
                      static_cast<int32_t>(mlir::cast<IntegerAttr>(
                                               crtaIndices[tensorArgumentIndex])
                                               .getInt()),
                      static_cast<int32_t>(baseCTA.getInt()),
-                     std::move(tensorGridShape), std::move(startIndices),
+                     std::move(tensorGridShape),
+                     {},
                      static_cast<int64_t>(tileType.getSizeBytes()),
-                     std::nullopt, op->getLoc()}})
+                     std::nullopt,
+                     op->getLoc()}})
             .second;
     assert(inserted && "receiver post visited more than once");
     return success();
