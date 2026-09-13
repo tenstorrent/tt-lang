@@ -98,7 +98,7 @@ void populatePassesModule(nb::module_ &m) {
           return nb::none();
         }
         auto argSpecAttr = func->getAttrOfType<mlir::tt::ttkernel::ArgSpecAttr>(
-            mlir::tt::ttkernel::kArgSpecAttrName);
+            mlir::tt::ttkernel::ArgSpecAttr::name);
         if (!argSpecAttr) {
           return nb::none();
         }

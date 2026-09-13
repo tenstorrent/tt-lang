@@ -4,9 +4,15 @@
 
 """Tests for core-specialized kernel compilation and execution.
 
-Coverage includes coordinate-dependent branches and loop bounds, BF16 and f32
-results in DRAM and L1, per-core DFB use, emitted runners, and descriptor
-sharing across cores that execute equivalent kernels.
+Coverage includes:
+  * A matmul that uses core coordinates only for addressing remains uncloned
+    and matches both Torch and unspecialized execution.
+  * Coordinate-dependent branches and loop bounds specialize per core and
+    preserve BF16 and FP32 results.
+  * A DFB used by only a subset of cores retains the correct per-core metadata
+    and executes correctly.
+  * An emitted runner executes from a cold cache for BF16 and FP32 tensors in
+    DRAM and L1, with equivalent specialized kernels sharing descriptors.
 """
 
 import os

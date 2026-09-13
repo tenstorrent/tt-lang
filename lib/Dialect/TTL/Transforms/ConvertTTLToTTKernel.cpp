@@ -2076,7 +2076,7 @@ struct FuncKernelFinalize : OpRewritePattern<FuncOp> {
             ttk::ArgSpecAttr::get(op.getContext(),
                                   /*rtArgs=*/ArrayRef<ttk::ArgAttr>{},
                                   /*ctArgs=*/ctArgSpecs);
-        op->setAttr("ttkernel.arg_spec", argSpecAttr);
+        op->setAttr(ttk::ArgSpecAttr::name, argSpecAttr);
       }
 
       // Only erase arguments that are now unused after conversion. If any are
