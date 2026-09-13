@@ -41,6 +41,16 @@ struct TensorAccessorArgsIndexUse {
   int64_t originalIndex;
 };
 
+static bool isCompilerL1ArenaCommonArgIndex(Value index, ModuleOp module) {
+  auto memoryModel = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
+  if (!memoryModel || memoryModel.getValue() != kCompilerL1MemoryModel) {
+    return false;
+  }
+  auto compileArg =
+      traceUnrealizedCasts(index).getDefiningOp<ttk::GetCompileArgValOp>();
+  return compileArg && compileArg.getArgIndex() == 0;
+}
+
 // Verbatim C++ may read runtime arguments without an analyzable MLIR use.
 static bool containsHiddenCommonArgAccess(func::FuncOp function) {
   bool hiddenAccess = false;
@@ -70,8 +80,9 @@ readGlobalTensorIndices(func::FuncOp function, ArrayAttr indicesAttr,
 // Record every resolvable index for rewriting. An unresolved index requires the
 // complete tensor prefix to remain stable.
 static LogicalResult classifyCommonArgIndices(
-    func::FuncOp function, int64_t tensorCount, BitVector &liveTensorSlots,
-    SmallVectorImpl<CommonArgIndexUse> &uses, bool &hasUnresolvedIndex) {
+    func::FuncOp function, ModuleOp module, int64_t tensorCount,
+    BitVector &liveTensorSlots, SmallVectorImpl<CommonArgIndexUse> &uses,
+    bool &hasUnresolvedIndex) {
   WalkResult walkResult = function.walk([&](ttk::GetCommonArgValOp get) {
     Value index = traceUnrealizedCasts(get.getArgIndex());
     APInt constantIndex;
@@ -90,6 +101,9 @@ static LogicalResult classifyCommonArgIndices(
 
     auto table = index.getDefiningOp<ttk::ConstantTableLookupOp>();
     if (!table) {
+      if (isCompilerL1ArenaCommonArgIndex(index, module)) {
+        return WalkResult::advance();
+      }
       hasUnresolvedIndex = true;
       return WalkResult::advance();
     }
@@ -277,8 +291,9 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
           function, module, globalTensorIndices, liveTensorSlots))) {
     return failure();
   }
-  if (failed(classifyCommonArgIndices(function, tensorCount, liveTensorSlots,
-                                      commonArgUses, hasUnresolvedIndex))) {
+  if (failed(classifyCommonArgIndices(function, module, tensorCount,
+                                      liveTensorSlots, commonArgUses,
+                                      hasUnresolvedIndex))) {
     return failure();
   }
   if (failed(classifyTensorAccessorArgsIndices(

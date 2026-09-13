@@ -3,6 +3,7 @@
 #ifndef TTLANG_COMPILER_L1_COMPUTE_TARGET_H
 #define TTLANG_COMPILER_L1_COMPUTE_TARGET_H
 #include "api/compute/bcast.h"
+#include "api/compute/compute_kernel_hw_startup.h"
 #include "api/compute/matmul.h"
 #include "api/compute/pack.h"
 #include "api/compute/tile_move_copy.h"
@@ -40,13 +41,22 @@ inline void resetMatmulThrottleState() {
 #endif
 }
 
+template <bool DestinationAccumulation>
+inline void setDestinationAccumulationMode() {
+  if constexpr (DestinationAccumulation) {
+    ckernel::enable_fp32_dest_acc();
+  } else {
+    ckernel::disable_fp32_dest_acc();
+  }
+}
+
 template <ckernel::DataCopyType CopyType, ckernel::BroadcastType Broadcast,
           typename Source>
 inline void initializeUnaryDataCopy() {
 #if defined(ARCH_BLACKHOLE)
   MATH((_llk_math_eltwise_unary_datacopy_init_<CopyType, DST_ACCUM_MODE,
                                                Broadcast>(
-      Source::tensorShape.total_num_faces(), Source::unpackFormat, false)));
+      Source::tensorShape.total_num_faces(), Source::unpackFormat)));
 #else
   MATH((_llk_math_eltwise_unary_datacopy_init_<CopyType, DST_ACCUM_MODE,
                                                Broadcast>(
@@ -54,58 +64,71 @@ inline void initializeUnaryDataCopy() {
 #endif
 }
 
-template <typename Output>
+/// FP32 L1 output reads BF16 destination registers without FP32 accumulation.
+template <typename Output, bool DestinationAccumulation>
+inline constexpr uint32_t packSourceFormat =
+    Output::format == static_cast<uint32_t>(DataFormat::Float32) &&
+            !DestinationAccumulation
+        ? static_cast<uint32_t>(DataFormat::Float16_b)
+        : Output::format;
+
+template <typename Output, bool DestinationAccumulation = DST_ACCUM_MODE>
 inline void initializePack() {
+  constexpr uint32_t sourceFormat = packSourceFormat<Output, DestinationAccumulation>;
 #if defined(ARCH_BLACKHOLE)
-  PACK((_llk_pack_hw_configure_<DST_ACCUM_MODE, ckernel::PackMode::Default>(
-      Output::format, Output::format, Output::pageWords,
+  PACK((_llk_pack_hw_configure_<DestinationAccumulation,
+                               ckernel::PackMode::Default>(
+      sourceFormat, Output::format, Output::pageWords,
       Output::tensorShape.face_r_dim, Output::tensorShape.total_col_dim(),
       Output::tensorShape.total_num_faces(),
       hasPartialFace(Output::tensorShape), 0)));
   PACK((_llk_pack_init_<ckernel::PackMode::Default>(
-      Output::format, Output::tensorShape.face_r_dim,
+      sourceFormat, Output::tensorShape.face_r_dim,
       Output::tensorShape.total_col_dim(),
       Output::tensorShape.total_num_faces(), 1, false)));
-  PACK((_llk_pack_dest_init_<DST_SYNC_MODE, DST_ACCUM_MODE>()));
+  PACK((_llk_pack_dest_init_<DST_SYNC_MODE, DestinationAccumulation>()));
 #else
-  PACK((_llk_pack_hw_configure_<DST_ACCUM_MODE, ckernel::PackMode::Default>(
-      Output::format, Output::format, Output::pageWords,
+  PACK((_llk_pack_hw_configure_<DestinationAccumulation,
+                               ckernel::PackMode::Default>(
+      sourceFormat, Output::format, Output::pageWords,
       Output::tensorShape.face_r_dim, Output::tensorShape.total_num_faces(),
       hasPartialFace(Output::tensorShape), isNarrowTile(Output::tensorShape),
       0)));
   PACK((_llk_pack_init_<ckernel::PackMode::Default>(
-      Output::format, Output::tensorShape.face_r_dim,
+      sourceFormat, Output::tensorShape.face_r_dim,
       Output::tensorShape.total_num_faces(),
       hasPartialFace(Output::tensorShape), isNarrowTile(Output::tensorShape),
       1)));
-  PACK((_llk_pack_dest_init_<DST_SYNC_MODE, DST_ACCUM_MODE,
+  PACK((_llk_pack_dest_init_<DST_SYNC_MODE, DestinationAccumulation,
                              ckernel::PackMode::Default>(
       Output::tensorShape.face_r_dim, isNarrowTile(Output::tensorShape))));
 #endif
 }
 
-template <typename Output, bool ReconfigureTileDimensions = false>
+template <typename Output, bool ReconfigureTileDimensions = false,
+          bool DestinationAccumulation = DST_ACCUM_MODE>
 inline void reconfigurePack() {
+  constexpr uint32_t sourceFormat = packSourceFormat<Output, DestinationAccumulation>;
 #if defined(ARCH_BLACKHOLE)
-  PACK((_llk_pack_reconfig_data_format_<DST_ACCUM_MODE>(
-      Output::format, Output::format, Output::pageWords,
+  PACK((_llk_pack_reconfig_data_format_<DestinationAccumulation>(
+      sourceFormat, Output::format, Output::pageWords,
       Output::tensorShape.total_col_dim(),
       Output::tensorShape.total_num_faces(),
       hasPartialFace(Output::tensorShape))));
   if constexpr (ReconfigureTileDimensions) {
     PACK((_llk_pack_init_<ckernel::PackMode::Default, false, true>(
-        Output::format, Output::tensorShape.face_r_dim,
+        sourceFormat, Output::tensorShape.face_r_dim,
         Output::tensorShape.total_col_dim(),
         Output::tensorShape.total_num_faces(), 1, false)));
   }
 #else
-  PACK((_llk_pack_reconfig_data_format_<DST_ACCUM_MODE>(
-      Output::format, Output::format, Output::pageWords,
+  PACK((_llk_pack_reconfig_data_format_<DestinationAccumulation>(
+      sourceFormat, Output::format, Output::pageWords,
       Output::tensorShape.face_r_dim, Output::tensorShape.total_num_faces(),
       hasPartialFace(Output::tensorShape), isNarrowTile(Output::tensorShape))));
   if constexpr (ReconfigureTileDimensions) {
     PACK((_llk_pack_init_<ckernel::PackMode::Default, false, true>(
-        Output::format, Output::tensorShape.face_r_dim,
+        sourceFormat, Output::tensorShape.face_r_dim,
         Output::tensorShape.total_num_faces(),
         hasPartialFace(Output::tensorShape), isNarrowTile(Output::tensorShape),
         1)));

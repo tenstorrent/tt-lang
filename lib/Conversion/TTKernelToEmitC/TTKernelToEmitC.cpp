@@ -3781,30 +3781,51 @@ public:
     TTKernelToEmitCConversionState state;
     ConversionPlan config(module.getContext(), state);
     for (func::FuncOp funcOp : module.getOps<func::FuncOp>()) {
-      if (!funcOp->hasAttr(ttkernel::ThreadTypeAttr::name)) {
+      auto threadType = funcOp->getAttrOfType<ttkernel::ThreadTypeAttr>(
+          ttkernel::ThreadTypeAttr::name);
+      if (!threadType) {
         continue;
       }
-      if (usesCompilerL1(funcOp) &&
-          funcOp
-              .walk([](Operation *operation) {
-                return isa<ttkernel::BinaryOpInitCommonOp,
-                           ttkernel::UnaryOpInitCommonOp, ttkernel::InitSFPUOp,
-                           ttkernel::MatmulInitOp, ttkernel::MatmulBlockInitOp,
-                           ttkernel::MatmulInitShortOp,
-                           ttkernel::MatmulBlockInitShortOp,
-                           ttkernel::TransposeInitOp,
-                           ttkernel::UnaryBcastInitOp, ttkernel::ReduceInitOp>(
-                           operation)
-                           ? WalkResult::interrupt()
-                           : WalkResult::advance();
-              })
-              .wasInterrupted()) {
+      bool compilerL1 = usesCompilerL1(funcOp);
+      if (compilerL1 &&
+          threadType.getValue() == ttkernel::ThreadType::Compute) {
+        constexpr StringLiteral resetComputeConfiguration =
+            "ttlang::l1::target::resetComputeConfigurationState";
+        bool hasComputeConfigurationReset =
+            llvm::any_of(funcOp.getBody().front(), [&](Operation &operation) {
+              auto call = dyn_cast<emitc::CallOpaqueOp>(operation);
+              return call && call.getCallee() == resetComputeConfiguration;
+            });
+        bool needsComputeContext =
+            funcOp
+                .walk([](Operation *operation) {
+                  return isa<ttkernel::BinaryOpInitCommonOp,
+                             ttkernel::UnaryOpInitCommonOp,
+                             ttkernel::InitSFPUOp, ttkernel::MatmulInitOp,
+                             ttkernel::MatmulBlockInitOp,
+                             ttkernel::MatmulInitShortOp,
+                             ttkernel::MatmulBlockInitShortOp,
+                             ttkernel::TransposeInitOp,
+                             ttkernel::UnaryBcastInitOp,
+                             ttkernel::ReduceInitOp>(operation)
+                             ? WalkResult::interrupt()
+                             : WalkResult::advance();
+                })
+                .wasInterrupted();
         OpBuilder builder(&funcOp.getBody().front(),
                           funcOp.getBody().front().begin());
-        emitc::VerbatimOp::create(
-            builder, funcOp.getLoc(),
-            "ttlang::l1::target::ComputeContext l1_compute_context;",
-            ValueRange{});
+        if (!hasComputeConfigurationReset) {
+          auto reset = emitc::CallOpaqueOp::create(
+              builder, funcOp.getLoc(), TypeRange{}, resetComputeConfiguration,
+              ArrayAttr(), ArrayAttr(), ValueRange{});
+          reset->setAttr("ttlang.requires_compiler_l1", builder.getUnitAttr());
+        }
+        if (needsComputeContext) {
+          emitc::VerbatimOp::create(
+              builder, funcOp.getLoc(),
+              "ttlang::l1::target::ComputeContext l1_compute_context;",
+              ValueRange{});
+        }
       }
       if (mayHaveRuntimeCBArgs(funcOp)) {
         assignRuntimeCBArgIndices(funcOp);

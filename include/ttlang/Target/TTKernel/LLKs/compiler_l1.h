@@ -109,6 +109,7 @@ public:
   }
   uint32_t get_write_ptr() const { return address(published); }
   uint32_t get_read_ptr() const { return address(consumed); }
+  uint32_t get_storage_base() const { return payload; }
 };
 
 template <uint32_t PageBytes, uint32_t PagesPerBlock, uint32_t BlockCount,
