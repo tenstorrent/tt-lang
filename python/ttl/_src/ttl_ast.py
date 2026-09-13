@@ -2858,12 +2858,33 @@ class TTLGenericCompiler(TTCompilerBase):
 
         keyword_values = {keyword.arg: keyword.value for keyword in node.keywords}
         if reset_all:
-            if keyword_values:
+            if not set(keyword_values).issubset({"preserve"}):
                 self._raise_error(
                     node,
-                    "ttl.reset_all_dfbs() does not accept keyword arguments",
+                    "ttl.reset_all_dfbs() accepts only the preserve keyword argument",
                 )
-            return ttl.reset_all_dfbs(reset=reset_attr)
+            preserve_node = keyword_values.get("preserve")
+            if preserve_node is None:
+                preserved_dfbs = []
+            elif not isinstance(preserve_node, ast.List):
+                self._raise_error(
+                    preserve_node,
+                    "ttl.reset_all_dfbs() preserve must be a list",
+                )
+            else:
+                preserved_dfbs = [
+                    self._resolve_dfb_value(element, "preserve", api_name)
+                    for element in preserve_node.elts
+                ]
+            if any(
+                dfb in preserved_dfbs[:dfb_index]
+                for dfb_index, dfb in enumerate(preserved_dfbs)
+            ):
+                self._raise_error(
+                    preserve_node,
+                    "ttl.reset_all_dfbs() preserve DFBs must be distinct",
+                )
+            return ttl.reset_all_dfbs(reset=reset_attr, preserved_dfbs=preserved_dfbs)
 
         if set(keyword_values) != {"dfbs"}:
             self._raise_error(
@@ -3183,7 +3204,33 @@ class TTLGenericCompiler(TTCompilerBase):
                     ta_node, "ttl.call_extern_func() template_args must be a list"
                 )
             for elt in ta_node.elts:
-                resolved_template_args.append(self._resolve_template_arg_value(elt))
+                if not isinstance(elt, ast.Starred):
+                    resolved_template_args.append(self._resolve_template_arg_value(elt))
+                    continue
+                expanded_nodes = None
+                if isinstance(elt.value, (ast.List, ast.Tuple)):
+                    expanded_nodes = elt.value.elts
+                elif isinstance(elt.value, ast.Name):
+                    sequence = None
+                    for namespace in (self.captures, self.fn_globals):
+                        if elt.value.id in namespace:
+                            sequence = namespace[elt.value.id]
+                            break
+                    if isinstance(sequence, (list, tuple)):
+                        expanded_nodes = [
+                            ast.copy_location(ast.Constant(value=value), elt)
+                            for value in sequence
+                        ]
+                if expanded_nodes is None:
+                    self._raise_error(
+                        elt,
+                        "ttl.call_extern_func() starred template arguments must "
+                        "reference a captured or module-level list or tuple",
+                    )
+                for value_node in expanded_nodes:
+                    resolved_template_args.append(
+                        self._resolve_template_arg_value(value_node)
+                    )
 
         func_args = []
         func_arg_nodes = []

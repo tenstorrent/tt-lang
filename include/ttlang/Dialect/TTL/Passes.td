@@ -979,38 +979,44 @@ def TTLVerifyTransferProvenance
 
 def TTLVerifyDFBSPSC
     : Pass<"ttl-verify-dfb-spsc", "::mlir::ModuleOp"> {
-  let summary = "Verify DFB producers and consumers across launch domains";
+  let summary = "Verify DFB queue ownership across launch domains";
   let description = [{
     Walks DFB protocol actions exposed through `DFBAccessOpInterface`, groups
     them by module-wide logical `dfb_id` and enclosing
     `ttl.kernel_thread`-tagged `func.func`, and tracks the launch-node domain for
-    each producer or consumer participant. The pass requires every waited DFB
+    each producer or read-pointer-owner participant. Reserve and push effects
+    identify producers; pop effects identify the kernel that advances the read
+    pointer. Multiple kernels may wait for and read the same published pages
+    when exactly one kernel pops them. The pass also requires every waited DFB
     to have a compiler-visible push or uncontracted external access that may
-    contain one and, for each launched node, at most one producer kernel and at
-    most one consumer kernel. Disjoint domains across different kernel
-    functions are accepted. Distinct logical DFBs remain separate when physical
-    allocation assigns them the same `cb_index`.
+    contain one. Each launched node may have at most one producer and one
+    read-pointer owner. Disjoint domains across different kernel functions are
+    accepted. Distinct logical DFBs remain separate when physical allocation
+    assigns them the same `cb_index`.
 
     tt-metal circular buffers expose a counter pair (`pages_received`,
     `pages_acked`) that is not multi-writer safe on either side, so the
-    per-launched-node single-producer single-consumer property is required for
-    correctness; see `docs/development/DFBManagement.md` for the runtime
-    contract. The pass emits an error for waits without any possible producer,
-    overlapping producer or consumer domains, and unknown domains when
-    multiple threads participate and SPSC cannot be proven statically.
+    per-launched-node single-writer property for each counter is required for
+    correctness. `cb_wait_front` observes availability without advancing the
+    read pointer; `cb_pop_front` advances it. See
+    `docs/development/DFBManagement.md` for the runtime contract. The pass emits
+    an error for waits without any possible producer, overlapping producer or
+    read-pointer-owner domains, and unknown domains when multiple owners
+    participate and ownership cannot be proven statically. Operations with an
+    exact zero execution count do not participate.
 
     The module must contain the `ttl.dfb_allocations` metadata emitted by
     `ttl-finalize-dfb-indices`, and every DFB declaration and lifecycle operand
     must resolve to a `ttl.bind_cb` with `dfb_id`. Modules with DFB acquire ops
     must also carry a valid `ttl.launch_grid` attribute.
 
-    Setting `TTL_RELAX_DFB_SPSC` skips per-launch-node producer and consumer
+    Setting `TTL_RELAX_DFB_SPSC` skips per-launch-node producer and read-pointer
     ownership verification. The program must enforce that ownership contract
     through synchronization not represented in the IR. The verifier still
     rejects every waited DFB without a compiler-visible push or uncontracted
     external access that may contain one. Finalized DFB identity,
-    physical-index, and launch-grid preconditions remain mandatory. Strict
-    verification is the default.
+    physical-index, and launch-grid preconditions remain mandatory. The
+    ownership checks run unless the environment variable is defined.
   }];
 
   let dependentDialects = [];
@@ -1449,12 +1455,13 @@ def TTKernelSpecializeCores
     `ttl.launch_grid` attribute, missing or malformed `ttl.launch_grid` is a hard error.
 
     For each kernel whose scf.if region branches on a core coordinate, clones
-    the function once per launch coordinate, replaces
-    ttkernel.my_logical_x_ / ttkernel.my_logical_y_ with arith.constant's
-    for that core, and tags the cloned function with ttl.core_coord (the coordinate it
-    serves). Downstream canonicalize / cse then fold the now-constant
-    branch conditions and delete untaken regions. The runtime bridge reads
-    ttl.core_coord to build per-kernel core ranges for dispatch.
+    the function once per launch coordinate and replaces
+    ttkernel.my_logical_x_ / ttkernel.my_logical_y_ with arith.constant operations for
+    that core. It then evaluates exact integer conditions and removes untaken
+    scf.if regions. This includes a conjunction or disjunction whose result is
+    fixed by one known operand even when another operand remains runtime-dependent.
+    Each clone is tagged with ttl.core_coord, which the runtime bridge uses to
+    build per-kernel core ranges for dispatch.
 
     NOTE: functions with symbol uses (e.g. `func.call` targets) are left
     unspecialized with a warning so erasing the original does not leave dangling
@@ -1520,17 +1527,19 @@ def TTKernelAnnotateDFBUse
     Runs after per-core specialization and canonicalization.
     For each `ttkernel.thread` function, records the
     sorted physical DFB indices reached through surviving
-    `ttkernel.get_compile_time_arg_val` operations below
-    `ttl.base_cta_index` in `ttl.used_dfb_indices`. Helpers stay in the
+    `ttkernel.get_compile_time_arg_val` operations in
+    `ttl.used_dfb_indices`. An argument index is a DFB index when it is less
+    than the number of entries in the module's `ttl.dfb_allocations` metadata.
+    Helpers stay in the
     call-graph analysis so their uses propagate to kernel entries.
     Declarations are not annotated. The compile-time ABI places
-    every DFB before tensor-accessor arguments, including DFB ids passed to
-    opaque externs as scalar values.
+    every DFB first, including DFB ids passed to opaque externs as scalar
+    values. Later compiler-defined and tensor-accessor arguments are excluded.
 
     Calls are resolved through the MLIR call graph. Uses are propagated from
     callees to callers in SCC order, including recursive calls. An unknown or
     external callee is handled conservatively by recording every DFB
-    compile-time argument below `ttl.base_cta_index`.
+    compile-time argument.
 
     Print-only `get_compile_time_arg_val` operations (those whose only users
     are `emitc.verbatim` debug prints, through unrealized casts) are excluded

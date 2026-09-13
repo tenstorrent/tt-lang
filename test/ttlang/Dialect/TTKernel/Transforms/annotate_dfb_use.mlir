@@ -12,7 +12,7 @@
 // CHECK-SAME: ttl.used_dfb_indices = array<i32: 1, 2>
 
 // CHECK-LABEL: func.func @calls_unknown()
-// CHECK-SAME: ttl.used_dfb_indices = array<i32: 0, 1>
+// CHECK-SAME: ttl.used_dfb_indices = array<i32: 0, 1, 2>
 
 // CHECK-LABEL: func.func @recursive()
 // CHECK-SAME: ttl.used_dfb_indices = array<i32: 0>
@@ -23,7 +23,7 @@
 // CHECK-LABEL: func.func @cycle_b()
 // CHECK-SAME: ttl.used_dfb_indices = array<i32: 0, 1>
 
-module {
+module attributes {ttl.dfb_allocations = [{}, {}, {}]} {
   func.func private @unknown()
 
   func.func @helper() attributes {ttl.base_cta_index = 3 : i32} {
@@ -45,7 +45,7 @@ module {
   }
 
   func.func @calls_unknown() attributes {
-      ttl.base_cta_index = 2 : i32,
+      ttl.base_cta_index = 5 : i32,
       ttkernel.thread = #ttkernel.thread<noc>} {
     func.call @unknown() : () -> ()
     return

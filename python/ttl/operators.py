@@ -63,18 +63,23 @@ def call_extern_func(
         callee: External C++ function name.
         template_args: Static values and explicit DFB wrappers emitted as C++
             template arguments.
-        func_args: Values emitted as C++ function arguments. Repeated opaque
-            DFBs are valid. Summarized occurrences must use distinct parameters
-            of a composed operation.
+        func_args: Values emitted as C++ function arguments. A list applies to
+            every selected kernel; a mapping assigns a list to each specified
+            kernel. Repeated opaque DFBs are valid.
+            Summarized occurrences must use distinct parameters of a composed
+            operation.
         dfb_dependencies: DFBs accessed by external C++ without adding C++
             arguments. Entries must identify distinct source occurrences and
             must not repeat an automatic dependency source in ``func_args`` or
             DFB descriptor template arguments.
-        dfb_effects: Optional call-wide sequence of synchronous DFB protocol
-            actions performed on every call execution. A complete summary can
-            permit physical-index reuse and does not emit protocol calls.
-        dfb_accesses: Optional synchronous DFB inspections performed by the
-            call without publishing, consuming, or changing DFB state.
+        dfb_effects: Optional sequence of synchronous DFB protocol actions
+            performed on every selected kernel, or a mapping from individual
+            kernel selectors to their respective sequences. A complete summary
+            can permit physical-index reuse and does not emit protocol calls.
+        dfb_accesses: Optional sequence of synchronous DFB inspections
+            performed on every selected kernel, or a mapping from kernel
+            selectors to their respective sequences. An inspection does not
+            publish, consume, or change DFB state.
         unknown_dfb_access: Whether external C++ may access unlisted
             user-managed DFBs, conservatively restricting physical-index reuse.
         include_paths: Compile-time directories added to external header
@@ -86,8 +91,10 @@ def call_extern_func(
     ``KernelKind`` values may be combined with ``|``. A nonempty tuple also
     supports multiple selectors, including operation-local kernels. The call is
     emitted once in each selected logical kernel. The unified-operation splitter
-    removes the selector before AST lowering. ``fabric_manager_effects``
-    declares external fabric-manager ownership at call entry and completion.
+    removes the selector before AST lowering. If one of the supported mappings
+    omits a selected kernel, that keyword is absent from the emitted call for
+    that kernel. ``fabric_manager_effects`` declares external fabric-manager
+    ownership at call entry and completion.
 
     ``result_type`` declares one scalar integer result as ``ScalarType.I32`` or
     ``ScalarType.I64``. Omitting it or passing ``None`` declares a void external
@@ -114,8 +121,12 @@ def reset_dfbs(reset: DFBReset, /, *, dfbs) -> None:
     raise RuntimeError("ttl.reset_dfbs() is valid only in a compiled kernel")
 
 
-def reset_all_dfbs(reset: DFBReset, /) -> None:
-    """Apply ``reset_dfbs`` semantics to every worker-local DFB interface."""
+def reset_all_dfbs(reset: DFBReset, /, *, preserve=()) -> None:
+    """Reset every worker-local DFB interface except those in ``preserve``.
+
+    Preserving one member of a DFB allocation group preserves every member of
+    that group because they share one L1 allocation.
+    """
     raise RuntimeError("ttl.reset_all_dfbs() is valid only in a compiled kernel")
 
 

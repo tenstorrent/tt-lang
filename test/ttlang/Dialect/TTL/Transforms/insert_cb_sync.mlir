@@ -1510,3 +1510,38 @@ func.func @early_consumer_release_before_read(
   %sum = ttl.add %attached, %arg0 : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   func.return
 }
+
+// -----
+
+// A nested later acquisition owns the direct DFB accesses that it dominates,
+// so those accesses do not invalidate the earlier transaction's release.
+
+// CHECK-LABEL: func.func @nested_later_acquire_owns_direct_access
+// CHECK: %[[CONDITION:.*]] = arith.constant true
+// CHECK: %[[DFB:.*]] = ttl.bind_cb
+// CHECK: scf.if %[[CONDITION]]
+// CHECK: ttl.cb_reserve %[[DFB]]
+// CHECK-NEXT: ttl.store
+// CHECK-NEXT: ttl.cb_push %[[DFB]]
+// CHECK-NEXT: scf.if %[[CONDITION]]
+// CHECK-NEXT: ttl.cb_reserve %[[DFB]]
+// CHECK-NEXT: ttl.opaque_call "fill_later_slot"
+// CHECK-NEXT: ttl.cb_push %[[DFB]]
+// CHECK: return
+func.func @nested_later_acquire_owns_direct_access(
+    %value: tensor<1x1x!ttcore.tile<32x32, bf16>>)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %condition = arith.constant true
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  scf.if %condition {
+    %first_reserved = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %value, %first_reserved : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    scf.if %condition {
+      %second_reserved = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.opaque_call "fill_later_slot" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) () {header = "fill.hpp"} : () -> ()
+      ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+  }
+  func.return
+}

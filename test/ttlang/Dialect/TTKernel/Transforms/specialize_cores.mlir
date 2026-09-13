@@ -121,10 +121,62 @@ module attributes {ttl.launch_grid = [1 : i64, 3 : i64]} {
 
 // -----
 
+// A known-inactive core predicate must eliminate its branch even when another
+// conjunction operand is runtime-dependent.
+
+// FOLDED-LABEL: func.func @partially_known_conjunction_c0_0
+// FOLDED-NOT:     ttkernel.opaque_call "uses_local_tensor"
+// FOLDED-NOT:     scf.if
+// FOLDED:         return
+// FOLDED-LABEL: func.func @partially_known_conjunction_c1_0
+// FOLDED:         ttkernel.opaque_call "runtime_rank"
+// FOLDED:         scf.if
+// FOLDED:           ttkernel.opaque_call "uses_local_tensor"
+// FOLDED-LABEL: func.func @partially_known_disjunction_c0_0
+// FOLDED:         ttkernel.opaque_call "uses_local_tensor"
+// FOLDED-NOT:     scf.if
+// FOLDED-LABEL: func.func @partially_known_disjunction_c1_0
+// FOLDED:         ttkernel.opaque_call "runtime_rank"
+// FOLDED:         scf.if
+// FOLDED:           ttkernel.opaque_call "uses_local_tensor"
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @partially_known_conjunction() {
+    %zero = arith.constant 0 : index
+    %limit = arith.constant 96 : index
+    %core_x = "ttkernel.my_logical_x_"() : () -> index
+    %is_expert = arith.cmpi eq, %core_x, %zero : index
+    %active_projection = emitc.logical_not %is_expert : i1
+    %runtime_rank = ttkernel.opaque_call "runtime_rank" () {header = "runtime_rank.hpp"} : () -> index
+    %selected_rank = arith.cmpi sge, %runtime_rank, %limit : index
+    %active = arith.andi %active_projection, %selected_rank : i1
+    scf.if %active {
+      ttkernel.opaque_call "uses_local_tensor" () {header = "uses_local_tensor.hpp"} : () -> ()
+    }
+    return
+  }
+
+  func.func @partially_known_disjunction() {
+    %zero = arith.constant 0 : index
+    %limit = arith.constant 96 : index
+    %core_x = "ttkernel.my_logical_x_"() : () -> index
+    %is_expert = arith.cmpi eq, %core_x, %zero : index
+    %runtime_rank = ttkernel.opaque_call "runtime_rank" () {header = "runtime_rank.hpp"} : () -> index
+    %selected_rank = arith.cmpi sge, %runtime_rank, %limit : index
+    %active = arith.ori %is_expert, %selected_rank : i1
+    scf.if %active {
+      ttkernel.opaque_call "uses_local_tensor" () {header = "uses_local_tensor.hpp"} : () -> ()
+    }
+    return
+  }
+}
+
+// -----
+
 // -- Test 4: pipe participants are specialized like any other kernel. --------
-// The module used a pipe, so a semaphore op is present. The pass no longer
-// special-cases pipes: because core_y drives an scf.if, the 1x2 grid is cloned
-// per row. The semaphore op is carried into each clone unchanged.
+// A live semaphore operation does not change specialization. Because core_y
+// drives an scf.if, the 1x2 grid is cloned per row, and the semaphore access is
+// retained in each clone.
 
 // CHECK-NOT:   func.func @kpipe()
 // CHECK-LABEL: func.func @kpipe_c0_0
@@ -140,6 +192,9 @@ module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
     %c7 = arith.constant 7 : index
     %c9 = arith.constant 9 : index
     %sem = ttkernel.get_semaphore(%c0) : (index) -> !ttkernel.local_semaphore
+    %sem_ptr = ttkernel.reinterpret_cast(%sem) : (!ttkernel.local_semaphore) -> !ttkernel.l1_addr_ptr
+    %one = arith.constant 1 : i32
+    ttkernel.experimental.semaphore_wait_min(%sem_ptr, %one) : (!ttkernel.l1_addr_ptr, i32) -> ()
     %y = "ttkernel.my_logical_y_"() : () -> index
     %pred = arith.cmpi eq, %y, %c0 : index
     %r = scf.if %pred -> (index) {

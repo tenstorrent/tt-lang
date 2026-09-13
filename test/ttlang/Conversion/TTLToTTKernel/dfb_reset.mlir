@@ -29,6 +29,33 @@ module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
 
 // -----
 
+// Allocation-group members can use distinct physical indices when their
+// descriptors differ. Selecting or preserving one member applies to every
+// physical index in the shared allocation.
+// CHECK-LABEL: func.func @allocation_group_masks
+// CHECK-DAG: %[[GROUP_MASK:.*]] = arith.constant 6 : i32
+// CHECK-DAG: %[[COMPLEMENT_MASK:.*]] = arith.constant 1 : i32
+// CHECK: ttkernel.opaque_call "experimental::reset_dfb_interfaces"({{.*}}, %[[GROUP_MASK]],
+// CHECK: ttkernel.opaque_call "experimental::reset_dfb_interfaces"({{.*}}, %[[COMPLEMENT_MASK]],
+module attributes {ttl.target_arch = #ttcore.arch<blackhole>} {
+  func.func @allocation_group_masks()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %ungrouped = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %group_bf16 = ttl.bind_cb {cb_index = 1, block_count = 1}
+        {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %group_f32 = ttl.bind_cb {cb_index = 2, block_count = 1}
+        {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 2 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "group_masks">, <kind = data_movement, identity = "reader", operation = "group_masks">, <kind = data_movement, identity = "writer", operation = "group_masks">]>(%group_bf16 : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+    ttl.reset_all_dfbs <1, participants[<kind = compute, identity = "compute", operation = "group_masks">, <kind = data_movement, identity = "reader", operation = "group_masks">, <kind = data_movement, identity = "writer", operation = "group_masks">]> preserve %group_bf16 : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    return
+  }
+}
+
+// -----
+
 // Reset state follows PipeNet scratch instead of overlapping its address table.
 // The 8,192-byte DFB footprint plus 64-byte combined scratch exactly fits the
 // second RUN's 8,256-byte budget.

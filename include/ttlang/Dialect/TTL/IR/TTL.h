@@ -193,8 +193,8 @@ constexpr llvm::StringLiteral
 constexpr llvm::StringLiteral
     kCompilerAllocatedAttrName("ttl.compiler_allocated");
 
-/// Function attribute recording the base compile-time argument index.
-/// CTA layout is [CBs, TAs], so this equals the number of CBs.
+/// Function attribute recording the first tensor-accessor argument index.
+/// CTA layout is [DFBs, compiler-defined arguments, tensor accessors].
 constexpr llvm::StringLiteral kBaseCTAIndexAttrName("ttl.base_cta_index");
 
 /// Function attribute recording physical DFB indices referenced by the final

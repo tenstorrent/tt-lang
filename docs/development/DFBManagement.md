@@ -238,13 +238,32 @@ def make_reset_operation():
 reset_operation = make_reset_operation()
 ```
 
-The same `DFBReset` value identifies the three occurrences as one dynamic
-boundary. `ttl.reset_all_dfbs(reset_boundary)` provides the same boundary for
-every allocated physical DFB index. A declaration contains exactly one compute
-kernel and two data movement kernels. It executes once per dispatch and launch
-node, or once per iteration of the same immutable sequential loop nest in all
-participants. Conditional occurrences must use equivalent structured conditions
-on all participants and cannot form a repeated reset run.
+The same `DFBReset` value identifies the three occurrences as one synchronized
+reset. `ttl.reset_all_dfbs(reset_boundary)` resets every allocated DFB
+interface. `ttl.reset_all_dfbs(reset_boundary, preserve=[live_dfb])` leaves
+`live_dfb` unchanged while resetting the other interfaces. Preserving one
+member of an allocation group preserves every member because the group shares
+one L1 allocation. This form is useful when an operation retains one input or
+output across an internal reset but abandons temporary DFB state.
+
+A declaration contains exactly one compute kernel and two data movement
+kernels. It executes once per dispatch and launch node, or once per iteration
+of the same immutable sequential loop nest in all participants. Conditional
+occurrences must use equivalent structured conditions on all participants and
+cannot form a repeated reset run.
+
+Canonical operation kernels can participate without explicit handles. This
+keeps composed operations on the target's canonical worker kernels:
+
+```python
+reset_boundary = ttl.DFBReset(
+    participants=(
+        ttl.KernelKind.COMPUTE,
+        ttl.KernelKind.DATA_MOVEMENT,
+        ttl.PIPE_SOURCE_KERNEL,
+    )
+)
+```
 
 The compiler treats the interval before the first reset, each interval between
 resets, and the interval after the last reset as separate allocation epochs.
@@ -509,35 +528,41 @@ when their read- and write-pointer effects execute on the same hardware
 processors on every shared launched node. A happens-before relation proves zero
 occupancy but does not transfer ring-pointer state between processors.
 
-## Single-producer Single-consumer Semantics
+## DFB Queue Ownership
 
 ### Contract
 
-Each DFB has at most one producer thread and at most one consumer thread on
-each launched node. A *thread* here is a `func.func` carrying the
-`ttl.kernel_thread` attribute (compute, noc, ethernet); ops in untagged
-functions are outside the contract.
+On each launched node, a DFB has at most one producer kernel and at most one
+kernel that executes `pop`. A kernel here is a `func.func` carrying the
+`ttl.kernel_thread` attribute (compute, noc, or ethernet). Operations in
+untagged functions are outside this contract.
 
-Multiple producer or consumer threads may reference the same DFB index when the
-compiler can prove that their launch-node domains are disjoint. For example, a
-DFB may be consumed by a compute thread on PipeNet destination nodes and by a
-data-movement thread on PipeNet source nodes, provided no launched node belongs
-to both consumer domains.
+Reserve and push effects identify a producer because they grant and publish
+writable storage. A pop effect identifies the read-pointer owner because it
+releases pages for producer reuse. A wait effect only observes whether enough
+pages have been published. Multiple kernels may wait for and read the same
+pages; exactly one of them may pop those pages, and the program must ensure that
+the pop executes after every reader finishes.
 
-The rule is inherited from tt-metal: its CB protocol is not multi-writer safe on either side. Each CB has two shared counters in `dataflow_api.h`:
+This restriction follows from the two shared tt-metal counters in
+`dataflow_api.h`:
 
-- `pages_received`, incremented by `cb_push_back` (producer side),
-- `pages_acked`, incremented by `cb_pop_front` (consumer side).
+- `pages_received`, incremented by `cb_push_back`,
+- `pages_acked`, incremented by `cb_pop_front`.
 
-`cb_reserve_back` blocks until `pages_received - pages_acked < block_count`.
-`cb_wait_front` blocks until `pages_received > pages_acked`. The protocol is
-correct only when exactly one thread on a physical node writes each counter;
-the counters are not atomic with respect to multiple writers and carry no
-per-thread identity.
+`cb_reserve_back` observes both counters to determine whether storage is free.
+`cb_wait_front` observes them to determine whether data is available; it does
+not increment a counter or advance the read pointer. Concurrent pushes or pops
+would update a shared counter without atomic multi-writer synchronization.
 
-### Violation
+Different producer or pop-owner kernels may reference the same DFB when their
+launch-node domains are disjoint. Every physical node still has one producer
+and one pop owner.
 
-A two-consumer DFB inside a stripe loop:
+### Invalid and valid multiple-reader protocols
+
+The following program has two pop owners because leaving each `wait` context
+pops the acquired pages:
 
 ```python
 buf = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
@@ -545,100 +570,73 @@ buf = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 @ttl.compute()
 def compute():
     for _ in range(num_stripes):
-        with buf.reserve() as b:
-            b.store(...)
-        with buf.wait() as b:       # consumer A: compute
+        with buf.reserve() as block:
+            block.store(...)
+        with buf.wait() as block:
             ...
 
 @ttl.datamovement()
-def dm_read():
+def data_reader():
     for _ in range(num_stripes):
-        with buf.wait() as b:       # consumer B: dm_read
+        with buf.wait() as block:
             ...
 ```
 
-Per iteration, the producer pushes once (`pages_received += 1`) and each consumer pops once (`pages_acked += 2`). After iteration 0, the producer's `cb_reserve_back` on iteration 1 sees two free slots when only one has actually been consumed; it writes slot 0 while the late consumer is still reading slot 0's old data. The symmetric failure occurs with two producers: each `cb_push_back` advances the shared write pointer, and a consumer reads a partially-written slot.
+Each iteration pushes once but pops twice. The extra `pages_acked` increment
+can let the next reserve overwrite pages that one reader still uses. A
+single-iteration test may not expose the overwrite because the producer does
+not reserve the slot again.
 
-A single-iteration test masks this — exactly one push and two over-pops do not corrupt data when the producer never refills — so the rule must be enforced statically rather than left to test coverage.
+When readers consume independently, allocate one DFB per reader. When readers
+intentionally share published pages, use one pop owner and synchronize it with
+the other readers:
 
-### Correct form
-
-When two consumers or producers can execute on the same launched node, allocate
-one DFB per consumer thread (and symmetrically per producer thread). The
-producer writes the value into each DFB; each consumer reads its own. The
-sketch below is illustrative (no `@ttl.operation` wrapper, no tensor shape);
-for a runnable example see
-`test/python/test_store_patterns.py::store_then_forward_kernel`:
-
-```python
-buf_for_compute = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
-buf_for_dm     = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
-
-@ttl.compute()
-def compute():
-    for _ in range(num_stripes):
-        val = ...
-        with buf_for_compute.reserve() as b: b.store(val)
-        with buf_for_dm.reserve()     as b: b.store(val)
-        with buf_for_compute.wait()   as b: ...
-
-@ttl.datamovement()
-def dm_read():
-    for _ in range(num_stripes):
-        with buf_for_dm.wait() as b: ...
+```text
+producer:  reserve -> write -> push
+observer:                    wait -> read -> signal complete
+pop owner:                   wait -> read -> wait for observer -> pop
 ```
 
-Each `pages_received`/`pages_acked` pair is now driven by a single thread on
-each launched node.
-
-When the participating threads have disjoint launch-node domains, the same DFB
-index can be shared without duplicating storage. The verifier accepts this form
-because every physical node still observes a single producer and a single
-consumer for that DFB.
+Kimi reduce-to-all uses the second form: compute and data movement both read
+published chunks, while one data-movement kernel owns the pop. The protocol
+orders that pop after the compute read. The liveness analysis includes every
+wait and read when it proves that a pop or state-discarding reconfiguration ends
+the DFB lifecycle.
 
 ### Verification
 
-The `ttl-verify-dfb-spsc` module-level pass runs after
-`ttl-annotate-cb-associations`. It walks producer and consumer actions exposed
-through `DFBAccessOpInterface`, groups them by logical `dfb_id` and enclosing
-`ttl.kernel_thread`-tagged `func.func`, and tracks the launch-node domain for
-each participant. Concrete reserve, push, wait, and pop operations and external
-protocol summaries therefore use the same verification. Distinct logical DFBs
-remain separate after physical allocation assigns them the same `cb_index`.
+The `ttl-verify-dfb-spsc` module pass runs after
+`ttl-annotate-cb-associations`. It groups reserve and push effects by producer,
+groups pop effects by read-pointer owner, and tracks each participant's
+launch-node domain. Concrete DFB operations and external-call protocol effects
+use the same verification. Operations with an exact zero execution count do
+not participate.
 
-The pass rejects a DFB when two producer domains overlap or when two consumer
-domains overlap. If multiple threads participate and a coordinate-dependent
-predicate cannot be analyzed statically, the pass rejects the DFB rather than
-assuming disjointness. The diagnostic identifies the logical `dfb_id`, the
-role (producer or consumer), an overlapping launched node when available, the
-participating operation sites, and the originating `ttl.bind_cb`.
+The pass rejects overlapping producer domains and overlapping pop-owner
+domains. It also rejects multiple possible owners when a runtime predicate
+prevents the compiler from proving their domains disjoint. Diagnostics identify
+the logical `dfb_id`, participant role, relevant operation sites, and one
+overlapping launched node when available.
 
-The pass also rejects a logical DFB when a kernel thread waits on it and no
-producer is possible. A compiler-visible push proves a producer exists. An
-opaque external DFB dependency without an access contract may contain a push,
+A wait must also have a possible producer. A compiler-visible push establishes
+one. An external DFB dependency without an access contract may contain a push,
 and `unknown_dfb_access` may contain a push for any user-managed DFB. An
-explicit `inspect` contract excludes protocol actions. Reserving storage is
-insufficient: `ttl.cb_wait` observes pages published by a push. This structural
-check does not depend on launch-domain analysis and remains enabled under the
-diagnostic relaxation.
+`inspect` contract excludes protocol actions. A reserve alone cannot satisfy
+the check because only a push publishes pages.
 
-Setting `TTL_RELAX_DFB_SPSC` skips only per-launch-node ownership and
-producer-correspondence checks that require synchronization absent from IR. It
-skips overlapping producer/consumer domain checks here and same-node producer
-correspondence for DFB waits in `ttl-verify-pipenet-guards`. A waited DFB still
-requires either a compiler-visible push or uncontracted external access that
-may contain one. Finalized DFB identity, physical-index, and launch-grid
-preconditions remain mandatory. PipeNet endpoint guards, transfer
-correspondence, and synchronization schedules also remain mandatory. Strict
-verification is the default.
+`TTL_RELAX_DFB_SPSC` disables per-launch-node producer, pop-owner, and PipeNet
+wait-correspondence checks. It does not disable finalized DFB identity,
+physical-index, launch-grid, PipeNet endpoint, transfer-correspondence, or
+synchronization-schedule checks. The program is then responsible for the
+disabled ownership and correspondence requirements.
 
 See `test/ttlang/Dialect/TTL/Transforms/verify_dfb_spsc_invalid.mlir` and
 `verify_dfb_spsc_missing_producer_invalid.mlir` and
-`verify_dfb_spsc_unknown_access_invalid.mlir` for rejected patterns, and
-`verify_dfb_spsc.mlir` for accepted patterns.
+`verify_dfb_spsc_unknown_access_invalid.mlir` for rejected programs, and
+`verify_dfb_spsc.mlir` for accepted programs.
 
-The compiler does not currently auto-split overlapping multi-consumer DFBs;
-users must duplicate explicitly via `make_dataflow_buffer_like`. Tracked in
+The compiler does not currently split DFBs with multiple pop owners; users must
+duplicate them explicitly with `make_dataflow_buffer_like`. Tracked in
 [tenstorrent/tt-lang#581](https://github.com/tenstorrent/tt-lang/issues/581).
 
 ## Compiler-Created Intermediate DFB Insertion

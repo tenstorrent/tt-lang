@@ -1508,6 +1508,7 @@ struct RawAddrLowering : OpConversionPattern<RawAddrOp> {
 
 struct DFBResetLoweringPlan {
   DenseMap<SynchronizedDFBResetAttr, int64_t> stateOffsetByReset;
+  DenseMap<int64_t, uint64_t> dfbMaskByAllocationGroup;
   int64_t scratchBaseOffset = 0;
   int64_t scratchBytes = 0;
   uint64_t allDFBMask = 0;
@@ -1550,7 +1551,12 @@ buildDFBResetLoweringPlan(ModuleOp module) {
           << "] for " << getTargetDFBIndexCapacityDescription(bind);
       return WalkResult::interrupt();
     }
-    plan.allDFBMask |= uint64_t{1} << static_cast<unsigned>(*dfbIndex);
+    uint64_t dfbMask = uint64_t{1} << static_cast<unsigned>(*dfbIndex);
+    plan.allDFBMask |= dfbMask;
+    if (DFBAllocationGroupAttr allocationGroup =
+            bind.getAllocationGroupAttr()) {
+      plan.dfbMaskByAllocationGroup[allocationGroup.getOrdinal()] |= dfbMask;
+    }
     return WalkResult::advance();
   });
   if (allocationResult.wasInterrupted()) {
@@ -1591,6 +1597,34 @@ static LogicalResult lowerDFBReset(Operation *operation,
   return success();
 }
 
+static FailureOr<uint64_t>
+getExpandedDFBMask(ValueRange dfbs, Operation *operation,
+                   const DFBResetLoweringPlan &plan) {
+  uint64_t dfbMask = 0;
+  for (Value dfb : dfbs) {
+    FailureOr<int32_t> dfbIndex = getValidatedDFBIndex(dfb, operation);
+    if (failed(dfbIndex)) {
+      return failure();
+    }
+    dfbMask |= uint64_t{1} << static_cast<unsigned>(*dfbIndex);
+    BindCBOp declaration = getDFBDeclaration(dfb);
+    if (!declaration) {
+      return operation->emitError("cannot resolve DFB declaration");
+    }
+    DFBAllocationGroupAttr allocationGroup =
+        declaration.getAllocationGroupAttr();
+    if (!allocationGroup) {
+      continue;
+    }
+    auto groupMask =
+        plan.dfbMaskByAllocationGroup.find(allocationGroup.getOrdinal());
+    assert(groupMask != plan.dfbMaskByAllocationGroup.end() &&
+           "finalized allocation group must be present in reset plan");
+    dfbMask |= groupMask->second;
+  }
+  return dfbMask;
+}
+
 struct ResetDFBsLowering : OpConversionPattern<ResetDFBsOp> {
   ResetDFBsLowering(TypeConverter &typeConverter, MLIRContext *context,
                     const DFBResetLoweringPlan &plan)
@@ -1599,15 +1633,11 @@ struct ResetDFBsLowering : OpConversionPattern<ResetDFBsOp> {
   LogicalResult
   matchAndRewrite(ResetDFBsOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    uint64_t dfbMask = 0;
-    for (Value dfb : op.getDfbs()) {
-      FailureOr<int32_t> dfbIndex = getValidatedDFBIndex(dfb, op);
-      if (failed(dfbIndex)) {
-        return failure();
-      }
-      dfbMask |= uint64_t{1} << static_cast<unsigned>(*dfbIndex);
+    FailureOr<uint64_t> dfbMask = getExpandedDFBMask(op.getDfbs(), op, plan);
+    if (failed(dfbMask)) {
+      return failure();
     }
-    return lowerDFBReset(op, op.getReset(), dfbMask, plan, rewriter);
+    return lowerDFBReset(op, op.getReset(), *dfbMask, plan, rewriter);
   }
 
 private:
@@ -1622,7 +1652,13 @@ struct ResetAllDFBsLowering : OpConversionPattern<ResetAllDFBsOp> {
   LogicalResult
   matchAndRewrite(ResetAllDFBsOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    return lowerDFBReset(op, op.getReset(), plan.allDFBMask, plan, rewriter);
+    FailureOr<uint64_t> preservedMask =
+        getExpandedDFBMask(op.getPreservedDfbs(), op, plan);
+    if (failed(preservedMask)) {
+      return failure();
+    }
+    return lowerDFBReset(op, op.getReset(), plan.allDFBMask & ~*preservedMask,
+                         plan, rewriter);
   }
 
 private:

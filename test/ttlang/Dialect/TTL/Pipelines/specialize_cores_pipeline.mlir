@@ -25,4 +25,7 @@
 // DISABLED-NOT: ttkernel-specialize-cores
 // DISABLED-NOT: ttkernel-annotate-dfb-use
 
-module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {}
+module attributes {
+  ttl.dfb_allocations = [],
+  ttl.launch_grid = [1 : i64, 1 : i64]
+} {}
