@@ -3594,6 +3594,9 @@ public:
         return;
       }
       WalkResult validation = module.walk([&](Operation *operation) {
+        if (isa<emitc::LogicalNotOp>(operation)) {
+          return WalkResult::advance();
+        }
         if (operation->getName().getDialectNamespace() == "emitc") {
           operation->emitOpError(
               "compiler-l1 cannot validate pre-lowered C++ effects");
