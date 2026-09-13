@@ -63,7 +63,7 @@ static void warnDroppedPrint(func::FuncOp func, int32_t dfbIndex) {
   InFlightDiagnostic diag = func.emitWarning()
                             << "eliminating debug print of unused DFB "
                             << dfbIndex;
-  if (auto coord = func->getAttr("ttl.core_coord")) {
+  if (auto coord = func->getAttr(kCoreCoordAttrName)) {
     diag << " on specialized core " << coord;
   }
 }
@@ -269,10 +269,10 @@ struct TTKernelAnnotateDFBUsePass
     CallGraph callgraph(module);
     const CallGraph *graph = &callgraph;
     for (auto sccIt = llvm::scc_begin(graph); !sccIt.isAtEnd(); ++sccIt) {
-      propagateSCC(*sccIt, usedDFBs, conservative, dfbCount);
+      propagateSCC(*sccIt, usedDFBs, conservative, maxDFBCount);
     }
 
-    dropUnusedPrintOnlyDFBGets(module, usedDFBs, dfbCount);
+    dropUnusedPrintOnlyDFBGets(module, usedDFBs, maxDFBCount);
 
     for (func::FuncOp func : module.getOps<func::FuncOp>()) {
       if (!getKernelThreadType(func)) {
