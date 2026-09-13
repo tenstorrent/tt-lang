@@ -61,8 +61,9 @@ routing_plane_write(tt::tt_fabric::RoutingPlaneConnectionManager &manager,
     sender.wait_for_empty_write_slot();
     sender.send_payload_without_header_non_blocking_from_address(source_address,
                                                                  packet_size);
-    sender.send_payload_flush_blocking_from_address(
+    sender.send_payload_flush_non_blocking_from_address(
         reinterpret_cast<uint32_t>(packet_header), sizeof(PACKET_HEADER_TYPE));
+    noc_async_writes_flushed();
     source_address += packet_size;
     destination_address += packet_size;
     size_bytes -= packet_size;
@@ -166,8 +167,9 @@ static __attribute__((noinline)) void routing_plane_fused_write_atomic_inc(
     sender.wait_for_empty_write_slot();
     sender.send_payload_without_header_non_blocking_from_address(sourceAddress,
                                                                  maxPacketSize);
-    sender.send_payload_flush_blocking_from_address(
+    sender.send_payload_flush_non_blocking_from_address(
         reinterpret_cast<uint32_t>(packetHeader), sizeof(PACKET_HEADER_TYPE));
+    noc_async_writes_flushed();
     sourceAddress += maxPacketSize;
     destinationAddress += maxPacketSize;
     sizeBytes -= maxPacketSize;

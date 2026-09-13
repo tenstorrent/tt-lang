@@ -13,6 +13,9 @@
 // CHECK-NEXT: routing_plane_write(
 // CHECK: packet_header->to_noc_unicast_write(
 // CHECK: sender.send_payload_without_header_non_blocking_from_address(source_address,
+// CHECK: sender.send_payload_flush_non_blocking_from_address(
+// CHECK-NEXT: reinterpret_cast<uint32_t>(packet_header), sizeof(PACKET_HEADER_TYPE));
+// CHECK-NEXT: noc_async_writes_flushed();
 // CHECK-LABEL: FORCE_INLINE void routing_plane_scatter_write(
 // CHECK: packetHeader->to_noc_unicast_scatter_write(
 // CHECK: fabric_unicast_noc_scatter_write_with_state<
@@ -23,6 +26,9 @@
 // CHECK: packetHeader->to_noc_unicast_write(
 // CHECK: sender.send_payload_without_header_non_blocking_from_address(sourceAddress,
 // CHECK-NEXT: [[MAX_PACKET_SIZE]]);
+// CHECK: sender.send_payload_flush_non_blocking_from_address(
+// CHECK-NEXT: reinterpret_cast<uint32_t>(packetHeader), sizeof(PACKET_HEADER_TYPE));
+// CHECK-NEXT: noc_async_writes_flushed();
 // CHECK: sourceAddress += [[MAX_PACKET_SIZE]];
 // CHECK-NEXT: destinationAddress += [[MAX_PACKET_SIZE]];
 // CHECK-NEXT: sizeBytes -= [[MAX_PACKET_SIZE]];
