@@ -16,6 +16,9 @@ namespace mlir::tt::ttkernel {
 
 enum class NocCommandClass;
 
+/// Function attribute containing TTKernel runtime and compile-time arguments.
+constexpr llvm::StringLiteral kArgSpecAttrName("arg_spec");
+
 /// Effects on one resident command class, independent of the selected NoC.
 struct NocCommandEffects {
   bool mayReprogram = false;
