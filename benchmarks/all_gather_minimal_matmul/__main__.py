@@ -327,7 +327,7 @@ def create_ttlang_workload(mesh, common, ttlang):
         torch.zeros(
             (
                 ttlang.communication_workers * operation_config.m_block_tiles * 32,
-                4 * operation_config.k_block_tiles * 32,
+                6 * operation_config.k_block_tiles * 32,
             ),
             dtype=torch_dtype,
         ),

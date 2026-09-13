@@ -60,28 +60,14 @@ def make_bidirectional_dram_all_gather_matmul_operation(
     fabric_served_row_count = (
         m_worker_count + fabric_worker_count - 1
     ) // fabric_worker_count
-    direct_activation_entry_net = ttl.PipeNet(
+    activation_row_net = ttl.PipeNet(
         [
             ttl.Pipe(
                 src=(0, m_worker_index % fabric_worker_count),
-                dst=(m_worker_index + 1, 0),
+                dst=(m_worker_index + 1, slice(0, n_worker_count)),
             )
             for m_worker_index in range(m_worker_count)
         ]
-    )
-    activation_compute_chain_net = (
-        ttl.PipeNet(
-            [
-                ttl.Pipe(
-                    src=(m_worker_index + 1, n_worker_index),
-                    dst=(m_worker_index + 1, n_worker_index + 1),
-                )
-                for m_worker_index in range(m_worker_count)
-                for n_worker_index in range(n_worker_count - 1)
-            ]
-        )
-        if n_worker_count > 1
-        else direct_activation_entry_net
     )
     weight_column_net = ttl.PipeNet(
         [
@@ -126,14 +112,24 @@ def make_bidirectional_dram_all_gather_matmul_operation(
                 "activation staging storage must include one row block per "
                 "communication worker"
             )
-        if gathered_activation.shape[1] < 4 * compute_k_tiles * 32:
+        if gathered_activation.shape[1] < 6 * compute_k_tiles * 32:
             raise ValueError(
-                "activation staging storage must include four transfer slots"
+                "activation staging storage must include six transfer slots"
             )
         activation_relay_dfb = ttl.make_dataflow_buffer_like(
             activation_shard,
             shape=(m_block_tiles, compute_k_tiles),
             block_count=2,
+        )
+        activation_fabric_send_dfb = ttl.make_dataflow_buffer_like(
+            activation_shard,
+            shape=(m_block_tiles, compute_k_tiles),
+            block_count=fabric_served_row_count,
+        )
+        secondary_fabric_send_dfb = ttl.make_dataflow_buffer_like(
+            activation_shard,
+            shape=(m_block_tiles, compute_k_tiles),
+            block_count=1,
         )
         matmul_activation_dfb = ttl.make_dataflow_buffer_like(
             activation_shard,
@@ -156,6 +152,11 @@ def make_bidirectional_dram_all_gather_matmul_operation(
         accumulation_bias_dfb = ttl.make_dfb(
             accumulation_dtype, shape=(1, n_block_tiles), block_count=1
         )
+        activation_block_bytes = (
+            m_block_tiles
+            * compute_k_tiles
+            * activation_shard.get_tile().get_tile_size(activation_shard.dtype)
+        )
 
         @ttl.datamovement()
         def receive_activations_and_write_output():
@@ -163,20 +164,28 @@ def make_bidirectional_dram_all_gather_matmul_operation(
             if physical_column == 0 and physical_row < fabric_worker_count:
                 staging_m_begin = physical_row * m_block_tiles
                 staging_m_end = staging_m_begin + m_block_tiles
-                forward_staging = gathered_activation[
+                primary_forward_staging = gathered_activation[
                     staging_m_begin:staging_m_end, 0:compute_k_tiles
                 ]
-                backward_staging = gathered_activation[
+                primary_backward_staging = gathered_activation[
                     staging_m_begin:staging_m_end,
                     compute_k_tiles : 2 * compute_k_tiles,
                 ]
-                opposite_forward_staging = gathered_activation[
+                secondary_forward_staging = gathered_activation[
                     staging_m_begin:staging_m_end,
                     2 * compute_k_tiles : 3 * compute_k_tiles,
                 ]
-                opposite_backward_staging = gathered_activation[
+                secondary_backward_staging = gathered_activation[
                     staging_m_begin:staging_m_end,
                     3 * compute_k_tiles : 4 * compute_k_tiles,
+                ]
+                opposite_forward_staging = gathered_activation[
+                    staging_m_begin:staging_m_end,
+                    4 * compute_k_tiles : 5 * compute_k_tiles,
+                ]
+                opposite_backward_staging = gathered_activation[
+                    staging_m_begin:staging_m_end,
+                    5 * compute_k_tiles : 6 * compute_k_tiles,
                 ]
                 local_served_row_count = (
                     m_worker_count + fabric_worker_count - 1 - physical_row
@@ -186,14 +195,14 @@ def make_bidirectional_dram_all_gather_matmul_operation(
                         for k_block in range(compute_k_blocks_per_device):
                             local_k_begin = k_block * compute_k_tiles
                             local_k_end = local_k_begin + compute_k_tiles
-                            for served_row in range(local_served_row_count):
-                                target_m_worker = (
-                                    served_row * fabric_worker_count + physical_row
-                                )
-                                m_begin = (
-                                    m_round * m_worker_count + target_m_worker
-                                ) * m_block_tiles
-                                for transfer_index in range(device_count):
+                            for transfer_index in range(device_count):
+                                for served_row in range(local_served_row_count):
+                                    target_m_worker = (
+                                        served_row * fabric_worker_count + physical_row
+                                    )
+                                    m_begin = (
+                                        m_round * m_worker_count + target_m_worker
+                                    ) * m_block_tiles
                                     if transfer_index == 0:
                                         relay = activation_relay_dfb.reserve()
                                         ttl.copy(
@@ -205,10 +214,10 @@ def make_bidirectional_dram_all_gather_matmul_operation(
                                         ).wait()
                                     else:
 
-                                        def receive_forward(pipe):
+                                        def receive_primary_forward(pipe):
                                             receive_request = ttl.copy(
                                                 pipe,
-                                                forward_staging,
+                                                primary_forward_staging,
                                                 shape=(
                                                     m_block_tiles,
                                                     compute_k_tiles,
@@ -216,12 +225,14 @@ def make_bidirectional_dram_all_gather_matmul_operation(
                                             )
                                             receive_request.wait()
                                             relay = activation_relay_dfb.reserve()
-                                            ttl.copy(forward_staging, relay).wait()
+                                            ttl.copy(
+                                                primary_forward_staging, relay
+                                            ).wait()
 
-                                        def receive_backward(pipe):
+                                        def receive_primary_backward(pipe):
                                             receive_request = ttl.copy(
                                                 pipe,
-                                                backward_staging,
+                                                primary_backward_staging,
                                                 shape=(
                                                     m_block_tiles,
                                                     compute_k_tiles,
@@ -229,7 +240,39 @@ def make_bidirectional_dram_all_gather_matmul_operation(
                                             )
                                             receive_request.wait()
                                             relay = activation_relay_dfb.reserve()
-                                            ttl.copy(backward_staging, relay).wait()
+                                            ttl.copy(
+                                                primary_backward_staging, relay
+                                            ).wait()
+
+                                        def receive_secondary_forward(pipe):
+                                            receive_request = ttl.copy(
+                                                pipe,
+                                                secondary_forward_staging,
+                                                shape=(
+                                                    m_block_tiles,
+                                                    compute_k_tiles,
+                                                ),
+                                            )
+                                            receive_request.wait()
+                                            relay = activation_relay_dfb.reserve()
+                                            ttl.copy(
+                                                secondary_forward_staging, relay
+                                            ).wait()
+
+                                        def receive_secondary_backward(pipe):
+                                            receive_request = ttl.copy(
+                                                pipe,
+                                                secondary_backward_staging,
+                                                shape=(
+                                                    m_block_tiles,
+                                                    compute_k_tiles,
+                                                ),
+                                            )
+                                            receive_request.wait()
+                                            relay = activation_relay_dfb.reserve()
+                                            ttl.copy(
+                                                secondary_backward_staging, relay
+                                            ).wait()
 
                                         def receive_opposite_forward(pipe):
                                             receive_request = ttl.copy(
@@ -262,13 +305,23 @@ def make_bidirectional_dram_all_gather_matmul_operation(
                                             ).wait()
 
                                         if transfer_index == 1:
-                                            activation_forward_net.if_dst(
-                                                receive_forward
-                                            )
+                                            if k_block % 2 == 0:
+                                                activation_forward_net.if_dst(
+                                                    receive_primary_forward
+                                                )
+                                            else:
+                                                activation_backward_net.if_dst(
+                                                    receive_primary_backward
+                                                )
                                         elif transfer_index == 2:
-                                            activation_backward_net.if_dst(
-                                                receive_backward
-                                            )
+                                            if k_block % 2 == 0:
+                                                activation_backward_net.if_dst(
+                                                    receive_secondary_backward
+                                                )
+                                            else:
+                                                activation_forward_net.if_dst(
+                                                    receive_secondary_forward
+                                                )
                                         elif k_block % 2 == 0:
                                             activation_forward_net.if_dst(
                                                 receive_opposite_forward
@@ -294,23 +347,7 @@ def make_bidirectional_dram_all_gather_matmul_operation(
                                     def receive_activation(pipe):
                                         ttl.copy(pipe, received_activation).wait()
 
-                                    if n_worker_index == 0:
-                                        direct_activation_entry_net.if_dst(
-                                            receive_activation
-                                        )
-                                    else:
-                                        activation_compute_chain_net.if_dst(
-                                            receive_activation
-                                        )
-
-                                    if n_worker_index < n_worker_count - 1:
-
-                                        def forward_activation(pipe):
-                                            ttl.copy(received_activation, pipe).wait()
-
-                                        activation_compute_chain_net.if_src(
-                                            forward_activation
-                                        )
+                                    activation_row_net.if_dst(receive_activation)
                         n_begin = (
                             n_round * n_worker_count + n_worker_index
                         ) * n_block_tiles
@@ -353,21 +390,92 @@ def make_bidirectional_dram_all_gather_matmul_operation(
                 for m_round in range(m_rounds):
                     for _activation_round in range(activation_read_rounds):
                         for k_block in range(compute_k_blocks_per_device):
-                            for served_row in range(local_served_row_count):
-                                for transfer_index in range(device_count):
+                            local_k_begin = k_block * compute_k_tiles
+                            local_k_end = local_k_begin + compute_k_tiles
+                            for transfer_index in range(device_count):
+
+                                def send_to_compute_worker(pipe):
                                     relay = activation_relay_dfb.wait()
+                                    if transfer_index < 2:
+                                        fabric_send_block = (
+                                            activation_fabric_send_dfb.reserve()
+                                        )
+                                        ttl.copy(
+                                            relay,
+                                            fabric_send_block,
+                                            byte_count=activation_block_bytes,
+                                        ).wait()
+                                    ttl.copy(relay, pipe).wait()
 
-                                    def send_activation(pipe):
-                                        ttl.copy(relay, pipe).wait()
+                                activation_row_net.if_src(send_to_compute_worker)
+                                if transfer_index == 0:
+                                    for _served_row in range(local_served_row_count):
+                                        fabric_send_block = (
+                                            activation_fabric_send_dfb.wait()
+                                        )
 
-                                    direct_activation_entry_net.if_src(send_activation)
-                                    if transfer_index == 0:
-                                        activation_forward_net.if_src(send_activation)
-                                        activation_backward_net.if_src(send_activation)
-                                    elif transfer_index == 1 and k_block % 2 == 0:
-                                        activation_forward_net.if_src(send_activation)
-                                    elif transfer_index == 2 and k_block % 2 != 0:
-                                        activation_backward_net.if_src(send_activation)
+                                        def send_to_device(pipe):
+                                            ttl.copy(fabric_send_block, pipe).wait()
+
+                                        if k_block % 2 == 0:
+                                            activation_forward_net.if_src(
+                                                send_to_device
+                                            )
+                                        else:
+                                            activation_backward_net.if_src(
+                                                send_to_device
+                                            )
+                                elif transfer_index == 1:
+                                    for served_row in range(local_served_row_count):
+                                        target_m_worker = (
+                                            served_row * fabric_worker_count
+                                            + physical_row
+                                        )
+                                        m_begin = (
+                                            m_round * m_worker_count + target_m_worker
+                                        ) * m_block_tiles
+                                        secondary_send_block = (
+                                            secondary_fabric_send_dfb.reserve()
+                                        )
+                                        ttl.copy(
+                                            activation_shard[
+                                                m_begin : m_begin + m_block_tiles,
+                                                local_k_begin:local_k_end,
+                                            ],
+                                            secondary_send_block,
+                                        ).wait()
+                                        secondary_send_block = (
+                                            secondary_fabric_send_dfb.wait()
+                                        )
+
+                                        def send_secondary_direction(pipe):
+                                            ttl.copy(secondary_send_block, pipe).wait()
+
+                                        if k_block % 2 == 0:
+                                            activation_backward_net.if_src(
+                                                send_secondary_direction
+                                            )
+                                        else:
+                                            activation_forward_net.if_src(
+                                                send_secondary_direction
+                                            )
+
+                                    for _served_row in range(local_served_row_count):
+                                        primary_send_block = (
+                                            activation_fabric_send_dfb.wait()
+                                        )
+
+                                        def forward_primary_direction(pipe):
+                                            ttl.copy(primary_send_block, pipe).wait()
+
+                                        if k_block % 2 == 0:
+                                            activation_forward_net.if_src(
+                                                forward_primary_direction
+                                            )
+                                        else:
+                                            activation_backward_net.if_src(
+                                                forward_primary_direction
+                                            )
             if physical_column > 0:
                 m_worker_index = physical_column - 1
                 n_worker_index = physical_row
@@ -385,13 +493,23 @@ def make_bidirectional_dram_all_gather_matmul_operation(
                             for transfer_index in range(device_count):
                                 source_device_index = local_device_index
                                 if transfer_index == 1:
-                                    source_device_index = (
-                                        local_device_index + device_count - 1
-                                    ) % device_count
+                                    if k_block % 2 == 0:
+                                        source_device_index = (
+                                            local_device_index + device_count - 1
+                                        ) % device_count
+                                    else:
+                                        source_device_index = (
+                                            local_device_index + 1
+                                        ) % device_count
                                 elif transfer_index == 2:
-                                    source_device_index = (
-                                        local_device_index + 1
-                                    ) % device_count
+                                    if k_block % 2 == 0:
+                                        source_device_index = (
+                                            local_device_index + 1
+                                        ) % device_count
+                                    else:
+                                        source_device_index = (
+                                            local_device_index + device_count - 1
+                                        ) % device_count
                                 elif transfer_index == 3:
                                     source_device_index = (
                                         local_device_index + 2
