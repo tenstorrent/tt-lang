@@ -277,14 +277,12 @@ def _build_atom_spec(
         source_file = "<unknown>"
 
     raw_lines, start_lineno = inspect.getsourcelines(fn)
-    num_decorator_lines = 0
-    for line in raw_lines:
-        stripped = line.strip()
-        if stripped.startswith("@"):
-            num_decorator_lines += 1
-        elif stripped.startswith("def ") or stripped.startswith("async def "):
-            break
-    line_offset = start_lineno + num_decorator_lines - 1
+    def_line_index = next(
+        index
+        for index, line in enumerate(raw_lines)
+        if line.lstrip().startswith(("def ", "async def "))
+    )
+    line_offset = start_lineno + def_line_index - 1
     module = ast.parse(_cleanup_source_code(fn))
     if len(module.body) != 1 or not isinstance(module.body[0], ast.FunctionDef):
         raise ValueError(
