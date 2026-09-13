@@ -24,6 +24,9 @@ class TestDefaults:
         assert opts.pipe_global_semaphores_only is False
         assert opts.pipe_capacity_sync is True
         assert opts.pipe_batch_tiles == 0
+        assert opts.sram_allocation_report is False
+        assert opts.l1_allocation_strategy == "multi-order-decreasing"
+        assert opts.l1_exact_allocation_search_limit == 1_000_000
         assert opts.reuse_user_dfbs is True
         assert opts.unsafe_assume_dfb_allocation_groups is False
         assert opts.dfb_exact_coloring_search_limit == 1_000_000
@@ -248,3 +251,81 @@ class TestEquality:
         a = CompilerOptions()
         b = CompilerOptions.from_string("--ttl-maximize-dst --ttl-fpu-binary-ops")
         assert hash(a) == hash(b)
+
+
+@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-l1"])
+def test_memory_model(memory_model):
+    options = CompilerOptions.from_string(f"--ttl-memory-model={memory_model}")
+    assert options.memory_model == memory_model
+    assert "memory_model" in options._explicit
+    assert CompilerOptions().merge(options).memory_model == memory_model
+
+
+def test_memory_model_cache_identity():
+    assert CompilerOptions() != CompilerOptions(memory_model="compiler-l1")
+    with pytest.raises(ValueError, match="Invalid memory model"):
+        CompilerOptions(memory_model="invalid")
+
+
+@pytest.mark.parametrize(
+    "allocation_strategy",
+    ["multi-order-decreasing", "first-fit-decreasing", "best-fit-decreasing", "exact"],
+)
+def test_l1_allocation_strategy(allocation_strategy):
+    options = CompilerOptions.from_string(
+        f"--ttl-l1-allocation-strategy={allocation_strategy}"
+    )
+    assert options.l1_allocation_strategy == allocation_strategy
+    assert "l1_allocation_strategy" in options._explicit
+    assert (
+        CompilerOptions().merge(options).l1_allocation_strategy == allocation_strategy
+    )
+
+
+def test_l1_allocation_strategy_cache_identity():
+    assert CompilerOptions() != CompilerOptions(
+        l1_allocation_strategy="best-fit-decreasing"
+    )
+    with pytest.raises(ValueError, match="Invalid L1 allocation strategy"):
+        CompilerOptions(l1_allocation_strategy="invalid")
+
+
+def test_l1_exact_allocation_search_limit():
+    options = CompilerOptions.from_string(
+        "--ttl-l1-exact-allocation-search-limit=250000"
+    )
+    assert options.l1_exact_allocation_search_limit == 250_000
+    assert "l1_exact_allocation_search_limit" in options._explicit
+    assert CompilerOptions() != options
+
+
+def test_nonpositive_l1_exact_allocation_search_limit_is_invalid():
+    with pytest.raises(SystemExit):
+        CompilerOptions.from_string("--ttl-l1-exact-allocation-search-limit=0")
+    with pytest.raises(ValueError, match="search limit must be positive"):
+        CompilerOptions(l1_exact_allocation_search_limit=0)
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_sram_report_option(enabled):
+    flag = (
+        "--ttl-sram-allocation-report" if enabled else "--no-ttl-sram-allocation-report"
+    )
+    option = CompilerOptions.from_string(flag)
+    assert option.sram_allocation_report is enabled
+    assert CompilerOptions().merge(option).sram_allocation_report is enabled
+
+
+@pytest.mark.parametrize("mode", ["uniform", "per-core"])
+def test_sram_allocation_mode(mode):
+    options = CompilerOptions.from_string(f"--ttl-sram-allocation-mode={mode}")
+    assert options.sram_allocation_mode == mode
+    assert CompilerOptions().merge(options).sram_allocation_mode == mode
+    assert CompilerOptions(sram_allocation_mode="uniform") != CompilerOptions(
+        sram_allocation_mode="per-core"
+    )
+
+
+def test_sram_allocation_mode_invalid():
+    with pytest.raises(ValueError, match="Invalid SRAM allocation mode"):
+        CompilerOptions(sram_allocation_mode="invalid")

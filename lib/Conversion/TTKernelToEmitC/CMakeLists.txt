@@ -16,4 +16,5 @@ add_mlir_conversion_library(TTLangTTKernelToEmitC
   MLIRTargetCpp
   MLIRTTKernelDialect
   MLIRTransformUtils
+  TTLangTTLTransforms
 )

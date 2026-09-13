@@ -96,11 +96,35 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::desc("Override the combined DFB, PipeNet, and synchronized-"
                      "reset L1 allocation budget."),
       llvm::cl::init(0)};
+  Option<std::string> memoryModel{
+      *this, "memory-model",
+      llvm::cl::desc("Select metal-cb or experimental compiler-l1 storage."),
+      llvm::cl::init("metal-cb")};
   Option<bool> reuseUserDFBs{
       *this, "reuse-user-dfbs",
       llvm::cl::desc("Reuse physical DFB indices when concurrent-kernel "
                      "liveness proves that logical lifetimes do not overlap."),
       llvm::cl::init(true)};
+  Option<std::string> sramAllocationMode{
+      *this, "sram-allocation-mode",
+      llvm::cl::desc("SRAM allocation domains: uniform or per-core"),
+      llvm::cl::init("uniform")};
+  Option<bool> sramAllocationReport{
+      *this, "sram-allocation-report",
+      llvm::cl::desc("Emit a JSON compiler-managed SRAM allocation report."),
+      llvm::cl::init(false)};
+  Option<std::string> l1AllocationStrategy{
+      *this, "l1-allocation-strategy",
+      llvm::cl::desc("Select multi-order-decreasing, first-fit-decreasing, "
+                     "best-fit-decreasing, or "
+                     "exact compiler-l1 payload placement."),
+      llvm::cl::init("multi-order-decreasing")};
+  Option<std::uint64_t> l1ExactAllocationSearchLimit{
+      *this, "l1-exact-allocation-search-limit",
+      llvm::cl::desc("Maximum work items examined by exact compiler-l1 "
+                     "placement per allocation domain before reporting an "
+                     "inconclusive result."),
+      llvm::cl::init(1000000)};
   Option<bool> unsafeAssumeAllocationGroups{
       *this, "unsafe-assume-allocation-groups",
       llvm::cl::desc("Trust explicit DFB allocation groups when runtime "

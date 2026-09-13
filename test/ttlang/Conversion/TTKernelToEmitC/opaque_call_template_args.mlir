@@ -24,15 +24,71 @@ func.func @typed_literals_to_emitc() attributes {ttkernel.thread = #ttkernel.thr
 // EMITC-SAME: ttlang.requires_dfb_descriptor
 
 // The emitted definition precedes the user header that names it.
-// CPP-LABEL: #include <cstdint>
+// Blackhole defines compute macros before the dataflow buffer header uses them.
+// CPP-LABEL: #include "api/compute/common.h"
+// CPP-NEXT: #include "api/dataflow/circular_buffer.h"
+// CPP: #define TTLANG_DFB_STORAGE_COMPILER_L1 0
 // CPP: namespace ttlang {
 // CPP: struct DFBDescriptor {
+// CPP: static CircularBuffer bind() { return CircularBuffer(Index); }
 // CPP: } // namespace ttlang
 // CPP: #include "describe.hpp"
 // CPP: describe<11, ttlang::DFBDescriptor<3, 2, 4, 4096>>();
-func.func @dfb_descriptor_template_to_emitc() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+func.func @dfb_descriptor_template_to_emitc() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
   ttkernel.opaque_call "describe" template_args [11 : si32, #ttkernel.dfb_descriptor<3, 2, 4, 4096>] () {dfb_resource_indices = array<i32: 3>, header = "describe.hpp"} : () -> ()
   return
+}
+
+// -----
+
+// Compiler-managed descriptors bind storage by arena address on Wormhole.
+// EMITC-LABEL: func.func @compiler_l1_descriptor_template_to_emitc
+// EMITC: emitc.call_opaque "describe"
+// EMITC-SAME: template_args = [#emitc.opaque<"ttlang::l1::DFBDescriptor<2048, 1, 2, 2, 0, 64, -1>">]
+// EMITC-SAME: ttlang.requires_compiler_l1
+// CPP: #ifndef TTLANG_COMPILER_L1_TARGET_H
+// CPP: #define TTLANG_DFB_STORAGE_COMPILER_L1 1
+// CPP: inline void resetState(uint32_t state) {
+// CPP-NEXT: if constexpr (!target::ownsDFBInterface) {
+// CPP: #include "describe.hpp"
+// CPP: describe<ttlang::l1::DFBDescriptor<2048, 1, 2, 2, 0, 64, -1>>();
+module attributes {ttl.memory_model = "compiler-l1", ttl.target_arch = #ttcore.arch<wormhole_b0>, ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, l1_allocation_bytes = 4096 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i32, page_size = 2048 : i32, storage_capacity_pages = 2 : i32, storage_index = 0 : i32}]} {
+  func.func @compiler_l1_descriptor_template_to_emitc() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+    ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<0, 1, 2, 2048>] () {dfb_resource_indices = array<i32: 0>, header = "describe.hpp"} : () -> ()
+    return
+  }
+}
+
+// -----
+
+// Compute descriptors preserve direct-to-destination format selection.
+// EMITC-LABEL: func.func @compiler_l1_compute_descriptor
+// EMITC: #emitc.opaque<"ttlang::l1::ComputeDFBDescriptor<static_cast<uint32_t>(DataFormat::Float32), 1024, 8, 32, 1, 1, 1, 0, 64, -1, true>">
+// CPP: #define TTLANG_DFB_STORAGE_COMPILER_L1 1
+// CPP: #include "describe.hpp"
+// CPP: describe<ttlang::l1::ComputeDFBDescriptor<static_cast<uint32_t>(DataFormat::Float32), 1024, 8, 32, 1, 1, 1, 0, 64, -1, true>>();
+module attributes {ttl.memory_model = "compiler-l1", ttl.target_arch = #ttcore.arch<wormhole_b0>, ttl.dfb_allocations = [{block_count = 1 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<8x32, f32>, l1_allocation_bytes = 1024 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i32, page_size = 1024 : i32, storage_capacity_pages = 1 : i32, storage_index = 0 : i32}]} {
+  func.func @compiler_l1_compute_descriptor() attributes {ttkernel.thread = #ttkernel.thread<compute>, ttl.unpack_to_dest_fp32 = array<i32: 0>} {
+    ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<0, 1, 1, 1024>] () {dfb_resource_indices = array<i32: 0>, header = "describe.hpp"} : () -> ()
+    return
+  }
+}
+
+// -----
+
+// External compute descriptors preserve full-tile block-float formats.
+// EMITC-LABEL: func.func @compiler_l1_bfp_compute_descriptors
+// EMITC: #emitc.opaque<"ttlang::l1::ComputeDFBDescriptor<static_cast<uint32_t>(DataFormat::Bfp4_b), 576, 32, 32, 1, 1, 1, 0, 64, -1, false>">
+// EMITC-SAME: #emitc.opaque<"ttlang::l1::ComputeDFBDescriptor<static_cast<uint32_t>(DataFormat::Bfp8_b), 1088, 32, 32, 1, 1, 1, 8, 632, -1, false>">
+// CPP: describe<ttlang::l1::ComputeDFBDescriptor<static_cast<uint32_t>(DataFormat::Bfp4_b), 576, 32, 32, 1, 1, 1, 0, 64, -1, false>, ttlang::l1::ComputeDFBDescriptor<static_cast<uint32_t>(DataFormat::Bfp8_b), 1088, 32, 32, 1, 1, 1, 8, 632, -1, false>>();
+module attributes {ttl.memory_model = "compiler-l1", ttl.target_arch = #ttcore.arch<wormhole_b0>, ttl.dfb_allocations = [
+  {block_count = 1 : i32, element_type = !ttcore.tile<32x32, bfp_bf4>, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i32, page_size = 576 : i32, storage_capacity_pages = 1 : i32},
+  {block_count = 1 : i32, element_type = !ttcore.tile<32x32, bfp_bf8>, l1_offset = 8 : i64, l1_payload_offset = 640 : i64, num_tiles = 1 : i32, page_size = 1088 : i32, storage_capacity_pages = 1 : i32}
+]} {
+  func.func @compiler_l1_bfp_compute_descriptors() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+    ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<0, 1, 1, 576>, #ttkernel.dfb_descriptor<1, 1, 1, 1088>] () {dfb_resource_indices = array<i32: 0, 1>, header = "describe.hpp"} : () -> ()
+    return
+  }
 }
 
 // -----

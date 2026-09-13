@@ -121,3 +121,55 @@ def test_reconfigured_receiver_uses_published_address(
     allocation_metadata = final_mlir.partition("ttl.dfb_reconfiguration_plan")[0]
     assert allocation_metadata.count("dfb_index = ") == 2
     assert "ttl.pipe_computed_address_dfb_indices" not in final_mlir
+
+
+# Compiler-managed reconfiguration uses stable computed addresses for both
+# tensor-backed and compiler-owned receivers across consecutive epochs.
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
+@pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
+def test_compiler_l1_reconfigured_receiver_uses_computed_addresses(
+    device,
+    dtype,
+    to_device,
+    monkeypatch,
+    tmp_path,
+    reject_metal_dfb_descriptor_creation,
+):
+    if ttl_api._detect_device_arch(device) != "blackhole":
+        pytest.skip("requires Blackhole DFB reconfiguration support")
+    reject_metal_dfb_descriptor_creation()
+    host_input = torch.arange(32 * 64, dtype=torch.float32).reshape(32, 64).to(dtype)
+    tensor_backed_output = to_l1_sharded(
+        torch.zeros((32, 32), dtype=dtype), device, layout="height"
+    )
+    scratch_output = to_device(torch.zeros((32, 32), dtype=dtype), device)
+    operation = _make_reconfigured_receiver_operation(
+        "bf16" if dtype == torch.bfloat16 else "float32"
+    )
+    final_mlir_path = tmp_path / "compiler_l1_reconfigured_pipe_receiver.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
+
+    for _invocation_index in range(2):
+        operation(
+            to_device(host_input, device),
+            tensor_backed_output,
+            scratch_output,
+            options="--ttl-memory-model=compiler-l1 --ttl-reuse-user-dfbs",
+        )
+        threshold = 0.999 if dtype == torch.bfloat16 else 0.99999
+        assert_pcc(
+            host_input[:, :32].float(),
+            ttnn.to_torch(tensor_backed_output).float(),
+            threshold=threshold,
+        )
+        assert_pcc(
+            host_input[:, 32:].float(),
+            ttnn.to_torch(scratch_output).float(),
+            threshold=threshold,
+        )
+
+    final_mlir = final_mlir_path.read_text()
+    assert 'ttl.memory_model = "compiler-l1"' in final_mlir
+    assert "ttl.compiler_l1_reconfiguration_resets" in final_mlir
+    assert "ttl.dfb_reconfiguration_plan" not in final_mlir
+    assert "ttl.pipe_computed_address_dfb_indices = array<i32: 0, 2>" in final_mlir

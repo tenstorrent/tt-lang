@@ -64,6 +64,13 @@ struct TTKernelCombinePackTilesPass
   using TTKernelCombinePackTilesBase::TTKernelCombinePackTilesBase;
 
   void runOnOperation() override {
+    auto module = getOperation()->getParentOfType<ModuleOp>();
+    if (auto model = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
+        model && model.getValue() == kCompilerL1MemoryModel) {
+      // PackTileBlockOp cannot preserve the tile index used to address the
+      // compiler-assigned output payload.
+      return;
+    }
     getOperation().walk([](Block *block) {
       // pack_tile_block is incompatible with pack_reconfig_l1_acc, which
       // requires individual pack_tile calls.

@@ -18,6 +18,35 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 
 // -----
 
+// An external wait must not execute outside the launch domain of its producer.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @opaque_effect_guarded_producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %dfb = ttl.bind_cb {cb_index = 13, block_count = 2} {dfb_id = 13 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+    func.return
+  }
+
+  func.func @opaque_effect_unguarded_consumer() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %dfb = ttl.bind_cb {cb_index = 13, block_count = 2} {dfb_id = 13 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{this operation waits on launched nodes where no thread pushes data to the buffer}}
+    // expected-note @below {{example node where the guard does not hold: core_x=0}}
+    ttl.opaque_call "consume"
+        dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>, #ttl.dfb_protocol_effect<pop, 0, 1>]
+        () {header = "consumer.hpp"} : () -> ()
+    func.return
+  }
+}
+
+// -----
+
 // Internal wait-any tokens must originate from receiver posts.
 
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {

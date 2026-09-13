@@ -24,6 +24,14 @@
 namespace mlir::tt::ttl {
 
 class DFBPhysicalConflictModelBuilder;
+class DFBConcurrentKernelLivenessAnalysis;
+struct DFBAnalysisFailure;
+
+/// Storage ownership semantics used when constructing the conflict relation.
+enum class DFBStorageConflictMode {
+  MetalRuntimeDescriptor,
+  CompilerManaged,
+};
 
 /// Physical index selected for one logical DFB.
 struct DFBPhysicalIndexAssignment {
@@ -134,6 +142,14 @@ struct DFBAssumedAllocationGroup {
   Operation *operation = nullptr;
 };
 
+/// Validates explicit allocation-group storage and cursor ownership.
+LogicalResult validateDFBAllocationGroups(
+    const DFBConcurrentKernelLivenessAnalysis &liveness,
+    ArrayRef<DFBStaticConfigurationConflict> staticConflicts,
+    bool unsafeAssumeAllocationGroups,
+    SmallVectorImpl<DFBAssumedAllocationGroup> &assumedAllocationGroups,
+    DFBAnalysisFailure &analysisFailure);
+
 /// Source evidence that explains why one logical DFB pair cannot share.
 struct DFBConflictEvidence {
   unsigned lhsLogicalIndex = 0;
@@ -149,6 +165,10 @@ struct DFBConflictEvidence {
 /// Immutable complete conflict relation used by every allocation policy.
 class DFBPhysicalConflictModel {
 public:
+  /// Builds byte-storage conflicts for the selected ownership semantics.
+  static DFBPhysicalConflictModel
+  buildStorage(const DFBConcurrentKernelLivenessAnalysis &liveness,
+               DFBStorageConflictMode mode);
   bool conflicts(unsigned lhsLogicalIndex, unsigned rhsLogicalIndex) const {
     assert(lhsLogicalIndex < adjacency.size() &&
            rhsLogicalIndex < adjacency.size());

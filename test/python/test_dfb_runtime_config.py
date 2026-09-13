@@ -20,14 +20,28 @@ def _entry(
     block_count=2,
     page_size=2048,
     storage_index=None,
+    l1_offset=None,
+    l1_payload_offset=None,
+    l1_allocation_bytes=None,
+    storage_capacity_pages=None,
 ):
     """Build one textual physical-allocation metadata entry."""
 
     storage_field = (
         "" if storage_index is None else f"storage_index = {storage_index} : i32, "
     )
+    if storage_capacity_pages is not None:
+        storage_field += f"storage_capacity_pages = {storage_capacity_pages} : i32, "
+    l1_fields = ""
+    for field_name, field_value in (
+        ("l1_offset", l1_offset),
+        ("l1_payload_offset", l1_payload_offset),
+        ("l1_allocation_bytes", l1_allocation_bytes),
+    ):
+        if field_value is not None:
+            l1_fields += f"{field_name} = {field_value} : i64, "
     return (
-        f"{{dfb_index = {dfb_index} : i32, {storage_field}"
+        f"{{dfb_index = {dfb_index} : i32, {storage_field}{l1_fields}"
         f"num_tiles = {num_tiles} : i32, "
         f"element_type = {element_type}, block_count = {block_count} : i32, "
         f"page_size = {page_size} : i32}}"
@@ -74,6 +88,53 @@ def test_storage_indices_are_preserved():
         ]
 
 
+def test_storage_capacity_is_preserved():
+    with Context():
+        module = _module(
+            [_entry(0, num_tiles=1, block_count=2, storage_capacity_pages=4)]
+        )
+
+        assert _resolve_dfb_configs(module) == [
+            PhysicalDFBConfig(
+                0,
+                1,
+                "bfloat16",
+                2,
+                2048,
+                None,
+                storage_capacity_pages=4,
+            )
+        ]
+
+
+def test_compiler_l1_offsets_are_preserved():
+    with Context():
+        module = _module(
+            [
+                _entry(
+                    0,
+                    l1_offset=8,
+                    l1_payload_offset=64,
+                    l1_allocation_bytes=4096,
+                )
+            ]
+        )
+
+        assert _resolve_dfb_configs(module) == [
+            PhysicalDFBConfig(
+                0,
+                1,
+                "bfloat16",
+                2,
+                2048,
+                None,
+                l1_offset=8,
+                l1_payload_offset=64,
+                l1_allocation_bytes=4096,
+            )
+        ]
+
+
 def test_tensor_backing_segments_preserve_nodes_and_tensor_range():
     with Context():
         module = Module.parse(
@@ -107,6 +168,47 @@ def test_tensor_backing_segments_preserve_nodes_and_tensor_range():
                         byte_size=2048,
                     ),
                 ),
+            )
+        ]
+
+
+def test_compiler_l1_tensor_backing_preserves_state_and_omits_arena_payload():
+    with Context():
+        module = Module.parse(
+            """module attributes {ttl.dfb_allocations = [{
+              block_count = 1 : i32,
+              dfb_index = 0 : i32,
+              element_type = !ttcore.tile<32x32, bf16>,
+              l1_offset = 0 : i64,
+              num_tiles = 1 : i32,
+              page_size = 2048 : i32,
+              storage_index = 0 : i32,
+              storage_segments = [{
+                tensor_backing = #ttl.tensor_backing<
+                  tensor_index = 2, byte_offset = 2048, byte_size = 2048>,
+                nodes = [[0, 0]]
+              }]
+            }]} {}"""
+        )
+
+        assert _resolve_dfb_configs(module) == [
+            PhysicalDFBConfig(
+                0,
+                1,
+                "bfloat16",
+                1,
+                2048,
+                (32, 32),
+                (
+                    DFBStorageSegment(
+                        nodes=((0, 0),),
+                        tensor_index=2,
+                        byte_offset=2048,
+                        byte_size=2048,
+                    ),
+                ),
+                storage_index=0,
+                l1_offset=0,
             )
         ]
 
@@ -214,7 +316,46 @@ def test_missing_complete_allocations_are_rejected():
         ([_entry(0, block_count=0)], "block_count must be positive"),
         ([_entry(0, page_size=0)], "page_size must be positive"),
         ([_entry(0, storage_index=-1)], "storage_index must be a nonnegative"),
+        (
+            [_entry(0, num_tiles=2, block_count=2, storage_capacity_pages=3)],
+            "storage_capacity_pages must cover the 4-page logical capacity",
+        ),
+        (
+            [
+                "{dfb_index = 0 : i32, storage_capacity_pages = "
+                "2147483648 : i64, num_tiles = 1 : i32, "
+                "element_type = bf16, block_count = 2 : i32, "
+                "page_size = 2048 : i32}"
+            ],
+            "storage_capacity_pages must be less than 2\\^31",
+        ),
         ([_entry(0, element_type="i1")], "Unrecognized MLIR scalar element type"),
+        (
+            [_entry(0, l1_offset=0)],
+            "requires tensor backing",
+        ),
+        (
+            [
+                _entry(
+                    0,
+                    l1_offset=-1,
+                    l1_payload_offset=64,
+                    l1_allocation_bytes=4096,
+                )
+            ],
+            "l1_offset must be nonnegative",
+        ),
+        (
+            [
+                _entry(
+                    0,
+                    l1_offset=0,
+                    l1_payload_offset=64,
+                    l1_allocation_bytes=1024,
+                )
+            ],
+            "l1_allocation_bytes must cover the 4096-byte payload",
+        ),
         ([_entry(0), _entry(0)], "duplicate dfb_index 0"),
         ([_entry(1)], "dense physical index range"),
         (

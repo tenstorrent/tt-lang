@@ -1,6 +1,11 @@
 # Dataflow Buffer Management
 
-This document describes how the tt-lang compiler manages dataflow buffers (DFBs) -- the L1-resident circular buffers that transfer data between compute and data movement threads on Tenstorrent hardware.
+This document describes DFB ownership, lifecycle analysis, and synchronization.
+The index-allocation sections describe the default Metal backend.
+[Compiler-managed SRAM allocation](SRAMAllocation.md) assigns byte-addressed storage;
+its protocol is specified [below](#compiler-managed-storage-protocol).
+Shared hardware terms are defined in the
+[specification glossary](../sphinx/specs/TTLangSpecification.md#appendix-a-glossary).
 
 ## Overview
 
@@ -570,17 +575,18 @@ the generated DFB lifecycle in write-then-publish order: `cb_reserve`,
 read-only compute-op-creation analysis described below before modifying IR.
 
 A wait-backed `ttl.store` represents replacement of consumer-owned pages. The
-initial contract accepts one complete block from a one-block DFB, with the wait
-as the compute kernel's first access to that DFB. Analysis requires the
+contract requires acquisition of the complete DFB capacity, with the wait as
+the compute kernel's first access to that DFB. Analysis requires the
 replacement computation to read the original generation, requires values
 derived from the original contents to remain within that computation, excludes
 overlapping DFB access, and requires every replacement-generation read to
 precede the matching pop.
-Lowering emits `ttkernel.pack_waited_tile`, then converts it to the same
-`pack_tile` runtime call used for producer stores. It emits no reserve or push;
-the operation changes neither occupancy nor either DFB pointer. Full-ring
-acquisition and the absence of earlier producer-pointer access prove that the
-consumer read window and pack destination identify the same pages.
+Lowering emits `ttkernel.pack_waited_tile`. Metal storage converts it to the
+existing `pack_tile` call after proving pointer equality. Compiler-managed
+storage packs directly to the acquired read-window address. It emits no reserve
+or push; the operation changes neither occupancy nor either DFB pointer.
+Full-ring acquisition and the absence of earlier producer-pointer access prove
+that the consumer read window and pack destination identify the same pages.
 
 After `cb_pop`, the producer may overwrite the released slot because its prior
 contents are no longer live. The DFB's backing storage remains allocated. Index
@@ -2712,3 +2718,87 @@ When writing an f32 value to a bf16 block, the Python DSL auto-inserts
 IEEE-754 encoding, which matches the bf16 representation. This
 truncation is lossy for values that are not exactly representable in
 bf16.
+
+## Compiler-Managed Storage Protocol
+
+[Compiler-managed allocation](SRAMAllocation.md) uses two 32-bit sequence numbers
+per storage owner: one published-page sequence written by the producer, and one
+consumed-page sequence written by the consumer. Both start at zero. For `C`
+pages of physical capacity, sequences wrap explicitly modulo `2C`.
+
+This representation encodes both position and occupancy:
+
+- Page position is `sequence modulo C`.
+- Occupancy is `(published - consumed) modulo 2C`, in `[0, C]`.
+- Equal sequences mean empty; a distance of `C` means full.
+
+The second cycle distinguishes full from empty without separate position words.
+Unlike natural 32-bit counter overflow, explicit modulo-`2C` wrap preserves page
+position for every capacity, including non-power-of-two capacities. Page units
+also preserve cursor state when validated allocation-group members use different
+pages-per-block and block-count values within one physical capacity envelope.
+
+Each side has at most one outstanding acquisition per storage owner: reserve must
+be followed by push before another reserve, and wait by pop before another wait.
+Producer and consumer acquisitions may overlap. The `with` syntax pairs acquisition
+and release but does not reject nested acquisitions of the same DFB. Alternation
+is a caller precondition; SPSC verification checks ownership only.
+
+The converter accepts one complete block per synchronization operation. A
+tensor-backed DFB can also publish or consume its complete capacity in one
+operation; this supports `DataflowBuffer.publish()`. Other multi-block and
+partial-block operations are rejected because one returned address cannot
+represent a range that wraps at the payload end. Total capacity must be positive
+and below `2^31` pages. Runtime assertions check page counts and contiguity only
+with watcher or lightweight assertions enabled; ordinary builds rely on the
+converter's static checks.
+
+```text
+reserve(requestedPages):
+    wait until C - occupancy >= requestedPages
+    require the requested pages to be contiguous before the payload end
+    return payload + (published modulo C) * bytesPerPage
+
+publish(requestedPages):
+    complete producer accesses
+    storeVisible(published, (published + requestedPages) modulo 2C)
+
+wait(requestedPages):
+    wait until occupancy >= requestedPages
+    require the requested pages to be contiguous before the payload end
+    return payload + (consumed modulo C) * bytesPerPage
+
+release(requestedPages):
+    complete consumer accesses
+    storeVisible(consumed, (consumed + requestedPages) modulo 2C)
+```
+
+At most `C` pages separate producer and consumer progress. Neither side can
+advance through a full sequence cycle while the other remains stationary, so
+sequence wrap cannot turn a full queue into an apparently empty one. Publication
+follows write completion; consumption follows read completion. Each counter has
+one writer, avoiding read-modify-write races.
+
+The [storage interface](../../include/ttlang/Target/TTKernel/LLKs/compiler_l1.h)
+uses [target helpers](../../include/ttlang/Target/TTKernel/LLKs/compiler_l1_target.h)
+for control-word visibility and engine completion:
+
+```text
+loadVisible(address):
+    execute target visibility fence
+    load word and complete the dependent-load sequence
+    return word
+
+storeVisible(address, value):
+    store word, read it back, and complete the dependent-load sequence
+
+completeAccesses():
+    on a data-movement processor: wait for outstanding NoC work
+    on UNPACK: stall until unpack accesses finish, then synchronize Tensix
+    on PACK: stall until pack accesses finish, then synchronize Tensix
+```
+
+UNPACK alone performs compute-side wait/pop; PACK alone performs reserve/push.
+MATH does not access queue state. The full NoC barrier also waits for unrelated
+work from the data-movement processor. A CPU fence alone does not establish
+transfer or compute-engine completion.

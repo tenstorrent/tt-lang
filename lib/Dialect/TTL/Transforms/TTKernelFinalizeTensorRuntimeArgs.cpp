@@ -175,6 +175,87 @@ remapCommonArgIndex(int64_t originalIndex,
   return *tensorSlotMap[originalIndex];
 }
 
+static FailureOr<int64_t> getCompilerL1TensorIndex(ModuleOp module,
+                                                   int64_t dfbIndex) {
+  auto memoryModel = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
+  if (!memoryModel || memoryModel.getValue() != kCompilerL1MemoryModel) {
+    return int64_t{-1};
+  }
+  auto allocations = module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName);
+  if (!allocations || dfbIndex < 0 ||
+      static_cast<uint64_t>(dfbIndex) >= allocations.size()) {
+    return failure();
+  }
+  auto allocation = dyn_cast<DictionaryAttr>(allocations[dfbIndex]);
+  auto segments = allocation ? allocation.getAs<ArrayAttr>("storage_segments")
+                             : ArrayAttr();
+  if (!segments) {
+    return int64_t{-1};
+  }
+  if (segments.size() != 1) {
+    return failure();
+  }
+  auto segment = dyn_cast<DictionaryAttr>(segments[0]);
+  auto backing = segment ? segment.getAs<TensorBackingAttr>("tensor_backing")
+                         : TensorBackingAttr();
+  return backing ? FailureOr<int64_t>(backing.getTensorIndex())
+                 : FailureOr<int64_t>(failure());
+}
+
+static LogicalResult retainCompilerL1TensorSlot(
+    Operation *operation, ModuleOp module, int64_t dfbIndex,
+    ArrayRef<int64_t> globalTensorIndices, BitVector &liveTensorSlots) {
+  FailureOr<int64_t> tensorIndex = getCompilerL1TensorIndex(module, dfbIndex);
+  if (failed(tensorIndex)) {
+    operation->emitOpError("has invalid compiler-l1 tensor-backing metadata");
+    return failure();
+  }
+  if (*tensorIndex < 0) {
+    return success();
+  }
+  auto tensorSlot = llvm::find(globalTensorIndices, *tensorIndex);
+  if (tensorSlot == globalTensorIndices.end()) {
+    operation->emitOpError("compiler-l1 tensor backing references tensor ")
+        << *tensorIndex
+        << " which is absent from the kernel's common tensor arguments";
+    return failure();
+  }
+  liveTensorSlots.set(std::distance(globalTensorIndices.begin(), tensorSlot));
+  return success();
+}
+
+static LogicalResult
+classifyCompilerL1TensorBackings(func::FuncOp function, ModuleOp module,
+                                 ArrayRef<int64_t> globalTensorIndices,
+                                 BitVector &liveTensorSlots) {
+  WalkResult walkResult = function.walk([&](Operation *operation) {
+    if (auto getCompileArg = dyn_cast<ttk::GetCompileArgValOp>(operation);
+        getCompileArg && isa<ttk::CBType>(getCompileArg.getType()) &&
+        failed(retainCompilerL1TensorSlot(
+            operation, module, getCompileArg.getArgIndex(), globalTensorIndices,
+            liveTensorSlots))) {
+      return WalkResult::interrupt();
+    }
+    auto opaqueCall = dyn_cast<ttk::OpaqueCallOp>(operation);
+    if (!opaqueCall) {
+      return WalkResult::advance();
+    }
+    if (std::optional<ArrayAttr> templateArguments =
+            opaqueCall.getTemplateArgs()) {
+      for (Attribute templateArgument : *templateArguments) {
+        auto descriptor = dyn_cast<ttk::DFBDescriptorAttr>(templateArgument);
+        if (descriptor && failed(retainCompilerL1TensorSlot(
+                              operation, module, descriptor.getIndex(),
+                              globalTensorIndices, liveTensorSlots))) {
+          return WalkResult::interrupt();
+        }
+      }
+    }
+    return WalkResult::advance();
+  });
+  return walkResult.wasInterrupted() ? failure() : success();
+}
+
 static LogicalResult finalizeFunction(func::FuncOp function) {
   auto crtaIndices = function->getAttrOfType<ArrayAttr>(kCRTAIndicesAttrName);
   if (!crtaIndices) {
@@ -191,6 +272,11 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
   SmallVector<CommonArgIndexUse> commonArgUses;
   SmallVector<TensorAccessorArgsIndexUse> tensorAccessorArgsUses;
   bool hasUnresolvedIndex = false;
+  ModuleOp module = function->getParentOfType<ModuleOp>();
+  if (failed(classifyCompilerL1TensorBackings(
+          function, module, globalTensorIndices, liveTensorSlots))) {
+    return failure();
+  }
   if (failed(classifyCommonArgIndices(function, tensorCount, liveTensorSlots,
                                       commonArgUses, hasUnresolvedIndex))) {
     return failure();
