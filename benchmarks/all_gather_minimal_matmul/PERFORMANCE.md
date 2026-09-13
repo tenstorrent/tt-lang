@@ -11,8 +11,8 @@ Four Blackhole P150b devices; global `M/K/N=9472/5120/15360`; per-device
 
 | Implementation | Device median ms (min-max) | TT-Lang/native | Warmups/samples |
 | --- | ---: | ---: | ---: |
-| TT-Lang grouped-row L1 | 2.306 (2.268-2.318) | 1.168 | 3/10 |
-| Native `all_gather_minimal_matmul_async` | 1.974 (1.959-2.004) | 1.000 | 3/10 |
+| TT-Lang grouped-row L1 | 2.269 (2.232-2.320) | 1.154 | 3/10 |
+| Native `all_gather_minimal_matmul_async` | 1.965 (1.954-1.992) | 1.000 | 3/10 |
 
 Both results passed PCC >= 0.99 and elementwise relative/absolute tolerances of
 0.05 against FP32 PyTorch for every warmup and sample.
@@ -99,6 +99,7 @@ consumer wait; they isolate communication and local distribution from matmul.
 | Direct fabric-to-compute publication and one-block output DFB; four-tile M block | 3.189 (3.153-3.215) | 1/3 | control | Direct publication alone is statistically equivalent to the preceding four-worker result. |
 | Same DFB configuration; five-tile M block with a partial final block | 2.631 (2.593-2.688) | 3/10 | -17.5% vs adjacent control | Accepted. Reduces M rounds from seven to five and padded M tiles from 336 to 300. |
 | Group three compute rows per fabric transfer and inject DFB subviews | 2.306 (2.268-2.318) | 3/10 | -11.8% vs 2.613 ms adjacent control | Accepted. Reduces each communication worker's fabric transfers from 180 to 60 without changing payload bytes or matmul blocking. |
+| Submit intermediate fabric packets without per-packet completion waits | 2.269 (2.232-2.320) | 3/10 | -1.6% vs 2.306 ms | Accepted. Retains blocking completion for the final write-and-atomic packet. |
 | Alternate complete ten-tile K blocks across both ring directions | not measured | full-size compile | n/a | Rejected. The small four-device BF16 streaming case passed, but the full workload required 1,474,560 L1 bytes, 13,184 bytes over the 1,461,376-byte budget. |
 | Eight direct fabric managers to reduce per-manager DFB capacity | not measured | full-size launch | n/a | Rejected. Compilation and PipeNet verification passed, but four physical forwarding links could not bind eight interfering managers. |
 | Four bidirectional managers with two-block receive and relay DFBs | not measured | full-size launch | n/a | Rejected. The local relay filled while fabric sends waited for peers to post receives, producing the finite-capacity protocol deadlock reported in [#1037](https://github.com/tenstorrent/tt-lang/issues/1037). |
@@ -126,6 +127,11 @@ subviews after reception and injects one into each compute-row chain. This
 retains the five-tile M block and identical fabric payload bytes while reducing
 each communication worker's fabric transfers from 180 to 60. The adjacent
 direct-L1 control measured 2.613 ms (2.605-2.616), an 11.8% difference.
+
+Each intermediate 8 KiB fabric packet is submitted without waiting for remote
+completion; a local NoC flush protects packet-header reuse. The final fused
+write-and-atomic packet remains blocking so the completion signal cannot
+precede its payload. This reduced device time from 2.306 ms to 2.269 ms.
 
 The bidirectional experiments require both directions to populate one ten-tile
 activation block and the matching two weight slices before one matmul. Splitting
@@ -172,10 +178,10 @@ Device profiling measures first kernel start through final kernel end, averaged
 across the four devices. Host tensor creation, compilation, dispatch,
 correctness checks, and profiler processing are excluded.
 
-TT-Lang measured 2026-09-13 17:47-17:49 UTC; native measured 2026-09-11
-18:40-18:41 UTC. TT-Lang base `9e58cb38ce30`, operation SHA-256
-`45e6b6022745`, comparison runner SHA-256 `ac35dd780ad2`; TT-Metal
-`ea042c4ad623`; LLVM `37aca9d384347`; firmware 18.12.1; IRD v1.1.9.
+Measured 2026-09-13 20:02-20:04 UTC. TT-Lang parent `f52fd7a52ad5`, operation
+SHA-256 `f6e57fa266f8`, routing helper SHA-256 `ff8df2b5d84b`, comparison runner
+SHA-256 `7b2fe3eb0750`; TT-Metal `ea042c4ad623`; LLVM `37aca9d384347`; firmware
+18.12.1; IRD v1.1.9.
 
 [Raw device-profiler reports](https://gist.github.com/brnorris03/fa7ab25c12872de92dc0727f28f16104).
 [Reproduction command and timing definition](README.md#run-the-comparison).

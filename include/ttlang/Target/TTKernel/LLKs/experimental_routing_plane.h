@@ -258,9 +258,10 @@ static __attribute__((noinline)) void routing_plane_fused_write_atomic_inc(
     manager.waitForEmptyWriteSlot(connectionIndex);
     manager.sendPayloadWithoutHeaderNonBlockingFromAddress(
         connectionIndex, sourceAddress, maxPacketSize);
-    manager.sendPayloadFlushBlockingFromAddress(
+    manager.sendPayloadFlushNonBlockingFromAddress(
         connectionIndex, reinterpret_cast<uint32_t>(packetHeader),
         sizeof(PACKET_HEADER_TYPE));
+    noc_async_writes_flushed();
     sourceAddress += maxPacketSize;
     destinationAddress += maxPacketSize;
     sizeBytes -= maxPacketSize;
