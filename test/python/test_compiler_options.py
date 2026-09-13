@@ -314,3 +314,18 @@ def test_sram_report_option(enabled):
     option = CompilerOptions.from_string(flag)
     assert option.sram_allocation_report is enabled
     assert CompilerOptions().merge(option).sram_allocation_report is enabled
+
+
+@pytest.mark.parametrize("mode", ["uniform", "per-core"])
+def test_sram_allocation_mode(mode):
+    options = CompilerOptions.from_string(f"--ttl-sram-allocation-mode={mode}")
+    assert options.sram_allocation_mode == mode
+    assert CompilerOptions().merge(options).sram_allocation_mode == mode
+    assert CompilerOptions(sram_allocation_mode="uniform") != CompilerOptions(
+        sram_allocation_mode="per-core"
+    )
+
+
+def test_sram_allocation_mode_invalid():
+    with pytest.raises(ValueError, match="Invalid SRAM allocation mode"):
+        CompilerOptions(sram_allocation_mode="invalid")

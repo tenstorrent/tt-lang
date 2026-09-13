@@ -10,16 +10,10 @@
 #include "api/compute/tile_move_copy.h"
 #include "api/compute/transpose.h"
 namespace ttlang::l1 {
+/// Hardware properties shared by DFBs with different storage addresses.
 template <uint32_t Format, uint32_t PageBytes, uint32_t TileHeight,
-          uint32_t TileWidth, uint32_t PagesPerBlock, uint32_t BlockCount,
-          uint32_t StorageCapacityPages, uint32_t PayloadOffset,
-          int32_t PayloadCommonArgIndex, bool DirectToDestination>
-class Operand
-    : public Buffer<PageBytes, PagesPerBlock, BlockCount, StorageCapacityPages,
-                    PayloadOffset, PayloadCommonArgIndex> {
-public:
-  using Buffer<PageBytes, PagesPerBlock, BlockCount, StorageCapacityPages,
-               PayloadOffset, PayloadCommonArgIndex>::Buffer;
+          uint32_t TileWidth, bool DirectToDestination>
+struct ComputeProperties {
   static constexpr uint32_t format = Format;
   static constexpr bool directToDestination = DirectToDestination;
   static constexpr uint32_t unpackFormat =
@@ -32,11 +26,29 @@ public:
       target::makeTensorShape<TileHeight, TileWidth>();
   static_assert(PageBytes % target::llkAddressWordBytes == 0,
                 "compute page size must use whole LLK address words");
+};
+
+template <uint32_t Format, uint32_t PageBytes, uint32_t TileHeight,
+          uint32_t TileWidth, uint32_t PagesPerBlock, uint32_t BlockCount,
+          uint32_t StorageCapacityPages, uint32_t PayloadOffset,
+          int32_t PayloadCommonArgIndex, bool DirectToDestination>
+class Operand
+    : public Buffer<PageBytes, PagesPerBlock, BlockCount, StorageCapacityPages,
+                    PayloadOffset, PayloadCommonArgIndex>,
+      public ComputeProperties<Format, PageBytes, TileHeight, TileWidth,
+                               DirectToDestination> {
+public:
+  using Properties = ComputeProperties<Format, PageBytes, TileHeight, TileWidth,
+                                       DirectToDestination>;
+  using Buffer<PageBytes, PagesPerBlock, BlockCount, StorageCapacityPages,
+               PayloadOffset, PayloadCommonArgIndex>::Buffer;
   uint32_t readTile(uint32_t tile) const {
-    return target::toLlkTileAddress(this->get_read_ptr(), tile, pageWords);
+    return target::toLlkTileAddress(this->get_read_ptr(), tile,
+                                    Properties::pageWords);
   }
   uint32_t writeTile(uint32_t tile) const {
-    return target::toLlkTileAddress(this->get_write_ptr(), tile, pageWords);
+    return target::toLlkTileAddress(this->get_write_ptr(), tile,
+                                    Properties::pageWords);
   }
 };
 
@@ -154,9 +166,8 @@ class ComputeContext {
     outputWidth = Output::tensorShape.total_col_dim();
   }
 
-public:
   template <typename SourceA, typename SourceB, typename Output>
-  void configure(SourceA, SourceB, Output) {
+  __attribute__((noinline)) void configureFormats() {
     if (!initialized) {
       UNPACK((_llk_unpack_hw_configure_<DST_ACCUM_MODE>(
           SourceA::format, SourceB::format, SourceA::unpackFormat,
@@ -237,6 +248,13 @@ public:
     }
     recordInputs<SourceA, SourceB>();
   }
+
+public:
+  template <typename SourceA, typename SourceB, typename Output>
+  void configure(SourceA, SourceB, Output) {
+    configureFormats<typename SourceA::Properties, typename SourceB::Properties,
+                     typename Output::Properties>();
+  }
   template <typename Lhs, typename Rhs, typename Output>
   void matmulInit(Lhs lhs, Rhs rhs, Output output, uint32_t transpose) {
     matmulBlockInit(lhs, rhs, output, transpose, 1, 1, 1);
@@ -254,7 +272,7 @@ public:
   template <typename Lhs, typename Rhs>
   void matmulBlockInitShort(Lhs, Rhs, uint32_t transpose, uint32_t columns,
                             uint32_t rows, uint32_t inner) {
-    configureInputs<Rhs, Lhs>();
+    configureInputs<typename Rhs::Properties, typename Lhs::Properties>();
     matmulInitShape<Lhs, Rhs>(transpose, columns, rows, inner);
   }
   template <ckernel::PoolType Pool, ckernel::ReduceDim Dimension,
@@ -318,7 +336,7 @@ __attribute__((noinline)) inline void copyAtAddress(uint32_t address,
 
 template <typename Source>
 inline void copy_tile_init(Source) {
-  copyInitFormats<Source>();
+  copyInitFormats<typename Source::Properties>();
 }
 template <typename Source>
 inline void copy_tile(Source source, uint32_t tile, uint32_t destination) {
