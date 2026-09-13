@@ -20,6 +20,10 @@
 // CHECK: packetHeader->to_noc_unicast_write(
 // CHECK: manager.sendPayloadWithoutHeaderNonBlockingFromAddress(
 // CHECK-NEXT: connectionIndex, sourceAddress, [[MAX_PACKET_SIZE]]);
+// CHECK: manager.sendPayloadFlushNonBlockingFromAddress(
+// CHECK-NEXT: connectionIndex, reinterpret_cast<uint32_t>(packetHeader),
+// CHECK-NEXT: sizeof(PACKET_HEADER_TYPE));
+// CHECK-NEXT: noc_async_writes_flushed();
 // CHECK: sourceAddress += [[MAX_PACKET_SIZE]];
 // CHECK-NEXT: destinationAddress += [[MAX_PACKET_SIZE]];
 // CHECK-NEXT: sizeBytes -= [[MAX_PACKET_SIZE]];
@@ -30,6 +34,10 @@
 // CHECK-NEXT: routing_plane_write(
 // CHECK: packet_header->to_noc_unicast_write(
 // CHECK: manager.sendPayloadWithoutHeaderNonBlockingFromAddress(
+// CHECK: manager.sendPayloadFlushNonBlockingFromAddress(
+// CHECK-NEXT: connection_index, reinterpret_cast<uint32_t>(packet_header),
+// CHECK-NEXT: sizeof(PACKET_HEADER_TYPE));
+// CHECK-NEXT: noc_async_writes_flushed();
 // CHECK-LABEL: FORCE_INLINE void routing_plane_scatter_write(
 // CHECK: packet_header->to_noc_unicast_scatter_write(
 // CHECK: manager.sendScatterWrite(connection_index, packet_header, source_address);
