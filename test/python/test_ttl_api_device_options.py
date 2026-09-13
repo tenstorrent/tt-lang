@@ -799,8 +799,18 @@ class TestSpecializedKernelGrouping:
                 2,
                 True,
             )
+            compile_argument = ttkernel.ir.ArgAttr.get(
+                context,
+                ttkernel.ArgType.BufferAddress.value,
+                1,
+                True,
+            )
             kernel_operation.attributes[ttkernel.ir.ARG_SPEC_ATTR] = (
-                ttkernel.ir.ArgSpecAttr.get(context, [runtime_argument], [])
+                ttkernel.ir.ArgSpecAttr.get(
+                    context,
+                    [runtime_argument],
+                    [compile_argument],
+                )
             )
             function = ttl_api._TTKernelFunction(
                 name="reader",
@@ -826,9 +836,9 @@ class TestSpecializedKernelGrouping:
             )
 
         assert ttkernel.ir.ARG_SPEC_ATTR == "ttkernel.arg_spec"
-        assert tuple(get_ttkernel_arg_spec(module, "reader").rt_args) == (
-            runtime_argument,
-        )
+        argument_spec = get_ttkernel_arg_spec(module, "reader")
+        assert tuple(argument_spec.rt_args) == (runtime_argument,)
+        assert tuple(argument_spec.ct_args) == (compile_argument,)
         assert first.runtime_arg_spec == (runtime_argument,)
         assert first == second
         assert hash(first) == hash(second)
