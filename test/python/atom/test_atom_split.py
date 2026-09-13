@@ -3431,6 +3431,106 @@ def test_external_call_tuple_selects_multiple_logical_kernels():
         assert "kernel=" not in source
 
 
+def test_external_call_selects_kernel_specific_func_args():
+    """Each emitted call retains only its selected kernel's C++ arguments."""
+    reader = _logical_kernel(KernelKind.DATA_MOVEMENT, "reader")
+    fn = _fn(
+        """
+        def k(compute_source, reader_source):
+            ttl.call_extern_func(
+                "shared.hpp",
+                "shared",
+                func_args={
+                    ttl.KernelKind.COMPUTE: [compute_source, 1],
+                    reader: [reader_source, 2],
+                },
+                kernel=(ttl.KernelKind.COMPUTE, reader),
+            )
+        """
+    )
+    result = split_function_body(
+        fn,
+        dfb_param_names={"compute_source", "reader_source"},
+        logical_kernels={"reader": reader},
+    )
+
+    compute_source = _kernel_src(result, KernelKind.COMPUTE)
+    assert "func_args=[compute_source, 1]" in compute_source
+    assert "reader_source" not in compute_source
+
+    reader_source = _kernel_src(result, reader)
+    assert "func_args=[reader_source, 2]" in reader_source
+    assert "compute_source" not in reader_source
+
+
+def test_kernel_specific_func_args_restrict_scalar_liveness():
+    """A scalar argument is required only by the kernel that receives it."""
+    fn = _fn(
+        """
+        def k(source):
+            position_word = ttl.read_index(source, 0, 0)
+            position = position_word + 1
+            ttl.call_extern_func(
+                "shared.hpp",
+                "shared",
+                func_args={
+                    ttl.KernelKind.COMPUTE: [],
+                    ttl.KernelKind.DATA_MOVEMENT: [position],
+                },
+                kernel=(
+                    ttl.KernelKind.COMPUTE,
+                    ttl.KernelKind.DATA_MOVEMENT,
+                ),
+            )
+        """
+    )
+    result = split_function_body(fn, dfb_param_names={"source"})
+
+    compute_source = _kind_src(result, KernelKind.COMPUTE)
+    assert "func_args=[]" in compute_source
+    assert "position_word =" not in compute_source
+    assert "position =" not in compute_source
+
+    data_movement_source = _kind_src(result, KernelKind.DATA_MOVEMENT)
+    assert "position_word = ttl.read_index(source, 0, 0)" in data_movement_source
+    assert "position = position_word + 1" in data_movement_source
+    assert "func_args=[position]" in data_movement_source
+
+
+def test_external_call_selects_kernel_specific_dfb_accesses():
+    """Each emitted call retains only its selected kernel's DFB inspections."""
+    reader = _logical_kernel(KernelKind.DATA_MOVEMENT, "reader")
+    fn = _fn(
+        """
+        def k(compute_source, reader_source):
+            ttl.call_extern_func(
+                "shared.hpp",
+                "shared",
+                dfb_accesses={
+                    ttl.KernelKind.COMPUTE: [
+                        ttl.DFBAccess.inspect(compute_source),
+                    ],
+                    reader: [ttl.DFBAccess.inspect(reader_source)],
+                },
+                kernel=(ttl.KernelKind.COMPUTE, reader),
+            )
+        """
+    )
+    result = split_function_body(
+        fn,
+        dfb_param_names={"compute_source", "reader_source"},
+        logical_kernels={"reader": reader},
+    )
+
+    compute_source = _kernel_src(result, KernelKind.COMPUTE)
+    assert "DFBAccess.inspect(compute_source)" in compute_source
+    assert "reader_source" not in compute_source
+
+    reader_source = _kernel_src(result, reader)
+    assert "DFBAccess.inspect(reader_source)" in reader_source
+    assert "compute_source" not in reader_source
+
+
 def test_external_call_selects_kernel_specific_dfb_effects():
     """Each emitted call retains only its selected kernel's DFB effects."""
     fn = _fn(
@@ -3474,6 +3574,40 @@ def test_external_call_selects_kernel_specific_dfb_effects():
     assert "DFBEffect.push(destination" in data_movement_source
     assert "DFBEffect.wait" not in data_movement_source
     assert "DFBEffect.pop" not in data_movement_source
+
+
+@pytest.mark.parametrize(
+    "keyword, value, message",
+    [
+        (
+            "func_args",
+            "{ttl.KernelKind.COMPUTE: (source,)}",
+            "kernel-specific func_args value must be a list",
+        ),
+        (
+            "dfb_accesses",
+            "{ttl.KernelKind.COMPUTE: []}",
+            "kernel-specific dfb_accesses value must be a nonempty list",
+        ),
+    ],
+)
+def test_external_call_rejects_invalid_kernel_specific_lists(
+    keyword, value, message
+):
+    fn = _fn(
+        f"""
+        def k(source):
+            ttl.call_extern_func(
+                "shared.hpp",
+                "shared",
+                {keyword}={value},
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+        """
+    )
+
+    with pytest.raises(ValueError, match=message):
+        split_function_body(fn, dfb_param_names={"source"})
 
 
 @pytest.mark.parametrize(

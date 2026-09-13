@@ -64,7 +64,9 @@ def call_extern_func(
         template_args: Static values and explicit DFB wrappers emitted as C++
             template arguments.
         func_args: Scalars, DFBs, base tensors, or explicit raw tensor
-            addresses emitted as C++ function arguments. A base tensor becomes
+            addresses emitted as C++ function arguments. A list applies to
+            every selected kernel; a mapping assigns a list to each specified
+            kernel. A base tensor becomes
             a data-movement `TensorAccessor` for device DRAM or SRAM, or a
             compute-local `LocalTensorAccessor<uint8_t>` for sharded SRAM.
             `L1` and `L1Small` retain the corresponding TTNN buffer-type names;
@@ -84,8 +86,10 @@ def call_extern_func(
             performed on every selected kernel, or a mapping from individual
             kernel selectors to their respective sequences. A complete summary
             can permit physical-index reuse and does not emit protocol calls.
-        dfb_accesses: Optional synchronous DFB inspections performed by the
-            call without publishing, consuming, or changing DFB state.
+        dfb_accesses: Optional sequence of synchronous DFB inspections
+            performed on every selected kernel, or a mapping from kernel
+            selectors to their respective sequences. An inspection does not
+            publish, consume, or change DFB state.
         unknown_dfb_access: Whether external C++ may access unlisted
             user-managed DFBs, conservatively restricting physical-index reuse.
         include_paths: Compile-time directories added to external header
@@ -97,8 +101,10 @@ def call_extern_func(
     ``KernelKind`` values may be combined with ``|``. A nonempty tuple also
     supports multiple selectors, including operation-local kernels. The call is
     emitted once in each selected logical kernel. The unified-operation splitter
-    removes the selector before AST lowering. ``fabric_manager_effects``
-    declares external fabric-manager ownership at call entry and completion.
+    removes the selector before AST lowering. If one of the supported mappings
+    omits a selected kernel, that keyword is absent from the emitted call for
+    that kernel. ``fabric_manager_effects`` declares external fabric-manager
+    ownership at call entry and completion.
 
     ``result_type`` declares one scalar integer result as ``ScalarType.I32`` or
     ``ScalarType.I64``. Omitting it or passing ``None`` declares a void external
