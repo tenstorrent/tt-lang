@@ -4006,6 +4006,9 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
       return failure();
     }
     WalkResult validation = module.walk([&](Operation *operation) {
+      if (isa<emitc::LogicalNotOp>(operation)) {
+        return WalkResult::advance();
+      }
       if (operation->getName().getDialectNamespace() == "emitc") {
         if (!operation->hasAttr(ttl::kDPrintGeneratedAttrName)) {
           operation->emitOpError(
