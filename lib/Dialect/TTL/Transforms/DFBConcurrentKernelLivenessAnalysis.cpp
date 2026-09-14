@@ -3804,6 +3804,9 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
       return {DFBLifecycleCompletionFailureReason::UnsupportedControlFlow,
               activeAccesses.front()->operation};
     }
+    // State discard completes every possible execution despite an unknown
+    // access domain.
+    lifetime.conditionalExecutionProven = includeUnknownDomains;
     return {};
   }
 
