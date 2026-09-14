@@ -1,4 +1,6 @@
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics
+// Summary: Reject pipe-send block operands without a valid DFB acquisition or
+// supported static subview.
 
 module {
   func.func @pipe_send_requires_waited_subview()
@@ -68,6 +70,29 @@ module {
     // expected-error @below {{requires a DFB block or block subview source}}
     %send = ttl.pipe_transfer.send %transfer, %source
         : (!ttl.pipe_transfer, tensor<1x1xf32>)
+        -> !ttl.transfer_handle<write>
+    func.return
+  }
+}
+
+// -----
+
+module {
+  func.func @pipe_send_requires_acquired_block(
+      %source: tensor<1x1x!ttcore.tile<32x32, f32>>)
+      attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+    %source_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %block = ttl.attach_cb %source, %source_dfb
+        : (tensor<1x1x!ttcore.tile<32x32, f32>>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>)
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    // expected-error @below {{pipe send source must come from ttl.cb_reserve or ttl.cb_wait}}
+    %send = ttl.copy %block, %pipe
+        : (tensor<1x1x!ttcore.tile<32x32, f32>>,
+           !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
         -> !ttl.transfer_handle<write>
     func.return
   }
