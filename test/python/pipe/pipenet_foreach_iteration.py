@@ -156,6 +156,11 @@ def report_table_driven_kernel_size(output):
         )
     ]
     assert len(pipe_kernel_sources) == 6
+    assert all(
+        "routing_plane_write(" not in kernel_source
+        and "routing_plane_scatter_write(" not in kernel_source
+        for kernel_source in pipe_kernel_sources
+    )
     local_kernel_bytes = max(
         len(kernel_source.encode()) for kernel_source in pipe_kernel_sources[:4]
     )
