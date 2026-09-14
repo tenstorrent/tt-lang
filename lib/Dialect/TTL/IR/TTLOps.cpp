@@ -709,6 +709,12 @@ mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
                          << cbTy.getBlockCount() << ")";
   }
 
+  if (StringAttr addressScope = getAddressScopeAttr();
+      addressScope && addressScope.getValue() != "local" &&
+      addressScope.getValue() != "remote_uniform") {
+    return emitOpError("address_scope must be 'local' or 'remote_uniform'");
+  }
+
   if (TensorBackingAttr backing = getTensorBackingAttr()) {
     auto tileType = mlir::dyn_cast<ttcore::TileType>(cbTy.getElementType());
     if (!tileType) {
