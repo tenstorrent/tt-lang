@@ -5008,11 +5008,19 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
     const OrderedLifecycleBoundary *terminalBoundary =
         boundaryInterval < boundaries.size() ? &boundaries[boundaryInterval]
                                              : nullptr;
-    bool discardsDFBState =
-        terminalBoundary && terminalBoundary->discardsDFBState();
+    bool hasLaterAccesses = llvm::any_of(
+        ArrayRef(epochAccesses).drop_front(boundaryInterval + 1),
+        [](ArrayRef<const DFBAccessOccurrence *> accesses) {
+          return !accesses.empty();
+        });
+    // A reconfiguration may discard state only after this DFB's final access.
+    bool terminatesDFBState =
+        terminalBoundary &&
+        (terminalBoundary->reset ||
+         (terminalBoundary->discardsDFBState() && !hasLaterAccesses));
     bool useExternalProducerBounds =
         terminalBoundary && terminalBoundary->reconfiguration &&
-        discardsDFBState && isExternalProducerOnlyProtocol(lifecycleAccesses);
+        terminatesDFBState && isExternalProducerOnlyProtocol(lifecycleAccesses);
     const AccessRuns &protocolAccessRuns =
         useExternalProducerBounds ? boundedExternalAccessRuns : accessRuns;
     SmallVector<DFBPerNodeLifetime, 0> epochLifetimes;
@@ -5022,7 +5030,7 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
         diagnostics ? &epochDiagnostics : nullptr, graph, structuralOrder,
         operationEvents, accessEvents, executionCounts, protocolAccessRuns,
         domainState, includeUnknownDomains, lifecycleAccesses,
-        /*stateDiscardingTerminator=*/discardsDFBState,
+        /*stateDiscardingTerminator=*/terminatesDFBState,
         /*selectedExecutionDivisor=*/repeatedReconfigurationCount);
     assert(epochLifetimes.size() == 1 &&
            "one selected epoch must produce one protocol lifetime");
