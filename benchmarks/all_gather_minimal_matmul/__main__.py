@@ -350,7 +350,6 @@ def create_ttlang_workload(mesh, common, ttlang):
             operation_config,
             math_fidelity=common.math_fidelity,
             fp32_dest_acc_en=common.fp32_dest_acc,
-            communication_worker_count=ttlang.communication_workers,
         )
 
         def run():
