@@ -125,6 +125,29 @@ DFBLogicalIdentityAnalysis::DFBLogicalIdentityAnalysis(Operation *operation) {
       errorMessage = messageStream.str();
       return;
     }
+    if (!inserted && firstDeclarationIt->second.getAddressScopeAttr() !=
+                         bindOp.getAddressScopeAttr()) {
+      std::string message;
+      llvm::raw_string_ostream messageStream(message);
+      messageStream << "logical DFB " << logicalId
+                    << " has inconsistent address scopes across kernel "
+                       "functions: expected ";
+      if (StringAttr expected =
+              firstDeclarationIt->second.getAddressScopeAttr()) {
+        messageStream << expected.getValue();
+      } else {
+        messageStream << "none";
+      }
+      messageStream << " but found ";
+      if (StringAttr found = bindOp.getAddressScopeAttr()) {
+        messageStream << found.getValue();
+      } else {
+        messageStream << "none";
+      }
+      errorOperation = bindOp;
+      errorMessage = messageStream.str();
+      return;
+    }
     assignments.push_back({bindOp, logicalId, bindOp.getAllocationGroupAttr()});
     logicalIds[bindOp.getOperation()] = logicalId;
   }

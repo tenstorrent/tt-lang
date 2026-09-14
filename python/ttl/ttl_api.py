@@ -2434,6 +2434,15 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
         if value <= 0:
             raise ValueError(f"{context}.{field} must be positive, got {value}")
 
+    address_scope = (
+        str(entry["address_scope"]) if "address_scope" in entry else "local"
+    )
+    if address_scope not in {"local", "remote_uniform", "legacy"}:
+        raise ValueError(
+            f"{context}.address_scope must be 'local', 'remote_uniform', or "
+            f"'legacy', got {address_scope!r}"
+        )
+
     allocation_nodes = None
     if "allocation_nodes" in entry:
         allocation_nodes = _extract_dfb_node_coordinates(
@@ -2510,6 +2519,7 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
         storage_segments=tuple(storage_segments),
         allocation_nodes=allocation_nodes,
         storage_index=storage_index,
+        address_scope=address_scope,
     )
 
 

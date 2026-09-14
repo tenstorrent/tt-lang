@@ -150,6 +150,9 @@ applyPhysicalAllocationPlan(ModuleOp moduleOp, OpBuilder &builder,
         "page_size", builder.getI32IntegerAttr(descriptor.pageSize)));
     entryAttributes.push_back(builder.getNamedAttr(
         "block_count", builder.getI32IntegerAttr(descriptor.blockCount)));
+    entryAttributes.push_back(builder.getNamedAttr(
+        "address_scope",
+        builder.getStringAttr(getDFBAddressScopeName(descriptor.addressScope))));
     if (descriptor.allocationDomain.known) {
       entryAttributes.push_back(builder.getNamedAttr(
           "allocation_nodes",
@@ -181,6 +184,10 @@ applyPhysicalAllocationPlan(ModuleOp moduleOp, OpBuilder &builder,
           "page_size", builder.getI32IntegerAttr(configuration.pageSize)));
       configurationEntry.push_back(builder.getNamedAttr(
           "block_count", builder.getI32IntegerAttr(configuration.blockCount)));
+      configurationEntry.push_back(builder.getNamedAttr(
+          "address_scope",
+          builder.getStringAttr(
+              getDFBAddressScopeName(descriptor.addressScope))));
       if (!configuration.storageSegments.empty()) {
         configurationEntry.push_back(builder.getNamedAttr(
             "storage_segments",

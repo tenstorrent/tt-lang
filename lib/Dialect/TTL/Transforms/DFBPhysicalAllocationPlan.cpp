@@ -38,6 +38,18 @@
 
 namespace mlir::tt::ttl {
 
+StringRef getDFBAddressScopeName(DFBAddressScope scope) {
+  switch (scope) {
+  case DFBAddressScope::Local:
+    return "local";
+  case DFBAddressScope::RemoteUniform:
+    return "remote_uniform";
+  case DFBAddressScope::Legacy:
+    return "legacy";
+  }
+  llvm_unreachable("unknown DFB address scope");
+}
+
 StringRef getDFBConflictReasonName(DFBConflictReason reason) {
   switch (reason) {
   case DFBConflictReason::DescriptorMismatch:
@@ -84,6 +96,31 @@ StringRef getDFBAllocationGroupAssumptionReasonName(
 }
 
 namespace {
+
+static DFBAddressScope getDFBAddressScope(
+    const DFBLogicalLifecycle &logicalDFB) {
+  StringAttr addressScope =
+      logicalDFB.declarations.front().getAddressScopeAttr();
+  if (!addressScope) {
+    return logicalDFB.compilerCreated ? DFBAddressScope::Local
+                                      : DFBAddressScope::Legacy;
+  }
+  return addressScope.getValue() == "remote_uniform"
+             ? DFBAddressScope::RemoteUniform
+             : DFBAddressScope::Local;
+}
+
+static DFBAddressScope joinDFBAddressScopes(DFBAddressScope lhs,
+                                            DFBAddressScope rhs) {
+  if (lhs == DFBAddressScope::RemoteUniform ||
+      rhs == DFBAddressScope::RemoteUniform) {
+    return DFBAddressScope::RemoteUniform;
+  }
+  if (lhs == DFBAddressScope::Legacy || rhs == DFBAddressScope::Legacy) {
+    return DFBAddressScope::Legacy;
+  }
+  return DFBAddressScope::Local;
+}
 
 // Preserves failed-proof evidence before using the caller-selected fallback.
 static Operation *getLifetimeEvidence(const DFBPerNodeLifetime *lifetime,
@@ -1815,7 +1852,8 @@ static FailureOr<PhysicalAllocationCandidate> computeDistinctUserAllocation(
     allocation.assignments.push_back(
         {logicalDFB.logicalId, physicalIndex, physicalIndex, logicalDFB.type,
          logicalDFB.tensorBacking, logicalDFB.allocationGroup,
-         logicalDFB.launchDomain, logicalDFB.declarations,
+         getDFBAddressScope(logicalDFB), logicalDFB.launchDomain,
+         logicalDFB.declarations,
          logicalDFB.bounded || logicalDFB.conditionallyBounded});
     allocation.physicalDFBCount =
         std::max(allocation.physicalDFBCount, physicalIndex + 1);
@@ -1914,7 +1952,8 @@ computeReuseAllocation(ModuleOp moduleOp,
     allocation.assignments.push_back(
         {logicalDFB.logicalId, physicalIndex, physicalIndex, logicalDFB.type,
          logicalDFB.tensorBacking, logicalDFB.allocationGroup,
-         logicalDFB.launchDomain, logicalDFB.declarations,
+         getDFBAddressScope(logicalDFB), logicalDFB.launchDomain,
+         logicalDFB.declarations,
          logicalDFB.bounded || logicalDFB.conditionallyBounded});
   }
 
@@ -1965,7 +2004,8 @@ static FailureOr<uint64_t> computeAllocationBytes(
       continue;
     }
     for (auto indexedFootprint : llvm::enumerate(footprints)) {
-      bool active = launchNodes.empty();
+      bool active = launchNodes.empty() ||
+                    assignment.addressScope == DFBAddressScope::Legacy;
       if (!active) {
         const std::set<LaunchNodeCoord> *possibleNodes =
             assignment.launchDomain.getUpperBoundNodes();
@@ -2014,14 +2054,28 @@ static LogicalResult assignPhysicalStorageIndices(
   SmallVector<uint64_t> pageSizeByPhysicalIndex(allocation.physicalDFBCount, 1);
   SmallVector<LaunchNodeDomain> domainByPhysicalIndex(
       allocation.physicalDFBCount);
+  SmallVector<DFBAddressScope> addressScopeByPhysicalIndex(
+      allocation.physicalDFBCount, DFBAddressScope::Local);
   llvm::BitVector tensorBacked(allocation.physicalDFBCount);
   for (auto indexedAssignment : llvm::enumerate(allocation.assignments)) {
     const DFBPhysicalIndexAssignment &assignment = indexedAssignment.value();
     logicalIndicesByPhysicalIndex[assignment.physicalIndex].push_back(
         indexedAssignment.index());
+    LaunchNodeDomain allocationDomain = assignment.launchDomain;
+    if (assignment.addressScope == DFBAddressScope::Legacy) {
+      allocationDomain = LaunchNodeDomain::unknown();
+      if (!launchNodes.empty()) {
+        allocationDomain = LaunchNodeDomain{};
+        allocationDomain.nodes.insert(launchNodes.begin(), launchNodes.end());
+      }
+    }
     domainByPhysicalIndex[assignment.physicalIndex] =
         domainByPhysicalIndex[assignment.physicalIndex].unionWith(
-            assignment.launchDomain);
+            allocationDomain);
+    addressScopeByPhysicalIndex[assignment.physicalIndex] =
+        joinDFBAddressScopes(
+            addressScopeByPhysicalIndex[assignment.physicalIndex],
+            assignment.addressScope);
     if (assignment.tensorBacking) {
       tensorBacked.set(assignment.physicalIndex);
       continue;
@@ -2084,7 +2138,11 @@ static LogicalResult assignPhysicalStorageIndices(
     for (int32_t rhsPhysicalIndex = lhsPhysicalIndex + 1;
          rhsPhysicalIndex < allocation.physicalDFBCount; ++rhsPhysicalIndex) {
       bool conflicts = tensorBacked.test(lhsPhysicalIndex) ||
-                       tensorBacked.test(rhsPhysicalIndex);
+                       tensorBacked.test(rhsPhysicalIndex) ||
+                       addressScopeByPhysicalIndex[lhsPhysicalIndex] !=
+                           DFBAddressScope::Local ||
+                       addressScopeByPhysicalIndex[rhsPhysicalIndex] !=
+                           DFBAddressScope::Local;
       for (unsigned lhsLogicalIndex :
            logicalIndicesByPhysicalIndex[lhsPhysicalIndex]) {
         for (unsigned rhsLogicalIndex :
@@ -2412,8 +2470,12 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
   }
   llvm::DenseMap<int32_t, const DFBPhysicalIndexAssignment *> uniqueByIndex;
   llvm::DenseMap<int32_t, LaunchNodeDomain> allocationDomainByIndex;
+  llvm::DenseMap<int32_t, DFBAddressScope> addressScopeByIndex;
   llvm::DenseMap<int32_t, SmallVector<const DFBPhysicalIndexAssignment *, 0>>
       assignmentsByIndex;
+  LaunchNodeDomain fullLaunchDomain;
+  fullLaunchDomain.nodes.insert(liveness.getLaunchNodes().begin(),
+                                liveness.getLaunchNodes().end());
   auto getRuntimeAllocationDomain = [&](const LaunchNodeDomain &domain) {
     return liveness.hasExactLaunchGrid() ? domain : LaunchNodeDomain::unknown();
   };
@@ -2421,8 +2483,19 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
     assignmentsByIndex[assignment.physicalIndex].push_back(&assignment);
     LaunchNodeDomain &allocationDomain =
         allocationDomainByIndex[assignment.physicalIndex];
+    LaunchNodeDomain assignmentDomain =
+        assignment.addressScope == DFBAddressScope::Legacy
+            ? fullLaunchDomain
+            : assignment.launchDomain;
     allocationDomain = allocationDomain.unionWith(
-        getRuntimeAllocationDomain(assignment.launchDomain));
+        getRuntimeAllocationDomain(assignmentDomain));
+    auto [addressScopeIt, insertedAddressScope] =
+        addressScopeByIndex.try_emplace(assignment.physicalIndex,
+                                        assignment.addressScope);
+    if (!insertedAddressScope) {
+      addressScopeIt->second = joinDFBAddressScopes(addressScopeIt->second,
+                                                    assignment.addressScope);
+    }
     auto [existingIt, inserted] =
         uniqueByIndex.try_emplace(assignment.physicalIndex, &assignment);
     if (inserted || existingIt->second->type == assignment.type) {
@@ -2491,6 +2564,7 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
     DFBPhysicalAllocationDescriptor descriptor;
     descriptor.physicalIndex = physicalIndex;
     descriptor.storageIndex = assignment->storageIndex;
+    descriptor.addressScope = addressScopeByIndex.lookup(physicalIndex);
     descriptor.allocationDomain = allocationDomainByIndex.lookup(physicalIndex);
     SmallVector<const DFBPhysicalIndexAssignment *>
         configurationRepresentatives;
@@ -2498,6 +2572,9 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
         [&](const DFBPhysicalIndexAssignment &candidate,
             std::optional<int64_t> entryReconfigurationOrdinal,
             LaunchNodeDomain activeDomain) -> LogicalResult {
+      if (candidate.addressScope == DFBAddressScope::Legacy) {
+        activeDomain = fullLaunchDomain;
+      }
       activeDomain = getRuntimeAllocationDomain(activeDomain);
       auto dfbType = cast<CircularBufferType>(candidate.type);
       FailureOr<uint64_t> pagesPerBlock = getDFBPagesPerBlock(dfbType);

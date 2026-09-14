@@ -1803,6 +1803,8 @@ class TTLGenericCompiler(TTCompilerBase):
             "block_count": cb.block_count,
             "dfb_id": cb._cb_index,
         }
+        if cb.address_scope is not None:
+            bind_attributes["address_scope"] = cb.address_scope
         if tensor_backing is not None:
             bind_attributes["tensor_backing"] = tensor_backing
         if cb.allocation_group is not None:
