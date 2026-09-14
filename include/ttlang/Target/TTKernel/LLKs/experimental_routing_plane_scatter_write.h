@@ -10,15 +10,14 @@ namespace experimental {
 // Group destination chunks into the fewest packets permitted by the fabric
 // packet and scatter limits.
 FORCE_INLINE void routing_plane_scatter_write(
-    tt::tt_fabric::RoutingPlaneConnectionManager &manager, uint32_t route_id,
+    RoutingPlaneConnectionManager &manager, uint32_t route_id,
     uint32_t connection_index, uint32_t destination_device_id,
     uint32_t destination_mesh_id, uint32_t destination_hop_count,
     uint32_t source_address, uint32_t chunk_size_bytes, uint32_t chunk_count,
     uint64_t destination_address_0, uint64_t destination_address_1,
     uint64_t destination_address_2, uint64_t destination_address_3) {
   ASSERT(chunk_count > 0 && chunk_count <= NOC_SCATTER_WRITE_MAX_CHUNKS);
-  auto *packet_header =
-      PacketHeaderPool::header_table[route_id].first + connection_index;
+  auto *packet_header = manager.packetHeader(route_id, connection_index);
 #if defined(FABRIC_2D)
   tt::tt_fabric::fabric_set_unicast_route(
       packet_header, static_cast<uint16_t>(destination_device_id),
@@ -27,7 +26,6 @@ FORCE_INLINE void routing_plane_scatter_write(
   tt::tt_fabric::fabric_set_unicast_route<false>(
       packet_header, static_cast<uint16_t>(destination_hop_count));
 #endif
-  auto &sender = manager.get(static_cast<uint8_t>(connection_index)).sender;
   const uint32_t max_packet_size = tt::tt_fabric::get_fabric_max_packet_size();
   ASSERT(chunk_size_bytes > 0 && chunk_size_bytes <= max_packet_size);
   const uint32_t available_chunks_per_packet =
@@ -55,11 +53,11 @@ FORCE_INLINE void routing_plane_scatter_write(
           tt::tt_fabric::NocUnicastCommandHeader{
               destination_addresses[first_chunk]},
           chunk_size_bytes);
-      sender.wait_for_empty_write_slot();
-      sender.send_payload_without_header_non_blocking_from_address(
-          source_address, chunk_size_bytes);
-      sender.send_payload_flush_non_blocking_from_address(
-          reinterpret_cast<uint32_t>(packet_header),
+      manager.waitForEmptyWriteSlot(connection_index);
+      manager.sendPayloadWithoutHeaderNonBlockingFromAddress(
+          connection_index, source_address, chunk_size_bytes);
+      manager.sendPayloadFlushNonBlockingFromAddress(
+          connection_index, reinterpret_cast<uint32_t>(packet_header),
           sizeof(PACKET_HEADER_TYPE));
     } else {
       const uint16_t packet_size_bytes =
@@ -70,10 +68,7 @@ FORCE_INLINE void routing_plane_scatter_write(
               static_cast<uint8_t>(packet_chunk_count)),
           packet_size_bytes);
       // The stateful send preserves the NoC command selected above.
-      tt::tt_fabric::linear::experimental::
-          fabric_unicast_noc_scatter_write_with_state<
-              UnicastScatterWriteUpdateMask::None>(&sender, packet_header,
-                                                   source_address);
+      manager.sendScatterWrite(connection_index, packet_header, source_address);
     }
     // The next packet or completion command reuses this packet header.
     noc_async_writes_flushed();

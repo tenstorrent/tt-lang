@@ -144,6 +144,16 @@ def _make_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--ttl-fabric-mux",
+        default=None,
+        dest="fabric_mux",
+        action=argparse.BooleanOptionalAction,
+        help=(
+            "Allow compiler-proven single-execution fabric clients to share "
+            "a forwarding link through a program-local mux (default: enabled)."
+        ),
+    )
+    p.add_argument(
         "--ttl-pipe-batch-tiles",
         default=None,
         dest="pipe_batch_tiles",
@@ -258,6 +268,7 @@ class CompilerOptions:
     pipe_computed_addresses: bool = True
     pipe_capacity_sync: bool = True
     pipe_global_semaphores_only: bool = False
+    fabric_mux: bool = True
     pipe_batch_tiles: int = 0
     reuse_user_dfbs: bool = True
     unsafe_assume_dfb_allocation_groups: bool = False

@@ -86,6 +86,12 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::desc("Allocate all compiler-managed PipeNet synchronization "
                      "counters in GlobalSemaphore storage."),
       llvm::cl::init(false)};
+  Option<bool> fabricMux{
+      *this, "fabric-mux",
+      llvm::cl::desc("Allow compiler-proven single-execution fabric clients "
+                     "to share a forwarding link through a program-local "
+                     "mux."),
+      llvm::cl::init(true)};
   Option<int64_t> pipeBatchTiles{
       *this, "pipe-batch-tiles",
       llvm::cl::desc("Limit logical transfers per PipeTransport group. "
