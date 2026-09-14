@@ -148,20 +148,19 @@ public:
                 experimental_constant_table_generated_len);
       }
       if (callee == "experimental::routing_plane_atomic_inc" ||
-          callee == "experimental::routing_plane_fused_write_atomic_inc") {
+          callee == "experimental::routing_plane_fused_write_atomic_inc" ||
+          callee == "experimental::routing_plane_scatter_write" ||
+          callee == "experimental::routing_plane_write") {
         emitLlk(experimental_routing_plane_generated,
                 experimental_routing_plane_generated_len);
-        headers.insert("tt_metal/fabric/hw/inc/fabric_config.h");
       }
       if (callee == "experimental::routing_plane_scatter_write") {
         emitLlk(experimental_routing_plane_scatter_write_generated,
                 experimental_routing_plane_scatter_write_generated_len);
-        headers.insert("tt_metal/fabric/hw/inc/fabric_config.h");
       }
       if (callee == "experimental::routing_plane_write") {
         emitLlk(experimental_routing_plane_write_generated,
                 experimental_routing_plane_write_generated_len);
-        headers.insert("tt_metal/fabric/hw/inc/fabric_config.h");
       }
       if (callee == "experimental::reset_dfb_interfaces") {
         emitLlk(experimental_dfb_reset_generated,

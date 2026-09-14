@@ -346,6 +346,7 @@ class KernelSpec:
             containing the base of compiler-managed fabric unique arguments.
         logical_kernel: Target-independent selector retained across kernel cloning.
         fabric_manager_intervals: Compiler-proven manager ownership intervals.
+        fabric_mux_capable: Whether target binding may select mux transport.
         used_dfb_indices: Physical DFB slots referenced by the final kernel body.
             None means metadata is unavailable and conservatively uses every DFB;
             an empty list means this kernel uses no DFBs.
@@ -364,6 +365,7 @@ class KernelSpec:
     fabric_runtime_arg_base_common_index: Optional[int] = None
     logical_kernel: Optional[KernelSelector] = None
     fabric_manager_intervals: Tuple[FabricManagerIntervalSpec, ...] = ()
+    fabric_mux_capable: bool = False
     used_dfb_indices: Optional[List[int]] = None
     local_tensor_indices: List[int] = field(default_factory=list)
 
@@ -1131,6 +1133,8 @@ def _validate_runtime_resource_record_types(
 _RESOURCE_PLAN_SCHEMA_VERSION = 2
 _RESOURCE_PLAN_PERSONALIZATION = b"ttlang-rr-plan"
 _RESOURCE_HASH_PERSONALIZATION = b"ttlang-rr-hash"
+_FABRIC_TARGET_HASH_SCHEMA_VERSION = 1
+_FABRIC_TARGET_HASH_PERSONALIZATION = b"ttlang-fb-hash"
 
 
 def _digest_primitive_payload(payload: object, personalization: bytes) -> int:
@@ -2800,6 +2804,24 @@ def combine_program_hash_with_runtime_resources(
     )
 
 
+def combine_program_hash_with_fabric_target(
+    program_hash: Optional[int], structural_fingerprint: int
+) -> Optional[int]:
+    """Combine a program hash with device-specific fabric target structure."""
+    normalized_program_hash = normalize_program_hash(program_hash)
+    if normalized_program_hash is None:
+        return None
+    return _digest_primitive_payload(
+        (
+            "fabric-target-program-hash",
+            _FABRIC_TARGET_HASH_SCHEMA_VERSION,
+            normalized_program_hash,
+            structural_fingerprint,
+        ),
+        _FABRIC_TARGET_HASH_PERSONALIZATION,
+    )
+
+
 def _core_range_coordinates(core_ranges: Any, *, label: str) -> set[Tuple[int, int]]:
     """Expand a CoreRangeSet into logical ``(x, y)`` pairs."""
     if core_ranges is None:
@@ -3953,7 +3975,10 @@ def configure_routing_plane_runtime_args(
     kernel_fabric_manager_intervals: Optional[
         List[Tuple[FabricManagerIntervalSpec, ...]]
     ] = None,
+    kernel_fabric_mux_capable: Optional[List[bool]] = None,
     external_fabric_connections: Tuple[FabricConnectionBinding, ...] = (),
+    mux_base_l1_address: Optional[int] = None,
+    mux_l1_end_address: Optional[int] = None,
 ) -> None:
     """Attach validated routing-plane target bindings to one device program."""
     _ensure_ttnn()
@@ -3971,8 +3996,11 @@ def configure_routing_plane_runtime_args(
         grid_cols=grid_cols,
         grid_rows=grid_rows,
         kernel_fabric_manager_intervals=kernel_fabric_manager_intervals,
+        kernel_fabric_mux_capable=kernel_fabric_mux_capable,
         external_fabric_connections=external_fabric_connections,
         route_cache=fabric_route_cache,
+        mux_base_l1_address=mux_base_l1_address,
+        mux_l1_end_address=mux_l1_end_address,
     )
 
 
@@ -4189,6 +4217,15 @@ def _run_kernel_on_device_impl(
         )
         program_descriptors = {}
         fabric_binding_plans = {}
+        mux_base_l1_address = None
+        mux_l1_end_address = None
+        if any(spec.fabric_mux_capable for spec in kernel_specs):
+            mux_base_l1_address = int(
+                ttnn.get_allocator_base_address(mesh_device, ttnn.BufferType.L1)
+            )
+            mux_l1_end_address = mux_base_l1_address + get_min_remaining_l1_for_device(
+                mesh_device
+            )
         for mesh_coordinate, runtime_coordinates in _iter_device_domain_coordinates(
             device_domain, mesh_program_placements
         ):
@@ -4219,12 +4256,17 @@ def _run_kernel_on_device_impl(
                 kernel_fabric_manager_intervals=[
                     spec.fabric_manager_intervals for spec in kernel_specs
                 ],
+                kernel_fabric_mux_capable=[
+                    spec.fabric_mux_capable for spec in kernel_specs
+                ],
                 external_fabric_connections=external_fabric_connections,
                 mesh_device=mesh_device,
                 device_coordinates=mesh_coordinate,
                 grid_cols=grid_cols,
                 grid_rows=grid_rows,
                 route_cache=fabric_route_cache,
+                mux_base_l1_address=mux_base_l1_address,
+                mux_l1_end_address=mux_l1_end_address,
             )
         for mesh_coordinate, device_program in program_descriptors.items():
             if mesh_coordinate not in fabric_binding_plans:
@@ -4233,7 +4275,14 @@ def _run_kernel_on_device_impl(
                 ttnn_api=ttnn,
                 program_descriptor=device_program,
                 plan=fabric_binding_plans[mesh_coordinate],
+                mesh_device=mesh_device,
                 device_coordinates=mesh_coordinate,
+            )
+            device_program.custom_program_hash = (
+                combine_program_hash_with_fabric_target(
+                    normalized_program_hash,
+                    fabric_binding_plans[mesh_coordinate].structural_fingerprint,
+                )
             )
         program = build_device_mesh_program_descriptor(program_descriptors)
     else:
@@ -4687,6 +4736,10 @@ def emit_runner_source(
         "KERNEL_FABRIC_MANAGER_INTERVALS = "
         f"{_fabric_manager_intervals_to_source(kernel_specs)}"
     )
+    lines.append(
+        "KERNEL_FABRIC_MUX_CAPABLE = "
+        f"{[spec.fabric_mux_capable for spec in kernel_specs]!r}"
+    )
     lines.append("class _RuntimeResourceOwner:")
     lines.append("    pass")
     lines.append("")
@@ -4888,6 +4941,9 @@ def emit_runner_source(
         "KERNEL_FABRIC_MANAGER_INTERVALS[kernel_idx],"
     )
     lines.append(
+        "                fabric_mux_capable=" "KERNEL_FABRIC_MUX_CAPABLE[kernel_idx],"
+    )
+    lines.append(
         "                used_dfb_indices=KERNEL_USED_DFB_INDICES[kernel_idx],"
     )
     lines.append("            )")
@@ -5007,6 +5063,7 @@ __all__ = [
     "normalize_mesh_program_placements",
     "normalize_program_hash",
     "combine_program_hash_with_runtime_resources",
+    "combine_program_hash_with_fabric_target",
     "build_generic_op_io_tensors",
     "build_device_mesh_program_descriptor",
     "configure_routing_plane_runtime_args",
