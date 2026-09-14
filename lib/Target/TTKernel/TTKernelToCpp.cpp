@@ -21,6 +21,8 @@
 #include "ttlang/Target/TTKernel/LLKs/experimental_padding_llks_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_reg_api_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_routing_plane_generated.h"
+#include "ttlang/Target/TTKernel/LLKs/experimental_routing_plane_scatter_write_generated.h"
+#include "ttlang/Target/TTKernel/LLKs/experimental_routing_plane_write_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_row_normalization_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_semaphore_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_tilize_llks_generated.h"
@@ -146,11 +148,20 @@ public:
                 experimental_constant_table_generated_len);
       }
       if (callee == "experimental::routing_plane_atomic_inc" ||
-          callee == "experimental::routing_plane_scatter_write" ||
           callee == "experimental::routing_plane_fused_write_atomic_inc") {
         emitLlk(experimental_routing_plane_generated,
                 experimental_routing_plane_generated_len);
         headers.insert("tt_metal/fabric/fabric_edm_packet_header.hpp");
+        headers.insert("tt_metal/fabric/hw/inc/fabric_config.h");
+      }
+      if (callee == "experimental::routing_plane_scatter_write") {
+        emitLlk(experimental_routing_plane_scatter_write_generated,
+                experimental_routing_plane_scatter_write_generated_len);
+        headers.insert("tt_metal/fabric/hw/inc/fabric_config.h");
+      }
+      if (callee == "experimental::routing_plane_write") {
+        emitLlk(experimental_routing_plane_write_generated,
+                experimental_routing_plane_write_generated_len);
         headers.insert("tt_metal/fabric/hw/inc/fabric_config.h");
       }
       if (callee == "experimental::reset_dfb_interfaces") {
