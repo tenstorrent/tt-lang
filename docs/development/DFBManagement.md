@@ -433,7 +433,9 @@ preceding lifecycle with residual queue or per-RISC wait state. A producer may
 leave published pages available when their maximum occupancy does not exceed the
 DFB capacity. A reader may wait without popping when preceding publication is
 sufficient for the wait to complete. A named opaque external access may also end
-at the call when its last possible execution is proven to occur earlier.
+at the call when its last possible execution is proven to occur earlier. This
+remains valid when node-dependent control prevents an exact launch-node domain:
+every possible access must precede the state-discarding reconfiguration.
 `unknown_dfb_access` remains unbounded because it does not identify the affected
 DFBs. Reconfiguration does not clear payload bytes. Reassigning the physical
 index resets its occupancy, ring pointers, and interface initialization before

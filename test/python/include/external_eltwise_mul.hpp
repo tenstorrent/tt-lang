@@ -57,3 +57,6 @@ static inline void ttl_external_eltwise_mul() {
 #endif
 #endif
 }
+
+template <typename DFB>
+static inline void ttl_external_dfb_dependency_only() {}
