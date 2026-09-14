@@ -88,13 +88,14 @@ coordinates and receiver DFB address.
 
 ### Routing-plane connections
 
-Generated data movement kernels use TT-Metal's
-`tt::tt_fabric::RoutingPlaneConnectionManager`. Host code configures each
-connection with `ttnn.setup_routing_plane_connection(...)`. That call:
+Generated data movement kernels use a tt-lang adapter over TT-Metal's direct
+`RoutingPlaneConnectionManager` and experimental fabric mux client. Host code
+obtains the direct kernel defines from `ttnn.get_fabric_kernel_defines()` and
+configures direct runtime arguments with `ttnn.fabric_connection_rt_args()`.
+The runtime-argument call:
 
 - selects a forwarding direction and fabric link;
 - allocates the connection semaphores in the program descriptor;
-- adds the kernel defines required by the selected fabric API;
 - returns the runtime arguments consumed by
   `RoutingPlaneConnectionManager::build_from_args()`.
 
@@ -103,6 +104,37 @@ associated with a connection slot, and closes all opened connections before
 returning. Connection selection and packet routing are separate operations. A
 connection chooses a router injection direction and link. The packet header
 still identifies how far or to which device the packet travels.
+
+When concurrent managers cannot receive distinct forwarding links, target
+binding may assign eligible managers to a program-local TT-Metal mux. This is a
+transport-resource decision; it does not change the PipeNet address,
+readiness, capacity, payload, or completion protocol.
+
+| Property | Direct connection | Program-local mux |
+| --- | --- | --- |
+| Selection | Preferred whenever all concurrent manager requests can be assigned eligible links. | Used only after direct assignment fails and mux assignment satisfies every resource constraint. |
+| Eligible manager | Any supported generated or external manager. | A compiler-generated manager with one single-execution runtime lifetime and one connection. Repeated and external manager lifetimes remain direct. |
+| Shared clients | One manager owns each assigned injection link during its lifetime. | Managers with the same direction, routing-plane endpoint, and eligible link receive separate mux channels on one shared link. |
+| Device objects | One `RoutingPlaneConnectionManager` per generated manager. | One `WorkerToFabricMuxSender` per client and one `tt_fabric_mux.cpp` kernel per mux group. |
+| Worker nodes | Uses the application's data movement node. | Uses each client node plus one otherwise unused worker node for the mux kernel. |
+| Worker semaphores | Two per direct connection. | Four per client, one shared termination semaphore, and two on the mux node. |
+| Packet operations | The client submits the packet directly to the routing-plane sender. | The client submits the same packet through its mux channel; the mux forwards it to the routing-plane endpoint. |
+| Completion | PipeNet completion follows payload visibility. | Identical to direct mode. |
+| Shutdown | Each manager closes its direct connections. | Clients disconnect; one termination master waits for the other clients, then terminates the mux kernel. |
+
+The device sequences are:
+
+```text
+direct client:
+  open direct connections
+  submit PipeNet packets
+  close direct connections
+
+mux group:
+  mux node: initialize endpoint and client channels
+  each client: connect; submit PipeNet packets; disconnect
+  termination master: wait for all disconnects; terminate mux node
+```
 
 ### Packet routing
 
@@ -390,9 +422,12 @@ that the active TT-Metal control plane can route. The current implementation:
   connection target;
 - reuses one injection connection for destinations with the same direction
   and a common forwarding link;
-- assigns links by manager lifetime, allowing a proven receiver/sender
-  ownership pair to reuse a link while requiring all other managers to use
-  distinct links;
+- first assigns direct links by manager lifetime, allowing a proven
+  receiver/sender ownership pair to reuse a link while requiring interfering
+  direct managers to use distinct links;
+- if direct assignment fails, retains non-multiplexable managers on distinct
+  links and distributes eligible single-execution managers across
+  program-local mux groups;
 - supplies final destination identifiers for 2D routing or a validated hop
   count for 1D routing.
 
@@ -451,7 +486,8 @@ Host execution setup for each invocation:
 compiled kernel route records + active MeshDevice
   -> host runtime route binding
   -> FabricNodeId and MeshDevice-scoped forwarding-direction queries
-  -> control-plane connection setup and link selection
+  -> direct-link selection or program-local mux construction
+  -> control-plane connection setup
   -> per-device ProgramDescriptor runtime arguments
   -> MeshProgramDescriptor construction
   -> TTNN MeshProgramDescriptor execution
@@ -650,15 +686,15 @@ route encoding.
 ### EmitC and generated C++
 
 `lib/Conversion/TTKernelToEmitC/TTKernelToEmitC.cpp` lowers routing-plane
-operations to the direct TT-Metal API. The generated sender follows this
-structure:
+operations to a generated adapter that dispatches to the direct manager or mux
+client from runtime arguments. Packet construction is common to both modes:
 
 ```cpp
-tt::tt_fabric::RoutingPlaneConnectionManager connection_manager;
-open_connections(connection_manager, connection_count, runtime_arg_base);
+experimental::RoutingPlaneConnectionManager connection_manager;
+auto route_id = connection_manager.open(connection_count, runtime_arg_base);
 
-PacketHeaderPool::reset();
-auto* packet_header = PacketHeaderPool::allocate_header(1);
+auto* packet_header = connection_manager.packetHeader(
+    route_id, connection_slot);
 #if defined(FABRIC_2D)
 tt::tt_fabric::fabric_set_unicast_route(
     packet_header, destination_device_id, destination_mesh_id);
@@ -668,16 +704,16 @@ tt::tt_fabric::fabric_set_unicast_route<false>(
 #endif
 
 packet_header->to_noc_fused_unicast_write_atomic_inc(...);
-auto& sender = connection_manager.get(connection_slot).sender;
-sender.wait_for_empty_write_slot();
-sender.send_payload_without_header_non_blocking_from_address(...);
-sender.send_payload_flush_blocking_from_address(...);
+connection_manager.waitForEmptyWriteSlot(connection_slot);
+connection_manager.sendPayloadWithoutHeaderNonBlockingFromAddress(...);
+connection_manager.sendPayloadFlushBlockingFromAddress(...);
 
-close_connections(connection_manager, connection_count);
+connection_manager.close(connection_count);
 ```
 
 The destination encoder is selected by TT-Metal's `FABRIC_2D` kernel define.
-The high-level TTL program does not select this condition.
+The high-level TTL program selects neither this condition nor the direct or mux
+transport.
 
 ### Host runtime route binding
 
@@ -691,12 +727,14 @@ logical device coordinate and places those descriptors into a
 validation, and descriptor mutation. For each generated kernel and TENSIX node,
 it determines the active logical routes, maps remote coordinates with
 `mesh_device.get_fabric_node_id()`, queries forwarding directions and eligible
-links when the target exposes link enumeration, and groups destinations by
-direction. It validates any required link assignment for interfering managers
-before calling `ttnn.setup_routing_plane_connection(...)`. Noninterfering
-managers may leave link selection to the control plane. No
-semaphore, runtime argument, or program descriptor is modified until the
-complete plan is valid.
+links, and groups destinations by direction. It validates a distinct-link
+assignment for all interfering managers first. If that assignment fails and
+mux is enabled, it keeps external and repeated-lifetime managers direct and
+assigns eligible single-execution managers to shared links. Each mux group
+requires one common routing-plane endpoint, one otherwise unused worker node,
+an in-bounds private L1 interval, and sufficient client and mux-node
+semaphores. `--no-ttl-fabric-mux` disables this fallback. No semaphore, runtime
+argument, or program descriptor is modified until the complete plan is valid.
 
 An operation executes on its complete `device_domain` by default. The
 `mesh_program_placements` operation option can instead select explicit logical
@@ -744,10 +782,14 @@ tt-lang uses these TTNN bindings during host runtime route binding:
 - `get_eth_forwarding_direction()` validates a source-destination pair and
   returns its outgoing direction;
 - `get_forwarding_link_indices()` exposes TT-Metal's existing control-plane
-  forwarding-link query to Python when explicit link assignment is needed;
-- `setup_routing_plane_connection()` validates an explicit link when supplied,
-  otherwise selects the control-plane default, allocates connection semaphores,
-  adds kernel defines, and appends connection runtime arguments.
+  forwarding-link query to Python;
+- `get_fabric_kernel_defines()` returns the defines required by the active
+  direct fabric API;
+- `fabric_connection_rt_args()` validates explicit links, allocates direct
+  connection resources in a `ProgramDescriptor`, and returns client runtime
+  arguments;
+- `ttnn.experimental.fabric_mux.Config` and its client helpers compute mux L1
+  layout, compile-time arguments, runtime arguments, and descriptor resources.
 
 Each `CompiledTTNNKernel` caches forwarding directions and eligible links by
 source and destination `FabricNodeId`. The cache is cleared when the mesh
@@ -801,10 +843,14 @@ compiler-managed semaphores, including when a cached program descriptor is
 reused. Global-semaphore-only compilation does not allocate this local
 ownership semaphore, so every manager remains interfering in that mode.
 
-Connection setup still runs for each constructed program descriptor because
-its semaphores and runtime arguments are invocation resources. Both the cached
-direction query and connection setup run on the host before submission. No
-control-plane query runs in a device kernel or once per packet.
+Connection and mux setup still run for each constructed program descriptor
+because their semaphores and runtime arguments are invocation resources. The
+complete direct-or-mux plan validates defines, worker placement, L1 use, and
+semaphore capacity before modifying the program descriptor. Runtime argument
+and semaphore allocation uses a staging descriptor so an allocation or ABI
+error does not partially modify the program descriptor. The cached direction
+query and setup run on the host before submission. No control-plane query runs
+in a device kernel or once per packet.
 
 Generated kernels pass final destination identifiers for 2D routing or a
 validated hop count for 1D routing. This keeps forwarding decisions in TT-Metal
@@ -844,8 +890,9 @@ pass does not establish correctness without the full-system result.
 ### Remaining capability work
 
 The current implementation supports coordinate-preserving logical-to-TTNN
-placement and programs whose concurrent connection requests fit the available
-forwarding links. It validates the complete target-binding plan before
+direct connections when concurrent requests fit the available forwarding
+links and a program-local mux when eligible single-execution managers exceed
+that direct capacity. It validates the complete target-binding plan before
 modifying program descriptors and rejects unsupported resource schedules.
 General fabric support still requires:
 
@@ -853,6 +900,8 @@ General fabric support still requires:
   `DeviceRef` to a `MeshCoordinate` and validates requested adjacency;
 - target-level router aggregation and connection reuse beyond the compiler's
   per-node manager intervals, including any transport-specific barriers;
+- mux use by repeated manager lifetimes, with explicit lifetime and shutdown
+  proofs;
 - tt-lang lowering and runtime binding for graph transfers with device-range
   destinations using TT-Metal fabric multicast;
 - a receiver-address publication protocol for schedules that cannot prove
@@ -861,7 +910,7 @@ General fabric support still requires:
 ### Remaining optimization and validation work
 
 - Jointly score legal routes and links by hop count, availability, estimated
-  contention, connection reuse, and barrier cost.
+  contention, direct connection reuse, mux cost, and shutdown cost.
 - Measure destination-table decoding, host connection setup, connection reuse,
-  packetization, and node placement against specialized communication
-  kernels.
+  mux forwarding, packetization, and worker placement against specialized
+  communication kernels.

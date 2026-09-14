@@ -25,10 +25,10 @@
 // CHECK: static __attribute__((noinline)) void
 // CHECK-NEXT: routing_plane_write(
 // CHECK: packet_header->to_noc_unicast_write(
-// CHECK: sender.send_payload_without_header_non_blocking_from_address(source_address,
+// CHECK: manager.sendPayloadWithoutHeaderNonBlockingFromAddress(
 // CHECK-LABEL: FORCE_INLINE void routing_plane_scatter_write(
 // CHECK: packet_header->to_noc_unicast_scatter_write(
-// CHECK: fabric_unicast_noc_scatter_write_with_state<
+// CHECK: manager.sendScatterWrite(connection_index, packet_header, source_address);
 // CHECK: noc_async_writes_flushed();
 // CHECK-LABEL: void kernel_main() {
 // CHECK: size_t [[RUNTIME_ARG_BASE:.*]] = 5;

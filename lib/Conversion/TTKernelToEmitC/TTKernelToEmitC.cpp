@@ -536,7 +536,7 @@ public:
         [ctx](mlir::tt::ttkernel::RoutingPlaneConnectionManagerType type)
             -> Type {
           return emitc::OpaqueType::get(
-              ctx, "tt::tt_fabric::RoutingPlaneConnectionManager");
+              ctx, "experimental::RoutingPlaneConnectionManager");
         });
     addConversion(
         [ctx](IndexType type) -> Type { return emitc::SizeTType::get(ctx); });
@@ -2662,22 +2662,14 @@ public:
                   ConversionPatternRewriter &rewriter) const final {
     std::string routeIdName =
         getResultVariableName(op.getRouteId(), state, "fabric_route_id_");
-    std::string runtimeArgIndexName = routeIdName + "_runtime_arg_index";
-    std::string code = "size_t " + runtimeArgIndexName + " = {};\n" +
-                       "uint32_t " + routeIdName + " = 0;\n" +
+    std::string code = "uint32_t " + routeIdName + " = 0;\n" +
                        "if ({} != 0) {{\n"
-                       "  open_connections({}, {}, " +
-                       runtimeArgIndexName +
-                       ");\n"
-                       "  PacketHeaderPool::reset();\n"
                        "  " +
-                       routeIdName +
-                       " = PacketHeaderPool::allocate_header_n({});\n" + "}";
+                       routeIdName + " = {}.open({}, {});\n" + "}";
     emitc::VerbatimOp::create(
         rewriter, op.getLoc(), rewriter.getStringAttr(code),
-        ValueRange{adaptor.getRuntimeArgBase(), adaptor.getConnectionCount(),
-                   adaptor.getManager(), adaptor.getConnectionCount(),
-                   adaptor.getConnectionCount()});
+        ValueRange{adaptor.getConnectionCount(), adaptor.getManager(),
+                   adaptor.getConnectionCount(), adaptor.getRuntimeArgBase()});
     rewriter.replaceOp(
         op, emitc::LiteralOp::create(
                 rewriter, op.getLoc(),
@@ -2770,8 +2762,9 @@ public:
                   ConversionPatternRewriter &rewriter) const final {
     emitc::VerbatimOp::create(
         rewriter, op.getLoc(),
-        rewriter.getStringAttr("if ({} != 0) {{\n  close_connections({});\n}"),
-        ValueRange{adaptor.getConnectionCount(), adaptor.getManager()});
+        rewriter.getStringAttr("if ({} != 0) {{\n  {}.close({});\n}"),
+        ValueRange{adaptor.getConnectionCount(), adaptor.getManager(),
+                   adaptor.getConnectionCount()});
     rewriter.eraseOp(op);
     return success();
   }
