@@ -189,6 +189,10 @@ constexpr llvm::StringLiteral kRelaxedDFBProtocolDomainVerificationAttrName(
 constexpr llvm::StringLiteral
     kDFBReconfigurationPlanAttrName("ttl.dfb_reconfiguration_plan");
 
+/// Associates a lowered DFB reconfiguration call with its plan entry.
+constexpr llvm::StringLiteral kDFBReconfigurationOrdinalAttrName(
+    "ttl.dfb_reconfiguration_ordinal");
+
 /// Module attributes carrying compiler-owned pipe resource allocation.
 constexpr llvm::StringLiteral
     kPipeSyncSemaphoreCountAttrName("ttl.pipe_sync_semaphore_count");

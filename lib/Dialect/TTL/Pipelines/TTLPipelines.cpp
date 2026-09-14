@@ -165,6 +165,7 @@ void buildTTKernelSpecializationPipeline(OpPassManager &pm) {
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
   buildTTKernelRecordCleanupPipeline(pm);
+  pm.addPass(createTTKernelSpecializeDFBReconfiguration());
   pm.addPass(createTTKernelAnnotateDFBUse());
 }
 
