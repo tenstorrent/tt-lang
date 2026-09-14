@@ -851,12 +851,21 @@ static mlir::LogicalResult verifyByteCopyDataFormats(mlir::Operation *operation,
   return mlir::success();
 }
 
-static mlir::LogicalResult verifyPipeSendSubview(mlir::Operation *operation,
-                                                 mlir::Value source) {
+static mlir::LogicalResult verifyPipeSendSource(mlir::Operation *operation,
+                                                mlir::Value source) {
   mlir::Value view = mlir::tt::ttl::traceUnrealizedCasts(source);
   auto slice = view.getDefiningOp<mlir::tensor::ExtractSliceOp>();
+  mlir::Operation *acquire = mlir::tt::ttl::findCBAcquireOp(source, operation);
+  if (!acquire) {
+    return operation->emitOpError(
+        "pipe send source must come from ttl.cb_reserve or ttl.cb_wait");
+  }
+  if (!slice) {
+    return mlir::success();
+  }
+
   auto viewType = mlir::dyn_cast<mlir::RankedTensorType>(view.getType());
-  if (!slice || !viewType || !viewType.hasStaticShape() ||
+  if (!viewType || !viewType.hasStaticShape() ||
       viewType.getNumElements() <= 0) {
     return operation->emitOpError(
         "pipe send DFB view must be a non-empty static extract_slice");
@@ -867,8 +876,7 @@ static mlir::LogicalResult verifyPipeSendSubview(mlir::Operation *operation,
       })) {
     return operation->emitOpError("pipe send DFB view must have unit strides");
   }
-  if (!mlir::isa_and_nonnull<mlir::tt::ttl::CBWaitOp>(
-          mlir::tt::ttl::findCBAcquireOp(source, operation))) {
+  if (!mlir::isa<mlir::tt::ttl::CBWaitOp>(acquire)) {
     return operation->emitOpError(
         "pipe send source DFB view must come from ttl.cb_wait");
   }
@@ -955,7 +963,7 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
                << "pipe send requires a DFB block or block subview source";
       }
       if (!srcIsCb) {
-        if (failed(verifyPipeSendSubview(getOperation(), getSrc()))) {
+        if (failed(verifyPipeSendSource(getOperation(), getSrc()))) {
           return failure();
         }
       }
@@ -1340,7 +1348,7 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferSendOp::verify() {
     return emitOpError("requires a DFB block or block subview source");
   }
   if (!sourceIsDFB) {
-    if (failed(verifyPipeSendSubview(getOperation(), getSrc()))) {
+    if (failed(verifyPipeSendSource(getOperation(), getSrc()))) {
       return failure();
     }
     if (getByteCountAttr() &&
