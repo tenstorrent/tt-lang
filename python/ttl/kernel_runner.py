@@ -2009,7 +2009,7 @@ def build_kernel_descriptors(
                         ).add(core_coordinate)
                     tensor_address_partitions = [
                         (
-                            _make_singleton_core_ranges(coordinates),
+                            _make_singleton_core_ranges(sorted(coordinates)),
                             list(tensor_addresses),
                             min(coordinates),
                         )
