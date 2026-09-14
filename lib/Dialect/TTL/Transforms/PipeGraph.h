@@ -541,6 +541,14 @@ public:
 
   LaunchNodeDomain getOperationLaunchDomain(Operation *op) const;
 
+  /// Return how often `operation` executes at `location`, when proven.
+  std::optional<std::uint64_t> getExactExecutionCountAtLaunchLocation(
+      Operation *operation, const LaunchExecutionLocation &location) const;
+
+  /// Evaluate `predicate` using compile-time values at `location`.
+  std::optional<bool> evaluatePredicateAtLaunchLocation(
+      Value predicate, const LaunchExecutionLocation &location) const;
+
   /// Returns DFB acquisition and release relations for the enclosing kernel.
   const DFBAcquireReleaseIndex &
   getDFBAcquireReleaseIndex(Operation *operation) const;
@@ -592,6 +600,8 @@ private:
   /// Cached operation-keyed analysis facts are valid only before lowering
   /// starts erasing or replacing IR operations.
   llvm::DenseMap<Operation *, LaunchNodeDomain> operationLaunchDomains;
+  /// Launch context used by execution-count proofs before lowering.
+  LaunchNodeDomainState launchNodeDomainState;
   llvm::DenseMap<Operation *, std::unique_ptr<DFBAcquireReleaseIndex>>
       dfbLifecycles;
 };

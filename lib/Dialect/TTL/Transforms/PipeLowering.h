@@ -29,6 +29,7 @@ class ValueOriginAnalysis;
 namespace mlir::tt::ttl {
 
 class PipeTransferIndex;
+class FabricForwarderPlan;
 
 /// One logical device route used by `sourceNodes` in a kernel function.
 /// `routeIndex` selects this route's target metadata; host binding separately
@@ -39,6 +40,10 @@ struct FabricRoute {
   SmallVector<LaunchNodeCoord> sourceNodes;
   std::size_t routeIndex;
 };
+
+/// Return whether both arrays contain the same unique launch nodes.
+bool launchNodeSetsEqual(ArrayRef<LaunchNodeCoord> lhs,
+                         ArrayRef<LaunchNodeCoord> rhs);
 
 /// Fabric routes and their logical device domain for one kernel function.
 struct FunctionFabricRoutePlan {
@@ -111,6 +116,18 @@ struct FabricRuntimeInfo {
 
 /// Routing-plane state indexed by each fabric protocol operation.
 using FabricRuntimeMap = llvm::DenseMap<Operation *, FabricRuntimeInfo>;
+
+/// Kernel-local expected values for cumulative scratch-backed counters.
+struct FabricForwarderCounterExpectations {
+  /// One-element i32 memref holding the expected arrival count.
+  Value arrivalCountStorage;
+  /// One-element i32 memref holding the expected completion count.
+  Value completionCountStorage;
+};
+
+/// Counter expectations indexed by their fabric protocol operation.
+using FabricForwarderCounterExpectationMap =
+    llvm::MapVector<Operation *, FabricForwarderCounterExpectations>;
 
 struct PipeInfo {
   PipeType pipeType;
@@ -320,6 +337,12 @@ void applyFabricRoutePlan(ModuleOp module, const FabricRoutePlan &plan);
 void initializeFabricRuntime(const FabricRoutePlan &plan,
                              FabricRuntimeMap &runtime);
 
+/// Allocate independent cumulative arrival and completion expectations for
+/// each aggregated operation.
+void initializeFabricForwarderCounterExpectations(
+    const FabricForwarderPlan &plan,
+    FabricForwarderCounterExpectationMap &forwarderCounterExpectations);
+
 /// Build the pipe resource plan used by pipe lowering. Transfer intervals that
 /// cannot be bounded by dominance are conservatively treated as conflicting
 /// with every other transfer interval from the same source core.
@@ -398,17 +421,24 @@ LogicalResult lowerPipeTransferSend(
     const PipeCounterProgressMap &senderCapacityCounters,
     const PipeCounterTableMap &fabricReadyCounters,
     const PipeComputedAddressCounterMap &computedAddressCounters,
-    const FabricRuntimeMap &fabricRuntime, ConversionPatternRewriter &rewriter);
+    const FabricRuntimeMap &fabricRuntime,
+    const FabricForwarderPlan &fabricForwarderPlan,
+    const FabricForwarderCounterExpectationMap &forwarderCounterExpectations,
+    ConversionPatternRewriter &rewriter);
 
 /// Remove a receiver post proven unreachable at its pipe endpoint.
 void lowerInactivePipeTransferPost(PipeTransferPostOp op,
                                    ConversionPatternRewriter &rewriter);
 
+/// Lower the receiver post and signal sender readiness.
 LogicalResult lowerPipeTransferPost(
     PipeTransferPostOp op, Value dst, const PipeTransferPlan &transferPlan,
     const PipeCounterTableMap &postSequenceCounters,
     const PipeResourcePlan &pipeResourcePlan,
-    const FabricRuntimeMap &fabricRuntime, ConversionPatternRewriter &rewriter);
+    const FabricRuntimeMap &fabricRuntime,
+    const FabricForwarderPlan &fabricForwarderPlan,
+    const FabricForwarderCounterExpectationMap &forwarderCounterExpectations,
+    ConversionPatternRewriter &rewriter);
 
 /// Lower a dataflow buffer pop and emit any proven pipe capacity releases.
 LogicalResult lowerCBPop(CBPopOp op, Value cb,

@@ -18,7 +18,6 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <algorithm>
-#include <limits>
 
 #define DEBUG_TYPE "ttl-pipe-transport-plan"
 
@@ -261,15 +260,6 @@ selectDestinationStorage(PipeTransportDFBUse dfbUse,
   return PipeTransportStorageSelection{std::move(dfbUse), access};
 }
 
-/// Return `value` aligned for PipeNet scratch, or no value on overflow.
-static std::optional<int64_t> alignPipeScratchBytes(int64_t value) {
-  if (value < 0 || value > std::numeric_limits<int64_t>::max() -
-                               (kPipeSramScratchAlignmentBytes - 1)) {
-    return std::nullopt;
-  }
-  return llvm::alignTo(value, kPipeSramScratchAlignmentBytes);
-}
-
 FailureOr<PipeTransportPlan> buildPipeTransportPlan(
     const PipeGraph &pipeGraph, const PipeCapacityPlan &capacityPlan,
     function_ref<PipeSynchronizationProtocol(PipeTransferNodeId)>
@@ -430,7 +420,7 @@ FailureOr<PipeTransportPlan> buildPipeTransportPlan(
         std::optional<int64_t> destinationBytes = llvm::checkedMul(
             destinationGroups, stream.packetization.payloadSizeBytes);
         std::optional<int64_t> scratchOffset =
-            alignPipeScratchBytes(plan.sramScratchBytes);
+            alignPipeSramScratchBytes(plan.sramScratchBytes);
         if (!destinationBytes || !scratchOffset) {
           sendOp.emitError("pipe transport scratch allocation exceeds int64_t");
           return failure();
@@ -438,7 +428,7 @@ FailureOr<PipeTransportPlan> buildPipeTransportPlan(
         std::optional<int64_t> scratchEnd =
             llvm::checkedAdd(*scratchOffset, *destinationBytes);
         std::optional<int64_t> alignedScratchEnd =
-            scratchEnd ? alignPipeScratchBytes(*scratchEnd) : std::nullopt;
+            scratchEnd ? alignPipeSramScratchBytes(*scratchEnd) : std::nullopt;
         if (!alignedScratchEnd) {
           sendOp.emitError("pipe transport scratch allocation exceeds int64_t");
           return failure();

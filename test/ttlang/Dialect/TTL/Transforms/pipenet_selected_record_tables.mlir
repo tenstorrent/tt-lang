@@ -8,19 +8,19 @@
 // CHECK-LABEL: module attributes
 // CHECK-NOT: ttl.pipe_sram_scratch_bytes
 
-// The sender uses route slots 0 and 1 for records 0 and 1. Its readiness
-// resources use distinct compiler-managed common arguments and counter slots.
+// The sender uses distinct readiness resources and route slots for each
+// selected record.
 // CHECK-LABEL: func.func @sender()
 // CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
 // CHECK: %[[FABRIC_BASE_I32:.*]] = ttkernel.get_common_arg_val
 // CHECK-NEXT: %[[FABRIC_BASE:.*]] = arith.index_cast %[[FABRIC_BASE_I32]] : i32 to index
 // CHECK: scf.for %[[RECORD:.*]] =
 // CHECK: scf.if
-// CHECK-NEXT: %[[ROUTE:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD]], [0, 1] : index
 // CHECK-NEXT: %[[READY_ARG_INDEX:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD]], [2, 3] : index
 // CHECK-NEXT: %[[READY_ADDRESS:.*]] = ttkernel.get_common_arg_val(%[[READY_ARG_INDEX]]) : (index) -> i32
-// CHECK-NEXT: %[[READY_COUNTER:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD]], [0, 1] : index
+// CHECK: %[[READY_COUNTER:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD]], [0, 1] : index
 // CHECK: ttkernel.experimental.semaphore_wait_min
+// CHECK: %[[ROUTE:.*]] = ttkernel.experimental.constant_table_lookup %[[RECORD]], [0, 1] : index
 // CHECK: %[[DEST_DEVICE_RELATIVE_INDEX:.*]] = arith.addi %[[ROUTE]], {{.*}} : index
 // CHECK: %[[DEST_MESH_RELATIVE_INDEX:.*]] = arith.addi %[[ROUTE]], {{.*}} : index
 // CHECK: %[[DEST_HOPS_RELATIVE_INDEX:.*]] = arith.addi %[[ROUTE]], {{.*}} : index
