@@ -411,6 +411,69 @@ cannot encode a legal route in one packet may materialize explicit forwarding
 after logical transfer analysis; that is not required by the current
 destination-routed TT-Metal transport.
 
+### Worker aggregation
+
+A graph PipeNet creates one logical transfer for each participating worker. If
+every worker opens its own fabric connection, a four-worker transfer requires
+four concurrent connection owners even when all transfers use the same device
+route. Blackhole provides two forwarding links for one route direction, so the
+compiler assigns the workers to at most two local forwarders before host
+runtime route binding.
+
+For four workers, the sender protocol is:
+
+```text
+worker 0 --payload slot 0--\
+worker 1 --payload slot 1---+--> forwarder 0 --fabric--> remote workers 0, 1
+
+worker 2 --payload slot 0--\
+worker 3 --payload slot 1---+--> forwarder 2 --fabric--> remote workers 2, 3
+```
+
+Each source worker writes its payload into a distinct SRAM scratch slot on its
+forwarder. A NoC write barrier completes that write before the worker increments
+the forwarder's arrival counter. The forwarder waits for every group member,
+calls `experimental::routing_plane_fused_write_atomic_inc` once per member,
+and then increments each member's local completion counter. The fabric helper
+uses a blocking payload flush, so the source worker does not reuse its DFB
+until the forwarder has consumed its scratch slot.
+
+Readiness follows the reverse sequence. Each receiver reserves its destination
+DFB and increments its receiver-side forwarder's arrival counter. After the
+whole group arrives, the forwarder calls
+`experimental::routing_plane_atomic_inc` once per source worker and increments
+each receiver's local completion counter. The receiver then waits for the
+normal fabric payload-completion signal before consuming the DFB.
+
+Arrival and completion counters increase across static loop iterations. Each
+kernel stores its expected counter values in local variables and uses
+`experimental::semaphore_wait_min` against the counters in SRAM scratch. The
+runtime allocates zero-initialized scratch for every dispatch. Each protocol
+operation receives separate counter state because its counts accumulate
+independently. This also prevents concurrent kernel functions from sharing
+counters.
+
+The compiler applies this transformation only on Blackhole when it proves all
+of the following:
+
+- every selected record crosses devices, names one destination worker, and the
+  operation has an exact worker domain;
+- every participating worker selects exactly one record;
+- every participating device and worker reaches corresponding executions
+  through the same positive static loop counts, PipeNet callback counts, and
+  selected conditional regions;
+- the operation belongs to a single-block data-movement kernel rather than a
+  helper function;
+- operations sharing one physical route partition its direct worker set and do
+  not require more than two independent forwarders;
+- cumulative arrival and completion counts fit in 32 bits.
+
+An operation that does not satisfy these conditions retains its direct worker
+connections. After planning, resource validation rejects a module when its
+combined DFB and compiler scratch allocation exceeds L1. The transformation
+does not change the PipeNet records, DFB ownership, or payload-completion
+protocol.
+
 ### Collective communication
 
 Collectives are transfer relations plus local computation. They should reuse
