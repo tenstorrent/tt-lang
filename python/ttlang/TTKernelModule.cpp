@@ -8,11 +8,15 @@
 #include "ttlang-c/TTKernelTypes.h"
 
 #include "ttlang/Bindings/Python/TTLangModule.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 
 using namespace mlir;
 
 void populateTTKernelModule(nb::module_ &m) {
+  m.attr("ARG_SPEC_ATTR") = nb::str(tt::ttkernel::ArgSpecAttr::name.data(),
+                                    tt::ttkernel::ArgSpecAttr::name.size());
+
   tt_type_class<tt::ttkernel::CBType>(m, "CBType")
       .def_static("get",
                   [](MlirContext ctx, MlirType memrefType) {
@@ -123,16 +127,16 @@ void populateTTKernelModule(nb::module_ &m) {
                           })
       .def_prop_ro("rt_args",
                    [](tt::ttkernel::ArgSpecAttr &self) {
-                     std::vector<tt::ttkernel::ArgAttr> result;
+                     std::vector<MlirAttribute> result;
                      for (const auto &arg : self.getRtArgs()) {
-                       result.push_back(arg);
+                       result.push_back(wrap(arg));
                      }
                      return result;
                    })
       .def_prop_ro("ct_args", [](tt::ttkernel::ArgSpecAttr &self) {
-        std::vector<tt::ttkernel::ArgAttr> result;
+        std::vector<MlirAttribute> result;
         for (const auto &arg : self.getCtArgs()) {
-          result.push_back(arg);
+          result.push_back(wrap(arg));
         }
         return result;
       });

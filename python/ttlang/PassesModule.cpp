@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: (c) 2025 Tenstorrent AI ULC
 // SPDX-License-Identifier: Apache-2.0
 
+#include "mlir/Bindings/Python/IRCore.h"
 #include "mlir/CAPI/IR.h"
 #include "mlir/IR/BuiltinOps.h"
 
@@ -13,25 +14,55 @@
 #include <nanobind/stl/string.h>
 #include <nanobind/stl/vector.h>
 
+#include <cstdlib>
+
 using namespace mlir;
+namespace mlirPython = mlir::python::MLIR_BINDINGS_PYTHON_DOMAIN;
+
+static void lowerTTKernelModuleToEmitC(MlirModule module) {
+  MlirContext context = mlirOperationGetContext(mlirModuleGetOperation(module));
+  mlirPython::PyMlirContext::ErrorCapture errors(
+      mlirPython::PyMlirContext::forContext(context));
+  if (!ttlangRunTTKernelToEmitC(module)) {
+    throw mlirPython::MLIRError(
+        "TTKernel-to-EmitC conversion failed; correct the reported IR error",
+        errors.take());
+  }
+}
+
+static std::string translateTTKernelFunction(MlirModule module,
+                                             const std::string &kernelName) {
+  char *result = ttlangTranslateKernelToCpp(module, kernelName.c_str());
+  if (!result) {
+    throw std::runtime_error("Failed to translate kernel '" + kernelName +
+                             "' to C++");
+  }
+  std::string output(result);
+  std::free(result);
+  return output;
+}
 
 void populatePassesModule(nb::module_ &m) {
 
   m.def(
+      "ttkernels_to_cpp",
+      [](MlirModule module, const std::vector<std::string> &kernelNames) {
+        lowerTTKernelModuleToEmitC(module);
+        std::vector<std::string> outputs;
+        outputs.reserve(kernelNames.size());
+        for (const std::string &kernelName : kernelNames) {
+          outputs.push_back(translateTTKernelFunction(module, kernelName));
+        }
+        return outputs;
+      },
+      nb::arg("module"), nb::arg("kernel_names"),
+      "Lower TTKernel to EmitC once and translate the requested kernels.");
+
+  m.def(
       "ttkernel_to_cpp_by_name",
       [](MlirModule module, const std::string &kernelName) -> std::string {
-        if (!ttlangRunTTKernelToEmitC(module)) {
-          throw std::runtime_error("Failed to run TTKernelToEmitC pass");
-        }
-
-        char *result = ttlangTranslateKernelToCpp(module, kernelName.c_str());
-        if (!result) {
-          throw std::runtime_error("Failed to translate kernel '" + kernelName +
-                                   "' to C++");
-        }
-        std::string output(result);
-        free(result);
-        return output;
+        lowerTTKernelModuleToEmitC(module);
+        return translateTTKernelFunction(module, kernelName);
       },
       nb::arg("module"), nb::arg("kernel_name"),
       "Translate a named TTKernel function to C++ string.");
@@ -45,22 +76,12 @@ void populatePassesModule(nb::module_ &m) {
         mod.walk([&](mlir::func::FuncOp funcOp) {
           auto threadAttr =
               funcOp->getAttrOfType<mlir::tt::ttkernel::ThreadTypeAttr>(
-                  "ttkernel.thread");
+                  mlir::tt::ttkernel::ThreadTypeAttr::name);
           if (threadAttr) {
-            auto threadType = threadAttr.getValue();
-            std::string threadStr;
-            switch (threadType) {
-            case mlir::tt::ttkernel::ThreadType::Noc:
-              threadStr = "noc";
-              break;
-            case mlir::tt::ttkernel::ThreadType::Compute:
-              threadStr = "compute";
-              break;
-            default:
-              threadStr = "unknown";
-              break;
-            }
-            result.emplace_back(funcOp.getName().str(), threadStr);
+            result.emplace_back(
+                funcOp.getName().str(),
+                mlir::tt::ttkernel::stringifyThreadType(threadAttr.getValue())
+                    .str());
           }
         });
         return result;
@@ -76,8 +97,8 @@ void populatePassesModule(nb::module_ &m) {
         if (!func) {
           return nb::none();
         }
-        auto argSpecAttr =
-            func->getAttrOfType<mlir::tt::ttkernel::ArgSpecAttr>("arg_spec");
+        auto argSpecAttr = func->getAttrOfType<mlir::tt::ttkernel::ArgSpecAttr>(
+            mlir::tt::ttkernel::ArgSpecAttr::name);
         if (!argSpecAttr) {
           return nb::none();
         }
