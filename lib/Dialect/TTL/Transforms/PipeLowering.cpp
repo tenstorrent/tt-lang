@@ -947,7 +947,33 @@ LogicalResult buildFabricRoutePlan(
   return result;
 }
 
-void applyFabricRoutePlan(ModuleOp mod, const FabricRoutePlan &plan) {
+static bool isFabricMuxCapableFunction(const FabricRoutePlan &plan,
+                                       FuncOp function) {
+  const FabricRuntimeIntervalPlan *singleRuntimeInterval = nullptr;
+  for (const FabricRuntimeIntervalPlan &runtimeInterval :
+       plan.runtimeIntervals) {
+    FuncOp intervalFunction =
+        runtimeInterval.acquireBoundary->getParentOfType<FuncOp>();
+    if (intervalFunction != function) {
+      continue;
+    }
+    bool repeatsWithinFunction = false;
+    for (Operation *ancestor = runtimeInterval.acquireBoundary->getParentOp();
+         ancestor && ancestor != function.getOperation();
+         ancestor = ancestor->getParentOp()) {
+      repeatsWithinFunction |= isa<LoopLikeOpInterface>(ancestor);
+    }
+    if (singleRuntimeInterval || runtimeInterval.useInvocationCounter ||
+        repeatsWithinFunction) {
+      return false;
+    }
+    singleRuntimeInterval = &runtimeInterval;
+  }
+  return singleRuntimeInterval != nullptr;
+}
+
+void applyFabricRoutePlan(ModuleOp mod, const FabricRoutePlan &plan,
+                          bool enableFabricMux) {
   Builder builder(mod.getContext());
   for (const auto &[func, functionPlan] : plan.routesByFunction) {
     SmallVector<Attribute> routeAttrs;
@@ -971,6 +997,9 @@ void applyFabricRoutePlan(ModuleOp mod, const FabricRoutePlan &plan) {
     func->setAttr(kFabricRoutesAttrName,
                   ArrayAttr::get(mod.getContext(), routeAttrs));
     func->setAttr(kFabricDeviceDomainAttrName, functionPlan.deviceDomain);
+    if (enableFabricMux && isFabricMuxCapableFunction(plan, func)) {
+      func->setAttr(kFabricMuxCapableAttrName, builder.getUnitAttr());
+    }
     func->setAttr(
         kFabricRuntimeArgBaseCommonIndexAttrName,
         builder.getI64IntegerAttr(

@@ -2412,7 +2412,8 @@ struct RawElementWriteLowering : OpConversionPattern<RawElementWriteOp> {
 static LogicalResult lowerTTLOpsToTTKernel(
     ModuleOp mod, MLIRContext &ctx, TTLToTTKernelTypeConverter &typeConverter,
     StringRef passName, bool pipeComputedAddresses, bool pipeCapacitySync,
-    bool pipeGlobalSemaphoresOnly, std::optional<uint64_t> l1BudgetOverride) {
+    bool pipeGlobalSemaphoresOnly, bool fabricMux,
+    std::optional<uint64_t> l1BudgetOverride) {
   ConversionTarget target(ctx);
   target.addIllegalDialect<tt::ttl::TTLDialect>();
   target.addLegalDialect<affine::AffineDialect, arith::ArithDialect,
@@ -2576,7 +2577,7 @@ static LogicalResult lowerTTLOpsToTTKernel(
   }
   mod->removeAttr(kPipeConservativeL1BytesAttrName);
   applyPipeModuleAttributes(mod, pipeModulePlan);
-  applyFabricRoutePlan(mod, fabricRoutePlan);
+  applyFabricRoutePlan(mod, fabricRoutePlan, fabricMux);
   const PipeResourcePlan &pipeResourcePlan = pipeModulePlan.getResourcePlan();
   const PipeCapacityPlan &pipeCapacityPlan = pipeModulePlan.getCapacityPlan();
   // [Device 2.0] The kPipeSyncSemaphoreCountAttrName,
@@ -2989,7 +2990,7 @@ struct TTLConvertTTLToTTKernelPass
     // Phase 1: Lower TTL ops to TTKernel (bind_cb, copy, wait, cb ops, store)
     if (failed(lowerTTLOpsToTTKernel(
             mod, ctx, typeConverter, getName(), pipeComputedAddresses,
-            pipeCapacitySync, pipeGlobalSemaphoresOnly,
+            pipeCapacitySync, pipeGlobalSemaphoresOnly, fabricMux,
             l1BudgetOverride == 0
                 ? std::nullopt
                 : std::optional<uint64_t>(l1BudgetOverride)))) {
