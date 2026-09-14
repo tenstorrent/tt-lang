@@ -704,7 +704,7 @@ LogicalResult buildFabricRoutePlan(
     ModuleOp module, const PipeTransferIndex &transferIndex,
     const PipeGraph &pipeGraph, const PipeForeachLoweringInfo &foreachInfo,
     ArrayRef<ExternalFabricManagerInterval> externalManagerIntervals,
-    bool enableLocalManagerOwnership, FabricRoutePlan &plan) {
+    FabricRoutePlan &plan) {
   LogicalResult result = success();
   RecordAlignedTableBuilder<std::size_t> routeIndices;
 
@@ -888,9 +888,16 @@ LogicalResult buildFabricRoutePlan(
                                   std::move(launchNodes)});
   }
 
+  return result;
+}
+
+void finalizeFabricRoutePlan(FabricRoutePlan &plan, const PipeGraph &pipeGraph,
+                             const PipeForeachLoweringInfo &foreachInfo,
+                             bool enableLocalManagerOwnership) {
+  llvm::SmallPtrSet<Operation *, 16> generatedControlOps(
+      foreachInfo.controlOps.begin(), foreachInfo.controlOps.end());
   planFabricManagerOwnership(plan, pipeGraph, generatedControlOps,
                              enableLocalManagerOwnership);
-  return result;
 }
 
 void applyFabricRoutePlan(ModuleOp mod, const FabricRoutePlan &plan) {
@@ -2351,6 +2358,7 @@ private:
   std::optional<DestinationRange> destinationRange;
 };
 
+// Translate one logical node and combine it with an L1 address for `noc`.
 static Value buildLogicalNodeNocAddress(Location loc, Value logicalX,
                                         Value logicalY, Value l1Address,
                                         Value noc,
@@ -2865,10 +2873,12 @@ static bool hasOneShotRemoteFixedReceiver(const PipeResourceInfo &resource) {
 
 // Logical coordinates represented as SSA values for generated NoC operations.
 struct LogicalPipeNode {
-  Value x;
-  Value y;
+  Value logicalX;
+  Value logicalY;
 };
 
+// Load the logical node stored at `groupTableIndex` in paired coordinate
+// tables.
 static LogicalPipeNode
 loadFabricForwarderGroupNode(Location loc, ArrayRef<int64_t> xCoordinates,
                              ArrayRef<int64_t> yCoordinates,
@@ -2896,6 +2906,7 @@ static SelectedFabricForwarderGroup loadSelectedFabricForwarderGroup(
                                groupIndex, rewriter)}};
 }
 
+// Add an operation-relative offset to the forwarder plan's scratch segment.
 static Value buildFabricForwarderScratchAddress(
     Operation *operation, const FabricForwarderPlan &forwarderPlan,
     int64_t operationByteOffset, ConversionPatternRewriter &rewriter) {
@@ -2905,17 +2916,20 @@ static Value buildFabricForwarderScratchAddress(
   return buildPipeSramScratchAddress(operation, *byteOffset, rewriter);
 }
 
+// Increment `counterAddress` in the scratch shard owned by `node`.
 static void
 emitFabricForwarderCounterIncrement(Operation *operation, LogicalPipeNode node,
                                     Value counterAddress, Value noc,
                                     ConversionPatternRewriter &rewriter) {
-  Value remoteCounter = buildLogicalNodeNocAddress(
-      operation->getLoc(), node.x, node.y, counterAddress, noc, rewriter);
+  Value remoteCounter =
+      buildLogicalNodeNocAddress(operation->getLoc(), node.logicalX,
+                                 node.logicalY, counterAddress, noc, rewriter);
   Value one = arith::ConstantIndexOp::create(rewriter, operation->getLoc(), 1);
   ttk::NocSemaphoreIncOp::create(rewriter, operation->getLoc(), remoteCounter,
                                  one, noc, /*posted=*/BoolAttr());
 }
 
+// Advance and return the cumulative counter value required by the next wait.
 static Value
 advanceFabricForwarderCounterExpectation(Location loc, Value expectationStorage,
                                          Value increment,
@@ -2929,6 +2943,7 @@ advanceFabricForwarderCounterExpectation(Location loc, Value expectationStorage,
   return expected;
 }
 
+// Wait until a cumulative scratch counter includes the next `increment` events.
 static void waitForFabricForwarderCounter(Location loc, Value counterAddress,
                                           Value expectationStorage,
                                           Value increment,
@@ -3000,6 +3015,7 @@ static void waitForSelectedSenderReadiness(
   ttk::NocSemaphoreSetOp::create(rewriter, loc, senderSemaphorePointer, zero);
 }
 
+// Return the DFB pointer selected by the transfer plan's ownership state.
 static Value
 buildSelectedSourceDFBAddress(PipeTransferSendOp op, Value sourceDFB,
                               const PipeSendPlan &sendPlan,
@@ -3044,9 +3060,9 @@ static void lowerFabricForwarderGroup(
   Value currentY =
       ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
   Value xMatches = arith::CmpIOp::create(
-      rewriter, loc, arith::CmpIPredicate::eq, currentX, forwarder.x);
+      rewriter, loc, arith::CmpIPredicate::eq, currentX, forwarder.logicalX);
   Value yMatches = arith::CmpIOp::create(
-      rewriter, loc, arith::CmpIPredicate::eq, currentY, forwarder.y);
+      rewriter, loc, arith::CmpIPredicate::eq, currentY, forwarder.logicalY);
   Value isForwarder = arith::AndIOp::create(rewriter, loc, xMatches, yMatches);
   auto forwardTransfers =
       scf::IfOp::create(rewriter, loc, isForwarder, /*withElseRegion=*/false);
@@ -3131,9 +3147,9 @@ static void lowerAggregatedSelectedPipeTransferSend(
   Value slotAddress =
       addByteOffset(loc, payloadScratchBase, slotByteOffset, rewriter);
   Value translatedForwarderX = ttk::ConvertLogicalXToTranslatedOp::create(
-      rewriter, loc, rewriter.getIndexType(), forwarder.x);
+      rewriter, loc, rewriter.getIndexType(), forwarder.logicalX);
   Value translatedForwarderY = ttk::ConvertLogicalYToTranslatedOp::create(
-      rewriter, loc, rewriter.getIndexType(), forwarder.y);
+      rewriter, loc, rewriter.getIndexType(), forwarder.logicalY);
   Value payloadSize = arith::ConstantIntOp::create(
       rewriter, loc, operationPlan.getPayloadSizeBytes(), 32);
   ttk::NocAsyncWriteOp::create(
@@ -3171,8 +3187,8 @@ static void lowerAggregatedSelectedPipeTransferSend(
         addByteOffset(loc, payloadScratchBase, memberByteOffset, rewriter);
     FabricRouteEmitter routeEmitter(op, routeIndex, fabricRuntime, rewriter);
     routeEmitter.emitFusedWriteAtomicIncrement(
-        destination.x, destination.y, memberSourceAddress, destinationAddress,
-        payloadSize, completionCounterAddress,
+        destination.logicalX, destination.logicalY, memberSourceAddress,
+        destinationAddress, payloadSize, completionCounterAddress,
         arith::ConstantIntOp::create(rewriter, loc, 1, 32));
   };
   lowerFabricForwarderGroup(op, selectedGroup, operationPlan, forwarderPlan,
@@ -3669,7 +3685,7 @@ static void lowerAggregatedSelectedPipeTransferPost(
         rewriter);
     FabricRouteEmitter routeEmitter(op, routeIndex, fabricRuntime, rewriter);
     routeEmitter.emitAtomicIncrement(
-        source.x, source.y, senderReadyCounterAddress,
+        source.logicalX, source.logicalY, senderReadyCounterAddress,
         arith::ConstantIntOp::create(rewriter, loc, 1, 32));
   };
   lowerFabricForwarderGroup(op, selectedGroup, operationPlan, forwarderPlan,

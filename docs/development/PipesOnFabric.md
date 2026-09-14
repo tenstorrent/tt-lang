@@ -416,9 +416,10 @@ destination-routed TT-Metal transport.
 A graph PipeNet creates one logical transfer for each participating worker. If
 every worker opens its own fabric connection, a four-worker transfer requires
 four concurrent connection owners even when all transfers use the same device
-route. Blackhole provides two forwarding links for one route direction, so the
-compiler assigns the workers to at most two local forwarders before host
-runtime route binding.
+route. TT-Metal can bind up to two Blackhole forwarding links for one route
+direction, so the compiler assigns the workers to at most two local forwarders
+before host runtime route binding. Runtime binding rejects hardware that does
+not provide every link required by the plan.
 
 For four workers, the sender protocol is:
 

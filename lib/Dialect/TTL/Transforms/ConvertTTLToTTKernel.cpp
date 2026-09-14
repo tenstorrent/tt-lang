@@ -2547,10 +2547,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   }
 
   FabricRoutePlan fabricRoutePlan;
-  if (failed(
-          buildFabricRoutePlan(mod, transferIndex, *pipeGraphOrErr,
-                               foreachLoweringInfo, *externalManagerIntervals,
-                               !pipeGlobalSemaphoresOnly, fabricRoutePlan))) {
+  if (failed(buildFabricRoutePlan(
+          mod, transferIndex, *pipeGraphOrErr, foreachLoweringInfo,
+          *externalManagerIntervals, fabricRoutePlan))) {
     return failure();
   }
 
@@ -2562,6 +2561,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   }
   FabricForwarderPlan fabricForwarderPlan =
       std::move(*maybeFabricForwarderPlan);
+  applyFabricForwarderRoutes(fabricForwarderPlan, fabricRoutePlan);
+  finalizeFabricRoutePlan(fabricRoutePlan, *pipeGraphOrErr, foreachLoweringInfo,
+                          !pipeGlobalSemaphoresOnly);
 
   PipePlanningOptions pipePlanningOptions;
   FailureOr<DFBResetLoweringPlan> resetLoweringPlan =
@@ -2640,7 +2642,6 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   }
   mod->removeAttr(kPipeConservativeL1BytesAttrName);
   applyPipeModuleAttributes(mod, pipeModulePlan);
-  applyFabricForwarderRoutes(fabricForwarderPlan, fabricRoutePlan);
   applyFabricRoutePlan(mod, fabricRoutePlan);
   const PipeResourcePlan &pipeResourcePlan = pipeModulePlan.getResourcePlan();
   const PipeCapacityPlan &pipeCapacityPlan = pipeModulePlan.getCapacityPlan();

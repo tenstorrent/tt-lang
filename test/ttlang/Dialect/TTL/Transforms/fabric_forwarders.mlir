@@ -10,7 +10,11 @@
               source = <coordinates = [0]>,
               destination = <coordinates = [1]>>,
               #ttl.transfer_edge<source = <coordinates = [2]>,
-              destination = <coordinates = [3]>>]}>,
+              destination = <coordinates = [3]>>,
+              #ttl.transfer_edge<source = <coordinates = [1]>,
+              destination = <coordinates = [0]>>,
+              #ttl.transfer_edge<source = <coordinates = [3]>,
+              destination = <coordinates = [2]>>]}>,
    pipes[<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
           dstEndX = 0, dstEndY = 0>,
          <srcX = 1, srcY = 0, dstStartX = 1, dstStartY = 0,
@@ -25,7 +29,11 @@
               source = <coordinates = [0]>,
               destination = <coordinates = [1]>>,
               #ttl.transfer_edge<source = <coordinates = [2]>,
-              destination = <coordinates = [3]>>]}>,
+              destination = <coordinates = [3]>>,
+              #ttl.transfer_edge<source = <coordinates = [1]>,
+              destination = <coordinates = [0]>>,
+              #ttl.transfer_edge<source = <coordinates = [3]>,
+              destination = <coordinates = [2]>>]}>,
    pipes[<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
           dstEndX = 0, dstEndY = 0>,
          <srcX = 1, srcY = 0, dstStartX = 1, dstStartY = 0,
@@ -35,14 +43,19 @@
          <srcX = 3, srcY = 0, dstStartX = 3, dstStartY = 0,
           dstEndX = 3, dstEndY = 0>]>>
 
-// Two device pairs use the same four-worker protocol. A static loop executes
-// the uniform outer callback twice; two source operations partition the
-// workers, so each operation retains one forwarder per device pair.
+// Two bidirectional device pairs use the same four-worker protocol. A static
+// loop executes the uniform outer callback twice. The sender's one-worker and
+// three-worker operations select forwarders 0 and 1, while the receiver's
+// four-worker operation selects forwarders 0 and 2. Manager ownership remains
+// independent because the physical connection owners differ.
 // CHECK-LABEL: module @disjoint_domains attributes
 // CHECK-SAME: ttl.pipe_sram_scratch_bytes = 8288 : i64
+// CHECK-SAME: ttl.pipe_sync_semaphore_count = 0 : i64
 // CHECK-LABEL: func.func @disjoint_sender
+// CHECK-SAME: ttl.fabric_manager_intervals = [#ttl.fabric_manager_interval<
+// CHECK-SAME: interferingIntervals = ["generated.1"]>]
 // CHECK-SAME: ttl.fabric_routes = [{
-// CHECK-SAME: source_nodes = [array<i64: 0, 0>, array<i64: 2, 0>]
+// CHECK-SAME: source_nodes = [array<i64: 0, 0>, array<i64: 1, 0>]
 // CHECK: ttkernel.noc_async_write
 // CHECK-NEXT: ttkernel.noc_async_write_barrier
 // CHECK: ttkernel.noc_semaphore_inc
@@ -54,6 +67,8 @@
 // CHECK-NEXT: ttkernel.noc_async_write_barrier
 // CHECK: ttkernel.routing_plane.fused_write_atomic_inc
 // CHECK-LABEL: func.func @disjoint_receiver
+// CHECK-SAME: ttl.fabric_manager_intervals = [#ttl.fabric_manager_interval<
+// CHECK-SAME: interferingIntervals = ["generated.0"]>]
 // CHECK-SAME: ttl.fabric_routes = [{
 // CHECK-SAME: source_nodes = [array<i64: 0, 0>, array<i64: 2, 0>]
 // CHECK: ttkernel.noc_semaphore_inc
@@ -77,8 +92,8 @@ module @disjoint_domains attributes {
       ttl.pipenet_foreach_src attributes {records = #outer_records} {
       ^bb0(%outer_pipe: !ttl.selected_pipe_src):
         %node_x = ttl.core_x : index
-        %c2 = arith.constant 2 : index
-        %left = arith.cmpi slt, %node_x, %c2 : index
+        %c1 = arith.constant 1 : index
+        %left = arith.cmpi slt, %node_x, %c1 : index
         scf.if %left {
           ttl.pipenet_foreach_src attributes {records = #records} {
           ^bb0(%pipe: !ttl.selected_pipe_src):
@@ -90,7 +105,7 @@ module @disjoint_domains attributes {
             ttl.yield
           }
         }
-        %right = arith.cmpi sge, %node_x, %c2 : index
+        %right = arith.cmpi sge, %node_x, %c1 : index
         scf.if %right {
           ttl.pipenet_foreach_src attributes {records = #records} {
           ^bb0(%pipe: !ttl.selected_pipe_src):

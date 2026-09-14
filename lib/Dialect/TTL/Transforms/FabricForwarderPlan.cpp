@@ -35,8 +35,9 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-// Blackhole exposes two independent forwarding links for one route direction.
-constexpr int64_t kBlackholeFabricForwardersPerRoute = 2;
+// TT-Metal can bind at most two independent Blackhole forwarding links for one
+// route direction; runtime binding rejects hardware with fewer required links.
+constexpr int64_t kMaximumBlackholeFabricForwardersPerRoute = 2;
 
 // Active records assigned to one forwarder for one operation and route.
 struct FabricForwarderGroupPlan {
@@ -166,6 +167,7 @@ static bool hasUniformForwarderControlFlow(
   return false;
 }
 
+// Orient the record's device edge from the kernel executing the operation.
 static std::pair<DeviceRefAttr, DeviceRefAttr>
 getLocalAndRemoteDevices(PipeRecordAttr record, bool isSender) {
   DeviceTransferAttr transfer = record.getDeviceTransfer();
@@ -177,6 +179,7 @@ getLocalAndRemoteDevices(PipeRecordAttr record, bool isSender) {
                   : std::make_pair(destination, source);
 }
 
+// Return the function route used by `record` in the operation's direction.
 static const FabricRoute *findDeviceRouteForRecord(const FabricRoutePlan &plan,
                                                    func::FuncOp function,
                                                    PipeRecordAttr record,
@@ -195,6 +198,7 @@ static const FabricRoute *findDeviceRouteForRecord(const FabricRoutePlan &plan,
   return &*route;
 }
 
+// Return the endpoint that executes the operation represented by `record`.
 static LaunchNodeCoord getLocalProtocolNode(PipeRecordAttr record,
                                             bool isSender) {
   return isSender
@@ -202,6 +206,7 @@ static LaunchNodeCoord getLocalProtocolNode(PipeRecordAttr record,
              : LaunchNodeCoord{record.getDstStartX(), record.getDstStartY()};
 }
 
+// Return the endpoint reached by the operation represented by `record`.
 static LaunchNodeCoord getRemoteProtocolNode(PipeRecordAttr record,
                                              bool isSender) {
   return isSender
@@ -242,6 +247,7 @@ partitionRecordsByNode(ArrayRef<LaunchNodeCoord> localNodesByRecord,
   return groups;
 }
 
+// Return whether `route` owns the local endpoint for `record`.
 static bool routeMatchesRecord(const FabricRoute &route, PipeRecordAttr record,
                                bool isSender) {
   auto [localDevice, remoteDevice] = getLocalAndRemoteDevices(record, isSender);
@@ -516,7 +522,8 @@ FailureOr<FabricForwarderPlan> buildFabricForwarderPlan(
     ArrayRef<std::size_t> routeCandidates = candidateIndicesByRoute[route];
     if (routeCandidates.size() != useCount ||
         routeCandidates.size() >
-            static_cast<std::size_t>(kBlackholeFabricForwardersPerRoute) ||
+            static_cast<std::size_t>(
+                kMaximumBlackholeFabricForwardersPerRoute) ||
         !routeCandidatesPartitionSourceNodes(*route, routeCandidates,
                                              candidates)) {
       unavailableRoutes.insert(route);
@@ -524,7 +531,7 @@ FailureOr<FabricForwarderPlan> buildFabricForwarderPlan(
     }
     SmallVector<int64_t> forwarderCounts =
         allocateRouteForwarders(*route, routeCandidates, candidates,
-                                kBlackholeFabricForwardersPerRoute);
+                                kMaximumBlackholeFabricForwardersPerRoute);
     for (auto [candidatePosition, candidateIndex] :
          llvm::enumerate(routeCandidates)) {
       const FabricOperationCandidate &candidate = candidates[candidateIndex];
@@ -568,7 +575,8 @@ FailureOr<FabricForwarderPlan> buildFabricForwarderPlan(
   for (const auto &[route, routeCandidates] : candidateIndicesByRoute) {
     if (!unavailableRoutes.contains(route) &&
         route->sourceNodes.size() >
-            static_cast<std::size_t>(kBlackholeFabricForwardersPerRoute)) {
+            static_cast<std::size_t>(
+                kMaximumBlackholeFabricForwardersPerRoute)) {
       selectedRoutes.insert(route);
     }
   }
@@ -597,9 +605,9 @@ FailureOr<FabricForwarderPlan> buildFabricForwarderPlan(
   llvm::DenseMap<const FabricRoute *, SmallVector<int64_t>>
       routeForwarderCounts;
   for (const FabricRoute *route : selectedRoutes) {
-    routeForwarderCounts[route] =
-        allocateRouteForwarders(*route, candidateIndicesByRoute[route],
-                                candidates, kBlackholeFabricForwardersPerRoute);
+    routeForwarderCounts[route] = allocateRouteForwarders(
+        *route, candidateIndicesByRoute[route], candidates,
+        kMaximumBlackholeFabricForwardersPerRoute);
   }
 
   llvm::DenseMap<const FabricRoute *, std::size_t> routePlanIndices;

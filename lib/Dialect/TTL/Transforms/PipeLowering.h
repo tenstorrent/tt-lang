@@ -322,13 +322,18 @@ getPipeResourceRequirements(const PipeResourcePlan &info,
 /// predicates. Duplicate records contribute one entry per transfer contract.
 LogicalResult buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 
-/// Build per-kernel routing-plane records from transfers validated by
-/// PipeGraph.
+/// Build per-kernel routes and unfinalized manager intervals from transfers
+/// validated by PipeGraph.
 LogicalResult buildFabricRoutePlan(
     ModuleOp module, const PipeTransferIndex &transferIndex,
     const PipeGraph &pipeGraph, const PipeForeachLoweringInfo &foreachInfo,
     ArrayRef<ExternalFabricManagerInterval> externalManagerIntervals,
-    bool enableLocalManagerOwnership, FabricRoutePlan &plan);
+    FabricRoutePlan &plan);
+
+/// Plan manager ownership after all route-owner substitutions are complete.
+void finalizeFabricRoutePlan(FabricRoutePlan &plan, const PipeGraph &pipeGraph,
+                             const PipeForeachLoweringInfo &foreachInfo,
+                             bool enableLocalManagerOwnership);
 
 /// Materialize the function attributes recorded by `plan`.
 void applyFabricRoutePlan(ModuleOp module, const FabricRoutePlan &plan);
