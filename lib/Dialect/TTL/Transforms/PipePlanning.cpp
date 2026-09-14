@@ -155,7 +155,8 @@ FailureOr<PipeTransferPayload> getPipeTransferPayload(PipeTransferSendOp sendOp,
           dyn_cast<RankedTensorType>(sendOp.getSrc().getType())) {
     if (!sourceViewType.hasStaticShape() || blockSpan != 1) {
       sendOp.emitError(
-          "pipe send DFB subviews require one logical transfer block");
+          "pipe send DFB block and subview sources require one logical "
+          "transfer block");
       return failure();
     }
     elementsPerTransfer = sourceViewType.getNumElements();
@@ -189,10 +190,17 @@ buildPipeSendPlan(PipeTransferSendOp sendOp, const DominanceInfo &dominanceInfo,
                         ? sendOp.getSrc()
                         : getAttachedCB(sendOp.getSrc());
   assert(sourceDFB && "verified pipe send must have a source DFB");
-  bool readFromDFB = llvm::any_of(sourceDFB.getUsers(), [&](Operation *user) {
-    return isa<CBWaitOp, CBPushOp>(user) && user->getOperand(0) == sourceDFB &&
-           dominanceInfo.dominates(user, sendOp);
-  });
+  bool readFromDFB;
+  if (!isa<CircularBufferType>(sendOp.getSrc().getType())) {
+    Operation *acquire = findCBAcquireOp(sendOp.getSrc(), sendOp);
+    assert(acquire && "verified pipe send block must have a DFB acquire");
+    readFromDFB = isa<CBWaitOp>(acquire);
+  } else {
+    readFromDFB = llvm::any_of(sourceDFB.getUsers(), [&](Operation *user) {
+      return isa<CBWaitOp>(user) && user->getOperand(0) == sourceDFB &&
+             dominanceInfo.dominates(user, sendOp);
+    });
+  }
 
   ArrayRef<std::size_t> fabricRouteIndices =
       fabricRoutePlan

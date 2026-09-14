@@ -10,8 +10,9 @@
 // CHECK: %[[DESTINATION1:.*]] = ttkernel.tensor_accessor.get_noc_addr
 // CHECK: %[[DESTINATION2:.*]] = ttkernel.tensor_accessor.get_noc_addr
 // CHECK: %[[DESTINATION3:.*]] = ttkernel.tensor_accessor.get_noc_addr
-// CHECK: %[[SOURCE:.*]] = ttkernel.get_read_ptr
 // CHECK-NOT: ttkernel.experimental.semaphore_wait
+// CHECK: ttkernel.noc_async_read_barrier
+// CHECK-NEXT: %[[SOURCE:.*]] = ttkernel.get_write_ptr
 // CHECK-NEXT: ttkernel.routing_plane.scatter_write
 // CHECK-SAME: %[[SOURCE]]
 // CHECK-SAME: %[[DESTINATION0]]
@@ -75,8 +76,8 @@ module attributes {
              !ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>)
           -> !ttl.transfer_handle<read>
       ttl.wait %read : !ttl.transfer_handle<read>
-      %send = ttl.copy %send_dfb, %pipe
-          : (!ttl.cb<[2, 2], !ttcore.tile<32x32, bf16>, 2>,
+      %send = ttl.copy %block, %pipe
+          : (tensor<2x2x!ttcore.tile<32x32, bf16>>,
              !ttl.selected_pipe_src)
           -> !ttl.transfer_handle<write>
       ttl.wait %send : !ttl.transfer_handle<write>

@@ -155,7 +155,8 @@ func.func @different_noc_write_barriers_survive() attributes { "ttl.kernel_threa
 
 // -----
 
-// CB -> Pipe copy (unicast): lowers to noc_async_write + semaphore inc
+// A prior push does not make a later reserved source readable. The unicast
+// send uses the current write pointer and signals completion.
 // CHECK-LABEL: func.func @copy_cb_to_pipe
 // CHECK: %[[NOC:.*]] = arith.constant 0 : i8
 // CHECK: %[[SRC_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
@@ -164,6 +165,7 @@ func.func @different_noc_write_barriers_survive() attributes { "ttl.kernel_threa
 // CHECK: ttkernel.experimental.semaphore_wait(%[[ADDR_READY_PTR]]
 // CHECK: ttkernel.noc_semaphore_set(%[[ADDR_READY_PTR]]
 // CHECK: %[[SRC_ADDR:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
+// CHECK-NOT: ttkernel.get_read_ptr(%[[SRC_DFB]])
 // CHECK: %[[DST_X:.*]] = ttkernel.experimental.convert_logical_x_to_translated
 // CHECK: %[[DST_Y:.*]] = ttkernel.experimental.convert_logical_y_to_translated
 // CHECK: %[[SCRATCH:.*]] = ttkernel.get_common_arg_val
@@ -181,6 +183,9 @@ func.func @different_noc_write_barriers_survive() attributes { "ttl.kernel_threa
 func.func @copy_cb_to_pipe() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %first = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %second = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
   %xf = ttl.copy %cb, %p : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> !ttl.transfer_handle<write>
   ttl.wait %xf : !ttl.transfer_handle<write>
   func.return
