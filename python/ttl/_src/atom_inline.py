@@ -17,7 +17,7 @@ from ttl.dfb_allocation_group import DFBAllocationGroup
 from ttl.dfb_reset import DFBReset
 from ttl.dfb_reconfiguration import DFBReconfiguration
 from ttl.fabric import FabricManagerClaim
-from ttl.kernel import Kernel
+from ttl.kernel import Kernel, KernelKind
 from ttl.scalar import ScalarType
 
 _INLINED_OPERATION_STATEMENT = "_ttl_inlined_operation_statement"
@@ -727,10 +727,11 @@ def _literal_node(
     suffix: str,
     name_hint: str,
 ) -> ast.expr:
-    if value is ScalarType or isinstance(value, ScalarType):
+    if value is ScalarType or isinstance(value, (ScalarType, KernelKind)):
         type_name = "class" if value is ScalarType else value.name.lower()
+        category = "kernel_kind" if isinstance(value, KernelKind) else "scalar_type"
         fresh_name = _fresh_name(
-            f"{name_hint}__scalar_type_{type_name}", suffix, reserved_names
+            f"{name_hint}__{category}_{type_name}", suffix, reserved_names
         )
         scope[fresh_name] = value
         return ast.Name(id=fresh_name, ctx=ast.Load())
