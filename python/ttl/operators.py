@@ -955,10 +955,9 @@ def copy(
             pipe_val = _get_pipe_mlir_value(dst)
             ctx = src.type.context
             xf_type = Type.parse("!ttl.transfer_handle<write>", ctx)
-            source = src if _is_block_subview(src) else _get_cb_from_block(src)
             return ttl.copy(
                 xf_type,
-                source,
+                src,
                 pipe_val,
                 byte_count=_copy_byte_count_attr(byte_count, ctx),
             )

@@ -3177,11 +3177,11 @@ static LogicalResult emitComputedTensorFabricWrite(
     ValueRange startIndices, const FabricRuntimeInfo &fabricRuntime,
     ConversionPatternRewriter &rewriter);
 
-/// Add a waited block subview's byte offset to the current DFB pointer.
 static Value
 addPipeSendSourceSubviewOffset(PipeTransferSendOp op, Value sourcePointer,
                                ConversionPatternRewriter &rewriter) {
-  if (isa<CircularBufferType>(op.getSrc().getType())) {
+  Value source = traceUnrealizedCasts(op.getSrc());
+  if (!source.getDefiningOp<tensor::ExtractSliceOp>()) {
     return sourcePointer;
   }
   Value sourceDFB = getAttachedCB(op.getSrc());
