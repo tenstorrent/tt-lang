@@ -2550,7 +2550,9 @@ destination tensor metadata and tile coordinates resolved for each receiver
 node. Consecutive source pages are grouped into fabric scatter writes of up to
 four pages, subject to the active fabric packet-size limit. A multi-page
 transfer performs one ordered remote completion increment after all scatter
-writes. A one-page transfer uses one fused payload write and completion
+writes. Payload packets and the completion increment use the same routing-plane
+connection, whose command order prevents completion from preceding a payload
+write. A one-page transfer uses one fused payload write and completion
 increment. The receiver waits for completion before reading the region. A
 region may be reused when the same sequential control context completes that
 read before posting the next transfer; otherwise transfers require disjoint
