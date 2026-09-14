@@ -1667,9 +1667,11 @@ def TTKernelAnnotateDFBUse
     Runs after per-core specialization and canonicalization.
     For each `ttkernel.thread` function, records the
     sorted physical DFB indices reached through surviving
-    `ttkernel.get_compile_time_arg_val` operations below
-    `ttl.base_cta_index` and `dfb_resource_indices` metadata on surviving
-    `ttkernel.opaque_call` operations in `ttl.used_dfb_indices`. The metadata
+    `ttkernel.get_compile_time_arg_val` operations below the finalized
+    `ttl.dfb_allocations` count and `dfb_resource_indices` metadata on
+    surviving `ttkernel.opaque_call` operations in `ttl.used_dfb_indices`.
+    Without finalized allocation metadata, the pass uses
+    `ttl.base_cta_index`. The metadata
     preserves resource requirements after lowering replaces DFB operands with
     static values. Helpers stay in the call-graph analysis so their uses
     propagate to kernel entries.
