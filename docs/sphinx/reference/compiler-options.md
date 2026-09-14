@@ -25,6 +25,7 @@ python my_kernel.py --no-ttl-maximize-dst
 | `--ttl-pipe-computed-addresses` / `--no-ttl-pipe-computed-addresses` | enabled | Use computed receiver DFB addresses for eligible PipeNet transfers. When disabled, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
 | `--ttl-pipe-capacity-sync` / `--no-ttl-pipe-capacity-sync` | enabled | Use capacity-counter synchronization when the receiver wait and pop execute on the receiver NOC thread and the computed-address transfer passes the DFB ownership and count proofs. When disabled, computed-address transfers use receiver-post synchronization. |
 | `--ttl-pipe-global-semaphores-only` / `--no-ttl-pipe-global-semaphores-only` | disabled | Allocate all compiler-managed PipeNet synchronization counters in GlobalSemaphore storage, leaving local hardware semaphore ids available to the application. |
+| `--ttl-fabric-mux` / `--no-ttl-fabric-mux` | enabled | Permit eligible single-execution fabric managers to share a forwarding link through a program-local TT-Metal mux when direct link assignment cannot satisfy all concurrent managers. |
 | `--ttl-pipe-batch-tiles N` | `0` (auto) | Limit the logical transfers in one PipeTransport group. `0` selects automatically and `1` disables grouping. |
 | `--ttl-l1-budget N` | target-dependent | Override the per-core L1 budget used for target-aligned DFB allocation, PipeNet resources, synchronized-reset state, reconfiguration state, and final combined validation. |
 | `--ttl-reuse-user-dfbs` / `--no-ttl-reuse-user-dfbs` | enabled | Reuse physical DFB indices and compiler-managed storage when concurrent-kernel liveness proves that compatible lifetimes do not overlap. Disabling compacts provisional user indices without introducing user-DFB sharing and assigns each physical descriptor separate storage. |
@@ -147,6 +148,7 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | `pipe-computed-addresses` | bool | `true` | Use computed receiver DFB addresses for eligible PipeNet transfers. When disabled, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
 | `pipe-capacity-sync` | bool | `true` | Use capacity-counter synchronization when the receiver wait and pop execute on the receiver NOC thread and the computed-address transfer passes the DFB ownership and count proofs. When disabled, computed-address transfers use receiver-post synchronization. |
 | `pipe-global-semaphores-only` | bool | `false` | Allocate all compiler-managed PipeNet synchronization counters in GlobalSemaphore storage, leaving local hardware semaphore ids available to the application. |
+| `fabric-mux` | bool | `true` | Mark single-execution fabric-manager lifetimes as eligible for program-local TT-Metal mux assignment when direct forwarding-link assignment fails. |
 | `pipe-batch-tiles` | int64_t | `0` (auto) | Limit logical transfers per PipeTransport group. `0` selects automatically and `1` disables grouping. |
 | `l1-budget-override` | uint32_t | `0` (target default) | Override the per-core L1 budget used for target-aligned DFB allocation, PipeNet resources, synchronized-reset state, reconfiguration state, and final combined validation. |
 | `reuse-user-dfbs` | bool | `true` | Reuse physical DFB indices and compiler-managed storage for compatible lifetimes proven not to overlap. |
@@ -181,7 +183,7 @@ The pipeline runs these passes and subpasses in order:
 - `ttl-verify-dfb-spsc` -- verify per-node DFB producer/consumer uniqueness after finalization
 - `ttl-erase-pipenet-scopes` -- remove verified PipeNet structural markers
 - `ttl-validate-cb-budget` -- verify target-aligned finalized DFB storage, synchronized-reset scratch, and reconfiguration tensors fit the per-core L1 budget
-- `convert-ttl-to-ttkernel` -- lower TTL DMA, PipeNet, synchronized-reset, and DFB reconfiguration operations to TTKernel, select their runtime resources, and validate the exact combined per-core L1 allocation
+- `convert-ttl-to-ttkernel` -- lower TTL DMA, PipeNet, synchronized-reset, and DFB reconfiguration operations to TTKernel, record mux-eligible single-execution fabric-manager lifetimes when `fabric-mux=true`, select runtime resources, and validate the exact combined per-core L1 allocation
 - `ttkernel-insert-inits` -- insert hardware init ops before compute ops
 - `ttkernel-insert-l1-accumulation` -- insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
 - `ttkernel-combine-pack-tiles` -- combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*
@@ -356,10 +358,11 @@ operations to TTKernel.
 | `pipe-computed-addresses` | bool | `true` | Use computed receiver DFB addresses for eligible PipeNet transfers. When false, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
 | `pipe-capacity-sync` | bool | `true` | Use capacity-counter synchronization when the receiver wait and pop execute on the receiver NOC thread and the computed-address transfer passes the DFB ownership and count proofs. When false, computed-address transfers use receiver-post synchronization. |
 | `pipe-global-semaphores-only` | bool | `false` | Allocate all compiler-managed PipeNet synchronization counters in GlobalSemaphore storage. |
+| `fabric-mux` | bool | `true` | Mark one single-execution fabric-manager lifetime as eligible for program-local TT-Metal mux assignment. Target binding still selects direct connections when they fit. |
 | `l1-budget-override` | uint32_t | `0` (target default) | Override the exact combined per-core budget for target-aligned finalized DFBs, synchronized-reset state, reconfiguration tensors, PipeNet scratch, and GlobalSemaphore allocations. |
 
 ```bash
-ttlang-opt input.mlir -p 'builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=false pipe-global-semaphores-only=true l1-budget-override=98304})'
+ttlang-opt input.mlir -p 'builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=false pipe-global-semaphores-only=true fabric-mux=true l1-budget-override=98304})'
 ```
 
 #### `ttl-dump-cb-flow-graph`
