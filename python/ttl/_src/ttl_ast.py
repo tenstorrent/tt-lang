@@ -913,34 +913,6 @@ class TTLGenericCompiler(TTCompilerBase):
             keyword for keyword in node.keywords if keyword.arg != "kernel"
         ]
 
-    def visit_For(self, node):
-        sequence = self._evaluate_sequence_expression(node.iter)
-        if not isinstance(sequence, _SequenceExpressionValue):
-            return super().visit_For(node)
-
-        if not isinstance(sequence.value, tuple):
-            self._raise_error(
-                node.iter,
-                "static kernel iteration requires an immutable tuple",
-            )
-        if not isinstance(node.target, ast.Name):
-            self._raise_error(
-                node.target,
-                "static kernel iteration requires a plain variable target",
-            )
-        if node.orelse:
-            self._raise_error(
-                node,
-                "static kernel iteration does not support a for-else clause",
-            )
-        self._reject_unsupported_language_constructs(node.body)
-
-        for element in sequence.value:
-            self._set_var(node.target.id, element)
-            for statement in node.body:
-                self.visit(statement)
-            self._on_scope_exit()
-
     def visit_AugAssign(self, node):
         """Handle augmented assignment on tensor values.
 
@@ -2056,12 +2028,6 @@ class TTLGenericCompiler(TTCompilerBase):
                     # Shape and axis lists are consumed by the Python-level API,
                     # exactly as an inline literal would be.
                     self._set_var(name, val)
-                    if isinstance(val, tuple):
-                        for index, element in enumerate(val):
-                            if isinstance(element, PipeNet):
-                                self._pipe_net_names.setdefault(
-                                    id(element), f"{name}[{index}]"
-                                )
                 elif isinstance(val, DataflowBuffer):
                     self._set_var(name, self._emit_cb_from_capture(val))
                 elif isinstance(val, Pipe):
