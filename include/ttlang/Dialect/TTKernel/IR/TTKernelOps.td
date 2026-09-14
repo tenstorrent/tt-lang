@@ -4307,7 +4307,8 @@ def TTKernel_GetCompileArgValOp : TTKernel_Op<"get_compile_time_arg_val",
 }
 
 def TTKernel_ConstantTableLookupOp
-    : TTKernel_Op<"experimental.constant_table_lookup", [Pure]> {
+    : TTKernel_Op<"experimental.constant_table_lookup",
+                  [ConditionallySpeculatable, NoMemoryEffect]> {
     let summary = "Look up an element in an immutable compile-time table.";
     let description = [{
       Returns the element at `index` from the non-empty `values` table. Every
@@ -4321,6 +4322,10 @@ def TTKernel_ConstantTableLookupOp
 
     let assemblyFormat = [{
       $index `,` $values attr-dict `:` type($index)
+    }];
+    let extraClassDeclaration = [{
+      /// Returns Speculatable only for an `index` constant within `values`.
+      Speculation::Speculatability getSpeculatability();
     }];
     let hasCanonicalizer = 1;
     let hasFolder = 1;

@@ -841,6 +841,17 @@ static FailureOr<int64_t> lookupConstantTableValue(int64_t index,
   return values[index];
 }
 
+Speculation::Speculatability ConstantTableLookupOp::getSpeculatability() {
+  APInt indexValue;
+  if (!matchPattern(getIndex(), m_ConstantInt(&indexValue))) {
+    return Speculation::NotSpeculatable;
+  }
+  return succeeded(
+             lookupConstantTableValue(indexValue.getSExtValue(), getValues()))
+             ? Speculation::Speculatable
+             : Speculation::NotSpeculatable;
+}
+
 struct StridedTableIndex {
   Value varyingIndex;
   std::size_t stride;

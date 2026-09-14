@@ -1,7 +1,8 @@
 // RUN: ttlang-opt %s --canonicalize | FileCheck %s
+// RUN: ttlang-opt %s --ttkernel-cleanup | FileCheck %s --check-prefix=HOIST
 
-// Summary: Verifies constant-table lookup canonicalization and dynamic-index
-// preservation.
+// Summary: Verifies constant-table lookup canonicalization, dynamic-index
+// preservation, and conditional execution.
 
 // A constant index is replaced by an arith constant with the selected value.
 // CHECK-LABEL: func.func @canonicalize_constant_index
@@ -69,4 +70,23 @@ func.func @retain_incomplete_table(%row: index) -> index {
   %value = ttkernel.experimental.constant_table_lookup %index,
       [0, 1, 2, 3, 4, 5] : index
   return %value : index
+}
+
+// An index valid only on participating executions must remain inside a loop
+// that may execute zero times.
+// HOIST-LABEL: func.func @retain_lookup_in_maybe_empty_loop
+// HOIST-NOT: ttkernel.experimental.constant_table_lookup
+// HOIST: scf.for
+// HOIST-NEXT: %[[VALUE:.*]] = ttkernel.experimental.constant_table_lookup
+// HOIST-NEXT: func.call @consume(%[[VALUE]])
+func.func private @consume(index)
+func.func @retain_lookup_in_maybe_empty_loop(%upper: index, %index: index) {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  scf.for %iteration = %zero to %upper step %one {
+    %value = ttkernel.experimental.constant_table_lookup %index,
+        [3, 5, 8] : index
+    func.call @consume(%value) : (index) -> ()
+  }
+  return
 }
