@@ -9,14 +9,6 @@
 // CHECK: routing_plane_atomic_inc(
 // CHECK: packet_header->to_noc_unicast_atomic_inc(
 // CHECK: sender.send_payload_flush_blocking_from_address(
-// CHECK: static __attribute__((noinline)) void
-// CHECK-NEXT: routing_plane_write(
-// CHECK: packet_header->to_noc_unicast_write(
-// CHECK: sender.send_payload_without_header_non_blocking_from_address(source_address,
-// CHECK-LABEL: FORCE_INLINE void routing_plane_scatter_write(
-// CHECK: packetHeader->to_noc_unicast_scatter_write(
-// CHECK: fabric_unicast_noc_scatter_write_with_state<
-// CHECK: noc_async_writes_flushed();
 // CHECK-LABEL: static __attribute__((noinline)) void routing_plane_fused_write_atomic_inc(
 // CHECK: const uint32_t [[MAX_PACKET_SIZE:.*]] = tt::tt_fabric::get_fabric_max_packet_size();
 // CHECK: while (sizeBytes > [[MAX_PACKET_SIZE]]) {
@@ -29,6 +21,14 @@
 // CHECK: packetHeader->to_noc_fused_unicast_write_atomic_inc(
 // CHECK: sender.send_payload_without_header_non_blocking_from_address(sourceAddress,
 // CHECK-NEXT: sizeBytes);
+// CHECK: static __attribute__((noinline)) void
+// CHECK-NEXT: routing_plane_write(
+// CHECK: packet_header->to_noc_unicast_write(
+// CHECK: sender.send_payload_without_header_non_blocking_from_address(source_address,
+// CHECK-LABEL: FORCE_INLINE void routing_plane_scatter_write(
+// CHECK: packetHeader->to_noc_unicast_scatter_write(
+// CHECK: fabric_unicast_noc_scatter_write_with_state<
+// CHECK: noc_async_writes_flushed();
 // CHECK-LABEL: void kernel_main() {
 // CHECK: size_t [[RUNTIME_ARG_BASE:.*]] = 5;
 // CHECK: tt::tt_fabric::RoutingPlaneConnectionManager [[MANAGER:.*]];
