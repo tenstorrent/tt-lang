@@ -2829,6 +2829,13 @@ def _lower_program_to_kernel(
         assign_dst_pass = "ttl-assign-dst"
 
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
+        sync_user_dfbs_flag = int(compiler_options.auto_sync_user_dfbs)
+        insert_dfb_sync_pass = (
+            f"ttl-insert-cb-sync{{sync-user-dfbs={sync_user_dfbs_flag}}}"
+        )
+        coalesce_dfb_acquires_pass = (
+            f"ttl-coalesce-dfb-acquires{{sync-user-dfbs={sync_user_dfbs_flag}}}"
+        )
         accumulation_strategy = compiler_options.accumulation_strategy
         pipe_batch_tiles = compiler_options.pipe_batch_tiles
         pipe_transport_options = [f"group-size={pipe_batch_tiles}"]
@@ -2856,16 +2863,16 @@ def _lower_program_to_kernel(
         pipeline_passes = [
             f"func.func({tensor_recurrence_pipeline})",
             "func.func(ttl-insert-copy-wait)",
-            "func.func(ttl-auto-sync)",
+            f"func.func({insert_dfb_sync_pass},{coalesce_dfb_acquires_pass})",
             "func.func(ttl-insert-accumulation-scopes{kind=dfb})",
             "func.func(ttl-lower-accumulation-scopes{kind=dfb})",
             "func.func(ttl-create-producer-compute)",
             f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
             "func.func(convert-ttl-to-compute)",
-            "func.func(ttl-insert-cb-sync)",
+            f"func.func({insert_dfb_sync_pass})",
             "ttl-verify-pipenet",
             pipe_transport_pass,
-            "func.func(ttl-coalesce-dfb-acquires)",
+            f"func.func({coalesce_dfb_acquires_pass})",
             "ttl-finalize-dfb-indices{"
             f"reuse-user-dfbs={reuse_user_dfbs_flag} "
             "unsafe-assume-allocation-groups="
