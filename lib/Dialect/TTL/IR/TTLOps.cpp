@@ -712,8 +712,7 @@ mlir::LogicalResult mlir::tt::ttl::BindCBOp::verify() {
   if (StringAttr addressScope = getAddressScopeAttr();
       addressScope && addressScope.getValue() != "local" &&
       addressScope.getValue() != "remote_uniform") {
-    return emitOpError(
-        "address_scope must be 'local' or 'remote_uniform'");
+    return emitOpError("address_scope must be 'local' or 'remote_uniform'");
   }
 
   if (TensorBackingAttr backing = getTensorBackingAttr()) {

@@ -19,6 +19,11 @@
 
 namespace mlir::tt::ttl {
 
+static StringRef getDFBAddressScope(BindCBOp declaration) {
+  StringAttr addressScope = declaration.getAddressScopeAttr();
+  return addressScope ? addressScope.getValue() : "local";
+}
+
 DFBLogicalIdentityAnalysis::DFBLogicalIdentityAnalysis(Operation *operation) {
   ModuleOp moduleOp = cast<ModuleOp>(operation);
   int64_t maxExplicitId = -1;
@@ -125,25 +130,16 @@ DFBLogicalIdentityAnalysis::DFBLogicalIdentityAnalysis(Operation *operation) {
       errorMessage = messageStream.str();
       return;
     }
-    if (!inserted && firstDeclarationIt->second.getAddressScopeAttr() !=
-                         bindOp.getAddressScopeAttr()) {
+    StringRef expectedAddressScope =
+        getDFBAddressScope(firstDeclarationIt->second);
+    StringRef addressScope = getDFBAddressScope(bindOp);
+    if (!inserted && expectedAddressScope != addressScope) {
       std::string message;
       llvm::raw_string_ostream messageStream(message);
       messageStream << "logical DFB " << logicalId
                     << " has inconsistent address scopes across kernel "
-                       "functions: expected ";
-      if (StringAttr expected =
-              firstDeclarationIt->second.getAddressScopeAttr()) {
-        messageStream << expected.getValue();
-      } else {
-        messageStream << "none";
-      }
-      messageStream << " but found ";
-      if (StringAttr found = bindOp.getAddressScopeAttr()) {
-        messageStream << found.getValue();
-      } else {
-        messageStream << "none";
-      }
+                       "functions: expected "
+                    << expectedAddressScope << " but found " << addressScope;
       errorOperation = bindOp;
       errorMessage = messageStream.str();
       return;

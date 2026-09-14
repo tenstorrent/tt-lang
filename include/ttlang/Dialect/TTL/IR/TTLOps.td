@@ -42,6 +42,7 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
       allocation for all logical DFBs carrying the same group identity.
     - `address_scope` is `local` when nodes may use different L1 addresses and
       `remote_uniform` when every node that uses the DFB requires one address.
+      Omitting the attribute is equivalent to `local`.
     - `tensor_backing`, when present, binds the complete dataflow buffer
       capacity to the specified byte range of an operation tensor argument.
       The range is relative to the local shard on each launch node. Tensor

@@ -2435,12 +2435,14 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
             raise ValueError(f"{context}.{field} must be positive, got {value}")
 
     address_scope = (
-        str(entry["address_scope"]) if "address_scope" in entry else "local"
+        StringAttr(entry["address_scope"]).value
+        if "address_scope" in entry
+        else "local"
     )
-    if address_scope not in {"local", "remote_uniform", "legacy"}:
+    if address_scope not in {"local", "remote_uniform"}:
         raise ValueError(
-            f"{context}.address_scope must be 'local', 'remote_uniform', or "
-            f"'legacy', got {address_scope!r}"
+            f"{context}.address_scope must be 'local' or 'remote_uniform', "
+            f"got {address_scope!r}"
         )
 
     allocation_nodes = None

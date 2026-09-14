@@ -140,10 +140,10 @@ def _validate_physical_dfb_config(
             f"DFB[{config.dfb_index}] storage_index must be a nonnegative "
             f"integer, got {config.storage_index!r}"
         )
-    if config.address_scope not in {"local", "remote_uniform", "legacy"}:
+    if config.address_scope not in {"local", "remote_uniform"}:
         raise ValueError(
-            f"DFB[{config.dfb_index}] address_scope must be 'local', "
-            f"'remote_uniform', or 'legacy', got {config.address_scope!r}"
+            f"DFB[{config.dfb_index}] address_scope must be 'local' or "
+            f"'remote_uniform', got {config.address_scope!r}"
         )
     allocation_nodes = None
     if config.allocation_nodes is not None:
@@ -3046,15 +3046,11 @@ def _resolve_dfb_placements(
                             f"on core {core}"
                         )
                     candidates[core] = source
-        used_cores = (
-            allocation_cores
-            if config.address_scope == "legacy"
-            else {
-                core
-                for core, indices in used_by_core.items()
-                if dfb_index in indices and core in allocation_cores
-            }
-        )
+        used_cores = {
+            core
+            for core, indices in used_by_core.items()
+            if dfb_index in indices and core in allocation_cores
+        }
         if config.storage_segments:
             uncovered = sorted(core for core in used_cores if core not in candidates)
             if uncovered:

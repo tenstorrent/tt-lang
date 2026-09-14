@@ -26,7 +26,7 @@ namespace mlir::tt::ttl {
 class DFBPhysicalConflictModelBuilder;
 
 /// Required relationship between one DFB's L1 addresses on launch nodes.
-enum class DFBAddressScope { Local, RemoteUniform, Legacy };
+enum class DFBAddressScope { Local, RemoteUniform };
 
 /// Returns the runtime metadata spelling for an address scope.
 StringRef getDFBAddressScopeName(DFBAddressScope scope);

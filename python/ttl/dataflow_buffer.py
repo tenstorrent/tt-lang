@@ -370,11 +370,9 @@ def make_dataflow_buffer_like(
         block_count: Capacity multiplier (default 2 for double-buffering)
         allocation_group: Optional immutable identity requiring compiler-verified
             physical allocation sharing with the other group members
-        address_scope: ``"local"`` permits different L1 addresses on different
-            nodes. ``"remote_uniform"`` requires one L1 address on every node
-            that uses the DFB. ``None`` allocates the DFB across the operation
-            grid for compatibility with code that does not declare its address
-            requirements.
+        address_scope: ``None`` or ``"local"`` permits different L1 addresses
+            on different nodes. ``"remote_uniform"`` requires one L1 address
+            on every node that uses the DFB.
 
     Returns:
         DataflowBuffer for use in thread function closures
@@ -406,6 +404,8 @@ def make_tensor_backed_dfb(
     ``allocation_group`` requires compiler-verified physical allocation sharing
     with the other group members. Tensor-backed group members must retain an
     identical DFB capacity descriptor.
+
+    ``address_scope`` has the same meaning as in :func:`make_dfb`.
     """
     from .dtype_utils import is_ttnn_tensor
 
@@ -486,11 +486,9 @@ def make_dfb(
             16, or 32 and widths 16 or 32.
         allocation_group: Optional immutable identity requiring compiler-verified
             physical allocation sharing with the other group members
-        address_scope: ``"local"`` permits different L1 addresses on different
-            nodes. ``"remote_uniform"`` requires one L1 address on every node
-            that uses the DFB. ``None`` allocates the DFB across the operation
-            grid for compatibility with code that does not declare its address
-            requirements.
+        address_scope: ``None`` or ``"local"`` permits different L1 addresses
+            on different nodes. ``"remote_uniform"`` requires one L1 address
+            on every node that uses the DFB.
 
     Returns:
         DataflowBuffer for use in thread function closures
