@@ -43,6 +43,14 @@ lifecycle is complete or ends at a synchronized boundary that is explicitly
 allowed to discard its state. [DFB lifecycle](#dfb-lifecycle) and
 [Index reuse](#index-reuse) define these rules in detail.
 
+## User-managed synchronization
+
+By default, release inference inserts missing push/pop operations and acquire coalescing combines compatible queue-operation groups. These transformations also inspect explicit releases to determine which accesses belong to each acquired slot.
+
+An external C++ consumer can wait and pop internally without exposing those actions as protocol metadata. For example, a program may reserve a DFB, fill it through external C++, push it, then call an external consumer in the same conditional region. Release inference can mistake that consumer for a write-side use that must precede the push.
+
+`--no-ttl-auto-sync-user-dfbs` disables release inference, its access-order checks, and acquire coalescing for user-managed DFBs. The program supplies their complete reserve/push/wait/pop sequence and synchronization, including operations inside external C++. Compiler-created DFBs retain automatic synchronization, identified with the existing `ttl.compiler_allocated` marker. Conditional receive-completion, SPSC, allocation, and capacity checks remain enabled. Storage reuse still requires the existing lifetime and allocation-group contracts.
+
 ## Tensor-backed storage
 
 `ttl.make_tensor_backed_dfb` binds a DFB's complete capacity to a byte range
