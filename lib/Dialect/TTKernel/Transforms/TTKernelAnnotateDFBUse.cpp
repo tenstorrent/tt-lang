@@ -71,9 +71,9 @@ static void warnDroppedPrint(func::FuncOp func, int32_t dfbIndex) {
 
 static int64_t getFuncDFBCount(func::FuncOp func, int64_t maxDFBCount) {
   auto module = func->getParentOfType<ModuleOp>();
-  if (auto model = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
-      model && model.getValue() == kCompilerL1MemoryModel) {
-    return module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName).size();
+  if (auto allocations =
+          module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName)) {
+    return allocations.size();
   }
   if (auto attr = func->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttrName)) {
     return attr.getInt();
