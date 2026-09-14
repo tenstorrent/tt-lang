@@ -6,6 +6,8 @@
 
 from dataclasses import dataclass
 from enum import Enum, auto
+import hashlib
+import json
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -58,6 +60,15 @@ class _FabricRoutingMode(Enum):
     TWO_DIMENSIONAL = auto()
 
 
+class _FabricTransportKind(Enum):
+    DIRECT = auto()
+    MUX = auto()
+
+
+def _fabric_node_key(node_id: Any) -> Tuple[int, int]:
+    return (int(node_id.mesh_id), int(node_id.chip_id))
+
+
 class FabricRouteCache:
     """Cache control-plane facts for one mesh and fabric configuration."""
 
@@ -66,10 +77,6 @@ class FabricRouteCache:
         self._fabric_config = None
         self._directions: Dict[Tuple[int, int, int, int], int] = {}
         self._forwarding_links: Dict[Tuple[int, int, int, int], Tuple[int, ...]] = {}
-
-    @staticmethod
-    def _node_key(node_id: Any) -> Tuple[int, int]:
-        return (int(node_id.mesh_id), int(node_id.chip_id))
 
     def _prepare_query(self, mesh_device: Any, fabric_config: Any) -> None:
         if self._mesh_device is mesh_device and self._fabric_config == fabric_config:
@@ -89,8 +96,8 @@ class FabricRouteCache:
     ) -> int:
         self._prepare_query(mesh_device, fabric_config)
         route_key = (
-            *self._node_key(source_node_id),
-            *self._node_key(destination_node_id),
+            *_fabric_node_key(source_node_id),
+            *_fabric_node_key(destination_node_id),
         )
         if route_key not in self._directions:
             direction = ttnn_api.get_eth_forwarding_direction(
@@ -114,8 +121,8 @@ class FabricRouteCache:
     ) -> Tuple[int, ...]:
         self._prepare_query(mesh_device, fabric_config)
         route_key = (
-            *self._node_key(source_node_id),
-            *self._node_key(destination_node_id),
+            *_fabric_node_key(source_node_id),
+            *_fabric_node_key(destination_node_id),
         )
         if route_key not in self._forwarding_links:
             get_forwarding_link_indices = getattr(
@@ -157,21 +164,37 @@ class _FabricManagerRequest:
     fabric_runtime_metadata: Tuple[int, ...]
     connections: Tuple[_FabricConnectionRequest, ...]
     apply_binding: bool = True
+    mux_capable: bool = False
 
 
 @dataclass(frozen=True)
 class _FabricConnectionBinding:
     connection_node_id: Any
     link_index: Optional[int]
+    transport: _FabricTransportKind = _FabricTransportKind.DIRECT
+    mux_group_index: Optional[int] = None
+    mux_client_index: Optional[int] = None
 
 
 @dataclass(frozen=True)
 class _FabricManagerBinding:
+    request_index: int
     kernel_index: int
     node_coordinates: Tuple[int, int]
     caller_runtime_args: Tuple[int, ...]
     fabric_runtime_metadata: Tuple[int, ...]
     connections: Tuple[_FabricConnectionBinding, ...]
+
+
+@dataclass(frozen=True)
+class _FabricMuxGroup:
+    direction: int
+    link_index: int
+    connection_node_id: Any
+    client_keys: Tuple[Tuple[int, int], ...]
+    logical_core: Tuple[int, int]
+    config: Any
+    client_compile_time_args: Tuple[int, ...]
 
 
 @dataclass
@@ -190,9 +213,72 @@ class FabricTargetBindingPlan:
     runtime_arg_base_common_indices: Tuple[Optional[int], ...]
     runtime_arg_bases: Tuple[Optional[int], ...]
     managers: Tuple[_FabricManagerBinding, ...]
+    mux_groups: Tuple[_FabricMuxGroup, ...] = ()
+    structural_fingerprint: int = 0
 
 
 _WORKER_SEMAPHORE_CAPACITY = 16
+_FABRIC_TARGET_PLAN_SCHEMA_VERSION = 1
+_FABRIC_TARGET_PLAN_PERSONALIZATION = b"ttlang-fb-plan"
+
+
+def _compute_fabric_target_plan_fingerprint(
+    source_node_id: Any,
+    managed_kernel_indices: Tuple[int, ...],
+    runtime_arg_bases: Tuple[Optional[int], ...],
+    managers: Tuple[_FabricManagerBinding, ...],
+    mux_groups: Tuple[_FabricMuxGroup, ...],
+) -> int:
+    manager_payload = tuple(
+        (
+            manager.kernel_index,
+            manager.node_coordinates,
+            runtime_arg_bases[manager.kernel_index],
+            len(manager.fabric_runtime_metadata),
+            tuple(
+                (
+                    _fabric_node_key(connection.connection_node_id),
+                    connection.link_index,
+                    connection.transport.name,
+                    connection.mux_group_index,
+                    connection.mux_client_index,
+                )
+                for connection in manager.connections
+            ),
+        )
+        for manager in managers
+    )
+    mux_payload = tuple(
+        (
+            mux_group.direction,
+            mux_group.link_index,
+            _fabric_node_key(mux_group.connection_node_id),
+            mux_group.client_keys,
+            mux_group.logical_core,
+            mux_group.client_compile_time_args,
+            tuple(int(value) for value in mux_group.config.kernel_compile_time_args()),
+            int(mux_group.config.memory_map_end_address()),
+        )
+        for mux_group in mux_groups
+    )
+    encoded_payload = json.dumps(
+        (
+            "fabric-target-binding-plan",
+            _FABRIC_TARGET_PLAN_SCHEMA_VERSION,
+            _fabric_node_key(source_node_id),
+            managed_kernel_indices,
+            manager_payload,
+            mux_payload,
+        ),
+        ensure_ascii=True,
+        separators=(",", ":"),
+    ).encode("ascii")
+    digest = hashlib.blake2b(
+        encoded_payload,
+        digest_size=8,
+        person=_FABRIC_TARGET_PLAN_PERSONALIZATION,
+    ).digest()
+    return int.from_bytes(digest, byteorder="big", signed=False)
 
 
 def _read_runtime_arg_row(
@@ -433,6 +519,28 @@ def _intersect_forwarding_links(
     )
 
 
+class _FabricLinkAssignmentError(ValueError):
+    pass
+
+
+def _connections_interfere(
+    manager_requests: List[_FabricManagerRequest],
+    interference_by_interval: Dict[str, frozenset[str]],
+    lhs_key: Tuple[int, int],
+    rhs_key: Tuple[int, int],
+) -> bool:
+    lhs = manager_requests[lhs_key[0]].connections[lhs_key[1]]
+    rhs = manager_requests[rhs_key[0]].connections[rhs_key[1]]
+    if not lhs.interval_ids or not rhs.interval_ids:
+        return True
+    return any(
+        lhs_interval == rhs_interval
+        or rhs_interval in interference_by_interval.get(lhs_interval, frozenset())
+        for lhs_interval in lhs.interval_ids
+        for rhs_interval in rhs.interval_ids
+    )
+
+
 def _assign_fabric_links(
     manager_requests: List[_FabricManagerRequest],
     interference_by_interval: Dict[str, frozenset[str]],
@@ -444,29 +552,17 @@ def _assign_fabric_links(
                 (manager_index, connection_index)
             )
 
-    def connections_interfere(lhs_key, rhs_key):
-        lhs_manager_index, lhs_connection_index = lhs_key
-        rhs_manager_index, rhs_connection_index = rhs_key
-        lhs = manager_requests[lhs_manager_index].connections[lhs_connection_index]
-        rhs = manager_requests[rhs_manager_index].connections[rhs_connection_index]
-        if not lhs.interval_ids or not rhs.interval_ids:
-            return True
-        for lhs_interval in lhs.interval_ids:
-            for rhs_interval in rhs.interval_ids:
-                if lhs_interval == rhs_interval:
-                    return True
-                if rhs_interval in interference_by_interval.get(
-                    lhs_interval, frozenset()
-                ):
-                    return True
-        return False
-
     selected_links = {}
     for direction, connection_keys in connections_by_direction.items():
         adjacency = {connection_key: set() for connection_key in connection_keys}
         for connection_position, lhs_key in enumerate(connection_keys):
             for rhs_key in connection_keys[connection_position + 1 :]:
-                if connections_interfere(lhs_key, rhs_key):
+                if _connections_interfere(
+                    manager_requests,
+                    interference_by_interval,
+                    lhs_key,
+                    rhs_key,
+                ):
                     adjacency[lhs_key].add(rhs_key)
                     adjacency[rhs_key].add(lhs_key)
 
@@ -581,13 +677,258 @@ def _assign_fabric_links(
                 for rhs_key in sorted(adjacency[lhs_key])
                 if lhs_key < rhs_key
             )
-            raise ValueError(
+            raise _FabricLinkAssignmentError(
                 "fabric connection plan cannot assign distinct forwarding "
                 f"links to interfering managers in direction {direction}; "
                 f"participants: {'; '.join(participants)}; "
                 f"interference: {interference}"
             )
     return selected_links
+
+
+def _assign_direct_subset(
+    manager_requests: List[_FabricManagerRequest],
+    interference_by_interval: Dict[str, frozenset[str]],
+    connection_keys: List[Tuple[int, int]],
+) -> Optional[Dict[Tuple[int, int], int]]:
+    adjacency = {connection_key: set() for connection_key in connection_keys}
+    for connection_position, lhs_key in enumerate(connection_keys):
+        for rhs_key in connection_keys[connection_position + 1 :]:
+            if _connections_interfere(
+                manager_requests, interference_by_interval, lhs_key, rhs_key
+            ):
+                adjacency[lhs_key].add(rhs_key)
+                adjacency[rhs_key].add(lhs_key)
+
+    ordered_keys = sorted(
+        connection_keys,
+        key=lambda connection_key: (
+            manager_requests[connection_key[0]]
+            .connections[connection_key[1]]
+            .fixed_link_index
+            is None,
+            len(
+                manager_requests[connection_key[0]]
+                .connections[connection_key[1]]
+                .eligible_links
+                or ()
+            ),
+            -len(adjacency[connection_key]),
+            connection_key,
+        ),
+    )
+    selected_links: Dict[Tuple[int, int], int] = {}
+
+    def assign_connection(position: int) -> bool:
+        if position == len(ordered_keys):
+            return True
+        connection_key = ordered_keys[position]
+        connection = manager_requests[connection_key[0]].connections[connection_key[1]]
+        if connection.eligible_links is None:
+            return False
+        candidate_links = (
+            (connection.fixed_link_index,)
+            if connection.fixed_link_index is not None
+            else connection.eligible_links
+        )
+        for link_index in candidate_links:
+            if link_index not in connection.eligible_links:
+                continue
+            if any(
+                selected_links.get(neighbor) == link_index
+                for neighbor in adjacency[connection_key]
+            ):
+                continue
+            selected_links[connection_key] = link_index
+            if assign_connection(position + 1):
+                return True
+            del selected_links[connection_key]
+        return False
+
+    return selected_links if assign_connection(0) else None
+
+
+def _assign_mux_clients_to_links(
+    manager_requests: List[_FabricManagerRequest],
+    connection_keys: List[Tuple[int, int]],
+    occupied_links: frozenset[int],
+    direction: int,
+) -> Dict[int, Tuple[Tuple[int, int], ...]]:
+    if not connection_keys:
+        return {}
+    candidate_links_by_client = {}
+    endpoint_by_client = {}
+    for connection_key in connection_keys:
+        connection = manager_requests[connection_key[0]].connections[connection_key[1]]
+        assert connection.eligible_links is not None
+        candidate_links = tuple(
+            link_index
+            for link_index in connection.eligible_links
+            if link_index not in occupied_links
+        )
+        if not candidate_links:
+            raise _FabricLinkAssignmentError(
+                "fabric mux clients have no forwarding link not occupied "
+                f"by a direct manager in direction {direction}"
+            )
+        candidate_links_by_client[connection_key] = candidate_links
+        endpoint_by_client[connection_key] = _fabric_node_key(
+            connection.connection_node_id
+        )
+
+    ordered_clients = sorted(
+        connection_keys,
+        key=lambda connection_key: (
+            len(candidate_links_by_client[connection_key]),
+            endpoint_by_client[connection_key],
+            connection_key,
+        ),
+    )
+    client_count = len(ordered_clients)
+    link_count = len(
+        {
+            link_index
+            for candidate_links in candidate_links_by_client.values()
+            for link_index in candidate_links
+        }
+    )
+
+    for maximum_clients_per_link in range(
+        (client_count + link_count - 1) // link_count,
+        client_count + 1,
+    ):
+        clients_by_link: Dict[int, List[Tuple[int, int]]] = {}
+        endpoint_by_link: Dict[int, Tuple[int, int]] = {}
+
+        def assign_client(client_position: int) -> bool:
+            if client_position == len(ordered_clients):
+                return True
+            connection_key = ordered_clients[client_position]
+            endpoint = endpoint_by_client[connection_key]
+            candidate_links = sorted(
+                candidate_links_by_client[connection_key],
+                key=lambda link_index: (
+                    len(clients_by_link.get(link_index, ())),
+                    link_index,
+                ),
+            )
+            for link_index in candidate_links:
+                clients = clients_by_link.get(link_index)
+                if clients is not None and endpoint_by_link[link_index] != endpoint:
+                    continue
+                if len(clients or ()) >= maximum_clients_per_link:
+                    continue
+                if clients is None:
+                    clients_by_link[link_index] = []
+                    endpoint_by_link[link_index] = endpoint
+                clients_by_link[link_index].append(connection_key)
+                if assign_client(client_position + 1):
+                    return True
+                clients_by_link[link_index].pop()
+                if not clients_by_link[link_index]:
+                    del clients_by_link[link_index]
+                    del endpoint_by_link[link_index]
+            return False
+
+        if assign_client(0):
+            return {
+                link_index: tuple(clients)
+                for link_index, clients in clients_by_link.items()
+            }
+
+    raise _FabricLinkAssignmentError(
+        f"fabric mux clients cannot be assigned eligible links in direction {direction}"
+    )
+
+
+def _assign_fabric_transports_with_mux(
+    manager_requests: List[_FabricManagerRequest],
+    interference_by_interval: Dict[str, frozenset[str]],
+) -> Tuple[
+    Dict[Tuple[int, int], Tuple[int, _FabricTransportKind]],
+    Tuple[Tuple[int, int, Any, Tuple[Tuple[int, int], ...]], ...],
+]:
+    connections_by_direction: Dict[int, List[Tuple[int, int]]] = {}
+    for manager_index, manager_request in enumerate(manager_requests):
+        for connection_index, connection in enumerate(manager_request.connections):
+            connections_by_direction.setdefault(connection.direction, []).append(
+                (manager_index, connection_index)
+            )
+
+    selections = {}
+    mux_groups = []
+    for direction, connection_keys in sorted(connections_by_direction.items()):
+        mux_eligible_keys = [
+            connection_key
+            for connection_key in connection_keys
+            if manager_requests[connection_key[0]].apply_binding
+            and manager_requests[connection_key[0]].mux_capable
+            and len(manager_requests[connection_key[0]].connections) == 1
+            and manager_requests[connection_key[0]]
+            .connections[connection_key[1]]
+            .fixed_link_index
+            is None
+            and manager_requests[connection_key[0]]
+            .connections[connection_key[1]]
+            .eligible_links
+            is not None
+        ]
+        mux_eligible_set = frozenset(mux_eligible_keys)
+        direct_keys = [
+            connection_key
+            for connection_key in connection_keys
+            if connection_key not in mux_eligible_set
+        ]
+        direct_links = _assign_direct_subset(
+            manager_requests, interference_by_interval, direct_keys
+        )
+        if direct_links is None:
+            raise _FabricLinkAssignmentError(
+                "non-multiplexable fabric managers cannot be assigned "
+                f"forwarding links in direction {direction}"
+            )
+        for connection_key, link_index in direct_links.items():
+            selections[connection_key] = (
+                link_index,
+                _FabricTransportKind.DIRECT,
+            )
+
+        occupied_direct_links = frozenset(direct_links.values())
+        clients_by_link = _assign_mux_clients_to_links(
+            manager_requests,
+            mux_eligible_keys,
+            occupied_direct_links,
+            direction,
+        )
+
+        for link_index, client_keys in sorted(clients_by_link.items()):
+            transport = (
+                _FabricTransportKind.MUX
+                if len(client_keys) > 1
+                else _FabricTransportKind.DIRECT
+            )
+            connection_node_ids = [
+                manager_requests[manager_index]
+                .connections[connection_index]
+                .connection_node_id
+                for manager_index, connection_index in client_keys
+            ]
+            connection_node_id = connection_node_ids[0]
+            if any(
+                candidate_node_id != connection_node_id
+                for candidate_node_id in connection_node_ids[1:]
+            ):
+                raise ValueError(
+                    "fabric mux clients assigned to one directional link must "
+                    "share one routing-plane endpoint"
+                )
+            for connection_key in client_keys:
+                selections[connection_key] = (link_index, transport)
+            if transport == _FabricTransportKind.MUX:
+                mux_groups.append(
+                    (direction, link_index, connection_node_id, tuple(client_keys))
+                )
+    return selections, tuple(mux_groups)
 
 
 def _build_interval_interference(
@@ -635,13 +976,38 @@ def _validate_manager_semaphore_capacity(
     ttnn_api: Any,
     program_descriptor: Any,
     manager_requests: List[_FabricManagerRequest],
+    transport_selections: Dict[
+        Tuple[int, int], Tuple[Optional[int], _FabricTransportKind]
+    ],
+    mux_groups: Tuple[_FabricMuxGroup, ...],
 ) -> None:
     required_by_node: Dict[Tuple[int, int], int] = {}
-    for manager in manager_requests:
-        if manager.apply_binding:
-            required_by_node[manager.node_coordinates] = required_by_node.get(
-                manager.node_coordinates, 0
-            ) + 2 * len(manager.connections)
+    for manager_index, manager in enumerate(manager_requests):
+        if not manager.apply_binding:
+            continue
+        required_count = sum(
+            (
+                4
+                if transport_selections[(manager_index, connection_index)][1]
+                == _FabricTransportKind.MUX
+                else 2
+            )
+            for connection_index in range(len(manager.connections))
+        )
+        required_by_node[manager.node_coordinates] = (
+            required_by_node.get(manager.node_coordinates, 0) + required_count
+        )
+    for mux_group in mux_groups:
+        termination_manager_index, _ = mux_group.client_keys[0]
+        termination_manager_node = manager_requests[
+            termination_manager_index
+        ].node_coordinates
+        required_by_node[termination_manager_node] = (
+            required_by_node.get(termination_manager_node, 0) + 1
+        )
+        required_by_node[mux_group.logical_core] = (
+            required_by_node.get(mux_group.logical_core, 0) + 2
+        )
 
     for node_coordinates, required_count in required_by_node.items():
         worker_node = ttnn_api.CoreCoord(*node_coordinates)
@@ -654,10 +1020,112 @@ def _validate_manager_semaphore_capacity(
         available_count = _WORKER_SEMAPHORE_CAPACITY - len(used_ids)
         if required_count > available_count:
             raise ValueError(
-                f"fabric managers at node {node_coordinates} require "
+                f"fabric resources at node {node_coordinates} require "
                 f"{required_count} worker semaphore IDs, but only "
                 f"{available_count} of {_WORKER_SEMAPHORE_CAPACITY} remain"
             )
+
+
+def _select_mux_cores(
+    ttnn_api: Any,
+    program_descriptor: Any,
+    mesh_device: Any,
+    mux_group_count: int,
+) -> Tuple[Tuple[int, int], ...]:
+    if mux_group_count == 0:
+        return ()
+    grid_size = mesh_device.compute_with_storage_grid_size()
+    occupied_nodes = {
+        node_coordinates
+        for kernel_descriptor in program_descriptor.kernels
+        for node_coordinates in _iter_descriptor_nodes(
+            ttnn_api, kernel_descriptor, int(grid_size.x), int(grid_size.y)
+        )
+    }
+    available_nodes = [
+        (node_x, node_y)
+        for node_y in reversed(range(int(grid_size.y)))
+        for node_x in reversed(range(int(grid_size.x)))
+        if (node_x, node_y) not in occupied_nodes
+    ]
+    if len(available_nodes) < mux_group_count:
+        raise ValueError(
+            f"fabric mux requires {mux_group_count} unused worker cores, but "
+            f"only {len(available_nodes)} are available"
+        )
+    return tuple(available_nodes[:mux_group_count])
+
+
+def _build_mux_groups(
+    ttnn_api: Any,
+    program_descriptor: Any,
+    mesh_device: Any,
+    group_assignments: Tuple[Tuple[int, int, Any, Tuple[Tuple[int, int], ...]], ...],
+    mux_base_l1_address: Optional[int],
+    mux_l1_end_address: Optional[int],
+) -> Tuple[_FabricMuxGroup, ...]:
+    if not group_assignments:
+        return ()
+    if mux_base_l1_address is None or mux_l1_end_address is None:
+        raise ValueError("fabric mux requires validated L1 allocation bounds")
+    try:
+        fabric_mux_api = ttnn_api.experimental.fabric_mux
+    except AttributeError as error:
+        raise RuntimeError(
+            "TTNN must expose ttnn.experimental.fabric_mux for mux target binding"
+        ) from error
+
+    mux_cores = _select_mux_cores(
+        ttnn_api, program_descriptor, mesh_device, len(group_assignments)
+    )
+    channel_buffer_size = int(fabric_mux_api.channel_buffer_size_bytes())
+    mux_groups = []
+    for (
+        direction,
+        link_index,
+        connection_node_id,
+        client_keys,
+    ), logical_core in zip(group_assignments, mux_cores):
+        client_count = len(client_keys)
+        config = fabric_mux_api.Config(
+            num_full_size_channels=client_count,
+            num_header_only_channels=0,
+            num_buffers_per_full_size_channel=1,
+            num_buffers_per_header_only_channel=0,
+            full_size_channel_buffer_size_bytes=channel_buffer_size,
+            base_l1_address=mux_base_l1_address,
+            core_type=ttnn_api.CoreType.WORKER,
+        )
+        if int(config.memory_map_end_address()) > mux_l1_end_address:
+            raise ValueError(
+                "fabric mux L1 allocation exceeds the available interval: "
+                f"end {int(config.memory_map_end_address()):#x}, limit "
+                f"{mux_l1_end_address:#x}"
+            )
+        client_compile_time_args = tuple(
+            int(argument)
+            for argument in fabric_mux_api.client_compile_time_args(
+                num_clients=client_count,
+                channel_type=fabric_mux_api.ChannelType.FULL_SIZE,
+                config=config,
+            )
+        )
+        if len(client_compile_time_args) != 5:
+            raise RuntimeError(
+                "fabric mux client compile-time ABI must contain five arguments"
+            )
+        mux_groups.append(
+            _FabricMuxGroup(
+                direction=direction,
+                link_index=link_index,
+                connection_node_id=connection_node_id,
+                client_keys=client_keys,
+                logical_core=logical_core,
+                config=config,
+                client_compile_time_args=client_compile_time_args,
+            )
+        )
+    return tuple(mux_groups)
 
 
 def build_fabric_target_binding_plan(
@@ -672,8 +1140,11 @@ def build_fabric_target_binding_plan(
     kernel_fabric_manager_intervals: Optional[
         List[Tuple[FabricManagerIntervalSpec, ...]]
     ] = None,
+    kernel_fabric_mux_capable: Optional[List[bool]] = None,
     external_fabric_connections: Tuple[Any, ...] = (),
     route_cache: Optional[FabricRouteCache] = None,
+    mux_base_l1_address: Optional[int] = None,
+    mux_l1_end_address: Optional[int] = None,
 ) -> FabricTargetBindingPlan:
     """Resolve and validate all fabric managers before descriptor mutation."""
     _validate_kernel_aligned_fabric_metadata(
@@ -688,6 +1159,13 @@ def build_fabric_target_binding_plan(
         raise ValueError(
             "kernel_fabric_manager_intervals must have one entry per kernel "
             "descriptor"
+        )
+    mux_capable = kernel_fabric_mux_capable or [
+        False for _ in program_descriptor.kernels
+    ]
+    if len(mux_capable) != len(program_descriptor.kernels):
+        raise ValueError(
+            "kernel_fabric_mux_capable must have one entry per kernel descriptor"
         )
     interference_by_interval = _build_interval_interference(manager_intervals)
     runtime_arg_bases = _plan_runtime_arg_bases(
@@ -844,6 +1322,7 @@ def build_fabric_target_binding_plan(
                     node_coordinates=node_coordinates,
                     fabric_runtime_metadata=fabric_runtime_metadata,
                     connections=tuple(connection_requests),
+                    mux_capable=mux_capable[kernel_index],
                 )
             )
 
@@ -1006,21 +1485,63 @@ def build_fabric_target_binding_plan(
             )
         )
 
-    _validate_manager_semaphore_capacity(ttnn_api, program_descriptor, manager_requests)
-    selected_links = _assign_fabric_links(manager_requests, interference_by_interval)
+    group_assignments = ()
+    try:
+        selected_links = {
+            connection_key: (link_index, _FabricTransportKind.DIRECT)
+            for connection_key, link_index in _assign_fabric_links(
+                manager_requests, interference_by_interval
+            ).items()
+        }
+    except _FabricLinkAssignmentError as direct_assignment_error:
+        if not any(manager.mux_capable for manager in manager_requests):
+            raise direct_assignment_error
+        selected_links, group_assignments = _assign_fabric_transports_with_mux(
+            manager_requests, interference_by_interval
+        )
+    mux_groups = _build_mux_groups(
+        ttnn_api,
+        program_descriptor,
+        mesh_device,
+        group_assignments,
+        mux_base_l1_address,
+        mux_l1_end_address,
+    )
+    mux_group_index_by_client = {
+        client_key: (mux_group_index, client_index)
+        for mux_group_index, mux_group in enumerate(mux_groups)
+        for client_index, client_key in enumerate(mux_group.client_keys)
+    }
+    _validate_manager_semaphore_capacity(
+        ttnn_api,
+        program_descriptor,
+        manager_requests,
+        selected_links,
+        mux_groups,
+    )
     manager_bindings = []
     for manager_index, manager_request in enumerate(manager_requests):
-        connection_bindings = tuple(
-            _FabricConnectionBinding(
-                connection_node_id=connection.connection_node_id,
-                link_index=selected_links[(manager_index, connection_index)],
+        connection_bindings = []
+        for connection_index, connection in enumerate(manager_request.connections):
+            connection_key = (manager_index, connection_index)
+            link_index, transport = selected_links[connection_key]
+            mux_group_index, mux_client_index = mux_group_index_by_client.get(
+                connection_key, (None, None)
             )
-            for connection_index, connection in enumerate(manager_request.connections)
-        )
+            connection_bindings.append(
+                _FabricConnectionBinding(
+                    connection_node_id=connection.connection_node_id,
+                    link_index=link_index,
+                    transport=transport,
+                    mux_group_index=mux_group_index,
+                    mux_client_index=mux_client_index,
+                )
+            )
         if not manager_request.apply_binding:
             continue
         manager_bindings.append(
             _FabricManagerBinding(
+                request_index=manager_index,
                 kernel_index=manager_request.kernel_index,
                 node_coordinates=manager_request.node_coordinates,
                 caller_runtime_args=_read_runtime_arg_row(
@@ -1028,21 +1549,31 @@ def build_fabric_target_binding_plan(
                     manager_request.node_coordinates,
                 ),
                 fabric_runtime_metadata=manager_request.fabric_runtime_metadata,
-                connections=connection_bindings,
+                connections=tuple(connection_bindings),
             )
         )
+    managed_kernel_indices = tuple(
+        kernel_index
+        for kernel_index, routes in enumerate(kernel_fabric_routes)
+        if routes
+    )
+    manager_binding_tuple = tuple(manager_bindings)
     return FabricTargetBindingPlan(
         source_node_id=source_node_id,
-        managed_kernel_indices=tuple(
-            kernel_index
-            for kernel_index, routes in enumerate(kernel_fabric_routes)
-            if routes
-        ),
+        managed_kernel_indices=managed_kernel_indices,
         runtime_arg_base_common_indices=tuple(
             kernel_fabric_runtime_arg_base_common_indices
         ),
         runtime_arg_bases=runtime_arg_bases,
-        managers=tuple(manager_bindings),
+        managers=manager_binding_tuple,
+        mux_groups=mux_groups,
+        structural_fingerprint=_compute_fabric_target_plan_fingerprint(
+            source_node_id,
+            managed_kernel_indices,
+            runtime_arg_bases,
+            manager_binding_tuple,
+            mux_groups,
+        ),
     )
 
 
@@ -1050,9 +1581,135 @@ def apply_fabric_target_binding_plan(
     ttnn_api: Any,
     program_descriptor: Any,
     plan: FabricTargetBindingPlan,
+    mesh_device: Any,
     device_coordinates: Tuple[int, ...],
 ) -> None:
     """Apply a validated target-binding plan to one program descriptor."""
+    managers_by_request_index = {
+        manager.request_index: manager for manager in plan.managers
+    }
+    define_values_by_kernel = {
+        kernel_index: dict(ttnn_api.get_fabric_kernel_defines())
+        for kernel_index in plan.managed_kernel_indices
+    }
+    for mux_group in plan.mux_groups:
+        compile_time_args = mux_group.client_compile_time_args
+        mux_defines = {
+            "TTLANG_FABRIC_MUX_CLIENT": "1",
+            "TTLANG_FABRIC_MUX_NUM_BUFFERS": str(compile_time_args[0]),
+            "TTLANG_FABRIC_MUX_CHANNEL_BUFFER_SIZE_BYTES": str(compile_time_args[1]),
+            "TTLANG_FABRIC_MUX_STATUS_ADDRESS": str(compile_time_args[2]),
+            "TTLANG_FABRIC_MUX_TERMINATION_SIGNAL_ADDRESS": str(compile_time_args[3]),
+        }
+        for manager_request_index, _ in mux_group.client_keys:
+            kernel_index = managers_by_request_index[manager_request_index].kernel_index
+            kernel_defines = define_values_by_kernel[kernel_index]
+            conflicting_names = {
+                name
+                for name, value in mux_defines.items()
+                if name in kernel_defines and kernel_defines[name] != value
+            }
+            if conflicting_names:
+                raise RuntimeError(
+                    f"kernel {kernel_index} requires incompatible fabric mux "
+                    "compile-time configurations for "
+                    f"{tuple(sorted(conflicting_names))}"
+                )
+            kernel_defines.update(mux_defines)
+
+    for kernel_index, required_defines in define_values_by_kernel.items():
+        existing_defines = dict(program_descriptor.kernels[kernel_index].defines)
+        conflicting_names = {
+            name
+            for name, value in required_defines.items()
+            if name in existing_defines and existing_defines[name] != value
+        }
+        if conflicting_names:
+            raise ValueError(
+                f"kernel {kernel_index} defines conflicting fabric values "
+                f"for {tuple(sorted(conflicting_names))}"
+            )
+
+    # TT-Metal allocates fabric semaphores while producing runtime arguments.
+    # Use a staging descriptor so allocation or ABI validation failures leave
+    # the caller's descriptor unchanged.
+    staging_descriptor = ttnn_api.ProgramDescriptor(
+        kernels=[],
+        semaphores=list(program_descriptor.semaphores),
+        cbs=[],
+    )
+    mux_runtime_args_by_client = {}
+    mux_kernel_descriptors = []
+    mux_kernel_indices = set()
+    for mux_group_index, mux_group in enumerate(plan.mux_groups):
+        fabric_mux_api = ttnn_api.experimental.fabric_mux
+        mux_logical_core = ttnn_api.CoreCoord(*mux_group.logical_core)
+        mux_virtual_core = mesh_device.worker_core_from_logical_core(mux_logical_core)
+        master_request_index, _ = mux_group.client_keys[0]
+        master_manager = managers_by_request_index[master_request_index]
+        master_logical_core = ttnn_api.CoreCoord(*master_manager.node_coordinates)
+        master_virtual_core = mesh_device.worker_core_from_logical_core(
+            master_logical_core
+        )
+        termination_semaphore_id = None
+        for client_index, (manager_request_index, _) in enumerate(
+            mux_group.client_keys
+        ):
+            manager = managers_by_request_index[manager_request_index]
+            is_termination_master = client_index == 0
+            client_runtime_args = list(
+                fabric_mux_api.client_runtime_args(
+                    connection_valid=True,
+                    is_termination_master=is_termination_master,
+                    channel_type=fabric_mux_api.ChannelType.FULL_SIZE,
+                    mux_virtual_core=mux_virtual_core,
+                    client_index=client_index,
+                    client_logical_core=ttnn_api.CoreCoord(*manager.node_coordinates),
+                    config=mux_group.config,
+                    program_descriptor=staging_descriptor,
+                    termination_master_virtual_core=master_virtual_core,
+                    termination_master_semaphore_id=termination_semaphore_id,
+                )
+            )
+            if len(client_runtime_args) != 17:
+                raise RuntimeError(
+                    "fabric mux client runtime ABI must contain 17 arguments"
+                )
+            if is_termination_master:
+                termination_semaphore_id = client_runtime_args[10]
+            client_runtime_args.append(len(mux_group.client_keys))
+            mux_runtime_args_by_client[(mux_group_index, client_index)] = tuple(
+                int(argument) for argument in client_runtime_args
+            )
+            mux_kernel_indices.add(manager.kernel_index)
+
+        mux_kernel_runtime_args = list(
+            mux_group.config.kernel_runtime_args(
+                source_node_id=plan.source_node_id,
+                destination_node_id=mux_group.connection_node_id,
+                link_index=mux_group.link_index,
+                program_descriptor=staging_descriptor,
+                mux_logical_core=mux_logical_core,
+            )
+        )
+        mux_core_range = ttnn_api.CoreRangeSet(
+            [ttnn_api.CoreRange(mux_logical_core, mux_logical_core)]
+        )
+        mux_kernel_descriptors.append(
+            ttnn_api.KernelDescriptor(
+                kernel_source="tt_metal/fabric/impl/kernels/tt_fabric_mux.cpp",
+                core_ranges=mux_core_range,
+                compile_time_args=list(mux_group.config.kernel_compile_time_args()),
+                runtime_args=[(mux_logical_core, mux_kernel_runtime_args)],
+                common_runtime_args=[],
+                opt_level=fabric_mux_api.KernelBuildOptLevel.O3,
+                config=ttnn_api.DataMovementConfigDescriptor(
+                    processor=ttnn_api.DataMovementProcessor.RISCV_0,
+                    noc=ttnn_api.NOC.RISCV_1_default,
+                ),
+            )
+        )
+
     applied_managers = []
     for manager in plan.managers:
         kernel_descriptor = program_descriptor.kernels[manager.kernel_index]
@@ -1060,7 +1717,22 @@ def apply_fabric_target_binding_plan(
         connection_node_ids = []
         connection_link_indices = []
         fabric_args = []
-        if manager.connections:
+        uses_mux = (
+            bool(manager.connections)
+            and manager.connections[0].transport == _FabricTransportKind.MUX
+        )
+        if uses_mux:
+            if len(manager.connections) != 1:
+                raise RuntimeError("fabric mux managers must have one connection")
+            connection = manager.connections[0]
+            assert connection.mux_group_index is not None
+            assert connection.mux_client_index is not None
+            fabric_args = list(
+                mux_runtime_args_by_client[
+                    (connection.mux_group_index, connection.mux_client_index)
+                ]
+            )
+        elif manager.connections:
             connection_node_ids = [
                 connection.connection_node_id for connection in manager.connections
             ]
@@ -1073,14 +1745,16 @@ def apply_fabric_target_binding_plan(
                 manager.connections
             )
             connection_link_indices = explicit_link_indices
-            fabric_args = ttnn_api.setup_routing_plane_connection(
+            fabric_args = ttnn_api.fabric_connection_rt_args(
                 plan.source_node_id,
                 connection_node_ids,
                 connection_link_indices,
-                program_descriptor,
+                staging_descriptor,
                 manager.kernel_index,
                 ttnn_api.CoreCoord(node_x, node_y),
             )
+        if manager.kernel_index in mux_kernel_indices:
+            fabric_args.insert(0, int(uses_mux))
         runtime_arg_base = plan.runtime_arg_bases[manager.kernel_index]
         assert runtime_arg_base is not None
         runtime_args = [*manager.caller_runtime_args]
@@ -1100,6 +1774,12 @@ def apply_fabric_target_binding_plan(
                 flush=True,
             )
 
+    for kernel_index, required_defines in define_values_by_kernel.items():
+        kernel_descriptor = program_descriptor.kernels[kernel_index]
+        updated_defines = dict(kernel_descriptor.defines)
+        updated_defines.update(required_defines)
+        kernel_descriptor.defines = list(updated_defines.items())
+    program_descriptor.semaphores = list(staging_descriptor.semaphores)
     for kernel_index in plan.managed_kernel_indices:
         runtime_arg_base = plan.runtime_arg_bases[kernel_index]
         common_index = plan.runtime_arg_base_common_indices[kernel_index]
@@ -1113,6 +1793,11 @@ def apply_fabric_target_binding_plan(
         program_descriptor.kernels[manager.kernel_index].runtime_args[node_x][
             node_y
         ] = runtime_args
+    if mux_kernel_descriptors:
+        program_descriptor.kernels = [
+            *program_descriptor.kernels,
+            *mux_kernel_descriptors,
+        ]
 
 
 def configure_routing_plane_runtime_args(
@@ -1128,7 +1813,10 @@ def configure_routing_plane_runtime_args(
     kernel_fabric_manager_intervals: Optional[
         List[Tuple[FabricManagerIntervalSpec, ...]]
     ] = None,
+    kernel_fabric_mux_capable: Optional[List[bool]] = None,
     external_fabric_connections: Tuple[Any, ...] = (),
+    mux_base_l1_address: Optional[int] = None,
+    mux_l1_end_address: Optional[int] = None,
 ) -> None:
     """Plan and apply routing-plane target bindings for one logical device."""
     _validate_kernel_aligned_fabric_metadata(
@@ -1153,17 +1841,21 @@ def configure_routing_plane_runtime_args(
             kernel_fabric_runtime_arg_base_common_indices
         ),
         kernel_fabric_manager_intervals=kernel_fabric_manager_intervals,
+        kernel_fabric_mux_capable=kernel_fabric_mux_capable,
         external_fabric_connections=external_fabric_connections,
         mesh_device=mesh_device,
         device_coordinates=device_coordinates,
         grid_cols=grid_cols,
         grid_rows=grid_rows,
         route_cache=route_cache,
+        mux_base_l1_address=mux_base_l1_address,
+        mux_l1_end_address=mux_l1_end_address,
     )
     apply_fabric_target_binding_plan(
         ttnn_api=ttnn_api,
         program_descriptor=program_descriptor,
         plan=plan,
+        mesh_device=mesh_device,
         device_coordinates=device_coordinates,
     )
 

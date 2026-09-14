@@ -2,7 +2,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0
 
-// RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s
+// RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s --implicit-check-not=ttl.fabric_mux_capable
 
 // Summary: Verify a statically bounded loop serializes repeated receiver and
 // sender manager ownership with a runtime invocation ordinal.
