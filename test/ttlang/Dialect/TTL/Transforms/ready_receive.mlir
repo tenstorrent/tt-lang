@@ -85,6 +85,8 @@
 
 // PUBLISHED-LABEL: func.func @ready_receive
 // PUBLISHED-NOT: ttl.pipe_computed_address_dfb_indices
+// PUBLISHED-DAG: %[[SCRATCH_ARG:.*]] = arith.constant 3 : index
+// PUBLISHED: ttkernel.get_common_arg_val(%[[SCRATCH_ARG]])
 // PUBLISHED-COUNT-4: ttkernel.noc_inline_dw_write
 // PUBLISHED-COUNT-4: ttkernel.noc_async_write_multicast_loopback_src
 // PUBLISHED: scf.while
@@ -94,7 +96,8 @@
 // mapping independently of the single-candidate control-flow case below.
 module attributes {ttl.launch_grid = array<i64: 2, 1>} {
   func.func @ready_receive(%start: index) -> index
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+      attributes {ttl.crta_indices = [0, 1, 2],
+                  ttl.kernel_thread = #ttkernel.thread<noc>} {
     %source = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %landing0 = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}

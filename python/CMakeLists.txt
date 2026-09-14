@@ -137,6 +137,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     diagnostics.py
     kernel.py
     kernel_runner.py
+    _sram_domains.py
     pipe.py
     domains.py
     runtime_resources.py

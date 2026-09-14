@@ -51,6 +51,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Casting.h"
+#include <algorithm>
 #include <cstdint>
 #include <cstdlib>
 #include <limits>
@@ -70,6 +71,11 @@ namespace ttk = mlir::tt::ttkernel;
 constexpr llvm::StringLiteral kExpandLinearizeIndexAttr =
     "ttlang.expand_linearize_index";
 // PipeGraph is defined in PipeGraph.h.
+
+static bool usesCompilerL1(ModuleOp module) {
+  auto memoryModel = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
+  return memoryModel && memoryModel.getValue() == kCompilerL1MemoryModel;
+}
 
 class TTLToTTKernelTypeConverter : public TypeConverter {
 public:
@@ -429,6 +435,18 @@ static FailureOr<int32_t> getValidatedDFBIndex(Value dfb, Operation *op) {
   if (!dfbIndex) {
     return op->emitError("cannot resolve finalized DFB index");
   }
+  auto module = op->getParentOfType<ModuleOp>();
+  auto memoryModel = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
+  if (memoryModel && memoryModel.getValue() == kCompilerL1MemoryModel) {
+    auto allocations =
+        module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName);
+    if (!allocations || *dfbIndex < 0 ||
+        static_cast<uint64_t>(*dfbIndex) >= allocations.size()) {
+      return op->emitError(
+          "storage identity is outside the compiler-l1 allocation plan");
+    }
+    return static_cast<int32_t>(*dfbIndex);
+  }
   int32_t targetMaxDFBIndices = getTargetMaxDFBIndices(op);
   if (*dfbIndex < 0 || *dfbIndex >= targetMaxDFBIndices) {
     return op->emitError("finalized DFB index ")
@@ -570,16 +588,11 @@ struct BindCBLowering : OpConversionPattern<BindCBOp> {
         ttk::CBType::get(ttlCbType.getContext(), ttlCbType.getTotalElements(),
                          ttlCbType.getElementType());
 
-    // Get the CB index from the bind_cb op attribute.
-    int64_t cbIndex = op.getCbIndex().getSExtValue();
-    int32_t targetMaxDFBIndices = getTargetMaxDFBIndices(op);
-    if (cbIndex < 0 || cbIndex >= targetMaxDFBIndices) {
-      return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
-        diag << "cb_index " << cbIndex << " out of valid range [0, "
-             << targetMaxDFBIndices - 1 << "] for "
-             << getTargetDFBIndexCapacityDescription(op);
-      });
+    FailureOr<int32_t> selectedIndex = getValidatedDFBIndex(op.getResult(), op);
+    if (failed(selectedIndex)) {
+      return failure();
     }
+    int32_t cbIndex = *selectedIndex;
 
     // Create ttkernel.get_compile_time_arg_val to get the CB handle.
     auto getArgVal = ttk::GetCompileArgValOp::create(
@@ -1603,15 +1616,23 @@ struct RawAddrLowering : OpConversionPattern<RawAddrOp> {
 // Synchronized DFB reset lowering
 //===----------------------------------------------------------------------===//
 
-struct DFBResetLoweringPlan {
+struct DFBSynchronizationLoweringPlan {
   DenseMap<SynchronizedDFBResetAttr, int64_t> stateOffsetByReset;
+  DenseMap<Operation *, SmallVector<int32_t>> resetDFBsByOperation;
+  DenseMap<int64_t, int64_t> stateOffsetByReconfiguration;
+  DenseMap<int64_t, SmallVector<int32_t>> resetDFBsByReconfiguration;
+  DenseMap<int32_t, Type> dfbTypesByIndex;
+  DenseMap<int32_t, uint32_t> dfbStateOffsetsByIndex;
+  SmallVector<int32_t> allDFBIndices;
   int64_t scratchBaseOffset = 0;
   int64_t scratchBytes = 0;
+  int64_t synchronizationRecordCount = 0;
   uint64_t allDFBMask = 0;
+  bool compilerL1 = false;
 };
 
-static FailureOr<DFBResetLoweringPlan>
-buildDFBResetLoweringPlan(ModuleOp module) {
+static FailureOr<DFBSynchronizationLoweringPlan>
+buildDFBSynchronizationLoweringPlan(ModuleOp module) {
   SmallVector<SynchronizedDFBResetAttr> orderedResets;
   if (failed(collectSynchronizedDFBResets(module, orderedResets))) {
     return failure();
@@ -1627,12 +1648,85 @@ buildDFBResetLoweringPlan(ModuleOp module) {
     return failure();
   }
 
-  DFBResetLoweringPlan plan;
+  DFBSynchronizationLoweringPlan plan;
+  plan.compilerL1 = usesCompilerL1(module);
+  plan.synchronizationRecordCount = static_cast<int64_t>(orderedResets.size());
   for (auto [resetIndex, reset] : llvm::enumerate(orderedResets)) {
     plan.stateOffsetByReset.try_emplace(
         reset, static_cast<int64_t>(resetIndex) * kDFBResetStateBytes);
   }
   plan.scratchBytes = static_cast<int64_t>(*scratchBytes);
+
+  if (plan.compilerL1) {
+    llvm::MapVector<int64_t, DFBReconfigurationAttr> reconfigurations;
+    Operation *invalidReconfiguration = nullptr;
+    module.walk([&](DFBReconfigurationOp reconfiguration) -> WalkResult {
+      DFBReconfigurationAttr boundary = reconfiguration.getBoundary();
+      auto [entry, inserted] =
+          reconfigurations.try_emplace(boundary.getOrdinal(), boundary);
+      if (!inserted && entry->second != boundary) {
+        invalidReconfiguration = reconfiguration;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+    if (invalidReconfiguration) {
+      invalidReconfiguration->emitOpError(
+          "reconfiguration ordinal identifies inconsistent boundaries");
+      return failure();
+    }
+    if (reconfigurations.size() >
+        static_cast<uint64_t>(
+            (std::numeric_limits<int64_t>::max() - plan.scratchBytes) /
+            kDFBResetStateBytes)) {
+      module.emitOpError(
+          "DFB reconfiguration synchronization state is not representable");
+      return failure();
+    }
+    for (auto [reconfigurationIndex, entry] :
+         llvm::enumerate(reconfigurations)) {
+      int64_t offset =
+          plan.scratchBytes +
+          static_cast<int64_t>(reconfigurationIndex) * kDFBResetStateBytes;
+      plan.stateOffsetByReconfiguration.try_emplace(entry.first, offset);
+    }
+    plan.scratchBytes +=
+        static_cast<int64_t>(reconfigurations.size()) * kDFBResetStateBytes;
+    plan.synchronizationRecordCount +=
+        static_cast<int64_t>(reconfigurations.size());
+
+    if (auto entries = module->getAttrOfType<ArrayAttr>(
+            kCompilerL1ReconfigurationResetsAttrName)) {
+      for (Attribute entryAttribute : entries) {
+        auto entry = dyn_cast<DictionaryAttr>(entryAttribute);
+        auto ordinal = entry ? entry.getAs<IntegerAttr>("ordinal") : nullptr;
+        auto indices =
+            entry ? entry.getAs<DenseI32ArrayAttr>("dfb_indices") : nullptr;
+        if (!ordinal || !indices ||
+            !plan.stateOffsetByReconfiguration.contains(ordinal.getInt())) {
+          module.emitOpError(
+              "contains malformed compiler-l1 reconfiguration reset metadata");
+          return failure();
+        }
+        auto [resetEntry, inserted] =
+            plan.resetDFBsByReconfiguration.try_emplace(ordinal.getInt(),
+                                                        indices.asArrayRef());
+        if (!inserted) {
+          module.emitOpError(
+              "contains duplicate compiler-l1 reconfiguration reset metadata");
+          return failure();
+        }
+        if (!llvm::is_sorted(resetEntry->second) ||
+            std::adjacent_find(resetEntry->second.begin(),
+                               resetEntry->second.end()) !=
+                resetEntry->second.end()) {
+          module.emitOpError("contains noncanonical compiler-l1 "
+                             "reconfiguration reset indices");
+          return failure();
+        }
+      }
+    }
+  }
 
   WalkResult allocationResult = module.walk([&](BindCBOp bind) -> WalkResult {
     std::optional<int64_t> dfbIndex = getCBIndex(bind.getResult());
@@ -1640,36 +1734,172 @@ buildDFBResetLoweringPlan(ModuleOp module) {
       bind.emitOpError("requires a finalized DFB index before reset lowering");
       return WalkResult::interrupt();
     }
-    int32_t targetMaxDFBIndices = getTargetMaxDFBIndices(bind);
-    if (*dfbIndex < 0 || *dfbIndex >= targetMaxDFBIndices) {
-      bind.emitOpError("finalized DFB index ")
-          << *dfbIndex << " is outside [0, " << targetMaxDFBIndices - 1
-          << "] for " << getTargetDFBIndexCapacityDescription(bind);
+    if (*dfbIndex < 0 ||
+        *dfbIndex > static_cast<int64_t>(std::numeric_limits<int32_t>::max())) {
+      bind.emitOpError("finalized DFB index is not representable as i32");
       return WalkResult::interrupt();
     }
-    plan.allDFBMask |= uint64_t{1} << static_cast<unsigned>(*dfbIndex);
+    int32_t index = static_cast<int32_t>(*dfbIndex);
+    auto ttlType = cast<CircularBufferType>(bind.getResult().getType());
+    Type ttkernelType =
+        ttk::CBType::get(ttlType.getContext(), ttlType.getTotalElements(),
+                         ttlType.getElementType());
+    auto [typeEntry, inserted] =
+        plan.dfbTypesByIndex.try_emplace(index, ttkernelType);
+    if (plan.compilerL1 && !inserted && typeEntry->second != ttkernelType) {
+      bind.emitOpError(
+          "compiler-l1 allocation index has inconsistent DFB types");
+      return WalkResult::interrupt();
+    }
+    if (inserted) {
+      plan.allDFBIndices.push_back(index);
+    }
+    if (plan.compilerL1) {
+      auto allocations =
+          module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName);
+      auto allocation =
+          allocations && static_cast<uint64_t>(index) < allocations.size()
+              ? dyn_cast<DictionaryAttr>(allocations[index])
+              : DictionaryAttr();
+      auto stateOffset = allocation ? allocation.getAs<IntegerAttr>("l1_offset")
+                                    : IntegerAttr();
+      if (!stateOffset || stateOffset.getInt() < 0 ||
+          static_cast<uint64_t>(stateOffset.getInt()) >
+              std::numeric_limits<uint32_t>::max()) {
+        bind.emitOpError("requires a representable compiler-l1 state offset");
+        return WalkResult::interrupt();
+      }
+      plan.dfbStateOffsetsByIndex.try_emplace(
+          index, static_cast<uint32_t>(stateOffset.getInt()));
+    }
+    if (!plan.compilerL1) {
+      int32_t targetMaxDFBIndices = getTargetMaxDFBIndices(bind);
+      if (index >= targetMaxDFBIndices) {
+        bind.emitOpError("finalized DFB index ")
+            << index << " is outside [0, " << targetMaxDFBIndices - 1
+            << "] for " << getTargetDFBIndexCapacityDescription(bind);
+        return WalkResult::interrupt();
+      }
+      plan.allDFBMask |= uint64_t{1} << static_cast<unsigned>(index);
+    }
     return WalkResult::advance();
   });
   if (allocationResult.wasInterrupted()) {
     return failure();
   }
 
-  if (!orderedResets.empty()) {
-    Builder builder(module.getContext());
-    module->setAttr(kDFBResetCountAttrName,
-                    builder.getI64IntegerAttr(orderedResets.size()));
+  WalkResult resetResult = module.walk([&](ResetDFBsOp reset) -> WalkResult {
+    FailureOr<SmallVector<int32_t>> indices =
+        getValidatedPhysicalDFBIndices(reset.getDfbs(), reset);
+    if (failed(indices)) {
+      return WalkResult::interrupt();
+    }
+    plan.resetDFBsByOperation.try_emplace(reset, std::move(*indices));
+    return WalkResult::advance();
+  });
+  if (resetResult.wasInterrupted()) {
+    return failure();
   }
+
+  for (const auto &[ordinal, indices] : plan.resetDFBsByReconfiguration) {
+    for (int32_t index : indices) {
+      if (!plan.dfbTypesByIndex.contains(index)) {
+        module.emitOpError("compiler-l1 reconfiguration ordinal ")
+            << ordinal << " references unknown DFB index " << index;
+        return failure();
+      }
+    }
+  }
+
+  llvm::sort(plan.allDFBIndices);
   return plan;
+}
+
+static void applyDFBSynchronizationLoweringPlanAttributes(
+    ModuleOp module, const DFBSynchronizationLoweringPlan &plan) {
+  if (plan.synchronizationRecordCount == 0) {
+    module->removeAttr(kDFBResetCountAttrName);
+    return;
+  }
+  Builder builder(module.getContext());
+  module->setAttr(kDFBResetCountAttrName,
+                  builder.getI64IntegerAttr(plan.synchronizationRecordCount));
+}
+
+static void emitDFBSynchronizationBarrier(Operation *operation,
+                                          Value synchronizationAddress,
+                                          ArrayRef<int32_t> requiredDFBIndices,
+                                          ConversionPatternRewriter &rewriter) {
+  Location location = operation->getLoc();
+  Value zero = arith::ConstantIntOp::create(rewriter, location, 0, 32);
+  ttk::OpaqueCallOp::create(
+      rewriter, location, TypeRange{},
+      rewriter.getStringAttr("experimental::reset_dfb_interfaces"),
+      rewriter.getStringAttr("<cstdint>"),
+      ValueRange{synchronizationAddress, zero, zero}, ArrayAttr(),
+      rewriter.getDenseI32ArrayAttr({0, 1, 2}),
+      getRequiredDFBIndicesAttr(requiredDFBIndices, rewriter));
+}
+
+static Value buildCompilerL1StateAddress(Operation *operation,
+                                         uint32_t stateOffset,
+                                         ConversionPatternRewriter &rewriter) {
+  Location location = operation->getLoc();
+  // Compile-time argument zero identifies the arena's common argument.
+  Value arenaCommonArgIndex = ttk::GetCompileArgValOp::create(
+      rewriter, location, rewriter.getI32Type(), 0);
+  Value arenaBase = ttk::GetCommonArgValOp::create(
+      rewriter, location, rewriter.getI32Type(), arenaCommonArgIndex);
+  if (stateOffset == 0) {
+    return arenaBase;
+  }
+  Value offset =
+      arith::ConstantIntOp::create(rewriter, location, stateOffset, 32);
+  return arith::AddIOp::create(rewriter, location, arenaBase, offset);
+}
+
+static LogicalResult
+lowerCompilerL1Synchronization(Operation *operation, int64_t stateOffset,
+                               ArrayRef<int32_t> resetDFBIndices,
+                               const DFBSynchronizationLoweringPlan &plan,
+                               ConversionPatternRewriter &rewriter) {
+  Value synchronizationAddress = buildPipeSramScratchAddress(
+      operation, plan.scratchBaseOffset + stateOffset, rewriter);
+  emitDFBSynchronizationBarrier(operation, synchronizationAddress,
+                                resetDFBIndices, rewriter);
+  for (int32_t index : resetDFBIndices) {
+    auto stateOffsetIt = plan.dfbStateOffsetsByIndex.find(index);
+    assert(stateOffsetIt != plan.dfbStateOffsetsByIndex.end() &&
+           "planned compiler-l1 synchronization must reference known DFBs");
+    Value stateAddress =
+        buildCompilerL1StateAddress(operation, stateOffsetIt->second, rewriter);
+    ttk::OpaqueCallOp::create(
+        rewriter, operation->getLoc(), TypeRange{},
+        rewriter.getStringAttr("ttlang::l1::resetState"),
+        rewriter.getStringAttr("<cstdint>"), ValueRange{stateAddress},
+        ArrayAttr(), DenseI32ArrayAttr(),
+        getRequiredDFBIndicesAttr(ArrayRef<int32_t>{index}, rewriter));
+  }
+  if (!resetDFBIndices.empty()) {
+    emitDFBSynchronizationBarrier(operation, synchronizationAddress,
+                                  resetDFBIndices, rewriter);
+  }
+  rewriter.eraseOp(operation);
+  return success();
 }
 
 static LogicalResult lowerDFBReset(Operation *operation,
                                    SynchronizedDFBResetAttr reset,
                                    uint64_t dfbMask,
-                                   const DFBResetLoweringPlan &plan,
+                                   ArrayRef<int32_t> dfbIndices,
+                                   const DFBSynchronizationLoweringPlan &plan,
                                    ConversionPatternRewriter &rewriter) {
   auto stateOffsetIt = plan.stateOffsetByReset.find(reset);
-  if (stateOffsetIt == plan.stateOffsetByReset.end()) {
-    return operation->emitError("is absent from the DFB reset lowering plan");
+  assert(stateOffsetIt != plan.stateOffsetByReset.end() &&
+         "reset must be present in the immutable lowering plan");
+  if (plan.compilerL1) {
+    return lowerCompilerL1Synchronization(operation, stateOffsetIt->second,
+                                          dfbIndices, plan, rewriter);
   }
   Location location = operation->getLoc();
   Value synchronizationAddress = buildPipeSramScratchAddress(
@@ -1699,40 +1929,44 @@ static LogicalResult lowerDFBReset(Operation *operation,
 
 struct ResetDFBsLowering : OpConversionPattern<ResetDFBsOp> {
   ResetDFBsLowering(TypeConverter &typeConverter, MLIRContext *context,
-                    const DFBResetLoweringPlan &plan)
+                    const DFBSynchronizationLoweringPlan &plan)
       : OpConversionPattern(typeConverter, context), plan(plan) {}
 
   LogicalResult
   matchAndRewrite(ResetDFBsOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    auto indicesIt = plan.resetDFBsByOperation.find(op);
+    assert(indicesIt != plan.resetDFBsByOperation.end() &&
+           "reset operands must be present in the immutable lowering plan");
+    ArrayRef<int32_t> dfbIndices = indicesIt->second;
     uint64_t dfbMask = 0;
-    for (Value dfb : op.getDfbs()) {
-      FailureOr<int32_t> dfbIndex = getValidatedDFBIndex(dfb, op);
-      if (failed(dfbIndex)) {
-        return failure();
+    if (!plan.compilerL1) {
+      for (int32_t dfbIndex : dfbIndices) {
+        dfbMask |= uint64_t{1} << static_cast<unsigned>(dfbIndex);
       }
-      dfbMask |= uint64_t{1} << static_cast<unsigned>(*dfbIndex);
     }
-    return lowerDFBReset(op, op.getReset(), dfbMask, plan, rewriter);
+    return lowerDFBReset(op, op.getReset(), dfbMask, dfbIndices, plan,
+                         rewriter);
   }
 
 private:
-  const DFBResetLoweringPlan &plan;
+  const DFBSynchronizationLoweringPlan &plan;
 };
 
 struct ResetAllDFBsLowering : OpConversionPattern<ResetAllDFBsOp> {
   ResetAllDFBsLowering(TypeConverter &typeConverter, MLIRContext *context,
-                       const DFBResetLoweringPlan &plan)
+                       const DFBSynchronizationLoweringPlan &plan)
       : OpConversionPattern(typeConverter, context), plan(plan) {}
 
   LogicalResult
   matchAndRewrite(ResetAllDFBsOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    return lowerDFBReset(op, op.getReset(), plan.allDFBMask, plan, rewriter);
+    return lowerDFBReset(op, op.getReset(), plan.allDFBMask, plan.allDFBIndices,
+                         plan, rewriter);
   }
 
 private:
-  const DFBResetLoweringPlan &plan;
+  const DFBSynchronizationLoweringPlan &plan;
 };
 
 //===----------------------------------------------------------------------===//
@@ -1740,7 +1974,9 @@ private:
 //===----------------------------------------------------------------------===//
 
 struct DFBReconfigurationLowering : OpConversionPattern<DFBReconfigurationOp> {
-  using OpConversionPattern::OpConversionPattern;
+  DFBReconfigurationLowering(TypeConverter &typeConverter, MLIRContext *context,
+                             const DFBSynchronizationLoweringPlan &plan)
+      : OpConversionPattern(typeConverter, context), plan(plan) {}
 
   LogicalResult
   matchAndRewrite(DFBReconfigurationOp op, OpAdaptor,
@@ -1749,6 +1985,19 @@ struct DFBReconfigurationLowering : OpConversionPattern<DFBReconfigurationOp> {
     ModuleOp module = op->getParentOfType<ModuleOp>();
     if (!function || !module) {
       return op.emitError("must be nested in a module kernel function");
+    }
+    int64_t ordinal = op.getBoundary().getOrdinal();
+    if (plan.compilerL1) {
+      auto stateOffsetIt = plan.stateOffsetByReconfiguration.find(ordinal);
+      assert(stateOffsetIt != plan.stateOffsetByReconfiguration.end() &&
+             "reconfiguration must be present in the immutable lowering plan");
+      auto resetIt = plan.resetDFBsByReconfiguration.find(ordinal);
+      ArrayRef<int32_t> resetDFBs =
+          resetIt == plan.resetDFBsByReconfiguration.end()
+              ? ArrayRef<int32_t>()
+              : ArrayRef<int32_t>(resetIt->second);
+      return lowerCompilerL1Synchronization(op, stateOffsetIt->second,
+                                            resetDFBs, plan, rewriter);
     }
     auto plan =
         module->getAttrOfType<DictionaryAttr>(kDFBReconfigurationPlanAttrName);
@@ -1759,7 +2008,6 @@ struct DFBReconfigurationLowering : OpConversionPattern<DFBReconfigurationOp> {
     if (!boundaryOrdinals || !dfbEntries) {
       return op.emitError("requires finalized DFB reconfiguration metadata");
     }
-    int64_t ordinal = op.getBoundary().getOrdinal();
     auto ordinalIt = llvm::find(boundaryOrdinals.asArrayRef(), ordinal);
     if (ordinalIt == boundaryOrdinals.asArrayRef().end()) {
       return op.emitError("boundary ordinal is absent from finalized DFB "
@@ -1793,6 +2041,9 @@ struct DFBReconfigurationLowering : OpConversionPattern<DFBReconfigurationOp> {
     rewriter.eraseOp(op);
     return success();
   }
+
+private:
+  const DFBSynchronizationLoweringPlan &plan;
 };
 
 //===----------------------------------------------------------------------===//
@@ -1805,6 +2056,7 @@ struct OpaqueScalarArgument {
 
 struct OpaqueDFBArgument {
   int32_t index;
+  Type type;
 };
 
 struct OpaqueTensorArgument {
@@ -1816,6 +2068,32 @@ struct OpaqueTensorArgument {
 using OpaqueArgumentPlan =
     std::variant<OpaqueScalarArgument, OpaqueDFBArgument, OpaqueTensorArgument>;
 
+static LogicalResult validateCompilerL1ExternalCalls(ModuleOp module) {
+  if (!usesCompilerL1(module)) {
+    return success();
+  }
+  WalkResult validation = module.walk([](OpaqueCallOp call) -> WalkResult {
+    if (call.hasUnknownDFBAccess()) {
+      call.emitOpError(
+          "compiler-l1 requires typed DFB effects for external calls");
+      return WalkResult::interrupt();
+    }
+    if (std::optional<ArrayAttr> templateArgs = call.getTemplateArgs()) {
+      for (Attribute attribute : *templateArgs) {
+        auto templateArg = cast<ExternalTemplateArgAttr>(attribute);
+        if (templateArg.getKind() == ExternalTemplateArgKind::DFBIndex) {
+          call.emitOpError(
+              "compiler-l1 external calls cannot use Metal DFB indices; use "
+              "ttl.dfb_descriptor()");
+          return WalkResult::interrupt();
+        }
+      }
+    }
+    return WalkResult::advance();
+  });
+  return validation.wasInterrupted() ? failure() : success();
+}
+
 struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
   OpaqueCallLowering(TypeConverter &typeConverter, MLIRContext *context,
                      ArrayRef<int32_t> userManagedPhysicalDFBIndices)
@@ -1826,6 +2104,11 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
   matchAndRewrite(OpaqueCallOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location location = op.getLoc();
+    ModuleOp module = op->getParentOfType<ModuleOp>();
+    bool compilerL1 = usesCompilerL1(module);
+
+    assert((!compilerL1 || !op.hasUnknownDFBAccess()) &&
+           "compiler-l1 external calls must be validated before conversion");
 
     // Dependency operands name every descriptor required by a typed external
     // call, including operands that are absent from the emitted C++ call.
@@ -1877,7 +2160,15 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
         if (failed(dfbIndex)) {
           return failure();
         }
-        argumentPlan.push_back(OpaqueDFBArgument{*dfbIndex});
+        Type convertedType = compilerL1
+                                 ? getTypeConverter()->convertType(originalType)
+                                 : IntegerType::get(rewriter.getContext(), 32,
+                                                    IntegerType::Unsigned);
+        if (!convertedType) {
+          return rewriter.notifyMatchFailure(op,
+                                             "failed to convert DFB argument");
+        }
+        argumentPlan.push_back(OpaqueDFBArgument{*dfbIndex, convertedType});
         continue;
       }
 
@@ -1925,10 +2216,8 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
         continue;
       }
       if (const auto *dfb = std::get_if<OpaqueDFBArgument>(&argument)) {
-        IntegerType unsignedI32 =
-            IntegerType::get(rewriter.getContext(), 32, IntegerType::Unsigned);
         convertedArgs.push_back(ttk::GetCompileArgValOp::create(
-            rewriter, location, unsignedI32, dfb->index));
+            rewriter, location, dfb->type, dfb->index));
         continue;
       }
       const auto &tensor = std::get<OpaqueTensorArgument>(argument);
@@ -1998,6 +2287,9 @@ private:
       return failure();
     }
     if (kind == ExternalTemplateArgKind::DFBIndex) {
+      assert(!usesCompilerL1(op->getParentOfType<ModuleOp>()) &&
+             "compiler-l1 template arguments must be validated before "
+             "conversion");
       return rewriter.getUI32IntegerAttr(static_cast<uint32_t>(*dfbIndex));
     }
     if (kind == ExternalTemplateArgKind::DFBDescriptor) {
@@ -2432,7 +2724,8 @@ struct RawElementWriteLowering : OpConversionPattern<RawElementWriteOp> {
 static LogicalResult lowerTTLOpsToTTKernel(
     ModuleOp mod, MLIRContext &ctx, TTLToTTKernelTypeConverter &typeConverter,
     StringRef passName, bool pipeComputedAddresses, bool pipeCapacitySync,
-    bool pipeGlobalSemaphoresOnly, std::optional<uint64_t> l1BudgetOverride) {
+    bool pipeGlobalSemaphoresOnly, std::optional<uint64_t> l1BudgetOverride,
+    DFBSynchronizationLoweringPlan &synchronizationLoweringPlan) {
   ConversionTarget target(ctx);
   target.addIllegalDialect<tt::ttl::TTLDialect>();
   target.addLegalDialect<affine::AffineDialect, arith::ArithDialect,
@@ -2538,12 +2831,6 @@ static LogicalResult lowerTTLOpsToTTKernel(
   }
 
   PipePlanningOptions pipePlanningOptions;
-  FailureOr<DFBResetLoweringPlan> resetLoweringPlan =
-      buildDFBResetLoweringPlan(mod);
-  if (failed(resetLoweringPlan)) {
-    return failure();
-  }
-
   FailureOr<SmallVector<int32_t>> userManagedPhysicalDFBIndices =
       collectUserManagedPhysicalDFBIndices(mod);
   if (failed(userManagedPhysicalDFBIndices)) {
@@ -2556,7 +2843,7 @@ static LogicalResult lowerTTLOpsToTTKernel(
                                : PipeCounterAllocationPolicy::LocalThenGlobal;
   pipePlanningOptions.fabricRoutePlan = &fabricRoutePlan;
   pipePlanningOptions.trailingSramScratchBytes =
-      resetLoweringPlan->scratchBytes;
+      synchronizationLoweringPlan.scratchBytes;
   pipePlanningOptions.trailingSramScratchAlignment = 4;
   FailureOr<PipeModulePlan> maybePipeModulePlan =
       buildPipeModulePlan(mod, transferAnalysis, transferIndex, *pipeGraphOrErr,
@@ -2567,7 +2854,7 @@ static LogicalResult lowerTTLOpsToTTKernel(
   PipeModulePlan pipeModulePlan = std::move(*maybePipeModulePlan);
   annotateInitialPipeReceiveBatches(mod, foreachLoweringInfo, *pipeGraphOrErr,
                                     pipeModulePlan.getResourcePlan());
-  resetLoweringPlan->scratchBaseOffset =
+  synchronizationLoweringPlan.scratchBaseOffset =
       pipeModulePlan.getTrailingSramScratchOffset();
   FailureOr<FinalizedDFBStorageFootprint> allocationFootprint =
       getFinalizedDFBStorageFootprint(mod);
@@ -2578,6 +2865,15 @@ static LogicalResult lowerTTLOpsToTTKernel(
   if (failed(allocationBytes)) {
     mod.emitOpError("failed to compute finalized DFB allocation sizes");
     return failure();
+  }
+  if (auto model = mod->getAttrOfType<StringAttr>(kMemoryModelAttrName);
+      model && model.getValue() == kCompilerL1MemoryModel) {
+    auto arenaBytes = mod->getAttrOfType<IntegerAttr>(kL1ArenaBytesAttrName);
+    if (!arenaBytes || arenaBytes.getInt() < 0) {
+      mod.emitOpError("missing validated compiler-l1 arena size");
+      return failure();
+    }
+    allocationBytes = static_cast<uint64_t>(arenaBytes.getInt());
   }
   const PipeResourceRequirements &resourceRequirements =
       pipeModulePlan.getResourceRequirements();
@@ -2592,6 +2888,8 @@ static LogicalResult lowerTTLOpsToTTKernel(
     return failure();
   }
   mod->removeAttr(kPipeConservativeL1BytesAttrName);
+  applyDFBSynchronizationLoweringPlanAttributes(mod,
+                                                synchronizationLoweringPlan);
   applyPipeModuleAttributes(mod, pipeModulePlan);
   applyFabricRoutePlan(mod, fabricRoutePlan);
   const PipeResourcePlan &pipeResourcePlan = pipeModulePlan.getResourcePlan();
@@ -2647,17 +2945,19 @@ static LogicalResult lowerTTLOpsToTTKernel(
                              pipeModulePlan.getCompletedPipeSendWaits());
   patterns.add<CBReserveLowering, CBPushLowering, CBWaitLowering>(
       typeConverter, &ctx, pipeTransportPlan);
-  patterns.add<ResetDFBsLowering, ResetAllDFBsLowering>(typeConverter, &ctx,
-                                                        *resetLoweringPlan);
-  patterns.add<
-      BindCBLowering, TensorSliceLowering, TileStoreLowering, StoreLowering,
-      CoreXLowering, CoreYLowering, RawElementReadLowering, ReadIndexLowering,
-      RawElementWriteLowering, RawAddrLowering, DFBReconfigurationLowering,
-      GetDfbIdLowering, IsDeviceLowering, CurrentDeviceIndexLowering,
-      IsDeviceInRangeLowering, SelectedPipeSourceDeviceIndexLowering,
-      SelectedPipeDestinationDeviceIndexLowering,
-      SelectedPipeSourceCoordinatesLowering,
-      SelectedPipeDestinationCoordinatesLowering>(typeConverter, &ctx);
+  patterns.add<ResetDFBsLowering, ResetAllDFBsLowering>(
+      typeConverter, &ctx, synchronizationLoweringPlan);
+  patterns.add<DFBReconfigurationLowering>(typeConverter, &ctx,
+                                           synchronizationLoweringPlan);
+  patterns
+      .add<BindCBLowering, TensorSliceLowering, TileStoreLowering,
+           StoreLowering, CoreXLowering, CoreYLowering, RawElementReadLowering,
+           ReadIndexLowering, RawElementWriteLowering, RawAddrLowering,
+           GetDfbIdLowering, IsDeviceLowering, CurrentDeviceIndexLowering,
+           IsDeviceInRangeLowering, SelectedPipeSourceDeviceIndexLowering,
+           SelectedPipeDestinationDeviceIndexLowering,
+           SelectedPipeSourceCoordinatesLowering,
+           SelectedPipeDestinationCoordinatesLowering>(typeConverter, &ctx);
   patterns.add<OpaqueCallLowering>(typeConverter, &ctx,
                                    *userManagedPhysicalDFBIndices);
   patterns.add<CBPopLowering>(typeConverter, &ctx, pipeCapacityPlan,
@@ -2926,6 +3226,60 @@ validateTileOperationsForTarget(ModuleOp module,
   return failure(hasErrors);
 }
 
+static LogicalResult addCompilerL1TensorRuntimeArgs(ModuleOp module) {
+  auto memoryModel = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
+  if (!memoryModel || memoryModel.getValue() != kCompilerL1MemoryModel) {
+    return success();
+  }
+
+  SmallVector<std::pair<func::FuncOp, SmallVector<int64_t>>> plans;
+  for (func::FuncOp function : module.getOps<func::FuncOp>()) {
+    SmallVector<int64_t> backingTensorIndices;
+    function.walk([&](BindCBOp bind) {
+      TensorBackingAttr backing = bind.getTensorBackingAttr();
+      if (backing &&
+          !llvm::is_contained(backingTensorIndices, backing.getTensorIndex())) {
+        backingTensorIndices.push_back(backing.getTensorIndex());
+      }
+    });
+    if (backingTensorIndices.empty()) {
+      continue;
+    }
+    auto currentIndices =
+        function->getAttrOfType<ArrayAttr>(kCRTAIndicesAttrName);
+    if (!currentIndices) {
+      function.emitOpError() << "missing " << kCRTAIndicesAttrName;
+      return failure();
+    }
+    SmallVector<int64_t> indices;
+    for (Attribute attribute : currentIndices) {
+      auto index = dyn_cast<IntegerAttr>(attribute);
+      if (!index || index.getInt() < 0) {
+        function.emitOpError()
+            << kCRTAIndicesAttrName << " must contain non-negative integers";
+        return failure();
+      }
+      indices.push_back(index.getInt());
+    }
+    for (int64_t backingTensorIndex : backingTensorIndices) {
+      if (!llvm::is_contained(indices, backingTensorIndex)) {
+        indices.push_back(backingTensorIndex);
+      }
+    }
+    plans.push_back({function, std::move(indices)});
+  }
+
+  OpBuilder builder(module.getContext());
+  for (auto &[function, indices] : plans) {
+    SmallVector<Attribute> attributes;
+    for (int64_t index : indices) {
+      attributes.push_back(builder.getI32IntegerAttr(index));
+    }
+    function->setAttr(kCRTAIndicesAttrName, builder.getArrayAttr(attributes));
+  }
+  return success();
+}
+
 struct TTLConvertTTLToTTKernelPass
     : impl::TTLConvertTTLToTTKernelBase<TTLConvertTTLToTTKernelPass> {
   using TTLConvertTTLToTTKernelBase::TTLConvertTTLToTTKernelBase;
@@ -2959,6 +3313,20 @@ struct TTLConvertTTLToTTKernelPass
       signalPassFailure();
       return;
     }
+    if (failed(validateCompilerL1ExternalCalls(mod))) {
+      signalPassFailure();
+      return;
+    }
+    FailureOr<DFBSynchronizationLoweringPlan> synchronizationLoweringPlan =
+        buildDFBSynchronizationLoweringPlan(mod);
+    if (failed(synchronizationLoweringPlan)) {
+      signalPassFailure();
+      return;
+    }
+    if (failed(addCompilerL1TensorRuntimeArgs(mod))) {
+      signalPassFailure();
+      return;
+    }
 
     // Phase 0: Expand DstSectionOp into four TTL sync ops. This inlines the
     // DstSectionOp body and inserts acquire/commit/wait/release around it,
@@ -2969,9 +3337,9 @@ struct TTLConvertTTLToTTKernelPass
     if (failed(lowerTTLOpsToTTKernel(
             mod, ctx, typeConverter, getName(), pipeComputedAddresses,
             pipeCapacitySync, pipeGlobalSemaphoresOnly,
-            l1BudgetOverride == 0
-                ? std::nullopt
-                : std::optional<uint64_t>(l1BudgetOverride)))) {
+            l1BudgetOverride == 0 ? std::nullopt
+                                  : std::optional<uint64_t>(l1BudgetOverride),
+            *synchronizationLoweringPlan))) {
       signalPassFailure();
       return;
     }
