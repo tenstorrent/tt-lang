@@ -4135,6 +4135,10 @@ def build_generic_op_io_tensors(
     if not tensors:
         raise ValueError("kernel must have at least one output tensor")
 
+    dispatch_tensors = [
+        tensor for tensor in tensors if not _is_per_core_allocated(tensor)
+    ]
+
     computed_address_dfb_tensors = [
         pipe_computed_address_dfb_tensors[dfb_index]
         for dfb_index in sorted(pipe_computed_address_dfb_tensors or {})
@@ -4154,8 +4158,12 @@ def build_generic_op_io_tensors(
         + list(dfb_reconfiguration_configuration_tensors or [])
         + ([compiler_l1_arena] if compiler_l1_arena is not None else [])
         + list(sram_core_arenas)
-        + list(tensors)
+        + dispatch_tensors
     )
+    if not io_tensors:
+        raise ValueError(
+            "kernel must have at least one tensor that defines device dispatch"
+        )
     if len(io_tensors) < 2:
         io_tensors = [io_tensors[-1]] + io_tensors
     return io_tensors
