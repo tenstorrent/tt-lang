@@ -214,6 +214,16 @@ source and restricts it to the exact launch nodes using that source. Sparse
 domains allocate one tensor shard per selected core rather than the area of
 their bounding rectangle.
 
+Each DFB declares the address requirement imposed by its users. The default
+`local` scope permits different L1 addresses on different nodes. Use
+`remote_uniform` when code reads a DFB's local address and uses it as a remote
+NoC address: the runtime then creates one descriptor at the same L1 address on
+every allocated node. This scope changes backing-storage placement only. It
+does not change the DFB protocol, physical-index reuse, capacity, or
+synchronization. A `remote_uniform` DFB cannot share backing storage with a
+different physical DFB index because that sharing would make its address depend
+on the other index's node domain.
+
 TT-Metal allocates static descriptor storage in descriptor order. It maintains
 one allocation frontier per core, and a descriptor shared by several cores
 starts at the greatest frontier among those cores. The runtime simulates these
@@ -231,9 +241,9 @@ and ends at the lowest live L1 tensor page. Subtracting only allocated page
 sizes would ignore allocator gaps and could overestimate the available range.
 Tensor-backed and already allocated computed-address storage do not advance the
 static frontiers. For a multi-device mesh, tensor and runtime-resource
-allocations use common L1 addresses, while harvested worker mappings can
-differ. The runtime therefore applies the reference allocator's global minimum
-remaining interval to every logical core.
+allocations can constrain the usable interval differently on each logical
+core. The runtime applies the reference allocator's global minimum remaining
+interval to every logical core when a descriptor requires a common address.
 The correctness invariant is that every surviving DFB access has one compatible
 descriptor on its launch core; conservative metadata preserves the
 whole-program descriptor behavior when this cannot be proved.
@@ -1608,8 +1618,10 @@ allocation group may combine scratch DFBs with different block shapes or block
 counts when their element types and page formats are identical. The physical
 descriptor then uses the largest total capacity. Synchronized reconfiguration
 may instead replace geometry, block count, and storage between disjoint epochs,
-but the element type and page format must remain identical. Every reuse
-mechanism requires each lifecycle to complete. Ordinary reuse also requires
+but the element type and page format must remain identical. The runtime
+reconfigures the DFB address, capacity, page geometry, and queue state; it does
+not rewrite the unpacker or packer format tables. Every reuse mechanism
+requires each lifecycle to complete. Ordinary reuse also requires
 matching write- and read-pointer runs unless a synchronized reset or
 state-discarding reconfiguration establishes empty state with the pointers at
 the descriptor base. The matched sequences must remain boundary-safe when

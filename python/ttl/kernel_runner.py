@@ -144,6 +144,11 @@ def _validate_physical_dfb_config(
             f"DFB[{config.dfb_index}] storage_index must be a nonnegative "
             f"integer, got {config.storage_index!r}"
         )
+    if config.address_scope not in {"local", "remote_uniform"}:
+        raise ValueError(
+            f"DFB[{config.dfb_index}] address_scope must be 'local' or "
+            f"'remote_uniform', got {config.address_scope!r}"
+        )
     allocation_nodes = None
     if config.allocation_nodes is not None:
         for node_position, node in enumerate(config.allocation_nodes):
@@ -3910,6 +3915,19 @@ def _build_dfb_descriptors(
                     format_descriptors=format_descriptors,
                 )
             )
+
+    for dfb_index, config in enumerate(cb_configs):
+        if config.address_scope == "local" or not placements[dfb_index]:
+            continue
+        matching_plans = [
+            plan for plan in descriptor_plans if plan.physical_index == dfb_index
+        ]
+        required_nodes = set(placements[dfb_index])
+        if len(matching_plans) != 1 or set(matching_plans[0].nodes) != required_nodes:
+            raise ValueError(
+                f"DFB[{dfb_index}] address_scope={config.address_scope!r} "
+                "requires one descriptor over every allocated node"
+            )
     descriptor_plans = _order_static_dfb_descriptor_plans(
         descriptor_plans, remaining_bytes_by_core
     )
@@ -4946,6 +4964,7 @@ def _append_physical_dfb_config_source(
     lines.append(f"{indent}    block_count={config.block_count},")
     lines.append(f"{indent}    page_size={config.page_size},")
     lines.append(f"{indent}    tile={config.tile!r},")
+    lines.append(f"{indent}    address_scope={config.address_scope!r},")
     if config.storage_index is not None:
         lines.append(f"{indent}    storage_index={config.storage_index},")
     if config.allocation_nodes is not None:

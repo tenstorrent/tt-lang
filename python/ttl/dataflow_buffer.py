@@ -25,6 +25,7 @@ from .dtype_utils import normalize_tile_dimensions
 from ttl.dialects import ttl
 
 _DFB_DESCRIPTOR_UINT32_MAX = (1 << 32) - 1
+_DFB_ADDRESS_SCOPES = frozenset(("local", "remote_uniform"))
 
 
 @dataclass(frozen=True)
@@ -188,11 +189,17 @@ class DataflowBuffer:
         byte_offset: int = 0,
         byte_size: Optional[int] = None,
         allocation_group: Optional[DFBAllocationGroup] = None,
+        address_scope: Optional[str] = None,
     ):
         if len(shape) < 2:
             raise ValueError(f"DFB shape must have at least 2 dimensions, got {shape}")
         if block_count < 1 or block_count > 32:
             raise ValueError(f"block_count must be in range [1, 32], got {block_count}")
+        if address_scope is not None and address_scope not in _DFB_ADDRESS_SCOPES:
+            raise ValueError(
+                "DFB address_scope must be 'local', 'remote_uniform', or None, "
+                f"got {address_scope!r}"
+            )
         normalized_tile = normalize_tile_dimensions(tile)
         # A buffer's dtype has one source: a backing tensor or an explicit
         # dtype. Supplying both is only valid when they resolve to the same type.
@@ -222,6 +229,7 @@ class DataflowBuffer:
                 f"{type(allocation_group).__name__}"
             )
         self.allocation_group = allocation_group
+        self.address_scope = address_scope
         self._cb_index = _next_cb_index()
 
     @property
@@ -312,6 +320,7 @@ class PhysicalDFBConfig:
     storage_segments: Tuple["DFBStorageSegment", ...] = ()
     allocation_nodes: Optional[Tuple[Tuple[int, int], ...]] = None
     storage_index: Optional[int] = None
+    address_scope: str = "local"
 
 
 @dataclass(frozen=True)
@@ -350,6 +359,7 @@ def make_dataflow_buffer_like(
     block_count: int = 2,
     *,
     allocation_group: Optional[DFBAllocationGroup] = None,
+    address_scope: Optional[str] = None,
 ) -> DataflowBuffer:
     """
     Create a dataflow buffer with properties derived from a tensor.
@@ -360,6 +370,9 @@ def make_dataflow_buffer_like(
         block_count: Capacity multiplier (default 2 for double-buffering)
         allocation_group: Optional immutable identity requiring compiler-verified
             physical allocation sharing with the other group members
+        address_scope: ``None`` or ``"local"`` permits different L1 addresses
+            on different nodes. ``"remote_uniform"`` requires one L1 address
+            on every node that uses the DFB.
 
     Returns:
         DataflowBuffer for use in thread function closures
@@ -373,6 +386,7 @@ def make_dataflow_buffer_like(
         block_count,
         tile=tile,
         allocation_group=allocation_group,
+        address_scope=address_scope,
     )
 
 
@@ -383,12 +397,15 @@ def make_tensor_backed_dfb(
     block_count: int = 1,
     byte_offset: int = 0,
     allocation_group: Optional[DFBAllocationGroup] = None,
+    address_scope: Optional[str] = None,
 ) -> DataflowBuffer:
     """Bind a DFB's complete capacity to a sharded L1 tensor byte range.
 
     ``allocation_group`` requires compiler-verified physical allocation sharing
     with the other group members. Tensor-backed group members must retain an
     identical DFB capacity descriptor.
+
+    ``address_scope`` has the same meaning as in :func:`make_dfb`.
     """
     from .dtype_utils import is_ttnn_tensor
 
@@ -427,6 +444,7 @@ def make_tensor_backed_dfb(
         byte_offset=byte_offset,
         byte_size=byte_size,
         allocation_group=allocation_group,
+        address_scope=address_scope,
     )
 
 
@@ -452,6 +470,7 @@ def make_dfb(
     tile: Tuple[int, int] = (DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE),
     *,
     allocation_group: Optional[DFBAllocationGroup] = None,
+    address_scope: Optional[str] = None,
 ) -> DataflowBuffer:
     """
     Create a dataflow buffer from an explicit dtype, with no backing tensor.
@@ -467,6 +486,9 @@ def make_dfb(
             16, or 32 and widths 16 or 32.
         allocation_group: Optional immutable identity requiring compiler-verified
             physical allocation sharing with the other group members
+        address_scope: ``None`` or ``"local"`` permits different L1 addresses
+            on different nodes. ``"remote_uniform"`` requires one L1 address
+            on every node that uses the DFB.
 
     Returns:
         DataflowBuffer for use in thread function closures
@@ -478,4 +500,5 @@ def make_dfb(
         dtype=_resolve_dfb_dtype(dtype),
         tile=tile,
         allocation_group=allocation_group,
+        address_scope=address_scope,
     )

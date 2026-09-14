@@ -6199,7 +6199,7 @@ def test_allocation_nodes_scope_unspecialized_dfb_descriptor(monkeypatch):
     assert _descriptor_cores(descriptors[0]) == {(1, 0)}
 
 
-def test_physical_dfb_uses_one_descriptor_across_residency_signatures(monkeypatch):
+def test_remote_uniform_dfb_uses_one_descriptor_across_nodes(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
     configs = [
@@ -6220,6 +6220,7 @@ def test_physical_dfb_uses_one_descriptor_across_residency_signatures(monkeypatc
             2048,
             (32, 32),
             allocation_nodes=((0, 0), (1, 0)),
+            address_scope="remote_uniform",
         ),
     ]
 
@@ -6237,6 +6238,45 @@ def test_physical_dfb_uses_one_descriptor_across_residency_signatures(monkeypatc
     }
     assert _descriptor_cores(descriptors_by_index[0]) == {(0, 0)}
     assert _descriptor_cores(descriptors_by_index[1]) == {(0, 0), (1, 0)}
+
+
+def test_remote_uniform_dfb_rejects_partitioned_storage_group(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    configs = [
+        PhysicalDFBConfig(
+            0,
+            1,
+            "bfloat16",
+            1,
+            2048,
+            (32, 32),
+            allocation_nodes=((0, 0),),
+            storage_index=0,
+        ),
+        PhysicalDFBConfig(
+            1,
+            1,
+            "bfloat16",
+            1,
+            2048,
+            (32, 32),
+            allocation_nodes=((0, 0), (1, 0)),
+            storage_index=0,
+            address_scope="remote_uniform",
+        ),
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match="requires one descriptor over every allocated node",
+    ):
+        kernel_runner.build_cb_descriptors(
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=configs,
+            core_ranges=full_grid,
+            kernel_specs=[_specialized_spec(full_grid, None)],
+        )
 
 
 def test_storage_group_uses_one_lcm_aligned_descriptor(monkeypatch):
