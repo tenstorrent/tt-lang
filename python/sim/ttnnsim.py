@@ -1115,6 +1115,25 @@ bfloat16: torch.dtype = _PROMOTABLE_FLOAT_DTYPES["bfloat16"]
 float16: torch.dtype = _PROMOTABLE_FLOAT_DTYPES["float16"]
 float32: torch.dtype = torch.float32
 
+# Golden functions come from the real ttnn and take ttnn dtypes, while a dtype
+# the simulator was called with is a torch dtype, so one has to be translated
+# back on the way into a golden call.  bfloat8_b and bfloat4_b have no entry:
+# both report torch.float32, and float32 is what a torch tensor of that kind
+# actually holds.
+_TTNN_DTYPE_FOR_TORCH: Dict[torch.dtype, Any] = (
+    {
+        bfloat16: ttnn.bfloat16,
+        float32: ttnn.float32,
+        torch.uint8: ttnn.uint8,
+        torch.uint16: ttnn.uint16,
+        torch.uint32: ttnn.uint32,
+        torch.int8: ttnn.int8,
+        torch.int32: ttnn.int32,
+    }
+    if TTNN_AVAILABLE
+    else {}
+)
+
 # When True (the default), tensor creation functions promote bfloat16 and
 # float16 backing to float32 for accurate computation on all host architectures.
 # The declared dtype is always preserved in Tensor._dtype for L1 accounting.
@@ -3263,6 +3282,8 @@ def _golden_logical_result(
         match arg:
             case Tensor():
                 return _logical_view(arg)
+            case torch.dtype():
+                return _TTNN_DTYPE_FOR_TORCH.get(arg, arg)
             case list() | tuple():
                 return type(arg)(unpadded(item) for item in arg)
             case _:
@@ -4085,6 +4106,8 @@ def _create_golden_wrapper(
             match arg:
                 case Tensor():
                     return arg.to_torch()
+                case torch.dtype():
+                    return _TTNN_DTYPE_FOR_TORCH.get(arg, arg)
                 case list() | tuple():
                     return type(arg)(convert_arg(item) for item in arg)
                 case _:
