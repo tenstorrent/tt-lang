@@ -915,9 +915,9 @@ def copy(
         dst: Destination block (for reads), tensor/slice (for writes), or Pipe (for pipe send)
         byte_count: Positive static byte count for DFB block-to-block and pipe
             transfers. Tensor-slice transfers always copy complete tiles.
-        shape: Static tile shape of a pipe-to-DRAM tensor-slice receive. The
-            argument is required because tensor subscripts retain start indices
-            but not range extents.
+        shape: Static tile shape of an inter-device, point-to-point
+            pipe-to-DRAM tensor-slice receive. The argument is required because
+            tensor subscripts retain start indices but not range extents.
 
     Returns:
         ReceiveRequest for a PipeNet receive; CopyTransferHandler otherwise.
