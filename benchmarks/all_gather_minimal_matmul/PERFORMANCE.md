@@ -11,8 +11,8 @@ Four Blackhole P150b devices; global `M/K/N=9472/5120/15360`; per-device
 
 | Implementation | Device median ms (min-max) | TT-Lang/native | Warmups/samples |
 | --- | ---: | ---: | ---: |
-| TT-Lang bidirectional L1 | 2.243 (2.179-2.255) | 1.138 | 3/10 |
-| Native `all_gather_minimal_matmul_async` | 1.971 (1.955-2.008) | 1.000 | 3/10 |
+| TT-Lang bidirectional L1 | 1.959 (1.945-1.983) | 0.995 | 3/10 |
+| Native `all_gather_minimal_matmul_async` | 1.969 (1.947-2.009) | 1.000 | 3/10 |
 
 Both results passed PCC >= 0.99 and elementwise relative/absolute tolerances of
 0.05 against FP32 PyTorch for every warmup and sample.
@@ -43,11 +43,12 @@ all-gather and L1 distribution sequence, then discards each block after its
 consumer wait. The composed operation validates the same data movement through
 its matmul output. No isolated native activation result was measured.
 
-## Additive timing decomposition
+## Previous output schedule decomposition
 
-The rows below are mutually exclusive and sum to the selected device medians.
-Input waits are measured on the operation-ending unpack thread. TT-Lang
-compute/control is the mean of independent activation-counter and
+This decomposition was measured before output writes moved from the activation
+thread to the weight thread. The rows are mutually exclusive and sum to those
+device medians. Input waits are measured on the operation-ending unpack thread.
+TT-Lang compute/control is the mean of independent activation-counter and
 weight-counter runs; their half-spread is 9.447 us.
 
 | Component | TT-Lang us | Native us | Difference us |
@@ -60,13 +61,15 @@ weight-counter runs; their half-spread is 9.447 us.
 | Start and cross-run residual | 1.779 | 5.120 | -3.341 |
 | **Complete operation** | **2243.214** | **1970.586** | **+272.628** |
 
-Activation delivery is the only large positive compute-envelope term. Matching
-native activation wait would reduce the modeled TT-Lang interval to 1.827 ms;
-TT-Lang already spends 142.311 us less in matmul/control and 61.831 us less in
-weight waits. Aggregate-counter medians were 2.249 ms for activation and
-2.232 ms for the accepted weight repeat. The native counter median was
-1.965 ms. These differ from adjacent uninstrumented controls by at most 0.9%.
-All executions passed the benchmark's 13 correctness checks.
+The measurements identified activation delivery and output scheduling as the
+positive differences. They counted only the interval after final compute as
+post-compute data movement; the activation thread also wrote each preceding
+output before starting the next activation round. Moving all output writes to
+the weight thread removed that repeated serialization. Aggregate-counter
+medians were 2.249 ms for activation and 2.232 ms for the weight repeat. The
+native counter median was 1.965 ms. These differ from adjacent uninstrumented
+controls by at most 0.9%. All executions passed the benchmark's 13 correctness
+checks.
 
 ## Configurations
 
@@ -127,6 +130,7 @@ consumer wait; they isolate communication and local distribution from matmul.
 | Submit intermediate fabric packets without per-packet completion waits | 2.269 (2.232-2.320) | 3/10 | -1.6% vs 2.306 ms | Accepted. Retains blocking completion for the final write-and-atomic packet. |
 | Bidirectional L1 transport; one mux buffer/client channel | 2.286 (2.267-2.338) | 3/10 | +1.1% vs mean of adjacent controls | Rejected. One slot serializes the 12 packets in each activation half. |
 | Bidirectional L1 transport; 22 mux buffers/client channel | 2.243 (2.179-2.255) | 3/10 | +0.2% vs mean of 2.242 and 2.234 ms controls | Accepted. The target derives the largest buffer count that fits the mux core's L1 interval. |
+| Defer output writes to the weight thread after publishing the next inputs | 1.959 (1.945-1.983) | 3/10 | -11.0% vs mean of 2.212 and 2.193 ms controls | Accepted. Paired native was 1.969 ms. |
 | Alternate complete ten-tile K blocks across both ring directions | not measured | full-size compile | n/a | Rejected. The small four-device BF16 streaming case passed, but the full workload required 1,474,560 L1 bytes, 13,184 bytes over the 1,461,376-byte budget. |
 | Eight direct fabric managers to reduce per-manager DFB capacity | not measured | full-size launch | n/a | Rejected. Compilation and PipeNet verification passed, but four physical forwarding links could not bind eight interfering managers. |
 | Four bidirectional managers with two-block receive and relay DFBs | not measured | full-size launch | n/a | Rejected. The local relay filled while fabric sends waited for peers to post receives, producing the finite-capacity protocol deadlock reported in [#1037](https://github.com/tenstorrent/tt-lang/issues/1037). |
@@ -165,10 +169,14 @@ both ring directions directly into L1. Each direction has 24 fabric clients
 distributed across four links, with six clients per mux. A 51,200-byte half
 requires 12 packets at the 4,352-byte maximum payload. The target selects the
 largest uniform channel depth that fits the mux worker's L1 interval; this
-configuration provides 22 buffers per client channel. It measured 2.243 ms,
-0.2% above the mean of the adjacent 2.242 and 2.234 ms grouped-row controls and
-1.1% below the previously published 2.269 ms result. The remaining difference
-from native is 273 us.
+configuration provides 22 buffers per client channel.
+
+The activation thread now performs only activation transport and distribution.
+For each output block, the weight thread publishes the next block's bias and
+weights before writing the preceding output. This overlaps output DRAM writes
+with compute and lets the activation thread start the next round immediately.
+The change measured 1.959 ms, 11.0% below the mean of the 2.212 and 2.193 ms
+adjacent controls. Paired native measured 1.969 ms, so TT-Lang/native is 0.995.
 
 The bidirectional experiments require both directions to populate one ten-tile
 activation block and the matching two weight slices before one matmul. Splitting
@@ -215,8 +223,9 @@ Device profiling measures first kernel start through final kernel end, averaged
 across the four devices. Host tensor creation, compilation, dispatch,
 correctness checks, and profiler processing are excluded.
 
-Measured 2026-09-15 04:29-04:31 UTC. TT-Lang `aeccb35a3fc3`, operation
-SHA-256 `bb9d986cb3c1`, compiler binary SHA-256 `6f4f849342e3`; TT-Metal
+Measured 2026-09-15 07:22-07:26 UTC; native reference measured 07:12 UTC.
+TT-Lang compiler source `0e35bfff32a7`, operation SHA-256 `4730ccbb7aa1`,
+compiler binary SHA-256 `6f4f849342e3`; TT-Metal
 `41859079d939`, native binary SHA-256 `9815624f3813`; LLVM `37aca9d384347`;
 firmware 18.12.1; IRD v1.1.9.
 
