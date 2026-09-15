@@ -806,6 +806,9 @@ static std::optional<std::uint64_t> getConcreteTransferExecutionCount(
     PipeGraphAnalysisState &analysisState,
     std::optional<PipeRecordAttr> selectedRecord);
 
+static DeviceDomainAttr
+getAggregateLocalPipeDeviceDomain(const PipeGraphAnalysisState &analysisState);
+
 static InFlightDiagnostic
 emitReceiverReservationPastDFBEnd(const ReceiverDFBInfo &receiverInfo,
                                   int64_t slot) {
@@ -880,6 +883,17 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
     LaunchExecutionLocation location;
     std::optional<std::uint64_t> executionCount;
   };
+  DeviceDomainAttr localDeviceDomain =
+      getAggregateLocalPipeDeviceDomain(analysisState);
+  DeviceRefAttr representativeLocalDevice;
+  if (localDeviceDomain) {
+    FailureOr<SmallVector<DeviceRefAttr>> maybeDevices =
+        enumerateDeviceDomain(localDeviceDomain);
+    if (failed(maybeDevices) || maybeDevices->empty()) {
+      return failure();
+    }
+    representativeLocalDevice = maybeDevices->front();
+  }
   // Resolve `endpoint`'s receiver location and total post count. An unresolved
   // location fails; a valid location with an unknown count remains
   // conservative.
@@ -894,16 +908,24 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
            "pipe transfer graph validated pipe references");
     const PipeTransferNode &transferNode =
         getPipeTransferNode(endpoint.transferNode);
-    FailureOr<LaunchExecutionLocation> maybeLocation =
-        getPipeGraphExecutionLocation(
-            postOp.getOperation(), getLaunchNodeCoord(endpoint.receiver),
-            transferNode.deviceTransfer, PipeRole::Destination);
-    if (failed(maybeLocation)) {
-      return failure();
+    LaunchNodeCoord receiverNode = getLaunchNodeCoord(endpoint.receiver);
+    LaunchExecutionLocation location(receiverNode);
+    if (transferNode.deviceTransfer) {
+      FailureOr<LaunchExecutionLocation> maybeLocation =
+          getPipeGraphExecutionLocation(postOp.getOperation(), receiverNode,
+                                        transferNode.deviceTransfer,
+                                        PipeRole::Destination);
+      if (failed(maybeLocation)) {
+        return failure();
+      }
+      location = *maybeLocation;
+    } else if (representativeLocalDevice) {
+      location = LaunchExecutionLocation(receiverNode, localDeviceDomain,
+                                         representativeLocalDevice);
     }
     return ReceiverEndpointExecutionInfo{
-        *maybeLocation,
-        getConcreteTransferExecutionCount(postOp.getOperation(), *maybeLocation,
+        location,
+        getConcreteTransferExecutionCount(postOp.getOperation(), location,
                                           *pipeRef, endpoint.postRecordIndex,
                                           analysisState, endpoint.postRecord)};
   };
@@ -1702,9 +1724,6 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
     tensorRegion.hasDisjointOccurrences =
         !tensorRegionHasOverlappingOccurrences(tensorRegion);
     tensorEndpoints.push_back(&endpoint);
-    if (*endpoint.executionCount > 1) {
-      repeatedTensorEndpoints.push_back(&endpoint);
-    }
   }
   if (tensorEndpoints.empty()) {
     return success();
@@ -1746,6 +1765,12 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
             << "overlapping destination is here";
         return failure();
       }
+    }
+  }
+  for (PipeReceiverEndpoint *endpoint : tensorEndpoints) {
+    if (*endpoint->executionCount > 1 &&
+        !endpoint->getTensorRegionDestination().hasDisjointOccurrences) {
+      repeatedTensorEndpoints.push_back(endpoint);
     }
   }
 
@@ -2661,6 +2686,64 @@ static std::optional<std::uint64_t> getConcreteTransferExecutionCount(
              : std::nullopt;
 }
 
+/// Return the one device domain used by selected PipeNet records. Target
+/// lowering imposes the same constraint per kernel before materializing fabric
+/// routes; multiple domains retain node-only conservative analysis here.
+static DeviceDomainAttr
+getAggregateLocalPipeDeviceDomain(const PipeGraphAnalysisState &analysisState) {
+  DeviceDomainAttr deviceDomain;
+  for (const auto &[loopOperation, recordLoop] :
+       analysisState.pipeRecordLoops) {
+    (void)loopOperation;
+    for (PipeRecordAttr record : recordLoop.records.getPipes()) {
+      if (!record.getDeviceTransfer()) {
+        continue;
+      }
+      DeviceDomainAttr recordDomain = record.getDeviceTransfer().getDomain();
+      if (deviceDomain && deviceDomain != recordDomain) {
+        return {};
+      }
+      deviceDomain = recordDomain;
+    }
+  }
+  return deviceDomain;
+}
+
+/// Return the per-device execution count for a local PipeNet event when every
+/// logical device has the same count. A local PipeNet represents one replicated
+/// transfer program, so a device-varying count cannot use one endpoint graph.
+static std::optional<std::uint64_t> getUniformLocalTransferExecutionCount(
+    Operation *op, LaunchNodeCoord node, const PipeReference &pipeRef,
+    std::optional<std::uint64_t> recordIndex,
+    std::optional<PipeRecordAttr> record, DeviceDomainAttr deviceDomain,
+    PipeGraphAnalysisState &analysisState) {
+  if (!deviceDomain) {
+    return getConcreteTransferExecutionCount(op, LaunchExecutionLocation(node),
+                                             pipeRef, recordIndex,
+                                             analysisState, record);
+  }
+  FailureOr<SmallVector<DeviceRefAttr>> maybeDevices =
+      enumerateDeviceDomain(deviceDomain);
+  if (failed(maybeDevices)) {
+    return std::nullopt;
+  }
+
+  std::optional<std::uint64_t> uniformCount;
+  for (DeviceRefAttr device : *maybeDevices) {
+    std::optional<std::uint64_t> maybeCount = getConcreteTransferExecutionCount(
+        op, LaunchExecutionLocation(node, deviceDomain, device), pipeRef,
+        recordIndex, analysisState, record);
+    if (!maybeCount) {
+      return std::nullopt;
+    }
+    if (uniformCount && *uniformCount != *maybeCount) {
+      return std::nullopt;
+    }
+    uniformCount = *maybeCount;
+  }
+  return uniformCount;
+}
+
 /// A protocol operation and the selected record it represents.
 template <typename ProtocolOp>
 struct PipeProtocolCandidate {
@@ -2734,6 +2817,8 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
   using PipeTransferIdentity = std::pair<PipeKey, DeviceTransferAttr>;
   llvm::MapVector<PipeTransferIdentity, PipeTransferCandidates>
       candidatesByPipe;
+  DeviceDomainAttr aggregateLocalDeviceDomain =
+      getAggregateLocalPipeDeviceDomain(analysisState);
   // Static operations require a conservative role bound. Selected operations
   // are restricted per record by their enclosing PipeNet foreach semantics.
   for (Operation *op : analysisState.transferProtocolOps) {
@@ -2780,9 +2865,14 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
                   return failure();
                 }
                 std::optional<std::uint64_t> maybeExecutionCount =
-                    getConcreteTransferExecutionCount(
-                        sendOp.getOperation(), *maybeLocation, *pipeRef,
-                        selectedRecordIndex, analysisState, record);
+                    deviceTransfer
+                        ? getConcreteTransferExecutionCount(
+                              sendOp.getOperation(), *maybeLocation, *pipeRef,
+                              selectedRecordIndex, analysisState, record)
+                        : getUniformLocalTransferExecutionCount(
+                              sendOp.getOperation(), source, *pipeRef,
+                              selectedRecordIndex, record,
+                              aggregateLocalDeviceDomain, analysisState);
                 if (maybeExecutionCount && *maybeExecutionCount == 0) {
                   return success();
                 }
@@ -2853,9 +2943,14 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
                   return;
                 }
                 std::optional<std::uint64_t> maybeExecutionCount =
-                    getConcreteTransferExecutionCount(
-                        postOp.getOperation(), *maybeLocation, *pipeRef,
-                        selectedRecordIndex, analysisState, record);
+                    deviceTransfer
+                        ? getConcreteTransferExecutionCount(
+                              postOp.getOperation(), *maybeLocation, *pipeRef,
+                              selectedRecordIndex, analysisState, record)
+                        : getUniformLocalTransferExecutionCount(
+                              postOp.getOperation(), receiverCoord, *pipeRef,
+                              selectedRecordIndex, record,
+                              aggregateLocalDeviceDomain, analysisState);
                 if (!maybeExecutionCount || *maybeExecutionCount != 0) {
                   candidates.postsByReceiver[receiver].push_back(
                       {postOp, selectedRecordIndex, record,
@@ -2957,15 +3052,27 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
         }
         bool haveEqualExecutionCounts = false;
         std::optional<std::uint64_t> maybeSendCount =
-            getConcreteTransferExecutionCount(
-                sendOp.getOperation(), *maybeSendLocation, *sendPipeRef,
-                candidates.sends[sendIndex].recordIndex, analysisState,
-                candidates.sends[sendIndex].record);
+            candidates.deviceTransfer
+                ? getConcreteTransferExecutionCount(
+                      sendOp.getOperation(), *maybeSendLocation, *sendPipeRef,
+                      candidates.sends[sendIndex].recordIndex, analysisState,
+                      candidates.sends[sendIndex].record)
+                : getUniformLocalTransferExecutionCount(
+                      sendOp.getOperation(), {pipeKey.srcX, pipeKey.srcY},
+                      *sendPipeRef, candidates.sends[sendIndex].recordIndex,
+                      candidates.sends[sendIndex].record,
+                      aggregateLocalDeviceDomain, analysisState);
         std::optional<std::uint64_t> maybePostCount =
-            getConcreteTransferExecutionCount(
-                postOp.getOperation(), *maybePostLocation, *postPipeRef,
-                postsIt->second[sendIndex].recordIndex, analysisState,
-                postsIt->second[sendIndex].record);
+            candidates.deviceTransfer
+                ? getConcreteTransferExecutionCount(
+                      postOp.getOperation(), *maybePostLocation, *postPipeRef,
+                      postsIt->second[sendIndex].recordIndex, analysisState,
+                      postsIt->second[sendIndex].record)
+                : getUniformLocalTransferExecutionCount(
+                      postOp.getOperation(), getLaunchNodeCoord(receiver),
+                      *postPipeRef, postsIt->second[sendIndex].recordIndex,
+                      postsIt->second[sendIndex].record,
+                      aggregateLocalDeviceDomain, analysisState);
         if (maybeSendCount && maybePostCount) {
           haveEqualExecutionCounts = *maybeSendCount == *maybePostCount;
         }
