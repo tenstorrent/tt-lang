@@ -16,6 +16,12 @@ from examples.all_gather_minimal_matmul import (
     make_grouped_row_all_gather_matmul_operation,
 )
 from examples.all_gather_minimal_matmul.__main__ import open_participant_mesh
+from examples.all_gather_minimal_matmul.operation_bidirectional_dram import (
+    make_bidirectional_dram_all_gather_matmul_operation,
+)
+from examples.all_gather_minimal_matmul.operation_bidirectional_l1 import (
+    make_bidirectional_l1_all_gather_matmul_operation,
+)
 from ttlang_test_utils import get_fabric_mesh_shape, to_dram
 from utils.correctness import assert_allclose, assert_pcc
 
@@ -33,13 +39,7 @@ def require_mesh(mesh_shape):
         )
 
 
-def run_case(
-    mesh,
-    config,
-    communication_workers,
-    torch_dtype,
-    operation_factory=make_all_gather_minimal_matmul_operation,
-):
+def make_case_tensors(mesh, config, torch_dtype):
     torch.manual_seed(19)
     m_elements = config.m_tiles * 32
     k_elements = config.device_count * config.k_tiles_per_device * 32
@@ -63,14 +63,10 @@ def run_case(
         mesh,
         mesh_mapper=shard_mapper,
     )
-    operation = operation_factory(
-        config,
-        math_fidelity="HiFi2" if torch_dtype == torch.bfloat16 else "HiFi4",
-        fp32_dest_acc_en=True,
-        communication_worker_count=communication_workers,
-    )
+    return expected, activation_device, weight_device, bias_device, output_device
 
-    operation(activation_device, weight_device, bias_device, output_device)
+
+def assert_case_output(mesh, expected, output_device, torch_dtype):
     actual = ttnn.to_torch(
         output_device, mesh_composer=ttnn.ConcatMeshToTensor(mesh, dim=1)
     ).float()
@@ -81,6 +77,27 @@ def run_case(
     )
     tolerance = 0.05 if torch_dtype == torch.bfloat16 else 0.005
     assert_allclose(actual, expected, rtol=tolerance, atol=tolerance)
+
+
+def run_case(
+    mesh,
+    config,
+    communication_workers,
+    torch_dtype,
+    operation_factory=make_all_gather_minimal_matmul_operation,
+):
+    expected, activation_device, weight_device, bias_device, output_device = (
+        make_case_tensors(mesh, config, torch_dtype)
+    )
+    operation = operation_factory(
+        config,
+        math_fidelity="HiFi2" if torch_dtype == torch.bfloat16 else "HiFi4",
+        fp32_dest_acc_en=True,
+        communication_worker_count=communication_workers,
+    )
+
+    operation(activation_device, weight_device, bias_device, output_device)
+    assert_case_output(mesh, expected, output_device, torch_dtype)
 
 
 @pytest.mark.parametrize(
@@ -170,3 +187,74 @@ def test_grouped_row_all_gather_minimal_matmul(torch_dtype):
             torch_dtype,
             operation_factory=make_grouped_row_all_gather_matmul_operation,
         )
+
+
+@pytest.mark.parametrize(
+    "torch_dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"]
+)
+def test_bidirectional_dram_all_gather_minimal_matmul(torch_dtype):
+    config = AllGatherMinimalMatmulConfig(
+        mesh_shape=(4, 1),
+        m_tiles=8,
+        k_tiles_per_device=4,
+        n_tiles_per_device=8,
+        compute_grid=(4, 4),
+        m_block_tiles=2,
+        k_block_tiles=2,
+        n_block_tiles=1,
+        reuse_activation=False,
+    )
+    require_mesh(config.mesh_shape)
+    with open_participant_mesh(config.mesh_shape) as mesh:
+        expected, activation, weight, bias, output = make_case_tensors(
+            mesh, config, torch_dtype
+        )
+        gathered_activation = to_dram(
+            torch.zeros(
+                (
+                    config.padded_m_tiles * 32,
+                    config.device_count * config.k_tiles_per_device * 32,
+                ),
+                dtype=torch_dtype,
+            ),
+            mesh,
+            mesh_mapper=ttnn.ReplicateTensorToMesh(mesh),
+        )
+        operation = make_bidirectional_dram_all_gather_matmul_operation(
+            config,
+            math_fidelity="HiFi2" if torch_dtype == torch.bfloat16 else "HiFi4",
+            fp32_dest_acc_en=True,
+        )
+
+        operation(activation, gathered_activation, weight, bias, output)
+        assert_case_output(mesh, expected, output, torch_dtype)
+
+
+@pytest.mark.parametrize(
+    "torch_dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"]
+)
+def test_bidirectional_l1_all_gather_minimal_matmul(torch_dtype):
+    config = AllGatherMinimalMatmulConfig(
+        mesh_shape=(4, 1),
+        m_tiles=8,
+        k_tiles_per_device=4,
+        n_tiles_per_device=8,
+        compute_grid=(4, 4),
+        m_block_tiles=2,
+        k_block_tiles=2,
+        n_block_tiles=1,
+        reuse_activation=False,
+    )
+    require_mesh(config.mesh_shape)
+    with open_participant_mesh(config.mesh_shape) as mesh:
+        expected, activation, weight, bias, output = make_case_tensors(
+            mesh, config, torch_dtype
+        )
+        operation = make_bidirectional_l1_all_gather_matmul_operation(
+            config,
+            math_fidelity="HiFi2" if torch_dtype == torch.bfloat16 else "HiFi4",
+            fp32_dest_acc_en=True,
+        )
+
+        operation(activation, weight, bias, output)
+        assert_case_output(mesh, expected, output, torch_dtype)
