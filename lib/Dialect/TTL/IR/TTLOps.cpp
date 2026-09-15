@@ -26,10 +26,12 @@
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/ADT/TypeSwitch.h" // IWYU pragma: keep
+#include "llvm/Support/CheckedArithmetic.h"
 #include <algorithm>
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <optional>
 #include <string>
@@ -276,97 +278,6 @@ void TTLDialect::registerTypes() {
       >();
 }
 
-namespace {
-
-using EmitErrorFn = llvm::function_ref<mlir::InFlightDiagnostic()>;
-
-static LogicalResult
-verifyComponentCoordinates(DeviceDomainComponentAttr component,
-                           DenseI64ArrayAttr coordinate, EmitErrorFn emitError,
-                           llvm::StringRef context,
-                           bool allowUpperBound = false) {
-  ArrayRef<int64_t> extent = component.getExtent().asArrayRef();
-  ArrayRef<int64_t> values = coordinate.asArrayRef();
-  if (values.size() != extent.size()) {
-    return emitError() << context << " component '"
-                       << component.getName().getValue() << "' has rank "
-                       << values.size() << ", expected " << extent.size();
-  }
-  for (auto [axis, value] : llvm::enumerate(values)) {
-    bool upperBoundValid =
-        allowUpperBound ? value <= extent[axis] : value < extent[axis];
-    if (value < 0 || !upperBoundValid) {
-      return emitError() << context << " component '"
-                         << component.getName().getValue() << "' axis " << axis
-                         << " is out of bounds for extent " << extent[axis]
-                         << ", got " << value;
-    }
-  }
-  return success();
-}
-
-static LogicalResult verifyDeviceRefInDomain(DeviceDomainAttr domain,
-                                             DeviceRefAttr deviceRef,
-                                             EmitErrorFn emitError,
-                                             llvm::StringRef context,
-                                             bool allowUpperBound = false) {
-  llvm::ArrayRef<DeviceDomainComponentAttr> components = domain.getComponents();
-  llvm::ArrayRef<DenseI64ArrayAttr> coordinates = deviceRef.getCoordinates();
-  if (coordinates.size() != components.size()) {
-    return emitError() << context << " has " << coordinates.size()
-                       << " component coordinates, expected "
-                       << components.size();
-  }
-
-  for (auto [component, coordinate] : llvm::zip(components, coordinates)) {
-    if (failed(verifyComponentCoordinates(component, coordinate, emitError,
-                                          context, allowUpperBound))) {
-      return failure();
-    }
-  }
-  return success();
-}
-
-static mlir::LogicalResult verifyTransferEdgeInDomain(DeviceDomainAttr domain,
-                                                      TransferEdgeAttr edge,
-                                                      EmitErrorFn emitError,
-                                                      llvm::StringRef context) {
-  if (mlir::failed(
-          verifyDeviceRefInDomain(domain, edge.getSource(), emitError,
-                                  (llvm::Twine(context) + ".source").str()))) {
-    return mlir::failure();
-  }
-  if (DeviceRefAttr destination = edge.getDestination()) {
-    if (failed(verifyDeviceRefInDomain(
-            domain, destination, emitError,
-            (llvm::Twine(context) + ".destination").str()))) {
-      return failure();
-    }
-    if (destination == edge.getSource()) {
-      return emitError() << context << " source must differ from destination";
-    }
-    return success();
-  }
-
-  DeviceRangeAttr destinationRange = edge.getDestinationRange();
-  if (mlir::failed(verifyDeviceRefInDomain(
-          domain, destinationRange.getLo(), emitError,
-          (llvm::Twine(context) + ".destination_range.lo").str())) ||
-      mlir::failed(verifyDeviceRefInDomain(
-          domain, destinationRange.getHi(), emitError,
-          (llvm::Twine(context) + ".destination_range.hi").str(), true))) {
-    return mlir::failure();
-  }
-  if (deviceRangeContains(destinationRange, edge.getSource())) {
-    return emitError()
-           << context
-           << " source must not be contained in its destination range";
-  }
-  return mlir::success();
-}
-
-} // namespace
-
 llvm::LogicalResult
 SliceAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
                   int64_t start, int64_t stop, int64_t step) {
@@ -584,6 +495,14 @@ llvm::LogicalResult DeviceTransferAttr::verify(
                                     "device transfer edge");
 }
 
+llvm::LogicalResult TransferGraphAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    DeviceDomainAttr domain, TransferGraphKind kind, StringAttr componentName,
+    DictionaryAttr properties) {
+  return createTransferGraph(domain, kind, componentName, properties)
+      ->verify(emitError);
+}
+
 mlir::LogicalResult IsDeviceOp::verify() {
   return verifyDeviceRefInDomain(
       getDomain(), getDevice(), [&]() { return emitOpError(); }, "device");
@@ -654,11 +573,114 @@ PipeRecordAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
   return llvm::success();
 }
 
+llvm::LogicalResult PipeMappingAttr::verify(
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
+    TransferGraphAttr graph, ArrayRef<PipeRecordAttr> pipes) {
+  if (pipes.empty()) {
+    return emitError() << "requires at least one node pipe";
+  }
+  llvm::DenseSet<PipeRecordAttr> uniquePipes;
+  for (PipeRecordAttr pipe : pipes) {
+    if (pipe.getDeviceTransfer()) {
+      return emitError()
+             << "node pipes must not contain a bound device transfer";
+    }
+    if (pipe.getIsCollective()) {
+      return emitError()
+             << "graph node collective destinations require multicast lowering";
+    }
+    if (!uniquePipes.insert(pipe).second) {
+      return emitError() << "contains a duplicate node pipe";
+    }
+  }
+  return success();
+}
+
 llvm::LogicalResult PipeNetRecordsAttr::verify(
     llvm::function_ref<mlir::InFlightDiagnostic()> emitError, int64_t pipeNetId,
-    StringAttr pipeNetName, ArrayRef<PipeRecordAttr> pipes) {
-  if (pipes.empty()) {
-    return emitError() << "requires at least one pipe record";
+    StringAttr pipeNetName, ArrayRef<PipeRecordAttr> pipes,
+    ArrayRef<PipeMappingAttr> mappings) {
+  if (pipes.empty() == mappings.empty()) {
+    return emitError()
+           << "requires exactly one of pipe records or graph mappings";
+  }
+  if (!mappings.empty()) {
+    struct MappingRelation {
+      std::unique_ptr<TransferGraph> graph;
+      llvm::DenseSet<PipeRecordAttr> pipes;
+      llvm::DenseSet<TransferEdgeAttr> edges;
+      bool edgesInitialized = false;
+    };
+    // Materialize graph edges only when shared node pipes make overlap
+    // possible.
+    auto getEdges =
+        [](MappingRelation &relation) -> llvm::DenseSet<TransferEdgeAttr> & {
+      if (!relation.edgesInitialized) {
+        relation.graph->forEachEdge(
+            [&](TransferEdgeAttr edge) { relation.edges.insert(edge); });
+        relation.edgesInitialized = true;
+      }
+      return relation.edges;
+    };
+    SmallVector<MappingRelation> previousMappings;
+    DeviceDomainAttr domain;
+    std::uint64_t recordCount = 0;
+    for (PipeMappingAttr mapping : mappings) {
+      DeviceDomainAttr mappingDomain = mapping.getGraph().getDomain();
+      if (domain && domain != mappingDomain) {
+        return emitError()
+               << "all graph mappings must use the same logical device domain";
+      }
+      domain = mappingDomain;
+
+      MappingRelation currentRelation;
+      currentRelation.graph = createTransferGraph(mapping.getGraph());
+      FailureOr<std::uint64_t> edgeCount =
+          currentRelation.graph->getEdgeCount();
+      std::optional<std::uint64_t> mappingRecordCount =
+          succeeded(edgeCount)
+              ? llvm::checkedMulUnsigned(
+                    *edgeCount,
+                    static_cast<std::uint64_t>(mapping.getPipes().size()))
+              : std::nullopt;
+      std::optional<std::uint64_t> updatedRecordCount =
+          mappingRecordCount
+              ? llvm::checkedAddUnsigned(recordCount, *mappingRecordCount)
+              : std::nullopt;
+      if (!updatedRecordCount ||
+          *updatedRecordCount >
+              static_cast<std::uint64_t>(std::numeric_limits<int64_t>::max())) {
+        return emitError()
+               << "graph PipeNet record count exceeds the supported index "
+                  "range";
+      }
+      recordCount = *updatedRecordCount;
+
+      for (PipeRecordAttr pipe : mapping.getPipes()) {
+        currentRelation.pipes.insert(pipe);
+      }
+      for (MappingRelation &previousRelation : previousMappings) {
+        bool sharesPipe =
+            llvm::any_of(currentRelation.pipes, [&](PipeRecordAttr pipe) {
+              return previousRelation.pipes.contains(pipe);
+            });
+        if (!sharesPipe) {
+          continue;
+        }
+        llvm::DenseSet<TransferEdgeAttr> &currentEdges =
+            getEdges(currentRelation);
+        llvm::DenseSet<TransferEdgeAttr> &previousEdges =
+            getEdges(previousRelation);
+        if (llvm::any_of(currentEdges, [&](TransferEdgeAttr edge) {
+              return previousEdges.contains(edge);
+            })) {
+          return emitError() << "graph mappings repeat the same device edge "
+                                "and node pipe";
+        }
+      }
+      previousMappings.push_back(std::move(currentRelation));
+    }
+    return success();
   }
   bool isCollective = pipes.front().getIsCollective();
   if (llvm::any_of(pipes, [&](PipeRecordAttr record) {
@@ -1114,6 +1136,9 @@ verifySelectedPipeDeviceIndex(mlir::Operation *op, mlir::Value pipe,
     return op->emitOpError()
            << "requires a selected pipe with an associated record table";
   }
+  if (!maybeRecords->records.getMappings().empty()) {
+    return mlir::success();
+  }
   for (mlir::tt::ttl::PipeRecordAttr record :
        maybeRecords->records.getPipes()) {
     mlir::tt::ttl::DeviceTransferAttr transfer = record.getDeviceTransfer();
@@ -1195,7 +1220,11 @@ selectedPipeKindMatchesTransfer(mlir::Value pipe,
     return true;
   }
 
-  bool isCollective = records.getPipes().front().getIsCollective();
+  mlir::FailureOr<mlir::tt::ttl::PipeRecordAttr> firstRecord =
+      mlir::tt::ttl::getFirstNodePipeRecord(records);
+  assert(succeeded(firstRecord) &&
+         "verified PipeNet records must contain a node pipe");
+  bool isCollective = firstRecord->getIsCollective();
   return isCollective == (kind == mlir::tt::ttl::PipeTransferKind::Collective);
 }
 
@@ -3283,7 +3312,7 @@ mlir::LogicalResult mlir::tt::ttl::RawAddrOp::verify() {
 // PipeNetPredicateOpInterface implementations.
 //===----------------------------------------------------------------------===//
 
-// The ID and expanded records redundantly identify one PipeNet and must agree.
+// The ID and record relation redundantly identify one PipeNet and must agree.
 template <typename PipeNetReferenceOp>
 static mlir::LogicalResult verifyPipeNetRecordIdentity(PipeNetReferenceOp op) {
   mlir::tt::ttl::PipeNetRecordsAttr records = op.getRecordsAttr();
