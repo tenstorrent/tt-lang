@@ -106,6 +106,7 @@ __all__ = [
     "reset_dfbs",
     "reset_all_dfbs",
     "reconfigure_dfbs",
+    "uint32",
     "wait_any",
     "math",
     "block",

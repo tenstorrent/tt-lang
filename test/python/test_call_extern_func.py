@@ -27,7 +27,6 @@ from utils.correctness import assert_allclose as assert_numeric_allclose
 import ttl
 from ttl.diagnostics import TTLangCompileError
 
-
 NEGATE_HEADER = os.path.join(os.path.dirname(__file__), "include", "negate_tile_op.hpp")
 TYPED_ARGS_HEADER = os.path.join(
     os.path.dirname(__file__), "include", "typed_args_op.hpp"

@@ -230,6 +230,7 @@ ordinals.
 | Python argument | Generated C++ argument |
 | --- | --- |
 | `int` | Signed integer constant |
+| `ttl.uint32(value)` | Unsigned 32-bit integer constant |
 | `bool` | Boolean constant |
 | `float` | Unsigned binary32 bit-pattern constant |
 | `ttl.dfb_descriptor(dfb)` | `ttlang::DFBDescriptor<index, pages_per_block, block_count, page_size>` type |
@@ -246,6 +247,7 @@ ttl.call_extern_func(
         ttl.dfb_descriptor(source_dfb),
         ttl.dfb_descriptor(destination_dfb),
         4,
+        ttl.uint32(0xFFFFFFFF),
         False,
     ],
     kernel=ttl.KernelKind.DATA_MOVEMENT,
