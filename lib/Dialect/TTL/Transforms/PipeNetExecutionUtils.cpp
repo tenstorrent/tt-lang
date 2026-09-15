@@ -9,7 +9,53 @@
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/Support/CheckedArithmetic.h"
 
+#include <limits>
+
 namespace mlir::tt::ttl {
+
+FailureOr<SmallVector<DeviceRefAttr>>
+enumerateDeviceDomain(DeviceDomainAttr deviceDomain) {
+  SmallVector<int64_t> axisExtents;
+  std::uint64_t deviceCount = 1;
+  for (DeviceDomainComponentAttr component : deviceDomain.getComponents()) {
+    for (int64_t extent : component.getExtent().asArrayRef()) {
+      std::optional<std::uint64_t> nextCount = llvm::checkedMulUnsigned(
+          deviceCount, static_cast<std::uint64_t>(extent));
+      if (!nextCount ||
+          *nextCount > static_cast<std::uint64_t>(
+                           std::numeric_limits<std::size_t>::max())) {
+        return failure();
+      }
+      deviceCount = *nextCount;
+      axisExtents.push_back(extent);
+    }
+  }
+
+  SmallVector<DeviceRefAttr> devices;
+  devices.reserve(static_cast<std::size_t>(deviceCount));
+  for (std::uint64_t deviceIndex = 0; deviceIndex < deviceCount;
+       ++deviceIndex) {
+    SmallVector<int64_t> flattenedCoordinates(axisExtents.size(), 0);
+    std::uint64_t remainingIndex = deviceIndex;
+    for (std::size_t axis = axisExtents.size(); axis-- > 0;) {
+      flattenedCoordinates[axis] = remainingIndex % axisExtents[axis];
+      remainingIndex /= axisExtents[axis];
+    }
+
+    SmallVector<DenseI64ArrayAttr> componentCoordinates;
+    std::size_t axisOffset = 0;
+    for (DeviceDomainComponentAttr component : deviceDomain.getComponents()) {
+      std::size_t componentRank = component.getExtent().size();
+      componentCoordinates.push_back(DenseI64ArrayAttr::get(
+          deviceDomain.getContext(), ArrayRef<int64_t>(flattenedCoordinates)
+                                         .slice(axisOffset, componentRank)));
+      axisOffset += componentRank;
+    }
+    devices.push_back(
+        DeviceRefAttr::get(deviceDomain.getContext(), componentCoordinates));
+  }
+  return devices;
+}
 
 std::optional<std::uint64_t>
 getPipeNetRecordLoopInductionValue(const PipeNetRecordLoop &recordLoop,
