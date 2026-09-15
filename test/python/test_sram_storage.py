@@ -4,6 +4,7 @@
 
 """Persistent SRAM ownership and cross-operation device correctness."""
 
+import copy
 import sys
 from types import SimpleNamespace
 
@@ -43,14 +44,29 @@ class Device:
 
 
 class Resource:
-    def __init__(self, shape, options):
+    def __init__(self, shape, options, address):
         self.shape = tuple(shape)
         self.options = options
+        self.dtype = options["dtype"]
+        self.layout = options["layout"]
+        self.address = address
         self.allocated = True
         self.value = None
 
     def is_allocated(self):
         return self.allocated
+
+    def device(self):
+        return self.options["device"]
+
+    def memory_config(self):
+        return self.options["memory_config"]
+
+    def is_per_core_allocated(self):
+        return False
+
+    def buffer_address(self):
+        return self.address
 
 
 @pytest.fixture
@@ -65,7 +81,7 @@ def runtime(monkeypatch):
 
     def empty(shape, **options):
         check("allocation", len(allocations))
-        resource = Resource(shape, options)
+        resource = Resource(shape, options, address=0x10000 + len(allocations) * 0x1000)
         allocations.append(resource)
         events.append(("allocate", resource))
         return resource
@@ -381,6 +397,29 @@ def test_completion_selection_ignores_mutable_stall_group(runtime):
     assert all(event[2]["sub_device_ids"] == [ttnn.SubDeviceId(1)] for event in records)
     orders = [event for event in runtime.events if event[0] == "order"]
     assert len(orders) == 4
+    storage.close()
+
+
+def test_external_tensor_alias_wrapper_restores_owned_reference(runtime):
+    storage = SRAMStorage(device=runtime.device)
+    state = declare(storage)
+    storage.allocate()
+    alias_wrapper = copy.copy(runtime.allocations[0])
+    assert storage.submit(lambda value: alias_wrapper, state) is state
+    storage.close()
+
+
+@pytest.mark.parametrize("difference", ["address", "shape"])
+def test_external_nonalias_tensor_wrapper_is_not_restored(runtime, difference):
+    storage = SRAMStorage(device=runtime.device)
+    state = declare(storage)
+    storage.allocate()
+    candidate = copy.copy(runtime.allocations[0])
+    if difference == "address":
+        candidate.address += 0x1000
+    else:
+        candidate.shape = (32, 32)
+    assert storage.submit(lambda value: candidate, state) is candidate
     storage.close()
 
 

@@ -60,6 +60,9 @@ class Backend:
         assert resource not in self.released
         self.released.append(resource)
 
+    def aliases(self, resource, candidate):
+        return resource is candidate
+
     def complete(self):
         for event in self.events:
             event.set()

@@ -101,6 +101,62 @@ class _TTNNStorageBackend:
             raise RuntimeError("persistent tensor backing was released externally")
         self.api.deallocate(resource)
 
+    def aliases(self, resource, candidate):
+        if resource is candidate:
+            return True
+        if type(resource) is not type(candidate):
+            return False
+        required_methods = (
+            "buffer_address",
+            "device",
+            "is_allocated",
+            "is_per_core_allocated",
+            "memory_config",
+        )
+        if any(
+            not callable(getattr(candidate, method, None))
+            for method in required_methods
+        ):
+            return False
+        try:
+            if (
+                not candidate.is_allocated()
+                or candidate.device().id() != self.device_id
+            ):
+                return False
+            if (
+                tuple(candidate.shape) != tuple(resource.shape)
+                or candidate.dtype != resource.dtype
+                or candidate.layout != resource.layout
+                or candidate.memory_config() != resource.memory_config()
+                or candidate.is_per_core_allocated() != resource.is_per_core_allocated()
+            ):
+                return False
+            if not resource.is_per_core_allocated():
+                return candidate.buffer_address() == resource.buffer_address()
+            shard_grid = resource.memory_config().shard_spec.grid
+            cores = sorted(
+                self.api.corerange_to_cores(shard_grid),
+                key=lambda core: (core.y, core.x),
+            )
+            resource_devices = tuple(resource.device_coords())
+            candidate_devices = tuple(candidate.device_coords())
+            if tuple(map(tuple, resource_devices)) != tuple(
+                map(tuple, candidate_devices)
+            ):
+                return False
+            for device_coordinate in resource_devices:
+                for core in cores:
+                    if resource.experimental_per_core_buffer_address(
+                        device_coordinate, core
+                    ) != candidate.experimental_per_core_buffer_address(
+                        device_coordinate, core
+                    ):
+                        return False
+            return True
+        except (AttributeError, RuntimeError, TypeError, ValueError):
+            return False
+
 
 @dataclass(frozen=True)
 class _TensorDeclaration:
