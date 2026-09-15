@@ -906,6 +906,17 @@ static mlir::LogicalResult verifyPipeSendSource(mlir::Operation *operation,
       })) {
     return operation->emitOpError("pipe send DFB view must have unit strides");
   }
+  auto sourceType =
+      mlir::cast<mlir::RankedTensorType>(slice.getSource().getType());
+  bool foundNonSingletonDimension = false;
+  for (auto [viewExtent, sourceExtent] :
+       llvm::zip_equal(viewType.getShape(), sourceType.getShape())) {
+    if (foundNonSingletonDimension && viewExtent != sourceExtent) {
+      return operation->emitOpError(
+          "pipe send DFB view must be contiguous in row-major storage");
+    }
+    foundNonSingletonDimension |= viewExtent != 1;
+  }
   if (!mlir::isa<mlir::tt::ttl::CBWaitOp>(acquire)) {
     return operation->emitOpError(
         "pipe send source DFB view must come from ttl.cb_wait");

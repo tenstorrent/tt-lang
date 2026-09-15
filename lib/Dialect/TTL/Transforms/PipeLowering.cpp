@@ -3007,7 +3007,8 @@ haveEqualComputedTensorMetadata(const PipeComputedTensorAddressInfo &lhs,
          lhs.startIndices.size() == rhs.startIndices.size() &&
          lhs.occurrenceStartIndices.size() ==
              rhs.occurrenceStartIndices.size() &&
-         lhs.occurrenceCounterIndex == rhs.occurrenceCounterIndex &&
+         lhs.occurrenceCounterIndex.has_value() ==
+             rhs.occurrenceCounterIndex.has_value() &&
          lhs.regionShape == rhs.regionShape &&
          lhs.pageSizeBytes == rhs.pageSizeBytes;
 }
@@ -3080,8 +3081,13 @@ static SmallVector<Value> buildSelectedComputedTensorStartIndices(
   }
 
   Value counters = lookupComputedAddressCounter(op, computedAddressCounters);
-  Value counterIndex = arith::ConstantIndexOp::create(
-      rewriter, loc, *firstAddress.occurrenceCounterIndex);
+  SmallVector<int64_t> counterIndices =
+      llvm::map_to_vector(resources, [](const PipeResourceInfo &resource) {
+        return *resource.addressStorage.computedTensorAddress
+                    ->occurrenceCounterIndex;
+      });
+  Value counterIndex =
+      loadIndexTableEntry(loc, counterIndices, recordIndex, rewriter);
   Value occurrenceI32 =
       memref::LoadOp::create(rewriter, loc, counters, ValueRange{counterIndex});
   Value occurrence = arith::IndexCastOp::create(
@@ -5922,7 +5928,6 @@ static ComputedAddressPlan buildComputedAddressPlan(
     plan.infoByUnitIndex[candidate.unitIndex] = computedAddress;
   }
 
-  llvm::DenseMap<Operation *, int64_t> occurrenceCounterBySend;
   for (const TensorCandidate &candidate : tensorCandidates) {
     PipeComputedTensorAddressInfo computedAddress = candidate.computedAddress;
     bool variesByOccurrence = !llvm::all_of(
@@ -5931,20 +5936,11 @@ static ComputedAddressPlan buildComputedAddressPlan(
           return startIndices == ArrayRef(computedAddress.startIndices);
         });
     if (variesByOccurrence) {
-      Operation *sendOp = units[candidate.unitIndex].sendOp;
-      auto counterIt = occurrenceCounterBySend.find(sendOp);
-      bool inserted = counterIt == occurrenceCounterBySend.end();
-      if (inserted) {
-        int64_t counterIndex =
-            nextDynamicSlotCounterIndexByFunc[candidate.senderFunc]++;
-        counterIt =
-            occurrenceCounterBySend.try_emplace(sendOp, counterIndex).first;
-      }
-      computedAddress.occurrenceCounterIndex = counterIt->second;
-      if (inserted) {
-        plan.counterInitializations[candidate.senderFunc].push_back(
-            PipeComputedAddressCounterInitInfo{counterIt->second, 0});
-      }
+      int64_t counterIndex =
+          nextDynamicSlotCounterIndexByFunc[candidate.senderFunc]++;
+      computedAddress.occurrenceCounterIndex = counterIndex;
+      plan.counterInitializations[candidate.senderFunc].push_back(
+          PipeComputedAddressCounterInitInfo{counterIndex, 0});
     }
     plan.tensorInfoByUnitIndex[candidate.unitIndex] =
         std::move(computedAddress);
