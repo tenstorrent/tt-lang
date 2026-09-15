@@ -56,6 +56,16 @@ change does not extend per-op init tracking to arbitrary nested control flow.
 Legacy full-init dialect operations remain available for explicitly authored
 TTKernel IR, but are not emitted by automatic init insertion.
 
+Cleanup hoists a copy's source reconfiguration together with its initialization
+out of a statically nonempty, straight-line loop when the source is invariant
+and every operation preserves copy configuration. Repeated matching setup pairs
+share the hoisted setup. L1 pack accumulation preserves copy configuration;
+unknown operations, changing sources, nested control flow, and standalone source
+reconfiguration prevent this optimization. Reconfiguration must precede the
+first copy initialization and immediately precede its associated initialization,
+so hoisting does not change the source formats used by an earlier copy. Moving
+the pair together also preserves initialization's signed-zero setting.
+
 Compiler coverage checks unconditional startup before a conditional first
 region, output format and geometry changes, physical matmul source order,
 input-pair changes, a loop backedge, and unary broadcast following live binary
