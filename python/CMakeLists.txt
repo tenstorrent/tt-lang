@@ -141,6 +141,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     domains.py
     runtime_resources.py
     scalar.py
+    template_argument.py
     ttl.py
     ttl_api.py
     ttl_block.py

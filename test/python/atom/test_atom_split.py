@@ -1265,6 +1265,42 @@ def test_kernel_kind_capture_selects_canonical_kernel():
         assert result.kernels == (expected_kind,)
 
 
+def test_uint32_template_capture_survives_composition():
+    """Composition retains unsigned type and distinguishes it from signed int."""
+
+    def make_operation(template_value):
+        template_arguments = [template_value]
+
+        @ttl.operation()
+        def external_call():
+            ttl.call_extern_func(
+                "template.hpp",
+                "consume",
+                template_args=template_arguments,
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+
+        return external_call
+
+    signed_operation = make_operation(1)
+    unsigned_operation = make_operation(ttl.uint32(1))
+
+    assert (
+        signed_operation._spec.operation_identity
+        != unsigned_operation._spec.operation_identity
+    )
+
+    @ttl.operation(grid=(1, 1))
+    def composed_operation():
+        unsigned_operation()
+
+    uint32_type = type(ttl.uint32(0))
+    assert any(
+        isinstance(value, uint32_type)
+        for value in composed_operation._spec.compile_time_captures.values()
+    )
+
+
 def test_composition_preserves_one_dispatch_condition_identity():
     """Inlining preserves one captured condition across logical kernels."""
     condition = ttl.DispatchCondition(ttl.ScalarType.I64)

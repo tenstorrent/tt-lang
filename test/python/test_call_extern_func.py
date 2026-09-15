@@ -41,6 +41,17 @@ SCALAR_RESULT_HEADER = os.path.join(
 MODULE_GLOBAL_SEMAPHORE = None
 
 
+def test_uint32_template_value_validation():
+    assert ttl.uint32(0).value == 0
+    assert ttl.uint32(0xFFFFFFFF).value == 0xFFFFFFFF
+    with pytest.raises(TypeError, match="requires an int"):
+        ttl.uint32(True)
+    with pytest.raises(ValueError, match="must fit in 32 bits"):
+        ttl.uint32(-1)
+    with pytest.raises(ValueError, match="must fit in 32 bits"):
+        ttl.uint32(1 << 32)
+
+
 @ttl.operation(grid=(1, 1))
 def negate_extern(inp, out):
     in_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)

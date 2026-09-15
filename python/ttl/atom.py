@@ -109,6 +109,7 @@ from .kernel import (
     _selector_kind,
     _transitive_participant_kernels,
 )
+from .template_argument import UInt32TemplateArgument
 from .fabric import (
     FabricManagerClaim,
     _bind_fabric_manager_claims,
@@ -508,7 +509,8 @@ def _is_compile_time_literal(value: Any) -> bool:
     if value is ScalarType:
         return True
     if value is None or isinstance(
-        value, (bool, int, float, str, ScalarType, KernelKind)
+        value,
+        (bool, int, float, str, ScalarType, KernelKind, UInt32TemplateArgument),
     ):
         return True
     if isinstance(value, (tuple, list)):

@@ -51,6 +51,7 @@ from ..kernel import (
     _selector_sort_key,
 )
 from ..scalar import ScalarType
+from ..template_argument import UInt32TemplateArgument
 from ..ttl_utils import get_thread_type_string
 from .auto_profile import (
     get_line_mapper,
@@ -2504,6 +2505,8 @@ class TTLGenericCompiler(TTCompilerBase):
 
         if isinstance(node, ast.Name) and node.id in self.captures:
             val = self.captures[node.id]
+            if isinstance(val, UInt32TemplateArgument):
+                return _unsigned_integer(val.value)
             if type(val) is bool:
                 return _boolean(val)
             if type(val) is int:
@@ -2516,6 +2519,8 @@ class TTLGenericCompiler(TTCompilerBase):
 
         if isinstance(node, ast.Name) and node.id in self.fn_globals:
             val = self.fn_globals[node.id]
+            if isinstance(val, UInt32TemplateArgument):
+                return _unsigned_integer(val.value)
             if type(val) is bool:
                 return _boolean(val)
             if type(val) is int:
