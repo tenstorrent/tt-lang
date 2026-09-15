@@ -81,6 +81,22 @@ Value getSingletonDimensionShapeViewSource(Operation *operation) {
   return source;
 }
 
+Value getStorageAliasSource(Operation *operation) {
+  if (auto attach = dyn_cast_or_null<AttachCBOp>(operation)) {
+    return attach.getTensor();
+  }
+  if (auto slice = dyn_cast_or_null<tensor::ExtractSliceOp>(operation)) {
+    return slice.getSource();
+  }
+  if (auto extract = dyn_cast_or_null<tensor::ExtractOp>(operation)) {
+    return extract.getTensor();
+  }
+  if (Value source = getDFBConversionCastSource(operation)) {
+    return source;
+  }
+  return getSingletonDimensionShapeViewSource(operation);
+}
+
 std::optional<ReadyReceiveSelection> getReadyReceiveSelection(Value predicate) {
   auto compare = predicate.getDefiningOp<arith::CmpIOp>();
   if (!compare || (compare.getPredicate() != arith::CmpIPredicate::eq &&
