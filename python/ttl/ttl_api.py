@@ -1997,6 +1997,17 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
         if value <= 0:
             raise ValueError(f"{context}.{field} must be positive, got {value}")
 
+    address_scope = (
+        StringAttr(entry["address_scope"]).value
+        if "address_scope" in entry
+        else "local"
+    )
+    if address_scope not in {"local", "remote_uniform"}:
+        raise ValueError(
+            f"{context}.address_scope must be 'local' or 'remote_uniform', "
+            f"got {address_scope!r}"
+        )
+
     allocation_nodes = None
     if "allocation_nodes" in entry:
         allocation_nodes = _extract_dfb_node_coordinates(
@@ -2073,6 +2084,7 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
         storage_segments=tuple(storage_segments),
         allocation_nodes=allocation_nodes,
         storage_index=storage_index,
+        address_scope=address_scope,
     )
 
 
@@ -2829,6 +2841,13 @@ def _lower_program_to_kernel(
         assign_dst_pass = "ttl-assign-dst"
 
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
+        sync_user_dfbs_flag = int(compiler_options.auto_sync_user_dfbs)
+        insert_dfb_sync_pass = (
+            f"ttl-insert-cb-sync{{sync-user-dfbs={sync_user_dfbs_flag}}}"
+        )
+        coalesce_dfb_acquires_pass = (
+            f"ttl-coalesce-dfb-acquires{{sync-user-dfbs={sync_user_dfbs_flag}}}"
+        )
         accumulation_strategy = compiler_options.accumulation_strategy
         pipe_batch_tiles = compiler_options.pipe_batch_tiles
         pipe_transport_options = [f"group-size={pipe_batch_tiles}"]
@@ -2856,16 +2875,16 @@ def _lower_program_to_kernel(
         pipeline_passes = [
             f"func.func({tensor_recurrence_pipeline})",
             "func.func(ttl-insert-copy-wait)",
-            "func.func(ttl-auto-sync)",
+            f"func.func({insert_dfb_sync_pass},{coalesce_dfb_acquires_pass})",
             "func.func(ttl-insert-accumulation-scopes{kind=dfb})",
             "func.func(ttl-lower-accumulation-scopes{kind=dfb})",
             "func.func(ttl-create-producer-compute)",
             f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
             "func.func(convert-ttl-to-compute)",
-            "func.func(ttl-insert-cb-sync)",
+            f"func.func({insert_dfb_sync_pass})",
             "ttl-verify-pipenet",
             pipe_transport_pass,
-            "func.func(ttl-coalesce-dfb-acquires)",
+            f"func.func({coalesce_dfb_acquires_pass})",
             "ttl-finalize-dfb-indices{"
             f"reuse-user-dfbs={reuse_user_dfbs_flag} "
             "unsafe-assume-allocation-groups="
