@@ -353,11 +353,18 @@ def test_missing_completion_is_diagnosed_and_requires_recovery():
     assert backend.recoveries == 1
 
 
-def test_allocation_requires_one_resource_for_each_declaration():
+@pytest.mark.parametrize("retained_count", [0, 2])
+def test_allocation_requires_one_resource_for_each_declaration(retained_count):
     backend = Backend()
     owner = StorageOwner((), backend, declared=True)
     owner.declare_reference()
+
+    def retain_resources(retain_resource):
+        for resource_index in range(retained_count):
+            retain_resource(object())
+
     with pytest.raises(ValueError, match="one resource per declaration"):
-        owner.allocate(lambda retain_resource: None)
+        owner.allocate(retain_resources)
     assert backend.recoveries == 1
+    assert len(backend.released) == retained_count
     owner.close()
