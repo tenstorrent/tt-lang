@@ -2389,7 +2389,7 @@ def _local_tensor_test_environment():
 
 
 class _LocalTensorTestDouble:
-    def __init__(self, buffer_type, memory_layout, shard_grid):
+    def __init__(self, buffer_type, memory_layout, shard_grid, *, per_core=False):
         self._memory_config = SimpleNamespace(
             buffer_type=buffer_type,
             memory_layout=memory_layout,
@@ -2397,6 +2397,7 @@ class _LocalTensorTestDouble:
                 None if shard_grid is None else SimpleNamespace(grid=shard_grid)
             ),
         )
+        self._per_core = per_core
 
     def memory_config(self):
         return self._memory_config
@@ -2404,6 +2405,13 @@ class _LocalTensorTestDouble:
     @staticmethod
     def buffer_address():
         return 0x2000
+
+    def is_per_core_allocated(self):
+        return self._per_core
+
+    @staticmethod
+    def experimental_per_core_buffer_address(device_coordinate, core):
+        return 0x2000 + 0x100 * core.x
 
 
 def test_build_kernel_descriptors_accepts_complete_local_tensor_shards(monkeypatch):
@@ -2430,6 +2438,65 @@ def test_build_kernel_descriptors_accepts_complete_local_tensor_shards(monkeypat
     )
 
     assert descriptors[0].common_runtime_args == [0x2000]
+
+
+# Each executing core receives the address of its local tensor shard.
+def test_build_kernel_descriptors_binds_per_core_local_tensor_addresses(monkeypatch):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    tensor = _LocalTensorTestDouble("l1", "height", full_grid, per_core=True)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="compute",
+        tensor_indices=[0],
+        local_tensor_indices=[0],
+        config=object(),
+    )
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        tensor_accessor_args=[],
+        core_ranges=full_grid,
+        grid_cols=2,
+        grid_rows=1,
+        num_cbs=0,
+        sram_mesh_coordinate=(0, 0),
+    )
+
+    assert [descriptor.common_runtime_args for descriptor in descriptors] == [
+        [0x2000],
+        [0x2100],
+    ]
+    assert [descriptor.core_ranges.num_cores() for descriptor in descriptors] == [1, 1]
+
+
+# A general tensor accessor cannot interpret independent per-core base addresses.
+def test_per_core_tensor_rejects_nonlocal_access(monkeypatch):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    tensor = _LocalTensorTestDouble("l1", "height", full_grid, per_core=True)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[0],
+        local_tensor_indices=[],
+        config=object(),
+    )
+
+    with pytest.raises(ValueError, match="require direct local access"):
+        kernel_runner.build_kernel_descriptors(
+            kernel_specs=[spec],
+            tensors=[tensor],
+            tensor_accessor_args=[],
+            core_ranges=full_grid,
+            grid_cols=2,
+            grid_rows=1,
+            num_cbs=0,
+            sram_mesh_coordinate=(0, 0),
+        )
 
 
 def test_local_tensor_access_requires_runtime_address_metadata(monkeypatch):
