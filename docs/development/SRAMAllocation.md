@@ -562,7 +562,7 @@ The requested static/dynamic distinction remains to be defined; it is not assume
 3. Unified host placement. Describe tensor and DFB storage with common ownership, alias, lifetime, alignment, domain, and fixed/movable constraints. Preserve caller-owned addresses. Reserve the validated plan transactionally and construct tensor views over owned storage, retaining owners through completion. Reuse TTNN/TT-Metal host facilities where their contracts suffice; extend host APIs where required.
 4. Late joint placement within one operation. Extend the existing immutable allocation problem and its oracle to fixed tensor intervals and domain-specific movable storage. Assign offsets only after sizes, ownership, domains, and completion conflicts are known. Minimize uniform arena size or total domain reservation subject to each core's capacity. Optimality remains relative to the supplied requirements and fixed addresses.
 
-Cross-launch persistence, cross-launch reuse, and runtime-dependent sizes are possible extensions proposed during design discussion, not requirements inferred from the original requests. Persistence retains contents across launches; reuse releases storage after completion. They require separate ownership and lifetime contracts.
+[Persistent SRAM Storage](PersistentStorage.md) defines ownership and completion across launches. Its initial implementation uses TTNN-owned tensor allocations and leaves per-invocation arena placement unchanged. Joint placement, cross-launch temporary reuse, and runtime-dependent sizes require additional ownership, scheduling, and reservation contracts.
 
 ### Backend Extensions and Qualification
 
