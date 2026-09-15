@@ -10,7 +10,7 @@ output shards collectively contain one `M x N` result.
 | 2 | [`operation_bidirectional_dram.py`](operation_bidirectional_dram.py) | Bidirectional K halves staged in receiver DRAM | Correct; slower than direct L1 |
 | 3 | [`operation_grouped_rows.py`](operation_grouped_rows.py) | Three contiguous M blocks per fabric transfer; L1 subview injection | Correct; 2.269 ms |
 | 4 | [`operation_bidirectional_l1.py`](operation_bidirectional_l1.py) | Bidirectional K halves received into L1 and distributed from opposite rows | Selected; 1.847 ms |
-| 5 | [`../matmul_reduce_scatter_2d/operation.py`](../matmul_reduce_scatter_2d/operation.py) | Exchange partial results between two K groups and reduce into M/N-sharded output | Correct; 3.387 ms on four devices |
+| 5 | [`../matmul_reduce_scatter_2d/operation.py`](../matmul_reduce_scatter_2d/operation.py) | Exchange partial results between two K groups and reduce into M/N-sharded output | Correct; 3.233 ms on four devices |
 
 Comparison reference: TT-Metal
 [`all_gather_minimal_matmul_async`](https://github.com/tenstorrent/tt-metal/tree/f8c4ce59dd04a3eeeb11abf01ffc9dbce0059eba/ttnn/cpp/ttnn/operations/experimental/ccl/all_gather_minimal_matmul_async),
@@ -84,5 +84,6 @@ compares the example with TT-Metal's fused operation.
 The 2D operation uses a `P_K x P_N` device mesh. Activation is K-sharded and
 replicated across `P_N`; weight and bias are K/N-sharded. Each device computes
 one partial `M x N/P_N` result, exchanges it with the other K group, and retains
-one `M/P_K x N/P_N` output shard. See
+one `M/P_K x N/P_N` output shard. Reduction of the preceding partial and its
+output write overlap computation and input delivery for the next partial. See
 [`matmul_reduce_scatter_2d/operation.py`](../matmul_reduce_scatter_2d/operation.py).

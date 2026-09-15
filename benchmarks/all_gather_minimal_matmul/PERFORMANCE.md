@@ -29,16 +29,21 @@ result above because the input and output placement differ.
 | --- | ---: | ---: | ---: |
 | Reduce each output immediately | 3.531 (3.523-3.536) | control | 3/10 |
 | Compute next outgoing partial before reducing the preceding output | 3.387 (3.354-3.455) | -4.08% | 3/10 |
+| Compute next partial; write preceding output on partial-exchange thread | 3.233 (3.211-3.256) | -8.45% | 3/10 |
 
-Both schedules use four Blackhole P150b devices; global
+All schedules use four Blackhole P150b devices; global
 `M/K/N=9472/5120/15360`; `2 x 2` device mesh; `11 x 10` compute grid; M/K/N
 blocks `7/10/8`; BF16 input/output; HiFi2; and FP32 destination accumulation.
 The retained schedule overlaps the preceding reduction and remote-partial wait
-with computation of the next outgoing partial. Every sample passed elementwise
-relative/absolute tolerances of 0.05 against FP32 PyTorch.
+with computation of the next outgoing partial. The partial-exchange thread
+writes the preceding output after submitting the current partial transfer,
+allowing the input thread to start the next block without waiting for output
+DRAM. An unchanged-source confirmation measured 3.240 ms (3.222-3.247). Every
+sample passed elementwise relative/absolute tolerances of 0.05 against FP32
+PyTorch.
 
-Measured 2026-09-15 15:41-15:46 UTC. TT-Lang `f4d6cb1cf268`, operation SHA-256
-`5c90877fb231`, compiler binary SHA-256 `6f4f849342e3`; TT-Metal
+Measured 2026-09-15 15:41-16:44 UTC. TT-Lang `eff918781101`, operation SHA-256
+`07a577b95bc3`, compiler binary SHA-256 `6f4f849342e3`; TT-Metal
 `41859079d939`; LLVM `37aca9d384347`; firmware 18.12.1; IRD v1.1.9.
 [Raw device-profiler reports](https://gist.github.com/brnorris03/fa7ab25c12872de92dc0727f28f16104).
 
