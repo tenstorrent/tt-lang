@@ -11,8 +11,8 @@ Four Blackhole P150b devices; global `M/K/N=9472/5120/15360`; per-device
 
 | Implementation | Device median ms (min-max) | TT-Lang/native | Warmups/samples |
 | --- | ---: | ---: | ---: |
-| TT-Lang bidirectional L1 | 1.959 (1.945-1.983) | 0.995 | 3/10 |
-| Native `all_gather_minimal_matmul_async` | 1.969 (1.947-2.009) | 1.000 | 3/10 |
+| TT-Lang bidirectional L1 | 1.968 (1.946-1.990) | 0.998 | 3/10 |
+| Native `all_gather_minimal_matmul_async` | 1.971 (1.950-1.997) | 1.000 | 3/10 |
 
 Both results passed PCC >= 0.99 and elementwise relative/absolute tolerances of
 0.05 against FP32 PyTorch for every warmup and sample.
@@ -223,11 +223,11 @@ Device profiling measures first kernel start through final kernel end, averaged
 across the four devices. Host tensor creation, compilation, dispatch,
 correctness checks, and profiler processing are excluded.
 
-Measured 2026-09-15 07:22-07:26 UTC; native reference measured 07:12 UTC.
-TT-Lang compiler source `0e35bfff32a7`, operation SHA-256 `4730ccbb7aa1`,
+Measured 2026-09-15 07:55-07:59 UTC.
+TT-Lang compiler source `0ab96ddf825b`, operation SHA-256 `4730ccbb7aa1`,
 compiler binary SHA-256 `6f4f849342e3`; TT-Metal
 `41859079d939`, native binary SHA-256 `9815624f3813`; LLVM `37aca9d384347`;
 firmware 18.12.1; IRD v1.1.9.
 
 [Raw device-profiler reports](https://gist.github.com/brnorris03/fa7ab25c12872de92dc0727f28f16104).
-[Reproduction command and timing definition](README.md#run-the-comparison).
+[Reproduction command and timing definition](README.md#run).
