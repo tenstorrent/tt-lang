@@ -9,7 +9,7 @@ output shards collectively contain one `M x N` result.
 | 1 | [`operation.py`](operation.py) | One M block per fabric transfer; direct L1 injection | Correct; 2.613 ms control |
 | 2 | [`operation_bidirectional_dram.py`](operation_bidirectional_dram.py) | Bidirectional K halves staged in receiver DRAM | Correct; slower than direct L1 |
 | 3 | [`operation_grouped_rows.py`](operation_grouped_rows.py) | Three contiguous M blocks per fabric transfer; L1 subview injection | Correct; 2.269 ms |
-| 4 | [`operation_bidirectional_l1.py`](operation_bidirectional_l1.py) | Bidirectional K halves received into L1 and distributed from opposite rows | Selected; 2.243 ms |
+| 4 | [`operation_bidirectional_l1.py`](operation_bidirectional_l1.py) | Bidirectional K halves received into L1 and distributed from opposite rows | Selected; 1.959 ms |
 
 Comparison reference: TT-Metal
 [`all_gather_minimal_matmul_async`](https://github.com/tenstorrent/tt-metal/tree/f8c4ce59dd04a3eeeb11abf01ffc9dbce0059eba/ttnn/cpp/ttnn/operations/experimental/ccl/all_gather_minimal_matmul_async),
@@ -17,11 +17,11 @@ which returns the same N-sharded output; [benchmark commands](../../benchmarks/a
 
 | Equivalent implementation | Physical source lines | Native/TT-Lang |
 | --- | ---: | ---: |
-| TT-Lang [`operation_bidirectional_l1.py`](operation_bidirectional_l1.py) | 473 | 1.0 |
-| Native TT-Metal API, device operation, program factory, and device kernels | 5,905 | 12.5 |
+| TT-Lang [`operation_bidirectional_l1.py`](operation_bidirectional_l1.py) | 522 | 1.0 |
+| Native TT-Metal API, device operation, program factory, and device kernels | 5,905 | 11.3 |
 
-Counts use `wc -l` at TT-Lang `aeccb35a3fc3` and TT-Metal
-`f8c4ce59dd04`; generated C++, bindings, tests, and documentation are excluded.
+Counts use `wc -l`; generated C++, bindings, tests, and documentation are
+excluded.
 
 ## Dataflow
 
@@ -33,7 +33,8 @@ for each M block and local K block:
     distribute the matching N-sharded weight halves down each compute column
     initialize the FP32 accumulator from the local bias shard
     accumulate both halves for every source device while communication continues
-    convert once to the output dtype and write the local N shard to DRAM
+    convert once to the output dtype
+    publish the next inputs, then write the preceding local N shard to DRAM
 ```
 
 Four compute rows provide the sender and receiver clients for both fabric
@@ -70,8 +71,8 @@ python -m benchmarks.all_gather_minimal_matmul \
 ```
 
 The compiler prints generated C++ filenames under `/tmp/default` in the
-container. The three kernels are `move_activations_and_write_output`,
-`read_bias_and_distribute_weights`, and `compute_matmul_and_bias`.
+container. The three kernels are `move_activations`,
+`move_weights_and_write_output`, and `compute_matmul_and_bias`.
 
 [`config.py`](config.py) validates the static device, worker, and tile
 decomposition. The [benchmark](../../benchmarks/all_gather_minimal_matmul/README.md)
