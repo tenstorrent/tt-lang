@@ -148,8 +148,9 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     A pipe send has an acquired DFB block or a statically shaped,
     row-major-contiguous subview of a waited block as its source and a pipe
     destination. A pipe receive has a pipe source and either a destination block
-    reserved from a DFB or a statically shaped DRAM tensor slice. The copy
-    transfers the complete endpoint payload in row-major tile order.
+    reserved from a DFB or, for an inter-device point-to-point transfer, a
+    statically shaped DRAM tensor slice. The copy transfers the complete
+    endpoint payload in row-major tile order.
 
     The tensor shape normally equals one dataflow buffer block. A copy may span
     consecutive blocks by extending the tensor's innermost dimension by an
