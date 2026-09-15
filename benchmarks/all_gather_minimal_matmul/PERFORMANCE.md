@@ -11,8 +11,8 @@ Four Blackhole P150b devices; global `M/K/N=9472/5120/15360`; per-device
 
 | Implementation | Device median ms (min-max) | TT-Lang/native | Warmups/samples |
 | --- | ---: | ---: | ---: |
-| TT-Lang grouped-row L1 | 2.269 (2.232-2.320) | 1.154 | 3/10 |
-| Native `all_gather_minimal_matmul_async` | 1.965 (1.954-1.992) | 1.000 | 3/10 |
+| TT-Lang bidirectional L1 | 2.218 (2.182-2.263) | 1.128 | 3/10 |
+| Native `all_gather_minimal_matmul_async` | 1.966 (1.957-2.018) | 1.000 | 3/10 |
 
 Both results passed PCC >= 0.99 and elementwise relative/absolute tolerances of
 0.05 against FP32 PyTorch for every warmup and sample.
@@ -32,7 +32,7 @@ below.
 The standalone comparison uses BF16 DRAM inputs and output, HiFi4, FP32
 destination accumulation, and packer L1 accumulation. TT-Lang uses 120 workers,
 a `12x10` grid, M/K/N blocks `8/8/5`, and pads M from 9472 to 10240; native
-[`ttnn.matmul`](https://github.com/tenstorrent/tt-metal/tree/ea042c4ad6237678103cd7cbceb346e060f0f9a3/ttnn/cpp/ttnn/operations/matmul)
+[`ttnn.matmul`](https://github.com/tenstorrent/tt-metal/tree/f8c4ce59dd04a3eeeb11abf01ffc9dbce0059eba/ttnn/cpp/ttnn/operations/matmul)
 uses automatic program selection without that padding. Both standalone matmul
 implementations measure first kernel start through final kernel end and pass
 PCC >= 0.99 against FP32 PyTorch.
@@ -57,18 +57,18 @@ configuration. Equal resource use is not required.
 | Compute grid | `12 x 10`; 120 compute workers | `12 x 9`; 108 compute workers |
 | M/K/N blocks | `5/10/12` tiles | `7/5/16` tiles |
 | Output subblock | `1 x 4` tiles; direct FP32 packer accumulation | `1 x 2` tiles |
-| Communication workers | 4 fabric workers; each serves 3 compute rows and injects their activation subviews into separate 10-node compute chains | 24 compute workers are fabric clients; 4 mux-only workers |
-| Activation collective | one-direction TT-Lang ring; each transfer contains three contiguous M blocks in L1 | bidirectional native ring into gathered-activation DRAM storage |
+| Communication workers | 48 fabric clients in 4 compute rows; 8 mux-only workers | 24 compute workers are fabric clients; 4 mux-only workers |
+| Activation collective | bidirectional ring; opposite five-tile K halves are received into L1 and distributed from the boundary rows | bidirectional native ring into gathered-activation DRAM storage |
 | Fabric configuration | 2D, strict initialization | 1D ring, strict initialization |
 | Payload | 8192 bytes | 8192 bytes |
-| Links/workers/channel buffers | one directed ring connection per fabric worker | 2 links; 6 workers/link; 24 buffers/channel |
+| Links/workers/channel buffers | 4 links/direction; 6 clients/link; 22 buffers/client channel | 2 links/direction; 6 clients/link; 24 buffers/client channel |
 | Arithmetic | BF16 input/output; HiFi2; FP32 destination and packer accumulation | same; `math_approx_mode=true`; three output chunks |
 
 The native grid and block configuration is the entry for
 `(9472, 5120, 3840)` in TT-Metal's
-[`grid_12_9_configs`](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/models/tt_dit/utils/matmul.py#L164-L168).
+[`grid_12_9_configs`](https://github.com/tenstorrent/tt-metal/blob/f8c4ce59dd04a3eeeb11abf01ffc9dbce0059eba/models/tt_dit/utils/matmul.py#L224-L247).
 The corresponding
-[`sweep_mm_block_sizes.py`](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/models/tt_dit/utils/sweep_mm_block_sizes.py#L130-L136)
+[`sweep_mm_block_sizes.py`](https://github.com/tenstorrent/tt-metal/blob/f8c4ce59dd04a3eeeb11abf01ffc9dbce0059eba/models/tt_dit/utils/sweep_mm_block_sizes.py#L142-L148)
 case uses the same per-device `M/K/N`, `12 x 9` grid, three output chunks, and
 approximate-math setting. Validation concatenates the three adjacent native
 chunks on the host; that untimed concatenation reconstructs the same N shard
@@ -100,6 +100,8 @@ consumer wait; they isolate communication and local distribution from matmul.
 | Same DFB configuration; five-tile M block with a partial final block | 2.631 (2.593-2.688) | 3/10 | -17.5% vs adjacent control | Accepted. Reduces M rounds from seven to five and padded M tiles from 336 to 300. |
 | Group three compute rows per fabric transfer and inject DFB subviews | 2.306 (2.268-2.318) | 3/10 | -11.8% vs 2.613 ms adjacent control | Accepted. Reduces each communication worker's fabric transfers from 180 to 60 without changing payload bytes or matmul blocking. |
 | Submit intermediate fabric packets without per-packet completion waits | 2.269 (2.232-2.320) | 3/10 | -1.6% vs 2.306 ms | Accepted. Retains blocking completion for the final write-and-atomic packet. |
+| Bidirectional L1 transport; one mux buffer/client channel | 2.286 (2.267-2.338) | 3/10 | +1.1% vs mean of adjacent controls | Rejected. One slot serializes the 12 packets in each activation half. |
+| Bidirectional L1 transport; 22 mux buffers/client channel | 2.218 (2.182-2.263) | 3/10 | -0.9% vs mean of 2.242 and 2.234 ms controls | Accepted. The target selects the largest buffer count that fits the mux core's L1 interval. |
 | Alternate complete ten-tile K blocks across both ring directions | not measured | full-size compile | n/a | Rejected. The small four-device BF16 streaming case passed, but the full workload required 1,474,560 L1 bytes, 13,184 bytes over the 1,461,376-byte budget. |
 | Eight direct fabric managers to reduce per-manager DFB capacity | not measured | full-size launch | n/a | Rejected. Compilation and PipeNet verification passed, but four physical forwarding links could not bind eight interfering managers. |
 | Four bidirectional managers with two-block receive and relay DFBs | not measured | full-size launch | n/a | Rejected. The local relay filled while fabric sends waited for peers to post receives, producing the finite-capacity protocol deadlock reported in [#1037](https://github.com/tenstorrent/tt-lang/issues/1037). |
@@ -121,7 +123,7 @@ compute configurations, point-to-point reduced activation-only time by 3.3%
 and complete-operation time by 4.5%; multicast therefore underperformed and
 was removed.
 
-The selected implementation groups the three contiguous M blocks served by
+The previously selected implementation groups the three contiguous M blocks served by
 each communication worker into one fabric transfer. It extracts three L1 DFB
 subviews after reception and injects one into each compute-row chain. This
 retains the five-tile M block and identical fabric payload bytes while reducing
@@ -132,6 +134,16 @@ Each intermediate 8 KiB fabric packet is submitted without waiting for remote
 completion; a local NoC flush protects packet-header reuse. The final fused
 write-and-atomic packet remains blocking so the completion signal cannot
 precede its payload. This reduced device time from 2.306 ms to 2.269 ms.
+
+The selected implementation receives complementary five-tile K halves over
+both ring directions directly into L1. Each direction has 24 fabric clients
+distributed across four links, with six clients per mux. A 51,200-byte half
+requires 12 packets at the 4,352-byte maximum payload. The target selects the
+largest uniform channel depth that fits the mux worker's L1 interval; this
+configuration provides 22 buffers per client channel. It measured 2.218 ms,
+0.9% below the mean of adjacent 2.242 and 2.234 ms grouped-row controls and
+2.2% below the previously published 2.269 ms result. The remaining difference
+from native is 252 us.
 
 The bidirectional experiments require both directions to populate one ten-tile
 activation block and the matching two weight slices before one matmul. Splitting
@@ -178,10 +190,10 @@ Device profiling measures first kernel start through final kernel end, averaged
 across the four devices. Host tensor creation, compilation, dispatch,
 correctness checks, and profiler processing are excluded.
 
-Measured 2026-09-13 20:02-20:04 UTC. TT-Lang parent `f52fd7a52ad5`, operation
-SHA-256 `f6e57fa266f8`, routing helper SHA-256 `ff8df2b5d84b`, comparison runner
-SHA-256 `7b2fe3eb0750`; TT-Metal `ea042c4ad623`; LLVM `37aca9d384347`; firmware
-18.12.1; IRD v1.1.9.
+Measured 2026-09-15 03:30-03:35 UTC. TT-Lang parent `7542225348f8`, operation
+SHA-256 `7e3b54da48da`, compiler binary SHA-256 `6f4f849342e3`; TT-Metal
+`41859079d939`, native binary SHA-256 `9815624f3813`; LLVM `37aca9d384347`;
+firmware 18.12.1; IRD v1.1.9.
 
 [Raw device-profiler reports](https://gist.github.com/brnorris03/fa7ab25c12872de92dc0727f28f16104).
 [Reproduction command and timing definition](README.md#run-the-comparison).
