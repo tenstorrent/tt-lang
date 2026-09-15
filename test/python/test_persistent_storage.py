@@ -111,6 +111,31 @@ def test_alias_arguments_record_and_release_once():
     assert backend.released == list(resources)
 
 
+def test_distinct_wrappers_for_same_initial_allocation_are_rejected():
+    backend = Backend()
+    backend.is_same_allocation = lambda resource, candidate: True
+    with pytest.raises(ValueError, match="distinct allocations"):
+        StorageOwner((object(), object()), backend)
+
+
+def test_distinct_wrappers_for_same_retained_allocation_roll_back():
+    backend = Backend()
+    backend.is_same_allocation = lambda resource, candidate: True
+    owner = StorageOwner((), backend, declared=True)
+    owner.declare_reference()
+    owner.declare_reference()
+    first_resource = object()
+
+    def retain_aliases(retain):
+        retain(first_resource)
+        retain(object())
+
+    with pytest.raises(ValueError, match="distinct allocations"):
+        owner.allocate(retain_aliases)
+    assert backend.released == [first_resource]
+    owner.close()
+
+
 @pytest.mark.parametrize("failure", ["validate", "order"])
 def test_rejected_submission_does_not_launch(failure):
     owner, backend, resources = make_owner()

@@ -47,6 +47,12 @@ _pending_lock = threading.Lock()
 _submission_thread = threading.local()
 
 
+def _contains_allocation(resources, candidate, backend):
+    return any(
+        backend.is_same_allocation(resource, candidate) for resource in resources
+    )
+
+
 class StorageOwner:
     """Retain initialized tensor resources until explicit, completion-aware close.
 
@@ -59,8 +65,11 @@ class StorageOwner:
     ):
         if not resources and not declared:
             raise ValueError("persistent storage requires at least one resource")
-        if len({id(resource) for resource in resources}) != len(resources):
-            raise ValueError("persistent resources must have distinct owners")
+        if any(
+            _contains_allocation(resources[:index], resource, backend)
+            for index, resource in enumerate(resources)
+        ):
+            raise ValueError("persistent resources must use distinct allocations")
         self._resources = list(resources)
         self._declared_resource_count = len(resources)
         self._backend = backend
@@ -96,8 +105,10 @@ class StorageOwner:
                 _pending_owners.add(self)
 
             def retain(resource: object):
-                if any(resource is existing for existing in self._resources):
-                    raise ValueError("persistent resources must have distinct owners")
+                if _contains_allocation(self._resources, resource, self._backend):
+                    raise ValueError(
+                        "persistent resources must use distinct allocations"
+                    )
                 self._resources.append(resource)
 
             try:
