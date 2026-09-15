@@ -41,8 +41,8 @@ MODULE_GLOBAL_SEMAPHORE = None
 
 
 def test_uint32_template_value_validation():
-    assert ttl.uint32(0) == 0
-    assert ttl.uint32(0xFFFFFFFF) == 0xFFFFFFFF
+    assert ttl.uint32(0).value == 0
+    assert ttl.uint32(0xFFFFFFFF).value == 0xFFFFFFFF
     with pytest.raises(TypeError, match="requires an int"):
         ttl.uint32(True)
     with pytest.raises(ValueError, match="must fit in 32 bits"):

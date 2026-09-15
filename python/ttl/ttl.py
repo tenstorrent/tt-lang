@@ -58,9 +58,9 @@ from .operators import (
     reset_all_dfbs,
     reset_dfbs,
     reconfigure_dfbs,
-    uint32,
     wait_any,
 )
+from .template_argument import uint32
 
 # Math operations namespace
 from . import ttl_math as math
