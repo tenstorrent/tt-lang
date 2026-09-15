@@ -50,6 +50,29 @@ python examples/<example_name>.py
 | `single_node_matmul.py` | Single-node matrix multiplication | ✓ | ✓ |
 | `multinode_matmul.py` | Multi-node matmul with work distribution | ✓ | ✓ |
 
+### Cryptography
+
+| Example | Description | Sim | HW |
+|---------|-------------|:---:|:--:|
+| `blake3.py` | Tile-parallel unkeyed BLAKE3 on the SFPU | - | yes |
+
+The BLAKE3 example streams 32x32 Int32 tiles through data-movement kernels and
+runs compression on the compute kernel. Each tile holds one BLAKE3 word across
+1024 SFPU lanes, and each 1024-lane group is assigned to a Tensix core on the
+full worker grid. External C++ issues the SFPU integer add, XOR, and shift
+operations that the TT-Lang tensor API does not yet expose.
+
+A second mode brute-forces ASCII passwords of at most 16 bytes. Each candidate
+is one SFPU lane, so one tile hashes 1024 passwords and the full grid hashes
+one wave of candidates at a time. Supported alphabets are ``digits``,
+``digits+letters``, and ``digits+letters+symbols``.
+
+```bash
+python examples/blake3.py --text "abc"
+python examples/blake3.py --file path/to/input
+python examples/blake3.py --crack <digest-hex> --charset digits --max-length 4
+```
+
 ### Demo/Tutorial
 
 | Example | Description | Sim | HW |
