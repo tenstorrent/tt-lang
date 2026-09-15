@@ -111,15 +111,6 @@ def call_extern_func(
     raise RuntimeError("ttl.call_extern_func() is valid only in a compiled kernel")
 
 
-def uint32(value: int) -> int:
-    """Represent an unsigned 32-bit C++ template argument."""
-    if type(value) is not int:
-        raise TypeError("ttl.uint32() requires an int")
-    if not 0 <= value < (1 << 32):
-        raise ValueError("ttl.uint32() value must fit in 32 bits")
-    return value
-
-
 def reset_dfbs(reset: DFBReset, /, *, dfbs) -> None:
     """Synchronize DFB interface owners and reset the listed interfaces.
 
