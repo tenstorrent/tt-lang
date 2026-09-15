@@ -16,7 +16,7 @@ An `SRAMStorage` object declares tensors, allocates their backing, initializes i
 
 Declaration and allocation are separate because placement should consider the complete set of requirements before reserving storage. The initial implementation uses ordinary owned TTNN allocations. It does not yet jointly pack them with compiler scratch; [SRAM Allocation](SRAMAllocation.md) describes the existing placement machinery.
 
-`addressing="uniform"` requests one local address on every participating core. `addressing="per-core"` lets TTNN allocate each core independently and uses the Metal hybrid-allocation prerequisite defined in [SRAM Allocation](SRAMAllocation.md#runtime-allocation-and-binding). The tensor's required sharding mode defines how its logical dimensions map to those cores.
+`addressing="uniform"` requests one local address on every participating core. `addressing="per-core"` lets TTNN allocate each core independently and uses the Metal hybrid-allocation prerequisite defined in [SRAM Allocation](SRAMAllocation.md#runtime-allocation-and-binding). The tensor's required sharding mode defines how its logical dimensions map to those cores. Per-core storage supports direct local access only; general tensor access and multicast require one common base address and are rejected.
 
 ### Example: Sharing State Between Operations
 
