@@ -17,6 +17,31 @@ Four Blackhole P150b devices; global `M/K/N=9472/5120/15360`; per-device
 Both results passed PCC >= 0.99 and elementwise relative/absolute tolerances of
 0.05 against FP32 PyTorch for every warmup and sample.
 
+## Two-dimensional decomposition
+
+The `2 x 2` operation partitions K across two device groups and N across two
+device groups. Each device returns one `M/2 x N/2` shard; the four output shards
+collectively contain one `M x N` result. This four-device result validates and
+tunes the implementation. It is not compared with the column-parallel native
+result above because the input and output placement differ.
+
+| Schedule | Device median ms (min-max) | Change | Warmups/samples |
+| --- | ---: | ---: | ---: |
+| Reduce each output immediately | 3.531 (3.523-3.536) | control | 3/10 |
+| Compute next outgoing partial before reducing the preceding output | 3.387 (3.354-3.455) | -4.08% | 3/10 |
+
+Both schedules use four Blackhole P150b devices; global
+`M/K/N=9472/5120/15360`; `2 x 2` device mesh; `11 x 10` compute grid; M/K/N
+blocks `7/10/8`; BF16 input/output; HiFi2; and FP32 destination accumulation.
+The retained schedule overlaps the preceding reduction and remote-partial wait
+with computation of the next outgoing partial. Every sample passed elementwise
+relative/absolute tolerances of 0.05 against FP32 PyTorch.
+
+Measured 2026-09-15 15:41-15:46 UTC. TT-Lang `f4d6cb1cf268`, operation SHA-256
+`5c90877fb231`, compiler binary SHA-256 `6f4f849342e3`; TT-Metal
+`41859079d939`; LLVM `37aca9d384347`; firmware 18.12.1; IRD v1.1.9.
+[Raw device-profiler reports](https://gist.github.com/brnorris03/fa7ab25c12872de92dc0727f28f16104).
+
 ## Component measurements
 
 These isolated measurements identify which component accounts for the fused
