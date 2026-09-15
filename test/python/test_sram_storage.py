@@ -191,35 +191,38 @@ def _make_persistent_increment(grid, increment):
     return update_persistent_state
 
 
-@ttl.operation(grid=(2, 1))
-def _accumulate_with_temporary_storage(input_tensor, state, output_tensor):
-    state_dfb = ttl.make_tensor_backed_dfb(state, shape=(1, 1), block_count=1)
-    input_dfb = ttl.make_dataflow_buffer_like(state, shape=(1, 1), block_count=2)
-    output_dfb = ttl.make_dataflow_buffer_like(state, shape=(1, 1), block_count=2)
+def _make_accumulate_with_temporary_storage(grid):
+    @ttl.operation(grid=grid)
+    def accumulate_with_temporary_storage(input_tensor, state, output_tensor):
+        state_dfb = ttl.make_tensor_backed_dfb(state, shape=(1, 1), block_count=1)
+        input_dfb = ttl.make_dataflow_buffer_like(state, shape=(1, 1), block_count=2)
+        output_dfb = ttl.make_dataflow_buffer_like(state, shape=(1, 1), block_count=2)
 
-    @ttl.compute()
-    def accumulate():
-        with (
-            input_dfb.wait() as input_block,
-            state_dfb.wait() as state_block,
-            output_dfb.reserve() as output_block,
-        ):
-            updated = state_block + input_block
-            state_block.store(updated)
-            output_block.store(updated)
+        @ttl.compute()
+        def accumulate():
+            with (
+                input_dfb.wait() as input_block,
+                state_dfb.wait() as state_block,
+                output_dfb.reserve() as output_block,
+            ):
+                updated = state_block + input_block
+                state_block.store(updated)
+                output_block.store(updated)
 
-    @ttl.datamovement()
-    def read_input():
-        column, row = ttl.node(dims=2)
-        with input_dfb.reserve() as input_block:
-            ttl.copy(input_tensor[column, row], input_block).wait()
-        state_dfb.publish()
+        @ttl.datamovement()
+        def read_input():
+            column, row = ttl.node(dims=2)
+            with input_dfb.reserve() as input_block:
+                ttl.copy(input_tensor[row, column], input_block).wait()
+            state_dfb.publish()
 
-    @ttl.datamovement()
-    def write_output():
-        column, row = ttl.node(dims=2)
-        with output_dfb.wait() as output_block:
-            ttl.copy(output_block, output_tensor[column, row]).wait()
+        @ttl.datamovement()
+        def write_output():
+            column, row = ttl.node(dims=2)
+            with output_dfb.wait() as output_block:
+                ttl.copy(output_block, output_tensor[row, column]).wait()
+
+    return accumulate_with_temporary_storage
 
 
 @pytest.mark.requires_device
@@ -295,25 +298,47 @@ def test_persistent_state_shared_by_distinct_operations(
     ids=["bf16", "fp32"],
 )
 @pytest.mark.parametrize("addressing", ["uniform", "per-core"])
+@pytest.mark.parametrize("sharding_name", ["height", "width", "block"])
 def test_persistent_state_with_compiler_managed_temporary_storage(
-    device, torch_dtype, ttnn_dtype, addressing
+    device, torch_dtype, ttnn_dtype, addressing, sharding_name
 ):
-    shape = (64, 32)
+    configurations = {
+        "height": (
+            (64, 32),
+            ((0, 0), (0, 1)),
+            (1, 2),
+            ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+        ),
+        "width": (
+            (32, 64),
+            ((0, 0), (1, 0)),
+            (2, 1),
+            ttnn.TensorMemoryLayout.WIDTH_SHARDED,
+        ),
+        "block": (
+            (64, 64),
+            ((0, 0), (1, 0), (0, 1), (1, 1)),
+            (2, 2),
+            ttnn.TensorMemoryLayout.BLOCK_SHARDED,
+        ),
+    }
+    shape, cores, grid, sharding = configurations[sharding_name]
+    accumulate = _make_accumulate_with_temporary_storage(grid)
     input_tensor = to_dram(torch.ones(shape, dtype=torch_dtype), device)
     output_tensor = to_dram(torch.zeros(shape, dtype=torch_dtype), device)
     with SRAMStorage(device=device) as storage:
         state = storage.tensor(
             shape=shape,
             shard_shape=(32, 32),
-            cores=((0, 0), (1, 0)),
+            cores=cores,
             dtype=ttnn_dtype,
             layout=ttnn.TILE_LAYOUT,
             addressing=addressing,
-            sharding=ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+            sharding=sharding,
         )
         storage.allocate()
         for iteration_index in range(2):
-            _accumulate_with_temporary_storage(
+            accumulate(
                 input_tensor,
                 state,
                 output_tensor,
