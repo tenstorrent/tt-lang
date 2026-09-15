@@ -74,7 +74,8 @@ def test_matmul_reduce_scatter_2d(torch_dtype, m_tiles):
             mesh_mapper=activation_mapper,
         )
         weight_device = to_dram(weight, mesh, mesh_mapper=weight_mapper)
-        bias_device = to_dram(bias, mesh, mesh_mapper=bias_mapper)
+        # FP32 bias removes a conversion dataflow buffer from each worker.
+        bias_device = to_dram(bias.float(), mesh, mesh_mapper=bias_mapper)
         output_device = to_dram(
             torch.zeros((config.padded_m_tiles * 32, n_elements), dtype=torch_dtype),
             mesh,

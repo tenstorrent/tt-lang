@@ -6,6 +6,7 @@
 device mesh: P_K=2 by P_N
 activation per device: M x K/P_K, replicated across P_N
 weight per device: K/P_K x N/P_N
+bias per device: 1 x N/P_N, FP32
 matmul partial per device: M x N/P_N
 output per device: M/P_K x N/P_N
 
@@ -101,7 +102,7 @@ def make_matmul_reduce_scatter_2d_operation(
             block_count=2,
         )
         bias_dfb = ttl.make_dataflow_buffer_like(
-            bias_shard, shape=(1, n_block_tiles), block_count=2
+            bias_shard, shape=(1, n_block_tiles), block_count=1
         )
         outgoing_partial_dfb = ttl.make_dataflow_buffer_like(
             output_shard,
@@ -119,7 +120,7 @@ def make_matmul_reduce_scatter_2d_operation(
             block_count=1,
         )
         accumulation_dtype = ttnn.float32 if fp32_dest_acc_en else output_shard.dtype
-        outgoing_accumulator_dfb = ttl.make_dfb(
+        scratch_accumulator_dfb = ttl.make_dfb(
             accumulation_dtype,
             shape=(m_block_tiles, n_block_tiles),
             block_count=1,
@@ -127,16 +128,6 @@ def make_matmul_reduce_scatter_2d_operation(
         local_accumulator_dfb = ttl.make_dfb(
             accumulation_dtype,
             shape=(m_block_tiles, n_block_tiles),
-            block_count=1,
-        )
-        converted_remote_partial_dfb = ttl.make_dfb(
-            accumulation_dtype,
-            shape=(m_block_tiles, n_block_tiles),
-            block_count=1,
-        )
-        accumulation_bias_dfb = ttl.make_dfb(
-            accumulation_dtype,
-            shape=(1, n_block_tiles),
             block_count=1,
         )
         partial_block_bytes = (
@@ -202,12 +193,6 @@ def make_matmul_reduce_scatter_2d_operation(
                 local_m_begin = (
                     m_round * m_worker_count + m_worker_index
                 ) * m_block_tiles
-                bias_block = bias_dfb.reserve()
-                ttl.copy(
-                    bias_shard[0:1, n_begin : n_begin + n_block_tiles],
-                    bias_block,
-                ).wait()
-
                 for partial_index in range(k_group_count):
                     target_k_group_index = (
                         local_k_group_index + k_group_count - 1 - partial_index
@@ -259,6 +244,12 @@ def make_matmul_reduce_scatter_2d_operation(
 
                             weight_column_net.if_dst(receive_weight)
 
+                bias_block = bias_dfb.reserve()
+                ttl.copy(
+                    bias_shard[0:1, n_begin : n_begin + n_block_tiles],
+                    bias_block,
+                ).wait()
+
                 if output_index > 0:
                     previous_output_index = output_index - 1
                     previous_n_round = previous_output_index % n_round_count
@@ -300,7 +291,7 @@ def make_matmul_reduce_scatter_2d_operation(
         @ttl.compute()
         def compute_partial_and_reduce():
             for _output_index in range(output_block_count):
-                outgoing_accumulator = outgoing_accumulator_dfb.reserve()
+                outgoing_accumulator = scratch_accumulator_dfb.reserve()
                 outgoing_accumulator.store(
                     ttl.block.fill(
                         0.0,
@@ -316,7 +307,7 @@ def make_matmul_reduce_scatter_2d_operation(
                         weight_block,
                         dtype=outgoing_accumulator.dtype,
                     )
-                outgoing_accumulator = outgoing_accumulator_dfb.wait()
+                outgoing_accumulator = scratch_accumulator_dfb.wait()
                 outgoing_partial = outgoing_partial_dfb.reserve()
                 outgoing_partial.store(
                     ttl.math.typecast(outgoing_accumulator, outgoing_partial.dtype)
@@ -339,20 +330,15 @@ def make_matmul_reduce_scatter_2d_operation(
                         dtype=local_accumulator.dtype,
                     )
                 remote_partial = remote_partial_dfb.wait()
-                converted_remote_partial = converted_remote_partial_dfb.reserve()
+                converted_remote_partial = scratch_accumulator_dfb.reserve()
                 converted_remote_partial.store(
                     ttl.math.typecast(remote_partial, converted_remote_partial.dtype)
                 )
                 bias_block = bias_dfb.wait()
-                accumulation_bias = accumulation_bias_dfb.reserve()
-                accumulation_bias.store(
-                    ttl.math.typecast(bias_block, accumulation_bias.dtype)
-                )
-                converted_remote_partial = converted_remote_partial_dfb.wait()
-                accumulation_bias = accumulation_bias_dfb.wait()
+                converted_remote_partial = scratch_accumulator_dfb.wait()
                 for _reduce_partial in range(1):
                     local_accumulator += converted_remote_partial + ttl.block.broadcast(
-                        accumulation_bias,
+                        bias_block,
                         dims=[0],
                         shape=(m_block_tiles, n_block_tiles),
                     )

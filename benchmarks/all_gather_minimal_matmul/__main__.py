@@ -380,7 +380,7 @@ def create_ttlang_2d_workload(mesh, common, ttlang):
         mesh_mapper=activation_mapper,
     )
     weight = to_dram(weight_host, mesh, mesh_mapper=weight_mapper)
-    bias = to_dram(bias_host, mesh, mesh_mapper=bias_mapper)
+    bias = to_dram(bias_host.float(), mesh, mesh_mapper=bias_mapper)
     output = to_dram(
         torch.zeros(
             (operation_config.padded_m_tiles * 32, common.n_tiles * 32),
