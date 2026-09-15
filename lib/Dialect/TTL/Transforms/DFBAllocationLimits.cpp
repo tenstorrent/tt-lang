@@ -28,6 +28,7 @@
 #include <limits>
 #include <numeric>
 #include <optional>
+#include <utility>
 
 namespace mlir::tt::ttl {
 
@@ -589,6 +590,10 @@ getFinalizedDFBStorageFootprint(ModuleOp module) {
           return failure();
         }
         staticStorageDomain = LaunchNodeDomain{};
+        // Computed addressing requires one tensor argument and byte offset for
+        // every storage segment of a physical DFB.
+        bool hasSingleTensorBase = !storageSegments.empty();
+        std::optional<std::pair<int64_t, int64_t>> commonTensorBase;
         for (auto indexedSegment : llvm::enumerate(storageSegments)) {
           auto segment = dyn_cast<DictionaryAttr>(indexedSegment.value());
           if (!segment) {
@@ -625,11 +630,53 @@ getFinalizedDFBStorageFootprint(ModuleOp module) {
           }
           if (!tensorBacking) {
             staticStorageDomain = staticStorageDomain.unionWith(*segmentDomain);
+            hasSingleTensorBase = false;
+            continue;
           }
+          result.tensorBackedPhysicalIndices.insert(physicalIndex);
+          auto backing = cast<TensorBackingAttr>(tensorBacking);
+          std::pair<int64_t, int64_t> segmentBase{backing.getTensorIndex(),
+                                                  backing.getByteOffset()};
+          if (!commonTensorBase) {
+            commonTensorBase = segmentBase;
+          } else if (*commonTensorBase != segmentBase) {
+            hasSingleTensorBase = false;
+          }
+        }
+        if (hasSingleTensorBase) {
+          result.singleTensorBasePhysicalIndices.insert(physicalIndex);
         }
       }
       domainByPhysicalIndex.try_emplace(physicalIndex,
                                         std::move(staticStorageDomain));
+    }
+  }
+
+  if (auto reconfigurationPlan = module->getAttrOfType<DictionaryAttr>(
+          kDFBReconfigurationPlanAttrName)) {
+    auto dfbEntries = reconfigurationPlan.getAs<ArrayAttr>("dfbs");
+    if (!dfbEntries) {
+      module.emitOpError() << kDFBReconfigurationPlanAttrName
+                           << " requires a dfbs array";
+      return failure();
+    }
+    for (auto indexedEntry : llvm::enumerate(dfbEntries)) {
+      auto entry = dyn_cast<DictionaryAttr>(indexedEntry.value());
+      auto physicalIndex =
+          entry ? entry.getAs<IntegerAttr>("dfb_index") : IntegerAttr();
+      auto configurations =
+          entry ? entry.getAs<ArrayAttr>("configurations") : ArrayAttr();
+      if (!entry || !physicalIndex || physicalIndex.getInt() < 0 ||
+          !configurations) {
+        module.emitOpError()
+            << kDFBReconfigurationPlanAttrName << " dfbs entry "
+            << indexedEntry.index()
+            << " requires a nonnegative dfb_index and configurations array";
+        return failure();
+      }
+      if (configurations.size() > 1) {
+        result.reconfiguredPhysicalIndices.insert(physicalIndex.getInt());
+      }
     }
   }
 
@@ -683,6 +730,8 @@ getFinalizedDFBStorageFootprint(ModuleOp module) {
 
   WalkResult walkResult = module.walk([&](BindCBOp bindOp) -> WalkResult {
     if (bindOp.getTensorBackingAttr()) {
+      result.tensorBackedPhysicalIndices.insert(
+          bindOp.getCbIndex().getSExtValue());
       return WalkResult::advance();
     }
     int64_t physicalIndex = bindOp.getCbIndex().getSExtValue();

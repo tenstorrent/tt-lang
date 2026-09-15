@@ -1795,9 +1795,27 @@ def _build_pipenet_graph(nets):
     graph = OperationPipeNets()
     for net in nets:
         if net.is_graph:
-            net_use = graph.add_graph_pipe_net(net.graph)
-            net._graph_edges = net_use.edges
+            if net._uses_matching_node_coordinates:
+                assert net.graph is not None
+                net_use = graph.add_graph_pipe_net(
+                    ((net.graph, None),), uses_matching_node_coordinates=True
+                )
+            else:
+                net_use = graph.add_graph_pipe_net(
+                    tuple(
+                        (
+                            relation_graph,
+                            tuple(_pipe_to_pipe_use(pipe) for pipe in relation_pipes),
+                        )
+                        for relation_graph, relation_pipes in net._device_relations
+                    )
+                )
             net.pipe_net_id = net_use.pipe_net_id
+            for _, relation_pipes in net._device_relations:
+                for pipe in relation_pipes:
+                    pipe.pipe_net_id = net_use.pipe_net_id
+            for pipe in net.pipes:
+                pipe.pipe_net_id = net_use.pipe_net_id
             continue
         net_use = graph.add_pipe_net(_pipe_to_pipe_use(p) for p in net.pipes)
         net.pipe_net_id = net_use.id

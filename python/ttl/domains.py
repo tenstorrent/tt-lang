@@ -5,13 +5,15 @@
 """Logical device domains and device-level transfer graphs.
 
 This module contains architecture-neutral frontend metadata. Explicit graphs
-store O(E) user edges. Structured graphs store O(1) descriptors. Neither form
-allocates runtime host state or device-visible communication memory.
+store O(E) user edges. Axis-neighbor, gather, scatter, and all-to-all graphs
+store only their domain and constructor parameters; stencil graphs also store
+their offsets. No graph allocates runtime host state or device-visible memory.
 """
 
 from __future__ import annotations
 
 import itertools
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from math import prod
 from typing import Any, Iterable, Iterator, Optional, Sequence, Tuple, Union
@@ -181,7 +183,7 @@ class TransferEdge:
 
 @dataclass(frozen=True)
 class StructuredTransfer:
-    """Base class for compact transfer relations."""
+    """Base class for relations stored by constructor parameters, not edge lists."""
 
     component_name: str
 
@@ -273,6 +275,25 @@ class DeviceDomain:
     @property
     def component_names(self) -> Tuple[str, ...]:
         return tuple(component.name for component in self.components)
+
+    def __getitem__(self, index: Any) -> DeviceView | DevicePoint:
+        return DeviceView(
+            self, tuple(range(extent) for extent in self.flattened_extent)
+        )[index]
+
+    def at_node(self, node_x: int, node_y: int) -> NodeSelection:
+        return self[:].at_node(node_x, node_y)
+
+    def select(self, points: Iterable[DevicePoint]) -> DeviceSet:
+        """Return the selected devices once each in parent-domain row-major order."""
+        references = []
+        for point in points:
+            if not isinstance(point, DevicePoint):
+                raise TypeError("selected points must be DevicePoint values")
+            if point.domain != self:
+                raise ValueError("selected points must belong to the parent domain")
+            references.append(point.reference)
+        return DeviceSet(self, tuple(references))
 
     @property
     def component_count(self) -> int:
@@ -442,9 +463,188 @@ class DeviceDomain:
                 )
 
 
+class DeviceSelection(ABC):
+    """Device membership with coordinates resolved in one parent domain."""
+
+    domain: DeviceDomain
+
+    @abstractmethod
+    def iter_device_refs(self) -> Iterator[DeviceRef]:
+        """Iterate selected parent-domain references in deterministic order."""
+
+    @abstractmethod
+    def _operation_identity_capture(self) -> tuple:
+        """Return the immutable selection contract used for compilation identity."""
+
+    def at_node(self, node_x: int, node_y: int) -> NodeSelection:
+        return NodeSelection(self, (node_x, node_y))
+
+    def __or__(self, other: DeviceSelection) -> DeviceSet:
+        if not isinstance(other, DeviceSelection):
+            raise TypeError(
+                "device selections can be combined only with another selection"
+            )
+        if self.domain != other.domain:
+            raise ValueError("device selections must share a parent domain")
+        return DeviceSet(
+            self.domain,
+            tuple(itertools.chain(self.iter_device_refs(), other.iter_device_refs())),
+        )
+
+
+@dataclass(frozen=True)
+class DevicePoint(DeviceSelection):
+    """One device reference together with its parent domain."""
+
+    domain: DeviceDomain
+    reference: DeviceRef
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "reference", self.domain.resolve_device_ref(self.reference)
+        )
+
+    def iter_device_refs(self) -> Iterator[DeviceRef]:
+        yield self.reference
+
+    def _operation_identity_capture(self) -> tuple:
+        return (
+            "device-point",
+            self.domain._operation_identity_capture(),
+            self.reference.coordinates,
+        )
+
+
+@dataclass(frozen=True)
+class DeviceView(DeviceSelection):
+    """An indexed device view stored as one integer or range per parent axis.
+
+    An integer selects one parent coordinate and removes that axis from the
+    view. A range preserves the axis for later indexing. Nested slicing updates
+    these selections without enumerating devices.
+    """
+
+    domain: DeviceDomain
+    axes: Tuple[int | range, ...]
+
+    def __post_init__(self) -> None:
+        axes = tuple(self.axes)
+        if len(axes) != len(self.domain.flattened_extent):
+            raise ValueError("device view must specify every parent axis")
+        for axis, extent in zip(axes, self.domain.flattened_extent):
+            if isinstance(axis, range):
+                if axis and (
+                    min(axis[0], axis[-1]) < 0 or max(axis[0], axis[-1]) >= extent
+                ):
+                    raise ValueError("device view range is outside the parent domain")
+            else:
+                coordinate = _require_int(axis, "device view coordinate")
+                if not 0 <= coordinate < extent:
+                    raise ValueError(
+                        "device view coordinate is outside the parent domain"
+                    )
+        object.__setattr__(self, "axes", axes)
+
+    @property
+    def shape(self) -> Coordinate:
+        return tuple(len(axis) for axis in self.axes if isinstance(axis, range))
+
+    def __getitem__(self, index: Any) -> DeviceView | DevicePoint:
+        indices = index if isinstance(index, tuple) else (index,)
+        rank = len(self.shape)
+        if len(indices) > rank:
+            raise IndexError(f"device view has rank {rank}, got {len(indices)} indices")
+        indices = iter(indices + (slice(None),) * (rank - len(indices)))
+        axes = []
+        for axis in self.axes:
+            if isinstance(axis, range):
+                selection = next(indices)
+                if not isinstance(selection, slice):
+                    _require_int(selection, "device index")
+                axis = axis[selection]
+            axes.append(axis)
+        if any(isinstance(axis, range) for axis in axes):
+            return DeviceView(self.domain, tuple(axes))
+        return DevicePoint(self.domain, self._parent_reference(tuple(axes)))
+
+    def _parent_reference(self, coordinates: Coordinate) -> DeviceRef:
+        components = []
+        offset = 0
+        for component in self.domain.components:
+            component_rank = len(component.extent)
+            components.append(coordinates[offset : offset + component_rank])
+            offset += component_rank
+        return DeviceRef(*components)
+
+    def iter_device_refs(self) -> Iterator[DeviceRef]:
+        for coordinates in itertools.product(
+            *(axis if isinstance(axis, range) else (axis,) for axis in self.axes)
+        ):
+            yield self._parent_reference(coordinates)
+
+    def _operation_identity_capture(self) -> tuple:
+        return (
+            "device-view",
+            self.domain._operation_identity_capture(),
+            tuple(
+                (axis.start, axis.stop, axis.step) if isinstance(axis, range) else axis
+                for axis in self.axes
+            ),
+        )
+
+
+@dataclass(frozen=True)
+class DeviceSet(DeviceSelection):
+    """Selected devices stored once each in parent-domain row-major order."""
+
+    domain: DeviceDomain
+    references: Tuple[DeviceRef, ...]
+
+    def __post_init__(self) -> None:
+        references = {
+            self.domain.resolve_device_ref(reference) for reference in self.references
+        }
+        object.__setattr__(
+            self, "references", tuple(sorted(references, key=self.domain.index_order))
+        )
+
+    def iter_device_refs(self) -> Iterator[DeviceRef]:
+        yield from self.references
+
+    def _operation_identity_capture(self) -> tuple:
+        return (
+            "device-set",
+            self.domain._operation_identity_capture(),
+            tuple(reference.coordinates for reference in self.references),
+        )
+
+
+@dataclass(frozen=True)
+class NodeSelection:
+    """A logical Tensix node on each selected device.
+
+    Coordinates are nonnegative. Operation placement must additionally verify
+    that this node exists on every selected device before dispatch.
+    """
+
+    devices: DeviceSelection
+    node: Coordinate
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.devices, DeviceSelection):
+            raise TypeError("node selection requires a device selection")
+        node = _normalize_coordinate(self.node, "node coordinate")
+        if len(node) != 2:
+            raise ValueError("node coordinate must have rank two")
+        object.__setattr__(self, "node", node)
+
+    def _operation_identity_capture(self) -> tuple:
+        return ("node-selection", self.devices._operation_identity_capture(), self.node)
+
+
 @dataclass(frozen=True, init=False)
 class TransferGraph:
-    """Explicit or structured transfer relation over a `DeviceDomain`."""
+    """Device transfers stored as explicit edges or constructor parameters."""
 
     domain: DeviceDomain
     transfer_edges: Tuple[TransferEdge, ...]
@@ -472,6 +672,8 @@ class TransferGraph:
                 self._normalize_edge(domain, edge, edge_index)
                 for edge_index, edge in enumerate(input_edges)
             )
+            if len(set(transfer_edges)) != len(transfer_edges):
+                raise ValueError("TransferGraph edges must be unique")
         object.__setattr__(self, "domain", domain)
         object.__setattr__(self, "transfer_edges", transfer_edges)
         object.__setattr__(self, "structured", structured)
@@ -574,17 +776,110 @@ class TransferGraph:
         return len(self.transfer_edges) if self.is_explicit else None
 
     def metadata_cost(self) -> GraphMetadataCost:
-        compile_time = (
-            "O(E * (C + R)) explicit user edges"
-            if self.is_explicit
-            else "O(1 + C + R) structured descriptor"
-        )
+        if self.is_explicit:
+            compile_time = "O(E * (C + R)) explicit user edges"
+        elif isinstance(self.structured, StencilTransfer):
+            compile_time = "O(K + C + R) stencil offsets and domain parameters"
+        else:
+            compile_time = "O(1 + C + R) domain and relation parameters"
         return GraphMetadataCost(
             storage_class="compile-time metadata",
             compile_time=compile_time,
             runtime_host="none allocated by TransferGraph",
             device_visible="none allocated by TransferGraph",
         )
+
+    def _operation_identity_capture(self) -> tuple:
+        """Return the stored graph descriptor used by operation caching."""
+
+        def device_identity(device: DeviceRef) -> tuple:
+            return tuple(tuple(coordinates) for coordinates in device.coordinates)
+
+        if self.is_explicit:
+            relation_identity = (
+                "explicit",
+                tuple(
+                    (
+                        device_identity(edge.source),
+                        (
+                            (
+                                "range",
+                                device_identity(edge.destination.lo),
+                                device_identity(edge.destination.hi),
+                            )
+                            if isinstance(edge.destination, DeviceRange)
+                            else ("device", device_identity(edge.destination))
+                        ),
+                    )
+                    for edge in self.transfer_edges
+                ),
+            )
+        else:
+            structured = self.structured
+            assert structured is not None
+            if isinstance(structured, AxisNeighborTransfer):
+                relation_identity = (
+                    "axis-neighbor",
+                    structured.component_name,
+                    structured.axis,
+                    structured.offset,
+                    structured.wrap,
+                )
+            elif isinstance(structured, StencilTransfer):
+                relation_identity = (
+                    "stencil",
+                    structured.component_name,
+                    tuple(structured.offsets),
+                    structured.wrap,
+                )
+            elif isinstance(structured, GatherTransfer):
+                relation_identity = (
+                    "gather",
+                    structured.component_name,
+                    device_identity(structured.root),
+                )
+            elif isinstance(structured, ScatterTransfer):
+                relation_identity = (
+                    "scatter",
+                    structured.component_name,
+                    device_identity(structured.source),
+                )
+            elif isinstance(structured, AllToAllTransfer):
+                relation_identity = ("all-to-all", structured.component_name)
+            else:
+                raise TypeError(
+                    f"unsupported structured transfer type "
+                    f"{type(structured).__name__}"
+                )
+
+        return (
+            "transfer-graph",
+            self.domain._operation_identity_capture(),
+            relation_identity,
+        )
+
+    def device_endpoints(self) -> frozenset[DeviceRef]:
+        """Return devices used as a source or destination by an edge."""
+        structured = self.structured
+        if isinstance(structured, (GatherTransfer, ScatterTransfer, AllToAllTransfer)):
+            return frozenset(self.domain.iter_device_refs())
+        if isinstance(structured, AxisNeighborTransfer) and structured.wrap:
+            return frozenset(self.domain.iter_device_refs())
+        if isinstance(structured, StencilTransfer) and structured.wrap:
+            return frozenset(self.domain.iter_device_refs())
+
+        endpoints = set()
+        for edge in self.iter_edges():
+            endpoints.add(edge.source)
+            if isinstance(edge.destination, DeviceRange):
+                endpoints.update(
+                    device
+                    for device in self.domain.iter_device_refs()
+                    if self._range_contains(edge.destination, device)
+                )
+            else:
+                endpoints.add(edge.destination)
+        return frozenset(endpoints)
 
     def iter_edges(self) -> Iterator[TransferEdge]:
         """Iterate the transfer relation without changing its stored form."""
@@ -750,8 +1045,6 @@ class TransferGraph:
                 )
         else:
             destination = domain.device_ref(edge.destination)
-            if source == destination:
-                raise ValueError("transfer edge source must differ from destination")
         return TransferEdge(source, destination)
 
     @staticmethod
@@ -806,11 +1099,25 @@ class TransferGraph:
         if isinstance(structured, StencilTransfer):
             if not isinstance(structured.wrap, bool):
                 raise TypeError(f"wrap must be a bool, got {structured.wrap!r}")
+            offsets = _normalize_stencil_offsets(
+                structured.offsets, len(component.extent)
+            )
+            if structured.wrap:
+                effective_offsets = []
+                seen_offsets = set()
+                for offset in offsets:
+                    effective_offset = tuple(
+                        delta % extent
+                        for delta, extent in zip(offset, component.extent)
+                    )
+                    if not any(effective_offset) or effective_offset in seen_offsets:
+                        continue
+                    seen_offsets.add(effective_offset)
+                    effective_offsets.append(effective_offset)
+                offsets = tuple(effective_offsets)
             return StencilTransfer(
                 component_name=structured.component_name,
-                offsets=_normalize_stencil_offsets(
-                    structured.offsets, len(component.extent)
-                ),
+                offsets=offsets,
                 wrap=structured.wrap,
             )
 
@@ -859,11 +1166,16 @@ __all__ = [
     "AllToAllTransfer",
     "AxisNeighborTransfer",
     "DeviceDomain",
+    "DevicePoint",
     "DeviceRange",
     "DeviceRef",
+    "DeviceSelection",
+    "DeviceSet",
+    "DeviceView",
     "DomainComponent",
     "GatherTransfer",
     "GraphMetadataCost",
+    "NodeSelection",
     "ScatterTransfer",
     "StencilTransfer",
     "StructuredTransfer",
