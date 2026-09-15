@@ -540,7 +540,7 @@ static LogicalResult insertCommonInits(
           builder, loc, in0CB, in1CB, outputCB, analysis.matmulTranspose,
           analysis.matmulCt, analysis.matmulRt, analysis.matmulKt);
       // The full init includes the first matmul's operation-specific init.
-      // Retaining the duplicate short init also resets packer L1 accumulation.
+      // Omit the duplicate short init because it resets packer L1 accumulation.
       if (isa_and_nonnull<ttk::MatmulBlockOp>(analysis.firstPerOpInitCompute)) {
         analysis.firstPerOpInitCompute->setAttr(
             kInitInserted, UnitAttr::get(moduleOp.getContext()));
