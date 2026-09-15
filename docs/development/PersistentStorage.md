@@ -6,7 +6,7 @@ Some operation sequences repeatedly update the same state: an accumulator, a cac
 
 Caller-owned TTNN tensors already provide backing that can outlive one operation. `SRAMStorage` makes ownership, initialization, and completion-aware release explicit in TT-Lang. It also provides the ownership boundary needed to plan several persistent allocations together later.
 
-The design and API are under development. Host ownership tests pass; device correctness and external-system interoperability remain unvalidated.
+The design and API are under development. Host ownership tests and 24 Blackhole device-correctness cases pass. External-system interoperability remains unvalidated.
 
 ## Design
 
