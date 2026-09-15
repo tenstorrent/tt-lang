@@ -8,8 +8,8 @@
     boundary rows: receive one fabric direction each and distribute its K half
     all compute workers: stream weights -> bias-initialized matmul -> output DRAM
 
-    data-movement thread 0: activation transport, distribution, output write
-    data-movement thread 1: weights and bias
+    data-movement thread 0: activation transport and distribution
+    data-movement thread 1: bias/weight distribution and deferred output write
 
 Run from the repository root (four devices):
     python -m benchmarks.all_gather_minimal_matmul \
@@ -188,7 +188,7 @@ def make_bidirectional_l1_all_gather_matmul_operation(
         )
 
         @ttl.datamovement()
-        def move_activations_and_write_output():
+        def move_activations():
             m_worker_index, n_worker_index = ttl.node(dims=2)
 
             for m_round in range(m_rounds):
@@ -316,39 +316,11 @@ def make_bidirectional_l1_all_gather_matmul_operation(
 
                                     activation_forward_net.if_src(send_forward_half)
 
-                    n_begin = (
-                        n_round * n_worker_count + n_worker_index
-                    ) * n_block_tiles
-                    output_block = output_dfb.wait()
-                    if m_begin + m_block_tiles <= logical_m_tiles:
-                        ttl.copy(
-                            output_block,
-                            output_shard[
-                                m_begin : m_begin + m_block_tiles,
-                                n_begin : n_begin + n_block_tiles,
-                            ],
-                        ).wait()
-                    else:
-                        for output_row in range(m_block_tiles):
-                            if m_begin + output_row < logical_m_tiles:
-                                output_row_block = ttl.block.subview(
-                                    output_block,
-                                    offsets=(output_row, 0),
-                                    shape=(1, n_block_tiles),
-                                )
-                                ttl.copy(
-                                    output_row_block,
-                                    output_shard[
-                                        m_begin + output_row : m_begin + output_row + 1,
-                                        n_begin : n_begin + n_block_tiles,
-                                    ],
-                                ).wait()
-
         @ttl.datamovement()
-        def read_bias_and_distribute_weights():
+        def move_weights_and_write_output():
             m_worker_index, n_worker_index = ttl.node(dims=2)
             local_device_index = device_domain.current_index()
-            for _m_round in range(m_rounds):
+            for m_round in range(m_rounds):
                 for n_round in range(n_rounds):
                     n_begin = (
                         n_round * n_worker_count + n_worker_index
@@ -435,6 +407,83 @@ def make_bidirectional_l1_all_gather_matmul_operation(
                                 compute_right_weight,
                                 byte_count=weight_half_bytes,
                             ).wait()
+
+                    # Write the preceding result after publishing this block's
+                    # inputs so its DRAM transfer overlaps compute without
+                    # delaying activation delivery.
+                    output_index = m_round * n_rounds + n_round
+                    if output_index > 0:
+                        previous_output_index = output_index - 1
+                        previous_m_round = previous_output_index // n_rounds
+                        previous_n_round = previous_output_index % n_rounds
+                        previous_m_begin = (
+                            previous_m_round * m_worker_count + m_worker_index
+                        ) * m_block_tiles
+                        previous_n_begin = (
+                            previous_n_round * n_worker_count + n_worker_index
+                        ) * n_block_tiles
+                        previous_output_block = output_dfb.wait()
+                        if previous_m_begin + m_block_tiles <= logical_m_tiles:
+                            ttl.copy(
+                                previous_output_block,
+                                output_shard[
+                                    previous_m_begin : previous_m_begin + m_block_tiles,
+                                    previous_n_begin : previous_n_begin + n_block_tiles,
+                                ],
+                            ).wait()
+                        else:
+                            for output_row in range(m_block_tiles):
+                                if previous_m_begin + output_row < logical_m_tiles:
+                                    previous_output_row = ttl.block.subview(
+                                        previous_output_block,
+                                        offsets=(output_row, 0),
+                                        shape=(1, n_block_tiles),
+                                    )
+                                    ttl.copy(
+                                        previous_output_row,
+                                        output_shard[
+                                            previous_m_begin
+                                            + output_row : previous_m_begin
+                                            + output_row
+                                            + 1,
+                                            previous_n_begin : previous_n_begin
+                                            + n_block_tiles,
+                                        ],
+                                    ).wait()
+
+            final_m_begin = (
+                (m_rounds - 1) * m_worker_count + m_worker_index
+            ) * m_block_tiles
+            final_n_begin = (
+                (n_rounds - 1) * n_worker_count + n_worker_index
+            ) * n_block_tiles
+            final_output_block = output_dfb.wait()
+            if final_m_begin + m_block_tiles <= logical_m_tiles:
+                ttl.copy(
+                    final_output_block,
+                    output_shard[
+                        final_m_begin : final_m_begin + m_block_tiles,
+                        final_n_begin : final_n_begin + n_block_tiles,
+                    ],
+                ).wait()
+            else:
+                for output_row in range(m_block_tiles):
+                    if final_m_begin + output_row < logical_m_tiles:
+                        final_output_row = ttl.block.subview(
+                            final_output_block,
+                            offsets=(output_row, 0),
+                            shape=(1, n_block_tiles),
+                        )
+                        ttl.copy(
+                            final_output_row,
+                            output_shard[
+                                final_m_begin
+                                + output_row : final_m_begin
+                                + output_row
+                                + 1,
+                                final_n_begin : final_n_begin + n_block_tiles,
+                            ],
+                        ).wait()
 
         @ttl.compute()
         def compute_matmul_and_bias():
