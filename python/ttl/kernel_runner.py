@@ -1647,13 +1647,8 @@ class _DFBReconfigurationBackingGroup:
 
 
 _DFB_RECONFIGURATION_MAX_INDICES = 64
-_DFB_RECONFIGURATION_WORDS_PER_DFB = 4
-_DFB_RECONFIGURATION_LOW_MASK_WORD = (
-    _DFB_RECONFIGURATION_MAX_INDICES * _DFB_RECONFIGURATION_WORDS_PER_DFB
-)
-_DFB_RECONFIGURATION_HIGH_MASK_WORD = _DFB_RECONFIGURATION_LOW_MASK_WORD + 1
-_DFB_RECONFIGURATION_SYNCHRONIZATION_WORD = _DFB_RECONFIGURATION_HIGH_MASK_WORD + 1
-_DFB_RECONFIGURATION_WORDS_PER_CORE = _DFB_RECONFIGURATION_SYNCHRONIZATION_WORD + 6
+_DFB_RECONFIGURATION_ACTIVE_MASK_WORDS = 2
+_DFB_RECONFIGURATION_SYNCHRONIZATION_WORDS = 6
 _DFB_RECONFIGURATION_PRESERVE_ADDRESS = 0
 
 
@@ -2744,7 +2739,7 @@ def build_dfb_reconfiguration_runtime_resources(
     existing_backing_allocation_bytes: Optional[Dict[int, int]] = None,
     device: Optional[Any] = None,
 ) -> DFBReconfigurationRuntimeResources:
-    """Build storage and configuration resources for DFB reconfiguration."""
+    """Allocate DFB backing and compact per-boundary runtime configuration."""
     if plan is None:
         return DFBReconfigurationRuntimeResources([], {}, [], {}, device)
 
@@ -2993,9 +2988,21 @@ def build_dfb_reconfiguration_runtime_resources(
 
     import torch
 
+    boundary_records = {ordinal: [] for ordinal in plan.boundary_ordinals}
+    for dfb_index, epochs in enumerate(plan.dfb_epochs):
+        for epoch in epochs:
+            ordinal = epoch.entry_reconfiguration_ordinal
+            if ordinal is not None:
+                boundary_records[ordinal].append((dfb_index, epoch.config))
+
     host_configurations = {
         boundary_ordinal: torch.zeros(
-            (len(core_keys), _DFB_RECONFIGURATION_WORDS_PER_CORE),
+            (
+                len(core_keys),
+                len(boundary_records[boundary_ordinal])
+                + _DFB_RECONFIGURATION_ACTIVE_MASK_WORDS
+                + _DFB_RECONFIGURATION_SYNCHRONIZATION_WORDS,
+            ),
             dtype=torch.uint32,
         )
         for boundary_ordinal in plan.boundary_ordinals
@@ -3007,18 +3014,10 @@ def build_dfb_reconfiguration_runtime_resources(
 
     for boundary_ordinal in plan.boundary_ordinals:
         host_configuration = host_configurations[boundary_ordinal]
-        for dfb_index, epochs in enumerate(plan.dfb_epochs):
-            matching_epoch = next(
-                (
-                    epoch
-                    for epoch in epochs
-                    if epoch.entry_reconfiguration_ordinal == boundary_ordinal
-                ),
-                None,
-            )
-            if matching_epoch is None:
-                continue
-            config = matching_epoch.config
+        records = boundary_records[boundary_ordinal]
+        low_mask_word = len(records)
+        high_mask_word = low_mask_word + 1
+        for record_offset, (dfb_index, config) in enumerate(records):
             allocation = _get_dfb_allocation(config)
             segments = config.storage_segments or (
                 DFBStorageSegment(nodes=tuple(core_keys)),
@@ -3064,13 +3063,8 @@ def build_dfb_reconfiguration_runtime_resources(
                         allocation.page_size,
                     )
 
-            mask_word = (
-                _DFB_RECONFIGURATION_LOW_MASK_WORD
-                if dfb_index < 32
-                else _DFB_RECONFIGURATION_HIGH_MASK_WORD
-            )
+            mask_word = low_mask_word if dfb_index < 32 else high_mask_word
             mask_bit = 1 << (dfb_index % 32)
-            configuration_offset = dfb_index * _DFB_RECONFIGURATION_WORDS_PER_DFB
             for core in core_keys:
                 record = records_by_core.get(core)
                 if record is None:
@@ -3079,10 +3073,7 @@ def build_dfb_reconfiguration_runtime_resources(
                 host_configuration[row, mask_word] = (
                     int(host_configuration[row, mask_word]) | mask_bit
                 )
-                for record_offset, value in enumerate(record):
-                    host_configuration[row, configuration_offset + record_offset] = (
-                        value
-                    )
+                host_configuration[row, record_offset] = record[0]
 
         num_devices = (
             resource_device.get_num_devices()
@@ -3094,7 +3085,7 @@ def build_dfb_reconfiguration_runtime_resources(
         )
         shard_spec = ttnn.ShardSpec(
             core_ranges,
-            (1, _DFB_RECONFIGURATION_WORDS_PER_CORE),
+            (1, host_configuration.shape[1]),
             ttnn.ShardOrientation.ROW_MAJOR,
         )
         memory_config = ttnn.MemoryConfig(

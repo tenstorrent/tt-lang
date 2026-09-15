@@ -1,7 +1,7 @@
 // Verifies exact combined-resource validation accepts the packed allocation
 // and rejects a one-byte-short budget.
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-form-pipe-transports{group-size=1 l1-budget-override=21760},ttl-finalize-dfb-indices{reuse-user-dfbs=true l1-budget-override=21760},convert-ttl-to-ttkernel{pipe-computed-addresses=false pipe-capacity-sync=true pipe-global-semaphores-only=true l1-budget-override=21760})' -o /dev/null
-// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-form-pipe-transports{group-size=1 l1-budget-override=21759},ttl-finalize-dfb-indices{reuse-user-dfbs=true l1-budget-override=21759},convert-ttl-to-ttkernel{pipe-computed-addresses=false pipe-capacity-sync=true pipe-global-semaphores-only=true l1-budget-override=21759})'
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-form-pipe-transports{group-size=1 l1-budget-override=20736},ttl-finalize-dfb-indices{reuse-user-dfbs=true l1-budget-override=20800},convert-ttl-to-ttkernel{pipe-computed-addresses=false pipe-capacity-sync=true pipe-global-semaphores-only=true l1-budget-override=20736})' -o /dev/null
+// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-form-pipe-transports{group-size=1 l1-budget-override=20735},ttl-finalize-dfb-indices{reuse-user-dfbs=true l1-budget-override=20800},convert-ttl-to-ttkernel{pipe-computed-addresses=false pipe-capacity-sync=true pipe-global-semaphores-only=true l1-budget-override=20735})'
 
 #layout = #ttl.layout<
     shape = [32, 384], element_type = !ttcore.tile<32x32, f32>,
@@ -12,9 +12,9 @@
 #boundary = #ttl.dfb_reconfiguration<0, participants[#compute, #reader, #writer]>
 
 // Physical DFB storage on the busiest launch node (20480), PipeNet scratch
-// (64), two global semaphores (128), and boundary state (1088) fit separately,
-// but their 21760-byte total exceeds the budget by one byte.
-// expected-error @below {{combined DFB and runtime resources require 21760 L1 bytes but the budget is 21759 (DFB=20480, scratch=64, global semaphores=128, reconfiguration state=1088)}}
+// (64), two global semaphores (128), and boundary state (64) fit separately,
+// but their 20736-byte total exceeds the budget by one byte.
+// expected-error @below {{combined DFB and runtime resources require 20736 L1 bytes but the budget is 20735 (DFB=20480, scratch=64, global semaphores=128, reconfiguration state=64)}}
 module attributes {
   ttl.launch_grid = array<i64: 2, 1>,
   ttl.target_arch = #ttcore.arch<blackhole>

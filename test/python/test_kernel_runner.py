@@ -62,23 +62,41 @@ def test_dfb_reconfiguration_abi_constants_match_sources():
     allocation_source = (
         repository_root / "lib/Dialect/TTL/Transforms/DFBAllocationLimits.cpp"
     ).read_text()
+    lowering_source = (
+        repository_root / "lib/Dialect/TTL/Transforms/ConvertTTLToTTKernel.cpp"
+    ).read_text()
 
-    low_mask_word = _extract_unsigned_constant(llk_source, "lowMaskWord")
-    high_mask_word = _extract_unsigned_constant(llk_source, "highMaskWord")
-    synchronization_word = _extract_unsigned_constant(llk_source, "synchronizationWord")
+    device_active_mask_words = _extract_unsigned_constant(
+        llk_source, "activeMaskWordCount"
+    )
+    device_synchronization_words = _extract_unsigned_constant(
+        llk_source, "synchronizationWordCount"
+    )
+    compiler_active_mask_words = _extract_unsigned_constant(
+        allocation_source, "kDFBReconfigurationActiveMaskWordCount"
+    )
+    compiler_synchronization_words = _extract_unsigned_constant(
+        allocation_source, "kDFBReconfigurationSynchronizationWordCount"
+    )
+    device_record_words = _extract_unsigned_constant(llk_source, "recordWordCount")
+    compiler_record_words = _extract_unsigned_constant(
+        lowering_source, "kDFBReconfigurationRecordWordCount"
+    )
     preserve_fifo_address = _extract_unsigned_constant(
         llk_source, "preserveFifoAddress"
     )
-    compiler_words_per_core = _extract_unsigned_constant(
-        allocation_source, "kDFBReconfigurationWordsPerCore"
-    )
 
-    assert low_mask_word == kernel_runner._DFB_RECONFIGURATION_LOW_MASK_WORD
-    assert high_mask_word == kernel_runner._DFB_RECONFIGURATION_HIGH_MASK_WORD
     assert (
-        synchronization_word == kernel_runner._DFB_RECONFIGURATION_SYNCHRONIZATION_WORD
+        device_active_mask_words
+        == compiler_active_mask_words
+        == kernel_runner._DFB_RECONFIGURATION_ACTIVE_MASK_WORDS
     )
-    assert compiler_words_per_core == kernel_runner._DFB_RECONFIGURATION_WORDS_PER_CORE
+    assert (
+        device_synchronization_words
+        == compiler_synchronization_words
+        == kernel_runner._DFB_RECONFIGURATION_SYNCHRONIZATION_WORDS
+    )
+    assert device_record_words == compiler_record_words
     assert preserve_fifo_address == kernel_runner._DFB_RECONFIGURATION_PRESERVE_ADDRESS
 
 
@@ -6118,14 +6136,10 @@ def test_reconfiguration_encodes_physical_index_32_in_high_mask(monkeypatch):
 
     assert len(host_configurations) == 1
     encoded = host_configurations[0][0]
-    assert int(encoded[256]) == 0
-    assert int(encoded[257]) == 1
-    assert tuple(int(value) for value in encoded[128:132]) == (
-        kernel_runner._DFB_RECONFIGURATION_PRESERVE_ADDRESS,
-        12288,
-        6,
-        2048,
-    )
+    assert len(encoded) == 9
+    assert int(encoded[0]) == kernel_runner._DFB_RECONFIGURATION_PRESERVE_ADDRESS
+    assert int(encoded[1]) == 0
+    assert int(encoded[2]) == 1
 
 
 def test_build_cb_descriptors_excludes_computed_address_backing_tensors(

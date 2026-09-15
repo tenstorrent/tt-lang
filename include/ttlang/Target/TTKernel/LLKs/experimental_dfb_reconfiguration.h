@@ -32,11 +32,11 @@ namespace dfb_reconfiguration_detail {
 #define TTL_DFB_RECONFIGURATION_PACK
 #endif
 
-// Each core stores 64 four-word interface records, two active masks, three
-// arrival words, one release word, and two padding words in shared L1.
-constexpr uint32_t lowMaskWord = 256;
-constexpr uint32_t highMaskWord = 257;
-constexpr uint32_t synchronizationWord = 258;
+// Each boundary stores one address per reconfigured DFB, two active masks, and
+// six synchronization words. Interface geometry is encoded in template data.
+constexpr uint32_t activeMaskWordCount = 2;
+constexpr uint32_t synchronizationWordCount = 6;
+constexpr uint32_t recordWordCount = 12;
 constexpr uint32_t dm0StateWord = 0;
 constexpr uint32_t unpackStateWord = 1;
 constexpr uint32_t packStateWord = 2;
@@ -201,45 +201,28 @@ FORCE_INLINE void exit(volatile uint32_t tt_l1_ptr *synchronizationState) {
 
 template <bool updateReadPointer, bool updateWritePointer,
           bool updateWriteTilePointer, bool resetStreamCounters>
-FORCE_INLINE void applyMask(uint32_t tt_l1_ptr *configuration,
-                            uint32_t activeMask, uint32_t firstDfbIndex) {
-  uint32_t dfbIndex = firstDfbIndex;
-  while (activeMask != 0) {
-    if ((activeMask & 1U) != 0) {
-      uint32_t configurationOffset = dfbIndex * 4;
-      uint32_t configuredAddress = configuration[configurationOffset];
-      uint32_t fifoSize =
-          configuration[configurationOffset + 1] >> cb_addr_shift;
-      uint32_t fifoNumPages = configuration[configurationOffset + 2];
-      uint32_t fifoPageSize =
-          configuration[configurationOffset + 3] >> cb_addr_shift;
+FORCE_INLINE void applyInterface(uint32_t dfbIndex, uint32_t fifoAddress,
+                                 uint32_t fifoSize, uint32_t fifoNumPages,
+                                 uint32_t fifoPageSize) {
+  LocalCBInterface &interface = get_local_cb_interface(dfbIndex);
+  if constexpr (updateReadPointer) {
+    interface.fifo_rd_ptr = fifoAddress;
+  }
+  if constexpr (updateWritePointer) {
+    interface.fifo_wr_ptr = fifoAddress;
+    interface.fifo_num_pages = fifoNumPages;
+  }
+  if constexpr (updateWriteTilePointer) {
+    interface.fifo_wr_tile_ptr = 0;
+  }
+  interface.fifo_size = fifoSize;
+  interface.fifo_limit = fifoAddress + fifoSize;
+  interface.fifo_page_size = fifoPageSize;
+  interface.tiles_acked_received_init = 0;
 
-      LocalCBInterface &interface = get_local_cb_interface(dfbIndex);
-      uint32_t fifoAddress = configuredAddress == preserveFifoAddress
-                                 ? interface.fifo_limit - interface.fifo_size
-                                 : configuredAddress >> cb_addr_shift;
-      if constexpr (updateReadPointer) {
-        interface.fifo_rd_ptr = fifoAddress;
-      }
-      if constexpr (updateWritePointer) {
-        interface.fifo_wr_ptr = fifoAddress;
-        interface.fifo_num_pages = fifoNumPages;
-      }
-      if constexpr (updateWriteTilePointer) {
-        interface.fifo_wr_tile_ptr = 0;
-      }
-      interface.fifo_size = fifoSize;
-      interface.fifo_limit = fifoAddress + fifoSize;
-      interface.fifo_page_size = fifoPageSize;
-      interface.tiles_acked_received_init = 0;
-
-      if constexpr (resetStreamCounters) {
-        *get_cb_tiles_received_ptr(dfbIndex) = 0;
-        *get_cb_tiles_acked_ptr(dfbIndex) = 0;
-      }
-    }
-    activeMask >>= 1;
-    ++dfbIndex;
+  if constexpr (resetStreamCounters) {
+    *get_cb_tiles_received_ptr(dfbIndex) = 0;
+    *get_cb_tiles_acked_ptr(dfbIndex) = 0;
   }
 }
 
@@ -288,92 +271,68 @@ FORCE_INLINE void applyDescriptor() {
 #endif
 }
 
-template <uint32_t... descriptorWords>
-struct ApplyDescriptors;
+#endif
 
-template <>
-struct ApplyDescriptors<> {
-  static FORCE_INLINE void run() {}
+template <uint32_t recordOffset, uint32_t... recordWords>
+struct ApplyRecords;
+
+template <uint32_t recordOffset>
+struct ApplyRecords<recordOffset> {
+  template <bool updateReadPointer, bool updateWritePointer,
+            bool updateWriteTilePointer, bool resetStreamCounters>
+  static FORCE_INLINE void run(uint32_t tt_l1_ptr *, uint32_t, uint32_t) {}
 };
 
-template <uint32_t dfbIndex, uint32_t pageBytes, uint32_t l1Format,
-          uint32_t tileHeight, uint32_t tileWidth, uint32_t faceHeight,
-          uint32_t numFaces, uint32_t unpackDstFormat, uint32_t packSrcFormat,
-          uint32_t... remainingWords>
-struct ApplyDescriptors<dfbIndex, pageBytes, l1Format, tileHeight, tileWidth,
-                        faceHeight, numFaces, unpackDstFormat, packSrcFormat,
-                        remainingWords...> {
-  static FORCE_INLINE void run() {
-    applyDescriptor<dfbIndex, pageBytes, l1Format, tileHeight, tileWidth,
-                    faceHeight, numFaces, unpackDstFormat, packSrcFormat>();
-    ApplyDescriptors<remainingWords...>::run();
+template <uint32_t recordOffset, uint32_t dfbIndex, uint32_t totalBytes,
+          uint32_t numPages, uint32_t pageBytes, uint32_t updateDescriptor,
+          uint32_t l1Format, uint32_t tileHeight, uint32_t tileWidth,
+          uint32_t faceHeight, uint32_t numFaces, uint32_t unpackDstFormat,
+          uint32_t packSrcFormat, uint32_t... remainingWords>
+struct ApplyRecords<recordOffset, dfbIndex, totalBytes, numPages, pageBytes,
+                    updateDescriptor, l1Format, tileHeight, tileWidth,
+                    faceHeight, numFaces, unpackDstFormat, packSrcFormat,
+                    remainingWords...> {
+  template <bool updateReadPointer, bool updateWritePointer,
+            bool updateWriteTilePointer, bool resetStreamCounters>
+  static FORCE_INLINE void run(uint32_t tt_l1_ptr *configuration,
+                               uint32_t lowMask, uint32_t highMask) {
+    uint32_t activeMask = dfbIndex < 32 ? lowMask : highMask;
+    if ((activeMask & (1U << (dfbIndex % 32))) != 0) {
+#if !defined(TTL_DFB_RECONFIGURATION_MATH)
+      uint32_t configuredAddress = configuration[recordOffset];
+      LocalCBInterface &interface = get_local_cb_interface(dfbIndex);
+      uint32_t fifoAddress = configuredAddress == preserveFifoAddress
+                                 ? interface.fifo_limit - interface.fifo_size
+                                 : configuredAddress >> cb_addr_shift;
+      applyInterface<updateReadPointer, updateWritePointer,
+                     updateWriteTilePointer, resetStreamCounters>(
+          dfbIndex, fifoAddress, totalBytes >> cb_addr_shift, numPages,
+          pageBytes >> cb_addr_shift);
+#endif
+#if defined(TTLANG_RUNTIME_DFB_RECONFIGURATION)
+      if constexpr (updateDescriptor != 0) {
+        applyDescriptor<dfbIndex, pageBytes, l1Format, tileHeight, tileWidth,
+                        faceHeight, numFaces, unpackDstFormat, packSrcFormat>();
+      }
+#else
+      static_assert(updateDescriptor == 0,
+                    "descriptor updates require runtime descriptor storage");
+#endif
+    }
+    ApplyRecords<recordOffset + 1, remainingWords...>::template run<
+        updateReadPointer, updateWritePointer, updateWriteTilePointer,
+        resetStreamCounters>(configuration, lowMask, highMask);
   }
 };
-#endif
 
-} // namespace dfb_reconfiguration_detail
-
-FORCE_INLINE void reconfigure_dfb_interfaces(uint32_t configurationAddress) {
-#if defined(TTL_DFB_RECONFIGURATION_DM1) ||                                    \
-    defined(TTL_DFB_RECONFIGURATION_DM0) ||                                    \
-    defined(TTL_DFB_RECONFIGURATION_UNPACK) ||                                 \
-    defined(TTL_DFB_RECONFIGURATION_PACK)
-#if defined(TTL_DFB_RECONFIGURATION_DM1)
-  constexpr bool updateReadPointer = true;
-  constexpr bool updateWritePointer = true;
-  constexpr bool updateWriteTilePointer = false;
-  constexpr bool resetStreamCounters = true;
-#elif defined(TTL_DFB_RECONFIGURATION_DM0)
-  constexpr bool updateReadPointer = true;
-  constexpr bool updateWritePointer = true;
-  constexpr bool updateWriteTilePointer = false;
-  constexpr bool resetStreamCounters = false;
-#elif defined(TTL_DFB_RECONFIGURATION_UNPACK)
-  constexpr bool updateReadPointer = true;
-  constexpr bool updateWritePointer = false;
-  constexpr bool updateWriteTilePointer = false;
-  constexpr bool resetStreamCounters = false;
-#elif defined(TTL_DFB_RECONFIGURATION_PACK)
-  constexpr bool updateReadPointer = false;
-  constexpr bool updateWritePointer = true;
-  constexpr bool updateWriteTilePointer = true;
-  constexpr bool resetStreamCounters = false;
-#endif
-
-  auto *configuration =
-      reinterpret_cast<uint32_t tt_l1_ptr *>(configurationAddress);
-  auto *synchronizationState = reinterpret_cast<volatile uint32_t tt_l1_ptr *>(
-      &configuration[dfb_reconfiguration_detail::synchronizationWord]);
-  dfb_reconfiguration_detail::enter<false>(synchronizationState);
-  dfb_reconfiguration_detail::applyMask<updateReadPointer, updateWritePointer,
-                                        updateWriteTilePointer,
-                                        resetStreamCounters>(
-      configuration, configuration[dfb_reconfiguration_detail::lowMaskWord], 0);
-  dfb_reconfiguration_detail::applyMask<updateReadPointer, updateWritePointer,
-                                        updateWriteTilePointer,
-                                        resetStreamCounters>(
-      configuration, configuration[dfb_reconfiguration_detail::highMaskWord],
-      32);
-  dfb_reconfiguration_detail::exit<false>(synchronizationState);
-#else
-  (void)configurationAddress;
-#endif
-}
-
-#if defined(TTLANG_RUNTIME_DFB_RECONFIGURATION)
-template <uint32_t recordCount, uint32_t... descriptorWords>
-FORCE_INLINE void reconfigure_dfb_descriptors(uint32_t configurationAddress) {
-  static_assert(sizeof...(descriptorWords) == recordCount * 9);
+template <bool includeMath, uint32_t recordCount, uint32_t... recordWords>
+FORCE_INLINE void applyReconfiguration(uint32_t configurationAddress) {
+  static_assert(sizeof...(recordWords) == recordCount * recordWordCount);
 #if defined(TTL_DFB_RECONFIGURATION_DM1) ||                                    \
     defined(TTL_DFB_RECONFIGURATION_DM0) ||                                    \
     defined(TTL_DFB_RECONFIGURATION_UNPACK) ||                                 \
     defined(TTL_DFB_RECONFIGURATION_MATH) ||                                   \
     defined(TTL_DFB_RECONFIGURATION_PACK)
-  auto *configuration =
-      reinterpret_cast<uint32_t tt_l1_ptr *>(configurationAddress);
-  auto *synchronizationState = reinterpret_cast<volatile uint32_t tt_l1_ptr *>(
-      &configuration[dfb_reconfiguration_detail::synchronizationWord]);
-  dfb_reconfiguration_detail::enter<true>(synchronizationState);
 #if defined(TTL_DFB_RECONFIGURATION_DM1)
   constexpr bool updateReadPointer = true;
   constexpr bool updateWritePointer = true;
@@ -394,24 +353,47 @@ FORCE_INLINE void reconfigure_dfb_descriptors(uint32_t configurationAddress) {
   constexpr bool updateWritePointer = true;
   constexpr bool updateWriteTilePointer = true;
   constexpr bool resetStreamCounters = false;
+#elif defined(TTL_DFB_RECONFIGURATION_MATH)
+  constexpr bool updateReadPointer = false;
+  constexpr bool updateWritePointer = false;
+  constexpr bool updateWriteTilePointer = false;
+  constexpr bool resetStreamCounters = false;
 #endif
-#if !defined(TTL_DFB_RECONFIGURATION_MATH)
-  dfb_reconfiguration_detail::applyMask<updateReadPointer, updateWritePointer,
-                                        updateWriteTilePointer,
-                                        resetStreamCounters>(
-      configuration, configuration[dfb_reconfiguration_detail::lowMaskWord], 0);
-  dfb_reconfiguration_detail::applyMask<updateReadPointer, updateWritePointer,
-                                        updateWriteTilePointer,
-                                        resetStreamCounters>(
-      configuration, configuration[dfb_reconfiguration_detail::highMaskWord],
-      32);
-#endif
-  dfb_reconfiguration_detail::ApplyDescriptors<descriptorWords...>::run();
+
+  auto *configuration =
+      reinterpret_cast<uint32_t tt_l1_ptr *>(configurationAddress);
+  constexpr uint32_t lowMaskWord = recordCount;
+  constexpr uint32_t highMaskWord = lowMaskWord + 1;
+  constexpr uint32_t synchronizationWord = recordCount + activeMaskWordCount;
+  auto *synchronizationState = reinterpret_cast<volatile uint32_t tt_l1_ptr *>(
+      &configuration[synchronizationWord]);
+  enter<includeMath>(synchronizationState);
+  ApplyRecords<0, recordWords...>::template run<
+      updateReadPointer, updateWritePointer, updateWriteTilePointer,
+      resetStreamCounters>(configuration, configuration[lowMaskWord],
+                           configuration[highMaskWord]);
   asm volatile("" ::: "memory");
-  dfb_reconfiguration_detail::exit<true>(synchronizationState);
+  exit<includeMath>(synchronizationState);
 #else
   (void)configurationAddress;
 #endif
+}
+
+} // namespace dfb_reconfiguration_detail
+
+template <uint32_t recordCount, uint32_t... recordWords>
+FORCE_INLINE void reconfigure_dfb_interfaces(uint32_t configurationAddress) {
+  dfb_reconfiguration_detail::applyReconfiguration<false, recordCount,
+                                                   recordWords...>(
+      configurationAddress);
+}
+
+#if defined(TTLANG_RUNTIME_DFB_RECONFIGURATION)
+template <uint32_t recordCount, uint32_t... recordWords>
+FORCE_INLINE void reconfigure_dfb_descriptors(uint32_t configurationAddress) {
+  dfb_reconfiguration_detail::applyReconfiguration<true, recordCount,
+                                                   recordWords...>(
+      configurationAddress);
 }
 #endif
 

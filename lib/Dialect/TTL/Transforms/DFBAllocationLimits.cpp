@@ -35,7 +35,9 @@ namespace {
 
 constexpr uint64_t kFallbackUsableL1Bytes = static_cast<uint64_t>(1432 * 1024);
 constexpr uint64_t kGlobalSemaphorePayloadBytes = 4;
-constexpr uint64_t kDFBReconfigurationWordsPerCore = 264;
+constexpr uint64_t kDFBReconfigurationMaxIndexCount = 64;
+constexpr uint64_t kDFBReconfigurationActiveMaskWordCount = 2;
+constexpr uint64_t kDFBReconfigurationSynchronizationWordCount = 6;
 constexpr uint64_t kDFBReconfigurationWordBytes = 4;
 
 std::optional<uint64_t> tryBudgetFromModule(ModuleOp module) {
@@ -172,43 +174,135 @@ LogicalResult validateDFBReconfigurationTarget(ModuleOp module) {
                                         "DFB reconfiguration");
 }
 
+static FailureOr<SmallVector<uint64_t>>
+getDFBReconfigurationRecordCounts(ModuleOp module) {
+  llvm::MapVector<int64_t, uint64_t> recordCountByBoundary;
+  auto plan =
+      module->getAttrOfType<DictionaryAttr>(kDFBReconfigurationPlanAttrName);
+  if (!plan) {
+    module.walk([&](DFBReconfigurationOp reconfiguration) {
+      recordCountByBoundary.try_emplace(
+          reconfiguration.getBoundary().getOrdinal(),
+          kDFBReconfigurationMaxIndexCount);
+    });
+  } else {
+    auto boundaryOrdinals = plan.getAs<DenseI64ArrayAttr>("boundary_ordinals");
+    auto dfbEntries = plan.getAs<ArrayAttr>("dfbs");
+    if (!boundaryOrdinals || !dfbEntries) {
+      module.emitOpError("contains malformed finalized DFB reconfiguration "
+                         "metadata");
+      return failure();
+    }
+    for (int64_t ordinal : boundaryOrdinals.asArrayRef()) {
+      if (!recordCountByBoundary.try_emplace(ordinal, 0).second) {
+        module.emitOpError("finalized DFB reconfiguration metadata contains "
+                           "duplicate boundaries");
+        return failure();
+      }
+    }
+    for (Attribute rawEntry : dfbEntries) {
+      auto entry = dyn_cast<DictionaryAttr>(rawEntry);
+      auto configurations =
+          entry ? entry.getAs<ArrayAttr>("configurations") : ArrayAttr();
+      if (!configurations) {
+        module.emitOpError("contains malformed finalized DFB reconfiguration "
+                           "metadata");
+        return failure();
+      }
+      for (Attribute rawConfiguration : configurations) {
+        auto configuration = dyn_cast<DictionaryAttr>(rawConfiguration);
+        if (!configuration) {
+          module.emitOpError("contains malformed finalized DFB "
+                             "reconfiguration metadata");
+          return failure();
+        }
+        auto ordinal =
+            configuration.getAs<IntegerAttr>("entry_reconfiguration");
+        if (!ordinal) {
+          continue;
+        }
+        auto countIt = recordCountByBoundary.find(ordinal.getInt());
+        if (countIt == recordCountByBoundary.end() ||
+            countIt->second >= kDFBReconfigurationMaxIndexCount) {
+          module.emitOpError("contains invalid finalized DFB reconfiguration "
+                             "metadata");
+          return failure();
+        }
+        ++countIt->second;
+      }
+    }
+  }
+
+  SmallVector<uint64_t> recordCounts;
+  recordCounts.reserve(recordCountByBoundary.size());
+  for (const auto &[ordinal, recordCount] : recordCountByBoundary) {
+    (void)ordinal;
+    recordCounts.push_back(recordCount);
+  }
+  return recordCounts;
+}
+
 FailureOr<uint64_t> getDFBReconfigurationStateBytes(ModuleOp module) {
-  llvm::DenseSet<int64_t> boundaryOrdinals;
-  module.walk([&](DFBReconfigurationOp reconfiguration) {
-    boundaryOrdinals.insert(reconfiguration.getBoundary().getOrdinal());
-  });
-  std::optional<uint64_t> stateBytes = llvm::checkedMulUnsigned(
-      static_cast<uint64_t>(boundaryOrdinals.size()),
-      kDFBReconfigurationWordsPerCore * kDFBReconfigurationWordBytes);
-  if (!stateBytes) {
-    module.emitOpError("DFB reconfiguration state is not representable");
+  FailureOr<SmallVector<uint64_t>> recordCounts =
+      getDFBReconfigurationRecordCounts(module);
+  if (failed(recordCounts)) {
     return failure();
   }
-  return *stateBytes;
+
+  uint64_t stateBytes = 0;
+  for (uint64_t recordCount : *recordCounts) {
+    std::optional<uint64_t> words = llvm::checkedAddUnsigned(
+        recordCount, kDFBReconfigurationActiveMaskWordCount +
+                         kDFBReconfigurationSynchronizationWordCount);
+    std::optional<uint64_t> boundaryBytes =
+        words ? llvm::checkedMulUnsigned(*words, kDFBReconfigurationWordBytes)
+              : std::nullopt;
+    std::optional<uint64_t> totalBytes =
+        boundaryBytes ? llvm::checkedAddUnsigned(stateBytes, *boundaryBytes)
+                      : std::nullopt;
+    if (!totalBytes) {
+      module.emitOpError("DFB reconfiguration state is not representable");
+      return failure();
+    }
+    stateBytes = *totalBytes;
+  }
+  return stateBytes;
 }
 
 FailureOr<uint64_t> getDFBReconfigurationStateAllocationBytes(ModuleOp module) {
-  FailureOr<uint64_t> stateBytes = getDFBReconfigurationStateBytes(module);
-  if (failed(stateBytes) || *stateBytes == 0) {
-    return stateBytes;
-  }
-  constexpr uint64_t payloadBytesPerBoundary =
-      kDFBReconfigurationWordsPerCore * kDFBReconfigurationWordBytes;
-  FailureOr<uint64_t> allocationBytesPerBoundary =
-      getL1AllocationSizeBytes(module, payloadBytesPerBoundary);
-  if (failed(allocationBytesPerBoundary)) {
-    module.emitOpError(
-        "DFB reconfiguration scratch allocation is not representable");
+  FailureOr<SmallVector<uint64_t>> recordCounts =
+      getDFBReconfigurationRecordCounts(module);
+  if (failed(recordCounts)) {
     return failure();
   }
-  std::optional<uint64_t> allocationBytes = llvm::checkedMulUnsigned(
-      *stateBytes / payloadBytesPerBoundary, *allocationBytesPerBoundary);
-  if (!allocationBytes) {
-    module.emitOpError(
-        "DFB reconfiguration scratch allocation is not representable");
-    return failure();
+
+  uint64_t allocationBytes = 0;
+  constexpr uint64_t fixedPayloadBytes =
+      (kDFBReconfigurationActiveMaskWordCount +
+       kDFBReconfigurationSynchronizationWordCount) *
+      kDFBReconfigurationWordBytes;
+  for (uint64_t recordCount : *recordCounts) {
+    std::optional<uint64_t> recordBytes =
+        llvm::checkedMulUnsigned(recordCount, kDFBReconfigurationWordBytes);
+    if (!recordBytes) {
+      module.emitOpError("DFB reconfiguration state is not representable");
+      return failure();
+    }
+    FailureOr<uint64_t> boundaryAllocation =
+        getL1AllocationSizeBytes(module, *recordBytes + fixedPayloadBytes);
+    if (failed(boundaryAllocation)) {
+      return failure();
+    }
+    std::optional<uint64_t> nextAllocationBytes =
+        llvm::checkedAddUnsigned(allocationBytes, *boundaryAllocation);
+    if (!nextAllocationBytes) {
+      module.emitOpError(
+          "DFB reconfiguration scratch allocation is not representable");
+      return failure();
+    }
+    allocationBytes = *nextAllocationBytes;
   }
-  return *allocationBytes;
+  return allocationBytes;
 }
 
 FailureOr<uint64_t>

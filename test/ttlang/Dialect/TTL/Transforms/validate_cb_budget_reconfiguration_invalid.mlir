@@ -1,5 +1,5 @@
 // Summary: Verifies DFB budget validation includes reconfiguration state.
-// RUN: ttlang-opt %s --verify-diagnostics --split-input-file -pass-pipeline='builtin.module(ttl-validate-cb-budget{l1-budget-override=3000})'
+// RUN: ttlang-opt %s --verify-diagnostics --split-input-file -pass-pipeline='builtin.module(ttl-validate-cb-budget{l1-budget-override=2367})'
 
 #compute = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "operation">
 #reader = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "operation">
@@ -11,7 +11,7 @@ module {
     ttl.kernel_thread = #ttkernel.thread<compute>,
     ttl.logical_kernel = #compute
   } {
-    // expected-error @below {{'ttl.bind_cb' op total DFB and fixed-state allocation (3136 bytes) exceeds L1 budget (3000 bytes)}}
+    // expected-error @below {{'ttl.bind_cb' op total DFB and fixed-state allocation (2368 bytes) exceeds L1 budget (2367 bytes)}}
     %dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     ttl.dfb_reconfiguration #boundary
