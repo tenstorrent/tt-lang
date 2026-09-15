@@ -6,6 +6,10 @@ with TT-Metal's
 Both receive K-sharded activation and N-sharded weight and bias, then return one
 distinct N-sharded output per device.
 
+The runner also measures the TT-Lang
+[`P_K x P_N` matmul reduce-scatter](../../examples/matmul_reduce_scatter_2d/operation.py),
+which preserves two-dimensional tensor placement for larger device counts.
+
 | File | Contents |
 | --- | --- |
 | [`__main__.py`](__main__.py) | Workload construction, correctness checks, and device-profiler timing |
@@ -24,6 +28,28 @@ python -m benchmarks.all_gather_minimal_matmul \
 The parent process runs TT-Lang and TT-Metal in separate profiler processes.
 All tensor, worker-grid, block, fabric, and native collective parameters are
 CLI options; `--help` lists the measured defaults.
+
+Four-device 2D result:
+
+```bash
+python -m benchmarks.all_gather_minimal_matmul \
+    --implementation ttlang \
+    --ttlang-operation 2d-reduce-scatter \
+    --mesh-shape 2x2 \
+    --m-tiles 296 \
+    --k-tiles-per-device 40 \
+    --n-tiles 480 \
+    --dtype bf16 \
+    --math-fidelity HiFi2 \
+    --fp32-dest-acc \
+    --ttlang-compute-grid 11 10 \
+    --ttlang-m-block-tiles 7 \
+    --ttlang-k-block-tiles 10 \
+    --ttlang-n-block-tiles 8 \
+    --warmup 3 \
+    --samples 10 \
+    --json /tmp/matmul-reduce-scatter-2d.json
+```
 
 ## Measurement
 
