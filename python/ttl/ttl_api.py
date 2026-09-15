@@ -62,6 +62,8 @@ from ttl.passes import (
 from ttl.passmanager import PassManager
 
 
+from ._persistent_storage import with_persistent_storage
+
 from ._src.auto_profile import (
     build_cb_wait_to_dma_map,
     build_dma_producer_to_cb_map,
@@ -3258,7 +3260,7 @@ def _make_operation_wrapper(
         return result
 
     attach_runtime_resource_finalizer(_wrapper, runtime_resource_cache)
-    return _wrapper
+    return with_persistent_storage(_wrapper)
 
 
 def _validate_operation_options(
