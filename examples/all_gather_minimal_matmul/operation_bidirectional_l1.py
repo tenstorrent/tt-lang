@@ -171,6 +171,7 @@ def make_bidirectional_l1_all_gather_matmul_operation(
             * half_k_tiles
             * activation_shard.get_tile().get_tile_size(activation_shard.dtype)
         )
+
         @ttl.datamovement()
         def move_activations():
             m_worker_index, n_worker_index = ttl.node(dims=2)
