@@ -148,20 +148,10 @@ def make_bidirectional_l1_all_gather_matmul_operation(
             shape=(m_block_tiles, half_k_tiles),
             block_count=2,
         )
-        left_weight_distribution_dfb = ttl.make_dataflow_buffer_like(
-            weight_shard,
-            shape=(half_k_tiles, n_block_tiles),
-            block_count=1,
-        )
-        right_weight_distribution_dfb = ttl.make_dataflow_buffer_like(
-            weight_shard,
-            shape=(half_k_tiles, n_block_tiles),
-            block_count=1,
-        )
         matmul_weight_dfb = ttl.make_dataflow_buffer_like(
             weight_shard,
             shape=(half_k_tiles, n_block_tiles),
-            block_count=2,
+            block_count=3,
         )
         bias_dfb = ttl.make_dataflow_buffer_like(
             bias_shard, shape=(1, n_block_tiles), block_count=1
@@ -181,12 +171,6 @@ def make_bidirectional_l1_all_gather_matmul_operation(
             * half_k_tiles
             * activation_shard.get_tile().get_tile_size(activation_shard.dtype)
         )
-        weight_half_bytes = (
-            half_k_tiles
-            * n_block_tiles
-            * weight_shard.get_tile().get_tile_size(weight_shard.dtype)
-        )
-
         @ttl.datamovement()
         def move_activations():
             m_worker_index, n_worker_index = ttl.node(dims=2)
@@ -340,7 +324,7 @@ def make_bidirectional_l1_all_gather_matmul_operation(
                             source_backward = (
                                 local_device_index + source_distance
                             ) % device_count
-                            left_weight = left_weight_distribution_dfb.reserve()
+                            left_weight = matmul_weight_dfb.reserve()
                             if m_worker_index == 0:
                                 left_weight_begin = (
                                     source_backward * k_tiles_per_device + local_k_begin
@@ -365,15 +349,7 @@ def make_bidirectional_l1_all_gather_matmul_operation(
 
                                 weight_row_net.if_dst(receive_left_weight)
 
-                            left_weight = left_weight_distribution_dfb.wait()
-                            compute_left_weight = matmul_weight_dfb.reserve()
-                            ttl.copy(
-                                left_weight,
-                                compute_left_weight,
-                                byte_count=weight_half_bytes,
-                            ).wait()
-
-                            right_weight = right_weight_distribution_dfb.reserve()
+                            right_weight = matmul_weight_dfb.reserve()
                             if m_worker_index == 0:
                                 right_weight_begin = (
                                     source_forward * k_tiles_per_device
@@ -399,14 +375,6 @@ def make_bidirectional_l1_all_gather_matmul_operation(
                                     ttl.copy(pipe, right_weight).wait()
 
                                 weight_row_net.if_dst(receive_right_weight)
-
-                            right_weight = right_weight_distribution_dfb.wait()
-                            compute_right_weight = matmul_weight_dfb.reserve()
-                            ttl.copy(
-                                right_weight,
-                                compute_right_weight,
-                                byte_count=weight_half_bytes,
-                            ).wait()
 
                     # Write the preceding result after publishing this block's
                     # inputs so its DRAM transfer overlaps compute without
