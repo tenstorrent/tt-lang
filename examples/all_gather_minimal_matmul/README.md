@@ -18,8 +18,8 @@ which returns the same N-sharded output; [benchmark commands](../../benchmarks/a
 
 | Equivalent implementation | Physical source lines | Native/TT-Lang |
 | --- | ---: | ---: |
-| TT-Lang [`operation_bidirectional_l1.py`](operation_bidirectional_l1.py) | 490 | 1.0 |
-| Native TT-Metal API, device operation, program factory, and device kernels | 5,905 | 12.1 |
+| TT-Lang [`operation_bidirectional_l1.py`](operation_bidirectional_l1.py) | 491 | 1.0 |
+| Native TT-Metal API, device operation, program factory, and device kernels | 5,905 | 12.0 |
 
 Counts use `wc -l`; generated C++, bindings, tests, and documentation are
 excluded.
