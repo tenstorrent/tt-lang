@@ -59,6 +59,34 @@ module {
 // -----
 
 module {
+  func.func @pipe_send_requires_contiguous_subview()
+      attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+    %source_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+        : !ttl.cb<[2, 4], !ttcore.tile<32x32, f32>, 1>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %waited = ttl.cb_wait %source_dfb
+        : <[2, 4], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<2x4x!ttcore.tile<32x32, f32>>
+    %block = ttl.attach_cb %waited, %source_dfb
+        : (tensor<2x4x!ttcore.tile<32x32, f32>>,
+           !ttl.cb<[2, 4], !ttcore.tile<32x32, f32>, 1>)
+        -> tensor<2x4x!ttcore.tile<32x32, f32>>
+    %view = tensor.extract_slice %block[0, 0] [2, 2] [1, 1]
+        : tensor<2x4x!ttcore.tile<32x32, f32>>
+        to tensor<2x2x!ttcore.tile<32x32, f32>>
+    // expected-error @below {{pipe send DFB view must be contiguous in row-major storage}}
+    %send = ttl.copy %view, %pipe
+        : (tensor<2x2x!ttcore.tile<32x32, f32>>,
+           !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+        -> !ttl.transfer_handle<write>
+    func.return
+  }
+}
+
+// -----
+
+module {
   func.func @pipe_transfer_send_requires_dfb_source(%source: tensor<1x1xf32>)
       attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
