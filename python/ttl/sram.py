@@ -126,8 +126,10 @@ class _TTNNStorageBackend:
                 return False
             if (
                 tuple(candidate.shape) != tuple(resource.shape)
+                or tuple(candidate.padded_shape) != tuple(resource.padded_shape)
                 or candidate.dtype != resource.dtype
                 or candidate.layout != resource.layout
+                or candidate.tile != resource.tile
                 or candidate.memory_config() != resource.memory_config()
                 or candidate.is_per_core_allocated() != resource.is_per_core_allocated()
             ):

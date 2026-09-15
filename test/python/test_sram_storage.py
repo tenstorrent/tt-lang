@@ -46,9 +46,11 @@ class Device:
 class Resource:
     def __init__(self, shape, options, address):
         self.shape = tuple(shape)
+        self.padded_shape = tuple(shape)
         self.options = options
         self.dtype = options["dtype"]
         self.layout = options["layout"]
+        self.tile = (32, 32)
         self.address = address
         self.allocated = True
         self.value = None
@@ -414,8 +416,10 @@ def test_external_tensor_alias_wrapper_restores_owned_reference(runtime):
     [
         "address",
         "shape",
+        "padded_shape",
         "dtype",
         "layout",
+        "tile",
         "memory_config",
         "allocation_state",
         "device",
@@ -431,10 +435,14 @@ def test_external_nonalias_tensor_wrapper_is_not_restored(runtime, difference):
         candidate.address += 0x1000
     elif difference == "shape":
         candidate.shape = (32, 32)
+    elif difference == "padded_shape":
+        candidate.padded_shape = (96, 32)
     elif difference == "dtype":
         candidate.dtype = ttnn.bfloat16
     elif difference == "layout":
         candidate.layout = ttnn.ROW_MAJOR_LAYOUT
+    elif difference == "tile":
+        candidate.tile = (16, 32)
     elif difference == "memory_config":
         candidate.options = {
             **candidate.options,
