@@ -20,12 +20,13 @@ class Device:
     def __init__(self):
         self.open = True
         self.manager = 1
+        self.device_id = 17
 
     def is_initialized(self):
         return self.open
 
     def id(self):
-        return 17
+        return self.device_id
 
     def num_hw_cqs(self):
         return 2
@@ -365,6 +366,15 @@ def test_declaration_after_allocation_is_rejected_without_affecting_state(runtim
     storage.close()
 
 
+def test_uninitialized_allocation_does_not_write_payload(runtime):
+    storage = SRAMStorage(device=runtime.device)
+    state = declare(storage, initialize="uninitialized")
+    storage.allocate()
+    assert not any(event[0] == "initialize" for event in runtime.events)
+    storage.submit(lambda value: None, state)
+    storage.close()
+
+
 @pytest.mark.parametrize("change", ["close", "manager", "release"])
 def test_invalid_runtime_binding_is_rejected_before_external_launch(runtime, change):
     storage = SRAMStorage(device=runtime.device)
@@ -385,6 +395,19 @@ def test_invalid_runtime_binding_is_rejected_before_external_launch(runtime, cha
     runtime.device.manager = 1
     if change == "release":
         runtime.allocations[0].allocated = True
+    storage.close()
+
+
+def test_changed_device_identity_is_rejected_before_external_launch(runtime):
+    storage = SRAMStorage(device=runtime.device)
+    state = declare(storage)
+    storage.allocate()
+    runtime.device.device_id = 18
+    launched = []
+    with pytest.raises(RuntimeError, match="closed or replaced"):
+        storage.submit(lambda value: launched.append(value), state)
+    assert launched == []
+    runtime.device.device_id = 17
     storage.close()
 
 
@@ -460,6 +483,20 @@ def test_non_mesh_device_is_rejected_before_allocating(runtime):
 
 def test_sram_storage_is_exported_from_ttl():
     assert ttl.SRAMStorage is SRAMStorage
+
+
+def test_allocation_requires_at_least_one_declaration(runtime):
+    with SRAMStorage(device=runtime.device) as storage:
+        with pytest.raises(ValueError, match="no tensor declarations"):
+            storage.allocate()
+
+
+def test_closed_storage_cannot_be_reentered(runtime):
+    storage = SRAMStorage(device=runtime.device)
+    storage.close()
+    with pytest.raises(RuntimeError, match="closing or closed"):
+        with storage:
+            pass
 
 
 def test_device_close_before_storage_close_retains_allocation(runtime):
