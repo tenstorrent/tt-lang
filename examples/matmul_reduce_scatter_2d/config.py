@@ -4,7 +4,7 @@
 """Static decomposition for two-dimensional matmul reduce-scatter."""
 
 from dataclasses import dataclass
-from math import lcm, prod
+from math import prod
 
 
 @dataclass(frozen=True)
@@ -71,8 +71,8 @@ class MatmulReduceScatter2DConfig:
 
     @property
     def padded_m_tiles(self) -> int:
-        tiles_per_partition = self.m_block_tiles * lcm(
-            self.m_worker_count, self.k_group_count
+        tiles_per_partition = (
+            self.m_block_tiles * self.m_worker_count * self.k_group_count
         )
         return (
             (self.m_tiles + tiles_per_partition - 1) // tiles_per_partition
