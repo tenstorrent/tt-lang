@@ -2119,8 +2119,7 @@ def test_plan_runtime_resources_requires_each_external_fabric_claim():
 
 
 def test_runtime_resource_fingerprint_is_stable_across_python_hash_seeds():
-    script = textwrap.dedent(
-        """
+    script = textwrap.dedent("""
         from ttl import CoreRuntimeArgs, KernelDefine, KernelKind
         from ttl import KernelRuntimeResources, ProgramRuntimeResources
         from ttl import kernel_runner
@@ -2160,8 +2159,7 @@ def test_runtime_resource_fingerprint_is_stable_across_python_hash_seeds():
             first_free_semaphore_id=0,
         )
         print(plan.structural_fingerprint)
-        """
-    )
+        """)
     fingerprints = []
     for hash_seed in ("1", "937"):
         environment = dict(os.environ)
@@ -4151,6 +4149,13 @@ def test_routing_plane_sizes_each_mux_for_its_assigned_clients(monkeypatch):
 
     mux_kernels = program.kernels[len(kernels) :]
     assert sorted(kernel.compile_time_args[0] for kernel in mux_kernels) == [2, 3]
+    assert {
+        (
+            call["config"].num_full_size_channels,
+            call["config"].num_buffers_per_full_size_channel,
+        )
+        for call in fake_ttnn.mux_client_runtime_calls
+    } == {(2, 3), (3, 2)}
     assert sorted(
         kernel.runtime_args[source_node[0]][source_node[1]][-1]
         for kernel, source_node in zip(kernels, source_nodes)
