@@ -13,7 +13,7 @@ import os
 import random
 import sys
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum, IntEnum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Union
@@ -2786,9 +2786,23 @@ def _extract_dfb_reconfiguration_plan(module, physical_configs):
                 f"{attribute_name}.dfbs[{dfb_index}] initial configuration "
                 "does not match ttl.dfb_allocations"
             )
+    normalized_epochs = []
+    for dfb_index, physical_config in enumerate(physical_configs):
+        normalized_epochs.append(
+            tuple(
+                replace(
+                    epoch,
+                    config=replace(
+                        epoch.config,
+                        storage_index=physical_config.storage_index,
+                    ),
+                )
+                for epoch in dfb_epochs_by_index[dfb_index]
+            )
+        )
     return DFBReconfigurationPlan(
         boundary_ordinals=boundary_ordinals,
-        dfb_epochs=tuple(dfb_epochs_by_index[index] for index in expected_indices),
+        dfb_epochs=tuple(normalized_epochs),
     )
 
 

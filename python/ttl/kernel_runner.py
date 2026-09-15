@@ -3058,14 +3058,38 @@ def build_dfb_reconfiguration_runtime_resources(
         for boundary_ordinal in plan.boundary_ordinals
     }
 
-    for dfb_index, scratch_bytes in scratch_bytes_by_index.items():
+    unallocated_indices_by_storage = {}
+    for dfb_index in scratch_bytes_by_index:
         if dfb_index in scratch_tensors:
             continue
-        scratch_tensors[dfb_index] = _allocate_l1_sharded_storage_tensor(
-            _make_singleton_core_ranges(sorted(scratch_nodes_by_index[dfb_index])),
-            scratch_bytes,
+        storage_indices = {
+            _physical_dfb_storage_index(epoch.config)
+            for epoch in plan.dfb_epochs[dfb_index]
+        }
+        if len(storage_indices) != 1:
+            raise ValueError(
+                f"DFB[{dfb_index}] changes backing storage across configurations"
+            )
+        storage_index = storage_indices.pop()
+        unallocated_indices_by_storage.setdefault(storage_index, []).append(dfb_index)
+
+    for member_indices in unallocated_indices_by_storage.values():
+        scratch_tensor = _allocate_l1_sharded_storage_tensor(
+            _make_singleton_core_ranges(
+                sorted(
+                    {
+                        node
+                        for dfb_index in member_indices
+                        for node in scratch_nodes_by_index[dfb_index]
+                    }
+                )
+            ),
+            max(scratch_bytes_by_index[dfb_index] for dfb_index in member_indices),
             resource_device,
+            per_core=True,
         )
+        for dfb_index in member_indices:
+            scratch_tensors[dfb_index] = scratch_tensor
 
     configuration_runtime_args = {core: [] for core in core_keys}
     configuration_tensors = []
