@@ -794,3 +794,55 @@ def test_factory_level_kernel_cache_reuses_matching_decorated_kernel(monkeypatch
     assert len(compile_calls) == 2
     assert two_result == repeated_two_result
     assert two_result != three_result
+
+
+def test_persistent_arguments_use_tensor_cache_signature_and_fresh_bindings(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+    from ttl._persistent_storage import StorageOwner
+
+    compile_calls = _install_recording_compile(monkeypatch)
+    completions = []
+    dependencies = []
+    released = []
+
+    def record():
+        completion = object()
+        completions.append(completion)
+        return completion
+
+    backend = SimpleNamespace(
+        validate=lambda resources: None,
+        order_after=dependencies.append,
+        record_completion=record,
+        wait=lambda completion: None,
+        recover=lambda: None,
+        release=released.append,
+    )
+
+    @ttl_api.operation(grid=(1, 1))
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    input_tensor = _FakeTensor()
+    first_output, second_output = _FakeTensor(), _FakeTensor()
+    first_owner = StorageOwner((first_output,), backend)
+    second_owner = StorageOwner((second_output,), backend)
+    first_reference = first_owner.reference(0)
+    copy_kernel(input_tensor, first_reference)
+    copy_kernel(input_tensor, first_reference)
+    first_owner.close()
+    copy_kernel(input_tensor, second_owner.reference(0))
+    assert len(compile_calls) == 1
+    assert compile_calls[0]["compiled_kernel"].runtime_args == [
+        (input_tensor, first_output),
+        (input_tensor, first_output),
+        (input_tensor, second_output),
+    ]
+    assert dependencies == [completions[0]]
+    with pytest.raises(RuntimeError, match="closing or closed"):
+        copy_kernel(input_tensor, first_reference)
+    assert len(completions) == 3
+    second_owner.close()
+    assert released == [first_output, second_output]
