@@ -1919,9 +1919,7 @@ def build_kernel_descriptors(
             common_runtime_arg_suffix.append(0)
         common_runtime_arg_suffix.extend(device_coordinates or [])
         common_runtime_arg_suffix.extend(spec.extra_common_runtime_args or [])
-        storage_runtime_base = len(spec.tensor_indices) + len(
-            common_runtime_arg_suffix
-        )
+        storage_runtime_base = len(spec.tensor_indices) + len(common_runtime_arg_suffix)
         if compiler_l1_base_address is not None or sram_core_arenas:
             common_runtime_arg_suffix.append(compiler_l1_base_address or 0)
 
@@ -1997,11 +1995,13 @@ def build_kernel_descriptors(
                     }
                     for core_coordinate in partition_coordinates:
                         tensor_addresses = tuple(
-                            per_core_tensor_addresses[tensor_index].get(
-                                core_coordinate, 0
+                            (
+                                per_core_tensor_addresses[tensor_index].get(
+                                    core_coordinate, 0
+                                )
+                                if tensor_index in per_core_indices
+                                else static_addresses[tensor_index]
                             )
-                            if tensor_index in per_core_indices
-                            else static_addresses[tensor_index]
                             for tensor_index in spec.tensor_indices
                         )
                         common_args_to_coordinates.setdefault(
