@@ -1061,6 +1061,32 @@ class TestSpecializedKernelGrouping:
             ["writer"],
         ]
 
+    def test_groups_specialized_kernels_beside_a_whole_grid_kernel(self):
+        # Specialization is per function, so one operation can contain both
+        # specialized and whole-grid kernels.
+        compute_metadata = replace(
+            _make_descriptor_metadata(),
+            configuration=replace(
+                _make_descriptor_metadata().configuration,
+                thread_type=ttl_api._KernelThreadType.COMPUTE,
+                data_movement_role=None,
+            ),
+        )
+        candidates = [
+            _make_descriptor_candidate("reader_c0_0", "reader source", [(0, 0)]),
+            _make_descriptor_candidate("reader_c1_0", "reader source", [(1, 0)]),
+            _make_descriptor_candidate(
+                "compute", "compute source", None, compute_metadata
+            ),
+        ]
+
+        groups = ttl_api._group_equivalent_specialized_kernels(candidates)
+
+        assert [[candidate.name for candidate in group] for group in groups] == [
+            ["reader_c0_0", "reader_c1_0"],
+            ["compute"],
+        ]
+
 
 class TestMathFidelity:
     @pytest.mark.parametrize("math_fidelity", SUPPORTED_MATH_FIDELITIES)

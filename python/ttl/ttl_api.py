@@ -1762,6 +1762,9 @@ def _group_equivalent_specialized_kernels(
     for candidate in candidates:
         coordinates = candidate.core_coordinates
         if coordinates is None:
+            # Specialization clones for the whole grid and erases the original,
+            # so a processor slot is never split between whole-grid and
+            # specialized functions.
             groups.append([candidate])
             continue
 
