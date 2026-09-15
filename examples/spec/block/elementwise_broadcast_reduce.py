@@ -151,7 +151,7 @@ def elementwise_broadcast_reduce(
             )
 
             # Zero-initialize the accumulator z before summing N_BLOCKS partial sums
-            z_final = ttl.block.fill(0, shape=(1, M_TILES))
+            z_final = ttl.block.fill(0, shape=(1, M_TILES), dtype=ttnn.float32)
 
             for _ in range(N_BLOCKS):
 
@@ -258,8 +258,18 @@ try:
     b_t = ttnn.from_torch(b_torch, layout=ttnn.TILE_LAYOUT, device=device)
     c_t = ttnn.from_torch(c_torch, layout=ttnn.TILE_LAYOUT, device=device)
     d_t = ttnn.from_torch(d_torch, layout=ttnn.TILE_LAYOUT, device=device)
-    y_t = ttnn.zeros(ttnn.Shape([N, 1]), layout=ttnn.TILE_LAYOUT, device=device)
-    z_t = ttnn.zeros(ttnn.Shape([M]), layout=ttnn.TILE_LAYOUT, device=device)
+    y_t = ttnn.zeros(
+        ttnn.Shape([N, 1]),
+        dtype=ttnn.float32,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+    )
+    z_t = ttnn.zeros(
+        ttnn.Shape([M]),
+        dtype=ttnn.float32,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+    )
 
     elementwise_broadcast_reduce(a_t, b_t, c_t, d_t, y_t, z_t)
 
