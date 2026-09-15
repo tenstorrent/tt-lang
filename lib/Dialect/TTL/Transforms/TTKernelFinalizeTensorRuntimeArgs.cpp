@@ -204,7 +204,8 @@ static FailureOr<int64_t> getCompilerL1TensorIndex(ModuleOp module,
 
 static LogicalResult retainCompilerL1TensorSlot(
     Operation *operation, ModuleOp module, int64_t dfbIndex,
-    ArrayRef<int64_t> globalTensorIndices, BitVector &liveTensorSlots) {
+    ArrayRef<int64_t> globalTensorIndices, BitVector &liveTensorSlots,
+    BitVector &localTensorSlots) {
   FailureOr<int64_t> tensorIndex = getCompilerL1TensorIndex(module, dfbIndex);
   if (failed(tensorIndex)) {
     operation->emitOpError("has invalid compiler-l1 tensor-backing metadata");
@@ -220,20 +221,23 @@ static LogicalResult retainCompilerL1TensorSlot(
         << " which is absent from the kernel's common tensor arguments";
     return failure();
   }
-  liveTensorSlots.set(std::distance(globalTensorIndices.begin(), tensorSlot));
+  size_t slot = std::distance(globalTensorIndices.begin(), tensorSlot);
+  liveTensorSlots.set(slot);
+  localTensorSlots.set(slot);
   return success();
 }
 
 static LogicalResult
 classifyCompilerL1TensorBackings(func::FuncOp function, ModuleOp module,
                                  ArrayRef<int64_t> globalTensorIndices,
-                                 BitVector &liveTensorSlots) {
+                                 BitVector &liveTensorSlots,
+                                 BitVector &localTensorSlots) {
   WalkResult walkResult = function.walk([&](Operation *operation) {
     if (auto getCompileArg = dyn_cast<ttk::GetCompileArgValOp>(operation);
         getCompileArg && isa<ttk::CBType>(getCompileArg.getType()) &&
         failed(retainCompilerL1TensorSlot(
             operation, module, getCompileArg.getArgIndex(), globalTensorIndices,
-            liveTensorSlots))) {
+            liveTensorSlots, localTensorSlots))) {
       return WalkResult::interrupt();
     }
     auto opaqueCall = dyn_cast<ttk::OpaqueCallOp>(operation);
@@ -244,9 +248,10 @@ classifyCompilerL1TensorBackings(func::FuncOp function, ModuleOp module,
             opaqueCall.getTemplateArgs()) {
       for (Attribute templateArgument : *templateArguments) {
         auto descriptor = dyn_cast<ttk::DFBDescriptorAttr>(templateArgument);
-        if (descriptor && failed(retainCompilerL1TensorSlot(
-                              operation, module, descriptor.getIndex(),
-                              globalTensorIndices, liveTensorSlots))) {
+        if (descriptor &&
+            failed(retainCompilerL1TensorSlot(
+                operation, module, descriptor.getIndex(), globalTensorIndices,
+                liveTensorSlots, localTensorSlots))) {
           return WalkResult::interrupt();
         }
       }
@@ -269,12 +274,14 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
   }
   int64_t tensorCount = globalTensorIndices.size();
   BitVector liveTensorSlots(tensorCount);
+  BitVector localTensorSlots(tensorCount);
   SmallVector<CommonArgIndexUse> commonArgUses;
   SmallVector<TensorAccessorArgsIndexUse> tensorAccessorArgsUses;
   bool hasUnresolvedIndex = false;
   ModuleOp module = function->getParentOfType<ModuleOp>();
   if (failed(classifyCompilerL1TensorBackings(
-          function, module, globalTensorIndices, liveTensorSlots))) {
+          function, module, globalTensorIndices, liveTensorSlots,
+          localTensorSlots))) {
     return failure();
   }
   if (failed(classifyCommonArgIndices(function, tensorCount, liveTensorSlots,
@@ -287,7 +294,6 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
     return failure();
   }
 
-  BitVector localTensorSlots(tensorCount);
   WalkResult localWalk =
       function.walk([&](ttk::LocalTensorAccessorOp accessor) {
         FailureOr<int64_t> slot = getLocalTensorSlot(accessor, tensorCount);
