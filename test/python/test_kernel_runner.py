@@ -3325,9 +3325,7 @@ def test_reconfiguration_scratch_excludes_unmodified_descriptors(monkeypatch):
     assert scratch_allocations[0][1:] == (2048, device, True)
 
 
-def test_reconfiguration_scratch_reuses_storage_and_allocates_largest_first(
-    monkeypatch,
-):
+def test_reconfiguration_scratch_packs_storage_in_one_per_core_arena(monkeypatch):
     fake_ttnn = _FakeTTNN()
     fake_ttnn.uint32 = "uint32"
     fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
@@ -3349,7 +3347,13 @@ def test_reconfiguration_scratch_reuses_storage_and_allocates_largest_first(
         )
         return _FakeTensor(allocation_device, address=0x8000)
 
-    fake_ttnn.from_torch = lambda *_args, **_kwargs: _FakeTensor(device, address=0x9000)
+    host_configurations = []
+
+    def copy_host_configuration(host_configuration, *_args, **_kwargs):
+        host_configurations.append(host_configuration)
+        return _FakeTensor(device, address=0xA000)
+
+    fake_ttnn.from_torch = copy_host_configuration
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     monkeypatch.setattr(
         kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_scratch
@@ -3418,11 +3422,13 @@ def test_reconfiguration_scratch_reuses_storage_and_allocates_largest_first(
     )
 
     assert [allocation[1:] for allocation in scratch_allocations] == [
-        (8192, device, True),
-        (4096, device, True),
+        (12288, device, True),
     ]
     assert resources.scratch_tensors[0] is resources.scratch_tensors[1]
-    assert resources.scratch_tensors[0] is not resources.scratch_tensors[2]
+    assert resources.scratch_tensors[0] is resources.scratch_tensors[2]
+    assert int(host_configurations[0][0, 0]) == 0x8000
+    assert int(host_configurations[0][1, 1]) == 0x8000
+    assert int(host_configurations[0][0, 2]) == 0x9000
 
 
 def test_reconfiguration_rejects_undersized_pipe_backing(monkeypatch):
