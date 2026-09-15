@@ -4247,6 +4247,79 @@ def test_routing_plane_keeps_direct_managers_when_links_are_sufficient(monkeypat
     )
 
 
+def test_routing_plane_uses_mux_only_in_overcommitted_direction(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    first_destination = _FakeFabricNodeId(0, 1)
+    second_destination = _FakeFabricNodeId(0, 2)
+    fake_ttnn.fabric_directions[first_destination] = 1
+    fake_ttnn.fabric_directions[second_destination] = 2
+    fake_ttnn.fabric_forwarding_links[first_destination] = [0]
+    fake_ttnn.fabric_forwarding_links[second_destination] = [0]
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    source_nodes = ((0, 0), (1, 0), (2, 0), (3, 0))
+    kernels = [
+        _FakeTTNN.KernelDescriptor(
+            kernel_source=f"/tmp/kernel_{kernel_index}.cpp",
+            core_ranges=_FakeTTNN.CoreRangeSet(
+                [
+                    _FakeTTNN.CoreRange(
+                        _FakeTTNN.CoreCoord(*source_node),
+                        _FakeTTNN.CoreCoord(*source_node),
+                    )
+                ]
+            ),
+            compile_time_args=[],
+            common_runtime_args=[0],
+            config=object(),
+        )
+        for kernel_index, source_node in enumerate(source_nodes)
+    ]
+    program = _FakeTTNN.ProgramDescriptor(kernels=kernels, cbs=[], semaphores=[])
+    routes = [
+        [kernel_runner.FabricRouteSpec((0, 0), destination, (source_node,), 0)]
+        for destination, source_node in zip(
+            ((0, 1), (0, 1), (0, 2), (0, 2)), source_nodes
+        )
+    ]
+    manager_intervals = [
+        (_fabric_manager_interval("direct_only", launch_nodes=(source_nodes[0],)),),
+        (_fabric_manager_interval("direct_reuse", launch_nodes=(source_nodes[1],)),),
+        (
+            _fabric_manager_interval(
+                "mux_first",
+                interfering_intervals=("mux_second",),
+                launch_nodes=(source_nodes[2],),
+            ),
+        ),
+        (
+            _fabric_manager_interval(
+                "mux_second",
+                interfering_intervals=("mux_first",),
+                launch_nodes=(source_nodes[3],),
+            ),
+        ),
+    ]
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=routes,
+        kernel_fabric_runtime_arg_base_common_indices=[0] * len(kernels),
+        kernel_fabric_manager_intervals=manager_intervals,
+        kernel_fabric_mux_capable=[False, True, True, True],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=4,
+        grid_rows=1,
+        mux_base_l1_address=0x10000,
+        mux_l1_end_address=0x20000,
+    )
+
+    assert len(program.kernels) == 5
+    assert len(fake_ttnn.fabric_setup_calls) == 2
+    assert len(fake_ttnn.mux_client_runtime_calls) == 2
+    assert all(call[2] == [0] for call in fake_ttnn.fabric_setup_calls)
+
+
 def test_fabric_target_fingerprint_records_mux_selection(monkeypatch):
     fake_ttnn = _FakeTTNN()
     destination = _FakeFabricNodeId(0, 1)

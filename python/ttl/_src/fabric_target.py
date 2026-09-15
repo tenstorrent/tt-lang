@@ -858,6 +858,18 @@ def _assign_fabric_transports_with_mux(
     selections = {}
     mux_groups = []
     for direction, connection_keys in sorted(connections_by_direction.items()):
+        direct_links = _assign_direct_subset(
+            manager_requests, interference_by_interval, connection_keys
+        )
+        if direct_links is not None:
+            selections.update(
+                {
+                    connection_key: (link_index, _FabricTransportKind.DIRECT)
+                    for connection_key, link_index in direct_links.items()
+                }
+            )
+            continue
+
         mux_eligible_keys = [
             connection_key
             for connection_key in connection_keys
