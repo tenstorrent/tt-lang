@@ -53,6 +53,9 @@ class Resource:
         self.tile = (32, 32)
         self.address = address
         self.allocated = True
+        self.per_core = False
+        self.device_coordinates = (ttnn.MeshCoordinate(0, 0),)
+        self.core_addresses = {}
         self.value = None
 
     def is_allocated(self):
@@ -65,10 +68,26 @@ class Resource:
         return self.options["memory_config"]
 
     def is_per_core_allocated(self):
-        return False
+        return self.per_core
 
     def buffer_address(self):
         return self.address
+
+    def device_coords(self):
+        return self.device_coordinates
+
+    def experimental_per_core_buffer_address(self, device_coordinate, core):
+        return self.core_addresses[(tuple(device_coordinate), core.x, core.y)]
+
+
+def make_per_core(resource):
+    resource.per_core = True
+    cores = ttnn.corerange_to_cores(resource.memory_config().shard_spec.grid)
+    for device_coordinate in resource.device_coordinates:
+        for core_index, core in enumerate(cores):
+            resource.core_addresses[(tuple(device_coordinate), core.x, core.y)] = (
+                resource.address + core_index * 0x1000
+            )
 
 
 @pytest.fixture
@@ -133,6 +152,7 @@ def runtime(monkeypatch):
                 "ShardSpec",
                 "ShardOrientation",
                 "SubDeviceId",
+                "corerange_to_cores",
             )
         }
     )
@@ -428,10 +448,13 @@ def test_completion_selection_ignores_mutable_stall_group(runtime):
     storage.close()
 
 
-def test_external_tensor_alias_wrapper_restores_owned_reference(runtime):
+@pytest.mark.parametrize("addressing", ["uniform", "per-core"])
+def test_external_tensor_alias_wrapper_restores_owned_reference(runtime, addressing):
     storage = SRAMStorage(device=runtime.device)
-    state = declare(storage)
+    state = declare(storage, addressing=addressing)
     storage.allocate()
+    if addressing == "per-core":
+        make_per_core(runtime.allocations[0])
     alias_wrapper = copy.copy(runtime.allocations[0])
     assert storage.submit(lambda value: alias_wrapper, state) is state
     storage.close()
@@ -450,13 +473,17 @@ def test_external_tensor_alias_wrapper_restores_owned_reference(runtime):
         "allocation_state",
         "device",
         "addressing",
+        "per_core_address",
     ],
 )
 def test_external_nonalias_tensor_wrapper_is_not_restored(runtime, difference):
     storage = SRAMStorage(device=runtime.device)
     state = declare(storage)
     storage.allocate()
+    if difference == "per_core_address":
+        make_per_core(runtime.allocations[0])
     candidate = copy.copy(runtime.allocations[0])
+    candidate.core_addresses = dict(candidate.core_addresses)
     if difference == "address":
         candidate.address += 0x1000
     elif difference == "shape":
@@ -482,6 +509,9 @@ def test_external_nonalias_tensor_wrapper_is_not_restored(runtime, difference):
         candidate.options = {**candidate.options, "device": other_device}
     elif difference == "addressing":
         candidate.is_per_core_allocated = lambda: True
+    elif difference == "per_core_address":
+        first_address = next(iter(candidate.core_addresses))
+        candidate.core_addresses[first_address] += 0x1000
     assert storage.submit(lambda value: candidate, state) is candidate
     storage.close()
 
