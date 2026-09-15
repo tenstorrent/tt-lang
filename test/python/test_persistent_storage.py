@@ -60,7 +60,7 @@ class Backend:
         assert resource not in self.released
         self.released.append(resource)
 
-    def aliases(self, resource, candidate):
+    def is_same_allocation(self, resource, candidate):
         return resource is candidate
 
     def complete(self):

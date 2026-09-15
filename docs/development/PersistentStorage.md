@@ -92,7 +92,7 @@ close(storage):
 
 ### TTNN and External Launchers
 
-The internal storage-backend interface defines validation, dependency insertion, completion recording, recovery, waiting, and release. `SRAMStorage` uses a TTNN implementation; ownership algorithms do not contain target-specific event or address handling.
+The internal storage-backend interface defines validation, allocation identity, dependency insertion, completion recording, recovery, waiting, and release. `SRAMStorage` uses a TTNN implementation; ownership algorithms do not contain target-specific event or address handling. Two tensor objects have the same allocation identity only when their device addresses, logical and padded dimensions, dtype, layout, tile geometry, and sharding configuration match. This preserves ownership when an external launcher returns a new wrapper for unchanged backing without discarding a changed interpretation of those bytes.
 
 The runtime reuses TTNN-owned tensors and command-queue events. Completion must cover every queue, sub-device, and remote user accessing the allocation. TTNN's default event selection follows the current sub-device stall group, which may exclude a service. The adapter therefore records an explicit selection instead of relying on that mutable default.
 

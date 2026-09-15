@@ -32,7 +32,7 @@ class StorageBackend(Protocol):
 
     def release(self, resource: object) -> None: ...
 
-    def aliases(self, resource: object, candidate: object) -> bool: ...
+    def is_same_allocation(self, resource: object, candidate: object) -> bool: ...
 
 
 class _State(Enum):
@@ -245,14 +245,14 @@ def with_persistent_storage(function):
                 for owner in owners:
                     owner._submitting = False
                 _submission_thread.active = False
-            aliases = [
+            owned_allocations = [
                 (reference._owner._backend, resolve(reference), reference)
                 for reference in references
             ]
 
             def restore(value):
-                for backend, resource, reference in aliases:
-                    if backend.aliases(resource, value):
+                for backend, resource, reference in owned_allocations:
+                    if backend.is_same_allocation(resource, value):
                         return reference
                 if type(value) is tuple:
                     return tuple(restore(element) for element in value)

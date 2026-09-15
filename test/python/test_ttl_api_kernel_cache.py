@@ -819,7 +819,7 @@ def test_persistent_arguments_use_tensor_cache_signature_and_fresh_bindings(
         wait=lambda completion: None,
         recover=lambda: None,
         release=released.append,
-        aliases=lambda resource, candidate: resource is candidate,
+        is_same_allocation=lambda resource, candidate: resource is candidate,
     )
 
     @ttl_api.operation(grid=(1, 1))

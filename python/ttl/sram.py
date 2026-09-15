@@ -101,7 +101,7 @@ class _TTNNStorageBackend:
             raise RuntimeError("persistent tensor backing was released externally")
         self.api.deallocate(resource)
 
-    def aliases(self, resource, candidate):
+    def is_same_allocation(self, resource, candidate):
         if resource is candidate:
             return True
         if type(resource) is not type(candidate):
