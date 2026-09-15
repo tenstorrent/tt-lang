@@ -162,7 +162,8 @@ static bool updateLocalSlotValuesAndTestUse(DFBAcquireInterval interval,
       slotValues.insert(result);
     }
     return !isa<AttachCBOp, UnrealizedConversionCastOp, scf::YieldOp>(
-        operation);
+               operation) &&
+           !getSingletonDimensionShapeViewSource(operation);
   }
 
   if (operation->hasTrait<OpTrait::IsTerminator>()) {

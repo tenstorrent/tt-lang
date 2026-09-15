@@ -200,16 +200,40 @@ inline mlir::Value traceUnrealizedCasts(mlir::Value value) {
   return value;
 }
 
+/// Return the source of a static tensor expand/collapse that only inserts or
+/// removes singleton dimensions without changing element type or encoding.
+mlir::Value getSingletonDimensionShapeViewSource(mlir::Operation *operation);
+
+/// Return the input of an identity cast or a one-to-one CB conversion bridge.
+/// Tensor-to-tensor reinterpretations are not DFB shape views: those must use
+/// the checked expand/collapse operations above.
+mlir::Value getDFBConversionCastSource(mlir::Operation *operation);
+
+/// Trace conversion bridges and checked singleton-dimension tensor views.
+inline mlir::Value traceDFBShapeViews(mlir::Value value) {
+  while (true) {
+    mlir::Operation *definition = value.getDefiningOp();
+    mlir::Value source = getDFBConversionCastSource(definition);
+    if (!source) {
+      source = getSingletonDimensionShapeViewSource(definition);
+    }
+    if (!source) {
+      return value;
+    }
+    value = source;
+  }
+}
+
 /// Trace a tensor value through view-preserving operations to its DFB acquire.
 ///
-/// Casts, DFB associations, slices, and extracts preserve the acquired storage
-/// identity and may occur in any order. Other tensor operations terminate the
-/// search because their results do not necessarily alias the acquired slot.
-/// Returns null when the chain does not end at `ttl.cb_wait` or
+/// Casts, singleton shape views, DFB associations, slices, and extracts
+/// preserve the acquired storage identity and may occur in any order. Other
+/// operations terminate the search because their results may not alias the
+/// acquired slot. Returns null when the chain does not end at `ttl.cb_wait` or
 /// `ttl.cb_reserve`.
 inline mlir::Operation *findCBAcquireOp(mlir::Value tensor) {
   while (true) {
-    tensor = traceUnrealizedCasts(tensor);
+    tensor = traceDFBShapeViews(tensor);
     if (auto attach = tensor.getDefiningOp<AttachCBOp>()) {
       tensor = attach.getTensor();
       continue;
@@ -266,7 +290,7 @@ inline bool isInactiveGuardedDFBYield(mlir::Value value) {
 inline mlir::Operation *findCBAcquireOp(mlir::Value tensor,
                                         mlir::Operation *use) {
   while (true) {
-    tensor = traceUnrealizedCasts(tensor);
+    tensor = traceDFBShapeViews(tensor);
     if (auto attach = tensor.getDefiningOp<AttachCBOp>()) {
       tensor = attach.getTensor();
       continue;
@@ -468,7 +492,17 @@ inline bool isCBAcquireView(mlir::Value tensor) {
 
 /// Return the circular buffer attached to `tensor`, or null if none.
 inline mlir::Value getAttachedCB(mlir::Value tensor) {
-  tensor = traceUnrealizedCasts(tensor);
+  tensor = traceDFBShapeViews(tensor);
+  // After CB lowering, shape views and slices may terminate at a materialized
+  // TTKernel handle rather than a TTL acquire operation.
+  if (mlir::isa<mlir::tt::ttkernel::CBType>(tensor.getType())) {
+    return tensor;
+  }
+  if (mlir::isa_and_nonnull<mlir::tensor::ExpandShapeOp,
+                            mlir::tensor::CollapseShapeOp>(
+          tensor.getDefiningOp())) {
+    return {};
+  }
   if (auto slice = tensor.getDefiningOp<mlir::tensor::ExtractSliceOp>()) {
     return getAttachedCB(slice.getSource());
   }

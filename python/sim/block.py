@@ -396,6 +396,8 @@ def unsqueeze(block: Block, dims: List[int]) -> Block:
     Position values in ``dims`` refer to positions in the resulting shape.
     Dimension indexing uses standard Python convention: positive 0 is
     outermost, negative -1 is innermost.
+    Duplicate positions are rejected because each result position can hold
+    only one inserted axis.
 
     Args:
         block: Input block.
@@ -419,17 +421,23 @@ def unsqueeze(block: Block, dims: List[int]) -> Block:
     ndim = len(block_shape)
     new_ndim = ndim + len(dims)
 
-    norm_positions: List[int] = []
+    norm_positions: set[int] = set()
     for d in dims:
         if d >= new_ndim or d < -new_ndim:
             raise ValueError(
                 f"Cannot unsqueeze at dimension {d}: resulting shape would have "
                 f"{new_ndim} dimensions"
             )
-        norm_positions.append(d % new_ndim)
+        normalized = d % new_ndim
+        if normalized in norm_positions:
+            raise ValueError(
+                f"Cannot unsqueeze duplicate dimension {d}: result position "
+                f"{normalized} is already selected"
+            )
+        norm_positions.add(normalized)
 
     result_list: List[int] = list(block_shape)
-    for pos in sorted(set(norm_positions)):
+    for pos in sorted(norm_positions):
         result_list.insert(pos, 1)
     new_shape = tuple(result_list)
 
