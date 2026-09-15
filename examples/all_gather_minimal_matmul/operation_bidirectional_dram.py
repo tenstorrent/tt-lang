@@ -377,9 +377,7 @@ def make_bidirectional_dram_all_gather_matmul_operation(
                                 def multicast_left_activation(pipe):
                                     ttl.copy(left_activation, pipe).wait()
 
-                                activation_compute_net.if_src(
-                                    multicast_left_activation
-                                )
+                                activation_compute_net.if_src(multicast_left_activation)
 
                                 def multicast_right_activation(pipe):
                                     ttl.copy(right_activation, pipe).wait()
@@ -521,8 +519,7 @@ def make_bidirectional_dram_all_gather_matmul_operation(
                             left_weight = left_weight_distribution_dfb.reserve()
                             if m_worker_index == 0:
                                 left_weight_begin = (
-                                    source_backward * k_tiles_per_device
-                                    + local_k_begin
+                                    source_backward * k_tiles_per_device + local_k_begin
                                 )
                                 ttl.copy(
                                     weight_shard[
