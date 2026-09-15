@@ -24,6 +24,10 @@ namespace dfb_reconfiguration_detail {
 #define TTL_DFB_RECONFIGURATION_UNPACK
 #endif
 
+#if defined(UCK_CHLKC_MATH) || defined(TRISC_MATH)
+#define TTL_DFB_RECONFIGURATION_MATH
+#endif
+
 #if defined(UCK_CHLKC_PACK) || defined(TRISC_PACK)
 #define TTL_DFB_RECONFIGURATION_PACK
 #endif
@@ -37,6 +41,7 @@ constexpr uint32_t dm0StateWord = 0;
 constexpr uint32_t unpackStateWord = 1;
 constexpr uint32_t packStateWord = 2;
 constexpr uint32_t releaseWord = 3;
+constexpr uint32_t mathStateWord = 4;
 constexpr uint32_t participantCount = 3;
 constexpr uint32_t entryComplete = 1;
 constexpr uint32_t exitComplete = 2;
@@ -67,6 +72,7 @@ storeSynchronizationWord(volatile uint32_t tt_l1_ptr *synchronizationWord,
                : "memory");
 }
 
+template <bool includeMath>
 FORCE_INLINE bool
 participantsHaveState(volatile uint32_t tt_l1_ptr *synchronizationState,
                       uint32_t state) {
@@ -75,6 +81,10 @@ participantsHaveState(volatile uint32_t tt_l1_ptr *synchronizationState,
     if (loadSynchronizationWord(&synchronizationState[participant]) != state) {
       return false;
     }
+  }
+  if constexpr (includeMath) {
+    return loadSynchronizationWord(&synchronizationState[mathStateWord]) ==
+           state;
   }
   return true;
 }
@@ -88,6 +98,9 @@ FORCE_INLINE void drainComputeEngine() {
 #elif defined(TTL_DFB_RECONFIGURATION_PACK)
   constexpr uint32_t waitResources = p_stall::PACK;
   constexpr uint32_t completionGpr = p_gpr_pack::TMP0;
+#elif defined(TTL_DFB_RECONFIGURATION_MATH)
+  TTI_STALLWAIT(p_stall::STALL_CFG, p_stall::MATH | p_stall::WAIT_SFPU);
+  tensix_sync();
 #endif
 #if defined(TTL_DFB_RECONFIGURATION_UNPACK) ||                                 \
     defined(TTL_DFB_RECONFIGURATION_PACK)
@@ -97,6 +110,7 @@ FORCE_INLINE void drainComputeEngine() {
 #endif
 }
 
+template <bool includeMath>
 FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState) {
 #if defined(TTL_DFB_RECONFIGURATION_DM0)
   constexpr uint32_t arrivalWord = dm0StateWord;
@@ -104,12 +118,18 @@ FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState) {
   constexpr uint32_t arrivalWord = unpackStateWord;
 #elif defined(TTL_DFB_RECONFIGURATION_PACK)
   constexpr uint32_t arrivalWord = packStateWord;
+#elif defined(TTL_DFB_RECONFIGURATION_MATH)
+  constexpr uint32_t arrivalWord = mathStateWord;
 #endif
 #if defined(TTL_DFB_RECONFIGURATION_DM0)
   noc_async_full_barrier();
 #elif defined(TTL_DFB_RECONFIGURATION_UNPACK) ||                               \
     defined(TTL_DFB_RECONFIGURATION_PACK)
   drainComputeEngine();
+#elif defined(TTL_DFB_RECONFIGURATION_MATH)
+  if constexpr (includeMath) {
+    drainComputeEngine();
+  }
 #endif
 #if defined(TTL_DFB_RECONFIGURATION_DM0) ||                                    \
     defined(TTL_DFB_RECONFIGURATION_UNPACK) ||                                 \
@@ -118,9 +138,17 @@ FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState) {
   while (loadSynchronizationWord(&synchronizationState[releaseWord]) !=
          entryComplete) {
   }
+#elif defined(TTL_DFB_RECONFIGURATION_MATH)
+  if constexpr (includeMath) {
+    storeSynchronizationWord(&synchronizationState[arrivalWord], entryComplete);
+    while (loadSynchronizationWord(&synchronizationState[releaseWord]) !=
+           entryComplete) {
+    }
+  }
 #elif defined(TTL_DFB_RECONFIGURATION_DM1)
   noc_async_full_barrier();
-  while (!participantsHaveState(synchronizationState, entryComplete)) {
+  while (!participantsHaveState<includeMath>(synchronizationState,
+                                             entryComplete)) {
   }
   storeSynchronizationWord(&synchronizationState[releaseWord], entryComplete);
 #endif
@@ -128,6 +156,7 @@ FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState) {
 
 // DM1 cannot begin next-epoch work until every other RISC has completed its
 // interface updates.
+template <bool includeMath>
 FORCE_INLINE void exit(volatile uint32_t tt_l1_ptr *synchronizationState) {
 #if defined(TTL_DFB_RECONFIGURATION_DM0)
   constexpr uint32_t arrivalWord = dm0StateWord;
@@ -135,6 +164,8 @@ FORCE_INLINE void exit(volatile uint32_t tt_l1_ptr *synchronizationState) {
   constexpr uint32_t arrivalWord = unpackStateWord;
 #elif defined(TTL_DFB_RECONFIGURATION_PACK)
   constexpr uint32_t arrivalWord = packStateWord;
+#elif defined(TTL_DFB_RECONFIGURATION_MATH)
+  constexpr uint32_t arrivalWord = mathStateWord;
 #endif
 #if defined(TTL_DFB_RECONFIGURATION_DM0) ||                                    \
     defined(TTL_DFB_RECONFIGURATION_UNPACK) ||                                 \
@@ -146,11 +177,22 @@ FORCE_INLINE void exit(volatile uint32_t tt_l1_ptr *synchronizationState) {
   storeSynchronizationWord(&synchronizationState[arrivalWord], 0);
   while (loadSynchronizationWord(&synchronizationState[releaseWord]) != 0) {
   }
+#elif defined(TTL_DFB_RECONFIGURATION_MATH)
+  if constexpr (includeMath) {
+    storeSynchronizationWord(&synchronizationState[arrivalWord], exitComplete);
+    while (loadSynchronizationWord(&synchronizationState[releaseWord]) !=
+           exitComplete) {
+    }
+    storeSynchronizationWord(&synchronizationState[arrivalWord], 0);
+    while (loadSynchronizationWord(&synchronizationState[releaseWord]) != 0) {
+    }
+  }
 #elif defined(TTL_DFB_RECONFIGURATION_DM1)
-  while (!participantsHaveState(synchronizationState, exitComplete)) {
+  while (
+      !participantsHaveState<includeMath>(synchronizationState, exitComplete)) {
   }
   storeSynchronizationWord(&synchronizationState[releaseWord], exitComplete);
-  while (!participantsHaveState(synchronizationState, 0)) {
+  while (!participantsHaveState<includeMath>(synchronizationState, 0)) {
   }
   storeSynchronizationWord(&synchronizationState[releaseWord], 0);
 #endif
@@ -198,6 +240,74 @@ FORCE_INLINE void applyMask(uint32_t tt_l1_ptr *configuration,
   }
 }
 
+#if defined(TTLANG_RUNTIME_DFB_RECONFIGURATION)
+template <uint32_t dfbIndex, uint32_t pageBytes, uint32_t l1Format,
+          uint32_t tileHeight, uint32_t tileWidth, uint32_t faceHeight,
+          uint32_t numFaces, uint32_t unpackDstFormat, uint32_t packSrcFormat>
+FORCE_INLINE void applyDescriptor() {
+#if defined(TTL_DFB_RECONFIGURATION_DM0) ||                                    \
+    defined(TTL_DFB_RECONFIGURATION_DM1) ||                                    \
+    defined(TTL_DFB_RECONFIGURATION_UNPACK) ||                                 \
+    defined(TTL_DFB_RECONFIGURATION_MATH)
+  unpack_src_format[dfbIndex] = l1Format;
+  unpack_dst_format[dfbIndex] = unpackDstFormat;
+  unpack_tile_num_faces[dfbIndex] = numFaces;
+  unpack_partial_face[dfbIndex] = tileHeight < 32;
+  unpack_tile_face_r_dim[dfbIndex] = faceHeight;
+  unpack_narrow_tile[dfbIndex] = tileWidth < 32;
+  unpack_tile_r_dim[dfbIndex] = tileHeight;
+  unpack_tile_c_dim[dfbIndex] = tileWidth;
+  unpack_tile_size[dfbIndex] = pageBytes;
+  unpack_num_faces_c_dim[dfbIndex] =
+      numFaces < tileWidth / 16 ? numFaces : tileWidth / 16;
+  unpack_num_faces_r_dim[dfbIndex] =
+      numFaces / unpack_num_faces_c_dim[dfbIndex];
+#endif
+
+#if defined(TTL_DFB_RECONFIGURATION_DM0) ||                                    \
+    defined(TTL_DFB_RECONFIGURATION_DM1) ||                                    \
+    defined(TTL_DFB_RECONFIGURATION_PACK)
+  pack_src_format[dfbIndex] = packSrcFormat;
+  pack_dst_format[dfbIndex] = l1Format;
+#if defined(TTL_DFB_RECONFIGURATION_PACK)
+  unpack_src_format[dfbIndex] = l1Format;
+#endif
+  pack_tile_num_faces[dfbIndex] = numFaces;
+  pack_partial_face[dfbIndex] = tileHeight < 32;
+  pack_tile_face_r_dim[dfbIndex] = faceHeight;
+  pack_narrow_tile[dfbIndex] = tileWidth < 32;
+  pack_tile_r_dim[dfbIndex] = tileHeight;
+  pack_tile_c_dim[dfbIndex] = tileWidth;
+  pack_tile_size[dfbIndex] = pageBytes;
+  pack_num_faces_c_dim[dfbIndex] =
+      numFaces < tileWidth / 16 ? numFaces : tileWidth / 16;
+  pack_num_faces_r_dim[dfbIndex] = numFaces / pack_num_faces_c_dim[dfbIndex];
+#endif
+}
+
+template <uint32_t... descriptorWords>
+struct ApplyDescriptors;
+
+template <>
+struct ApplyDescriptors<> {
+  static FORCE_INLINE void run() {}
+};
+
+template <uint32_t dfbIndex, uint32_t pageBytes, uint32_t l1Format,
+          uint32_t tileHeight, uint32_t tileWidth, uint32_t faceHeight,
+          uint32_t numFaces, uint32_t unpackDstFormat, uint32_t packSrcFormat,
+          uint32_t... remainingWords>
+struct ApplyDescriptors<dfbIndex, pageBytes, l1Format, tileHeight, tileWidth,
+                        faceHeight, numFaces, unpackDstFormat, packSrcFormat,
+                        remainingWords...> {
+  static FORCE_INLINE void run() {
+    applyDescriptor<dfbIndex, pageBytes, l1Format, tileHeight, tileWidth,
+                    faceHeight, numFaces, unpackDstFormat, packSrcFormat>();
+    ApplyDescriptors<remainingWords...>::run();
+  }
+};
+#endif
+
 } // namespace dfb_reconfiguration_detail
 
 FORCE_INLINE void reconfigure_dfb_interfaces(uint32_t configurationAddress) {
@@ -231,7 +341,7 @@ FORCE_INLINE void reconfigure_dfb_interfaces(uint32_t configurationAddress) {
       reinterpret_cast<uint32_t tt_l1_ptr *>(configurationAddress);
   auto *synchronizationState = reinterpret_cast<volatile uint32_t tt_l1_ptr *>(
       &configuration[dfb_reconfiguration_detail::synchronizationWord]);
-  dfb_reconfiguration_detail::enter(synchronizationState);
+  dfb_reconfiguration_detail::enter<false>(synchronizationState);
   dfb_reconfiguration_detail::applyMask<updateReadPointer, updateWritePointer,
                                         updateWriteTilePointer,
                                         resetStreamCounters>(
@@ -241,15 +351,71 @@ FORCE_INLINE void reconfigure_dfb_interfaces(uint32_t configurationAddress) {
                                         resetStreamCounters>(
       configuration, configuration[dfb_reconfiguration_detail::highMaskWord],
       32);
-  dfb_reconfiguration_detail::exit(synchronizationState);
+  dfb_reconfiguration_detail::exit<false>(synchronizationState);
 #else
   (void)configurationAddress;
 #endif
 }
 
+#if defined(TTLANG_RUNTIME_DFB_RECONFIGURATION)
+template <uint32_t recordCount, uint32_t... descriptorWords>
+FORCE_INLINE void reconfigure_dfb_descriptors(uint32_t configurationAddress) {
+  static_assert(sizeof...(descriptorWords) == recordCount * 9);
+#if defined(TTL_DFB_RECONFIGURATION_DM1) ||                                    \
+    defined(TTL_DFB_RECONFIGURATION_DM0) ||                                    \
+    defined(TTL_DFB_RECONFIGURATION_UNPACK) ||                                 \
+    defined(TTL_DFB_RECONFIGURATION_MATH) ||                                   \
+    defined(TTL_DFB_RECONFIGURATION_PACK)
+  auto *configuration =
+      reinterpret_cast<uint32_t tt_l1_ptr *>(configurationAddress);
+  auto *synchronizationState = reinterpret_cast<volatile uint32_t tt_l1_ptr *>(
+      &configuration[dfb_reconfiguration_detail::synchronizationWord]);
+  dfb_reconfiguration_detail::enter<true>(synchronizationState);
+#if defined(TTL_DFB_RECONFIGURATION_DM1)
+  constexpr bool updateReadPointer = true;
+  constexpr bool updateWritePointer = true;
+  constexpr bool updateWriteTilePointer = false;
+  constexpr bool resetStreamCounters = true;
+#elif defined(TTL_DFB_RECONFIGURATION_DM0)
+  constexpr bool updateReadPointer = true;
+  constexpr bool updateWritePointer = true;
+  constexpr bool updateWriteTilePointer = false;
+  constexpr bool resetStreamCounters = false;
+#elif defined(TTL_DFB_RECONFIGURATION_UNPACK)
+  constexpr bool updateReadPointer = true;
+  constexpr bool updateWritePointer = false;
+  constexpr bool updateWriteTilePointer = false;
+  constexpr bool resetStreamCounters = false;
+#elif defined(TTL_DFB_RECONFIGURATION_PACK)
+  constexpr bool updateReadPointer = false;
+  constexpr bool updateWritePointer = true;
+  constexpr bool updateWriteTilePointer = true;
+  constexpr bool resetStreamCounters = false;
+#endif
+#if !defined(TTL_DFB_RECONFIGURATION_MATH)
+  dfb_reconfiguration_detail::applyMask<updateReadPointer, updateWritePointer,
+                                        updateWriteTilePointer,
+                                        resetStreamCounters>(
+      configuration, configuration[dfb_reconfiguration_detail::lowMaskWord], 0);
+  dfb_reconfiguration_detail::applyMask<updateReadPointer, updateWritePointer,
+                                        updateWriteTilePointer,
+                                        resetStreamCounters>(
+      configuration, configuration[dfb_reconfiguration_detail::highMaskWord],
+      32);
+#endif
+  dfb_reconfiguration_detail::ApplyDescriptors<descriptorWords...>::run();
+  asm volatile("" ::: "memory");
+  dfb_reconfiguration_detail::exit<true>(synchronizationState);
+#else
+  (void)configurationAddress;
+#endif
+}
+#endif
+
 #undef TTL_DFB_RECONFIGURATION_DM0
 #undef TTL_DFB_RECONFIGURATION_DM1
 #undef TTL_DFB_RECONFIGURATION_UNPACK
+#undef TTL_DFB_RECONFIGURATION_MATH
 #undef TTL_DFB_RECONFIGURATION_PACK
 
 } // namespace experimental

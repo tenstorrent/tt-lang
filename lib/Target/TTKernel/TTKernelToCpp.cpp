@@ -162,7 +162,8 @@ public:
         emitLlk(experimental_dfb_reset_generated,
                 experimental_dfb_reset_generated_len);
       }
-      if (callee == "experimental::reconfigure_dfb_interfaces") {
+      if (callee == "experimental::reconfigure_dfb_interfaces" ||
+          callee == "experimental::reconfigure_dfb_descriptors") {
         emitLlk(experimental_dfb_reconfiguration_generated,
                 experimental_dfb_reconfiguration_generated_len);
       }

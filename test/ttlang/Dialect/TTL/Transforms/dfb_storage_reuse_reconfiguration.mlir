@@ -1,4 +1,4 @@
-// Summary: Reconfigured descriptors retain dedicated runtime storage.
+// Summary: Reconfiguration permits one physical DFB to serve different descriptors.
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true})' | FileCheck %s
 
 #compute = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "operation">
@@ -6,13 +6,11 @@
 #writer = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "operation">
 #boundary = #ttl.dfb_reconfiguration<0, participants[#compute, #reader, #writer]>
 
-// The two lifetimes are ordered and use different physical descriptors. The
-// second descriptor requires runtime reconfiguration storage, so the static
-// descriptor cannot share that allocation.
+// The boundary separates the two lifetimes. Runtime descriptor reconfiguration
+// allows both element types to use the same physical DFB and L1 allocation.
 
 // CHECK: ttl.dfb_allocations = [
-// CHECK-SAME: {allocation_nodes = {{\[\[0, 0\]\]}}, block_count = 1 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32, page_size = 2048 : i32, storage_index = 1 : i32},
-// CHECK-SAME: {allocation_nodes = {{\[\[0, 0\]\]}}, block_count = 1 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<32x32, f32>, num_tiles = 1 : i32, page_size = 4096 : i32, storage_index = 0 : i32}
+// CHECK-SAME: {allocation_nodes = {{\[\[0, 0\]\]}}, block_count = 1 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32, page_size = 2048 : i32, storage_index = 0 : i32}
 
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @compute() attributes {
@@ -67,12 +65,10 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 #writer = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "operation">
 #boundary = #ttl.dfb_reconfiguration<0, participants[#compute, #reader, #writer]>
 
-// Hidden reconfiguration backing on one launch node does not prevent a static
-// descriptor on another launch node from using the same storage index.
+// Disjoint launch nodes also use one physical DFB and one L1 allocation.
 
 // CHECK: ttl.dfb_allocations = [
-// CHECK-SAME: {allocation_nodes = {{\[\[0, 0\]\]}}, block_count = 1 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32, page_size = 2048 : i32, storage_index = 0 : i32},
-// CHECK-SAME: {allocation_nodes = {{\[\[1, 0\]\]}}, block_count = 1 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<32x32, f32>, num_tiles = 1 : i32, page_size = 4096 : i32, storage_index = 0 : i32}
+// CHECK-SAME: {allocation_nodes = {{\[\[0, 0\], \[1, 0\]\]}}, block_count = 1 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, num_tiles = 1 : i32, page_size = 2048 : i32, storage_index = 0 : i32}
 
 module attributes {ttl.launch_grid = [2, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @compute_disjoint_nodes() attributes {

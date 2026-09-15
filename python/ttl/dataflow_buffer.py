@@ -378,6 +378,18 @@ class DFBReconfigurationPlan:
     boundary_ordinals: Tuple[int, ...]
     dfb_epochs: Tuple[Tuple[DFBConfigurationEpoch, ...], ...]
 
+    @property
+    def requires_descriptor_reconfiguration(self) -> bool:
+        """Return whether any physical DFB changes its runtime descriptor."""
+        for epochs in self.dfb_epochs:
+            descriptor_signatures = {
+                (epoch.config.data_format, epoch.config.page_size, epoch.config.tile)
+                for epoch in epochs
+            }
+            if len(descriptor_signatures) > 1:
+                return True
+        return False
+
 
 def make_dataflow_buffer_like(
     tensor: Any,

@@ -1928,6 +1928,7 @@ def build_kernel_descriptors(
     device_coordinates: Optional[List[int]] = None,
     descriptor_resource_plans: Optional[Sequence[_KernelDescriptorResourcePlan]] = None,
     dfb_reconfiguration_runtime_args: Optional[Dict[Tuple[int, int], List[int]]] = None,
+    reconfigure_dfb_descriptors: bool = False,
     compiler_l1_base_address: Optional[int] = None,
     sram_core_arenas: Optional[Dict[Tuple[int, int], Any]] = None,
     sram_configs: Sequence[PhysicalDFBConfig] = (),
@@ -1960,6 +1961,8 @@ def build_kernel_descriptors(
             kernel_specs.
         dfb_reconfiguration_runtime_args: Per-core L1 configuration addresses
             in finalized boundary order.
+        reconfigure_dfb_descriptors: Whether reconfiguration operations update
+            TT-Metal's per-kernel DFB descriptor tables.
         compiler_l1_base_address: Common per-core base address for the
             compiler-managed L1 arena.
 
@@ -2045,9 +2048,7 @@ def build_kernel_descriptors(
             common_runtime_arg_suffix.append(0)
         common_runtime_arg_suffix.extend(device_coordinates or [])
         common_runtime_arg_suffix.extend(spec.extra_common_runtime_args or [])
-        storage_runtime_base = len(spec.tensor_indices) + len(
-            common_runtime_arg_suffix
-        )
+        storage_runtime_base = len(spec.tensor_indices) + len(common_runtime_arg_suffix)
         if compiler_l1_base_address is not None or sram_core_arenas:
             common_runtime_arg_suffix.append(compiler_l1_base_address or 0)
 
@@ -2071,6 +2072,26 @@ def build_kernel_descriptors(
                 for runtime_arg in descriptor_resource_plan.runtime_args
             ]
             defines = list(descriptor_resource_plan.defines)
+
+        if reconfigure_dfb_descriptors:
+            descriptor_reconfiguration_define = (
+                "TTLANG_RUNTIME_DFB_RECONFIGURATION",
+                "1",
+            )
+            matching_defines = [
+                define
+                for define in defines
+                if define[0] == descriptor_reconfiguration_define[0]
+            ]
+            if matching_defines and matching_defines != [
+                descriptor_reconfiguration_define
+            ]:
+                raise ValueError(
+                    "TTLANG_RUNTIME_DFB_RECONFIGURATION is reserved for "
+                    "compiler-selected DFB descriptor reconfiguration"
+                )
+            if not matching_defines:
+                defines.append(descriptor_reconfiguration_define)
 
         descriptor_variants: List[_KernelDescriptorVariant]
         if not reconfiguration_args:
@@ -2123,11 +2144,13 @@ def build_kernel_descriptors(
                     }
                     for core_coordinate in partition_coordinates:
                         tensor_addresses = tuple(
-                            per_core_tensor_addresses[tensor_index].get(
-                                core_coordinate, 0
+                            (
+                                per_core_tensor_addresses[tensor_index].get(
+                                    core_coordinate, 0
+                                )
+                                if tensor_index in per_core_indices
+                                else static_addresses[tensor_index]
                             )
-                            if tensor_index in per_core_indices
-                            else static_addresses[tensor_index]
                             for tensor_index in spec.tensor_indices
                         )
                         common_args_to_coordinates.setdefault(
@@ -4716,6 +4739,10 @@ def _run_kernel_on_device_impl(
             ),
             dfb_reconfiguration_runtime_args=(
                 reconfiguration_resources.configuration_runtime_args
+            ),
+            reconfigure_dfb_descriptors=(
+                dfb_reconfiguration_plan is not None
+                and dfb_reconfiguration_plan.requires_descriptor_reconfiguration
             ),
         )
         program_descriptor = build_program_descriptor(

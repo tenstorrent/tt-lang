@@ -402,10 +402,9 @@ static bool canUseCapacityEnvelope(const DFBLogicalLifecycle &lhs,
 static bool
 canReconfigureDescriptorAcrossEpochs(const DFBLogicalLifecycle &lhs,
                                      const DFBLogicalLifecycle &rhs) {
-  // Opaque external access reaches disjoint epochs only after lifecycle
-  // analysis proves that a state-discarding boundary terminates it.
-  return haveIdenticalPageFormat(lhs.type, rhs.type) &&
-         haveDisjointConfigurationEpochs(lhs, rhs);
+  // Runtime descriptor updates are valid only for DFB lifetimes assigned to
+  // different reconfiguration epochs.
+  return haveDisjointConfigurationEpochs(lhs, rhs);
 }
 
 static bool
@@ -597,7 +596,8 @@ private:
     bool reconfiguresDescriptor =
         canReconfigureDescriptorAcrossEpochs(lhs, rhs);
     if ((requirements.requireMatchingElementType &&
-         !haveIdenticalPageFormat(lhs.type, rhs.type)) ||
+         !haveIdenticalPageFormat(lhs.type, rhs.type) &&
+         !reconfiguresDescriptor) ||
         (requirements.requireExactDescriptor && lhs.type != rhs.type &&
          !usesCapacityEnvelope && !reconfiguresDescriptor)) {
       addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
