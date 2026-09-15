@@ -79,6 +79,11 @@ struct ActivePipeNetExecution {
   std::optional<std::uint64_t> countDivisor = 1;
 };
 
+/// Enumerate every member of a logical-device domain in row-major component
+/// and axis order. Return failure when the domain size exceeds size_t.
+FailureOr<SmallVector<DeviceRefAttr>>
+enumerateDeviceDomain(DeviceDomainAttr deviceDomain);
+
 /// Evaluate the selected records and matching-record count at `location`.
 ActivePipeNetExecution evaluateActivePipeNetExecution(
     ArrayRef<ActivePipeNetRecord> activeRecords,
