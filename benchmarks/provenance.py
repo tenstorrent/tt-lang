@@ -24,12 +24,17 @@ def collect_provenance(sources):
     source_files = {Path(source).resolve() for source in sources}
     source_files.update((Path(__file__).resolve(), root / "benchmarks/common.py"))
 
-    def git_output(*arguments):
+    def git_output(repository, *arguments):
         return subprocess.check_output(
-            ["git", "-c", f"safe.directory={root}", *arguments], cwd=root, text=True
+            ["git", "-c", f"safe.directory={repository}", *arguments],
+            cwd=repository,
+            text=True,
         ).strip()
 
     metal_home = Path(os.environ["TT_METAL_HOME"])
+    metal_runtime_root = Path(
+        os.environ.get("TT_METAL_RUNTIME_ROOT", root / "third-party/tt-metal")
+    ).resolve()
     compiler_directory = Path(_ttlang.__file__).parent
     binaries = (
         Path(_ttlang.__file__),
@@ -38,8 +43,8 @@ def collect_provenance(sources):
         metal_home / "lib/libtt_metal.so",
     )
     return {
-        "ttlang_revision": git_output("rev-parse", "HEAD"),
-        "worktree_status": git_output("status", "--short"),
+        "ttlang_revision": git_output(root, "rev-parse", "HEAD"),
+        "worktree_status": git_output(root, "status", "--short"),
         "source_sha256": {
             str(Path(source).resolve().relative_to(root)): file_sha256(source)
             for source in sorted(source_files)
@@ -48,9 +53,11 @@ def collect_provenance(sources):
         "ttlang_module": ttl.__file__,
         "ttnn_module": ttnn.__file__,
         "dependency_pins": git_output(
-            "ls-tree", "HEAD", "third-party/tt-metal", "third-party/llvm-project"
+            root, "ls-tree", "HEAD", "third-party/tt-metal", "third-party/llvm-project"
         ),
+        "ttmetal_revision": git_output(metal_runtime_root, "rev-parse", "HEAD"),
         "ttmetal_home": str(metal_home),
+        "ttmetal_runtime_root": str(metal_runtime_root),
         "container_image": os.getenv("BENCHMARK_CONTAINER_IMAGE", "unrecorded"),
         "hostname": platform.node(),
         "python_version": platform.python_version(),

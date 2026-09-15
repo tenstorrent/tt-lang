@@ -29,13 +29,16 @@ from examples.all_gather_minimal_matmul import (
 from examples.all_gather_minimal_matmul.operation_bidirectional_dram import (
     make_bidirectional_dram_all_gather_matmul_operation,
 )
+from examples.all_gather_minimal_matmul.operation_bidirectional_l1 import (
+    make_bidirectional_l1_all_gather_matmul_operation,
+)
 from examples.all_gather_minimal_matmul.operation_grouped_rows import (
     make_grouped_row_all_gather_matmul_operation,
 )
 from ttlang_test_utils import get_fabric_mesh_shape, to_dram
 from utils.correctness import assert_allclose, assert_pcc
 
-REFERENCE_REVISION = "ea042c4ad6237678103cd7cbceb346e060f0f9a3"
+REFERENCE_REVISION = "f8c4ce59dd04a3eeeb11abf01ffc9dbce0059eba"
 REFERENCE_ROOT = f"https://github.com/tenstorrent/tt-metal/blob/{REFERENCE_REVISION}"
 MATH_FIDELITIES = {"HiFi2": ttnn.MathFidelity.HiFi2, "HiFi4": ttnn.MathFidelity.HiFi4}
 
@@ -133,8 +136,13 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--ttlang-activation-strategy",
-        choices=("direct-l1", "grouped-row-l1", "bidirectional-dram"),
-        default="grouped-row-l1",
+        choices=(
+            "direct-l1",
+            "grouped-row-l1",
+            "bidirectional-dram",
+            "bidirectional-l1",
+        ),
+        default="bidirectional-l1",
     )
     parser.add_argument("--ttlang-communication-workers", type=positive_int, default=4)
     parser.add_argument("--ttlang-m-block-tiles", type=positive_int, default=5)
@@ -356,6 +364,17 @@ def create_ttlang_workload(mesh, common, ttlang):
             operation(activation, gathered_activation, weight, bias, output)
             return output
 
+    elif ttlang.activation_strategy == "bidirectional-l1":
+        operation = make_bidirectional_l1_all_gather_matmul_operation(
+            operation_config,
+            math_fidelity=common.math_fidelity,
+            fp32_dest_acc_en=common.fp32_dest_acc,
+        )
+
+        def run():
+            operation(activation, weight, bias, output)
+            return output
+
     else:
         operation_factory = (
             make_grouped_row_all_gather_matmul_operation
@@ -559,6 +578,8 @@ def run_worker(arguments):
                     / "examples/all_gather_minimal_matmul/operation.py",
                     Path(__file__).resolve().parents[2]
                     / "examples/all_gather_minimal_matmul/operation_bidirectional_dram.py",
+                    Path(__file__).resolve().parents[2]
+                    / "examples/all_gather_minimal_matmul/operation_bidirectional_l1.py",
                     Path(__file__).resolve().parents[2]
                     / "examples/all_gather_minimal_matmul/operation_grouped_rows.py",
                 ]

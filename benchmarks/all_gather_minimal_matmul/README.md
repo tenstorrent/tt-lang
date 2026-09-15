@@ -1,8 +1,8 @@
 # All-gather matmul benchmark
 
-This benchmark compares the [TT-Lang grouped-row column-parallel operation](../../examples/all_gather_minimal_matmul/operation_grouped_rows.py)
+This benchmark compares the [TT-Lang bidirectional-L1 column-parallel operation](../../examples/all_gather_minimal_matmul/operation_bidirectional_l1.py)
 with TT-Metal's
-[`all_gather_minimal_matmul_async`](https://github.com/tenstorrent/tt-metal/tree/ea042c4ad6237678103cd7cbceb346e060f0f9a3/ttnn/cpp/ttnn/operations/experimental/ccl/all_gather_minimal_matmul_async).
+[`all_gather_minimal_matmul_async`](https://github.com/tenstorrent/tt-metal/tree/f8c4ce59dd04a3eeeb11abf01ffc9dbce0059eba/ttnn/cpp/ttnn/operations/experimental/ccl/all_gather_minimal_matmul_async).
 Both receive K-sharded activation and N-sharded weight and bias, then return one
 distinct N-sharded output per device.
 
