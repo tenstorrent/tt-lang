@@ -19,7 +19,6 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
         : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
     %is_source = ttl.is_device <coordinates = [0]> in #domain : i1
     scf.if %is_source {
-      // expected-error @below {{cannot prove a one-to-one synchronization schedule}}
       %send = ttl.copy %src, %pipe
           : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
              !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
@@ -44,7 +43,8 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
         %reserved = ttl.cb_reserve %dst
             : <[1, 1], !ttcore.tile<32x32, f32>, 2>
             -> tensor<1x1x!ttcore.tile<32x32, f32>>
-        // expected-note @below {{matching receiver post occurrence is here}}
+        // expected-error @below {{PipeNet net_0 requires one static receiver post definition for each static send definition at receiver core_x=0, core_y=0; found 2 static receiver post definition(s) and 1 static send definition(s)}}
+        // expected-note @below {{this receiver post has no corresponding send}}
         %post = ttl.copy %pipe, %reserved
             : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
                tensor<1x1x!ttcore.tile<32x32, f32>>)

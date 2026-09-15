@@ -50,6 +50,53 @@ def test_graph_pipenet_accepts_local_nodes():
     assert operation_pipenets.graph_pipe_nets[0].local_nodes == net.local_nodes
 
 
+def test_graph_pipenet_accepts_local_pipes():
+    domain = ttl.DeviceDomain((1, 2))
+    graph = ttl.TransferGraph.edges(domain, edges=[((0, 0), (0, 1))])
+    local_pipes = (
+        ttl.Pipe(src=(0, 1), dst=(0, 0)),
+        ttl.Pipe(src=(1, 1), dst=(1, 0)),
+    )
+
+    net = ttl.PipeNet(graph=graph, local_pipes=local_pipes)
+    operation_pipenets = _build_pipenet_graph([net])
+    graph_net = operation_pipenets.graph_pipe_nets[0]
+
+    assert net.local_pipes == local_pipes
+    assert graph_net.local_nodes is None
+    assert tuple(pipe.src.coords for pipe in graph_net.local_pipes) == (
+        (0, 1),
+        (1, 1),
+    )
+
+
+def test_graph_pipenet_rejects_both_local_mappings():
+    domain = ttl.DeviceDomain((1, 2))
+    graph = ttl.TransferGraph.edges(domain, edges=[((0, 0), (0, 1))])
+
+    with pytest.raises(ValueError, match="local_nodes or local_pipes, not both"):
+        ttl.PipeNet(
+            graph=graph,
+            local_nodes=[(0, 0)],
+            local_pipes=[ttl.Pipe(src=(0, 0), dst=(1, 0))],
+        )
+
+
+@pytest.mark.parametrize(
+    "local_pipes, error",
+    [
+        ([], "at least one pipe"),
+        ([object()], "must contain Pipe objects"),
+    ],
+)
+def test_graph_pipenet_rejects_invalid_local_pipes(local_pipes, error):
+    domain = ttl.DeviceDomain((1, 2))
+    graph = ttl.TransferGraph.edges(domain, edges=[((0, 0), (0, 1))])
+
+    with pytest.raises((TypeError, ValueError), match=error):
+        ttl.PipeNet(graph=graph, local_pipes=local_pipes)
+
+
 @pytest.mark.parametrize(
     "local_nodes, error",
     [
@@ -72,6 +119,14 @@ def test_local_nodes_requires_graph():
         ttl.PipeNet(
             [ttl.Pipe(src=(0, 0), dst=(1, 0))],
             local_nodes=[(0, 0)],
+        )
+
+
+def test_local_pipes_requires_graph():
+    with pytest.raises(ValueError, match="requires a graph"):
+        ttl.PipeNet(
+            [ttl.Pipe(src=(0, 0), dst=(1, 0))],
+            local_pipes=[ttl.Pipe(src=(0, 0), dst=(1, 0))],
         )
 
 

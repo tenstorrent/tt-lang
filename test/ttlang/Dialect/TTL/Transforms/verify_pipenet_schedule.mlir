@@ -485,3 +485,112 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     func.return
   }
 }
+
+// -----
+
+// A constant expression equivalent to device_count - 1 produces three sends.
+// The receiver's four-iteration loop skips its local-device iteration, so the
+// expanded analysis schedule contains three matching posts. The pass analyzes
+// a clone and leaves both loops unchanged in its output.
+
+// CHECK-LABEL: func.func @derived_device_count_loop_bounds
+// CHECK: %[[REMOTE_ROUNDS:.*]] = arith.subi
+// CHECK: scf.for {{.*}} to %[[REMOTE_ROUNDS]] step
+// CHECK: scf.for
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @derived_device_count_loop_bounds()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %device_count = arith.constant 4 : index
+    %remote_rounds = arith.subi %device_count, %c1 : index
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %send_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %receive_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+        {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      scf.for %source_round = %c0 to %remote_rounds step %c1 {
+        %send = ttl.copy %send_dfb, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+               !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+    }
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      scf.for %source_round = %c0 to %device_count step %c1 {
+        %is_remote = arith.cmpi ne, %source_round, %c0 : index
+        scf.if %is_remote {
+          %reserved = ttl.cb_reserve %receive_dfb
+              : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+              -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+          %receive = ttl.copy %pipe, %reserved
+              : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+                 tensor<1x1x!ttcore.tile<32x32, bf16>>)
+              -> !ttl.receive_request
+          ttl.wait %receive : !ttl.receive_request
+        }
+      }
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Zero-trip schedule loops can carry values. The analysis clone replaces their
+// results with the initial values; the pass leaves the input loops unchanged.
+
+// CHECK-LABEL: func.func @zero_trip_schedule_loops
+// CHECK-COUNT-2: scf.for
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @zero_trip_schedule_loops()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %send_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %receive_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+        {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %send_result = scf.for %iteration = %c0 to %c0 step %c1
+          iter_args(%state = %c0) -> (index) {
+        %send = ttl.copy %send_dfb, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>,
+               !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+        scf.yield %state : index
+      }
+      %send_use = arith.addi %send_result, %c1 : index
+    }
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %receive_result = scf.for %iteration = %c0 to %c0 step %c1
+          iter_args(%state = %c0) -> (index) {
+        %reserved = ttl.cb_reserve %receive_dfb
+            : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        %receive = ttl.copy %pipe, %reserved
+            : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+               tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> !ttl.receive_request
+        ttl.wait %receive : !ttl.receive_request
+        scf.yield %state : index
+      }
+      %receive_use = arith.addi %receive_result, %c1 : index
+    }
+    func.return
+  }
+}
+
+// -----
