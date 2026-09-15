@@ -249,11 +249,21 @@ def test_persistent_state_shared_by_distinct_operations(
             sharding=sharding,
         )
         storage.allocate()
+        returned_state = storage.submit(
+            ttnn.full,
+            shape,
+            1.0,
+            dtype=ttnn_dtype,
+            layout=ttnn.TILE_LAYOUT,
+            device=device,
+            optional_tensor=state,
+        )
+        assert returned_state is state
         for iteration_index in range(2):
             add_one(state, options="--ttl-memory-model=compiler-l1")
             add_two(state, options="--ttl-memory-model=compiler-l1")
         actual = storage.submit(ttnn.to_torch, state).float()
-    expected = torch.full(shape, 6, dtype=torch_dtype).float()
+    expected = torch.full(shape, 7, dtype=torch_dtype).float()
     if torch_dtype == torch.bfloat16:
         assert_allclose(actual, expected, rtol=0.05, atol=1.0)
     else:
