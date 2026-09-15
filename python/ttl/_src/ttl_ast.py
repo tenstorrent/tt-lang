@@ -486,27 +486,49 @@ class TTLGenericCompiler(TTCompilerBase):
         records = []
         grid_cols, grid_rows = self.context.grid
         local_nodes = pipenet.local_nodes
-        if local_nodes is None:
+        local_pipes = pipenet.local_pipes
+        if local_nodes is None and local_pipes is None:
             local_nodes = tuple(
                 (node_x, node_y)
                 for node_y in range(grid_rows)
                 for node_x in range(grid_cols)
             )
-        for node_x, node_y in local_nodes:
-            if node_x >= grid_cols or node_y >= grid_rows:
-                raise ValueError(
-                    f"PipeNet local node {(node_x, node_y)} is outside "
-                    f"operation grid {(grid_cols, grid_rows)}"
+        if local_nodes is not None:
+            local_pipe_records = tuple(
+                (node, node, node, False) for node in local_nodes
+            )
+        else:
+            assert local_pipes is not None
+            local_pipe_records = tuple(
+                (
+                    local_pipe.src,
+                    local_pipe.dst_start,
+                    local_pipe.dst_end,
+                    local_pipe.is_collective,
                 )
+                for local_pipe in local_pipes
+            )
+        for source, destination_start, destination_end, _ in local_pipe_records:
+            for node_x, node_y in (source, destination_start, destination_end):
+                if node_x >= grid_cols or node_y >= grid_rows:
+                    raise ValueError(
+                        f"PipeNet local pipe coordinate {(node_x, node_y)} is "
+                        f"outside operation grid {(grid_cols, grid_rows)}"
+                    )
         for edge in pipenet._graph_edges:
             device_transfer = self._device_transfer_attr(pipenet.graph.domain, edge)
-            for node in local_nodes:
+            for (
+                source,
+                destination_start,
+                destination_end,
+                is_collective,
+            ) in local_pipe_records:
                 records.append(
                     self._pipe_record_attr(
-                        node,
-                        node,
-                        node,
-                        False,
+                        source,
+                        destination_start,
+                        destination_end,
+                        is_collective,
                         device_transfer=device_transfer,
                     )
                 )

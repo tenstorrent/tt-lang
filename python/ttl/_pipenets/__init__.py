@@ -79,6 +79,7 @@ class GraphPipeNetUse:
     edges: Tuple[TransferEdge, ...]
     transfer_graph: TransferGraph
     local_nodes: Optional[Tuple[Tuple[int, int], ...]]
+    local_pipes: Optional[Tuple[PipeUse, ...]]
 
 
 @dataclass
@@ -104,6 +105,7 @@ class OperationPipeNets:
         self,
         transfer_graph: TransferGraph,
         local_nodes: Optional[Tuple[Tuple[int, int], ...]] = None,
+        local_pipes: Optional[Tuple[PipeUse, ...]] = None,
     ) -> GraphPipeNetUse:
         """Append a graph PipeNet with one ordered device-edge record set."""
         edges = tuple(transfer_graph.iter_edges())
@@ -119,6 +121,7 @@ class OperationPipeNets:
             edges=edges,
             transfer_graph=transfer_graph,
             local_nodes=local_nodes,
+            local_pipes=local_pipes,
         )
         self.graph_pipe_nets.append(use)
         return use
@@ -131,7 +134,10 @@ class OperationPipeNets:
         """
         if not self.graph_pipe_nets and not self.pipe_nets:
             return None
-        if any(pipe_net.local_nodes is None for pipe_net in self.graph_pipe_nets):
+        if any(
+            pipe_net.local_nodes is None and pipe_net.local_pipes is None
+            for pipe_net in self.graph_pipe_nets
+        ):
             return None
         active: Set[int] = set()
         for net in self.pipe_nets:
@@ -140,9 +146,15 @@ class OperationPipeNets:
                 for coord in _expand_dst(pipe.dst):
                     active.add(_linearize(coord, grid))
         for pipe_net in self.graph_pipe_nets:
-            assert pipe_net.local_nodes is not None
-            for coordinates in pipe_net.local_nodes:
-                active.add(_linearize(coordinates, grid))
+            if pipe_net.local_nodes is not None:
+                for coordinates in pipe_net.local_nodes:
+                    active.add(_linearize(coordinates, grid))
+                continue
+            assert pipe_net.local_pipes is not None
+            for pipe in pipe_net.local_pipes:
+                active.add(_linearize(pipe.src.coords, grid))
+                for coordinates in _expand_dst(pipe.dst):
+                    active.add(_linearize(coordinates, grid))
         return active
 
     def validate(self) -> None:
@@ -152,6 +164,9 @@ class OperationPipeNets:
             if not net.pipes:
                 raise ValueError("PipeNet requires at least one pipe")
             _validate_no_mixed_kinds(net.pipes)
+        for net in self.graph_pipe_nets:
+            if net.local_pipes is not None:
+                _validate_no_mixed_kinds(net.local_pipes)
         _validate_consistent_coord_rank(self.pipe_nets)
 
     def resolve_device_domain(self, operation_domain: Any) -> Any:
