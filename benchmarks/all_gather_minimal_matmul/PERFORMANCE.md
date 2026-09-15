@@ -11,8 +11,8 @@ Four Blackhole P150b devices; global `M/K/N=9472/5120/15360`; per-device
 
 | Implementation | Device median ms (min-max) | TT-Lang/native | Warmups/samples |
 | --- | ---: | ---: | ---: |
-| TT-Lang bidirectional L1 | 2.218 (2.182-2.263) | 1.128 | 3/10 |
-| Native `all_gather_minimal_matmul_async` | 1.966 (1.957-2.018) | 1.000 | 3/10 |
+| TT-Lang bidirectional L1 | 2.243 (2.179-2.255) | 1.138 | 3/10 |
+| Native `all_gather_minimal_matmul_async` | 1.971 (1.955-2.008) | 1.000 | 3/10 |
 
 Both results passed PCC >= 0.99 and elementwise relative/absolute tolerances of
 0.05 against FP32 PyTorch for every warmup and sample.
@@ -101,7 +101,7 @@ consumer wait; they isolate communication and local distribution from matmul.
 | Group three compute rows per fabric transfer and inject DFB subviews | 2.306 (2.268-2.318) | 3/10 | -11.8% vs 2.613 ms adjacent control | Accepted. Reduces each communication worker's fabric transfers from 180 to 60 without changing payload bytes or matmul blocking. |
 | Submit intermediate fabric packets without per-packet completion waits | 2.269 (2.232-2.320) | 3/10 | -1.6% vs 2.306 ms | Accepted. Retains blocking completion for the final write-and-atomic packet. |
 | Bidirectional L1 transport; one mux buffer/client channel | 2.286 (2.267-2.338) | 3/10 | +1.1% vs mean of adjacent controls | Rejected. One slot serializes the 12 packets in each activation half. |
-| Bidirectional L1 transport; 22 mux buffers/client channel | 2.218 (2.182-2.263) | 3/10 | -0.9% vs mean of 2.242 and 2.234 ms controls | Accepted. The target selects the largest buffer count that fits the mux core's L1 interval. |
+| Bidirectional L1 transport; 22 mux buffers/client channel | 2.243 (2.179-2.255) | 3/10 | +0.2% vs mean of 2.242 and 2.234 ms controls | Accepted. The target derives the largest buffer count that fits the mux core's L1 interval. |
 | Alternate complete ten-tile K blocks across both ring directions | not measured | full-size compile | n/a | Rejected. The small four-device BF16 streaming case passed, but the full workload required 1,474,560 L1 bytes, 13,184 bytes over the 1,461,376-byte budget. |
 | Eight direct fabric managers to reduce per-manager DFB capacity | not measured | full-size launch | n/a | Rejected. Compilation and PipeNet verification passed, but four physical forwarding links could not bind eight interfering managers. |
 | Four bidirectional managers with two-block receive and relay DFBs | not measured | full-size launch | n/a | Rejected. The local relay filled while fabric sends waited for peers to post receives, producing the finite-capacity protocol deadlock reported in [#1037](https://github.com/tenstorrent/tt-lang/issues/1037). |
@@ -140,10 +140,10 @@ both ring directions directly into L1. Each direction has 24 fabric clients
 distributed across four links, with six clients per mux. A 51,200-byte half
 requires 12 packets at the 4,352-byte maximum payload. The target selects the
 largest uniform channel depth that fits the mux worker's L1 interval; this
-configuration provides 22 buffers per client channel. It measured 2.218 ms,
-0.9% below the mean of adjacent 2.242 and 2.234 ms grouped-row controls and
-2.2% below the previously published 2.269 ms result. The remaining difference
-from native is 252 us.
+configuration provides 22 buffers per client channel. It measured 2.243 ms,
+0.2% above the mean of the adjacent 2.242 and 2.234 ms grouped-row controls and
+1.1% below the previously published 2.269 ms result. The remaining difference
+from native is 273 us.
 
 The bidirectional experiments require both directions to populate one ten-tile
 activation block and the matching two weight slices before one matmul. Splitting
@@ -190,8 +190,8 @@ Device profiling measures first kernel start through final kernel end, averaged
 across the four devices. Host tensor creation, compilation, dispatch,
 correctness checks, and profiler processing are excluded.
 
-Measured 2026-09-15 03:30-03:35 UTC. TT-Lang parent `7542225348f8`, operation
-SHA-256 `7e3b54da48da`, compiler binary SHA-256 `6f4f849342e3`; TT-Metal
+Measured 2026-09-15 04:29-04:31 UTC. TT-Lang `aeccb35a3fc3`, operation
+SHA-256 `bb9d986cb3c1`, compiler binary SHA-256 `6f4f849342e3`; TT-Metal
 `41859079d939`, native binary SHA-256 `9815624f3813`; LLVM `37aca9d384347`;
 firmware 18.12.1; IRD v1.1.9.
 
