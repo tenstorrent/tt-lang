@@ -20,7 +20,6 @@ os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 import ttl
 
-
 FAKE_HEADER = "/dev/null/fake_shim.hpp"
 
 
@@ -38,6 +37,7 @@ def extern_dfb_template_kernel(inp):
                 ttl.dfb_descriptor(scratch_dfb),
                 ttl.dfb_descriptor(in_dfb),
                 -3,
+                ttl.uint32(0xFFFFFFFF),
                 True,
                 -1.0,
             ],
@@ -60,12 +60,12 @@ def extern_dfb_template_kernel(inp):
 # CHECK-DAG: %[[SCRATCH:.*]] = ttl.bind_cb{cb_index = 1
 # CHECK-DAG: %[[IN_CB:.*]] = ttl.bind_cb{cb_index = 0
 
-# CHECK: ttl.opaque_call "my_shim" template_args [#ttl.external_template_arg<dfb_descriptor, 0>, #ttl.external_template_arg<dfb_descriptor, 1>, #ttl.external_template_arg<signed_integer, -3>, #ttl.external_template_arg<boolean, 1>, #ttl.external_template_arg<unsigned_integer, 3212836864>] template_dfbs(%[[SCRATCH]], %[[IN_CB]] : !ttl.cb<{{.*}}>, !ttl.cb<{{.*}}>) ()
+# CHECK: ttl.opaque_call "my_shim" template_args [#ttl.external_template_arg<dfb_descriptor, 0>, #ttl.external_template_arg<dfb_descriptor, 1>, #ttl.external_template_arg<signed_integer, -3>, #ttl.external_template_arg<unsigned_integer, 4294967295>, #ttl.external_template_arg<boolean, 1>, #ttl.external_template_arg<unsigned_integer, 3212836864>] template_dfbs(%[[SCRATCH]], %[[IN_CB]] : !ttl.cb<{{.*}}>, !ttl.cb<{{.*}}>) ()
 
 # CHECK-CPP: === compute kernel written to {{.*}} ===
 # CHECK-CPP: namespace ttlang {
 # CHECK-CPP: struct DFBDescriptor {
-# CHECK-CPP: my_shim<ttlang::DFBDescriptor<1, 2, 3, 2048>, ttlang::DFBDescriptor<0, 1, 1, 2048>, -3, true, 3212836864U>();
+# CHECK-CPP: my_shim<ttlang::DFBDescriptor<1, 2, 3, 2048>, ttlang::DFBDescriptor<0, 1, 1, 2048>, -3, 4294967295U, true, 3212836864U>();
 
 
 if __name__ == "__main__":

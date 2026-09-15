@@ -27,7 +27,6 @@ from utils.correctness import assert_allclose as assert_numeric_allclose
 import ttl
 from ttl.diagnostics import TTLangCompileError
 
-
 NEGATE_HEADER = os.path.join(os.path.dirname(__file__), "include", "negate_tile_op.hpp")
 TYPED_ARGS_HEADER = os.path.join(
     os.path.dirname(__file__), "include", "typed_args_op.hpp"
@@ -39,6 +38,17 @@ SCALAR_RESULT_HEADER = os.path.join(
     os.path.dirname(__file__), "include", "scalar_result_op.hpp"
 )
 MODULE_GLOBAL_SEMAPHORE = None
+
+
+def test_uint32_template_value_validation():
+    assert ttl.uint32(0) == 0
+    assert ttl.uint32(0xFFFFFFFF) == 0xFFFFFFFF
+    with pytest.raises(TypeError, match="requires an int"):
+        ttl.uint32(True)
+    with pytest.raises(ValueError, match="must fit in 32 bits"):
+        ttl.uint32(-1)
+    with pytest.raises(ValueError, match="must fit in 32 bits"):
+        ttl.uint32(1 << 32)
 
 
 @ttl.operation(grid=(1, 1))

@@ -2412,6 +2412,7 @@ class TTLGenericCompiler(TTCompilerBase):
         - ``ttl.dfb_descriptor(dfb)`` -- typed allocation descriptor
         - ``ttl.get_dfb_id(dfb)`` -- compatibility integer index
         - ``int`` literals / module-level ints -- signed 32-bit payload
+        - ``ttl.uint32(value)`` -- unsigned 32-bit payload
         - ``bool`` literals / module-level bools -- boolean payload
         - ``float`` literals / module-level floats -- binary32 bit payload
         """
@@ -2479,6 +2480,12 @@ class TTLGenericCompiler(TTCompilerBase):
             return _dfb_reference(arg_kind.DFBIndex)
         if isinstance(node, ast.Call) and self._is_ttl_api_call(node, "dfb_descriptor"):
             return _dfb_reference(arg_kind.DFBDescriptor)
+        if isinstance(node, ast.Call) and self._is_ttl_api_call(node, "uint32"):
+            if len(node.args) != 1 or node.keywords:
+                self._raise_error(node, "ttl.uint32() requires exactly 1 argument")
+            return _unsigned_integer(
+                self._resolve_static_int(node.args[0], "ttl.uint32() argument")
+            )
 
         if isinstance(node, ast.Constant):
             # bool is a subclass of int; check explicitly first.
