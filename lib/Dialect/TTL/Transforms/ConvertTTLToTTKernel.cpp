@@ -1774,6 +1774,206 @@ private:
 // DFB reconfiguration lowering
 //===----------------------------------------------------------------------===//
 
+enum class MetalDataFormat : int64_t {
+  Float32 = 0,
+  Tf32 = 4,
+  Float16B = 5,
+  Bfp8B = 6,
+  Bfp4B = 7,
+  Int32 = 8,
+  UInt16 = 9,
+  UInt32 = 24,
+  UInt8 = 30,
+};
+
+static FailureOr<MetalDataFormat> getMetalDataFormat(Type elementType) {
+  ttcore::DataType dataType;
+  if (auto tileType = dyn_cast<ttcore::TileType>(elementType)) {
+    dataType = tileType.getDataType();
+  } else if (elementType.isBF16()) {
+    dataType = ttcore::DataType::BFloat16;
+  } else if (elementType.isF32()) {
+    dataType = ttcore::DataType::Float32;
+  } else if (auto integerType = dyn_cast<IntegerType>(elementType)) {
+    if (integerType.getWidth() == 32 && integerType.isUnsigned()) {
+      dataType = ttcore::DataType::UInt32;
+    } else if (integerType.getWidth() == 16 && integerType.isUnsigned()) {
+      dataType = ttcore::DataType::UInt16;
+    } else if (integerType.getWidth() == 8 && integerType.isUnsigned()) {
+      dataType = ttcore::DataType::UInt8;
+    } else if (integerType.getWidth() == 32 && !integerType.isUnsigned()) {
+      dataType = ttcore::DataType::Int32;
+    } else {
+      return failure();
+    }
+  } else {
+    return failure();
+  }
+
+  switch (dataType) {
+  case ttcore::DataType::Float32:
+    return MetalDataFormat::Float32;
+  case ttcore::DataType::BFloat16:
+    return MetalDataFormat::Float16B;
+  case ttcore::DataType::BFP_BFloat8:
+    return MetalDataFormat::Bfp8B;
+  case ttcore::DataType::BFP_BFloat4:
+    return MetalDataFormat::Bfp4B;
+  case ttcore::DataType::Int32:
+    return MetalDataFormat::Int32;
+  case ttcore::DataType::UInt16:
+    return MetalDataFormat::UInt16;
+  case ttcore::DataType::UInt32:
+    return MetalDataFormat::UInt32;
+  case ttcore::DataType::UInt8:
+    return MetalDataFormat::UInt8;
+  default:
+    return failure();
+  }
+}
+
+static bool haveMatchingRuntimeFormat(DictionaryAttr lhs, DictionaryAttr rhs) {
+  return lhs.getAs<TypeAttr>("element_type") ==
+             rhs.getAs<TypeAttr>("element_type") &&
+         lhs.getAs<IntegerAttr>("page_size") ==
+             rhs.getAs<IntegerAttr>("page_size");
+}
+
+struct DFBDescriptorUpdatePlan {
+  SmallVector<Attribute> templateArguments;
+  bool updatesDescriptors = false;
+};
+
+static FailureOr<DFBDescriptorUpdatePlan>
+buildDFBDescriptorUpdatePlan(DFBReconfigurationOp op, ArrayAttr dfbEntries,
+                             int64_t ordinal) {
+  func::FuncOp kernel = op->getParentOfType<func::FuncOp>();
+  assert(kernel && "DFB reconfiguration must be inside a kernel function");
+  bool fp32DestinationAccumulation = false;
+  SmallVector<int32_t> unpackToDestinationIndices;
+  if (auto enabled = kernel->getAttrOfType<BoolAttr>(kFp32DestAccEnAttrName)) {
+    fp32DestinationAccumulation = enabled.getValue();
+  }
+  if (auto indices =
+          kernel->getAttrOfType<DenseI32ArrayAttr>(kUnpackToDestFp32AttrName)) {
+    unpackToDestinationIndices.append(indices.asArrayRef().begin(),
+                                      indices.asArrayRef().end());
+  }
+
+  DFBDescriptorUpdatePlan updatePlan;
+  SmallVector<Attribute> descriptorWords;
+  IntegerType templateWordType =
+      IntegerType::get(op.getContext(), 32, IntegerType::Unsigned);
+  for (Attribute rawEntry : dfbEntries) {
+    auto entry = dyn_cast<DictionaryAttr>(rawEntry);
+    auto physicalIndex =
+        entry ? entry.getAs<IntegerAttr>("dfb_index") : IntegerAttr();
+    auto configurations =
+        entry ? entry.getAs<ArrayAttr>("configurations") : ArrayAttr();
+    if (!physicalIndex || !configurations) {
+      op.emitError("contains malformed finalized DFB reconfiguration metadata");
+      return failure();
+    }
+
+    DictionaryAttr targetConfiguration;
+    for (Attribute rawConfiguration : configurations) {
+      auto configuration = dyn_cast<DictionaryAttr>(rawConfiguration);
+      if (!configuration) {
+        op.emitError("contains malformed finalized DFB configuration metadata");
+        return failure();
+      }
+      auto entryOrdinal =
+          configuration.getAs<IntegerAttr>("entry_reconfiguration");
+      if (entryOrdinal && entryOrdinal.getInt() == ordinal) {
+        targetConfiguration = configuration;
+        break;
+      }
+    }
+    if (!targetConfiguration) {
+      continue;
+    }
+
+    bool indexChangesFormat =
+        llvm::any_of(configurations, [&](Attribute rawConfiguration) {
+          auto configuration = cast<DictionaryAttr>(rawConfiguration);
+          return !haveMatchingRuntimeFormat(targetConfiguration, configuration);
+        });
+    if (!indexChangesFormat) {
+      continue;
+    }
+
+    auto elementType = targetConfiguration.getAs<TypeAttr>("element_type");
+    auto pageSize = targetConfiguration.getAs<IntegerAttr>("page_size");
+    if (!elementType || !pageSize) {
+      op.emitError("contains incomplete finalized DFB format metadata");
+      return failure();
+    }
+    FailureOr<MetalDataFormat> l1Format =
+        getMetalDataFormat(elementType.getValue());
+    if (failed(l1Format)) {
+      op.emitError("cannot reconfigure unsupported DFB element type ")
+          << elementType.getValue();
+      return failure();
+    }
+
+    int64_t tileHeight = 32;
+    int64_t tileWidth = 32;
+    if (auto tileType = dyn_cast<ttcore::TileType>(elementType.getValue())) {
+      tileHeight = tileType.getHeight();
+      tileWidth = tileType.getWidth();
+    }
+    if ((tileWidth != 16 && tileWidth != 32) ||
+        !llvm::is_contained(ArrayRef<int64_t>{1, 2, 4, 8, 16, 32},
+                            tileHeight)) {
+      op.emitError("cannot reconfigure unsupported DFB tile dimensions ")
+          << tileHeight << 'x' << tileWidth;
+      return failure();
+    }
+    int64_t faceHeight = std::min<int64_t>(tileHeight, 16);
+    int64_t faceWidth = std::min<int64_t>(tileWidth, 16);
+    int64_t numFaces = (tileHeight / faceHeight) * (tileWidth / faceWidth);
+    bool isFloat32 = *l1Format == MetalDataFormat::Float32;
+    MetalDataFormat fp32Route = fp32DestinationAccumulation
+                                    ? MetalDataFormat::Tf32
+                                    : MetalDataFormat::Float16B;
+    bool unpackToDestination =
+        llvm::is_contained(unpackToDestinationIndices,
+                           static_cast<int32_t>(physicalIndex.getInt()));
+    MetalDataFormat unpackDestinationFormat =
+        isFloat32 ? (unpackToDestination ? MetalDataFormat::Float32 : fp32Route)
+                  : *l1Format;
+    bool isBlockFloat = *l1Format == MetalDataFormat::Bfp8B ||
+                        *l1Format == MetalDataFormat::Bfp4B;
+    MetalDataFormat packSourceFormat =
+        isFloat32 ? (fp32DestinationAccumulation ? MetalDataFormat::Float32
+                                                 : fp32Route)
+                  : (isBlockFloat ? MetalDataFormat::Bfp8B : *l1Format);
+
+    int64_t words[] = {
+        physicalIndex.getInt(),
+        pageSize.getInt(),
+        static_cast<int64_t>(*l1Format),
+        tileHeight,
+        tileWidth,
+        faceHeight,
+        numFaces,
+        static_cast<int64_t>(unpackDestinationFormat),
+        static_cast<int64_t>(packSourceFormat),
+    };
+    for (int64_t word : words) {
+      descriptorWords.push_back(IntegerAttr::get(templateWordType, word));
+    }
+  }
+
+  if (!descriptorWords.empty()) {
+    updatePlan.updatesDescriptors = true;
+    updatePlan.templateArguments.push_back(
+        IntegerAttr::get(templateWordType, descriptorWords.size() / 9));
+    updatePlan.templateArguments.append(descriptorWords);
+  }
+  return updatePlan;
+}
+
 struct DFBReconfigurationLowering : OpConversionPattern<DFBReconfigurationOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -1808,6 +2008,12 @@ struct DFBReconfigurationLowering : OpConversionPattern<DFBReconfigurationOp> {
       return op.emitError("runtime argument index is out of range");
     }
 
+    FailureOr<DFBDescriptorUpdatePlan> descriptorUpdatePlan =
+        buildDFBDescriptorUpdatePlan(op, dfbEntries, ordinal);
+    if (failed(descriptorUpdatePlan)) {
+      return failure();
+    }
+
     Value callerRuntimeArgCount = ttk::GetCompileArgValOp::create(
         rewriter, op.getLoc(), rewriter.getI32Type(),
         static_cast<int32_t>(dfbEntries.size()));
@@ -1822,9 +2028,13 @@ struct DFBReconfigurationLowering : OpConversionPattern<DFBReconfigurationOp> {
         runtimeArgIndex);
     ttk::OpaqueCallOp::create(
         rewriter, op.getLoc(), TypeRange{},
-        rewriter.getStringAttr("experimental::reconfigure_dfb_interfaces"),
+        rewriter.getStringAttr(
+            descriptorUpdatePlan->updatesDescriptors
+                ? "experimental::reconfigure_dfb_descriptors"
+                : "experimental::reconfigure_dfb_interfaces"),
         rewriter.getStringAttr("<cstdint>"), ValueRange{configurationAddress},
-        ArrayAttr(), rewriter.getDenseI32ArrayAttr({0}), DenseI32ArrayAttr());
+        rewriter.getArrayAttr(descriptorUpdatePlan->templateArguments),
+        rewriter.getDenseI32ArrayAttr({0}), DenseI32ArrayAttr());
     rewriter.eraseOp(op);
     return success();
   }

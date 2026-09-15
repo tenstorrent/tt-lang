@@ -1963,6 +1963,7 @@ def build_kernel_descriptors(
     device_coordinates: Optional[List[int]] = None,
     descriptor_resource_plans: Optional[Sequence[_KernelDescriptorResourcePlan]] = None,
     dfb_reconfiguration_runtime_args: Optional[Dict[Tuple[int, int], List[int]]] = None,
+    reconfigure_dfb_descriptors: bool = False,
 ) -> List[Any]:
     """
     Build kernel descriptors for ttnn.generic_op.
@@ -1990,6 +1991,8 @@ def build_kernel_descriptors(
             kernel_specs.
         dfb_reconfiguration_runtime_args: Per-core L1 configuration addresses
             in finalized boundary order.
+        reconfigure_dfb_descriptors: Whether reconfiguration operations update
+            TT-Metal's per-kernel DFB descriptor tables.
 
     Returns:
         List of ttnn.KernelDescriptor objects.
@@ -2088,6 +2091,26 @@ def build_kernel_descriptors(
                 for runtime_arg in descriptor_resource_plan.runtime_args
             ]
             defines = list(descriptor_resource_plan.defines)
+
+        if reconfigure_dfb_descriptors:
+            descriptor_reconfiguration_define = (
+                "TTLANG_RUNTIME_DFB_RECONFIGURATION",
+                "1",
+            )
+            matching_defines = [
+                define
+                for define in defines
+                if define[0] == descriptor_reconfiguration_define[0]
+            ]
+            if matching_defines and matching_defines != [
+                descriptor_reconfiguration_define
+            ]:
+                raise ValueError(
+                    "TTLANG_RUNTIME_DFB_RECONFIGURATION is reserved for "
+                    "compiler-selected DFB descriptor reconfiguration"
+                )
+            if not matching_defines:
+                defines.append(descriptor_reconfiguration_define)
 
         descriptor_variants: List[_KernelDescriptorVariant]
         if not reconfiguration_args:
@@ -4792,6 +4815,10 @@ def _run_kernel_on_device_impl(
             ),
             dfb_reconfiguration_runtime_args=(
                 reconfiguration_resources.configuration_runtime_args
+            ),
+            reconfigure_dfb_descriptors=(
+                dfb_reconfiguration_plan is not None
+                and dfb_reconfiguration_plan.requires_descriptor_reconfiguration
             ),
         )
         program_descriptor = build_program_descriptor(

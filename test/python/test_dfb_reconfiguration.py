@@ -593,7 +593,8 @@ def _make_cross_core_tensor_backed_reconfiguration_operation():
     return cross_core_tensor_backed_reconfiguration_operation
 
 
-def _make_native_format_reconfiguration_operation(data_format):
+def _make_native_format_reconfiguration_operation(data_format, second_data_format=None):
+    second_data_format = second_data_format or data_format
     compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
     reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
     writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
@@ -607,8 +608,8 @@ def _make_native_format_reconfiguration_operation(data_format):
     ):
         first_source = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
         first_result = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
-        second_source = ttl.make_dfb(data_format, shape=(1, 2), block_count=3)
-        second_result = ttl.make_dfb(data_format, shape=(1, 2), block_count=3)
+        second_source = ttl.make_dfb(second_data_format, shape=(1, 2), block_count=3)
+        second_result = ttl.make_dfb(second_data_format, shape=(1, 2), block_count=3)
 
         @ttl.compute(kernel=compute_kernel)
         def compute():
@@ -831,6 +832,77 @@ def test_reconfiguration_supports_compute_dfb_formats(
     assert_pcc(expected_second.float(), actual_second.float(), 0.9999)
     assert_allclose(actual_first, expected_first, rtol=0, atol=0)
     assert_allclose(actual_second, expected_second, rtol=0, atol=0)
+
+
+@pytest.mark.parametrize(
+    "memory_config",
+    [ttnn.DRAM_MEMORY_CONFIG, ttnn.L1_MEMORY_CONFIG],
+    ids=["dram", "l1"],
+)
+def test_reconfiguration_reuses_physical_dfbs_across_formats(
+    device, memory_config, monkeypatch, tmp_path
+):
+    if ttl_api._detect_device_arch(device) != "blackhole":
+        pytest.skip("requires Blackhole DFB reconfiguration support")
+
+    operation = _make_native_format_reconfiguration_operation("bfloat16", "bfloat8_b")
+    mlir_file = tmp_path / "mixed_format_reconfiguration.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(mlir_file))
+    first_host = _native_format_host_tensor((32, 32), torch.bfloat16, 3)
+    second_host = _native_format_host_tensor((32, 64), torch.bfloat16, 11)
+
+    for invocation_index in range(2):
+        first_input = _to_device_with_dtype(
+            first_host + invocation_index,
+            device,
+            ttnn.bfloat16,
+            memory_config,
+        )
+        second_input = _to_device_with_dtype(
+            second_host + invocation_index,
+            device,
+            ttnn.bfloat8_b,
+            memory_config,
+        )
+        first_output = _to_device_with_dtype(
+            torch.zeros_like(first_host),
+            device,
+            ttnn.bfloat16,
+            memory_config,
+        )
+        second_output = _to_device_with_dtype(
+            torch.zeros_like(second_host),
+            device,
+            ttnn.bfloat8_b,
+            memory_config,
+        )
+
+        operation(
+            first_input,
+            first_output,
+            second_input,
+            second_output,
+            options="--ttl-reuse-user-dfbs",
+        )
+
+        assert_allclose(
+            ttnn.to_torch(first_output).float(),
+            ttnn.to_torch(first_input).float(),
+            rtol=0,
+            atol=0,
+        )
+        assert_allclose(
+            ttnn.to_torch(second_output).float(),
+            ttnn.to_torch(second_input).float(),
+            rtol=0,
+            atol=0,
+        )
+
+    allocation_metadata = mlir_file.read_text().partition(
+        "ttl.dfb_reconfiguration_plan"
+    )[0]
+    assert allocation_metadata.count("dfb_index = ") == 2
+    assert "experimental::reconfigure_dfb_descriptors" in mlir_file.read_text()
 
 
 # U8 reconfiguration is qualified only for data-movement DFB interfaces.
