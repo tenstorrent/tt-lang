@@ -193,9 +193,9 @@ class SRAMStorage:
         cores,
         dtype,
         layout,
+        sharding,
         addressing="uniform",
         initialize="zeros",
-        sharding=None,
     ):
         """Declare a BF16/FP32 tiled tensor using TTNN shard-layout validation."""
         api = self._api
@@ -249,9 +249,6 @@ class SRAMStorage:
                 core_ranges = api.CoreRangeSet([rectangle])
             shard_spec = api.ShardSpec(
                 core_ranges, shard_shape, api.ShardOrientation.ROW_MAJOR
-            )
-            sharding = (
-                api.TensorMemoryLayout.HEIGHT_SHARDED if sharding is None else sharding
             )
             if sharding not in (
                 api.TensorMemoryLayout.HEIGHT_SHARDED,

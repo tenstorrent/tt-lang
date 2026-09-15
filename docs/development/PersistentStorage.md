@@ -31,6 +31,7 @@ try:
         cores=((0, 0), (1, 0)),
         dtype=ttnn.float32,
         layout=ttnn.TILE_LAYOUT,
+        sharding=ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
         addressing="per-core",
         initialize="zeros",
     )
