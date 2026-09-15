@@ -10,14 +10,16 @@ uses that Python itself must resolve: importing, aliasing, and introspecting a
 signature outside kernel source.
 
 Only the operations the compiler implements appear here. ``mask``,
-``mask_posinf``, ``where``, ``squeeze`` and ``unsqueeze`` are specified but not
-yet implemented, and are absent rather than bound to a stub.
+``mask_posinf`` and ``where`` are specified but not yet implemented, and are
+absent rather than bound to a stub.
 """
 
-from .operators import broadcast, fill, transpose
+from .operators import broadcast, fill, squeeze, transpose, unsqueeze
 
 __all__ = [
     "broadcast",
     "fill",
+    "squeeze",
     "transpose",
+    "unsqueeze",
 ]
