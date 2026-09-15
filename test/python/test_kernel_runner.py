@@ -3325,7 +3325,9 @@ def test_reconfiguration_scratch_excludes_unmodified_descriptors(monkeypatch):
     assert scratch_allocations[0][1:] == (2048, device, True)
 
 
-def test_reconfiguration_scratch_reuses_physical_storage(monkeypatch):
+def test_reconfiguration_scratch_reuses_storage_and_allocates_largest_first(
+    monkeypatch,
+):
     fake_ttnn = _FakeTTNN()
     fake_ttnn.uint32 = "uint32"
     fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
@@ -3380,6 +3382,16 @@ def test_reconfiguration_scratch_reuses_physical_storage(monkeypatch):
         (DFBStorageSegment(nodes=((1, 0),)),),
         storage_index=3,
     )
+    largest_config = PhysicalDFBConfig(
+        2,
+        1,
+        "bfloat16",
+        1,
+        8192,
+        (32, 32),
+        (DFBStorageSegment(nodes=((0, 0),)),),
+        storage_index=4,
+    )
     plan = DFBReconfigurationPlan(
         boundary_ordinals=(7,),
         dfb_epochs=(
@@ -3391,6 +3403,10 @@ def test_reconfiguration_scratch_reuses_physical_storage(monkeypatch):
                 DFBConfigurationEpoch(None, second_config),
                 DFBConfigurationEpoch(7, second_config),
             ),
+            (
+                DFBConfigurationEpoch(None, largest_config),
+                DFBConfigurationEpoch(7, largest_config),
+            ),
         ),
     )
 
@@ -3401,9 +3417,12 @@ def test_reconfiguration_scratch_reuses_physical_storage(monkeypatch):
         device=device,
     )
 
-    assert len(scratch_allocations) == 1
-    assert scratch_allocations[0][1:] == (4096, device, True)
+    assert [allocation[1:] for allocation in scratch_allocations] == [
+        (8192, device, True),
+        (4096, device, True),
+    ]
     assert resources.scratch_tensors[0] is resources.scratch_tensors[1]
+    assert resources.scratch_tensors[0] is not resources.scratch_tensors[2]
 
 
 def test_reconfiguration_rejects_undersized_pipe_backing(monkeypatch):

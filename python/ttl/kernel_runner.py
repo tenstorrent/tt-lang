@@ -3073,7 +3073,23 @@ def build_dfb_reconfiguration_runtime_resources(
         storage_index = storage_indices.pop()
         unallocated_indices_by_storage.setdefault(storage_index, []).append(dfb_index)
 
-    for member_indices in unallocated_indices_by_storage.values():
+    def scratch_allocation_order(item):
+        storage_index, member_indices = item
+        storage_bytes = max(
+            scratch_bytes_by_index[dfb_index] for dfb_index in member_indices
+        )
+        storage_nodes = {
+            node
+            for dfb_index in member_indices
+            for node in scratch_nodes_by_index[dfb_index]
+        }
+        return (-storage_bytes, -len(storage_nodes), storage_index)
+
+    # Large and broadly resident buffers have fewer valid placements after
+    # smaller per-core allocations fragment the lockstep-compatible ranges.
+    for _, member_indices in sorted(
+        unallocated_indices_by_storage.items(), key=scratch_allocation_order
+    ):
         scratch_tensor = _allocate_l1_sharded_storage_tensor(
             _make_singleton_core_ranges(
                 sorted(
