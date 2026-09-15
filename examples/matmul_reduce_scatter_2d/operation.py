@@ -10,8 +10,8 @@ bias per device: 1 x N/P_N, FP32
 matmul partial per device: M x N/P_N
 output per device: M/P_K x N/P_N
 
-data-movement thread 0: exchange peer partial blocks in deadlock-free order
-data-movement thread 1: distribute inputs; write the preceding reduced block
+data-movement thread 0: exchange partial blocks; write preceding reduced output
+data-movement thread 1: distribute activation, weight, and bias inputs
 compute: calculate local and peer blocks; reduce the preceding pair; add bias
 """
 
@@ -138,7 +138,8 @@ def make_matmul_reduce_scatter_2d_operation(
 
         @ttl.datamovement()
         def exchange_partial_blocks():
-            for _output_index in range(output_block_count):
+            m_worker_index, n_worker_index = ttl.node(dims=2)
+            for output_index in range(output_block_count):
 
                 def receive_group_zero_partial(pipe):
                     remote_partial = remote_partial_dfb.reserve()
@@ -180,8 +181,46 @@ def make_matmul_reduce_scatter_2d_operation(
 
                 reduce_to_group_one_net.if_src(send_group_one_partial)
 
+                if output_index > 0:
+                    previous_output_index = output_index - 1
+                    previous_n_round = previous_output_index % n_round_count
+                    previous_n_begin = (
+                        previous_n_round * n_worker_count + n_worker_index
+                    ) * n_block_tiles
+                    previous_m_round = previous_output_index // n_round_count
+                    previous_local_m_begin = (
+                        previous_m_round * m_worker_count + m_worker_index
+                    ) * m_block_tiles
+                    output_block = output_dfb.wait()
+                    ttl.copy(
+                        output_block,
+                        output_shard[
+                            previous_local_m_begin : previous_local_m_begin
+                            + m_block_tiles,
+                            previous_n_begin : previous_n_begin + n_block_tiles,
+                        ],
+                    ).wait()
+
+            final_output_index = output_block_count - 1
+            final_m_round = final_output_index // n_round_count
+            final_n_round = final_output_index % n_round_count
+            final_local_m_begin = (
+                final_m_round * m_worker_count + m_worker_index
+            ) * m_block_tiles
+            final_n_begin = (
+                final_n_round * n_worker_count + n_worker_index
+            ) * n_block_tiles
+            output_block = output_dfb.wait()
+            ttl.copy(
+                output_block,
+                output_shard[
+                    final_local_m_begin : final_local_m_begin + m_block_tiles,
+                    final_n_begin : final_n_begin + n_block_tiles,
+                ],
+            ).wait()
+
         @ttl.datamovement()
-        def distribute_inputs_and_write_outputs():
+        def distribute_inputs():
             m_worker_index, n_worker_index = ttl.node(dims=2)
             local_device_index = device_domain.current_index()
             local_k_group_index = local_device_index // n_group_count
@@ -249,44 +288,6 @@ def make_matmul_reduce_scatter_2d_operation(
                     bias_shard[0:1, n_begin : n_begin + n_block_tiles],
                     bias_block,
                 ).wait()
-
-                if output_index > 0:
-                    previous_output_index = output_index - 1
-                    previous_n_round = previous_output_index % n_round_count
-                    previous_n_begin = (
-                        previous_n_round * n_worker_count + n_worker_index
-                    ) * n_block_tiles
-                    previous_m_round = previous_output_index // n_round_count
-                    previous_local_m_begin = (
-                        previous_m_round * m_worker_count + m_worker_index
-                    ) * m_block_tiles
-                    output_block = output_dfb.wait()
-                    ttl.copy(
-                        output_block,
-                        output_shard[
-                            previous_local_m_begin : previous_local_m_begin
-                            + m_block_tiles,
-                            previous_n_begin : previous_n_begin + n_block_tiles,
-                        ],
-                    ).wait()
-
-            final_output_index = output_block_count - 1
-            final_m_round = final_output_index // n_round_count
-            final_n_round = final_output_index % n_round_count
-            final_local_m_begin = (
-                final_m_round * m_worker_count + m_worker_index
-            ) * m_block_tiles
-            final_n_begin = (
-                final_n_round * n_worker_count + n_worker_index
-            ) * n_block_tiles
-            output_block = output_dfb.wait()
-            ttl.copy(
-                output_block,
-                output_shard[
-                    final_local_m_begin : final_local_m_begin + m_block_tiles,
-                    final_n_begin : final_n_begin + n_block_tiles,
-                ],
-            ).wait()
 
         @ttl.compute()
         def compute_partial_and_reduce():
