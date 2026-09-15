@@ -43,6 +43,31 @@ all-gather and L1 distribution sequence, then discards each block after its
 consumer wait. The composed operation validates the same data movement through
 its matmul output. No isolated native activation result was measured.
 
+## Additive timing decomposition
+
+The rows below are mutually exclusive and sum to the selected device medians.
+Input waits are measured on the operation-ending unpack thread. TT-Lang
+compute/control is the mean of independent activation-counter and
+weight-counter runs; their half-spread is 9.447 us.
+
+| Component | TT-Lang us | Native us | Difference us |
+| --- | ---: | ---: | ---: |
+| Activation DFB wait | 792.118 | 376.137 | +415.981 |
+| Weight DFB wait | 29.120 | 90.951 | -61.831 |
+| Matmul and control | 1346.265 | 1488.576 | -142.311 |
+| Compute-thread alignment | 1.224 | 0.223 | +1.001 |
+| Post-compute data movement | 72.708 | 9.579 | +63.128 |
+| Start and cross-run residual | 1.779 | 5.120 | -3.341 |
+| **Complete operation** | **2243.214** | **1970.586** | **+272.628** |
+
+Activation delivery is the only large positive compute-envelope term. Matching
+native activation wait would reduce the modeled TT-Lang interval to 1.827 ms;
+TT-Lang already spends 142.311 us less in matmul/control and 61.831 us less in
+weight waits. Aggregate-counter medians were 2.249 ms for activation and
+2.232 ms for the accepted weight repeat. The native counter median was
+1.965 ms. These differ from adjacent uninstrumented controls by at most 0.9%.
+All executions passed the benchmark's 13 correctness checks.
+
 ## Configurations
 
 Each implementation uses its selected grid, blocking, and communication
