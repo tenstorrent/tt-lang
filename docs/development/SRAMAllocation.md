@@ -324,7 +324,7 @@ buildDomains(operation):
 
 Unknown activity retains the payload. Conflict edges remain conservative across the operation: a conflict observed on another core is not currently removed. Control records remain at fixed offsets on every core, including cores without that owner's payload, so reset and allocation-group ownership retain their existing contracts. These choices bound the current savings; independent placement does not imply an optimal domain partition or minimum total device reservation.
 
-The existing core-specialization pass creates one kernel instance per core. Finalized metadata supplies each instance's payload offsets and each computed PipeNet argument's destination DFB, core, and logical device. Transport finalization preserves those identities when it removes unused receiver arguments. The runtime validates domain membership, shared layouts, storage aliases, and receiver bindings before creating resources.
+The existing core-specialization pass creates one kernel instance per core. Finalized metadata supplies each instance's payload offsets and each computed PipeNet argument's destination DFB, core, and logical device. Transport finalization preserves those identities when it removes unused receiver arguments. The runtime validates domain membership, shared layouts, storage aliases, and receiver bindings before creating resources. Independently addressed tensor backing requires direct local access on every executing core; general tensor access and multicast require one common base address and are rejected.
 
 ```text
 bindDomains(invocation):
