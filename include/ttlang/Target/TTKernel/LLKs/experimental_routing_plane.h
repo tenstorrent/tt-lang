@@ -180,6 +180,9 @@ private:
   }
 
   void closeMux() {
+    // Disconnect only after the mux has consumed every submitted packet.
+    while (muxSender.get_num_free_write_slots() != muxNumBuffers) {
+    }
     tt::tt_fabric::fabric_client_disconnect(muxSender);
     if (terminationMaster) {
       auto *terminationSync = reinterpret_cast<volatile tt_l1_ptr uint32_t *>(

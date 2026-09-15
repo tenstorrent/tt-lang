@@ -358,7 +358,7 @@ operations to TTKernel.
 | `pipe-computed-addresses` | bool | `true` | Use computed receiver DFB addresses for eligible PipeNet transfers. When false, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
 | `pipe-capacity-sync` | bool | `true` | Use capacity-counter synchronization when the receiver wait and pop execute on the receiver NOC thread and the computed-address transfer passes the DFB ownership and count proofs. When false, computed-address transfers use receiver-post synchronization. |
 | `pipe-global-semaphores-only` | bool | `false` | Allocate all compiler-managed PipeNet synchronization counters in GlobalSemaphore storage. |
-| `fabric-mux` | bool | `true` | Mark one single-execution fabric-manager lifetime as eligible for program-local TT-Metal mux assignment. Target binding still selects direct connections when they fit. |
+| `fabric-mux` | bool | `true` | Mark compiler-proven single-execution fabric-manager lifetimes as eligible for program-local TT-Metal mux assignment. Target binding still selects direct connections when they fit. |
 | `l1-budget-override` | uint32_t | `0` (target default) | Override the exact combined per-core budget for target-aligned finalized DFBs, synchronized-reset state, reconfiguration tensors, PipeNet scratch, and GlobalSemaphore allocations. |
 
 ```bash
