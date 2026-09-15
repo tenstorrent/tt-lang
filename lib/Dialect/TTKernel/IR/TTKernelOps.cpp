@@ -843,9 +843,9 @@ static FailureOr<int64_t> lookupConstantTableValue(int64_t index,
 
 OpFoldResult ConstantTableLookupOp::fold(FoldAdaptor adaptor) {
   ArrayRef<int64_t> values = getValues();
-  if (!values.empty() &&
-      llvm::all_of(values.drop_front(),
-                   [&](int64_t value) { return value == values.front(); })) {
+  if (!values.empty() && llvm::all_of(values.drop_front(), [&](int64_t value) {
+        return value == values.front();
+      })) {
     return IntegerAttr::get(getResult().getType(), values.front());
   }
 
@@ -867,11 +867,10 @@ void ConstantTableLookupOp::getCanonicalizationPatterns(
                    PatternRewriter &rewriter) -> LogicalResult {
     ArrayRef<int64_t> values = lookupOp.getValues();
     if (!values.empty() &&
-        llvm::all_of(values.drop_front(), [&](int64_t value) {
-          return value == values.front();
-        })) {
+        llvm::all_of(values.drop_front(),
+                     [&](int64_t value) { return value == values.front(); })) {
       rewriter.replaceOpWithNewOp<arith::ConstantIndexOp>(lookupOp,
-                                                           values.front());
+                                                          values.front());
       return success();
     }
 
@@ -880,8 +879,8 @@ void ConstantTableLookupOp::getCanonicalizationPatterns(
       return rewriter.notifyMatchFailure(lookupOp, "index is not constant");
     }
 
-    FailureOr<int64_t> tableValue = lookupConstantTableValue(
-        indexValue.getSExtValue(), values);
+    FailureOr<int64_t> tableValue =
+        lookupConstantTableValue(indexValue.getSExtValue(), values);
     if (failed(tableValue)) {
       return rewriter.notifyMatchFailure(lookupOp,
                                          "index is outside table bounds");
