@@ -51,6 +51,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include <algorithm>
 #include <cstdint>
 #include <cstdlib>
@@ -2038,14 +2039,16 @@ static bool haveMatchingRuntimeFormat(DictionaryAttr lhs, DictionaryAttr rhs) {
              rhs.getAs<IntegerAttr>("page_size");
 }
 
-struct DFBDescriptorUpdatePlan {
+struct DFBReconfigurationUpdatePlan {
   SmallVector<Attribute> templateArguments;
   bool updatesDescriptors = false;
 };
 
-static FailureOr<DFBDescriptorUpdatePlan>
-buildDFBDescriptorUpdatePlan(DFBReconfigurationOp op, ArrayAttr dfbEntries,
-                             int64_t ordinal) {
+constexpr uint32_t kDFBReconfigurationRecordWordCount = 12;
+
+static FailureOr<DFBReconfigurationUpdatePlan>
+buildDFBReconfigurationUpdatePlan(DFBReconfigurationOp op, ArrayAttr dfbEntries,
+                                  int64_t ordinal) {
   func::FuncOp kernel = op->getParentOfType<func::FuncOp>();
   assert(kernel && "DFB reconfiguration must be inside a kernel function");
   bool fp32DestinationAccumulation = false;
@@ -2059,8 +2062,8 @@ buildDFBDescriptorUpdatePlan(DFBReconfigurationOp op, ArrayAttr dfbEntries,
                                       indices.asArrayRef().end());
   }
 
-  DFBDescriptorUpdatePlan updatePlan;
-  SmallVector<Attribute> descriptorWords;
+  DFBReconfigurationUpdatePlan updatePlan;
+  SmallVector<Attribute> recordWords;
   IntegerType templateWordType =
       IntegerType::get(op.getContext(), 32, IntegerType::Unsigned);
   for (Attribute rawEntry : dfbEntries) {
@@ -2092,19 +2095,34 @@ buildDFBDescriptorUpdatePlan(DFBReconfigurationOp op, ArrayAttr dfbEntries,
       continue;
     }
 
-    bool indexChangesFormat =
+    bool updateDescriptor =
         llvm::any_of(configurations, [&](Attribute rawConfiguration) {
           auto configuration = cast<DictionaryAttr>(rawConfiguration);
           return !haveMatchingRuntimeFormat(targetConfiguration, configuration);
         });
-    if (!indexChangesFormat) {
-      continue;
-    }
 
     auto elementType = targetConfiguration.getAs<TypeAttr>("element_type");
     auto pageSize = targetConfiguration.getAs<IntegerAttr>("page_size");
-    if (!elementType || !pageSize) {
-      op.emitError("contains incomplete finalized DFB format metadata");
+    auto numTiles = targetConfiguration.getAs<IntegerAttr>("num_tiles");
+    auto blockCount = targetConfiguration.getAs<IntegerAttr>("block_count");
+    if (!elementType || !pageSize || !numTiles || !blockCount ||
+        pageSize.getInt() <= 0 || numTiles.getInt() <= 0 ||
+        blockCount.getInt() <= 0) {
+      op.emitError("contains incomplete finalized DFB configuration metadata");
+      return failure();
+    }
+    std::optional<uint64_t> numPages =
+        llvm::checkedMulUnsigned(static_cast<uint64_t>(numTiles.getInt()),
+                                 static_cast<uint64_t>(blockCount.getInt()));
+    std::optional<uint64_t> totalBytes =
+        numPages ? llvm::checkedMulUnsigned(
+                       *numPages, static_cast<uint64_t>(pageSize.getInt()))
+                 : std::nullopt;
+    if (!numPages || !totalBytes ||
+        *numPages > std::numeric_limits<uint32_t>::max() ||
+        *totalBytes > std::numeric_limits<uint32_t>::max() ||
+        pageSize.getInt() > std::numeric_limits<uint32_t>::max()) {
+      op.emitError("contains unrepresentable finalized DFB configuration");
       return failure();
     }
     FailureOr<MetalDataFormat> l1Format =
@@ -2150,7 +2168,10 @@ buildDFBDescriptorUpdatePlan(DFBReconfigurationOp op, ArrayAttr dfbEntries,
 
     int64_t words[] = {
         physicalIndex.getInt(),
+        static_cast<int64_t>(*totalBytes),
+        static_cast<int64_t>(*numPages),
         pageSize.getInt(),
+        updateDescriptor,
         static_cast<int64_t>(*l1Format),
         tileHeight,
         tileWidth,
@@ -2160,16 +2181,15 @@ buildDFBDescriptorUpdatePlan(DFBReconfigurationOp op, ArrayAttr dfbEntries,
         static_cast<int64_t>(packSourceFormat),
     };
     for (int64_t word : words) {
-      descriptorWords.push_back(IntegerAttr::get(templateWordType, word));
+      recordWords.push_back(IntegerAttr::get(templateWordType, word));
     }
+    updatePlan.updatesDescriptors |= updateDescriptor;
   }
 
-  if (!descriptorWords.empty()) {
-    updatePlan.updatesDescriptors = true;
-    updatePlan.templateArguments.push_back(
-        IntegerAttr::get(templateWordType, descriptorWords.size() / 9));
-    updatePlan.templateArguments.append(descriptorWords);
-  }
+  updatePlan.templateArguments.push_back(IntegerAttr::get(
+      templateWordType,
+      recordWords.size() / kDFBReconfigurationRecordWordCount));
+  updatePlan.templateArguments.append(recordWords);
   return updatePlan;
 }
 
@@ -2221,9 +2241,9 @@ struct DFBReconfigurationLowering : OpConversionPattern<DFBReconfigurationOp> {
       return op.emitError("runtime argument index is out of range");
     }
 
-    FailureOr<DFBDescriptorUpdatePlan> descriptorUpdatePlan =
-        buildDFBDescriptorUpdatePlan(op, dfbEntries, ordinal);
-    if (failed(descriptorUpdatePlan)) {
+    FailureOr<DFBReconfigurationUpdatePlan> updatePlan =
+        buildDFBReconfigurationUpdatePlan(op, dfbEntries, ordinal);
+    if (failed(updatePlan)) {
       return failure();
     }
 
@@ -2242,11 +2262,11 @@ struct DFBReconfigurationLowering : OpConversionPattern<DFBReconfigurationOp> {
     ttk::OpaqueCallOp::create(
         rewriter, op.getLoc(), TypeRange{},
         rewriter.getStringAttr(
-            descriptorUpdatePlan->updatesDescriptors
+            updatePlan->updatesDescriptors
                 ? "experimental::reconfigure_dfb_descriptors"
                 : "experimental::reconfigure_dfb_interfaces"),
         rewriter.getStringAttr("<cstdint>"), ValueRange{configurationAddress},
-        rewriter.getArrayAttr(descriptorUpdatePlan->templateArguments),
+        rewriter.getArrayAttr(updatePlan->templateArguments),
         rewriter.getDenseI32ArrayAttr({0}), DenseI32ArrayAttr());
     rewriter.eraseOp(op);
     return success();

@@ -68,20 +68,38 @@ def test_dfb_reconfiguration_abi_constants_match_sources():
     allocation_source = (
         repository_root / "lib/Dialect/TTL/Transforms/DFBAllocationLimits.cpp"
     ).read_text()
+    lowering_source = (
+        repository_root / "lib/Dialect/TTL/Transforms/ConvertTTLToTTKernel.cpp"
+    ).read_text()
 
-    low_mask_word = _extract_integer_constant(llk_source, "lowMaskWord")
-    high_mask_word = _extract_integer_constant(llk_source, "highMaskWord")
-    synchronization_word = _extract_integer_constant(llk_source, "synchronizationWord")
-    compiler_words_per_core = _extract_integer_constant(
-        allocation_source, "kDFBReconfigurationWordsPerCore"
+    device_active_mask_words = _extract_integer_constant(
+        llk_source, "activeMaskWordCount"
+    )
+    device_synchronization_words = _extract_integer_constant(
+        llk_source, "synchronizationWordCount"
+    )
+    compiler_active_mask_words = _extract_integer_constant(
+        allocation_source, "kDFBReconfigurationActiveMaskWordCount"
+    )
+    compiler_synchronization_words = _extract_integer_constant(
+        allocation_source, "kDFBReconfigurationSynchronizationWordCount"
+    )
+    device_record_words = _extract_integer_constant(llk_source, "recordWordCount")
+    compiler_record_words = _extract_integer_constant(
+        lowering_source, "kDFBReconfigurationRecordWordCount"
     )
 
-    assert low_mask_word == kernel_runner._DFB_RECONFIGURATION_LOW_MASK_WORD
-    assert high_mask_word == kernel_runner._DFB_RECONFIGURATION_HIGH_MASK_WORD
     assert (
-        synchronization_word == kernel_runner._DFB_RECONFIGURATION_SYNCHRONIZATION_WORD
+        device_active_mask_words
+        == compiler_active_mask_words
+        == kernel_runner._DFB_RECONFIGURATION_ACTIVE_MASK_WORDS
     )
-    assert compiler_words_per_core == kernel_runner._DFB_RECONFIGURATION_WORDS_PER_CORE
+    assert (
+        device_synchronization_words
+        == compiler_synchronization_words
+        == kernel_runner._DFB_RECONFIGURATION_SYNCHRONIZATION_WORDS
+    )
+    assert device_record_words == compiler_record_words
 
 
 # Runtime scratch classification must match the compiler and device reset ABI.
@@ -2018,8 +2036,7 @@ def test_plan_runtime_resources_requires_each_external_fabric_claim():
 
 
 def test_runtime_resource_fingerprint_is_stable_across_python_hash_seeds():
-    script = textwrap.dedent(
-        """
+    script = textwrap.dedent("""
         from ttl import CoreRuntimeArgs, KernelDefine, KernelKind
         from ttl import KernelRuntimeResources, ProgramRuntimeResources
         from ttl import kernel_runner
@@ -2059,8 +2076,7 @@ def test_runtime_resource_fingerprint_is_stable_across_python_hash_seeds():
             first_free_semaphore_id=0,
         )
         print(plan.structural_fingerprint)
-        """
-    )
+        """)
     fingerprints = []
     for hash_seed in ("1", "937"):
         environment = dict(os.environ)
@@ -3623,6 +3639,8 @@ def test_device_domain_rejects_invalid_mesh_program_placement(
                 "invalid placement reached runtime resource planning"
             ),
         )
+
+
 # A mesh arena has one lockstep address and each descriptor retains its coordinates.
 def test_compiler_l1_device_domain_binds_lockstep_arena(monkeypatch):
     fake_ttnn = _FakeTTNN()
@@ -5325,6 +5343,7 @@ def test_run_kernel_rejects_invalid_mesh_placements_before_resource_planning(
             ),
         )
 
+
 # A replicated mesh descriptor uses the mesh arena's common lockstep address.
 def test_compiler_l1_mesh_placements_bind_lockstep_arena(monkeypatch):
     fake_ttnn = _FakeTTNN()
@@ -6220,14 +6239,10 @@ def test_reconfiguration_encodes_physical_index_32_in_high_mask(monkeypatch):
     assert len(scratch_addresses) == 1
     assert len(host_configurations) == 1
     encoded = host_configurations[0][0]
-    assert int(encoded[256]) == 0
-    assert int(encoded[257]) == 1
-    assert tuple(int(value) for value in encoded[128:132]) == (
-        scratch_addresses[0],
-        12288,
-        6,
-        2048,
-    )
+    assert len(encoded) == 9
+    assert int(encoded[0]) == scratch_addresses[0]
+    assert int(encoded[1]) == 0
+    assert int(encoded[2]) == 1
 
 
 def test_build_cb_descriptors_excludes_computed_address_backing_tensors(
