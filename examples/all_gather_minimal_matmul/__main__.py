@@ -14,6 +14,9 @@ from ttlang_test_utils import get_fabric_mesh_shape, open_fabric_mesh, to_dram
 from utils.correctness import assert_allclose, assert_pcc
 
 from .config import AllGatherMinimalMatmulConfig
+from .operation_bidirectional_l1 import (
+    make_bidirectional_l1_all_gather_matmul_operation,
+)
 from .operation_grouped_rows import make_grouped_row_all_gather_matmul_operation
 from .operation import make_all_gather_minimal_matmul_operation
 
@@ -42,7 +45,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mesh-shape", type=parse_mesh_shape, required=True)
     parser.add_argument(
         "--activation-strategy",
-        choices=("grouped-row-l1", "direct-l1"),
+        choices=("grouped-row-l1", "direct-l1", "bidirectional-l1"),
         default="grouped-row-l1",
     )
     parser.add_argument("--compute-grid", type=positive_int, nargs=2, default=(4, 4))
@@ -119,17 +122,25 @@ def main() -> None:
         n_block_tiles=arguments.n_block_tiles,
         reuse_activation=arguments.reuse_activation,
     )
-    operation_factory = (
-        make_grouped_row_all_gather_matmul_operation
-        if arguments.activation_strategy == "grouped-row-l1"
-        else make_all_gather_minimal_matmul_operation
-    )
-    operation = operation_factory(
-        config,
-        math_fidelity="HiFi2" if arguments.dtype == "bf16" else "HiFi4",
-        fp32_dest_acc_en=True,
-        communication_worker_count=arguments.communication_workers,
-    )
+    math_fidelity = "HiFi2" if arguments.dtype == "bf16" else "HiFi4"
+    if arguments.activation_strategy == "bidirectional-l1":
+        operation = make_bidirectional_l1_all_gather_matmul_operation(
+            config,
+            math_fidelity=math_fidelity,
+            fp32_dest_acc_en=True,
+        )
+    else:
+        operation_factory = (
+            make_grouped_row_all_gather_matmul_operation
+            if arguments.activation_strategy == "grouped-row-l1"
+            else make_all_gather_minimal_matmul_operation
+        )
+        operation = operation_factory(
+            config,
+            math_fidelity=math_fidelity,
+            fp32_dest_acc_en=True,
+            communication_worker_count=arguments.communication_workers,
+        )
 
     torch.manual_seed(arguments.seed)
     torch_dtype = torch.bfloat16 if arguments.dtype == "bf16" else torch.float32
