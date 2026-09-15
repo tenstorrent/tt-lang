@@ -1666,6 +1666,25 @@ def TTKernelAnnotateDFBUse
   let dependentDialects = [];
 }
 
+def TTKernelSpecializeDFBReconfiguration
+    : Pass<"ttkernel-specialize-dfb-reconfiguration", "::mlir::ModuleOp"> {
+  let summary = "Specialize DFB reconfiguration for invariant storage";
+  let description = [{
+    Runs after per-core specialization. When every epoch configuration of a
+    physical DFB uses the same storage source on the specialized core, the
+    pass records the selected epoch's descriptor fields as opaque-call
+    template arguments. Reconfiguration still synchronizes through the
+    runtime record, but does not read descriptor fields or scan active DFB
+    masks at runtime.
+
+    If any reused DFB changes its storage source, the pass preserves the
+    runtime-record implementation so that the selected epoch supplies the
+    correct address. The pass also records the specialized call's DFB resource
+    indices for subsequent per-kernel resource-use analysis.
+  }];
+  let dependentDialects = ["::mlir::tt::ttkernel::TTKernelDialect"];
+}
+
 def TTKernelFinalizeTensorRuntimeArgs
     : Pass<"ttkernel-finalize-tensor-runtime-args", "::mlir::ModuleOp"> {
   let summary = "Finalize tensor common runtime arguments";
