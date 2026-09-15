@@ -87,9 +87,9 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 
 // -----
 
-// A node-dependent condition leaves each external access domain unknown. Each
-// state-discarding reconfiguration still proves that the preceding access has
-// completed, so the two DFBs may use the same physical index.
+// Logical negation of a node predicate retains an exact access domain. Each
+// reconfiguration proves that the preceding access has completed, so the two
+// DFBs may use the same physical index.
 
 #compute = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "unknown_domain_external">
 #reader = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "unknown_domain_external">
@@ -101,10 +101,10 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 // IR-SAME: dfb_index = 0 : i32
 // IR-NOT: dfb_index = 1 : i32
 
-// DEBUG: DFB logical_id=0 bounded=0
-// DEBUG-SAME: conditionally_bounded=1
-// DEBUG: DFB logical_id=1 bounded=0
-// DEBUG-SAME: conditionally_bounded=1
+// DEBUG: DFB logical_id=0 bounded=1
+// DEBUG-SAME: conditionally_bounded=0
+// DEBUG: DFB logical_id=1 bounded=1
+// DEBUG-SAME: conditionally_bounded=0
 // DEBUG: Total DFB count: 1
 
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
