@@ -145,11 +145,11 @@ def TTL_CopyOp : TTL_Op<"copy", [MemoryEffects<[MemRead, MemWrite]>]> {
     operand with TTL layout encoding. The DFB endpoint is either a `!ttl.cb` or
     a statically shaped, unit-stride `tensor.extract_slice` view of an acquired
     block. Reads require a reserved destination; writes require a waited source.
-    A pipe send has an acquired DFB block or a statically shaped, unit-stride
-    subview of a waited block as its source and a pipe destination. A pipe
-    receive has a pipe source and either a destination block reserved from a
-    DFB or a statically shaped DRAM tensor slice. The copy transfers the
-    complete endpoint payload in row-major tile order.
+    A pipe send has an acquired DFB block or a statically shaped,
+    row-major-contiguous subview of a waited block as its source and a pipe
+    destination. A pipe receive has a pipe source and either a destination block
+    reserved from a DFB or a statically shaped DRAM tensor slice. The copy
+    transfers the complete endpoint payload in row-major tile order.
 
     The tensor shape normally equals one dataflow buffer block. A copy may span
     consecutive blocks by extending the tensor's innermost dimension by an
@@ -1054,10 +1054,10 @@ def TTL_PipeTransferSendOp : TTL_Op<"pipe_transfer.send",
     Waits until the selected synchronization condition is satisfied, then
     writes the source DFB payload to the receiver-owned destination storage and
     signals receiver completion. The source is a DFB, an acquired DFB block, or
-    a statically shaped, unit-stride subview of a waited block. The returned
-    write handle preserves the existing `ttl.wait` ordering contract for
-    send-side code. The send starts at the subview offset and reads either its
-    complete static extent or the explicit `byte_count`.
+    a statically shaped, row-major-contiguous subview of a waited block. The
+    returned write handle preserves the existing `ttl.wait` ordering contract
+    for send-side code. The send starts at the subview offset and reads either
+    its complete static extent or the explicit `byte_count`.
   }];
   let arguments = (ins
     TTL_PipeTransfer:$transfer,
@@ -1075,7 +1075,7 @@ def TTL_PipeTransferWaitOp : TTL_Op<"pipe_transfer.wait",
   let summary = "Wait for pipe receive completion";
   let description = [{
     Blocks until the posted receive represented by the pipe token has completed.
-    The receiver-owned destination DFB slot is safe to consume after this
+    The receiver-owned destination storage is safe to consume after this
     operation completes.
   }];
   let arguments = (ins
