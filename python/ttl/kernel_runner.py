@@ -1737,6 +1737,27 @@ def _validate_local_tensor_access(
     spec: KernelSpec, tensors: List[Any], kernel_ranges: Any
 ) -> None:
     """Require a local tensor shard on every core that executes the kernel."""
+    per_core_tensor_indices = []
+    for tensor_index in spec.tensor_indices:
+        if tensor_index < 0 or tensor_index >= len(tensors):
+            tensor_kind = (
+                "local tensor"
+                if tensor_index in spec.local_tensor_indices
+                else "tensor runtime argument"
+            )
+            raise ValueError(
+                f"{tensor_kind} index {tensor_index} is outside the tensor list"
+            )
+        if _is_per_core_allocated(tensors[tensor_index]):
+            per_core_tensor_indices.append(tensor_index)
+    unsupported_tensor_indices = sorted(
+        set(per_core_tensor_indices) - set(spec.local_tensor_indices)
+    )
+    if unsupported_tensor_indices:
+        raise ValueError(
+            "per-core tensor indices require direct local access; unsupported "
+            f"indices {unsupported_tensor_indices}"
+        )
     if not spec.local_tensor_indices:
         return
 
@@ -1919,9 +1940,7 @@ def build_kernel_descriptors(
             common_runtime_arg_suffix.append(0)
         common_runtime_arg_suffix.extend(device_coordinates or [])
         common_runtime_arg_suffix.extend(spec.extra_common_runtime_args or [])
-        storage_runtime_base = len(spec.tensor_indices) + len(
-            common_runtime_arg_suffix
-        )
+        storage_runtime_base = len(spec.tensor_indices) + len(common_runtime_arg_suffix)
         if compiler_l1_base_address is not None or sram_core_arenas:
             common_runtime_arg_suffix.append(compiler_l1_base_address or 0)
 
@@ -1997,11 +2016,11 @@ def build_kernel_descriptors(
                     }
                     for core_coordinate in partition_coordinates:
                         tensor_addresses = tuple(
-                            per_core_tensor_addresses[tensor_index].get(
-                                core_coordinate, 0
+                            (
+                                per_core_tensor_addresses[tensor_index][core_coordinate]
+                                if tensor_index in per_core_indices
+                                else static_addresses[tensor_index]
                             )
-                            if tensor_index in per_core_indices
-                            else static_addresses[tensor_index]
                             for tensor_index in spec.tensor_indices
                         )
                         common_args_to_coordinates.setdefault(

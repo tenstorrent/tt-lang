@@ -1614,8 +1614,9 @@ def TTKernelFinalizeTensorRuntimeArgs
     `ttl.crta_indices` retains the corresponding global tensor indices.
 
     The pass also records the surviving tensors used to construct
-    `LocalTensorAccessor` values in `ttl.local_tensor_indices`. The runtime uses
-    this metadata to require local tensor shards on every executing core.
+    `LocalTensorAccessor` values or back locally accessed compiler-managed DFBs
+    in `ttl.local_tensor_indices`. The runtime uses this metadata to require
+    local tensor shards on every executing core.
 
     Dynamic common-argument indices represented by
     `ttkernel.experimental.constant_table_lookup` are rewritten with the same
