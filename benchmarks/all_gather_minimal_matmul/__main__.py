@@ -35,6 +35,10 @@ from examples.all_gather_minimal_matmul.operation_bidirectional_l1 import (
 from examples.all_gather_minimal_matmul.operation_grouped_rows import (
     make_grouped_row_all_gather_matmul_operation,
 )
+from examples.matmul_reduce_scatter_2d import (
+    MatmulReduceScatter2DConfig,
+    make_matmul_reduce_scatter_2d_operation,
+)
 from ttlang_test_utils import get_fabric_mesh_shape, to_dram
 from utils.correctness import assert_allclose, assert_pcc
 
@@ -67,6 +71,7 @@ class CommonConfig:
 
 @dataclass(frozen=True)
 class TTLangConfig:
+    operation: str
     activation_strategy: str
     compute_grid: tuple[int, int]
     communication_workers: int
@@ -109,10 +114,8 @@ def mesh_shape(value: str) -> tuple[int, int]:
         result = tuple(int(extent) for extent in value.lower().split("x"))
     except ValueError as error:
         raise argparse.ArgumentTypeError("mesh shape must be ROWSxCOLS") from error
-    if len(result) != 2 or min(result) != 1 or max(result) < 2:
-        raise argparse.ArgumentTypeError(
-            "mesh shape must be a device line, such as 4x1"
-        )
+    if len(result) != 2 or min(result) < 1 or prod(result) < 2:
+        raise argparse.ArgumentTypeError("mesh shape must be ROWSxCOLS")
     return result
 
 
@@ -133,6 +136,11 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--ttlang-compute-grid", type=positive_int, nargs=2, default=(12, 10)
+    )
+    parser.add_argument(
+        "--ttlang-operation",
+        choices=("column-parallel", "2d-reduce-scatter"),
+        default="column-parallel",
     )
     parser.add_argument(
         "--ttlang-activation-strategy",
@@ -196,6 +204,7 @@ def make_configs(arguments):
         seed=arguments.seed,
     )
     ttlang = TTLangConfig(
+        operation=arguments.ttlang_operation,
         activation_strategy=arguments.ttlang_activation_strategy,
         compute_grid=tuple(arguments.ttlang_compute_grid),
         communication_workers=arguments.ttlang_communication_workers,
@@ -228,7 +237,7 @@ def fabric_router_config(max_payload_size: int):
 
 
 @contextmanager
-def open_participant_mesh(common, implementation, router_payload):
+def open_participant_mesh(requested_shape, implementation, router_payload):
     fabric_config = (
         ttnn.FabricConfig.FABRIC_2D
         if implementation == "ttlang"
@@ -247,21 +256,20 @@ def open_participant_mesh(common, implementation, router_payload):
     parent_mesh = None
     participant_mesh = None
     try:
-        if common.device_count > prod(discovered_shape):
+        if prod(requested_shape) > prod(discovered_shape):
             raise ValueError(
-                f"requested mesh {common.mesh_shape} exceeds discovered mesh "
-                f"{discovered_shape}"
+                f"requested mesh {requested_shape} exceeds discovered mesh {discovered_shape}"
             )
         parent_shape = tuple(discovered_shape)
         if any(
             requested > available
             for requested, available in zip(
-                common.mesh_shape, discovered_shape, strict=True
+                requested_shape, discovered_shape, strict=True
             )
         ):
             parent_shape = (
                 (prod(discovered_shape), 1)
-                if common.mesh_shape[0] > 1
+                if requested_shape[0] > 1
                 else (1, prod(discovered_shape))
             )
         parent_mesh = ttnn.open_mesh_device(ttnn.MeshShape(discovered_shape))
@@ -269,10 +277,10 @@ def open_participant_mesh(common, implementation, router_payload):
             parent_mesh.reshape(ttnn.MeshShape(parent_shape))
         participant_mesh = (
             parent_mesh
-            if common.mesh_shape == parent_shape
-            else parent_mesh.create_submesh(ttnn.MeshShape(common.mesh_shape))
+            if requested_shape == parent_shape
+            else parent_mesh.create_submesh(ttnn.MeshShape(requested_shape))
         )
-        cluster_axis = 0 if common.mesh_shape[0] > 1 else 1
+        cluster_axis = 0 if requested_shape[0] > 1 else 1
         yield participant_mesh, cluster_axis, discovered_shape, fabric_config
     finally:
         if participant_mesh is not None and participant_mesh is not parent_mesh:
@@ -282,7 +290,7 @@ def open_participant_mesh(common, implementation, router_payload):
         ttnn.set_fabric_config(ttnn.FabricConfig.DISABLED)
 
 
-def make_inputs(mesh, common, padded_m_tiles=None):
+def make_host_inputs(common):
     torch.manual_seed(common.seed)
     torch_dtype = torch.bfloat16 if common.dtype == "bf16" else torch.float32
     m_elements = common.m_tiles * 32
@@ -292,6 +300,12 @@ def make_inputs(mesh, common, padded_m_tiles=None):
     weight = torch.randn((k_elements, n_elements), dtype=torch_dtype) / k_elements**0.5
     bias = torch.randn((1, n_elements), dtype=torch_dtype) * 0.1
     expected = activation.float() @ weight.float() + bias.float()
+    return activation, weight, bias, expected
+
+
+def make_inputs(mesh, common, padded_m_tiles=None):
+    activation, weight, bias, expected = make_host_inputs(common)
+    m_elements = common.m_tiles * 32
     activation_storage = activation
     if padded_m_tiles is not None and padded_m_tiles != common.m_tiles:
         activation_storage = torch.nn.functional.pad(
@@ -321,7 +335,86 @@ def validate_output(actual, expected, dtype):
     }
 
 
+def create_ttlang_2d_workload(mesh, common, ttlang):
+    k_group_count, n_group_count = common.mesh_shape
+    full_k_tiles = common.device_count * common.k_tiles_per_device
+    if full_k_tiles % k_group_count:
+        raise ValueError("complete K tile count must be divisible by P_K")
+    if common.n_tiles % n_group_count:
+        raise ValueError("complete N tile count must be divisible by P_N")
+    operation_config = MatmulReduceScatter2DConfig(
+        mesh_shape=common.mesh_shape,
+        m_tiles=common.m_tiles,
+        k_tiles_per_group=full_k_tiles // k_group_count,
+        n_tiles_per_group=common.n_tiles // n_group_count,
+        compute_grid=ttlang.compute_grid,
+        m_block_tiles=ttlang.m_block_tiles,
+        k_block_tiles=ttlang.k_block_tiles,
+        n_block_tiles=ttlang.n_block_tiles,
+    )
+    activation_host, weight_host, bias_host, expected = make_host_inputs(common)
+    torch_dtype = torch.bfloat16 if common.dtype == "bf16" else torch.float32
+    activation_mapper = ttnn.ShardTensor2dMesh(
+        mesh, mesh_shape=common.mesh_shape, dims=(1, None)
+    )
+    weight_mapper = ttnn.ShardTensor2dMesh(
+        mesh, mesh_shape=common.mesh_shape, dims=(0, 1)
+    )
+    bias_mapper = ttnn.ShardTensor2dMesh(
+        mesh, mesh_shape=common.mesh_shape, dims=(None, 1)
+    )
+    output_mapper = ttnn.ShardTensor2dMesh(
+        mesh, mesh_shape=common.mesh_shape, dims=(0, 1)
+    )
+    activation = to_dram(
+        torch.nn.functional.pad(
+            activation_host,
+            (
+                0,
+                0,
+                0,
+                operation_config.padded_m_tiles * 32 - activation_host.shape[0],
+            ),
+        ),
+        mesh,
+        mesh_mapper=activation_mapper,
+    )
+    weight = to_dram(weight_host, mesh, mesh_mapper=weight_mapper)
+    bias = to_dram(bias_host, mesh, mesh_mapper=bias_mapper)
+    output = to_dram(
+        torch.zeros(
+            (operation_config.padded_m_tiles * 32, common.n_tiles * 32),
+            dtype=torch_dtype,
+        ),
+        mesh,
+        mesh_mapper=output_mapper,
+    )
+    operation = make_matmul_reduce_scatter_2d_operation(
+        operation_config,
+        math_fidelity=common.math_fidelity,
+        fp32_dest_acc_en=common.fp32_dest_acc,
+    )
+
+    def run():
+        operation(activation, weight, bias, output)
+        return output
+
+    def validate(result):
+        actual = ttnn.to_torch(
+            result,
+            mesh_composer=ttnn.ConcatMesh2dToTensor(
+                mesh, mesh_shape=common.mesh_shape, dims=(0, 1)
+            ),
+        )[: activation_host.shape[0], :].float()
+        return validate_output(actual, expected, common.dtype)
+
+    return Workload(run, validate, lambda _result: None), operation_config
+
+
 def create_ttlang_workload(mesh, common, ttlang):
+    if ttlang.operation == "2d-reduce-scatter":
+        return create_ttlang_2d_workload(mesh, common, ttlang)
+
     operation_config = AllGatherMinimalMatmulConfig(
         mesh_shape=common.mesh_shape,
         m_tiles=common.m_tiles,
@@ -403,7 +496,7 @@ def create_ttlang_workload(mesh, common, ttlang):
 
 def create_native_workload(mesh, cluster_axis, common, native):
     operation_config = {
-        "mesh_shape": common.mesh_shape,
+        "mesh_shape": tuple(mesh.shape),
         "m_tiles": common.m_tiles,
         "k_tiles_per_device": common.k_tiles_per_device,
         "n_tiles_per_device": common.n_tiles_per_device,
@@ -540,8 +633,14 @@ def run_worker(arguments):
     if os.environ.get("TT_METAL_DEVICE_PROFILER") != "1":
         raise ValueError("profiler worker requires TT_METAL_DEVICE_PROFILER=1")
     common, ttlang, native = make_configs(arguments)
+    requested_shape = common.mesh_shape
+    if (
+        arguments.implementation == "ttmetal"
+        and ttlang.operation == "2d-reduce-scatter"
+    ):
+        requested_shape = (common.device_count, 1)
     with open_participant_mesh(
-        common, arguments.implementation, arguments.fabric_router_payload
+        requested_shape, arguments.implementation, arguments.fabric_router_payload
     ) as (mesh, cluster_axis, discovered_shape, fabric_config):
         if arguments.implementation == "ttlang":
             workload, operation_config = create_ttlang_workload(mesh, common, ttlang)
@@ -565,6 +664,7 @@ def run_worker(arguments):
             ),
             "device_ids": list(mesh.get_device_ids()),
             "discovered_mesh": list(discovered_shape),
+            "participant_mesh": list(requested_shape),
             "arch": str(mesh.arch()),
             "fabric_config": str(fabric_config),
             "fabric_router_payload": arguments.fabric_router_payload,
@@ -582,6 +682,10 @@ def run_worker(arguments):
                     / "examples/all_gather_minimal_matmul/operation_bidirectional_l1.py",
                     Path(__file__).resolve().parents[2]
                     / "examples/all_gather_minimal_matmul/operation_grouped_rows.py",
+                    Path(__file__).resolve().parents[2]
+                    / "examples/matmul_reduce_scatter_2d/config.py",
+                    Path(__file__).resolve().parents[2]
+                    / "examples/matmul_reduce_scatter_2d/operation.py",
                 ]
             ),
             "references": {
