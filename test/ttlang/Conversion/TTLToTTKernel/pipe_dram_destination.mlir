@@ -140,18 +140,22 @@ module attributes {
 
 // -----
 
-// Multiple selected records for one send share its occurrence counter. A
-// later send therefore receives the next dense counter index.
+// Repeated selected records use independent occurrence counters. A later send
+// receives the next dense range of counter indices.
 
 // CHECK-LABEL: func.func @dense_counter_sender
 // CHECK: %[[ONE_INDEX:.*]] = arith.constant 1 : index
 // CHECK: %[[ZERO_VALUE:.*]] = arith.constant 0 : i32
 // CHECK: %[[ZERO_INDEX:.*]] = arith.constant 0 : index
-// CHECK: %[[COUNTERS:.*]] = memref.alloca() : memref<2xi32>
+// CHECK: %[[COUNTERS:.*]] = memref.alloca() : memref<4xi32>
 // CHECK-NEXT: memref.store %[[ZERO_VALUE]], %[[COUNTERS]][%[[ZERO_INDEX]]]
 // CHECK-NEXT: memref.store %[[ZERO_VALUE]], %[[COUNTERS]][%[[ONE_INDEX]]]
-// CHECK: arith.remui
-// CHECK: ttkernel.experimental.constant_table_lookup {{.*}}, [0, 4, 0, 4] : index
+// CHECK-NEXT: memref.store %[[ZERO_VALUE]], %[[COUNTERS]][%{{.*}}]
+// CHECK-NEXT: memref.store %[[ZERO_VALUE]], %[[COUNTERS]][%{{.*}}]
+// CHECK: %[[COUNTER0:.*]] = ttkernel.experimental.constant_table_lookup {{.*}}, [0, 1] : index
+// CHECK: memref.load %[[COUNTERS]][%[[COUNTER0]]] : memref<4xi32>
+// CHECK: %[[COUNTER1:.*]] = ttkernel.experimental.constant_table_lookup {{.*}}, [2, 3] : index
+// CHECK: memref.load %[[COUNTERS]][%[[COUNTER1]]] : memref<4xi32>
 
 #dense_counter_layout = #ttl.layout<
   shape = [64, 32], element_type = !ttcore.tile<32x32, bf16>,

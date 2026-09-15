@@ -2618,7 +2618,7 @@ The shared graph and proof must preserve these fabric invariants:
 * fabric transfers require a proven computed receiver address;
 * fabric receiver posts publish readiness with a reverse-route atomic increment,
   and senders wait for the corresponding cumulative ready count before writing,
-  unless the destination is a one-shot, statically disjoint DRAM region;
+  unless every transfer occurrence has a statically disjoint DRAM region;
 * receiver pops do not return capacity for reuse by another fabric transfer in
   the same invocation;
 * fabric completion uses remotely addressable synchronization storage;
@@ -2714,7 +2714,7 @@ Fabric `CDA/NR`:
 sender:   addresses = compute_disjoint_dram_tensor_page_addresses()
 sender:   fabric_scatter_write_pages(addresses); complete_remotely()
 receiver: wait_for_completion(); read_region_into_local_dfb(); wait_for_read()
-receiver: compute(); pop_local_dfb(); finish()
+receiver: compute(); pop_local_dfb(); repeat_or_finish()
 ```
 
 For `CDA/RP`, the sender computes each remote DRAM page address from the
@@ -2728,12 +2728,13 @@ write. A one-page transfer uses one fused payload write and completion
 increment. The receiver waits for completion before reading the region. A
 region may be reused when the same sequential control context completes that
 read before posting the next transfer; otherwise transfers require disjoint
-regions.
+regions. Each selected PipeNet record with varying destination coordinates uses
+independent sender-local occurrence state.
 
 For `CDA/NR`, the compiler omits the readiness counter and reverse fabric
-manager only when one point-to-point transfer writes a statically disjoint DRAM
-region exactly once. The receiver declaration still creates the completion
-token consumed by `wait`.
+manager only when a point-to-point transfer writes statically disjoint DRAM
+regions throughout the invocation. The receiver declaration still creates the
+completion tokens consumed by `wait`.
 
 This mechanism must remain within the existing proof sequence. Planning must
 prove:
