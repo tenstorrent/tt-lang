@@ -1025,12 +1025,15 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
       return rewriter.notifyMatchFailure(
           op, "cannot determine operand tensor shapes for block dimensions");
     }
-    // lhs is [M, K]. rhs is [K, N] (non-transposed) or [N, K] when
-    // transpose_rhs is set, so the output column count N comes from rhs[0].
+    // lhs is [..., M, K]. rhs is [..., K, N] (non-transposed) or
+    // [..., N, K] when transpose_rhs is set.
     bool transposeRhs = op.getTransposeRhs();
-    int32_t rt = lhsTy.getDimSize(0);                                      // M
-    int32_t ct = transposeRhs ? rhsTy.getDimSize(0) : rhsTy.getDimSize(1); // N
-    int32_t kt = lhsTy.getDimSize(1);                                      // K
+    int64_t lhsRank = lhsTy.getRank();
+    int64_t rhsRank = rhsTy.getRank();
+    int32_t rt = lhsTy.getDimSize(lhsRank - 2);
+    int32_t ct = transposeRhs ? rhsTy.getDimSize(rhsRank - 2)
+                              : rhsTy.getDimSize(rhsRank - 1);
+    int32_t kt = lhsTy.getDimSize(lhsRank - 1);
 
     // Starting DFB tile index: 0 when not subblocked (DFB refilled each
     // K-step), or the slice offset when subblocked.
@@ -1066,7 +1069,9 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
         Value localIdx = arith::ConstantIndexOp::create(rewriter, loc, i);
         Value cbIdx =
             utils::addSliceOffset(op.getAccumulator(), localIdx, rewriter, loc);
-        Value dstTileIdx = arith::ConstantIndexOp::create(rewriter, loc, i);
+        Value localDstIdx = arith::ConstantIndexOp::create(rewriter, loc, i);
+        Value dstTileIdx =
+            arith::AddIOp::create(rewriter, loc, dstIdx, localDstIdx);
         ttk::CopyTileOp::create(rewriter, loc, *accDFB, cbIdx, dstTileIdx);
       }
     }
@@ -1083,8 +1088,8 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
       assert(rhsCBVal && "rhs CB lookup failed after prior successful lookup");
       if (auto ttlCb = mlir::dyn_cast<CircularBufferType>(rhsCBVal.getType())) {
         auto cbShape = ttlCb.getShape();
-        if (cbShape.size() == 2) {
-          bStridePerK = cbShape[1];
+        if (!cbShape.empty()) {
+          bStridePerK = cbShape.back();
         }
       }
     }
@@ -1102,29 +1107,53 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(forOp.getBody());
       Value kIdx = forOp.getInductionVar();
-      MLIRContext *ctx = rewriter.getContext();
-
-      // A tile index: base + k.
-      //   affine_map<(k)[base] -> (base + k)>
-      auto in0Map = AffineMap::get(
-          1, 1, getAffineSymbolExpr(0, ctx) + getAffineDimExpr(0, ctx), ctx);
-      Value in0Idx = affine::AffineApplyOp::create(
-          rewriter, loc, in0Map, ValueRange{kIdx, in0TileIndex});
-
-      // B tile index: base + k * bStridePerK.
-      //   affine_map<(k)[base, stride] -> (base + k * stride)>
-      auto in1Map = AffineMap::get(1, 2,
-                                   getAffineSymbolExpr(0, ctx) +
-                                       getAffineDimExpr(0, ctx) *
-                                           getAffineSymbolExpr(1, ctx),
-                                   ctx);
-      Value bStrideVal =
-          arith::ConstantIndexOp::create(rewriter, loc, bStridePerK);
-      Value in1Idx = affine::AffineApplyOp::create(
-          rewriter, loc, in1Map, ValueRange{kIdx, in1TileIndex, bStrideVal});
-
-      ttk::MatmulBlockOp::create(rewriter, loc, *lhsCB, *rhsCB, in0Idx, in1Idx,
-                                 dstIdx, transpose, ctVal, rtVal, ktVal);
+      if (transposeRhs && ct > 1) {
+        // The block unpacker advances output columns by one RHS tile, but
+        // transposed [N, K] columns are K tiles apart. Single-output calls
+        // preserve those strides and the row-major DST layout.
+        Value one = arith::ConstantIntOp::create(rewriter, loc, 1, 32);
+        for (int64_t row = 0; row < rt; ++row) {
+          Value rowOffset =
+              arith::ConstantIndexOp::create(rewriter, loc, row * kt);
+          Value lhsLocal =
+              arith::AddIOp::create(rewriter, loc, rowOffset, kIdx);
+          Value lhsIndex =
+              utils::addSliceOffset(op.getLhs(), lhsLocal, rewriter, loc);
+          for (int64_t column = 0; column < ct; ++column) {
+            Value columnOffset =
+                arith::ConstantIndexOp::create(rewriter, loc, column * kt);
+            Value rhsLocal =
+                arith::AddIOp::create(rewriter, loc, columnOffset, kIdx);
+            Value rhsIndex =
+                utils::addSliceOffset(op.getRhs(), rhsLocal, rewriter, loc);
+            Value outputOffset = arith::ConstantIndexOp::create(
+                rewriter, loc, row * ct + column);
+            Value outputIndex =
+                arith::AddIOp::create(rewriter, loc, dstIdx, outputOffset);
+            ttk::MatmulBlockOp::create(rewriter, loc, *lhsCB, *rhsCB, lhsIndex,
+                                       rhsIndex, outputIndex, transpose, one,
+                                       one, ktVal);
+          }
+        }
+      } else {
+        MLIRContext *ctx = rewriter.getContext();
+        auto in0Map = AffineMap::get(
+            1, 1, getAffineSymbolExpr(0, ctx) + getAffineDimExpr(0, ctx), ctx);
+        Value in0Idx = affine::AffineApplyOp::create(
+            rewriter, loc, in0Map, ValueRange{kIdx, in0TileIndex});
+        auto in1Map = AffineMap::get(1, 2,
+                                     getAffineSymbolExpr(0, ctx) +
+                                         getAffineDimExpr(0, ctx) *
+                                             getAffineSymbolExpr(1, ctx),
+                                     ctx);
+        Value bStrideVal =
+            arith::ConstantIndexOp::create(rewriter, loc, bStridePerK);
+        Value in1Idx = affine::AffineApplyOp::create(
+            rewriter, loc, in1Map, ValueRange{kIdx, in1TileIndex, bStrideVal});
+        ttk::MatmulBlockOp::create(rewriter, loc, *lhsCB, *rhsCB, in0Idx,
+                                   in1Idx, dstIdx, transpose, ctVal, rtVal,
+                                   ktVal);
+      }
     }
 
     rewriter.replaceOp(op, adaptor.getLhs());
