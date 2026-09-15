@@ -2119,7 +2119,8 @@ def test_plan_runtime_resources_requires_each_external_fabric_claim():
 
 
 def test_runtime_resource_fingerprint_is_stable_across_python_hash_seeds():
-    script = textwrap.dedent("""
+    script = textwrap.dedent(
+        """
         from ttl import CoreRuntimeArgs, KernelDefine, KernelKind
         from ttl import KernelRuntimeResources, ProgramRuntimeResources
         from ttl import kernel_runner
@@ -2159,7 +2160,8 @@ def test_runtime_resource_fingerprint_is_stable_across_python_hash_seeds():
             first_free_semaphore_id=0,
         )
         print(plan.structural_fingerprint)
-        """)
+        """
+    )
     fingerprints = []
     for hash_seed in ("1", "937"):
         environment = dict(os.environ)
