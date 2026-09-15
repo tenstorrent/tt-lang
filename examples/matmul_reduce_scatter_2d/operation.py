@@ -313,6 +313,35 @@ def make_matmul_reduce_scatter_2d_operation(
                     ttl.math.typecast(outgoing_accumulator, outgoing_partial.dtype)
                 )
 
+                if _output_index > 0:
+                    previous_local_partial = local_accumulator_dfb.wait()
+                    previous_remote_partial = remote_partial_dfb.wait()
+                    reduction_accumulator = scratch_accumulator_dfb.reserve()
+                    reduction_accumulator.store(
+                        ttl.math.typecast(
+                            previous_remote_partial,
+                            reduction_accumulator.dtype,
+                        )
+                    )
+                    previous_bias_block = bias_dfb.wait()
+                    for _reduce_partial in range(1):
+                        reduction_accumulator += (
+                            previous_local_partial
+                            + ttl.block.broadcast(
+                                previous_bias_block,
+                                dims=[0],
+                                shape=(m_block_tiles, n_block_tiles),
+                            )
+                        )
+                    reduction_accumulator = scratch_accumulator_dfb.wait()
+                    previous_output_block = output_dfb.reserve()
+                    previous_output_block.store(
+                        ttl.math.typecast(
+                            reduction_accumulator,
+                            previous_output_block.dtype,
+                        )
+                    )
+
                 local_accumulator = local_accumulator_dfb.reserve()
                 local_accumulator.store(
                     ttl.block.fill(
@@ -329,23 +358,30 @@ def make_matmul_reduce_scatter_2d_operation(
                         weight_block,
                         dtype=local_accumulator.dtype,
                     )
-                remote_partial = remote_partial_dfb.wait()
-                converted_remote_partial = scratch_accumulator_dfb.reserve()
-                converted_remote_partial.store(
-                    ttl.math.typecast(remote_partial, converted_remote_partial.dtype)
+
+            final_local_partial = local_accumulator_dfb.wait()
+            final_remote_partial = remote_partial_dfb.wait()
+            reduction_accumulator = scratch_accumulator_dfb.reserve()
+            reduction_accumulator.store(
+                ttl.math.typecast(
+                    final_remote_partial,
+                    reduction_accumulator.dtype,
                 )
-                bias_block = bias_dfb.wait()
-                converted_remote_partial = scratch_accumulator_dfb.wait()
-                for _reduce_partial in range(1):
-                    local_accumulator += converted_remote_partial + ttl.block.broadcast(
-                        bias_block,
-                        dims=[0],
-                        shape=(m_block_tiles, n_block_tiles),
-                    )
-                local_accumulator = local_accumulator_dfb.wait()
-                output_block = output_dfb.reserve()
-                output_block.store(
-                    ttl.math.typecast(local_accumulator, output_block.dtype)
+            )
+            final_bias_block = bias_dfb.wait()
+            for _reduce_partial in range(1):
+                reduction_accumulator += final_local_partial + ttl.block.broadcast(
+                    final_bias_block,
+                    dims=[0],
+                    shape=(m_block_tiles, n_block_tiles),
                 )
+            reduction_accumulator = scratch_accumulator_dfb.wait()
+            final_output_block = output_dfb.reserve()
+            final_output_block.store(
+                ttl.math.typecast(
+                    reduction_accumulator,
+                    final_output_block.dtype,
+                )
+            )
 
     return matmul_reduce_scatter_2d
