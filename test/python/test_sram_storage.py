@@ -409,7 +409,19 @@ def test_external_tensor_alias_wrapper_restores_owned_reference(runtime):
     storage.close()
 
 
-@pytest.mark.parametrize("difference", ["address", "shape"])
+@pytest.mark.parametrize(
+    "difference",
+    [
+        "address",
+        "shape",
+        "dtype",
+        "layout",
+        "memory_config",
+        "allocation_state",
+        "device",
+        "addressing",
+    ],
+)
 def test_external_nonalias_tensor_wrapper_is_not_restored(runtime, difference):
     storage = SRAMStorage(device=runtime.device)
     state = declare(storage)
@@ -417,8 +429,25 @@ def test_external_nonalias_tensor_wrapper_is_not_restored(runtime, difference):
     candidate = copy.copy(runtime.allocations[0])
     if difference == "address":
         candidate.address += 0x1000
-    else:
+    elif difference == "shape":
         candidate.shape = (32, 32)
+    elif difference == "dtype":
+        candidate.dtype = ttnn.bfloat16
+    elif difference == "layout":
+        candidate.layout = ttnn.ROW_MAJOR_LAYOUT
+    elif difference == "memory_config":
+        candidate.options = {
+            **candidate.options,
+            "memory_config": ttnn.DRAM_MEMORY_CONFIG,
+        }
+    elif difference == "allocation_state":
+        candidate.allocated = False
+    elif difference == "device":
+        other_device = Device()
+        other_device.device_id += 1
+        candidate.options = {**candidate.options, "device": other_device}
+    elif difference == "addressing":
+        candidate.is_per_core_allocated = lambda: True
     assert storage.submit(lambda value: candidate, state) is candidate
     storage.close()
 
