@@ -542,6 +542,7 @@ def _add_logical_kernel_bindings(
         for reset_name, reset in spec.dfb_resets.items()
         if reset_name in loaded_names
         for participant in reset.participants
+        if isinstance(participant, Kernel)
     }
     synchronization_participant_ids.update(
         id(participant)
@@ -673,7 +674,11 @@ def _add_dfb_reset_bindings(
             # within that call retain one identity across all participants.
             reset_instance = DFBReset(
                 participants=tuple(
-                    selected_kernels[id(participant)]
+                    (
+                        selected_kernels[id(participant)]
+                        if isinstance(participant, Kernel)
+                        else participant
+                    )
                     for participant in reset.participants
                 ),
             )

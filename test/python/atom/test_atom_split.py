@@ -1770,6 +1770,35 @@ def test_synchronized_dfb_reset_is_replicated_to_every_participant():
     assert _kind_src(result, KernelKind.DATA_MOVEMENT, 1).count("ttl.reset_dfbs(") == 1
 
 
+def test_synchronized_dfb_reset_accepts_canonical_kernel_selectors():
+    """Unified operations can reset their three canonical logical kernels."""
+    reset = ttl.DFBReset(
+        participants=(
+            ttl.KernelKind.COMPUTE,
+            ttl.KernelKind.DATA_MOVEMENT,
+            ttl.PIPE_SOURCE_KERNEL,
+        )
+    )
+
+    @ttl.operation()
+    def reset_participants():
+        ttl.reset_all_dfbs(reset)
+
+    spec = reset_participants._spec
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+    )
+    compute_source = _kind_src(result, KernelKind.COMPUTE)
+    reader_source = _kind_src(result, KernelKind.DATA_MOVEMENT, 0)
+    writer_source = _kind_src(result, KernelKind.DATA_MOVEMENT, 1)
+    assert compute_source.count("ttl.reset_all_dfbs(") == 1
+    assert reader_source.count("ttl.reset_all_dfbs(") == 1
+    assert writer_source.count("ttl.reset_all_dfbs(") == 1
+
+
 def test_dfb_reconfiguration_requires_complete_distinct_participants():
     """A boundary names one compute kernel and both data-movement kernels."""
     with pytest.raises(TypeError, match="nonempty tuple"):
