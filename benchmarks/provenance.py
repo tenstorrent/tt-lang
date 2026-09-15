@@ -19,6 +19,23 @@ def file_sha256(filename):
         return hashlib.file_digest(source_file, "sha256").hexdigest()
 
 
+def loaded_library_path(filename, maps_file=Path("/proc/self/maps")):
+    matches = set()
+    for line in maps_file.read_text().splitlines():
+        fields = line.split(maxsplit=5)
+        if len(fields) != 6:
+            continue
+        library_path = Path(fields[-1])
+        if library_path.name == filename:
+            matches.add(library_path.resolve())
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"expected one loaded {filename}, found {len(matches)}: "
+            f"{sorted(str(match) for match in matches)}"
+        )
+    return matches.pop()
+
+
 def collect_provenance(sources):
     root = Path(__file__).resolve().parents[1]
     source_files = {Path(source).resolve() for source in sources}
@@ -39,8 +56,9 @@ def collect_provenance(sources):
     binaries = (
         Path(_ttlang.__file__),
         compiler_directory / "libTTLangPythonCAPI.so",
-        metal_home / "lib/_ttnncpp.so",
-        metal_home / "lib/libtt_metal.so",
+        Path(ttnn._ttnn.__file__),
+        loaded_library_path("_ttnncpp.so"),
+        loaded_library_path("libtt_metal.so"),
     )
     return {
         "ttlang_revision": git_output(root, "rev-parse", "HEAD"),
