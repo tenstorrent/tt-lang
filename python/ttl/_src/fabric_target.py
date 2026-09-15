@@ -1120,20 +1120,14 @@ def _build_mux_groups(
                 f"end {minimum_end_address:#x}, limit "
                 f"{mux_l1_end_address:#x}"
             )
-        # The mux core is excluded from program kernels. Use its remaining L1
-        # for channel capacity so packet bursts do not serialize on one slot.
-        minimum_buffer_count = 1
-        maximum_buffer_count = _FABRIC_MUX_MAX_BUFFERS_PER_CHANNEL
-        while minimum_buffer_count < maximum_buffer_count:
-            candidate_buffer_count = (
-                minimum_buffer_count + maximum_buffer_count + 1
-            ) // 2
-            candidate_config = build_config(candidate_buffer_count)
-            if int(candidate_config.memory_map_end_address()) <= mux_l1_end_address:
-                minimum_buffer_count = candidate_buffer_count
-            else:
-                maximum_buffer_count = candidate_buffer_count - 1
-        buffer_count = minimum_buffer_count
+        # Each additional slot adds one channel buffer per client. Derive the
+        # capacity without constructing an invalid TT-Metal configuration,
+        # because TT-Metal rejects L1 overflow with a fatal assertion.
+        additional_buffer_bytes = client_count * channel_buffer_size
+        buffer_count = min(
+            _FABRIC_MUX_MAX_BUFFERS_PER_CHANNEL,
+            1 + (mux_l1_end_address - minimum_end_address) // additional_buffer_bytes,
+        )
         config = build_config(buffer_count)
         client_compile_time_args = tuple(
             int(argument)
