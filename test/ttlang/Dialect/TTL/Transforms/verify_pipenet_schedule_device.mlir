@@ -78,6 +78,73 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
 
 // -----
 
+// A local PipeNet nested in a fabric callback executes once on each logical
+// device. Its receiver executes once on the same device outside the callback.
+
+// CHECK-LABEL: func.func @nested_local_sender
+// CHECK: ttl.pipenet_foreach_src
+// CHECK: ttl.copy
+// CHECK-LABEL: func.func @replicated_local_receiver
+// CHECK: ttl.copy
+
+#callback_domain = #ttl.device_domain<
+    components = <name = "device", extent = [2]>>
+#callback_records = #ttl.pipenet_records<net 17 name "fabric_callback" pipes [
+  #ttl.pipe_record<
+      srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
+      dstEndX = 0, dstEndY = 0,
+      deviceTransfer = <
+        domain = #callback_domain,
+        edge = <source = <coordinates = [0]>,
+                destination = <coordinates = [1]>>>>,
+  #ttl.pipe_record<
+      srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
+      dstEndX = 0, dstEndY = 0,
+      deviceTransfer = <
+        domain = #callback_domain,
+        edge = <source = <coordinates = [1]>,
+                destination = <coordinates = [0]>>>>
+]>
+
+module attributes {ttl.launch_grid = array<i64: 1, 2>} {
+  func.func @nested_local_sender()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %src = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %local_pipe = ttl.create_pipe src(0, 0) dst(0, 1) to(0, 1) net 18
+        : !ttl.pipe<src(0, 0) dst(0, 1) to(0, 1) net 18>
+    ttl.pipenet_foreach_src attributes {records = #callback_records} {
+    ^bb0(%fabric_pipe: !ttl.selected_pipe_src):
+      %send = ttl.copy %src, %local_pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+             !ttl.pipe<src(0, 0) dst(0, 1) to(0, 1) net 18>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+      ttl.yield
+    }
+    func.return
+  }
+
+  func.func @replicated_local_receiver()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %local_pipe = ttl.create_pipe src(0, 0) dst(0, 1) to(0, 1) net 18
+        : !ttl.pipe<src(0, 0) dst(0, 1) to(0, 1) net 18>
+    %reserved = ttl.cb_reserve %dst
+        : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+        -> tensor<1x1x!ttcore.tile<32x32, f32>>
+    %post = ttl.copy %local_pipe, %reserved
+        : (!ttl.pipe<src(0, 0) dst(0, 1) to(0, 1) net 18>,
+           tensor<1x1x!ttcore.tile<32x32, f32>>)
+        -> !ttl.receive_request
+    ttl.wait %post : !ttl.receive_request
+    func.return
+  }
+}
+
+// -----
+
 // Selected source and destination properties describe the same transfer row
 // from different endpoint callbacks. Record-aware execution counts discard
 // the inactive branch before pairing each send with its receiver post.
