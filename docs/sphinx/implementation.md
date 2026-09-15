@@ -5,6 +5,7 @@ This section collects design documents and pipeline traces that describe how TT-
 ## Design Documents
 
 - [Compiler-Managed SRAM Allocation](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/SRAMAllocation.md) - completion-aware byte placement and arena binding
+- [Persistent SRAM Storage](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/PersistentStorage.md) - ownership and completion across operation launches
 
 - [Static Execution Analysis](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/StaticExecutionAnalysis.md) - exact operation cardinality in structured control flow
 - [Value Origin Analysis](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/ValueOriginAnalysis.md) - conservative SSA value origins through control flow and tensor updates
