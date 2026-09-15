@@ -749,6 +749,53 @@ static ttk::BcastType convertBcastType(ttl::BcastType ttlType) {
   llvm_unreachable("unknown BcastType");
 }
 
+/// Convert TTL EltwiseBinaryType to TTKernel EltwiseBinaryType.
+static ttk::EltwiseBinaryType
+convertEltwiseBinaryType(ttl::EltwiseBinaryType ttlType) {
+  switch (ttlType) {
+  case ttl::EltwiseBinaryType::Add:
+    return ttk::EltwiseBinaryType::Add;
+  case ttl::EltwiseBinaryType::Sub:
+    return ttk::EltwiseBinaryType::Sub;
+  case ttl::EltwiseBinaryType::Mul:
+    return ttk::EltwiseBinaryType::Mul;
+  }
+  llvm_unreachable("unknown EltwiseBinaryType");
+}
+
+/// Resolve the output CB of a broadcast tile op. The output operand only
+/// exists to carry the PACK configuration, so it is frequently not traceable
+/// to a bind_cb by itself; ttl-annotate-cb-associations records the index for
+/// exactly this case.
+static FailureOr<Value> lookupBcastOutputCB(Operation *op, Value output,
+                                            func::FuncOp funcOp,
+                                            const TypeConverter *typeConverter,
+                                            ConversionPatternRewriter &rewriter,
+                                            Location loc) {
+  auto outCB = lookupAndConvertCB(output, funcOp, typeConverter, rewriter, loc);
+  if (succeeded(outCB)) {
+    return outCB;
+  }
+
+  auto cbIdx = op->getAttrOfType<IntegerAttr>(kBcastOutputCBIndexAttrName);
+  if (!cbIdx) {
+    return failure();
+  }
+
+  Value cb;
+  funcOp->walk([&](BindCBOp bindOp) {
+    if (bindOp.getCbIndexAttr().getInt() == cbIdx.getInt()) {
+      cb = bindOp.getResult();
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  if (!cb) {
+    return failure();
+  }
+  return utils::convertTTLCBToTTKernel(cb, rewriter, loc, typeConverter);
+}
+
 /// Lower ttl.tile_bcast to TTKernel unary_bcast_init + unary_bcast.
 /// Supports shape expansion where input CB has different shape than output CB.
 struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
@@ -771,28 +818,10 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
       return rewriter.notifyMatchFailure(op, "cannot find/convert input CB");
     }
 
-    auto outCB = lookupAndConvertCB(op.getOutput(), funcOp, typeConverter,
-                                    rewriter, loc);
+    auto outCB = lookupBcastOutputCB(op, op.getOutput(), funcOp, typeConverter,
+                                     rewriter, loc);
     if (failed(outCB)) {
-      // Use the output CB index annotation from ttl-annotate-cb-associations.
-      if (auto cbIdx =
-              op->getAttrOfType<IntegerAttr>(kBcastOutputCBIndexAttrName)) {
-        Value cb;
-        funcOp->walk([&](BindCBOp bindOp) {
-          if (bindOp.getCbIndexAttr().getInt() == cbIdx.getInt()) {
-            cb = bindOp.getResult();
-            return WalkResult::interrupt();
-          }
-          return WalkResult::advance();
-        });
-        if (cb) {
-          outCB =
-              utils::convertTTLCBToTTKernel(cb, rewriter, loc, typeConverter);
-        }
-      }
-      if (failed(outCB)) {
-        return rewriter.notifyMatchFailure(op, "cannot find/convert output CB");
-      }
+      return rewriter.notifyMatchFailure(op, "cannot find/convert output CB");
     }
 
     // Get DST index from the SSA operand (assigned by TTLAssignDST pass).
@@ -823,6 +852,65 @@ struct TTLTileBcastToTTKernel : OpConversionPattern<TileBcastOp> {
     }
 
     rewriter.replaceOp(op, adaptor.getInput());
+    return success();
+  }
+};
+
+/// Lower ttl.tile_binary_bcast to TTKernel binary_bcast_init + binary_bcast.
+/// Both operands stay CB-resident; the broadcast is applied to the rhs during
+/// unpack rather than being materialized into DST first.
+struct TTLTileBinaryBcastToTTKernel : OpConversionPattern<TileBinaryBcastOp> {
+  using OpConversionPattern<TileBinaryBcastOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileBinaryBcastOp op, TileBinaryBcastOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    auto funcOp = op->getParentOfType<func::FuncOp>();
+    if (!funcOp) {
+      return rewriter.notifyMatchFailure(op, "op not in function");
+    }
+
+    auto *typeConverter = this->getTypeConverter();
+    auto lhsCB =
+        lookupAndConvertCB(op.getLhs(), funcOp, typeConverter, rewriter, loc);
+    auto rhsCB =
+        lookupAndConvertCB(op.getRhs(), funcOp, typeConverter, rewriter, loc);
+    if (failed(lhsCB) || failed(rhsCB)) {
+      return rewriter.notifyMatchFailure(op, "cannot find/convert input CBs");
+    }
+
+    auto outCB = lookupBcastOutputCB(op, op.getOutput(), funcOp, typeConverter,
+                                     rewriter, loc);
+    if (failed(outCB)) {
+      return rewriter.notifyMatchFailure(op, "cannot find/convert output CB");
+    }
+
+    // Each operand has its own CB, so the tile indices are computed
+    // independently rather than shared as in the non-broadcast FPU binary.
+    auto lhsCBIdx = computeCBTileIndex(op.getLhs(), rewriter, loc);
+    auto rhsCBIdx = computeCBTileIndex(op.getRhs(), rewriter, loc);
+    if (failed(lhsCBIdx) || failed(rhsCBIdx)) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot compute CB tile indices from tensor.extract");
+    }
+
+    // DST index from the SSA operand (assigned by TTLAssignDST).
+    Value dstIdx = adaptor.getDstIndex();
+
+    auto bcastOp = ttk::BinaryBcastTileOp::create(
+        rewriter, loc, *lhsCB, *rhsCB, *lhsCBIdx, *rhsCBIdx, dstIdx,
+        convertEltwiseBinaryType(op.getEltwiseBinaryType()),
+        convertBcastType(op.getBcastType()));
+
+    // Propagate output CB index for per-op init insertion.
+    if (auto cbIdxAttr =
+            op->getAttrOfType<IntegerAttr>(kBcastOutputCBIndexAttrName)) {
+      bcastOp->setAttr(kBcastOutputCBIndexAttrName, cbIdxAttr);
+    }
+
+    rewriter.replaceOp(op, adaptor.getLhs());
     return success();
   }
 };
@@ -1270,6 +1358,7 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
 
   // Bcast ops need the type converter for CB lookup.
   patterns.add<TTLTileBcastToTTKernel>(*typeConverter, ctx);
+  patterns.add<TTLTileBinaryBcastToTTKernel>(*typeConverter, ctx);
 
   // Reduce and transpose ops need the type converter for CB lookup.
   patterns.add<TTLTileReduceToTTKernel>(*typeConverter, ctx);

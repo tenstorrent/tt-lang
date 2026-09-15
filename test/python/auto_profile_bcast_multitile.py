@@ -138,18 +138,26 @@ def bcast_multitile_kernel(
 # CHECK-NEXT:         }
 # CHECK-NEXT:         {
 # CHECK-NEXT:         DeviceZoneScopedN("demo_compute_L{{[0-9]+}}");
-# CHECK-NEXT:         init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(3));
+# CHECK-NEXT:         reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(0), get_compile_time_arg_val(0));
+# CHECK-NEXT:         pack_reconfig_data_format<true>(get_compile_time_arg_val(3));
+# CHECK-NEXT:         copy_tile_init(get_compile_time_arg_val(0));
+# CHECK-NEXT:         #ifndef ARCH_QUASAR
+# CHECK-NEXT:         MATH((ckernel::math::_configure_unary_preserve_zero_flag_state_()));
+# CHECK-NEXT:         #endif
 # CHECK-NEXT:         for (size_t [[K:.*]] = [[V6]]; [[K]] < [[V4:.*]]; [[K]] += [[V5]]) {
 # CHECK-NEXT:           size_t [[ROW_OFFSET:.*]] = [[K]] * [[V4]];
 # CHECK-NEXT:           for (size_t [[L:.*]] = [[V6]]; [[L]] < [[V4]]; [[L]] += [[V5]]) {
 # CHECK-NEXT:             tile_regs_acquire();
-# CHECK-NEXT:             unary_bcast_init<BroadcastType::COL>(get_compile_time_arg_val(0), get_compile_time_arg_val(3));
+# CHECK-NEXT:             reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(0), get_compile_time_arg_val(0));
+# CHECK-NEXT:             unary_bcast_init<BroadcastType::COL>(get_compile_time_arg_val(0));
 # CHECK-NEXT:             unary_bcast<BroadcastType::COL>(get_compile_time_arg_val(0), [[K]], [[V6]]);
-# CHECK-NEXT:             unary_bcast_init<BroadcastType::ROW>(get_compile_time_arg_val(1), get_compile_time_arg_val(3));
+# CHECK-NEXT:             reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(1), get_compile_time_arg_val(1));
+# CHECK-NEXT:             unary_bcast_init<BroadcastType::ROW>(get_compile_time_arg_val(1));
 # CHECK-NEXT:             unary_bcast<BroadcastType::ROW>(get_compile_time_arg_val(1), [[L]], [[V5]]);
 # CHECK-NEXT:             mul_binary_tile_init();
 # CHECK-NEXT:             mul_binary_tile([[V6]], [[V5]], [[V6]]);
-# CHECK-NEXT:             unary_bcast_init<BroadcastType::SCALAR>(get_compile_time_arg_val(2), get_compile_time_arg_val(3));
+# CHECK-NEXT:             reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(2), get_compile_time_arg_val(2));
+# CHECK-NEXT:             unary_bcast_init<BroadcastType::SCALAR>(get_compile_time_arg_val(2));
 # CHECK-NEXT:             unary_bcast<BroadcastType::SCALAR>(get_compile_time_arg_val(2), [[V6]], [[V5]]);
 # CHECK-NEXT:             add_binary_tile_init();
 # CHECK-NEXT:             add_binary_tile([[V6]], [[V5]], [[V6]]);
@@ -216,13 +224,19 @@ def bcast_multitile_kernel(
 # CHECK-FPU-NEXT:         }
 # CHECK-FPU-NEXT:         {
 # CHECK-FPU-NEXT:         DeviceZoneScopedN("demo_compute_L{{[0-9]+}}");
-# CHECK-FPU-NEXT:         init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(3));
+# CHECK-FPU-NEXT:         reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(0), get_compile_time_arg_val(0));
+# CHECK-FPU-NEXT:         pack_reconfig_data_format<true>(get_compile_time_arg_val(3));
+# CHECK-FPU-NEXT:         copy_tile_init(get_compile_time_arg_val(0));
+# CHECK-FPU-NEXT:         #ifndef ARCH_QUASAR
+# CHECK-FPU-NEXT:         MATH((ckernel::math::_configure_unary_preserve_zero_flag_state_()));
+# CHECK-FPU-NEXT:         #endif
 
 # Single subblock loop (4 tiles per subblock)
 # CHECK-FPU-NEXT:         for (size_t {{.*}} = {{.*}}; {{.*}} < {{.*}}; {{.*}} += {{.*}}) {
 # CHECK-FPU-NEXT:           tile_regs_acquire();
 
 # Grouped COL broadcasts (4 tiles)
+# CHECK-FPU-NEXT:           reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(0), get_compile_time_arg_val(0));
 # CHECK-FPU-NEXT:           unary_bcast_init<BroadcastType::COL>(
 # CHECK-FPU-NEXT:           unary_bcast<BroadcastType::COL>(
 # CHECK-FPU-NEXT:           unary_bcast<BroadcastType::COL>(
@@ -230,6 +244,7 @@ def bcast_multitile_kernel(
 # CHECK-FPU-NEXT:           unary_bcast<BroadcastType::COL>(
 
 # Grouped ROW broadcasts (4 tiles)
+# CHECK-FPU-NEXT:           reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(1), get_compile_time_arg_val(1));
 # CHECK-FPU-NEXT:           unary_bcast_init<BroadcastType::ROW>(
 # CHECK-FPU-NEXT:           unary_bcast<BroadcastType::ROW>(
 # CHECK-FPU-NEXT:           unary_bcast<BroadcastType::ROW>(
@@ -244,6 +259,7 @@ def bcast_multitile_kernel(
 # CHECK-FPU-NEXT:           mul_binary_tile(
 
 # Grouped SCALAR broadcasts (4 tiles)
+# CHECK-FPU-NEXT:           reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(2), get_compile_time_arg_val(2));
 # CHECK-FPU-NEXT:           unary_bcast_init<BroadcastType::SCALAR>(
 # CHECK-FPU-NEXT:           unary_bcast<BroadcastType::SCALAR>(
 # CHECK-FPU-NEXT:           unary_bcast<BroadcastType::SCALAR>(
