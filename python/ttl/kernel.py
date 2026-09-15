@@ -307,6 +307,8 @@ def _encode_identity_literal(value) -> Optional[bytes]:
         return f"str:{len(encoded)}:".encode("ascii") + encoded
     if isinstance(value, ScalarType):
         return f"scalar:{value.name}".encode("ascii")
+    if isinstance(value, KernelKind):
+        return f"kernel-kind:{value.name}".encode("ascii")
     if isinstance(value, (tuple, list)):
         elements = []
         for element in value:
@@ -560,6 +562,11 @@ def _bind_kernel_declarations(
     logical_kernels: Mapping[str, Kernel], operation_identity: str
 ) -> None:
     """Bind uniquely named declarations during operation registration."""
+    logical_kernels = {
+        name: kernel
+        for name, kernel in logical_kernels.items()
+        if _selector_implicit_role(kernel) is None
+    }
     source_names = {}
     for name, kernel in logical_kernels.items():
         previous_name = source_names.get(id(kernel))
