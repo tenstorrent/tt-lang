@@ -352,6 +352,8 @@ The fixed control cost is `roundUp(8 * S, A)` for `S` storage owners. For 96 ung
 
 The bounded `minimum-arena` strategy measures the gap between the selected greedy placement and the proven optimum for small problems. Its exhaustive search may cost substantially more compilation time; the default multi-order strategy retains the first-fit result unless the second order reduces the arena.
 
+[Persistent SRAM Storage](PersistentStorage.md) defines ownership and completion across launches. Its initial implementation uses TTNN-owned tensor allocations and leaves per-invocation arena placement unchanged. Joint placement, cross-launch temporary reuse, and runtime-dependent sizes require additional ownership, scheduling, and reservation contracts.
+
 ## Implemented Contract
 
 - One uniform worker-node arena layout at a lockstep address across the selected devices.

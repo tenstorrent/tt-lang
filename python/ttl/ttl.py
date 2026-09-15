@@ -21,6 +21,7 @@ Math operations:
     ttl.math.sqrt(), ttl.math.exp(), etc.
 """
 
+from .sram import SRAMStorage
 from .ttl_api import compute, datamovement
 from .atom import operation, DFB
 from .kernel import Kernel, KernelKind, PIPE_SOURCE_KERNEL
@@ -68,6 +69,7 @@ from . import ttl_math as math
 from . import ttl_block as block
 
 __all__ = [
+    "SRAMStorage",
     "operation",
     "DFB",
     "Kernel",
