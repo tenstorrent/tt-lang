@@ -218,7 +218,7 @@ template <bool updateReadPointer, bool updateWritePointer,
           bool updateWriteTilePointer, bool resetStreamCounters>
 struct ApplyStaticConfigurations<updateReadPointer, updateWritePointer,
                                  updateWriteTilePointer, resetStreamCounters> {
-  static FORCE_INLINE void run() {}
+  static FORCE_INLINE void run(uint32_t tt_l1_ptr *) {}
 };
 
 template <bool updateReadPointer, bool updateWritePointer,
@@ -229,16 +229,16 @@ struct ApplyStaticConfigurations<updateReadPointer, updateWritePointer,
                                  updateWriteTilePointer, resetStreamCounters,
                                  dfbIndex, totalBytes, numPages, pageBytes,
                                  remaining...> {
-  static FORCE_INLINE void run() {
-    LocalCBInterface &interface = get_local_cb_interface(dfbIndex);
-    uint32_t fifoAddress = interface.fifo_limit - interface.fifo_size;
+  static FORCE_INLINE void run(uint32_t tt_l1_ptr *configuration) {
+    uint32_t fifoAddress =
+        configuration[dfbIndex * 4] >> cb_addr_shift;
     applyInterfaceConfiguration<updateReadPointer, updateWritePointer,
                                 updateWriteTilePointer, resetStreamCounters>(
         dfbIndex, fifoAddress, totalBytes >> cb_addr_shift, numPages,
         pageBytes >> cb_addr_shift);
     ApplyStaticConfigurations<updateReadPointer, updateWritePointer,
                               updateWriteTilePointer, resetStreamCounters,
-                              remaining...>::run();
+                              remaining...>::run(configuration);
   }
 };
 
@@ -259,10 +259,10 @@ template <uint32_t... configuration>
 struct StaticConfigurations {
   template <bool updateReadPointer, bool updateWritePointer,
             bool updateWriteTilePointer, bool resetStreamCounters>
-  static FORCE_INLINE void run(uint32_t tt_l1_ptr *) {
+  static FORCE_INLINE void run(uint32_t tt_l1_ptr *runtimeConfiguration) {
     ApplyStaticConfigurations<updateReadPointer, updateWritePointer,
                               updateWriteTilePointer, resetStreamCounters,
-                              configuration...>::run();
+                              configuration...>::run(runtimeConfiguration);
   }
 };
 

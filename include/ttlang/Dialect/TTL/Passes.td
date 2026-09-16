@@ -1670,19 +1670,17 @@ def TTKernelAnnotateDFBUse
 
 def TTKernelSpecializeDFBReconfiguration
     : Pass<"ttkernel-specialize-dfb-reconfiguration", "::mlir::ModuleOp"> {
-  let summary = "Specialize DFB reconfiguration for invariant storage";
+  let summary = "Specialize DFB reconfiguration descriptor fields";
   let description = [{
-    Runs after per-core specialization. When every epoch configuration of a
-    physical DFB uses the same storage source on the specialized core, the
-    pass records the selected epoch's descriptor fields as opaque-call
-    template arguments. Reconfiguration still synchronizes through the
-    runtime record, but does not read descriptor fields or scan active DFB
-    masks at runtime.
+    Runs after per-core specialization. The pass records the selected epoch's
+    DFB size, page count, and page size as opaque-call template arguments.
+    Reconfiguration reads each selected DFB's L1 address from the runtime
+    record because compiler-managed and tensor-backed epochs may use different
+    allocations. It does not read the other descriptor fields or scan active
+    DFB masks at runtime.
 
-    If any reused DFB changes its storage source, the pass preserves the
-    runtime-record implementation so that the selected epoch supplies the
-    correct address. The pass also records the specialized call's DFB resource
-    indices for subsequent per-kernel resource-use analysis.
+    The pass also records the specialized call's DFB resource indices for
+    subsequent per-kernel resource-use analysis.
   }];
   let dependentDialects = ["::mlir::tt::ttkernel::TTKernelDialect"];
 }
