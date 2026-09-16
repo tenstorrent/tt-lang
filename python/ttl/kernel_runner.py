@@ -2322,39 +2322,12 @@ def _print_sram_runtime_report(
     print("ttlang-sram-report: " + json.dumps(report, sort_keys=True), file=sys.stderr)
 
 
-def _get_compiler_l1_arena_bytes(
+def _get_compiler_sram_arena_bytes(
     cb_configs: Sequence[PhysicalDFBConfig],
 ) -> Optional[int]:
-    has_compiler_l1_metadata = any(
-        config.l1_offset is not None
-        or config.l1_payload_offset is not None
-        or config.l1_allocation_bytes is not None
-        for config in cb_configs
-    )
-    if not has_compiler_l1_metadata:
-        return None
-    if not all(config.l1_offset is not None for config in cb_configs):
-        raise ValueError("mixed compiler-l1 and Metal storage metadata")
-    arena_ends = [config.l1_offset + 8 for config in cb_configs]
-    for config in cb_configs:
-        has_payload_offset = config.l1_payload_offset is not None
-        has_allocation_bytes = config.l1_allocation_bytes is not None
-        if has_payload_offset != has_allocation_bytes:
-            raise ValueError("incomplete compiler-l1 payload allocation metadata")
-        if config.sram_core_layouts:
-            arena_ends.extend(layout.arena_bytes for layout in config.sram_core_layouts)
-        if has_payload_offset:
-            if not config.sram_core_layouts:
-                arena_ends.append(config.l1_payload_offset + config.l1_allocation_bytes)
-            continue
-        if not config.storage_segments or any(
-            not segment.is_tensor_backed for segment in config.storage_segments
-        ):
-            raise ValueError(
-                "compiler-l1 storage without an arena payload requires "
-                "tensor backing on every storage segment"
-            )
-    return max(arena_ends)
+    from ._sram_requirements import compiler_arena_bytes
+
+    return compiler_arena_bytes(cb_configs)
 
 
 def _has_pipe_sram_scratch(pipe_sram_scratch_bytes: int, num_dfb_resets: int) -> bool:
@@ -2862,7 +2835,7 @@ def _get_cached_runtime_resources_impl(
             num_dfb_resets > 0
             or (
                 pipe_sram_scratch_bytes > 0
-                and _get_compiler_l1_arena_bytes(cb_configs) is not None
+                and _get_compiler_sram_arena_bytes(cb_configs) is not None
             )
         ),
         kernel_specs=kernel_specs,
@@ -4482,20 +4455,23 @@ def _run_kernel_on_device_impl(
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
 
-    compiler_l1_arena_bytes = _get_compiler_l1_arena_bytes(cb_configs)
-    compiler_l1 = compiler_l1_arena_bytes is not None
-    from ._sram_domains import validate_core_layouts
+    operation_cores = tuple(
+        (int(core.x), int(core.y))
+        for core in ttnn.corerange_to_cores(core_ranges, row_wise=True)
+    )
+    from ._sram_requirements import prepare_sram_operation
 
-    sram_core_sizes = {}
-    if any(config.sram_core_layouts for config in cb_configs):
-        sram_core_sizes = validate_core_layouts(
-            cb_configs,
-            (
-                (int(core.x), int(core.y))
-                for core in ttnn.corerange_to_cores(core_ranges, row_wise=True)
-            ),
-        )
-    if sram_core_sizes:
+    prepared_sram = prepare_sram_operation(
+        name=operation_name,
+        tensors=tensors,
+        configs=cb_configs,
+        cores=operation_cores,
+        ttnn_api=ttnn,
+    )
+    compiler_l1 = prepared_sram.uses_compiler_arena
+    has_sram_core_layouts = any(config.sram_core_layouts for config in cb_configs)
+    sram_core_sizes = prepared_sram.arena_bytes_by_core()
+    if has_sram_core_layouts:
         from ._sram_domains import validate_receiver_targets
 
         validate_receiver_targets(kernel_specs, cb_configs)
@@ -4597,11 +4573,12 @@ def _run_kernel_on_device_impl(
     compiler_l1_arena = None
     sram_core_arenas = {}
     compiler_l1_base_address = None
-    if sram_core_sizes:
-        from ._sram_domains import core_domains
-
-        for coordinates in core_domains(cb_configs):
-            size = sram_core_sizes[coordinates[0]]
+    if has_sram_core_layouts:
+        for arena_binding in prepared_sram.arenas:
+            coordinates = arena_binding.cores
+            size = prepared_sram.requirements[
+                arena_binding.requirement_index
+            ].extent_bytes
             domain_ranges = _make_singleton_core_ranges(coordinates)
             arena_device = device if device is not None else _first_device(tensors)
             arena = _allocate_l1_sharded_storage_tensor(
@@ -4622,6 +4599,11 @@ def _run_kernel_on_device_impl(
             for coordinate in coordinates:
                 sram_core_arenas[coordinate] = arena
     elif compiler_l1:
+        if len(prepared_sram.arenas) != 1:
+            raise RuntimeError("uniform compiler SRAM requires one arena")
+        compiler_l1_arena_bytes = prepared_sram.requirements[
+            prepared_sram.arenas[0].requirement_index
+        ].extent_bytes
         compiler_l1_arena = _allocate_l1_sharded_storage_tensor(
             core_ranges,
             compiler_l1_arena_bytes,
