@@ -233,9 +233,10 @@ def test_bidirectional_dram_all_gather_minimal_matmul(torch_dtype):
 @pytest.mark.parametrize(
     "torch_dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"]
 )
-def test_bidirectional_l1_all_gather_minimal_matmul(torch_dtype):
+@pytest.mark.parametrize("mesh_shape", [(4, 1), (8, 1)], ids=["4_devices", "8_devices"])
+def test_bidirectional_l1_all_gather_minimal_matmul(torch_dtype, mesh_shape):
     config = AllGatherMinimalMatmulConfig(
-        mesh_shape=(4, 1),
+        mesh_shape=mesh_shape,
         m_tiles=8,
         k_tiles_per_device=4,
         n_tiles_per_device=8,
