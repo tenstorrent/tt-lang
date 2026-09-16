@@ -32,6 +32,35 @@ not exhaustively searched. TT-Lang likewise used the best measured `11 x 10`
 configuration from its screened candidates; alternate worker grids and
 communication-worker counts remain unmeasured.
 
+### Configuration search
+
+The native four-device configuration (`12 x 9`, `7/5/16` M/K/N blocks,
+`1 x 2` subblock) is the published TT-Metal entry for this workload; it was
+not exhaustively re-swept here. For eight devices, the same native transport
+configuration was retained while preserving the global tensor dimensions and
+N-sharded output. The per-device dimensions then give 20 K tiles and 60 N
+tiles. The candidate blocks followed the TT-Metal sweep rules: M and N blocks
+were selected from even sizes 2--16 plus per-core divisors, K blocks divided
+the per-device K tile count, FP32 destination accumulation constrained the
+subblock, and candidates exceeding the L1 budget were excluded.
+
+The eight-device native screen measured all eight combinations
+`M ∈ {5,7}`, `K ∈ {5,10}`, `N ∈ {7,8}`. Every candidate passed correctness and
+was measured with one warmup and three samples. `M7/K10/N8` had the lowest
+observed median (1.705 ms in the screen) and was confirmed with three warmups
+and ten samples at 1.709 ms (1.690--1.722 ms). The nearest measured candidate,
+`M7/K10/N7`, was 1.721 ms; its 0.7% difference is too small to establish a
+statistically decisive separation from the winner without more repetitions.
+
+TT-Lang used the feasible eight-device `11 x 10` grid (110 compute workers
+plus eight mux workers) and screened `M9/K10/N6` against an `M3` control under
+the same grid and placement. This was the best measured TT-Lang candidate, not
+an exhaustive search of alternate worker grids, communication-worker counts,
+or all legal block sizes. Neither implementation's search varied every
+combination of grid, links, clients, channel buffers, chunks, transport, and
+blocking; the reported ratio therefore compares independently tuned measured
+configurations rather than proven global optima.
+
 ## Two-dimensional decomposition
 
 The `2 x 2` operation partitions K across two device groups and N across two
