@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -30,11 +31,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && command -v clang++-20 >/dev/null \
     && command -v lld-20 >/dev/null
 
-RUN mkdir -p "$TT_EMULE_RUNTIME_ROOT" \
-    && git init /opt/tt-emule \
-    && git -C /opt/tt-emule remote add origin https://github.com/tenstorrent/tt-emule.git \
-    && git -C /opt/tt-emule fetch --depth 1 origin "$TT_EMULE_COMMIT" \
-    && git -C /opt/tt-emule checkout --detach FETCH_HEAD \
+COPY --from=tt-emule-source . /opt/tt-emule
+
+RUN if [ -f /opt/tt-emule/tt-metal-pin.txt ]; then \
+        grep -F -x -- "$TT_METAL_COMMIT" /opt/tt-emule/tt-metal-pin.txt; \
+    fi \
+    && mkdir -p "$TT_EMULE_RUNTIME_ROOT" \
     && git init "$TT_METAL_SOURCE_DIR" \
     && git -C "$TT_METAL_SOURCE_DIR" remote add origin https://github.com/tenstorrent/tt-metal.git \
     && git -C "$TT_METAL_SOURCE_DIR" fetch --depth 1 origin "$TT_METAL_COMMIT" \
