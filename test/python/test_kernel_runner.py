@@ -2294,6 +2294,37 @@ def test_build_kernel_descriptors_binds_per_core_tensor_addresses(
     assert descriptors[1].runtime_args[1][0] == [0x2000]
 
 
+def test_build_kernel_descriptors_reports_missing_per_core_tensor_shard(monkeypatch):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    tensor = _PerCoreLocalTensorTestDouble(
+        "l1-small", "block", _FakeExplicitCoreRanges((0, 0), (0, 0))
+    )
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[0],
+        local_tensor_indices=[],
+        config=object(),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"per-core tensor 0 has no shard on executing core \(1, 0\)",
+    ):
+        kernel_runner.build_kernel_descriptors(
+            kernel_specs=[spec],
+            tensors=[tensor],
+            tensor_accessor_args=[],
+            core_ranges=full_grid,
+            grid_cols=2,
+            grid_rows=1,
+            num_cbs=0,
+            device_coordinates=[0, 3],
+        )
+
+
 def test_local_tensor_access_requires_runtime_address_metadata(monkeypatch):
     fake_ttnn = _local_tensor_test_environment()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)

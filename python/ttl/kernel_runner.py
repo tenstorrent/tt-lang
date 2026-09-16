@@ -1904,18 +1904,18 @@ def _partition_descriptor_by_tensor_addresses(
     for core_coordinate in _core_range_coordinates(
         core_ranges, label="kernel descriptor core ranges"
     ):
-        try:
-            argument_addresses = tuple(
-                (
-                    argument_index,
-                    per_core_addresses[tensor_index][core_coordinate],
+        argument_addresses = []
+        for argument_index, tensor_index in per_core_argument_indices:
+            tensor_addresses = per_core_addresses[tensor_index]
+            if core_coordinate not in tensor_addresses:
+                raise ValueError(
+                    f"per-core tensor {tensor_index} has no shard on executing "
+                    f"core {core_coordinate}"
                 )
-                for argument_index, tensor_index in per_core_argument_indices
+            argument_addresses.append(
+                (argument_index, tensor_addresses[core_coordinate])
             )
-        except KeyError as error:
-            raise ValueError(
-                f"per-core tensor has no shard on executing core {core_coordinate}"
-            ) from error
+        argument_addresses = tuple(argument_addresses)
         coordinates_by_addresses.setdefault(argument_addresses, set()).add(
             core_coordinate
         )
