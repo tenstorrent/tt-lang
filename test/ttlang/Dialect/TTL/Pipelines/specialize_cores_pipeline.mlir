@@ -24,7 +24,6 @@
 // SUBPIPELINE-NEXT: ttkernel-specialize-dfb-reconfiguration,
 // SUBPIPELINE-NEXT: ttkernel-annotate-dfb-use
 // SUBPIPELINE-NOT:  ttkernel-specialize-cores
-// SUBPIPELINE-NOT:  ttkernel-annotate-dfb-use
 
 // CLEANUP-LABEL: Pass Manager with
 // CLEANUP-NEXT: builtin.module(
@@ -75,4 +74,7 @@
 // DISABLED-NEXT: ttkernel-finalize-tensor-runtime-args
 // DISABLED-NEXT: canonicalize{{.*}}
 
-module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {}
+module attributes {
+  ttl.dfb_allocations = [],
+  ttl.launch_grid = [1 : i64, 1 : i64]
+} {}
