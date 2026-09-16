@@ -67,6 +67,10 @@ enum class IntermediateDFBReason {
   /// A consumer cannot absorb a producer with its own standalone compute
   /// recipe, so the producer result must become a DFB input to that consumer.
   ComputeOpRequiresMaterializedInput,
+
+  /// A computed zero-copy shape view is stored directly and must first be
+  /// routed through a compiler DFB so the final store becomes passthrough.
+  StoreInputShapeView,
 };
 
 /// Evidence supporting one intermediate DFB requirement.
@@ -110,10 +114,12 @@ struct IntermediateDFBRequirement {
 /// https://github.com/llvm/llvm-project/blob/4279d524cc78d0bac294bb29257c62665121d9f1/mlir/include/mlir/Dialect/Bufferization/Transforms/OneShotAnalysis.h
 class DFBMaterializationAnalysisState {
 public:
-  /// Returns whether `operand` must be replaced with a DFB-attached value.
+  /// Returns whether planned storage supplies `operand`, directly or through
+  /// checked singleton views of the stored producer.
   bool requiresMaterialization(const OpOperand &operand) const;
 
   /// Records an independent proof that `operand` requires materialization.
+  /// Singleton views record the innermost view's source operand.
   /// Returns true when this is the first decision for the operand.
   bool requireMaterialization(OpOperand &operand,
                               IntermediateDFBEvidence evidence);
