@@ -16,6 +16,8 @@ An `SRAMStorage` object declares tensors, allocates their backing, initializes i
 
 Declaration and allocation are separate because placement should consider the complete set of requirements before reserving storage. The initial implementation uses ordinary owned TTNN allocations. It does not yet jointly pack them with compiler scratch; [SRAM Allocation](SRAMAllocation.md) describes the existing placement machinery.
 
+`storage.requirements()` returns the immutable pre-allocation requirements while declarations remain open. Each physical tensor declaration appears once with its per-shard extent, alignment, persistent lifetime, movable placement, and address-equality domains. Uniform addressing produces one domain containing all participating cores; per-core addressing produces one singleton domain per core. `allocate()` validates the same requirements before reserving storage.
+
 `addressing="uniform"` requests one local address on every participating core. `addressing="per-core"` lets TTNN allocate each core independently and uses the Metal hybrid-allocation prerequisite defined in [SRAM Allocation](SRAMAllocation.md#runtime-allocation-and-binding). The tensor's required sharding mode defines how its logical dimensions map to those cores. Per-core storage supports direct local access only; general tensor access and multicast require one common base address and are rejected.
 
 ### Example: Sharing State Between Operations
@@ -109,6 +111,6 @@ Persistent references become ordinary tensor arguments before compilation and ca
 
 ## Follow-On Work
 
-Joint placement combines declared persistent tensors, fixed existing allocations, and known temporary-storage requirements. Persistent contents remain live between accesses, so idle time alone cannot justify reusing their bytes. Reusing temporary storage across launches additionally requires a declared and enforced execution order.
+The next runtime contract obtains complete fixed occupancy from the host allocator and reserves all movable requirements atomically. Joint placement can then combine declared persistent tensors, fixed existing allocations, and known temporary-storage requirements without overlapping another owner. Persistent contents remain live between accesses, so idle time alone cannot justify reusing their bytes. Reusing temporary storage across launches additionally requires a declared and enforced execution order.
 
 Read/write effect information can permit concurrent read-only borrowing. These optimizations preserve the ownership and completion rules above.

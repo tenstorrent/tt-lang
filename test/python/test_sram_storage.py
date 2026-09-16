@@ -14,6 +14,12 @@ import ttnn
 import ttl
 
 from ttl.sram import SRAMStorage
+from ttl._sram_requirements import (
+    SRAMLifetime,
+    SRAMOwner,
+    SRAMOwnerKind,
+    SRAMOwnership,
+)
 from ttlang_test_utils import to_dram
 from utils.correctness import assert_allclose
 
@@ -158,6 +164,7 @@ def runtime(monkeypatch):
     )
     api.empty = empty
     api.full = full
+    api.get_l1_alignment = lambda: 16
     api.record_event = record_event
     api.wait_for_event = lambda **options: events.append(("order", options))
     api.event_synchronize = wait
@@ -184,6 +191,22 @@ def declare(storage, **options):
     )
     arguments.update(options)
     return storage.tensor(**arguments)
+
+
+@pytest.mark.parametrize("addressing", ["uniform", "per-core"])
+def test_persistent_declarations_export_movable_requirements(runtime, addressing):
+    storage = SRAMStorage(device=runtime.device)
+    declare(storage, addressing=addressing)
+
+    prepared = storage.requirements()
+    requirement = prepared.requirements[0]
+    assert requirement.owner == SRAMOwner(SRAMOwnerKind.PERSISTENT_DECLARATION, 0)
+    assert requirement.extent_bytes == 4096
+    assert requirement.ownership is SRAMOwnership.MOVABLE
+    assert requirement.lifetime is SRAMLifetime.PERSISTENT
+    expected_domain_count = 1 if addressing == "uniform" else 2
+    assert len(requirement.address_domains) == expected_domain_count
+    storage.close()
 
 
 def _make_persistent_increment(grid, increment):
