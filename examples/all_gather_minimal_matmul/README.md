@@ -54,7 +54,7 @@ reads that block from DRAM and distributes it within the row.
 | | TT-Lang | Native TT-Metal |
 | --- | --- | --- |
 | Grid | 12 M columns x 10 N rows | 12 M columns x 9 N rows |
-| DRAM readers | `m=0` in every N row | Edge worker in every N row |
+| DRAM readers | `m=0` in every N row | `x=0` (M-partition index 0) in every N row |
 | Block | Two `5 x 12` K-half blocks | One `5 x 16` K block |
 | Distribution | One-to-many NoC multicast | Hop-by-hop NoC unicast |
 | Consumers | All 12 M workers in the row | All 12 M workers in the chain |
@@ -80,8 +80,8 @@ DRAM --> x0 --> x1 --> x2 --> ... --> x11
 
 TT-Lang reads each weight half directly into the matmul DFB at `m=0`; that
 worker also computes while the multicast supplies `m=1...11`. Native publishes
-the block to the edge worker's input DFB before relaying it through the worker
-chain. Each native receiver consumes the block and signals the following
+the block to the `x=0` worker's input DFB before relaying it through
+`x=1...11`. Each native receiver consumes the block and signals the following
 unicast hop. Weights do not cross devices in either implementation.
 
 ## Run
