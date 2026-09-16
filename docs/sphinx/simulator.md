@@ -97,8 +97,16 @@ live in named Docker volumes, so subsequent source edits rebuild incrementally.
 Set `TTLANG_EMULE_REBUILD=1` to rebuild the runtime image, or
 `TTLANG_EMULE_JOBS=N` to limit build parallelism.
 
-The initial supported target is a single emulated Wormhole N150 device. Options
-specific to the Python backend, such as `--grid`, `--trace`, and
+The initial supported target is a single emulated Blackhole P150 device with
+the full, unharvested 13x10 compute grid. The launcher selects the emulator's
+P150 descriptor and configures tt-metal's hybrid allocator before the device
+is opened. Select a compatible pinned emulator checkout and its matching
+tt-metal revision through `TTLANG_EMULE_RUNTIME_SOURCE_DIR`,
+`TTLANG_EMULE_RUNTIME_COMMIT`, and `TTLANG_EMULE_RUNTIME_METAL_COMMIT`. The
+launcher rejects a runtime without the required P150 descriptor before the
+Docker build starts.
+
+Options specific to the Python backend, such as `--grid`, `--trace`, and
 `--no-float32-promotion`, do not apply to compiler-backed emulation. Arguments
 after `--` are always passed to the user script:
 
