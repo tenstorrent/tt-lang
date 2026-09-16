@@ -2196,8 +2196,26 @@ class _LocalTensorTestDouble:
         return self._memory_config
 
     @staticmethod
+    def is_per_core_allocated():
+        return False
+
+    @staticmethod
     def buffer_address():
         return 0x2000
+
+
+class _PerCoreLocalTensorTestDouble(_LocalTensorTestDouble):
+    @staticmethod
+    def is_per_core_allocated():
+        return True
+
+    @staticmethod
+    def buffer_address():
+        pytest.fail("per-core local tensors have no common buffer address")
+
+    @staticmethod
+    def experimental_per_core_buffer_address(device_coordinate, core):
+        return 0x2000 + 0x100 * device_coordinate.coords[1] + 0x10 * core.x
 
 
 def test_build_kernel_descriptors_accepts_complete_local_tensor_shards(monkeypatch):
@@ -2224,6 +2242,56 @@ def test_build_kernel_descriptors_accepts_complete_local_tensor_shards(monkeypat
     )
 
     assert descriptors[0].common_runtime_args == [0x2000]
+
+
+@pytest.mark.parametrize(
+    ("thread_type", "local_tensor_indices"),
+    [("compute", [0]), ("noc", [])],
+    ids=["compute-local-accessor", "data-movement-tensor-accessor"],
+)
+def test_build_kernel_descriptors_binds_per_core_tensor_addresses(
+    monkeypatch, thread_type, local_tensor_indices
+):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    tensor = _PerCoreLocalTensorTestDouble("l1-small", "block", full_grid)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type=thread_type,
+        tensor_indices=[0],
+        local_tensor_indices=local_tensor_indices,
+        config=object(),
+    )
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        tensor_accessor_args=[],
+        core_ranges=full_grid,
+        grid_cols=2,
+        grid_rows=1,
+        num_cbs=0,
+        device_coordinates=[0, 3],
+        dfb_reconfiguration_runtime_args={
+            (0, 0): [0x1000],
+            (1, 0): [0x2000],
+        },
+    )
+
+    assert [descriptor.common_runtime_args for descriptor in descriptors] == [
+        [0x2300, 0, 3],
+        [0x2310, 0, 3],
+    ]
+    assert [
+        [
+            (core_range.start.x, core_range.start.y)
+            for core_range in descriptor.core_ranges.ranges()
+        ]
+        for descriptor in descriptors
+    ] == [[(0, 0)], [(1, 0)]]
+    assert descriptors[0].runtime_args[0][0] == [0x1000]
+    assert descriptors[1].runtime_args[1][0] == [0x2000]
 
 
 def test_local_tensor_access_requires_runtime_address_metadata(monkeypatch):

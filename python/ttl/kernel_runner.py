@@ -22,7 +22,7 @@ import os
 import threading
 import warnings
 import weakref
-from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 ttnn = None  # Lazy-loaded via _ensure_ttnn()
 
@@ -1791,6 +1791,154 @@ def _validate_local_tensor_access(
             )
 
 
+def _is_per_core_allocated(tensor: Any) -> bool:
+    probe = getattr(tensor, "is_per_core_allocated", None)
+    if probe is None:
+        return False
+    try:
+        return bool(probe())
+    except Exception as error:
+        raise ValueError("failed to query tensor per-core allocation") from error
+
+
+def _resolve_per_core_tensor_addresses(
+    tensors: List[Any],
+    tensor_indices: Iterable[int],
+    mesh_coordinate: Optional[Tuple[int, ...]],
+) -> Dict[int, Dict[Tuple[int, int], int]]:
+    addresses_by_tensor = {}
+    for tensor_index in tensor_indices:
+        tensor = tensors[tensor_index]
+        if not _is_per_core_allocated(tensor):
+            continue
+        try:
+            shard_grid = tensor.memory_config().shard_spec.grid
+        except Exception as error:
+            raise ValueError(
+                f"per-core tensor {tensor_index} must expose a shard grid"
+            ) from error
+        core_coordinates = _core_range_coordinates(
+            shard_grid, label=f"per-core tensor {tensor_index} shard grid"
+        )
+
+        core_addresses = {}
+        if mesh_coordinate is not None:
+            device_coordinate = _build_mesh_coordinate(mesh_coordinate)
+            for core_coordinate in core_coordinates:
+                try:
+                    core_addresses[core_coordinate] = int(
+                        tensor.experimental_per_core_buffer_address(
+                            device_coordinate, ttnn.CoreCoord(*core_coordinate)
+                        )
+                    )
+                except Exception as error:
+                    raise ValueError(
+                        f"failed to resolve per-core tensor {tensor_index} on "
+                        f"device {mesh_coordinate}, core {core_coordinate}"
+                    ) from error
+        else:
+            try:
+                device_tensors = list(ttnn.get_device_tensors(tensor))
+            except Exception as error:
+                raise ValueError(
+                    f"failed to enumerate device shards for per-core tensor "
+                    f"{tensor_index}"
+                ) from error
+            if not device_tensors:
+                raise ValueError(f"per-core tensor {tensor_index} has no device shards")
+            for core_coordinate in core_coordinates:
+                addresses = []
+                for device_index, device_tensor in enumerate(device_tensors):
+                    if not _is_per_core_allocated(device_tensor):
+                        raise ValueError(
+                            f"per-core tensor {tensor_index} device shard "
+                            f"{device_index} is not per-core allocated"
+                        )
+                    try:
+                        (device_coordinate,) = device_tensor.device_coords()
+                        addresses.append(
+                            int(
+                                device_tensor.experimental_per_core_buffer_address(
+                                    device_coordinate,
+                                    ttnn.CoreCoord(*core_coordinate),
+                                )
+                            )
+                        )
+                    except Exception as error:
+                        raise ValueError(
+                            f"failed to resolve per-core tensor {tensor_index} on "
+                            f"device shard {device_index}, core {core_coordinate}"
+                        ) from error
+                if len(set(addresses)) != 1:
+                    raise ValueError(
+                        f"per-core tensor {tensor_index} has different addresses "
+                        f"across devices on core {core_coordinate}: {addresses}"
+                    )
+                core_addresses[core_coordinate] = addresses[0]
+        addresses_by_tensor[tensor_index] = core_addresses
+    return addresses_by_tensor
+
+
+def _partition_descriptor_by_tensor_addresses(
+    core_ranges: Any,
+    spec: KernelSpec,
+    per_core_addresses: Dict[int, Dict[Tuple[int, int], int]],
+) -> List[Tuple[Any, Dict[int, int], Set[Tuple[int, int]]]]:
+    per_core_argument_indices = [
+        (argument_index, tensor_index)
+        for argument_index, tensor_index in enumerate(spec.tensor_indices)
+        if tensor_index in per_core_addresses
+    ]
+    if not per_core_argument_indices:
+        return [(core_ranges, {}, _core_range_coordinates(core_ranges))]
+
+    coordinates_by_addresses = {}
+    for core_coordinate in _core_range_coordinates(core_ranges):
+        try:
+            argument_addresses = tuple(
+                (
+                    argument_index,
+                    per_core_addresses[tensor_index][core_coordinate],
+                )
+                for argument_index, tensor_index in per_core_argument_indices
+            )
+        except KeyError as error:
+            raise ValueError(
+                f"per-core tensor has no shard on executing core {core_coordinate}"
+            ) from error
+        coordinates_by_addresses.setdefault(argument_addresses, set()).add(
+            core_coordinate
+        )
+
+    return [
+        (
+            _make_singleton_core_ranges(coordinates),
+            dict(argument_addresses),
+            coordinates,
+        )
+        for argument_addresses, coordinates in sorted(
+            coordinates_by_addresses.items(), key=lambda item: min(item[1])
+        )
+    ]
+
+
+def _restrict_runtime_args(runtime_args: Any, coordinates: Set[Tuple[int, int]]):
+    if not runtime_args:
+        return runtime_args
+    if isinstance(runtime_args, dict):
+        restricted = ttnn.RuntimeArgs()
+        for core_x, core_y in sorted(coordinates):
+            row = runtime_args.get(core_x)
+            if row is not None and core_y in row:
+                restricted[core_x][core_y] = row[core_y]
+        return restricted
+    return [
+        (core, values)
+        for core, values in runtime_args
+        if (int(core.x), int(core.y)) in coordinates
+    ]
+
+
 def build_kernel_descriptors(
     kernel_specs: List[KernelSpec],
     tensors: List[Any],
@@ -1854,6 +2002,14 @@ def build_kernel_descriptors(
     computed_address_base_addresses = pipe_computed_address_base_addresses or {}
     extra_args = list(extra_common_runtime_args or [])
     reconfiguration_args = dict(dfb_reconfiguration_runtime_args or {})
+    referenced_tensor_indices = sorted(
+        {tensor_index for spec in kernel_specs for tensor_index in spec.tensor_indices}
+    )
+    per_core_tensor_addresses = _resolve_per_core_tensor_addresses(
+        tensors,
+        referenced_tensor_indices,
+        None if device_coordinates is None else tuple(device_coordinates),
+    )
     if (
         expected_extra_common_runtime_args is not None
         and len(extra_args) != expected_extra_common_runtime_args
@@ -1873,7 +2029,12 @@ def build_kernel_descriptors(
         # Build common_runtime_args using tensor_indices.
         # C++ indexes by function-local position, we provide addresses in that order.
         common_runtime_args = [
-            tensors[idx].buffer_address() for idx in spec.tensor_indices
+            (
+                0
+                if tensor_index in per_core_tensor_addresses
+                else int(tensors[tensor_index].buffer_address())
+            )
+            for tensor_index in spec.tensor_indices
         ]
         computed_address_base_args = []
         for dfb_index in spec.pipe_computed_address_dfb_indices:
@@ -1941,18 +2102,33 @@ def build_kernel_descriptors(
             )
 
         for descriptor_variant in descriptor_variants:
-            kernel_descriptor_args = dict(
-                kernel_source=spec.path,
-                core_ranges=descriptor_variant.core_ranges,
-                compile_time_args=descriptor_variant.compile_time_args,
-                defines=defines,
-                common_runtime_args=common_runtime_args,
-                config=spec.config,
-                compiler_include_paths=spec.compiler_include_paths,
-            )
-            if descriptor_variant.runtime_args:
-                kernel_descriptor_args["runtime_args"] = descriptor_variant.runtime_args
-            kernel_descriptors.append(ttnn.KernelDescriptor(**kernel_descriptor_args))
+            for (
+                partition_ranges,
+                argument_addresses,
+                partition_coordinates,
+            ) in _partition_descriptor_by_tensor_addresses(
+                descriptor_variant.core_ranges, spec, per_core_tensor_addresses
+            ):
+                partition_common_runtime_args = list(common_runtime_args)
+                for argument_index, address in argument_addresses.items():
+                    partition_common_runtime_args[argument_index] = address
+                kernel_descriptor_args = dict(
+                    kernel_source=spec.path,
+                    core_ranges=partition_ranges,
+                    compile_time_args=descriptor_variant.compile_time_args,
+                    defines=defines,
+                    common_runtime_args=partition_common_runtime_args,
+                    config=spec.config,
+                    compiler_include_paths=spec.compiler_include_paths,
+                )
+                partition_runtime_args = _restrict_runtime_args(
+                    descriptor_variant.runtime_args, partition_coordinates
+                )
+                if partition_runtime_args:
+                    kernel_descriptor_args["runtime_args"] = partition_runtime_args
+                kernel_descriptors.append(
+                    ttnn.KernelDescriptor(**kernel_descriptor_args)
+                )
 
     return kernel_descriptors
 
