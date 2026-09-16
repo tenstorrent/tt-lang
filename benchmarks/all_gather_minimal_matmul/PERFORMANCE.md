@@ -23,6 +23,15 @@ a `1 x 2` output subblock, two links per direction, six clients per link, 24
 channel buffers, and three output chunks. The independently selected
 configurations produce the same N-sharded output.
 
+The table reports the fastest measured member of the candidate sets below, not
+a proof of global optimality. The eight-device native search fixed the
+published `12 x 9` transport configuration and measured all eight combinations
+of M/K/N blocks in `{5,7} x {5,10} x {7,8}`; alternate grids, link/client
+counts, channel-buffer counts, chunk counts, and other legal block sizes were
+not exhaustively searched. TT-Lang likewise used the best measured `11 x 10`
+configuration from its screened candidates; alternate worker grids and
+communication-worker counts remain unmeasured.
+
 ## Two-dimensional decomposition
 
 The `2 x 2` operation partitions K across two device groups and N across two
