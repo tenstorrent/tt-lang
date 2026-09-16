@@ -52,8 +52,10 @@ DEVICE_ALL_TO_ALL_NET = ttl.PipeNet(graph=ttl.TransferGraph.all_to_all(DEVICE_DO
 
 SINGLE_RECEIVER_COLLECTIVE_NET = ttl.PipeNet(
     [
-        ttl.Pipe(src=(node, 0), dst=(slice(node, node + 1), 1))
-        for node in range(SINGLE_RECEIVER_COLLECTIVE_COUNT)
+        ttl.Pipe(
+            src=(0, 0),
+            dst=(slice(0, SINGLE_RECEIVER_COLLECTIVE_COUNT), 1),
+        )
     ]
 )
 
