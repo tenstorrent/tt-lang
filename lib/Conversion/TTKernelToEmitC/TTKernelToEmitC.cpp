@@ -2862,6 +2862,29 @@ public:
   }
 };
 
+template <typename SourceOp, typename EmitCOp>
+class ArithIndexUnsignedBinaryRewriter : public OpConversionPattern<SourceOp> {
+public:
+  using OpConversionPattern<SourceOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    if (!isa<IndexType>(op.getResult().getType())) {
+      return failure();
+    }
+    Type resultType =
+        this->getTypeConverter()->convertType(op.getResult().getType());
+    if (!resultType) {
+      return failure();
+    }
+    ValueRange operands = adaptor.getOperands();
+    rewriter.replaceOpWithNewOp<EmitCOp>(op, resultType, operands[0],
+                                         operands[1]);
+    return success();
+  }
+};
+
 // Convert arith.bitcast to a call to float_to_bits helper.
 // This is needed for scalar tile ops that pass float values as integer params.
 // The helper function is defined in TTKernelToCpp.cpp during code generation.
@@ -3577,12 +3600,14 @@ public:
         TTKernelClassMethodRewriter<ttkernel::TensorAccessorIsLocalShardOp>>(
         typeConverter, context, state);
 
-    patterns
-        .add<ArithFloorDivRewriter, ArithBitcastRewriter, ArithMaxUIRewriter,
-             ArithMinUIRewriter, ArithMaxSIRewriter, ArithMinSIRewriter,
-             ArithBoolBinaryRewriter<arith::AndIOp, emitc::LogicalAndOp>,
-             ArithBoolBinaryRewriter<arith::OrIOp, emitc::LogicalOrOp>>(
-            typeConverter, context);
+    patterns.add<ArithFloorDivRewriter,
+                 ArithIndexUnsignedBinaryRewriter<arith::DivUIOp, emitc::DivOp>,
+                 ArithIndexUnsignedBinaryRewriter<arith::RemUIOp, emitc::RemOp>,
+                 ArithBitcastRewriter, ArithMaxUIRewriter, ArithMinUIRewriter,
+                 ArithMaxSIRewriter, ArithMinSIRewriter,
+                 ArithBoolBinaryRewriter<arith::AndIOp, emitc::LogicalAndOp>,
+                 ArithBoolBinaryRewriter<arith::OrIOp, emitc::LogicalOrOp>>(
+        typeConverter, context);
 
     return FrozenRewritePatternSet(std::move(patterns));
   }
