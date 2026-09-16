@@ -33,8 +33,7 @@ struct EvaluationTask {
   Value replacement;
 };
 
-using EvaluationCache =
-    llvm::DenseMap<Value, std::optional<llvm::APInt>>;
+using EvaluationCache = llvm::DenseMap<Value, std::optional<llvm::APInt>>;
 
 /// Cache a replacement without retaining a reference across map insertion.
 static void cacheReplacementValue(EvaluationCache &cache, Value value,
@@ -166,8 +165,7 @@ IntegerExpressionEvaluator::evaluate(Value requestedValue) {
       }
       worklist.push_back(
           {task.value, EvaluationTaskKind::ResolveReplacement, replacement});
-      worklist.push_back(
-          {replacement, EvaluationTaskKind::Discover, Value()});
+      worklist.push_back({replacement, EvaluationTaskKind::Discover, Value()});
       continue;
     }
 
