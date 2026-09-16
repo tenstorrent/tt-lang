@@ -95,6 +95,9 @@ constexpr llvm::StringLiteral kKernelThreadAttrName("ttl.kernel_thread");
 /// Func-level target-independent logical-kernel identity.
 constexpr llvm::StringLiteral kLogicalKernelAttrName("ttl.logical_kernel");
 
+/// Module-level two-dimensional launch-grid extent.
+constexpr llvm::StringLiteral kLaunchGridAttrName("ttl.launch_grid");
+
 /// Launch coordinates assigned to a core-specialized function.
 constexpr llvm::StringLiteral kCoreCoordAttrName("ttl.core_coord");
 

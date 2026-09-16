@@ -40,13 +40,6 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-// Attribute names. These are part of the frontend / runtime contract and keep
-// the `ttl.` prefix even though this pass runs at the TTKernel level:
-// `ttl.launch_grid` (the launch extent) is set on the module by the Python
-// frontend, and Python kernel construction reads `ttl.core_coord` to assign
-// each specialized function's launch coordinates.
-constexpr llvm::StringLiteral LaunchGridAttrName = "ttl.launch_grid";
-
 /// Parse the launch extent from an i64 array attribute into (gridX, gridY).
 ///
 /// NOTE: operations.py specifies that only dims=2 is supported for now.
@@ -196,16 +189,16 @@ struct TTKernelSpecializeCoresPass
   void runOnOperation() override {
     ModuleOp module = getOperation();
 
-    auto gridAttr = module->getAttrOfType<ArrayAttr>(LaunchGridAttrName);
+    auto gridAttr = module->getAttrOfType<ArrayAttr>(kLaunchGridAttrName);
     if (!gridAttr) {
-      module.emitOpError() << "requires a `" << LaunchGridAttrName
+      module.emitOpError() << "requires a `" << kLaunchGridAttrName
                            << "` module attribute";
       signalPassFailure();
       return;
     }
     FailureOr<std::pair<int64_t, int64_t>> grid = readGrid(gridAttr);
     if (failed(grid)) {
-      module.emitOpError() << "`" << LaunchGridAttrName
+      module.emitOpError() << "`" << kLaunchGridAttrName
                            << "` must be a length-2 array of positive i64 "
                               "extents";
       signalPassFailure();
