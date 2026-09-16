@@ -1879,10 +1879,20 @@ def _partition_descriptor_by_tensor_addresses(
         if tensor_index in per_core_addresses
     ]
     if not per_core_argument_indices:
-        return [(core_ranges, {}, _core_range_coordinates(core_ranges))]
+        return [
+            (
+                core_ranges,
+                {},
+                _core_range_coordinates(
+                    core_ranges, label="kernel descriptor core ranges"
+                ),
+            )
+        ]
 
     coordinates_by_addresses = {}
-    for core_coordinate in _core_range_coordinates(core_ranges):
+    for core_coordinate in _core_range_coordinates(
+        core_ranges, label="kernel descriptor core ranges"
+    ):
         try:
             argument_addresses = tuple(
                 (
