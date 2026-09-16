@@ -26,6 +26,8 @@ excluded.
 
 ## Selected column-parallel dataflow
 
+[Animated four-device dataflow and worker-role diagram](https://gist.githubusercontent.com/brnorris03/9bcd230ff55f920c5262a61a679000b5/raw/agmm_bidirectional_l1_animation.svg)
+
 ```text
 for each M block and local K block:
     split the activation block into left and right K halves
