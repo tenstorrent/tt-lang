@@ -510,16 +510,27 @@ protected:
                                   componentExtent);
   }
 
-  Value getComponentAxisCoordinate(OpBuilder &builder, Location loc,
-                                   Value deviceIndex, std::size_t axis) const {
-    std::uint64_t coordinateStride = 1;
+  std::uint64_t getComponentAxisStride(std::size_t axis) const {
+    std::uint64_t stride = 1;
     for (int64_t extent :
          component.getExtent().asArrayRef().drop_front(axis + 1)) {
-      coordinateStride *= extent;
+      stride *= extent;
     }
+    return stride;
+  }
+
+  std::uint64_t getDeviceAxisStride(std::size_t axis) const {
+    FailureOr<std::uint64_t> trailingSize = getTrailingComponentSize();
+    assert(succeeded(trailingSize) &&
+           "graph verification must reject overflowing domain extents");
+    return getComponentAxisStride(axis) * *trailingSize;
+  }
+
+  Value getComponentAxisCoordinate(OpBuilder &builder, Location loc,
+                                   Value deviceIndex, std::size_t axis) const {
     Value componentIndex = getComponentIndex(builder, loc, deviceIndex);
     Value stride = arith::ConstantIndexOp::create(
-        builder, loc, static_cast<int64_t>(coordinateStride));
+        builder, loc, static_cast<int64_t>(getComponentAxisStride(axis)));
     Value axisExtent = arith::ConstantIndexOp::create(
         builder, loc, component.getExtent()[axis]);
     Value withoutTrailing =
@@ -555,15 +566,10 @@ protected:
   Value replaceComponentAxisCoordinate(OpBuilder &builder, Location loc,
                                        Value deviceIndex, std::size_t axis,
                                        Value replacementCoordinate) const {
-    std::uint64_t coordinateStride = 1;
-    for (int64_t extent :
-         component.getExtent().asArrayRef().drop_front(axis + 1)) {
-      coordinateStride *= extent;
-    }
     Value currentCoordinate =
         getComponentAxisCoordinate(builder, loc, deviceIndex, axis);
     Value stride = arith::ConstantIndexOp::create(
-        builder, loc, static_cast<int64_t>(coordinateStride));
+        builder, loc, static_cast<int64_t>(getDeviceAxisStride(axis)));
     Value currentOffset =
         arith::MulIOp::create(builder, loc, currentCoordinate, stride);
     Value replacementOffset =
@@ -851,15 +857,7 @@ private:
     if (wrap) {
       return source;
     }
-    std::uint64_t axisStride = 1;
-    for (int64_t extent :
-         component.getExtent().asArrayRef().drop_front(axis + 1)) {
-      axisStride *= extent;
-    }
-    FailureOr<std::uint64_t> trailingSize = getTrailingComponentSize();
-    assert(succeeded(trailingSize) &&
-           "graph verification must reject overflowing domain extents");
-    axisStride *= *trailingSize;
+    std::uint64_t axisStride = getDeviceAxisStride(axis);
     int64_t axisExtent = component.getExtent()[axis];
     Value completeBlock = arith::ConstantIndexOp::create(
         builder, loc, axisExtent * static_cast<int64_t>(axisStride));
