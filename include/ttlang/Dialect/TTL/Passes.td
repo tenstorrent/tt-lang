@@ -384,6 +384,11 @@ def TTLConvertTTLToTTKernel
            "Allocate all compiler-managed PipeNet synchronization counters "
            "in GlobalSemaphore storage, leaving local hardware semaphore ids "
            "available to the application.">,
+    Option<"fabricMux", "fabric-mux", "bool", "true",
+           "Mark compiler-proven single-execution fabric clients as eligible "
+           "for program-local forwarding-link multiplexing. Target binding "
+           "selects direct or mux transport without changing PipeNet "
+           "synchronization.">,
     Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
            "Override the per-core L1 budget used for finalized DFB and "
            "scratch validation. 0 selects the target budget.">

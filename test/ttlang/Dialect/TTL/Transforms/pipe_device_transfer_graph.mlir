@@ -1,5 +1,7 @@
 // RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s
 // RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s --check-prefix=COUNT
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{fabric-mux=true})' | FileCheck %s --check-prefix=MUX
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{fabric-mux=false})' | FileCheck %s --check-prefix=NO-MUX
 
 // Summary: Verify that PipeGraph preserves distinct logical-device transfers
 // that share one node-level PipeKey.
@@ -7,6 +9,15 @@
 // Receiver declarations intentionally reverse the send order. Each edge must
 // retain its route, predicate, payload send, completion wait, and receiver DFB.
 // Disjoint device predicates share one function-scoped fabric manager.
+
+// Mux mode marks each function whose manager has one function-scoped lifetime.
+// MUX-LABEL: func.func @senders
+// MUX-SAME: ttl.fabric_mux_capable
+// MUX-LABEL: func.func @receivers
+// MUX-SAME: ttl.fabric_mux_capable
+
+// Disabling mux selection omits the target-binding capability marker.
+// NO-MUX-NOT: ttl.fabric_mux_capable
 
 // COUNT-LABEL: func.func @senders
 // COUNT: ttkernel.routing_plane.create_connection_manager

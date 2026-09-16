@@ -215,6 +215,8 @@ constexpr llvm::StringLiteral kFabricRuntimeArgBaseCommonIndexAttrName(
     "ttl.fabric_runtime_arg_base_common_index");
 constexpr llvm::StringLiteral
     kFabricManagerIntervalsAttrName("ttl.fabric_manager_intervals");
+constexpr llvm::StringLiteral
+    kFabricMuxCapableAttrName("ttl.fabric_mux_capable");
 
 /// Marker on BindCBOp to distinguish compiler-allocated DFBs from user-declared
 /// ones.
