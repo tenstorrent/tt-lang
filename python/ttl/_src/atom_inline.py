@@ -17,7 +17,7 @@ from ttl.dfb_allocation_group import DFBAllocationGroup
 from ttl.dfb_reset import DFBReset
 from ttl.dfb_reconfiguration import DFBReconfiguration
 from ttl.fabric import FabricManagerClaim
-from ttl.kernel import Kernel
+from ttl.kernel import Kernel, KernelKind, _selector_implicit_role
 from ttl.scalar import ScalarType
 
 _INLINED_OPERATION_STATEMENT = "_ttl_inlined_operation_statement"
@@ -498,8 +498,11 @@ def _add_capture_bindings(
     suffix: str,
 ) -> None:
     loaded_names = _loaded_names(spec.fn_ast.body)
-    for name, value in spec.compile_time_captures.items():
-        if name in loaded_names and name not in bindings:
+    for name in sorted(loaded_names):
+        if name in bindings:
+            continue
+        if name in spec.compile_time_captures:
+            value = spec.compile_time_captures[name]
             bindings[name] = _literal_node(
                 value,
                 scope=scope,
@@ -507,6 +510,17 @@ def _add_capture_bindings(
                 suffix=suffix,
                 name_hint=name,
             )
+            continue
+        value = spec.frozen_scope.get(name)
+        if not (
+            isinstance(value, KernelKind)
+            or isinstance(value, Kernel)
+            and _selector_implicit_role(value) is not None
+        ):
+            continue
+        fresh_name = _fresh_name(f"{spec.name}__{name}", suffix, reserved_names)
+        scope[fresh_name] = value
+        bindings[name] = ast.Name(id=fresh_name, ctx=ast.Load())
 
 
 def _add_external_pipenet_bindings(
@@ -652,6 +666,17 @@ def _add_allocation_group_bindings(
         bindings[name] = ast.Name(id=existing_name, ctx=ast.Load())
 
 
+def _remap_composed_synchronization_participant(
+    participant: Kernel | KernelKind,
+    selected_kernels: Dict[int, Kernel],
+) -> Kernel | KernelKind:
+    if not isinstance(participant, Kernel):
+        return participant
+    if _selector_implicit_role(participant) is not None:
+        return participant
+    return selected_kernels[id(participant)]
+
+
 def _add_dfb_reset_bindings(
     spec,
     bindings: Dict[str, ast.expr],
@@ -672,7 +697,9 @@ def _add_dfb_reset_bindings(
             # within that call retain one identity across all participants.
             reset_instance = DFBReset(
                 participants=tuple(
-                    selected_kernels[id(participant)]
+                    _remap_composed_synchronization_participant(
+                        participant, selected_kernels
+                    )
                     for participant in reset.participants
                 ),
             )
@@ -703,10 +730,8 @@ def _add_dfb_reconfiguration_bindings(
             # within that call retain one identity across all participants.
             boundary_instance = DFBReconfiguration(
                 participants=tuple(
-                    (
-                        selected_kernels[id(participant)]
-                        if isinstance(participant, Kernel)
-                        else participant
+                    _remap_composed_synchronization_participant(
+                        participant, selected_kernels
                     )
                     for participant in boundary.participants
                 ),
