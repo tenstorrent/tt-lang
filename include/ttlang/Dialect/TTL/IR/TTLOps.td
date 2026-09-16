@@ -40,6 +40,9 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
       buffer.
     - `allocation_group`, when present, requests one compiler-verified physical
       allocation for all logical DFBs carrying the same group identity.
+    - `address_scope` is `local` when nodes may use different L1 addresses and
+      `remote_uniform` when every node that uses the DFB requires one address.
+      Omitting the attribute is equivalent to `local`.
     - `tensor_backing`, when present, binds the complete dataflow buffer
       capacity to the specified byte range of an operation tensor argument.
       The range is relative to the local shard on each launch node. Tensor
@@ -56,7 +59,8 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
     DefaultValuedAttr<I64Attr, "2">:$block_count,
     OptionalAttr<IndexAttr>:$dfb_id,
     OptionalAttr<TTL_TensorBackingAttr>:$tensor_backing,
-    OptionalAttr<TTL_DFBAllocationGroupAttr>:$allocation_group
+    OptionalAttr<TTL_DFBAllocationGroupAttr>:$allocation_group,
+    OptionalAttr<StrAttr>:$address_scope
   );
   let results = (outs TTL_CircularBuffer:$result);
   let assemblyFormat = "`{` `cb_index` `=` $cb_index `,` `block_count` `=` $block_count `}` attr-dict `:` type($result)";

@@ -60,6 +60,7 @@ from .operators import (
     reconfigure_dfbs,
     wait_any,
 )
+from .template_argument import uint32
 
 # Math operations namespace
 from . import ttl_math as math
@@ -105,6 +106,7 @@ __all__ = [
     "reset_dfbs",
     "reset_all_dfbs",
     "reconfigure_dfbs",
+    "uint32",
     "wait_any",
     "math",
     "block",

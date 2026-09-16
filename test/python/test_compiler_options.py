@@ -20,6 +20,7 @@ class TestDefaults:
         assert opts.accumulation_strategy == "auto"
         assert opts.enable_fpu_binary_ops is True
         assert opts.subblock_sync is False
+        assert opts.auto_sync_user_dfbs is True
         assert opts.pipe_computed_addresses is True
         assert opts.pipe_global_semaphores_only is False
         assert opts.pipe_capacity_sync is True
@@ -28,6 +29,7 @@ class TestDefaults:
         assert opts.unsafe_assume_dfb_allocation_groups is False
         assert opts.dfb_exact_coloring_search_limit == 1_000_000
         assert opts.specialize_cores is False
+        assert opts.dynamic_noc is False
         assert opts._explicit == frozenset()
 
     def test_frozen(self):
@@ -64,6 +66,17 @@ class TestFromString:
         opts = CompilerOptions.from_string("--no-ttl-fpu-binary-ops")
         assert opts.enable_fpu_binary_ops is False
         assert "enable_fpu_binary_ops" in opts._explicit
+
+    @pytest.mark.parametrize("enabled", [True, False])
+    def test_user_dfb_synchronization(self, enabled):
+        option = (
+            "--ttl-auto-sync-user-dfbs" if enabled else "--no-ttl-auto-sync-user-dfbs"
+        )
+        options = CompilerOptions.from_string(option)
+        assert options.auto_sync_user_dfbs is enabled
+        assert "auto_sync_user_dfbs" in options._explicit
+        assert options.compiler_dfbs is True
+        assert options.unsafe_assume_dfb_allocation_groups is False
 
     def test_disable_pipe_computed_addresses(self):
         opts = CompilerOptions.from_string("--no-ttl-pipe-computed-addresses")
@@ -104,6 +117,11 @@ class TestFromString:
         opts = CompilerOptions.from_string("--ttl-specialize-cores")
         assert opts.specialize_cores is True
         assert "specialize_cores" in opts._explicit
+
+    def test_enable_dynamic_noc(self):
+        opts = CompilerOptions.from_string("--ttl-dynamic-noc")
+        assert opts.dynamic_noc is True
+        assert "dynamic_noc" in opts._explicit
 
     def test_disable_user_dfb_reuse(self):
         opts = CompilerOptions.from_string("--no-ttl-reuse-user-dfbs")

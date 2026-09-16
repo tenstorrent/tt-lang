@@ -21,12 +21,21 @@ def TTLInsertCBSync
     Explicit push/pop calls and context-manager-generated push/pop are
     preserved: the pass only fills in what is missing.
 
+    With `sync-user-dfbs=false`, release inference and its access-order checks
+    apply only to compiler-created DFBs. The program supplies push/pop and
+    orders all accesses to user-managed DFBs, including external C++ accesses.
+    Conditional receive-completion validation remains enabled.
+
     A receive request used by `ttl.wait_any` has conditional completion. Its
     destination reservation is not published automatically because only the
     selected request is known to be complete. Publication must be explicit and
     conditioned on the corresponding selection, or follow an exact wait.
   }];
 
+  let options = [
+    Option<"syncUserDFBs", "sync-user-dfbs", "bool", "true",
+           "Infer missing releases and validate access order for user-managed DFBs">
+  ];
   let dependentDialects = [];
 }
 
@@ -103,8 +112,16 @@ def TTLCoalesceDFBAcquires
     `<1, k>` are coalesced; the coalesced result is `<1, N*k>`. Other
     ranks would require a convention for which axis to extend by `N`,
     which is not specified, and are skipped.
+
+    With `sync-user-dfbs=false`, only compiler-created DFBs are coalesced.
+    User-managed queue operations retain their counts and ordering so they
+    can implement a protocol shared with external C++.
   }];
 
+  let options = [
+    Option<"syncUserDFBs", "sync-user-dfbs", "bool", "true",
+           "Coalesce acquire/release groups for user-managed DFBs">
+  ];
   let dependentDialects = [
     "::mlir::tensor::TensorDialect"
   ];

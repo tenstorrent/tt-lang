@@ -294,6 +294,8 @@ class _KernelSelectorResolver:
                 f"the enclosing operation{type_detail}",
             )
         for participant in participants:
+            if isinstance(participant, KernelKind):
+                continue
             if participant._implicit_role is None and not any(
                 participant is kernel for kernel in self.logical_kernels.values()
             ):

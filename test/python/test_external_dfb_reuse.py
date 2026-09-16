@@ -12,6 +12,7 @@ so DFBs whose protocol exists only in C++ remain conservatively unbounded.
 """
 
 import os
+import re
 
 import pytest
 import torch
@@ -146,6 +147,60 @@ def _make_external_reset_kernel(data_format, distinct_logical_dfbs):
     return external_reset_kernel
 
 
+def _make_conditional_external_reconfiguration_kernel(data_format):
+    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
+    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+    before_second_external_access = ttl.DFBReconfiguration(
+        participants=(compute_kernel, reader_kernel, writer_kernel),
+        discard_dfb_state=True,
+    )
+    before_native_access = ttl.DFBReconfiguration(
+        participants=(compute_kernel, reader_kernel, writer_kernel),
+        discard_dfb_state=True,
+    )
+
+    @ttl.operation(grid=(1, 1), fp32_dest_acc_en=data_format == "float32")
+    def conditional_external_reconfiguration_kernel(source, result):
+        first_external_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        second_external_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        native_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            node_x, _node_y = ttl.node(dims=2)
+            if not (node_x != 0):
+                ttl.call_extern_func(
+                    EXTERNAL_MULTIPLY_HEADER,
+                    "ttl_external_dfb_dependency_only",
+                    template_args=[ttl.dfb_descriptor(first_external_dfb)],
+                )
+            ttl.reconfigure_dfbs(before_second_external_access)
+            if not (node_x != 0):
+                ttl.call_extern_func(
+                    EXTERNAL_MULTIPLY_HEADER,
+                    "ttl_external_dfb_dependency_only",
+                    template_args=[ttl.dfb_descriptor(second_external_dfb)],
+                )
+            ttl.reconfigure_dfbs(before_native_access)
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def read():
+            ttl.reconfigure_dfbs(before_second_external_access)
+            ttl.reconfigure_dfbs(before_native_access)
+            with native_dfb.reserve() as destination:
+                ttl.copy(source[0, 0], destination).wait()
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def write():
+            ttl.reconfigure_dfbs(before_second_external_access)
+            ttl.reconfigure_dfbs(before_native_access)
+            with native_dfb.wait() as source_block:
+                ttl.copy(source_block, result[0, 0]).wait()
+
+    return conditional_external_reconfiguration_kernel
+
+
 def _make_nested_copy_atom(data_format, level_count):
     @ttl.operation()
     def copy_stage(source: ttl.DFB, destination: ttl.DFB):
@@ -256,6 +311,12 @@ _external_bf16_composition = _make_external_composition_kernel("bf16", False)
 _external_f32_composition = _make_external_composition_kernel("float32", False)
 _tensor_backed_bf16_composition = _make_external_composition_kernel("bf16", True)
 _tensor_backed_f32_composition = _make_external_composition_kernel("float32", True)
+_conditional_external_bf16_reconfiguration = (
+    _make_conditional_external_reconfiguration_kernel("bf16")
+)
+_conditional_external_f32_reconfiguration = (
+    _make_conditional_external_reconfiguration_kernel("float32")
+)
 
 assert EXTERNAL_COMPOSITION_LOGICAL_DFBS > 64
 
@@ -263,6 +324,17 @@ assert EXTERNAL_COMPOSITION_LOGICAL_DFBS > 64
 def _count_final_dfb_allocations(final_mlir_path):
     final_mlir = final_mlir_path.read_text()
     return final_mlir.count("dfb_index =")
+
+
+def _get_final_physical_dfb_indices(final_mlir_path):
+    final_mlir = final_mlir_path.read_text()
+    allocations = re.search(
+        r"ttl\.dfb_allocations = \[(.*?)\](?:, ttl\.)", final_mlir, re.DOTALL
+    )
+    assert allocations is not None
+    return [
+        int(index) for index in re.findall(r"dfb_index = (\d+)", allocations.group(1))
+    ]
 
 
 @pytest.mark.parametrize(
@@ -304,6 +376,41 @@ def test_external_protocol_state_reset_drains_compute_interfaces(
         assert_allclose(actual, rhs_host.float(), rtol=0.05, atol=1.0)
     else:
         assert_allclose(actual, rhs_host.float(), rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize(
+    ("operation", "dtype"),
+    [
+        (_conditional_external_bf16_reconfiguration, torch.bfloat16),
+        (_conditional_external_f32_reconfiguration, torch.float32),
+    ],
+    ids=["bf16", "f32"],
+)
+@pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
+def test_conditional_external_dfb_reuse_across_reconfiguration(
+    device, operation, dtype, to_device, monkeypatch, tmp_path
+):
+    if ttl_api._detect_device_arch(device) != "blackhole":
+        pytest.skip("requires Blackhole DFB reconfiguration support")
+
+    source_host = (
+        torch.arange(TILE * TILE, dtype=torch.float32).reshape(TILE, TILE).to(dtype)
+    )
+    source = to_device(source_host, device)
+    result = to_device(torch.zeros_like(source_host), device)
+    final_mlir_path = tmp_path / "conditional_external_reconfiguration.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
+
+    operation(source, result)
+
+    # Three logical DFBs require two physical descriptors because the two
+    # conditional external lifetimes are separated by DFB reconfiguration.
+    assert _get_final_physical_dfb_indices(final_mlir_path) == [0, 1]
+    actual = ttnn.to_torch(result).float()
+    if dtype == torch.bfloat16:
+        assert_allclose(actual, source_host.float(), rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, source_host.float(), rtol=1e-5, atol=1e-6)
 
 
 @pytest.mark.parametrize(

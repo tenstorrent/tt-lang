@@ -6,6 +6,7 @@
 
 from collections import defaultdict
 from dataclasses import FrozenInstanceError
+from enum import Enum
 import gc
 import os
 from pathlib import Path
@@ -262,6 +263,24 @@ class _FakeTTNN:
 
     class WriterConfigDescriptor:
         pass
+
+    class DataMovementProcessor(Enum):
+        RISCV_0 = 0
+        RISCV_1 = 1
+
+    class NOC(Enum):
+        RISCV_0_default = 0
+        RISCV_1_default = 1
+
+    class NOC_MODE(Enum):
+        DM_DEDICATED_NOC = 0
+        DM_DYNAMIC_NOC = 1
+
+    class DataMovementConfigDescriptor:
+        def __init__(self, processor, noc, noc_mode):
+            self.processor = processor
+            self.noc = noc
+            self.noc_mode = noc_mode
 
     class FabricConfig:
         FABRIC_1D = "linear"
@@ -2173,8 +2192,26 @@ class _LocalTensorTestDouble:
         return self._memory_config
 
     @staticmethod
+    def is_per_core_allocated():
+        return False
+
+    @staticmethod
     def buffer_address():
         return 0x2000
+
+
+class _PerCoreLocalTensorTestDouble(_LocalTensorTestDouble):
+    @staticmethod
+    def is_per_core_allocated():
+        return True
+
+    @staticmethod
+    def buffer_address():
+        pytest.fail("per-core local tensors have no common buffer address")
+
+    @staticmethod
+    def experimental_per_core_buffer_address(device_coordinate, core):
+        return 0x2000 + 0x100 * device_coordinate.coords[1] + 0x10 * core.x
 
 
 def test_build_kernel_descriptors_accepts_complete_local_tensor_shards(monkeypatch):
@@ -2201,6 +2238,56 @@ def test_build_kernel_descriptors_accepts_complete_local_tensor_shards(monkeypat
     )
 
     assert descriptors[0].common_runtime_args == [0x2000]
+
+
+@pytest.mark.parametrize(
+    ("thread_type", "local_tensor_indices"),
+    [("compute", [0]), ("noc", [])],
+    ids=["compute-local-accessor", "data-movement-tensor-accessor"],
+)
+def test_build_kernel_descriptors_binds_per_core_tensor_addresses(
+    monkeypatch, thread_type, local_tensor_indices
+):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    tensor = _PerCoreLocalTensorTestDouble("l1-small", "block", full_grid)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type=thread_type,
+        tensor_indices=[0],
+        local_tensor_indices=local_tensor_indices,
+        config=object(),
+    )
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        tensor_accessor_args=[],
+        core_ranges=full_grid,
+        grid_cols=2,
+        grid_rows=1,
+        num_cbs=0,
+        device_coordinates=[0, 3],
+        dfb_reconfiguration_runtime_args={
+            (0, 0): [0x1000],
+            (1, 0): [0x2000],
+        },
+    )
+
+    assert [descriptor.common_runtime_args for descriptor in descriptors] == [
+        [0x2300, 0, 3],
+        [0x2310, 0, 3],
+    ]
+    assert [
+        [
+            (core_range.start.x, core_range.start.y)
+            for core_range in descriptor.core_ranges.ranges()
+        ]
+        for descriptor in descriptors
+    ] == [[(0, 0)], [(1, 0)]]
+    assert descriptors[0].runtime_args[0][0] == [0x1000]
+    assert descriptors[1].runtime_args[1][0] == [0x2000]
 
 
 def test_local_tensor_access_requires_runtime_address_metadata(monkeypatch):
@@ -2956,7 +3043,7 @@ def test_build_kernel_descriptors_checks_pipe_runtime_arg_count(monkeypatch):
         kernel_specs=[spec],
         tensors=[tensor],
         tensor_accessor_args=[],
-        core_ranges=object(),
+        core_ranges=_FakeCoreRanges(),
         grid_cols=1,
         grid_rows=1,
         num_cbs=0,
@@ -3025,7 +3112,7 @@ def test_build_kernel_descriptors_passes_computed_addresses_as_runtime_args(
         kernel_specs=[spec],
         tensors=[tensor],
         tensor_accessor_args=[0x44, 0x55],
-        core_ranges=object(),
+        core_ranges=_FakeCoreRanges(),
         grid_cols=1,
         grid_rows=1,
         num_cbs=2,
@@ -3069,7 +3156,7 @@ def test_build_kernel_descriptors_appends_per_kernel_runtime_args(monkeypatch):
         kernel_specs=specs,
         tensors=[tensor],
         tensor_accessor_args=[],
-        core_ranges=object(),
+        core_ranges=_FakeCoreRanges(),
         grid_cols=1,
         grid_rows=1,
         num_cbs=0,
@@ -3098,7 +3185,7 @@ def test_build_kernel_descriptors_reserves_fabric_runtime_arg_base(monkeypatch):
         kernel_specs=[spec],
         tensors=[tensor],
         tensor_accessor_args=[],
-        core_ranges=object(),
+        core_ranges=_FakeCoreRanges(),
         grid_cols=1,
         grid_rows=1,
         num_cbs=0,
@@ -5749,7 +5836,7 @@ def test_allocation_nodes_scope_unspecialized_dfb_descriptor(monkeypatch):
     assert _descriptor_cores(descriptors[0]) == {(1, 0)}
 
 
-def test_physical_dfb_uses_one_descriptor_across_residency_signatures(monkeypatch):
+def test_remote_uniform_dfb_uses_one_descriptor_across_nodes(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
     configs = [
@@ -5770,6 +5857,7 @@ def test_physical_dfb_uses_one_descriptor_across_residency_signatures(monkeypatc
             2048,
             (32, 32),
             allocation_nodes=((0, 0), (1, 0)),
+            address_scope="remote_uniform",
         ),
     ]
 
@@ -5787,6 +5875,45 @@ def test_physical_dfb_uses_one_descriptor_across_residency_signatures(monkeypatc
     }
     assert _descriptor_cores(descriptors_by_index[0]) == {(0, 0)}
     assert _descriptor_cores(descriptors_by_index[1]) == {(0, 0), (1, 0)}
+
+
+def test_remote_uniform_dfb_rejects_partitioned_storage_group(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    configs = [
+        PhysicalDFBConfig(
+            0,
+            1,
+            "bfloat16",
+            1,
+            2048,
+            (32, 32),
+            allocation_nodes=((0, 0),),
+            storage_index=0,
+        ),
+        PhysicalDFBConfig(
+            1,
+            1,
+            "bfloat16",
+            1,
+            2048,
+            (32, 32),
+            allocation_nodes=((0, 0), (1, 0)),
+            storage_index=0,
+            address_scope="remote_uniform",
+        ),
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match="requires one descriptor over every allocated node",
+    ):
+        kernel_runner.build_cb_descriptors(
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=configs,
+            core_ranges=full_grid,
+            kernel_specs=[_specialized_spec(full_grid, None)],
+        )
 
 
 def test_storage_group_uses_one_lcm_aligned_descriptor(monkeypatch):
@@ -7460,7 +7587,7 @@ def test_emit_runner_source_uses_shared_pipe_resource_helpers(monkeypatch):
     assert "build_kernel_descriptors(" not in source
     assert "KERNEL_EXTRA_COMMON_RUNTIME_ARGS = [" in source
     assert "    [7, 9],  # noc" in source
-    assert "    0,  # noc" in source
+    assert "    ('reader',),  # noc" in source
     assert (
         "extra_common_runtime_args=KERNEL_EXTRA_COMMON_RUNTIME_ARGS[kernel_idx]"
         in source
@@ -7899,6 +8026,35 @@ def test_emit_runner_source_omits_program_hash_by_default():
     )
 
     assert "PROGRAM_HASH = None" in source
+
+
+def test_emit_runner_source_preserves_explicit_data_movement_config(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    config = fake_ttnn.DataMovementConfigDescriptor(
+        processor=fake_ttnn.DataMovementProcessor.RISCV_1,
+        noc=fake_ttnn.NOC.RISCV_0_default,
+        noc_mode=fake_ttnn.NOC_MODE.DM_DYNAMIC_NOC,
+    )
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[],
+        config=config,
+    )
+
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[spec],
+        cb_configs=[],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+    )
+
+    assert "('data_movement', 'RISCV_1', 'RISCV_0_default', 'DM_DYNAMIC_NOC')" in source
+    assert "processor=getattr(ttnn.DataMovementProcessor, processor)" in source
+    assert "noc=getattr(ttnn.NOC, noc)" in source
+    assert "noc_mode=getattr(ttnn.NOC_MODE, noc_mode)" in source
 
 
 def test_emit_runner_source_preserves_specialized_dfb_use(monkeypatch):

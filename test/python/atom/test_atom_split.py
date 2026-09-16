@@ -614,6 +614,73 @@ def test_repeated_composition_reuses_callee_logical_kernel():
     assert result.kernels == (reader,)
 
 
+def test_factory_operations_reuse_implicit_kernel_selector():
+    """Implicit selectors retain their compiler-owned identity across operations."""
+
+    def make_helper(entry):
+        selected_kernel = ttl.PIPE_SOURCE_KERNEL
+
+        @ttl.operation()
+        def selected_helper():
+            ttl.call_extern_func("pipe.hpp", entry, kernel=selected_kernel)
+
+        return selected_helper
+
+    first_helper = make_helper("first_entry")
+    second_helper = make_helper("second_entry")
+
+    @ttl.operation(grid=(1, 1))
+    def selected_caller():
+        first_helper()
+        second_helper()
+
+    spec = selected_caller._spec
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+        kernel_capacities=_backend_kernel_capacities(),
+    )
+
+    assert result.kernels == (ttl.PIPE_SOURCE_KERNEL,)
+    source = _kernel_src(result, ttl.PIPE_SOURCE_KERNEL)
+    assert "'first_entry'" in source
+    assert "'second_entry'" in source
+
+
+def test_composition_preserves_captured_kernel_kind():
+    """A factory-selected canonical kernel remains available after inlining."""
+
+    def make_helper(selected_kernel_kind):
+        @ttl.operation()
+        def selected_helper():
+            ttl.call_extern_func(
+                "reader.hpp",
+                "reader",
+                kernel=selected_kernel_kind,
+            )
+
+        return selected_helper
+
+    data_movement_helper = make_helper(KernelKind.DATA_MOVEMENT)
+
+    @ttl.operation(grid=(1, 1))
+    def selected_caller():
+        data_movement_helper()
+
+    spec = selected_caller._spec
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+        kernel_capacities=_backend_kernel_capacities(),
+    )
+
+    assert result.kernels == (KernelKind.DATA_MOVEMENT,)
+
+
 def test_factory_instances_with_different_captures_keep_distinct_kernels():
     """Different immutable captures distinguish factory-created operations."""
 
@@ -961,6 +1028,42 @@ def test_scalar_type_capture_changes_operation_identity():
 
     assert (
         i32_operation._spec.operation_identity != i64_operation._spec.operation_identity
+    )
+
+
+def test_uint32_template_capture_survives_composition():
+    """Composition retains unsigned type and distinguishes it from signed int."""
+
+    def make_operation(template_value):
+        template_arguments = [template_value]
+
+        @ttl.operation()
+        def external_call():
+            ttl.call_extern_func(
+                "template.hpp",
+                "consume",
+                template_args=template_arguments,
+                kernel=ttl.KernelKind.COMPUTE,
+            )
+
+        return external_call
+
+    signed_operation = make_operation(1)
+    unsigned_operation = make_operation(ttl.uint32(1))
+
+    assert (
+        signed_operation._spec.operation_identity
+        != unsigned_operation._spec.operation_identity
+    )
+
+    @ttl.operation(grid=(1, 1))
+    def composed_operation():
+        unsigned_operation()
+
+    uint32_type = type(ttl.uint32(0))
+    assert any(
+        isinstance(value, uint32_type)
+        for value in composed_operation._spec.compile_time_captures.values()
     )
 
 
@@ -1665,6 +1768,35 @@ def test_synchronized_dfb_reset_is_replicated_to_every_participant():
     assert _kind_src(result, KernelKind.COMPUTE).count("ttl.reset_dfbs(") == 1
     assert _kind_src(result, KernelKind.DATA_MOVEMENT, 0).count("ttl.reset_dfbs(") == 1
     assert _kind_src(result, KernelKind.DATA_MOVEMENT, 1).count("ttl.reset_dfbs(") == 1
+
+
+def test_synchronized_dfb_reset_accepts_canonical_kernel_selectors():
+    """Unified operations can reset their three canonical logical kernels."""
+    reset = ttl.DFBReset(
+        participants=(
+            ttl.KernelKind.COMPUTE,
+            ttl.KernelKind.DATA_MOVEMENT,
+            ttl.PIPE_SOURCE_KERNEL,
+        )
+    )
+
+    @ttl.operation()
+    def reset_participants():
+        ttl.reset_all_dfbs(reset)
+
+    spec = reset_participants._spec
+    result = split_function_body(
+        spec.fn_ast,
+        dfb_param_names=set(),
+        logical_kernels=spec.logical_kernels,
+        selector_scope=spec.frozen_scope,
+    )
+    compute_source = _kind_src(result, KernelKind.COMPUTE)
+    reader_source = _kind_src(result, KernelKind.DATA_MOVEMENT, 0)
+    writer_source = _kind_src(result, KernelKind.DATA_MOVEMENT, 1)
+    assert compute_source.count("ttl.reset_all_dfbs(") == 1
+    assert reader_source.count("ttl.reset_all_dfbs(") == 1
+    assert writer_source.count("ttl.reset_all_dfbs(") == 1
 
 
 def test_dfb_reconfiguration_requires_complete_distinct_participants():

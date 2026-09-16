@@ -17,8 +17,9 @@ from ttl.dfb_allocation_group import DFBAllocationGroup
 from ttl.dfb_reset import DFBReset
 from ttl.dfb_reconfiguration import DFBReconfiguration
 from ttl.fabric import FabricManagerClaim
-from ttl.kernel import Kernel
+from ttl.kernel import Kernel, KernelKind
 from ttl.scalar import ScalarType
+from ttl.template_argument import UInt32TemplateArgument
 
 _INLINED_OPERATION_STATEMENT = "_ttl_inlined_operation_statement"
 _DFB_SOURCE_OCCURRENCE = "_ttl_dfb_source_occurrence"
@@ -541,6 +542,7 @@ def _add_logical_kernel_bindings(
         for reset_name, reset in spec.dfb_resets.items()
         if reset_name in loaded_names
         for participant in reset.participants
+        if isinstance(participant, Kernel)
     }
     synchronization_participant_ids.update(
         id(participant)
@@ -672,7 +674,11 @@ def _add_dfb_reset_bindings(
             # within that call retain one identity across all participants.
             reset_instance = DFBReset(
                 participants=tuple(
-                    selected_kernels[id(participant)]
+                    (
+                        selected_kernels[id(participant)]
+                        if isinstance(participant, Kernel)
+                        else participant
+                    )
                     for participant in reset.participants
                 ),
             )
@@ -727,10 +733,17 @@ def _literal_node(
     suffix: str,
     name_hint: str,
 ) -> ast.expr:
-    if value is ScalarType or isinstance(value, ScalarType):
-        type_name = "class" if value is ScalarType else value.name.lower()
+    if value is ScalarType or isinstance(
+        value, (ScalarType, KernelKind, UInt32TemplateArgument)
+    ):
+        if isinstance(value, UInt32TemplateArgument):
+            category = "uint32_template_argument"
+            type_name = str(value.value)
+        else:
+            type_name = "class" if value is ScalarType else value.name.lower()
+            category = "kernel_kind" if isinstance(value, KernelKind) else "scalar_type"
         fresh_name = _fresh_name(
-            f"{name_hint}__scalar_type_{type_name}", suffix, reserved_names
+            f"{name_hint}__{category}_{type_name}", suffix, reserved_names
         )
         scope[fresh_name] = value
         return ast.Name(id=fresh_name, ctx=ast.Load())
