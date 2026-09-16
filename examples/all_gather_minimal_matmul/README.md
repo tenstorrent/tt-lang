@@ -32,8 +32,8 @@ excluded.
 for each M block and local K block:
     split the activation block into left and right K halves
     stream the halves in opposite directions around the device ring
-    distribute each received half from its boundary row across the compute grid
-    distribute the matching N-sharded weight halves down each compute column
+    multicast each received half from its boundary row through each compute column
+    multicast each matching N-sharded weight half from m=0 across its compute row
     initialize the FP32 accumulator from the local bias shard
     accumulate both halves for every source device while communication continues
     convert once to the output dtype
