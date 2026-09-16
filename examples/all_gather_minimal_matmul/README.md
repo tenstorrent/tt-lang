@@ -54,11 +54,11 @@ reads that block from DRAM and distributes it within the row.
 | | TT-Lang | Native TT-Metal |
 | --- | --- | --- |
 | Grid | 12 M columns x 10 N rows | 12 M columns x 9 N rows |
-| DRAM readers | `m=0` in every N row | `x=0` (M-partition index 0) in every N row |
+| DRAM readers | `m=0` in every N row | `m=0` in every N row |
 | Block | Two `5 x 12` K-half blocks | One `5 x 16` K block |
 | Distribution | One-to-many NoC multicast | Hop-by-hop NoC unicast |
 | Consumers | All 12 M workers in the row | All 12 M workers in the chain |
-| Destination storage | Three-entry matmul weight DFB | Native input DFB |
+| Destination storage | Three-block matmul weight DFB | Two-block TT-Metal `cb_in1` circular buffer |
 
 ```text
 TT-Lang, one N row:
@@ -73,16 +73,18 @@ DRAM --> m0 ------+---- m2 compute
 ```text
 Native TT-Metal, one N row:
 
-DRAM --> x0 --> x1 --> x2 --> ... --> x11
+DRAM --> m0 --> m1 --> m2 --> ... --> m11
          compute  compute  compute       compute
                 individual unicast hops
 ```
 
 TT-Lang reads each weight half directly into the matmul DFB at `m=0`; that
 worker also computes while the multicast supplies `m=1...11`. Native publishes
-the block to the `x=0` worker's input DFB before relaying it through
-`x=1...11`. Each native receiver consumes the block and signals the following
-unicast hop. Weights do not cross devices in either implementation.
+the block to the `m=0` worker's `cb_in1` before relaying it through `m=1...11`.
+Each native receiver places the block in its own `cb_in1`, consumes it, and
+signals the following unicast hop. Weights do not cross devices in either
+implementation. In the native transposed grid, semantic indices `m` and `n`
+map to physical core coordinates `x` and `y`, respectively.
 
 ## Run
 
