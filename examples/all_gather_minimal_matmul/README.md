@@ -45,6 +45,45 @@ directions. Eight mux workers map the clients onto four links per direction.
 The `12 x 10` compute grid uses 120 workers per device. Bounded dataflow buffers
 provide backpressure; the operation does not allocate gathered-activation DRAM.
 
+### Weight distribution within one device
+
+Each device stores the full K dimension of its `K x N/4` weight shard. Every
+M-partition worker in an N row consumes the same weight block, so one worker
+reads that block from DRAM and distributes it within the row.
+
+| | TT-Lang | Native TT-Metal |
+| --- | --- | --- |
+| Grid | 12 M columns x 10 N rows | 12 M columns x 9 N rows |
+| DRAM readers | `m=0` in every N row | Edge worker in every N row |
+| Block | Two `5 x 12` K-half blocks | One `5 x 16` K block |
+| Distribution | One-to-many NoC multicast | Hop-by-hop NoC unicast |
+| Consumers | All 12 M workers in the row | All 12 M workers in the chain |
+| Destination storage | Three-entry matmul weight DFB | Native input DFB |
+
+```text
+TT-Lang, one N row:
+
+                 +---- m1 compute
+DRAM --> m0 ------+---- m2 compute
+         compute  +---- ...
+                 +---- m11 compute
+              one multicast
+```
+
+```text
+Native TT-Metal, one N row:
+
+DRAM --> x0 --> x1 --> x2 --> ... --> x11
+         compute  compute  compute       compute
+                individual unicast hops
+```
+
+TT-Lang reads each weight half directly into the matmul DFB at `m=0`; that
+worker also computes while the multicast supplies `m=1...11`. Native publishes
+the block to the edge worker's input DFB before relaying it through the worker
+chain. Each native receiver consumes the block and signals the following
+unicast hop. Weights do not cross devices in either implementation.
+
 ## Run
 
 Small four-device case:
