@@ -11,6 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "ttlang/Analysis/IntegerExpressionEvaluator.h"
 #include "ttlang/Analysis/ValueOriginAnalysis.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
@@ -20,6 +21,7 @@
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/SymbolTable.h"
@@ -172,6 +174,28 @@ static void replaceCoordReads(func::FuncOp clone, int64_t coord) {
   }
 }
 
+// Canonicalization does not evaluate every EmitC scalar expression produced
+// by the frontend. Resolve exact branch predicates after coordinate
+// substitution so canonicalization can remove untaken per-core code.
+static void materializeExactIfConditions(func::FuncOp clone) {
+  IntegerExpressionEvaluator evaluator;
+  SmallVector<std::pair<scf::IfOp, bool>> exactConditions;
+  clone.walk([&](scf::IfOp ifOp) {
+    std::optional<llvm::APInt> condition =
+        evaluator.evaluate(ifOp.getCondition());
+    if (condition) {
+      exactConditions.emplace_back(ifOp, condition->getBoolValue());
+    }
+  });
+
+  for (auto [ifOp, condition] : exactConditions) {
+    OpBuilder builder(ifOp);
+    Value constant = arith::ConstantOp::create(
+        builder, ifOp.getLoc(), builder.getBoolAttr(condition));
+    ifOp.getConditionMutable().assign(constant);
+  }
+}
+
 /// Emit one clone of func for core (x, y), replacing every coordinate read
 /// with the matching constant and tagging the clone with ttl.core_coord.
 /// TODO: See if we can leverage LaunchDomainAnalysis in an earlier pass
@@ -184,6 +208,7 @@ static void emitCoreClone(func::FuncOp func, int64_t x, int64_t y,
 
   replaceCoordReads<ttk::MyLogicalXOp>(clone, x);
   replaceCoordReads<ttk::MyLogicalYOp>(clone, y);
+  materializeExactIfConditions(clone);
 
   clone->setAttr(
       kCoreCoordAttrName,
