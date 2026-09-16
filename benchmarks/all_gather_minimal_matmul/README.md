@@ -55,6 +55,18 @@ Use `--fabric-config 1d-line --topology linear` for the secondary line
 comparison. Rows marked unsupported require matching TT-Lang fused-epilogue or
 operation-kind support and are not timed as plain AGMM.
 
+Run every currently comparable row with the sweep orchestrator; it writes one
+small report per row and a summary under the specified private directory:
+
+```bash
+python -m benchmarks.all_gather_minimal_matmul.sweep \
+    --fabric-config 1d-ring \
+    --topology ring \
+    --warmup 3 \
+    --samples 10 \
+    --output-dir ~/tt/perf/agmm-four-device-ring
+```
+
 The earlier eight-device comparison remains archived in `PERFORMANCE.md`; it is
 not part of the current four-device sweep.
 
