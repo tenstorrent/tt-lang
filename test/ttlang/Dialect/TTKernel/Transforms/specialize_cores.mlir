@@ -429,3 +429,46 @@ module attributes {ttl.launch_grid = [1 : i64, 2 : i64]} {
     return %r : index
   }
 }
+
+// -----
+
+// -- Test 10: specialization applies per function. ----------------------------
+// The reader branches on core_x, so it is cloned per coordinate and the
+// original is erased. The compute kernel uses coordinates only as data and
+// remains whole-grid. Each occupies a different processor.
+
+// CHECK-NOT:   func.func @mixed_reader()
+// CHECK-LABEL: func.func @mixed_reader_c0_0
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}0, 0]]
+// CHECK-NOT:     my_logical_x_
+// CHECK-LABEL: func.func @mixed_reader_c1_0
+// CHECK-SAME:    ttl.core_coord = {{\[\[}}1, 0]]
+// CHECK-LABEL: func.func @mixed_compute
+// CHECK-NOT:     ttl.core_coord
+// CHECK:         my_logical_x_
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @mixed_reader() -> index attributes {
+      ttl.kernel_thread = #ttkernel.thread<noc>,
+      ttl.noc_index = 0 : i32} {
+    %c0 = arith.constant 0 : index
+    %c3 = arith.constant 3 : index
+    %c5 = arith.constant 5 : index
+    %x = "ttkernel.my_logical_x_"() : () -> index
+    %pred = arith.cmpi eq, %x, %c0 : index
+    %r = scf.if %pred -> (index) {
+      scf.yield %c3 : index
+    } else {
+      scf.yield %c5 : index
+    }
+    return %r : index
+  }
+
+  func.func @mixed_compute() -> index attributes {
+      ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %x = "ttkernel.my_logical_x_"() : () -> index
+    %y = "ttkernel.my_logical_y_"() : () -> index
+    %s = arith.addi %x, %y : index
+    return %s : index
+  }
+}

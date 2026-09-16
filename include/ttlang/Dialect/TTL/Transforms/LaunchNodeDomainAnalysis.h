@@ -24,6 +24,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "ttlang/Analysis/ExecutionCountAnalysis.h"
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
@@ -40,9 +41,6 @@
 #include <utility>
 
 namespace mlir::tt::ttl {
-
-/// Module attribute containing the two-dimensional launch grid extent.
-inline constexpr llvm::StringLiteral kLaunchGridAttrName = "ttl.launch_grid";
 
 /// Return the positive X/Y extents of the enclosing module launch grid.
 FailureOr<std::pair<int64_t, int64_t>> getLaunchGrid(Operation *op);

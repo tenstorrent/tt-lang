@@ -64,7 +64,7 @@ static void warnDroppedPrint(func::FuncOp func, int32_t dfbIndex) {
   InFlightDiagnostic diag = func.emitWarning()
                             << "eliminating debug print of unused DFB "
                             << dfbIndex;
-  if (auto coord = func->getAttr("ttl.core_coord")) {
+  if (auto coord = func->getAttr(kCoreCoordAttrName)) {
     diag << " on specialized core " << coord;
   }
 }
