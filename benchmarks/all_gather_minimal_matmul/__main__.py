@@ -12,7 +12,7 @@ import sys
 import tempfile
 from collections.abc import Callable
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from math import prod
 from pathlib import Path
@@ -20,6 +20,12 @@ from pathlib import Path
 import torch
 import ttnn
 
+from benchmarks.all_gather_minimal_matmul.native_heuristic import choose_agmm_blocking
+from benchmarks.all_gather_minimal_matmul.sweep_cases import (
+    COMPARABLE_OPERATION_KINDS,
+    COMPARABLE_USE_CASES,
+    UPSTREAM_AGMM_CASES,
+)
 from benchmarks.device_timing import latest_kernel_duration, read_device_profile
 from benchmarks.provenance import collect_provenance
 from examples.all_gather_minimal_matmul import (
@@ -42,7 +48,7 @@ from examples.matmul_reduce_scatter_2d import (
 from ttlang_test_utils import get_fabric_mesh_shape, to_dram
 from utils.correctness import assert_allclose, assert_pcc
 
-REFERENCE_REVISION = "f8c4ce59dd04a3eeeb11abf01ffc9dbce0059eba"
+REFERENCE_REVISION = "967ce00c724cd27bf107e00fbfe7406014cfc14e"
 REFERENCE_ROOT = f"https://github.com/tenstorrent/tt-metal/blob/{REFERENCE_REVISION}"
 MATH_FIDELITIES = {"HiFi2": ttnn.MathFidelity.HiFi2, "HiFi4": ttnn.MathFidelity.HiFi4}
 
@@ -93,6 +99,7 @@ class NativeConfig:
     channel_buffers: int
     chunks: int
     math_approx_mode: bool
+    topology: str
 
 
 @dataclass
@@ -128,6 +135,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--m-tiles", type=positive_int, default=296)
     parser.add_argument("--k-tiles-per-device", type=positive_int, default=40)
     parser.add_argument("--n-tiles", type=positive_int, default=480)
+    parser.add_argument(
+        "--sweep-case",
+        choices=tuple(case.case_id for case in UPSTREAM_AGMM_CASES),
+        help="load one pinned TT-Metal AGMM sweep row and derive four-device dimensions",
+    )
+    parser.add_argument(
+        "--list-sweep-cases",
+        action="store_true",
+        help="list pinned upstream AGMM rows and whether this harness supports them",
+    )
     parser.add_argument("--dtype", choices=("bf16", "fp32"), default="bf16")
     parser.add_argument("--math-fidelity", choices=("HiFi2", "HiFi4"), default="HiFi2")
     parser.add_argument(
@@ -178,8 +195,26 @@ def parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=True,
     )
+    parser.add_argument(
+        "--native-heuristic",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="derive native blocking with the TT-Metal AGMM heuristic",
+    )
 
     parser.add_argument("--fabric-router-payload", type=positive_int, default=8192)
+    parser.add_argument(
+        "--fabric-config",
+        choices=("auto", "1d-ring", "1d-line", "2d"),
+        default="auto",
+        help="physical fabric configuration; auto preserves the historical per-implementation default",
+    )
+    parser.add_argument(
+        "--topology",
+        choices=("ring", "linear"),
+        default="ring",
+        help="collective topology passed to the native AGMM operation",
+    )
     parser.add_argument("--device-aggregation", choices=("mean", "max"), default="mean")
     parser.add_argument("--warmup", type=positive_int, default=3)
     parser.add_argument("--samples", type=positive_int, default=10)
@@ -193,6 +228,31 @@ def parse_args() -> argparse.Namespace:
 
 
 def make_configs(arguments):
+    sweep_case = None
+    if arguments.sweep_case is not None:
+        sweep_case = next(
+            case for case in UPSTREAM_AGMM_CASES if case.case_id == arguments.sweep_case
+        )
+        if arguments.mesh_shape != (4, 1):
+            raise ValueError("--sweep-case currently requires --mesh-shape 4x1")
+        if sweep_case.operation_kind not in COMPARABLE_OPERATION_KINDS:
+            raise ValueError(
+                f"{sweep_case.case_id} uses operation kind {sweep_case.operation_kind}; "
+                "this runner measures all_gather_minimal_matmul_async only"
+            )
+        if sweep_case.use_case not in COMPARABLE_USE_CASES:
+            raise ValueError(
+                f"{sweep_case.case_id} uses epilogue {sweep_case.use_case}; "
+                "matching TT-Lang epilogue support is required before timing"
+            )
+        arguments.m_tiles = sweep_case.m_tiles
+        arguments.k_tiles_per_device = sweep_case.k_tiles_per_device(4)
+        arguments.n_tiles = sweep_case.n_tiles_per_device * 4
+        if arguments.native_compute_grid == (12, 9):
+            arguments.native_compute_grid = sweep_case.compute_grid
+        if arguments.ttlang_compute_grid == (12, 10):
+            arguments.ttlang_compute_grid = sweep_case.compute_grid
+
     common = CommonConfig(
         mesh_shape=arguments.mesh_shape,
         m_tiles=arguments.m_tiles,
@@ -224,7 +284,24 @@ def make_configs(arguments):
         channel_buffers=arguments.native_channel_buffers,
         chunks=arguments.native_chunks,
         math_approx_mode=arguments.native_math_approx_mode,
+        topology=arguments.topology,
     )
+    if arguments.native_heuristic or sweep_case is not None:
+        full_k_tiles = common.device_count * common.k_tiles_per_device
+        m_block_tiles, k_block_tiles, n_block_tiles, subblock = choose_agmm_blocking(
+            common.m_tiles,
+            full_k_tiles,
+            common.n_tiles_per_device,
+            native.compute_grid,
+        )
+        native = replace(
+            native,
+            m_block_tiles=m_block_tiles,
+            k_block_tiles=k_block_tiles,
+            n_block_tiles=n_block_tiles,
+            subblock=subblock,
+            chunks=1,
+        )
     if common.dtype == "fp32" and not common.fp32_dest_acc:
         raise ValueError("FP32 inputs require FP32 destination accumulation")
     return common, ttlang, native
@@ -237,12 +314,21 @@ def fabric_router_config(max_payload_size: int):
 
 
 @contextmanager
-def open_participant_mesh(requested_shape, implementation, router_payload):
-    fabric_config = (
-        ttnn.FabricConfig.FABRIC_2D
-        if implementation == "ttlang"
-        else ttnn.FabricConfig.FABRIC_1D_RING
-    )
+def open_participant_mesh(
+    requested_shape, implementation, router_payload, fabric_config_name="auto"
+):
+    if fabric_config_name == "auto":
+        fabric_config = (
+            ttnn.FabricConfig.FABRIC_2D
+            if implementation == "ttlang"
+            else ttnn.FabricConfig.FABRIC_1D_RING
+        )
+    else:
+        fabric_config = {
+            "1d-ring": ttnn.FabricConfig.FABRIC_1D_RING,
+            "1d-line": ttnn.FabricConfig.FABRIC_1D,
+            "2d": ttnn.FabricConfig.FABRIC_2D,
+        }[fabric_config_name]
     reliability = ttnn.FabricReliabilityMode.STRICT_INIT
     router_config = fabric_router_config(router_payload)
     discovered_shape = get_fabric_mesh_shape(
@@ -545,7 +631,11 @@ def create_native_workload(mesh, cluster_axis, common, native):
             compute_kernel_config=compute_config,
             persistent_output_buffer=gathered,
             multi_device_global_semaphore=semaphores,
-            topology=ttnn.Topology.Ring,
+            topology=(
+                ttnn.Topology.Ring
+                if native.topology == "ring"
+                else ttnn.Topology.Linear
+            ),
             cluster_axis=cluster_axis,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             force_transpose=True,
@@ -640,7 +730,10 @@ def run_worker(arguments):
     ):
         requested_shape = (common.device_count, 1)
     with open_participant_mesh(
-        requested_shape, arguments.implementation, arguments.fabric_router_payload
+        requested_shape,
+        arguments.implementation,
+        arguments.fabric_router_payload,
+        arguments.fabric_config,
     ) as (mesh, cluster_axis, discovered_shape, fabric_config):
         if arguments.implementation == "ttlang":
             workload, operation_config = create_ttlang_workload(mesh, common, ttlang)
@@ -655,6 +748,7 @@ def run_worker(arguments):
         report = {
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "implementation": arguments.implementation,
+            "sweep_case": arguments.sweep_case,
             "common_config": asdict(common),
             "implementation_config": implementation_config,
             "operation_config": (
@@ -754,8 +848,21 @@ def run_isolated_workers(arguments):
     print(f"Results: {arguments.json}", flush=True)
 
 
+def list_sweep_cases():
+    for case in UPSTREAM_AGMM_CASES:
+        comparable = (
+            case.operation_kind in COMPARABLE_OPERATION_KINDS
+            and case.use_case in COMPARABLE_USE_CASES
+        )
+        status = "comparable" if comparable else "unsupported"
+        print(f"{case.case_id}: {status}")
+
+
 def main():
     arguments = parse_args()
+    if arguments.list_sweep_cases:
+        list_sweep_cases()
+        return
     for variable in (
         "TTLANG_COMPILE_ONLY",
         "TTLANG_AUTO_PROFILE",

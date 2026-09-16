@@ -4,6 +4,22 @@ This comparison measures column-parallel all-gather matmul with K-sharded
 activation and N-sharded weight, bias, and output. The output shards
 collectively contain one `M x N` result.
 
+## Current four-device sweep
+
+The active comparison covers four devices on a 1D ring, with a 1D line as a
+secondary topology. The case manifest contains the 155 unique `is_agmm=True`
+rows (including grid variants) from
+[`sweep_mm_block_sizes.py`](https://github.com/tenstorrent/tt-metal/blob/967ce00c724cd27bf107e00fbfe7406014cfc14e/models/tt_dit/utils/sweep_mm_block_sizes.py#L140).
+Native blocking is derived from the
+[`get_agmm_config` call](https://github.com/tenstorrent/tt-metal/blob/967ce00c724cd27bf107e00fbfe7406014cfc14e/models/tt_dit/layers/linear.py#L415)
+and `_compute_heuristic_blocking`; it is not selected by a local dense sweep.
+Rows requiring fused epilogues or a different operation kind remain listed but
+are not reported as plain AGMM comparisons. Measurements use three warmups,
+ten samples, correctness on every invocation, and device kernel intervals only.
+
+The archived results below document earlier four- and eight-device experiments;
+they are not the active sweep summary.
+
 ## Results
 
 Blackhole P150b devices; global `M/K/N=9472/5120/15360`.
