@@ -28,6 +28,7 @@ class TestDefaults:
         assert opts.unsafe_assume_dfb_allocation_groups is False
         assert opts.dfb_exact_coloring_search_limit == 1_000_000
         assert opts.specialize_cores is False
+        assert opts.dynamic_noc is False
         assert opts._explicit == frozenset()
 
     def test_frozen(self):
@@ -104,6 +105,11 @@ class TestFromString:
         opts = CompilerOptions.from_string("--ttl-specialize-cores")
         assert opts.specialize_cores is True
         assert "specialize_cores" in opts._explicit
+
+    def test_enable_dynamic_noc(self):
+        opts = CompilerOptions.from_string("--ttl-dynamic-noc")
+        assert opts.dynamic_noc is True
+        assert "dynamic_noc" in opts._explicit
 
     def test_disable_user_dfb_reuse(self):
         opts = CompilerOptions.from_string("--no-ttl-reuse-user-dfbs")

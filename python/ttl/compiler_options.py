@@ -189,6 +189,14 @@ def _make_parser() -> argparse.ArgumentParser:
         "Opt-in (default: disabled).",
     )
     p.add_argument(
+        "--ttl-dynamic-noc",
+        default=None,
+        dest="dynamic_noc",
+        action=argparse.BooleanOptionalAction,
+        help="Allow data-movement kernels to select either NOC dynamically "
+        "(default: disabled).",
+    )
+    p.add_argument(
         "--ttl-l1-budget",
         default=None,
         dest="l1_budget",
@@ -263,6 +271,7 @@ class CompilerOptions:
     unsafe_assume_dfb_allocation_groups: bool = False
     dfb_exact_coloring_search_limit: int = 1_000_000
     specialize_cores: bool = False
+    dynamic_noc: bool = False
     l1_budget: int = dataclasses.field(default=0, compare=False, hash=False)
 
     # Fields that were explicitly provided (not defaulted). Excluded from
