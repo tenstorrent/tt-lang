@@ -1,21 +1,27 @@
 # All-gather matmul performance
 
 This comparison measures column-parallel all-gather matmul with K-sharded
-activation and N-sharded weight, bias, and output. The four output shards
+activation and N-sharded weight, bias, and output. The output shards
 collectively contain one `M x N` result.
 
 ## Results
 
-Four Blackhole P150b devices; global `M/K/N=9472/5120/15360`; per-device
-`M/K/N=9472/5120/3840`.
+Blackhole P150b devices; global `M/K/N=9472/5120/15360`.
 
-| Implementation | Device median ms (min-max) | TT-Lang/native | Warmups/samples |
-| --- | ---: | ---: | ---: |
-| TT-Lang bidirectional L1 | 1.847 (1.802-1.879) | 0.937 | 3/10 |
-| Native `all_gather_minimal_matmul_async` | 1.970 (1.950-2.035) | 1.000 | 3/10 |
+| Devices | Per-device K/N | TT-Lang device median ms (min-max) | Native device median ms (min-max) | TT-Lang/native | Warmups/samples |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 4 | 1280/3840 | 1.847 (1.802-1.879) | 1.970 (1.950-2.035) | 0.937 | 3/10 |
+| 8 | 640/1920 | 1.798 (1.784-1.852) | 1.709 (1.690-1.722) | 1.052 | 3/10 |
 
-Both results passed PCC >= 0.99 and elementwise relative/absolute tolerances of
+All four measurements passed PCC >= 0.99 and elementwise relative/absolute tolerances of
 0.05 against FP32 PyTorch for every warmup and sample.
+
+The eight-device TT-Lang configuration uses an `11 x 10` compute grid,
+M/K/N blocks `9/10/6`, 110 compute workers, and eight mux workers per device.
+The native configuration uses a `12 x 9` compute grid, M/K/N blocks `7/10/8`,
+a `1 x 2` output subblock, two links per direction, six clients per link, 24
+channel buffers, and three output chunks. The independently selected
+configurations produce the same N-sharded output.
 
 ## Two-dimensional decomposition
 
@@ -255,14 +261,19 @@ short initialization that would reset packer accumulation.
 ## Measurement
 
 Device profiling measures first kernel start through final kernel end, averaged
-across the four devices. Host tensor creation, compilation, dispatch,
+across the participating devices. Host tensor creation, compilation, dispatch,
 correctness checks, and profiler processing are excluded.
 
-Measured 2026-09-15 09:34-09:35 UTC.
-TT-Lang `71b471e6c72c`, operation SHA-256 `6d7cfba54a5b`,
-compiler binary SHA-256 `6f4f849342e3`; TT-Metal
+Four-device result measured 2026-09-15 09:34-09:35 UTC: TT-Lang
+`71b471e6c72c`, operation SHA-256 `6d7cfba54a5b`, compiler binary SHA-256
+`6f4f849342e3`; TT-Metal `41859079d939`, native binary SHA-256
+`9815624f3813`; LLVM `37aca9d384347`; firmware 18.12.1; IRD v1.1.9.
+
+Eight-device result measured 2026-09-16 05:26-05:50 UTC on
+`bh-lb-120-a08u28`: TT-Lang `1de0765a4eaf`, operation SHA-256
+`cd1877ea6787`, compiler binary SHA-256 `ddc32628bb6e`; TT-Metal
 `41859079d939`, native binary SHA-256 `9815624f3813`; LLVM `37aca9d384347`;
-firmware 18.12.1; IRD v1.1.9.
+firmware 19.8.1; IRD v1.1.9 image digest `76489cf9e5fb`.
 
 [Raw device-profiler reports](https://gist.github.com/brnorris03/fa7ab25c12872de92dc0727f28f16104).
 [Reproduction command and timing definition](README.md#run).
