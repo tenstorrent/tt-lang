@@ -29,6 +29,28 @@ The parent process runs TT-Lang and TT-Metal in separate profiler processes.
 All tensor, worker-grid, block, fabric, and native collective parameters are
 CLI options; `--help` lists the measured defaults.
 
+Eight-device comparison:
+
+```bash
+python -m benchmarks.all_gather_minimal_matmul \
+    --mesh-shape 8x1 \
+    --m-tiles 296 \
+    --k-tiles-per-device 20 \
+    --n-tiles 480 \
+    --ttlang-compute-grid 11 10 \
+    --ttlang-m-block-tiles 9 \
+    --ttlang-k-block-tiles 10 \
+    --ttlang-n-block-tiles 6 \
+    --native-compute-grid 12 9 \
+    --native-m-block-tiles 7 \
+    --native-k-block-tiles 10 \
+    --native-n-block-tiles 8 \
+    --native-subblock 1 2 \
+    --warmup 3 \
+    --samples 10 \
+    --json /tmp/all-gather-minimal-matmul-8-device.json
+```
+
 Four-device 2D result:
 
 ```bash

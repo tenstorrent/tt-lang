@@ -1,7 +1,7 @@
 # All-gather minimal matmul
 
 This example computes `all_gather_K(activation) @ weight + bias` on a device
-line. Activation is K-sharded; weight, bias, and output are N-sharded. The four
+line. Activation is K-sharded; weight, bias, and output are N-sharded. The
 output shards collectively contain one `M x N` result.
 
 | Order | Implementation | Inter-device communication | Status |
@@ -9,7 +9,7 @@ output shards collectively contain one `M x N` result.
 | 1 | [`operation.py`](operation.py) | One M block per fabric transfer; direct L1 injection | Correct; 2.613 ms control |
 | 2 | [`operation_bidirectional_dram.py`](operation_bidirectional_dram.py) | Bidirectional K halves staged in receiver DRAM | Correct; slower than direct L1 |
 | 3 | [`operation_grouped_rows.py`](operation_grouped_rows.py) | Three contiguous M blocks per fabric transfer; L1 subview injection | Correct; 2.269 ms |
-| 4 | [`operation_bidirectional_l1.py`](operation_bidirectional_l1.py) | Bidirectional K halves received into L1 and distributed from opposite rows | Selected; 1.847 ms |
+| 4 | [`operation_bidirectional_l1.py`](operation_bidirectional_l1.py) | Bidirectional K halves received into L1 and distributed from opposite rows | Selected; 1.847 ms on 4 devices, 1.798 ms on 8 devices |
 | 5 | [`../matmul_reduce_scatter_2d/operation.py`](../matmul_reduce_scatter_2d/operation.py) | Exchange partial results between two K groups and reduce into M/N-sharded output | Correct; 3.233 ms on four devices |
 
 Comparison reference: TT-Metal
@@ -111,6 +111,23 @@ python -m benchmarks.all_gather_minimal_matmul \
     --ttlang-m-block-tiles 5 \
     --ttlang-k-block-tiles 10 \
     --ttlang-n-block-tiles 12 \
+    --no-ttlang-reuse-activation
+```
+
+Eight devices, with per-device `M/K/N=9472/640/1920`:
+
+```bash
+python -m benchmarks.all_gather_minimal_matmul \
+    --implementation ttlang \
+    --ttlang-activation-strategy bidirectional-l1 \
+    --mesh-shape 8x1 \
+    --ttlang-compute-grid 11 10 \
+    --m-tiles 296 \
+    --k-tiles-per-device 20 \
+    --n-tiles 480 \
+    --ttlang-m-block-tiles 9 \
+    --ttlang-k-block-tiles 10 \
+    --ttlang-n-block-tiles 6 \
     --no-ttlang-reuse-activation
 ```
 
