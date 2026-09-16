@@ -95,6 +95,12 @@ constexpr llvm::StringLiteral kKernelThreadAttrName("ttl.kernel_thread");
 /// Func-level target-independent logical-kernel identity.
 constexpr llvm::StringLiteral kLogicalKernelAttrName("ttl.logical_kernel");
 
+/// Module-level two-dimensional launch-grid extent.
+constexpr llvm::StringLiteral kLaunchGridAttrName("ttl.launch_grid");
+
+/// Launch coordinates assigned to a core-specialized function.
+constexpr llvm::StringLiteral kCoreCoordAttrName("ttl.core_coord");
+
 /// Global tensor indices represented by the function's common runtime-argument
 /// prefix.
 constexpr llvm::StringLiteral kCRTAIndicesAttrName("ttl.crta_indices");
@@ -108,7 +114,7 @@ constexpr llvm::StringLiteral kUnrollFactorAttrName("ttl.unroll_factor");
 
 /// Func-level: NOC index (0 = reader/NCRISC, 1 = writer/BRISC) of a
 /// datamovement kernel; set by the frontend, read via getNocIndex during
-/// TTL->TTKernel lowering and by the ttnn runtime bridge for reader/writer
+/// TTL->TTKernel lowering and by Python kernel construction for reader/writer
 /// config assignment. Mirrored in python/ttl/ttl_api.py.
 constexpr llvm::StringLiteral kNocIndexAttrName("ttl.noc_index");
 

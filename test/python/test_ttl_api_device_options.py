@@ -2,8 +2,9 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unit tests for TT device options used by the TTL Python wrapper."""
+"""Unit tests for TTL device options and kernel descriptor construction."""
 
+from dataclasses import fields, replace
 from unittest import mock
 
 import pytest
@@ -14,7 +15,9 @@ import ttl.dialects.ttl as ttl_dialect
 import ttl.ttl_api as ttl_api
 from ttl import ProgramRuntimeResources
 from ttl.constants import SUPPORTED_MATH_FIDELITIES
+from ttl.dialects import ttkernel
 from ttl.ir import Context, Module
+from ttl.passes import get_ttkernel_arg_spec
 
 
 class _TensorWithDevice:
@@ -649,6 +652,440 @@ class TestKernelI32ArrayAttr:
                 ttl_api._get_kernel_i32_array_attr(
                     module, "compute_kernel", "ttl.unpack_to_dest_fp32"
                 )
+
+
+def _make_descriptor_metadata():
+    return ttl_api._KernelDescriptorMetadata(
+        runtime_arg_spec=("arg",),
+        configuration=ttl_api._KernelConfigurationMetadata(
+            thread_type=ttl_api._KernelThreadType.NOC,
+            data_movement_role=ttl_api._DataMovementRole.READER,
+        ),
+        pipe_computed_address_dfb_indices=(1,),
+        used_dfb_indices=(2,),
+        tensor_indices=(3,),
+        local_tensor_indices=(4,),
+        fabric_routes=("route",),
+        fabric_runtime_arg_base_common_index=5,
+        fabric_manager_intervals=("interval",),
+        logical_selector=ttl.KernelKind.DATA_MOVEMENT,
+        function_attributes=(("new.descriptor.property", "value"),),
+    )
+
+
+def _make_descriptor_candidate(
+    name,
+    cpp_source,
+    core_coordinates,
+    descriptor_metadata=None,
+):
+    if descriptor_metadata is None:
+        descriptor_metadata = _make_descriptor_metadata()
+    return ttl_api._KernelDescriptorCandidate(
+        name=name,
+        core_coordinates=(
+            None if core_coordinates is None else tuple(core_coordinates)
+        ),
+        cpp_source=cpp_source,
+        descriptor_metadata=descriptor_metadata,
+    )
+
+
+def test_collect_ttkernel_functions_associates_symbols_and_attributes(monkeypatch):
+    context = Context()
+    ttl_dialect.ensure_dialects_registered(context)
+    with context:
+        module = Module.parse(
+            """
+            module {
+              func.func @reader() attributes {
+                ttl.core_coord = [[0, 1]],
+                ttl.noc_index = 0 : i32
+              } {
+                return
+              }
+              func.func @writer() attributes {ttl.noc_index = 1 : i32} {
+                return
+              }
+            }
+            """
+        )
+        monkeypatch.setattr(
+            ttl_api,
+            "get_ttkernel_names",
+            lambda _module: [("reader", "noc"), ("writer", "noc")],
+        )
+
+        functions = ttl_api._collect_ttkernel_functions(module)
+
+        assert [function.name for function in functions] == ["reader", "writer"]
+        assert [function.thread_type for function in functions] == [
+            ttl_api._KernelThreadType.NOC,
+            ttl_api._KernelThreadType.NOC,
+        ]
+        assert functions[0].core_coordinates == ((0, 1),)
+        assert functions[1].core_coordinates is None
+        assert (
+            ttl_api._get_kernel_data_movement_role(
+                module, "reader", kernel_operation=functions[0].operation
+            )
+            == ttl_api._DataMovementRole.READER
+        )
+        assert (
+            ttl_api._get_kernel_data_movement_role(
+                module, "writer", kernel_operation=functions[1].operation
+            )
+            == ttl_api._DataMovementRole.WRITER
+        )
+
+
+def test_collect_ttkernel_functions_rejects_unknown_thread_type(monkeypatch):
+    context = Context()
+    ttl_dialect.ensure_dialects_registered(context)
+    with context:
+        module = Module.parse("module { func.func @kernel() { return } }")
+        monkeypatch.setattr(
+            ttl_api,
+            "get_ttkernel_names",
+            lambda _module: [("kernel", "unknown")],
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="Invalid TTKernel thread type 'unknown' on kernel 'kernel'",
+        ):
+            ttl_api._collect_ttkernel_functions(module)
+
+
+def test_data_movement_role_rejects_unknown_noc_index():
+    context = Context()
+    ttl_dialect.ensure_dialects_registered(context)
+    with context:
+        module = Module.parse(
+            """
+            module {
+              func.func @reader() attributes {ttl.noc_index = 2 : i32} {
+                return
+              }
+            }
+            """
+        )
+
+        with pytest.raises(
+            ValueError,
+            match="expected 0 for reader or 1 for writer",
+        ):
+            ttl_api._get_kernel_data_movement_role(module, "reader")
+
+
+class TestSpecializedKernelGrouping:
+    def test_snapshot_retains_structural_runtime_argument_metadata(self):
+        context = Context()
+        ttl_dialect.ensure_dialects_registered(context)
+        with context:
+            module = Module.parse(
+                """
+                module {
+                  func.func @reader() attributes {
+                    ttl.crta_indices = [], ttl.noc_index = 0 : i32
+                  } { return }
+                }
+                """
+            )
+            kernel_operation = module.body.operations[0].operation
+            runtime_argument = ttkernel.ir.ArgAttr.get(
+                context,
+                ttkernel.ArgType.BufferAddress.value,
+                2,
+                True,
+            )
+            compile_argument = ttkernel.ir.ArgAttr.get(
+                context,
+                ttkernel.ArgType.BufferAddress.value,
+                1,
+                True,
+            )
+            kernel_operation.attributes[ttkernel.ir.ARG_SPEC_ATTR] = (
+                ttkernel.ir.ArgSpecAttr.get(
+                    context,
+                    [runtime_argument],
+                    [compile_argument],
+                )
+            )
+            function = ttl_api._TTKernelFunction(
+                name="reader",
+                thread_type=ttl_api._KernelThreadType.NOC,
+                operation=kernel_operation,
+                core_coordinates=((0, 0),),
+                logical_selector=ttl.KernelKind.DATA_MOVEMENT,
+            )
+
+            first = ttl_api._snapshot_kernel_descriptor_metadata(
+                module,
+                function,
+                math_fidelity=None,
+                fp32_dest_acc_en=None,
+                dst_full_sync_en=None,
+            )
+            second = ttl_api._snapshot_kernel_descriptor_metadata(
+                module,
+                function,
+                math_fidelity=None,
+                fp32_dest_acc_en=None,
+                dst_full_sync_en=None,
+            )
+
+        assert ttkernel.ir.ARG_SPEC_ATTR == "ttkernel.arg_spec"
+        argument_spec = get_ttkernel_arg_spec(module, "reader")
+        assert tuple(argument_spec.rt_args) == (runtime_argument,)
+        assert tuple(argument_spec.ct_args) == (compile_argument,)
+        assert first.runtime_arg_spec == (runtime_argument,)
+        assert first == second
+        assert hash(first) == hash(second)
+
+    def test_groups_only_matching_specialized_kernels(self):
+        metadata = _make_descriptor_metadata()
+        different_metadata = replace(metadata, tensor_indices=(7,))
+        candidates = [
+            _make_descriptor_candidate("first", "same", [(0, 0)], metadata),
+            _make_descriptor_candidate("second", "same", [(0, 1)], metadata),
+            _make_descriptor_candidate(
+                "different_metadata", "same", [(1, 0)], different_metadata
+            ),
+            _make_descriptor_candidate(
+                "different_source", "different", [(1, 1)], metadata
+            ),
+            _make_descriptor_candidate("unspecialized_first", "same", None, metadata),
+            _make_descriptor_candidate("unspecialized_second", "same", None, metadata),
+        ]
+
+        groups = ttl_api._group_equivalent_specialized_kernels(candidates)
+
+        assert [[candidate.name for candidate in group] for group in groups] == [
+            ["first", "second"],
+            ["different_metadata"],
+            ["different_source"],
+            ["unspecialized_first"],
+            ["unspecialized_second"],
+        ]
+
+    def test_runtime_metadata_changes_prevent_grouping(self):
+        metadata = _make_descriptor_metadata()
+        changed_values = {
+            "runtime_arg_spec": ("other",),
+            "pipe_computed_address_dfb_indices": (6,),
+            "used_dfb_indices": None,
+            "tensor_indices": (7,),
+            "local_tensor_indices": (8,),
+            "fabric_routes": ("other",),
+            "fabric_runtime_arg_base_common_index": 9,
+            "fabric_manager_intervals": ("other",),
+            "logical_selector": ttl.KernelKind.COMPUTE,
+            "function_attributes": (("new.descriptor.property", "other"),),
+        }
+        assert set(changed_values) == {
+            field.name for field in fields(metadata) if field.name != "configuration"
+        }
+
+        for field_name, changed_value in changed_values.items():
+            changed = replace(metadata, **{field_name: changed_value})
+            assert changed != metadata
+
+        configuration_changes = {
+            "thread_type": ttl_api._KernelThreadType.COMPUTE,
+            "math_fidelity": "HiFi4",
+            "fp32_dest_acc_en": True,
+            "dst_full_sync_en": True,
+            "unpack_to_dest_fp32": (1,),
+            "data_movement_role": ttl_api._DataMovementRole.WRITER,
+        }
+        assert set(configuration_changes) == {
+            field.name for field in fields(metadata.configuration)
+        }
+        for field_name, changed_value in configuration_changes.items():
+            configuration = replace(
+                metadata.configuration, **{field_name: changed_value}
+            )
+            changed = replace(metadata, configuration=configuration)
+            assert changed != metadata
+
+        selector = ttl.Kernel._from_metadata(
+            ttl.KernelKind.DATA_MOVEMENT,
+            "reader",
+            operation_identity="operation",
+        )
+        equivalent_selector = ttl.Kernel._from_metadata(
+            ttl.KernelKind.DATA_MOVEMENT,
+            "reader",
+            operation_identity="operation",
+        )
+        assert replace(metadata, logical_selector=selector) == replace(
+            metadata, logical_selector=equivalent_selector
+        )
+        assert hash(replace(metadata, logical_selector=selector)) == hash(
+            replace(metadata, logical_selector=equivalent_selector)
+        )
+        selector_changes = [
+            ttl.Kernel._from_metadata(
+                ttl.KernelKind.COMPUTE,
+                "reader",
+                operation_identity="operation",
+            ),
+            ttl.Kernel._from_metadata(
+                ttl.KernelKind.DATA_MOVEMENT,
+                "writer",
+                operation_identity="operation",
+            ),
+            ttl.Kernel._from_metadata(
+                ttl.KernelKind.DATA_MOVEMENT,
+                "reader",
+                operation_identity="other_operation",
+            ),
+            ttl.Kernel._from_metadata(
+                ttl.KernelKind.DATA_MOVEMENT,
+                "reader",
+                None,
+                implicit_role="source",
+            ),
+        ]
+        original = replace(metadata, logical_selector=selector)
+        for changed_selector in selector_changes:
+            changed = replace(metadata, logical_selector=changed_selector)
+            assert changed != original
+
+        implicit_selector = ttl.Kernel._from_metadata(
+            ttl.KernelKind.DATA_MOVEMENT,
+            "reader",
+            None,
+            implicit_role="source",
+        )
+        changed_role = ttl.Kernel._from_metadata(
+            ttl.KernelKind.DATA_MOVEMENT,
+            "reader",
+            None,
+            implicit_role="destination",
+        )
+        assert replace(metadata, logical_selector=implicit_selector) != replace(
+            metadata, logical_selector=changed_role
+        )
+
+    def test_unknown_function_attribute_prevents_grouping(self):
+        context = Context()
+        ttl_dialect.ensure_dialects_registered(context)
+        with context:
+            module = Module.parse(
+                """
+                module {
+                  func.func @first() attributes {
+                    ttl.core_coord = [[0, 0]], test.future_property = 1 : i32
+                  } { return }
+                  func.func @second() attributes {
+                    ttl.core_coord = [[0, 1]], test.future_property = 2 : i32
+                  } { return }
+                  func.func @identity_change() attributes {
+                    ttl.core_coord = [[1, 1]], test.future_property = 1 : i32
+                  } { return }
+                }
+                """
+            )
+            first_op, second_op, identity_change_op = (
+                op.operation for op in module.body.operations
+            )
+            first = ttl_api._descriptor_relevant_function_attributes(
+                first_op.attributes
+            )
+            second = ttl_api._descriptor_relevant_function_attributes(
+                second_op.attributes
+            )
+            identity_only_change = ttl_api._descriptor_relevant_function_attributes(
+                identity_change_op.attributes
+            )
+
+        assert first == identity_only_change
+        assert first != second
+
+    @pytest.mark.parametrize(
+        "core_coordinates",
+        [[[(0, 0), (0, 0)]], [[(0, 0)], [(0, 0)]]],
+        ids=["within-kernel", "between-kernels"],
+    )
+    def test_rejects_overlapping_specialized_coordinates(self, core_coordinates):
+        candidates = [
+            _make_descriptor_candidate(f"kernel_{kernel_index}", "source", coordinates)
+            for kernel_index, coordinates in enumerate(core_coordinates)
+        ]
+        with pytest.raises(ValueError, match="duplicate|both assign"):
+            ttl_api._group_equivalent_specialized_kernels(candidates)
+
+    def test_rejects_processor_overlap_across_different_descriptors(self):
+        metadata = _make_descriptor_metadata()
+        candidates = [
+            _make_descriptor_candidate("first", "first source", [(0, 0)], metadata),
+            _make_descriptor_candidate(
+                "second",
+                "second source",
+                [(0, 0)],
+                replace(metadata, tensor_indices=(7,)),
+            ),
+        ]
+
+        with pytest.raises(
+            ValueError,
+            match=(
+                "'first' and 'second' both assign the reader data-movement "
+                "processor to launch coordinate \\(0, 0\\)"
+            ),
+        ):
+            ttl_api._group_equivalent_specialized_kernels(candidates)
+
+    def test_allows_reader_and_writer_on_same_coordinate(self):
+        reader_metadata = _make_descriptor_metadata()
+        writer_metadata = replace(
+            reader_metadata,
+            configuration=replace(
+                reader_metadata.configuration,
+                data_movement_role=ttl_api._DataMovementRole.WRITER,
+            ),
+        )
+        candidates = [
+            _make_descriptor_candidate("reader", "reader source", [(0, 0)]),
+            _make_descriptor_candidate(
+                "writer", "writer source", [(0, 0)], writer_metadata
+            ),
+        ]
+
+        groups = ttl_api._group_equivalent_specialized_kernels(candidates)
+
+        assert [[candidate.name for candidate in group] for group in groups] == [
+            ["reader"],
+            ["writer"],
+        ]
+
+    def test_groups_specialized_kernels_beside_a_whole_grid_kernel(self):
+        # Specialization is per function, so one operation can contain both
+        # specialized and whole-grid kernels.
+        compute_metadata = replace(
+            _make_descriptor_metadata(),
+            configuration=replace(
+                _make_descriptor_metadata().configuration,
+                thread_type=ttl_api._KernelThreadType.COMPUTE,
+                data_movement_role=None,
+            ),
+        )
+        candidates = [
+            _make_descriptor_candidate("reader_c0_0", "reader source", [(0, 0)]),
+            _make_descriptor_candidate("reader_c1_0", "reader source", [(1, 0)]),
+            _make_descriptor_candidate(
+                "compute", "compute source", None, compute_metadata
+            ),
+        ]
+
+        groups = ttl_api._group_equivalent_specialized_kernels(candidates)
+
+        assert [[candidate.name for candidate in group] for group in groups] == [
+            ["reader_c0_0", "reader_c1_0"],
+            ["compute"],
+        ]
 
 
 class TestMathFidelity:

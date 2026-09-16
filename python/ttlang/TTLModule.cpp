@@ -29,6 +29,12 @@ using namespace mlir::tt::ttl;
 
 void populateTTLModule(nb::module_ &m) {
   m.doc() = "TTL (TT-Lang) dialect Python bindings";
+  m.attr("FP32_DEST_ACC_EN_ATTR") =
+      nb::str(kFp32DestAccEnAttrName.data(), kFp32DestAccEnAttrName.size());
+  m.attr("DST_FULL_SYNC_EN_ATTR") =
+      nb::str(kDstFullSyncEnAttrName.data(), kDstFullSyncEnAttrName.size());
+  m.attr("UNPACK_TO_DEST_FP32_ATTR") = nb::str(
+      kUnpackToDestFp32AttrName.data(), kUnpackToDestFp32AttrName.size());
   m.attr("PIPE_SYNC_SEMAPHORE_COUNT_ATTR") =
       nb::str(kPipeSyncSemaphoreCountAttrName.data(),
               kPipeSyncSemaphoreCountAttrName.size());
@@ -55,6 +61,10 @@ void populateTTLModule(nb::module_ &m) {
       nb::str(kUsedDFBIndicesAttrName.data(), kUsedDFBIndicesAttrName.size());
   m.attr("LOGICAL_KERNEL_ATTR") =
       nb::str(kLogicalKernelAttrName.data(), kLogicalKernelAttrName.size());
+  m.attr("CORE_COORD_ATTR") =
+      nb::str(kCoreCoordAttrName.data(), kCoreCoordAttrName.size());
+  m.attr("NOC_INDEX_ATTR") =
+      nb::str(kNocIndexAttrName.data(), kNocIndexAttrName.size());
   m.attr("CRTA_INDICES_ATTR") =
       nb::str(kCRTAIndicesAttrName.data(), kCRTAIndicesAttrName.size());
   m.attr("LOCAL_TENSOR_INDICES_ATTR") = nb::str(
