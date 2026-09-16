@@ -154,7 +154,9 @@ def test_dataflow_buffer_multi_tile() -> None:
     tile0.to_torch().fill_(1.0)
     tile1 = ttnn.rand(TILE_SHAPE)
     tile1.to_torch().fill_(2.0)
-    assembled = ttnn.Tensor(_torch.cat([tile0.to_torch(), tile1.to_torch()], dim=0))
+    assembled = ttnn.Tensor(
+        _torch.cat([tile0.to_torch(), tile1.to_torch()], dim=0), dtype=element.dtype
+    )
     write_view.store(Block.from_tensor(assembled))
 
     write_view.push()
@@ -458,8 +460,8 @@ def test_reserve_store_push_pop_workflow() -> None:
         write_block.store(
             Block.from_list(
                 [
-                    ttnn.Tensor(torch.full(TILE_SHAPE, 5.0)),
-                    ttnn.Tensor(torch.full(TILE_SHAPE, 10.0)),
+                    ttnn.Tensor(torch.full(TILE_SHAPE, 5.0), dtype=element.dtype),
+                    ttnn.Tensor(torch.full(TILE_SHAPE, 10.0), dtype=element.dtype),
                 ],
                 shape=(2, 1),
             )
@@ -478,8 +480,13 @@ def test_reserve_store_push_pop_workflow() -> None:
             write_block.store(
                 Block.from_list(
                     [
-                        ttnn.Tensor(torch.full(TILE_SHAPE, float(i * 2))),
-                        ttnn.Tensor(torch.full(TILE_SHAPE, float(i * 2 + 1))),
+                        ttnn.Tensor(
+                            torch.full(TILE_SHAPE, float(i * 2)), dtype=element.dtype
+                        ),
+                        ttnn.Tensor(
+                            torch.full(TILE_SHAPE, float(i * 2 + 1)),
+                            dtype=element.dtype,
+                        ),
                     ],
                     shape=(2, 1),
                 )
@@ -781,17 +788,17 @@ def test_iadd_accumulates_into_temporary() -> None:
 
     values1 = Block.from_list(
         [
-            ttnn.Tensor(torch.full(TILE_SHAPE, 5.0)),
-            ttnn.Tensor(torch.full(TILE_SHAPE, 10.0)),
-            ttnn.Tensor(torch.full(TILE_SHAPE, 15.0)),
+            ttnn.Tensor(torch.full(TILE_SHAPE, 5.0), dtype=element.dtype),
+            ttnn.Tensor(torch.full(TILE_SHAPE, 10.0), dtype=element.dtype),
+            ttnn.Tensor(torch.full(TILE_SHAPE, 15.0), dtype=element.dtype),
         ],
         shape=(3, 1),
     )
     values2 = Block.from_list(
         [
-            ttnn.Tensor(torch.full(TILE_SHAPE, 3.0)),
-            ttnn.Tensor(torch.full(TILE_SHAPE, 6.0)),
-            ttnn.Tensor(torch.full(TILE_SHAPE, 9.0)),
+            ttnn.Tensor(torch.full(TILE_SHAPE, 3.0), dtype=element.dtype),
+            ttnn.Tensor(torch.full(TILE_SHAPE, 6.0), dtype=element.dtype),
+            ttnn.Tensor(torch.full(TILE_SHAPE, 9.0), dtype=element.dtype),
         ],
         shape=(3, 1),
     )
@@ -820,7 +827,9 @@ def test_iadd_raises_on_non_temporary() -> None:
     dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
 
     block = dfb.reserve()
-    other = Block.from_tensor(ttnn.Tensor(torch.full(TILE_SHAPE, 1.0)))
+    other = Block.from_tensor(
+        ttnn.Tensor(torch.full(TILE_SHAPE, 1.0), dtype=element.dtype)
+    )
     with pytest.raises(
         RuntimeError, match="In-place accumulation.*only valid for temporary"
     ):
@@ -859,7 +868,9 @@ def test_pending_confirmation_cleared_when_result_is_stored() -> None:
     try:
         with src_dfb.wait() as c_blk:
             # arithmetic use registers pending confirmation
-            y = c_blk + Block.from_tensor(ttnn.Tensor(torch.full(TILE_SHAPE, 1.0)))
+            y = c_blk + Block.from_tensor(
+                ttnn.Tensor(torch.full(TILE_SHAPE, 1.0), dtype=element.dtype)
+            )
             assert c_blk in src_dfb._pending_confirmations
 
         # c_blk has been popped; confirmation is still pending
@@ -897,7 +908,7 @@ def test_pending_confirmation_raises_at_termination_if_never_stored() -> None:
     try:
         with src_dfb.wait(name="arith_src") as c_blk:
             _unused = c_blk + Block.from_tensor(
-                ttnn.Tensor(torch.full(TILE_SHAPE, 1.0))
+                ttnn.Tensor(torch.full(TILE_SHAPE, 1.0), dtype=element.dtype)
             )
             # _unused is never stored
 
@@ -1393,6 +1404,14 @@ def _row_major_block_1x1() -> Block:
     )
 
 
+def _tile_block_with_dtype(dtype) -> Block:
+    """Create a float32-backed tile block with an explicit logical dtype."""
+    return Block.from_list(
+        [Tensor(torch.zeros(32, 32, dtype=torch.float32), dtype=dtype)],
+        shape=(1, 1),
+    )
+
+
 def test_block_add_layout_mismatch_raises():
     """``Block.__add__`` raises when operand layouts differ."""
     a = _tile_block_1x1()
@@ -1455,6 +1474,42 @@ def test_top_level_matmul_layout_mismatch_raises():
     b = _row_major_block_1x1()
     with pytest.raises(ValueError, match="must share the same layout"):
         dfb_matmul(a, b)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        lambda lhs, rhs: lhs + rhs,
+        lambda lhs, rhs: lhs - rhs,
+        lambda lhs, rhs: lhs * rhs,
+        lambda lhs, rhs: lhs / rhs,
+        lambda lhs, rhs: lhs @ rhs,
+    ],
+    ids=["add", "sub", "mul", "div", "matmul"],
+)
+def test_block_operations_reject_mixed_declared_dtypes(operation):
+    """Block arithmetic rejects BF16/F32 operands despite F32 backing storage."""
+    lhs = _tile_block_with_dtype(ttnn.bfloat16)
+    rhs = _tile_block_with_dtype(ttnn.float32)
+
+    with pytest.raises(ValueError, match="operation requires matching data types"):
+        operation(lhs, rhs)
+
+
+def test_store_rejects_mixed_declared_dtypes():
+    """A store rejects a source whose logical dtype differs from its destination."""
+    destination = DataflowBuffer(
+        likeness_tensor=Tensor(
+            torch.zeros(32, 32, dtype=torch.float32), dtype=ttnn.float32
+        ),
+        shape=(1, 1),
+        block_count=2,
+    )
+    source = _tile_block_with_dtype(ttnn.bfloat16)
+
+    with pytest.raises(ValueError, match="operation requires matching data types"):
+        with destination.reserve() as output:
+            output.store(source)
 
 
 def test_block_add_layout_error_wins_over_shape_error():

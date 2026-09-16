@@ -22,6 +22,7 @@ import torch
 from .context import get_context
 from .dfb import (
     Block,
+    check_same_dtype,
     check_same_layout,
     track_source_blocks,
     matmul,
@@ -60,7 +61,9 @@ def _create_unary_op_wrapper(
             torch_fn(t.to_torch()) for t in block.to_list()
         ]
 
-        result_list: List[Tensor] = [Tensor(t, layout) for t in result_torch]
+        result_list: List[Tensor] = [
+            Tensor(t, layout, dtype=block.raw_tensor.dtype) for t in result_torch
+        ]
         result_block = Block.from_list(result_list, shape=block._shape)  # type: ignore[attr-defined]
         track_source_blocks(result_block, block)
         return result_block
@@ -151,6 +154,7 @@ def _apply_binary_op(
     # Layout is checked before shape so a layout error wins when both
     # mismatch (see ``block._apply_binary_op`` for the rationale).
     check_same_layout(a, b)
+    check_same_dtype(a, b)
     a_shape = a._shape  # type: ignore[attr-defined]
     b_shape = b._shape  # type: ignore[attr-defined]
     if a_shape != b_shape:
@@ -165,7 +169,9 @@ def _apply_binary_op(
     result_torch: List[torch.Tensor] = [
         op(a_t, b_t) for a_t, b_t in zip(a_tensors, b_tensors)
     ]
-    result_list: List[Tensor] = [Tensor(t, layout) for t in result_torch]
+    result_list: List[Tensor] = [
+        Tensor(t, layout, dtype=a.raw_tensor.dtype) for t in result_torch
+    ]
 
     result_block = Block.from_list(result_list, shape=a_shape)  # type: ignore[attr-defined]
     track_source_blocks(result_block, a, b)
@@ -189,7 +195,9 @@ def _apply_unary_with_params(
         return _dry_run_result(block.shape, block)
     layout = block.layout
     result_torch: List[torch.Tensor] = [op(t.to_torch()) for t in block.to_list()]
-    result_list: List[Tensor] = [Tensor(t, layout) for t in result_torch]
+    result_list: List[Tensor] = [
+        Tensor(t, layout, dtype=block.raw_tensor.dtype) for t in result_torch
+    ]
 
     result_block = Block.from_list(result_list, shape=block._shape)  # type: ignore[attr-defined]
     track_source_blocks(result_block, block)
@@ -623,7 +631,9 @@ def _reduce_impl(
                 new_tile[(..., 0, slice(None))] = seed
             result_tile = new_tile
 
-        result_tensors.append(Tensor(result_tile, block.layout))
+        result_tensors.append(
+            Tensor(result_tile, block.layout, dtype=block.raw_tensor.dtype)
+        )
 
     result_block = Block.from_list(result_tensors, shape=result_shape)
     track_source_blocks(result_block, block)
