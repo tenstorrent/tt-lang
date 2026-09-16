@@ -2235,7 +2235,7 @@ def _build_pipenet_graph(nets):
     graph = OperationPipeNets()
     for net in nets:
         if net.is_graph:
-            net_use = graph.add_graph_pipe_net(net.graph)
+            net_use = graph.add_graph_pipe_net(net.graph, net.local_nodes)
             net._graph_edges = net_use.edges
             net.pipe_net_id = net_use.pipe_net_id
             continue

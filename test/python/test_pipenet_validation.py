@@ -39,6 +39,42 @@ def test_pipenet_accepts_transfer_graph():
     assert net.pipes == []
 
 
+def test_graph_pipenet_accepts_local_nodes():
+    domain = ttl.DeviceDomain((1, 2))
+    graph = ttl.TransferGraph.edges(domain, edges=[((0, 0), (0, 1))])
+
+    net = ttl.PipeNet(graph=graph, local_nodes=[(0, 0), (0, 1)])
+    operation_pipenets = _build_pipenet_graph([net])
+
+    assert net.local_nodes == ((0, 0), (0, 1))
+    assert operation_pipenets.graph_pipe_nets[0].local_nodes == net.local_nodes
+
+
+@pytest.mark.parametrize(
+    "local_nodes, error",
+    [
+        ([], "at least one node"),
+        ([(0, 0), (0, 0)], "duplicate nodes"),
+        ([(0, -1)], "non-negative"),
+        ([(0,)], "non-negative"),
+    ],
+)
+def test_graph_pipenet_rejects_invalid_local_nodes(local_nodes, error):
+    domain = ttl.DeviceDomain((1, 2))
+    graph = ttl.TransferGraph.edges(domain, edges=[((0, 0), (0, 1))])
+
+    with pytest.raises(ValueError, match=error):
+        ttl.PipeNet(graph=graph, local_nodes=local_nodes)
+
+
+def test_local_nodes_requires_graph():
+    with pytest.raises(ValueError, match="requires a graph"):
+        ttl.PipeNet(
+            [ttl.Pipe(src=(0, 0), dst=(1, 0))],
+            local_nodes=[(0, 0)],
+        )
+
+
 def test_graph_pipenet_rejects_device_range_until_multicast_lowering():
     domain = ttl.DeviceDomain((1, 3))
     destination = ttl.DeviceRange(lo=ttl.DeviceRef((0, 1)), hi=ttl.DeviceRef((1, 3)))

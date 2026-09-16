@@ -19,6 +19,64 @@ func.func @if_src_lowering() attributes { "ttl.kernel_thread" = #ttkernel.thread
 
 // -----
 
+// A pipe send from a DFB subview adds the tile offset to the source pointer.
+// CHECK-LABEL: func.func @pipe_send_block_subview
+// CHECK: %[[SOURCE_BASE:.*]] = ttkernel.get_read_ptr
+// CHECK: %[[SOURCE_BASE_INDEX:.*]] = arith.index_cast %[[SOURCE_BASE]]
+// CHECK: %[[SOURCE_ADDRESS_INDEX:.*]] = arith.addi %[[SOURCE_BASE_INDEX]], %c4096
+// CHECK: %[[SOURCE_ADDRESS:.*]] = arith.index_cast %[[SOURCE_ADDRESS_INDEX]]
+// CHECK: ttkernel.noc_async_write_one_packet_with_state(%[[SOURCE_ADDRESS]],
+// CHECK-NOT: ttl.pipe_transfer
+// CHECK-NOT: unrealized_conversion_cast
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @pipe_send_block_subview()
+      attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+    %source_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 2], !ttcore.tile<32x32, f32>, 1>
+    %destination_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+        {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %transfer = ttl.pipe_transfer.create %pipe
+        {kind = #ttl.pipe_transfer_kind<point_to_point>}
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+        -> !ttl.pipe_transfer
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %destination = ttl.cb_reserve %destination_dfb
+          : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %post = ttl.pipe_transfer.post %transfer, %destination
+          : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.pipe_token<net 0>
+      ttl.pipe_transfer.wait %post : !ttl.pipe_token<net 0>
+      ttl.cb_push %destination_dfb
+          : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    }
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %waited = ttl.cb_wait %source_dfb
+          : <[1, 2], !ttcore.tile<32x32, f32>, 1>
+          -> tensor<1x2x!ttcore.tile<32x32, f32>>
+      %block = ttl.attach_cb %waited, %source_dfb
+          : (tensor<1x2x!ttcore.tile<32x32, f32>>,
+             !ttl.cb<[1, 2], !ttcore.tile<32x32, f32>, 1>)
+          -> tensor<1x2x!ttcore.tile<32x32, f32>>
+      %view = tensor.extract_slice %block[0, 1] [1, 1] [1, 1]
+          : tensor<1x2x!ttcore.tile<32x32, f32>>
+          to tensor<1x1x!ttcore.tile<32x32, f32>>
+      %send = ttl.pipe_transfer.send %transfer, %view
+          : (!ttl.pipe_transfer, tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+      ttl.cb_pop %source_dfb : <[1, 2], !ttcore.tile<32x32, f32>, 1>
+    }
+    func.return
+  }
+}
+
+// -----
+
 // CHECK-LABEL: func.func @if_dst_lowering
 // CHECK: ttkernel.my_logical_x_
 // CHECK: ttkernel.my_logical_y_
@@ -97,7 +155,8 @@ func.func @different_noc_write_barriers_survive() attributes { "ttl.kernel_threa
 
 // -----
 
-// CB -> Pipe copy (unicast): lowers to noc_async_write + semaphore inc
+// A prior push does not make a later reserved source readable. The unicast
+// send uses the current write pointer and signals completion.
 // CHECK-LABEL: func.func @copy_cb_to_pipe
 // CHECK: %[[NOC:.*]] = arith.constant 0 : i8
 // CHECK: %[[SRC_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
@@ -106,6 +165,7 @@ func.func @different_noc_write_barriers_survive() attributes { "ttl.kernel_threa
 // CHECK: ttkernel.experimental.semaphore_wait(%[[ADDR_READY_PTR]]
 // CHECK: ttkernel.noc_semaphore_set(%[[ADDR_READY_PTR]]
 // CHECK: %[[SRC_ADDR:.*]] = ttkernel.get_write_ptr(%[[SRC_DFB]])
+// CHECK-NOT: ttkernel.get_read_ptr(%[[SRC_DFB]])
 // CHECK: %[[DST_X:.*]] = ttkernel.experimental.convert_logical_x_to_translated
 // CHECK: %[[DST_Y:.*]] = ttkernel.experimental.convert_logical_y_to_translated
 // CHECK: %[[SCRATCH:.*]] = ttkernel.get_common_arg_val
@@ -123,6 +183,9 @@ func.func @different_noc_write_barriers_survive() attributes { "ttl.kernel_threa
 func.func @copy_cb_to_pipe() attributes { "ttl.kernel_thread" = #ttkernel.thread<noc> } {
   %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
   %p = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+  %first = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
+  ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+  %second = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, f32>, 2> -> tensor<1x1x!ttcore.tile<32x32, f32>>
   %xf = ttl.copy %cb, %p : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> !ttl.transfer_handle<write>
   ttl.wait %xf : !ttl.transfer_handle<write>
   func.return

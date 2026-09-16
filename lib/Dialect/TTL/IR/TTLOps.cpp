@@ -851,6 +851,49 @@ static mlir::LogicalResult verifyByteCopyDataFormats(mlir::Operation *operation,
   return mlir::success();
 }
 
+static mlir::LogicalResult verifyPipeSendSource(mlir::Operation *operation,
+                                                mlir::Value source) {
+  mlir::Value view = mlir::tt::ttl::traceUnrealizedCasts(source);
+  auto slice = view.getDefiningOp<mlir::tensor::ExtractSliceOp>();
+  mlir::Operation *acquire = mlir::tt::ttl::findCBAcquireOp(source, operation);
+  if (!acquire) {
+    return operation->emitOpError(
+        "pipe send source must come from ttl.cb_reserve or ttl.cb_wait");
+  }
+  if (!slice) {
+    return mlir::success();
+  }
+
+  auto viewType = mlir::dyn_cast<mlir::RankedTensorType>(view.getType());
+  if (!viewType || !viewType.hasStaticShape() ||
+      viewType.getNumElements() <= 0) {
+    return operation->emitOpError(
+        "pipe send DFB view must be a non-empty static extract_slice");
+  }
+  if (llvm::any_of(slice.getMixedStrides(), [](mlir::OpFoldResult stride) {
+        std::optional<int64_t> constantStride = getConstantIntValue(stride);
+        return !constantStride || *constantStride != 1;
+      })) {
+    return operation->emitOpError("pipe send DFB view must have unit strides");
+  }
+  auto sourceType =
+      mlir::cast<mlir::RankedTensorType>(slice.getSource().getType());
+  bool foundNonSingletonDimension = false;
+  for (auto [viewExtent, sourceExtent] :
+       llvm::zip_equal(viewType.getShape(), sourceType.getShape())) {
+    if (foundNonSingletonDimension && viewExtent != sourceExtent) {
+      return operation->emitOpError(
+          "pipe send DFB view must be contiguous in row-major storage");
+    }
+    foundNonSingletonDimension |= viewExtent != 1;
+  }
+  if (!mlir::isa<mlir::tt::ttl::CBWaitOp>(acquire)) {
+    return operation->emitOpError(
+        "pipe send source DFB view must come from ttl.cb_wait");
+  }
+  return mlir::success();
+}
+
 mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
   auto srcTy = getSrc().getType();
   auto dstTy = getDst().getType();
@@ -926,9 +969,14 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
                 "ttl.pipenet_foreach_dst";
     }
     if (dstIsPipe) {
-      if (!srcIsCb) {
+      if (!srcIsCb && !srcAttachedDFB) {
         return emitOpError()
-               << "pipe send requires source operand to be !ttl.cb";
+               << "pipe send requires a DFB block or block subview source";
+      }
+      if (!srcIsCb) {
+        if (failed(verifyPipeSendSource(getOperation(), getSrc()))) {
+          return failure();
+        }
       }
       auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
       if (!handleType || handleType.getKind() != TransferKind::write) {
@@ -940,7 +988,33 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
                            : success();
     }
     if (!findCBReserveForPipeReceive(getDst())) {
-      return emitOpError() << "pipe receive requires a cb_reserve destination";
+      auto destinationSlice = getDst().getDefiningOp<TensorSliceOp>();
+      if (!destinationSlice) {
+        return emitOpError()
+               << "pipe receive requires a cb_reserve or tensor_slice "
+                  "destination";
+      }
+      if (byteCountAttr) {
+        return emitOpError("pipe receive tensor_slice destination does not "
+                           "support byte_count");
+      }
+      auto tensorType =
+          mlir::cast<RankedTensorType>(destinationSlice.getTensor().getType());
+      auto sliceType = mlir::cast<RankedTensorType>(getDst().getType());
+      auto layout =
+          mlir::dyn_cast_or_null<LayoutAttr>(tensorType.getEncoding());
+      if (!layout || layout.getBufferType() != BufferType::DRAM ||
+          layout.getMemoryLayout() != TensorMemoryLayout::Interleaved) {
+        return emitOpError(
+            "pipe receive tensor_slice destination requires interleaved DRAM "
+            "storage");
+      }
+      if (!sliceType.hasStaticShape() || sliceType.getNumElements() <= 0 ||
+          !mlir::isa<ttcore::TileType>(sliceType.getElementType())) {
+        return emitOpError(
+            "pipe receive tensor_slice destination requires a non-empty "
+            "static tile shape");
+      }
     }
     if (!mlir::isa<ReceiveRequestType>(getXf().getType())) {
       return emitOpError()
@@ -964,21 +1038,37 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
            << "non-pipe copy requires a direction-typed transfer handle result";
   }
 
-  if (srcIsCb == dstIsCb) {
+  const bool srcIsDFBEndpoint = srcIsCb || static_cast<bool>(srcAttachedDFB);
+  const bool dstIsDFBEndpoint = dstIsCb || static_cast<bool>(dstAttachedDFB);
+  if (srcIsDFBEndpoint == dstIsDFBEndpoint) {
     return emitOpError()
-           << "expects exactly one operand to be !ttl.cb; got src=" << srcTy
+           << "expects exactly one dataflow-buffer endpoint; got src=" << srcTy
            << " dst=" << dstTy;
   }
 
-  // Extract the transfer tensor type from the non-CB operand. For slices, this
-  // is the slice result type because ttl.copy moves one DFB block at a time.
-  Type nonCbTy = srcIsCb ? dstTy : srcTy;
-  RankedTensorType transferTensorTy = mlir::dyn_cast<RankedTensorType>(nonCbTy);
+  Value dfbEndpoint = srcIsDFBEndpoint ? getSrc() : getDst();
+  Value dfb = srcIsDFBEndpoint ? (srcIsCb ? getSrc() : srcAttachedDFB)
+                               : (dstIsCb ? getDst() : dstAttachedDFB);
+  Value tensorEndpoint = srcIsDFBEndpoint ? getDst() : getSrc();
+  RankedTensorType transferTensorTy =
+      mlir::dyn_cast<RankedTensorType>(tensorEndpoint.getType());
   if (!transferTensorTy) {
     return emitOpError()
-           << "expects the non-CB operand to be a ranked tensor or "
+           << "expects the non-DFB operand to be a ranked tensor or "
               "tensor_slice result; got "
-           << nonCbTy;
+           << tensorEndpoint.getType();
+  }
+
+  if (!mlir::isa<CircularBufferType>(dfbEndpoint.getType())) {
+    Operation *acquire = findCBAcquireOp(dfbEndpoint, getOperation());
+    if (srcIsDFBEndpoint && !mlir::isa_and_nonnull<CBWaitOp>(acquire)) {
+      return emitOpError(
+          "tensor copy source DFB view must come from ttl.cb_wait");
+    }
+    if (dstIsDFBEndpoint && !mlir::isa_and_nonnull<CBReserveOp>(acquire)) {
+      return emitOpError(
+          "tensor copy destination DFB view must come from ttl.cb_reserve");
+    }
   }
 
   // TT-Lang programs require a TTL layout encoding on tensors so lowering can
@@ -999,9 +1089,23 @@ mlir::LogicalResult mlir::tt::ttl::CopyOp::verify() {
            << layoutTensorTy;
   }
 
-  auto cbTy = mlir::cast<CircularBufferType>(srcIsCb ? srcTy : dstTy);
+  auto cbTy = mlir::cast<CircularBufferType>(dfb.getType());
   auto cbShape = cbTy.getShape();
   auto tensorShape = transferTensorTy.getShape();
+
+  if (!mlir::isa<CircularBufferType>(dfbEndpoint.getType())) {
+    auto viewTy = mlir::dyn_cast<RankedTensorType>(dfbEndpoint.getType());
+    if (!viewTy) {
+      return emitOpError() << "DFB view must be a ranked tensor; got "
+                           << dfbEndpoint.getType();
+    }
+    if (viewTy.getShape() != tensorShape) {
+      return emitOpError() << "tensor shape " << tensorShape
+                           << " must match DFB view shape "
+                           << viewTy.getShape();
+    }
+    cbShape = viewTy.getShape();
+  }
 
   if (cbShape.size() != tensorShape.size()) {
     return emitOpError() << "tensor rank (" << tensorShape.size()
@@ -1248,6 +1352,21 @@ mlir::LogicalResult mlir::tt::ttl::PipeTransferSendOp::verify() {
   auto handleType = mlir::dyn_cast<TransferHandleType>(getXf().getType());
   if (!handleType || handleType.getKind() != TransferKind::write) {
     return emitOpError() << "requires a write transfer handle result";
+  }
+
+  bool sourceIsDFB = mlir::isa<CircularBufferType>(getSrc().getType());
+  if (!sourceIsDFB && !getAttachedCB(getSrc())) {
+    return emitOpError("requires a DFB block or block subview source");
+  }
+  if (!sourceIsDFB) {
+    if (failed(verifyPipeSendSource(getOperation(), getSrc()))) {
+      return failure();
+    }
+    if (getByteCountAttr() &&
+        failed(verifyByteCountFitsDFBEndpoint(
+            getOperation(), getSrc(), getByteCountAttr().getInt(), "source"))) {
+      return failure();
+    }
   }
 
   return success();

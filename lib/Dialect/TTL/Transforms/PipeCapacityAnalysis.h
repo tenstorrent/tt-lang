@@ -45,7 +45,9 @@
 // Pseudocode:
 //
 //   for endpoint in pipeGraph.getPipeReceiverEndpoints():
-//     node = pipeGraph.getReceiverDFBNode(endpoint.receiverDFBNode)
+//     skip endpoints that do not target a DFB
+//     destination = endpoint.getDFBDestination()
+//     node = pipeGraph.getReceiverDFBNode(destination.receiverDFBNode)
 //     require endpoint.transferNode to be point-to-point
 //     if the transport owns the endpoint storage:
 //       use the owned destination pop and the transport ring depth
