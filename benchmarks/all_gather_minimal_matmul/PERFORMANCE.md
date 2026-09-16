@@ -110,7 +110,8 @@ configuration. Equal resource use is not required.
 | M/K/N blocks | `5/10/12` tiles | `7/5/16` tiles |
 | Output subblock | `1 x 4` tiles; direct FP32 packer accumulation | `1 x 2` tiles |
 | Communication workers | 48 fabric clients in 4 compute rows; 8 mux-only workers | 24 compute workers are fabric clients; 4 mux-only workers |
-| Activation collective | bidirectional ring; opposite five-tile K halves are received into L1 and distributed from the boundary rows | bidirectional native ring into gathered-activation DRAM storage |
+| Activation collective | bidirectional ring; opposite five-tile K halves are received into L1 and multicast from the boundary rows through compute columns | bidirectional native ring into gathered-activation DRAM storage, followed by unicast worker-chain distribution |
+| Weight distribution | one `m=0` source per N-partition row reads each weight block directly into the matmul DFB, then multicasts it across the row | one edge source per N partition reads each weight block, consumes it locally, then relays it through a unicast worker chain |
 | Fabric configuration | 2D, strict initialization | 1D ring, strict initialization |
 | Payload | 8192 bytes | 8192 bytes |
 | Links/workers/channel buffers | 4 links/direction; 6 clients/link; 22 buffers/client channel | 2 links/direction; 6 clients/link; 24 buffers/client channel |
