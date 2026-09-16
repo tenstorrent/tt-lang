@@ -1619,15 +1619,17 @@ def TTKernelAnnotateDFBUse
     Runs after per-core specialization and canonicalization.
     For each `ttkernel.thread` function, records the
     sorted physical DFB indices reached through surviving
-    `ttkernel.get_compile_time_arg_val` operations below
-    `ttl.base_cta_index` and `dfb_resource_indices` metadata on surviving
-    `ttkernel.opaque_call` operations in `ttl.used_dfb_indices`. The metadata
-    preserves resource requirements after lowering replaces DFB operands with
-    static values. Helpers stay in the call-graph analysis so their uses
-    propagate to kernel entries.
+    `ttkernel.get_compile_time_arg_val` operations in
+    `ttl.used_dfb_indices`, together with `dfb_resource_indices` metadata on
+    surviving `ttkernel.opaque_call` operations. The metadata preserves
+    resource requirements after lowering replaces DFB operands with static
+    values. An argument or resource index is a DFB index when it is less than
+    the number of entries in the module's `ttl.dfb_allocations` metadata.
+    Helpers stay in the
+    call-graph analysis so their uses propagate to kernel entries.
     Declarations are not annotated. The compile-time ABI places
-    every DFB before tensor-accessor arguments, including DFB ids passed to
-    opaque externs as scalar values.
+    every DFB first, including DFB ids passed to opaque externs as scalar
+    values. Later compiler-defined and tensor-accessor arguments are excluded.
 
     Resource indices must be within the enclosing function's DFB compile-time
     argument range.
@@ -1635,7 +1637,7 @@ def TTKernelAnnotateDFBUse
     Calls are resolved through the MLIR call graph. Uses are propagated from
     callees to callers in SCC order, including recursive calls. An unknown or
     external callee is handled conservatively by recording every DFB
-    compile-time argument below `ttl.base_cta_index`.
+    compile-time argument.
 
     Print-only `get_compile_time_arg_val` operations (those whose only users
     are `emitc.verbatim` debug prints, through unrealized casts) are excluded
@@ -1647,6 +1649,25 @@ def TTKernelAnnotateDFBUse
   }];
 
   let dependentDialects = [];
+}
+
+def TTKernelSpecializeDFBReconfiguration
+    : Pass<"ttkernel-specialize-dfb-reconfiguration", "::mlir::ModuleOp"> {
+  let summary = "Specialize DFB reconfiguration for invariant storage";
+  let description = [{
+    Runs after per-core specialization. When every epoch configuration of a
+    physical DFB uses the same storage source on the specialized core, the
+    pass records the selected epoch's descriptor fields as opaque-call
+    template arguments. Reconfiguration still synchronizes through the
+    runtime record, but does not read descriptor fields or scan active DFB
+    masks at runtime.
+
+    If any reused DFB changes its storage source, the pass preserves the
+    runtime-record implementation so that the selected epoch supplies the
+    correct address. The pass also records the specialized call's DFB resource
+    indices for subsequent per-kernel resource-use analysis.
+  }];
+  let dependentDialects = ["::mlir::tt::ttkernel::TTKernelDialect"];
 }
 
 def TTKernelFinalizeTensorRuntimeArgs

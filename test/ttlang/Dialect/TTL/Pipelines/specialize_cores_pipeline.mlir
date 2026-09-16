@@ -21,9 +21,9 @@
 // SUBPIPELINE-NEXT: ttkernel-cleanup,
 // SUBPIPELINE-NEXT: ttkernel-finalize-tensor-runtime-args,
 // SUBPIPELINE-NEXT: canonicalize{{.*}},
+// SUBPIPELINE-NEXT: ttkernel-specialize-dfb-reconfiguration,
 // SUBPIPELINE-NEXT: ttkernel-annotate-dfb-use
 // SUBPIPELINE-NOT:  ttkernel-specialize-cores
-// SUBPIPELINE-NOT:  ttkernel-annotate-dfb-use
 
 // CLEANUP-LABEL: Pass Manager with
 // CLEANUP-NEXT: builtin.module(
@@ -54,6 +54,7 @@
 // ENABLED-NEXT: ttkernel-cleanup,
 // ENABLED-NEXT: ttkernel-finalize-tensor-runtime-args,
 // ENABLED-NEXT: canonicalize{{.*}},
+// ENABLED-NEXT: ttkernel-specialize-dfb-reconfiguration,
 // ENABLED-NEXT: ttkernel-annotate-dfb-use
 
 // DISABLED: ttkernel-insert-l1-accumulation
@@ -73,4 +74,7 @@
 // DISABLED-NEXT: ttkernel-finalize-tensor-runtime-args
 // DISABLED-NEXT: canonicalize{{.*}}
 
-module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {}
+module attributes {
+  ttl.dfb_allocations = [],
+  ttl.launch_grid = [1 : i64, 1 : i64]
+} {}
