@@ -37,8 +37,6 @@ def make_bidirectional_l1_all_gather_matmul_operation(
     math_fidelity: str | None = None,
     fp32_dest_acc_en: bool | None = None,
 ) -> Callable[..., None]:
-    if config.device_count != 4:
-        raise ValueError("bidirectional L1 all-gather currently requires four devices")
     if config.k_block_tiles % 2:
         raise ValueError("bidirectional L1 all-gather requires an even K block")
     if config.n_workers < 4:
