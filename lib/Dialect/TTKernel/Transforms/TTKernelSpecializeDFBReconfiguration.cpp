@@ -28,15 +28,6 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-struct StorageSource {
-  std::optional<int64_t> tensorIndex;
-  int64_t byteOffset = 0;
-
-  bool operator==(const StorageSource &rhs) const {
-    return tensorIndex == rhs.tensorIndex && byteOffset == rhs.byteOffset;
-  }
-};
-
 struct StaticReconfiguration {
   SmallVector<Attribute> templateArguments;
   SmallVector<int32_t> dfbIndices;
@@ -98,14 +89,15 @@ storageSegmentContainsCore(DictionaryAttr segment,
   return false;
 }
 
-static FailureOr<std::optional<StorageSource>>
-getStorageSource(DictionaryAttr configuration, CoreCoordinate coreCoordinate) {
+static FailureOr<bool>
+configurationAppliesToCore(DictionaryAttr configuration,
+                           CoreCoordinate coreCoordinate) {
   auto storageSegments = configuration.getAs<ArrayAttr>("storage_segments");
   if (!storageSegments) {
-    return std::optional<StorageSource>(StorageSource{});
+    return true;
   }
 
-  std::optional<StorageSource> source;
+  bool appliesToCore = false;
   for (Attribute segmentAttribute : storageSegments) {
     auto segment = dyn_cast<DictionaryAttr>(segmentAttribute);
     if (!segment) {
@@ -119,18 +111,12 @@ getStorageSource(DictionaryAttr configuration, CoreCoordinate coreCoordinate) {
     if (!*containsCore) {
       continue;
     }
-    if (source) {
+    if (appliesToCore) {
       return failure();
     }
-    if (auto tensorBacking =
-            segment.getAs<TensorBackingAttr>("tensor_backing")) {
-      source = StorageSource{tensorBacking.getTensorIndex(),
-                             tensorBacking.getByteOffset()};
-    } else {
-      source = StorageSource{};
-    }
+    appliesToCore = true;
   }
-  return source;
+  return appliesToCore;
 }
 
 static FailureOr<OptionalStaticReconfiguration>
@@ -160,26 +146,19 @@ buildStaticReconfiguration(ArrayAttr dfbEntries, int64_t ordinal,
     }
     previousDFBIndex = dfbIndex.getInt();
 
-    std::optional<StorageSource> stableSource;
     DictionaryAttr selectedConfiguration;
     for (Attribute configurationAttribute : configurations) {
       auto configuration = dyn_cast<DictionaryAttr>(configurationAttribute);
       if (!configuration) {
         return failure();
       }
-      FailureOr<std::optional<StorageSource>> source =
-          getStorageSource(configuration, **coreCoordinate);
-      if (failed(source)) {
+      FailureOr<bool> appliesToCore =
+          configurationAppliesToCore(configuration, **coreCoordinate);
+      if (failed(appliesToCore)) {
         return failure();
       }
-      if (*source) {
-        if (stableSource && !(*stableSource == **source)) {
-          return OptionalStaticReconfiguration{};
-        }
-        stableSource = **source;
-      }
       auto entry = configuration.getAs<IntegerAttr>("entry_reconfiguration");
-      if (entry && entry.getInt() == ordinal && *source) {
+      if (entry && entry.getInt() == ordinal && *appliesToCore) {
         if (selectedConfiguration) {
           return failure();
         }
