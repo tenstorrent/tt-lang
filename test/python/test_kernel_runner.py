@@ -4101,6 +4101,13 @@ def test_routing_plane_sizes_each_mux_for_its_assigned_clients(monkeypatch):
 
     mux_kernels = program.kernels[len(kernels) :]
     assert sorted(kernel.compile_time_args[0] for kernel in mux_kernels) == [2, 3]
+    assert {
+        (
+            call["config"].num_full_size_channels,
+            call["config"].num_buffers_per_full_size_channel,
+        )
+        for call in fake_ttnn.mux_client_runtime_calls
+    } == {(2, 3), (3, 2)}
     assert sorted(
         kernel.runtime_args[source_node[0]][source_node[1]][-1]
         for kernel, source_node in zip(kernels, source_nodes)

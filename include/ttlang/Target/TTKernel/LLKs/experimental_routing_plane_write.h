@@ -33,9 +33,10 @@ routing_plane_write(RoutingPlaneConnectionManager &manager, uint32_t route_id,
     manager.waitForEmptyWriteSlot(connection_index);
     manager.sendPayloadWithoutHeaderNonBlockingFromAddress(
         connection_index, source_address, packet_size);
-    manager.sendPayloadFlushBlockingFromAddress(
+    manager.sendPayloadFlushNonBlockingFromAddress(
         connection_index, reinterpret_cast<uint32_t>(packet_header),
         sizeof(PACKET_HEADER_TYPE));
+    noc_async_writes_flushed();
     source_address += packet_size;
     destination_address += packet_size;
     size_bytes -= packet_size;

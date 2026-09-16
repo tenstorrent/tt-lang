@@ -218,6 +218,7 @@ class FabricTargetBindingPlan:
 
 
 _WORKER_SEMAPHORE_CAPACITY = 16
+_FABRIC_MUX_MAX_BUFFERS_PER_CHANNEL = ((1 << 8) - 1) // 2
 _FABRIC_TARGET_PLAN_SCHEMA_VERSION = 1
 _FABRIC_TARGET_PLAN_PERSONALIZATION = b"ttlang-fb-plan"
 
@@ -1099,21 +1100,35 @@ def _build_mux_groups(
         client_keys,
     ), logical_core in zip(group_assignments, mux_cores):
         client_count = len(client_keys)
-        config = fabric_mux_api.Config(
-            num_full_size_channels=client_count,
-            num_header_only_channels=0,
-            num_buffers_per_full_size_channel=1,
-            num_buffers_per_header_only_channel=0,
-            full_size_channel_buffer_size_bytes=channel_buffer_size,
-            base_l1_address=mux_base_l1_address,
-            core_type=ttnn_api.CoreType.WORKER,
-        )
-        if int(config.memory_map_end_address()) > mux_l1_end_address:
+
+        def build_config(buffer_count: int):
+            return fabric_mux_api.Config(
+                num_full_size_channels=client_count,
+                num_header_only_channels=0,
+                num_buffers_per_full_size_channel=buffer_count,
+                num_buffers_per_header_only_channel=0,
+                full_size_channel_buffer_size_bytes=channel_buffer_size,
+                base_l1_address=mux_base_l1_address,
+                core_type=ttnn_api.CoreType.WORKER,
+            )
+
+        minimum_config = build_config(1)
+        minimum_end_address = int(minimum_config.memory_map_end_address())
+        if minimum_end_address > mux_l1_end_address:
             raise ValueError(
                 "fabric mux L1 allocation exceeds the available interval: "
-                f"end {int(config.memory_map_end_address()):#x}, limit "
+                f"end {minimum_end_address:#x}, limit "
                 f"{mux_l1_end_address:#x}"
             )
+        # Each additional slot adds one channel buffer per client. Derive the
+        # capacity without constructing an invalid TT-Metal configuration,
+        # because TT-Metal rejects L1 overflow with a fatal assertion.
+        additional_buffer_bytes = client_count * channel_buffer_size
+        buffer_count = min(
+            _FABRIC_MUX_MAX_BUFFERS_PER_CHANNEL,
+            1 + (mux_l1_end_address - minimum_end_address) // additional_buffer_bytes,
+        )
+        config = build_config(buffer_count)
         client_compile_time_args = tuple(
             int(argument)
             for argument in fabric_mux_api.client_compile_time_args(

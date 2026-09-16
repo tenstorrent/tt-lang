@@ -599,20 +599,59 @@ isBeforeInReceiverControlContext(Operation *before, Operation *after,
   return false;
 }
 
-/// Return true when `before` precedes `after` directly or before an enclosing
-/// runtime region containing `after`.
+// Return true when execution of `before` guarantees later execution of
+// `after`. An executed nested operation completes before subsequent enclosing
+// operations. A nested `after` may be projected outward only through control
+// that is statically selected at the receiver location.
+static bool
+executionGuaranteesLaterExecution(Operation *before, Operation *after,
+                                  const LaunchExecutionLocation &location,
+                                  const PipeGraphAnalysisState &analysisState) {
+  for (Operation *beforeAncestor = before; beforeAncestor;) {
+    for (Operation *afterAncestor = after; afterAncestor;) {
+      if (isBeforeInReceiverControlContext(beforeAncestor, afterAncestor,
+                                           location, analysisState)) {
+        return true;
+      }
+      Block *afterBlock = afterAncestor->getBlock();
+      Operation *parent = afterBlock ? afterBlock->getParentOp() : nullptr;
+      if (!parent) {
+        break;
+      }
+      std::optional<ReceiverControlContext> afterContext =
+          getReceiverControlContext(afterAncestor, location, analysisState);
+      std::optional<ReceiverControlContext> parentContext =
+          getReceiverControlContext(parent, location, analysisState);
+      if (!afterContext || afterContext != parentContext) {
+        break;
+      }
+      afterAncestor = parent;
+    }
+
+    Block *beforeBlock = beforeAncestor->getBlock();
+    beforeAncestor = beforeBlock ? beforeBlock->getParentOp() : nullptr;
+  }
+  return false;
+}
+
+// Return true when `before` completes before `after` whenever both execute.
+// Projecting either operation through enclosing structured control preserves
+// this order without asserting that a runtime-selected region executes.
 static bool
 isBeforeInReceiverExecution(Operation *before, Operation *after,
                             const LaunchExecutionLocation &location,
                             const PipeGraphAnalysisState &analysisState) {
-  Operation *enclosing = after;
-  while (enclosing) {
-    if (isBeforeInReceiverControlContext(before, enclosing, location,
-                                         analysisState)) {
-      return true;
+  for (Operation *beforeAncestor = before; beforeAncestor;) {
+    for (Operation *afterAncestor = after; afterAncestor;) {
+      if (isBeforeInReceiverControlContext(beforeAncestor, afterAncestor,
+                                           location, analysisState)) {
+        return true;
+      }
+      Block *afterBlock = afterAncestor->getBlock();
+      afterAncestor = afterBlock ? afterBlock->getParentOp() : nullptr;
     }
-    Block *block = enclosing->getBlock();
-    enclosing = block ? block->getParentOp() : nullptr;
+    Block *beforeBlock = beforeAncestor->getBlock();
+    beforeAncestor = beforeBlock ? beforeBlock->getParentOp() : nullptr;
   }
   return false;
 }
@@ -629,8 +668,8 @@ static bool hasMatchingReceiveWaitBeforeUse(
   auto waitIt = waitsByPost.find(postOp.getOperation());
   if (waitIt != waitsByPost.end() &&
       llvm::any_of(waitIt->second, [&](PipeTransferWaitOp waitOp) {
-        return isBeforeInReceiverExecution(postOp, waitOp, location,
-                                           analysisState) &&
+        return executionGuaranteesLaterExecution(postOp, waitOp, location,
+                                                 analysisState) &&
                isBeforeInReceiverExecution(waitOp, consumer, location,
                                            analysisState);
       })) {
@@ -766,6 +805,9 @@ static std::optional<std::uint64_t> getConcreteTransferExecutionCount(
     const PipeReference &pipeRef, std::optional<std::uint64_t> recordIndex,
     PipeGraphAnalysisState &analysisState);
 
+static DeviceDomainAttr
+getAggregateLocalPipeDeviceDomain(const PipeGraphAnalysisState &analysisState);
+
 static InFlightDiagnostic
 emitReceiverReservationPastDFBEnd(const ReceiverDFBInfo &receiverInfo,
                                   int64_t slot) {
@@ -840,6 +882,17 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
     LaunchExecutionLocation location;
     std::optional<std::uint64_t> executionCount;
   };
+  DeviceDomainAttr localDeviceDomain =
+      getAggregateLocalPipeDeviceDomain(analysisState);
+  DeviceRefAttr representativeLocalDevice;
+  if (localDeviceDomain) {
+    FailureOr<SmallVector<DeviceRefAttr>> maybeDevices =
+        enumerateDeviceDomain(localDeviceDomain);
+    if (failed(maybeDevices) || maybeDevices->empty()) {
+      return failure();
+    }
+    representativeLocalDevice = maybeDevices->front();
+  }
   // Resolve `endpoint`'s receiver location and total post count. An unresolved
   // location fails; a valid location with an unknown count remains
   // conservative.
@@ -854,17 +907,25 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
            "pipe transfer graph validated pipe references");
     const PipeTransferNode &transferNode =
         getPipeTransferNode(endpoint.transferNode);
-    FailureOr<LaunchExecutionLocation> maybeLocation =
-        getPipeGraphExecutionLocation(
-            postOp.getOperation(), getLaunchNodeCoord(endpoint.receiver),
-            transferNode.deviceTransfer, PipeRole::Destination);
-    if (failed(maybeLocation)) {
-      return failure();
+    LaunchNodeCoord receiverNode = getLaunchNodeCoord(endpoint.receiver);
+    LaunchExecutionLocation location(receiverNode);
+    if (transferNode.deviceTransfer) {
+      FailureOr<LaunchExecutionLocation> maybeLocation =
+          getPipeGraphExecutionLocation(postOp.getOperation(), receiverNode,
+                                        transferNode.deviceTransfer,
+                                        PipeRole::Destination);
+      if (failed(maybeLocation)) {
+        return failure();
+      }
+      location = *maybeLocation;
+    } else if (representativeLocalDevice) {
+      location = LaunchExecutionLocation(receiverNode, localDeviceDomain,
+                                         representativeLocalDevice);
     }
     return ReceiverEndpointExecutionInfo{
-        *maybeLocation, getConcreteTransferExecutionCount(
-                            postOp.getOperation(), *maybeLocation, *pipeRef,
-                            endpoint.postRecordIndex, analysisState)};
+        location, getConcreteTransferExecutionCount(
+                      postOp.getOperation(), location, *pipeRef,
+                      endpoint.postRecordIndex, analysisState)};
   };
 
   ReceiverEndpointsByDFB endpointsByReceiverDFB =
@@ -1655,9 +1716,6 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
     tensorRegion.hasDisjointOccurrences =
         !tensorRegionHasOverlappingOccurrences(tensorRegion);
     tensorEndpoints.push_back(&endpoint);
-    if (*endpoint.executionCount > 1) {
-      repeatedTensorEndpoints.push_back(&endpoint);
-    }
   }
   if (tensorEndpoints.empty()) {
     return success();
@@ -1699,6 +1757,12 @@ LogicalResult PipeGraph::verifyTensorRegionDestinations(
             << "overlapping destination is here";
         return failure();
       }
+    }
+  }
+  for (PipeReceiverEndpoint *endpoint : tensorEndpoints) {
+    if (*endpoint->executionCount > 1 &&
+        !endpoint->getTensorRegionDestination().hasDisjointOccurrences) {
+      repeatedTensorEndpoints.push_back(endpoint);
     }
   }
 
@@ -2585,6 +2649,62 @@ static std::optional<std::uint64_t> getConcreteTransferExecutionCount(
              : std::nullopt;
 }
 
+/// Return the one device domain used by selected PipeNet records. Target
+/// lowering imposes the same constraint per kernel before materializing fabric
+/// routes; multiple domains retain node-only conservative analysis here.
+static DeviceDomainAttr
+getAggregateLocalPipeDeviceDomain(const PipeGraphAnalysisState &analysisState) {
+  DeviceDomainAttr deviceDomain;
+  for (const auto &[loopOperation, recordLoop] :
+       analysisState.pipeRecordLoops) {
+    (void)loopOperation;
+    for (PipeRecordAttr record : recordLoop.records.getPipes()) {
+      if (!record.getDeviceTransfer()) {
+        continue;
+      }
+      DeviceDomainAttr recordDomain = record.getDeviceTransfer().getDomain();
+      if (deviceDomain && deviceDomain != recordDomain) {
+        return {};
+      }
+      deviceDomain = recordDomain;
+    }
+  }
+  return deviceDomain;
+}
+
+/// Return the per-device execution count for a local PipeNet event when every
+/// logical device has the same count. A local PipeNet represents one replicated
+/// transfer program, so a device-varying count cannot use one endpoint graph.
+static std::optional<std::uint64_t> getUniformLocalTransferExecutionCount(
+    Operation *op, LaunchNodeCoord node, const PipeReference &pipeRef,
+    std::optional<std::uint64_t> recordIndex, DeviceDomainAttr deviceDomain,
+    PipeGraphAnalysisState &analysisState) {
+  if (!deviceDomain) {
+    return getConcreteTransferExecutionCount(
+        op, LaunchExecutionLocation(node), pipeRef, recordIndex, analysisState);
+  }
+  FailureOr<SmallVector<DeviceRefAttr>> maybeDevices =
+      enumerateDeviceDomain(deviceDomain);
+  if (failed(maybeDevices)) {
+    return std::nullopt;
+  }
+
+  std::optional<std::uint64_t> uniformCount;
+  for (DeviceRefAttr device : *maybeDevices) {
+    std::optional<std::uint64_t> maybeCount = getConcreteTransferExecutionCount(
+        op, LaunchExecutionLocation(node, deviceDomain, device), pipeRef,
+        recordIndex, analysisState);
+    if (!maybeCount) {
+      return std::nullopt;
+    }
+    if (uniformCount && *uniformCount != *maybeCount) {
+      return std::nullopt;
+    }
+    uniformCount = *maybeCount;
+  }
+  return uniformCount;
+}
+
 /// A protocol operation and the selected record it represents.
 template <typename ProtocolOp>
 struct PipeProtocolCandidate {
@@ -2628,6 +2748,8 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
   using PipeTransferIdentity = std::pair<PipeKey, DeviceTransferAttr>;
   llvm::MapVector<PipeTransferIdentity, PipeTransferCandidates>
       candidatesByPipe;
+  DeviceDomainAttr aggregateLocalDeviceDomain =
+      getAggregateLocalPipeDeviceDomain(analysisState);
   // Static operations require a conservative role bound. Selected operations
   // are restricted per record by their enclosing PipeNet foreach semantics.
   for (Operation *op : analysisState.transferProtocolOps) {
@@ -2672,9 +2794,13 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
           return failure();
         }
         std::optional<std::uint64_t> maybeExecutionCount =
-            getConcreteTransferExecutionCount(
-                sendOp.getOperation(), *maybeLocation, *pipeRef,
-                selectedRecordIndex, analysisState);
+            deviceTransfer ? getConcreteTransferExecutionCount(
+                                 sendOp.getOperation(), *maybeLocation,
+                                 *pipeRef, selectedRecordIndex, analysisState)
+                           : getUniformLocalTransferExecutionCount(
+                                 sendOp.getOperation(), source, *pipeRef,
+                                 selectedRecordIndex,
+                                 aggregateLocalDeviceDomain, analysisState);
         if (maybeExecutionCount && *maybeExecutionCount == 0) {
           continue;
         }
@@ -2740,9 +2866,13 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
           return;
         }
         std::optional<std::uint64_t> maybeExecutionCount =
-            getConcreteTransferExecutionCount(
-                postOp.getOperation(), *maybeLocation, *pipeRef,
-                selectedRecordIndex, analysisState);
+            deviceTransfer ? getConcreteTransferExecutionCount(
+                                 postOp.getOperation(), *maybeLocation,
+                                 *pipeRef, selectedRecordIndex, analysisState)
+                           : getUniformLocalTransferExecutionCount(
+                                 postOp.getOperation(), receiverCoord, *pipeRef,
+                                 selectedRecordIndex,
+                                 aggregateLocalDeviceDomain, analysisState);
         if (!maybeExecutionCount || *maybeExecutionCount != 0) {
           candidates.postsByReceiver[receiver].push_back(
               {postOp, selectedRecordIndex, maybeExecutionCount});
@@ -2839,13 +2969,23 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
         }
         bool haveEqualExecutionCounts = false;
         std::optional<std::uint64_t> maybeSendCount =
-            getConcreteTransferExecutionCount(
-                sendOp.getOperation(), *maybeSendLocation, *sendPipeRef,
-                candidates.sends[sendIndex].recordIndex, analysisState);
+            candidates.deviceTransfer
+                ? getConcreteTransferExecutionCount(
+                      sendOp.getOperation(), *maybeSendLocation, *sendPipeRef,
+                      candidates.sends[sendIndex].recordIndex, analysisState)
+                : getUniformLocalTransferExecutionCount(
+                      sendOp.getOperation(), {pipeKey.srcX, pipeKey.srcY},
+                      *sendPipeRef, candidates.sends[sendIndex].recordIndex,
+                      aggregateLocalDeviceDomain, analysisState);
         std::optional<std::uint64_t> maybePostCount =
-            getConcreteTransferExecutionCount(
-                postOp.getOperation(), *maybePostLocation, *postPipeRef,
-                postsIt->second[sendIndex].recordIndex, analysisState);
+            candidates.deviceTransfer
+                ? getConcreteTransferExecutionCount(
+                      postOp.getOperation(), *maybePostLocation, *postPipeRef,
+                      postsIt->second[sendIndex].recordIndex, analysisState)
+                : getUniformLocalTransferExecutionCount(
+                      postOp.getOperation(), getLaunchNodeCoord(receiver),
+                      *postPipeRef, postsIt->second[sendIndex].recordIndex,
+                      aggregateLocalDeviceDomain, analysisState);
         if (maybeSendCount && maybePostCount) {
           haveEqualExecutionCounts = *maybeSendCount == *maybePostCount;
         }

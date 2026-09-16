@@ -1,5 +1,16 @@
 // RUN: ttlang-opt %s --ttkernel-finalize-tensor-runtime-args --verify-diagnostics --split-input-file
 
+// The fabric argument cannot overlap the tensor-address prefix.
+// expected-error @below {{fabric runtime argument base must follow tensor arguments}}
+func.func @overlapping_fabric_index()
+    attributes {ttl.crta_indices = [0, 1],
+                ttl.fabric_runtime_arg_base_common_index = 1 : i64,
+                ttl.kernel_thread = #ttkernel.thread<noc>} {
+  return
+}
+
+// -----
+
 // A local accessor must retain structural tensor identity.
 func.func @local_accessor_without_runtime_argument()
     attributes {ttl.crta_indices = [0],
@@ -67,18 +78,5 @@ func.func @negative_tensor_accessor_runtime_index()
   %crta = arith.constant -1 : i32
   // expected-error @below {{'ttkernel.TensorAccessorArgs' op common runtime argument index must be non-negative}}
   %args = ttkernel.TensorAccessorArgs(%cta, %crta)
-  return
-}
-
-// -----
-
-// Fabric runtime arguments cannot overlap the tensor prefix.
-// expected-error @below {{'func.func' op ttl.fabric_runtime_arg_base_common_index must follow every tensor runtime argument}}
-func.func @fabric_runtime_base_inside_tensor_prefix()
-    attributes {
-      ttl.crta_indices = [0, 1],
-      ttl.fabric_runtime_arg_base_common_index = 1 : i64,
-      ttl.kernel_thread = #ttkernel.thread<noc>
-    } {
   return
 }
