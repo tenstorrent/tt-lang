@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "examples": [
+    {
+      "name": "add",
+      "category": "elementwise",
+      "path": "examples/eltwise_add.py",
+      "correctness": "embedded_torch_reference"
+    },
+    {
+      "name": "matmul",
+      "category": "matrix_multiplication",
+      "path": "examples/single_node_matmul.py",
+      "correctness": "embedded_torch_reference"
+    },
+    {
+      "name": "reduce",
+      "category": "reduction",
+      "path": "examples/spec/block/elementwise_broadcast_reduce.py",
+      "correctness": "embedded_torch_reference"
+    },
+    {
+      "name": "fused-matmul-bias",
+      "category": "fusion",
+      "path": "examples/matmul_acc.py",
+      "correctness": "embedded_torch_reference"
+    }
+  ]
+}
