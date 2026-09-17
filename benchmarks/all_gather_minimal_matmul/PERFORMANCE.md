@@ -17,10 +17,11 @@ Rows requiring fused epilogues or a different operation kind remain listed but
 are not reported as plain AGMM comparisons. Measurements use three warmups,
 ten samples, correctness on every invocation, and device kernel intervals only.
 
-The current bidirectional-L1 operation has compiled with the current TT-Lang
-build and TT-Metal fabric runtime, but the reduced four-device correctness case
-has timed out on both the ring and line configurations. No current ring/line
-timing is therefore reported. The 155-row sweep remains pending correctness.
+The accepted four-device comparison in the Results table remains the published
+comparison. A separate rerun of the current four-device bidirectional-L1
+operation has timed out on both reduced ring and line cases; those incomplete
+runs are not substituted for the accepted result. The 155-row sweep remains
+pending correctness.
 The same reduced case completes under `FABRIC_2D` while retaining the ring
 transfer graph (47.94 us device interval); this is a routing sanity check, not
 an accepted performance result. The first full-size case exceeded a 300-second
@@ -28,10 +29,6 @@ outer limit during JIT compilation; a cache-warm retry generated kernels but
 exited without a result JSON. It has no timing yet.
 
 ## Results
-
-The following measurements are archived results from an earlier implementation
-and configuration. They are retained for provenance only and must not be used
-as the current ring/line comparison.
 
 Blackhole P150b devices; global `M/K/N=9472/5120/15360`.
 
