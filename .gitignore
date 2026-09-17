@@ -11,6 +11,7 @@ third_party/ttnn-python
 .venv/*
 /venv
 .cache
+/.ttlang-sim/
 .claude/*
 *pycache*
 *.egg-info

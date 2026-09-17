@@ -58,6 +58,72 @@ tt-lang-sim examples/eltwise_add.py
 
 ### Compiler-backed emulation
 
+The Docker backend provides setup, program execution, and test commands through
+one source-tree launcher. Docker must be running with Linux amd64 support; Git
+and Python 3 are the only other host tools required. No host compiler build or
+Python environment activation is needed.
+
+Configure the emulator source repository once:
+
+```bash
+./bin/tt-lang-sim emule setup --source-url REPOSITORY_URL
+```
+
+`REPOSITORY_URL` is the approved emulator Git repository, accessible with the
+host's Git credentials. Setup fetches the exact emulator revision from the stack
+manifest, builds the Docker runtime and compiler, and runs the smoke test before
+saving the configuration. The initial build can take a long time. Subsequent
+commands reuse the runtime image, compiler build, and kernel caches.
+
+An existing checkout at the pinned revision or an existing runtime image can
+be selected instead:
+
+```bash
+./bin/tt-lang-sim emule setup --source /path/to/emulator
+./bin/tt-lang-sim emule setup --image REGISTRY/IMAGE:TAG
+```
+
+The image option reuses a local image or downloads it from the registry. It
+requires an image produced by the emulator Dockerfile, with its compiler
+toolchain and entrypoint. These commands do not select or publish a new default
+image. Runtime selection is saved per checkout in the ignored
+`.ttlang-sim/emule.json` file. `setup --jobs 8` also saves compiler build
+parallelism. Explicit `TTLANG_EMULE_*` environment overrides take precedence
+over the saved settings.
+
+After setup:
+
+```bash
+./bin/tt-lang-sim emule run examples/eltwise_add.py
+./bin/tt-lang-sim emule smoke
+./bin/tt-lang-sim emule examples
+./bin/tt-lang-sim emule test
+```
+
+`run` forwards arguments after the script path to the program. `examples` runs
+the four reference programs described below. `test` runs all six compiler test
+suites in the Docker environment, including device tests with emulation enabled.
+It continues to the next suite after failures and returns nonzero if any suite
+fails. This broad sweep can expose unsupported emulator behavior; it is not a
+claim that every compiler test is supported. It does not include `test/sim` or
+the tutorial suite.
+
+Each test invocation writes a new directory under `.ttlang-sim/reports/`, prints
+its location, and saves suite logs, JUnit reports, a summary, and available
+compiler/runtime provenance. The host records the actual checkout commit and
+whether it has uncommitted changes. Logs and reports remain available after the
+container exits. Suites and the report parent directory can be selected:
+
+```bash
+./bin/tt-lang-sim emule test --suite mlir --suite bindings
+./bin/tt-lang-sim emule test --suite pytest --reports-dir ./test-results
+./bin/tt-lang-sim emule --help
+```
+
+Suite names are `mlir`, `bindings`, `packaging`, `pytest`, `me2e`, and
+`python-lit`. Running `setup` again changes the saved runtime only after a
+successful smoke test. Existing backend options remain available:
+
 From a TT-Lang source checkout, select the `emule` backend to compile the
 program and execute the resulting kernels through tt-metal and tt-emule:
 

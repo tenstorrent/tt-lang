@@ -148,6 +148,11 @@ _RUN_ARGS=(
     -e "MESH_DEVICE=${_MANIFEST_MESH_DEVICE}"
 )
 
+if [ -n "${TTLANG_EMULE_REPORT_DIR:-}" ]; then
+    _REPORT_DIR="$(cd "$TTLANG_EMULE_REPORT_DIR" && pwd -P)"
+    _RUN_ARGS+=(--mount "type=bind,src=${_REPORT_DIR},dst=/ttlang-reports")
+fi
+
 case "${_HOST_CWD}/" in
     "${_REPO_ROOT}/"*)
         _CONTAINER_CWD="/workspace${_HOST_CWD#"$_REPO_ROOT"}"
@@ -180,6 +185,8 @@ if [ -t 0 ] && [ -t 1 ]; then
 fi
 
 for _ENV_NAME in \
+    TTLANG_EMULE_COMPILER_SHA \
+    TTLANG_EMULE_COMPILER_DIRTY \
     TTLANG_EMULE_JOBS \
     TTLANG_KEEP_GENERATED_KERNELS \
     TT_METAL_DPRINT_CHIPS \

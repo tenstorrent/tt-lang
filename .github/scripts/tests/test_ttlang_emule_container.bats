@@ -187,6 +187,22 @@ EOF
     refute_log_line "build"
 }
 
+@test "test reports and compiler provenance reach the container" {
+    local reports="$BATS_TEST_TMPDIR/reports with spaces"
+    mkdir -p "$reports"
+    reports="$(cd "$reports" && pwd -P)"
+    cd "$TTLANG_REPO_ROOT"
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        TTLANG_EMULE_REPORT_DIR="$reports" \
+        TTLANG_EMULE_COMPILER_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+        TTLANG_EMULE_COMPILER_DIRTY=1 \
+        run -0 "$RUNNER" examples/eltwise_add.py
+
+    assert_log_line "type=bind,src=${reports},dst=/ttlang-reports"
+    assert_log_line "TTLANG_EMULE_COMPILER_SHA"
+    assert_log_line "TTLANG_EMULE_COMPILER_DIRTY"
+}
+
 @test "runtime image identity changes when an image input changes" {
     local synthetic_root="$BATS_TEST_TMPDIR/synthetic-repo"
     local synthetic_runner="$synthetic_root/scripts/tt-lang-emule-container.sh"
