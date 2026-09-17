@@ -2931,7 +2931,8 @@ def test_reconfiguration_scratch_uses_exact_node_union(monkeypatch):
     device = object()
     scratch_allocations = []
 
-    def allocate_scratch(core_ranges, _num_bytes, allocation_device):
+    def allocate_scratch(core_ranges, _num_bytes, allocation_device, *, per_core):
+        assert per_core
         scratch_allocations.append(core_ranges)
         return _FakeTensor(allocation_device, address=0x8000)
 
@@ -2992,7 +2993,8 @@ def test_reconfiguration_scratch_excludes_unmodified_descriptors(monkeypatch):
     device = object()
     scratch_allocations = []
 
-    def allocate_scratch(core_ranges, num_bytes, allocation_device):
+    def allocate_scratch(core_ranges, num_bytes, allocation_device, *, per_core):
+        assert per_core
         scratch_allocations.append((core_ranges, num_bytes, allocation_device))
         return _FakeTensor(allocation_device, address=0x8000)
 
@@ -3053,14 +3055,14 @@ def test_reconfiguration_scratch_allocation_order_preserves_bindings(
         0x40000: {node: 0x40000 for node in all_nodes},
     }
 
-    def allocate_scratch(core_ranges, num_bytes, allocation_device):
+    def allocate_scratch(core_ranges, num_bytes, allocation_device, *, per_core):
         nodes = tuple(
             (int(core.x), int(core.y))
             for core in fake_ttnn.corerange_to_cores(core_ranges, row_wise=True)
         )
         address = 0x8000 + len(allocation_calls) * 0x1000
         tensor = _FakeTensor(allocation_device, address=address)
-        allocation_calls.append((nodes, num_bytes, allocation_device, tensor))
+        allocation_calls.append((nodes, num_bytes, allocation_device, per_core, tensor))
         addresses_by_base[address] = {node: address for node in nodes}
         return tensor
 
@@ -3135,12 +3137,13 @@ def test_reconfiguration_scratch_allocation_order_preserves_bindings(
     allocation_nodes = (all_nodes, all_nodes, ((1, 0),), all_nodes)
     assert len(allocation_calls) == len(expected_order)
     assert set(resources.scratch_tensors) == {0, 1, 2, 3}
-    for dfb_index, (nodes, num_bytes, allocation_device, tensor) in zip(
+    for dfb_index, (nodes, num_bytes, allocation_device, per_core, tensor) in zip(
         expected_order, allocation_calls
     ):
         assert nodes == allocation_nodes[dfb_index]
         assert num_bytes == maximum_sizes[dfb_index]
         assert allocation_device is device
+        assert per_core
         assert resources.scratch_tensors[dfb_index] is tensor
     if reuse_backing:
         assert resources.scratch_tensors[3] is existing_tensor
@@ -3165,7 +3168,7 @@ def test_reconfiguration_scratch_allocation_order_preserves_bindings(
         node: [0x40000] for node in all_nodes
     }
     assert resources.l1_buffer_addresses == frozenset(
-        [0x40000] + [tensor.buffer_address() for _, _, _, tensor in allocation_calls]
+        [0x40000] + [tensor.buffer_address() for _, _, _, _, tensor in allocation_calls]
     )
 
 
@@ -5504,7 +5507,8 @@ def test_run_kernel_reuses_reconfiguration_resource_generation(monkeypatch):
     scratch_allocations = []
     configuration_allocations = []
 
-    def allocate_scratch(_core_ranges, _num_bytes, _device):
+    def allocate_scratch(_core_ranges, _num_bytes, _device, *, per_core):
+        assert per_core
         tensor = _FakeTensor(device, address=0x8000)
         scratch_allocations.append(tensor)
         return tensor
@@ -5727,7 +5731,8 @@ def test_reconfiguration_encodes_physical_index_32_in_high_mask(monkeypatch):
     scratch_addresses = []
     host_configurations = []
 
-    def allocate_scratch(_core_ranges, _num_bytes, allocation_device):
+    def allocate_scratch(_core_ranges, _num_bytes, allocation_device, *, per_core):
+        assert per_core
         nonlocal next_scratch_address
         tensor = _FakeTensor(allocation_device, address=next_scratch_address)
         scratch_addresses.append(next_scratch_address)
@@ -6810,6 +6815,57 @@ def test_l1_sharded_storage_counts_sparse_cores(monkeypatch):
     )
 
     assert empty_calls[0][0] == (2, 512)
+
+
+def test_l1_sharded_storage_enables_per_core_allocation(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.ShardSpec = lambda *args: args
+    memory_config = SimpleNamespace(per_core=False)
+
+    def enable_per_core(enable):
+        memory_config.per_core = enable
+
+    memory_config.experimental_set_per_core_allocation = enable_per_core
+    fake_ttnn.MemoryConfig = lambda *args: memory_config
+    fake_ttnn.ShardOrientation = SimpleNamespace(ROW_MAJOR=object())
+    fake_ttnn.TensorMemoryLayout = SimpleNamespace(HEIGHT_SHARDED=object())
+    fake_ttnn.BufferType = SimpleNamespace(L1=object())
+    fake_ttnn.float32 = object()
+    fake_ttnn.ROW_MAJOR_LAYOUT = object()
+    empty_calls = []
+    fake_ttnn.empty = (
+        lambda shape, **kwargs: empty_calls.append((shape, kwargs)) or object()
+    )
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+
+    kernel_runner._allocate_l1_sharded_storage_tensor(
+        _FakeExplicitCoreRanges((0, 0), (1, 0)),
+        num_bytes=2048,
+        device=object(),
+        per_core=True,
+    )
+
+    assert memory_config.per_core
+    assert empty_calls[0][1]["memory_config"] is memory_config
+
+
+def test_l1_buffer_addresses_uses_per_core_tensor_addresses(monkeypatch):
+    tensor = SimpleNamespace(is_per_core_allocated=lambda: True)
+    expected_addresses = {(0, 0): 0x2000, (1, 0): 0x3000}
+    resolve_calls = []
+
+    def resolve_per_core(tensors, tensor_indices, mesh_coordinate):
+        resolve_calls.append((tensors, tensor_indices, mesh_coordinate))
+        return {0: expected_addresses}
+
+    monkeypatch.setattr(
+        kernel_runner, "_resolve_per_core_tensor_addresses", resolve_per_core
+    )
+
+    assert kernel_runner._l1_buffer_addresses_by_core(tensor, object()) == (
+        expected_addresses
+    )
+    assert resolve_calls == [([tensor], (0,), None)]
 
 
 def test_specialized_dfb_use_intersects_storage_segments(monkeypatch):

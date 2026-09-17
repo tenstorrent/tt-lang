@@ -2160,7 +2160,12 @@ def _same_device(lhs: Any, rhs: Any) -> bool:
 
 
 def _allocate_l1_sharded_storage_tensor(
-    core_ranges: Any, num_bytes: int, device: Any, *, zero_initialize: bool = False
+    core_ranges: Any,
+    num_bytes: int,
+    device: Any,
+    *,
+    zero_initialize: bool = False,
+    per_core: bool = False,
 ):
     """Allocate row-major L1 storage with one 4-byte element per storage word."""
     aligned_bytes = _align_up(num_bytes, _L1_SHARDED_STORAGE_ALIGNMENT_BYTES)
@@ -2176,6 +2181,8 @@ def _allocate_l1_sharded_storage_tensor(
         ttnn.BufferType.L1,
         shard_spec,
     )
+    if per_core:
+        memory_config.experimental_set_per_core_allocation(True)
     allocator = ttnn.zeros if zero_initialize else ttnn.empty
     return allocator(
         (num_cores, elements_per_core),
@@ -2190,6 +2197,8 @@ def _l1_buffer_addresses_by_core(
     tensor: Any, device: Any
 ) -> Dict[Tuple[int, int], int]:
     """Return each shard's physical L1 base indexed by logical core."""
+    if _is_per_core_allocated(tensor):
+        return _resolve_per_core_tensor_addresses([tensor], (0,), None)[0]
     buffer_address = int(tensor.buffer_address())
     addresses = {}
     for page in ttnn._ttnn.reports.get_buffer_pages(device):
@@ -2794,7 +2803,7 @@ def build_dfb_reconfiguration_runtime_resources(
         for boundary_ordinal in plan.boundary_ordinals
     }
 
-    # Larger per-core extents fit fewer common free intervals across their cores.
+    # Allocate larger extents first to preserve contiguous L1 on every core.
     pending_scratch_allocations = sorted(
         (
             (dfb_index, scratch_bytes)
@@ -2811,6 +2820,7 @@ def build_dfb_reconfiguration_runtime_resources(
             _make_singleton_core_ranges(sorted(scratch_nodes_by_index[dfb_index])),
             scratch_bytes,
             resource_device,
+            per_core=True,
         )
 
     configuration_runtime_args = {core: [] for core in core_keys}
