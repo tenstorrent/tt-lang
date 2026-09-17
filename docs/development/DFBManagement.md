@@ -495,6 +495,11 @@ runtime-resource cache. Compatible calls reuse one generation. Incompatible
 replacement and owner destruction synchronize the device before releasing it;
 failed synchronization retains ownership.
 
+When `TT_METAL_ALLOCATOR_MODE_HYBRID=1` is set before device initialization,
+reconfiguration scratch uses independent per-core L1 addresses to avoid
+cross-core free-space fragmentation. The default Metal allocator mode retains
+lockstep scratch allocation for compatibility.
+
 Per-core L1 accounting uses target allocation quanta rather than logical byte
 counts. On each launch node it includes one aligned maximum allocation per
 non-tensor-backed storage index resident on that node, allocator-rounded reset

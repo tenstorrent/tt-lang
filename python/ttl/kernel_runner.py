@@ -2815,12 +2815,15 @@ def build_dfb_reconfiguration_runtime_resources(
             request[0],
         ),
     )
+    per_core_allocation = (
+        os.environ.get("TT_METAL_ALLOCATOR_MODE_HYBRID", "0") == "1"
+    )
     for dfb_index, scratch_bytes in pending_scratch_allocations:
         scratch_tensors[dfb_index] = _allocate_l1_sharded_storage_tensor(
             _make_singleton_core_ranges(sorted(scratch_nodes_by_index[dfb_index])),
             scratch_bytes,
             resource_device,
-            per_core=True,
+            per_core=per_core_allocation,
         )
 
     configuration_runtime_args = {core: [] for core in core_keys}

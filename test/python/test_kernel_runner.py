@@ -2932,7 +2932,7 @@ def test_reconfiguration_scratch_uses_exact_node_union(monkeypatch):
     scratch_allocations = []
 
     def allocate_scratch(core_ranges, _num_bytes, allocation_device, *, per_core):
-        assert per_core
+        assert not per_core
         scratch_allocations.append(core_ranges)
         return _FakeTensor(allocation_device, address=0x8000)
 
@@ -2994,7 +2994,7 @@ def test_reconfiguration_scratch_excludes_unmodified_descriptors(monkeypatch):
     scratch_allocations = []
 
     def allocate_scratch(core_ranges, num_bytes, allocation_device, *, per_core):
-        assert per_core
+        assert not per_core
         scratch_allocations.append((core_ranges, num_bytes, allocation_device))
         return _FakeTensor(allocation_device, address=0x8000)
 
@@ -3038,6 +3038,7 @@ def test_reconfiguration_scratch_excludes_unmodified_descriptors(monkeypatch):
 def test_reconfiguration_scratch_allocation_order_preserves_bindings(
     monkeypatch, reuse_backing
 ):
+    monkeypatch.setenv("TT_METAL_ALLOCATOR_MODE_HYBRID", "1")
     fake_ttnn = _FakeTTNN()
     fake_ttnn.uint32 = "uint32"
     fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
@@ -5508,7 +5509,7 @@ def test_run_kernel_reuses_reconfiguration_resource_generation(monkeypatch):
     configuration_allocations = []
 
     def allocate_scratch(_core_ranges, _num_bytes, _device, *, per_core):
-        assert per_core
+        assert not per_core
         tensor = _FakeTensor(device, address=0x8000)
         scratch_allocations.append(tensor)
         return tensor
@@ -5732,7 +5733,7 @@ def test_reconfiguration_encodes_physical_index_32_in_high_mask(monkeypatch):
     host_configurations = []
 
     def allocate_scratch(_core_ranges, _num_bytes, allocation_device, *, per_core):
-        assert per_core
+        assert not per_core
         nonlocal next_scratch_address
         tensor = _FakeTensor(allocation_device, address=next_scratch_address)
         scratch_addresses.append(next_scratch_address)
