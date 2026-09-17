@@ -2901,10 +2901,10 @@ def build_dfb_reconfiguration_runtime_resources(
             )
     # A physical storage index must remain one TT-Metal allocation. Splitting
     # it by per-core capacity fragments dependency-constrained L1 ranges.
-    # TT-Metal needs one common free address across all selected cores, so
-    # allocate the widest ranges before narrower allocations fragment them.
+    # Larger allocations have fewer valid placements after smaller allocations
+    # fragment the lockstep-compatible ranges.
     pending_allocations.sort(
-        key=lambda allocation: (-len(allocation[2]), -allocation[1], allocation[0])
+        key=lambda allocation: (-allocation[1], -len(allocation[2]), allocation[0])
     )
 
     scratch_tensors = []
