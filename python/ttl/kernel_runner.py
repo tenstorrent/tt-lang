@@ -2837,9 +2837,18 @@ def build_dfb_reconfiguration_runtime_resources(
         ):
             reconfigured_storage_indices.add(storage_index)
 
-    # Runtime backing preserves storage reuse across descriptor formats and
-    # removes reconfigured scratch capacity from the static program allocation.
+    # Runtime backing preserves storage reuse across descriptor formats. Local
+    # storage also uses per-core backing because its independent addresses do
+    # not need the common low-L1 interval required by static descriptors.
     runtime_backed_storage_indices = set(reconfigured_storage_indices)
+    runtime_backed_storage_indices.update(
+        storage_index_by_dfb[dfb_index]
+        for dfb_index, scratch_layout_by_core in scratch_layout_by_core_by_dfb.items()
+        if scratch_layout_by_core
+        and not requires_uniform_address_by_storage[
+            storage_index_by_dfb[dfb_index]
+        ]
+    )
 
     required_layout_by_core_by_storage = {}
     for dfb_index, scratch_layout_by_core in scratch_layout_by_core_by_dfb.items():

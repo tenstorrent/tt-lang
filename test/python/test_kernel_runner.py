@@ -3027,7 +3027,9 @@ def test_reconfiguration_runtime_storage_uses_exact_node_union(monkeypatch):
     )
 
 
-def test_reconfiguration_runtime_storage_excludes_unmodified_descriptors(monkeypatch):
+def test_reconfiguration_runtime_storage_backs_only_invariant_local_descriptors(
+    monkeypatch,
+):
     fake_ttnn = _FakeTTNN()
     fake_ttnn.uint32 = "uint32"
     fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
@@ -3068,6 +3070,15 @@ def test_reconfiguration_runtime_storage_excludes_unmodified_descriptors(monkeyp
 
     reconfigured = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32))
     unchanged = PhysicalDFBConfig(1, 1, "float32", 1, 4096, (32, 32))
+    unchanged_remote = PhysicalDFBConfig(
+        2,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        address_scope="remote_uniform",
+    )
     plan = DFBReconfigurationPlan(
         boundary_ordinals=(7,),
         dfb_epochs=(
@@ -3076,6 +3087,7 @@ def test_reconfiguration_runtime_storage_excludes_unmodified_descriptors(monkeyp
                 DFBConfigurationEpoch(7, reconfigured),
             ),
             (DFBConfigurationEpoch(None, unchanged),),
+            (DFBConfigurationEpoch(None, unchanged_remote),),
         ),
     )
 
@@ -3086,10 +3098,12 @@ def test_reconfiguration_runtime_storage_excludes_unmodified_descriptors(monkeyp
         device=device,
     )
 
-    assert len(scratch_allocations) == 1
-    assert scratch_allocations[0][1:] == (2048, device)
-    assert resources.scratch_tensors == [scratch_tensor]
-    assert set(resources.scratch_segments_by_index) == {0}
+    assert [allocation[1:] for allocation in scratch_allocations] == [
+        (4096, device),
+        (2048, device),
+    ]
+    assert resources.scratch_tensors == [scratch_tensor, scratch_tensor]
+    assert set(resources.scratch_segments_by_index) == {0, 1}
     assert len(host_configurations) == 1
     encoded = host_configurations[0][0]
     assert int(encoded[1]) == 1
