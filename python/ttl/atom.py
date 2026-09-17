@@ -325,6 +325,12 @@ def _build_atom_spec(
     for node in ast.walk(fn_def):
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
             loaded_names.add(node.id)
+    captured_values.update(
+        {
+            capture_name: scope[capture_name]
+            for capture_name in loaded_names & scope.keys()
+        }
+    )
 
     external_pipenets = dict(inlined_pipenets)
     compile_time_captures: Dict[str, Any] = {}
