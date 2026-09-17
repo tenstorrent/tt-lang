@@ -233,7 +233,7 @@ __attribute__((noinline)) inline void copyInitFormats() {
           0, 0, ckernel::DEFAULT_TENSOR_SHAPE, Format, UnpackFormat)));
   initializeUnaryDataCopy<ckernel::DataCopyType::A2D,
                           ckernel::BroadcastType::NONE>(UnpackFormat);
-  MATH((ckernel::math::_configure_unary_preserve_zero_flag_state_()));
+  MATH((ckernel::math::_configure_preserve_zero_flag_state_()));
 }
 template <uint32_t Format, uint32_t UnpackFormat, bool Direct>
 __attribute__((noinline)) inline void copyAtAddress(uint32_t address,
