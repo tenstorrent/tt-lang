@@ -516,6 +516,10 @@ def test_launcher_preserves_program_arguments_and_exit_status(launcher_checkout)
     arguments = [
         "--backend",
         "python",
+        "--test",
+        "--setup",
+        "--examples",
+        "--smoke-test",
         "--image",
         "image with spaces",
         "$(false)",
@@ -745,4 +749,189 @@ def test_launcher_keeps_direct_runner_fallback_without_management_helper(
     assert result.returncode == 0, result.stderr
     assert json.loads(Path(environment["LAUNCH_LOG"]).read_text())["arguments"] == [
         str(script)
+    ]
+
+
+@pytest.mark.parametrize(
+    "flag,alias,options",
+    [
+        ("--setup", "setup", ["--image", "runtime:tested", "--jobs", "3"]),
+        ("--setup", "setup", ["--source", "/some/emulator"]),
+        ("--setup", "setup", ["--source-url", "https://example.com/emulator.git"]),
+        ("--smoke-test", "smoke", []),
+        ("--examples", "examples", []),
+        (
+            "--test",
+            "test",
+            ["--suite", "bindings", "--suite", "mlir", "--reports-dir", "/tmp/reports"],
+        ),
+    ],
+)
+def test_action_flags_use_the_same_options_as_legacy_aliases(
+    cli, monkeypatch, flag, alias, options
+):
+    monkeypatch.setattr(sys, "argv", [str(CLI), flag, *options])
+    flagged = cli.parse_args()
+    monkeypatch.setattr(sys, "argv", [str(CLI), alias, *options])
+
+    assert vars(flagged) == vars(cli.parse_args())
+
+
+@pytest.mark.parametrize("action", ["--setup", "--test", "--examples", "--smoke-test"])
+def test_action_help_does_not_need_docker_or_valid_configuration(
+    launcher_checkout, action
+):
+    root, environment = launcher_checkout
+    config = root / ".ttlang-sim" / "emule.json"
+    config.parent.mkdir()
+    config.write_text("invalid configuration", encoding="utf-8")
+
+    result = run_launcher(root, environment, "--backend=emule", action, "--help")
+
+    assert result.returncode == 0, result.stderr
+    assert f"usage: tt-lang-sim --backend=emule {action}" in result.stdout
+    assert not Path(environment["LAUNCH_LOG"]).exists()
+
+
+@pytest.mark.parametrize("action", ["--setup", "--test", "--examples", "--smoke-test"])
+def test_python_backend_rejects_emule_action_flags(launcher_checkout, action):
+    root, environment = launcher_checkout
+
+    result = run_launcher(root, environment, "--backend=python", action)
+
+    assert result.returncode == 2
+    assert "require --backend emule" in result.stderr
+    assert not Path(environment["LAUNCH_LOG"]).exists()
+
+
+@pytest.mark.parametrize(
+    "actions",
+    [
+        ["--setup", "--test"],
+        ["--setup", "--examples"],
+        ["--setup", "--smoke-test"],
+        ["--test", "--examples"],
+        ["--test", "--smoke-test"],
+        ["--examples", "--smoke-test"],
+        ["--test", "--test"],
+    ],
+)
+def test_action_flags_are_mutually_exclusive(launcher_checkout, actions):
+    root, environment = launcher_checkout
+
+    result = run_launcher(root, environment, "--backend=emule", *actions)
+
+    assert result.returncode == 2
+    assert "mutually exclusive" in result.stderr
+    assert not Path(environment["LAUNCH_LOG"]).exists()
+
+
+@pytest.mark.parametrize("action", ["--setup", "--test", "--examples", "--smoke-test"])
+def test_actions_reject_a_competing_script(launcher_checkout, action):
+    root, environment = launcher_checkout
+    script = root / "program.py"
+    script.touch()
+
+    result = run_launcher(root, environment, str(script), "--backend=emule", action)
+
+    assert result.returncode == 2
+    assert str(script) in result.stderr or "does not accept a script" in result.stderr
+    assert not Path(environment["LAUNCH_LOG"]).exists()
+
+
+def test_setup_flag_saves_runtime_after_smoke(launcher_checkout):
+    root, environment = launcher_checkout
+    example = root / "examples" / "compiler_only_external_call.py"
+    example.parent.mkdir()
+    example.touch()
+    enable_fake_docker(root, environment)
+
+    result = run_launcher(
+        root,
+        environment,
+        "--setup",
+        "--image",
+        "runtime:tested",
+        "--jobs",
+        "4",
+        "--backend",
+        "emule",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads((root / ".ttlang-sim" / "emule.json").read_text()) == {
+        "schema_version": 1,
+        "image": "runtime:tested",
+        "jobs": 4,
+    }
+    payload = json.loads(Path(environment["LAUNCH_LOG"]).read_text())
+    assert payload["arguments"] == [str(example)]
+    assert payload["environment"]["TTLANG_EMULE_IMAGE"] == "runtime:tested"
+    assert payload["environment"]["TTLANG_EMULE_JOBS"] == "4"
+
+
+def test_test_flag_forwards_suites_keeps_reports_and_propagates_failure(
+    launcher_checkout,
+):
+    root, environment = launcher_checkout
+    suite_script = root / "scripts" / "run-tt-lang-emule-suite.py"
+    suite_script.touch()
+    git = root / "bin" / "git"
+    git.write_text(
+        f"#!{sys.executable}\n"
+        "import sys\n"
+        "if sys.argv[3:] == ['rev-parse', 'HEAD']:\n"
+        "    print('a' * 40)\n"
+        "else:\n"
+        "    assert sys.argv[3:] == ['status', '--porcelain']\n",
+        encoding="utf-8",
+    )
+    git.chmod(0o755)
+    environment["PATH"] = str(root / "bin") + os.pathsep + environment["PATH"]
+    environment["LAUNCH_RESULT"] = "7"
+    reports_parent = root / "test reports"
+
+    result = run_launcher(
+        root,
+        environment,
+        "--suite",
+        "bindings",
+        "--test",
+        "--backend=emule",
+        "--suite",
+        "mlir",
+        "--reports-dir",
+        str(reports_parent),
+    )
+
+    assert result.returncode == 7, result.stderr
+    payload = json.loads(Path(environment["LAUNCH_LOG"]).read_text())
+    assert payload["arguments"] == [
+        str(suite_script),
+        "--reports-dir",
+        "/ttlang-reports",
+        "--suite",
+        "bindings",
+        "--suite",
+        "mlir",
+    ]
+    reports = Path(payload["environment"]["TTLANG_EMULE_REPORT_DIR"])
+    assert reports.parent == reports_parent
+    provenance = json.loads((reports / "invocation.json").read_text())
+    assert provenance["suites"] == ["bindings", "mlir"]
+    assert provenance["compiler_commit"] == "a" * 40
+    assert str(reports) in result.stdout
+
+
+def test_examples_flag_dispatches_reference_suite(launcher_checkout):
+    root, environment = launcher_checkout
+    examples = root / "scripts" / "run-tt-lang-emule-examples.py"
+    shutil.copy2(root / "runner.py", examples)
+    environment["LAUNCH_RESULT"] = "5"
+
+    result = run_launcher(root, environment, "--backend=emule", "--examples")
+
+    assert result.returncode == 5, result.stderr
+    assert json.loads(Path(environment["LAUNCH_LOG"]).read_text())["arguments"] == [
+        "--keep-going"
     ]

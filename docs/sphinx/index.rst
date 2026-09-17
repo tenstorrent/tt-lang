@@ -7,6 +7,7 @@ TT-Lang Documentation
 
    overview
    getting-started
+   simulator-getting-started
    simulator
    tour/index
    elementwise-tutorial/index

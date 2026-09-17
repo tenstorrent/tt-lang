@@ -33,15 +33,30 @@ def positive_integer(value):
 
 
 def parse_args():
+    action_flags = {
+        "--setup": "setup",
+        "--smoke-test": "smoke",
+        "--examples": "examples",
+        "--test": "test",
+    }
+    arguments = sys.argv[1:]
+    action_flag = arguments[0] if arguments and arguments[0] in action_flags else None
+    if action_flag:
+        arguments = [action_flags[action_flag], *arguments[1:]]
     parser = argparse.ArgumentParser(
         prog="tt-lang-sim emule",
         description="Configure and test the compiler-backed simulator.",
         epilog="Run programs with: tt-lang-sim --backend=emule SCRIPT.py [-- ARGS...]",
     )
     commands = parser.add_subparsers(dest="command", required=True)
-    setup = commands.add_parser(
-        "setup", help="save a runtime choice after a smoke test"
-    )
+
+    def add_command(name, help):
+        options = {"help": help}
+        if action_flag:
+            options["prog"] = f"tt-lang-sim --backend=emule {action_flag}"
+        return commands.add_parser(name, **options)
+
+    setup = add_command("setup", "save a runtime choice after a smoke test")
     runtime = setup.add_mutually_exclusive_group()
     runtime.add_argument("--source", type=Path, help="exact local emulator checkout")
     runtime.add_argument(
@@ -52,11 +67,9 @@ def parse_args():
         "--jobs", type=positive_integer, help="compiler build parallelism"
     )
 
-    commands.add_parser("smoke", help="run the compiler-to-emulator acceptance test")
-    commands.add_parser("examples", help="run the four reference examples")
-    tests = commands.add_parser(
-        "test", help="run all six compiler suites through Docker"
-    )
+    add_command("smoke", "run the compiler-to-emulator acceptance test")
+    add_command("examples", "run the four reference examples")
+    tests = add_command("test", "run all six compiler suites through Docker")
     tests.add_argument(
         "--suite",
         action="append",
@@ -66,7 +79,7 @@ def parse_args():
     tests.add_argument(
         "--reports-dir", type=Path, help="parent directory for a new report folder"
     )
-    return parser.parse_args()
+    return parser.parse_args(arguments)
 
 
 def load_settings():

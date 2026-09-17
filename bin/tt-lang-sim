@@ -30,6 +30,7 @@ fi
 _BACKEND="${TTLANG_SIM_BACKEND:-python}"
 _RUNTIME_IMAGE=""
 _SMOKE_TEST=0
+_ACTION=""
 _FORWARD_ARGS=()
 _SEPARATOR_INDEX=""
 while [ "$#" -gt 0 ]; do
@@ -62,8 +63,15 @@ while [ "$#" -gt 0 ]; do
             fi
             shift
             ;;
-        --smoke-test)
-            _SMOKE_TEST=1
+        --setup|--test|--examples|--smoke-test)
+            if [ -n "$_ACTION" ]; then
+                echo "tt-lang-sim: --setup, --test, --examples, and --smoke-test are mutually exclusive." >&2
+                exit 2
+            fi
+            _ACTION="$1"
+            if [ "$_ACTION" = "--smoke-test" ]; then
+                _SMOKE_TEST=1
+            fi
             shift
             ;;
         --)
@@ -81,7 +89,7 @@ set -- "${_FORWARD_ARGS[@]}"
 
 # Help and version describe the launcher as a whole and never require a
 # backend runtime. Preserve the existing no-argument help path as well.
-if [ "$_SMOKE_TEST" -eq 0 ]; then
+if [ -z "$_ACTION" ]; then
     case "${1:-}" in
         ""|-h|--help|--version)
             _BACKEND=python
@@ -90,12 +98,23 @@ if [ "$_SMOKE_TEST" -eq 0 ]; then
 fi
 
 if [ "$_BACKEND" != "emule" ] && \
-   { [ -n "$_RUNTIME_IMAGE" ] || [ "$_SMOKE_TEST" -eq 1 ]; }; then
-    echo "tt-lang-sim: --runtime-image and --smoke-test require --backend emule." >&2
+   { [ -n "$_RUNTIME_IMAGE" ] || [ -n "$_ACTION" ]; }; then
+    echo "tt-lang-sim: --runtime-image, --setup, --test, --examples, and --smoke-test require --backend emule." >&2
     exit 2
 fi
 
 if [ "$_BACKEND" = "emule" ]; then
+    if [ -n "$_RUNTIME_IMAGE" ]; then
+        export TTLANG_EMULE_IMAGE="$_RUNTIME_IMAGE"
+    fi
+    if [ -n "$_ACTION" ] && \
+       { [ "$_ACTION" != "--smoke-test" ] || [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; }; then
+        if [ ! -f "$_EMULE_CLI" ]; then
+            echo "tt-lang-sim: ${_ACTION} requires a source checkout." >&2
+            exit 1
+        fi
+        exec "${TTLANG_EMULE_HOST_PYTHON:-python3}" "$_EMULE_CLI" "$_ACTION" "$@"
+    fi
     if [ "$_SMOKE_TEST" -eq 1 ]; then
         if [ "$#" -ne 0 ]; then
             echo "tt-lang-sim: --smoke-test does not accept a script." >&2
@@ -103,10 +122,6 @@ if [ "$_BACKEND" = "emule" ]; then
         fi
         set -- "${_REPO_ROOT}/examples/compiler_only_external_call.py"
     fi
-    if [ -n "$_RUNTIME_IMAGE" ]; then
-        export TTLANG_EMULE_IMAGE="$_RUNTIME_IMAGE"
-    fi
-
     # Unlike the Python backend, emule has no intermediate argparse layer to
     # consume the launcher/script separator before invoking the user program.
     if [ -n "$_SEPARATOR_INDEX" ]; then

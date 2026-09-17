@@ -187,7 +187,7 @@ def main():
     try:
         if os.environ.get("TT_METAL_EMULE_MODE") != "1":
             raise ValueError(
-                "TT_METAL_EMULE_MODE=1 is required; use tt-lang-sim emule test"
+                "TT_METAL_EMULE_MODE=1 is required; use tt-lang-sim --backend=emule --test"
             )
         for variable in (
             "TTLANG_COMPILE_ONLY",

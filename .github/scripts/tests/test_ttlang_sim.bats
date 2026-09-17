@@ -100,6 +100,40 @@ EOF
     assert_output --partial "does not accept a script"
 }
 
+@test "emule test flag forwards suite and report arguments to the host helper" {
+    make_layout "$ROOT" source
+    mkdir -p "$ROOT/scripts"
+    : > "$ROOT/scripts/tt-lang-emule.py"
+    make_mock_python "$MOCK_PY"
+    TTLANG_EMULE_HOST_PYTHON="$MOCK_PY" run -0 "$ROOT/bin/tt-lang-sim" \
+        --suite bindings --test --backend=emule --reports-dir "reports with spaces"
+    assert_line --index 1 "argv=$ROOT/scripts/tt-lang-emule.py"
+    assert_line --index 2 "argv=--test"
+    assert_line --index 3 "argv=--suite"
+    assert_line --index 4 "argv=bindings"
+    assert_line --index 5 "argv=--reports-dir"
+    assert_line --index 6 "argv=reports with spaces"
+}
+
+@test "emule actions require a source checkout helper" {
+    make_layout "$ROOT" installed
+    run -1 "$ROOT/bin/tt-lang-sim" --backend emule --test
+    assert_output --partial "--test requires a source checkout"
+}
+
+@test "action-looking script arguments after separator remain literal" {
+    make_layout "$ROOT" source
+    local runner="$ROOT/emule-runner"
+    make_mock_emule_runner "$runner"
+    TTLANG_EMULE_RUNNER="$runner" run -0 "$ROOT/bin/tt-lang-sim" \
+        program.py --backend=emule -- --test --setup --examples --smoke-test
+    assert_line --index 0 "argv=program.py"
+    assert_line --index 1 "argv=--test"
+    assert_line --index 2 "argv=--setup"
+    assert_line --index 3 "argv=--examples"
+    assert_line --index 4 "argv=--smoke-test"
+}
+
 @test "source layout: dispatches sim.ttlang_sim with PYTHONPATH=<root>/python" {
     make_layout "$ROOT" source
     make_mock_python "$MOCK_PY"
