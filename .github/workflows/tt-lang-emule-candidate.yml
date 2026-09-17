@@ -1,0 +1,151 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+# SPDX-License-Identifier: Apache-2.0
+
+name: Validate compiler-backed emulation candidate
+
+on:
+  pull_request:
+    paths:
+      - ".github/containers/Dockerfile.emule"
+      - ".github/workflows/tt-lang-emule-candidate.yml"
+      - "bin/tt-lang-sim"
+      - "config/tt-lang-emule-*.json"
+      - "scripts/*tt-lang-emule*"
+      - "test/packaging/test_ttlang_emule_*"
+  workflow_dispatch:
+    inputs:
+      emulator_commit:
+        description: "Exact emulator commit to validate"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+concurrency:
+  group: tt-lang-emule-candidate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  unit:
+    name: Candidate tooling and launcher tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v6
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: python -m pip install pytest
+
+      - name: Run candidate tooling tests
+        run: |
+          python -m pytest -q \
+            test/packaging/test_ttlang_emule_candidate.py \
+            test/packaging/test_ttlang_emule_examples.py \
+            test/packaging/test_ttlang_emule_stack.py \
+            test/packaging/test_ttlang_emule_test_plan.py
+
+      - name: Install BATS and helpers
+        uses: bats-core/bats-action@2.0.0
+        with:
+          bats-version: 1.11.0
+          support-install: true
+          assert-install: true
+          detik-install: false
+          file-install: false
+
+      - name: Run launcher tests
+        env:
+          BATS_LIB_PATH: /usr/lib
+        run: |
+          bats --print-output-on-failure \
+            .github/scripts/tests/test_ttlang_sim.bats \
+            .github/scripts/tests/test_ttlang_emule_container.bats
+
+  candidate:
+    name: Build and execute candidate
+    if: github.event_name == 'workflow_dispatch'
+    needs: unit
+    runs-on: mlir-large-runner-lang
+    timeout-minutes: 240
+    steps:
+      - name: Require cross-repository source configuration
+        env:
+          EMULATOR_REPOSITORY: ${{ vars.TTLANG_EMULE_SOURCE_REPOSITORY }}
+          EMULATOR_TOKEN: ${{ secrets.TTLANG_EMULE_SOURCE_TOKEN }}
+        run: |
+          test -n "$EMULATOR_REPOSITORY" || {
+            echo "::error::TTLANG_EMULE_SOURCE_REPOSITORY is not configured"
+            exit 1
+          }
+          test -n "$EMULATOR_TOKEN" || {
+            echo "::error::TTLANG_EMULE_SOURCE_TOKEN is not configured"
+            exit 1
+          }
+
+      - name: Checkout tt-lang
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Checkout exact emulator source
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ vars.TTLANG_EMULE_SOURCE_REPOSITORY }}
+          ref: ${{ inputs.emulator_commit }}
+          path: .candidate-emulator
+          token: ${{ secrets.TTLANG_EMULE_SOURCE_TOKEN }}
+          persist-credentials: false
+
+      - name: Prepare and validate the candidate manifest
+        run: |
+          python3 scripts/prepare-tt-lang-emule-candidate.py \
+            --emulator-source .candidate-emulator \
+            --emulator-commit "${{ inputs.emulator_commit }}" \
+            --output candidate-stack.json
+
+      - name: Login to the container registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and smoke-test the candidate
+        env:
+          TTLANG_EMULE_IMAGE: tt-lang-emule:candidate-${{ github.run_id }}
+          TTLANG_EMULE_JOBS: "8"
+          TTLANG_EMULE_REBUILD: "1"
+          TTLANG_EMULE_RUNTIME_SOURCE_DIR: .candidate-emulator
+          TTLANG_EMULE_STACK_MANIFEST: candidate-stack.json
+        run: ./bin/tt-lang-sim --backend emule --smoke-test
+
+      - name: Run the reference suite
+        run: |
+          python3 scripts/run-tt-lang-emule-examples.py \
+            --runtime-image "tt-lang-emule:candidate-${{ github.run_id }}"
+
+      - name: Capture exact runtime provenance
+        run: |
+          docker image inspect "tt-lang-emule:candidate-${{ github.run_id }}" \
+            > runtime-image-inspect.json
+          docker run --rm --entrypoint cat \
+            "tt-lang-emule:candidate-${{ github.run_id }}" \
+            /opt/tt-emule-runtime/stack.json > runtime-stack.json
+
+      - name: Upload candidate evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: tt-lang-emule-candidate-${{ github.run_id }}
+          path: |
+            candidate-stack.json
+            runtime-image-inspect.json
+            runtime-stack.json
+          if-no-files-found: error

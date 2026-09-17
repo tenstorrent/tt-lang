@@ -27,16 +27,21 @@ case "${1:-}" in
     build)
         if [ "${MOCK_DOCKER_REQUIRE_SANITIZED_CONTEXT:-0}" = "1" ]; then
             source_context=""
+            stack_context=""
             for argument in "$@"; do
                 case "$argument" in
                     tt-emule-source=*)
                         source_context="${argument#tt-emule-source=}"
+                        ;;
+                    tt-lang-stack=*)
+                        stack_context="${argument#tt-lang-stack=}"
                         ;;
                 esac
             done
             [ -f "$source_context/tracked-source" ] || exit 97
             [ ! -e "$source_context/.git" ] || exit 98
             [ ! -e "$source_context/untracked-secret" ] || exit 99
+            [ -f "$stack_context/tt-lang-emule-stack.json" ] || exit 96
         fi
         exit 0
         ;;
@@ -310,8 +315,7 @@ PY
             "TT_LANG_COMPILER_BASE_COMMIT=59c53e209a6b871ce90937dff0cf26d8bc3e25af"
         assert_log_contains "STACK_MANIFEST_SHA256="
         assert_log_line "RUNTIME_PLATFORM=linux/amd64"
-        assert_log_line \
-            "tt-lang-stack=${TTLANG_REPO_ROOT}/config"
+        assert_log_contains "tt-lang-stack=$runtime_tmp/tt-lang-stack-context."
         assert_log_contains "tt-emule-source="
         refute_log_line "tt-emule-source=$emule_source"
         assert_log_line "${TTLANG_REPO_ROOT}/scripts"
@@ -320,6 +324,7 @@ PY
         local retained_runtime_dirs=(
             "$runtime_tmp"/tt-lang-emule.*
             "$runtime_tmp"/tt-lang-emule-context.*
+            "$runtime_tmp"/tt-lang-stack-context.*
         )
         shopt -u nullglob
         [ "${#retained_runtime_dirs[@]}" -eq 0 ]
