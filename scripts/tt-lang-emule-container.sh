@@ -72,18 +72,23 @@ _BUILD_VOLUME="${TTLANG_EMULE_BUILD_VOLUME:-tt-lang-emule-build-${_RUNTIME_ID}-$
 _CACHE_VOLUME="${TTLANG_EMULE_CACHE_VOLUME:-tt-lang-emule-cache-${_RUNTIME_ID}}"
 _TEMP_EMULE_SOURCE=""
 _TEMP_EMULE_CONTEXT=""
+_TEMP_STACK_CONTEXT=""
 
 "$_PYTHON" "$_STACK_TOOL" --manifest "$_STACK_MANIFEST" validate \
     --compiler-source "$_REPO_ROOT" --quiet
 
 cleanup() {
-    for _TEMP_DIR in "$_TEMP_EMULE_SOURCE" "$_TEMP_EMULE_CONTEXT"; do
+    for _TEMP_DIR in \
+        "$_TEMP_EMULE_SOURCE" \
+        "$_TEMP_EMULE_CONTEXT" \
+        "$_TEMP_STACK_CONTEXT"; do
         if [ -n "$_TEMP_DIR" ] && [ -d "$_TEMP_DIR" ]; then
             rm -rf -- "$_TEMP_DIR"
         fi
     done
     _TEMP_EMULE_SOURCE=""
     _TEMP_EMULE_CONTEXT=""
+    _TEMP_STACK_CONTEXT=""
 }
 
 trap cleanup EXIT
@@ -234,11 +239,14 @@ if [ "${TTLANG_EMULE_REBUILD:-0}" = "1" ] || \
         echo "  TTLANG_EMULE_RUNTIME_COMMIT, and TTLANG_EMULE_RUNTIME_METAL_COMMIT." >&2
         exit 1
     fi
+    _TEMP_STACK_CONTEXT="$(mktemp -d "${TMPDIR:-/tmp}/tt-lang-stack-context.XXXXXX")"
+    cp -- "$_STACK_MANIFEST" \
+        "${_TEMP_STACK_CONTEXT}/tt-lang-emule-stack.json"
     echo "tt-lang-sim: building compiler + tt-emule image ${_IMAGE}" >&2
     "$_DOCKER" build \
         --platform "$_PLATFORM" \
         --build-context "tt-emule-source=${_TEMP_EMULE_CONTEXT}" \
-        --build-context "tt-lang-stack=${_REPO_ROOT}/config" \
+        --build-context "tt-lang-stack=${_TEMP_STACK_CONTEXT}" \
         --file "${_REPO_ROOT}/.github/containers/Dockerfile.emule" \
         --build-arg "STACK_MANIFEST_SHA256=${_MANIFEST_SHA256}" \
         --build-arg "TT_LANG_COMPILER_REPOSITORY=${_MANIFEST_COMPILER_REPOSITORY}" \

@@ -101,6 +101,28 @@ they combine compiler checks with runtime, topology, and device assumptions.
 They must be qualified case by case instead of being treated as supported just
 because the compiler-only suites pass.
 
+### Updating the supported stack
+
+Prepare a candidate from an exact emulator checkout. The tool reads that
+checkout's Metal pin, records the current compiler commit, and runs the same
+source validations as the launcher:
+
+```bash
+python3 scripts/prepare-tt-lang-emule-candidate.py \
+  --emulator-source /path/to/emulator \
+  --emulator-commit FULL_COMMIT_SHA \
+  --output candidate-stack.json
+```
+
+The `Validate compiler-backed emulation candidate` workflow automates the same
+process on the large x86 runner. It builds the candidate, runs the smoke test
+and four reference programs, and uploads the resolved stack plus image metadata
+as evidence. It does not publish an image or change the supported manifest;
+promotion remains an ordinary reviewed manifest change. The workflow obtains
+the cross-repository source from the `TTLANG_EMULE_SOURCE_REPOSITORY` repository
+variable and `TTLANG_EMULE_SOURCE_TOKEN` secret, so credentials and internal
+source coordinates are not baked into the runtime image.
+
 Automation can select an already-built, versioned artifact explicitly instead
 of relying on the manifest-derived local tag:
 
