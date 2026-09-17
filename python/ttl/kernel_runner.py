@@ -2696,6 +2696,7 @@ def _get_cached_runtime_resources_impl(
             pipe_resources.computed_address_dfb_allocation_bytes
         ),
         device=resource_device,
+        cb_configs=cb_configs,
     )
     if cache is not None:
         cache.compatibility_key = compatibility_key
@@ -2762,6 +2763,7 @@ def build_dfb_reconfiguration_runtime_resources(
     existing_backing_tensors: Optional[Dict[int, Any]] = None,
     existing_backing_allocation_bytes: Optional[Dict[int, int]] = None,
     device: Optional[Any] = None,
+    cb_configs: Optional[List[PhysicalDFBConfig]] = None,
 ) -> DFBReconfigurationRuntimeResources:
     """Allocate DFB backing and compact per-boundary runtime configuration."""
     if plan is None:
@@ -2864,6 +2866,27 @@ def build_dfb_reconfiguration_runtime_resources(
                 max(current_size, scratch_bytes),
                 math.lcm(current_alignment, scratch_alignment),
             )
+
+    if cb_configs is not None:
+        if len(cb_configs) != len(plan.dfb_epochs):
+            raise ValueError(
+                "launch DFB configuration count does not match the "
+                "reconfiguration plan"
+            )
+        for dfb_index, config in enumerate(cb_configs):
+            storage_index = storage_index_by_dfb[dfb_index]
+            if storage_index not in runtime_backed_storage_indices:
+                continue
+            allocation = _get_dfb_allocation(config)
+            required_layout_by_core = required_layout_by_core_by_storage[
+                storage_index
+            ]
+            for core in scratch_layout_by_core_by_dfb[dfb_index]:
+                current_size, current_alignment = required_layout_by_core[core]
+                required_layout_by_core[core] = (
+                    max(current_size, allocation.total_size),
+                    math.lcm(current_alignment, allocation.page_size),
+                )
 
     required_bytes_by_core_by_storage = {
         storage_index: {
