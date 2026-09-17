@@ -516,6 +516,8 @@ The fixed state cost can dominate heavily reused payloads. For 96 ungrouped one-
 
 Domain placement addresses a different source of waste: reserving the busiest core's layout everywhere. In the two-core 16-tile/one-tile regression, uniform allocation reserves 65,664 bytes for BF16 and 131,200 for FP32. Per-core allocation reserves 34,944 and 69,760 respectively, including control prefixes. These are measured backing extents, not execution-speed results or a claim of globally optimal host placement.
 
+A matched Blackhole benchmark copies one 4x4-tile block 256 times per dispatch through read, compute, and write kernels. Across 200 measured dispatches per backend, compiler-managed storage takes 261.96 us versus 212.14 us for Metal DFBs with BF16, and 482.14 us versus 446.32 us with FP32. These 1.233x and 1.080x ratios include sequence-counter synchronization, explicit-address handling, and target barriers. Exact outputs pass before and after measurement; compilation and allocation are outside the measured interval.
+
 ### Validation Responsibilities
 
 The tests separate placement optimality, lifetime-proof correctness, runtime address binding, and device correctness. Numerical output tests alone cannot detect missed reuse or excessive reservation.
