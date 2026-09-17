@@ -52,12 +52,52 @@ make_mock_emule_runner() {
     local target="$1"
     cat > "$target" <<'EOF'
 #!/usr/bin/env bash
+if [ -n "${TTLANG_EMULE_IMAGE:-}" ]; then
+    echo "image=$TTLANG_EMULE_IMAGE"
+fi
 for a in "$@"; do
     echo "argv=$a"
 done
 exit 0
 EOF
     chmod +x "$target"
+}
+
+@test "emule backend selects an explicit versioned runtime image" {
+    make_layout "$ROOT" source
+    local runner="$ROOT/emule-runner"
+    make_mock_emule_runner "$runner"
+    TTLANG_EMULE_RUNNER="$runner" run -0 "$ROOT/bin/tt-lang-sim" \
+        program.py --backend emule --runtime-image registry/runtime:tested
+    assert_line --index 0 "image=registry/runtime:tested"
+    assert_line --index 1 "argv=program.py"
+}
+
+@test "emule smoke test dispatches the bundled compiler example" {
+    make_layout "$ROOT" source
+    mkdir -p "$ROOT/examples"
+    : > "$ROOT/examples/compiler_only_external_call.py"
+    local runner="$ROOT/emule-runner"
+    make_mock_emule_runner "$runner"
+    TTLANG_EMULE_RUNNER="$runner" run -0 "$ROOT/bin/tt-lang-sim" \
+        --backend emule --smoke-test
+    assert_output "argv=$ROOT/examples/compiler_only_external_call.py"
+}
+
+@test "emule-only launcher options are rejected by the Python backend" {
+    make_layout "$ROOT" source
+    run -2 "$ROOT/bin/tt-lang-sim" program.py \
+        --runtime-image registry/runtime:tested
+    assert_output --partial "require --backend emule"
+}
+
+@test "emule smoke test rejects a competing script" {
+    make_layout "$ROOT" source
+    local runner="$ROOT/emule-runner"
+    make_mock_emule_runner "$runner"
+    TTLANG_EMULE_RUNNER="$runner" run -2 "$ROOT/bin/tt-lang-sim" \
+        program.py --backend emule --smoke-test
+    assert_output --partial "does not accept a script"
 }
 
 @test "source layout: dispatches sim.ttlang_sim with PYTHONPATH=<root>/python" {
