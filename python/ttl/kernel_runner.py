@@ -2767,7 +2767,6 @@ def build_dfb_reconfiguration_runtime_resources(
     storage_index_by_dfb = {}
     scratch_layout_by_core_by_dfb = {}
     reconfigured_storage_indices = set()
-    tensor_backed_storage_indices = set()
     for dfb_index, epochs in enumerate(plan.dfb_epochs):
         storage_indices = {
             _physical_dfb_storage_index(epoch.config) for epoch in epochs
@@ -2787,7 +2786,6 @@ def build_dfb_reconfiguration_runtime_resources(
             )
             for segment in segments:
                 if segment.is_tensor_backed:
-                    tensor_backed_storage_indices.add(storage_index)
                     continue
                 outside_nodes = set(segment.nodes).difference(core_rows)
                 if outside_nodes:
@@ -2810,13 +2808,9 @@ def build_dfb_reconfiguration_runtime_resources(
         ):
             reconfigured_storage_indices.add(storage_index)
 
-    runtime_backed_storage_indices = set(tensor_backed_storage_indices)
-    runtime_backed_storage_indices.update(
-        storage_index_by_dfb[dfb_index]
-        for dfb_index in reusable_backing_tensors
-        if dfb_index in storage_index_by_dfb
-    )
-    runtime_backed_storage_indices.intersection_update(reconfigured_storage_indices)
+    # Runtime backing preserves storage reuse across descriptor formats and
+    # removes reconfigured scratch capacity from the static program allocation.
+    runtime_backed_storage_indices = set(reconfigured_storage_indices)
 
     required_layout_by_core_by_storage = {}
     for dfb_index, scratch_layout_by_core in scratch_layout_by_core_by_dfb.items():
