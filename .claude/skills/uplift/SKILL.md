@@ -46,10 +46,13 @@ how to validate an uplift on hardware, and how to attribute a failure.
   one exclusive host and run the same test. A Blackhole Quietbox reserved
   through Slurm matches the CI runner. Reserve it, run the device ownership
   preflight, and release it afterwards.
-- A test that never returns is usually a device hang, not a slow test.
-  `pytest --timeout` cannot interrupt a blocking C++ call, so the timeout never
-  fires. Identify the test with `py-spy dump --pid <pid>` and get the native
-  stack with `gdb -p <pid> -batch -ex 'thread 1' -ex 'bt 25'`.
+- A test that never returns is usually a device hang, not a slow test. Run
+  pytest with `--timeout-method=thread`, as the hardware harness does: it
+  terminates a process stuck in a C-level device call, where SIGALRM cannot.
+  It still cannot fire while the blocking call holds the GIL, which leaves the
+  timeout thread unable to run, so wrap a manual run in an outer `timeout` too.
+  Identify the test with `py-spy dump --pid <pid>` and get the native stack
+  with `gdb -p <pid> -batch -ex 'thread 1' -ex 'bt 25'`.
 - A device hang leaves the board unusable, reporting an active ethernet core
   heartbeat timeout on the next device open. Recover with `tt-smi -r 0,1,2,3`
   and delete `~/.cache/tt_metal_*`. Reset only after confirming no other
@@ -64,12 +67,16 @@ how to validate an uplift on hardware, and how to attribute a failure.
 - Compare against the same source on the previous toolchain before concluding
   the uplift caused a failure. CI history on `main` at the branch point is the
   cheapest baseline.
-- To separate an LLVM regression from a tt-metal one, compare the generated
-  kernels. tt-lang writes them to `/tmp/$USER/ttlang_kernel_*.cpp`, named by a
-  hash of their content. Run the failing test under each toolchain with
-  `TTLANG_COMPILE_ONLY=1`, which generates kernels without launching them, and
-  compare. Identical kernels mean the compiler output did not change and the
-  regression is in the tt-metal runtime, LLK or firmware.
+- To separate an LLVM regression from a tt-metal one, compare everything the
+  compiler produced, which is more than the kernels. tt-lang writes generated
+  kernels to `/tmp/$USER/ttlang_kernel_*.cpp`, named by a hash of their
+  content, and derives descriptor metadata (argument specs, DFB indices, fabric
+  routes, compute configuration) separately; `ttl_api.py` shares a descriptor
+  only when both the C++ and that metadata match. Run the failing test under
+  each toolchain with `TTLANG_COMPILE_ONLY=1`, which generates kernels without
+  launching them, and compare the kernels and `TTLANG_FINAL_MLIR`. Only when
+  both are identical did the compiler output not change, leaving the regression
+  in the tt-metal runtime, LLK or firmware.
 
 ## Carrying an upstream fix
 
