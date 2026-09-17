@@ -36,8 +36,12 @@ how to validate an uplift on hardware, and how to attribute a failure.
 
 ## Validating on hardware
 
-- CI's BH-Quietbox-2 job runs the full `test/python` and `test/me2e` suites;
-  the n150 job runs a small subset. A green n150 does not mean the suites ran.
+- Both hardware runners go through `call-test-hardware.yml` and run the same
+  phases, so `test/python` and `test/me2e` run in full on n150 as well as on
+  BH-Quietbox-2. The n150 job carries `continue-on-error` so the whole matrix
+  finishes before a verdict, but `check-hardware` then reads every hardware
+  job's result and fails the run on it. An n150 failure is as real as a
+  Quietbox one.
 - For an A/B against a baseline, build both variants in their own IRD images on
   one exclusive host and run the same test. A Blackhole Quietbox reserved
   through Slurm matches the CI runner. Reserve it, run the device ownership

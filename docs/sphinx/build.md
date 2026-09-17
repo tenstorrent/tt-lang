@@ -411,7 +411,8 @@ the toolchain with `fail-on-cache-miss: true` and bakes it into the IRD image.
 Dispatching `call-build-docker.yml` separately resolves the same cache scopes
 and rebuilds too.
 
-Confirm the cache exists first; the key uses seven-character tree hashes:
+Confirm the cache exists first; the key uses seven-character IDs, the two
+submodule gitlink commits and the tree of `third-party/patches`:
 
 ```bash
 gh api "repos/tenstorrent/tt-lang/actions/caches?per_page=100" \
