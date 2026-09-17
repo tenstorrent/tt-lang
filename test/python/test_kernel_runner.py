@@ -2003,8 +2003,7 @@ def test_plan_runtime_resources_requires_each_external_fabric_claim():
 
 
 def test_runtime_resource_fingerprint_is_stable_across_python_hash_seeds():
-    script = textwrap.dedent(
-        """
+    script = textwrap.dedent("""
         from ttl import CoreRuntimeArgs, KernelDefine, KernelKind
         from ttl import KernelRuntimeResources, ProgramRuntimeResources
         from ttl import kernel_runner
@@ -2044,8 +2043,7 @@ def test_runtime_resource_fingerprint_is_stable_across_python_hash_seeds():
             first_free_semaphore_id=0,
         )
         print(plan.structural_fingerprint)
-        """
-    )
+        """)
     fingerprints = []
     for hash_seed in ("1", "937"):
         environment = dict(os.environ)
@@ -3199,8 +3197,12 @@ def test_reconfiguration_runtime_storage_uses_maximum_per_core_capacity(monkeypa
     )
 
     def l1_addresses(tensor, _device):
-        if tensor is scratch_allocations[0][2]:
-            return {(0, 0): tensor.buffer_address(), (1, 0): tensor.buffer_address()}
+        for core_ranges, _, scratch_tensor in scratch_allocations:
+            if tensor is scratch_tensor:
+                return {
+                    (int(core.x), int(core.y)): tensor.buffer_address()
+                    for core in fake_ttnn.corerange_to_cores(core_ranges)
+                }
         assert tensor is configuration_tensor
         return {(0, 0): 0xA000, (1, 0): 0xB000}
 
@@ -3249,18 +3251,18 @@ def test_reconfiguration_runtime_storage_uses_maximum_per_core_capacity(monkeypa
         dfb_reconfiguration_plan=plan,
     )
 
-    assert [allocation[1] for allocation in scratch_allocations] == [4096]
-    assert len(resources.scratch_tensors) == 1
-    assert resources.scratch_segments_by_index[0][0].allocation_bytes == 4096
+    assert [allocation[1] for allocation in scratch_allocations] == [4096, 2048]
+    assert len(resources.scratch_tensors) == 2
+    assert resources.scratch_segments_by_index[0][0].allocation_bytes == 2048
     assert resources.scratch_segments_by_index[1][0].allocation_bytes == 4096
-    assert [descriptor.total_size for descriptor in descriptors] == [4096, 4096]
+    assert [descriptor.total_size for descriptor in descriptors] == [2048, 4096]
     assert [
         descriptor.format_descriptors[0].buffer_index for descriptor in descriptors
     ] == [0, 1]
     assert all(descriptor.backing_desc is not None for descriptor in descriptors)
 
 
-def test_reconfiguration_runtime_storage_reuses_and_allocates_broadest_first(
+def test_reconfiguration_runtime_storage_allocates_remote_uniform_first(
     monkeypatch,
 ):
     fake_ttnn = _FakeTTNN()
@@ -3307,6 +3309,7 @@ def test_reconfiguration_runtime_storage_reuses_and_allocates_broadest_first(
         (32, 32),
         (DFBStorageSegment(nodes=((0, 0),)),),
         storage_index=3,
+        address_scope="remote_uniform",
     )
     shared_second = replace(
         shared_first,

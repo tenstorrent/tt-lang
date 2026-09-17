@@ -2765,6 +2765,7 @@ def build_dfb_reconfiguration_runtime_resources(
         )
 
     storage_index_by_dfb = {}
+    requires_uniform_address_by_storage = {}
     scratch_layout_by_core_by_dfb = {}
     reconfigured_storage_indices = set()
     for dfb_index, epochs in enumerate(plan.dfb_epochs):
@@ -2777,6 +2778,10 @@ def build_dfb_reconfiguration_runtime_resources(
             )
         storage_index = storage_indices.pop()
         storage_index_by_dfb[dfb_index] = storage_index
+        requires_uniform_address_by_storage[storage_index] = (
+            requires_uniform_address_by_storage.get(storage_index, False)
+            or any(epoch.config.address_scope == "remote_uniform" for epoch in epochs)
+        )
         scratch_layout_by_core = {}
         for epoch in epochs:
             config = epoch.config
@@ -2880,8 +2885,6 @@ def build_dfb_reconfiguration_runtime_resources(
             )
 
     pending_allocations = []
-    # One multi-format descriptor preserves the compiler-selected backing alias;
-    # separate descriptors would represent the same tensor as independent L1.
     for (
         storage_index,
         required_bytes_by_core,
@@ -2891,7 +2894,9 @@ def build_dfb_reconfiguration_runtime_resources(
             if (storage_index, core) in backing_by_storage_and_core:
                 continue
             unbacked_required_bytes_by_core[core] = required_bytes
-        if unbacked_required_bytes_by_core:
+        if not unbacked_required_bytes_by_core:
+            continue
+        if requires_uniform_address_by_storage[storage_index]:
             pending_allocations.append(
                 (
                     storage_index,
@@ -2899,10 +2904,14 @@ def build_dfb_reconfiguration_runtime_resources(
                     tuple(unbacked_required_bytes_by_core),
                 )
             )
-    # A physical storage index must remain one TT-Metal allocation. Splitting
-    # it by per-core capacity fragments dependency-constrained L1 ranges.
-    # TT-Metal needs one common free address across all selected cores, so
-    # allocate the widest ranges before narrower allocations fragment them.
+        else:
+            pending_allocations.extend(
+                (storage_index, required_bytes, (core,))
+                for core, required_bytes in unbacked_required_bytes_by_core.items()
+            )
+    # Remote consumers require one common address across their storage cores.
+    # Local consumers permit independent addresses, which avoid imposing an
+    # unnecessary intersection across each core's free L1 ranges.
     pending_allocations.sort(
         key=lambda allocation: (-len(allocation[2]), -allocation[1], allocation[0])
     )
