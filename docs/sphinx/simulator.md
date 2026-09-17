@@ -89,19 +89,28 @@ toolchain and entrypoint. These commands do not select or publish a new default
 image. Runtime selection is saved per checkout in the ignored
 `.ttlang-sim/emule.json` file. `setup --jobs 8` also saves compiler build
 parallelism. Explicit `TTLANG_EMULE_*` environment overrides take precedence
-over the saved settings.
+over the saved settings. The normal `--backend=emule` launcher loads these
+settings automatically; `--runtime-image IMAGE` overrides the saved runtime for
+one invocation. The Python backend does not load emulator settings.
 
 After setup:
 
 ```bash
-./bin/tt-lang-sim emule run examples/eltwise_add.py
+./bin/tt-lang-sim --backend=emule examples/eltwise_add.py
 ./bin/tt-lang-sim emule smoke
 ./bin/tt-lang-sim emule examples
 ./bin/tt-lang-sim emule test
 ```
 
-`run` forwards arguments after the script path to the program. `examples` runs
-the four reference programs described below. `test` runs all six compiler test
+Program arguments follow `--`, keeping them separate from launcher options:
+
+```bash
+./bin/tt-lang-sim --backend=emule program.py -- --program-option value
+```
+
+The `emule` subcommands manage setup and testing; program execution uses the
+same launcher interface as the Python backend. `examples` runs the four
+reference programs described below. `test` runs all six compiler test
 suites in the Docker environment, including device tests with emulation enabled.
 It continues to the next suite after failures and returns nonzero if any suite
 fails. This broad sweep can expose unsupported emulator behavior; it is not a

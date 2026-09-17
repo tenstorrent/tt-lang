@@ -262,7 +262,12 @@ def test_missing_script_is_rejected_before_accessing_docker(cli, monkeypatch, ca
 
     monkeypatch.setattr(cli.subprocess, "run", unexpected_process)
 
-    assert invoke(cli, monkeypatch, "run", cli.REPO_ROOT / "missing.py") == 2
+    assert (
+        invoke(
+            cli, monkeypatch, "--launch", "/fake/runner", cli.REPO_ROOT / "missing.py"
+        )
+        == 2
+    )
     assert "script not found" in capsys.readouterr().err
 
 
@@ -361,7 +366,9 @@ def launcher_checkout(tmp_path):
     runner.write_text(
         f"#!{sys.executable}\n"
         "import json, os, pathlib, sys\n"
-        "pathlib.Path(os.environ['LAUNCH_LOG']).write_text(json.dumps(sys.argv[1:]))\n"
+        "payload = {'arguments': sys.argv[1:], 'environment': "
+        "{key: value for key, value in os.environ.items() if key.startswith('TTLANG_EMULE_')}}\n"
+        "pathlib.Path(os.environ['LAUNCH_LOG']).write_text(json.dumps(payload))\n"
         "sys.exit(int(os.environ.get('LAUNCH_RESULT', '0')))\n",
         encoding="utf-8",
     )
@@ -369,20 +376,19 @@ def launcher_checkout(tmp_path):
     environment = {
         name: value
         for name, value in os.environ.items()
-        if not name.startswith("TTLANG_EMULE_")
+        if not name.startswith("TTLANG_EMULE_") and name != "TTLANG_SIM_BACKEND"
     }
     environment.update(
         TTLANG_EMULE_HOST_PYTHON=sys.executable,
         TTLANG_EMULE_RUNNER=str(runner),
         TTLANG_EMULE_DOCKER=str(root / "docker-must-not-run"),
+        PYTHON=sys.executable,
         LAUNCH_LOG=str(root / "launch.json"),
     )
     return root, environment
 
 
-@pytest.mark.parametrize(
-    "command", [[], ["setup"], ["run"], ["smoke"], ["examples"], ["test"]]
-)
+@pytest.mark.parametrize("command", [[], ["setup"], ["smoke"], ["examples"], ["test"]])
 def test_launcher_help_needs_no_docker_or_saved_configuration(
     launcher_checkout, command
 ):
@@ -401,6 +407,9 @@ def test_launcher_help_needs_no_docker_or_saved_configuration(
 
     assert result.returncode == 0, result.stderr
     assert "usage:" in result.stdout
+    assert "--launch" not in result.stdout
+    if not command:
+        assert "{setup,smoke,examples,test}" in result.stdout
     assert not Path(environment["LAUNCH_LOG"]).exists()
 
 
@@ -420,7 +429,13 @@ def test_launcher_preserves_program_arguments_and_exit_status(launcher_checkout)
     environment["LAUNCH_RESULT"] = "23"
 
     result = subprocess.run(
-        [str(root / "bin" / "tt-lang-sim"), "emule", "run", str(script), *arguments],
+        [
+            str(root / "bin" / "tt-lang-sim"),
+            "--backend=emule",
+            str(script),
+            "--",
+            *arguments,
+        ],
         env=environment,
         capture_output=True,
         text=True,
@@ -428,7 +443,210 @@ def test_launcher_preserves_program_arguments_and_exit_status(launcher_checkout)
     )
 
     assert result.returncode == 23, result.stderr
-    assert json.loads(Path(environment["LAUNCH_LOG"]).read_text()) == [
+    assert json.loads(Path(environment["LAUNCH_LOG"]).read_text())["arguments"] == [
         str(script),
         *arguments,
+    ]
+
+
+def save_launcher_settings(root, settings):
+    config = root / ".ttlang-sim" / "emule.json"
+    config.parent.mkdir(exist_ok=True)
+    config.write_text(json.dumps({"schema_version": 1, **settings}), encoding="utf-8")
+
+
+def enable_fake_docker(root, environment):
+    docker = root / "docker.py"
+    docker.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, pathlib, sys\n"
+        "with pathlib.Path(os.environ['DOCKER_LOG']).open('a') as output:\n"
+        "    output.write(json.dumps(sys.argv[1:]) + '\\n')\n",
+        encoding="utf-8",
+    )
+    docker.chmod(0o755)
+    environment["TTLANG_EMULE_DOCKER"] = str(docker)
+    environment["DOCKER_LOG"] = str(root / "docker.jsonl")
+
+
+def run_launcher(root, environment, *arguments):
+    return subprocess.run(
+        [str(root / "bin" / "tt-lang-sim"), *arguments],
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize("runtime", ["source", "image"])
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--backend=emule", "program.py"],
+        ["--backend", "emule", "program.py"],
+        ["program.py", "--backend=emule"],
+        ["program.py", "--backend", "emule"],
+    ],
+)
+def test_normal_launcher_uses_saved_settings(launcher_checkout, runtime, arguments):
+    root, environment = launcher_checkout
+    script = root / "program.py"
+    script.touch()
+    value = "runtime:saved" if runtime == "image" else str(root / "emulator")
+    save_launcher_settings(root, {runtime: value, "jobs": 3})
+    enable_fake_docker(root, environment)
+    arguments = [str(script) if value == "program.py" else value for value in arguments]
+
+    result = run_launcher(root, environment, *arguments)
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(Path(environment["LAUNCH_LOG"]).read_text())
+    assert payload["arguments"] == [str(script)]
+    runtime_variable = (
+        "TTLANG_EMULE_IMAGE"
+        if runtime == "image"
+        else "TTLANG_EMULE_RUNTIME_SOURCE_DIR"
+    )
+    assert payload["environment"][runtime_variable] == value
+    assert payload["environment"]["TTLANG_EMULE_JOBS"] == "3"
+    docker_log = Path(environment["DOCKER_LOG"])
+    if runtime == "image":
+        calls = [json.loads(line) for line in docker_log.read_text().splitlines()]
+        assert calls == [["info"], ["image", "inspect", "runtime:saved"]]
+    else:
+        assert not docker_log.exists()
+
+
+def test_default_emule_backend_uses_saved_settings(launcher_checkout):
+    root, environment = launcher_checkout
+    script = root / "program.py"
+    script.touch()
+    source = str(root / "saved emulator")
+    save_launcher_settings(root, {"source": source})
+    environment["TTLANG_SIM_BACKEND"] = "emule"
+
+    result = run_launcher(root, environment, str(script))
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(Path(environment["LAUNCH_LOG"]).read_text())
+    assert payload["arguments"] == [str(script)]
+    assert payload["environment"]["TTLANG_EMULE_RUNTIME_SOURCE_DIR"] == source
+
+
+def test_normal_launcher_environment_selection_replaces_saved_runtime(
+    launcher_checkout,
+):
+    root, environment = launcher_checkout
+    script = root / "program.py"
+    script.touch()
+    save_launcher_settings(root, {"image": "runtime:saved", "jobs": 2})
+    environment["TTLANG_EMULE_RUNTIME_SOURCE_URL"] = "https://example.com/override.git"
+    environment["TTLANG_EMULE_JOBS"] = "5"
+
+    result = run_launcher(root, environment, "--backend=emule", str(script))
+
+    assert result.returncode == 0, result.stderr
+    effective = json.loads(Path(environment["LAUNCH_LOG"]).read_text())["environment"]
+    assert "TTLANG_EMULE_IMAGE" not in effective
+    assert (
+        effective["TTLANG_EMULE_RUNTIME_SOURCE_URL"]
+        == "https://example.com/override.git"
+    )
+    assert effective["TTLANG_EMULE_JOBS"] == "5"
+
+
+@pytest.mark.parametrize(
+    "image_option",
+    [["--runtime-image", "runtime:explicit"], ["--runtime-image=runtime:explicit"]],
+)
+def test_normal_launcher_explicit_image_overrides_saved_and_environment_images(
+    launcher_checkout, image_option
+):
+    root, environment = launcher_checkout
+    script = root / "program.py"
+    script.touch()
+    save_launcher_settings(root, {"image": "runtime:saved"})
+    environment["TTLANG_EMULE_IMAGE"] = "runtime:environment"
+    enable_fake_docker(root, environment)
+
+    result = run_launcher(
+        root, environment, str(script), "--backend=emule", *image_option
+    )
+
+    assert result.returncode == 0, result.stderr
+    effective = json.loads(Path(environment["LAUNCH_LOG"]).read_text())["environment"]
+    assert effective["TTLANG_EMULE_IMAGE"] == "runtime:explicit"
+    calls = [
+        json.loads(line)
+        for line in Path(environment["DOCKER_LOG"]).read_text().splitlines()
+    ]
+    assert calls == [["info"], ["image", "inspect", "runtime:explicit"]]
+
+
+@pytest.mark.parametrize("backend", ["python", "emule"])
+def test_top_level_help_ignores_invalid_saved_configuration(launcher_checkout, backend):
+    root, environment = launcher_checkout
+    config = root / ".ttlang-sim" / "emule.json"
+    config.parent.mkdir()
+    config.write_text("invalid configuration", encoding="utf-8")
+    simulation = root / "python" / "sim" / "ttlang_sim.py"
+    simulation.parent.mkdir(parents=True)
+    (simulation.parent / "__init__.py").touch()
+    simulation.write_text("print('usage: tt-lang-sim')\n", encoding="utf-8")
+
+    result = run_launcher(root, environment, "--backend=" + backend, "--help")
+
+    assert result.returncode == 0, result.stderr
+    assert "usage: tt-lang-sim" in result.stdout
+    assert not Path(environment["LAUNCH_LOG"]).exists()
+
+
+def test_python_execution_ignores_invalid_saved_emule_configuration(launcher_checkout):
+    root, environment = launcher_checkout
+    config = root / ".ttlang-sim" / "emule.json"
+    config.parent.mkdir()
+    config.write_text("invalid configuration", encoding="utf-8")
+    simulation = root / "python" / "sim" / "ttlang_sim.py"
+    simulation.parent.mkdir(parents=True)
+    (simulation.parent / "__init__.py").touch()
+    simulation.write_text(
+        "import sys\nassert sys.argv[1:] == ['program.py']\nprint('python backend selected')\n",
+        encoding="utf-8",
+    )
+    environment["TTLANG_SIM_BACKEND"] = "emule"
+
+    result = run_launcher(root, environment, "--backend=python", "program.py")
+
+    assert result.returncode == 0, result.stderr
+    assert "python backend selected" in result.stdout
+    assert not Path(environment["LAUNCH_LOG"]).exists()
+
+
+def test_normal_launcher_rejects_missing_script_before_docker(launcher_checkout):
+    root, environment = launcher_checkout
+    save_launcher_settings(root, {"image": "runtime:saved"})
+
+    result = run_launcher(
+        root, environment, "--backend=emule", str(root / "missing.py")
+    )
+
+    assert result.returncode == 2
+    assert "script not found" in result.stderr
+    assert not Path(environment["LAUNCH_LOG"]).exists()
+
+
+def test_launcher_keeps_direct_runner_fallback_without_management_helper(
+    launcher_checkout,
+):
+    root, environment = launcher_checkout
+    (root / "scripts" / "tt-lang-emule.py").unlink()
+    script = root / "program.py"
+    script.touch()
+
+    result = run_launcher(root, environment, "--backend=emule", str(script))
+
+    assert result.returncode == 0, result.stderr
+    assert json.loads(Path(environment["LAUNCH_LOG"]).read_text())["arguments"] == [
+        str(script)
     ]

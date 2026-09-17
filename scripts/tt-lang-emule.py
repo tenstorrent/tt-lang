@@ -35,7 +35,8 @@ def positive_integer(value):
 def parse_args():
     parser = argparse.ArgumentParser(
         prog="tt-lang-sim emule",
-        description="Build and run the pinned Docker simulator without manual Docker commands.",
+        description="Configure and test the compiler-backed simulator.",
+        epilog="Run programs with: tt-lang-sim --backend=emule SCRIPT.py [-- ARGS...]",
     )
     commands = parser.add_subparsers(dest="command", required=True)
     setup = commands.add_parser(
@@ -51,11 +52,6 @@ def parse_args():
         "--jobs", type=positive_integer, help="compiler build parallelism"
     )
 
-    run = commands.add_parser("run", help="compile and execute a Python program")
-    run.add_argument("script", type=Path)
-    run.add_argument(
-        "arguments", nargs=argparse.REMAINDER, help="arguments for the program"
-    )
     commands.add_parser("smoke", help="run the compiler-to-emulator acceptance test")
     commands.add_parser("examples", help="run the four reference examples")
     tests = commands.add_parser(
@@ -301,25 +297,25 @@ def run_tests(arguments, environment):
 
 
 def main():
-    arguments = parse_args()
+    # The shell launcher has already consumed its options and the separator.
+    launch_arguments = sys.argv[2:] if sys.argv[1:2] == ["--launch"] else None
+    arguments = None if launch_arguments is not None else parse_args()
     try:
         settings = load_settings()
-        if arguments.command == "setup":
+        if arguments is not None and arguments.command == "setup":
             return setup(arguments, settings)
         environment = make_environment(settings)
         validate_environment(environment)
-        if arguments.command == "run" and not arguments.script.is_file():
-            raise ValueError(f"script not found: {arguments.script}")
+        if launch_arguments is not None:
+            if len(launch_arguments) < 2:
+                raise ValueError("the emule backend requires a script path")
+            if not Path(launch_arguments[1]).is_file():
+                raise ValueError(f"script not found: {launch_arguments[1]}")
+            prepare_image(environment)
+            return run_command(launch_arguments, environment)
         prepare_image(environment)
         if arguments.command == "smoke":
             return run_command(launcher("--smoke-test"), environment)
-        if arguments.command == "run":
-            forwarded = arguments.arguments
-            if forwarded[:1] == ["--"]:
-                forwarded = forwarded[1:]
-            return run_command(
-                launcher(arguments.script, "--", *forwarded), environment
-            )
         if arguments.command == "examples":
             return run_command(
                 [

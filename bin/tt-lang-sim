@@ -13,10 +13,10 @@ PYTHON="${PYTHON:-python}"
 # when invoked as ./bin/tt-lang-sim or from an arbitrary working directory.
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _REPO_ROOT="$(dirname "$_SCRIPT_DIR")"
+_EMULE_CLI="${_REPO_ROOT}/scripts/tt-lang-emule.py"
 
 if [ "${1:-}" = "emule" ]; then
     shift
-    _EMULE_CLI="${_REPO_ROOT}/scripts/tt-lang-emule.py"
     if [ ! -f "$_EMULE_CLI" ]; then
         echo "tt-lang-sim: emule commands require a source checkout." >&2
         exit 1
@@ -134,6 +134,10 @@ if [ "$_BACKEND" = "emule" ]; then
         exit 1
     fi
 
+    if [ -f "$_EMULE_CLI" ]; then
+        exec "${TTLANG_EMULE_HOST_PYTHON:-python3}" "$_EMULE_CLI" \
+            --launch "$_EMULE_RUNNER" "$@"
+    fi
     exec "$_EMULE_RUNNER" "$@"
 fi
 
