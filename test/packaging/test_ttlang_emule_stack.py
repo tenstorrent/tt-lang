@@ -2,6 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -72,6 +73,10 @@ def test_manifest_emits_exact_runtime_inputs():
 
     assert result.returncode == 0, result.stderr
     values = dict(line.split("\t", 1) for line in result.stdout.splitlines())
+    assert (
+        values["TTLANG_EMULE_STACK_MANIFEST_SHA256"]
+        == hashlib.sha256(STACK_MANIFEST.read_bytes()).hexdigest()
+    )
     assert values["TTLANG_EMULE_REPOSITORY"] == ""
     assert len(values["TTLANG_EMULE_COMMIT"]) == 40
     assert len(values["TTLANG_METAL_COMMIT"]) == 40

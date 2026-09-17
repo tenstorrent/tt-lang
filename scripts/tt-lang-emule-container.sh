@@ -24,6 +24,8 @@ fi
 _STACK_OUTPUT="$("$_PYTHON" "$_STACK_TOOL" --manifest "$_STACK_MANIFEST" emit)"
 while IFS=$'\t' read -r _STACK_KEY _STACK_VALUE; do
     case "$_STACK_KEY" in
+        TTLANG_EMULE_STACK_MANIFEST_SHA256) _MANIFEST_SHA256="$_STACK_VALUE" ;;
+        TTLANG_COMPILER_REPOSITORY) _MANIFEST_COMPILER_REPOSITORY="$_STACK_VALUE" ;;
         TTLANG_COMPILER_BASE_COMMIT) _MANIFEST_COMPILER_BASE_COMMIT="$_STACK_VALUE" ;;
         TTLANG_EMULE_REPOSITORY) _MANIFEST_EMULE_REPOSITORY="$_STACK_VALUE" ;;
         TTLANG_EMULE_COMMIT) _MANIFEST_EMULE_COMMIT="$_STACK_VALUE" ;;
@@ -236,11 +238,20 @@ if [ "${TTLANG_EMULE_REBUILD:-0}" = "1" ] || \
     "$_DOCKER" build \
         --platform "$_PLATFORM" \
         --build-context "tt-emule-source=${_TEMP_EMULE_CONTEXT}" \
+        --build-context "tt-lang-stack=${_REPO_ROOT}/config" \
         --file "${_REPO_ROOT}/.github/containers/Dockerfile.emule" \
+        --build-arg "STACK_MANIFEST_SHA256=${_MANIFEST_SHA256}" \
+        --build-arg "TT_LANG_COMPILER_REPOSITORY=${_MANIFEST_COMPILER_REPOSITORY}" \
+        --build-arg "TT_LANG_COMPILER_BASE_COMMIT=${_MANIFEST_COMPILER_BASE_COMMIT}" \
+        --build-arg "TT_EMULE_SOURCE_URL=${_TT_EMULE_SOURCE_URL}" \
         --build-arg "TT_EMULE_COMMIT=${_TT_EMULE_COMMIT}" \
         --build-arg "TT_METAL_COMMIT=${_TT_METAL_COMMIT}" \
         --build-arg "TT_METAL_SOURCE_URL=${_TT_METAL_SOURCE_URL}" \
         --build-arg "BASE_IMAGE=${_BASE_IMAGE}" \
+        --build-arg "RUNTIME_PLATFORM=${_PLATFORM}" \
+        --build-arg "TARGET_NAME=${_MANIFEST_TARGET}" \
+        --build-arg "TARGET_CLUSTER_DESCRIPTOR=${_MANIFEST_CLUSTER_DESCRIPTOR}" \
+        --build-arg "TARGET_MESH_DEVICE=${_MANIFEST_MESH_DEVICE}" \
         --tag "$_IMAGE" \
         "${_REPO_ROOT}/scripts"
 fi

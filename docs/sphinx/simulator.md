@@ -98,6 +98,20 @@ override is a candidate stack rather than the repository's supported default;
 its revisions must be recorded with the resulting test evidence before it is
 promoted into the manifest.
 
+Every built image records its resolved inputs as OCI labels and in
+`/opt/tt-emule-runtime/stack.json`. The original supported-stack manifest is
+stored beside it as `source-manifest.json`, and its SHA-256 is verified while
+the image is built. This means an image built with experimental overrides still
+reports both the supported manifest it started from and the exact revisions it
+actually used. Inspect an artifact without running a workload with:
+
+```bash
+docker image inspect tt-lang-emule:TAG \
+  --format '{{json .Config.Labels}}'
+docker run --rm --entrypoint cat tt-lang-emule:TAG \
+  /opt/tt-emule-runtime/stack.json
+```
+
 The backend requires a working Docker-compatible daemon. Its image is Linux
 amd64 because tt-emule JITs x86-64 shared objects. On Apple Silicon, use Docker
 Desktop with x86 emulation enabled, or start an x86-64 Colima VM:

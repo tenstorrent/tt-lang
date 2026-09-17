@@ -119,6 +119,28 @@ EOF
     run -1 grep -F -- "github_token" "$DOCKERFILE"
 }
 
+@test "emule image records the complete runtime provenance" {
+    run -0 grep -F -- \
+        'io.tenstorrent.tt-lang.compiler.commit="${TT_LANG_COMPILER_BASE_COMMIT}"' \
+        "$DOCKERFILE"
+    run -0 grep -F -- \
+        'io.tenstorrent.tt-lang.emule.commit="${TT_EMULE_COMMIT}"' \
+        "$DOCKERFILE"
+    run -0 grep -F -- \
+        'io.tenstorrent.tt-lang.metal.commit="${TT_METAL_COMMIT}"' \
+        "$DOCKERFILE"
+    run -0 grep -F -- \
+        'io.tenstorrent.tt-lang.runtime.manifest-sha256="${STACK_MANIFEST_SHA256}"' \
+        "$DOCKERFILE"
+    run -0 grep -F -- \
+        'COPY --from=tt-lang-stack tt-lang-emule-stack.json' "$DOCKERFILE"
+    run -0 grep -F -- \
+        '/opt/tt-emule-runtime/source-manifest.json | sha256sum --check --strict' \
+        "$DOCKERFILE"
+    run -0 grep -F -- \
+        '> /opt/tt-emule-runtime/stack.json' "$DOCKERFILE"
+}
+
 @test "emule image verifies that the built ttnn binding is importable" {
     run -0 grep -F -- \
         "/opt/ttlang-toolchain/venv/bin/python -c 'import ttnn'" "$DOCKERFILE"
@@ -284,6 +306,12 @@ PY
             "TT_EMULE_COMMIT=$emule_commit"
         assert_log_line \
             "TT_METAL_COMMIT=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        assert_log_line \
+            "TT_LANG_COMPILER_BASE_COMMIT=59c53e209a6b871ce90937dff0cf26d8bc3e25af"
+        assert_log_contains "STACK_MANIFEST_SHA256="
+        assert_log_line "RUNTIME_PLATFORM=linux/amd64"
+        assert_log_line \
+            "tt-lang-stack=${TTLANG_REPO_ROOT}/config"
         assert_log_contains "tt-emule-source="
         refute_log_line "tt-emule-source=$emule_source"
         assert_log_line "${TTLANG_REPO_ROOT}/scripts"
