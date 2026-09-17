@@ -71,6 +71,7 @@ class StorageOwner:
         ):
             raise ValueError("persistent resources must use distinct allocations")
         self._resources = list(resources)
+        self._owned_resources = list(resources)
         self._declared_resource_count = len(resources)
         self._backend = backend
         self._lock = threading.RLock()
@@ -78,6 +79,7 @@ class StorageOwner:
         self._completion = None
         self._unknown_completion = False
         self._submitting = False
+        self._operation_bindings = {}
 
     def reference(self, index: int) -> "StorageReference":
         with self._lock:
@@ -93,7 +95,7 @@ class StorageOwner:
             self._declared_resource_count += 1
             return StorageReference(self, index)
 
-    def allocate(self, build_resources: Callable[[Callable[[object], None]], None]):
+    def allocate(self, build_resources: Callable[[Callable[[object], None]], object]):
         """Publish all retained resources together after initialization completes."""
         with self._lock:
             if self._state is not _State.DECLARED:
@@ -104,25 +106,36 @@ class StorageOwner:
             with _pending_lock:
                 _pending_owners.add(self)
 
-            def retain(resource: object):
-                if _contains_allocation(self._resources, resource, self._backend):
+            pending_resources = []
+
+            def retain(resource: object, *, alias=False):
+                if (
+                    _contains_allocation(self._owned_resources, resource, self._backend)
+                    and not alias
+                ):
                     raise ValueError(
                         "persistent resources must use distinct allocations"
                     )
-                self._resources.append(resource)
+                pending_resources.append(resource)
+                self._owned_resources.append(resource)
 
             try:
-                build_resources(retain)
-                if len(self._resources) != self._declared_resource_count:
+                reference_resources = build_resources(retain)
+                if reference_resources is None:
+                    reference_resources = tuple(pending_resources)
+                else:
+                    reference_resources = tuple(reference_resources)
+                if len(reference_resources) != self._declared_resource_count:
                     raise ValueError(
                         "persistent storage requires one resource per declaration"
                     )
+                self._resources = list(reference_resources)
                 self._unknown_completion = True
                 completion = self._backend.record_completion()
                 if completion is None:
                     raise RuntimeError("backend returned no completion record")
                 self._backend.wait(completion)
-                self._backend.validate(tuple(self._resources))
+                self._backend.validate(tuple(self._owned_resources))
                 self._unknown_completion = False
                 self._state = _State.READY
             except BaseException:
@@ -134,6 +147,17 @@ class StorageOwner:
 
     def owns(self, reference: object) -> bool:
         return isinstance(reference, StorageReference) and reference._owner is self
+
+    def bind_operation(self, compiled_kernel: object, binding: object):
+        if self._state is not _State.DECLARED:
+            raise RuntimeError("operation binding requires unallocated storage")
+        self._operation_bindings[id(compiled_kernel)] = (compiled_kernel, binding)
+
+    def get_operation_binding(self, compiled_kernel: object):
+        entry = self._operation_bindings.get(id(compiled_kernel))
+        if entry is None or entry[0] is not compiled_kernel:
+            return None
+        return entry[1]
 
     def require_open(self):
         with self._lock:
@@ -179,9 +203,11 @@ class StorageOwner:
         elif self._completion is not None:
             self._backend.wait(self._completion)
             self._completion = None
-        while self._resources:
-            self._backend.release(self._resources[-1])
-            self._resources.pop()
+        while self._owned_resources:
+            self._backend.release(self._owned_resources[-1])
+            self._owned_resources.pop()
+        self._resources.clear()
+        self._operation_bindings.clear()
         self._state = _State.CLOSED
         with _pending_lock:
             _pending_owners.discard(self)
@@ -222,7 +248,7 @@ def with_persistent_storage(function):
                 locks.enter_context(owner._lock)
             for owner in owners:
                 owner._require_ready()
-                owner._backend.validate(tuple(owner._resources))
+                owner._backend.validate(tuple(owner._owned_resources))
             for owner in owners:
                 if owner._completion is not None:
                     owner._backend.order_after(owner._completion)
@@ -239,6 +265,7 @@ def with_persistent_storage(function):
             for owner in owners:
                 owner._submitting = True
             _submission_thread.active = True
+            _submission_thread.owners = tuple(owners)
             try:
                 try:
                     result = function(*resolved_args, **resolved_kwargs)
@@ -256,6 +283,7 @@ def with_persistent_storage(function):
                 for owner in owners:
                     owner._submitting = False
                 _submission_thread.active = False
+                del _submission_thread.owners
             owned_allocations = [
                 (reference._owner._backend, resolve(reference), reference)
                 for reference in references
@@ -276,3 +304,15 @@ def with_persistent_storage(function):
             return restore(result)
 
     return invoke
+
+
+def current_operation_binding(compiled_kernel):
+    """Return the binding supplied by the active persistent submission."""
+    bindings = [
+        binding
+        for owner in getattr(_submission_thread, "owners", ())
+        if (binding := owner.get_operation_binding(compiled_kernel)) is not None
+    ]
+    if len(bindings) > 1:
+        raise RuntimeError("operation has SRAM bindings from multiple storage owners")
+    return bindings[0] if bindings else None

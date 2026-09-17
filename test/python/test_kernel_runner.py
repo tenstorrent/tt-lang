@@ -9052,6 +9052,71 @@ def test_per_core_sram_preserves_grouped_specialized_kernel(monkeypatch):
     assert allocations == [(2112, True, False)]
 
 
+def test_prepared_sram_resets_controls_only_before_dispatch(monkeypatch):
+    from ttl._sram_requirements import prepare_sram_operation
+
+    fake_ttnn = _FakeTTNN()
+    events = []
+    fake_ttnn.full = lambda *args, **kwargs: events.append(("reset", args, kwargs))
+    fake_ttnn.prepare_generic_op = lambda tensors, program: events.append(
+        ("prepare", tensors, program)
+    )
+    fake_ttnn.generic_op = lambda tensors, program: events.append(
+        ("dispatch", tensors, program)
+    )
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    mesh_device = _FakeMeshDevice()
+    input_tensor = _FakeTensor(mesh_device)
+    arena = _SharedSRAMArena(mesh_device, address=0x8000)
+    control_tensor = SimpleNamespace(
+        shape=(1, 2),
+        dtype="UINT32",
+        layout="ROW_MAJOR",
+        device=lambda: mesh_device,
+    )
+    config = _compiler_l1_config()
+    core_ranges = _FakeCoreRanges()
+    requirements = prepare_sram_operation(
+        name="prepared",
+        tensors=[input_tensor],
+        configs=[config],
+        cores=((0, 0),),
+        ttnn_api=fake_ttnn,
+    )
+    resources = kernel_runner.PreparedSRAMResources(
+        requirements=requirements,
+        uniform_arena=arena,
+        core_arenas=(),
+        control_tensors=(control_tensor,),
+    )
+    arguments = dict(
+        kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
+        tensors=[input_tensor],
+        cb_configs=[config],
+        core_ranges=core_ranges,
+        device=mesh_device,
+        operation_name="prepared",
+        prepared_sram_resources=resources,
+    )
+
+    kernel_runner.run_kernel_on_device(**arguments, prepare_only=True)
+    kernel_runner.run_kernel_on_device(**arguments)
+    kernel_runner.run_kernel_on_device(**arguments)
+
+    assert [event[0] for event in events] == [
+        "prepare",
+        "reset",
+        "dispatch",
+        "reset",
+        "dispatch",
+    ]
+    assert all(
+        event[2].kernels[0].common_runtime_args[-1] == 0x8000
+        for event in events
+        if event[0] in ("prepare", "dispatch")
+    )
+
+
 def test_per_core_sram_splits_grouped_kernel_between_allocation_domains(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
