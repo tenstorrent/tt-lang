@@ -659,6 +659,11 @@ class SRAMStorage:
                         uniform_arena=resources["uniform"],
                         core_arenas=tuple(sorted(resources["cores"].items())),
                         control_tensors=tuple(resources["controls"]),
+                        late_bound_tensor_indices=tuple(
+                            index
+                            for index, value in enumerate(prepared.runtime_args)
+                            if isinstance(value, _PreparedStorageTensor)
+                        ),
                     )
                 )
 
