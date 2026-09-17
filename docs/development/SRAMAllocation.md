@@ -12,7 +12,7 @@ TT-Lang normally assigns each logical dataflow buffer (DFB) a TT-Metal DFB descr
 | Storage address | TT-Metal descriptor | Compiler arena or tensor base plus byte offset |
 | Capacity limit | SRAM capacity and 32 or 64 descriptor indices | SRAM capacity, control records, and alignment |
 | Payload reuse | Requires the Metal descriptor and backing-storage contracts | Requires noninterfering completed lifetimes or an explicit validated allocation group |
-| Producer/consumer state | TT-Metal DFB interface state | Two 32-bit page-sequence counters per storage owner |
+| Producer/consumer state | TT-Metal DFB interface state | Two 32-bit SRAM sequence counters per storage owner; no DFB index or local semaphore id |
 | Tensor-backed storage | Installed through a TT-Metal descriptor | Addressed directly through the tensor runtime argument |
 | Allocation groups | Reuse a physical descriptor and its storage contract | Share one validated storage owner and control record |
 | Reset and reconfiguration | Blackhole TT-Metal interface reset and runtime descriptor reconfiguration | Blackhole address-based state reset; page size, pages per block, block count, and storage capacity remain unchanged |
@@ -61,6 +61,10 @@ Packed-format metadata is included in `P`. An allocation group reserves the larg
 The allocation scope is one compiled `ttl.operation` invocation. Compiler-owned payload sizes are static; tensor-backed payloads retain their existing height-, width-, or block-sharded allocations. Uniform and per-core placement share the same ownership and completion rules.
 
 DFB transactions operate on one block, or publish/consume a tensor-backed DFB's complete capacity. Capacity is positive and below `2^31` pages. Consumer-owned replacement writes remain within the acquired read window and do not change occupancy or sequence counters. Compute formats and tile dimensions, reset synchronization, and external/transport bindings are specified in the backend subsections below.
+
+The 32-index Wormhole B0 and 64-index Blackhole limits apply only to TT-Metal DFB descriptors. A compiler-managed logical DFB does not allocate one of those descriptors. Its local producer/consumer protocol polls two 32-bit SRAM sequence counters and executes a processor-specific completion barrier before publishing or consuming pages. It does not allocate a local semaphore id. Logical DFB count is therefore limited by SRAM use, generated code and configuration size, runtime arguments, and Metal program capacity instead of the hardware descriptor count.
+
+PipeNet synchronization is a separate resource. TT-Lang currently has 16 local hardware semaphore ids. Generated PipeNet counters use available local ids and then use host-created `GlobalSemaphore` SRAM words; exhaustion of the 16 local ids does not restore a 16-DFB limit. Global counters add SRAM allocations and runtime arguments and remain subject to the combined SRAM and program-capacity checks.
 
 ### Shared Runtime Requirements
 
