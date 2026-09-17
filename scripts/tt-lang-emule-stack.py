@@ -4,6 +4,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import argparse
+import hashlib
 import json
 import re
 import subprocess
@@ -50,9 +51,9 @@ def require_repository(mapping, name):
 
 def load_stack(path):
     try:
-        with path.open(encoding="utf-8") as stack_file:
-            stack = json.load(stack_file)
-    except (OSError, json.JSONDecodeError) as error:
+        manifest_bytes = path.read_bytes()
+        stack = json.loads(manifest_bytes)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise StackError(f"cannot read stack manifest {path}: {error}") from error
 
     if not isinstance(stack, dict):
@@ -83,6 +84,9 @@ def load_stack(path):
         )
 
     values = {
+        "TTLANG_EMULE_STACK_MANIFEST_SHA256": hashlib.sha256(
+            manifest_bytes
+        ).hexdigest(),
         "TTLANG_COMPILER_REPOSITORY": require_repository(compiler, "compiler"),
         "TTLANG_COMPILER_BASE_COMMIT": require_sha(compiler, "base_commit", "compiler"),
         "TTLANG_EMULE_REPOSITORY": "",
