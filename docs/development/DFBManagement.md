@@ -463,15 +463,17 @@ overwrite data still in use. Once both readers reach `ttl.reconfigure_dfbs(...)`
 its synchronization establishes that the reads are complete and its state reset
 makes a separate synchronized pop unnecessary.
 
-For a repeated state-discarding reconfiguration sequence, structured static
-loop bounds may locate a conditional external call between the same two
+For a repeated reconfiguration sequence, structured static loop bounds may
+locate a conditional external call between the same two
 reconfiguration calls in every iteration. The bounds contribute access ordering
 and maximum execution counts; the normal capacity, wait-progress, pointer
-ownership, and operation-order checks still apply. Every reconfiguration in the
-repeated sequence must permit state discard. A lifecycle that begins after a
-conditional non-repeated reconfiguration call must use the same condition so it
-cannot access a descriptor that was not configured. Accesses ended by a
-conditional state-discarding call must use that condition as well.
+ownership, and operation-order checks still apply. The reconfiguration that
+terminates each bounded external lifecycle must permit state discard and follow
+every possible access in that lifecycle. Other reconfigurations need not permit
+state discard. A lifecycle that begins after a conditional non-repeated
+reconfiguration call must use the same condition so it cannot access a
+descriptor that was not configured. Accesses ended by a conditional
+state-discarding call must use that condition as well.
 
 The allocation conflict graph permits two lifecycle epochs to share a physical
 index only when their per-node active epochs are disjoint and their static

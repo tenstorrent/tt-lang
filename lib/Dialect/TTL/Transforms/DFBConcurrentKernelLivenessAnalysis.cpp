@@ -1670,9 +1670,10 @@ static AccessRuns collectAccessRuns(
   return runs;
 }
 
-// Adds structural upper bounds for conditional opaque calls only when every
-// repeated reconfiguration discards DFB state. These bounds support event
-// ordering and producer capacity; other protocol proofs retain exact runs.
+// Adds structural upper bounds for conditional opaque calls when the bound can
+// be partitioned across every repeated reconfiguration. These bounds establish
+// event ordering only; lifecycle completion separately requires a terminal
+// state-discarding boundary.
 static AccessRuns collectBoundedExternalAccessRuns(
     ArrayRef<DFBLogicalLifecycle> logicalDFBs,
     ArrayRef<ValidatedDFBReconfiguration> reconfigurations,
@@ -1680,10 +1681,7 @@ static AccessRuns collectBoundedExternalAccessRuns(
     const AccessRuns &exactAccessRuns, bool includeUnknownDomains) {
   AccessRuns boundedRuns = exactAccessRuns;
   if (reconfigurations.empty() ||
-      reconfigurations.front().executionCount <= 1 ||
-      !llvm::all_of(reconfigurations, [](const auto &reconfiguration) {
-        return reconfiguration.boundary.getDiscardDfbState();
-      })) {
+      reconfigurations.front().executionCount <= 1) {
     return boundedRuns;
   }
 
@@ -4799,13 +4797,6 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
   // lifecycles in every loop iteration. Reject accesses that cannot be reduced
   // from a dispatch-wide count to a fixed count per reconfiguration execution.
   std::optional<std::uint64_t> repeatedReconfigurationCount;
-  // Structural bounds are sufficient only when no boundary must preserve the
-  // possibly executed state for its successor configuration.
-  bool everyReconfigurationDiscardsState =
-      !reconfigurations.empty() &&
-      llvm::all_of(reconfigurations, [](const auto &reconfiguration) {
-        return reconfiguration.boundary.getDiscardDfbState();
-      });
   if (!reconfigurations.empty() &&
       reconfigurations.front().executionCount > 1) {
     repeatedReconfigurationCount = reconfigurations.front().executionCount;
@@ -4817,33 +4808,6 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
       }
       return {DFBLifecycleCompletionFailureReason::UnsupportedControlFlow,
               synchronizedResets.front().participantOperations.front()};
-    }
-    for (const DFBAccessOccurrence &access : logicalDFB.accesses) {
-      if (!mayContainLaunchNode(access.launchDomain, node,
-                                includeUnknownDomains)) {
-        continue;
-      }
-      auto executionCountIt = executionCounts.find(&access);
-      assert(executionCountIt != executionCounts.end() &&
-             "every DFB access must have an execution-count fact");
-      if (executionCountIt->second && *executionCountIt->second == 0) {
-        continue;
-      }
-      bool exactRunMatches = hasFixedAccessCountForReconfiguration(
-          access, reconfigurations.front(), accessRuns);
-      bool discardedExternalRunMatchesForOrdering =
-          everyReconfigurationDiscardsState && isExternalCallAccess(access) &&
-          hasPartitionableExternalAccessBound(access, reconfigurations.front(),
-                                              boundedExternalAccessRuns);
-      if (!exactRunMatches && !discardedExternalRunMatchesForOrdering) {
-        DFBPerNodeLifetime &lifetime = lifetimes.emplace_back();
-        lifetime.node = node;
-        if (lifetimeDiagnostics) {
-          lifetimeDiagnostics->emplace_back();
-        }
-        return {DFBLifecycleCompletionFailureReason::UnsupportedControlFlow,
-                access.operation};
-      }
     }
   }
 
@@ -4970,21 +4934,41 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
             epochAccesses.back().front()->operation};
   }
 
-  for (const OrderedLifecycleBoundary &boundary : boundaries) {
-    if (!boundary.discardsDFBState()) {
-      continue;
-    }
-    Operation *conditionalMismatch = nullptr;
-    for (ArrayRef<const DFBAccessOccurrence *> accesses : epochAccesses) {
-      conditionalMismatch = findConditionalExecutionMismatch(
-          boundary, accesses, node, accessRuns, domainState);
-      if (conditionalMismatch) {
-        break;
+  if (repeatedReconfigurationCount) {
+    std::optional<unsigned> finalAccessBoundaryInterval;
+    for (auto [boundaryInterval, intervalAccesses] :
+         llvm::enumerate(epochAccesses)) {
+      if (!intervalAccesses.empty()) {
+        finalAccessBoundaryInterval = boundaryInterval;
       }
     }
-    if (conditionalMismatch) {
-      return {DFBLifecycleCompletionFailureReason::UnsupportedControlFlow,
-              conditionalMismatch};
+    if (finalAccessBoundaryInterval) {
+      assert(*finalAccessBoundaryInterval < boundaries.size() &&
+             "repeated DFB accesses must precede a reconfiguration boundary");
+      bool finalBoundaryDiscardsState =
+          boundaries[*finalAccessBoundaryInterval].discardsDFBState();
+      for (const DFBAccessOccurrence &access : logicalDFB.accesses) {
+        if (!mayContainLaunchNode(access.launchDomain, node,
+                                  includeUnknownDomains)) {
+          continue;
+        }
+        auto executionCountIt = executionCounts.find(&access);
+        assert(executionCountIt != executionCounts.end() &&
+               "every DFB access must have an execution-count fact");
+        if (executionCountIt->second && *executionCountIt->second == 0) {
+          continue;
+        }
+        bool exactRunMatches = hasFixedAccessCountForReconfiguration(
+            access, reconfigurations.front(), accessRuns);
+        bool terminatedExternalRunMatchesForOrdering =
+            finalBoundaryDiscardsState && isExternalCallAccess(access) &&
+            hasPartitionableExternalAccessBound(
+                access, reconfigurations.front(), boundedExternalAccessRuns);
+        if (!exactRunMatches && !terminatedExternalRunMatchesForOrdering) {
+          return {DFBLifecycleCompletionFailureReason::UnsupportedControlFlow,
+                  access.operation};
+        }
+      }
     }
   }
 
@@ -5013,6 +4997,14 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
         terminalBoundary &&
         (terminalBoundary->reset ||
          (terminalBoundary->discardsDFBState() && !hasLaterAccesses));
+    if (terminatesDFBState) {
+      if (Operation *conditionalMismatch = findConditionalExecutionMismatch(
+              *terminalBoundary, lifecycleAccesses, node, accessRuns,
+              domainState)) {
+        return {DFBLifecycleCompletionFailureReason::UnsupportedControlFlow,
+                conditionalMismatch};
+      }
+    }
     bool useExternalProducerBounds =
         terminalBoundary && terminalBoundary->reconfiguration &&
         terminatesDFBState && isExternalProducerOnlyProtocol(lifecycleAccesses);
