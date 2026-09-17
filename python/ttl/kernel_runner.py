@@ -2886,13 +2886,21 @@ def build_dfb_reconfiguration_runtime_resources(
         storage_index,
         required_bytes_by_core,
     ) in required_bytes_by_core_by_storage.items():
-        cores_by_required_bytes = {}
+        unbacked_required_bytes_by_core = {}
         for core, required_bytes in required_bytes_by_core.items():
             if (storage_index, core) in backing_by_storage_and_core:
                 continue
-            cores_by_required_bytes.setdefault(required_bytes, []).append(core)
-        for required_bytes, cores in cores_by_required_bytes.items():
-            pending_allocations.append((storage_index, required_bytes, tuple(cores)))
+            unbacked_required_bytes_by_core[core] = required_bytes
+        if unbacked_required_bytes_by_core:
+            pending_allocations.append(
+                (
+                    storage_index,
+                    max(unbacked_required_bytes_by_core.values()),
+                    tuple(unbacked_required_bytes_by_core),
+                )
+            )
+    # A physical storage index must remain one TT-Metal allocation. Splitting
+    # it by per-core capacity fragments dependency-constrained L1 ranges.
     # TT-Metal needs one common free address across all selected cores, so
     # allocate the widest ranges before narrower allocations fragment them.
     pending_allocations.sort(
