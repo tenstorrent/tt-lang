@@ -27,6 +27,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Set,
 ttnn = None  # Lazy-loaded via _ensure_ttnn()
 
 _STATIC_DFB_PACKING_SEARCH_STATE_LIMIT = 1_000_000
+_L1_SHARDED_STORAGE_ALIGNMENT_BYTES = 32
 
 
 def _ensure_ttnn():
@@ -2162,7 +2163,7 @@ def _allocate_l1_sharded_storage_tensor(
     core_ranges: Any, num_bytes: int, device: Any, *, zero_initialize: bool = False
 ):
     """Allocate row-major L1 storage with one 4-byte element per storage word."""
-    aligned_bytes = _align_up(num_bytes, 32)
+    aligned_bytes = _align_up(num_bytes, _L1_SHARDED_STORAGE_ALIGNMENT_BYTES)
     elements_per_core = max(1, aligned_bytes // 4)
     num_cores = core_ranges.num_cores()
     shard_spec = ttnn.ShardSpec(
@@ -2793,9 +2794,19 @@ def build_dfb_reconfiguration_runtime_resources(
         for boundary_ordinal in plan.boundary_ordinals
     }
 
-    for dfb_index, scratch_bytes in scratch_bytes_by_index.items():
-        if dfb_index in scratch_tensors:
-            continue
+    # Larger per-core extents fit fewer common free intervals across their cores.
+    pending_scratch_allocations = sorted(
+        (
+            (dfb_index, scratch_bytes)
+            for dfb_index, scratch_bytes in scratch_bytes_by_index.items()
+            if dfb_index not in scratch_tensors
+        ),
+        key=lambda request: (
+            -_align_up(request[1], _L1_SHARDED_STORAGE_ALIGNMENT_BYTES),
+            request[0],
+        ),
+    )
+    for dfb_index, scratch_bytes in pending_scratch_allocations:
         scratch_tensors[dfb_index] = _allocate_l1_sharded_storage_tensor(
             _make_singleton_core_ranges(sorted(scratch_nodes_by_index[dfb_index])),
             scratch_bytes,
