@@ -14,6 +14,7 @@
 #include "ttlang/Analysis/ValueOriginAnalysis.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
+#include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Analysis/SliceAnalysis.h"
@@ -38,14 +39,6 @@ namespace mlir::tt::ttl {
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
 namespace {
-
-// Attribute names. These are part of the frontend / runtime contract and keep
-// the `ttl.` prefix even though this pass runs at the TTKernel level:
-// `ttl.launch_grid` (the launch extent) is set on the module by the Python
-// frontend, and `ttl.core_coord` is read back by the ttnn runtime bridge for
-// dispatch.
-constexpr llvm::StringLiteral LaunchGridAttrName = "ttl.launch_grid";
-constexpr llvm::StringLiteral CoreCoordAttrName = "ttl.core_coord";
 
 /// Parse the launch extent from an i64 array attribute into (gridX, gridY).
 ///
@@ -186,7 +179,7 @@ static void emitCoreClone(func::FuncOp func, int64_t x, int64_t y,
   replaceCoordReads<ttk::MyLogicalYOp>(clone, y);
 
   clone->setAttr(
-      CoreCoordAttrName,
+      kCoreCoordAttrName,
       moduleBuilder.getArrayAttr({moduleBuilder.getI64ArrayAttr({x, y})}));
   moduleBuilder.insert(clone);
 }
@@ -196,16 +189,16 @@ struct TTKernelSpecializeCoresPass
   void runOnOperation() override {
     ModuleOp module = getOperation();
 
-    auto gridAttr = module->getAttrOfType<ArrayAttr>(LaunchGridAttrName);
+    auto gridAttr = module->getAttrOfType<ArrayAttr>(kLaunchGridAttrName);
     if (!gridAttr) {
-      module.emitOpError() << "requires a `" << LaunchGridAttrName
+      module.emitOpError() << "requires a `" << kLaunchGridAttrName
                            << "` module attribute";
       signalPassFailure();
       return;
     }
     FailureOr<std::pair<int64_t, int64_t>> grid = readGrid(gridAttr);
     if (failed(grid)) {
-      module.emitOpError() << "`" << LaunchGridAttrName
+      module.emitOpError() << "`" << kLaunchGridAttrName
                            << "` must be a length-2 array of positive i64 "
                               "extents";
       signalPassFailure();

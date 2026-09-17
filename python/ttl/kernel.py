@@ -325,7 +325,13 @@ def _encode_identity_capture(
     encoded = _encode_identity_literal(value)
     if encoded is not None:
         return encoded
+    if isinstance(value, KernelKind):
+        return f"kernel-kind:{value.value}".encode("utf-8")
     if isinstance(value, Kernel):
+        if value._implicit_role is not None:
+            return (
+                f"kernel-implicit:{value.kind.value}:{value._implicit_role}"
+            ).encode("utf-8")
         return f"kernel-kind:{value.kind.value}".encode("utf-8")
     if is_ttnn_global_semaphore(value):
         address = get_ttnn_global_semaphore_address(value)
@@ -405,7 +411,7 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
         identity_captures.update(
             (name, value)
             for name, value in referenced_values.items()
-            if isinstance(value, Kernel)
+            if isinstance(value, (Kernel, KernelKind))
             or callable(getattr(value, "_operation_identity_capture", None))
         )
         bound_conditions = _bind_dispatch_conditions(
