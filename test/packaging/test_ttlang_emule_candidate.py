@@ -130,5 +130,6 @@ def test_candidate_workflow_validates_without_publishing():
     assert "TTLANG_EMULE_SOURCE_REPOSITORY" in workflow
     assert "TTLANG_EMULE_SOURCE_TOKEN" in workflow
     assert "packages: read" in workflow
+    assert workflow.count("fetch-depth: 0") == 2
     assert "docker push" not in workflow
     assert "packages: write" not in workflow
