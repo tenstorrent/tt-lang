@@ -1636,7 +1636,6 @@ class _DFBReconfigurationScratchSegment:
     tensor: Any
     nodes: Tuple[Tuple[int, int], ...]
     allocation_bytes: int
-    byte_offset: int = 0
 
 
 @dataclass
@@ -2878,7 +2877,6 @@ def build_dfb_reconfiguration_runtime_resources(
             backing_by_storage_and_core[storage_core] = (
                 existing_tensor,
                 required_bytes,
-                0,
             )
 
     pending_allocations = []
@@ -2901,45 +2899,39 @@ def build_dfb_reconfiguration_runtime_resources(
                     tuple(unbacked_required_bytes_by_core),
                 )
             )
+    # A physical storage index must remain one TT-Metal allocation. Splitting
+    # it by per-core capacity fragments dependency-constrained L1 ranges.
+    # TT-Metal needs one common free address across all selected cores, so
+    # allocate the widest ranges before narrower allocations fragment them.
+    pending_allocations.sort(
+        key=lambda allocation: (-len(allocation[2]), -allocation[1], allocation[0])
+    )
+
     scratch_tensors = []
     owned_l1_buffer_addresses = set()
-    arena_offsets_by_core = {core: 0 for core in core_keys}
-    storage_offsets_by_core = {}
-    arena_cores = set()
-    for storage_index, required_bytes, cores in sorted(pending_allocations):
-        aligned_bytes = _align_up(required_bytes, 32)
-        offsets_by_core = {core: arena_offsets_by_core[core] for core in cores}
-        for core in cores:
-            arena_offsets_by_core[core] += aligned_bytes
-        storage_offsets_by_core[storage_index] = offsets_by_core
-        arena_cores.update(cores)
-
-    if arena_cores:
-        scratch_arena = _allocate_l1_sharded_storage_tensor(
-            _make_singleton_core_ranges(sorted(arena_cores)),
-            max(arena_offsets_by_core.values()),
+    for storage_index, required_bytes, cores in pending_allocations:
+        scratch_tensor = _allocate_l1_sharded_storage_tensor(
+            _make_singleton_core_ranges(sorted(cores)),
+            required_bytes,
             resource_device,
         )
-        scratch_tensors.append(scratch_arena)
-        addresses_by_core = _l1_buffer_addresses_by_core(scratch_arena, resource_device)
-        tensor_addresses_by_identity[id(scratch_arena)] = addresses_by_core
-        missing_cores = arena_cores.difference(addresses_by_core)
+        scratch_tensors.append(scratch_tensor)
+        addresses_by_core = _l1_buffer_addresses_by_core(
+            scratch_tensor, resource_device
+        )
+        tensor_addresses_by_identity[id(scratch_tensor)] = addresses_by_core
+        missing_cores = set(cores).difference(addresses_by_core)
         if missing_cores:
             raise RuntimeError(
-                "DFB scratch arena has no L1 address for launch nodes "
-                f"{sorted(missing_cores)}"
+                f"storage[{storage_index}] scratch has no L1 address for launch "
+                f"nodes {sorted(missing_cores)}"
             )
-        owned_l1_buffer_addresses.update(
-            addresses_by_core[core] for core in arena_cores
-        )
-        for storage_index, required_bytes, cores in pending_allocations:
-            offsets_by_core = storage_offsets_by_core[storage_index]
-            for core in cores:
-                backing_by_storage_and_core[(storage_index, core)] = (
-                    scratch_arena,
-                    required_bytes,
-                    offsets_by_core[core],
-                )
+        owned_l1_buffer_addresses.update(addresses_by_core[core] for core in cores)
+        for core in cores:
+            backing_by_storage_and_core[(storage_index, core)] = (
+                scratch_tensor,
+                required_bytes,
+            )
 
     scratch_segments_by_index = {}
     scratch_addresses_by_index = {}
@@ -2953,10 +2945,10 @@ def build_dfb_reconfiguration_runtime_resources(
         cores_by_tensor_identity = {}
         tensor_by_identity = {}
         for core in scratch_layout_by_core:
-            scratch_tensor, allocation_bytes, byte_offset = backing_by_storage_and_core[
+            scratch_tensor, allocation_bytes = backing_by_storage_and_core[
                 (storage_index, core)
             ]
-            backing_identity = (id(scratch_tensor), allocation_bytes, byte_offset)
+            backing_identity = (id(scratch_tensor), allocation_bytes)
             tensor_by_identity[backing_identity] = scratch_tensor
             cores_by_tensor_identity.setdefault(backing_identity, []).append(core)
         segments = tuple(
@@ -2964,7 +2956,6 @@ def build_dfb_reconfiguration_runtime_resources(
                 tensor=tensor_by_identity[backing_identity],
                 nodes=tuple(sorted(cores)),
                 allocation_bytes=backing_identity[1],
-                byte_offset=backing_identity[2],
             )
             for backing_identity, cores in sorted(
                 cores_by_tensor_identity.items(), key=lambda item: min(item[1])
@@ -2981,7 +2972,7 @@ def build_dfb_reconfiguration_runtime_resources(
                 )
                 tensor_addresses_by_identity[tensor_identity] = segment_addresses
             for core in segment.nodes:
-                addresses_by_core[core] = segment_addresses[core] + segment.byte_offset
+                addresses_by_core[core] = segment_addresses[core]
         scratch_addresses_by_index[dfb_index] = addresses_by_core
 
     for dfb_index, scratch_layout_by_core in scratch_layout_by_core_by_dfb.items():
@@ -4002,7 +3993,6 @@ def _build_dfb_descriptors(
                     _physical_dfb_storage_index(cb_configs[dfb_index]),
                     id(segment.tensor),
                     segment.allocation_bytes,
-                    segment.byte_offset,
                 )
                 backing_group = reconfiguration_members_by_backing_by_core.setdefault(
                     backing_identity,
@@ -4072,13 +4062,11 @@ def _build_dfb_descriptors(
         _storage_index,
         _tensor_identity,
         allocation_bytes,
-        address_offset,
     ), backing_group in sorted(
         reconfiguration_members_by_backing_by_core.items(),
         key=lambda item: (
             item[0][0],
             item[0][2],
-            item[0][3],
             min(item[1].members_by_core),
         ),
     ):
@@ -4100,7 +4088,6 @@ def _build_dfb_descriptors(
             backing_descriptor = ttnn.cb_descriptor_from_sharded_tensor(
                 min(member_indices),
                 backing_group.tensor,
-                address_offset=address_offset,
                 total_size=allocation_bytes,
                 core_ranges=source_ranges,
             )
