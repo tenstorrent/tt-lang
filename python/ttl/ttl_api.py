@@ -1028,8 +1028,7 @@ class CompiledTTNNKernel:
         compiled_kernel.__dict__.pop("_runtime_resource_finalizer", None)
         return compiled_kernel
 
-    def __call__(self, *args):
-        """Execute the kernel with the given tensors."""
+    def _invoke(self, args, *, prepared_sram_resources, prepare_only):
         if len(args) != self.num_tensors:
             raise ValueError(f"Expected {self.num_tensors} tensors, got {len(args)}")
 
@@ -1072,7 +1071,6 @@ class CompiledTTNNKernel:
             )
             kernel_specs.append(spec)
 
-        # Use shared kernel execution logic.
         return run_kernel_on_device(
             kernel_specs=kernel_specs,
             tensors=list(args),
@@ -1093,6 +1091,44 @@ class CompiledTTNNKernel:
             sram_allocation_report=self.sram_allocation_report,
             runtime_resource_cache=self._runtime_resource_cache,
             device=device,
+            prepared_sram_resources=prepared_sram_resources,
+            prepare_only=prepare_only,
+        )
+
+    def __call__(self, *args):
+        """Execute the kernel with the given tensors."""
+        from ._persistent_storage import current_operation_binding
+
+        return self._invoke(
+            args,
+            prepared_sram_resources=current_operation_binding(self),
+            prepare_only=False,
+        )
+
+    def prepare_device_program(self, *args, prepared_sram_resources):
+        """Compile and finalize the device program without dispatching it."""
+        return self._invoke(
+            args,
+            prepared_sram_resources=prepared_sram_resources,
+            prepare_only=True,
+        )
+
+    def prepare_sram_requirements(self, *args):
+        """Return immutable SRAM requirements without allocating or dispatching."""
+        if len(args) != self.num_tensors:
+            raise ValueError(f"Expected {self.num_tensors} tensors, got {len(args)}")
+        operation_cores = tuple(
+            (int(core.x), int(core.y))
+            for core in ttnn.corerange_to_cores(self.core_ranges, row_wise=True)
+        )
+        from ._sram_requirements import prepare_sram_operation
+
+        return prepare_sram_operation(
+            name=self.operation_name,
+            tensors=args,
+            configs=self.cb_configs,
+            cores=operation_cores,
+            ttnn_api=ttnn,
         )
 
 
@@ -3832,9 +3868,7 @@ def _make_operation_wrapper(
     runtime_resource_cache = KernelRuntimeResourceCache()
     post_semaphore_cache_entry: Optional[_PostSemaphoreCacheEntry] = None
 
-    @functools.wraps(function)
-    def _wrapper(*args, **kwargs):
-        nonlocal post_semaphore_cache_entry
+    def resolve_compiled_operation(args, kwargs):
         kwargs = dict(kwargs)
         opts_str = kwargs.pop("options", options)
         runtime_args = args
@@ -3924,6 +3958,15 @@ def _make_operation_wrapper(
                 if compiled_kernel is not None:
                     cache[cache_key] = compiled_kernel
 
+        return compiled_kernel, runtime_args, compiler_options, make_cache_key
+
+    @functools.wraps(function)
+    def _wrapper(*args, **kwargs):
+        nonlocal post_semaphore_cache_entry
+        compiled_kernel, runtime_args, compiler_options, make_cache_key = (
+            resolve_compiled_operation(args, kwargs)
+        )
+
         if compiled_kernel is None or not _should_execute():
             return None
 
@@ -3972,8 +4015,18 @@ def _make_operation_wrapper(
 
         return result
 
+    def prepare_operation(*args, **kwargs):
+        compiled_kernel, runtime_args, _, _ = resolve_compiled_operation(args, kwargs)
+        if compiled_kernel is None:
+            raise RuntimeError(
+                "operation preparation did not produce a compiled kernel"
+            )
+        return compiled_kernel, runtime_args
+
     attach_runtime_resource_finalizer(_wrapper, runtime_resource_cache)
+    _wrapper._ttlang_prepare_operation = prepare_operation
     wrapped = with_persistent_storage(_wrapper)
+    wrapped._ttlang_prepare_operation = prepare_operation
     wrapped.__wrapped__ = function
     return wrapped
 

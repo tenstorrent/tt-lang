@@ -138,6 +138,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     kernel.py
     kernel_runner.py
     _sram_domains.py
+    _sram_placement.py
     _sram_requirements.py
     _persistent_storage.py
     sram.py
