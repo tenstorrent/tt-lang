@@ -3099,16 +3099,17 @@ def test_reconfiguration_runtime_storage_backs_only_invariant_local_descriptors(
     )
 
     assert [allocation[1:] for allocation in scratch_allocations] == [
-        (4096, device),
-        (2048, device),
+        (6144, device),
     ]
-    assert resources.scratch_tensors == [scratch_tensor, scratch_tensor]
+    assert resources.scratch_tensors == [scratch_tensor]
     assert set(resources.scratch_segments_by_index) == {0, 1}
+    assert resources.scratch_segments_by_index[0][0].byte_offset == 4096
+    assert resources.scratch_segments_by_index[1][0].byte_offset == 0
     assert len(host_configurations) == 1
     encoded = host_configurations[0][0]
     assert int(encoded[1]) == 1
     assert tuple(int(value) for value in encoded[:8]) == (
-        0x8000,
+        0x9000,
         1,
         0,
         0,
