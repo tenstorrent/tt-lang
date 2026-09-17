@@ -704,6 +704,47 @@ def test_joint_allocation_failure_rolls_back_and_retries(runtime):
     storage.close()
 
 
+# Publication failures discard provisional pools and operation bindings before
+# the same prepared operation is retried.
+@pytest.mark.parametrize("stage", ["record", "wait"])
+def test_joint_publication_failure_rolls_back_and_retries(runtime, stage):
+    from ttl._persistent_storage import (
+        current_operation_binding,
+        with_persistent_storage,
+    )
+
+    observed_bindings = []
+
+    def prepare_program(_state, resources):
+        observed_bindings.append(resources)
+        return SimpleNamespace(
+            max_program_config_size_bytes=4096,
+            max_kernel_binary_size_bytes=8192,
+        )
+
+    storage = SRAMStorage(device=runtime.device)
+    state = declare(storage)
+    operation, compiled_kernel = preparable_operation(
+        "publication-failure", prepare_program=prepare_program
+    )
+    storage.prepare_operation(operation, state)
+    runtime.failure.update(stage=stage, at=0)
+
+    with pytest.raises(RuntimeError, match=f"injected {stage} failure"):
+        storage.allocate()
+    assert all(not resource.allocated for resource in runtime.allocations)
+
+    runtime.failure.update(stage=None, at=0)
+    storage.allocate()
+    active_binding = with_persistent_storage(
+        lambda value: current_operation_binding(compiled_kernel)
+    )(state)
+    assert len(observed_bindings) == 2
+    assert active_binding is observed_bindings[1]
+    assert active_binding is not observed_bindings[0]
+    storage.close()
+
+
 def test_joint_allocation_rolls_back_invalid_measured_capacity(runtime, monkeypatch):
     storage = SRAMStorage(device=runtime.device)
     state = declare(storage)
@@ -722,14 +763,27 @@ def test_joint_allocation_rolls_back_invalid_measured_capacity(runtime, monkeypa
     storage.close()
 
 
-@pytest.mark.parametrize("configuration_bytes", [4096, 4097])
-def test_joint_program_capacity_boundary(runtime, configuration_bytes):
+@pytest.mark.parametrize(
+    ("capacity_name", "limit_bytes"),
+    [("configuration", 4096), ("kernel binary", 8192)],
+)
+@pytest.mark.parametrize("excess_bytes", [0, 1], ids=["exact", "overflow"])
+def test_joint_program_capacity_boundary(
+    runtime, capacity_name, limit_bytes, excess_bytes
+):
+    configuration_bytes = 4096
+    kernel_binary_bytes = 8192
+    if capacity_name == "configuration":
+        configuration_bytes += excess_bytes
+    else:
+        kernel_binary_bytes += excess_bytes
+
     def prepare_program(_state, _resources):
-        if configuration_bytes > 4096:
-            raise RuntimeError("program capacity exceeded")
+        if excess_bytes:
+            raise RuntimeError(f"{capacity_name} capacity exceeded")
         return SimpleNamespace(
             max_program_config_size_bytes=configuration_bytes,
-            max_kernel_binary_size_bytes=8192,
+            max_kernel_binary_size_bytes=kernel_binary_bytes,
         )
 
     storage = SRAMStorage(device=runtime.device)
@@ -737,7 +791,7 @@ def test_joint_program_capacity_boundary(runtime, configuration_bytes):
     operation, _ = preparable_operation("program-boundary", 2048, prepare_program)
     storage.prepare_operation(operation, state)
 
-    if configuration_bytes == 4096:
+    if not excess_bytes:
         storage.allocate()
         assert storage.allocation_metrics()["programs"] == (
             {
@@ -746,7 +800,7 @@ def test_joint_program_capacity_boundary(runtime, configuration_bytes):
             },
         )
     else:
-        with pytest.raises(RuntimeError, match="program capacity exceeded"):
+        with pytest.raises(RuntimeError, match=f"{capacity_name} capacity exceeded"):
             storage.allocate()
         assert not any(event[0] == "initialize" for event in runtime.events)
         assert all(not resource.allocated for resource in runtime.allocations)
