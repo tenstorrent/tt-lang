@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "phases": [
+    {
+      "name": "compiler-core",
+      "layer": "compiler",
+      "mode": "compiler_only",
+      "command": [
+        "cmake",
+        "--build",
+        "{build_dir}",
+        "--target",
+        "check-ttlang"
+      ],
+      "environment": {
+        "TTLANG_COMPILE_ONLY": "1"
+      }
+    },
+    {
+      "name": "compiler-python-lit",
+      "layer": "compiler",
+      "mode": "compiler_only",
+      "command": [
+        "cmake",
+        "--build",
+        "{build_dir}",
+        "--target",
+        "check-ttlang-python-lit"
+      ],
+      "environment": {
+        "TTLANG_COMPILE_ONLY": "1"
+      }
+    },
+    {
+      "name": "emule-reference",
+      "layer": "runtime",
+      "mode": "emulated_execution",
+      "command": [
+        "{repo_root}/scripts/run-tt-lang-emule-examples.py"
+      ],
+      "environment": {}
+    },
+    {
+      "name": "python-pytest-device-execution",
+      "layer": "mixed",
+      "mode": "inventory_only",
+      "reason": "The suite mixes compiler coverage with device-specific execution and must be qualified case by case before running through the emulator."
+    },
+    {
+      "name": "me2e-device-execution",
+      "layer": "mixed",
+      "mode": "inventory_only",
+      "reason": "The middle end-to-end suite assumes broader device and runtime behavior than the supported emulator reference suite."
+    },
+    {
+      "name": "tutorial-device-execution",
+      "layer": "mixed",
+      "mode": "inventory_only",
+      "reason": "Tutorials include single-device, mesh, and collective workloads that require separate emulator qualification."
+    }
+  ]
+}

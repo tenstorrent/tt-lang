@@ -85,6 +85,22 @@ python3 scripts/run-tt-lang-emule-examples.py
 Use `--list` to inspect the suite or `--example NAME` to run one case. CI can
 reuse a promoted artifact with `--runtime-image IMAGE`.
 
+The complete validation plan deliberately separates compilation from emulated
+execution:
+
+```bash
+python3 scripts/run-tt-lang-emule-tests.py --list
+python3 scripts/run-tt-lang-emule-tests.py --build-dir build
+```
+
+`compiler-core` and `compiler-python-lit` validate the compiler with
+`TTLANG_COMPILE_ONLY=1`; they do not need, or test, the emulator. The
+`emule-reference` phase runs the four qualified programs above. Broad Python
+device pytest, me2e, and tutorial suites are listed as inventory-only because
+they combine compiler checks with runtime, topology, and device assumptions.
+They must be qualified case by case instead of being treated as supported just
+because the compiler-only suites pass.
+
 Automation can select an already-built, versioned artifact explicitly instead
 of relying on the manifest-derived local tag:
 
