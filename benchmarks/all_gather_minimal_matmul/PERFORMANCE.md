@@ -21,6 +21,10 @@ The current bidirectional-L1 operation has compiled with the current TT-Lang
 build and TT-Metal fabric runtime, but the reduced four-device correctness case
 has timed out on both the ring and line configurations. No current ring/line
 timing is therefore reported. The 155-row sweep remains pending correctness.
+The same reduced case completes under `FABRIC_2D` while retaining the ring
+transfer graph (47.94 us device interval); this is a routing sanity check, not
+an accepted performance result. The full-size case exceeded the worker limit
+during JIT compilation and has no timing yet.
 
 ## Results
 
