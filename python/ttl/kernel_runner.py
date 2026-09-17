@@ -397,6 +397,43 @@ class PreparedSRAMResources:
     uniform_arena: Optional[Any]
     core_arenas: Tuple[Tuple[Tuple[int, int], Any], ...]
     control_tensors: Tuple[Any, ...]
+    late_bound_tensor_indices: Tuple[int, ...] = ()
+
+    def __post_init__(self):
+        indices = self.late_bound_tensor_indices
+        if not isinstance(indices, tuple) or any(
+            type(index) is not int or index < 0 for index in indices
+        ):
+            raise TypeError("late-bound tensor indices must be nonnegative integers")
+        if len(set(indices)) != len(indices):
+            raise ValueError("late-bound tensor indices must be distinct")
+
+
+def _prepared_sram_requirements_match(expected, actual, late_bound_tensor_indices):
+    from ._sram_requirements import SRAMOwnerKind
+
+    if len(expected.requirements) != len(actual.requirements):
+        return False
+    normalized_requirements = []
+    late_bound_tensor_indices = set(late_bound_tensor_indices)
+    for expected_requirement, actual_requirement in zip(
+        expected.requirements, actual.requirements
+    ):
+        if expected_requirement.owner != actual_requirement.owner:
+            return False
+        if (
+            expected_requirement.owner.kind is SRAMOwnerKind.TENSOR_ARGUMENT
+            and expected_requirement.owner.index in late_bound_tensor_indices
+        ):
+            if len(expected_requirement.fixed_bases) != len(
+                actual_requirement.fixed_bases
+            ):
+                return False
+            expected_requirement = replace(
+                expected_requirement, fixed_bases=actual_requirement.fixed_bases
+            )
+        normalized_requirements.append(expected_requirement)
+    return replace(expected, requirements=tuple(normalized_requirements)) == actual
 
 
 @dataclass(frozen=True)
@@ -4482,9 +4519,10 @@ def _run_kernel_on_device_impl(
         cores=operation_cores,
         ttnn_api=ttnn,
     )
-    if (
-        prepared_sram_resources is not None
-        and prepared_sram_resources.requirements != prepared_sram
+    if prepared_sram_resources is not None and not _prepared_sram_requirements_match(
+        prepared_sram_resources.requirements,
+        prepared_sram,
+        prepared_sram_resources.late_bound_tensor_indices,
     ):
         raise ValueError(
             "prepared SRAM resources do not match the operation requirements"
