@@ -69,13 +69,34 @@ This is not the Python simulator with a different tensor implementation. The
 script imports the real `ttl` and `ttnn` packages, TT-Lang compiles each
 operation, and tt-metal dispatches the generated kernels to tt-emule.
 
-By default, the launcher fetches its pinned emulator revision with the host's
-Git client. To use another compatible emulator revision, set
-`TTLANG_EMULE_RUNTIME_SOURCE_DIR`, `TTLANG_EMULE_RUNTIME_COMMIT`, and
-`TTLANG_EMULE_RUNTIME_METAL_COMMIT`. The source must be a Git checkout at the
-selected revision. The launcher exports that commit into a temporary build
-context, excluding Git metadata and local files. This keeps host Git
-credentials out of the Docker build.
+Set `TTLANG_EMULE_RUNTIME_SOURCE_URL` to fetch the pinned emulator revision
+with the host's Git client, or set `TTLANG_EMULE_RUNTIME_SOURCE_DIR` to an
+existing checkout. To test another compatible revision, also set
+`TTLANG_EMULE_RUNTIME_COMMIT` and `TTLANG_EMULE_RUNTIME_METAL_COMMIT`. A local
+source must be a Git checkout at the selected revision. The launcher exports
+that commit into a temporary build context, excluding Git metadata and local
+files. This keeps host Git credentials out of the Docker build.
+
+The default compiler, emulator commit, tt-metal, container, and target inputs
+are recorded together in `config/tt-lang-emule-stack.json`. The source
+repository is supplied separately with `TTLANG_EMULE_RUNTIME_SOURCE_URL`, or as
+an exact local checkout with `TTLANG_EMULE_RUNTIME_SOURCE_DIR`; this keeps
+cross-repository source coordinates and credentials out of the public
+manifest. The launcher validates that the current TT-Lang checkout contains the
+compiler baseline. It also verifies the emulator checkout commit, the P150
+descriptor, and the emulator's exact tt-metal pin before building. Run the same
+checks directly with:
+
+```bash
+python3 scripts/tt-lang-emule-stack.py \
+  --manifest config/tt-lang-emule-stack.json \
+  validate --compiler-source . --emulator-source /path/to/emulator
+```
+
+Environment overrides remain available for compatibility experiments. An
+override is a candidate stack rather than the repository's supported default;
+its revisions must be recorded with the resulting test evidence before it is
+promoted into the manifest.
 
 The backend requires a working Docker-compatible daemon. Its image is Linux
 amd64 because tt-emule JITs x86-64 shared objects. On Apple Silicon, use Docker

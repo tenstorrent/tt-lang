@@ -152,7 +152,7 @@ EOF
         "type=bind,src=${TTLANG_REPO_ROOT},dst=/workspace"
     assert_log_line "/workspace/examples/eltwise_add.py"
     assert_log_line "argument with spaces"
-    [[ "$runtime_id" == 07f1bd83-d48d09de-r* ]]
+    [[ "$runtime_id" == 7292395c-b6c508c4-r* ]]
     assert_log_line \
         "type=volume,src=tt-lang-emule-build-${runtime_id}-${source_id},dst=/ttlang-build"
     assert_log_line \
@@ -166,11 +166,27 @@ EOF
     local first_image
     local second_image
     mkdir -p "$synthetic_root/.github/containers" \
-        "$synthetic_root/examples" "$synthetic_root/scripts"
+        "$synthetic_root/config" "$synthetic_root/examples" \
+        "$synthetic_root/scripts"
     cp "$DOCKERFILE" "$synthetic_root/.github/containers/Dockerfile.emule"
+    cp "$TTLANG_REPO_ROOT/config/tt-lang-emule-stack.json" \
+        "$synthetic_root/config/tt-lang-emule-stack.json"
     cp "$ENTRYPOINT" "$synthetic_root/scripts/tt-lang-emule-entrypoint.sh"
     cp "$RUNNER" "$synthetic_runner"
+    cp "$TTLANG_REPO_ROOT/scripts/tt-lang-emule-stack.py" \
+        "$synthetic_root/scripts/tt-lang-emule-stack.py"
     touch "$synthetic_root/examples/program.py"
+    git -C "$synthetic_root" init -q
+    git -C "$synthetic_root" add .
+    git -C "$synthetic_root" \
+        -c user.name=test -c user.email=test@example.com \
+        commit -q -m "Synthetic runtime inputs"
+    local synthetic_commit
+    synthetic_commit="$(git -C "$synthetic_root" rev-parse HEAD)"
+    sed -i.bak \
+        "s/59c53e209a6b871ce90937dff0cf26d8bc3e25af/$synthetic_commit/" \
+        "$synthetic_root/config/tt-lang-emule-stack.json"
+    rm "$synthetic_root/config/tt-lang-emule-stack.json.bak"
 
     TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$synthetic_runner" \
         "$synthetic_root/examples/program.py"
@@ -321,6 +337,18 @@ PY
         run -1 "$RUNNER" examples/eltwise_add.py
 
     assert_output --partial "source directory not found"
+    refute_log_line "build"
+    refute_log_line "run"
+}
+
+@test "a missing emulator source coordinate fails before fetching" {
+    cd "$TTLANG_REPO_ROOT"
+    MOCK_DOCKER_IMAGE_STATUS=1 \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -1 "$RUNNER" examples/eltwise_add.py
+
+    assert_output --partial "no emulator source was configured"
+    assert_output --partial "TTLANG_EMULE_RUNTIME_SOURCE_URL"
     refute_log_line "build"
     refute_log_line "run"
 }
