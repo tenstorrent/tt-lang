@@ -200,6 +200,19 @@ FailureOr<std::uint64_t> getDomainDeviceCount(DeviceDomainAttr domain) {
   return count;
 }
 
+LogicalResult
+verifyDomainDeviceCount(DeviceDomainAttr domain,
+                        llvm::function_ref<InFlightDiagnostic()> emitError) {
+  FailureOr<std::uint64_t> deviceCount = getDomainDeviceCount(domain);
+  if (failed(deviceCount) ||
+      *deviceCount >
+          static_cast<std::uint64_t>(std::numeric_limits<int64_t>::max())) {
+    return emitError()
+           << "transfer graph device count exceeds the supported index range";
+  }
+  return success();
+}
+
 struct StencilOffsetDescriptor {
   DenseI64ArrayAttr offset;
   SmallVector<int64_t> sourceLowerBounds;
@@ -332,6 +345,9 @@ public:
       return emitError()
              << "explicit transfer graph must not name a domain component";
     }
+    if (failed(verifyDomainDeviceCount(getDomain(), emitError))) {
+      return failure();
+    }
     DictionaryAttr properties = getProperties();
     ArrayAttr edges = properties.getAs<ArrayAttr>("edges");
     if (!edges || edges.empty() || properties.size() != 1) {
@@ -442,15 +458,7 @@ protected:
                             "domain component '"
                          << componentName.getValue() << "'";
     }
-    FailureOr<std::uint64_t> deviceCount = getDeviceCount();
-    if (failed(deviceCount) ||
-        *deviceCount >
-            static_cast<std::uint64_t>(std::numeric_limits<int64_t>::max())) {
-      return emitError()
-             << "structured transfer graph device count exceeds the supported "
-                "index range";
-    }
-    return success();
+    return verifyDomainDeviceCount(getDomain(), emitError);
   }
 
   DeviceRefAttr replaceComponent(DeviceRefAttr device,

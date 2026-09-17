@@ -93,7 +93,7 @@ func.func @invalid_axis_neighbor_offset() attributes {
 
 // The product domain must fit the compiler's signed index representation.
 func.func @unrepresentable_graph_domain() attributes {
-    // expected-error @below {{structured transfer graph device count exceeds the supported index range}}
+    // expected-error @below {{transfer graph device count exceeds the supported index range}}
     test.graph = #ttl.transfer_graph<
       domain = <components = <name = "device", extent = [3037000500, 3037000500]>>,
       kind = all_to_all, componentName = "device", properties = {}>} {
