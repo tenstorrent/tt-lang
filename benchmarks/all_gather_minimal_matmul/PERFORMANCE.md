@@ -4,7 +4,7 @@ This comparison measures column-parallel all-gather matmul with K-sharded
 activation and N-sharded weight, bias, and output. The output shards
 collectively contain one `M x N` result.
 
-## Current four-device sweep
+## Four-device sweep status
 
 The active comparison covers four devices on a 1D ring, with a 1D line as a
 secondary topology. The case manifest contains the 155 unique `is_agmm=True`
@@ -17,10 +17,16 @@ Rows requiring fused epilogues or a different operation kind remain listed but
 are not reported as plain AGMM comparisons. Measurements use three warmups,
 ten samples, correctness on every invocation, and device kernel intervals only.
 
-The archived results below document earlier four- and eight-device experiments;
-they are not the active sweep summary.
+The current bidirectional-L1 operation has compiled with the current TT-Lang
+build and TT-Metal fabric runtime, but the reduced four-device correctness case
+has timed out on both the ring and line configurations. No current ring/line
+timing is therefore reported. The 155-row sweep remains pending correctness.
 
 ## Results
+
+The following measurements are archived results from an earlier implementation
+and configuration. They are retained for provenance only and must not be used
+as the current ring/line comparison.
 
 Blackhole P150b devices; global `M/K/N=9472/5120/15360`.
 

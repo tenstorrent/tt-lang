@@ -17,7 +17,8 @@ which preserves two-dimensional tensor placement for larger device counts.
 
 ## Run
 
-The defaults reproduce the accepted four-device comparison documented in
+The defaults run the current four-device bidirectional-L1 workload. Current
+ring/line timings are pending a reduced-case correctness fix; see
 [`PERFORMANCE.md`](PERFORMANCE.md):
 
 ```bash
