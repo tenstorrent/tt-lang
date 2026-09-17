@@ -3148,6 +3148,52 @@ def test_reconfiguration_static_storage_uses_per_core_epoch_capacity(monkeypatch
     ) == [(2048, {(0, 0), (2, 0)}), (4096, {(1, 0)})]
 
 
+def test_remote_uniform_reconfiguration_uses_maximum_epoch_capacity(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    initial = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (DFBStorageSegment(nodes=((0, 0),)),),
+        storage_index=4,
+        address_scope="remote_uniform",
+    )
+    larger = replace(
+        initial,
+        data_format="float32",
+        page_size=4096,
+        storage_segments=(DFBStorageSegment(nodes=((1, 0),)),),
+    )
+    physical_config = replace(
+        initial,
+        storage_segments=(),
+        allocation_nodes=((0, 0), (1, 0), (2, 0)),
+    )
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (
+                DFBConfigurationEpoch(None, initial),
+                DFBConfigurationEpoch(7, larger),
+            ),
+        ),
+    )
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[],
+        cb_configs=[physical_config],
+        core_ranges=_FakeExplicitCoreRanges((0, 0), (2, 0)),
+        dfb_reconfiguration_plan=plan,
+    )
+
+    assert len(descriptors) == 1
+    assert descriptors[0].total_size == 4096
+    assert _descriptor_cores(descriptors[0]) == {(0, 0), (1, 0), (2, 0)}
+
+
 def test_reconfiguration_shared_storage_uses_available_epoch_capacity(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     initial = PhysicalDFBConfig(

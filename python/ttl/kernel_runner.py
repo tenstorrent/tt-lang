@@ -3730,6 +3730,25 @@ def _static_storage_bytes_by_core(
                     core,
                     _get_dfb_allocation(cb_configs[dfb_index]),
                 )
+
+    remote_uniform_storage_indices = {
+        _physical_dfb_storage_index(config)
+        for config in cb_configs
+        if config.address_scope == "remote_uniform"
+    }
+    for storage_index in remote_uniform_storage_indices:
+        layouts_by_core = layouts_by_storage_by_core.get(storage_index)
+        if not layouts_by_core:
+            continue
+        # Per-core sizes would split the descriptor and allow TT-Metal's L1
+        # allocators to select different addresses for different nodes.
+        uniform_size = max(size for size, _alignment in layouts_by_core.values())
+        uniform_alignment = math.lcm(
+            *(alignment for _size, alignment in layouts_by_core.values())
+        )
+        for core in layouts_by_core:
+            layouts_by_core[core] = (uniform_size, uniform_alignment)
+
     return {
         storage_index: {
             core: _align_up(required_size, required_alignment)
