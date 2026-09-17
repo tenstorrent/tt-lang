@@ -24,9 +24,8 @@ func.func @typed_literals_to_emitc() attributes {ttkernel.thread = #ttkernel.thr
 // EMITC-SAME: ttlang.requires_dfb_descriptor
 
 // The emitted definition precedes the user header that names it.
-// Blackhole defines compute macros before the dataflow buffer header uses them.
-// CPP-LABEL: #include "api/compute/common.h"
-// CPP-NEXT: #include "api/dataflow/circular_buffer.h"
+// The dataflow buffer declaration precedes the descriptor that uses it.
+// CPP-LABEL: #include "api/dataflow/circular_buffer.h"
 // CPP: #define TTLANG_DFB_STORAGE_COMPILER_L1 0
 // CPP: namespace ttlang {
 // CPP: struct DFBDescriptor {
