@@ -3260,7 +3260,7 @@ def test_reconfiguration_runtime_storage_uses_maximum_per_core_capacity(monkeypa
     assert all(descriptor.backing_desc is not None for descriptor in descriptors)
 
 
-def test_reconfiguration_runtime_storage_reuses_and_allocates_largest_first(
+def test_reconfiguration_runtime_storage_packs_one_arena(
     monkeypatch,
 ):
     fake_ttnn = _FakeTTNN()
@@ -3345,18 +3345,20 @@ def test_reconfiguration_runtime_storage_reuses_and_allocates_largest_first(
         (scratch_cores, num_bytes)
         for scratch_cores, num_bytes, _ in scratch_allocations
     ] == [
-        ({(0, 0)}, 8192),
-        ({(0, 0), (1, 0)}, 4096),
+        ({(0, 0), (1, 0)}, 12288),
     ]
     assert (
-        resources.scratch_segments_by_index[0][0].tensor is resources.scratch_tensors[1]
+        resources.scratch_segments_by_index[0][0].tensor is resources.scratch_tensors[0]
     )
     assert (
-        resources.scratch_segments_by_index[1][0].tensor is resources.scratch_tensors[1]
+        resources.scratch_segments_by_index[1][0].tensor is resources.scratch_tensors[0]
     )
     assert (
         resources.scratch_segments_by_index[2][0].tensor is resources.scratch_tensors[0]
     )
+    assert resources.scratch_segments_by_index[0][0].byte_offset == 0
+    assert resources.scratch_segments_by_index[1][0].byte_offset == 0
+    assert resources.scratch_segments_by_index[2][0].byte_offset == 4096
 
 
 def test_reconfiguration_static_storage_uses_per_core_epoch_capacity(monkeypatch):
