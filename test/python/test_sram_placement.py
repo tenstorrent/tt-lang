@@ -133,6 +133,92 @@ def test_serialized_operations_share_scratch_after_persistent_payload():
     assert plan.metrics.efficiency == 1.0
 
 
+# Persistent payloads and every arena that can access the same core must occupy
+# distinct bytes.
+def test_persistent_declarations_conflict_with_each_other_and_scratch():
+    cores = ((0, 0),)
+    storage = _storage(
+        _requirement(
+            SRAMOwnerKind.PERSISTENT_DECLARATION,
+            0,
+            64,
+            cores,
+            SRAMLifetime.PERSISTENT,
+        ),
+        _requirement(
+            SRAMOwnerKind.PERSISTENT_DECLARATION,
+            1,
+            32,
+            cores,
+            SRAMLifetime.PERSISTENT,
+        ),
+    )
+
+    plan = plan_joint_sram(
+        storage,
+        (_operation("operation", 48, cores),),
+        budget_bytes=144,
+        allocator=_allocate,
+    )
+
+    assert [placement.offset for placement in plan.pools[0].placements] == [0, 64, 96]
+    assert plan.pools[0].reservation_bytes_per_location == 144
+
+
+# Partially overlapping core sets form one reservation without making
+# serialized operations conflict.
+def test_transitive_core_overlap_reuses_serialized_operation_storage():
+    operations = (
+        _operation("first", 64, ((0, 0), (1, 0))),
+        _operation("second", 48, ((1, 0), (2, 0))),
+        _operation("third", 32, ((2, 0),)),
+    )
+
+    plan = plan_joint_sram(
+        PreparedSRAMStorage(()),
+        operations,
+        budget_bytes=64,
+        allocator=_allocate,
+    )
+
+    assert len(plan.pools) == 1
+    assert [placement.offset for placement in plan.pools[0].placements] == [0, 0, 0]
+    assert plan.pools[0].locations == tuple(
+        SRAMLocation((), core) for core in ((0, 0), (1, 0), (2, 0))
+    )
+    assert plan.metrics.required_peak_bytes == 176
+    assert plan.metrics.reservation_bytes == 192
+    assert plan.metrics.fragmentation_bytes == 16
+
+
+# A pool uses its strictest alignment and reports the resulting unused bytes.
+def test_mixed_alignment_reports_padding_and_pool_fragmentation():
+    cores = ((0, 0),)
+    persistent = replace(
+        _requirement(
+            SRAMOwnerKind.PERSISTENT_DECLARATION,
+            0,
+            17,
+            cores,
+            SRAMLifetime.PERSISTENT,
+        ),
+        alignment_bytes=64,
+    )
+
+    plan = plan_joint_sram(
+        _storage(persistent),
+        (_operation("operation", 33, cores),),
+        budget_bytes=128,
+        allocator=_allocate,
+    )
+
+    assert [placement.offset for placement in plan.pools[0].placements] == [0, 64]
+    assert plan.metrics.required_peak_bytes == 50
+    assert plan.metrics.separate_planned_peak_bytes == 112
+    assert plan.metrics.reservation_bytes == 128
+    assert plan.metrics.fragmentation_bytes == 78
+
+
 def test_joint_placement_uses_compiler_allocator_strategy():
     cores = ((0, 0),)
     storage = _storage(
@@ -360,3 +446,68 @@ def test_fixed_or_wrong_lifetime_requirement_is_rejected():
     wrong_lifetime = replace(persistent, lifetime=SRAMLifetime.INVOCATION)
     with pytest.raises(ValueError, match="must remain movable"):
         _storage(wrong_lifetime)
+
+
+# Invalid numeric options fail before invoking an allocator implementation.
+@pytest.mark.parametrize("budget_bytes", [0, -1, True, 1.5])
+def test_invalid_budget_is_rejected(budget_bytes):
+    storage = _storage(
+        _requirement(
+            SRAMOwnerKind.PERSISTENT_DECLARATION,
+            0,
+            16,
+            ((0, 0),),
+            SRAMLifetime.PERSISTENT,
+        )
+    )
+
+    with pytest.raises(ValueError, match="budget must be a positive integer"):
+        plan_joint_sram(storage, (), budget_bytes=budget_bytes, allocator=_allocate)
+
+
+# The exact-search bound is part of the swappable allocator contract.
+@pytest.mark.parametrize("exact_search_limit", [0, -1, True, 1.5])
+def test_invalid_exact_search_limit_is_rejected(exact_search_limit):
+    storage = _storage(
+        _requirement(
+            SRAMOwnerKind.PERSISTENT_DECLARATION,
+            0,
+            16,
+            ((0, 0),),
+            SRAMLifetime.PERSISTENT,
+        )
+    )
+
+    with pytest.raises(ValueError, match="search limit must be a positive integer"):
+        plan_joint_sram(
+            storage,
+            (),
+            budget_bytes=16,
+            exact_search_limit=exact_search_limit,
+            allocator=_allocate,
+        )
+
+
+# A strategy implementation must return one offset for every submitted region.
+def test_allocator_result_must_cover_every_region():
+    storage = _storage(
+        _requirement(
+            SRAMOwnerKind.PERSISTENT_DECLARATION,
+            0,
+            16,
+            ((0, 0),),
+            SRAMLifetime.PERSISTENT,
+        )
+    )
+
+    def incomplete_allocator(*arguments):
+        del arguments
+        return (), 0
+
+    with pytest.raises(RuntimeError, match="wrong placement count"):
+        plan_joint_sram(
+            storage,
+            (),
+            budget_bytes=16,
+            allocator=incomplete_allocator,
+        )
