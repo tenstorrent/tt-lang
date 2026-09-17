@@ -250,8 +250,6 @@ def make_configs(arguments):
         arguments.n_tiles = sweep_case.n_tiles_per_device * 4
         if arguments.native_compute_grid == (12, 9):
             arguments.native_compute_grid = sweep_case.compute_grid
-        if arguments.ttlang_compute_grid == (12, 10):
-            arguments.ttlang_compute_grid = sweep_case.compute_grid
 
     common = CommonConfig(
         mesh_shape=arguments.mesh_shape,
