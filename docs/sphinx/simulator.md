@@ -73,6 +73,18 @@ example and verifies its tensor result:
 ./bin/tt-lang-sim --backend emule --smoke-test
 ```
 
+Once the smoke test passes, run the four-program reference suite. It covers
+elementwise addition, single-node matrix multiplication, reduction, and fused
+matrix multiplication with bias. Every program compares the emulated result
+with a Torch reference before it exits successfully:
+
+```bash
+python3 scripts/run-tt-lang-emule-examples.py
+```
+
+Use `--list` to inspect the suite or `--example NAME` to run one case. CI can
+reuse a promoted artifact with `--runtime-image IMAGE`.
+
 Automation can select an already-built, versioned artifact explicitly instead
 of relying on the manifest-derived local tag:
 
