@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 // SPDX-License-Identifier: Apache-2.0
 
-#include "SRAMAllocator.h"
 #include "SRAMAllocator_Internal.h"
+#include "ttlang/Dialect/TTL/Transforms/SRAMAllocator.h"
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/CheckedArithmetic.h"

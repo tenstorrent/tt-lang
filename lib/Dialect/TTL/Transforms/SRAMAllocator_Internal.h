@@ -4,7 +4,7 @@
 #ifndef TTLANG_DIALECT_TTL_TRANSFORMS_SRAMALLOCATOR_INTERNAL_H
 #define TTLANG_DIALECT_TTL_TRANSFORMS_SRAMALLOCATOR_INTERNAL_H
 
-#include "SRAMAllocator.h"
+#include "ttlang/Dialect/TTL/Transforms/SRAMAllocator.h"
 
 namespace mlir::tt::ttl::detail {
 

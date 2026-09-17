@@ -58,7 +58,7 @@ Packed-format metadata is included in `P`. An allocation group reserves the larg
 
 ### Implemented Contract
 
-The allocation scope is one compiled `ttl.operation` invocation. Compiler-owned payload sizes are static; tensor-backed payloads retain their existing height-, width-, or block-sharded allocations. Uniform and per-core placement share the same ownership and completion rules.
+Compiler-planned scratch storage is live for one completed `ttl.operation` launch. Persistent declarations remain live across prepared launches until their `SRAMStorage` owner closes. Joint placement assigns both to owned pools and reuses scratch offsets only between completion-ordered launches. Compiler-owned payload sizes are static; tensor-backed payloads retain their existing height-, width-, or block-sharded allocations. Uniform and per-core placement share the same ownership and completion rules.
 
 DFB transactions operate on one block, or publish/consume a tensor-backed DFB's complete capacity. Capacity is positive and below `2^31` pages. Consumer-owned replacement writes remain within the acquired read window and do not change occupancy or sequence counters. Compute formats and tile dimensions, reset synchronization, and external/transport bindings are specified in the backend subsections below.
 
@@ -240,7 +240,7 @@ allocateDomains(domains):
 
 `SRAMAllocatorOptions` contains limits that affect strategy execution but do not change the allocation problem. `exactSearchLimit` bounds the exact strategy's combined subset-sum candidates and partial placements separately for each allocation domain. With `D` domains, total search work can reach `D` times the configured limit. `createSRAMAllocator` maps stable compiler-option names to implementations and supplies these options. `getName()` identifies the implementation in validation diagnostics. A new implementation derives from `SRAMAllocator`, implements `getName()` and `allocateImpl()`, and registers its name in the factory. It cannot change conflict construction or bypass common validation.
 
-The common interface and validation are in [SRAMAllocator.h](../../lib/Dialect/TTL/Transforms/SRAMAllocator.h) and [SRAMAllocator.cpp](../../lib/Dialect/TTL/Transforms/SRAMAllocator.cpp). [SRAMAllocator_Greedy.cpp](../../lib/Dialect/TTL/Transforms/SRAMAllocator_Greedy.cpp) shares ordering and gap placement across the three greedy strategies; [SRAMAllocator_Exact.cpp](../../lib/Dialect/TTL/Transforms/SRAMAllocator_Exact.cpp) contains exact search. Private declarations in [SRAMAllocator_Internal.h](../../lib/Dialect/TTL/Transforms/SRAMAllocator_Internal.h) connect the factory and allow exact search to reuse greedy upper bounds.
+The public interface and validation are in [SRAMAllocator.h](../../include/ttlang/Dialect/TTL/Transforms/SRAMAllocator.h) and [SRAMAllocator.cpp](../../lib/Dialect/TTL/Transforms/SRAMAllocator.cpp). [SRAMAllocator_Greedy.cpp](../../lib/Dialect/TTL/Transforms/SRAMAllocator_Greedy.cpp) shares ordering and gap placement across the three greedy strategies; [SRAMAllocator_Exact.cpp](../../lib/Dialect/TTL/Transforms/SRAMAllocator_Exact.cpp) contains exact search. Private declarations in [SRAMAllocator_Internal.h](../../lib/Dialect/TTL/Transforms/SRAMAllocator_Internal.h) connect the factory and allow exact search to reuse greedy upper bounds.
 
 ### Greedy Placement
 

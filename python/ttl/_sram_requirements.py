@@ -118,6 +118,7 @@ class SRAMStorageRequirement:
     ownership: SRAMOwnership
     lifetime: SRAMLifetime
     fixed_bases: Tuple[int, ...] = ()
+    addressing: SRAMAddressing = SRAMAddressing.UNIFORM
 
     def __post_init__(self):
         if not isinstance(self.owner, SRAMOwner):
@@ -132,6 +133,8 @@ class SRAMStorageRequirement:
             raise TypeError("SRAM requirement ownership must be an SRAMOwnership")
         if not isinstance(self.lifetime, SRAMLifetime):
             raise TypeError("SRAM requirement lifetime must be an SRAMLifetime")
+        if not isinstance(self.addressing, SRAMAddressing):
+            raise TypeError("SRAM requirement addressing must be an SRAMAddressing")
         if not isinstance(self.fixed_bases, tuple):
             raise TypeError("SRAM requirement fixed bases must be a tuple")
         if type(self.extent_bytes) is not int or self.extent_bytes <= 0:
@@ -398,6 +401,7 @@ def prepare_persistent_storage(
                 address_domains=domains,
                 ownership=SRAMOwnership.MOVABLE,
                 lifetime=SRAMLifetime.PERSISTENT,
+                addressing=declaration.addressing,
             )
         )
     return PreparedSRAMStorage(tuple(requirements))
@@ -512,6 +516,7 @@ def _tensor_requirement(
         address_domains=tuple(domains),
         ownership=SRAMOwnership.FIXED,
         lifetime=SRAMLifetime.EXTERNAL,
+        addressing=(SRAMAddressing.PER_CORE if per_core else SRAMAddressing.UNIFORM),
         fixed_bases=tuple(bases),
     )
 
@@ -576,6 +581,11 @@ def prepare_sram_operation(
                     address_domains=(SRAMAddressDomain(domain_locations),),
                     ownership=SRAMOwnership.MOVABLE,
                     lifetime=SRAMLifetime.INVOCATION,
+                    addressing=(
+                        SRAMAddressing.PER_CORE
+                        if len(arena_cores) == 1
+                        else SRAMAddressing.UNIFORM
+                    ),
                 )
             )
             arenas.append(SRAMArenaBinding(requirement_index, arena_cores))
@@ -619,6 +629,7 @@ def prepare_sram_operation(
                 address_domains=(SRAMAddressDomain(domain_locations),),
                 ownership=SRAMOwnership.MOVABLE,
                 lifetime=SRAMLifetime.INVOCATION,
+                addressing=SRAMAddressing.UNIFORM,
             )
         )
         arenas.append(SRAMArenaBinding(requirement_index, cores))
