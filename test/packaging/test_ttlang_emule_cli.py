@@ -278,7 +278,12 @@ def test_failed_image_pull_does_not_launch_or_save_configuration(cli, monkeypatc
         calls.append(command)
         assert command[0] == "docker"
         code = 0 if command[1:] == ["info"] else 1
-        return subprocess.CompletedProcess(command, code)
+        diagnostic = (
+            "Error response from daemon: No such image: runtime:missing\n"
+            if command[1:3] == ["image", "inspect"]
+            else ""
+        )
+        return subprocess.CompletedProcess(command, code, stderr=diagnostic)
 
     monkeypatch.setattr(cli.subprocess, "run", docker)
 
@@ -289,6 +294,97 @@ def test_failed_image_pull_does_not_launch_or_save_configuration(cli, monkeypatc
         ["docker", "pull", "--platform", "linux/amd64", "runtime:missing"],
     ]
     assert not cli.CONFIG_PATH.exists()
+
+
+@pytest.mark.parametrize(
+    "exit_code,diagnostic",
+    [
+        (1, "Error response from daemon: Internal Server Error for API route\n"),
+        (1, "Cannot connect to the Docker daemon at unix:///var/run/docker.sock\n"),
+        (-9, ""),
+        (-15, "Terminated\n"),
+        (1, None),
+        (1, ""),
+        (
+            1,
+            "proxy error: Error response from daemon: No such image: runtime:selected\n",
+        ),
+        (
+            1,
+            "Error response from daemon: permission denied\nNo such image: runtime:selected\n",
+        ),
+        (2, "Error response from daemon: No such image: runtime:selected\n"),
+        (-9, "Error response from daemon: No such image: runtime:selected\n"),
+    ],
+)
+def test_image_inspection_failure_preserves_settings_without_pull_or_launch(
+    cli, monkeypatch, capsys, exit_code, diagnostic
+):
+    cli.save_settings({"image": "runtime:previous", "jobs": 2})
+    saved = cli.CONFIG_PATH.read_bytes()
+    calls = []
+
+    def docker(command, **keywords):
+        calls.append(command)
+        if command == ["docker", "info"]:
+            return subprocess.CompletedProcess(command, 0)
+        assert command == ["docker", "image", "inspect", "runtime:selected"]
+        assert keywords["stderr"] == subprocess.PIPE
+        assert keywords["text"] is True
+        return subprocess.CompletedProcess(command, exit_code, stderr=diagnostic)
+
+    monkeypatch.setattr(cli.subprocess, "run", docker)
+
+    assert invoke(cli, monkeypatch, "setup", "--image", "runtime:selected") == 2
+    assert calls == [
+        ["docker", "info"],
+        ["docker", "image", "inspect", "runtime:selected"],
+    ]
+    assert cli.CONFIG_PATH.read_bytes() == saved
+    output = capsys.readouterr()
+    assert "Downloading" not in output.out
+    assert (
+        f"cannot inspect runtime image runtime:selected (exit {exit_code})"
+        in output.err
+    )
+    assert "no download attempted" in output.err
+    assert (
+        diagnostic.strip() if diagnostic else "Docker returned no diagnostic"
+    ) in output.err
+
+
+def test_existing_image_runs_smoke_without_pull_and_saves_settings(cli, monkeypatch):
+    cli.save_settings({"image": "runtime:previous"})
+    calls = []
+    launches = []
+
+    def docker(command, **keywords):
+        calls.append(command)
+        assert command in (
+            ["docker", "info"],
+            ["docker", "image", "inspect", "runtime:local"],
+        )
+        return subprocess.CompletedProcess(command, 0, stderr="")
+
+    def smoke(command, environment):
+        launches.append(command)
+        assert command[-3:] == ["--backend", "emule", "--smoke-test"]
+        assert environment["TTLANG_EMULE_IMAGE"] == "runtime:local"
+        return 0
+
+    monkeypatch.setattr(cli.subprocess, "run", docker)
+    monkeypatch.setattr(cli, "run_command", smoke)
+
+    assert invoke(cli, monkeypatch, "setup", "--image", "runtime:local") == 0
+    assert calls == [
+        ["docker", "info"],
+        ["docker", "image", "inspect", "runtime:local"],
+    ]
+    assert len(launches) == 1
+    assert json.loads(cli.CONFIG_PATH.read_text()) == {
+        "schema_version": 1,
+        "image": "runtime:local",
+    }
 
 
 @pytest.mark.parametrize("dirty", [False, True])

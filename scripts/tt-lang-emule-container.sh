@@ -197,8 +197,28 @@ for _ENV_NAME in \
     fi
 done
 
-if [ "${TTLANG_EMULE_REBUILD:-0}" = "1" ] || \
-   ! "$_DOCKER" image inspect "$_IMAGE" >/dev/null 2>&1; then
+_BUILD_IMAGE=0
+if [ "${TTLANG_EMULE_REBUILD:-0}" = "1" ]; then
+    _BUILD_IMAGE=1
+elif _IMAGE_INSPECT_ERROR="$("$_DOCKER" image inspect "$_IMAGE" 2>&1 >/dev/null)"; then
+    :
+else
+    _IMAGE_INSPECT_STATUS=$?
+    if [ "$_IMAGE_INSPECT_STATUS" -eq 1 ] && \
+       [[ "$_IMAGE_INSPECT_ERROR" == "Error response from daemon: No such image:"* ]]; then
+        _BUILD_IMAGE=1
+    else
+        printf 'tt-lang-sim: Docker could not inspect image %s (exit %s).\n' \
+            "$_IMAGE" "$_IMAGE_INSPECT_STATUS" >&2
+        if [ -n "$_IMAGE_INSPECT_ERROR" ]; then
+            printf '%s\n' "$_IMAGE_INSPECT_ERROR" >&2
+        fi
+        echo "Check the Docker daemon and selected context, then retry." >&2
+        exit "$_IMAGE_INSPECT_STATUS"
+    fi
+fi
+
+if [ "$_BUILD_IMAGE" -eq 1 ]; then
     _EMULE_SOURCE="${TTLANG_EMULE_RUNTIME_SOURCE_DIR:-}"
     if [ -z "$_EMULE_SOURCE" ]; then
         if [ -z "$_TT_EMULE_SOURCE_URL" ]; then

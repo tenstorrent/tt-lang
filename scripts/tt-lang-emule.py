@@ -138,16 +138,23 @@ def prepare_image(environment):
         raise ValueError(
             "cannot connect to Docker; start Docker Desktop or the Docker daemon"
         )
-    if (
-        subprocess.run(
-            [docker, "image", "inspect", image],
-            env=environment,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        ).returncode
-        == 0
-    ):
+    inspection = subprocess.run(
+        [docker, "image", "inspect", image],
+        env=environment,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    if inspection.returncode == 0:
         return
+    detail = (inspection.stderr or "").strip()
+    if inspection.returncode != 1 or not detail.startswith(
+        "Error response from daemon: No such image:"
+    ):
+        raise ValueError(
+            f"cannot inspect runtime image {image} (exit {inspection.returncode}); "
+            f"no download attempted: {detail or 'Docker returned no diagnostic'}"
+        )
     print(f"Downloading simulator runtime {image}", flush=True)
     if run_command([docker, "pull", "--platform", "linux/amd64", image], environment):
         raise ValueError(
