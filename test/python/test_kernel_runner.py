@@ -3384,7 +3384,7 @@ def test_reconfiguration_runtime_storage_uses_maximum_per_core_capacity(monkeypa
     assert all(descriptor.backing_desc is not None for descriptor in descriptors)
 
 
-def test_reconfiguration_runtime_storage_allocates_remote_uniform_first(
+def test_reconfiguration_runtime_storage_uses_range_lockstep_after_local_storage(
     monkeypatch,
 ):
     fake_ttnn = _FakeTTNN()
@@ -3401,7 +3401,12 @@ def test_reconfiguration_runtime_storage_allocates_remote_uniform_first(
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
 
     def allocate_scratch(
-        core_ranges, num_bytes, allocation_device, *, per_core_allocation=False
+        core_ranges,
+        num_bytes,
+        allocation_device,
+        *,
+        per_core_allocation=False,
+        range_lockstep_allocation=False,
     ):
         scratch_tensor = _FakeTensor(
             allocation_device, address=0x8000 + len(scratch_allocations) * 0x1000
@@ -3413,8 +3418,10 @@ def test_reconfiguration_runtime_storage_allocates_remote_uniform_first(
         scratch_allocations.append((scratch_cores, num_bytes, scratch_tensor))
         if len(scratch_cores) > 1:
             assert not per_core_allocation
+            assert range_lockstep_allocation
         else:
             assert per_core_allocation
+            assert not range_lockstep_allocation
         return scratch_tensor
 
     monkeypatch.setattr(
@@ -3476,17 +3483,17 @@ def test_reconfiguration_runtime_storage_allocates_remote_uniform_first(
         (scratch_cores, num_bytes)
         for scratch_cores, num_bytes, _ in scratch_allocations
     ] == [
-        ({(0, 0), (1, 0)}, 4096),
         ({(0, 0)}, 8192),
+        ({(0, 0), (1, 0)}, 4096),
     ]
     assert (
-        resources.scratch_segments_by_index[0][0].tensor is resources.scratch_tensors[0]
+        resources.scratch_segments_by_index[0][0].tensor is resources.scratch_tensors[1]
     )
     assert (
-        resources.scratch_segments_by_index[1][0].tensor is resources.scratch_tensors[0]
+        resources.scratch_segments_by_index[1][0].tensor is resources.scratch_tensors[1]
     )
     assert (
-        resources.scratch_segments_by_index[2][0].tensor is resources.scratch_tensors[1]
+        resources.scratch_segments_by_index[2][0].tensor is resources.scratch_tensors[0]
     )
 
 
@@ -7467,9 +7474,13 @@ def test_l1_sharded_storage_counts_sparse_cores(monkeypatch):
         def __init__(self, *args):
             self.args = args
             self.per_core_allocation = False
+            self.range_lockstep_allocation = False
 
         def experimental_set_per_core_allocation(self, enable):
             self.per_core_allocation = enable
+
+        def experimental_set_range_lockstep_allocation(self, enable):
+            self.range_lockstep_allocation = enable
 
     fake_ttnn.MemoryConfig = FakeMemoryConfig
     fake_ttnn.ShardOrientation = type("ShardOrientation", (), {"ROW_MAJOR": object()})
@@ -7500,6 +7511,25 @@ def test_l1_sharded_storage_counts_sparse_cores(monkeypatch):
 
     assert empty_calls[0][0] == (2, 512)
     assert empty_calls[0][1]["memory_config"].per_core_allocation
+
+    kernel_runner._allocate_l1_sharded_storage_tensor(
+        sparse_ranges,
+        num_bytes=2048,
+        device=object(),
+        range_lockstep_allocation=True,
+    )
+
+    assert empty_calls[1][0] == (2, 512)
+    assert empty_calls[1][1]["memory_config"].range_lockstep_allocation
+
+    with pytest.raises(ValueError, match="cannot use per-core and range-lockstep"):
+        kernel_runner._allocate_l1_sharded_storage_tensor(
+            sparse_ranges,
+            num_bytes=2048,
+            device=object(),
+            per_core_allocation=True,
+            range_lockstep_allocation=True,
+        )
 
 
 def test_l1_per_core_addresses_require_mesh_uniformity(monkeypatch):
