@@ -11,7 +11,7 @@ are retained so the sweep reports them explicitly instead of relabeling them.
 
 from dataclasses import dataclass
 
-TT_METAL_SWEEP_REVISION = "967ce00c724cd27bf107e00fbfe7406014cfc14e"
+TT_METAL_SWEEP_REVISION = "975015c2f03bb818eaee2422c3845fba381eaf8c"
 
 
 @dataclass(frozen=True)
@@ -84,6 +84,7 @@ UPSTREAM_AGMM_CASES = (
     AGMMCase(1024, 6144, 768, (12, 9), "to_out", "agmm"),
     AGMMCase(128, 6144, 2304, (12, 9), "qkv", "agmm"),
     AGMMCase(128, 6144, 768, (12, 9), "to_out", "agmm"),
+    AGMMCase(128, 6144, 4608, (12, 9), "plain", "agmm"),
     AGMMCase(8192, 6144, 9216, (12, 9), "plain", "agmm"),
     AGMMCase(8256, 6144, 9216, (12, 9), "plain", "agmm"),
     AGMMCase(8192, 6144, 4608, (12, 9), "qkv", "agmm"),

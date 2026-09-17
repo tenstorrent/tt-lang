@@ -20,10 +20,11 @@ from pathlib import Path
 import torch
 import ttnn
 
-from benchmarks.all_gather_minimal_matmul.native_heuristic import choose_agmm_blocking
+from benchmarks.all_gather_minimal_matmul.native_heuristic import resolve_agmm_config
 from benchmarks.all_gather_minimal_matmul.sweep_cases import (
     COMPARABLE_OPERATION_KINDS,
     COMPARABLE_USE_CASES,
+    TT_METAL_SWEEP_REVISION,
     UPSTREAM_AGMM_CASES,
 )
 from benchmarks.device_timing import latest_kernel_duration, read_device_profile
@@ -48,7 +49,7 @@ from examples.matmul_reduce_scatter_2d import (
 from ttlang_test_utils import get_fabric_mesh_shape, to_dram
 from utils.correctness import assert_allclose, assert_pcc
 
-REFERENCE_REVISION = "967ce00c724cd27bf107e00fbfe7406014cfc14e"
+REFERENCE_REVISION = TT_METAL_SWEEP_REVISION
 REFERENCE_ROOT = f"https://github.com/tenstorrent/tt-metal/blob/{REFERENCE_REVISION}"
 MATH_FIDELITIES = {"HiFi2": ttnn.MathFidelity.HiFi2, "HiFi4": ttnn.MathFidelity.HiFi4}
 
@@ -100,6 +101,9 @@ class NativeConfig:
     chunks: int
     math_approx_mode: bool
     topology: str
+    use_heuristic: bool
+    source_root: str | None
+    use_case: str
 
 
 @dataclass
@@ -201,6 +205,14 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="derive native blocking with the TT-Metal AGMM heuristic",
     )
+    parser.add_argument(
+        "--ttmetal-source-root",
+        type=Path,
+        help=(
+            "TT-Metal source tree providing models.tt_dit.utils.matmul; "
+            "defaults to TT_METAL_RUNTIME_ROOT"
+        ),
+    )
 
     parser.add_argument("--fabric-router-payload", type=positive_int, default=8192)
     parser.add_argument(
@@ -246,7 +258,10 @@ def make_configs(arguments):
                 f"{sweep_case.case_id} uses operation kind {sweep_case.operation_kind}; "
                 "this runner measures all_gather_minimal_matmul_async only"
             )
-        if sweep_case.use_case not in COMPARABLE_USE_CASES:
+        if (
+            sweep_case.use_case not in COMPARABLE_USE_CASES
+            and arguments.implementation != "ttmetal"
+        ):
             raise ValueError(
                 f"{sweep_case.case_id} uses epilogue {sweep_case.use_case}; "
                 "matching TT-Lang epilogue support is required before timing"
@@ -289,22 +304,18 @@ def make_configs(arguments):
         chunks=arguments.native_chunks,
         math_approx_mode=arguments.native_math_approx_mode,
         topology=arguments.topology,
+        use_heuristic=arguments.native_heuristic or sweep_case is not None,
+        source_root=(
+            str(arguments.ttmetal_source_root)
+            if arguments.ttmetal_source_root is not None
+            else None
+        ),
+        use_case=sweep_case.use_case if sweep_case is not None else "plain",
     )
-    if arguments.native_heuristic or sweep_case is not None:
-        full_k_tiles = common.device_count * common.k_tiles_per_device
-        m_block_tiles, k_block_tiles, n_block_tiles, subblock = choose_agmm_blocking(
-            common.m_tiles,
-            full_k_tiles,
-            common.n_tiles_per_device,
-            native.compute_grid,
-        )
+    if native.use_heuristic:
         native = replace(
             native,
-            m_block_tiles=m_block_tiles,
-            k_block_tiles=k_block_tiles,
-            n_block_tiles=n_block_tiles,
-            subblock=subblock,
-            chunks=1,
+            chunks=3 if native.use_case == "qkv" else 1,
         )
     if common.dtype == "fp32" and not common.fp32_dest_acc:
         raise ValueError("FP32 inputs require FP32 destination accumulation")
@@ -585,6 +596,37 @@ def create_ttlang_workload(mesh, common, ttlang):
 
 
 def create_native_workload(mesh, cluster_axis, common, native):
+    if native.use_heuristic:
+        (
+            compute_grid,
+            m_block_tiles,
+            k_block_tiles,
+            n_block_tiles,
+            subblock,
+            workers_per_link,
+        ) = resolve_agmm_config(
+            ttnn_module=ttnn,
+            m_elements=common.m_tiles * 32,
+            full_k_elements=common.k_tiles_per_device * common.device_count * 32,
+            n_elements_per_device=common.n_tiles_per_device * 32,
+            full_grid=mesh.compute_with_storage_grid_size(),
+            device_count=common.device_count,
+            num_links=native.num_links,
+            compute_grid=native.compute_grid,
+            source_root=native.source_root,
+            expected_revision=TT_METAL_SWEEP_REVISION,
+            fuse_swiglu=native.use_case == "ff1_swiglu",
+            use_addcmul=native.use_case == "to_out",
+        )
+        native = replace(
+            native,
+            compute_grid=compute_grid,
+            m_block_tiles=m_block_tiles,
+            k_block_tiles=k_block_tiles,
+            n_block_tiles=n_block_tiles,
+            subblock=subblock,
+            workers_per_link=workers_per_link,
+        )
     operation_config = {
         "mesh_shape": tuple(mesh.shape),
         "m_tiles": common.m_tiles,
@@ -776,6 +818,8 @@ def run_worker(arguments):
             "provenance": collect_provenance(
                 [
                     __file__,
+                    Path(__file__).resolve().parent / "native_heuristic.py",
+                    Path(__file__).resolve().parent / "sweep_cases.py",
                     Path(__file__).resolve().parents[1] / "device_timing.py",
                     Path(__file__).resolve().parents[2]
                     / "examples/all_gather_minimal_matmul/operation.py",
