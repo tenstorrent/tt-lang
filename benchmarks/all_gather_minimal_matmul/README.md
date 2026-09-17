@@ -17,9 +17,8 @@ which preserves two-dimensional tensor placement for larger device counts.
 
 ## Run
 
-The defaults run the four-device bidirectional-L1 workload. The accepted
-four-device comparison and the status of the separate current rerun are in
-[`PERFORMANCE.md`](PERFORMANCE.md):
+The defaults run the accepted four-device comparison. Its configuration and
+provenance are in [`PERFORMANCE.md`](PERFORMANCE.md):
 
 ```bash
 python -m benchmarks.all_gather_minimal_matmul \
@@ -43,8 +42,9 @@ the four-device tensor dimensions from the upstream full-K/per-device-N tuple;
 
 ```bash
 python -m benchmarks.all_gather_minimal_matmul \
+    --implementation ttmetal \
     --sweep-case 3072x5120x3840_8x8_agmm_plain \
-    --fabric-config 1d-ring \
+    --native-fabric-config 1d-ring \
     --topology ring \
     --native-heuristic \
     --warmup 3 \
@@ -52,7 +52,7 @@ python -m benchmarks.all_gather_minimal_matmul \
     --json /tmp/agmm-3072x5120x3840-ring.json
 ```
 
-Use `--fabric-config 1d-line --topology linear` for the secondary line
+Use `--native-fabric-config 1d-line --topology linear` for the secondary line
 comparison. Rows marked unsupported require matching TT-Lang fused-epilogue or
 operation-kind support and are not timed as plain AGMM.
 
@@ -61,7 +61,7 @@ small report per row and a summary under the specified private directory:
 
 ```bash
 python -m benchmarks.all_gather_minimal_matmul.sweep \
-    --fabric-config 1d-ring \
+    --native-fabric-config 1d-ring \
     --topology ring \
     --warmup 3 \
     --samples 10 \

@@ -19,7 +19,9 @@ from benchmarks.all_gather_minimal_matmul.sweep_cases import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--fabric-config", choices=("1d-ring", "1d-line"), default="1d-ring"
+        "--native-fabric-config",
+        choices=("1d-ring", "1d-line"),
+        default="1d-ring",
     )
     parser.add_argument("--topology", choices=("ring", "linear"), default="ring")
     parser.add_argument("--warmup", type=int, default=3)
@@ -28,6 +30,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--case", action="append", dest="case_ids")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
+
+
+def build_native_command(
+    arguments: argparse.Namespace, case_id: str, report: Path
+) -> list[str]:
+    return [
+        sys.executable,
+        "-m",
+        "benchmarks.all_gather_minimal_matmul",
+        "--implementation",
+        "ttmetal",
+        "--sweep-case",
+        case_id,
+        "--native-fabric-config",
+        arguments.native_fabric_config,
+        "--topology",
+        arguments.topology,
+        "--native-heuristic",
+        "--warmup",
+        str(arguments.warmup),
+        "--samples",
+        str(arguments.samples),
+        "--json",
+        str(report),
+    ]
 
 
 def main() -> None:
@@ -47,7 +74,7 @@ def main() -> None:
     ]
     arguments.output_dir.mkdir(parents=True, exist_ok=True)
     summary = {
-        "fabric_config": arguments.fabric_config,
+        "native_fabric_config": arguments.native_fabric_config,
         "topology": arguments.topology,
         "warmup": arguments.warmup,
         "samples": arguments.samples,
@@ -57,32 +84,18 @@ def main() -> None:
     }
     for case in cases:
         report = arguments.output_dir / f"{case.case_id}_{arguments.topology}.json"
-        command = [
-            sys.executable,
-            "-m",
-            "benchmarks.all_gather_minimal_matmul",
-            "--sweep-case",
-            case.case_id,
-            "--fabric-config",
-            arguments.fabric_config,
-            "--topology",
-            arguments.topology,
-            "--native-heuristic",
-            "--warmup",
-            str(arguments.warmup),
-            "--samples",
-            str(arguments.samples),
-            "--json",
-            str(report),
-        ]
+        command = build_native_command(arguments, case.case_id, report)
         print(" ".join(command), flush=True)
         if not arguments.dry_run:
             subprocess.run(command, check=True)
             result = json.loads(report.read_text())
+            measurement = result["variants"]["ttmetal"]["measurements"]
             summary["results"].append(
                 {
                     "case_id": case.case_id,
-                    "ratio": result.get("ttlang_over_ttmetal"),
+                    "median_us": measurement["median_us"],
+                    "min_us": measurement["min_us"],
+                    "max_us": measurement["max_us"],
                     "report": str(report),
                 }
             )

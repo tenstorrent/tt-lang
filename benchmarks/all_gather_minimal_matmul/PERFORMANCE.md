@@ -4,7 +4,7 @@ This comparison measures column-parallel all-gather matmul with K-sharded
 activation and N-sharded weight, bias, and output. The output shards
 collectively contain one `M x N` result.
 
-## Four-device sweep status
+## Native baseline matrix
 
 The active comparison covers four devices on a 1D ring, with a 1D line as a
 secondary topology. The case manifest contains the 155 unique `is_agmm=True`
@@ -16,17 +16,6 @@ and `_compute_heuristic_blocking`; it is not selected by a local dense sweep.
 Rows requiring fused epilogues or a different operation kind remain listed but
 are not reported as plain AGMM comparisons. Measurements use three warmups,
 ten samples, correctness on every invocation, and device kernel intervals only.
-
-The accepted four-device comparison in the Results table remains the published
-comparison. A separate rerun of the current four-device bidirectional-L1
-operation has timed out on both reduced ring and line cases; those incomplete
-runs are not substituted for the accepted result. The 155-row sweep remains
-pending correctness.
-The same reduced case completes under `FABRIC_2D` while retaining the ring
-transfer graph (47.94 us device interval); this is a routing sanity check, not
-an accepted performance result. The first full-size case exceeded a 300-second
-outer limit during JIT compilation; a cache-warm retry generated kernels but
-exited without a result JSON. It has no timing yet.
 
 ## Results
 

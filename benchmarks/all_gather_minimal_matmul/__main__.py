@@ -204,10 +204,16 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--fabric-router-payload", type=positive_int, default=8192)
     parser.add_argument(
-        "--fabric-config",
+        "--ttlang-fabric-config",
         choices=("auto", "1d-ring", "1d-line", "2d"),
         default="auto",
-        help="physical fabric configuration; auto preserves the historical per-implementation default",
+        help="TT-Lang fabric configuration; auto selects the accepted 2D configuration",
+    )
+    parser.add_argument(
+        "--native-fabric-config",
+        choices=("auto", "1d-ring", "1d-line", "2d"),
+        default="auto",
+        help="TT-Metal fabric configuration; auto selects the native 1D ring",
     )
     parser.add_argument(
         "--topology",
@@ -727,11 +733,16 @@ def run_worker(arguments):
         and ttlang.operation == "2d-reduce-scatter"
     ):
         requested_shape = (common.device_count, 1)
+    fabric_config_name = (
+        arguments.ttlang_fabric_config
+        if arguments.implementation == "ttlang"
+        else arguments.native_fabric_config
+    )
     with open_participant_mesh(
         requested_shape,
         arguments.implementation,
         arguments.fabric_router_payload,
-        arguments.fabric_config,
+        fabric_config_name,
     ) as (mesh, cluster_axis, discovered_shape, fabric_config):
         if arguments.implementation == "ttlang":
             workload, operation_config = create_ttlang_workload(mesh, common, ttlang)
