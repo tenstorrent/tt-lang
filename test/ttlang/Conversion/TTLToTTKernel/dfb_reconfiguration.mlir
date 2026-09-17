@@ -6,7 +6,7 @@
 // CHECK-NEXT: %[[CALLER_COUNT:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> i32
 // CHECK-NEXT: %[[INDEX:.*]] = arith.addi %[[CALLER_COUNT]], %[[OFFSET]] : i32
 // CHECK-NEXT: %[[ADDRESS:.*]] = ttkernel.get_arg_val(%[[INDEX]]) : (i32) -> ui32
-// CHECK: ttkernel.opaque_call "experimental::reconfigure_dfb_interfaces"(%[[ADDRESS]]) {header = "<cstdint>", ttl.dfb_reconfiguration_ordinal = 1 : i64, unsigned_arg_indices = array<i32: 0>} : (ui32) -> ()
+// CHECK: ttkernel.opaque_call "experimental::reconfigure_dfb_interfaces"(%[[ADDRESS]]) {header = "<cstdint>", unsigned_arg_indices = array<i32: 0>} : (ui32) -> ()
 module attributes {
   ttl.target_arch = #ttcore.arch<blackhole>,
   ttl.dfb_reconfiguration_plan = {

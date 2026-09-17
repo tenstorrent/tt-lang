@@ -5,7 +5,7 @@
 """Python-only tests for ttl.kernel_runner resource allocation helpers."""
 
 from collections import defaultdict
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from enum import Enum
 import gc
 import os
@@ -66,6 +66,9 @@ def test_dfb_reconfiguration_abi_constants_match_sources():
     low_mask_word = _extract_unsigned_constant(llk_source, "lowMaskWord")
     high_mask_word = _extract_unsigned_constant(llk_source, "highMaskWord")
     synchronization_word = _extract_unsigned_constant(llk_source, "synchronizationWord")
+    preserve_fifo_address = _extract_unsigned_constant(
+        llk_source, "preserveFifoAddress"
+    )
     compiler_words_per_core = _extract_unsigned_constant(
         allocation_source, "kDFBReconfigurationWordsPerCore"
     )
@@ -76,6 +79,7 @@ def test_dfb_reconfiguration_abi_constants_match_sources():
         synchronization_word == kernel_runner._DFB_RECONFIGURATION_SYNCHRONIZATION_WORD
     )
     assert compiler_words_per_core == kernel_runner._DFB_RECONFIGURATION_WORDS_PER_CORE
+    assert preserve_fifo_address == kernel_runner._DFB_RECONFIGURATION_PRESERVE_ADDRESS
 
 
 class _FakeTensor:
@@ -2918,8 +2922,7 @@ def test_reconfiguration_rejects_ieee_fp16_runtime_storage(monkeypatch):
         )
 
 
-# Reconfiguration scratch is allocated only on compiler-selected launch nodes.
-def test_reconfiguration_scratch_uses_exact_node_union(monkeypatch):
+def test_reconfiguration_static_storage_uses_exact_node_union(monkeypatch):
     fake_ttnn = _FakeTTNN()
     fake_ttnn.uint32 = "uint32"
     fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
@@ -2929,22 +2932,21 @@ def test_reconfiguration_scratch_uses_exact_node_union(monkeypatch):
     fake_ttnn.ShardSpec = lambda *args: args
     fake_ttnn.MemoryConfig = lambda *args: args
     device = object()
-    scratch_allocations = []
+    host_configurations = []
 
-    def allocate_scratch(core_ranges, _num_bytes, allocation_device, *, per_core):
-        assert not per_core
-        scratch_allocations.append(core_ranges)
-        return _FakeTensor(allocation_device, address=0x8000)
+    def allocate_configuration(host_configuration, *_args, **_kwargs):
+        host_configurations.append(host_configuration.clone())
+        return _FakeTensor(device, address=0x9000)
 
-    fake_ttnn.from_torch = lambda *_args, **_kwargs: _FakeTensor(device, address=0x9000)
+    fake_ttnn.from_torch = allocate_configuration
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     monkeypatch.setattr(
-        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_scratch
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        lambda *_args, **_kwargs: pytest.fail("unexpected scratch allocation"),
     )
 
     def l1_addresses(tensor, _device):
-        if tensor.buffer_address() == 0x8000:
-            return {(1, 0): 0x8000}
         return {(0, 0): 0x9000, (1, 0): 0xA000}
 
     monkeypatch.setattr(kernel_runner, "_l1_buffer_addresses_by_core", l1_addresses)
@@ -2967,21 +2969,33 @@ def test_reconfiguration_scratch_uses_exact_node_union(monkeypatch):
         ),
     )
 
-    kernel_runner.build_dfb_reconfiguration_runtime_resources(
+    resources = kernel_runner.build_dfb_reconfiguration_runtime_resources(
         tensors=[],
         core_ranges=_FakeExplicitCoreRanges((0, 0), (1, 0)),
         plan=plan,
         device=device,
     )
 
-    assert len(scratch_allocations) == 1
-    assert {
-        (int(core.x), int(core.y))
-        for core in fake_ttnn.corerange_to_cores(scratch_allocations[0])
-    } == {(1, 0)}
+    assert resources.scratch_tensors == []
+    assert resources.scratch_segments_by_index == {}
+    assert len(host_configurations) == 1
+    assert (
+        int(host_configurations[0][0, kernel_runner._DFB_RECONFIGURATION_LOW_MASK_WORD])
+        == 0
+    )
+    assert (
+        int(host_configurations[0][1, kernel_runner._DFB_RECONFIGURATION_LOW_MASK_WORD])
+        == 1
+    )
+    assert tuple(int(value) for value in host_configurations[0][1, :4]) == (
+        kernel_runner._DFB_RECONFIGURATION_PRESERVE_ADDRESS,
+        2048,
+        1,
+        2048,
+    )
 
 
-def test_reconfiguration_scratch_excludes_unmodified_descriptors(monkeypatch):
+def test_reconfiguration_static_storage_excludes_unmodified_descriptors(monkeypatch):
     fake_ttnn = _FakeTTNN()
     fake_ttnn.uint32 = "uint32"
     fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
@@ -2991,17 +3005,18 @@ def test_reconfiguration_scratch_excludes_unmodified_descriptors(monkeypatch):
     fake_ttnn.ShardSpec = lambda *args: args
     fake_ttnn.MemoryConfig = lambda *args: args
     device = object()
-    scratch_allocations = []
+    host_configurations = []
 
-    def allocate_scratch(core_ranges, num_bytes, allocation_device, *, per_core):
-        assert not per_core
-        scratch_allocations.append((core_ranges, num_bytes, allocation_device))
-        return _FakeTensor(allocation_device, address=0x8000)
+    def allocate_configuration(host_configuration, *_args, **_kwargs):
+        host_configurations.append(host_configuration.clone())
+        return _FakeTensor(device, address=0x9000)
 
-    fake_ttnn.from_torch = lambda *_args, **_kwargs: _FakeTensor(device, address=0x9000)
+    fake_ttnn.from_torch = allocate_configuration
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     monkeypatch.setattr(
-        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_scratch
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        lambda *_args, **_kwargs: pytest.fail("unexpected scratch allocation"),
     )
     monkeypatch.setattr(
         kernel_runner,
@@ -3029,16 +3044,24 @@ def test_reconfiguration_scratch_excludes_unmodified_descriptors(monkeypatch):
         device=device,
     )
 
-    assert set(resources.scratch_tensors) == {0}
-    assert len(scratch_allocations) == 1
-    assert scratch_allocations[0][1:] == (2048, device)
+    assert resources.scratch_tensors == []
+    assert resources.scratch_segments_by_index == {}
+    assert len(host_configurations) == 1
+    encoded = host_configurations[0][0]
+    assert int(encoded[kernel_runner._DFB_RECONFIGURATION_LOW_MASK_WORD]) == 1
+    assert tuple(int(value) for value in encoded[:8]) == (
+        kernel_runner._DFB_RECONFIGURATION_PRESERVE_ADDRESS,
+        2048,
+        1,
+        2048,
+        0,
+        0,
+        0,
+        0,
+    )
 
 
-@pytest.mark.parametrize("reuse_backing", [False, True], ids=["new", "reused"])
-def test_reconfiguration_scratch_allocation_order_preserves_bindings(
-    monkeypatch, reuse_backing
-):
-    monkeypatch.setenv("TT_METAL_ALLOCATOR_MODE_HYBRID", "1")
+def test_reconfiguration_static_storage_preserves_shared_storage(monkeypatch):
     fake_ttnn = _FakeTTNN()
     fake_ttnn.uint32 = "uint32"
     fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
@@ -3048,129 +3071,380 @@ def test_reconfiguration_scratch_allocation_order_preserves_bindings(
     fake_ttnn.ShardSpec = lambda *args: args
     fake_ttnn.MemoryConfig = lambda *args: args
     device = object()
-    all_nodes = ((0, 0), (1, 0))
-    allocation_calls = []
-    host_configurations = []
-    addresses_by_base = {
-        0x7000: {node: 0x7000 for node in all_nodes},
-        0x40000: {node: 0x40000 for node in all_nodes},
-    }
-
-    def allocate_scratch(core_ranges, num_bytes, allocation_device, *, per_core):
-        nodes = tuple(
-            (int(core.x), int(core.y))
-            for core in fake_ttnn.corerange_to_cores(core_ranges, row_wise=True)
-        )
-        address = 0x8000 + len(allocation_calls) * 0x1000
-        tensor = _FakeTensor(allocation_device, address=address)
-        allocation_calls.append((nodes, num_bytes, allocation_device, per_core, tensor))
-        addresses_by_base[address] = {node: address for node in nodes}
-        return tensor
-
-    def allocate_configuration(host_configuration, *_args, **_kwargs):
-        host_configurations.append(host_configuration.clone())
-        return _FakeTensor(device, address=0x40000)
-
-    fake_ttnn.from_torch = allocate_configuration
+    fake_ttnn.from_torch = lambda *_args, **_kwargs: _FakeTensor(device, address=0x9000)
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     monkeypatch.setattr(
-        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_scratch
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        lambda *_args, **_kwargs: pytest.fail("unexpected scratch allocation"),
     )
     monkeypatch.setattr(
         kernel_runner,
         "_l1_buffer_addresses_by_core",
-        lambda tensor, _device: addresses_by_base[tensor.buffer_address()],
+        lambda tensor, _device: {(0, 0): tensor.buffer_address()},
     )
 
-    initial_sizes = (32, 16, 64, 128, 256)
-    next_sizes = (32, 48, 64, 96)
-    initial_nodes = (all_nodes, ((0, 0),), ((1, 0),), all_nodes, all_nodes)
-    next_nodes = (all_nodes, ((1, 0),), ((1, 0),), all_nodes)
-    initial_configs = tuple(
-        PhysicalDFBConfig(
-            dfb_index,
-            1,
-            "bfloat16",
-            1,
-            size,
-            None,
-            (DFBStorageSegment(nodes=initial_nodes[dfb_index]),),
-        )
-        for dfb_index, size in enumerate(initial_sizes)
-    )
-    next_configs = tuple(
-        PhysicalDFBConfig(
-            dfb_index,
-            1,
-            "bfloat16",
-            1,
-            size,
-            None,
-            (DFBStorageSegment(nodes=next_nodes[dfb_index]),),
-        )
-        for dfb_index, size in enumerate(next_sizes)
+    unchanged = PhysicalDFBConfig(0, 1, "bfloat8_b", 1, 1088, (32, 32), storage_index=4)
+    reconfigured = PhysicalDFBConfig(
+        1, 1, "float32", 1, 4096, (32, 32), storage_index=4
     )
     plan = DFBReconfigurationPlan(
         boundary_ordinals=(7,),
-        dfb_epochs=tuple(
-            (DFBConfigurationEpoch(None, config),)
-            + (
-                (DFBConfigurationEpoch(7, next_configs[dfb_index]),)
-                if dfb_index < len(next_configs)
-                else ()
-            )
-            for dfb_index, config in enumerate(initial_configs)
+        dfb_epochs=(
+            (DFBConfigurationEpoch(None, unchanged),),
+            (
+                DFBConfigurationEpoch(None, reconfigured),
+                DFBConfigurationEpoch(7, reconfigured),
+            ),
         ),
     )
-    existing_tensor = _FakeTensor(device, address=0x7000)
+
     resources = kernel_runner.build_dfb_reconfiguration_runtime_resources(
         tensors=[],
-        core_ranges=_FakeCoreRanges((((0, 0), (1, 0)),)),
+        core_ranges=_FakeCoreRanges(),
         plan=plan,
-        existing_backing_tensors={3: existing_tensor} if reuse_backing else {},
-        existing_backing_allocation_bytes={3: 128} if reuse_backing else {},
+        device=device,
+    )
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[],
+        cb_configs=[unchanged, reconfigured],
+        core_ranges=_FakeCoreRanges(),
+        dfb_reconfiguration_scratch_segments=resources.scratch_segments_by_index,
+        dfb_reconfiguration_plan=plan,
+    )
+
+    assert resources.scratch_tensors == []
+    assert resources.scratch_segments_by_index == {}
+    assert len(descriptors) == 1
+    assert [
+        descriptor.buffer_index for descriptor in descriptors[0].format_descriptors
+    ] == [0, 1]
+    assert descriptors[0].total_size == 69632
+    assert descriptors[0].backing_desc is None
+
+
+def test_reconfiguration_static_storage_preserves_per_core_capacity(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.uint32 = "uint32"
+    fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
+    fake_ttnn.ShardOrientation = type("ShardOrientation", (), {"ROW_MAJOR": 0})
+    fake_ttnn.TensorMemoryLayout = type("TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0})
+    fake_ttnn.BufferType = type("BufferType", (), {"L1": 0})
+    fake_ttnn.ShardSpec = lambda *args: args
+    fake_ttnn.MemoryConfig = lambda *args: args
+    device = object()
+    configuration_tensor = _FakeTensor(device, address=0xA000)
+    fake_ttnn.from_torch = lambda *_args, **_kwargs: configuration_tensor
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        lambda *_args, **_kwargs: pytest.fail("unexpected scratch allocation"),
+    )
+
+    def l1_addresses(tensor, _device):
+        assert tensor is configuration_tensor
+        return {(0, 0): 0xA000, (1, 0): 0xB000}
+
+    monkeypatch.setattr(kernel_runner, "_l1_buffer_addresses_by_core", l1_addresses)
+    small = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (DFBStorageSegment(nodes=((0, 0),)),),
+        storage_index=4,
+    )
+    large = PhysicalDFBConfig(
+        1,
+        1,
+        "float32",
+        1,
+        4096,
+        (32, 32),
+        (DFBStorageSegment(nodes=((1, 0),)),),
+        storage_index=4,
+    )
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (DFBConfigurationEpoch(None, small), DFBConfigurationEpoch(7, small)),
+            (DFBConfigurationEpoch(None, large), DFBConfigurationEpoch(7, large)),
+        ),
+    )
+
+    resources = kernel_runner.build_dfb_reconfiguration_runtime_resources(
+        tensors=[],
+        core_ranges=_FakeExplicitCoreRanges((0, 0), (1, 0)),
+        plan=plan,
+        device=device,
+    )
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[],
+        cb_configs=[small, large],
+        core_ranges=_FakeExplicitCoreRanges((0, 0), (1, 0)),
+        dfb_reconfiguration_scratch_segments=resources.scratch_segments_by_index,
+        dfb_reconfiguration_plan=plan,
+    )
+
+    assert resources.scratch_tensors == []
+    assert resources.scratch_segments_by_index == {}
+    assert [descriptor.total_size for descriptor in descriptors] == [2048, 4096]
+    assert [
+        descriptor.format_descriptors[0].buffer_index for descriptor in descriptors
+    ] == [0, 1]
+
+
+def test_reconfiguration_static_storage_uses_per_core_epoch_capacity(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    initial = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (DFBStorageSegment(nodes=((0, 0),)),),
+        storage_index=4,
+    )
+    larger = PhysicalDFBConfig(
+        0,
+        1,
+        "float32",
+        1,
+        4096,
+        (32, 32),
+        (DFBStorageSegment(nodes=((1, 0),)),),
+        storage_index=4,
+    )
+    physical_config = replace(
+        initial,
+        storage_segments=(),
+        allocation_nodes=((0, 0), (1, 0), (2, 0)),
+    )
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (
+                DFBConfigurationEpoch(None, initial),
+                DFBConfigurationEpoch(7, larger),
+            ),
+        ),
+    )
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[],
+        cb_configs=[physical_config],
+        core_ranges=_FakeExplicitCoreRanges((0, 0), (2, 0)),
+        dfb_reconfiguration_plan=plan,
+    )
+
+    assert sorted(
+        (descriptor.total_size, _descriptor_cores(descriptor))
+        for descriptor in descriptors
+    ) == [(2048, {(0, 0), (2, 0)}), (4096, {(1, 0)})]
+
+
+def test_remote_uniform_reconfiguration_uses_maximum_epoch_capacity(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    initial = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (DFBStorageSegment(nodes=((0, 0),)),),
+        storage_index=4,
+        address_scope="remote_uniform",
+    )
+    larger = replace(
+        initial,
+        data_format="float32",
+        page_size=4096,
+        storage_segments=(DFBStorageSegment(nodes=((1, 0),)),),
+    )
+    physical_config = replace(
+        initial,
+        storage_segments=(),
+        allocation_nodes=((0, 0), (1, 0), (2, 0)),
+    )
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (
+                DFBConfigurationEpoch(None, initial),
+                DFBConfigurationEpoch(7, larger),
+            ),
+        ),
+    )
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[],
+        cb_configs=[physical_config],
+        core_ranges=_FakeExplicitCoreRanges((0, 0), (2, 0)),
+        dfb_reconfiguration_plan=plan,
+    )
+
+    assert len(descriptors) == 1
+    assert descriptors[0].total_size == 4096
+    assert _descriptor_cores(descriptors[0]) == {(0, 0), (1, 0), (2, 0)}
+
+
+def test_reconfiguration_shared_storage_uses_available_epoch_capacity(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    initial = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (DFBStorageSegment(nodes=((0, 0),)),),
+        storage_index=4,
+    )
+    larger = replace(
+        initial,
+        data_format="float32",
+        page_size=4096,
+        storage_segments=(DFBStorageSegment(nodes=((1, 0),)),),
+    )
+    physical_config = replace(
+        initial,
+        storage_segments=(),
+        allocation_nodes=((0, 0), (1, 0), (2, 0)),
+    )
+    shared_physical_config = PhysicalDFBConfig(
+        1,
+        4,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (),
+        allocation_nodes=((0, 0),),
+        storage_index=4,
+    )
+    shared_epoch = replace(
+        shared_physical_config,
+        storage_segments=(DFBStorageSegment(nodes=((1, 0),)),),
+        allocation_nodes=None,
+    )
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (
+                DFBConfigurationEpoch(None, initial),
+                DFBConfigurationEpoch(7, larger),
+            ),
+            (DFBConfigurationEpoch(None, shared_epoch),),
+        ),
+    )
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[],
+        cb_configs=[physical_config, shared_physical_config],
+        core_ranges=_FakeExplicitCoreRanges((0, 0), (2, 0)),
+        dfb_reconfiguration_plan=plan,
+    )
+
+    assert sorted(
+        (descriptor.total_size, tuple(sorted(_descriptor_cores(descriptor))))
+        for descriptor in descriptors
+    ) == [
+        (2048, ((0, 0),)),
+        (2048, ((2, 0),)),
+        (4096, ((1, 0),)),
+    ]
+
+
+def test_reconfiguration_runtime_storage_supports_tensor_epochs(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.uint32 = "uint32"
+    fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
+    fake_ttnn.ShardOrientation = type("ShardOrientation", (), {"ROW_MAJOR": 0})
+    fake_ttnn.TensorMemoryLayout = type("TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0})
+    fake_ttnn.BufferType = type("BufferType", (), {"L1": 0})
+    fake_ttnn.ShardSpec = lambda *args: args
+    fake_ttnn.MemoryConfig = lambda *args: args
+    device = object()
+    scratch_tensor = _FakeTensor(device, address=0x8000)
+    configuration_tensors = iter(
+        (_FakeTensor(device, address=0x9000), _FakeTensor(device, address=0xA000))
+    )
+    host_configurations = []
+
+    def allocate_configuration(host_configuration, *_args, **_kwargs):
+        host_configurations.append(host_configuration.clone())
+        return next(configuration_tensors)
+
+    fake_ttnn.from_torch = allocate_configuration
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        lambda *_args, **_kwargs: scratch_tensor,
+    )
+    monkeypatch.setattr(
+        kernel_runner,
+        "_l1_buffer_addresses_by_core",
+        lambda tensor, _device: {(0, 0): tensor.buffer_address()},
+    )
+
+    compiler_config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (DFBStorageSegment(nodes=((0, 0),)),),
+    )
+    tensor_config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (
+            DFBStorageSegment(
+                nodes=((0, 0),),
+                tensor_index=0,
+                byte_size=2048,
+            ),
+        ),
+    )
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7, 8),
+        dfb_epochs=(
+            (
+                DFBConfigurationEpoch(None, compiler_config),
+                DFBConfigurationEpoch(7, tensor_config),
+                DFBConfigurationEpoch(8, compiler_config),
+            ),
+        ),
+    )
+    input_tensor = _FakeTensor(
+        device,
+        address=0x4000,
+        dtype=kernel_runner.format_name_to_ttnn_dtype("bfloat16"),
+    )
+
+    resources = kernel_runner.build_dfb_reconfiguration_runtime_resources(
+        tensors=[input_tensor],
+        core_ranges=_FakeCoreRanges(),
+        plan=plan,
         device=device,
     )
 
-    # Sizes 48 and 64 tie after alignment, so physical index determines order.
-    expected_order = [1, 2, 0] if reuse_backing else [3, 1, 2, 0]
-    maximum_sizes = (32, 48, 64, 128)
-    allocation_nodes = (all_nodes, all_nodes, ((1, 0),), all_nodes)
-    assert len(allocation_calls) == len(expected_order)
-    assert set(resources.scratch_tensors) == {0, 1, 2, 3}
-    for dfb_index, (nodes, num_bytes, allocation_device, per_core, tensor) in zip(
-        expected_order, allocation_calls
-    ):
-        assert nodes == allocation_nodes[dfb_index]
-        assert num_bytes == maximum_sizes[dfb_index]
-        assert allocation_device is device
-        assert per_core
-        assert resources.scratch_tensors[dfb_index] is tensor
-    if reuse_backing:
-        assert resources.scratch_tensors[3] is existing_tensor
-
-    assert len(host_configurations) == 1
-    for row, node in enumerate(all_nodes):
-        encoded = host_configurations[0][row]
-        for dfb_index, size in enumerate(next_sizes):
-            expected_record = (
-                (resources.scratch_tensors[dfb_index].buffer_address(), size, 1, size)
-                if node in next_nodes[dfb_index]
-                else (0, 0, 0, 0)
-            )
-            assert tuple(int(value) for value in encoded[dfb_index * 4 :][:4]) == (
-                expected_record
-            )
-        assert int(encoded[kernel_runner._DFB_RECONFIGURATION_LOW_MASK_WORD]) == (
-            0b1001 if node == (0, 0) else 0b1111
-        )
-        assert int(encoded[kernel_runner._DFB_RECONFIGURATION_HIGH_MASK_WORD]) == 0
-    assert resources.configuration_runtime_args == {
-        node: [0x40000] for node in all_nodes
-    }
-    assert resources.l1_buffer_addresses == frozenset(
-        [0x40000] + [tensor.buffer_address() for _, _, _, _, tensor in allocation_calls]
-    )
+    assert resources.scratch_tensors == [scratch_tensor]
+    assert resources.scratch_segments_by_index[0][0].tensor is scratch_tensor
+    assert len(host_configurations) == 2
+    assert int(host_configurations[0][0, 0]) == 0x4000
+    assert int(host_configurations[1][0, 0]) == 0x8000
 
 
 def test_reconfiguration_rejects_undersized_pipe_backing(monkeypatch):
@@ -3190,15 +3464,90 @@ def test_reconfiguration_rejects_undersized_pipe_backing(monkeypatch):
 
     with pytest.raises(
         ValueError,
-        match=r"DFB\[0\] PipeNet backing is smaller than its reconfiguration",
+        match=r"storage\[0\] PipeNet backing is smaller",
     ):
+        backing_tensor = _FakeTensor(device, address=0x8000)
+        monkeypatch.setattr(
+            kernel_runner,
+            "_l1_buffer_addresses_by_core",
+            lambda _tensor, _device: {(0, 0): 0x8000},
+        )
         kernel_runner.build_dfb_reconfiguration_runtime_resources(
             tensors=[_FakeTensor(device)],
             core_ranges=_FakeCoreRanges(),
             plan=plan,
-            existing_backing_tensors={0: object()},
+            existing_backing_tensors={0: backing_tensor},
             existing_backing_allocation_bytes={0: 2048},
         )
+
+
+def test_reconfiguration_shares_sufficient_pipe_backing(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.uint32 = "uint32"
+    fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
+    fake_ttnn.ShardOrientation = type("ShardOrientation", (), {"ROW_MAJOR": 0})
+    fake_ttnn.TensorMemoryLayout = type("TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0})
+    fake_ttnn.BufferType = type("BufferType", (), {"L1": 0})
+    fake_ttnn.ShardSpec = lambda *args: args
+    fake_ttnn.MemoryConfig = lambda *args: args
+    device = object()
+    backing_tensor = _FakeTensor(device, address=0x8000)
+    configuration_tensor = _FakeTensor(device, address=0x9000)
+    fake_ttnn.from_torch = lambda *_args, **_kwargs: configuration_tensor
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        lambda *_args, **_kwargs: pytest.fail("unexpected scratch allocation"),
+    )
+    monkeypatch.setattr(
+        kernel_runner,
+        "_l1_buffer_addresses_by_core",
+        lambda tensor, _device: {(0, 0): tensor.buffer_address()},
+    )
+
+    reconfigured = PhysicalDFBConfig(
+        0, 1, "bfloat16", 1, 2048, (32, 32), storage_index=4
+    )
+    unchanged = PhysicalDFBConfig(1, 1, "float32", 1, 4096, (32, 32), storage_index=4)
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (
+                DFBConfigurationEpoch(None, reconfigured),
+                DFBConfigurationEpoch(7, reconfigured),
+            ),
+            (DFBConfigurationEpoch(None, unchanged),),
+        ),
+    )
+
+    resources = kernel_runner.build_dfb_reconfiguration_runtime_resources(
+        tensors=[],
+        core_ranges=_FakeCoreRanges(),
+        plan=plan,
+        existing_backing_tensors={0: backing_tensor, 1: backing_tensor},
+        existing_backing_allocation_bytes={0: 8192, 1: 8192},
+        device=device,
+    )
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[],
+        cb_configs=[reconfigured, unchanged],
+        core_ranges=_FakeCoreRanges(),
+        pipe_computed_address_backing_tensors={0: backing_tensor},
+        dfb_reconfiguration_scratch_segments=resources.scratch_segments_by_index,
+    )
+
+    assert resources.scratch_tensors == []
+    assert all(
+        segments[0].tensor is backing_tensor
+        for segments in resources.scratch_segments_by_index.values()
+    )
+    assert len(descriptors) == 1
+    assert descriptors[0].total_size == 4096
+    assert [
+        descriptor.buffer_index for descriptor in descriptors[0].format_descriptors
+    ] == [0, 1]
+    assert descriptors[0].backing_desc["tensor"] is backing_tensor
 
 
 def test_build_kernel_descriptors_checks_pipe_runtime_arg_count(monkeypatch):
@@ -5505,14 +5854,7 @@ def test_run_kernel_reuses_reconfiguration_resource_generation(monkeypatch):
     fake_ttnn.ShardSpec = lambda *args: args
     fake_ttnn.MemoryConfig = lambda *args: args
     device = object()
-    scratch_allocations = []
     configuration_allocations = []
-
-    def allocate_scratch(_core_ranges, _num_bytes, _device, *, per_core):
-        assert not per_core
-        tensor = _FakeTensor(device, address=0x8000)
-        scratch_allocations.append(tensor)
-        return tensor
 
     def allocate_configuration(*_args, **_kwargs):
         tensor = _FakeTensor(device, address=0x9000)
@@ -5522,7 +5864,9 @@ def test_run_kernel_reuses_reconfiguration_resource_generation(monkeypatch):
     fake_ttnn.from_torch = allocate_configuration
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     monkeypatch.setattr(
-        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_scratch
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        lambda *_args, **_kwargs: pytest.fail("unexpected scratch allocation"),
     )
     monkeypatch.setattr(
         kernel_runner,
@@ -5557,14 +5901,13 @@ def test_run_kernel_reuses_reconfiguration_resource_generation(monkeypatch):
             runtime_resource_cache=cache,
         )
 
-    assert len(scratch_allocations) == 1
     assert len(configuration_allocations) == 1
-    assert cache.reconfiguration_resources.scratch_tensors[0] is scratch_allocations[0]
+    assert cache.reconfiguration_resources.scratch_tensors == []
     assert (
         cache.reconfiguration_resources.configuration_tensors[0]
         is configuration_allocations[0]
     )
-    assert cache.owned_l1_buffer_addresses == frozenset((0x8000, 0x9000))
+    assert cache.owned_l1_buffer_addresses == frozenset((0x9000,))
 
 
 def test_run_kernel_synchronizes_uncached_runtime_resources(monkeypatch):
@@ -5728,17 +6071,7 @@ def test_reconfiguration_encodes_physical_index_32_in_high_mask(monkeypatch):
     fake_ttnn.ShardSpec = lambda *args: args
     fake_ttnn.MemoryConfig = lambda *args: args
     device = object()
-    next_scratch_address = 0x8000
-    scratch_addresses = []
     host_configurations = []
-
-    def allocate_scratch(_core_ranges, _num_bytes, allocation_device, *, per_core):
-        assert not per_core
-        nonlocal next_scratch_address
-        tensor = _FakeTensor(allocation_device, address=next_scratch_address)
-        scratch_addresses.append(next_scratch_address)
-        next_scratch_address += 0x1000
-        return tensor
 
     def allocate_configuration(host_configuration, *_args, **_kwargs):
         host_configurations.append(host_configuration.clone())
@@ -5747,7 +6080,9 @@ def test_reconfiguration_encodes_physical_index_32_in_high_mask(monkeypatch):
     fake_ttnn.from_torch = allocate_configuration
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     monkeypatch.setattr(
-        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_scratch
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        lambda *_args, **_kwargs: pytest.fail("unexpected scratch allocation"),
     )
     monkeypatch.setattr(
         kernel_runner,
@@ -5781,13 +6116,12 @@ def test_reconfiguration_encodes_physical_index_32_in_high_mask(monkeypatch):
         plan=plan,
     )
 
-    assert len(scratch_addresses) == 1
     assert len(host_configurations) == 1
     encoded = host_configurations[0][0]
     assert int(encoded[256]) == 0
     assert int(encoded[257]) == 1
     assert tuple(int(value) for value in encoded[128:132]) == (
-        scratch_addresses[0],
+        kernel_runner._DFB_RECONFIGURATION_PRESERVE_ADDRESS,
         12288,
         6,
         2048,
@@ -6504,10 +6838,11 @@ def test_static_dfb_descriptor_exact_search_finds_nonlocal_reordering(monkeypatc
     )
 
 
-# A non-fitting static descriptor set reports the best deterministic order.
-def test_static_dfb_descriptor_order_reports_no_fitting_candidate(monkeypatch):
+# Splitting descriptors removes allocation coupling between sparse core sets.
+def test_static_dfb_descriptors_split_over_budget_core(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 10240)
+    monkeypatch.setattr(kernel_runner, "_STATIC_DFB_PACKING_EXACT_PLAN_LIMIT", 2)
     full_grid = _FakeExplicitCoreRanges((0, 0), (2, 0))
     configs = [
         PhysicalDFBConfig(
@@ -6528,6 +6863,44 @@ def test_static_dfb_descriptor_order_reports_no_fitting_candidate(monkeypatch):
         )
     ]
 
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=configs,
+        core_ranges=full_grid,
+        kernel_specs=[_specialized_spec(full_grid, None)],
+    )
+
+    assert len(descriptors) == 5
+    cores_by_dfb = defaultdict(set)
+    for descriptor in descriptors:
+        cores_by_dfb[descriptor.format_descriptors[0].buffer_index].update(
+            _descriptor_cores(descriptor)
+        )
+    assert cores_by_dfb == {
+        0: {(0, 0), (1, 0)},
+        1: {(1, 0), (2, 0)},
+        2: {(0, 0), (2, 0)},
+    }
+
+
+# Splitting cannot satisfy a core whose own DFB storage exceeds its budget.
+def test_static_dfb_descriptor_order_reports_local_capacity_excess(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 10240)
+    core = _FakeExplicitCoreRanges((0, 0), (0, 0))
+    configs = [
+        PhysicalDFBConfig(
+            physical_index,
+            64,
+            "bfloat16",
+            1,
+            64,
+            (1, 32),
+            allocation_nodes=((0, 0),),
+        )
+        for physical_index in range(3)
+    ]
+
     with pytest.raises(
         ValueError,
         match=(
@@ -6538,8 +6911,8 @@ def test_static_dfb_descriptor_order_reports_no_fitting_candidate(monkeypatch):
         kernel_runner.build_cb_descriptors(
             tensors=[_FakeTensorWithoutDevice()],
             cb_configs=configs,
-            core_ranges=full_grid,
-            kernel_specs=[_specialized_spec(full_grid, None)],
+            core_ranges=core,
+            kernel_specs=[_specialized_spec(core, None)],
         )
 
 
@@ -6602,13 +6975,13 @@ def test_remaining_l1_uses_lowest_live_tensor_address(monkeypatch):
     assert kernel_runner.get_min_remaining_l1_for_device(device) == 0x900
 
 
-# Multi-device and opaque wrappers use one conservative global L1 floor.
+# Per-core reports remain exact for multi-device and opaque wrappers.
 @pytest.mark.parametrize(
     "device",
     [SimpleNamespace(get_num_devices=lambda: 32), object()],
     ids=["multiple-devices", "unknown-device-type"],
 )
-def test_global_remaining_l1_uses_reference_allocator_floor(monkeypatch, device):
+def test_remaining_l1_preserves_reference_allocator_per_core(monkeypatch, device):
     l1_buffer_type = object()
     device_info = SimpleNamespace(cb_limit=0x1000)
     buffer_pages = [
@@ -6646,8 +7019,8 @@ def test_global_remaining_l1_uses_reference_allocator_floor(monkeypatch, device)
 
     assert remaining_by_core == {
         (0, 0): 0x900,
-        (1, 0): 0x900,
-        (2, 0): 0x900,
+        (1, 0): 0xC00,
+        (2, 0): 0x1000,
     }
 
 
@@ -6816,57 +7189,6 @@ def test_l1_sharded_storage_counts_sparse_cores(monkeypatch):
     )
 
     assert empty_calls[0][0] == (2, 512)
-
-
-def test_l1_sharded_storage_enables_per_core_allocation(monkeypatch):
-    fake_ttnn = _FakeTTNN()
-    fake_ttnn.ShardSpec = lambda *args: args
-    memory_config = SimpleNamespace(per_core=False)
-
-    def enable_per_core(enable):
-        memory_config.per_core = enable
-
-    memory_config.experimental_set_per_core_allocation = enable_per_core
-    fake_ttnn.MemoryConfig = lambda *args: memory_config
-    fake_ttnn.ShardOrientation = SimpleNamespace(ROW_MAJOR=object())
-    fake_ttnn.TensorMemoryLayout = SimpleNamespace(HEIGHT_SHARDED=object())
-    fake_ttnn.BufferType = SimpleNamespace(L1=object())
-    fake_ttnn.float32 = object()
-    fake_ttnn.ROW_MAJOR_LAYOUT = object()
-    empty_calls = []
-    fake_ttnn.empty = (
-        lambda shape, **kwargs: empty_calls.append((shape, kwargs)) or object()
-    )
-    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
-
-    kernel_runner._allocate_l1_sharded_storage_tensor(
-        _FakeExplicitCoreRanges((0, 0), (1, 0)),
-        num_bytes=2048,
-        device=object(),
-        per_core=True,
-    )
-
-    assert memory_config.per_core
-    assert empty_calls[0][1]["memory_config"] is memory_config
-
-
-def test_l1_buffer_addresses_uses_per_core_tensor_addresses(monkeypatch):
-    tensor = SimpleNamespace(is_per_core_allocated=lambda: True)
-    expected_addresses = {(0, 0): 0x2000, (1, 0): 0x3000}
-    resolve_calls = []
-
-    def resolve_per_core(tensors, tensor_indices, mesh_coordinate):
-        resolve_calls.append((tensors, tensor_indices, mesh_coordinate))
-        return {0: expected_addresses}
-
-    monkeypatch.setattr(
-        kernel_runner, "_resolve_per_core_tensor_addresses", resolve_per_core
-    )
-
-    assert kernel_runner._l1_buffer_addresses_by_core(tensor, object()) == (
-        expected_addresses
-    )
-    assert resolve_calls == [([tensor], (0,), None)]
 
 
 def test_specialized_dfb_use_intersects_storage_segments(monkeypatch):
@@ -7504,13 +7826,27 @@ def test_build_cb_descriptors_binds_mixed_tensor_and_reconfiguration_scratch(
         cb_configs=[config],
         core_ranges=full_grid,
         kernel_specs=[_specialized_spec(full_grid, [0])],
-        dfb_reconfiguration_scratch_tensors={0: scratch_tensor},
+        dfb_reconfiguration_scratch_segments={
+            0: (
+                kernel_runner._DFBReconfigurationScratchSegment(
+                    tensor=scratch_tensor,
+                    nodes=((1, 0),),
+                    allocation_bytes=2048,
+                ),
+            )
+        },
     )
 
     assert len(descriptors) == 2
-    assert descriptors[0]["tensor"] is tensor
-    assert descriptors[1].backing_desc["tensor"] is scratch_tensor
-    scratch_range = descriptors[1].core_ranges.ranges()[0]
+    tensor_descriptor = next(
+        descriptor for descriptor in descriptors if isinstance(descriptor, dict)
+    )
+    scratch_descriptor = next(
+        descriptor for descriptor in descriptors if not isinstance(descriptor, dict)
+    )
+    assert tensor_descriptor["tensor"] is tensor
+    assert scratch_descriptor.backing_desc["tensor"] is scratch_tensor
+    scratch_range = scratch_descriptor.core_ranges.ranges()[0]
     assert (scratch_range.start.x, scratch_range.start.y) == (1, 0)
 
 

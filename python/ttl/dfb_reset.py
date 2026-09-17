@@ -19,12 +19,13 @@ class DFBReset:
     """One worker-local synchronized DFB reset declaration.
 
     ``participants`` contains one compute selector and two data movement
-    selectors. A ``KernelKind`` selects the operation's canonical logical
-    kernel of that kind; a ``Kernel`` selects a specific operation-local
-    logical kernel. A call to ``ttl.reset_dfbs`` or ``ttl.reset_all_dfbs`` is
-    replicated to those three logical kernels. A declaration may execute once
-    or once per iteration of the same immutable sequential loop nest in every
-    participant. Runtime lowering is supported only on Blackhole.
+    selectors. A ``KernelKind`` selects the operation's canonical kernel of
+    that kind; a ``Kernel`` selects an explicit operation-local or
+    compiler-owned kernel. A call to ``ttl.reset_dfbs`` or
+    ``ttl.reset_all_dfbs`` is replicated to those three logical kernels. A
+    declaration may execute once or once per iteration of the same immutable
+    sequential loop nest in every participant. Runtime lowering is supported
+    only on Blackhole.
     """
 
     participants: tuple[KernelSelector, ...]

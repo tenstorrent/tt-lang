@@ -779,8 +779,7 @@ def test_data_movement_role_rejects_unknown_noc_index():
 
 
 class TestSpecializedKernelGrouping:
-    @pytest.mark.parametrize("dynamic_noc", [False, True])
-    def test_snapshot_retains_structural_runtime_argument_metadata(self, dynamic_noc):
+    def test_snapshot_retains_structural_runtime_argument_metadata(self):
         context = Context()
         ttl_dialect.ensure_dialects_registered(context)
         with context:
@@ -827,7 +826,6 @@ class TestSpecializedKernelGrouping:
                 math_fidelity=None,
                 fp32_dest_acc_en=None,
                 dst_full_sync_en=None,
-                dynamic_noc=dynamic_noc,
             )
             second = ttl_api._snapshot_kernel_descriptor_metadata(
                 module,
@@ -835,7 +833,6 @@ class TestSpecializedKernelGrouping:
                 math_fidelity=None,
                 fp32_dest_acc_en=None,
                 dst_full_sync_en=None,
-                dynamic_noc=dynamic_noc,
             )
 
         assert ttkernel.ir.ARG_SPEC_ATTR == "ttkernel.arg_spec"
@@ -843,22 +840,12 @@ class TestSpecializedKernelGrouping:
         assert tuple(argument_spec.rt_args) == (runtime_argument,)
         assert tuple(argument_spec.ct_args) == (compile_argument,)
         assert first.runtime_arg_spec == (runtime_argument,)
-        assert first.configuration.dynamic_noc is dynamic_noc
         assert first == second
         assert hash(first) == hash(second)
 
-    @pytest.mark.parametrize("dynamic_noc", [False, True])
-    def test_groups_only_matching_specialized_kernels(self, dynamic_noc):
+    def test_groups_only_matching_specialized_kernels(self):
         metadata = _make_descriptor_metadata()
-        metadata = replace(
-            metadata,
-            configuration=replace(metadata.configuration, dynamic_noc=dynamic_noc),
-        )
         different_metadata = replace(metadata, tensor_indices=(7,))
-        different_noc_metadata = replace(
-            metadata,
-            configuration=replace(metadata.configuration, dynamic_noc=not dynamic_noc),
-        )
         candidates = [
             _make_descriptor_candidate("first", "same", [(0, 0)], metadata),
             _make_descriptor_candidate("second", "same", [(0, 1)], metadata),
@@ -867,9 +854,6 @@ class TestSpecializedKernelGrouping:
             ),
             _make_descriptor_candidate(
                 "different_source", "different", [(1, 1)], metadata
-            ),
-            _make_descriptor_candidate(
-                "different_noc", "same", [(2, 0)], different_noc_metadata
             ),
             _make_descriptor_candidate("unspecialized_first", "same", None, metadata),
             _make_descriptor_candidate("unspecialized_second", "same", None, metadata),
@@ -881,7 +865,6 @@ class TestSpecializedKernelGrouping:
             ["first", "second"],
             ["different_metadata"],
             ["different_source"],
-            ["different_noc"],
             ["unspecialized_first"],
             ["unspecialized_second"],
         ]
@@ -915,7 +898,6 @@ class TestSpecializedKernelGrouping:
             "dst_full_sync_en": True,
             "unpack_to_dest_fp32": (1,),
             "data_movement_role": ttl_api._DataMovementRole.WRITER,
-            "dynamic_noc": True,
         }
         assert set(configuration_changes) == {
             field.name for field in fields(metadata.configuration)

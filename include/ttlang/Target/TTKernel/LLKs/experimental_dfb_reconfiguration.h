@@ -41,6 +41,7 @@ constexpr uint32_t participantCount = 3;
 constexpr uint32_t entryComplete = 1;
 constexpr uint32_t exitComplete = 2;
 constexpr uint32_t completionMarker = 0xD1FB;
+constexpr uint32_t preserveFifoAddress = 0;
 
 FORCE_INLINE uint32_t
 loadSynchronizationWord(volatile uint32_t tt_l1_ptr *synchronizationWord) {
@@ -158,116 +159,51 @@ FORCE_INLINE void exit(volatile uint32_t tt_l1_ptr *synchronizationState) {
 
 template <bool updateReadPointer, bool updateWritePointer,
           bool updateWriteTilePointer, bool resetStreamCounters>
-FORCE_INLINE void
-applyInterfaceConfiguration(uint32_t dfbIndex, uint32_t fifoAddress,
-                            uint32_t fifoSize, uint32_t fifoNumPages,
-                            uint32_t fifoPageSize) {
-  LocalCBInterface &interface = get_local_cb_interface(dfbIndex);
-  if constexpr (updateReadPointer) {
-    interface.fifo_rd_ptr = fifoAddress;
-  }
-  if constexpr (updateWritePointer) {
-    interface.fifo_wr_ptr = fifoAddress;
-    interface.fifo_num_pages = fifoNumPages;
-  }
-  if constexpr (updateWriteTilePointer) {
-    interface.fifo_wr_tile_ptr = 0;
-  }
-  interface.fifo_size = fifoSize;
-  interface.fifo_limit = fifoAddress + fifoSize;
-  interface.fifo_page_size = fifoPageSize;
-  interface.tiles_acked_received_init = 0;
-
-  if constexpr (resetStreamCounters) {
-    *get_cb_tiles_received_ptr(dfbIndex) = 0;
-    *get_cb_tiles_acked_ptr(dfbIndex) = 0;
-  }
-}
-
-template <bool updateReadPointer, bool updateWritePointer,
-          bool updateWriteTilePointer, bool resetStreamCounters>
 FORCE_INLINE void applyMask(uint32_t tt_l1_ptr *configuration,
                             uint32_t activeMask, uint32_t firstDfbIndex) {
   uint32_t dfbIndex = firstDfbIndex;
   while (activeMask != 0) {
     if ((activeMask & 1U) != 0) {
       uint32_t configurationOffset = dfbIndex * 4;
-      uint32_t fifoAddress =
-          configuration[configurationOffset] >> cb_addr_shift;
+      uint32_t configuredAddress = configuration[configurationOffset];
       uint32_t fifoSize =
           configuration[configurationOffset + 1] >> cb_addr_shift;
       uint32_t fifoNumPages = configuration[configurationOffset + 2];
       uint32_t fifoPageSize =
           configuration[configurationOffset + 3] >> cb_addr_shift;
 
-      applyInterfaceConfiguration<updateReadPointer, updateWritePointer,
-                                  updateWriteTilePointer, resetStreamCounters>(
-          dfbIndex, fifoAddress, fifoSize, fifoNumPages, fifoPageSize);
+      LocalCBInterface &interface = get_local_cb_interface(dfbIndex);
+      uint32_t fifoAddress = configuredAddress == preserveFifoAddress
+                                 ? interface.fifo_limit - interface.fifo_size
+                                 : configuredAddress >> cb_addr_shift;
+      if constexpr (updateReadPointer) {
+        interface.fifo_rd_ptr = fifoAddress;
+      }
+      if constexpr (updateWritePointer) {
+        interface.fifo_wr_ptr = fifoAddress;
+        interface.fifo_num_pages = fifoNumPages;
+      }
+      if constexpr (updateWriteTilePointer) {
+        interface.fifo_wr_tile_ptr = 0;
+      }
+      interface.fifo_size = fifoSize;
+      interface.fifo_limit = fifoAddress + fifoSize;
+      interface.fifo_page_size = fifoPageSize;
+      interface.tiles_acked_received_init = 0;
+
+      if constexpr (resetStreamCounters) {
+        *get_cb_tiles_received_ptr(dfbIndex) = 0;
+        *get_cb_tiles_acked_ptr(dfbIndex) = 0;
+      }
     }
     activeMask >>= 1;
     ++dfbIndex;
   }
 }
 
-template <bool updateReadPointer, bool updateWritePointer,
-          bool updateWriteTilePointer, bool resetStreamCounters,
-          uint32_t... configuration>
-struct ApplyStaticConfigurations;
+} // namespace dfb_reconfiguration_detail
 
-template <bool updateReadPointer, bool updateWritePointer,
-          bool updateWriteTilePointer, bool resetStreamCounters>
-struct ApplyStaticConfigurations<updateReadPointer, updateWritePointer,
-                                 updateWriteTilePointer, resetStreamCounters> {
-  static FORCE_INLINE void run(uint32_t tt_l1_ptr *) {}
-};
-
-template <bool updateReadPointer, bool updateWritePointer,
-          bool updateWriteTilePointer, bool resetStreamCounters,
-          uint32_t dfbIndex, uint32_t totalBytes, uint32_t numPages,
-          uint32_t pageBytes, uint32_t... remaining>
-struct ApplyStaticConfigurations<updateReadPointer, updateWritePointer,
-                                 updateWriteTilePointer, resetStreamCounters,
-                                 dfbIndex, totalBytes, numPages, pageBytes,
-                                 remaining...> {
-  static FORCE_INLINE void run(uint32_t tt_l1_ptr *configuration) {
-    uint32_t fifoAddress =
-        configuration[dfbIndex * 4] >> cb_addr_shift;
-    applyInterfaceConfiguration<updateReadPointer, updateWritePointer,
-                                updateWriteTilePointer, resetStreamCounters>(
-        dfbIndex, fifoAddress, totalBytes >> cb_addr_shift, numPages,
-        pageBytes >> cb_addr_shift);
-    ApplyStaticConfigurations<updateReadPointer, updateWritePointer,
-                              updateWriteTilePointer, resetStreamCounters,
-                              remaining...>::run(configuration);
-  }
-};
-
-struct RuntimeConfigurations {
-  template <bool updateReadPointer, bool updateWritePointer,
-            bool updateWriteTilePointer, bool resetStreamCounters>
-  static FORCE_INLINE void run(uint32_t tt_l1_ptr *configuration) {
-    applyMask<updateReadPointer, updateWritePointer, updateWriteTilePointer,
-              resetStreamCounters>(configuration, configuration[lowMaskWord],
-                                   0);
-    applyMask<updateReadPointer, updateWritePointer, updateWriteTilePointer,
-              resetStreamCounters>(configuration, configuration[highMaskWord],
-                                   32);
-  }
-};
-
-template <uint32_t... configuration>
-struct StaticConfigurations {
-  template <bool updateReadPointer, bool updateWritePointer,
-            bool updateWriteTilePointer, bool resetStreamCounters>
-  static FORCE_INLINE void run(uint32_t tt_l1_ptr *runtimeConfiguration) {
-    ApplyStaticConfigurations<updateReadPointer, updateWritePointer,
-                              updateWriteTilePointer, resetStreamCounters,
-                              configuration...>::run(runtimeConfiguration);
-  }
-};
-
-template <typename Configurations>
-FORCE_INLINE void applyReconfiguration(uint32_t configurationAddress) {
+FORCE_INLINE void reconfigure_dfb_interfaces(uint32_t configurationAddress) {
 #if defined(TTL_DFB_RECONFIGURATION_DM1) ||                                    \
     defined(TTL_DFB_RECONFIGURATION_DM0) ||                                    \
     defined(TTL_DFB_RECONFIGURATION_UNPACK) ||                                 \
@@ -297,30 +233,21 @@ FORCE_INLINE void applyReconfiguration(uint32_t configurationAddress) {
   auto *configuration =
       reinterpret_cast<uint32_t tt_l1_ptr *>(configurationAddress);
   auto *synchronizationState = reinterpret_cast<volatile uint32_t tt_l1_ptr *>(
-      &configuration[synchronizationWord]);
-  enter(synchronizationState);
-  Configurations::template run<updateReadPointer, updateWritePointer,
-                               updateWriteTilePointer, resetStreamCounters>(
-      configuration);
-  exit(synchronizationState);
+      &configuration[dfb_reconfiguration_detail::synchronizationWord]);
+  dfb_reconfiguration_detail::enter(synchronizationState);
+  dfb_reconfiguration_detail::applyMask<updateReadPointer, updateWritePointer,
+                                        updateWriteTilePointer,
+                                        resetStreamCounters>(
+      configuration, configuration[dfb_reconfiguration_detail::lowMaskWord], 0);
+  dfb_reconfiguration_detail::applyMask<updateReadPointer, updateWritePointer,
+                                        updateWriteTilePointer,
+                                        resetStreamCounters>(
+      configuration, configuration[dfb_reconfiguration_detail::highMaskWord],
+      32);
+  dfb_reconfiguration_detail::exit(synchronizationState);
 #else
   (void)configurationAddress;
 #endif
-}
-
-} // namespace dfb_reconfiguration_detail
-
-FORCE_INLINE void reconfigure_dfb_interfaces(uint32_t configurationAddress) {
-  dfb_reconfiguration_detail::applyReconfiguration<
-      dfb_reconfiguration_detail::RuntimeConfigurations>(configurationAddress);
-}
-
-template <uint32_t recordCount, uint32_t... configuration>
-FORCE_INLINE void reconfigure_dfb_interfaces(uint32_t configurationAddress) {
-  static_assert(sizeof...(configuration) == recordCount * 4);
-  dfb_reconfiguration_detail::applyReconfiguration<
-      dfb_reconfiguration_detail::StaticConfigurations<configuration...>>(
-      configurationAddress);
 }
 
 #undef TTL_DFB_RECONFIGURATION_DM0

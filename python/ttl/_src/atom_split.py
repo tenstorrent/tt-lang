@@ -295,9 +295,7 @@ class _KernelSelectorResolver:
             if not isinstance(values, ast.List) or (
                 not allow_empty_lists and not values.elts
             ):
-                list_requirement = (
-                    "a list" if allow_empty_lists else "a nonempty list"
-                )
+                list_requirement = "a list" if allow_empty_lists else "a nonempty list"
                 raise _split_error(
                     values,
                     f"each call_extern_func kernel-specific {keyword_name} value "
@@ -325,9 +323,7 @@ class _KernelSelectorResolver:
             )
             if selected_values is None:
                 call.keywords = [
-                    keyword
-                    for keyword in call.keywords
-                    if keyword.arg != keyword_name
+                    keyword for keyword in call.keywords if keyword.arg != keyword_name
                 ]
                 continue
             for keyword in call.keywords:
@@ -388,10 +384,12 @@ class _KernelSelectorResolver:
                 f"the enclosing operation{type_detail}",
             )
         for participant in participants:
-            if isinstance(participant, KernelKind):
-                continue
-            if participant._implicit_role is None and not any(
-                participant is kernel for kernel in self.logical_kernels.values()
+            if (
+                isinstance(participant, Kernel)
+                and participant._implicit_role is None
+                and not any(
+                    participant is kernel for kernel in self.logical_kernels.values()
+                )
             ):
                 raise _split_error(
                     reset_node,

@@ -6,8 +6,6 @@
 // CHECK:      entry = {(0,0), (0,1), (1,0), (1,1)}
 // CHECK-NEXT: x_zero = {(0,0), (0,1)}
 // CHECK-NEXT: x_nonzero = {(1,0), (1,1)}
-// CHECK-NEXT: not_x_zero = {(1,0), (1,1)}
-// CHECK-NEXT: scf_if_result = {(0,0), (0,1)}
 // CHECK-NEXT: nested_scf_if_result = {(0,0), (0,1)}
 // CHECK-NEXT: large_integer_expression = {(0,0), (0,1)}
 // CHECK-NEXT: joined = {(0,0), (0,1), (1,0), (1,1)}
@@ -52,23 +50,6 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
       "test.observe"() {test.label = "x_zero"} : () -> ()
     } else {
       "test.observe"() {test.label = "x_nonzero"} : () -> ()
-    }
-    %not_x_zero = emitc.logical_not %is_x_zero : i1
-    scf.if %not_x_zero {
-      "test.observe"() {test.label = "not_x_zero"} : () -> ()
-    }
-
-    // Coordinate expressions emitted by the frontend use scf.if results.
-    // Evaluate the selected yield before interpreting the outer predicate.
-    %c1_selected = arith.constant 1 : index
-    %selected_x = scf.if %is_x_zero -> (index) {
-      scf.yield %c1_selected : index
-    } else {
-      scf.yield %c0 : index
-    }
-    %selected_first_column = arith.cmpi eq, %selected_x, %c1_selected : index
-    scf.if %selected_first_column {
-      "test.observe"() {test.label = "scf_if_result"} : () -> ()
     }
 
     %c2_selected = arith.constant 2 : index

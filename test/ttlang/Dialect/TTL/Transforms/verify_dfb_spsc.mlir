@@ -279,6 +279,79 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
+// Multiple kernels may wait for and read the same published pages when exactly
+// one kernel advances the DFB read pointer.
+// CHECK-LABEL: func.func @shared_read_producer
+// CHECK-LABEL: func.func @shared_read_observer
+// CHECK-LABEL: func.func @shared_read_owner
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @shared_read_producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 50 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %slot = ttl.cb_reserve %dfb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    func.return
+  }
+
+  func.func @shared_read_observer() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 50 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.opaque_call "observe" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    func.return
+  }
+
+  func.func @shared_read_owner() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 50 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.opaque_call "consume" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>, #ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    func.return
+  }
+}
+
+// -----
+
+// Protocol effects in a branch with an exact zero execution count do not
+// create producer or read-pointer-owner participants.
+// CHECK-LABEL: func.func @live_producer
+// CHECK-LABEL: func.func @dead_protocol
+// CHECK-LABEL: func.func @live_consumer
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @live_producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 51 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %slot = ttl.cb_reserve %dfb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    func.return
+  }
+
+  func.func @dead_protocol(%runtime_condition: i1) attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 51 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %false = arith.constant false
+    %never = arith.andi %runtime_condition, %false : i1
+    scf.if %never {
+      ttl.opaque_call "unused" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>, #ttl.dfb_protocol_effect<push, 0, 1>, #ttl.dfb_protocol_effect<wait, 0, 1>, #ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    }
+    func.return
+  }
+
+  func.func @live_consumer() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 51 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %view = ttl.cb_wait %dfb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    func.return
+  }
+}
+
+// -----
+
 // Hidden producer and consumer actions participate in SPSC verification
 // through the shared DFB access interface.
 // CHECK-LABEL: func.func @hidden_producer

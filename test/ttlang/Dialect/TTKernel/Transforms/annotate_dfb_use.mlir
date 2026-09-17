@@ -14,10 +14,6 @@
 // CHECK-LABEL: func.func @calls_unknown()
 // CHECK-SAME: ttl.used_dfb_indices = array<i32: 0, 1, 2>
 
-// Compiler-defined arguments before tensor accessors are not DFB indices.
-// CHECK-LABEL: func.func @compiler_defined_argument()
-// CHECK-SAME: ttl.used_dfb_indices = array<i32>
-
 // CHECK-LABEL: func.func @recursive()
 // CHECK-SAME: ttl.used_dfb_indices = array<i32: 0>
 
@@ -50,16 +46,9 @@ module attributes {ttl.dfb_allocations = [{}, {}, {}]} {
   }
 
   func.func @calls_unknown() attributes {
-      ttl.base_cta_index = 2 : i32,
+      ttl.base_cta_index = 5 : i32,
       ttkernel.thread = #ttkernel.thread<noc>} {
     func.call @unknown() : () -> ()
-    return
-  }
-
-  func.func @compiler_defined_argument() attributes {
-      ttl.base_cta_index = 4 : i32,
-      ttkernel.thread = #ttkernel.thread<noc>} {
-    %compiler_defined = ttkernel.get_compile_time_arg_val(3) : () -> i32
     return
   }
 

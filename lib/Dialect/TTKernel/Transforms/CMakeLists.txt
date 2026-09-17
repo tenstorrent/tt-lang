@@ -7,7 +7,6 @@ add_mlir_dialect_library(TTLangTTKernelTransforms
   TTKernelInsertL1Accumulation.cpp
   TTKernelLowerScalarFpTypes.cpp
   TTKernelAnnotateDFBUse.cpp
-  TTKernelSpecializeDFBReconfiguration.cpp
   TTKernelSpecializeCores.cpp
   TTKernelUnrollStaticPipeNetRecordLoops.cpp
 

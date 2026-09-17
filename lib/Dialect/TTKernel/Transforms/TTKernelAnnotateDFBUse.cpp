@@ -63,7 +63,7 @@ static void warnDroppedPrint(func::FuncOp func, int32_t dfbIndex) {
   InFlightDiagnostic diag = func.emitWarning()
                             << "eliminating debug print of unused DFB "
                             << dfbIndex;
-  if (auto coord = func->getAttr(kCoreCoordAttrName)) {
+  if (auto coord = func->getAttr("ttl.core_coord")) {
     diag << " on specialized core " << coord;
   }
 }
@@ -122,8 +122,6 @@ static func::FuncOp getCallableFunc(CallGraphNode *node) {
   return dyn_cast<func::FuncOp>(node->getCallableRegion()->getParentOp());
 }
 
-// Collects descriptor requirements encoded directly in a function and rejects
-// physical indices outside its descriptor table.
 static LogicalResult collectDirectDFBUses(func::FuncOp func, int64_t dfbCount,
                                           DFBSet &used) {
   func.walk([&](ttk::GetCompileArgValOp op) {
@@ -136,10 +134,8 @@ static LogicalResult collectDirectDFBUses(func::FuncOp func, int64_t dfbCount,
     }
   });
 
-  // TTL lowering removes DFB operands, so each opaque call carries finalized
-  // physical DFB indices whose descriptors must survive core specialization.
-  // The op verifier checks index form; this pass checks each index against the
-  // enclosing function's DFB count.
+  // Lowering removes DFB operands, so external calls retain their descriptor
+  // requirements as finalized physical indices.
   WalkResult result = func.walk([&](ttk::OpaqueCallOp call) -> WalkResult {
     std::optional<ArrayRef<int32_t>> requiredPhysicalDFBIndices =
         call.getDfbResourceIndices();

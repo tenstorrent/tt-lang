@@ -104,6 +104,7 @@ from .kernel import (
     KernelSelector,
     _bind_kernel_declarations,
     _operation_identity,
+    _referenced_operation_values,
     _selector_implicit_role,
     _selector_kind,
     _transitive_participant_kernels,
@@ -303,12 +304,7 @@ def _build_atom_spec(
         )
     fn_def: ast.FunctionDef = module.body[0]
     scope = function_scope(fn)
-    params = _classify_params(fn)
-    local_names = _collect_local_names(fn_def) | {param.name for param in params}
-    static_capture_values = {
-        capture_name: scope[capture_name]
-        for capture_name in (loaded_names_in(fn_def) - local_names) & scope.keys()
-    }
+    captured_values = _referenced_operation_values(fn)
 
     # Inline statement-level calls to other unified operations, then keep
     # the post-inline AST + source.
@@ -321,7 +317,7 @@ def _build_atom_spec(
         inlined_dfb_resets,
         inlined_dfb_reconfigurations,
     ) = inline_atom_calls(fn_def, scope, caller_name=name)
-    specialize_static_boolean_branches(fn_def, static_capture_values)
+    specialize_static_boolean_branches(fn_def, captured_values)
     _hoist_inlined_resource_declarations(fn_def, scope, name)
     validate_resource_declarations(fn_def, name)
 
@@ -329,12 +325,13 @@ def _build_atom_spec(
     for node in ast.walk(fn_def):
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
             loaded_names.add(node.id)
+    captured_values.update(
+        {
+            capture_name: scope[capture_name]
+            for capture_name in loaded_names & scope.keys()
+        }
+    )
 
-    local_names = _collect_local_names(fn_def) | {param.name for param in params}
-    captured_values = {
-        capture_name: scope[capture_name]
-        for capture_name in (loaded_names - local_names) & scope.keys()
-    }
     external_pipenets = dict(inlined_pipenets)
     compile_time_captures: Dict[str, Any] = {}
     logical_kernels: Dict[str, Kernel] = dict(inlined_logical_kernels)
@@ -484,6 +481,7 @@ def _build_atom_spec(
     frozen_scope.update(dfb_reconfigurations)
     source = ast.unparse(fn_def)
 
+    params = _classify_params(fn)
     return _AtomSpec(
         name=name,
         operation_identity=operation_identity,

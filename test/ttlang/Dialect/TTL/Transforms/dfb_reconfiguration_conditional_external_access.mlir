@@ -248,13 +248,18 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 #entry = #ttl.dfb_reconfiguration<0, participants[#compute, #reader, #writer], discard_dfb_state = true>
 #exit = #ttl.dfb_reconfiguration<1, participants[#compute, #reader, #writer]>
 
+// The entry reconfiguration terminates the conditional producer lifecycle.
+// The non-discarding exit occurs after that lifecycle and does not prevent
+// reuse with the complete lifecycle between entry and exit.
 // IR: ttl.dfb_allocations = [
 // IR-SAME: dfb_index = 0 : i32
-// IR-SAME: dfb_index = 1 : i32
+// IR-NOT: dfb_index = 1 : i32
 
-// DEBUG: DFB logical_id=0 bounded=0
+// DEBUG: DFB logical_id=0 bounded=1
+// DEBUG: epochs=[{executions=3,accesses=[0, 1]
+// DEBUG-SAME: terminal_reconfiguration=0
 // DEBUG: DFB logical_id=1 bounded=1
-// DEBUG: Total DFB count: 2
+// DEBUG: Total DFB count: 1
 
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @compute() attributes {

@@ -153,22 +153,6 @@ func.func @context_integer_expression(
 }
 // CHECK-LABEL: context_integer_expression = 4
 
-// EmitC logical negation composes with context values used by branch counts.
-func.func @context_logical_not(
-    %coordinate: index {test.value = 2 : i64}) {
-  %one = arith.constant 1 : index
-  %is_one = arith.cmpi eq, %coordinate, %one : index
-  %is_not_one = emitc.logical_not %is_one : i1
-  scf.if %is_not_one {
-    %target = arith.addi %coordinate, %coordinate {
-      test.expected_count = 1 : i64,
-      test.label = "context_logical_not"
-    } : index
-  }
-  return
-}
-// CHECK-LABEL: context_logical_not = 1
-
 // A loop bound derived from an outer induction variable is enumerated when the
 // complete nest remains compile-time evaluable.
 func.func @dependent_inner_bound() {

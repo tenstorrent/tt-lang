@@ -64,9 +64,7 @@ def call_extern_func(
         template_args: Static values and explicit DFB wrappers emitted as C++
             template arguments.
         func_args: Scalars, DFBs, base tensors, or explicit raw tensor
-            addresses emitted as C++ function arguments. A list applies to every
-            selected kernel; a mapping assigns a list to each specified kernel.
-            A base tensor becomes
+            addresses emitted as C++ function arguments. A base tensor becomes
             a data-movement `TensorAccessor` for device DRAM or SRAM, or a
             compute-local `LocalTensorAccessor<uint8_t>` for sharded SRAM.
             `L1` and `L1Small` retain the corresponding TTNN buffer-type names;
@@ -76,6 +74,8 @@ def call_extern_func(
             BFLOAT16, INT32, UINT32, UINT16, and UINT8. External functions must
             accept the accessor by `const&` and must not retain it after the
             enclosing kernel returns. Repeated opaque DFBs are valid.
+            A list applies to every selected kernel; a mapping assigns a list to
+            each specified kernel.
             Summarized occurrences must use distinct parameters of a composed
             operation.
         dfb_dependencies: DFBs accessed by external C++ without adding C++
@@ -131,8 +131,12 @@ def reset_dfbs(reset: DFBReset, /, *, dfbs) -> None:
     raise RuntimeError("ttl.reset_dfbs() is valid only in a compiled kernel")
 
 
-def reset_all_dfbs(reset: DFBReset, /) -> None:
-    """Apply ``reset_dfbs`` semantics to every worker-local DFB interface."""
+def reset_all_dfbs(reset: DFBReset, /, *, preserve=()) -> None:
+    """Reset every worker-local DFB interface except those in ``preserve``.
+
+    Preserving one member of a DFB allocation group preserves every member of
+    that group because they share one L1 allocation.
+    """
     raise RuntimeError("ttl.reset_all_dfbs() is valid only in a compiled kernel")
 
 

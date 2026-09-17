@@ -1,7 +1,7 @@
-// Verify that DFB resource metadata cannot reference descriptors outside the
-// enclosing function's compile-time DFB argument range.
 // RUN: ttlang-opt %s -ttkernel-annotate-dfb-use --verify-diagnostics --split-input-file
 
+// Verify that DFB resource metadata cannot reference descriptors outside the
+// finalized module allocation range.
 module attributes {ttl.dfb_allocations = [{}, {}]} {
   func.func @invalid_resource_index() attributes {
       ttl.base_cta_index = 2 : i32,
@@ -14,7 +14,12 @@ module attributes {ttl.dfb_allocations = [{}, {}]} {
 
 // -----
 
-// The pass runs only after physical DFB allocation has been finalized.
-// expected-error @below {{'builtin.module' op `ttkernel-annotate-dfb-use` requires finalized DFB allocation metadata; run `ttl-finalize-dfb-indices` first}}
+// expected-error @below {{`ttkernel-annotate-dfb-use` requires finalized DFB allocation metadata; run `ttl-finalize-dfb-indices` first}}
 module {
+}
+
+// -----
+
+// expected-error @below {{`ttkernel-annotate-dfb-use` requires finalized DFB allocation metadata; run `ttl-finalize-dfb-indices` first}}
+module attributes {ttl.dfb_allocations = 0 : i64} {
 }

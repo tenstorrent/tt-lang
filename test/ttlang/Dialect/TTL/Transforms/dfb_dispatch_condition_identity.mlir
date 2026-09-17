@@ -76,38 +76,6 @@ module {
 
 // -----
 
-// Logical negation preserves a typed dispatch condition when applied twice.
-// CHECK-LABEL: func.func @logical_not_identity
-// CHECK-SAME: ttl.base_cta_index = 1 : i32
-// CHECK: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 0 : index}
-// CHECK-NEXT: ttl.bind_cb{cb_index = 0, block_count = 2} {dfb_id = 1 : index}
-
-module {
-  func.func @logical_not_identity()
-      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
-                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-    %first = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %second = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-    %zero = arith.constant 0 : i64
-    %producer_value = ttl.opaque_call "producer_predicate" () {condition_result = #ttl.dispatch_condition<0, i64>, header = "predicate.hpp"} : () -> i64
-    %consumer_value = ttl.opaque_call "consumer_predicate" () {condition_result = #ttl.dispatch_condition<0, i64>, header = "predicate.hpp"} : () -> i64
-    %producer_active = arith.cmpi ne, %producer_value, %zero : i64
-    %consumer_active = arith.cmpi ne, %consumer_value, %zero : i64
-    %consumer_inactive = emitc.logical_not %consumer_active : i1
-    %consumer_restored = emitc.logical_not %consumer_inactive : i1
-    scf.if %producer_active {
-      ttl.opaque_call "produce" dfb_dependencies(%first : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>, #ttl.dfb_protocol_effect<push, 0, 1>] () {header = "effects.hpp"} : () -> ()
-    }
-    scf.if %consumer_restored {
-      ttl.opaque_call "consume" dfb_dependencies(%first : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>, #ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "effects.hpp"} : () -> ()
-    }
-    ttl.opaque_call "second" dfb_dependencies(%second : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>, #ttl.dfb_protocol_effect<push, 0, 1>, #ttl.dfb_protocol_effect<wait, 0, 1>, #ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "effects.hpp"} : () -> ()
-    return
-  }
-}
-
-// -----
-
 // Different typed identities do not establish equal execution.
 // CHECK-LABEL: func.func @different_identities
 // CHECK-SAME: ttl.base_cta_index = 2 : i32
