@@ -9,12 +9,41 @@
 
 set -euo pipefail
 
-readonly _DEFAULT_TT_EMULE_COMMIT="07f1bd8301544403c8bc1faa4038f6cbf69909f1"
-readonly _DEFAULT_TT_METAL_COMMIT="d48d09dee19de51f694a52fdf75d569950d38ceb"
-readonly _TT_EMULE_COMMIT="${TTLANG_EMULE_RUNTIME_COMMIT:-$_DEFAULT_TT_EMULE_COMMIT}"
-readonly _TT_METAL_COMMIT="${TTLANG_EMULE_RUNTIME_METAL_COMMIT:-$_DEFAULT_TT_METAL_COMMIT}"
-readonly _TT_EMULE_SOURCE_URL="${TTLANG_EMULE_RUNTIME_SOURCE_URL:-https://github.com/tenstorrent/tt-emule.git}"
-readonly _REQUIRED_EMULE_FILE="cluster_descriptors/blackhole_P150_unharvested.yaml"
+_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+_REPO_ROOT="$(dirname "$_SCRIPT_DIR")"
+readonly _SCRIPT_DIR _REPO_ROOT
+readonly _STACK_MANIFEST="${TTLANG_EMULE_STACK_MANIFEST:-${_REPO_ROOT}/config/tt-lang-emule-stack.json}"
+readonly _STACK_TOOL="${_SCRIPT_DIR}/tt-lang-emule-stack.py"
+readonly _PYTHON="${TTLANG_EMULE_HOST_PYTHON:-python3}"
+
+if ! command -v "$_PYTHON" >/dev/null 2>&1; then
+    echo "tt-lang-sim: Python 3 is required to read the emulator stack manifest." >&2
+    exit 1
+fi
+
+_STACK_OUTPUT="$("$_PYTHON" "$_STACK_TOOL" --manifest "$_STACK_MANIFEST" emit)"
+while IFS=$'\t' read -r _STACK_KEY _STACK_VALUE; do
+    case "$_STACK_KEY" in
+        TTLANG_COMPILER_BASE_COMMIT) _MANIFEST_COMPILER_BASE_COMMIT="$_STACK_VALUE" ;;
+        TTLANG_EMULE_REPOSITORY) _MANIFEST_EMULE_REPOSITORY="$_STACK_VALUE" ;;
+        TTLANG_EMULE_COMMIT) _MANIFEST_EMULE_COMMIT="$_STACK_VALUE" ;;
+        TTLANG_METAL_REPOSITORY) _MANIFEST_METAL_REPOSITORY="$_STACK_VALUE" ;;
+        TTLANG_METAL_COMMIT) _MANIFEST_METAL_COMMIT="$_STACK_VALUE" ;;
+        TTLANG_EMULE_BASE_IMAGE) _MANIFEST_BASE_IMAGE="$_STACK_VALUE" ;;
+        TTLANG_EMULE_PLATFORM) _MANIFEST_PLATFORM="$_STACK_VALUE" ;;
+        TTLANG_EMULE_TARGET) _MANIFEST_TARGET="$_STACK_VALUE" ;;
+        TTLANG_EMULE_CLUSTER_DESCRIPTOR) _MANIFEST_CLUSTER_DESCRIPTOR="$_STACK_VALUE" ;;
+        TTLANG_EMULE_MESH_DEVICE) _MANIFEST_MESH_DEVICE="$_STACK_VALUE" ;;
+        TTLANG_EMULE_ALLOCATOR_MODE) _MANIFEST_ALLOCATOR_MODE="$_STACK_VALUE" ;;
+    esac
+done <<< "$_STACK_OUTPUT"
+
+readonly _TT_EMULE_COMMIT="${TTLANG_EMULE_RUNTIME_COMMIT:-$_MANIFEST_EMULE_COMMIT}"
+readonly _TT_METAL_COMMIT="${TTLANG_EMULE_RUNTIME_METAL_COMMIT:-$_MANIFEST_METAL_COMMIT}"
+readonly _TT_EMULE_SOURCE_URL="${TTLANG_EMULE_RUNTIME_SOURCE_URL:-$_MANIFEST_EMULE_REPOSITORY}"
+readonly _TT_METAL_SOURCE_URL="${TTLANG_EMULE_RUNTIME_METAL_SOURCE_URL:-$_MANIFEST_METAL_REPOSITORY}"
+readonly _BASE_IMAGE="${TTLANG_EMULE_RUNTIME_BASE_IMAGE:-$_MANIFEST_BASE_IMAGE}"
+readonly _REQUIRED_EMULE_FILE="$_MANIFEST_CLUSTER_DESCRIPTOR"
 
 for _COMMIT in "$_TT_EMULE_COMMIT" "$_TT_METAL_COMMIT"; do
     if [ "${#_COMMIT}" -ne 40 ] || [[ "$_COMMIT" == *[!0-9a-f]* ]]; then
@@ -23,10 +52,9 @@ for _COMMIT in "$_TT_EMULE_COMMIT" "$_TT_METAL_COMMIT"; do
     fi
 done
 
-_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-_REPO_ROOT="$(dirname "$_SCRIPT_DIR")"
 _IMAGE_INPUT_ID="$(
-    cksum "${_REPO_ROOT}/.github/containers/Dockerfile.emule" \
+    cksum "$_STACK_MANIFEST" \
+        "${_REPO_ROOT}/.github/containers/Dockerfile.emule" \
         "${_SCRIPT_DIR}/tt-lang-emule-entrypoint.sh" |
         awk '{print $1, $2}' |
         cksum |
@@ -35,13 +63,16 @@ _IMAGE_INPUT_ID="$(
 readonly _IMAGE_INPUT_ID
 readonly _RUNTIME_ID="${_TT_EMULE_COMMIT:0:8}-${_TT_METAL_COMMIT:0:8}-r${_IMAGE_INPUT_ID}"
 _DOCKER="${TTLANG_EMULE_DOCKER:-docker}"
-_PLATFORM="${TTLANG_EMULE_PLATFORM:-linux/amd64}"
+_PLATFORM="${TTLANG_EMULE_PLATFORM:-$_MANIFEST_PLATFORM}"
 _IMAGE="${TTLANG_EMULE_IMAGE:-tt-lang-emule:${_RUNTIME_ID}}"
 _SOURCE_ID="$(printf '%s' "$_REPO_ROOT" | cksum | awk '{print $1}')"
 _BUILD_VOLUME="${TTLANG_EMULE_BUILD_VOLUME:-tt-lang-emule-build-${_RUNTIME_ID}-${_SOURCE_ID}}"
 _CACHE_VOLUME="${TTLANG_EMULE_CACHE_VOLUME:-tt-lang-emule-cache-${_RUNTIME_ID}}"
 _TEMP_EMULE_SOURCE=""
 _TEMP_EMULE_CONTEXT=""
+
+"$_PYTHON" "$_STACK_TOOL" --manifest "$_STACK_MANIFEST" validate \
+    --compiler-source "$_REPO_ROOT" --quiet
 
 cleanup() {
     for _TEMP_DIR in "$_TEMP_EMULE_SOURCE" "$_TEMP_EMULE_CONTEXT"; do
@@ -104,6 +135,10 @@ _RUN_ARGS=(
     --mount "type=bind,src=${_REPO_ROOT},dst=/workspace"
     --mount "type=volume,src=${_BUILD_VOLUME},dst=/ttlang-build"
     --mount "type=volume,src=${_CACHE_VOLUME},dst=/tt-metal-cache"
+    -e "TTLANG_EMULE_TARGET_NAME=${_MANIFEST_TARGET}"
+    -e "TT_METAL_MOCK_CLUSTER_DESC_PATH=/opt/tt-emule/${_REQUIRED_EMULE_FILE}"
+    -e "TT_METAL_ALLOCATOR_MODE_HYBRID=1"
+    -e "MESH_DEVICE=${_MANIFEST_MESH_DEVICE}"
 )
 
 case "${_HOST_CWD}/" in
@@ -152,6 +187,12 @@ if [ "${TTLANG_EMULE_REBUILD:-0}" = "1" ] || \
    ! "$_DOCKER" image inspect "$_IMAGE" >/dev/null 2>&1; then
     _EMULE_SOURCE="${TTLANG_EMULE_RUNTIME_SOURCE_DIR:-}"
     if [ -z "$_EMULE_SOURCE" ]; then
+        if [ -z "$_TT_EMULE_SOURCE_URL" ]; then
+            echo "tt-lang-sim: no emulator source was configured." >&2
+            echo "Set TTLANG_EMULE_RUNTIME_SOURCE_DIR to an exact local checkout or" >&2
+            echo "TTLANG_EMULE_RUNTIME_SOURCE_URL to the approved source repository." >&2
+            exit 1
+        fi
         if ! command -v git >/dev/null 2>&1; then
             echo "tt-lang-sim: git is required to fetch the emulator source." >&2
             exit 1
@@ -175,6 +216,12 @@ if [ "${TTLANG_EMULE_REBUILD:-0}" = "1" ] || \
         echo "  found:  ${_EMULE_SOURCE_COMMIT:-not a Git checkout}" >&2
         exit 1
     fi
+    if [ "$_TT_EMULE_COMMIT" = "$_MANIFEST_EMULE_COMMIT" ] && \
+       [ "$_TT_METAL_COMMIT" = "$_MANIFEST_METAL_COMMIT" ]; then
+        "$_PYTHON" "$_STACK_TOOL" --manifest "$_STACK_MANIFEST" validate \
+            --compiler-source "$_REPO_ROOT" --emulator-source "$_EMULE_SOURCE" \
+            --quiet
+    fi
     _TEMP_EMULE_CONTEXT="$(mktemp -d "${TMPDIR:-/tmp}/tt-lang-emule-context.XXXXXX")"
     git -C "$_EMULE_SOURCE" archive --format=tar "$_TT_EMULE_COMMIT" |
         tar -xf - -C "$_TEMP_EMULE_CONTEXT"
@@ -192,6 +239,8 @@ if [ "${TTLANG_EMULE_REBUILD:-0}" = "1" ] || \
         --file "${_REPO_ROOT}/.github/containers/Dockerfile.emule" \
         --build-arg "TT_EMULE_COMMIT=${_TT_EMULE_COMMIT}" \
         --build-arg "TT_METAL_COMMIT=${_TT_METAL_COMMIT}" \
+        --build-arg "TT_METAL_SOURCE_URL=${_TT_METAL_SOURCE_URL}" \
+        --build-arg "BASE_IMAGE=${_BASE_IMAGE}" \
         --tag "$_IMAGE" \
         "${_REPO_ROOT}/scripts"
 fi
