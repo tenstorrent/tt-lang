@@ -18,6 +18,8 @@ _REPO_ROOT="$(dirname "$_SCRIPT_DIR")"
 # The simulator CLI already uses `--` to separate its options from script
 # arguments, so stop scanning there as well.
 _BACKEND="${TTLANG_SIM_BACKEND:-python}"
+_RUNTIME_IMAGE=""
+_SMOKE_TEST=0
 _FORWARD_ARGS=()
 _SEPARATOR_INDEX=""
 while [ "$#" -gt 0 ]; do
@@ -32,6 +34,26 @@ while [ "$#" -gt 0 ]; do
             ;;
         --backend=*)
             _BACKEND="${1#--backend=}"
+            shift
+            ;;
+        --runtime-image)
+            if [ "$#" -lt 2 ]; then
+                echo "tt-lang-sim: --runtime-image requires an image reference." >&2
+                exit 2
+            fi
+            _RUNTIME_IMAGE="$2"
+            shift 2
+            ;;
+        --runtime-image=*)
+            _RUNTIME_IMAGE="${1#--runtime-image=}"
+            if [ -z "$_RUNTIME_IMAGE" ]; then
+                echo "tt-lang-sim: --runtime-image requires an image reference." >&2
+                exit 2
+            fi
+            shift
+            ;;
+        --smoke-test)
+            _SMOKE_TEST=1
             shift
             ;;
         --)
@@ -49,13 +71,32 @@ set -- "${_FORWARD_ARGS[@]}"
 
 # Help and version describe the launcher as a whole and never require a
 # backend runtime. Preserve the existing no-argument help path as well.
-case "${1:-}" in
-    ""|-h|--help|--version)
-        _BACKEND=python
-        ;;
-esac
+if [ "$_SMOKE_TEST" -eq 0 ]; then
+    case "${1:-}" in
+        ""|-h|--help|--version)
+            _BACKEND=python
+            ;;
+    esac
+fi
+
+if [ "$_BACKEND" != "emule" ] && \
+   { [ -n "$_RUNTIME_IMAGE" ] || [ "$_SMOKE_TEST" -eq 1 ]; }; then
+    echo "tt-lang-sim: --runtime-image and --smoke-test require --backend emule." >&2
+    exit 2
+fi
 
 if [ "$_BACKEND" = "emule" ]; then
+    if [ "$_SMOKE_TEST" -eq 1 ]; then
+        if [ "$#" -ne 0 ]; then
+            echo "tt-lang-sim: --smoke-test does not accept a script." >&2
+            exit 2
+        fi
+        set -- "${_REPO_ROOT}/examples/compiler_only_external_call.py"
+    fi
+    if [ -n "$_RUNTIME_IMAGE" ]; then
+        export TTLANG_EMULE_IMAGE="$_RUNTIME_IMAGE"
+    fi
+
     # Unlike the Python backend, emule has no intermediate argparse layer to
     # consume the launcher/script separator before invoking the user program.
     if [ -n "$_SEPARATOR_INDEX" ]; then

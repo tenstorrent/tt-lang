@@ -65,6 +65,23 @@ program and execute the resulting kernels through tt-metal and tt-emule:
 ./bin/tt-lang-sim examples/eltwise_add.py --backend emule
 ```
 
+To run a minimal compiler-to-runtime acceptance check without choosing a
+program, use the bundled smoke test. It compiles and executes the external-call
+example and verifies its tensor result:
+
+```bash
+./bin/tt-lang-sim --backend emule --smoke-test
+```
+
+Automation can select an already-built, versioned artifact explicitly instead
+of relying on the manifest-derived local tag:
+
+```bash
+./bin/tt-lang-sim --backend emule \
+  --runtime-image registry.example/tt-lang-emule:tested \
+  examples/compiler_only_external_call.py
+```
+
 This is not the Python simulator with a different tensor implementation. The
 script imports the real `ttl` and `ttnn` packages, TT-Lang compiles each
 operation, and tt-metal dispatches the generated kernels to tt-emule.
