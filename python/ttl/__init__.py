@@ -54,6 +54,7 @@ if _SIM_ONLY_INSTALL:
     ]
 else:
     from ttl.ttl import (
+        SRAMStorage,
         operation,
         DFB,
         Kernel,
@@ -111,6 +112,7 @@ else:
     from ttl.pipe import Pipe, PipeNet
 
     __all__ = [
+        "SRAMStorage",
         "__version__",
         "build_info",
         "operation",
