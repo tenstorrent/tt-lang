@@ -19,6 +19,7 @@ def ensure_dialects_registered(ctx):
     ctx.append_dialect_registry(reg)
     # Trigger loading so attributes/ops are available immediately.
     _ = ctx.dialects["ttl"]
+    _ = ctx.dialects["tensor"]
 
 
 # Re-export C++-bound attributes/types for convenience.

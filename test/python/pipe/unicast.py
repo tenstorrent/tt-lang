@@ -72,12 +72,14 @@ def unicast_pipe(inp, out):
 # CHECK-LABEL: func.func @dm_read
 # CHECK-SAME: ttl.kernel_thread = #ttkernel.thread<noc>
 
+# CHECK: %[[SOURCE_RESERVED:.*]] = ttl.cb_reserve
+# CHECK: %[[SOURCE_BLOCK:.*]] = ttl.attach_cb %[[SOURCE_RESERVED]]
 # CHECK: ttl.pipenet_foreach_src
 # CHECK-SAME: name "net"
 # CHECK-SAME: <srcX = 1, srcY = 0
 # CHECK-SAME: dstEndX = 0, dstEndY = 0>
 # CHECK: ^bb0(%[[SRC_PIPE:.*]]: !ttl.selected_pipe_src):
-# CHECK: ttl.copy %{{.*}}, %[[SRC_PIPE]]
+# CHECK: ttl.copy %[[SOURCE_BLOCK]], %[[SRC_PIPE]]
 
 # CHECK: ttl.pipenet_foreach_dst
 # CHECK-SAME: name "net"

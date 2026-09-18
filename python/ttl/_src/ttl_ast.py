@@ -485,20 +485,31 @@ class TTLGenericCompiler(TTCompilerBase):
     def _graph_pipe_record_attrs(self, pipenet):
         records = []
         grid_cols, grid_rows = self.context.grid
+        local_nodes = pipenet.local_nodes
+        if local_nodes is None:
+            local_nodes = tuple(
+                (node_x, node_y)
+                for node_y in range(grid_rows)
+                for node_x in range(grid_cols)
+            )
+        for node_x, node_y in local_nodes:
+            if node_x >= grid_cols or node_y >= grid_rows:
+                raise ValueError(
+                    f"PipeNet local node {(node_x, node_y)} is outside "
+                    f"operation grid {(grid_cols, grid_rows)}"
+                )
         for edge in pipenet._graph_edges:
             device_transfer = self._device_transfer_attr(pipenet.graph.domain, edge)
-            for node_y in range(grid_rows):
-                for node_x in range(grid_cols):
-                    node = (node_x, node_y)
-                    records.append(
-                        self._pipe_record_attr(
-                            node,
-                            node,
-                            node,
-                            False,
-                            device_transfer=device_transfer,
-                        )
+            for node in local_nodes:
+                records.append(
+                    self._pipe_record_attr(
+                        node,
+                        node,
+                        node,
+                        False,
+                        device_transfer=device_transfer,
                     )
+                )
         return records
 
     def _get_pipe_net_records_attr(self, pipenet):
