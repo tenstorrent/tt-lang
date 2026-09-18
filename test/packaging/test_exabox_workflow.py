@@ -41,8 +41,11 @@ def test_pull_request_ci_targets_main_without_metadata_edits() -> None:
     assert root_jobs["build-docs"]["if"].endswith(
         "github.event_name != 'pull_request' }}"
     )
+    # prune-caches runs only on the nightly schedule, which excludes pull
+    # requests outright rather than by checking their base branch.
+    assert root_jobs["prune-caches"]["if"] == "${{ github.event_name == 'schedule' }}"
     for job_name, job in root_jobs.items():
-        if job_name != "build-docs":
+        if job_name not in ("build-docs", "prune-caches"):
             assert job["if"] == pull_request_guard
     assert ci_jobs["check-all-green"]["if"] == (
         "${{ always() && (github.event_name != 'pull_request' || "
