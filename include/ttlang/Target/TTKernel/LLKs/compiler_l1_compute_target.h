@@ -22,14 +22,8 @@ inline void resetMatmulThrottleState() {
 
 template <ckernel::DataCopyType CopyType, ckernel::BroadcastType Broadcast>
 inline void initializeUnaryDataCopy(uint32_t unpackFormat) {
-#if defined(ARCH_BLACKHOLE)
-  MATH((_llk_math_eltwise_unary_datacopy_init_<CopyType, DST_ACCUM_MODE,
-                                               Broadcast>(4, unpackFormat,
-                                                          false)));
-#else
   MATH((_llk_math_eltwise_unary_datacopy_init_<CopyType, DST_ACCUM_MODE,
                                                Broadcast>(4, unpackFormat)));
-#endif
 }
 
 template <uint32_t OutputFormat, uint32_t OutputPageWords>
