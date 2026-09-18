@@ -1,0 +1,14 @@
+{
+  "runs": [
+    {
+      "iteration": 1,
+      "exit_code": 1,
+      "directory": "run-001"
+    },
+    {
+      "iteration": 2,
+      "exit_code": 1,
+      "directory": "run-002"
+    }
+  ]
+}

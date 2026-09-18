@@ -43,21 +43,8 @@ Python environment and compiler tools.
 ## Obtain the source checkout
 
 These commands describe development branch `kostas/tt-lang-sim-simple-cli`.
-The branch is currently local development work and has not been published to
-the upstream repository. An existing checkout of this branch, or access to a
-maintainer-provided copy, is required until it is published. Installing the
-PyPI simulator or cloning upstream `main` does not provide this interface.
-
-An accessible local development checkout can be cloned with:
-
-```bash
-git clone --branch kostas/tt-lang-sim-simple-cli \
-  /path/to/tt-lang-development-checkout tt-lang
-cd tt-lang
-```
-
-Replace the source path with the supplied checkout. Once the branch is
-published to the upstream repository, the equivalent network checkout is:
+Installing the PyPI simulator or cloning upstream `main` does not provide this
+development interface. Obtain the branch with:
 
 ```bash
 git clone --branch kostas/tt-lang-sim-simple-cli \
