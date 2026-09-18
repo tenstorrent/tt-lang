@@ -94,7 +94,7 @@ class TTLangConfig:
 
 @dataclass(frozen=True)
 class NativeConfig:
-    compute_grid: tuple[int, int]
+    compute_grid: tuple[int, int] | None
     m_block_tiles: int
     k_block_tiles: int
     n_block_tiles: int
@@ -188,7 +188,10 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--native-compute-grid", type=positive_int, nargs=2, default=(12, 9)
+        "--native-compute-grid",
+        type=positive_int,
+        nargs=2,
+        help="override the grid selected by the native configuration resolver",
     )
     parser.add_argument("--native-m-block-tiles", type=positive_int, default=7)
     parser.add_argument("--native-k-block-tiles", type=positive_int, default=5)
@@ -206,8 +209,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--native-heuristic",
         action=argparse.BooleanOptionalAction,
-        default=False,
-        help="derive native blocking with the TT-Metal AGMM heuristic",
+        default=None,
+        help=(
+            "derive native blocking with the TT-Metal AGMM heuristic; enabled "
+            "by default for --sweep-case"
+        ),
     )
     parser.add_argument(
         "--ttmetal-source-root",
@@ -273,8 +279,18 @@ def make_configs(arguments):
         arguments.m_tiles = sweep_case.m_tiles
         arguments.k_tiles_per_device = sweep_case.k_tiles_per_device(4)
         arguments.n_tiles = sweep_case.n_tiles_per_device * 4
-        if arguments.native_compute_grid == (12, 9):
-            arguments.native_compute_grid = sweep_case.compute_grid
+
+    native_use_heuristic = (
+        arguments.native_heuristic
+        if arguments.native_heuristic is not None
+        else sweep_case is not None
+    )
+    if arguments.native_compute_grid is not None:
+        native_compute_grid = tuple(arguments.native_compute_grid)
+    elif native_use_heuristic:
+        native_compute_grid = None
+    else:
+        native_compute_grid = (12, 9)
 
     common = CommonConfig(
         mesh_shape=arguments.mesh_shape,
@@ -297,7 +313,7 @@ def make_configs(arguments):
         reuse_activation=arguments.ttlang_reuse_activation,
     )
     native = NativeConfig(
-        compute_grid=tuple(arguments.native_compute_grid),
+        compute_grid=native_compute_grid,
         m_block_tiles=arguments.native_m_block_tiles,
         k_block_tiles=arguments.native_k_block_tiles,
         n_block_tiles=arguments.native_n_block_tiles,
@@ -308,7 +324,7 @@ def make_configs(arguments):
         chunks=arguments.native_chunks,
         math_approx_mode=arguments.native_math_approx_mode,
         topology=arguments.topology,
-        use_heuristic=arguments.native_heuristic or sweep_case is not None,
+        use_heuristic=native_use_heuristic,
         source_root=(
             str(arguments.ttmetal_source_root)
             if arguments.ttmetal_source_root is not None
@@ -691,6 +707,7 @@ def create_native_workload(mesh, cluster_axis, common, native):
             subblock=subblock,
             workers_per_link=workers_per_link,
         )
+    assert native.compute_grid is not None
     operation_config = {
         "mesh_shape": tuple(mesh.shape),
         "m_tiles": common.m_tiles,

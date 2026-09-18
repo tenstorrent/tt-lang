@@ -17,6 +17,7 @@ from benchmarks.all_gather_minimal_matmul.sweep import (
     write_summary,
 )
 from benchmarks.all_gather_minimal_matmul.sweep_cases import (
+    COMPARABLE_USE_CASES,
     NATIVE_SUPPORTED_USE_CASES,
     TT_METAL_SWEEP_REVISION,
     UPSTREAM_AGMM_CASES,
@@ -58,13 +59,16 @@ def test_sweep_command_runs_only_native_with_native_fabric_configuration():
 
 def test_native_case_selection_includes_agmm_epilogues_and_excludes_sagmm():
     cases, unsupported = select_native_cases(None)
+    all_candidates, _ = select_native_cases(None, all_grid_candidates=True)
 
-    assert len(cases) == 150
+    assert len(cases) == 63
+    assert len(all_candidates) == 150
     assert len(unsupported) == 6
     assert {case.operation_kind for case in cases} == {"agmm"}
     assert {case.use_case for case in cases} == NATIVE_SUPPORTED_USE_CASES
     assert all(case.operation_kind == "sagmm" for case in UPSTREAM_AGMM_CASES[-6:])
     assert unsupported == [case.case_id for case in UPSTREAM_AGMM_CASES[-6:]]
+    assert COMPARABLE_USE_CASES == {"plain", "qkv"}
 
 
 def test_sweep_measurement_resume_validates_case_and_checkpoints_atomically(tmp_path):
@@ -88,6 +92,7 @@ def test_sweep_measurement_resume_validates_case_and_checkpoints_atomically(tmp_
 
     measurement = read_measurement(report, "case-a")
     assert measurement["status"] == "passed"
+    assert measurement["comparison_id"] == "case-a"
     assert measurement["median_us"] == 2.0
     with pytest.raises(ValueError, match="records case-a, expected case-b"):
         read_measurement(report, "case-b")
@@ -145,6 +150,7 @@ def test_native_resolver_reproduces_model_configuration(monkeypatch):
     assert calls["default_block_size"] == (8, 3, 14)
     assert calls["use_heuristic"] is False
     assert calls["force_transpose"] is True
+    assert (calls["core_grid"].x, calls["core_grid"].y) == (12, 9)
 
 
 def test_native_resolver_uses_heuristic_without_model_blocking(monkeypatch):
@@ -182,7 +188,7 @@ def test_native_resolver_uses_heuristic_without_model_blocking(monkeypatch):
         full_grid=SimpleNamespace(x=13, y=10),
         device_count=4,
         num_links=2,
-        compute_grid=(12, 9),
+        compute_grid=None,
         source_root=Path("/tmp/tt-metal"),
         expected_revision=TT_METAL_SWEEP_REVISION,
         fuse_swiglu=False,
@@ -191,6 +197,7 @@ def test_native_resolver_uses_heuristic_without_model_blocking(monkeypatch):
 
     assert calls["default_block_size"] is None
     assert calls["use_heuristic"] is True
+    assert calls["core_grid"] is None
 
 
 def test_native_resolver_rejects_invalid_ring_k_block(monkeypatch):

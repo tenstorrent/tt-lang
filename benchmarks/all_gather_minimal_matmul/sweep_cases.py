@@ -32,6 +32,13 @@ class AGMMCase:
         )
 
     @property
+    def comparison_id(self) -> str:
+        return (
+            f"{self.m_elements}x{self.full_k_elements}x"
+            f"{self.n_elements_per_device}_{self.operation_kind}_{self.use_case}"
+        )
+
+    @property
     def m_tiles(self) -> int:
         if self.m_elements % 32:
             raise ValueError(f"{self.case_id}: M must be tile aligned")
@@ -211,9 +218,9 @@ UPSTREAM_AGMM_CASES = (
 
 
 COMPARABLE_OPERATION_KINDS = frozenset({"agmm"})
-# The current TT-Lang benchmark has only the plain bias epilogue.  QKV chunking,
-# addcmul, and fused activations remain listed but are not timed as plain AGMM.
-COMPARABLE_USE_CASES = frozenset({"plain"})
+# QKV chunking partitions the same matmul result that TT-Lang returns as one
+# tensor.  Addcmul and fused activations require matching TT-Lang epilogues.
+COMPARABLE_USE_CASES = frozenset({"plain", "qkv"})
 NATIVE_SUPPORTED_USE_CASES = frozenset(
     {"plain", "qkv", "to_out", "ff1_gelu", "plain_gelu", "ff1_swiglu"}
 )

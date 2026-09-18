@@ -31,6 +31,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--ttmetal-source-root", type=Path)
     parser.add_argument("--case", action="append", dest="case_ids")
+    parser.add_argument(
+        "--all-grid-candidates",
+        action="store_true",
+        help="measure every source row instead of one production-resolved run per input",
+    )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -65,7 +70,7 @@ def build_native_command(
     return command
 
 
-def select_native_cases(case_ids: list[str] | None):
+def select_native_cases(case_ids: list[str] | None, all_grid_candidates: bool = False):
     cases = [
         case
         for case in UPSTREAM_AGMM_CASES
@@ -73,6 +78,11 @@ def select_native_cases(case_ids: list[str] | None):
         and case.use_case in NATIVE_SUPPORTED_USE_CASES
         and (not case_ids or case.case_id in case_ids)
     ]
+    if not all_grid_candidates:
+        unique_cases = {}
+        for case in cases:
+            unique_cases.setdefault(case.comparison_id, case)
+        cases = list(unique_cases.values())
     unsupported = [
         case.case_id
         for case in UPSTREAM_AGMM_CASES
@@ -82,7 +92,9 @@ def select_native_cases(case_ids: list[str] | None):
     return cases, unsupported
 
 
-def read_measurement(report: Path, case_id: str) -> dict[str, Any]:
+def read_measurement(
+    report: Path, case_id: str, comparison_id: str | None = None
+) -> dict[str, Any]:
     result = json.loads(report.read_text())
     variant = result["variants"]["ttmetal"]
     if variant["sweep_case"] != case_id:
@@ -92,6 +104,7 @@ def read_measurement(report: Path, case_id: str) -> dict[str, Any]:
     measurement = variant["measurements"]
     return {
         "case_id": case_id,
+        "comparison_id": comparison_id or case_id,
         "status": "passed",
         "median_us": measurement["median_us"],
         "min_us": measurement["min_us"],
@@ -108,7 +121,9 @@ def write_summary(summary_path: Path, summary: dict[str, Any]) -> None:
 
 def main() -> None:
     arguments = parse_args()
-    cases, unsupported = select_native_cases(arguments.case_ids)
+    cases, unsupported = select_native_cases(
+        arguments.case_ids, arguments.all_grid_candidates
+    )
     arguments.output_dir.mkdir(parents=True, exist_ok=True)
     summary = {
         "native_fabric_config": arguments.native_fabric_config,
@@ -121,14 +136,19 @@ def main() -> None:
             if arguments.ttmetal_source_root is not None
             else None
         ),
-        "native_case_ids": [case.case_id for case in cases],
+        "native_case_ids": [case.comparison_id for case in cases],
+        "source_case_ids": [case.case_id for case in cases],
+        "all_grid_candidates": arguments.all_grid_candidates,
         "unsupported_case_ids": unsupported,
         "results": [],
     }
     summary_path = arguments.output_dir / f"summary_{arguments.topology}.json"
     write_summary(summary_path, summary)
     for case in cases:
-        report = arguments.output_dir / f"{case.case_id}_{arguments.topology}.json"
+        report_id = (
+            case.case_id if arguments.all_grid_candidates else case.comparison_id
+        )
+        report = arguments.output_dir / f"{report_id}_{arguments.topology}.json"
         command = build_native_command(arguments, case.case_id, report)
         print(" ".join(command), flush=True)
         if not arguments.dry_run:
@@ -139,11 +159,14 @@ def main() -> None:
                         check=True,
                         timeout=arguments.case_timeout_seconds,
                     )
-                summary["results"].append(read_measurement(report, case.case_id))
+                summary["results"].append(
+                    read_measurement(report, case.case_id, case.comparison_id)
+                )
             except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
                 summary["results"].append(
                     {
                         "case_id": case.case_id,
+                        "comparison_id": case.comparison_id,
                         "status": "failed",
                         "error": f"{type(error).__name__}: {error}",
                         "report": str(report),

@@ -57,7 +57,7 @@ def resolve_agmm_config(
     full_grid,
     device_count: int,
     num_links: int,
-    compute_grid: tuple[int, int],
+    compute_grid: tuple[int, int] | None,
     source_root: Path | None,
     expected_revision: str,
     fuse_swiglu: bool,
@@ -86,7 +86,9 @@ def resolve_agmm_config(
         full_grid=full_grid,
         cluster_size=device_count,
         num_links=num_links,
-        core_grid=ttnn_module.CoreCoord(*compute_grid),
+        core_grid=(
+            ttnn_module.CoreCoord(*compute_grid) if compute_grid is not None else None
+        ),
         default_block_size=default_block_size,
         use_heuristic=use_heuristic,
         fuse_swiglu=fuse_swiglu,
