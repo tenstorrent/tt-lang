@@ -301,6 +301,7 @@ class PhysicalDFBConfig:
     possibly empty, launch-node set.
     `storage_index` identifies the backing L1 allocation and may be shared by
     physical DFBs that are never used concurrently on the same launch node.
+    `storage_capacity_pages` records that allocation's shared ring capacity.
     """
 
     dfb_index: int
@@ -315,6 +316,7 @@ class PhysicalDFBConfig:
     l1_offset: Optional[int] = None
     l1_payload_offset: Optional[int] = None
     l1_allocation_bytes: Optional[int] = None
+    storage_capacity_pages: Optional[int] = None
 
 
 @dataclass(frozen=True)

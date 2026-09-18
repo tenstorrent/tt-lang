@@ -17,7 +17,6 @@ from conftest import temp_kernel_files
 from ttlang_test_utils import to_dram
 from utils.correctness import assert_allclose
 
-
 KERNEL_TEMPLATES = {
     "scratch": """
 import ttl
@@ -231,6 +230,11 @@ def _assert_dtype_aware_allclose(actual, expected, torch_dtype):
         assert_allclose(actual.float(), expected.float(), rtol=5e-3, atol=1e-4)
 
 
+@pytest.fixture(params=("metal-cb", "compiler-l1"), ids=("metal", "compiler-l1"))
+def memory_model_option(request):
+    return f"--ttl-memory-model={request.param}"
+
+
 @ttl.operation(grid=(1, 1))
 def _replace_waited_tensor_backed_state(state, output):
     state_dfb = ttl.make_tensor_backed_dfb(state, shape=(1, 1), block_count=1)
@@ -268,7 +272,12 @@ def _replace_waited_tensor_backed_state(state, output):
     "storage_kind", ["scratch", "tensor_backed"], ids=["scratch", "tensor-backed"]
 )
 def test_dfb_storage_eltwise_mul(
-    device, torch_dtype, tile_count, node_count, storage_kind
+    device,
+    torch_dtype,
+    tile_count,
+    node_count,
+    storage_kind,
+    memory_model_option,
 ):
     """The same computation is correct with staged and direct DFB storage."""
     tensor_shape = (32 * node_count, 32 * tile_count)
@@ -281,7 +290,9 @@ def test_dfb_storage_eltwise_mul(
     rhs = _to_height_sharded(rhs_torch, device, node_count)
     out = _to_height_sharded(torch.zeros_like(expected), device, node_count)
 
-    _make_kernel(storage_kind, tile_count, node_count)(lhs, rhs, out)
+    _make_kernel(storage_kind, tile_count, node_count)(
+        lhs, rhs, out, options=memory_model_option
+    )
 
     actual = ttnn.to_torch(out)
     _assert_dtype_aware_allclose(actual, expected, torch_dtype)
@@ -297,7 +308,12 @@ def test_dfb_storage_eltwise_mul(
     "shard_tile_rows", [1, 2], ids=["one_tile_row", "two_tile_rows"]
 )
 def test_tensor_backed_dfb_width_sharded_storage(
-    device, torch_dtype, tile_count, node_count, shard_tile_rows
+    device,
+    torch_dtype,
+    tile_count,
+    node_count,
+    shard_tile_rows,
+    memory_model_option,
 ):
     """Tensor-backed DFBs bind multi-row width shards on every launch node."""
     memory_layout = ttnn.TensorMemoryLayout.WIDTH_SHARDED
@@ -312,7 +328,7 @@ def test_tensor_backed_dfb_width_sharded_storage(
     out = _to_sharded(torch.zeros_like(expected), device, node_count, memory_layout)
 
     _make_kernel("tensor_backed", tile_count, node_count, tile_rows=shard_tile_rows)(
-        lhs, rhs, out
+        lhs, rhs, out, options=memory_model_option
     )
 
     actual = ttnn.to_torch(out)
@@ -339,6 +355,7 @@ def test_tensor_backed_dfb_block_sharded_storage(
     shard_orientation,
     shard_tile_rows,
     shard_tile_columns,
+    memory_model_option,
 ):
     """Tensor-backed DFBs bind each block shard on its launch node."""
     grid_x = 2
@@ -371,7 +388,7 @@ def test_tensor_backed_dfb_block_sharded_storage(
         grid_x=grid_x,
         grid_y=grid_y,
         tile_rows=shard_tile_rows,
-    )(lhs, rhs, out)
+    )(lhs, rhs, out, options=memory_model_option)
 
     actual = ttnn.to_torch(out)
     _assert_dtype_aware_allclose(actual, expected, torch_dtype)
@@ -381,7 +398,7 @@ def test_tensor_backed_dfb_block_sharded_storage(
 @pytest.mark.parametrize(
     "torch_dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"]
 )
-def test_tensor_backed_dfb_block_count_two(device, torch_dtype):
+def test_tensor_backed_dfb_block_count_two(device, torch_dtype, memory_model_option):
     """One publication supplies two FIFO blocks and leaves the DFB reusable."""
     block_count = 2
     tile_count = 1
@@ -399,7 +416,7 @@ def test_tensor_backed_dfb_block_count_two(device, torch_dtype):
         rhs = _to_height_sharded(rhs_torch, device, node_count=1)
         out = _to_height_sharded(torch.zeros_like(expected), device, node_count=1)
 
-        operation(lhs, rhs, out)
+        operation(lhs, rhs, out, options=memory_model_option)
 
         actual = ttnn.to_torch(out)
         _assert_dtype_aware_allclose(actual, expected, torch_dtype)
@@ -409,15 +426,17 @@ def test_tensor_backed_dfb_block_count_two(device, torch_dtype):
 @pytest.mark.parametrize(
     "torch_dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"]
 )
-def test_tensor_backed_waited_block_replacement_persists(device, torch_dtype):
+def test_tensor_backed_waited_block_replacement_persists(
+    device, torch_dtype, memory_model_option
+):
     """Replacement updates tensor storage and remains reusable across dispatches."""
     element_indices = torch.arange(32 * 32, dtype=torch.float32).reshape(32, 32)
     state_host = ((element_indices.remainder(257) - 128) / 64).to(torch_dtype)
     state = _to_height_sharded(state_host, device, node_count=1)
     output = to_dram(torch.zeros_like(state_host), device)
 
-    _replace_waited_tensor_backed_state(state, output)
-    _replace_waited_tensor_backed_state(state, output)
+    _replace_waited_tensor_backed_state(state, output, options=memory_model_option)
+    _replace_waited_tensor_backed_state(state, output, options=memory_model_option)
 
     actual_state = ttnn.to_torch(state).float()
     actual_output = ttnn.to_torch(output).float()
@@ -434,7 +453,9 @@ def test_tensor_backed_waited_block_replacement_persists(device, torch_dtype):
 @pytest.mark.parametrize(
     "torch_dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"]
 )
-def test_tensor_backed_dfb_nonzero_byte_offset(device, torch_dtype):
+def test_tensor_backed_dfb_nonzero_byte_offset(
+    device, torch_dtype, memory_model_option
+):
     """A page-aligned view reads and writes only its logical shard range."""
     tile_width = 32
     torch.manual_seed(0)
@@ -459,7 +480,7 @@ def test_tensor_backed_dfb_nonzero_byte_offset(device, torch_dtype):
     byte_offset = int(lhs.get_tile().get_tile_size(lhs.dtype))
 
     _make_kernel("tensor_backed", tile_count=1, grid_x=1, byte_offset=byte_offset)(
-        lhs, rhs, out
+        lhs, rhs, out, options=memory_model_option
     )
 
     actual = ttnn.to_torch(out)

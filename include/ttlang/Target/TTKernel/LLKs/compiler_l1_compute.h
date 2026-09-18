@@ -11,11 +11,15 @@
 #include "api/compute/transpose.h"
 namespace ttlang::l1 {
 template <uint32_t Format, uint32_t PageBytes, uint32_t PagesPerBlock,
-          uint32_t BlockCount, uint32_t PayloadOffset, bool DirectToDestination>
+          uint32_t BlockCount, uint32_t StorageCapacityPages,
+          uint32_t PayloadOffset, int32_t PayloadCommonArgIndex,
+          bool DirectToDestination>
 class Operand
-    : public Buffer<PageBytes, PagesPerBlock, BlockCount, PayloadOffset> {
+    : public Buffer<PageBytes, PagesPerBlock, BlockCount, StorageCapacityPages,
+                    PayloadOffset, PayloadCommonArgIndex> {
 public:
-  using Buffer<PageBytes, PagesPerBlock, BlockCount, PayloadOffset>::Buffer;
+  using Buffer<PageBytes, PagesPerBlock, BlockCount, StorageCapacityPages,
+               PayloadOffset, PayloadCommonArgIndex>::Buffer;
   static constexpr uint32_t format = Format;
   static constexpr bool directToDestination = DirectToDestination;
   static constexpr uint32_t unpackFormat =
@@ -33,13 +37,16 @@ public:
 };
 
 template <uint32_t Format, uint32_t PageBytes, uint32_t PagesPerBlock,
-          uint32_t BlockCount, uint32_t StateOffset, uint32_t PayloadOffset,
-          bool DirectToDestination>
+          uint32_t BlockCount, uint32_t StorageCapacityPages,
+          uint32_t StateOffset, uint32_t PayloadOffset,
+          int32_t PayloadCommonArgIndex, bool DirectToDestination>
 class ComputeDFBDescriptor
     : public Operand<Format, PageBytes, PagesPerBlock, BlockCount,
-                     PayloadOffset, DirectToDestination> {
+                     StorageCapacityPages, PayloadOffset, PayloadCommonArgIndex,
+                     DirectToDestination> {
 public:
-  using Operand<Format, PageBytes, PagesPerBlock, BlockCount, PayloadOffset,
+  using Operand<Format, PageBytes, PagesPerBlock, BlockCount,
+                StorageCapacityPages, PayloadOffset, PayloadCommonArgIndex,
                 DirectToDestination>::Operand;
   /// Binds this descriptor to its compile-time allocation in the core arena.
   static ComputeDFBDescriptor bind() {
@@ -423,6 +430,13 @@ inline void pack_tile(uint32_t destination, Output output, uint32_t tile) {
   static_assert(OutOfOrder,
                 "compiler-l1 packing requires an explicit tile index");
   PACK((packAtAddress(destination, output.writeTile(tile))));
+}
+template <bool OutOfOrder, typename Output>
+inline void pack_waited_tile(uint32_t destination, Output output,
+                             uint32_t tile) {
+  static_assert(OutOfOrder,
+                "compiler-l1 packing requires an explicit tile index");
+  PACK((packAtAddress(destination, output.readTile(tile))));
 }
 } // namespace target
 } // namespace ttlang::l1
