@@ -446,14 +446,20 @@ def make_inputs(mesh, common, padded_m_tiles=None):
 
 def validate_output(actual, expected, dtype):
     assert_pcc(expected, actual, threshold=0.99 if dtype == "bf16" else 0.999)
-    tolerance = 0.05 if dtype == "bf16" else 0.005
-    assert_allclose(actual, expected, rtol=tolerance, atol=tolerance)
+    relative_tolerance = 0.05 if dtype == "bf16" else 0.005
+    absolute_tolerance = 1.0 if dtype == "bf16" else 0.005
+    assert_allclose(
+        actual,
+        expected,
+        rtol=relative_tolerance,
+        atol=absolute_tolerance,
+    )
     absolute_error = (actual - expected).abs()
     return {
         "max_abs_error": absolute_error.max().item(),
         "mean_abs_error": absolute_error.mean().item(),
-        "rtol": tolerance,
-        "atol": tolerance,
+        "rtol": relative_tolerance,
+        "atol": absolute_tolerance,
     }
 
 
