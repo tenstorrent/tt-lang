@@ -234,9 +234,65 @@ Reconfiguration uses the same algorithm. Lifetime analysis records which logical
 
 Wormhole continues to support ordinary compiler-managed allocation, transfer, and compute. Synchronized reset and reconfiguration remain Blackhole-only because their current LLK protocol depends on Blackhole processor synchronization behavior. Wormhole compilation rejects those operations with a target-specific diagnostic before allocation.
 
+## Compute Tile Metadata
+
+TT-Metal compute APIs normally read the data format and tile dimensions from a DFB descriptor. Compiler-managed storage creates no such descriptor, so each generated compute operand type contains the data format, page size, tile height, and tile width. The common compute interface derives face dimensions from those values. Compiler-managed address-based compute accepts BF16 and FP32 tiles supported by the shared compute-target contract: 1x32, 2x32, 4x32, 8x32, 16x16, 16x32, 32x16, and 32x32 on Wormhole and Blackhole.
+
+A generated compute kernel can use different tile dimensions during one execution. `ComputeContext` records the currently programmed input formats, page sizes, and face dimensions, together with the output format and tile dimensions. The first operation configures UNPACK, MATH, and PACK. Later operations reconfigure only state that differs. A PACK tile-dimension change requires data-format reconfiguration followed by pack initialization that preserves the existing address modifiers. This sequence follows the TT-Metal LLK contract and avoids repeating hardware configuration.
+
+```text
+configureCompute(inputA, inputB, output):
+    if no compute configuration exists:
+        configure UNPACK and MATH for inputA and inputB
+        configure PACK for output
+    else:
+        for each input:
+            if page size or face dimensions changed:
+                reconfigure its format and face dimensions
+            else if its format changed:
+                reconfigure its format
+        if output tile dimensions changed:
+            reconfigure its format and dimensions
+            initialize PACK while preserving address modifiers
+        else if output format or page size changed:
+            reconfigure its format
+    record the active input and output configuration
+```
+
+`compiler_l1_compute.h` contains this common policy and passes derived parameters to `compiler_l1_compute_target.h`. The target header adapts those parameters to the Blackhole and Wormhole LLK signatures. Sub-tile lowering adds no architecture branch to compiler conversion or allocation.
+
 ## External C++ Interface
 
-`ttl.dfb_descriptor(dfb)` lowers to a C++ template type containing page size, pages per block, block count, shared storage capacity, state offset, payload offset, and an optional tensor common-argument index. Its `bind()` method obtains the state address from the arena. The payload address comes from either the arena or the tensor's existing common runtime argument. External functions therefore require no Metal DFB index and no additional runtime argument per DFB.
+`ttl.dfb_descriptor(dfb)` lowers to a C++ template type containing page size, pages per block, block count, shared storage capacity, state offset, payload offset, and an optional tensor common-argument index. A compute-thread descriptor also contains the data format, tile height, tile width, and direct-to-destination choice:
+
+```cpp
+namespace ttlang::l1 {
+
+template <uint32_t Format, uint32_t PageBytes, uint32_t TileHeight,
+          uint32_t TileWidth, uint32_t PagesPerBlock, uint32_t BlockCount,
+          uint32_t StorageCapacityPages, uint32_t StateOffset,
+          uint32_t PayloadOffset, int32_t PayloadCommonArgIndex,
+          bool DirectToDestination>
+class ComputeDFBDescriptor;
+
+} // namespace ttlang::l1
+```
+
+The template parameters are compile-time constants copied from finalized allocation and compute metadata:
+
+| Parameter | Contract |
+| --- | --- |
+| `Format` | TT-Metal data-format value stored in L1. |
+| `PageBytes` | Bytes per tile and per DFB page. It is a positive multiple of 16. |
+| `TileHeight`, `TileWidth` | Compute-target tile dimensions used to configure UNPACK, MATH, and PACK. |
+| `PagesPerBlock`, `BlockCount` | Transaction size and number of transactions in the logical DFB. |
+| `StorageCapacityPages` | Capacity of the shared storage owner. It is at least `PagesPerBlock * BlockCount`. |
+| `StateOffset` | Byte offset of the storage owner's 8-byte control record from the arena base. |
+| `PayloadOffset` | Byte offset from the control-record address for arena storage, or from the tensor base for tensor-backed storage. |
+| `PayloadCommonArgIndex` | Common runtime-argument index containing the tensor base; `-1` selects arena storage. |
+| `DirectToDestination` | Whether FP32 input is unpacked directly to FP32 destination registers instead of conversion to TF32. |
+
+`bind()` resolves the control-record and payload addresses from these constants. External functions therefore require no Metal DFB index and no additional runtime argument per DFB. [Compute kernel configuration](ComputeKernelConfiguration.md) defines direct-to-destination selection.
 
 Generated C++ emits storage descriptor definitions before the external header, allowing one source adapter to bind either Metal or compiler-owned storage. Compiler-owned adapters use `ttlang::l1::target`, which contains target-specific address operations. Opaque C++ bodies do not participate in compute analysis, so the enclosing operation declares required compute configuration. [External functions](../sphinx/reference/external-functions.md#template-arguments) defines the exact C++ interface.
 
@@ -338,7 +394,7 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 - Validated allocation groups with one shared state record and the largest required compiler-owned payload envelope.
 - One-block transactions and complete-capacity tensor publication or consumption, with positive capacity below `2^31` pages.
 - Consumer-owned replacement writes into the acquired read window without changing occupancy or sequence state.
-- Full 32x32 BF16 and FP32 tiles for address-based compute.
+- BF16 and FP32 address-based compute for 1x32, 2x32, 4x32, 8x32, 16x16, 16x32, 32x16, and 32x32 tiles.
 - Address-based tensor transfer, elementwise compute, matmul, reductions, broadcast, transpose, and selected activation operations covered by the implementation tests.
 - Typed external C++ calls with explicit DFB effects, compiler-owned or tensor-backed payloads, elementwise multiply, and multi-tile block matmul.
 - Device-domain and mesh program placement with declarative external runtime resources.
@@ -351,6 +407,7 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 
 | Scenario | Evidence |
 | --- | --- |
+| Sub-tile compute | 220 compiler-L1 Blackhole device-correctness cases across BF16/FP32, DRAM/L1 tensors, both allocation strategies, supported tile dimensions, a tensor-backed multi-page expression, elementwise operations, broadcast, matmul, transpose, reductions, mixed dimensions in one compute kernel, equal-byte-size width transitions, and typed external descriptors; 192 Metal device-correctness cases preserve existing behavior |
 | Blackhole transfer and compute | Device correctness across BF16/FP32, DRAM/L1 tensors, repeated executions, counter wraparound, 96 live DFBs, arithmetic with 66 allocated DFBs, matmul, reductions, residual, MLP, attention, and expert merge |
 | Tensor-backed storage | 46 Blackhole device-correctness cases across BF16/FP32, compiler-owned scratch and tensor-backed storage, height/width/block sharding, row/column shard orientation, nonzero byte offsets, complete-capacity publication, replacement, and repeated execution; compile-only metadata checks cover both allocator strategies |
 | Allocation groups | Four compiler-L1 Blackhole device-correctness cases across BF16/FP32 and DRAM/L1 tensors for repeated shared-state handoff with different member capacities; compile-only checks cover both allocator strategies, tensor-backed ownership, rejection with reuse disabled, and tensor byte-range alias diagnostics |
@@ -364,14 +421,14 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 | Generated fabric PipeNet execution | Compile-only full-pipeline coverage preserves generated routes, routing-plane operations, compiler-owned receiver offsets, and descriptor independence; runtime-unit coverage verifies per-device route binding for compiler-owned and tensor-backed receiver addresses |
 | Invalid contracts | Compiler diagnostics for malformed metadata, unsupported transactions and tile forms, unknown external effects, numeric external DFB indices, storage ownership, and budget overflow |
 
-Relevant tests are [transfer and allocator device tests](../../test/python/test_compiler_l1.py), [compute device tests](../../test/python/test_compiler_l1_compute.py), [lifecycle and external-call device tests](../../test/python/test_compiler_l1_lifecycle.py), [external elementwise device tests](../../test/python/test_external_dfb_reuse.py), [external matmul device tests](../../test/python/test_external_matmul.py), [local PipeNet device tests](../../test/python/pipe/test_compiler_l1_pipenet.py), [generated fabric device tests](../../test/python/fabric/test_ccl.py), [runtime placement tests](../../test/python/test_kernel_runner.py), [external runtime-resource device tests](../../test/python/test_operation_runtime_resources.py), and [generated allocator stress tests](../../test/ttlang/Dialect/TTL/Transforms/compiler_l1_stress.py).
+Relevant tests are [transfer and allocator device tests](../../test/python/test_compiler_l1.py), [compute device tests](../../test/python/test_compiler_l1_compute.py), [sub-tile compute device tests](../../test/python/test_subtile_compute.py), [lifecycle and external-call device tests](../../test/python/test_compiler_l1_lifecycle.py), [external elementwise device tests](../../test/python/test_external_dfb_reuse.py), [external matmul device tests](../../test/python/test_external_matmul.py), [local PipeNet device tests](../../test/python/pipe/test_compiler_l1_pipenet.py), [generated fabric device tests](../../test/python/fabric/test_ccl.py), [runtime placement tests](../../test/python/test_kernel_runner.py), [external runtime-resource device tests](../../test/python/test_operation_runtime_resources.py), and [generated allocator stress tests](../../test/ttlang/Dialect/TTL/Transforms/compiler_l1_stress.py).
 
 ## Follow-on PRs
 
 The intended dependency order after generated fabric support is:
 
 1. Qualify additional external C++ kernels beyond elementwise multiply and block matmul against the typed descriptor interface. Add target operations only when a kernel requires an address, page/block, or completion operation that the common interface does not provide.
-2. Add sub-tile and row-major metadata, partial-block and general contiguous multi-block transactions, and the corresponding address, stride, capacity, and wrap rules.
+2. Add row-major metadata, partial-block and general contiguous multi-block transactions, and the corresponding address, stride, capacity, and wrap rules.
 3. Add per-core arena layouts if sparse-placement measurements justify the additional per-node allocation metadata and runtime binding.
 4. Add Wormhole reset and reconfiguration after defining and device-qualifying a Wormhole synchronization protocol behind the existing target interface.
 5. Qualify complete model layers, then measure device cycles, arena high-water usage, initialization cost, compile time, and generated code size against `metal-cb`.
