@@ -2683,7 +2683,7 @@ def test_compiler_l1_composes_with_lifecycle_scratch(monkeypatch):
 
     def allocate_storage(ranges, num_bytes, allocation_device, *, zero_initialize):
         allocation_calls.append((ranges, num_bytes, allocation_device, zero_initialize))
-        return scratch if num_bytes == 16 else arena
+        return scratch if num_bytes == 32 else arena
 
     monkeypatch.setattr(
         kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_storage
@@ -2693,13 +2693,13 @@ def test_compiler_l1_composes_with_lifecycle_scratch(monkeypatch):
         tensors=[tensor],
         cb_configs=[_compiler_l1_config()],
         core_ranges=core_ranges,
-        pipe_sram_scratch_bytes=16,
+        pipe_sram_scratch_bytes=32,
         num_dfb_resets=1,
         device=device,
     )
 
     assert allocation_calls == [
-        (core_ranges, 16, device, True),
+        (core_ranges, 32, device, True),
         (core_ranges, 2112, device, True),
     ]
     assert result["tensors"] == [scratch, arena, tensor]
