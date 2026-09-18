@@ -7,6 +7,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsTypes.h"
+#include "ttlang/Dialect/TTL/Transforms/SRAMAllocator.h"
 
 #include "mlir/CAPI/IR.h"
 #include "mlir/IR/Diagnostics.h"
@@ -15,6 +16,7 @@
 #include <nanobind/stl/array.h>
 #include <nanobind/stl/optional.h>
 #include <nanobind/stl/string.h>
+#include <nanobind/stl/tuple.h>
 #include <nanobind/stl/vector.h>
 
 #include <array>
@@ -69,6 +71,49 @@ void populateTTLModule(nb::module_ &m) {
       nb::str(kCRTAIndicesAttrName.data(), kCRTAIndicesAttrName.size());
   m.attr("LOCAL_TENSOR_INDICES_ATTR") = nb::str(
       kLocalTensorIndicesAttrName.data(), kLocalTensorIndicesAttrName.size());
+
+  m.def(
+      "allocate_sram_regions",
+      [](const std::vector<uint64_t> &regionBytes,
+         const std::vector<std::array<unsigned, 2>> &conflicts,
+         uint64_t alignmentBytes, uint64_t payloadBaseOffset,
+         uint64_t budgetBytes, const std::string &strategy,
+         uint64_t exactSearchLimit) {
+        InterferenceGraph graph(regionBytes.size());
+        for (const auto &conflict : conflicts) {
+          if (conflict[0] >= regionBytes.size() ||
+              conflict[1] >= regionBytes.size() || conflict[0] == conflict[1]) {
+            throw nb::value_error("invalid SRAM conflict edge");
+          }
+          graph.addInterference(conflict[0], conflict[1]);
+        }
+        SRAMAllocationProblem problem{
+            llvm::SmallVector<uint64_t>(regionBytes.begin(), regionBytes.end()),
+            std::move(graph), alignmentBytes, payloadBaseOffset, budgetBytes};
+        std::string failureReason;
+        FailureOr<std::unique_ptr<SRAMAllocator>> allocator =
+            createSRAMAllocator(strategy, {exactSearchLimit}, failureReason);
+        if (failed(allocator)) {
+          throw nb::value_error(failureReason.c_str());
+        }
+        std::optional<unsigned> failureRegion;
+        FailureOr<SRAMAllocationSolution> solution =
+            (*allocator)->allocate(problem, failureRegion, failureReason);
+        if (failed(solution)) {
+          if (failureRegion) {
+            failureReason += " at region " + std::to_string(*failureRegion);
+          }
+          throw nb::value_error(failureReason.c_str());
+        }
+        return std::make_tuple(std::vector<uint64_t>(solution->offsets.begin(),
+                                                     solution->offsets.end()),
+                               solution->arenaBytes);
+      },
+      nb::arg("region_bytes"), nb::arg("conflicts"), nb::arg("alignment_bytes"),
+      nb::arg("payload_base_offset"), nb::arg("budget_bytes"),
+      nb::arg("strategy") = kMultiOrderDecreasingSRAMAllocator.str(),
+      nb::arg("exact_search_limit") = 1000000,
+      "Allocate aligned SRAM regions using a compiler allocation strategy.");
 
   nb::enum_<LogicalKernelKind>(m, "LogicalKernelKind")
       .value("Compute", LogicalKernelKind::Compute)

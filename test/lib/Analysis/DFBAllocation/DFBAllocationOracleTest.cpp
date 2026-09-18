@@ -6,9 +6,9 @@
 // conflict. Exhaustive index and byte-placement enumeration supplies expected
 // results without calling the production search.
 
-#include "SRAMAllocator.h"
 #include "ttlang/Dialect/TTCore/IR/TTCore.h"
 #include "ttlang/Dialect/TTL/Transforms/InterferenceGraphColoring.h"
+#include "ttlang/Dialect/TTL/Transforms/SRAMAllocator.h"
 #include "ttlang/Target/TargetInfo.h"
 
 #include "mlir/IR/Builders.h"

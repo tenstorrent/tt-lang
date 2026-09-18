@@ -12,7 +12,7 @@ TT-Lang normally assigns each logical dataflow buffer (DFB) a TT-Metal DFB descr
 | Storage address | TT-Metal descriptor | Compiler arena or tensor base plus byte offset |
 | Capacity limit | SRAM capacity and 32 or 64 descriptor indices | SRAM capacity, control records, and alignment |
 | Payload reuse | Requires the Metal descriptor and backing-storage contracts | Requires noninterfering completed lifetimes or an explicit validated allocation group |
-| Producer/consumer state | TT-Metal DFB interface state | Two 32-bit page-sequence counters per storage owner |
+| Producer/consumer state | TT-Metal DFB interface state | Two 32-bit SRAM sequence counters per storage owner; no DFB index or local semaphore id |
 | Tensor-backed storage | Installed through a TT-Metal descriptor | Addressed directly through the tensor runtime argument |
 | Allocation groups | Reuse a physical descriptor and its storage contract | Share one validated storage owner and control record |
 | Reset and reconfiguration | Blackhole TT-Metal interface reset and runtime descriptor reconfiguration | Blackhole address-based state reset; page size, pages per block, block count, and storage capacity remain unchanged |
@@ -62,13 +62,17 @@ The allocation scope is one compiled `ttl.operation` invocation. Compiler-owned 
 
 DFB transactions operate on one block, or publish/consume a tensor-backed DFB's complete capacity. Capacity is positive and below `2^31` pages. Consumer-owned replacement writes remain within the acquired read window and do not change occupancy or sequence counters. Compute formats and tile dimensions, reset synchronization, and external/transport bindings are specified in the backend subsections below.
 
+The 32-index Wormhole B0 and 64-index Blackhole limits apply only to TT-Metal DFB descriptors. A compiler-managed logical DFB does not allocate one of those descriptors. Its local producer/consumer protocol polls two 32-bit SRAM sequence counters and executes a processor-specific completion barrier before publishing or consuming pages. It does not allocate a local semaphore id. Logical DFB count is therefore limited by SRAM use, generated code and configuration size, runtime arguments, and Metal program capacity instead of the hardware descriptor count.
+
+PipeNet synchronization is a separate resource. TT-Lang currently has 16 local hardware semaphore ids. Generated PipeNet counters use available local ids and then use host-created `GlobalSemaphore` SRAM words; exhaustion of the 16 local ids does not restore a 16-DFB limit. Global counters add SRAM allocations and runtime arguments and remain subject to the combined SRAM and program-capacity checks.
+
 ### Shared Runtime Requirements
 
 The compiler placement problem describes relative offsets inside compiler-owned arenas. The runtime also needs one representation that can describe those movable arenas together with fixed tensor storage. Before creating runtime resources, it prepares an immutable requirement for each physical owner. A requirement records its byte extent, alignment, lifetime, fixed or movable placement, and address-equality domains. The runtime obtains the target SRAM alignment from TTNN. An address-equality domain is a set of device/core locations that must use one base address. An empty device coordinate denotes the device domain selected when storage is bound. Uniform storage has one domain; independent storage has one singleton domain per location.
 
 DFB control and payload ranges are uses of a requirement, not additional owners. Several tensor-backed DFBs that reference one tensor therefore produce one fixed requirement and several byte-range uses. The fixed requirement covers the tensor's complete logical shard extent and shard grid, including bytes and cores not referenced by those DFBs. Compiler control and payload ranges reference their arena requirement. The runtime derives the current arena allocation sizes and core groups from this prepared record, so allocation and descriptor binding use the same validated information.
 
-Persistent declarations use the same requirement type. They remain movable until `SRAMStorage.allocate()` reserves TTNN tensors. The current runtime still allocates each persistent tensor and each operation arena separately; the prepared requirements do not claim joint physical placement. Joint reservation also requires an API that prepares all participating operations and enforces their launch dependencies.
+Persistent declarations use the same requirement type. They remain movable until `SRAMStorage.allocate()` jointly places them with the arenas of every prepared operation. Caller-supplied tensors retain their existing addresses and remain outside these owned pools. The storage owner enforces completion between prepared operations before allowing their scratch arenas to reuse bytes.
 
 ### Completion and Storage Conflicts
 
@@ -240,7 +244,7 @@ allocateDomains(domains):
 
 `SRAMAllocatorOptions` contains limits that affect strategy execution but do not change the allocation problem. `exactSearchLimit` bounds the exact strategy's combined subset-sum candidates and partial placements separately for each allocation domain. With `D` domains, total search work can reach `D` times the configured limit. `createSRAMAllocator` maps stable compiler-option names to implementations and supplies these options. `getName()` identifies the implementation in validation diagnostics. A new implementation derives from `SRAMAllocator`, implements `getName()` and `allocateImpl()`, and registers its name in the factory. It cannot change conflict construction or bypass common validation.
 
-The common interface and validation are in [SRAMAllocator.h](../../lib/Dialect/TTL/Transforms/SRAMAllocator.h) and [SRAMAllocator.cpp](../../lib/Dialect/TTL/Transforms/SRAMAllocator.cpp). [SRAMAllocator_Greedy.cpp](../../lib/Dialect/TTL/Transforms/SRAMAllocator_Greedy.cpp) shares ordering and gap placement across the three greedy strategies; [SRAMAllocator_Exact.cpp](../../lib/Dialect/TTL/Transforms/SRAMAllocator_Exact.cpp) contains exact search. Private declarations in [SRAMAllocator_Internal.h](../../lib/Dialect/TTL/Transforms/SRAMAllocator_Internal.h) connect the factory and allow exact search to reuse greedy upper bounds.
+The public interface and validation are in [SRAMAllocator.h](../../include/ttlang/Dialect/TTL/Transforms/SRAMAllocator.h) and [SRAMAllocator.cpp](../../lib/Dialect/TTL/Transforms/SRAMAllocator.cpp). [SRAMAllocator_Greedy.cpp](../../lib/Dialect/TTL/Transforms/SRAMAllocator_Greedy.cpp) shares ordering and gap placement across the three greedy strategies; [SRAMAllocator_Exact.cpp](../../lib/Dialect/TTL/Transforms/SRAMAllocator_Exact.cpp) contains exact search. Private declarations in [SRAMAllocator_Internal.h](../../lib/Dialect/TTL/Transforms/SRAMAllocator_Internal.h) connect the factory and allow exact search to reuse greedy upper bounds.
 
 ### Greedy Placement
 
@@ -512,6 +516,8 @@ The fixed state cost can dominate heavily reused payloads. For 96 ungrouped one-
 
 Domain placement addresses a different source of waste: reserving the busiest core's layout everywhere. In the two-core 16-tile/one-tile regression, uniform allocation reserves 65,664 bytes for BF16 and 131,200 for FP32. Per-core allocation reserves 34,944 and 69,760 respectively, including control prefixes. These are measured backing extents, not execution-speed results or a claim of globally optimal host placement.
 
+A matched Blackhole benchmark copies one 4x4-tile block 256 times per dispatch through read, compute, and write kernels. Across 200 measured dispatches per backend, compiler-managed storage takes 261.96 us versus 212.14 us for Metal DFBs with BF16, and 482.14 us versus 446.32 us with FP32. These 1.233x and 1.080x ratios include sequence-counter synchronization, explicit-address handling, and target barriers. Exact outputs pass before and after measurement; compilation and allocation are outside the measured interval.
+
 ### Validation Responsibilities
 
 The tests separate placement optimality, lifetime-proof correctness, runtime address binding, and device correctness. Numerical output tests alone cannot detect missed reuse or excessive reservation.
@@ -552,25 +558,28 @@ ttlang-opt test/ttlang/Dialect/TTL/Transforms/compiler_l1_multi_order.mlir \
   > /tmp/allocated.mlir 2> /tmp/sram-report.log
 ```
 
-## Future Work
+## Requested Capabilities
 
-The requested static/dynamic distinction remains to be defined; it is not assumed to mean runtime-dependent sizes.
+The current model names lifetimes directly: persistent storage remains live until its owner closes, while invocation storage remains live through one completed launch. It does not expose static and dynamic as separate allocation categories, and extents cannot depend on runtime values.
 
 | Request | Implemented | Missing |
 | --- | --- | --- |
-| Late allocation and global minimum | One immutable problem per `ttl.operation`; optional exact minimum for each compiler-owned allocation domain. | Joint placement of tensor-backed and compiler-owned storage within that operation. Existing tensor addresses are already assigned. |
-| Full lockstep, ranged lockstep, and per-core allocation | Uniform mode uses one shared layout; per-core mode uses domain-specific completion conflicts and merges multicast receivers that require equal addresses. | Explicit user-selected partitions. Multicast constraints can force larger shared domains. |
-| Unified tensor and DFB allocation | One runtime requirement model represents fixed tensor storage, movable compiler arenas, aliases, lifetimes, and address-equality domains. Tensor-backed DFB aliases reference one fixed owner. | Shared physical reservation and placement. TTNN owns existing tensor allocations; the compiler currently owns only its arena. |
+| Late allocation and global minimum | Allocation is deferred until operation requirements are finalized. The optional exact strategy minimizes each conflict component. `SRAMStorage` jointly places persistent declarations and every prepared operation arena. | A device-wide optimum across unrelated storage owners and existing tensors. Existing tensor addresses remain fixed. |
+| Full lockstep, ranged lockstep, and per-core allocation | Address-equality domains represent cores that require one base. Uniform requirements share a base across their complete domain; independent requirements may use one base per core. Multicast receiver domains merge when equal addresses are required. | An explicit user API for selecting intermediate core partitions. Multicast equality can still enlarge a domain. |
+| Unified tensor and DFB allocation | One requirement model represents fixed tensors, movable persistent tensors, compiler arenas, aliases, lifetimes, and address-equality domains. Joint owned pools pack persistent tensor payloads with prepared operation arenas, including DFB control and payload ranges. | Relocation or packing of existing caller-owned tensors. Runtime-dependent extents also require a separate contract. |
 | Lifetime inspection and reuse hints | Automatic completion-aware reuse and the allocation report above. | A user-facing guidance contract that preserves asynchronous completion. |
+| Persistent per-core SRAM across launches | `SRAMStorage` owns uniform or per-core BF16/FP32 tiled tensors, preserves their addresses until close, initializes them once, and places them with completion-ordered scratch arenas. External launchers participate through the same ownership protocol. | Concurrent borrowing, device reset or migration, and joint preparation of PipeNet storage, DFB reconfiguration, selected device domains, fabric routes, or opaque runtime-resource factories. |
+
+## Future Work
 
 ### Implementation Direction
 
 1. Lifetime guidance. Build on the allocation report. Placement preferences may change ordering but cannot remove conflicts. Reuse existing ownership-transfer operations for semantic lifetime boundaries; validate producer publication and consumer completion, including remote and external users.
 2. Allocation-domain refinement. Accept explicit core partitions, validate multicast receiver address equality, and reuse domain-specific conflict construction. Measure whether finer domains reduce actual reservation enough to justify additional host allocations and kernel specialization.
-3. Unified host reservation. Reserve prepared requirements in owned pools and construct owner-retaining tensor views. Preserve caller-owned addresses. Placement into separate free intervals additionally requires complete host-allocator occupancy and conditional reservation that rejects stale snapshots. Reuse TTNN/TT-Metal host facilities where their contracts suffice; extend host APIs where required.
-4. Late joint placement within one operation. Extend the existing immutable allocation problem and its oracle to fixed tensor intervals and domain-specific movable storage. Assign offsets only after sizes, ownership, domains, and completion conflicts are known. Minimize uniform arena size or total domain reservation subject to each core's capacity. Optimality remains relative to the supplied requirements and fixed addresses.
+3. Existing-allocation integration. Obtain complete per-core free intervals from the host allocator and reserve selected intervals conditionally. Extend the immutable allocation problem and its oracle with fixed tensor intervals so owned pools can occupy fragmented gaps without relocating caller-owned tensors or relying on stale occupancy snapshots.
+4. Cross-owner optimization. Prepare requirements and completion relations from multiple storage owners before reservation. Optimize total physical reservation while preserving concurrency between owners, then commit every reservation through one rollback-capable transaction.
 
-[Persistent SRAM Storage](PersistentStorage.md) defines ownership and completion across launches. Its initial implementation uses TTNN-owned tensor allocations and leaves per-invocation arena placement unchanged. Its [joint-placement design](PersistentStorage.md#joint-placement) covers persistent packing and serialized scratch reuse; [program-capacity validation](PersistentStorage.md#program-capacity) adds independent code and configuration checks before reservation. These remain proposed extensions. Runtime-dependent sizes require a further allocation contract.
+[Persistent SRAM Storage](PersistentStorage.md) defines ownership and completion across launches. Its [joint-placement implementation](PersistentStorage.md#joint-placement) packs persistent declarations with prepared operation arenas and reuses scratch only after enforced device completion. [Program-capacity validation](PersistentStorage.md#program-capacity) checks code and configuration limits before initialization and publication. Runtime-dependent sizes require a further allocation contract.
 
 ### Backend Extensions and Qualification
 

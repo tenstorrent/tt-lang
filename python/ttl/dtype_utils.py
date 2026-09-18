@@ -55,6 +55,8 @@ TTNN_ROW_MAJOR_DTYPE_NAMES = (
 
 def is_ttnn_tensor(tensor) -> bool:
     """Check if tensor is a ttnn.Tensor."""
+    if getattr(tensor, "__ttlang_prepared_tensor__", False):
+        return True
     _ensure_ttnn()
     if ttnn is None:
         return False
