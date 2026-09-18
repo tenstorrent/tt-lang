@@ -14,6 +14,7 @@
 #include "mlir/Support/LogicalResult.h"
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
@@ -127,6 +128,12 @@ struct FinalizedDFBStorageFootprint {
   llvm::SmallVector<DFBStorageFootprint> footprintsByNode;
   llvm::SmallVector<MembersByStorageIndex> membersByNode;
   llvm::DenseMap<int64_t, int64_t> storageIndexByPhysicalIndex;
+  /// Physical indices backed by a tensor in any binding or storage segment.
+  llvm::DenseSet<int64_t> tensorBackedPhysicalIndices;
+  /// Physical indices whose storage segments share one tensor index and offset.
+  llvm::DenseSet<int64_t> singleTensorBasePhysicalIndices;
+  /// Physical indices with more than one finalized epoch configuration.
+  llvm::DenseSet<int64_t> reconfiguredPhysicalIndices;
   bool usesPerNodeAccounting = false;
 
   /// Returns the maximum target-rounded storage allocation on any launch node.
