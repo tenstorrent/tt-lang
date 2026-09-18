@@ -277,7 +277,8 @@ def test_compiler_l1_pipe_receiver_above_metal_index_limit(
     device, dtype, monkeypatch, tmp_path, reject_metal_dfb_descriptor_creation
 ):
     reject_metal_dfb_descriptor_creation()
-    preceding_dfb_count = 65
+    # Exceed the architecture descriptor limit without testing instruction capacity.
+    preceding_dfb_count = 33 if ttnn.get_arch_name() == "wormhole_b0" else 65
     operation = _make_high_index_pipe(tmp_path, preceding_dfb_count)
     final_mlir_path = tmp_path / "compiler_l1_high_index_pipe.mlir"
     monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
