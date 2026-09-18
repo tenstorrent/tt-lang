@@ -36,17 +36,35 @@ def loaded_library_path(filename, maps_file=Path("/proc/self/maps")):
     return matches.pop()
 
 
+def git_output(repository, *arguments):
+    return subprocess.check_output(
+        ["git", "-c", f"safe.directory={repository}", *arguments],
+        cwd=repository,
+        text=True,
+        stderr=subprocess.DEVNULL,
+    ).strip()
+
+
+def dependency_revision(ls_tree_output, dependency):
+    for line in ls_tree_output.splitlines():
+        metadata, filename = line.split("\t", maxsplit=1)
+        if filename == dependency:
+            return metadata.split()[2]
+    raise ValueError(f"dependency {dependency} is absent from git ls-tree output")
+
+
+def resolve_ttmetal_revision(source_revision, runtime_revision, pinned_revision):
+    if source_revision is not None:
+        return source_revision, "source_checkout"
+    if runtime_revision is not None:
+        return runtime_revision, "runtime_checkout"
+    return pinned_revision, "ttlang_dependency_pin"
+
+
 def collect_provenance(sources, *, ttmetal_source_root=None):
     root = Path(__file__).resolve().parents[1]
     source_files = {Path(source).resolve() for source in sources}
     source_files.update((Path(__file__).resolve(), root / "benchmarks/common.py"))
-
-    def git_output(repository, *arguments):
-        return subprocess.check_output(
-            ["git", "-c", f"safe.directory={repository}", *arguments],
-            cwd=repository,
-            text=True,
-        ).strip()
 
     metal_home = Path(os.environ["TT_METAL_HOME"])
     metal_runtime_root = Path(
@@ -61,6 +79,21 @@ def collect_provenance(sources, *, ttmetal_source_root=None):
         loaded_library_path("_ttnncpp.so"),
         loaded_library_path("libtt_metal.so"),
     )
+    dependency_pins = git_output(
+        root, "ls-tree", "HEAD", "third-party/tt-metal", "third-party/llvm-project"
+    )
+    try:
+        source_revision = git_output(metal_source_root, "rev-parse", "HEAD")
+    except (OSError, subprocess.CalledProcessError):
+        source_revision = None
+    try:
+        runtime_revision = git_output(metal_runtime_root, "rev-parse", "HEAD")
+    except (OSError, subprocess.CalledProcessError):
+        runtime_revision = None
+    pinned_revision = dependency_revision(dependency_pins, "third-party/tt-metal")
+    metal_revision, metal_revision_source = resolve_ttmetal_revision(
+        source_revision, runtime_revision, pinned_revision
+    )
     return {
         "ttlang_revision": git_output(root, "rev-parse", "HEAD"),
         "worktree_status": git_output(root, "status", "--short"),
@@ -71,10 +104,11 @@ def collect_provenance(sources, *, ttmetal_source_root=None):
         "binary_sha256": {str(binary): file_sha256(binary) for binary in binaries},
         "ttlang_module": ttl.__file__,
         "ttnn_module": ttnn.__file__,
-        "dependency_pins": git_output(
-            root, "ls-tree", "HEAD", "third-party/tt-metal", "third-party/llvm-project"
-        ),
-        "ttmetal_revision": git_output(metal_source_root, "rev-parse", "HEAD"),
+        "dependency_pins": dependency_pins,
+        "ttmetal_revision": metal_revision,
+        "ttmetal_revision_source": metal_revision_source,
+        "ttmetal_source_revision": source_revision,
+        "ttmetal_runtime_revision": runtime_revision,
         "ttmetal_home": str(metal_home),
         "ttmetal_runtime_root": str(metal_runtime_root),
         "ttmetal_source_root": str(metal_source_root),
