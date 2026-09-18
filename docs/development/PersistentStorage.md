@@ -83,7 +83,7 @@ This partition can reserve more bytes than separate allocations. A pool spanning
 
 The placement offsets are relative to an owned pool. TTNN allocates each pool through the normal Metal allocator, and owner-retaining tensor views bind persistent declarations and operation arenas to their assigned offsets. A view can cover a subset of the pool's cores while retaining the complete pool allocation.
 
-Program preparation revalidates the requirement contract against the final views. Ownership, extent, alignment, addressing, domains, uses, and arena layout must match the provisional contract; only the physical bases of declared persistent tensors may change during late binding.
+Program preparation revalidates the requirement contract against the final views. Ownership, extent, alignment, addressing, domains, uses, and arena layout must match the provisional contract. A tensor argument may use another physical base on a later launch when every other requirement remains identical. This permits repeated use of one prepared specialization with compatible input and output allocations.
 
 Reservations remain provisional while every prepared operation is compiled and its Metal program layout is finalized. Persistent payload initialization occurs only after all program checks succeed. The owner then records and waits for initialization completion before publishing tensor references and operation bindings together. Any allocation, view construction, program preparation, initialization, or completion failure releases the provisional views and pools in reverse order.
 

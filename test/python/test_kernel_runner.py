@@ -9143,10 +9143,11 @@ def test_prepared_sram_resets_controls_only_before_dispatch(monkeypatch):
     )
 
 
-def _prepared_tensor_operation(base, extent_bytes=2048):
+def _prepared_tensor_operation(base, extent_bytes=2048, location=None, addressing=None):
     from ttl._sram_requirements import (
         PreparedSRAMOperation,
         SRAMAddressDomain,
+        SRAMAddressing,
         SRAMLocation,
         SRAMOwner,
         SRAMOwnerKind,
@@ -9155,33 +9156,49 @@ def _prepared_tensor_operation(base, extent_bytes=2048):
         SRAMLifetime,
     )
 
+    if location is None:
+        location = SRAMLocation((0, 0), (0, 0))
+    if addressing is None:
+        addressing = SRAMAddressing.UNIFORM
     requirement = SRAMStorageRequirement(
         owner=SRAMOwner(SRAMOwnerKind.TENSOR_ARGUMENT, 0),
         extent_bytes=extent_bytes,
         alignment_bytes=64,
-        address_domains=(SRAMAddressDomain((SRAMLocation((0, 0), (0, 0)),)),),
+        address_domains=(SRAMAddressDomain((location,)),),
         ownership=SRAMOwnership.FIXED,
         lifetime=SRAMLifetime.EXTERNAL,
         fixed_bases=(base,),
+        addressing=addressing,
     )
     return PreparedSRAMOperation("prepared", (requirement,), (), ())
 
 
-# Late binding changes persistent tensor bases without changing storage semantics.
-def test_prepared_sram_requirement_match_allows_declared_tensor_base():
+# Compatible tensors can change physical address between prepared launches.
+def test_prepared_sram_requirement_match_allows_tensor_base_rebinding():
     expected = _prepared_tensor_operation(0)
     actual = _prepared_tensor_operation(0x8000)
 
-    assert kernel_runner._prepared_sram_requirements_match(expected, actual, (0,))
-    assert not kernel_runner._prepared_sram_requirements_match(expected, actual, ())
+    assert kernel_runner._prepared_sram_requirements_match(expected, actual)
 
 
-# Late binding does not permit changes to persistent tensor geometry.
+# Address rebinding does not permit changes to tensor storage requirements.
 def test_prepared_sram_requirement_match_rejects_geometry_change():
     expected = _prepared_tensor_operation(0)
     actual = _prepared_tensor_operation(0x8000, extent_bytes=4096)
 
-    assert not kernel_runner._prepared_sram_requirements_match(expected, actual, (0,))
+    assert not kernel_runner._prepared_sram_requirements_match(expected, actual)
+
+
+# Address rebinding cannot change the tensor's domain or addressing mode.
+def test_prepared_sram_requirement_match_rejects_location_change():
+    from ttl._sram_requirements import SRAMAddressing, SRAMLocation
+
+    expected = _prepared_tensor_operation(0)
+    moved = _prepared_tensor_operation(0x8000, location=SRAMLocation((0, 0), (1, 0)))
+    per_core = _prepared_tensor_operation(0x8000, addressing=SRAMAddressing.PER_CORE)
+
+    assert not kernel_runner._prepared_sram_requirements_match(expected, moved)
+    assert not kernel_runner._prepared_sram_requirements_match(expected, per_core)
 
 
 def test_per_core_sram_splits_grouped_kernel_between_allocation_domains(monkeypatch):
