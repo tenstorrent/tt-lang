@@ -102,11 +102,11 @@ allocate_joint_storage(plan):
 
 Data capacity and program capacity are independent. Metal's allocatable SRAM interval already excludes firmware and reserved program memory. Joint placement compares data reservations with that interval and does not subtract compiled code a second time.
 
-`MeshWorkload::prepare` compiles kernels, finalizes program offsets and runtime-argument configuration, and performs Metal's architecture-specific capacity checks without dispatching the workload. It reports the maximum program-configuration size and maximum kernel-binary size established by finalization. TTNN exposes this operation through `prepare_generic_op`. Target memory maps and processor limits remain inside TT-Metal.
+`tt::tt_metal::experimental::program_preparation::prepare` compiles kernels and finalizes program offsets and runtime-argument configuration without dispatching the workload. Finalization rejects a program configuration that exceeds the architecture's kernel-configuration buffer. The result reports the maximum finalized configuration size and kernel-binary size. Kernel binaries larger than the prefetcher cache remain valid because Metal dispatches them without that cache. TTNN exposes preparation through `ttnn.experimental.prepare_generic_op`. Target memory maps and processor limits remain inside TT-Metal.
 
 Pool bases remain runtime arguments. Changing a physical reservation address therefore updates invocation arguments without creating a new kernel specialization.
 
-Data overflow is rejected before reservation. Program overflow after provisional reservation triggers transactional rollback before persistent initialization or publication. Tests distinguish exact-fit data and program cases, data overflow before program preparation, and program overflow after reservation.
+Data overflow is rejected before reservation. Program-configuration overflow after provisional reservation triggers transactional rollback before persistent initialization or publication. Tests distinguish exact-fit data and program-configuration cases, data overflow before program preparation, and program-configuration overflow after reservation.
 
 ## Launch Behavior
 
@@ -135,10 +135,10 @@ The architecture-neutral placement API is declared in [`SRAMAllocator.h`](../../
 
 The runtime ownership interfaces are:
 
-- `MeshBuffer::create_sharded_view`: creates a bounded SRAM view, preserves uniform, range-lockstep, or per-core addressing, and retains its source allocation.
-- `ttnn::create_sharded_tensor_view`: applies a `TensorSpec` and tensor topology to that retained view.
-- `MeshWorkload::prepare`: performs non-dispatch compilation, finalization, and program-capacity validation.
-- `ttnn::prepare_generic_op`: exposes preparation for TT-Lang's generic operation descriptor.
+- `tt::tt_metal::experimental::retained_buffer_view::create`: creates a bounded SRAM view, preserves uniform, range-lockstep, or per-core addressing, and retains its source allocation.
+- `ttnn::experimental::create_sharded_tensor_view`: applies a `TensorSpec` and tensor topology to that retained view.
+- `tt::tt_metal::experimental::program_preparation::prepare`: performs non-dispatch compilation and finalization and reports program-memory use.
+- `ttnn::experimental::prepare_generic_op`: exposes preparation for TT-Lang's generic operation descriptor.
 
 The TT-Lang runtime depends only on these common interfaces. Wormhole and Blackhole address rules and program limits remain behind TT-Metal APIs.
 

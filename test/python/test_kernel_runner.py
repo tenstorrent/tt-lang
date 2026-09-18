@@ -9058,8 +9058,10 @@ def test_prepared_sram_resets_controls_only_before_dispatch(monkeypatch):
     fake_ttnn = _FakeTTNN()
     events = []
     fake_ttnn.full = lambda *args, **kwargs: events.append(("reset", args, kwargs))
-    fake_ttnn.prepare_generic_op = lambda tensors, program: events.append(
-        ("prepare", tensors, program)
+    fake_ttnn.experimental = SimpleNamespace(
+        prepare_generic_op=lambda tensors, program: events.append(
+            ("prepare", tensors, program)
+        )
     )
     fake_ttnn.generic_op = lambda tensors, program: events.append(
         ("dispatch", tensors, program)
