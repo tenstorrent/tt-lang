@@ -8,6 +8,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 from benchmarks.all_gather_minimal_matmul.sweep_cases import (
     COMPARABLE_OPERATION_KINDS,
@@ -26,9 +27,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--topology", choices=("ring", "linear"), default="ring")
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--samples", type=int, default=10)
+    parser.add_argument("--case-timeout-seconds", type=int, default=300)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--ttmetal-source-root", type=Path)
     parser.add_argument("--case", action="append", dest="case_ids")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--fail-fast", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -78,6 +82,30 @@ def select_native_cases(case_ids: list[str] | None):
     return cases, unsupported
 
 
+def read_measurement(report: Path, case_id: str) -> dict[str, Any]:
+    result = json.loads(report.read_text())
+    variant = result["variants"]["ttmetal"]
+    if variant["sweep_case"] != case_id:
+        raise ValueError(
+            f"{report} records {variant['sweep_case']}, expected {case_id}"
+        )
+    measurement = variant["measurements"]
+    return {
+        "case_id": case_id,
+        "status": "passed",
+        "median_us": measurement["median_us"],
+        "min_us": measurement["min_us"],
+        "max_us": measurement["max_us"],
+        "report": str(report),
+    }
+
+
+def write_summary(summary_path: Path, summary: dict[str, Any]) -> None:
+    temporary_path = summary_path.with_suffix(".tmp")
+    temporary_path.write_text(json.dumps(summary, indent=2) + "\n")
+    temporary_path.replace(summary_path)
+
+
 def main() -> None:
     arguments = parse_args()
     cases, unsupported = select_native_cases(arguments.case_ids)
@@ -87,6 +115,7 @@ def main() -> None:
         "topology": arguments.topology,
         "warmup": arguments.warmup,
         "samples": arguments.samples,
+        "case_timeout_seconds": arguments.case_timeout_seconds,
         "ttmetal_source_root": (
             str(arguments.ttmetal_source_root)
             if arguments.ttmetal_source_root is not None
@@ -96,25 +125,35 @@ def main() -> None:
         "unsupported_case_ids": unsupported,
         "results": [],
     }
+    summary_path = arguments.output_dir / f"summary_{arguments.topology}.json"
+    write_summary(summary_path, summary)
     for case in cases:
         report = arguments.output_dir / f"{case.case_id}_{arguments.topology}.json"
         command = build_native_command(arguments, case.case_id, report)
         print(" ".join(command), flush=True)
         if not arguments.dry_run:
-            subprocess.run(command, check=True)
-            result = json.loads(report.read_text())
-            measurement = result["variants"]["ttmetal"]["measurements"]
-            summary["results"].append(
-                {
-                    "case_id": case.case_id,
-                    "median_us": measurement["median_us"],
-                    "min_us": measurement["min_us"],
-                    "max_us": measurement["max_us"],
-                    "report": str(report),
-                }
-            )
-    summary_path = arguments.output_dir / f"summary_{arguments.topology}.json"
-    summary_path.write_text(json.dumps(summary, indent=2) + "\n")
+            try:
+                if not (arguments.resume and report.exists()):
+                    subprocess.run(
+                        command,
+                        check=True,
+                        timeout=arguments.case_timeout_seconds,
+                    )
+                summary["results"].append(read_measurement(report, case.case_id))
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+                summary["results"].append(
+                    {
+                        "case_id": case.case_id,
+                        "status": "failed",
+                        "error": f"{type(error).__name__}: {error}",
+                        "report": str(report),
+                    }
+                )
+                write_summary(summary_path, summary)
+                if arguments.fail_fast:
+                    raise
+                continue
+            write_summary(summary_path, summary)
     print(f"Summary: {summary_path}", flush=True)
 
 

@@ -2,16 +2,19 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import argparse
+import json
 import sys
-from types import SimpleNamespace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from benchmarks.all_gather_minimal_matmul import native_heuristic
 from benchmarks.all_gather_minimal_matmul.sweep import (
     build_native_command,
+    read_measurement,
     select_native_cases,
+    write_summary,
 )
 from benchmarks.all_gather_minimal_matmul.sweep_cases import (
     NATIVE_SUPPORTED_USE_CASES,
@@ -62,6 +65,37 @@ def test_native_case_selection_includes_agmm_epilogues_and_excludes_sagmm():
     assert {case.use_case for case in cases} == NATIVE_SUPPORTED_USE_CASES
     assert all(case.operation_kind == "sagmm" for case in UPSTREAM_AGMM_CASES[-6:])
     assert unsupported == [case.case_id for case in UPSTREAM_AGMM_CASES[-6:]]
+
+
+def test_sweep_measurement_resume_validates_case_and_checkpoints_atomically(tmp_path):
+    report = tmp_path / "case.json"
+    report.write_text(
+        json.dumps(
+            {
+                "variants": {
+                    "ttmetal": {
+                        "sweep_case": "case-a",
+                        "measurements": {
+                            "median_us": 2.0,
+                            "min_us": 1.9,
+                            "max_us": 2.1,
+                        },
+                    }
+                }
+            }
+        )
+    )
+
+    measurement = read_measurement(report, "case-a")
+    assert measurement["status"] == "passed"
+    assert measurement["median_us"] == 2.0
+    with pytest.raises(ValueError, match="records case-a, expected case-b"):
+        read_measurement(report, "case-b")
+
+    summary_path = tmp_path / "summary.json"
+    write_summary(summary_path, {"results": [measurement]})
+    assert json.loads(summary_path.read_text()) == {"results": [measurement]}
+    assert not summary_path.with_suffix(".tmp").exists()
 
 
 def test_native_resolver_reproduces_model_configuration(monkeypatch):
