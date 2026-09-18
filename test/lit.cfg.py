@@ -161,6 +161,9 @@ config.environment["FILECHECK_OPTS"] = "-enable-var-scope --allow-unused-prefixe
 for env_var in [
     "HOME",
     "MESH_DEVICE",
+    "EMULE_FABRIC8",
+    "TT_EMULE_JIT_CACHE_DIR",
+    "TT_METAL_ALLOCATOR_MODE_HYBRID",
     "TT_METAL_CACHE",
     "TT_METAL_EMULE_MODE",
     "TT_METAL_MOCK_CLUSTER_DESC_PATH",
