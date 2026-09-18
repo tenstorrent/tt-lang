@@ -351,7 +351,8 @@ LogicalResult buildFabricRoutePlan(
     bool enableLocalManagerOwnership, FabricRoutePlan &plan);
 
 /// Materialize the function attributes recorded by `plan`.
-void applyFabricRoutePlan(ModuleOp module, const FabricRoutePlan &plan);
+void applyFabricRoutePlan(ModuleOp module, const FabricRoutePlan &plan,
+                          bool enableFabricMux);
 
 /// Materialize routing-plane state for each planned connection interval.
 void initializeFabricRuntime(const FabricRoutePlan &plan,
