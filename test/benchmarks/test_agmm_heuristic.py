@@ -30,7 +30,11 @@ def test_upstream_manifest_is_pinned_and_tile_aligned():
 
 def test_sweep_command_runs_only_native_with_native_fabric_configuration():
     arguments = argparse.Namespace(
-        native_fabric_config="1d-ring", topology="ring", warmup=3, samples=10
+        native_fabric_config="1d-ring",
+        topology="ring",
+        warmup=3,
+        samples=10,
+        ttmetal_source_root=Path("/tmp/tt-metal"),
     )
     command = build_native_command(
         arguments,
@@ -45,6 +49,7 @@ def test_sweep_command_runs_only_native_with_native_fabric_configuration():
     ]
     assert command[command.index("--implementation") + 1] == "ttmetal"
     assert command[command.index("--native-fabric-config") + 1] == "1d-ring"
+    assert command[command.index("--ttmetal-source-root") + 1] == "/tmp/tt-metal"
     assert "--ttlang-fabric-config" not in command
 
 

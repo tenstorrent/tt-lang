@@ -27,6 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--warmup", type=int, default=3)
     parser.add_argument("--samples", type=int, default=10)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--ttmetal-source-root", type=Path)
     parser.add_argument("--case", action="append", dest="case_ids")
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -35,7 +36,7 @@ def parse_args() -> argparse.Namespace:
 def build_native_command(
     arguments: argparse.Namespace, case_id: str, report: Path
 ) -> list[str]:
-    return [
+    command = [
         sys.executable,
         "-m",
         "benchmarks.all_gather_minimal_matmul",
@@ -55,6 +56,9 @@ def build_native_command(
         "--json",
         str(report),
     ]
+    if arguments.ttmetal_source_root is not None:
+        command.extend(["--ttmetal-source-root", str(arguments.ttmetal_source_root)])
+    return command
 
 
 def select_native_cases(case_ids: list[str] | None):
@@ -83,6 +87,11 @@ def main() -> None:
         "topology": arguments.topology,
         "warmup": arguments.warmup,
         "samples": arguments.samples,
+        "ttmetal_source_root": (
+            str(arguments.ttmetal_source_root)
+            if arguments.ttmetal_source_root is not None
+            else None
+        ),
         "native_case_ids": [case.case_id for case in cases],
         "unsupported_case_ids": unsupported,
         "results": [],
