@@ -94,9 +94,8 @@ invocation. The Python backend does not read emulator settings.
 The smoke test executes the external C++ call example and checks its tensor
 result. The example suite covers addition, matrix multiplication, reduction,
 and fused matrix multiplication with bias. Each program contains a Torch
-reference check. A compiler tensor-rank mismatch in the reduction example on
-the historical tested baseline is described in the
-{ref}`getting-started guide <docker-simulator-examples-and-tests>`.
+reference check; compilation or execution failures remain visible in the
+results. See {ref}`examples and tests <docker-simulator-examples-and-tests>`.
 
 The test command runs the six compiler suites with emulation enabled. It
 continues after failures and returns nonzero if any suite fails. It includes
@@ -116,12 +115,9 @@ reports, a summary, and available compiler/runtime provenance on the host.
 See the getting-started guide for setup failures that occur before test reports
 are produced.
 
-The {ref}`historical validation summary <docker-simulator-historical-validation>`
-records the earlier branch's six-suite results, not validation of
-`kostas/tt-lang-sim-emule-consolidated` or its newer `main` baseline. The
-[preserved reports](https://github.com/tenstorrent/tt-lang/tree/bc0c0e72854b8614ab177b4e7d4cc592e274ec44/docs/development/simulator-reports/2026-09-17)
-remain available at an immutable revision rather than being copied into this
-branch.
+The {ref}`scope and validation guidance <docker-simulator-coverage>` explains
+the single-device target and how to interpret results for an exact dependency
+combination. Running the suites does not imply support for every workload.
 
 The developer qualification plan separately distinguishes compilation from
 emulated execution:

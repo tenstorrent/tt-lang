@@ -31,11 +31,13 @@ Examples that use compiler-only APIs can run without hardware through the
 compiler-backed tt-emule backend:
 
 ```bash
-tt-lang-sim examples/compiler_only_external_call.py --backend emule
+./bin/tt-lang-sim --backend=emule examples/compiler_only_external_call.py
 ```
 
-Docker is required. The first run builds the pinned compiler and tt-emule
-runtime image; later runs reuse that image and persistent build caches.
+A source checkout and Docker are required. The
+[setup guide](../docs/sphinx/simulator-getting-started.md)
+describes selecting emulator source or a compatible runtime image. Later runs
+reuse the selected image and persistent build caches.
 
 ## Example Categories
 

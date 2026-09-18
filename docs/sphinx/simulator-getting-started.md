@@ -42,13 +42,12 @@ Python environment and compiler tools.
 
 ## Obtain the source checkout
 
-These commands describe development branch
-`kostas/tt-lang-sim-emule-consolidated`.
-Installing the PyPI simulator or cloning upstream `main` does not provide this
-development interface. Obtain the branch with:
+The emule backend requires a TT-Lang source checkout containing this backend;
+the PyPI simulator provides only the Python backend. Replace `TT_LANG_REF` with
+the branch or release tag being evaluated:
 
 ```bash
-git clone --branch kostas/tt-lang-sim-emule-consolidated \
+git clone --branch TT_LANG_REF \
   https://github.com/tenstorrent/tt-lang.git
 cd tt-lang
 ```
@@ -154,10 +153,9 @@ and fused matrix multiplication with bias:
 ```
 
 The command reports failures and continues through the remaining examples.
-On the historical baseline described below, the reduction example supplied
-rank-one and scalar tensors that the compiler rejected with
-`Tensors must have at least 2 dimensions`, before emulator kernel execution.
-That result is not a validation of the consolidated branch.
+Each example checks its output against a Torch reference. Programs remain
+subject to the compiler's input and operation restrictions, so compilation can
+fail before any emulator kernel executes.
 
 A short initial test selection checks compiler passes, Python bindings, and
 packaging:
@@ -212,24 +210,20 @@ Select another report parent directory or repeat `--suite` to narrow a run:
   --suite bindings --reports-dir ./test-results
 ```
 
-(docker-simulator-historical-validation)=
-### Historical validation
+(docker-simulator-coverage)=
+### Scope and validation
 
-The September 17-18, 2026 six-suite run recorded **5,765 passed, 165 failed,
-65 skipped/unsupported, and 42 expected failures**. It tested compiler commit
-`70c5d093df06d211aa78332447bbd8d602d2ba79` on the earlier
-`kostas/tt-lang-sim-simple-cli` branch, with emulator commit
-`7292395ce55a208a8ede0a4635a9f2167c8c4939`, using Docker Desktop on a Mac and
-one emulated P150. It did not use the QB or physical TT hardware.
+The configured target is one emulated Blackhole P150 device. This execution
+path does not establish support for full models or multi-device workloads.
+Compiler support and emulator support are separate requirements: successful
+compilation does not guarantee successful kernel execution.
 
-These are historical results, **not validation of the consolidated branch or
-its newer `main` baseline**. They do not qualify full models or multi-device
-execution. The unchanged
-[validation record](https://github.com/tenstorrent/tt-lang/blob/bc0c0e72854b8614ab177b4e7d4cc592e274ec44/docs/development/simulator-reports/2026-09-17/README.md)
-preserves exact runtime provenance and the raw-archive policy; the
-[failure inventory and triage](https://github.com/tenstorrent/tt-lang/blob/bc0c0e72854b8614ab177b4e7d4cc592e274ec44/docs/development/simulator-reports/2026-09-17/TRIAGE.md)
-distinguishes observed failures from inferred causes. A new checkout requires
-its own reports before any change in coverage can be claimed.
+Validation applies to the exact compiler, emulator, tt-metal, and toolchain
+combination recorded in each run's reports. Inspect suite failures, skips, and
+runtime provenance before qualifying a workload or changing the pinned stack.
+Keep compiler rejection, runtime errors, and output mismatches separate when
+triaging failures; a failed test alone does not identify which component needs
+a change.
 
 ## Troubleshooting
 
