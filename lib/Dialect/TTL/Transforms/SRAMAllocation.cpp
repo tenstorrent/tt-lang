@@ -6,6 +6,8 @@
 #include "DFBAnalysisFailure.h"
 #include "DFBConcurrentKernelLivenessAnalysis.h"
 #include "DFBPhysicalAllocationPlan.h"
+#include "SRAMAllocationPlan.h"
+#include "SRAMAllocationReport.h"
 #include "SRAMAllocator.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/DFBLogicalIdentityAnalysis.h"
@@ -20,41 +22,12 @@
 
 namespace mlir::tt::ttl {
 namespace {
-constexpr uint64_t kControlWordCount = 2;
-constexpr uint64_t kControlRecordBytes = kControlWordCount * sizeof(uint32_t);
 
-struct L1Region {
-  int64_t logicalId;
-  CircularBufferType type;
-  TensorBackingAttr tensorBacking;
-  DFBAllocationGroupAttr allocationGroup;
-  LaunchNodeDomain launchDomain;
-  uint64_t pages;
-  uint64_t pageBytes;
-  uint64_t capacityPages;
-  uint64_t allocationBytes;
-  unsigned storageIndex = 0;
-  SmallVector<BindCBOp> declarations;
-};
-
-struct L1Storage {
-  uint64_t capacityPages = 0;
-  uint64_t allocationBytes = 0;
-  uint64_t offset = 0;
-  uint64_t stateOffset = 0;
-  SmallVector<unsigned> members;
-};
-
-struct L1AllocationPlan {
-  SmallVector<L1Region> regions;
-  SmallVector<L1Storage> storage;
-  uint64_t arenaBytes;
-};
-
-static FailureOr<L1AllocationPlan>
+static FailureOr<SRAMAllocationPlan>
 planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
             uint64_t budget, bool reuseStorage,
             llvm::StringRef allocationStrategy, uint64_t exactSearchLimit,
+            bool reportAllocation,
             const DFBConcurrentKernelLivenessAnalysis &liveness) {
   std::string targetFailure;
   FailureOr<uint64_t> alignment =
@@ -68,7 +41,7 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
        liveness.getLogicalDFBLifecycles()) {
     lifecycleByLogicalId.try_emplace(lifecycle.logicalId, &lifecycle);
   }
-  llvm::MapVector<int64_t, L1Region> regions;
+  llvm::MapVector<int64_t, SRAMRegion> regions;
   for (const auto &assignment : identities.getAssignments()) {
     BindCBOp declaration = assignment.declaration;
     auto type = cast<CircularBufferType>(declaration.getResult().getType());
@@ -131,11 +104,11 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
                      0,
                      {declaration}}});
   }
-  SmallVector<L1Region> plan;
+  SmallVector<SRAMRegion> plan;
   for (auto &entry : regions) {
     plan.push_back(std::move(entry.second));
   }
-  SmallVector<L1Storage> storage;
+  SmallVector<SRAMStorage> storage;
   DenseMap<int64_t, unsigned> storageByAllocationGroup;
   for (auto [regionIndex, region] : llvm::enumerate(plan)) {
     unsigned storageIndex = storage.size();
@@ -149,7 +122,7 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     if (createStorage) {
       storage.emplace_back();
     }
-    L1Storage &allocation = storage[storageIndex];
+    SRAMStorage &allocation = storage[storageIndex];
     allocation.capacityPages =
         std::max(allocation.capacityPages, region.capacityPages);
     allocation.allocationBytes =
@@ -165,12 +138,12 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     lifecycleIndices[lifecycle.logicalId] = lifecycleIndex;
   }
   for (unsigned lhsIndex = 0; lhsIndex < plan.size(); ++lhsIndex) {
-    L1Region &lhs = plan[lhsIndex];
+    SRAMRegion &lhs = plan[lhsIndex];
     if (!lhs.tensorBacking) {
       continue;
     }
     for (unsigned rhsIndex = lhsIndex + 1; rhsIndex < plan.size(); ++rhsIndex) {
-      L1Region &rhs = plan[rhsIndex];
+      SRAMRegion &rhs = plan[rhsIndex];
       if (!rhs.tensorBacking ||
           lhs.tensorBacking.getTensorIndex() !=
               rhs.tensorBacking.getTensorIndex() ||
@@ -204,7 +177,7 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
   }
   // Only a validated allocation group may transfer control-state ownership.
   std::optional<uint64_t> unalignedControlBytes = llvm::checkedMulUnsigned(
-      static_cast<uint64_t>(storage.size()), kControlRecordBytes);
+      static_cast<uint64_t>(storage.size()), kSRAMControlRecordBytes);
   FailureOr<uint64_t> controlBytes =
       unalignedControlBytes
           ? getL1AllocationSizeBytes(module, *unalignedControlBytes)
@@ -221,8 +194,8 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
   SmallVector<unsigned> storageIndexByAllocationRegion;
   for (unsigned storageIndex = 0; storageIndex < storage.size();
        ++storageIndex) {
-    L1Storage &allocation = storage[storageIndex];
-    allocation.stateOffset = storageIndex * kControlRecordBytes;
+    SRAMStorage &allocation = storage[storageIndex];
+    allocation.stateOffset = storageIndex * kSRAMControlRecordBytes;
     if (allocation.allocationBytes == 0) {
       continue;
     }
@@ -235,12 +208,12 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
        allocationRegionIndex < allocationRegionCount; ++allocationRegionIndex) {
     unsigned storageIndex =
         storageIndexByAllocationRegion[allocationRegionIndex];
-    const L1Storage &allocation = storage[storageIndex];
+    const SRAMStorage &allocation = storage[storageIndex];
     for (unsigned previousRegionIndex = 0;
          previousRegionIndex < allocationRegionIndex; ++previousRegionIndex) {
       unsigned previousStorageIndex =
           storageIndexByAllocationRegion[previousRegionIndex];
-      const L1Storage &previousAllocation = storage[previousStorageIndex];
+      const SRAMStorage &previousAllocation = storage[previousStorageIndex];
       bool hasConflict = !reuseStorage;
       for (unsigned member : allocation.members) {
         if (hasConflict) {
@@ -297,7 +270,13 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     storage[storageIndex].offset = solution->offsets[allocationRegionIndex];
   }
   uint64_t arenaBytes = std::max(*controlBytes, solution->arenaBytes);
-  return L1AllocationPlan{std::move(plan), std::move(storage), arenaBytes};
+  SRAMAllocationPlan result{std::move(plan), std::move(storage), arenaBytes};
+  if (reportAllocation) {
+    printSRAMAllocationReport(llvm::errs(), result, liveness, conflicts,
+                              allocationStrategy, reuseStorage, *alignment,
+                              *controlBytes, budget);
+  }
+  return result;
 }
 } // namespace
 
@@ -305,7 +284,7 @@ LogicalResult allocateSRAM(
     ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     uint64_t budgetOverride, bool reuseStorage,
     llvm::StringRef allocationStrategy, uint64_t exactSearchLimit,
-    const DFBConcurrentKernelLivenessAnalysis &liveness,
+    bool reportAllocation, const DFBConcurrentKernelLivenessAnalysis &liveness,
     ArrayRef<DFBStaticConfigurationConflict> staticConfigurationConflicts,
     bool unsafeAssumeAllocationGroups,
     SmallVectorImpl<DFBAssumedAllocationGroup> &assumedAllocationGroups) {
@@ -333,18 +312,18 @@ LogicalResult allocateSRAM(
   auto budget = getUsableDFBL1Bytes(
       module,
       budgetOverride ? std::optional<uint64_t>(budgetOverride) : std::nullopt);
-  FailureOr<L1AllocationPlan> maybePlan =
+  FailureOr<SRAMAllocationPlan> maybePlan =
       planRegions(module, identities, budget, reuseStorage, allocationStrategy,
-                  exactSearchLimit, liveness);
+                  exactSearchLimit, reportAllocation, liveness);
   if (failed(maybePlan)) {
     return failure();
   }
-  const L1AllocationPlan &plan = *maybePlan;
+  const SRAMAllocationPlan &plan = *maybePlan;
   OpBuilder builder(module.getContext());
   SmallVector<Attribute> allocations;
   DenseMap<int64_t, int32_t> allocationIndexByLogicalId;
   for (auto [regionIndex, region] : llvm::enumerate(plan.regions)) {
-    const L1Storage &storage = plan.storage[region.storageIndex];
+    const SRAMStorage &storage = plan.storage[region.storageIndex];
     allocationIndexByLogicalId.try_emplace(region.logicalId,
                                            static_cast<int32_t>(regionIndex));
     for (BindCBOp declaration : region.declarations) {
