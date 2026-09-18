@@ -44,6 +44,7 @@ def run_examples(tmp_path, *arguments, environment=None):
     launcher = write_launcher(tmp_path)
     log = tmp_path / "launch.log"
     env = os.environ.copy()
+    env.pop("LAUNCH_ENV_LOG", None)
     env["LAUNCH_LOG"] = str(log)
     if environment:
         env.update(environment)
@@ -118,6 +119,17 @@ def test_reference_suite_preserves_candidate_manifest_and_image(tmp_path, monkey
     assert all(
         environment["TTLANG_EMULE_REBUILD"] is None for environment in environments
     )
+
+
+def test_mock_launcher_ignores_ambient_environment_log(tmp_path, monkeypatch):
+    ambient_log = tmp_path / "unrequested-environment.jsonl"
+    monkeypatch.setenv("LAUNCH_ENV_LOG", str(ambient_log))
+
+    result, lines = run_examples(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert len(lines) == 4
+    assert not ambient_log.exists()
 
 
 def test_failure_stops_the_suite_by_default(tmp_path):
