@@ -340,7 +340,7 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 - Consumer-owned replacement writes into the acquired read window without changing occupancy or sequence state.
 - Full 32x32 BF16 and FP32 tiles for address-based compute.
 - Address-based tensor transfer, elementwise compute, matmul, reductions, broadcast, transpose, and selected activation operations covered by the implementation tests.
-- Typed external C++ calls with explicit DFB effects and either compiler-owned or tensor-backed payloads.
+- Typed external C++ calls with explicit DFB effects, compiler-owned or tensor-backed payloads, elementwise multiply, and multi-tile block matmul.
 - Device-domain and mesh program placement with declarative external runtime resources.
 - Blackhole selected reset, reset-all, and reconfiguration.
 - Wormhole allocation, transfer, compute, external descriptors, and local PipeNet compilation without reset or reconfiguration.
@@ -355,6 +355,8 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 | Tensor-backed storage | 46 Blackhole device-correctness cases across BF16/FP32, compiler-owned scratch and tensor-backed storage, height/width/block sharding, row/column shard orientation, nonzero byte offsets, complete-capacity publication, replacement, and repeated execution; compile-only metadata checks cover both allocator strategies |
 | Allocation groups | Four compiler-L1 Blackhole device-correctness cases across BF16/FP32 and DRAM/L1 tensors for repeated shared-state handoff with different member capacities; compile-only checks cover both allocator strategies, tensor-backed ownership, rejection with reuse disabled, and tensor byte-range alias diagnostics |
 | External calls and lifecycle boundaries | 20 Blackhole device cases across BF16/FP32 and DRAM/L1, including repeated selected reset, reset-all, reconfiguration, live state preservation, payload reuse, and reset of allocation index 65 |
+| External descriptor and elementwise compute | 98 Blackhole device-correctness cases across BF16/FP32, compiler-owned and tensor-backed storage, TT-Metal and compiler-managed storage, both allocator strategies, reset and reconfiguration, repeated invocation, and a 70-DFB composition |
+| External block matmul | 118 Blackhole device-correctness cases across one tile through a 2x2-tile result, BF16/FP32, compiler-owned and single-core height/width/block-sharded tensor-backed storage, TT-Metal and compiler-managed storage, both allocator strategies, selected reset, reconfiguration with payload reuse, repeated invocation, and a gated-MLP composition with native normalization, activation, and residual operations |
 | Allocation | 20,888 compile-only generated placements covering both strategies, conflicts, alignment, reuse enabled and disabled, determinism, and exact budget boundaries; a focused fragmented graph verifies distinct strategy results |
 | Wormhole | Compile-only allocation, typed external descriptor, local PipeNet pipeline, and UNPACK/MATH/PACK target compilation; negative reset and reconfiguration diagnostics |
 | Runtime placement and resources | Runtime-unit evidence for one-device and device-domain descriptors, replicated mesh placement, lockstep arena binding, external fabric bindings, resource lifetimes, program hashes, tensor-address cache identity, and owned-allocation accounting; 18 Blackhole device-correctness cases for typed external calls with semaphores, runtime arguments, defines, repeated invocations, BF16/FP32, DRAM/L1, generic/specialized kernels, and both memory models |
@@ -362,13 +364,13 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 | Generated fabric PipeNet execution | Compile-only full-pipeline coverage preserves generated routes, routing-plane operations, compiler-owned receiver offsets, and descriptor independence; runtime-unit coverage verifies per-device route binding for compiler-owned and tensor-backed receiver addresses |
 | Invalid contracts | Compiler diagnostics for malformed metadata, unsupported transactions and tile forms, unknown external effects, numeric external DFB indices, storage ownership, and budget overflow |
 
-Relevant tests are [transfer and allocator device tests](../../test/python/test_compiler_l1.py), [compute device tests](../../test/python/test_compiler_l1_compute.py), [lifecycle and external-call device tests](../../test/python/test_compiler_l1_lifecycle.py), [local PipeNet device tests](../../test/python/pipe/test_compiler_l1_pipenet.py), [generated fabric device tests](../../test/python/fabric/test_ccl.py), [runtime placement tests](../../test/python/test_kernel_runner.py), [external runtime-resource device tests](../../test/python/test_operation_runtime_resources.py), and [generated allocator stress tests](../../test/ttlang/Dialect/TTL/Transforms/compiler_l1_stress.py).
+Relevant tests are [transfer and allocator device tests](../../test/python/test_compiler_l1.py), [compute device tests](../../test/python/test_compiler_l1_compute.py), [lifecycle and external-call device tests](../../test/python/test_compiler_l1_lifecycle.py), [external elementwise device tests](../../test/python/test_external_dfb_reuse.py), [external matmul device tests](../../test/python/test_external_matmul.py), [local PipeNet device tests](../../test/python/pipe/test_compiler_l1_pipenet.py), [generated fabric device tests](../../test/python/fabric/test_ccl.py), [runtime placement tests](../../test/python/test_kernel_runner.py), [external runtime-resource device tests](../../test/python/test_operation_runtime_resources.py), and [generated allocator stress tests](../../test/ttlang/Dialect/TTL/Transforms/compiler_l1_stress.py).
 
 ## Follow-on PRs
 
 The intended dependency order after generated fabric support is:
 
-1. Qualify representative external C++ kernels against the typed descriptor interface and add common adapters for address operations, page and block metadata, and completion operations.
+1. Qualify additional external C++ kernels beyond elementwise multiply and block matmul against the typed descriptor interface. Add target operations only when a kernel requires an address, page/block, or completion operation that the common interface does not provide.
 2. Add sub-tile and row-major metadata, partial-block and general contiguous multi-block transactions, and the corresponding address, stride, capacity, and wrap rules.
 3. Add per-core arena layouts if sparse-placement measurements justify the additional per-node allocation metadata and runtime binding.
 4. Add Wormhole reset and reconfiguration after defining and device-qualifying a Wormhole synchronization protocol behind the existing target interface.
