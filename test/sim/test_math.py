@@ -680,15 +680,23 @@ def test_exp_scale_flag():
 
 
 def test_exp_approx_flags_ignored_numerically():
-    """Approximation-only flags are accepted and do not change the exact
-    reference result in the simulator."""
+    """Approximation flags do not change the simulator's exact result."""
     t1 = [Tensor(torch.tensor([[0.0, 1.0, -1.0]]))]
     block1 = Block.from_list(t1, shape=(1, 1))
 
-    result = ttl.math.exp(block1, approx=True, skip_clamp_check=True, iterations=4)
+    result = ttl.math.exp(block1, approx=True, skip_clamp_check=True, iterations=8)
 
     expected = torch.exp(torch.tensor([[0.0, 1.0, -1.0]]))
     assert torch.allclose(result.to_list()[0].to_torch(), expected)
+
+
+@pytest.mark.parametrize("iterations", [0, -1, 4, 2147483647])
+def test_exp_rejects_unsupported_iterations(iterations):
+    """The simulator rejects iteration counts unsupported by device kernels."""
+    block = Block.from_list([Tensor(torch.tensor([[0.0]]))], shape=(1, 1))
+
+    with pytest.raises(ValueError, match="ttl.math.exp iterations must be 8"):
+        ttl.math.exp(block, iterations=iterations)
 
 
 # Tests for reduce_max function
