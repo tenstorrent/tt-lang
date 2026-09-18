@@ -22,6 +22,7 @@ during development.
 
 The simulator typically supports more language features than the compiler at any given point — see the [functionality matrix](specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current coverage.
 
+(simulator-python-setup)=
 ## Setup
 
 For the Python backend, the recommended path is to install from PyPI:
@@ -95,7 +96,7 @@ result. The example suite covers addition, matrix multiplication, reduction,
 and fused matrix multiplication with bias. Each program contains a Torch
 reference check. The current reduction example has a compiler tensor-rank
 mismatch described in the
-[getting-started guide](simulator-getting-started.md#run-examples-and-tests).
+{ref}`getting-started guide <docker-simulator-examples-and-tests>`.
 
 The test command runs the six compiler suites with emulation enabled. It
 continues after failures and returns nonzero if any suite fails. It includes
@@ -131,6 +132,7 @@ they combine compiler checks with runtime, topology, and device assumptions.
 They must be qualified case by case instead of being treated as supported just
 because the compiler-only suites pass.
 
+(simulator-updating-supported-stack)=
 ### Updating the supported stack
 
 Prepare a candidate from an exact emulator checkout. The tool reads that

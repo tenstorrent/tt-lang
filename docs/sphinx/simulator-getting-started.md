@@ -8,7 +8,7 @@ are not required.
 
 The separate `python` backend remains the lightweight option for kernel logic
 and Python debugging. Its installation is described in
-[Simulation backends](simulator.md#setup); it does not require Docker.
+{ref}`Python backend setup <simulator-python-setup>`; it does not require Docker.
 
 ## Host prerequisites
 
@@ -154,6 +154,7 @@ This compiles and executes the external C++ call example and verifies its
 tensor result. A successful smoke test confirms that the selected stack works
 for that program; broader coverage is checked separately.
 
+(docker-simulator-examples-and-tests)=
 ## Run examples and tests
 
 The reference example set exercises addition, matrix multiplication, reduction,
@@ -200,6 +201,9 @@ has failures and does not establish that every compiler workload is supported.
 It excludes the Python simulator's `test/sim` suite and the tutorial suite.
 Execution can take substantially longer on an emulated x86-64 Mac environment
 than on native x86-64 Linux.
+
+Run one emulator command at a time per checkout. Commands share the compiler
+build and kernel caches, so overlapping builds or test runs can interfere.
 
 The test command continues after a failed suite and returns nonzero if any
 suite fails. Every invocation creates a new report directory beneath
@@ -259,5 +263,5 @@ overrides the saved runtime. A shell carrying overrides from an earlier
 experiment can therefore select a different runtime than `.ttlang-sim/emule.json`.
 The Python backend does not read this emulator configuration.
 
-See [Simulation backends](simulator.md#updating-the-supported-stack) for stack
-validation, candidate workflows, and advanced compatibility overrides.
+See {ref}`Updating the supported stack <simulator-updating-supported-stack>` for
+stack validation, candidate workflows, and advanced compatibility overrides.
