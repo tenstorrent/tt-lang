@@ -27,8 +27,7 @@ import sys
 from typing import Optional
 
 from .context_types import SimulatorContext
-from .blockstate import KernelType
-
+from .kernel import KernelKind
 
 # Single per-process simulator context.  Created lazily by ``get_context()``
 # and swapped wholesale by ``set_context()`` / ``reset_context()``.  See the
@@ -107,7 +106,9 @@ def cleanup_run_context() -> None:
     ctx.kernel_dfb_count = 0
     ctx.kernel_l1_bytes = 0
     ctx.active_hooks.clear()
-    ctx.injection_points_cache.clear()
+    ctx.deferred_copy_wait_codes.clear()
+    ctx.deferred_copy_wait_sites.clear()
+    ctx.deferred_copy_wait_requests.clear()
     ctx.auto_wait_copy_lines.clear()
     _free_monitoring_tool_id()
 
@@ -138,11 +139,11 @@ def set_dry_run(enabled: bool) -> None:
     get_context().config.dry_run = enabled
 
 
-def get_current_kernel_type() -> KernelType:
+def get_current_kernel_type() -> KernelKind:
     """Get the current kernel role (compute vs datamovement).
 
     Returns:
-        KernelType
+        KernelKind
 
     Raises:
         RuntimeError: If kernel role is not set (not within a running compute/DM kernel)
@@ -156,7 +157,7 @@ def get_current_kernel_type() -> KernelType:
     return current_kernel_type
 
 
-def set_current_kernel_type(kernel_type: Optional[KernelType]) -> None:
+def set_current_kernel_type(kernel_type: Optional[KernelKind]) -> None:
     """Set the current kernel role (compute vs datamovement).
 
     Args:

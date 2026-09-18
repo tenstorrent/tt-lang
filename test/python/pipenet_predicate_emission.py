@@ -14,27 +14,34 @@
 #
 # RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_FINAL_MLIR=%t.no_pipenet_final.mlir TTLANG_OP=no_pipenet %python %s
 # RUN: FileCheck %s --input-file=%t.no_pipenet_final.mlir --check-prefix=NO-PIPENET
+#
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.unified_pipenet_initial.mlir TTLANG_OP=unified_pipenet %python %s
+# RUN: FileCheck %s --input-file=%t.unified_pipenet_initial.mlir --check-prefix=LOGICAL
 
 """Frontend-pipeline integration check for the PipeNet verifier.
 
 `net.is_active()` lowers to `ttl.is_active`, which the verifier
-recognizes structurally. After lowering the predicate becomes the
-same arith chain the runtime evaluates. A straight-line kernel
-without any PipeNet must not contain the predicate machinery.
+recognizes structurally. Lowering tests whether the current node's record count
+is nonzero. A kernel without any PipeNet requires neither the lookup nor its
+conditional branch.
 """
 
-# Frontend emits the predicate op for `if net.is_active()`.
+# The role query includes the records used to determine active nodes.
 # INITIAL: ttl.is_active
+# INITIAL-SAME: records = #ttl.pipenet_records<
+
+# A unified PipeNet source callback receives the compiler-owned affinity.
+# LOGICAL: ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "<pipe_source>", role = "pipe_source">
 
 # After lowering, the user's guard survives as an emitc.if; the
-# predicate chain reduces to a logical_or over the per-pipe role
-# matches.
-# FINAL: emitc.logical_or
+# role query becomes one launch-node-indexed table lookup.
+# FINAL: experimental::constant_table_lookup
+# FINAL-NOT: emitc.logical_or
 # FINAL: emitc.if
 
-# A kernel without any PipeNet contains neither the emitc.if nor the
-# logical_or. There is no role predicate to evaluate.
-# NO-PIPENET-NOT: emitc.logical_or
+# A kernel without any PipeNet contains neither the table lookup nor its guard.
+# NO-PIPENET-NOT: experimental::constant_table_lookup
+# NO-PIPENET-NOT: emitc.if
 
 import os
 
@@ -112,16 +119,47 @@ def no_pipenet_op(inp, out):
             ttl.copy(blk, out[0, 0]).wait()
 
 
+@ttl.operation(grid=(4, 1))
+def unified_pipenet_op(inp, out):
+    net = ttl.PipeNet([ttl.Pipe(src=(0, 0), dst=(slice(1, 4), 0))])
+    send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
+    receive_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=1)
+
+    if net.is_src():
+        with send_dfb.reserve() as send_block:
+            ttl.copy(inp[0, 0], send_block).wait()
+
+    def send(pipe):
+        with send_dfb.wait() as send_block:
+            ttl.copy(send_block, pipe).wait()
+
+    net.if_src(send)
+
+    def receive(pipe):
+        with receive_dfb.reserve() as receive_block:
+            ttl.copy(pipe, receive_block).wait()
+
+    net.if_dst(receive)
+
+    if net.is_dst():
+        with receive_dfb.wait() as receive_block:
+            ttl.copy(receive_block, out[0, 0]).wait()
+
+
 def main():
     op_name = os.environ.get("TTLANG_OP", "with_pipenet")
     if op_name == "with_pipenet":
         inp = _host_ttnn((32, 4 * 32))
         out = _host_ttnn((32, 4 * 32))
         with_pipenet_op(inp, out)
-    else:
+    elif op_name == "no_pipenet":
         inp = _host_ttnn((32, 32))
         out = _host_ttnn((32, 32))
         no_pipenet_op(inp, out)
+    else:
+        inp = _host_ttnn((32, 32))
+        out = _host_ttnn((32, 32))
+        unified_pipenet_op(inp, out)
 
 
 if __name__ == "__main__":

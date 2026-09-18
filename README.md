@@ -11,7 +11,7 @@
 </picture>
 
 </div>
-pl<br>
+<br>
 
 ![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)
 ![Python Version](https://img.shields.io/badge/python-3.10%20%7C%203.12-blue.svg)
@@ -45,8 +45,8 @@ TT-Lang bridges this gap through progressive disclosure: simple kernels require 
 We provide two tt-lang packages: the [tt-lang](https://pypi.org/project/tt-lang/) package includes the tt-lang compiler, Tenstorrent hardware support and depends on the `ttnn`, `pytorch` and several smaller python packages, while [tt-lang-sim](https://pypi.org/project/tt-lang-sim/) includes only the functional simulator (no compiler or hardware support) and does not depend on `ttnn`.
 
 First, create an isolated Python environment (venv, conda, etc.) with Python
-matching the selected wheel. Public PyPI hardware wheels currently use Python
-3.12; S3 light wheels are built for Python 3.10 and Python 3.12. For example:
+matching the selected wheel. Public PyPI and S3 light hardware wheels are built
+for Python 3.10 and Python 3.12. For example:
 
 ```bash
 python3 -m venv --prompt ttlang ttlang-venv
@@ -237,7 +237,7 @@ cd /path/to/tt-lang
 pre-commit install
 ```
 
-Pre-commit runs automatically on `git commit`. It formats Python code with [Black](https://github.com/psf/black), C++ code with [clang-format](https://clang.llvm.org/docs/ClangFormat.html) (LLVM style), removes trailing whitespace, and checks YAML/TOML syntax.
+The installed hooks validate staged changes, commit messages, and pushes. They format Python code with [Black](https://github.com/psf/black), C++ code with [clang-format](https://clang.llvm.org/docs/ClangFormat.html) (LLVM style), remove trailing whitespace, and check YAML/TOML syntax and restricted public content. See [CONTRIBUTING.md](CONTRIBUTING.md#updating-restricted-public-content) for signature maintenance.
 
 If pre-commit modifies files, the commit is stopped. Stage the changes and commit again:
 

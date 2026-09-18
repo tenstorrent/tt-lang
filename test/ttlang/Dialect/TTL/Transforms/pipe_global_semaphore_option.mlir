@@ -1,0 +1,88 @@
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-capacity-sync=false pipe-global-semaphores-only=false})' | FileCheck %s --check-prefix=LOCAL
+// Global-only mode must not lower any counter to a local semaphore lookup.
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-capacity-sync=false pipe-global-semaphores-only=true})' | FileCheck %s --check-prefix=GLOBAL --implicit-check-not=ttkernel.get_semaphore
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(convert-ttl-to-ttkernel{pipe-capacity-sync=false pipe-computed-addresses=false pipe-global-semaphores-only=true l1-budget-override=16576})' -o /dev/null
+
+// Summary: Verifies that the PipeNet counter-storage option preserves the
+// allocation plan while selecting local or GlobalSemaphore storage.
+
+// The default uses one local completion counter and one local sender-ready
+// counter. Global-only mode preserves their synchronization data flow while
+// leaving the local semaphore count at zero.
+// LOCAL-LABEL: module attributes
+// LOCAL-NOT: ttl.pipe_global_semaphore_count
+// LOCAL-SAME: ttl.pipe_sync_semaphore_count = 2 : i64
+// LOCAL-LABEL: func.func @select_pipe_counter_storage
+// LOCAL-DAG: %[[LOCAL_COMPLETION_INDEX:.*]] = arith.constant 0 : index
+// LOCAL-DAG: %[[LOCAL_READY_INDEX:.*]] = arith.constant 1 : index
+// LOCAL: %[[LOCAL_POST_COUNTER:.*]] = ttkernel.get_semaphore(%[[LOCAL_READY_INDEX]])
+// LOCAL: %[[LOCAL_POST_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[LOCAL_POST_COUNTER]], {{.*}})
+// LOCAL: %[[LOCAL_WAIT_COUNTER:.*]] = ttkernel.get_semaphore(%[[LOCAL_COMPLETION_INDEX]])
+// LOCAL-NEXT: %[[LOCAL_WAIT_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[LOCAL_WAIT_COUNTER]])
+// LOCAL: ttkernel.noc_semaphore_inc(%[[LOCAL_POST_NOC]]
+// LOCAL: ttkernel.experimental.semaphore_wait_min(%[[LOCAL_WAIT_PTR]]
+// LOCAL: %[[LOCAL_READY_COUNTER:.*]] = ttkernel.get_semaphore(%[[LOCAL_READY_INDEX]])
+// LOCAL-NEXT: %[[LOCAL_READY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[LOCAL_READY_COUNTER]])
+// LOCAL: %[[LOCAL_COMPLETION_COUNTER:.*]] = ttkernel.get_semaphore(%[[LOCAL_COMPLETION_INDEX]])
+// LOCAL: ttkernel.noc_async_write_one_packet_set_state({{.*}}) posted true
+// LOCAL: ttkernel.experimental.semaphore_wait(%[[LOCAL_READY_PTR]]
+// LOCAL-NEXT: ttkernel.noc_semaphore_set(%[[LOCAL_READY_PTR]]
+// LOCAL: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true
+// LOCAL-NEXT: ttkernel.noc_inline_dw_write({{.*}}, %[[LOCAL_COMPLETION_COUNTER]], {{.*}}) posted true
+// LOCAL-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
+
+// GLOBAL-LABEL: module attributes
+// GLOBAL-SAME: ttl.pipe_global_semaphore_count = 2 : i64
+// GLOBAL-SAME: ttl.pipe_sync_semaphore_count = 0 : i64
+// GLOBAL-LABEL: func.func @select_pipe_counter_storage
+// GLOBAL-DAG: %[[GLOBAL_COMPLETION_INDEX:.*]] = arith.constant 1 : index
+// GLOBAL-DAG: %[[GLOBAL_READY_INDEX:.*]] = arith.constant 2 : index
+// GLOBAL: %[[GLOBAL_POST_COUNTER:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_READY_INDEX]])
+// GLOBAL: %[[GLOBAL_POST_NOC:.*]] = ttkernel.get_noc_addr({{.*}}, %[[GLOBAL_POST_COUNTER]], {{.*}})
+// GLOBAL: %[[GLOBAL_WAIT_COUNTER:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_COMPLETION_INDEX]])
+// GLOBAL-NEXT: %[[GLOBAL_WAIT_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[GLOBAL_WAIT_COUNTER]])
+// GLOBAL: ttkernel.noc_semaphore_inc(%[[GLOBAL_POST_NOC]]
+// GLOBAL: ttkernel.experimental.semaphore_wait_min(%[[GLOBAL_WAIT_PTR]]
+// GLOBAL: %[[GLOBAL_READY_COUNTER:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_READY_INDEX]])
+// GLOBAL-NEXT: %[[GLOBAL_READY_PTR:.*]] = ttkernel.reinterpret_cast{{.*}}(%[[GLOBAL_READY_COUNTER]])
+// GLOBAL: %[[GLOBAL_COMPLETION_COUNTER:.*]] = ttkernel.get_common_arg_val(%[[GLOBAL_COMPLETION_INDEX]])
+// GLOBAL: ttkernel.noc_async_write_one_packet_set_state({{.*}}) posted true
+// GLOBAL: ttkernel.experimental.semaphore_wait(%[[GLOBAL_READY_PTR]]
+// GLOBAL-NEXT: ttkernel.noc_semaphore_set(%[[GLOBAL_READY_PTR]]
+// GLOBAL: ttkernel.noc_async_write_one_packet_with_state({{.*}}) posted true
+// GLOBAL-NEXT: ttkernel.noc_inline_dw_write({{.*}}, %[[GLOBAL_COMPLETION_COUNTER]], {{.*}}) posted true
+// GLOBAL-NEXT: ttkernel.noc_async_writes_flushed({{.*}}) posted true
+
+module attributes {
+  ttl.launch_grid = array<i64: 2, 1>,
+  ttl.target_arch = #ttcore.arch<blackhole>
+} {
+  func.func @select_pipe_counter_storage()
+      attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>} {
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %reserved = ttl.cb_reserve %dst
+          : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      %receive = ttl.copy %pipe, %reserved
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.receive_request
+      ttl.wait %receive : !ttl.receive_request
+      ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    }
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %send = ttl.copy %src, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}

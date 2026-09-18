@@ -101,7 +101,7 @@ jobs:
     # Built once in the oldest glibc (manylinux_2_34, forward-compatible to the
     # ird runners) at cp312 to match the device jobs' ttnn import ABI.
     container:
-      image: ghcr.io/tenstorrent/tt-lang/tt-lang-wheel-manylinux-2-34-cp312:${{ inputs.docker_tag }}
+      image: ghcr.io/${{ github.repository }}/tt-lang-wheel-manylinux-2-34-cp312:${{ inputs.docker_tag }}
     defaults:
       run:
         shell: bash
@@ -266,7 +266,7 @@ jobs:
       matrix:
         python_tag: [cp310, cp312]
     container:
-      image: ghcr.io/tenstorrent/tt-lang/tt-lang-wheel-manylinux-2-34-${{ matrix.python_tag }}:${{ inputs.docker_tag }}
+      image: ghcr.io/${{ github.repository }}/tt-lang-wheel-manylinux-2-34-${{ matrix.python_tag }}:${{ inputs.docker_tag }}
     defaults:
       run:
         shell: bash
@@ -319,11 +319,7 @@ jobs:
           TTLANG_EXTERNAL_TT_METAL_DIR: /tmp/ttmetal-install
           TTLANG_GIT_COMMIT: ${{ needs.find-compatible.outputs.winner_sha }}
           TT_METAL_COMMIT: ${{ needs.find-compatible.outputs.ttmetal_sha }}
-        run: |
-          .github/scripts/build-s3-light-core-wheel.sh \
-            --python-tag "${{ matrix.python_tag }}" \
-            --version "${{ needs.find-compatible.outputs.winner_version }}" \
-            --dist-dir dist
+        run: .github/scripts/build-s3-light-core-wheel.sh --python-tag "${{ matrix.python_tag }}" --version "${{ needs.find-compatible.outputs.winner_version }}" --dist-dir dist
 
       - name: Upload per-ABI wheels
         if: ${{ steps.gate.outputs.build == 'true' }}
@@ -341,7 +337,7 @@ jobs:
     runs-on: mlir-large-runner-lang
     timeout-minutes: 30
     container:
-      image: ghcr.io/tenstorrent/tt-lang/tt-lang-wheel-manylinux-2-34-cp312:${{ inputs.docker_tag }}
+      image: ghcr.io/${{ github.repository }}/tt-lang-wheel-manylinux-2-34-cp312:${{ inputs.docker_tag }}
     defaults:
       run:
         shell: bash

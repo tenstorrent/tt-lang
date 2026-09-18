@@ -19,19 +19,28 @@
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Operation.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Target/Cpp/CppEmitter.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/ADT/bit.h"
+#include "llvm/Support/xxhash.h"
 
 #include <array>
+#include <cmath>
 #include <functional>
+#include <optional>
 #include <string>
+#include <type_traits>
+#include <utility>
 
 using namespace mlir;
 using namespace tt;
@@ -232,6 +241,35 @@ static std::string ensureCBDeclaration(Value cb, Operation *useOp,
   rewriter.create<emitc::VerbatimOp>(useOp->getLoc(), cbDecl, ValueRange{cb});
   declarations.insert(cbName);
   return cbName;
+}
+
+/// Chase through UnrealizedConversionCastOps to find the real producer.
+static Value unwrapCasts(Value v) {
+  while (auto cast = v.getDefiningOp<mlir::UnrealizedConversionCastOp>()) {
+    if (cast.getInputs().size() == 1) {
+      v = cast.getInputs()[0];
+    } else {
+      break;
+    }
+  }
+  return v;
+}
+
+/// Resolve a DFB (CB) SSA value to its compile-time argument index.
+/// Works both before and after GetCompileArgValOp is lowered to emitc.literal.
+static std::optional<int> resolveDfbIndex(Value dfb) {
+  dfb = unwrapCasts(dfb);
+  Operation *defOp = dfb.getDefiningOp();
+  if (!defOp) {
+    return std::nullopt;
+  }
+  if (auto attr = defOp->getAttrOfType<IntegerAttr>("ttkernel.cb_ctarg_idx")) {
+    return attr.getInt();
+  }
+  if (auto getArg = dyn_cast<ttkernel::GetCompileArgValOp>(defOp)) {
+    return getArg.getArgIndex();
+  }
+  return std::nullopt;
 }
 
 static StringRef getL1PtrOpaqueTypeName(unsigned elementWidth) {
@@ -436,6 +474,15 @@ emitNocEndpoint(Operation *useOp, ConversionPatternRewriter &rewriter,
           ".addr = static_cast<uint32_t>({})}"};
 }
 
+static std::string
+getDFBDescriptorTypeName(ttkernel::DFBDescriptorAttr descriptor) {
+  return (Twine("ttlang::DFBDescriptor<") + Twine(descriptor.getIndex()) +
+          ", " + Twine(descriptor.getPagesPerBlock()) + ", " +
+          Twine(descriptor.getBlockCount()) + ", " +
+          Twine(descriptor.getPageSizeBytes()) + ">")
+      .str();
+}
+
 // Type converter used for TTKernel-to-EmitC conversion.
 namespace {
 class TTKernelToEmitCTypeConverter : public TypeConverter {
@@ -473,6 +520,10 @@ public:
       return emitc::OpaqueType::get(ctx, "TensorAccessor");
     });
     addConversion(
+        [ctx](mlir::tt::ttkernel::LocalTensorAccessorType type) -> Type {
+          return emitc::OpaqueType::get(ctx, "LocalTensorAccessor<uint8_t>");
+        });
+    addConversion(
         [ctx](mlir::tt::ttkernel::TensorAccessorPageMappingType type) -> Type {
           return emitc::OpaqueType::get(ctx, "PageMapping");
         });
@@ -480,6 +531,12 @@ public:
         [ctx](mlir::tt::ttkernel::FabricConnectionManagerType type) -> Type {
           return emitc::OpaqueType::get(
               ctx, "experimental::FabricConnectionManager");
+        });
+    addConversion(
+        [ctx](mlir::tt::ttkernel::RoutingPlaneConnectionManagerType type)
+            -> Type {
+          return emitc::OpaqueType::get(
+              ctx, "tt::tt_fabric::RoutingPlaneConnectionManager");
         });
     addConversion(
         [ctx](IndexType type) -> Type { return emitc::SizeTType::get(ctx); });
@@ -526,6 +583,22 @@ public:
 } // namespace
 
 namespace {
+class TTKernelCastToL1AddrOpToEmitCOpRewriter
+    : public OpConversionPattern<ttkernel::CastToL1AddrOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ttkernel::CastToL1AddrOp op,
+                  ttkernel::CastToL1AddrOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    // The type converter maps every accepted operand to the same i32 address
+    // representation, so the normalization requires no emitted C++ operation.
+    rewriter.replaceOp(op, adaptor.getAddr());
+    return success();
+  }
+};
+
 class TTKernelCastToL1PtrOpToEmitCOpRewriter
     : public OpConversionPattern<ttkernel::CastToL1PtrOp> {
 
@@ -765,8 +838,32 @@ public:
 } // namespace
 
 namespace {
-template <typename SourceOp, typename Adaptor = typename SourceOp::Adaptor>
+// A missing or false `posted` attribute on `op` means non-posted writes.
+template <typename SourceOp>
+static bool usesPostedWriteMode(SourceOp op) {
+  auto posted = op.getPosted();
+  return posted && *posted;
+}
+
+enum class PostedTemplateArgument { None, Boolean };
+
+// Detect the generated accessor even when the optional attribute is absent in
+// IR.
+template <typename SourceOp>
+using PostedAttributeResult = decltype(std::declval<SourceOp>().getPosted());
+
+template <typename SourceOp, typename Adaptor = typename SourceOp::Adaptor,
+          PostedTemplateArgument postedArgument = PostedTemplateArgument::None>
 class TTKernelToEmitCOpaqueRewriter : public OpConversionPattern<SourceOp> {
+  // Registration must specify the C++ argument convention whenever the source
+  // op defines `posted`; adding the attribute cannot silently drop its
+  // semantics.
+  static_assert(
+      llvm::is_detected<PostedAttributeResult, SourceOp>::value ==
+          (postedArgument == PostedTemplateArgument::Boolean),
+      "Register operations with posted using an explicit response-mode "
+      "rewriter or PostedTemplateArgument::Boolean");
+
 public:
   TTKernelToEmitCOpaqueRewriter(TTKernelToEmitCTypeConverter &typeConverter,
                                 MLIRContext *ctx, std::string opName = "")
@@ -838,7 +935,9 @@ public:
   ArrayAttr getTemplateArgs(Builder &builder, SourceOp op) const {
     if constexpr (std::is_same_v<SourceOp, ttkernel::ReduceInitOp> ||
                   std::is_same_v<SourceOp, ttkernel::ReduceTileOp>) {
-      SmallVector<Attribute, 3> template_args;
+      // Full-fp32 accumulation follows DST_ACCUM_MODE, set from the kernel's
+      // fp32_dest_acc_en; the metal API takes no per-call override.
+      SmallVector<Attribute, 2> template_args;
       StringRef reduceType, reduceDim;
       std::tie(reduceType, reduceDim) = reduceTypeAndDimToString(
           op.getReduceTypeAttr(), op.getReduceDimAttr());
@@ -846,36 +945,16 @@ public:
           emitc::OpaqueAttr::get(op.getContext(), reduceType));
       template_args.push_back(
           emitc::OpaqueAttr::get(op.getContext(), reduceDim));
-      template_args.push_back(emitc::OpaqueAttr::get(
-          op.getContext(), op.getFullFp32() ? "true" : "false"));
       return ArrayAttr::get(op.getContext(), template_args);
     } else if constexpr (std::is_same_v<SourceOp, ttkernel::ReduceUninitOp>) {
-      // The default `reduce_uninit()` signature already resolves to <false>,
-      // so emit a template arg only when full_fp32 is set.
-      if (!op.getFullFp32()) {
+      return ArrayAttr();
+    } else if constexpr (postedArgument == PostedTemplateArgument::Boolean) {
+      // The low-level APIs default to non-posted writes.
+      if (!usesPostedWriteMode(op)) {
         return ArrayAttr();
       }
       SmallVector<Attribute, 1> template_args;
       template_args.push_back(emitc::OpaqueAttr::get(op.getContext(), "true"));
-      return ArrayAttr::get(op.getContext(), template_args);
-    } else if constexpr (std::is_same_v<SourceOp,
-                                        ttkernel::NocSemaphoreIncOp> ||
-                         std::is_same_v<SourceOp,
-                                        ttkernel::NocSemaphoreIncMulticastOp>) {
-      // The metal C signature defaults `posted` to false, so emit a template
-      // arg only when the producer explicitly opts into posted semantics.
-      auto posted = op.getPosted();
-      if (!posted || !*posted) {
-        return ArrayAttr();
-      }
-      SmallVector<Attribute, 1> template_args;
-      template_args.push_back(emitc::OpaqueAttr::get(op.getContext(), "true"));
-      return ArrayAttr::get(op.getContext(), template_args);
-    } else if constexpr (std::is_same_v<SourceOp,
-                                        ttkernel::NocInlineDwWriteOp>) {
-      SmallVector<Attribute, 1> template_args;
-      template_args.push_back(
-          emitc::OpaqueAttr::get(op.getContext(), "InlineWriteDst::L1"));
       return ArrayAttr::get(op.getContext(), template_args);
     } else if constexpr (std::is_same_v<SourceOp, ttkernel::SFPUReduceInitOp>) {
       // sfpu_reduce_init<PoolType, DataFormat>()
@@ -913,12 +992,17 @@ public:
       template_args.push_back(
           emitc::OpaqueAttr::get(op.getContext(), "true")); // default to DRAM
       return ArrayAttr::get(op.getContext(), template_args);
-    } else if constexpr (std::is_same_v<SourceOp, ttkernel::PackTileOp>) {
+    } else if constexpr (std::is_same_v<SourceOp,
+                                        ttkernel::LocalTensorAccessorOp>) {
+      SmallVector<Attribute, 1> templateArgs;
+      templateArgs.push_back(
+          emitc::OpaqueAttr::get(op.getContext(), "uint8_t"));
+      return ArrayAttr::get(op.getContext(), templateArgs);
+    } else if constexpr (std::is_same_v<SourceOp, ttkernel::PackTileOp> ||
+                         std::is_same_v<SourceOp, ttkernel::PackWaitedTileOp>) {
       SmallVector<Attribute, 1> template_args;
 
-      auto packTileOp = mlir::cast<ttkernel::PackTileOp>(op);
-
-      template_args.push_back(packTileOp.getOutOfOrderAttr());
+      template_args.push_back(op.getOutOfOrderAttr());
       return ArrayAttr::get(op.getContext(), template_args);
     } else if constexpr (std::is_same_v<SourceOp, ttkernel::AddIntTileOp> ||
                          std::is_same_v<SourceOp, ttkernel::SubIntTileOp> ||
@@ -1144,6 +1228,155 @@ public:
 
 private:
   std::string opName;
+};
+
+// Register low-level APIs whose first template parameter is the posted boolean,
+// defaulting to false. NocOptions-based APIs use their dedicated rewriters.
+template <typename SourceOp>
+using TTKernelToEmitCPostedOpaqueRewriter =
+    TTKernelToEmitCOpaqueRewriter<SourceOp, typename SourceOp::Adaptor,
+                                  PostedTemplateArgument::Boolean>;
+} // namespace
+
+namespace {
+static SmallVector<uint64_t> packConstantTable(ArrayRef<int64_t> values,
+                                               unsigned bitsPerValue) {
+  std::size_t totalBits = values.size() * bitsPerValue;
+  SmallVector<uint64_t> packedWords((totalBits + 63) / 64, 0);
+  for (auto [index, signedValue] : llvm::enumerate(values)) {
+    uint64_t value = static_cast<uint64_t>(signedValue);
+    std::size_t bitOffset = index * bitsPerValue;
+    std::size_t wordIndex = bitOffset / 64;
+    unsigned offsetInWord = bitOffset % 64;
+    packedWords[wordIndex] |= value << offsetInWord;
+    if (offsetInWord + bitsPerValue > 64) {
+      packedWords[wordIndex + 1] |= value >> (64 - offsetInWord);
+    }
+  }
+  return packedWords;
+}
+
+static std::string getConstantTableSymbolName(ArrayRef<uint64_t> packedWords) {
+  SmallString<128> serializedWords;
+  for (uint64_t packedWord : packedWords) {
+    serializedWords += llvm::utohexstr(packedWord);
+    serializedWords += '_';
+  }
+  return "__ttlang_constant_table_" +
+         llvm::utohexstr(llvm::xxh3_64bits(StringRef(serializedWords)));
+}
+
+static emitc::GlobalOp
+getOrCreateConstantTableGlobal(ConversionPatternRewriter &rewriter,
+                               Operation *anchor,
+                               ArrayRef<uint64_t> packedWords) {
+  // Static storage keeps device-compiler parsing independent of table length;
+  // a template argument for every packed word scales parsing with the table.
+  ModuleOp module = anchor->getParentOfType<ModuleOp>();
+  assert(module && "constant table lookup must be nested in a module");
+
+  IntegerType wordType = IntegerType::get(
+      rewriter.getContext(), 64, IntegerType::SignednessSemantics::Unsigned);
+  auto arrayType = emitc::ArrayType::get(
+      {static_cast<int64_t>(packedWords.size())}, wordType);
+  std::string initializerText = "{";
+  for (auto [wordIndex, packedWord] : llvm::enumerate(packedWords)) {
+    if (wordIndex != 0) {
+      initializerText += ", ";
+    }
+    initializerText += "0x" + llvm::utohexstr(packedWord) + "ULL";
+  }
+  initializerText += "}";
+  auto initializer =
+      emitc::OpaqueAttr::get(rewriter.getContext(), initializerText);
+
+  std::string baseName = getConstantTableSymbolName(packedWords);
+  std::string symbolName = baseName;
+  for (unsigned suffix = 0;; ++suffix) {
+    Operation *existing = SymbolTable::lookupSymbolIn(module, symbolName);
+    if (!existing) {
+      break;
+    }
+    auto global = dyn_cast<emitc::GlobalOp>(existing);
+    if (global && global.getType() == arrayType &&
+        global.getInitialValueAttr() == initializer) {
+      return global;
+    }
+    symbolName = baseName + "_" + std::to_string(suffix + 1);
+  }
+
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPointToStart(module.getBody());
+  return emitc::GlobalOp::create(rewriter, anchor->getLoc(), symbolName,
+                                 /*symVisibility=*/nullptr, arrayType,
+                                 initializer,
+                                 /*externSpecifier=*/false,
+                                 /*staticSpecifier=*/true,
+                                 /*constSpecifier=*/true);
+}
+
+class TTKernelConstantTableLookupOpRewriter
+    : public OpConversionPattern<ttkernel::ConstantTableLookupOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ttkernel::ConstantTableLookupOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+    if (!resultType) {
+      return rewriter.notifyMatchFailure(op, "failed to convert result type");
+    }
+    if (op.getValues().empty()) {
+      return rewriter.notifyMatchFailure(op,
+                                         "constant table must not be empty");
+    }
+
+    uint64_t maxValue = 0;
+    for (int64_t value : op.getValues()) {
+      if (value < 0) {
+        return rewriter.notifyMatchFailure(
+            op, "constant table values must be non-negative");
+      }
+      maxValue = std::max(maxValue, static_cast<uint64_t>(value));
+    }
+    unsigned bitsPerValue =
+        std::max(1, llvm::bit_width(static_cast<uint64_t>(maxValue)));
+    SmallVector<uint64_t> packedWords =
+        packConstantTable(op.getValues(), bitsPerValue);
+
+    SmallVector<Attribute> templateArgs;
+    templateArgs.push_back(
+        emitc::OpaqueAttr::get(op.getContext(), std::to_string(bitsPerValue)));
+    if (packedWords.size() == 1 && op.getValues().size() * bitsPerValue <= 32) {
+      IntegerType wordType =
+          IntegerType::get(rewriter.getContext(), 32,
+                           IntegerType::SignednessSemantics::Unsigned);
+      auto packedWord = emitc::LiteralOp::create(
+          rewriter, op.getLoc(), wordType,
+          "0x" + llvm::utohexstr(packedWords.front()) + "U");
+      auto call = emitc::CallOpaqueOp::create(
+          rewriter, op.getLoc(), resultType,
+          "experimental::constant_table_lookup_word", ArrayAttr(),
+          rewriter.getArrayAttr(templateArgs),
+          ValueRange{adaptor.getIndex(), packedWord});
+      rewriter.replaceOp(op, call.getResult(0));
+      return success();
+    }
+
+    emitc::GlobalOp table =
+        getOrCreateConstantTableGlobal(rewriter, op, packedWords);
+    auto tableRef = emitc::GetGlobalOp::create(
+        rewriter, op.getLoc(), table.getType(), table.getSymName());
+
+    auto call = emitc::CallOpaqueOp::create(
+        rewriter, op.getLoc(), resultType,
+        "experimental::constant_table_lookup", ArrayAttr(),
+        rewriter.getArrayAttr(templateArgs),
+        ValueRange{adaptor.getIndex(), tableRef});
+    rewriter.replaceOp(op, call.getResult(0));
+    return success();
+  }
 };
 } // namespace
 
@@ -1481,6 +1714,40 @@ private:
   std::reference_wrapper<TTKernelToEmitCConversionState> state;
 };
 
+class TTKernelToEmitCNocWritesFlushedRewriter
+    : public OpConversionPattern<ttkernel::NocAsyncWritesFlushedOp> {
+public:
+  TTKernelToEmitCNocWritesFlushedRewriter(
+      TTKernelToEmitCTypeConverter &typeConverter, MLIRContext *ctx,
+      TTKernelToEmitCConversionState &state)
+      : OpConversionPattern<ttkernel::NocAsyncWritesFlushedOp>(typeConverter,
+                                                               ctx),
+        state(state) {}
+
+  LogicalResult
+  matchAndRewrite(ttkernel::NocAsyncWritesFlushedOp op,
+                  ttkernel::NocAsyncWritesFlushedOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    SmallVector<Value, 1> operands;
+    FailureOr<std::string> nocName = ensureNocDeclaration(
+        op.getOperation(), rewriter, state, operands, adaptor.getNoc());
+    if (failed(nocName)) {
+      return failure();
+    }
+    std::string templateArgument =
+        usesPostedWriteMode(op) ? "<NocOptions::POSTED>" : "";
+    std::string callStr =
+        *nocName + ".async_writes_flushed" + templateArgument + "();";
+
+    emitc::VerbatimOp::create(rewriter, op.getLoc(), callStr, operands);
+    rewriter.eraseOp(op);
+    return success();
+  }
+
+private:
+  std::reference_wrapper<TTKernelToEmitCConversionState> state;
+};
+
 template <typename SourceOp>
 class TTKernelToEmitCNocFullBarrierRewriter
     : public OpConversionPattern<SourceOp> {
@@ -1593,8 +1860,11 @@ public:
                 ", CoreLocalMem<uint32_t>({}), {}, " + endpoint.args +
                 ", {{});";
     } else {
-      callStr = *nocName + ".async_write(CoreLocalMem<uint32_t>({}), " +
-                endpoint.endpointName + ", {}, {{} , " + endpoint.args + ");";
+      std::string templateArgument =
+          usesPostedWriteMode(op) ? "<NocOptions::POSTED>" : "";
+      callStr = *nocName + ".async_write" + templateArgument +
+                "(CoreLocalMem<uint32_t>({}), " + endpoint.endpointName +
+                ", {}, {{} , " + endpoint.args + ");";
     }
 
     rewriter.create<emitc::VerbatimOp>(op.getLoc(), callStr, operands);
@@ -1746,10 +2016,13 @@ public:
     SmallVector<Value, 5> operands{
         adaptor.getVal(), adaptor.getDstNocX(), adaptor.getDstNocY(),
         adaptor.getDstAddress(), adaptor.getByteEnable()};
-    std::string callStr =
-        *nocName + ".inline_dw_write<NocOptions::INLINE_L1>(" + endpoint +
-        ", {}, {{.noc_x = {}, .noc_y = {}, "
-        ".addr = static_cast<uint32_t>({})}, {});";
+    std::string options = usesPostedWriteMode(op)
+                              ? "NocOptions::INLINE_L1 | NocOptions::POSTED"
+                              : "NocOptions::INLINE_L1";
+    std::string callStr = *nocName + ".inline_dw_write<" + options + ">(" +
+                          endpoint +
+                          ", {}, {{.noc_x = {}, .noc_y = {}, "
+                          ".addr = static_cast<uint32_t>({})}, {});";
 
     rewriter.create<emitc::VerbatimOp>(op.getLoc(), callStr, operands);
     rewriter.eraseOp(op);
@@ -2025,6 +2298,121 @@ public:
 } // namespace
 
 namespace {
+class GetDfbIdOpRewriter : public OpConversionPattern<ttkernel::GetDfbIdOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ttkernel::GetDfbIdOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+    if (!resultType) {
+      return rewriter.notifyMatchFailure(op, "failed to convert result type");
+    }
+
+    auto dfbIdx = resolveDfbIndex(adaptor.getDfb());
+    if (!dfbIdx) {
+      return rewriter.notifyMatchFailure(
+          op, "get_dfb_id operand must trace to get_compile_time_arg_val");
+    }
+
+    rewriter.replaceOpWithNewOp<emitc::LiteralOp>(op, resultType,
+                                                  std::to_string(*dfbIdx));
+    return success();
+  }
+};
+} // namespace
+
+namespace {
+class TTKernelToEmitCOpaqueCallRewriter
+    : public OpConversionPattern<ttkernel::OpaqueCallOp> {
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ttkernel::OpaqueCallOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    SmallVector<Type> resultTypes;
+    for (Type resTy : op.getResultTypes()) {
+      Type converted = getTypeConverter()->convertType(resTy);
+      if (!converted) {
+        return rewriter.notifyMatchFailure(op, "failed to convert result type");
+      }
+      resultTypes.push_back(converted);
+    }
+
+    ArrayAttr emitcTemplateArgs;
+    bool hasDescriptor = false;
+    if (std::optional<ArrayAttr> templateArgs = op.getTemplateArgs()) {
+      SmallVector<Attribute> opaqueArgs;
+      for (Attribute templateArg : *templateArgs) {
+        if (auto descriptor =
+                dyn_cast<ttkernel::DFBDescriptorAttr>(templateArg)) {
+          opaqueArgs.push_back(emitc::OpaqueAttr::get(
+              op.getContext(), getDFBDescriptorTypeName(descriptor)));
+          hasDescriptor = true;
+          continue;
+        }
+        if (auto boolValue = dyn_cast<BoolAttr>(templateArg)) {
+          opaqueArgs.push_back(emitc::OpaqueAttr::get(
+              op.getContext(), boolValue.getValue() ? "true" : "false"));
+          continue;
+        }
+        auto integerValue = dyn_cast<IntegerAttr>(templateArg);
+        if (!integerValue) {
+          return rewriter.notifyMatchFailure(
+              op, "unsupported static opaque_call template argument");
+        }
+        auto integerType = dyn_cast<IntegerType>(integerValue.getType());
+        if (!integerType) {
+          return rewriter.notifyMatchFailure(
+              op, "opaque_call integer template argument has non-integer "
+                  "type");
+        }
+        std::string literal;
+        if (integerType.isUnsigned()) {
+          literal =
+              std::to_string(integerValue.getValue().getZExtValue()) + "U";
+        } else {
+          literal = std::to_string(integerValue.getValue().getSExtValue());
+        }
+        opaqueArgs.push_back(emitc::OpaqueAttr::get(op.getContext(), literal));
+      }
+      emitcTemplateArgs = ArrayAttr::get(op.getContext(), opaqueArgs);
+    }
+
+    SmallVector<Value> callArguments(adaptor.getArgOperands());
+    if (std::optional<ArrayRef<int32_t>> unsignedArgIndices =
+            op.getUnsignedArgIndices()) {
+      // An explicit cast preserves unsigned overload resolution even when an
+      // address was transported through a signless i32 SSA value.
+      IntegerType unsignedI32 =
+          IntegerType::get(rewriter.getContext(), 32, IntegerType::Unsigned);
+      for (int32_t index : *unsignedArgIndices) {
+        Value argument = callArguments[static_cast<size_t>(index)];
+        if (argument.getType() == unsignedI32) {
+          continue;
+        }
+        callArguments[static_cast<size_t>(index)] =
+            emitc::CastOp::create(rewriter, op.getLoc(), unsignedI32, argument)
+                .getResult();
+      }
+    }
+
+    auto callOp = rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, resultTypes, op.getCallee(), nullptr, emitcTemplateArgs,
+        callArguments);
+    callOp->setAttr("ttlang.opaque_header",
+                    rewriter.getStringAttr(op.getHeader()));
+    if (hasDescriptor) {
+      callOp->setAttr("ttlang.requires_dfb_descriptor", rewriter.getUnitAttr());
+    }
+    return success();
+  }
+};
+} // namespace
+
+namespace {
 template <typename Op, typename Adaptor = typename Op::Adaptor>
 class TTKernelMacroOpToEmitCOpRewriter : public OpConversionPattern<Op> {
 public:
@@ -2224,6 +2612,139 @@ private:
 } // namespace
 
 namespace {
+class TTKernelCreateRoutingPlaneConnectionManagerOpRewriter
+    : public OpConversionPattern<
+          ttkernel::CreateRoutingPlaneConnectionManagerOp> {
+  using Op = ttkernel::CreateRoutingPlaneConnectionManagerOp;
+
+public:
+  TTKernelCreateRoutingPlaneConnectionManagerOpRewriter(
+      const TypeConverter &typeConverter, MLIRContext *context,
+      TTKernelToEmitCConversionState &state)
+      : OpConversionPattern(typeConverter, context), state(state) {}
+
+  LogicalResult
+  matchAndRewrite(Op op, Op::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type managerType =
+        getTypeConverter()->convertType(op.getResult().getType());
+    auto opaqueType = mlir::dyn_cast_if_present<emitc::OpaqueType>(managerType);
+    if (!opaqueType) {
+      return rewriter.notifyMatchFailure(op, "failed to convert manager type");
+    }
+
+    std::string variableName = getResultVariableName(
+        op.getResult(), state, "routing_plane_connection_manager_");
+    emitc::VerbatimOp::create(
+        rewriter, op.getLoc(),
+        (opaqueType.getValue() + " " + variableName + ";").str());
+    rewriter.replaceOp(op, emitc::LiteralOp::create(rewriter, op.getLoc(),
+                                                    managerType, variableName));
+    return success();
+  }
+
+private:
+  std::reference_wrapper<TTKernelToEmitCConversionState> state;
+};
+
+class TTKernelOpenRoutingPlaneConnectionsOpRewriter
+    : public OpConversionPattern<ttkernel::OpenRoutingPlaneConnectionsOp> {
+  using Op = ttkernel::OpenRoutingPlaneConnectionsOp;
+
+public:
+  TTKernelOpenRoutingPlaneConnectionsOpRewriter(
+      const TypeConverter &typeConverter, MLIRContext *context,
+      TTKernelToEmitCConversionState &state)
+      : OpConversionPattern(typeConverter, context), state(state) {}
+
+  LogicalResult
+  matchAndRewrite(Op op, Op::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    std::string routeIdName =
+        getResultVariableName(op.getRouteId(), state, "fabric_route_id_");
+    std::string runtimeArgIndexName = routeIdName + "_runtime_arg_index";
+    std::string code = "size_t " + runtimeArgIndexName + " = {};\n" +
+                       "uint32_t " + routeIdName + " = 0;\n" +
+                       "if ({} != 0) {{\n"
+                       "  open_connections({}, {}, " +
+                       runtimeArgIndexName +
+                       ");\n"
+                       "  PacketHeaderPool::reset();\n"
+                       "  " +
+                       routeIdName +
+                       " = PacketHeaderPool::allocate_header_n({});\n" + "}";
+    emitc::VerbatimOp::create(
+        rewriter, op.getLoc(), rewriter.getStringAttr(code),
+        ValueRange{adaptor.getRuntimeArgBase(), adaptor.getConnectionCount(),
+                   adaptor.getManager(), adaptor.getConnectionCount(),
+                   adaptor.getConnectionCount()});
+    rewriter.replaceOp(
+        op, emitc::LiteralOp::create(
+                rewriter, op.getLoc(),
+                getTypeConverter()->convertType(op.getRouteId().getType()),
+                routeIdName));
+    return success();
+  }
+
+private:
+  std::reference_wrapper<TTKernelToEmitCConversionState> state;
+};
+
+class TTKernelRoutingPlaneAtomicIncOpRewriter
+    : public OpConversionPattern<ttkernel::RoutingPlaneAtomicIncOp> {
+  using Op = ttkernel::RoutingPlaneAtomicIncOp;
+
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(Op op, Op::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange(), "experimental::routing_plane_atomic_inc", nullptr,
+        nullptr, adaptor.getOperands());
+    return success();
+  }
+};
+
+class TTKernelRoutingPlaneFusedWriteAtomicIncOpRewriter
+    : public OpConversionPattern<ttkernel::RoutingPlaneFusedWriteAtomicIncOp> {
+  using Op = ttkernel::RoutingPlaneFusedWriteAtomicIncOp;
+
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(Op op, Op::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange(), "experimental::routing_plane_fused_write_atomic_inc",
+        nullptr, nullptr, adaptor.getOperands());
+    return success();
+  }
+};
+
+class TTKernelCloseRoutingPlaneConnectionsOpRewriter
+    : public OpConversionPattern<ttkernel::CloseRoutingPlaneConnectionsOp> {
+  using Op = ttkernel::CloseRoutingPlaneConnectionsOp;
+
+public:
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(Op op, Op::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    emitc::VerbatimOp::create(
+        rewriter, op.getLoc(),
+        rewriter.getStringAttr("if ({} != 0) {{\n  close_connections({});\n}"),
+        ValueRange{adaptor.getConnectionCount(), adaptor.getManager()});
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+} // namespace
+
+namespace {
 template <typename SourceOp, typename Adaptor = typename SourceOp::Adaptor>
 class TTKernelClassMethodRewriter : public OpConversionPattern<SourceOp> {
 public:
@@ -2338,6 +2859,29 @@ public:
     rewriter.replaceOpWithNewOp<arith::DivSIOp>(op, op.getResult().getType(),
                                                 op.getOperands());
 
+    return success();
+  }
+};
+
+template <typename SourceOp, typename EmitCOp>
+class ArithIndexUnsignedBinaryRewriter : public OpConversionPattern<SourceOp> {
+public:
+  using OpConversionPattern<SourceOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    if (!isa<IndexType>(op.getResult().getType())) {
+      return failure();
+    }
+    Type resultType =
+        this->getTypeConverter()->convertType(op.getResult().getType());
+    if (!resultType) {
+      return failure();
+    }
+    ValueRange operands = adaptor.getOperands();
+    rewriter.replaceOpWithNewOp<EmitCOp>(op, resultType, operands[0],
+                                         operands[1]);
     return success();
   }
 };
@@ -2489,6 +3033,46 @@ public:
   }
 };
 
+class ExperimentalRowNormalizationBlockOpConversion
+    : public OpConversionPattern<
+          ttkernel::ExperimentalRowNormalizationBlockOp> {
+public:
+  using OpConversionPattern<
+      ttkernel::ExperimentalRowNormalizationBlockOp>::OpConversionPattern;
+
+  LogicalResult matchAndRewrite(
+      ttkernel::ExperimentalRowNormalizationBlockOp op,
+      ttkernel::ExperimentalRowNormalizationBlockOp::Adaptor adaptor,
+      ConversionPatternRewriter &rewriter) const final {
+    auto createBitsLiteral = [&](FloatAttr value) {
+      std::uint64_t bits = value.getValue().bitcastToAPInt().getZExtValue();
+      return emitc::LiteralOp::create(rewriter, op.getLoc(),
+                                      rewriter.getI32Type(),
+                                      (Twine(bits) + "U").str());
+    };
+    // The fused LLK multiplies its scaler during both reduction stages, so its
+    // argument is the square root of the semantic scale.
+    FloatAttr reductionScaler = rewriter.getF32FloatAttr(
+        std::sqrt(op.getScaleAttr().getValueAsDouble()));
+    Value reductionScalerBits = createBitsLiteral(reductionScaler);
+    Value epsilonBits = createBitsLiteral(op.getEpsilonAttr());
+
+    SmallVector<Attribute, 4> templateArguments = {
+        emitc::OpaqueAttr::get(op.getContext(),
+                               std::to_string(op.getNumTiles())),
+        emitc::OpaqueAttr::get(op.getContext(),
+                               op.getHasGamma() ? "true" : "false"),
+        datatypeToDataformatEnumNameOpaqueAttr(rewriter, op.getDtype())};
+    SmallVector<Value, 5> operands = {
+        adaptor.getInputCb(), adaptor.getGammaCb(), adaptor.getOutputCb(),
+        reductionScalerBits, epsilonBits};
+    rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+        op, TypeRange(), "experimental::row_normalization_block", ArrayAttr(),
+        ArrayAttr::get(op.getContext(), templateArguments), operands);
+    return success();
+  }
+};
+
 // Arith MaxUIOp doesn't have an emitc lowering. We can lower it to a call to
 // std::max.
 class ArithMaxUIRewriter : public OpConversionPattern<arith::MaxUIOp> {
@@ -2580,12 +3164,20 @@ public:
       ConvertTTKernelToEmitCPass>::ConvertTTKernelToEmitCBase;
 
   void runOnOperation() final {
-    func::FuncOp funcOp = getOperation();
+    ModuleOp module = getOperation();
     TTKernelToEmitCConversionState state;
-    ConversionPlan config(funcOp.getContext(), state);
-    if (failed(visit(funcOp, config))) {
-      signalPassFailure();
-      return;
+    ConversionPlan config(module.getContext(), state);
+    for (func::FuncOp funcOp : module.getOps<func::FuncOp>()) {
+      if (!funcOp->hasAttr(ttkernel::ThreadTypeAttr::name)) {
+        continue;
+      }
+      if (mayHaveRuntimeCBArgs(funcOp)) {
+        assignRuntimeCBArgIndices(funcOp);
+      }
+      if (failed(applyFullConversion(funcOp, config.target, config.patterns))) {
+        signalPassFailure();
+        return;
+      }
     }
   }
 
@@ -2612,17 +3204,6 @@ public:
     FrozenRewritePatternSet patterns;
   };
 
-  static LogicalResult visit(func::FuncOp funcOp, ConversionPlan &config) {
-    if (!funcOp->hasAttr(ttkernel::ThreadTypeAttr::name)) {
-      return success();
-    }
-
-    if (mayHaveRuntimeCBArgs(funcOp)) {
-      assignRuntimeCBArgIndices(funcOp);
-    }
-    return applyFullConversion(funcOp, config.target, config.patterns);
-  }
-
   static FrozenRewritePatternSet
   buildPatterns(MLIRContext *context,
                 TTKernelToEmitCTypeConverter &typeConverter,
@@ -2636,6 +3217,7 @@ public:
     populateMemRefToEmitCConversionPatterns(patterns, typeConverter);
 
     patterns.add<TTKernelBitcastOpRewriter>(typeConverter, context, &state);
+    patterns.add<TTKernelConstantTableLookupOpRewriter>(typeConverter, context);
     patterns
         .add<TTKernelMatmulInitToEmitCRewriter<ttkernel::MatmulInitOp>,
              TTKernelMatmulInitToEmitCRewriter<ttkernel::MatmulBlockInitOp>>(
@@ -2645,6 +3227,7 @@ public:
     patterns
         .add<TTKernelToEmitCOpaqueRewriter<ttkernel::MatmulBlockInitShortOp>>(
             typeConverter, context, "matmul_block_init");
+    patterns.add<TTKernelToEmitCOpaqueCallRewriter>(typeConverter, context);
     patterns.add<
         TTKernelToEmitCArgValRewriter<ttkernel::GetCompileArgValOp>,
         TTKernelToEmitCArgValRewriter<ttkernel::GetArgValOp>,
@@ -2653,16 +3236,19 @@ public:
         TTKernelToEmitCGetMyLogicalMeshPositionOpRewriter,
         TTKernelMacroOpToEmitCOpRewriter<ttkernel::MemZerosBaseOp>,
         TTKernelMacroOpToEmitCOpRewriter<ttkernel::MemZerosSizeOp>,
+        TTKernelCastToL1AddrOpToEmitCOpRewriter,
         TTKernelCastToL1PtrOpToEmitCOpRewriter,
         TTKernelToEmitCOpaqueRewriter<ttkernel::GetSemaphoreOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::NocSemaphoreSetOp>,
+        TTKernelToEmitCOpaqueRewriter<ttkernel::SemaphoreReachedOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::SemaphoreWaitMinOp>,
-        TTKernelToEmitCOpaqueRewriter<ttkernel::NocSemaphoreIncOp>,
+        TTKernelToEmitCPostedOpaqueRewriter<ttkernel::NocSemaphoreIncOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::SemaphoreWaitOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::NocSemaphoreSetMulticastOp>,
         TTKernelToEmitCOpaqueRewriter<
             ttkernel::NocSemaphoreSetMulticastLoopbackOp>,
-        TTKernelToEmitCOpaqueRewriter<ttkernel::NocSemaphoreIncMulticastOp>,
+        TTKernelToEmitCPostedOpaqueRewriter<
+            ttkernel::NocSemaphoreIncMulticastOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::UnpackStallOnPackOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::TileRegsAcquireOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::TileRegsCommitOp>,
@@ -2897,6 +3483,10 @@ public:
         TTKernelToEmitCOpaqueRewriter<ttkernel::ClampScalarTileOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::ClampScalarTileInt32Op>,
 
+        TTKernelToEmitCPostedOpaqueRewriter<
+            ttkernel::NocAsyncWriteOnePacketSetStateOp>,
+        TTKernelToEmitCPostedOpaqueRewriter<
+            ttkernel::NocAsyncWriteOnePacketWithStateOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::GetNocMulticastAddrOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::ConvertLogicalXToTranslatedOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::ConvertLogicalYToTranslatedOp>,
@@ -2912,9 +3502,14 @@ public:
         TTKernelToEmitCOpaqueRewriter<ttkernel::GetTileSizeOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::GetNocAddrFromBankIDOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::GetDataFormatOp>,
-        TTKernelToEmitCOpaqueRewriter<ttkernel::TensorAccessorOp>>(
+        TTKernelToEmitCOpaqueRewriter<ttkernel::TensorAccessorOp>,
+        TTKernelToEmitCOpaqueRewriter<ttkernel::LocalTensorAccessorOp>>(
         typeConverter, context);
 
+    patterns.add<TTKernelToEmitCOpaqueRewriter<ttkernel::PackWaitedTileOp>>(
+        typeConverter, context, "pack_tile");
+
+    patterns.add<GetDfbIdOpRewriter>(typeConverter, context);
     patterns.add<TTKernelToEmitCCBVoidMethodRewriter<ttkernel::CBPushBackOp>>(
         typeConverter, context, state, "push_back");
     patterns.add<TTKernelToEmitCCBVoidMethodRewriter<ttkernel::CBPopFrontOp>>(
@@ -2936,6 +3531,7 @@ public:
     patterns
         .add<TTKernelToEmitCGetNocAddrRewriter,
              TTKernelToEmitCNocAtomicBarrierRewriter,
+             TTKernelToEmitCNocWritesFlushedRewriter,
              TTKernelToEmitCNocAsyncTileRewriter<ttkernel::NocAsyncReadTileOp>,
              TTKernelToEmitCNocAsyncTileRewriter<ttkernel::NocAsyncWriteTileOp>,
              TTKernelToEmitCNocAsyncReadOnePacketSetStateRewriter,
@@ -2965,6 +3561,8 @@ public:
         typeConverter, context, state, "async_write_barrier");
 
     patterns.add<TTKernelInvokeSFPIOpRewriter>(typeConverter, context);
+    patterns.add<ExperimentalRowNormalizationBlockOpConversion>(typeConverter,
+                                                                context);
     patterns.add<TTKernelToEmitCGetDeviceIdFromLogicalMeshPositionOpRewriter>(
         typeConverter, context, state);
 
@@ -2985,6 +3583,13 @@ public:
 
     patterns.add<TTKernelCreateFabricConnectionManagerOpRewriter>(
         typeConverter, context, state);
+    patterns.add<TTKernelCreateRoutingPlaneConnectionManagerOpRewriter,
+                 TTKernelOpenRoutingPlaneConnectionsOpRewriter>(typeConverter,
+                                                                context, state);
+    patterns.add<TTKernelRoutingPlaneAtomicIncOpRewriter,
+                 TTKernelRoutingPlaneFusedWriteAtomicIncOpRewriter,
+                 TTKernelCloseRoutingPlaneConnectionsOpRewriter>(typeConverter,
+                                                                 context);
 
     patterns.add<
         TTKernelClassMethodRewriter<ttkernel::TensorAccessorGetNocAddrOp>,
@@ -2996,12 +3601,14 @@ public:
         TTKernelClassMethodRewriter<ttkernel::TensorAccessorIsLocalShardOp>>(
         typeConverter, context, state);
 
-    patterns
-        .add<ArithFloorDivRewriter, ArithBitcastRewriter, ArithMaxUIRewriter,
-             ArithMinUIRewriter, ArithMaxSIRewriter, ArithMinSIRewriter,
-             ArithBoolBinaryRewriter<arith::AndIOp, emitc::LogicalAndOp>,
-             ArithBoolBinaryRewriter<arith::OrIOp, emitc::LogicalOrOp>>(
-            typeConverter, context);
+    patterns.add<ArithFloorDivRewriter,
+                 ArithIndexUnsignedBinaryRewriter<arith::DivUIOp, emitc::DivOp>,
+                 ArithIndexUnsignedBinaryRewriter<arith::RemUIOp, emitc::RemOp>,
+                 ArithBitcastRewriter, ArithMaxUIRewriter, ArithMinUIRewriter,
+                 ArithMaxSIRewriter, ArithMinSIRewriter,
+                 ArithBoolBinaryRewriter<arith::AndIOp, emitc::LogicalAndOp>,
+                 ArithBoolBinaryRewriter<arith::OrIOp, emitc::LogicalOrOp>>(
+        typeConverter, context);
 
     return FrozenRewritePatternSet(std::move(patterns));
   }

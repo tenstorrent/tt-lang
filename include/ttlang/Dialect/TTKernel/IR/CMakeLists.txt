@@ -1,6 +1,7 @@
 add_mlir_dialect(TTKernelOps ttkernel)
 add_mlir_doc(TTKernelBase TTKernelDialect src/autogen/md/Dialect/ -gen-dialect-doc)
-add_mlir_doc(TTKernelOps TTKernelOp src/autogen/md/Dialect/ -gen-op-doc)
+add_mlir_doc(TTKernelOps TTKernelOp src/autogen/md/Dialect/ -gen-op-doc
+             -dialect=ttkernel)
 add_mlir_doc(TTKernelOpsTypes TTKernelAttr src/autogen/md/Dialect/ -gen-attrdef-doc)
 add_mlir_doc(TTKernelOpsTypes TTKernelType src/autogen/md/Dialect/ -gen-typedef-doc)
 

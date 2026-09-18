@@ -1,5 +1,5 @@
 // Summary: Test unary operation interval merging - verify live intervals via LLVM_DEBUG.
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst))' -debug-only=ttl-assign-dst --split-input-file 2>&1 | FileCheck %s
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0},func.func(ttl-assign-dst))' -debug-only=ttl-assign-dst --split-input-file 2>&1 | FileCheck %s
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -14,8 +14,7 @@
 // - Block arg and all unary results should have the same interval [0, 3]
 // - All values get allocated to the same DST register
 
-// Phase 1 directly: copy insertion only (FPU eligibility is no longer
-// stamped as an attribute; isFPUEligibleBinaryOp resolves on demand).
+// Copy insertion consumes the strategy selected by kernel configuration.
 // CHECK: === Phase 1: Copy Insertion ===
 
 // Verify Phase 2 merging happens

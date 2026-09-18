@@ -6,10 +6,11 @@
 // TTL Verify DFB SPSC
 //===----------------------------------------------------------------------===//
 //
-// Rejects modules in which a dataflow buffer (identified by its `cb_index`) has
-// more than one producer or consumer kernel thread active on the same launched
-// node. tt-metal CBs are single-producer single-consumer at the API level; see
-// `docs/development/DFBManagement.md` for the rationale.
+// Rejects waits without a push and modules in which a logical dataflow buffer
+// has more than one producer or consumer kernel active on the same launched
+// node. Logical identity remains distinct when non-overlapping DFBs share a
+// physical `cb_index`. tt-metal CBs are single-producer single-consumer at the
+// API level; see `docs/development/DFBManagement.md` for the rationale.
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,7 +22,10 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/TTL/Transforms/LaunchNodeDomainAnalysis.h"
 
+#include "DFBVerification.h"
+
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -35,16 +39,17 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-/// Domain fact recorded for one dataflow buffer acquire operation.
-struct AcquireDomain {
+// Caches one operation's launch domain because all its protocol actions execute
+// on the same launched nodes.
+struct ProtocolActionDomain {
   LaunchNodeDomain domain;
   Operation *unanalyzableOp = nullptr;
 };
 
-/// A kernel thread that produces or consumes a dataflow buffer.
-///
-/// Multiple acquires in the same thread are merged into one participant because
-/// SPSC is a thread-level property, not an operation-level property.
+// A kernel thread that produces or consumes a dataflow buffer.
+//
+// Multiple actions in the same thread are merged because SPSC is a thread-level
+// property, not an operation-level property.
 struct DFBParticipant {
   func::FuncOp thread;
   Operation *op = nullptr;
@@ -52,26 +57,27 @@ struct DFBParticipant {
   Operation *unanalyzableOp = nullptr;
 };
 
-/// Producers or consumers for one finalized dataflow buffer index.
+// Producers or consumers for one logical dataflow buffer.
 struct DFBParticipantSet {
   llvm::SmallMapVector<func::FuncOp, DFBParticipant, 2> participants;
 };
 
-/// Analysis state shared by the dataflow solver and the verifier pass.
+// Analysis state shared by the dataflow solver and the verifier pass.
 struct ModuleState : LaunchNodeDomainState {
-  llvm::DenseMap<Operation *, AcquireDomain> acquireDomains;
+  llvm::DenseMap<Operation *, ProtocolActionDomain> protocolActionDomains;
 };
 
-/// Record the launch-node domain that reaches a producer or consumer acquire.
-void recordAcquireDomain(Operation *op, const LaunchNodeDomain &domain,
-                         Operation *unanalyzableOp, ModuleState &state) {
-  if (!isa<CBReserveOp, CBWaitOp>(op)) {
+void recordProtocolActionDomain(Operation *op, const LaunchNodeDomain &domain,
+                                Operation *unanalyzableOp, ModuleState &state) {
+  auto access = dyn_cast<DFBAccessOpInterface>(op);
+  if (!access || access.getDFBProtocolEffects().empty()) {
     return;
   }
-  state.acquireDomains[op] = {domain, unanalyzableOp};
+  state.protocolActionDomains[op] = {domain, unanalyzableOp};
 }
 
-/// Add a thread participant, merging repeated acquires from the same thread.
+// SPSC counts kernel threads, so repeated actions from one thread form one
+// participant with the union of their launch domains.
 void addParticipant(DFBParticipantSet &set, func::FuncOp thread, Operation *op,
                     const LaunchNodeDomain &domain, Operation *unanalyzableOp) {
   DFBParticipant participant{thread, op, domain, unanalyzableOp};
@@ -86,7 +92,6 @@ void addParticipant(DFBParticipantSet &set, func::FuncOp thread, Operation *op,
       pickEarlierBySourceLoc(existing.unanalyzableOp, unanalyzableOp);
 }
 
-/// Attach notes shared by producer and consumer SPSC diagnostics.
 void attachCommonNotes(InFlightDiagnostic &diag, Operation *bindSite,
                        llvm::StringRef role) {
   diag.attachNote() << "tt-metal CBs are single-producer single-consumer; "
@@ -97,15 +102,89 @@ void attachCommonNotes(InFlightDiagnostic &diag, Operation *bindSite,
   }
 }
 
-/// Emit the error for two participant domains with a proven common launch node.
-void emitOverlapError(int64_t cbIndex, const DFBParticipant &lhs,
+struct DFBProtocolPresence {
+  bool hasAcquisitionAction = false;
+  bool hasUnknownUserDFBAccess = false;
+  llvm::DenseSet<int64_t> pushedDFBs;
+  llvm::DenseSet<int64_t> dfbsWithOpaqueAccess;
+  llvm::SmallMapVector<int64_t, Operation *, 4> firstWaitByDFB;
+};
+
+DFBProtocolPresence collectDFBProtocolPresence(ModuleOp module) {
+  DFBProtocolPresence presence;
+  module.walk([&](Operation *op) {
+    auto access = dyn_cast<DFBAccessOpInterface>(op);
+    if (!access || !getEnclosingKernelThread(op)) {
+      return;
+    }
+    if (auto opaqueCall = dyn_cast<OpaqueCallOp>(op)) {
+      SmallVector<Value> dependencies = opaqueCall.getDFBDependencyOperands();
+      for (unsigned dependencyIndex :
+           getOpaqueDFBDependencyIndices(opaqueCall)) {
+        FailureOr<int64_t> dfbId = getDFBId(dependencies[dependencyIndex]);
+        assert(succeeded(dfbId) && "DFB identities were verified");
+        presence.dfbsWithOpaqueAccess.insert(*dfbId);
+      }
+      presence.hasUnknownUserDFBAccess |= opaqueCall.hasUnknownDFBAccess();
+    }
+    for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
+      FailureOr<int64_t> dfbId = getDFBId(effect.dfb);
+      assert(succeeded(dfbId) && "DFB identities were verified");
+      switch (effect.kind) {
+      case DFBProtocolEffectKind::Reserve:
+        presence.hasAcquisitionAction = true;
+        break;
+      case DFBProtocolEffectKind::Push:
+        presence.pushedDFBs.insert(*dfbId);
+        break;
+      case DFBProtocolEffectKind::Wait:
+        presence.hasAcquisitionAction = true;
+        presence.firstWaitByDFB.try_emplace(*dfbId, op);
+        break;
+      case DFBProtocolEffectKind::Pop:
+        break;
+      }
+    }
+  });
+  return presence;
+}
+
+LogicalResult verifyDFBWaitsHavePushes(
+    const DFBProtocolPresence &presence,
+    const llvm::DenseMap<int64_t, Operation *> &bindSites) {
+  bool sawError = false;
+  for (auto [dfbId, waitOp] : presence.firstWaitByDFB) {
+    Operation *bindSite = bindSites.lookup(dfbId);
+    auto bindOp = dyn_cast_or_null<BindCBOp>(bindSite);
+    bool hasPossibleExternalProducer =
+        presence.dfbsWithOpaqueAccess.contains(dfbId) ||
+        (presence.hasUnknownUserDFBAccess && bindOp &&
+         isUserManagedDFB(bindOp.getResult()));
+    if (presence.pushedDFBs.contains(dfbId) || hasPossibleExternalProducer) {
+      continue;
+    }
+    InFlightDiagnostic diag = waitOp->emitError()
+                              << "logical DFB " << dfbId
+                              << " is waited on but no kernel thread pushes "
+                                 "it";
+    diag.attachNote()
+        << "a DFB wait blocks until a matching push publishes data";
+    if (bindSite) {
+      diag.attachNote(bindSite->getLoc()) << "dataflow buffer declared here";
+    }
+    sawError = true;
+  }
+  return failure(sawError);
+}
+
+void emitOverlapError(int64_t logicalId, const DFBParticipant &lhs,
                       const DFBParticipant &rhs,
                       const LaunchNodeDomain &overlap, Operation *bindSite,
                       llvm::StringRef role, llvm::StringRef verbedHere) {
   InFlightDiagnostic diag = lhs.op->emitError()
-                            << "dataflow buffer cb_index=" << cbIndex << " has "
-                            << "multiple " << role
-                            << " threads active on the same launched node";
+                            << "logical DFB " << logicalId << " has multiple "
+                            << role
+                            << " kernels active on the same launched node";
   if (!overlap.nodes.empty()) {
     LaunchNodeCoord example = *overlap.nodes.begin();
     diag.attachNote() << "example overlapping node: core_x=" << example.x
@@ -115,9 +194,7 @@ void emitOverlapError(int64_t cbIndex, const DFBParticipant &lhs,
   attachCommonNotes(diag, bindSite, role);
 }
 
-/// Emit the conservative error used when a domain-dependent predicate could not
-/// be evaluated statically.
-void emitUnknownDomainError(int64_t cbIndex, const DFBParticipantSet &set,
+void emitUnknownDomainError(int64_t logicalId, const DFBParticipantSet &set,
                             Operation *bindSite, llvm::StringRef role,
                             llvm::StringRef verbedHere) {
   auto unknownIt = llvm::find_if(set.participants, [](const auto &entry) {
@@ -127,10 +204,11 @@ void emitUnknownDomainError(int64_t cbIndex, const DFBParticipantSet &set,
          "expected at least one unknown participant domain");
 
   const DFBParticipant &primary = unknownIt->second;
-  InFlightDiagnostic diag =
-      primary.op->emitError()
-      << "dataflow buffer cb_index=" << cbIndex << " has multiple " << role
-      << " threads, but SPSC could not be statically proven";
+  InFlightDiagnostic diag = primary.op->emitError()
+                            << "logical DFB " << logicalId << " has multiple "
+                            << role
+                            << " kernels, but SPSC could not be statically "
+                               "proven";
   if (primary.unanalyzableOp) {
     diag.attachNote(primary.unanalyzableOp->getLoc())
         << "this expression is not statically analyzable";
@@ -146,9 +224,7 @@ void emitUnknownDomainError(int64_t cbIndex, const DFBParticipantSet &set,
   attachCommonNotes(diag, bindSite, role);
 }
 
-/// Verify one dataflow buffer role after participants have been coalesced by
-/// kernel thread.
-bool verifyParticipantSet(int64_t cbIndex, const DFBParticipantSet &set,
+bool verifyParticipantSet(int64_t logicalId, const DFBParticipantSet &set,
                           Operation *bindSite, llvm::StringRef role,
                           llvm::StringRef verbedHere) {
   if (set.participants.size() <= 1) {
@@ -162,7 +238,7 @@ bool verifyParticipantSet(int64_t cbIndex, const DFBParticipantSet &set,
       const DFBParticipant &rhs = rhsIt->second;
       LaunchNodeDomain overlap = lhs.domain.intersectWith(rhs.domain);
       if (overlap.known && !overlap.nodes.empty()) {
-        emitOverlapError(cbIndex, lhs, rhs, overlap, bindSite, role,
+        emitOverlapError(logicalId, lhs, rhs, overlap, bindSite, role,
                          verbedHere);
         return true;
       }
@@ -172,7 +248,7 @@ bool verifyParticipantSet(int64_t cbIndex, const DFBParticipantSet &set,
   if (llvm::any_of(set.participants, [](const auto &entry) {
         return !entry.second.domain.known;
       })) {
-    emitUnknownDomainError(cbIndex, set, bindSite, role, verbedHere);
+    emitUnknownDomainError(logicalId, set, bindSite, role, verbedHere);
     return true;
   }
   return false;
@@ -183,32 +259,58 @@ struct TTLVerifyDFBSPSCPass
   void runOnOperation() override {
     ModuleOp module = getOperation();
 
-    ModuleState state;
-    state.initialize(module);
+    if (failed(verifyResolvedDFBIdentities(module, getArgument()))) {
+      signalPassFailure();
+      return;
+    }
 
-    bool hasAcquire = false;
     llvm::DenseMap<int64_t, Operation *> bindSites;
+    llvm::DenseMap<int64_t, int64_t> physicalIndices;
+    bool hasInconsistentIndex = false;
 
-    module.walk([&](Operation *op) {
-      if (isa<CBReserveOp, CBWaitOp>(op) && getEnclosingKernelThread(op)) {
-        hasAcquire = true;
-      } else if (auto bindOp = dyn_cast<BindCBOp>(op)) {
-        std::optional<int64_t> idx = getCBIndex(bindOp.getResult());
-        if (idx.has_value()) {
-          bindSites.try_emplace(*idx, op);
-        }
+    // Finalization normally guarantees this mapping. The check remains here
+    // because the verifier also supports direct invocation on finalized IR.
+    module.walk([&](BindCBOp bindOp) {
+      FailureOr<int64_t> dfbId = getDFBId(bindOp.getResult());
+      assert(succeeded(dfbId) && "DFB identities were verified");
+      int64_t cbIndex = bindOp.getCbIndex().getSExtValue();
+      bindSites.try_emplace(*dfbId, bindOp);
+      auto [indexIt, inserted] = physicalIndices.try_emplace(*dfbId, cbIndex);
+      if (!inserted && indexIt->second != cbIndex) {
+        bindOp.emitOpError() << "logical DFB " << *dfbId
+                             << " has inconsistent finalized cb_index values "
+                             << indexIt->second << " and " << cbIndex;
+        hasInconsistentIndex = true;
       }
     });
 
-    if (!hasAcquire) {
+    if (hasInconsistentIndex) {
+      signalPassFailure();
       return;
     }
+
+    DFBProtocolPresence protocolPresence = collectDFBProtocolPresence(module);
+    if (!protocolPresence.hasAcquisitionAction) {
+      return;
+    }
+
+    ModuleState state;
+    state.initialize(module);
     if (!state.hasLaunchGrid) {
       module.emitError()
           << "ttl-verify-dfb-spsc requires a `ttl.launch_grid` module "
              "attribute (an i64 array of length 2 with positive entries) "
-             "when verifying DFB acquire ops";
+             "when verifying DFB acquire actions";
       signalPassFailure();
+      return;
+    }
+
+    if (failed(verifyDFBWaitsHavePushes(protocolPresence, bindSites))) {
+      signalPassFailure();
+      return;
+    }
+
+    if (applyDFBProtocolDomainVerificationRelaxation(module)) {
       return;
     }
 
@@ -219,7 +321,7 @@ struct TTLVerifyDFBSPSCPass
     options.operationCallback = [&](Operation *op,
                                     const LaunchNodeDomain &domain,
                                     Operation *unanalyzableOp) {
-      recordAcquireDomain(op, domain, unanalyzableOp, state);
+      recordProtocolActionDomain(op, domain, unanalyzableOp, state);
     };
     solver.load<LaunchNodeDomainAnalysis>(state, options);
     if (failed(solver.initializeAndRun(module))) {
@@ -231,46 +333,50 @@ struct TTLVerifyDFBSPSCPass
       return;
     }
 
-    llvm::MapVector<int64_t, DFBParticipantSet> producers;
-    llvm::MapVector<int64_t, DFBParticipantSet> consumers;
+    llvm::MapVector<int64_t, DFBParticipantSet> producersByDFB;
+    llvm::MapVector<int64_t, DFBParticipantSet> consumersByDFB;
 
-    auto record = [&](llvm::MapVector<int64_t, DFBParticipantSet> &perCB,
+    auto record = [&](llvm::MapVector<int64_t, DFBParticipantSet> &perDFB,
                       Operation *op, Value cb) {
       func::FuncOp thread = getEnclosingKernelThread(op);
       if (!thread) {
         return;
       }
-      std::optional<int64_t> idx = getCBIndex(cb);
-      assert(idx.has_value() &&
-             "ttl-verify-dfb-spsc requires finalized cb_index; run "
-             "ttl-finalize-dfb-indices first");
-      auto domainIt = state.acquireDomains.find(op);
-      AcquireDomain acquireDomain =
-          domainIt == state.acquireDomains.end()
-              ? AcquireDomain{LaunchNodeDomain::unknown(), op}
+      FailureOr<int64_t> dfbId = getDFBId(cb);
+      assert(succeeded(dfbId) && "DFB identities were verified");
+      auto domainIt = state.protocolActionDomains.find(op);
+      ProtocolActionDomain actionDomain =
+          domainIt == state.protocolActionDomains.end()
+              ? ProtocolActionDomain{LaunchNodeDomain::unknown(), op}
               : domainIt->second;
-      addParticipant(perCB[*idx], thread, op, acquireDomain.domain,
-                     acquireDomain.unanalyzableOp);
+      addParticipant(perDFB[*dfbId], thread, op, actionDomain.domain,
+                     actionDomain.unanalyzableOp);
     };
 
     module.walk([&](Operation *op) {
-      if (auto reserveOp = dyn_cast<CBReserveOp>(op)) {
-        record(producers, op, reserveOp.getCb());
-      } else if (auto waitOp = dyn_cast<CBWaitOp>(op)) {
-        record(consumers, op, waitOp.getCb());
+      auto access = dyn_cast<DFBAccessOpInterface>(op);
+      if (!access) {
+        return;
+      }
+      for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
+        if (isProducerDFBProtocolEffect(effect.kind)) {
+          record(producersByDFB, op, effect.dfb);
+        } else if (isConsumerDFBProtocolEffect(effect.kind)) {
+          record(consumersByDFB, op, effect.dfb);
+        }
       }
     });
 
     bool sawError = false;
-    for (auto &entry : producers) {
-      sawError |= verifyParticipantSet(entry.first, entry.second,
-                                       bindSites.lookup(entry.first),
-                                       "producer", "reserved");
+    for (auto &entry : producersByDFB) {
+      sawError |= verifyParticipantSet(
+          entry.first, entry.second, bindSites.lookup(entry.first), "producer",
+          "performed a producer action");
     }
-    for (auto &entry : consumers) {
-      sawError |= verifyParticipantSet(entry.first, entry.second,
-                                       bindSites.lookup(entry.first),
-                                       "consumer", "waited on");
+    for (auto &entry : consumersByDFB) {
+      sawError |= verifyParticipantSet(
+          entry.first, entry.second, bindSites.lookup(entry.first), "consumer",
+          "performed a consumer action");
     }
 
     if (sawError) {

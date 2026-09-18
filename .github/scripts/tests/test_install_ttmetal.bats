@@ -22,13 +22,16 @@ mkfake_ttmetal() {
     dir=$(mktemp -d "${BATS_TEST_TMPDIR:-/tmp}/ttmetal.XXXXXX")
 
     mkdir -p "$dir/src/ttnn/ttnn" "$dir/src/ttnn/cpp" "$dir/src/tt_metal/api" \
-        "$dir/src/tools/tracy" "$dir/src/tt_metal/pre-compiled/stale"
+        "$dir/src/tools/tracy" "$dir/src/tools/triage" \
+        "$dir/src/tt_metal/pre-compiled/stale"
     echo "from . import _ttnn" > "$dir/src/ttnn/ttnn/__init__.py"
     echo "version = '0.x'" > "$dir/src/ttnn/ttnn/version.py"
     echo "// cpp header" > "$dir/src/ttnn/cpp/placeholder.h"
     echo "// header" > "$dir/src/tt_metal/api/sample.h"
     echo "stale firmware" > "$dir/src/tt_metal/pre-compiled/stale/fw.elf"
     echo "tracy_module" > "$dir/src/tools/tracy/__init__.py"
+    echo "triage_module" > "$dir/src/tools/triage/triage.py"
+    echo "tt-exalens==0.3.21" > "$dir/src/tools/triage/requirements.txt"
 
     if [[ "$has_stale_so" == "stale" ]]; then
         printf '\x7fELF stale ttnn' > "$dir/src/ttnn/ttnn/_ttnn.so"
@@ -82,6 +85,16 @@ run_install() {
     assert_success
     [ -f "$install/python_packages/ttnn/ttnn/__init__.py" ]
     [ -f "$install/python_packages/ttnn/ttnn/version.py" ]
+}
+
+@test "install copies tt-triage from \$SRC" {
+    local d
+    d=$(mkfake_ttmetal "with-so" "fresh")
+    local install="$BATS_TEST_TMPDIR/install"
+    run run_install "$d/src" "$d/build" "$install"
+    assert_success
+    [ -f "$install/tools/triage/triage.py" ]
+    [ -f "$install/tools/triage/requirements.txt" ]
 }
 
 @test "install fails when neither stale .so nor fresh .so exist" {

@@ -48,7 +48,7 @@ def fill_kernel(out):
 # =============================================================================
 
 # CHECK-LABEL: func.func @fill_compute
-# CHECK-SAME: attributes {{{.*}}ttl.kernel_thread = #ttkernel.thread<compute>}
+# CHECK-SAME: attributes {{{.*}}ttl.kernel_thread = #ttkernel.thread<compute>, ttl.logical_kernel = #ttl.logical_kernel<kind = compute>}
 
 # CHECK: %[[OUT_CB:.+]] = ttl.bind_cb{cb_index = 0
 

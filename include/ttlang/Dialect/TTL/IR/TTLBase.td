@@ -52,6 +52,16 @@ class TTL_Attr<string name, string attrMnemonic, list<Trait> traits = []>
 class TTL_Op<string mnemonic, list<Trait> traits = []>
     : Op<TTL_Dialect, mnemonic, traits>;
 
+class TTL_ComputePrimitiveOp<string mnemonic, string primitive,
+                             list<Trait> traits = []>
+    : TTL_Op<mnemonic,
+             !listconcat(traits, [TTL_ComputePrimitiveOpInterface])> {
+  let extraClassDeclaration =
+      "static constexpr ::mlir::tt::ttl::ComputePrimitive "
+      "getComputePrimitiveKind() { return "
+      "::mlir::tt::ttl::ComputePrimitive::"#primitive#"; }";
+}
+
 
 //===----------------------------------------------------------------------===//
 // TTL traits

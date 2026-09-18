@@ -37,8 +37,8 @@
 // CHECK:   size_t [[CB_PTR1_IDX:v[0-9]+]] = (size_t) [[CB_PTR1_PTRDIFF]];
 // Generated tile loops iterate over tensor grid (2x2)
 // CHECK:   for (size_t [[TILE1_Y:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE1_Y]] < [[TILES_BOUND]]; [[TILE1_Y]] += [[TILE_STEP]]) {
+// CHECK:     size_t [[TILE1_OFFSET_Y:v[0-9]+]] = [[TILE1_Y]] * [[TILES_BOUND]];
 // CHECK:     for (size_t [[TILE1_X:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE1_X]] < [[TILES_BOUND]]; [[TILE1_X]] += [[TILE_STEP]]) {
-// CHECK:       size_t [[TILE1_OFFSET_Y:v[0-9]+]] = [[TILE1_Y]] * [[TILES_BOUND]];
 // CHECK:       size_t [[TILE1_OFFSET_X:v[0-9]+]] = [[TILE1_OFFSET_Y]] + [[TILE1_X]];
 // CB address computation: cb_ptr + tile_offset * page_size (all size_t arithmetic)
 // CHECK:       size_t [[BYTE_OFF1:v[0-9]+]] = [[TILE1_OFFSET_X]] * [[PAGE_SIZE]];
@@ -62,8 +62,8 @@
 // CHECK:   size_t [[CB_PTR2_IDX:v[0-9]+]] = (size_t) [[CB_PTR2_PTRDIFF]];
 // Generated tile loops still iterate over tensor grid (2x2), not CB shape (4x1)
 // CHECK:   for (size_t [[TILE2_Y:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE2_Y]] < [[TILES_BOUND]]; [[TILE2_Y]] += [[TILE_STEP]]) {
+// CHECK:     size_t [[TILE2_OFFSET_Y:v[0-9]+]] = [[TILE2_Y]] * [[TILES_BOUND]];
 // CHECK:     for (size_t [[TILE2_X:[a-z][0-9]+]] = [[TILE_LB]]; [[TILE2_X]] < [[TILES_BOUND]]; [[TILE2_X]] += [[TILE_STEP]]) {
-// CHECK:       size_t [[TILE2_OFFSET_Y:v[0-9]+]] = [[TILE2_Y]] * [[TILES_BOUND]];
 // CHECK:       size_t [[TILE2_OFFSET_X:v[0-9]+]] = [[TILE2_OFFSET_Y]] + [[TILE2_X]];
 // CB address computation: cb_ptr + tile_offset * page_size (all size_t arithmetic)
 // CHECK:       size_t [[BYTE_OFF2:v[0-9]+]] = [[TILE2_OFFSET_X]] * [[PAGE_SIZE]];
@@ -84,8 +84,8 @@ module {
   func.func @same_layout_different_cb(%arg0: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>, %arg1: tensor<2x2x!ttcore.tile<32x32, f32>, #layout>)
       attributes {ttl.base_cta_index = 2 : i32, ttl.crta_indices = [0, 1], ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
-    %cb1 = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
-    %cb2 = ttl.bind_cb {cb_index = 1, block_count = 2} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+    %cb1 = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
+    %cb2 = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index} : !ttl.cb<[2, 2], !ttcore.tile<32x32, f32>, 2>
 
     // First copy: 64x64 → CB [2,2]
     %slice0 = ttl.tensor_slice %arg0[%c0, %c0] : tensor<2x2x!ttcore.tile<32x32, f32>, #layout> -> tensor<2x2x!ttcore.tile<32x32, f32>, #layout>

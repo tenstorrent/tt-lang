@@ -133,6 +133,36 @@ def TTKernel_PackTileOp : TTKernel_Op<"pack_tile"> {
     }];
 }
 
+def TTKernel_PackWaitedTileOp : TTKernel_Op<"pack_waited_tile"> {
+    let summary = "Replace a tile in a waited full-ring DFB transaction.";
+    let description = [{
+      Copies one DST tile into a consumer-owned DFB page without reserving or
+      publishing producer space. `acquired_tiles` must equal the DFB capacity,
+      and `out_index` is relative to the acquired read window. The operation is
+      legal only when the producer write pointer and consumer read pointer are
+      separately proved to address the same ring position.
+
+      The operation changes neither occupancy nor either DFB pointer. A prior
+      consumer wait owns the pages until the corresponding pop. The compiler
+      must prove that the original page value is consumed before replacement
+      and that following accesses occur before the pop.
+    }];
+
+    let arguments = (ins
+      IndexLike:$dst_index,
+      TTKernel_CB:$out_cb,
+      IndexLike:$out_index,
+      DefaultValuedAttr<BoolAttr, "true">:$out_of_order,
+      ConfinedAttr<I64Attr, [IntPositive]>:$acquired_tiles
+    );
+
+    let assemblyFormat = [{
+      `(` $dst_index `,` $out_cb `,` $out_index `,` $out_of_order `)`
+      attr-dict `:` functional-type(operands, results)
+    }];
+    let hasVerifier = 1;
+}
+
 def TTKernel_PackTileBlockOp : TTKernel_Op<"pack_tile_block"> {
     let summary = "PackTileBlock op.";
     let description = [{
@@ -603,6 +633,36 @@ def TTKernel_BinaryDestReuseTilesOp : TTKernel_FPUOp<"binary_dest_reuse_tiles"> 
     }];
 }
 
+def TTKernel_ExperimentalRowNormalizationBlockOp :
+    TTKernel_FPUOp<"experimental_row_normalization_block"> {
+  let summary = "Normalize one row in a single DST acquisition";
+  let description = [{
+    Computes a full-row sum of squares, applies scale, epsilon, and reciprocal
+    square root, then reuses the retained scalar across a contiguous block of
+    input tiles. Optional gamma multiplication occurs in place before packing.
+
+    The operation does not acquire, commit, wait, release, reserve, push, pop,
+    or pack. Those transactions remain explicit surrounding TTKernel
+    operations.
+  }];
+  let arguments = (ins TTKernel_CB:$input_cb,
+                       TTKernel_CB:$gamma_cb,
+                       TTKernel_CB:$output_cb,
+                       I64Attr:$num_tiles,
+                       F32Attr:$scale,
+                       F32Attr:$epsilon,
+                       BoolAttr:$has_gamma,
+                       TTCore_DataTypeAttr:$dtype);
+  let assemblyFormat = [{
+    `(` $input_cb `,` $gamma_cb `,` $output_cb `)`
+    `num_tiles` `=` $num_tiles `scale` `=` $scale
+    `epsilon` `=` $epsilon `has_gamma` `=` $has_gamma
+    `dtype` `=` $dtype
+    attr-dict `:` functional-type(operands, results)
+  }];
+  let hasVerifier = 1;
+}
+
 def TTKernel_UnaryBcastInitOp : TTKernel_InitOp<"unary_bcast_init"> {
     let summary = "Init function";
     let description = [{
@@ -651,8 +711,7 @@ def TTKernel_ReduceInitOp : TTKernel_InitOp<"reduce_init"> {
                          TTKernel_CB:$scaling_cb,
                          TTKernel_CB:$out_cb,
                          TTKernel_ReduceTypeAttr:$reduce_type,
-                         TTKernel_ReduceDimAttr:$reduce_dim,
-                         UnitAttr:$full_fp32);
+                         TTKernel_ReduceDimAttr:$reduce_dim);
 
     let assemblyFormat = [{
       `(` $in_cb `,` $scaling_cb `,` $out_cb `,` $reduce_type `,` $reduce_dim `)` attr-dict `:` functional-type(operands, results)
@@ -667,14 +726,8 @@ def TTKernel_ReduceUninitOp : TTKernel_InitOp<"reduce_uninit"> {
        same dimension, this call can be omitted. If this function is not called, the packer will continue to use the edge masks set
        by the latest reduce_init call, which may lead to incorrect packing behavior in subsequent operations.
 
-       The `full_fp32` attribute emits reduce_uninit<true>, which performs the extra cleanup required after some
-       full-fp32 reduce sequences. Without the attribute, lowering emits reduce_uninit(), matching tt-metal's
-       default false behavior.
-
        This function is not in line with our programming mode. To be removed by end of 2025. tt-metal#22904.
     }];
-
-    let arguments = (ins UnitAttr:$full_fp32);
 
     let assemblyFormat = [{
       `(` `)` attr-dict `:` functional-type(operands, results)
@@ -702,8 +755,7 @@ def TTKernel_ReduceTileOp : TTKernel_FPUOp<"reduce_tile", [TTKernel_TernaryOpTra
                          IndexLike:$scaling_tile_index,
                          IndexLike:$dst_index,
                          TTKernel_ReduceTypeAttr:$reduce_type,
-                         TTKernel_ReduceDimAttr:$reduce_dim,
-                         UnitAttr:$full_fp32);
+                         TTKernel_ReduceDimAttr:$reduce_dim);
 
     let assemblyFormat = [{
       `(` $in_cb `,` $scaling_cb `,` $in_tile_index `,` $scaling_tile_index `,` $dst_index `,` $reduce_type `,` $reduce_dim `)` attr-dict `:` functional-type(operands, results)
@@ -3504,7 +3556,7 @@ def TTKernel_TransposeTileOp : TTKernel_Op<"transpose_wh_tile"> {
 // TTKernel NOC operations
 //===----------------------------------------------------------------------===//
 
-def TTKernel_GetNocAddrOp : TTKernel_Op<"get_noc_addr"> {
+def TTKernel_GetNocAddrOp : TTKernel_Op<"get_noc_addr", [Pure]> {
     let summary = "GetNocAddr";
     let description = [{
       GetNocAddr api including core coordinates.
@@ -3524,7 +3576,8 @@ def TTKernel_GetNocAddrOp : TTKernel_Op<"get_noc_addr"> {
     ];
 }
 
-def TTKernel_GetNocAddrFromBankIDOp: TTKernel_Op<"get_noc_addr_from_bank_id"> {
+def TTKernel_GetNocAddrFromBankIDOp
+    : TTKernel_Op<"get_noc_addr_from_bank_id", [Pure]> {
     let summary = "GetNocAddrFromBankID";
     let description = [{
       GetNocAddrFromBankID api
@@ -3538,7 +3591,9 @@ def TTKernel_GetNocAddrFromBankIDOp: TTKernel_Op<"get_noc_addr_from_bank_id"> {
     }];
 }
 
-def TTKernel_NocAsyncReadOp : TTKernel_Op<"noc_async_read", [AttrSizedOperandSegments]> {
+def TTKernel_NocAsyncReadOp
+    : TTKernel_NocReadCommandOp<"noc_async_read",
+                                [AttrSizedOperandSegments]> {
     let summary = "NocAsyncRead";
     let description = [{
       NocAsyncRead from either an L1 core coordinate or a DRAM bank.
@@ -3558,7 +3613,8 @@ def TTKernel_NocAsyncReadOp : TTKernel_Op<"noc_async_read", [AttrSizedOperandSeg
     let hasVerifier = 1;
 }
 
-def TTKernel_NocAsyncReadTileOp : TTKernel_Op<"noc_async_read_tile"> {
+def TTKernel_NocAsyncReadTileOp
+    : TTKernel_NocReadCommandOp<"noc_async_read_tile"> {
     let summary = "NocAsyncReadTile";
     let description = [{
       NocAsyncReadTile
@@ -3574,8 +3630,9 @@ def TTKernel_NocAsyncReadTileOp : TTKernel_Op<"noc_async_read_tile"> {
     }];
 }
 
-def TTKernel_NocAsyncReadOnePacketSetStateOp : TTKernel_Op<"noc_async_read_one_packet_set_state",
-                                                           [AttrSizedOperandSegments]> {
+def TTKernel_NocAsyncReadOnePacketSetStateOp
+    : TTKernel_NocReadCommandOp<"noc_async_read_one_packet_set_state",
+                                [AttrSizedOperandSegments]> {
     let summary = "NocAsyncReadOnePacketSetState";
     let description = [{
       NocAsyncReadOnePacketSetState
@@ -3594,8 +3651,12 @@ def TTKernel_NocAsyncReadOnePacketSetStateOp : TTKernel_Op<"noc_async_read_one_p
     let hasVerifier = 1;
 }
 
-def TTKernel_NocAsyncReadOnePacketWithStateOp : TTKernel_Op<"noc_async_read_one_packet_with_state",
-                                                            [AttrSizedOperandSegments]> {
+def TTKernel_NocAsyncReadOnePacketWithStateOp
+    : TTKernel_NocReadCommandOp<
+          "noc_async_read_one_packet_with_state",
+          [TTKernel_NocCommandStatePreservingOpTrait,
+           TTKernel_NocCommandStateDependentOpTrait,
+           AttrSizedOperandSegments]> {
     let summary = "NocAsyncReadOnePacketWithState";
     let description = [{
       NocAsyncReadOnePacketWithState
@@ -3615,7 +3676,11 @@ def TTKernel_NocAsyncReadOnePacketWithStateOp : TTKernel_Op<"noc_async_read_one_
     let hasVerifier = 1;
 }
 
-def TTKernel_NocAsyncReadBarrierOp : TTKernel_Op<"noc_async_read_barrier", [TTKernel_DeviceZoneOpTrait]> {
+def TTKernel_NocAsyncReadBarrierOp
+    : TTKernel_NocReadCommandOp<
+          "noc_async_read_barrier",
+          [TTKernel_NocCommandStatePreservingOpTrait,
+           TTKernel_DeviceZoneOpTrait]> {
     let summary = "NocAsyncReadBarrier";
     let description = [{
       Waits for all outstanding read transactions on the given NOC.
@@ -3636,7 +3701,11 @@ def TTKernel_NocAsyncReadBarrierOp : TTKernel_Op<"noc_async_read_barrier", [TTKe
     let hasCanonicalizer = 1;
 }
 
-def TTKernel_NocAsyncReadBarrierWithTridOp : TTKernel_Op<"noc_async_read_barrier_with_trid", [TTKernel_DeviceZoneOpTrait, TTKernel_TridNocOpTrait]> {
+def TTKernel_NocAsyncReadBarrierWithTridOp
+    : TTKernel_NocReadCommandOp<
+          "noc_async_read_barrier_with_trid",
+          [TTKernel_NocCommandStatePreservingOpTrait,
+           TTKernel_DeviceZoneOpTrait, TTKernel_TridNocOpTrait]> {
     let summary = "NocAsyncReadBarrierWithTrid";
     let description = [{
       Waits for outstanding read transactions matching a transaction ID. TRID is 0-15, NOC is 0 or 1.
@@ -3654,10 +3723,15 @@ def TTKernel_NocAsyncReadBarrierWithTridOp : TTKernel_Op<"noc_async_read_barrier
     }];
 }
 
-def TTKernel_NocAsyncWriteOp : TTKernel_Op<"noc_async_write", [AttrSizedOperandSegments]> {
+def TTKernel_NocAsyncWriteOp
+    : TTKernel_NocWriteCommandOp<"noc_async_write",
+                                 [AttrSizedOperandSegments]> {
     let summary = "NocAsyncWrite";
     let description = [{
-      NocAsyncWrite to either an L1 core coordinate or a DRAM bank.
+      Initiates an asynchronous write from local L1 to either a remote core or
+      a DRAM bank. When `posted` is true, the write does not request a remote
+      acknowledgement. Receiver-visible completion must be established by a
+      separate synchronization operation.
     }];
 
     let arguments = (ins I32:$srcLocalL1Addr,
@@ -3665,16 +3739,28 @@ def TTKernel_NocAsyncWriteOp : TTKernel_Op<"noc_async_write", [AttrSizedOperandS
                          Variadic<I32>:$dstBankId,
                          I32:$dstAddress,
                          I32:$size,
-                         Optional<I8>:$noc);
+                         Optional<I8>:$noc,
+                         OptionalAttr<BoolAttr>:$posted);
 
     let assemblyFormat = [{
-      $srcLocalL1Addr `,` (`core` `[` $dstCoreXY^ `]`)? (`bank` `[` $dstBankId^ `]`)? `,` $dstAddress `,` $size (`,` `noc` $noc^)? attr-dict `:` functional-type(operands, results)
+      $srcLocalL1Addr `,` (`core` `[` $dstCoreXY^ `]`)? (`bank` `[` $dstBankId^ `]`)? `,` $dstAddress `,` $size (`,` `noc` $noc^)? (`posted` $posted^)? attr-dict `:` functional-type(operands, results)
     }];
+
+    let builders = [
+      OpBuilder<(ins "Value":$srcLocalL1Addr,
+                     "::mlir::ValueRange":$dstCoreXY,
+                     "::mlir::ValueRange":$dstBankId,
+                     "Value":$dstAddress, "Value":$size, "Value":$noc), [{
+        build($_builder, $_state, srcLocalL1Addr, dstCoreXY, dstBankId,
+              dstAddress, size, noc, /*posted=*/BoolAttr{});
+      }]>,
+    ];
 
     let hasVerifier = 1;
 }
 
-def TTKernel_NocAsyncWriteTileOp : TTKernel_Op<"noc_async_write_tile"> {
+def TTKernel_NocAsyncWriteTileOp
+    : TTKernel_NocWriteCommandOp<"noc_async_write_tile"> {
     let summary = "NocAsyncWriteTile";
     let description = [{
       NocAsyncWriteTilie
@@ -3690,8 +3776,10 @@ def TTKernel_NocAsyncWriteTileOp : TTKernel_Op<"noc_async_write_tile"> {
     }];
 }
 
-def TTKernel_NocAsyncWriteOnePacketWithTridOp : TTKernel_Op<"noc_async_write_one_packet_with_trid",
-                                                            [TTKernel_TridNocOpTrait, AttrSizedOperandSegments]> {
+def TTKernel_NocAsyncWriteOnePacketWithTridOp
+    : TTKernel_NocWriteCommandOp<
+          "noc_async_write_one_packet_with_trid",
+          [TTKernel_TridNocOpTrait, AttrSizedOperandSegments]> {
     let summary = "NocAsyncWriteOnePacketWithTrid";
     let description = [{
       Issues a one-packet NOC write with a specific transaction ID. TRID is 0-15, NOC is 0 or 1.
@@ -3719,10 +3807,89 @@ def TTKernel_NocAsyncWriteOnePacketWithTridOp : TTKernel_Op<"noc_async_write_one
     let hasVerifier = 1;
 }
 
-def TTKernel_NocAsyncWriteBarrierOp : TTKernel_Op<"noc_async_write_barrier", [TTKernel_DeviceZoneOpTrait]> {
+def TTKernel_NocAsyncWriteOnePacketSetStateOp
+    : TTKernel_NocWriteCommandOp<
+          "noc_async_write_one_packet_set_state"> {
+    let summary = "NocAsyncWriteOnePacketSetState";
+    let description = [{
+      Programs the stateful registers for subsequent one-packet asynchronous
+      writes to the same destination node and transfer size.
+
+      The destination operand is a full NoC address. The companion
+      `noc_async_write_one_packet_with_state` operation supplies the source L1
+      address and destination local L1 address that vary per transfer. The
+      `posted` setting is part of the command state and must match every
+      companion operation that uses it.
+    }];
+
+    let arguments = (ins TTKernel_NocAddr:$dstNocAddr,
+                         I32:$size,
+                         Optional<I8>:$noc,
+                         OptionalAttr<BoolAttr>:$posted);
+
+    let assemblyFormat = [{
+      `(` $dstNocAddr `,` $size (`,` `noc` $noc^)? `)` (`posted` $posted^)? attr-dict `:` functional-type(operands, results)
+    }];
+
+    let builders = [
+      OpBuilder<(ins "Value":$dstNocAddr, "Value":$size, "Value":$noc), [{
+        build($_builder, $_state, dstNocAddr, size, noc,
+              /*posted=*/BoolAttr{});
+      }]>,
+    ];
+}
+
+def TTKernel_NocAsyncWriteOnePacketWithStateOp
+    : TTKernel_NocWriteCommandOp<
+          "noc_async_write_one_packet_with_state",
+          [TTKernel_NocCommandStatePreservingOpTrait,
+           TTKernel_NocCommandStateDependentOpTrait]> {
+    let summary = "NocAsyncWriteOnePacketWithState";
+    let description = [{
+      Issues a one-packet asynchronous write using the state programmed by
+      `noc_async_write_one_packet_set_state`.
+
+      The destination local L1 address must refer to the same destination node
+      that was used to set the command state. The transfer size is the size
+      programmed by the set-state operation. Its `posted` setting must match
+      the set-state operation.
+
+      A matching setup must execute before every issue, including repeated
+      issues in loops. An intervening operation or call that may overwrite
+      write-command state invalidates the setup. Read and atomic commands
+      that preserve write-command state do not invalidate it.
+    }];
+
+    let arguments = (ins I32:$srcLocalL1Addr,
+                         I32:$dstLocalL1Addr,
+                         Optional<I8>:$noc,
+                         OptionalAttr<BoolAttr>:$posted);
+
+    let assemblyFormat = [{
+      `(` $srcLocalL1Addr `,` $dstLocalL1Addr (`,` `noc` $noc^)? `)` (`posted` $posted^)? attr-dict `:` functional-type(operands, results)
+    }];
+
+    let builders = [
+      OpBuilder<(ins "Value":$srcLocalL1Addr, "Value":$dstLocalL1Addr,
+                     "Value":$noc), [{
+        build($_builder, $_state, srcLocalL1Addr, dstLocalL1Addr, noc,
+              /*posted=*/BoolAttr{});
+      }]>,
+    ];
+
+    let hasVerifier = 1;
+}
+
+def TTKernel_NocAsyncWriteBarrierOp
+    : TTKernel_NocWriteCommandOp<
+          "noc_async_write_barrier",
+          [TTKernel_NocCommandStatePreservingOpTrait,
+           TTKernel_DeviceZoneOpTrait]> {
     let summary = "NocAsyncWriteBarrier";
     let description = [{
-      Waits for all outstanding write transactions on the given NOC.
+      Waits for remote completion of all outstanding non-posted write
+      transactions on the selected NoC. Posted writes are not observed because
+      they do not request remote acknowledgements.
     }];
 
     let arguments = (ins Optional<I8>:$noc);
@@ -3740,7 +3907,40 @@ def TTKernel_NocAsyncWriteBarrierOp : TTKernel_Op<"noc_async_write_barrier", [TT
     let hasCanonicalizer = 1;
 }
 
-def TTKernel_NocAsyncAtomicBarrierOp : TTKernel_Op<"noc_async_atomic_barrier"> {
+def TTKernel_NocAsyncWritesFlushedOp
+    : TTKernel_NocWriteCommandOp<
+          "noc_async_writes_flushed",
+          [TTKernel_NocCommandStatePreservingOpTrait,
+           TTKernel_DeviceZoneOpTrait]> {
+    let summary = "NocAsyncWritesFlushed";
+    let description = [{
+      Blocks until outstanding writes of the selected response mode have
+      departed the current core on the selected NoC. This operation does not
+      wait for remote completion. When `posted` is true it observes posted
+      writes; otherwise it observes non-posted writes.
+    }];
+
+    let arguments = (ins Optional<I8>:$noc,
+                         OptionalAttr<BoolAttr>:$posted);
+
+    let assemblyFormat = [{
+      `(` ($noc^)? `)` (`posted` $posted^)? attr-dict `:` functional-type(operands, results)
+    }];
+
+    let builders = [
+      OpBuilder<(ins), [{
+        build($_builder, $_state, /*noc=*/Value{}, /*posted=*/BoolAttr{});
+      }]>,
+      OpBuilder<(ins "Value":$noc), [{
+        build($_builder, $_state, noc, /*posted=*/BoolAttr{});
+      }]>,
+    ];
+}
+
+def TTKernel_NocAsyncAtomicBarrierOp
+    : TTKernel_NocAtomicCommandOp<
+          "noc_async_atomic_barrier",
+          [TTKernel_NocCommandStatePreservingOpTrait]> {
     let summary = "NocAsyncAtomicBarrier";
     let description = [{
       Block until all outstanding non-posted atomic operations on the given
@@ -3755,7 +3955,11 @@ def TTKernel_NocAsyncAtomicBarrierOp : TTKernel_Op<"noc_async_atomic_barrier"> {
     }];
 }
 
-def TTKernel_NocAsyncWriteBarrierWithTridOp : TTKernel_Op<"noc_async_write_barrier_with_trid", [TTKernel_DeviceZoneOpTrait, TTKernel_TridNocOpTrait]> {
+def TTKernel_NocAsyncWriteBarrierWithTridOp
+    : TTKernel_NocWriteCommandOp<
+          "noc_async_write_barrier_with_trid",
+          [TTKernel_NocCommandStatePreservingOpTrait,
+           TTKernel_DeviceZoneOpTrait, TTKernel_TridNocOpTrait]> {
     let summary = "NocAsyncWriteBarrierWithTrid";
     let description = [{
       Waits for outstanding write transactions matching a transaction ID. TRID is 0-15, NOC is 0 or 1.
@@ -3773,7 +3977,7 @@ def TTKernel_NocAsyncWriteBarrierWithTridOp : TTKernel_Op<"noc_async_write_barri
     }];
 }
 
-def TTKernel_GetSemaphoreOp : TTKernel_Op<"get_semaphore"> {
+def TTKernel_GetSemaphoreOp : TTKernel_Op<"get_semaphore", [Pure]> {
     let summary = "GetSemaphoreOp";
     let description = [{
       Get L1 addr of the semaphore with specified semaphore id
@@ -3787,7 +3991,8 @@ def TTKernel_GetSemaphoreOp : TTKernel_Op<"get_semaphore"> {
     }];
 }
 
-def TTKernel_NocSemaphoreIncOp : TTKernel_Op<"noc_semaphore_inc"> {
+def TTKernel_NocSemaphoreIncOp
+    : TTKernel_NocAtomicCommandOp<"noc_semaphore_inc"> {
     let summary = "NocSemaphoreInc";
     let description = [{
       The Tensix core executing this function call initiates an atomic increment
@@ -3824,7 +4029,9 @@ def TTKernel_NocSemaphoreIncOp : TTKernel_Op<"noc_semaphore_inc"> {
     ];
 }
 
-def TTKernel_NocSemaphoreSetOp : TTKernel_Op<"noc_semaphore_set"> {
+def TTKernel_NocSemaphoreSetOp
+    : TTKernel_NocOp<"noc_semaphore_set",
+                     [TTKernel_NocCommandStatePreservingOpTrait]> {
     let summary = "NocSemaphoreSet";
     let description = [{
       Sets the value of a local L1 memory address on the Tensix core executing
@@ -3840,7 +4047,8 @@ def TTKernel_NocSemaphoreSetOp : TTKernel_Op<"noc_semaphore_set"> {
     }];
 }
 
-def TTKernel_RemoteSramWriteU32Op : TTKernel_Op<"remote_sram_write_u32"> {
+def TTKernel_RemoteSramWriteU32Op
+    : TTKernel_NocWriteCommandOp<"remote_sram_write_u32"> {
     let summary = "RemoteSramWriteU32";
     let description = [{
       Initiates a 4-byte remote SRAM write of the u32 value stored at a local
@@ -3858,24 +4066,39 @@ def TTKernel_RemoteSramWriteU32Op : TTKernel_Op<"remote_sram_write_u32"> {
     }];
 }
 
-def TTKernel_NocInlineDwWriteOp : TTKernel_Op<"noc_inline_dw_write"> {
+def TTKernel_NocInlineDwWriteOp
+    : TTKernel_NocWriteCommandOp<
+          "noc_inline_dw_write"> {
     let summary = "NocInlineDwWrite";
     let description = [{
       Initiates an inline 32-bit NOC write to a remote L1 address. The value is
-      provided as an SSA value, so the operation does not require a local SRAM
-      staging word.
+      provided as an SSA value, so callers do not provide a local SRAM staging
+      word. Resident asynchronous-write command state is unspecified after
+      this operation. When `posted` is true, the write does not request a
+      remote acknowledgement.
     }];
 
     let arguments = (ins IndexLike:$dstNocX,
                          IndexLike:$dstNocY,
-                         I32:$dstAddress,
+                         AnyTypeOf<[I32, TTKernel_L1Addr,
+                                    TTKernel_LocalSemaphore]>:$dstAddress,
                          I32:$val,
                          I8:$byte_enable,
-                         Optional<I8>:$noc);
+                         Optional<I8>:$noc,
+                         OptionalAttr<BoolAttr>:$posted);
 
     let assemblyFormat = [{
-      `(` `core` `[` $dstNocX `,` $dstNocY `]` `,` $dstAddress `,` $val `,` $byte_enable (`,` `noc` $noc^)? `)` attr-dict `:` functional-type(operands, results)
+      `(` `core` `[` $dstNocX `,` $dstNocY `]` `,` $dstAddress `,` $val `,` $byte_enable (`,` `noc` $noc^)? `)` (`posted` $posted^)? attr-dict `:` functional-type(operands, results)
     }];
+
+    let builders = [
+      OpBuilder<(ins "Value":$dstNocX, "Value":$dstNocY,
+                     "Value":$dstAddress, "Value":$val,
+                     "Value":$byte_enable, "Value":$noc), [{
+        build($_builder, $_state, dstNocX, dstNocY, dstAddress, val,
+              byte_enable, noc, /*posted=*/BoolAttr{});
+      }]>,
+    ];
 }
 
 def TTKernel_SemaphoreWaitOp : TTKernel_Op<"experimental.semaphore_wait"> {
@@ -3910,7 +4133,26 @@ def TTKernel_SemaphoreWaitMinOp : TTKernel_Op<"experimental.semaphore_wait_min">
     }];
 }
 
-def TTKernel_NocSemaphoreSetMulticastOp : TTKernel_Op<"noc_semaphore_set_multicast"> {
+def TTKernel_SemaphoreReachedOp
+    : TTKernel_Op<"experimental.semaphore_reached",
+                  [MemoryEffects<[MemRead]>]> {
+    let summary = "Test a semaphore completion threshold";
+    let description = [{
+      Invalidates the L1 cache, reads a local L1 semaphore address, and returns
+      whether its value is equal to or greater than the target value. The
+      operation does not block or modify the semaphore.
+    }];
+
+    let arguments = (ins TTKernel_L1AddrPtr:$sem_addr, I32:$val);
+    let results = (outs I1:$reached);
+
+    let assemblyFormat = [{
+      `(` $sem_addr `,` $val `)` attr-dict `:` functional-type(operands, results)
+    }];
+}
+
+def TTKernel_NocSemaphoreSetMulticastOp
+    : TTKernel_NocWriteCommandOp<"noc_semaphore_set_multicast"> {
     let summary = "NocSemaphoreSetMulticast";
     let description = [{
       Initiates an asynchronous write from a source address in L1 memory on the
@@ -3938,7 +4180,9 @@ def TTKernel_NocSemaphoreSetMulticastOp : TTKernel_Op<"noc_semaphore_set_multica
     }];
 }
 
-def TTKernel_NocSemaphoreSetMulticastLoopbackOp : TTKernel_Op<"noc_semaphore_set_multicast_loopback_src"> {
+def TTKernel_NocSemaphoreSetMulticastLoopbackOp
+    : TTKernel_NocWriteCommandOp<
+          "noc_semaphore_set_multicast_loopback_src"> {
     let summary = "NocSemaphoreSetMulticastLoopback";
     let description = [{
       Initiates an asynchronous write from a source address in L1 memory on the
@@ -3966,7 +4210,8 @@ def TTKernel_NocSemaphoreSetMulticastLoopbackOp : TTKernel_Op<"noc_semaphore_set
     }];
 }
 
-def TTKernel_NocSemaphoreIncMulticastOp : TTKernel_Op<"noc_semaphore_inc_multicast"> {
+def TTKernel_NocSemaphoreIncMulticastOp
+    : TTKernel_NocAtomicCommandOp<"noc_semaphore_inc_multicast"> {
     let summary = "NocSemaphoreIncMulticast";
     let description = [{
       Initiates an atomic increment (with 32-bit wrap) of a 4-byte L1 semaphore
@@ -4061,6 +4306,27 @@ def TTKernel_GetCompileArgValOp : TTKernel_Op<"get_compile_time_arg_val",
     }];
 }
 
+def TTKernel_ConstantTableLookupOp
+    : TTKernel_Op<"experimental.constant_table_lookup", [Pure]> {
+    let summary = "Look up an element in an immutable compile-time table.";
+    let description = [{
+      Returns the element at `index` from the non-empty `values` table. Every
+      table value must be non-negative. A constant index is verified to be
+      within the table bounds; a dynamic index must satisfy the same
+      precondition.
+    }];
+
+    let arguments = (ins Index:$index, DenseI64ArrayAttr:$values);
+    let results = (outs Index:$result);
+
+    let assemblyFormat = [{
+      $index `,` $values attr-dict `:` type($index)
+    }];
+    let hasCanonicalizer = 1;
+    let hasFolder = 1;
+    let hasVerifier = 1;
+}
+
 
 //===----------------------------------------------------------------------===//
 // TTKernel Helper functions
@@ -4083,7 +4349,7 @@ def TTKernel_BitcastOp : TTKernel_Op<"bitcast", [Pure]> {
     }];
 }
 
-def TTKernel_CastToL1PtrOp : TTKernel_Op<"reinterpret_cast"> {
+def TTKernel_CastToL1PtrOp : TTKernel_Op<"reinterpret_cast", [Pure]> {
     let summary = "CastToL1Ptr";
     let description = [{
       Cast specified addr to L1 pointer.
@@ -4095,6 +4361,21 @@ def TTKernel_CastToL1PtrOp : TTKernel_Op<"reinterpret_cast"> {
 
     let assemblyFormat = [{
       `(` $addr `)` attr-dict `:` functional-type(operands, results)
+    }];
+}
+
+def TTKernel_CastToL1AddrOp : TTKernel_Op<"cast_to_l1_addr", [Pure]> {
+    let summary = "Normalize a value to an L1 address.";
+    let description = [{
+      Converts an integer L1 address, typed L1 address, or local semaphore
+      address to `l1_addr` without changing its representation.
+    }];
+
+    let arguments = (ins AnyTypeOf<[I32, TTKernel_L1Addr, TTKernel_LocalSemaphore]>:$addr);
+    let results = (outs TTKernel_L1Addr:$result);
+
+    let assemblyFormat = [{
+      $addr attr-dict `:` type($addr) `to` type($result)
     }];
 }
 
@@ -4330,6 +4611,108 @@ def TTKernel_CloseFabricConnectionsOp : TTKernel_Op<"experimental.close_fabric_c
   }];
 }
 
+def TTKernel_CreateRoutingPlaneConnectionManagerOp :
+    TTKernel_Op<"routing_plane.create_connection_manager"> {
+  let summary = "Create a routing-plane connection manager";
+  let description = [{
+    Creates the connection manager used by routing-plane fabric operations in
+    one kernel invocation.
+  }];
+  let results = (outs TTKernel_RoutingPlaneConnectionManager:$result);
+  let assemblyFormat = "attr-dict `:` type($result)";
+}
+
+def TTKernel_OpenRoutingPlaneConnectionsOp :
+    TTKernel_Op<"routing_plane.open_connections"> {
+  let summary = "Open routing-plane connections from runtime arguments";
+  let description = [{
+    Opens `connectionCount` routing-plane connections by reading their setup
+    data from runtime arguments beginning at `runtimeArgBase`. The result owns
+    one packet header for each opened connection.
+  }];
+  let arguments = (ins
+    TTKernel_RoutingPlaneConnectionManager:$manager,
+    I32:$connectionCount,
+    Index:$runtimeArgBase
+  );
+  let results = (outs I32:$routeId);
+  let assemblyFormat = [{
+    $manager `,` $connectionCount `runtime_arg_base` `=` $runtimeArgBase
+      attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def TTKernel_RoutingPlaneAtomicIncOp :
+    TTKernel_Op<"routing_plane.atomic_inc"> {
+  let summary = "Increment a remote semaphore through one fabric connection";
+  let description = [{
+    Sends a non-posted atomic increment to `semaphoreAddress` through the
+    connection selected by `connectionIndex`. `destinationDeviceId` identifies
+    the final destination; `destinationMeshId` also selects the mesh when mesh
+    routing is enabled. `destinationHopCount` selects the route when
+    one-dimensional fabric routing is enabled.
+  }];
+  let arguments = (ins
+    TTKernel_RoutingPlaneConnectionManager:$manager,
+    I32:$routeId,
+    I32:$connectionIndex,
+    I32:$destinationDeviceId,
+    I32:$destinationMeshId,
+    I32:$destinationHopCount,
+    TTKernel_NocAddr:$semaphoreAddress,
+    I32:$increment
+  );
+  let assemblyFormat = [{
+    `(` operands `)` attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def TTKernel_RoutingPlaneFusedWriteAtomicIncOp :
+    TTKernel_Op<"routing_plane.fused_write_atomic_inc"> {
+  let summary = "Write a payload and increment a remote semaphore";
+  let description = [{
+    Sends `sizeBytes` from local L1 memory to `destinationAddress` through the
+    connection selected by `connectionIndex`. Payloads larger than the active
+    fabric packet limit are split into consecutive packets. The final packet
+    atomically increments `semaphoreAddress`, so the increment observes the
+    complete transfer. `destinationDeviceId` identifies the final destination;
+    `destinationMeshId` also selects the mesh when mesh routing is enabled.
+    `destinationHopCount` selects the route when one-dimensional fabric routing
+    is enabled.
+  }];
+  let arguments = (ins
+    TTKernel_RoutingPlaneConnectionManager:$manager,
+    I32:$routeId,
+    I32:$connectionIndex,
+    I32:$destinationDeviceId,
+    I32:$destinationMeshId,
+    I32:$destinationHopCount,
+    I32:$sourceAddress,
+    I32:$sizeBytes,
+    TTKernel_NocAddr:$destinationAddress,
+    TTKernel_NocAddr:$semaphoreAddress,
+    I32:$increment
+  );
+  let assemblyFormat = [{
+    `(` operands `)` attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def TTKernel_CloseRoutingPlaneConnectionsOp :
+    TTKernel_Op<"routing_plane.close_connections"> {
+  let summary = "Close routing-plane connections";
+  let description = [{
+    Closes every active connection owned by `manager`.
+  }];
+  let arguments = (ins
+    TTKernel_RoutingPlaneConnectionManager:$manager,
+    I32:$connectionCount
+  );
+  let assemblyFormat = [{
+    `(` operands `)` attr-dict `:` functional-type(operands, results)
+  }];
+}
+
 //===----------------------------------------------------------------------===//
 // TTKernel Logical Mesh Position operations
 //===----------------------------------------------------------------------===//
@@ -4368,7 +4751,8 @@ def TTKernel_GetDeviceIdFromLogicalMeshPositionOp : TTKernel_Op<"experimental.ge
 // TTKernel Multicast NoC operations
 //===----------------------------------------------------------------------===//
 
-def TTKernel_GetNocMulticastAddrOp : TTKernel_Op<"get_noc_multicast_addr"> {
+def TTKernel_GetNocMulticastAddrOp
+    : TTKernel_Op<"get_noc_multicast_addr", [Pure]> {
   let summary = "GetNocMulticastAddr";
   let description = [{
     Default tt-metal get_noc_multicast_addr.
@@ -4385,7 +4769,9 @@ def TTKernel_GetNocMulticastAddrOp : TTKernel_Op<"get_noc_multicast_addr"> {
     }];
 }
 
-def TTKernel_NocAsyncWriteMulticastOnePacketOp : TTKernel_Op<"noc_async_write_multicast_one_packet"> {
+def TTKernel_NocAsyncWriteMulticastOnePacketOp
+    : TTKernel_NocWriteCommandOp<
+          "noc_async_write_multicast_one_packet"> {
   let summary = "NocAsyncWriteMulticastOnePacket";
   let description = [{
     NocAsyncWriteMulticastOnePacket
@@ -4411,7 +4797,8 @@ def TTKernel_NocAsyncWriteMulticastOnePacketOp : TTKernel_Op<"noc_async_write_mu
     }];
 }
 
-def TTKernel_NocAsyncWriteMulticastOp : TTKernel_Op<"noc_async_write_multicast"> {
+def TTKernel_NocAsyncWriteMulticastOp
+    : TTKernel_NocWriteCommandOp<"noc_async_write_multicast"> {
   let summary = "NocAsyncWriteMulticast";
   let description = [{
     Initiates an asynchronous write from a source address in L1 memory on the
@@ -4458,7 +4845,9 @@ def TTKernel_NocAsyncWriteMulticastOp : TTKernel_Op<"noc_async_write_multicast">
   }];
 }
 
-def TTKernel_NocAsyncWriteMulticastLoopbackSrcOp : TTKernel_Op<"noc_async_write_multicast_loopback_src"> {
+def TTKernel_NocAsyncWriteMulticastLoopbackSrcOp
+    : TTKernel_NocWriteCommandOp<
+          "noc_async_write_multicast_loopback_src"> {
   let summary = "NocAsyncWriteMulticastLoopbackSrc";
   let description = [{
     Multicast write that allows the sender to be part of the destinations.
@@ -4491,7 +4880,7 @@ def TTKernel_NocAsyncWriteMulticastLoopbackSrcOp : TTKernel_Op<"noc_async_write_
 //===----------------------------------------------------------------------===//
 
 def TTKernel_TensorAccessorArgsOp : TTKernel_Op<"TensorAccessorArgs",
-    [AttrSizedOperandSegments]> {
+    [AttrSizedOperandSegments, Pure]> {
   let summary = "TensorAccessorArgs";
   let description = [{
     TensorAccessorArgs struct constructor.
@@ -4502,27 +4891,6 @@ def TTKernel_TensorAccessorArgsOp : TTKernel_Op<"TensorAccessorArgs",
       `prev_args.next_compile_time_args_offset()` (for CTA) or
       `prev_args.next_common_runtime_args_offset()` (for CRTA).
     3. Otherwise, use cta_base/crta_base integer constants.
-
-    Examples:
-    ```mlir
-    // Literal offsets
-    %c0 = arith.constant 0 : i32
-    %args = ttkernel.TensorAccessorArgs(%c0, %c0) : (i32, i32) -> !ttkernel.TensorAccessorArgs
-    // Generates: TensorAccessorArgs<0, 0>()
-
-    // CTA+CRTA chaining (common pattern)
-    %args_src = ttkernel.TensorAccessorArgs(%c0, %c0) : (i32, i32) -> !ttkernel.TensorAccessorArgs
-    %args_dst = ttkernel.TensorAccessorArgs(prev = %args_src) : (!ttkernel.TensorAccessorArgs) -> !ttkernel.TensorAccessorArgs
-    // Generates: TensorAccessorArgs<args_src.next_compile_time_args_offset(), args_src.next_common_runtime_args_offset()>()
-
-    // Selective override: chain CTA from prev, use literal CRTA
-    %args_custom = ttkernel.TensorAccessorArgs(prev = %args_src) {crta_expr = "0"} : (!ttkernel.TensorAccessorArgs) -> !ttkernel.TensorAccessorArgs
-    // Generates: TensorAccessorArgs<args_src.next_compile_time_args_offset(), 0>()
-
-    // Constexpr expression (no chaining)
-    %args_expr = ttkernel.TensorAccessorArgs(%c0, %c0) {cta_expr = "get_offset()"} : (i32, i32) -> !ttkernel.TensorAccessorArgs
-    // Generates: TensorAccessorArgs<get_offset(), 0>()
-    ```
   }];
 
   let arguments = (ins
@@ -4538,21 +4906,44 @@ def TTKernel_TensorAccessorArgsOp : TTKernel_Op<"TensorAccessorArgs",
   let hasVerifier = 1;
 }
 
-def TTKernel_TensorAccessorOp : TTKernel_Op<"TensorAccessor"> {
-  let summary = "MakeTensorAccessorFromArgs";
+def TTKernel_TensorAccessorOp : TTKernel_Op<"TensorAccessor", [Pure]> {
+  let summary = "Construct a distributed tensor accessor";
   let description = [{
-    TensorAccessor constructor.
+    Constructs a tensor accessor from its compile-time and runtime argument
+    descriptor and buffer address. When `page_size_in` is omitted, the
+    descriptor's aligned page size determines the accessor page size. An
+    explicit page size overrides the descriptor value.
   }];
 
-  let arguments = (ins TTKernel_TensorAccessorArgs:$args, I32:$bank_base_address_in, I32:$page_size_in);
+  let arguments = (ins TTKernel_TensorAccessorArgs:$args,
+                       I32:$bank_base_address_in,
+                       Optional<I32>:$page_size_in);
   let results = (outs TTKernel_TensorAccessor:$result);
 
   let assemblyFormat = [{
-    `(` $args `,` $bank_base_address_in `,` $page_size_in `)` attr-dict `:` functional-type(operands, results)
+    `(` $args `,` $bank_base_address_in (`,` $page_size_in^)? `)` attr-dict
+        `:` functional-type(operands, results)
   }];
 }
 
-def TTKernel_TensorAccessorGetNocAddrOp : TTKernel_Op<"tensor_accessor.get_noc_addr"> {
+def TTKernel_LocalTensorAccessorOp
+    : TTKernel_Op<"LocalTensorAccessor", [Pure]> {
+  let summary = "Construct a local SRAM byte accessor";
+  let description = [{
+    Constructs `LocalTensorAccessor<uint8_t>` from the base address of a tensor
+    in the executing core's local SRAM. The byte element type preserves
+    the tensor's raw storage independently of logical dtype and layout.
+  }];
+  let arguments = (ins I32:$bank_base_address_in);
+  let results = (outs TTKernel_LocalTensorAccessor:$result);
+  let assemblyFormat = [{
+    `(` $bank_base_address_in `)` attr-dict
+        `:` functional-type(operands, results)
+  }];
+}
+
+def TTKernel_TensorAccessorGetNocAddrOp
+    : TTKernel_Op<"tensor_accessor.get_noc_addr", [Pure]> {
   let summary = "TensorAccessor's get_noc_addr";
   let description = [{
     get_noc_addr using information stored in the TensorAccessor.
@@ -4565,7 +4956,8 @@ def TTKernel_TensorAccessorGetNocAddrOp : TTKernel_Op<"tensor_accessor.get_noc_a
   }];
 }
 
-def TTKernel_TensorAccessorGetShardNocAddrOp : TTKernel_Op<"tensor_accessor.get_shard_noc_addr"> {
+def TTKernel_TensorAccessorGetShardNocAddrOp
+    : TTKernel_Op<"tensor_accessor.get_shard_noc_addr", [Pure]> {
   let summary = "TensorAccessor's get_shard_noc_addr";
   let description = [{
     Returns noc addr of a shard.
@@ -4578,7 +4970,8 @@ def TTKernel_TensorAccessorGetShardNocAddrOp : TTKernel_Op<"tensor_accessor.get_
   }];
 }
 
-def TTKernel_TensorAccessorGetBankAndOffsetOp : TTKernel_Op<"tensor_accessor.get_bank_and_offset"> {
+def TTKernel_TensorAccessorGetBankAndOffsetOp
+    : TTKernel_Op<"tensor_accessor.get_bank_and_offset", [Pure]> {
   let summary = "TensorAccessor's get_bank_and_offset";
   let description = [{
     Returns bank id and page offset.
@@ -4591,7 +4984,8 @@ def TTKernel_TensorAccessorGetBankAndOffsetOp : TTKernel_Op<"tensor_accessor.get
   }];
 }
 
-def TTKernel_TensorAccessorIsLocalBankOp : TTKernel_Op<"tensor_accessor.is_local_bank"> {
+def TTKernel_TensorAccessorIsLocalBankOp
+    : TTKernel_Op<"tensor_accessor.is_local_bank", [Pure]> {
   let summary = "TensorAccessor's is_local_bank";
   let description = [{
     Returns bool indicating bank locality.
@@ -4604,7 +4998,8 @@ def TTKernel_TensorAccessorIsLocalBankOp : TTKernel_Op<"tensor_accessor.is_local
   }];
 }
 
-def TTKernel_TensorAccessorIsLocalAddrOp : TTKernel_Op<"tensor_accessor.is_local_addr"> {
+def TTKernel_TensorAccessorIsLocalAddrOp
+    : TTKernel_Op<"tensor_accessor.is_local_addr", [Pure]> {
   let summary = "TensorAccessor's is_local_addr";
   let description = [{
     Returns bool indicating addr locality.
@@ -4617,7 +5012,8 @@ def TTKernel_TensorAccessorIsLocalAddrOp : TTKernel_Op<"tensor_accessor.is_local
   }];
 }
 
-def TTKernel_TensorAccessorIsLocalPageOp : TTKernel_Op<"tensor_accessor.is_local_page"> {
+def TTKernel_TensorAccessorIsLocalPageOp
+    : TTKernel_Op<"tensor_accessor.is_local_page", [Pure]> {
   let summary = "TensorAccessor's is_local_page";
   let description = [{
     Returns bool indicating page locality.
@@ -4630,7 +5026,8 @@ def TTKernel_TensorAccessorIsLocalPageOp : TTKernel_Op<"tensor_accessor.is_local
   }];
 }
 
-def TTKernel_TensorAccessorIsLocalShardOp : TTKernel_Op<"tensor_accessor.is_local_shard"> {
+def TTKernel_TensorAccessorIsLocalShardOp
+    : TTKernel_Op<"tensor_accessor.is_local_shard", [Pure]> {
   let summary = "TensorAccessor's is_local_shard";
   let description = [{
     Returns bool indicating shard locality.
@@ -4799,6 +5196,73 @@ def TTKernel_DPrintOp : TTKernel_Op<"dprint", [MemoryEffects<[MemRead, MemWrite]
         return build(odsBuilder, odsState, StringRef(fmt), ValueRange{std::forward<Args>(argv)...});
       }
     }];
+}
+
+//===----------------------------------------------------------------------===//
+// DFB index query
+//===----------------------------------------------------------------------===//
+
+def TTKernel_GetDfbIdOp : TTKernel_Op<"get_dfb_id", [Pure]> {
+    let summary = "Get the integer index for a dataflow buffer";
+    let description = [{
+      Returns the integer DFB index for the given dataflow buffer as an
+      i32 SSA value. Lowered to a raw integer literal at EmitC time.
+    }];
+    let arguments = (ins TTKernel_CB:$dfb);
+    let results = (outs I32:$result);
+    let assemblyFormat = "$dfb attr-dict `:` type($dfb)";
+}
+
+// A single variadic operand group has no segment boundaries and cannot use
+// AttrSizedOperandSegments.
+def TTKernel_OpaqueCallOp : TTKernel_Op<"opaque_call",
+    [MemoryEffects<[MemRead, MemWrite]>,
+     TTKernel_NocCommandStateUnknownOpTrait]> {
+    let summary = "Call an external C/C++ function declared in a user header.";
+    let description = [{
+      Emits a call to an opaque external C/C++ function whose declaration is
+      provided by a user-specified header file. The `callee` attribute names
+      the function and `header` specifies the `#include` path. Arguments are
+      forwarded positionally. Scalar float arguments follow tt-metal's
+      scalar-arg convention: they are passed as their raw IEEE-754 bit
+      pattern in an integer register. The ttkernel-lower-scalar-fp-types
+      pass performs the float-to-bits rewrite for float constants.
+
+      The ordered `template_args` attributes become C++ template arguments.
+      Signed integer, boolean, and unsigned 32-bit attributes resolve to
+      literals. DFB descriptor attributes resolve to `ttlang::DFBDescriptor`
+      types. Compile-time metadata is stored as attributes because it has no
+      runtime SSA identity at the TTKernel level.
+
+      `unsigned_arg_indices` preserves unsigned address semantics when an
+      earlier signless i32 value reaches the C++ call boundary.
+
+      `dfb_resource_indices` lists finalized physical DFB indices whose
+      descriptors must remain available while the call executes. It adds no
+      C++ arguments. The indices are strictly increasing and contain no
+      duplicates.
+
+      Example:
+      ```
+      ttkernel.opaque_call "my_func" template_args [1 : si32]
+          (%a, %b) {header = "my_header.hpp"} : (f32, f32) -> ()
+      ```
+    }];
+    let arguments = (ins
+      StrAttr:$callee,
+      StrAttr:$header,
+      Variadic<AnyType>:$arg_operands,
+      OptionalAttr<ArrayAttr>:$template_args,
+      OptionalAttr<DenseI32ArrayAttr>:$unsigned_arg_indices,
+      OptionalAttr<DenseI32ArrayAttr>:$dfb_resource_indices
+    );
+    let results = (outs Variadic<AnyType>);
+    let assemblyFormat = [{
+      $callee (`template_args` $template_args^)?
+      `(` $arg_operands `)` attr-dict `:`
+      functional-type($arg_operands, results)
+    }];
+    let hasVerifier = 1;
 }
 
 #endif

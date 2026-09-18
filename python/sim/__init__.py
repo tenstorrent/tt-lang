@@ -15,12 +15,19 @@ import types
 from . import ttnnsim as ttnn
 from .dfb import DFBStats
 from .constants import TILE_SHAPE
-from .copy import CopyTransaction, GroupTransfer, copy
+from .copy import (
+    CopyTransaction,
+    GroupTransfer,
+    ReadyReceive,
+    ReceiveRequest,
+    copy,
+    wait_any,
+)
 from .decorators import compute, datamovement
+from .kernel import Kernel, KernelKind
 from .nodecontext import node
 from .operation import operation
 from .pipe import DstPipeIdentity, DstT, Pipe, PipeNet, SrcPipeIdentity
-from .program import Program
 from .ttnnsim import TTNN_AVAILABLE, ROW_MAJOR_LAYOUT, TILE_LAYOUT
 from .typedefs import NodeCoord, NodeRange, Shape
 
@@ -92,21 +99,27 @@ class _TTLNamespace:
     def __init__(self):
         from .dfb import make_dataflow_buffer_like
         from .constants import TILE_SHAPE
-        from .copy import copy
+        from .copy import copy, wait_any
         from .decorators import compute, datamovement
         from .nodecontext import node, grid_size
+        from .kernel import Kernel, KernelKind
         from .operation import operation
         from .pipe import DstPipeIdentity, DstT, Pipe, PipeNet, SrcPipeIdentity
-        from .program import Program
         from .typedefs import NodeCoord, NodeRange, Shape, Size
 
         self.operation = operation
         self.grid_size = grid_size
         self.make_dataflow_buffer_like = make_dataflow_buffer_like
+        self.make_tensor_backed_dfb = self._make_tensor_backed_dfb
         self.compute = compute
         self.datamovement = datamovement
+        self.Kernel = Kernel
+        self.KernelKind = KernelKind
         self.node = node
         self.copy = copy
+        self.wait_any = wait_any
+        self.ReceiveRequest = ReceiveRequest
+        self.ReadyReceive = ReadyReceive
         self.GroupTransfer = GroupTransfer
         self.Pipe = Pipe
         self.PipeNet = PipeNet
@@ -120,9 +133,14 @@ class _TTLNamespace:
         self.TILE_SHAPE = TILE_SHAPE
         self.TILE_LAYOUT = TILE_LAYOUT
         self.ROW_MAJOR_LAYOUT = ROW_MAJOR_LAYOUT
-        self.Program = Program
         self.block = _TTLBlockNamespace()
         self.math = _TTLMathNamespace()
+
+    @staticmethod
+    def _make_tensor_backed_dfb(tensor, shape, *, block_count=1, byte_offset=0):
+        raise NotImplementedError(
+            "the simulator does not model tensor-backed DFB storage"
+        )
 
     @staticmethod
     def signpost(*args: Any, **kwargs: Any) -> _SignpostContextManager:
@@ -134,6 +152,8 @@ ttl = _TTLNamespace()
 
 __all__ = [
     "DFBStats",
+    "Kernel",
+    "KernelKind",
     "NodeCoord",
     "NodeRange",
     "DstT",
@@ -145,8 +165,10 @@ __all__ = [
     "TILE_SHAPE",
     "copy",
     "CopyTransaction",
+    "ReceiveRequest",
+    "ReadyReceive",
+    "wait_any",
     "GroupTransfer",
-    "Program",
     "node",
     "compute",
     "datamovement",

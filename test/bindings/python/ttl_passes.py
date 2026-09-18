@@ -18,34 +18,48 @@ def test_ttl_passes_registered():
 
     # Function-level passes.
     func_passes = [
+        "ttl-form-accumulation-scopes",
+        "ttl-insert-accumulation-scopes",
+        "ttl-lower-accumulation-scopes",
         "ttl-materialize-loop-state",
         "convert-ttl-to-compute",
         "ttl-assign-dst",
         "ttl-lower-to-loops",
         "ttl-annotate-cb-associations",
+        "ttkernel-unroll-static-pipenet-record-loops",
     ]
 
     for pass_name in func_passes:
         PassManager.parse(f"builtin.module(func.func({pass_name}))", context=ctx)
         print(f"{pass_name} pass registered")
+        # CHECK: ttl-form-accumulation-scopes pass registered
+        # CHECK: ttl-insert-accumulation-scopes pass registered
+        # CHECK: ttl-lower-accumulation-scopes pass registered
         # CHECK: ttl-materialize-loop-state pass registered
         # CHECK: convert-ttl-to-compute pass registered
         # CHECK: ttl-assign-dst pass registered
         # CHECK: ttl-lower-to-loops pass registered
         # CHECK: ttl-annotate-cb-associations pass registered
+        # CHECK: ttkernel-unroll-static-pipenet-record-loops pass registered
 
     # Module-level passes.
     module_passes = [
         "convert-ttl-to-ttkernel",
         "ttl-verify-pipenet-guards",
+        "ttl-verify-pipenet-schedule",
         "ttl-erase-pipenet-scopes",
+        "ttkernel-annotate-dfb-use",
+        "ttkernel-specialize-and-annotate-dfb-use",
     ]
     for pass_name in module_passes:
         PassManager.parse(f"builtin.module({pass_name})", context=ctx)
         print(f"{pass_name} pass registered")
         # CHECK: convert-ttl-to-ttkernel pass registered
         # CHECK: ttl-verify-pipenet-guards pass registered
+        # CHECK: ttl-verify-pipenet-schedule pass registered
         # CHECK: ttl-erase-pipenet-scopes pass registered
+        # CHECK: ttkernel-annotate-dfb-use pass registered
+        # CHECK: ttkernel-specialize-and-annotate-dfb-use pass registered
 
 
 if __name__ == "__main__":

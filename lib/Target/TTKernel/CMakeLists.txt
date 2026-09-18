@@ -11,12 +11,17 @@ set(LLK_HEADERS
   experimental_invoke_sfpi_llks
   experimental_matmul_llks
   experimental_padding_llks
+  experimental_constant_table
   experimental_coord_translation
+  experimental_dfb_reset
+  experimental_dfb_reconfiguration
   experimental_fabric_topology_info
   experimental_fabric_1d_routing
   experimental_fabric_2d_routing
   experimental_fabric_api
+  experimental_routing_plane
   experimental_reg_api
+  experimental_row_normalization
   experimental_semaphore
 )
 
@@ -37,6 +42,23 @@ foreach(header_name ${LLK_HEADERS})
   )
   list(APPEND GENERATED_LLK_HEADERS ${output_file})
 endforeach()
+
+set(DFB_DESCRIPTOR_PRELUDE_SOURCE
+  "${CMAKE_SOURCE_DIR}/include/ttlang/Target/TTKernel/DFBDescriptorPrelude.inc")
+set(DFB_DESCRIPTOR_PRELUDE_GENERATED
+  "${CMAKE_BINARY_DIR}/include/ttlang/Target/TTKernel/DFBDescriptorPrelude_generated.h")
+add_custom_command(
+  OUTPUT ${DFB_DESCRIPTOR_PRELUDE_GENERATED}
+  COMMAND ${CMAKE_COMMAND}
+    -DINPUT_FILE=${DFB_DESCRIPTOR_PRELUDE_SOURCE}
+    -DOUTPUT_FILE=${DFB_DESCRIPTOR_PRELUDE_GENERATED}
+    -DVARIABLE_NAME=dfb_descriptor_prelude_generated
+    -P "${CMAKE_SOURCE_DIR}/cmake/modules/GenerateRawStringHeader.cmake"
+  DEPENDS ${DFB_DESCRIPTOR_PRELUDE_SOURCE}
+  COMMENT "Generating DFB descriptor prelude header"
+  VERBATIM
+)
+list(APPEND GENERATED_LLK_HEADERS ${DFB_DESCRIPTOR_PRELUDE_GENERATED})
 
 add_custom_target(TTKernelGeneratedLLKHeaders DEPENDS ${GENERATED_LLK_HEADERS})
 

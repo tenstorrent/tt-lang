@@ -72,7 +72,7 @@ def reduce_scalar_kernel(inp, scalar_out, col_out, row_out):
 
 
 # CHECK-LABEL: func.func @reduce_compute
-# CHECK-SAME: attributes {{{.*}}ttl.kernel_thread = #ttkernel.thread<compute>}
+# CHECK-SAME: attributes {{{.*}}ttl.kernel_thread = #ttkernel.thread<compute>, ttl.logical_kernel = #ttl.logical_kernel<kind = compute>}
 # Each reduce uses an internally-synthesized fill(1.0) scaler; the user's
 # Python-float coefficient is applied separately by mul_unary_const.
 # CHECK: ttl.fill 1.000000e+00

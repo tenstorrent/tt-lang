@@ -3,9 +3,7 @@
 // and reduction maps (output projection via cb_index_map attribute).
 
 // Identity map test: full pipeline.
-// RUN: ttlang-opt %s --split-input-file \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, canonicalize, cse)' \
-// RUN:   | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0},func.func(ttl-assign-dst,ttl-lower-to-loops,ttl-annotate-cb-associations), convert-ttl-to-ttkernel, canonicalize, cse)' | FileCheck %s
 
 // 2x3 output with tile loops (not unrolled): pack_tile receives
 // index from affine.linearize_index [%row, %col] by (2, 3).

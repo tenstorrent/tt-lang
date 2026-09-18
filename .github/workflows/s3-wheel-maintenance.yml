@@ -1,0 +1,79 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+
+name: S3 Wheel Maintenance
+
+run-name: "S3 wheels: ${{ inputs.operation }} (dry_run=${{ inputs.dry_run }})"
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: "Storage maintenance operation."
+        type: choice
+        options:
+          - deduplicate
+          - remove-dev-range
+        required: true
+      start_date:
+        description: "Inclusive start date (YYYY-MM-DD) for remove-dev-range."
+        type: string
+        default: ""
+        required: false
+      end_date:
+        description: "Inclusive end date (YYYY-MM-DD) for remove-dev-range."
+        type: string
+        default: ""
+        required: false
+      dry_run:
+        description: "List selected object versions without deleting them."
+        type: boolean
+        default: true
+        required: true
+      confirm:
+        description: "Live token: delete-duplicate-versions or delete-dev-versions."
+        type: string
+        default: ""
+        required: false
+
+concurrency:
+  group: publish-s3-pypi-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  maintain:
+    name: "Plan or apply S3 wheel maintenance"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v6
+
+      - name: Configure AWS Credentials
+        if: ${{ github.ref == 'refs/heads/main' }}
+        uses: ./.github/actions/configure-tt-s3-credentials
+
+      - name: Install Markdown renderer
+        if: ${{ inputs.operation == 'remove-dev-range' && inputs.dry_run != true }}
+        run: python3 -m pip install markdown
+
+      - name: Plan or apply maintenance
+        id: maintenance
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          END_DATE: ${{ inputs.end_date }}
+          OPERATION: ${{ inputs.operation }}
+          START_DATE: ${{ inputs.start_date }}
+        run: .github/scripts/s3-wheel-maintenance.py "$OPERATION" --dry-run "$DRY_RUN" --start-date "$START_DATE" --end-date "$END_DATE" --confirm "$CONFIRM" --github-ref "$GITHUB_REF"
+
+      - name: Refresh S3 wheel views
+        if: ${{ inputs.operation == 'remove-dev-range' && inputs.dry_run != true }}
+        env:
+          AFFECTED_MONTHS: ${{ steps.maintenance.outputs.refresh-months }}
+        run: .github/scripts/refresh-s3-wheel-views.sh --months "$AFFECTED_MONTHS"

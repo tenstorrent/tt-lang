@@ -48,13 +48,13 @@ if [ -z "$VERSION" ]; then
     exit 2
 fi
 
-repo_root="$(git rev-parse --show-toplevel)"
+script_dir="$(cd "$(dirname "$0")" && pwd)"
 version_output="$(mktemp)"
 trap 'rm -f "$version_output"' EXIT
 TTNN_DEP_MODE=external \
 VERSION_OVERRIDE="$VERSION" \
 GITHUB_OUTPUT="$version_output" \
-    "$repo_root/.github/scripts/resolve-wheel-versions.sh"
+    "$script_dir/resolve-wheel-versions.sh"
 light_version="$(sed -n 's/^light_version=//p' "$version_output")"
 
 . /opt/ttlang-toolchain/venv/bin/activate
@@ -77,6 +77,6 @@ if [ ! -f "$expected_wheel" ]; then
     exit 1
 fi
 
-python "$repo_root/.github/scripts/check-light-metapackage.py" \
+python "$script_dir/check-light-metapackage.py" \
     --dist-dir "$DIST_DIR" \
     --expect-ttlang-version "$light_version"

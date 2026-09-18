@@ -4,7 +4,14 @@
 
 """Shared pytest fixtures for simulator tests."""
 
+import os
+import sys
+
 import pytest
+
+# Add test root to path for shared pytest plugins.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+pytest_plugins = ("hardware_pytest_plugin",)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -30,7 +37,6 @@ def pytest_collection_modifyitems(
 
 
 from greenlet import greenlet
-from sim.blockstate import KernelType
 from sim.context import set_current_kernel_type, reset_context
 from sim.greenlet_scheduler import (
     GreenletScheduler,
@@ -39,6 +45,7 @@ from sim.greenlet_scheduler import (
     set_scheduler,
     set_scheduler_algorithm,
 )
+from sim.kernel import KernelKind
 from sim.trace import set_tracing
 
 
@@ -58,11 +65,11 @@ def reset_simulator_context():
     yield
 
 
-def setup_scheduler_and_kernel_context(kernel_type: KernelType) -> GreenletScheduler:
+def setup_scheduler_and_kernel_context(kernel_type: KernelKind) -> GreenletScheduler:
     """Set up scheduler and kernel context for unit tests.
 
     Args:
-        kernel_type: Type of kernel to simulate (COMPUTE or DM)
+        kernel_type: Kind of kernel to simulate (COMPUTE or DATA_MOVEMENT)
 
     Returns:
         Configured GreenletScheduler instance
@@ -108,7 +115,7 @@ def teardown_scheduler_and_kernel_context() -> None:
 @pytest.fixture
 def compute_kernel_context():
     """Set up scheduler context with COMPUTE kernel for tests."""
-    setup_scheduler_and_kernel_context(KernelType.COMPUTE)
+    setup_scheduler_and_kernel_context(KernelKind.COMPUTE)
     yield
     teardown_scheduler_and_kernel_context()
 
@@ -116,6 +123,6 @@ def compute_kernel_context():
 @pytest.fixture
 def dm_kernel_context():
     """Set up scheduler context with DM kernel for tests."""
-    setup_scheduler_and_kernel_context(KernelType.DM)
+    setup_scheduler_and_kernel_context(KernelKind.DATA_MOVEMENT)
     yield
     teardown_scheduler_and_kernel_context()

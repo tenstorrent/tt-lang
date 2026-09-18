@@ -93,13 +93,9 @@ def test_fixed_grid_host_tensor():
         nop_fixed_grid(a_host)
 
 
-def test_full_grid_no_ttnn_tensors():
-    """
-    grid='full' with no ttnn tensors should report that none were provided.
-    The fixed-grid path hits _require_device at __call__ time (post-compile),
-    so it can't be reached without a valid ttnn tensor to compile against.
-    """
-    with pytest.raises(ValueError, match="no ttnn tensor arguments were provided"):
+def test_full_grid_rejects_non_ttnn_tensor():
+    """grid='full' rejects non-TTNN arguments before device resolution."""
+    with pytest.raises(TypeError, match="runtime argument 'a' must be a TT-NN tensor"):
         nop_full_grid(torch.zeros(32, 32, dtype=torch.bfloat16))
 
 

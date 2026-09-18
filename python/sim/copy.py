@@ -11,7 +11,10 @@ DataflowBuffer system.
 
 import math
 import sys
-from typing import Optional, Tuple
+import types
+from typing import Optional, Sequence, Tuple
+
+from ttl.constants import MAX_NOC_TRANSFER_BYTES
 
 from .context import get_context
 from .copyhandlers import (
@@ -25,7 +28,7 @@ from .greenlet_scheduler import block_if_needed
 from .sharding import try_count_locality
 from .trace import TRACE, trace
 from .ttnnsim import Tensor, tile_count_from_tensor
-from .pipe import Pipe, SrcPipeIdentity
+from .pipe import DstPipeIdentity, Pipe, SrcPipeIdentity
 
 
 def _copy_trace_fields(src: CopyEndpoint, dst: CopyEndpoint) -> dict:
@@ -54,7 +57,7 @@ def _copy_trace_fields(src: CopyEndpoint, dst: CopyEndpoint) -> dict:
         # For TILE_LAYOUT: elements_per_tile = prod(shape) / tile_count.
         # For ROW_MAJOR_LAYOUT: elements_per_tile = 1 (each element is a unit).
         # Integer division is exact for standard tile-aligned sharding.
-        total_elems = math.prod(tensor.shape)
+        total_elems = math.prod(tensor.padded_shape)
         if total_elems > 0:
             fields["local_l1"] = local_elems * tiles // total_elems
             fields["remote_l1"] = remote_elems * tiles // total_elems
@@ -79,6 +82,7 @@ class CopyTransaction:
         self,
         src: CopyEndpoint,
         dst: CopyEndpoint,
+        byte_count: Optional[int] = None,
         user_location: Optional[Tuple[str, int]] = None,
     ):
         """
@@ -87,6 +91,8 @@ class CopyTransaction:
         Args:
             src: Source data (tensor, Block, or Pipe)
             dst: Destination (tensor, Block, or Pipe)
+            byte_count: Positive byte count for DFB block-to-block and pipe
+                transfers.
             user_location: Pre-captured ``(filename, lineno)`` for the user
                 code initiating this copy.  Passed in by :func:`copy` so that
                 ``Block.mark_copy_as_{source,dest}`` can skip the per-call
@@ -98,6 +104,19 @@ class CopyTransaction:
         """
         self._src = src
         self._dst = dst
+        if isinstance(byte_count, bool) or (
+            byte_count is not None
+            and (not isinstance(byte_count, int) or byte_count <= 0)
+        ):
+            raise ValueError(
+                f"copy() byte_count must be a positive int, got {byte_count}"
+            )
+        if byte_count is not None and byte_count > MAX_NOC_TRANSFER_BYTES:
+            raise ValueError(
+                "copy() byte_count must fit the unsigned 32-bit NoC transfer "
+                f"size, got {byte_count}"
+            )
+        self._byte_count = byte_count
         self._completed = False
         self._transfer_performed = False
         # Stable trace label, computed once at construction so the scheduler
@@ -109,8 +128,10 @@ class CopyTransaction:
         handler = self._lookup_handler(type(src), type(dst))
         self._handler = handler
 
-        # Mark blocks in state machine BEFORE validation - this transitions them to appropriate states
-        # that prevent user access during the copy operation
+        # Validation must not change block state so callers can recover from an
+        # invalid request and issue a corrected transfer on the same blocks.
+        handler.validate(src, dst, byte_count)
+
         match src:
             case Block():
                 src.mark_copy_as_source(user_location)
@@ -122,19 +143,17 @@ class CopyTransaction:
             case _:
                 pass
 
-        # Validate immediately - let exceptions propagate to scheduler for context
-        handler.validate(src, dst)
-
         if TRACE.enabled:
             trace(
                 "copy_start",
                 src=type(src).__name__,
                 dst=type(dst).__name__,
+                byte_count=byte_count,
                 **_copy_trace_fields(src, dst),
             )
 
         if self._starts_on_copy():
-            self._handler.transfer(self._src, self._dst)
+            self._handler.transfer(self._src, self._dst, self._byte_count)
             self._transfer_performed = True
 
     def _starts_on_copy(self) -> bool:
@@ -193,7 +212,7 @@ class CopyTransaction:
             # bookkeeping so pipe sequencing is exercised symmetrically. The
             # block state transitions below always fire so structural checks
             # (state machine, deadlock) remain fully exercised.
-            self._handler.transfer(self._src, self._dst)
+            self._handler.transfer(self._src, self._dst, self._byte_count)
             self._transfer_performed = True
         self._completed = True
 
@@ -214,6 +233,7 @@ class CopyTransaction:
                 "copy_end",
                 src=type(self._src).__name__,
                 dst=type(self._dst).__name__,
+                byte_count=self._byte_count,
                 **_copy_trace_fields(self._src, self._dst),
             )
 
@@ -229,12 +249,77 @@ class CopyTransaction:
         Returns:
             True if wait() can proceed without blocking
         """
-        return self._handler.can_wait(self._src, self._dst)
+        return self._handler.can_wait(self._src, self._dst, self._byte_count)
 
     @property
     def is_completed(self) -> bool:
         """Check if the copy transaction has completed."""
         return self._completed
+
+
+class ReceiveRequest(CopyTransaction):
+    """One pending PipeNet receive."""
+
+
+class ReadyReceive:
+    """The request selected by :func:`wait_any`."""
+
+    def __init__(self, selected_index: int) -> None:
+        self._selected_index = selected_index
+
+    def index(self) -> int:
+        """Return the selected request's tuple index."""
+        return self._selected_index
+
+
+class _ReceiveSelection:
+    """Scheduler predicate for a rotating set of receive requests."""
+
+    def __init__(self, requests: Sequence[ReceiveRequest], start: int) -> None:
+        self._requests = requests
+        self._start = start % len(requests)
+        self._trace_name = f"wait_any_{id(self) & 0xFFFF:04x}"
+
+    def find_ready_index(self) -> Optional[int]:
+        for offset in range(len(self._requests)):
+            candidate = (self._start + offset) % len(self._requests)
+            if self._requests[candidate].can_wait():
+                return candidate
+        return None
+
+    def can_wait(self) -> bool:
+        return self.find_ready_index() is not None
+
+
+def wait_any(requests: tuple[ReceiveRequest, ...], start: int = 0) -> ReadyReceive:
+    """Select the first completed receive in cyclic order from start."""
+    if not isinstance(requests, tuple):
+        raise TypeError("ttl.wait_any() requires a tuple of receive requests")
+    if not requests:
+        raise ValueError("ttl.wait_any() requires at least one receive request")
+    if any(not isinstance(request, ReceiveRequest) for request in requests):
+        raise TypeError("ttl.wait_any() accepts only PipeNet receive requests")
+    if len({id(request) for request in requests}) != len(requests):
+        raise ValueError("ttl.wait_any() requires distinct receive requests")
+    if not isinstance(start, int) or isinstance(start, bool):
+        raise TypeError("ttl.wait_any() start must be an integer")
+
+    selection = _ReceiveSelection(requests, start)
+    block_if_needed(selection, "wait")
+    selected_index = selection.find_ready_index()
+    if selected_index is None:
+        raise RuntimeError("scheduler resumed ttl.wait_any() without a ready request")
+    requests[selected_index].wait()
+    return ReadyReceive(selected_index)
+
+
+def _register_deferred_copy_wait(
+    frame: types.FrameType, handle: CopyTransaction
+) -> None:
+    context = get_context()
+    if (id(frame.f_code), frame.f_lineno) not in context.deferred_copy_wait_sites:
+        return
+    context.deferred_copy_wait_requests.setdefault(frame, []).append(handle)
 
 
 class GroupTransfer:
@@ -280,6 +365,8 @@ class GroupTransfer:
 def copy(
     src: CopyEndpoint,
     dst: CopyEndpoint,
+    *,
+    byte_count: Optional[int] = None,
 ) -> CopyTransaction:
     """
     Create a copy transaction from source to destination.
@@ -296,6 +383,8 @@ def copy(
     Args:
         src: Source data (tensor, Block, or Pipe)
         dst: Destination (tensor, Block, or Pipe)
+        byte_count: Positive byte count for DFB block-to-block and pipe
+            transfers.
 
     Returns:
         CopyTransaction object that can be waited on
@@ -326,7 +415,15 @@ def copy(
     frame = sys._getframe(1)
     user_location: Tuple[str, int] = (frame.f_code.co_filename, frame.f_lineno)
 
-    handle = CopyTransaction(src, dst, user_location=user_location)
+    transaction_type = (
+        ReceiveRequest
+        if isinstance(src, (Pipe, DstPipeIdentity)) and isinstance(dst, Block)
+        else CopyTransaction
+    )
+    handle = transaction_type(
+        src, dst, byte_count=byte_count, user_location=user_location
+    )
+    _register_deferred_copy_wait(frame, handle)
 
     # Case A: bare ttl.copy(...) with no assignment — auto-wait immediately.
     # The AST analysis in analyze_kernel_function identifies these call sites

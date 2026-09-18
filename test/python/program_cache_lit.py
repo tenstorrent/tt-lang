@@ -24,39 +24,19 @@ from ttlang_test_utils import to_dram, to_l1
 
 @ttl.operation(grid=(1, 1))
 def add_kernel(lhs, rhs, out):
-    """Simple add kernel for cache testing."""
     lhs_dfb = ttl.make_dataflow_buffer_like(lhs, shape=(1, 1), block_count=2)
     rhs_dfb = ttl.make_dataflow_buffer_like(rhs, shape=(1, 1), block_count=2)
     out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
 
-    @ttl.compute()
-    def compute():
-        l = lhs_dfb.wait()
-        r = rhs_dfb.wait()
-        o = out_dfb.reserve()
-        o.store(l + r)
-        l.pop()
-        r.pop()
-        o.push()
+    lhs_block = lhs_dfb.reserve()
+    ttl.copy(lhs[0:1, 0:1], lhs_block)
+    rhs_block = rhs_dfb.reserve()
+    ttl.copy(rhs[0:1, 0:1], rhs_block)
 
-    @ttl.datamovement()
-    def dm_read():
-        lhs_blk = lhs_dfb.reserve()
-        tx = ttl.copy(lhs[0, 0], lhs_blk)
-        tx.wait()
-        lhs_blk.push()
+    result = out_dfb.reserve()
+    result.store(lhs_dfb.wait() + rhs_dfb.wait())
 
-        rhs_blk = rhs_dfb.reserve()
-        tx = ttl.copy(rhs[0, 0], rhs_blk)
-        tx.wait()
-        rhs_blk.push()
-
-    @ttl.datamovement()
-    def dm_write():
-        out_blk = out_dfb.wait()
-        tx = ttl.copy(out_blk, out[0, 0])
-        tx.wait()
-        out_blk.pop()
+    ttl.copy(out_dfb.wait(), out[0:1, 0:1])
 
 
 @ttl.operation(grid=(1, 1))
@@ -106,6 +86,10 @@ print("=== Testing Program Cache ===")
 
 device = ttnn.open_device(device_id=0)
 
+# Device allocations change the derived L1 budget, which is an independent
+# compiler configuration tested separately.
+CACHE_TEST_OPTIONS = "--ttl-l1-budget 98304"
+
 try:
     # =========================================================================
     # Test 1: Cache hit - same kernel, same tensor config
@@ -121,7 +105,7 @@ try:
     print("Call 1 (should compile):")
     # CHECK: Call 1 (should compile)
     # CHECK: TTNN INTEROP: Compiling kernel
-    add_kernel(lhs1, rhs1, out1)
+    add_kernel(lhs1, rhs1, out1, options=CACHE_TEST_OPTIONS)
     result1 = ttnn.to_torch(out1)
     assert torch.allclose(result1.float(), torch.full((32, 32), 5.0), rtol=1e-2)
     print("Result 1 correct: 2 + 3 = 5")
@@ -135,7 +119,7 @@ try:
     print("Call 2 (should use cache):")
     # CHECK: Call 2 (should use cache)
     # CHECK-NOT: TTNN INTEROP: Compiling kernel
-    add_kernel(lhs2, rhs2, out2)
+    add_kernel(out=out2, rhs=rhs2, lhs=lhs2, options=CACHE_TEST_OPTIONS)
     result2 = ttnn.to_torch(out2)
     assert torch.allclose(result2.float(), torch.full((32, 32), 17.0), rtol=1e-2)
     print("Result 2 correct: 10 + 7 = 17")
@@ -158,7 +142,7 @@ try:
     print("Call 3 (different shape, should compile):")
     # CHECK: Call 3 (different shape, should compile)
     # CHECK: TTNN INTEROP: Compiling kernel
-    add_kernel(lhs3, rhs3, out3)
+    add_kernel(lhs3, rhs3, out3, options=CACHE_TEST_OPTIONS)
     result3 = ttnn.to_torch(out3)
     # Kernel only processes first tile, so check first 32x32
     assert torch.allclose(
@@ -184,7 +168,7 @@ try:
     print("Call 4 (DRAM instead of L1, should compile):")
     # CHECK: Call 4 (DRAM instead of L1, should compile)
     # CHECK: TTNN INTEROP: Compiling kernel
-    add_kernel(lhs4, rhs4, out4)
+    add_kernel(lhs4, rhs4, out4, options=CACHE_TEST_OPTIONS)
     result4 = ttnn.to_torch(out4)
     assert torch.allclose(result4.float(), torch.full((32, 32), 9.0), rtol=1e-2)
     print("Result 4 correct: 4 + 5 = 9")
@@ -207,7 +191,7 @@ try:
     print("Call 5 (mul_kernel, should compile):")
     # CHECK: Call 5 (mul_kernel, should compile)
     # CHECK: TTNN INTEROP: Compiling kernel
-    mul_kernel(lhs5, rhs5, out5)
+    mul_kernel(lhs5, rhs5, out5, options=CACHE_TEST_OPTIONS)
     result5 = ttnn.to_torch(out5)
     assert torch.allclose(result5.float(), torch.full((32, 32), 12.0), rtol=1e-2)
     print("Result 5 correct: 3 * 4 = 12")
@@ -221,7 +205,7 @@ try:
     print("Call 6 (mul_kernel again, should use cache):")
     # CHECK: Call 6 (mul_kernel again, should use cache)
     # CHECK-NOT: TTNN INTEROP: Compiling kernel
-    mul_kernel(lhs6, rhs6, out6)
+    mul_kernel(lhs6, rhs6, out6, options=CACHE_TEST_OPTIONS)
     result6 = ttnn.to_torch(out6)
     assert torch.allclose(result6.float(), torch.full((32, 32), 12.0), rtol=1e-2)
     print("Result 6 correct: 2 * 6 = 12")
@@ -244,7 +228,7 @@ try:
     print("Call 7 (back to original config, should use cache):")
     # CHECK: Call 7 (back to original config, should use cache)
     # CHECK-NOT: TTNN INTEROP: Compiling kernel
-    add_kernel(lhs7, rhs7, out7)
+    add_kernel(lhs7, rhs7, out7, options=CACHE_TEST_OPTIONS)
     result7 = ttnn.to_torch(out7)
     assert torch.allclose(result7.float(), torch.full((32, 32), 123.0), rtol=1e-2)
     print("Result 7 correct: 100 + 23 = 123")

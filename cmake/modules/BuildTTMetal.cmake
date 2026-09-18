@@ -354,7 +354,8 @@ if(DEFINED TTLANG_TOOLCHAIN_DIR AND NOT TTLANG_USE_TOOLCHAIN_TTMETAL)
     RESULT_VARIABLE _TTMETAL_INSTALL_RESULT
   )
   if(NOT _TTMETAL_INSTALL_RESULT EQUAL 0)
-    message(WARNING "tt-metal install into toolchain failed (exit ${_TTMETAL_INSTALL_RESULT})")
+    message(FATAL_ERROR
+      "tt-metal install into toolchain failed (exit ${_TTMETAL_INSTALL_RESULT})")
   endif()
 endif()
 

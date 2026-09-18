@@ -126,17 +126,28 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
   ADD_TO_PARENT TTLangPythonCommon
   SOURCES
     __init__.py
+    atom.py
     dataflow_buffer.py
     compiler_options.py
+    condition.py
     constants.py
+    dfb_allocation_group.py
+    dfb_reset.py
+    dfb_reconfiguration.py
     diagnostics.py
+    kernel.py
     kernel_runner.py
     pipe.py
+    domains.py
+    runtime_resources.py
+    scalar.py
     ttl.py
     ttl_api.py
+    ttl_block.py
     ttl_math.py
     ttl_utils.py
     dtype_utils.py
+    fabric.py
     layouts.py
     operators.py
     version.py
@@ -156,7 +167,12 @@ declare_mlir_python_sources(TTLangPythonCommon.Src
   ADD_TO_PARENT TTLangPythonCommon
   SOURCES
     _src/__init__.py
+    _src/atom_rules.py
+    _src/atom_split.py
+    _src/atom_inline.py
     _src/auto_profile.py
+    _src/fabric_target.py
+    _src/global_semaphore.py
     _src/perf_summary.py
     _src/perf_trace_server.py
     _src/signpost_profile.py

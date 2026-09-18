@@ -5,20 +5,68 @@
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 
 #include "ttlang/Dialect/TTCore/IR/TTCoreOpsTypes.h"
+#include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
+#include "ttlang/Dialect/Utils/OpaqueCallVerifyUtils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/InferIntRangeInterface.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
+#include "llvm/ADT/STLExtras.h"
 
+#include <cstdint>
 #include <limits>
+#include <optional>
+#include <utility>
 
 #define GET_OP_CLASSES
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.cpp.inc"
 
 namespace mlir::tt::ttkernel {
+
+::mlir::LogicalResult ExperimentalRowNormalizationBlockOp::verify() {
+  if (getNumTiles() < 1 || getNumTiles() > 8) {
+    return emitOpError("num_tiles must be in the range [1, 8]");
+  }
+  if (!getHasGamma() && getGammaCb() != getInputCb()) {
+    return emitOpError("gamma_cb must equal input_cb when has_gamma is false");
+  }
+  if (getDtype() != ttcore::DataType::BFloat16) {
+    return emitOpError("supports bf16 DFBs only");
+  }
+
+  const llvm::APFloat &scale = getScaleAttr().getValue();
+  const llvm::APFloat &epsilon = getEpsilonAttr().getValue();
+  if (!scale.isFinite() || scale.isZero() || scale.isNegative()) {
+    return emitOpError("scale must be finite and positive");
+  }
+  if (!epsilon.isFinite() || epsilon.isZero() || epsilon.isNegative()) {
+    return emitOpError("epsilon must be finite and positive");
+  }
+
+  auto inputCBType = mlir::cast<CBType>(getInputCb().getType());
+  auto gammaCBType = mlir::cast<CBType>(getGammaCb().getType());
+  auto outputCBType = mlir::cast<CBType>(getOutputCb().getType());
+  if (inputCBType.getElementType() != outputCBType.getElementType()) {
+    return emitOpError("input and output dataflow buffer types must match");
+  }
+  if (getHasGamma() &&
+      gammaCBType.getElementType() != outputCBType.getElementType()) {
+    return emitOpError("gamma and output dataflow buffer types must match");
+  }
+  auto outputTileType =
+      mlir::dyn_cast<ttcore::TileType>(outputCBType.getElementType());
+  if (!outputTileType || outputTileType.getDataType() != getDtype()) {
+    return emitOpError("dtype must match the output tile data type");
+  }
+  return success();
+}
 
 void ComputeKernelHWStartupOp::print(::mlir::OpAsmPrinter &printer) {
   printer << "(" << getIcb0();
@@ -117,6 +165,19 @@ static bool insideKernelFunction(mlir::Operation *op) {
 ::mlir::LogicalResult CBWaitFrontOp::verify() {
   if (!insideKernelFunction(getOperation())) {
     return emitOpError("CBWaitFrontOp must be inside a kernel function");
+  }
+  return success();
+}
+
+::mlir::LogicalResult PackWaitedTileOp::verify() {
+  if (!getOutOfOrder()) {
+    return emitOpError("requires out_of_order packing");
+  }
+  auto dfbType = getOutCb().getType();
+  uint64_t capacityTiles = static_cast<uint64_t>(dfbType.getNumElements());
+  if (getAcquiredTiles() != capacityTiles) {
+    return emitOpError() << "acquired_tiles must equal DFB capacity "
+                         << capacityTiles << ", got " << getAcquiredTiles();
   }
   return success();
 }
@@ -388,6 +449,211 @@ static ::mlir::LogicalResult verifyNocAsyncAddressMode(Operation *op,
                                    getDstBankId());
 }
 
+using ConditionAssignment = std::pair<Value, bool>;
+
+// Return the scf.if condition values and branch choices enclosing `operation`.
+static SmallVector<ConditionAssignment>
+getEnclosingIfConditions(Operation *operation) {
+  SmallVector<ConditionAssignment> conditions;
+  for (Operation *ancestor = operation->getParentOp(); ancestor;
+       ancestor = ancestor->getParentOp()) {
+    auto ifOp = dyn_cast<scf::IfOp>(ancestor);
+    if (!ifOp) {
+      continue;
+    }
+    Region *operationRegion = operation->getParentRegion();
+    bool executesInThenRegion =
+        ifOp.getThenRegion().isAncestor(operationRegion);
+    bool executesInElseRegion =
+        ifOp.getElseRegion().isAncestor(operationRegion);
+    assert(executesInThenRegion != executesInElseRegion &&
+           "operation nested in scf.if must belong to exactly one branch");
+    conditions.emplace_back(ifOp.getCondition(), executesInThenRegion);
+  }
+  return conditions;
+}
+
+// Require matching scf.if guards and keep other region-local setups inside
+// their region, where conditional entry and loop execution are shared.
+static bool useExecutionImpliesSetupExecution(Operation *setup,
+                                              Operation *use) {
+  for (Region *region = setup->getParentRegion(); region;
+       region = region->getParentRegion()) {
+    if (!isa<scf::IfOp>(region->getParentOp()) &&
+        !region->isAncestor(use->getParentRegion())) {
+      return false;
+    }
+  }
+  SmallVector<ConditionAssignment> setupConditions =
+      getEnclosingIfConditions(setup);
+  SmallVector<ConditionAssignment> useConditions =
+      getEnclosingIfConditions(use);
+  return llvm::all_of(setupConditions, [&](ConditionAssignment setupCondition) {
+    return llvm::is_contained(useConditions, setupCondition);
+  });
+}
+
+// Return false when branch conditions or execution-core metadata prove that
+// the operations cannot execute on the same worker core.
+static bool executionsMayOverlap(Operation *lhs, Operation *rhs) {
+  return !insideMutuallyExclusiveRegions(lhs, rhs) &&
+         !haveDisjointExecutionCoreRanges(lhs, rhs);
+}
+
+// Compare execution order after projecting nested operations into a common
+// enclosing block.
+static bool structurallyPrecedes(Operation *before, Operation *after) {
+  for (Operation *ancestor = before; ancestor;
+       ancestor = ancestor->getParentOp()) {
+    if (ancestor->isProperAncestor(after)) {
+      return false;
+    }
+    if (Operation *projectedAfter =
+            ancestor->getBlock()->findAncestorOpInBlock(*after)) {
+      return ancestor->isBeforeInBlock(projectedAfter);
+    }
+  }
+  return false;
+}
+
+// Prove selector equality from SSA identity, equal constants, or two omitted
+// selectors that both select the default NoC.
+static bool haveProvablySameNocSelector(Value lhs, Value rhs) {
+  if (!lhs || !rhs) {
+    return !lhs && !rhs;
+  }
+  if (lhs == rhs) {
+    return true;
+  }
+  std::optional<int64_t> lhsConstant = getConstantIntValue(lhs);
+  std::optional<int64_t> rhsConstant = getConstantIntValue(rhs);
+  return lhsConstant && rhsConstant && *lhsConstant == *rhsConstant;
+}
+
+// Return false only when two explicit constant selectors are distinct.
+static bool nocSelectorsMayAlias(Value lhs, Value rhs) {
+  if (lhs == rhs) {
+    return true;
+  }
+  if (!lhs || !rhs) {
+    return true;
+  }
+  std::optional<int64_t> lhsConstant = getConstantIntValue(lhs);
+  std::optional<int64_t> rhsConstant = getConstantIntValue(rhs);
+  return !lhsConstant || !rhsConstant || *lhsConstant == *rhsConstant;
+}
+
+// Find the last state setup proven to execute before every execution of `use`
+// on the same NoC.
+static NocAsyncWriteOnePacketSetStateOp
+findReachingWriteStateSetup(NocAsyncWriteOnePacketWithStateOp use,
+                            ArrayRef<Operation *> stateChanges) {
+  NocAsyncWriteOnePacketSetStateOp reachingSetup;
+  for (Operation *operation : stateChanges) {
+    auto setup = dyn_cast<NocAsyncWriteOnePacketSetStateOp>(operation);
+    if (!setup || !haveProvablySameNocSelector(setup.getNoc(), use.getNoc()) ||
+        !useExecutionImpliesSetupExecution(setup, use) ||
+        !structurallyPrecedes(setup, use)) {
+      continue;
+    }
+    if (!reachingSetup || structurallyPrecedes(reachingSetup, setup)) {
+      reachingSetup = setup;
+    }
+  }
+  return reachingSetup;
+}
+
+// Return whether constant scf.for bounds prove at most `limit` body executions.
+// Other loop forms and dynamic bounds do not establish this upper bound.
+static bool hasAtMostIterations(Operation *operation, uint64_t limit) {
+  auto loop = dyn_cast<scf::ForOp>(operation);
+  if (!loop) {
+    return false;
+  }
+  std::optional<APInt> tripCount = loop.getStaticTripCount();
+  return tripCount && tripCount->ule(limit);
+}
+
+// Find an operation that can overwrite the selected setup before this or a
+// later loop iteration's issue. Calls use the same effect summary as cleanup.
+static Operation *
+findInterveningWriteStateChange(NocAsyncWriteOnePacketSetStateOp reachingSetup,
+                                NocAsyncWriteOnePacketWithStateOp use,
+                                ArrayRef<Operation *> stateChanges) {
+  for (Operation *operation : stateChanges) {
+    if (operation == reachingSetup || !executionsMayOverlap(operation, use)) {
+      continue;
+    }
+    if (auto setup = dyn_cast<NocAsyncWriteOnePacketSetStateOp>(operation);
+        setup && !nocSelectorsMayAlias(setup.getNoc(), use.getNoc())) {
+      continue;
+    }
+    bool precedesUse = structurallyPrecedes(operation, use);
+    bool followsReachingSetup = structurallyPrecedes(reachingSetup, operation);
+    if (precedesUse && followsReachingSetup) {
+      return operation;
+    }
+
+    // A later write can invalidate the next iteration's issue only if another
+    // iteration exists and the loop does not restore the selected setup.
+    if (!structurallyPrecedes(use, operation)) {
+      continue;
+    }
+    for (Operation *ancestor = use->getParentOp(); ancestor;
+         ancestor = ancestor->getParentOp()) {
+      if (!isa<LoopLikeOpInterface>(ancestor) ||
+          hasAtMostIterations(ancestor, 1) ||
+          ancestor->isAncestor(reachingSetup)) {
+        continue;
+      }
+      if (ancestor->isAncestor(operation)) {
+        return operation;
+      }
+    }
+  }
+  return nullptr;
+}
+
+::mlir::LogicalResult NocAsyncWriteOnePacketWithStateOp::verify() {
+  SmallVector<Operation *> stateChanges;
+  NocCommandEffectsAnalysis commandEffects(NocCommandClass::Write);
+  if (auto function = getOperation()->getParentOfType<func::FuncOp>()) {
+    // One traversal collects both candidate setups and all possible clobbers;
+    // state-preserving issues and independent read/atomic commands are omitted.
+    function.walk<WalkOrder::PreOrder>([&](Operation *operation) {
+      if (hasAtMostIterations(operation, 0)) {
+        return WalkResult::skip();
+      }
+      if (commandEffects.getEffects(operation).mayReprogram) {
+        stateChanges.push_back(operation);
+      }
+      return WalkResult::advance();
+    });
+  }
+  NocAsyncWriteOnePacketSetStateOp setup =
+      findReachingWriteStateSetup(*this, stateChanges);
+  if (!setup) {
+    return emitOpError(
+        "requires a preceding one-packet write state setup on the same NoC "
+        "whose execution conditions cover this operation");
+  }
+  if (Operation *interveningChange =
+          findInterveningWriteStateChange(setup, *this, stateChanges)) {
+    InFlightDiagnostic diagnostic = emitOpError(
+        "cannot identify one preceding write state setup for every execution");
+    diagnostic.attachNote(interveningChange->getLoc())
+        << "this operation may replace the selected state before a later issue";
+    return failure();
+  }
+  bool setupIsPosted = setup.getPosted().value_or(false);
+  bool useIsPosted = getPosted().value_or(false);
+  if (setupIsPosted != useIsPosted) {
+    return emitOpError(
+        "posted mode must match the preceding one-packet write state setup");
+  }
+  return success();
+}
+
 ::mlir::LogicalResult TensorAccessorArgsOp::verify() {
   // Validation rules:
   // 1. If prev_args is present, cta_base and crta_base should NOT be present.
@@ -566,6 +832,69 @@ void MyLogicalYOp::inferResultRanges(
                  getIndexRange(0, std::numeric_limits<uint32_t>::max()));
 }
 
+// Return `values[index]`, or failure when `index` is outside the table bounds.
+static FailureOr<int64_t> lookupConstantTableValue(int64_t index,
+                                                   ArrayRef<int64_t> values) {
+  if (index < 0 || static_cast<std::size_t>(index) >= values.size()) {
+    return failure();
+  }
+  return values[index];
+}
+
+OpFoldResult ConstantTableLookupOp::fold(FoldAdaptor adaptor) {
+  auto indexAttr = dyn_cast_or_null<IntegerAttr>(adaptor.getIndex());
+  if (!indexAttr) {
+    return {};
+  }
+  FailureOr<int64_t> tableValue =
+      lookupConstantTableValue(indexAttr.getInt(), getValues());
+  if (failed(tableValue)) {
+    return {};
+  }
+  return IntegerAttr::get(getResult().getType(), *tableValue);
+}
+
+void ConstantTableLookupOp::getCanonicalizationPatterns(
+    RewritePatternSet &patterns, MLIRContext *) {
+  patterns.add(+[](ConstantTableLookupOp lookupOp,
+                   PatternRewriter &rewriter) -> LogicalResult {
+    APInt indexValue;
+    if (!matchPattern(lookupOp.getIndex(), m_ConstantInt(&indexValue))) {
+      return rewriter.notifyMatchFailure(lookupOp, "index is not constant");
+    }
+
+    FailureOr<int64_t> tableValue = lookupConstantTableValue(
+        indexValue.getSExtValue(), lookupOp.getValues());
+    if (failed(tableValue)) {
+      return rewriter.notifyMatchFailure(lookupOp,
+                                         "index is outside table bounds");
+    }
+
+    rewriter.replaceOpWithNewOp<arith::ConstantIndexOp>(lookupOp, *tableValue);
+    return success();
+  });
+}
+
+LogicalResult ConstantTableLookupOp::verify() {
+  ArrayRef<int64_t> values = getValues();
+  if (values.empty()) {
+    return emitOpError("requires at least one table value");
+  }
+  if (llvm::any_of(values, [](int64_t value) { return value < 0; })) {
+    return emitOpError("requires non-negative table values");
+  }
+  APInt indexValue;
+  if (matchPattern(getIndex(), m_ConstantInt(&indexValue))) {
+    int64_t index = indexValue.getSExtValue();
+    if (index < 0 || static_cast<std::size_t>(index) >= values.size()) {
+      return emitOpError() << "constant index " << index
+                           << " is outside the table bounds [0, "
+                           << values.size() << ")";
+    }
+  }
+  return success();
+}
+
 void NocAsyncReadBarrierOp::getCanonicalizationPatterns(
     mlir::RewritePatternSet &patterns, mlir::MLIRContext *context) {
   patterns.add(+[](NocAsyncReadBarrierOp op,
@@ -603,12 +932,10 @@ void NocAsyncWriteBarrierOp::getCanonicalizationPatterns(
           return success();
         }
       }
-      if (mlir::isa<NocAsyncWriteOp, NocAsyncWriteTileOp,
-                    NocAsyncWriteOnePacketWithTridOp, NocAsyncWriteMulticastOp,
-                    NocAsyncWriteMulticastOnePacketOp,
-                    NocAsyncWriteMulticastLoopbackSrcOp, NocInlineDwWriteOp>(
-              it) ||
-          it->getNumRegions() > 0) {
+      bool issuesOrConfiguresWrite =
+          accessesNocCommand(it, NocCommandClass::Write) &&
+          !mlir::isa<NocAsyncWriteBarrierOp, NocAsyncWritesFlushedOp>(it);
+      if (issuesOrConfiguresWrite || it->getNumRegions() > 0) {
         break;
       }
     }
@@ -627,6 +954,55 @@ void UnpackStallOnPackOp::getCanonicalizationPatterns(
     rewriter.eraseOp(op);
     return mlir::success();
   });
+}
+
+::mlir::LogicalResult OpaqueCallOp::verify() {
+  if (failed(mlir::tt::utils::verifyOpaqueCallNames(getOperation(), getCallee(),
+                                                    getHeader()))) {
+    return failure();
+  }
+  if (failed(mlir::tt::utils::verifyOpaqueCallUnsignedArgIndices(
+          getOperation(), getUnsignedArgIndices(), getArgOperands()))) {
+    return failure();
+  }
+  // Absence represents no descriptor requirement. A canonical nonnegative set
+  // lets downstream annotation merge physical DFB indices without normalizing.
+  if (std::optional<ArrayRef<int32_t>> requiredPhysicalDFBIndices =
+          getDfbResourceIndices()) {
+    if (requiredPhysicalDFBIndices->empty()) {
+      return emitOpError("DFB resource indices must not be empty");
+    }
+    if (!llvm::all_of(*requiredPhysicalDFBIndices,
+                      [](int32_t index) { return index >= 0; })) {
+      return emitOpError("DFB resource indices must be nonnegative");
+    }
+    if (!mlir::tt::utils::areIndicesStrictlyIncreasing(
+            *requiredPhysicalDFBIndices)) {
+      return emitOpError(
+          "DFB resource indices must be strictly increasing without "
+          "duplicates");
+    }
+  }
+  std::optional<ArrayAttr> templateArgs = getTemplateArgs();
+  if (!templateArgs) {
+    return success();
+  }
+  for (Attribute templateArg : *templateArgs) {
+    if (isa<BoolAttr, DFBDescriptorAttr>(templateArg)) {
+      continue;
+    }
+    auto integerArg = dyn_cast<IntegerAttr>(templateArg);
+    if (!integerArg) {
+      return emitOpError("template arg must be a signed i32, boolean, "
+                         "unsigned i32, or DFB descriptor attribute");
+    }
+    auto integerType = dyn_cast<IntegerType>(integerArg.getType());
+    if (!integerType || integerType.getWidth() != 32 ||
+        (!integerType.isSigned() && !integerType.isUnsigned())) {
+      return emitOpError("integer template arg must have type si32 or ui32");
+    }
+  }
+  return success();
 }
 
 } // namespace mlir::tt::ttkernel

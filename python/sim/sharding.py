@@ -166,9 +166,13 @@ def _count_nd_round_robin_elements(
 ) -> Tuple[Count, Count, Count]:
     ndim = len(spec.shard_grid)
     num_shard_slots = math.prod(spec.shard_grid)
-    num_cores = spec.num_cores if spec.num_cores is not None else num_shard_slots
+    num_cores = (
+        spec.round_robin_cores
+        if spec.round_robin_cores is not None
+        else num_shard_slots
+    )
     if num_cores < 1:
-        raise ValueError("NdShardSpec.num_cores must be at least 1")
+        raise ValueError("NdShardSpec.round_robin_cores must be at least 1")
 
     shard_strides = [1] * ndim
     for d in range(ndim - 2, -1, -1):
@@ -218,7 +222,7 @@ def count_local_remote_l1_dram(
 
     For sharded tensors, returned counts are **element** totals.  For interleaved
     tensors, the third component is the total number of elements in ``t``
-    (same as ``math.prod(t.shape)`` for physical storage).
+    (``math.prod(t.padded_shape)``, i.e. the physical/tile-aligned storage).
 
     Args:
         t: Tensor view (often a slice of a larger sharded tensor).
@@ -228,9 +232,9 @@ def count_local_remote_l1_dram(
     """
     mc = t.memory_config
     if mc.strategy == ShardingStrategy.INTERLEAVED:
-        return (0, 0, math.prod(t.shape))
+        return (0, 0, math.prod(t.padded_shape))
 
-    eshape = t.shape
+    eshape = t.padded_shape
     origin = (
         origin_in_parent_elements
         if origin_in_parent_elements is not None
@@ -245,7 +249,13 @@ def count_local_remote_l1_dram(
         )
 
     if mc.shard_spec is None:
-        return (0, 0, math.prod(t.shape))
+        # Answering "all DRAM" here would report a tensor whose config calls
+        # itself sharded as living nowhere in L1, and the caller would take that
+        # for a locality measurement rather than a missing shard spec. Said
+        # plainly instead, the way the ND case above says it.
+        raise ValueError(
+            f"{mc.strategy.name} requires shard_spec to say where its shards live"
+        )
 
     counter = _SHARD_ELEMENT_COUNTERS.get(mc.strategy)
     if counter is None:

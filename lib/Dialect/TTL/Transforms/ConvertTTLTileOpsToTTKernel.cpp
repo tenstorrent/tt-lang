@@ -34,6 +34,8 @@
 #include "ttlang/Dialect/TTL/Passes.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
 
+#include <type_traits>
+
 #define DEBUG_TYPE "ttl-tile-ops-to-ttkernel"
 
 namespace mlir::tt::ttl {
@@ -42,6 +44,8 @@ namespace ttk = mlir::tt::ttkernel;
 
 namespace {
 
+constexpr int64_t defaultExpIterations = 8;
+
 /// Materializes a float attribute as an i32 carrying its IEEE 754 bits. Scalar
 /// SFPU tile APIs take i32 params even for float scalars.
 static Value floatAttrToI32Bits(OpBuilder &rewriter, Location loc,
@@ -49,6 +53,14 @@ static Value floatAttrToI32Bits(OpBuilder &rewriter, Location loc,
   auto f32Val = arith::ConstantOp::create(
       rewriter, loc, rewriter.getF32FloatAttr(attr.getValueAsDouble()));
   return arith::BitcastOp::create(rewriter, loc, rewriter.getI32Type(), f32Val);
+}
+
+/// Materializes a float attribute as an i32 attribute carrying its IEEE 754
+/// bits.
+static IntegerAttr floatAttrToI32BitsAttr(OpBuilder &builder, FloatAttr attr) {
+  uint32_t bits =
+      static_cast<uint32_t>(attr.getValue().bitcastToAPInt().getZExtValue());
+  return builder.getI32IntegerAttr(bits);
 }
 
 /// Look up a CB for a copy_tile source.
@@ -64,9 +76,8 @@ static Value lookupCBByIndex(Value src, Operation *funcOp) {
     if (computeOp) {
       unsigned argIdx = barg.getArgNumber();
       if (auto cbIndex = getCBIndexAttr(computeOp, argIdx)) {
-        // Validate cb_index is in valid range.
-        assert(*cbIndex >= 0 && *cbIndex < kMaxCircularBuffers &&
-               "cb_index must be in range [0, 31]");
+        assert(*cbIndex >= 0 && *cbIndex < getTargetMaxDFBIndices(computeOp) &&
+               "cb_index must be valid for the compilation target");
 
         // Find the bind_cb op with matching cb_index in the function.
         Value result;
@@ -94,9 +105,8 @@ static Value lookupCBByIndex(Value src, Operation *funcOp) {
     tensor = slice.getSource();
   }
 
-  // Trace through unrealized conversion casts.
-  // After cb_wait lowering, the tensor is an unrealized_cast(ttkernel.cb).
-  tensor = traceUnrealizedCasts(tensor);
+  // Shape views can wrap the conversion bridge from a lowered cb_wait.
+  tensor = traceDFBShapeViews(tensor);
 
   // If we traced to a ttkernel.cb, return it directly.
   if (llvm::isa<ttkernel::CBType>(tensor.getType())) {
@@ -291,6 +301,51 @@ struct TTLTileTypecastToTTKernel : OpConversionPattern<TileTypecastOp> {
   }
 };
 
+/// Lower ttl.tile_exp to ttkernel.exp_tile, forwarding the hardware exp flags.
+///
+/// Cannot reuse the generic unary SFPU template because exp_tile carries
+/// flags. The matching exp_tile_init (with its own flags) is emitted later by
+/// the TTKernelInsertInits pass, which reads the flags off this exp_tile op.
+///
+/// TTKernel interface:
+///   ttkernel.exp_tile : (tile_index, approx?, input_clamping?, iterations?,
+///                        scale?)
+///   ttkernel.exp_tile_init : (approx?, scale?, input_clamping?)
+/// where InputClamping shares the underlying values of ttl::InputClamping.
+struct TTLTileExpToTTKernel : OpConversionPattern<ExpTileOp> {
+  using OpConversionPattern<ExpTileOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(ExpTileOp op, ExpTileOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value dstIdxVal = adaptor.getDstIndex();
+
+    BoolAttr approxAttr;
+    if (op.getApprox()) {
+      approxAttr = rewriter.getBoolAttr(true);
+    }
+    ttk::InputClampingAttr inputClampingAttr;
+    if (op.getInputClamping() != ttl::InputClamping::ClampToNegative) {
+      inputClampingAttr = ttk::InputClampingAttr::get(
+          rewriter.getContext(),
+          static_cast<ttk::InputClamping>(op.getInputClamping()));
+    }
+    IntegerAttr iterationsAttr;
+    if (op.getIterations() != defaultExpIterations) {
+      iterationsAttr = rewriter.getI32IntegerAttr(op.getIterations());
+    }
+    IntegerAttr scaleAttr;
+    if (auto ttlScaleAttr = op.getScaleAttr()) {
+      scaleAttr = floatAttrToI32BitsAttr(rewriter, ttlScaleAttr);
+    }
+    ttk::ExpTileOp::create(rewriter, loc, dstIdxVal, approxAttr,
+                           inputClampingAttr, iterationsAttr, scaleAttr);
+    rewriter.replaceOp(op, adaptor.getInput());
+    return success();
+  }
+};
+
 static FailureOr<Value> getSrcDstIndex(Value operand, Location loc,
                                        ConversionPatternRewriter &rewriter) {
   FailureOr<DstFootprint> footprint = getDstFootprint(operand);
@@ -307,14 +362,42 @@ static FailureOr<Value> getSrcDstIndex(Value operand, Location loc,
   return failure();
 }
 
+static bool isIntegerTileType(Type type) {
+  auto tileType = dyn_cast<ttcore::TileType>(type);
+  return tileType && !ttcore::isFloat(tileType.getDataType());
+}
+
+template <typename SourceOp>
+static LogicalResult
+createIntegerBinaryOp(SourceOp op, Value lhsIndex, Value rhsIndex,
+                      Value resultIndex, ConversionPatternRewriter &rewriter) {
+  auto tileType = dyn_cast<ttcore::TileType>(op.getResult().getType());
+  if (!tileType) {
+    return rewriter.notifyMatchFailure(op, "result is not a tile type");
+  }
+  auto dataType =
+      ttcore::DataTypeAttr::get(rewriter.getContext(), tileType.getDataType());
+  if constexpr (std::is_same_v<SourceOp, AddTileOp>) {
+    ttk::AddIntTileOp::create(rewriter, op.getLoc(), lhsIndex, rhsIndex,
+                              resultIndex, dataType);
+  } else if constexpr (std::is_same_v<SourceOp, SubTileOp>) {
+    ttk::SubIntTileOp::create(rewriter, op.getLoc(), lhsIndex, rhsIndex,
+                              resultIndex, dataType);
+  } else if constexpr (std::is_same_v<SourceOp, MulTileOp>) {
+    ttk::MulIntTileOp::create(rewriter, op.getLoc(), lhsIndex, rhsIndex,
+                              resultIndex, dataType);
+  } else {
+    return rewriter.notifyMatchFailure(
+        op, "integer lowering is not implemented for this operation");
+  }
+  return success();
+}
+
 /// Generic pattern for lowering TTL binary tile ops to TTKernel SFPU ops.
 /// Binary SFPU ops: DST[odst] = DST[src0] op DST[src1]
 ///
 /// Source DST indices are resolved from the operand-defining ops' dst_index.
 /// The output index comes from this op's dst_index operand.
-/// The FPU variant (TTLTileBinaryFPUToTTKernel) is registered with higher
-/// benefit so it is tried first; this SFPU pattern is the unconditional
-/// fallback.
 template <typename SourceOp, typename InitOp, typename TTKernelComputeOp>
 struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
   TTLTileBinaryToTTKernel(MLIRContext *ctx)
@@ -323,6 +406,13 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
   LogicalResult
   matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    if (op->template hasTrait<TTLStrategyDependentBinaryOpTrait>()) {
+      FailureOr<TileExecutionStrategy> strategy =
+          getSelectedTileExecutionStrategy(op);
+      if (failed(strategy) || *strategy != TileExecutionStrategy::SFPU) {
+        return rewriter.notifyMatchFailure(op, "SFPU strategy is not selected");
+      }
+    }
     Location loc = op.getLoc();
 
     auto src0 = getSrcDstIndex(op.getLhs(), loc, rewriter);
@@ -333,9 +423,93 @@ struct TTLTileBinaryToTTKernel : OpConversionPattern<SourceOp> {
     }
     Value odst = adaptor.getDstIndex();
 
-    TTKernelComputeOp::create(rewriter, loc, *src0, *src1, odst);
+    if (isIntegerTileType(op.getResult().getType())) {
+      if (failed(createIntegerBinaryOp(op, *src0, *src1, odst, rewriter))) {
+        return failure();
+      }
+    } else {
+      TTKernelComputeOp::create(rewriter, loc, *src0, *src1, odst);
+    }
 
     rewriter.replaceOp(op, adaptor.getLhs());
+    return success();
+  }
+};
+
+/// Lowers tile accumulation while preserving the accumulator DST index.
+struct TTLTileAccumulateToTTKernel : OpConversionPattern<TileAccumulateOp> {
+  TTLTileAccumulateToTTKernel(const TypeConverter &typeConverter,
+                              MLIRContext *ctx)
+      : OpConversionPattern<TileAccumulateOp>(typeConverter, ctx) {}
+
+  LogicalResult
+  matchAndRewrite(TileAccumulateOp op, TileAccumulateOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    FailureOr<Value> accumulatorDst =
+        getSrcDstIndex(op.getAccumulator(), loc, rewriter);
+    if (failed(accumulatorDst)) {
+      return rewriter.notifyMatchFailure(
+          op, "failed to extract dst_index from accumulator");
+    }
+
+    FailureOr<Value> contributionDst =
+        getSrcDstIndex(op.getContribution(), loc, rewriter);
+    if (succeeded(contributionDst)) {
+      switch (op.getCombiner()) {
+      case AccumulationCombiner::Add:
+        if (isIntegerTileType(op.getResult().getType())) {
+          auto tileType = cast<ttcore::TileType>(op.getResult().getType());
+          auto dataTypeAttr = ttcore::DataTypeAttr::get(rewriter.getContext(),
+                                                        tileType.getDataType());
+          ttk::AddIntTileOp::create(rewriter, loc, *accumulatorDst,
+                                    *contributionDst, *accumulatorDst,
+                                    dataTypeAttr);
+        } else {
+          ttk::AddBinaryTilesOp::create(rewriter, loc, *accumulatorDst,
+                                        *contributionDst, *accumulatorDst);
+        }
+        break;
+      case AccumulationCombiner::Max:
+        if (isIntegerTileType(op.getResult().getType())) {
+          ttk::BinaryMaxInt32TileOp::create(rewriter, loc, *accumulatorDst,
+                                            *contributionDst, *accumulatorDst);
+        } else {
+          ttk::BinaryMaxTileOp::create(rewriter, loc, *accumulatorDst,
+                                       *contributionDst, *accumulatorDst);
+        }
+        break;
+      }
+
+      rewriter.replaceOp(op, adaptor.getAccumulator());
+      return success();
+    }
+
+    if (op.getCombiner() != AccumulationCombiner::Add) {
+      return rewriter.notifyMatchFailure(
+          op, "DFB-backed tile accumulation only supports add");
+    }
+
+    auto funcOp = op->getParentOfType<func::FuncOp>();
+    if (!funcOp) {
+      return rewriter.notifyMatchFailure(op, "op not in function");
+    }
+
+    Value contributionSource = op.getContribution();
+    FailureOr<Value> contributionCB = lookupAndConvertCB(
+        contributionSource, funcOp, this->getTypeConverter(), rewriter, loc);
+    FailureOr<Value> contributionTileIndex =
+        computeCBTileIndex(contributionSource, rewriter, loc);
+    if (failed(contributionCB) || failed(contributionTileIndex)) {
+      return rewriter.notifyMatchFailure(
+          op, "failed to resolve DFB-backed contribution");
+    }
+
+    ttk::BinaryDestReuseTilesOp::create(
+        rewriter, loc, *contributionCB, *contributionTileIndex, *accumulatorDst,
+        ttk::EltwiseBinaryType::Add, ttk::BinaryDestReuseType::DestToSrcA);
+
+    rewriter.replaceOp(op, adaptor.getAccumulator());
     return success();
   }
 };
@@ -377,9 +551,7 @@ struct TTLTileMaxToTTKernel : OpConversionPattern<SourceOp> {
 /// FPU binary ops: read both operands from CBs, write result to DST.
 /// add_tiles(in0_cb, in1_cb, in0_tile_index, in1_tile_index, dst_index)
 ///
-/// Only matches strategy-dependent binary ops (add/sub/mul) that are
-/// currently FPU-eligible per isFPUEligibleBinaryOp. Registered with higher
-/// benefit than the SFPU pattern so this predicate is tried first.
+/// Only matches binary tile ops whose selected strategy is FPU.
 template <typename SourceOp, typename InitOp, typename TTKernelComputeOp>
 struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
   TTLTileBinaryFPUToTTKernel(const TypeConverter &typeConverter,
@@ -389,8 +561,13 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
   LogicalResult
   matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (!isFPUEligibleBinaryOp(op)) {
-      return rewriter.notifyMatchFailure(op, "not FPU-eligible");
+    if (isIntegerTileType(op.getResult().getType())) {
+      return rewriter.notifyMatchFailure(op, "integer operations require SFPU");
+    }
+    FailureOr<TileExecutionStrategy> strategy =
+        getSelectedTileExecutionStrategy(op);
+    if (failed(strategy) || *strategy != TileExecutionStrategy::FPU) {
+      return rewriter.notifyMatchFailure(op, "FPU strategy is not selected");
     }
 
     Location loc = op.getLoc();
@@ -433,9 +610,8 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
               llvm::Twine(rhsTensorTy.getNumElements()));
     }
 
-    // CB tile index: both operands share the same index because
-    // isFPUEligibleBinaryOp only matches when the two tensor.extract ops use
-    // identical induction indices (the lowered form of matching maps).
+    // FPU strategy selection proves that both extracts use the same tile
+    // coordinates before DST assignment can change operand provenance.
     auto cbIdx = computeCBTileIndex(op.getLhs(), rewriter, loc);
     if (failed(cbIdx)) {
       return rewriter.notifyMatchFailure(
@@ -698,11 +874,7 @@ struct CBInputTileOpSetup {
 
 /// Lower ttl.tile_reduce to ttkernel.reduce_tile.
 struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
-  bool fullFp32;
-
-  TTLTileReduceToTTKernel(TypeConverter &converter, MLIRContext *ctx,
-                          bool fullFp32)
-      : OpConversionPattern<TileReduceOp>(converter, ctx), fullFp32(fullFp32) {}
+  using OpConversionPattern<TileReduceOp>::OpConversionPattern;
 
   LogicalResult
   matchAndRewrite(TileReduceOp op, TileReduceOp::Adaptor adaptor,
@@ -739,17 +911,6 @@ struct TTLTileReduceToTTKernel : OpConversionPattern<TileReduceOp> {
         scalerIdx, setup->dstIdx,
         ttk::ReduceTypeAttr::get(op.getContext(), ttkReduceType),
         ttk::ReduceDimAttr::get(op.getContext(), op.getReduceDim()));
-
-    bool useFullFp32 = shouldUseFullFp32Reduce(op, fullFp32);
-    if (fullFp32 && isBlackholeTarget(op) &&
-        op.getReduceDim() == ttk::ReduceDim::Row) {
-      op.emitWarning()
-          << "full-fp32 row reduce is disabled on Blackhole because of issue "
-             "#533; using non-full-fp32 reduce lowering";
-    }
-    if (useFullFp32 && getKernelBoolAttr(op, kFp32DestAccEnAttrName)) {
-      reduceOp->setAttr("full_fp32", rewriter.getUnitAttr());
-    }
 
     // Propagate output CB index for per-op init insertion.
     if (auto cbIdxAttr =
@@ -971,6 +1132,47 @@ struct TTLTileMatmulBlockToTTKernel : OpConversionPattern<TileMatmulBlockOp> {
   }
 };
 
+/// Lower the planned row-normalization block after its tensor operands have
+/// acquired concrete TTKernel DFB identities.
+struct TTLTileRowNormalizationBlockToTTKernel
+    : OpConversionPattern<TileRowNormalizationBlockOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(TileRowNormalizationBlockOp op,
+                  TileRowNormalizationBlockOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    auto funcOp = op->getParentOfType<func::FuncOp>();
+    if (!funcOp) {
+      return rewriter.notifyMatchFailure(op, "op not in function");
+    }
+    const TypeConverter *typeConverter = this->getTypeConverter();
+    FailureOr<Value> inputDfb =
+        lookupAndConvertCB(op.getInput(), funcOp, typeConverter, rewriter, loc);
+    FailureOr<Value> gammaDfb =
+        lookupAndConvertCB(op.getGamma(), funcOp, typeConverter, rewriter, loc);
+    FailureOr<Value> outputDfb = lookupAndConvertCB(
+        op.getOutput(), funcOp, typeConverter, rewriter, loc);
+    if (failed(inputDfb) || failed(gammaDfb) || failed(outputDfb)) {
+      return rewriter.notifyMatchFailure(
+          op, "cannot find or convert row-normalization DFBs");
+    }
+
+    auto resultType = dyn_cast<ttcore::TileType>(op.getResult().getType());
+    if (!resultType) {
+      return rewriter.notifyMatchFailure(op, "requires a tile result");
+    }
+
+    ttk::ExperimentalRowNormalizationBlockOp::create(
+        rewriter, loc, *inputDfb, *gammaDfb, *outputDfb, op.getNumTiles(),
+        op.getScaleAttr().getValue(), op.getEpsilonAttr().getValue(),
+        op.getHasGamma(), resultType.getDataType());
+    rewriter.replaceOp(op, adaptor.getInput());
+    return success();
+  }
+};
+
 //===----------------------------------------------------------------------===//
 // Fill Tile Op Lowering
 //===----------------------------------------------------------------------===//
@@ -1026,8 +1228,7 @@ struct TTLTileMulUnaryConstToTTKernel
 //===----------------------------------------------------------------------===//
 
 void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
-                                          RewritePatternSet &patterns,
-                                          bool reduceFullFp32) {
+                                          RewritePatternSet &patterns) {
   MLIRContext *ctx = patterns.getContext();
 
   // DST lifecycle ops (1:1 conversion, no operands/results).
@@ -1055,10 +1256,12 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
   patterns.add<TTL_OP##FPUTileLowering>(*typeConverter, ctx);
 #include "ttlang/Dialect/TTL/TTLElementwiseOps.def"
 
-  // DST-based ops (no type converter needed).
+  // DST-based ops.
   patterns.add<TTLTileFillToTTKernel>(ctx);
   patterns.add<TTLTileMulUnaryConstToTTKernel>(ctx);
   patterns.add<TTLTileTypecastToTTKernel>(ctx);
+  patterns.add<TTLTileExpToTTKernel>(ctx);
+  patterns.add<TTLTileAccumulateToTTKernel>(*typeConverter, ctx);
 
   // Copy ops need the type converter.
   patterns.add<TTLTileCopyToTTKernel>(*typeConverter, ctx);
@@ -1068,11 +1271,12 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
   patterns.add<TTLTileBcastToTTKernel>(*typeConverter, ctx);
 
   // Reduce and transpose ops need the type converter for CB lookup.
-  patterns.add<TTLTileReduceToTTKernel>(*typeConverter, ctx, reduceFullFp32);
+  patterns.add<TTLTileReduceToTTKernel>(*typeConverter, ctx);
   patterns.add<TTLTileTransposeToTTKernel>(*typeConverter, ctx);
 
   // Matmul block needs the type converter for CB lookup.
   patterns.add<TTLTileMatmulBlockToTTKernel>(*typeConverter, ctx);
+  patterns.add<TTLTileRowNormalizationBlockToTTKernel>(*typeConverter, ctx);
 }
 
 } // namespace mlir::tt::ttl

@@ -35,6 +35,7 @@ class TestMLIRGeneration:
         assert f"ttl.{op_name}" in mlir_str
         # Verify CB binding and attachment.
         assert "ttl.bind_cb" in mlir_str
+        assert "dfb_id = 0 : index" in mlir_str
         assert "ttl.attach_cb" in mlir_str
         # Verify two inputs.
         assert "%arg0" in mlir_str
@@ -58,6 +59,7 @@ class TestMLIRGeneration:
         assert f"ttl.{op_name}" in mlir_str
         # Verify CB binding and attachment.
         assert "ttl.bind_cb" in mlir_str
+        assert "dfb_id = 0 : index" in mlir_str
         assert "ttl.attach_cb" in mlir_str
         # Verify one input.
         assert "%arg0" in mlir_str

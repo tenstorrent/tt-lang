@@ -78,14 +78,17 @@ setup() {
 @test "bare release tag, image missing -> refuse (exit 1)" {
     FAKE_DOCKER_MISSING=1 run -1 "$SCRIPT" "$BARE_TAG"
     assert_equal "$(read_needs_rebuild "$GH_OUT")" ""
+    assert_output --partial "Run call-build-docker.yml with push=true at ref $BARE_TAG"
 }
 
 @test "rc release tag, image missing -> refuse (exit 1)" {
     FAKE_DOCKER_MISSING=1 run -1 "$SCRIPT" "$RC_TAG"
+    assert_output --partial "Run call-build-docker.yml with push=true at ref $RC_TAG"
 }
 
 @test "dev release tag, image missing -> refuse (exit 1)" {
     FAKE_DOCKER_MISSING=1 run -1 "$SCRIPT" "$DEV_TAG"
+    assert_output --partial "Run call-build-docker.yml with push=true at ref $DEV_TAG"
 }
 
 # --- Mock invoked with the expected image reference ---

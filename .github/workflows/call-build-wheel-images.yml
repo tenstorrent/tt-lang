@@ -1,10 +1,5 @@
 name: Build Wheel-Builder Images
 
-# Builds and pushes the manylinux_2_34 wheel-builder images used to build the S3
-# light wheels. Kept separate from call-build-docker.yml so that hardware tests
-# and standard wheels (which depend on the ird image, not these) do not wait on
-# this build. Callers decide when to invoke it.
-
 on:
   workflow_dispatch:
     inputs:
@@ -18,34 +13,43 @@ on:
         description: "tt-lang SHA/branch override (optional, defaults to current commit)"
         type: string
         required: false
+    outputs:
+      docker-tag:
+        description: "Tag shared by the cp310 and cp312 manylinux builders"
+        value: ${{ jobs.resolve.outputs.docker-tag }}
 
 permissions:
   contents: read
   packages: write
 
+env:
+  WHEEL_CACHE_IMAGE: ghcr.io/${{ github.repository }}/tt-lang-wheel-manylinux-2-34-build-cache
+
 jobs:
-  build-manylinux-wheel-images:
-    runs-on: mlir-large-runner-lang
-    timeout-minutes: 360
-    strategy:
-      fail-fast: false
-      matrix:
-        python_tag: [cp310, cp312]
-
-    defaults:
-      run:
-        shell: bash
-
+  resolve:
+    name: "Resolve manylinux builder state"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      docker-tag: ${{ steps.resolve.outputs.docker-tag }}
+      all-images-exist: ${{ steps.resolve.outputs.all-images-exist }}
+      update-latest: ${{ steps.resolve.outputs.update-latest }}
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ttlang_sha_override || github.sha }}
-          submodules: recursive
           fetch-depth: 0
           fetch-tags: true
 
-      - name: Free up runner space
-        run: .github/scripts/cleanup-ci-space.sh
+      - name: Checkout wheel image workflow source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .wheel-workflow-src
+          sparse-checkout: |
+            .github/containers
+            .github/scripts
+          sparse-checkout-cone-mode: false
 
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@v4
@@ -54,33 +58,144 @@ jobs:
           username: ${{ github.repository_owner }}
           password: ${{ github.token }}
 
-      - name: Fix git safe directory for submodules
-        run: git config --global --add safe.directory '*'
+      - name: Resolve Docker tag and existing images
+        id: resolve
+        run: .wheel-workflow-src/.github/scripts/resolve-wheel-builder-images.sh --repository "${{ github.repository }}" --workflow-source .wheel-workflow-src
 
-      - name: Resolve Docker tag
-        id: docker-tag
-        run: |
-          docker_tag=$(.github/containers/get-version-tag.sh)
-          registry_image="ghcr.io/${{ github.repository }}/tt-lang-wheel-manylinux-2-34-${{ matrix.python_tag }}:${docker_tag}"
-          echo "docker-tag=${docker_tag}" >> "$GITHUB_OUTPUT"
-          echo "registry-image=${registry_image}" >> "$GITHUB_OUTPUT"
-          echo "Docker tag: ${docker_tag}"
-          echo "Registry image: ${registry_image}"
-          {
-            echo "### manylinux wheel-builder image"
-            echo ""
-            echo "- Docker tag: \`${docker_tag}\`"
-            echo "- Image: \`${registry_image}\`"
-          } >> "$GITHUB_STEP_SUMMARY"
+  cache-components:
+    name: "Cache ${{ matrix.name }}"
+    needs: resolve
+    if: ${{ needs.resolve.outputs.all-images-exist != 'true' }}
+    runs-on: mlir-large-runner-lang
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: "tt-metal"
+            component: ttmetal
+            python_tag: ""
+            cache_tag: linux-amd64-ttmetal-cp312
+          - name: "LLVM (cp310)"
+            component: llvm
+            python_tag: cp310
+            cache_tag: linux-amd64-llvm-cp310
+          - name: "LLVM (cp312)"
+            component: llvm
+            python_tag: cp312
+            cache_tag: linux-amd64-llvm-cp312
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ttlang_sha_override || github.sha }}
+          submodules: recursive
+          fetch-depth: 0
+          fetch-tags: true
 
-      - name: Build and push manylinux wheel-builder image
+      - name: Checkout wheel image workflow source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .wheel-workflow-src
+          sparse-checkout: |
+            .github/actions/setup-wheel-image-build
+            .github/containers
+            .github/scripts
+            cmake/modules
+            scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Set up wheel image build
+        uses: ./.wheel-workflow-src/.github/actions/setup-wheel-image-build
+        with:
+          registry-owner: ${{ github.repository_owner }}
+          registry-token: ${{ github.token }}
+
+      - name: Update component build cache
         env:
-          DOCKER_BUILDKIT: 1
-          BUILDKIT_STEP_LOG_MAX_SIZE: -1
-        run: .github/containers/build-wheel-manylinux-images.sh --python-tags "${{ matrix.python_tag }}" --image-tag "${{ steps.docker-tag.outputs.docker-tag }}" --build-parallel-level 2
+          CACHE_COMPONENT: ${{ matrix.component }}
+          CACHE_REF: ${{ format('{0}:{1}', env.WHEEL_CACHE_IMAGE, matrix.cache_tag) }}
+          PYTHON_TAG: ${{ matrix.python_tag }}
+        run: .wheel-workflow-src/.github/containers/cache-wheel-manylinux-component.sh --component "$CACHE_COMPONENT" --python-tag "$PYTHON_TAG" --cache-ref "$CACHE_REF" --build-parallel-level 2 --workflow-source .wheel-workflow-src
 
       - name: Show disk usage on failure
         if: failure()
-        run: |
-          df -h
-          docker system df || true
+        run: .wheel-workflow-src/.github/scripts/report-docker-disk-usage.sh
+
+  build-manylinux-wheel-images:
+    name: "Build manylinux wheel image (${{ matrix.python_tag }})"
+    needs: [resolve, cache-components]
+    if: ${{ always() && needs.resolve.result == 'success' && (needs.cache-components.result == 'success' || needs.cache-components.result == 'skipped') && needs.resolve.outputs.all-images-exist != 'true' }}
+    runs-on: mlir-large-runner-lang
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        python_tag: [cp310, cp312]
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ttlang_sha_override || github.sha }}
+          submodules: recursive
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Checkout wheel image workflow source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .wheel-workflow-src
+          sparse-checkout: |
+            .github/actions/setup-wheel-image-build
+            .github/containers
+            .github/scripts
+            cmake/modules
+            scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Set up wheel image build
+        uses: ./.wheel-workflow-src/.github/actions/setup-wheel-image-build
+        with:
+          registry-owner: ${{ github.repository_owner }}
+          registry-token: ${{ github.token }}
+
+      - name: Assemble and push manylinux wheel-builder image
+        env:
+          DOCKER_TAG: ${{ needs.resolve.outputs.docker-tag }}
+          PYTHON_TAG: ${{ matrix.python_tag }}
+        run: .wheel-workflow-src/.github/containers/build-wheel-manylinux-images.sh --python-tags "$PYTHON_TAG" --image-tag "$DOCKER_TAG" --llvm-cache-ref "${WHEEL_CACHE_IMAGE}:linux-amd64-llvm-${PYTHON_TAG}" --ttmetal-cache-ref "${WHEEL_CACHE_IMAGE}:linux-amd64-ttmetal-cp312" --build-parallel-level 2 --workflow-source .wheel-workflow-src
+
+      - name: Show disk usage on failure
+        if: failure()
+        run: .wheel-workflow-src/.github/scripts/report-docker-disk-usage.sh
+
+  publish-latest:
+    name: "Publish latest manylinux wheel images"
+    needs: [resolve, build-manylinux-wheel-images]
+    if: ${{ always() && needs.resolve.result == 'success' && needs.resolve.outputs.update-latest == 'true' && (needs.resolve.outputs.all-images-exist == 'true' || needs.build-manylinux-wheel-images.result == 'success') }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout wheel image workflow source
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: |
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ github.token }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Publish latest manifests
+        env:
+          DOCKER_TAG: ${{ needs.resolve.outputs.docker-tag }}
+          REPOSITORY: ${{ github.repository }}
+        run: .github/scripts/publish-wheel-builder-latest.sh --repository "$REPOSITORY" --docker-tag "$DOCKER_TAG"

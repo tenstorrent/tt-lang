@@ -15,6 +15,18 @@ include "mlir/IR/EnumAttr.td"
 // Note: TTL uses TTKernel's ThreadType enum (#ttkernel.thread<noc>) for
 // kernel thread annotations on functions.
 
+def TTL_LogicalKernelKind_Compute :
+    I32EnumAttrCase<"Compute", 0, "compute">;
+def TTL_LogicalKernelKind_DataMovement :
+    I32EnumAttrCase<"DataMovement", 1, "data_movement">;
+
+def TTL_LogicalKernelKind : I32EnumAttr<
+    "LogicalKernelKind", "Target-independent logical kernel kind",
+    [TTL_LogicalKernelKind_Compute, TTL_LogicalKernelKind_DataMovement]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
+}
+
 def TTL_TransferKind : I32EnumAttr<
     "TransferKind", "TTL transfer kind",
     [
@@ -35,6 +47,106 @@ def TTL_PipeTransferKind : I32EnumAttr<
     [TTL_PipeTransferKind_PointToPoint, TTL_PipeTransferKind_Collective]> {
   let cppNamespace = "::mlir::tt::ttl";
   let genSpecializedAttr = 0;
+}
+
+def TTL_ExternalTemplateArgKind_SignedInteger :
+    I32EnumAttrCase<"SignedInteger", 0, "signed_integer">;
+def TTL_ExternalTemplateArgKind_Boolean :
+    I32EnumAttrCase<"Boolean", 1, "boolean">;
+def TTL_ExternalTemplateArgKind_UnsignedInteger :
+    I32EnumAttrCase<"UnsignedInteger", 2, "unsigned_integer">;
+def TTL_ExternalTemplateArgKind_DFBIndex :
+    I32EnumAttrCase<"DFBIndex", 3, "dfb_index">;
+def TTL_ExternalTemplateArgKind_DFBDescriptor :
+    I32EnumAttrCase<"DFBDescriptor", 4, "dfb_descriptor">;
+
+def TTL_ExternalTemplateArgKind : I32EnumAttr<
+    "ExternalTemplateArgKind", "External function template argument kind",
+    [TTL_ExternalTemplateArgKind_SignedInteger,
+     TTL_ExternalTemplateArgKind_Boolean,
+     TTL_ExternalTemplateArgKind_UnsignedInteger,
+     TTL_ExternalTemplateArgKind_DFBIndex,
+     TTL_ExternalTemplateArgKind_DFBDescriptor]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
+}
+
+def TTL_FabricManagerEffectKind_Acquire :
+    I32EnumAttrCase<"Acquire", 0, "acquire">;
+def TTL_FabricManagerEffectKind_Use :
+    I32EnumAttrCase<"Use", 1, "use">;
+def TTL_FabricManagerEffectKind_Release :
+    I32EnumAttrCase<"Release", 2, "release">;
+def TTL_FabricManagerEffectKind_Scoped :
+    I32EnumAttrCase<"Scoped", 3, "scoped">;
+
+def TTL_FabricManagerEffectKind : I32EnumAttr<
+    "FabricManagerEffectKind", "External fabric manager lifetime effect",
+    [TTL_FabricManagerEffectKind_Acquire,
+     TTL_FabricManagerEffectKind_Use,
+     TTL_FabricManagerEffectKind_Release,
+     TTL_FabricManagerEffectKind_Scoped]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
+}
+
+def TTL_FabricManagerIntervalKind_GeneratedReceiver :
+    I32EnumAttrCase<"GeneratedReceiver", 0, "generated_receiver">;
+def TTL_FabricManagerIntervalKind_GeneratedSender :
+    I32EnumAttrCase<"GeneratedSender", 1, "generated_sender">;
+def TTL_FabricManagerIntervalKind_GeneratedMixed :
+    I32EnumAttrCase<"GeneratedMixed", 2, "generated_mixed">;
+def TTL_FabricManagerIntervalKind_External :
+    I32EnumAttrCase<"External", 3, "external">;
+
+def TTL_FabricManagerIntervalKind : I32EnumAttr<
+    "FabricManagerIntervalKind", "Fabric manager interval owner",
+    [TTL_FabricManagerIntervalKind_GeneratedReceiver,
+     TTL_FabricManagerIntervalKind_GeneratedSender,
+     TTL_FabricManagerIntervalKind_GeneratedMixed,
+     TTL_FabricManagerIntervalKind_External]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
+}
+
+def TTL_DFBProtocolEffectKind_Reserve :
+    I32EnumAttrCase<"Reserve", 0, "reserve">;
+def TTL_DFBProtocolEffectKind_Push :
+    I32EnumAttrCase<"Push", 1, "push">;
+def TTL_DFBProtocolEffectKind_Wait :
+    I32EnumAttrCase<"Wait", 2, "wait">;
+def TTL_DFBProtocolEffectKind_Pop :
+    I32EnumAttrCase<"Pop", 3, "pop">;
+
+def TTL_DFBProtocolEffectKind : I32EnumAttr<
+    "DFBProtocolEffectKind", "Dataflow buffer protocol effect kind",
+    [TTL_DFBProtocolEffectKind_Reserve, TTL_DFBProtocolEffectKind_Push,
+     TTL_DFBProtocolEffectKind_Wait, TTL_DFBProtocolEffectKind_Pop]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
+}
+
+def TTL_DFBNonTransactionalAccessKind_Inspect :
+    I32EnumAttrCase<"Inspect", 0, "inspect">;
+
+def TTL_DFBNonTransactionalAccessKind : I32EnumAttr<
+    "DFBNonTransactionalAccessKind",
+    "Dataflow buffer non-transactional access kind",
+    [TTL_DFBNonTransactionalAccessKind_Inspect]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
+}
+
+def TTL_DFBTileStoreKind_Producer :
+    I32EnumAttrCase<"Producer", 0, "producer">;
+def TTL_DFBTileStoreKind_ConsumerReplacement :
+    I32EnumAttrCase<"ConsumerReplacement", 1, "consumer_replacement">;
+
+def TTL_DFBTileStoreKind : I32EnumAttr<
+    "DFBTileStoreKind", "Dataflow buffer tile-store ownership",
+    [TTL_DFBTileStoreKind_Producer,
+     TTL_DFBTileStoreKind_ConsumerReplacement]> {
+  let cppNamespace = "::mlir::tt::ttl";
 }
 
 def TTL_BcastType_Col    : I32EnumAttrCase<"Col",    1, "col">;
@@ -72,6 +184,33 @@ def TTL_AccumulationInitialMode : I32EnumAttr<"AccumulationInitialMode",
   let cppNamespace = "::mlir::tt::ttl";
 }
 
+//===----------------------------------------------------------------------===//
+// Exp input clamping
+//===----------------------------------------------------------------------===//
+
+// Controls whether the (approximate) exp clamps very negative inputs before
+// the SFPU evaluation. Underlying values match tt-metal's ckernel::InputClamping
+// and the TTKernel InputClamping enum so the lowering can forward by value:
+//   None (0): no clamp -- faster, but inputs below ~-88.5 produce incorrect
+//             outputs (guaranteed negative; consider packer ReLU).
+//   ClampToNegative (1): clamp very negative inputs -- safer, slightly slower.
+def TTL_InputClamping_None            : I32EnumAttrCase<"None",            0, "none">;
+def TTL_InputClamping_ClampToNegative : I32EnumAttrCase<"ClampToNegative", 1, "clamp_to_negative">;
+
+def TTL_InputClamping : I32EnumAttr<"InputClamping", "TTL exp input clamping mode",
+    [TTL_InputClamping_None, TTL_InputClamping_ClampToNegative]> {
+  let cppNamespace = "::mlir::tt::ttl";
+}
+
+def TTL_AccumulationCombiner_Add : I32EnumAttrCase<"Add", 0, "add">;
+def TTL_AccumulationCombiner_Max : I32EnumAttrCase<"Max", 1, "max">;
+
+def TTL_AccumulationCombiner : I32EnumAttr<"AccumulationCombiner",
+    "TTL accumulation combiner",
+    [TTL_AccumulationCombiner_Add, TTL_AccumulationCombiner_Max]> {
+  let cppNamespace = "::mlir::tt::ttl";
+}
+
 // Buffer type for tensor memory placement.
 // Values match TTNN BufferType enum for compatibility.
 def TTL_BufferType_DRAM       : I32EnumAttrCase<"DRAM",       0, "dram">;
@@ -92,13 +231,26 @@ def TTL_TensorMemoryLayout_SingleBank   : I32EnumAttrCase<"SingleBank",   1, "si
 def TTL_TensorMemoryLayout_HeightSharded : I32EnumAttrCase<"HeightSharded", 2, "height_sharded">;
 def TTL_TensorMemoryLayout_WidthSharded  : I32EnumAttrCase<"WidthSharded",  3, "width_sharded">;
 def TTL_TensorMemoryLayout_BlockSharded  : I32EnumAttrCase<"BlockSharded",  4, "block_sharded">;
+def TTL_TensorMemoryLayout_NdSharded     : I32EnumAttrCase<"NdSharded",     5, "nd_sharded">;
 
 def TTL_TensorMemoryLayout : I32EnumAttr<
     "TensorMemoryLayout", "TTL tensor memory layout",
     [TTL_TensorMemoryLayout_Interleaved, TTL_TensorMemoryLayout_SingleBank,
      TTL_TensorMemoryLayout_HeightSharded, TTL_TensorMemoryLayout_WidthSharded,
-     TTL_TensorMemoryLayout_BlockSharded]> {
+     TTL_TensorMemoryLayout_BlockSharded, TTL_TensorMemoryLayout_NdSharded]> {
   let cppNamespace = "::mlir::tt::ttl";
+}
+
+def TTL_TileExecutionStrategy_FPU :
+    I32EnumAttrCase<"FPU", 0, "fpu">;
+def TTL_TileExecutionStrategy_SFPU :
+    I32EnumAttrCase<"SFPU", 1, "sfpu">;
+
+def TTL_TileExecutionStrategy : I32EnumAttr<
+    "TileExecutionStrategy", "tile execution strategy",
+    [TTL_TileExecutionStrategy_FPU, TTL_TileExecutionStrategy_SFPU]> {
+  let cppNamespace = "::mlir::tt::ttl";
+  let genSpecializedAttr = 0;
 }
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSENUMS_TD

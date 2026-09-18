@@ -5,7 +5,7 @@
 
   --mode external  -> ttnn must NOT be importable.
   --mode bundled   -> ttnn must be importable and bundled native libs present.
-  --mode pypi      -> no check; exit 0.
+  --mode pypi      -> ttnn must be installed.
 
 Run inside the test venv so importlib resolves the installed tt-lang.
 
@@ -35,6 +35,13 @@ _LDD_COMMAND_ENV = "TTLANG_LDD_COMMAND"
 def check_external() -> int:
     if importlib.util.find_spec("ttnn") is not None:
         print("external wheel unexpectedly installed ttnn", file=sys.stderr)
+        return 1
+    return 0
+
+
+def check_pypi() -> int:
+    if importlib.util.find_spec("ttnn") is None:
+        print("pypi wheel did not install its ttnn dependency", file=sys.stderr)
         return 1
     return 0
 
@@ -123,7 +130,7 @@ def main() -> int:
         return check_external()
     if args.mode == "bundled":
         return check_bundled()
-    return 0
+    return check_pypi()
 
 
 if __name__ == "__main__":

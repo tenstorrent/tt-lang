@@ -13,12 +13,31 @@ python my_kernel.py --no-ttl-maximize-dst
 | Flag | Default | Description |
 |---|---|---|
 | `--ttl-maximize-dst` / `--no-ttl-maximize-dst` | enabled | Partition compute iteration spaces into subblocks that maximize DST register utilization, and reorder tile operations within sync regions to group by kind. Disabling falls back to per-tile synchronization. |
-| `--ttl-fpu-binary-ops` / `--no-ttl-fpu-binary-ops` | enabled | Emit FPU binary elementwise ops (`add_tiles`, `sub_tiles`, `mul_tiles`) when both operands come from dataflow buffers. When disabled, binary ops use the SFPU path. |
+| `--ttl-accumulation-strategy {auto,dst,l1-pack}` | `auto` | Select tensor recurrence accumulation storage. `auto` compares legal DST and L1 packer candidates with the accumulation cost model. |
+| `--ttl-fpu-binary-ops` / `--no-ttl-fpu-binary-ops` | enabled | Allow FPU strategy selection for binary add, subtract, and multiply when their operands permit it. Disabling selects SFPU. |
 | `--ttl-block-matmul` / `--no-ttl-block-matmul` | enabled | Emit `matmul_block` (processes the full tile block atomically) instead of per-tile matmul loops. Disabling this option is not yet supported. |
 | `--ttl-subblock-sync` / `--no-ttl-subblock-sync` | disabled | Refine DFB reserve/push to per-subblock granularity, enabling `pack_tile_block` for contiguous subblocks. When disabled, user-placed reserve/push is preserved as written. |
 | `--ttl-combine-pack-tiles` / `--no-ttl-combine-pack-tiles` | enabled | Combine consecutive `pack_tile` ops on the same DFB with contiguous DST and DFB indices into a single `pack_tile_block` call. |
+| `--ttl-reduce-full-fp32` / `--no-ttl-reduce-full-fp32` | enabled | Prefer full-fp32 accumulation for reduce operations when supported by the target and the complete kernel configuration. |
+| `--ttl-matmul-full-fp32` / `--no-ttl-matmul-full-fp32` | enabled | Prefer full-fp32 accumulation for matmul operations when supported by the target and the complete kernel configuration. |
 | `--ttl-strict-f32-acc` / `--no-ttl-strict-f32-acc` | disabled | Error at compile time if a `+=` accumulation loop's output block exceeds f32 DST capacity (4 tiles with double-buffering). When enabled, guarantees each accumulation step fits in a single DST section without subblocking. |
-| `--ttl-compiler-dfbs` / `--no-ttl-compiler-dfbs` | enabled | Insert compiler-allocated intermediate DFBs at fusion split points where an operation requires DFB-attached inputs (reduce, broadcast, matmul, transpose). When disabled, the compiler emits an error if any fused computation requires an intermediate DFB. |
+| `--ttl-compiler-dfbs` / `--no-ttl-compiler-dfbs` | enabled | Insert compiler-allocated intermediate DFBs when an operation requires DFB-attached inputs, fusion would read a source after its DFB is released, or a computed value is stored by operations in multiple MLIR basic blocks. When disabled, the compiler emits an error if materialization is required. |
+| `--ttl-pipe-computed-addresses` / `--no-ttl-pipe-computed-addresses` | enabled | Use computed receiver DFB addresses for eligible PipeNet transfers. When disabled, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
+| `--ttl-pipe-capacity-sync` / `--no-ttl-pipe-capacity-sync` | enabled | Use capacity-counter synchronization when the receiver wait and pop execute on the receiver NOC thread and the computed-address transfer passes the DFB ownership and count proofs. When disabled, computed-address transfers use receiver-post synchronization. |
+| `--ttl-pipe-global-semaphores-only` / `--no-ttl-pipe-global-semaphores-only` | disabled | Allocate all compiler-managed PipeNet synchronization counters in GlobalSemaphore storage, leaving local hardware semaphore ids available to the application. |
+| `--ttl-pipe-batch-tiles N` | `0` (auto) | Limit the logical transfers in one PipeTransport group. `0` selects automatically and `1` disables grouping. |
+| `--ttl-l1-budget N` | target-dependent | Override the per-core L1 budget used for target-aligned DFB allocation, PipeNet resources, synchronized-reset state, reconfiguration state, and final combined validation. |
+| `--ttl-reuse-user-dfbs` / `--no-ttl-reuse-user-dfbs` | enabled | Reuse physical DFB indices and compiler-managed storage when concurrent-kernel liveness proves that compatible lifetimes do not overlap. Disabling compacts provisional user indices without introducing user-DFB sharing and assigns each physical descriptor separate storage. |
+| `--ttl-dfb-exact-coloring-search-limit N` | `1000000` | Examine at most `N` states during deterministic exact DFB allocation when order-dependent first-fit prevents acceptance or exceeds the provisional threshold after a conservative PipeNet reservation. This bounds compile time; reaching the limit reports an inconclusive result only when authoritative acceptance requires the search result. |
+| `--ttl-unsafe-assume-dfb-allocation-groups` / `--no-ttl-unsafe-assume-dfb-allocation-groups` | disabled | Trust explicit `allocation_group=` handoffs that the compiler cannot prove. Accepted groups emit warnings and `ttl.assumed_dfb_allocation_groups` metadata. Descriptor, storage, static configuration, capacity, and L1 checks remain enforced. |
+| `--ttl-specialize-cores` / `--no-ttl-specialize-cores` | disabled | Clone each TTKernel function whose structured branch or loop control depends on a core coordinate once per launch coordinate (`ttkernel-specialize-cores`), replacing `my_logical_x_` / `my_logical_y_` with constants and tagging clones with `ttl.core_coord` for per-core dispatch. Specialized functions with identical generated C++ and runtime metadata share one runtime descriptor. Opt-in. |
+
+**f32 accumulation precision:** `dst` keeps the accumulator in the DST register
+but feeds it back through SRCA on each step, which truncates to tf32 (10-bit
+mantissa); deep f32 recurrences therefore do not retain full f32 precision.
+When `auto` selects `dst`, it inherits the same limit.
+Use `l1-pack` when full f32 accumulation precision is required; it accumulates
+in f32 L1.
 
 ### Other Ways to Set These
 
@@ -42,16 +61,22 @@ my_kernel(tensor_a, tensor_b, options="--no-ttl-fpu-binary-ops")
 
 ## Compute Configuration
 
-These two parameters are set on the `@ttl.operation` decorator (not via command-line
+These parameters are set on the `@ttl.operation` decorator (not via command-line
 flags) and control the TTNN compute kernel hardware configuration:
 
 | Parameter | Type | Default | Description |
 |---|---|---|---|
-| `fp32_dest_acc_en` | `bool` or `None` | `None` | Enable f32 accumulation in the DST register file. When `None`, auto-detected from input tensor dtypes (enabled when any input is f32). |
-| `dst_full_sync_en` | `bool` or `None` | `None` | Enable full DST synchronization (single-buffering mode). Doubles DST capacity (f32: 8, f16/bf16: 16) at the cost of a full sync between math and pack threads. |
+| `fp32_dest_acc_en` | `bool` or `None` | `None` | Constrain the Wormhole B0/Blackhole DST register-file element width: `true` selects 32-bit elements and `false` selects 16-bit elements. When `None`, resolve the width from target capabilities and tile-operation requirements. |
+| `dst_full_sync_en` | `bool` or `None` | `None` | Enable full DST synchronization (single-buffering mode). Doubles DST capacity (32-bit elements: 8, 16-bit elements: 16) at the cost of a full sync between math and pack threads. |
+| `math_fidelity` | `str` or `None` | `None` | Set the compute math fidelity to `LoFi`, `HiFi2`, `HiFi3`, or `HiFi4`. When `None`, retain the TTNN default. |
 
 ```python
-@ttl.operation(grid=(2, 2), fp32_dest_acc_en=True, dst_full_sync_en=False)
+@ttl.operation(
+    grid=(2, 2),
+    fp32_dest_acc_en=True,
+    dst_full_sync_en=False,
+    math_fidelity="HiFi4",
+)
 def my_kernel(a, b): ...
 ```
 
@@ -69,6 +94,7 @@ They are independent of the code generation flags above.
 | `TTLANG_DEBUG_LOCATIONS` | `0`/`1` | `0` | Include source locations in printed MLIR (locations are always tracked internally for error messages). |
 | `TTLANG_VERBOSE_ERRORS` | `0`/`1` | `0` | Include raw MLIR diagnostics in error output. |
 | `TTLANG_SIM_ONLY` | `0`/`1` | `0` | Force `import ttl` to skip loading the compiled MLIR extension. Used when running the simulator from a source tree without an installed `tt-lang-sim` wheel (which ships the same signal as a marker module). |
+| `TTL_RELAX_DFB_SPSC` | any value | (unset) | Skip per-launch-node verification that DFB producers, consumers, and waits execute on corresponding dynamically active nodes. The program must enforce those ownership and synchronization contracts. A waited DFB must still have a compiler-visible push or uncontracted external access that may contain one. Finalized DFB preconditions, PipeNet endpoint guards, transfer correspondence, and synchronization schedules remain enabled. The compiler emits a warning and records `ttl.relaxed_dfb_protocol_domain_verification` on the module. |
 
 Profiling-related environment variables (`TTLANG_AUTO_PROFILE`,
 `TTLANG_PERF_DUMP`, `TTLANG_PERF_SERV`, `TTLANG_SIGNPOST_PROFILE`,
@@ -109,43 +135,108 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `maximize-dst` | bool | `true` | Enable DST maximization via subblock compute and scheduling. |
-| `enable-fpu-binary-ops` | bool | `true` | Use FPU for binary add/sub/mul. |
-| `use-block-matmul` | bool | `true` | Lower matmul to block-level hardware calls (`experimental::matmul_block`). |
+| `accumulation-strategy` | string | `auto` | Tensor recurrence accumulation strategy: `auto`, `dst`, or `l1-pack`. |
+| `enable-fpu-binary-ops` | bool | `true` | Allow FPU strategy selection for binary add/sub/mul. |
+| `use-block-matmul` | bool | `true` | Lower matmul to block-level hardware calls (`matmul_block`). |
 | `subblock-sync` | bool | `false` | Refine DFB reserve/push to per-subblock granularity. |
 | `combine-pack-tiles` | bool | `true` | Combine consecutive `pack_tile` ops into `pack_tile_block`. |
+| `reduce-full-fp32` | bool | `true` | Prefer full-fp32 reduce accumulation when supported. |
+| `matmul-full-fp32` | bool | `true` | Prefer full-fp32 matmul accumulation when supported. |
 | `strict-f32-acc` | bool | `false` | Error if a `+=` accumulation loop's output block exceeds f32 DST capacity. |
-| `compiler-dfbs` | bool | `true` | Insert compiler-allocated intermediate DFBs for fused computations. Error if disabled and any operation requires one. |
+| `compiler-dfbs` | bool | `true` | Insert compiler-allocated intermediate DFBs for DFB-only operands, source-lifetime preservation, and computed values stored by operations in multiple MLIR basic blocks. Error if disabled and any operation requires one. |
+| `pipe-computed-addresses` | bool | `true` | Use computed receiver DFB addresses for eligible PipeNet transfers. When disabled, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
+| `pipe-capacity-sync` | bool | `true` | Use capacity-counter synchronization when the receiver wait and pop execute on the receiver NOC thread and the computed-address transfer passes the DFB ownership and count proofs. When disabled, computed-address transfers use receiver-post synchronization. |
+| `pipe-global-semaphores-only` | bool | `false` | Allocate all compiler-managed PipeNet synchronization counters in GlobalSemaphore storage, leaving local hardware semaphore ids available to the application. |
+| `pipe-batch-tiles` | int64_t | `0` (auto) | Limit logical transfers per PipeTransport group. `0` selects automatically and `1` disables grouping. |
+| `l1-budget-override` | uint32_t | `0` (target default) | Override the per-core L1 budget used for target-aligned DFB allocation, PipeNet resources, synchronized-reset state, reconfiguration state, and final combined validation. |
+| `reuse-user-dfbs` | bool | `true` | Reuse physical DFB indices and compiler-managed storage for compatible lifetimes proven not to overlap. |
+| `unsafe-assume-allocation-groups` | bool | `false` | Trust explicit DFB allocation-group handoffs that lack a complete compiler proof. Automatic reuse remains proof-based. |
+| `exact-coloring-search-limit` | uint64 | `1000000` | Maximum states examined during deterministic exact DFB allocation before reporting an inconclusive result. |
+| `specialize-cores` | bool | `false` | Run the `ttkernel-specialize-and-annotate-dfb-use` sub-pipeline. Maps from `--ttl-specialize-cores`. |
 | `lower-to-emitc` | bool | `false` | Run the TTKernel-to-EmitC backend (produces C++ source). |
 
-The pipeline runs these passes in order:
+The pipeline runs these passes and subpasses in order:
 
-- `ttl-insert-intermediate-dfbs` — allocate compiler-managed DFBs for intermediate values (transposes, etc.); verify and error when `compiler-dfbs=false`
-- `ttl-insert-copy-wait` — insert missing `ttl.wait` after `ttl.copy` ops whose transfer handle has no wait user
-- `ttl-insert-cb-sync` — insert DFB wait/pop/reserve/push around compute regions
-- `ttl-annotate-l1-acc-loops` — detect `+=` accumulation loops and annotate for L1 packer accumulation
-- `convert-ttl-to-compute` — lower TTL elementwise tensor ops to `ttl.compute` with tile ops
-- `ttl-set-compute-kernel-config` — set `fp32_dest_acc_en` / `dst_full_sync_en` defaults
-- `ttl-assign-dst` — DST register allocation (linear scan with copy insertion)
-- `ttl-subblock-compute-for-dst` — tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*; optionally refine reserve/push to per-subblock granularity *(only if `subblock-sync=true`)*
-- `ttl-insert-tile-regs-sync` — insert math/pack thread synchronization
-- `ttl-lower-to-loops` — lower `ttl.compute` to `scf.for` loops; matmul computes are expanded inline via `generateMatmulCompute`
-- `ttl-schedule-operations` — reorder tile ops by dependency depth and kind *(only if `maximize-dst=true`)*
-- `ttl-annotate-cb-associations` — annotate block args with DFB indices
-- `convert-ttl-to-ttkernel` — lower TTL DMA ops to TTKernel
-- `ttkernel-insert-inits` — insert hardware init ops before compute ops
-- `ttkernel-insert-l1-accumulation` — insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
-- `ttkernel-combine-pack-tiles` — combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*
+- `ttl-form-accumulation-scopes{strategy=<accumulation-strategy>}` -- form semantic accumulation scopes for eligible tensor recurrences
+- `ttl-lower-accumulation-scopes{strategy=<accumulation-strategy>}` -- lower tensor accumulation scopes
+- `ttl-materialize-loop-state` -- replace remaining ranked-tensor loop-carried values with compiler-created DFBs
+- `ttl-insert-copy-wait` -- complete copies on every continuation without moving request cleanup before `ttl.wait_any`
+- `ttl-auto-sync` -- run `ttl-insert-cb-sync` and `ttl-coalesce-dfb-acquires`
+- `ttl-insert-accumulation-scopes{kind=dfb}` -- form semantic accumulation scopes for user-written `+=` loops
+- `ttl-lower-accumulation-scopes{kind=dfb}` -- lower user-written `+=` scopes to L1 packer metadata
+- `ttl-create-producer-compute` -- create producer `ttl.compute` operations before intermediate materialization
+- `ttl-insert-intermediate-dfbs` -- materialize DFB-only operands, values that must be preserved before source release, and computed values stored by operations in multiple MLIR basic blocks; verify and error when `compiler-dfbs=false`
+- `convert-ttl-to-compute` -- lower TTL elementwise tensor ops to `ttl.compute` with tile ops
+- `ttl-insert-cb-sync` -- insert missing DFB synchronization
+- `ttl-verify-pipenet-guards`, then `ttl-verify-pipenet-schedule` -- verify PipeNet launch domains and event ordering while logical DFB identities remain distinct and before physical DFB allocation
+- `ttl-form-pipe-transports` -- group eligible repeated PipeNet transfers and select bounded receiver storage while accounting for synchronized-reset and reconfiguration state
+- `ttl-coalesce-dfb-acquires` -- coalesce compatible DFB acquires
+- `ttl-finalize-dfb-indices` -- assign logical DFBs to physical indices, validate combined DFB and fixed-state capacity, and emit runtime metadata; `reuse-user-dfbs` controls automatic user-DFB reuse, `unsafe-assume-allocation-groups` trusts only explicit unproved group handoffs, `exact-coloring-search-limit` bounds exhaustive index and weighted-allocation queries, and `l1-budget-override` replaces the target L1 budget
+- `ttl-set-compute-kernel-config` -- select tile execution strategies and resolve kernel-wide DST and per-DFB unpack configuration
+- `ttl-assign-dst` -- DST register allocation (linear scan with copy insertion)
+- `ttl-subblock-compute-for-dst` -- tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*; optionally refine reserve/push to per-subblock granularity *(only if `subblock-sync=true`)*
+- `ttl-lower-to-loops` -- lower `ttl.compute` to `scf.for` loops; matmul computes are expanded inline via `generateMatmulCompute`
+- `ttl-schedule-operations` -- reorder tile ops by dependency depth and kind *(only if `maximize-dst=true`)*
+- `ttl-annotate-cb-associations` -- annotate block args with DFB indices
+- `ttl-verify-dfb-spsc` -- verify per-node DFB producer/consumer uniqueness after finalization
+- `ttl-erase-pipenet-scopes` -- remove verified PipeNet structural markers
+- `ttl-validate-cb-budget` -- verify target-aligned finalized DFB storage, synchronized-reset scratch, and reconfiguration tensors fit the per-core L1 budget
+- `convert-ttl-to-ttkernel` -- lower TTL DMA, PipeNet, synchronized-reset, and DFB reconfiguration operations to TTKernel, select their runtime resources, and validate the exact combined per-core L1 allocation
+- `ttkernel-insert-inits` -- insert hardware init ops before compute ops
+- `ttkernel-insert-l1-accumulation` -- insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
+- `ttkernel-combine-pack-tiles` -- combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*
 - Canonicalization and CSE cleanup
-- *(if `lower-to-emitc=true`)* `lower-affine`, `convert-ttkernel-to-emitc`, `emitc-form-expressions`
+- `ttkernel-specialize-and-annotate-dfb-use` -- `ttkernel-specialize-cores`, `canonicalize`, `cse`, `ttkernel-batch-static-pipenet-receives`, `ttkernel-unroll-static-pipenet-record-loops`, `lower-affine`, `canonicalize`, `cse`, `ttkernel-cleanup`, `ttkernel-finalize-tensor-runtime-args`, `canonicalize`, then `ttkernel-annotate-dfb-use` *(only if `specialize-cores=true`)*
+- Without core specialization, `ttkernel-cleanup-and-finalize-runtime-args` runs `ttkernel-batch-static-pipenet-receives`, `ttkernel-unroll-static-pipenet-record-loops`, `lower-affine`, `canonicalize`, `cse`, `ttkernel-cleanup`, `ttkernel-finalize-tensor-runtime-args`, then `canonicalize`. Python, the full C++ pipeline, and the standalone specialization pipeline use this same implementation.
+- *(if `lower-to-emitc=true`)* `convert-ttkernel-to-emitc`, `emitc-form-expressions`
 
 ### Individual Pass Options
 
-Each pass can also be run standalone for testing. Only passes with configurable
-options are listed; the remaining passes have no options.
+The following references describe configurable passes and selected passes that
+are useful to run independently for testing.
+
+#### `ttl-form-accumulation-scopes`
+
+Form semantic accumulation scopes for eligible tensor recurrences before
+concrete strategy selection.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `strategy` | string | `auto` | Tensor recurrence accumulation strategy used to filter scopes. Supported values: `auto`, `dst`, `l1-pack`. |
+
+```bash
+ttlang-opt input.mlir -p 'func.func(ttl-form-accumulation-scopes{strategy=auto})'
+```
+
+#### `ttl-insert-accumulation-scopes`
+
+Insert semantic accumulation scopes for user-written accumulation.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `kind` | string | `dfb` | Scope insertion kind. Supported value: `dfb`. |
+
+```bash
+ttlang-opt input.mlir -p 'func.func(ttl-insert-accumulation-scopes{kind=dfb})'
+```
+
+#### `ttl-lower-accumulation-scopes`
+
+Lower semantic accumulation scopes to a concrete storage strategy.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `kind` | string | `tensor` | Scope lowering kind. Supported values: `tensor`, `dfb`. |
+| `strategy` | string | `auto` | Tensor recurrence accumulation strategy. Supported values: `auto`, `dst`, `l1-pack`. Ignored for `kind=dfb`. |
+
+```bash
+ttlang-opt input.mlir -p 'func.func(ttl-lower-accumulation-scopes{strategy=dst})'
+```
 
 #### `ttl-insert-intermediate-dfbs`
 
-Insert compiler-allocated intermediate DFBs at fusion split points.
+Insert compiler-allocated intermediate DFBs where tensor SSA values require
+concrete DFB storage.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
@@ -155,17 +246,54 @@ Insert compiler-allocated intermediate DFBs at fusion split points.
 ttlang-opt input.mlir -p 'func.func(ttl-insert-intermediate-dfbs{enable=false})'
 ```
 
-#### `ttl-set-compute-kernel-config`
+#### `ttl-finalize-dfb-indices`
 
-Set default compute kernel configuration attributes on `ttl.compute` ops.
+Assign physical indices to logical DFBs and emit the complete runtime
+allocation table.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `fp32-dest-acc-en` | bool | `false` | Default `fp32_dest_acc_en` when not already configured. |
-| `dst-full-sync-en` | bool | `false` | Default `dst_full_sync_en` when not already configured. |
+| `reuse-user-dfbs` | bool | `true` | Reuse physical indices for compatible logical DFBs and storage allocations for physical descriptors when concurrent-kernel liveness proves that their lifetimes cannot overlap. When false, compact provisional user indices without introducing new user-DFB sharing, apply physical-index reuse only to compiler-created DFBs, and assign each physical descriptor separate storage. |
+| `exact-coloring-search-limit` | uint64 | `1000000` | Examine at most this many states during deterministic exact DFB allocation. Exhaustive search runs when order-dependent first-fit prevents acceptance by the index or weighted L1 limit, or exceeds the provisional threshold after a conservative PipeNet reservation. Reaching the limit fails with an inconclusive-search diagnostic only when acceptance requires the result; a reservation-only search may retain an authoritative-budget-valid assignment. |
+| `l1-budget-override` | uint32_t | `0` (target default) | Override the per-core L1 budget used by target-aligned DFB allocation, synchronized-reset and reconfiguration state, and the conservative PipeNet reservation. |
+| `unsafe-assume-allocation-groups` | bool | `false` | Trust explicit DFB allocation groups when launch-domain, access-completion, pointer-handoff, or lifetime-order proof is incomplete. Emit one warning per accepted group and record the assumptions in `ttl.assumed_dfb_allocation_groups`. Page-format, storage, static compute-configuration, per-member ring-envelope, target-capacity, and L1-budget errors remain fatal. |
 
 ```bash
-ttlang-opt input.mlir -p 'func.func(ttl-set-compute-kernel-config{fp32-dest-acc-en=1})'
+ttlang-opt input.mlir -p 'builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true unsafe-assume-allocation-groups=false exact-coloring-search-limit=1000000 l1-budget-override=0})'
+```
+
+#### `ttl-validate-cb-budget`
+
+Validate the target-aligned allocation for finalized physical DFBs,
+allocator-rounded synchronized-reset state, and one configuration tensor per
+synchronized reconfiguration boundary. Tensor-backed DFB storage is excluded
+because the tensor allocator owns it. Exact PipeNet scratch and GlobalSemaphore
+allocations are added during `convert-ttl-to-ttkernel`.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `l1-budget-override` | uint32_t | `0` (target default) | Override the per-core L1 budget used for finalized DFB, synchronized-reset, and reconfiguration-state validation. |
+
+```bash
+ttlang-opt input.mlir -p 'builtin.module(ttl-validate-cb-budget{l1-budget-override=98304})'
+```
+
+#### `ttl-set-compute-kernel-config`
+
+Resolve tile execution strategies and shared compute-kernel configuration. See
+[Compute Kernel Configuration](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/ComputeKernelConfiguration.md)
+for the algorithm and invariants.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `fp32-dest-acc-en` | string | `auto` | Select 32-bit destination elements through the Wormhole B0/Blackhole `fp32_dest_acc_en` setting: `auto`, `enabled`, or `disabled`. |
+| `dst-full-sync-en` | string | `auto` | Select full DST synchronization: `auto`, `enabled`, or `disabled`. |
+| `reduce-full-fp32` | bool | `true` | Prefer full-fp32 reduce accumulation when supported. |
+| `matmul-full-fp32` | bool | `true` | Prefer full-fp32 matmul accumulation when supported. |
+| `enable-fpu-binary-ops` | bool | `true` | Allow eligible add/sub/mul operations to select FPU. |
+
+```bash
+ttlang-opt input.mlir -p 'ttl-set-compute-kernel-config{fp32-dest-acc-en=enabled}'
 ```
 
 #### `ttl-assign-dst`
@@ -175,12 +303,11 @@ merging.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `dst-capacity` | uint32_t | `0` (auto) | Override DST register capacity. Auto-computed from `fp32_dest_acc_en` and `dst_full_sync_en` by default. Single-buffering (`dst_full_sync_en=true`): f32=8, f16/bf16=16. Double-buffering (default): f32=4, f16/bf16=8. |
+| `dst-capacity` | uint32_t | `0` (auto) | Override DST register capacity. Auto-computed from `fp32_dest_acc_en` and `dst_full_sync_en` by default. Single-buffering (`dst_full_sync_en=true`): 32-bit elements=8, 16-bit elements=16. Double-buffering (default): 32-bit elements=4, 16-bit elements=8. |
 | `separate-output-region` | bool | `false` | Allocate outputs in a separate DST region (needed for reductions and some loop optimizations). |
-| `enable-fpu-binary-ops` | bool | `true` | Use FPU for binary add/sub/mul when both operands come from DFBs. When disabled, binary ops use the SFPU path. |
 
 ```bash
-ttlang-opt input.mlir -p 'func.func(ttl-assign-dst{dst-capacity=16 enable-fpu-binary-ops=0})'
+ttlang-opt input.mlir -p 'func.func(ttl-assign-dst{dst-capacity=16})'
 ```
 
 #### `ttl-subblock-compute-for-dst`
@@ -196,6 +323,45 @@ Partition `ttl.compute` into DST-sized subblocks.
 ttlang-opt input.mlir -p 'func.func(ttl-subblock-compute-for-dst{subblock-sync=true})'
 ```
 
+#### `ttl-form-pipe-transports`
+
+Group eligible repeated PipeNet transfers and select bounded receiver storage.
+Later PipeTransport planning replaces proven-private grouped DFB lifecycles
+with transport-owned scratch; scalar residuals retain the original lifecycle.
+Selection uses a target-aligned logical DFB estimate and a conservative upper
+bound for receiver-published addresses, transport scratch, GlobalSemaphore
+counters, record-selected callback resources, synchronized-reset state, and
+reconfiguration state. The estimate selects a grouping size; it does not reject
+the finalized physical DFB allocation. A group size of one records the
+reservation without grouping. Exact combined validation occurs after PipeNet
+planning in `convert-ttl-to-ttkernel`.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `group-size` | int64_t | `0` (auto) | Limit logical transfers per group. `0` selects automatically and `1` disables grouping. |
+| `l1-budget-override` | uint32_t | `0` (target default) | Override the combined per-core L1 budget used during conservative grouping selection. |
+
+```bash
+ttlang-opt input.mlir --ttl-form-pipe-transports='group-size=8'
+```
+
+#### `convert-ttl-to-ttkernel`
+
+Lower TTL data movement, PipeNet, synchronized-reset, and DFB reconfiguration
+operations to TTKernel.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `reduce-full-fp32` | bool | `true` | Enable FP32 accumulation for reduce operations. |
+| `pipe-computed-addresses` | bool | `true` | Use computed receiver DFB addresses for eligible PipeNet transfers. When false, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
+| `pipe-capacity-sync` | bool | `true` | Use capacity-counter synchronization when the receiver wait and pop execute on the receiver NOC thread and the computed-address transfer passes the DFB ownership and count proofs. When false, computed-address transfers use receiver-post synchronization. |
+| `pipe-global-semaphores-only` | bool | `false` | Allocate all compiler-managed PipeNet synchronization counters in GlobalSemaphore storage. |
+| `l1-budget-override` | uint32_t | `0` (target default) | Override the exact combined per-core budget for target-aligned finalized DFBs, synchronized-reset state, reconfiguration tensors, PipeNet scratch, and GlobalSemaphore allocations. |
+
+```bash
+ttlang-opt input.mlir -p 'builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=false pipe-global-semaphores-only=true l1-budget-override=98304})'
+```
+
 #### `ttl-dump-cb-flow-graph`
 
 Analyze dataflow buffer producer/consumer relationships and dump the flow graph.
@@ -206,4 +372,102 @@ Analyze dataflow buffer producer/consumer relationships and dump the flow graph.
 
 ```bash
 ttlang-opt input.mlir -p 'ttl-dump-cb-flow-graph{output="/tmp/cb_graph.json"}'
+```
+
+#### `ttkernel-specialize-cores`
+
+Clone TTKernel functions whose control flow depends on a core coordinate once
+per launch coordinate. Requires a module-level `ttl.launch_grid` attribute (an
+i64 array of length 2 with positive entries). Missing or malformed
+`ttl.launch_grid` is a hard error. A valid single-core grid (product <= 1)
+skips specialization.
+
+Any structured region branch selector, repetition condition, or loop bound
+derived from `ttkernel.my_logical_x_` / `ttkernel.my_logical_y_` triggers
+cloning. Covered SCF operations include `scf.if`, `scf.index_switch`,
+`scf.for`, and `scf.while`.
+Functions with symbol uses (for example `func.call` targets) are left
+unspecialized with a warning so erasing the original does not leave dangling
+`SymbolRefAttr`s; unrelated functions in the module are still specialized.
+Each clone replaces coordinate reads with `arith.constant`s and is tagged with
+`ttl.core_coord` for runtime dispatch. Downstream `canonicalize` / `cse` fold
+the now-constant conditions and loop bounds. Static local PipeNet record loops
+are then fully unrolled so record-table lookups can fold to constants.
+`ttkernel-annotate-dfb-use` then records surviving DFB compile-time arguments,
+synchronized resets, and external-call dependencies on each specialized
+function. Debug prints of a DFB remain only on cores that still have a
+non-print use of that DFB; a print whose DFB was folded away is dropped rather
+than keeping the descriptor alive for debugging.
+
+Before TTNN program construction, the Python kernel builder lowers the module
+to EmitC once and compares the generated C++ and runtime metadata of specialized
+functions. Matching functions share one kernel descriptor whose core range is
+the union of their `ttl.core_coord` values. Different code, runtime arguments,
+tensor and DFB use, compute configuration, or fabric metadata retain separate
+descriptors.
+
+For example, consider a reader on a `2x2` launch grid whose only
+coordinate-dependent branch tests `x`. Specialization creates one reader
+function per coordinate, but both `x=0` functions generate the same code and
+both `x=1` functions generate the same code. The Python kernel builder emits
+two reader descriptors: one for `{(0,0), (0,1)}` and one for `{(1,0), (1,1)}`.
+Unmodified compute and writer functions retain their whole-grid descriptors.
+
+This pass is off by default. Enable it through the pipeline option
+`specialize-cores` (Python: `--ttl-specialize-cores`), which runs the
+registered `ttkernel-specialize-and-annotate-dfb-use` sub-pipeline:
+
+```bash
+ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{specialize-cores=true lower-to-emitc=true}'
+# Or stand-alone:
+ttlang-opt input.mlir -p 'builtin.module(ttkernel-specialize-and-annotate-dfb-use)'
+```
+
+#### `ttkernel-cleanup-and-finalize-runtime-args`
+
+This registered pipeline performs receive batching, record-loop unrolling,
+affine lowering, canonicalization and CSE, TTKernel cleanup, runtime-argument finalization, and
+final canonicalization. The specialization pipeline includes this sequence
+after cloning and coordinate folding. Python uses the registered pipelines in
+both modes, before signpost lowering to EmitC. Affine index arithmetic is
+lowered before canonicalization so newly exposed constants are folded too.
+
+```bash
+ttlang-opt input.mlir -p 'builtin.module(ttkernel-cleanup-and-finalize-runtime-args)'
+```
+
+#### `ttkernel-cleanup`
+
+Removes redundant barriers and configures reusable one-packet NoC write state
+when intervening operations preserve that state. It runs after record-loop
+expansion and endpoint simplification so newly exposed constant destinations
+receive the same optimizations as straight-line transfers during TTL lowering.
+The module-scoped pass inspects callees without concurrent function rewrites.
+
+#### `ttkernel-batch-static-pipenet-receives`
+
+Posts all receives in a static local record loop before waiting for individual
+payloads, provided TTL analysis proves that their distinct destination slots
+fit initially empty DFB storage. Completion waits and publication remain in
+record order. Repeated sequences, unknown counts, receiver-published addresses,
+and additional effects retain sequential execution. This pass runs before
+record-loop unrolling in both core-specialization configurations.
+
+#### `ttkernel-unroll-static-pipenet-record-loops`
+
+PipeNet lowering generates loops over the source or destination records selected
+for a worker. It marks bounded local-record loops as eligible for unrolling;
+loops that scan the complete fallback table remain rolled to limit code size.
+
+This pass replaces each marked loop with its individual iterations once its
+bounds are constant. This exposes each selected record index to canonicalization,
+which replaces immutable record-table lookups with constants. Dynamic loop
+bounds remain unchanged, and their temporary compiler marker is removed.
+
+The full TTL-to-TTKernel pipeline runs this pass even when core specialization
+is disabled so the marker never reaches code generation. In that case, loops
+whose bounds still depend on runtime coordinates remain loops.
+
+```bash
+ttlang-opt input.mlir -p 'builtin.module(func.func(ttkernel-unroll-static-pipenet-record-loops),canonicalize)'
 ```

@@ -1,0 +1,565 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Tests for core-specialized kernel compilation and execution.
+
+Coverage includes:
+  * A matmul that uses core coordinates only for addressing remains uncloned
+    and matches both Torch and unspecialized execution.
+  * Coordinate-dependent branches and loop bounds specialize per core and
+    preserve BF16 and FP32 results.
+  * A DFB used by only a subset of cores retains the correct per-core metadata
+    and executes correctly.
+  * An emitted runner executes from a cold cache for BF16 and FP32 tensors in
+    DRAM and L1, with equivalent specialized kernels sharing descriptors.
+"""
+
+import os
+import re
+
+import pytest
+
+ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
+
+import torch
+
+import ttl
+import ttl.dialects.ttl as ttl_dialect
+import ttl.ttl_api as ttl_api
+from ttl.ir import Context, Module
+from ttlang_test_utils import to_dram, to_l1
+from utils.correctness import assert_allclose, assert_pcc
+
+TILE_SIZE = 32
+
+# Small grid keeps the clone count (3 kernels * GRID_X * GRID_Y) modest.
+GRID_X = 2
+GRID_Y = 2
+
+
+def _assert_not_cloned(final_mlir_path):
+    """Confirm the dumped final MLIR shows no per-core clones.
+
+    The kernels here use the coordinate only for addressing, never for a branch,
+    so specialization must decline to clone them: no `ttl.core_coord` clone tag
+    and no `_c<x>_<y>` clone suffixes should appear.
+    """
+    with open(final_mlir_path) as fd:
+        mlir = fd.read()
+    assert (
+        "ttl.core_coord" not in mlir
+    ), "data-addressing kernels must not be cloned (found ttl.core_coord)"
+    clones = re.findall(r"func\.func @\w+_c\d+_\d+", mlir)
+    assert not clones, f"expected no per-core clones, got {clones}"
+
+
+# The motivating case from the specialization epic: a 2D grid matmul where
+# core (x, y) computes output tile out[y, x] = a[y, 0] @ b[0, x]. The reader
+# and writer address a, b, and out through their ttl.node coordinate, so
+# specialization must const-fold each clone's core_x / core_y to the right
+# tile. A single K tile per core is used because multicore K-accumulation is
+# not supported yet (see the matmul_multinode TODO and issue #652).
+#
+# Two op objects share this body so each has an independent compilation cache:
+# matmul_default runs unspecialized; matmul_specialized is always invoked with
+# options="--ttl-specialize-cores".
+def _make_matmul_op():
+    @ttl.operation(grid=(GRID_X, GRID_Y))
+    def matmul(a, b, out):
+        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+        b_dfb = ttl.make_dataflow_buffer_like(b, shape=(1, 1), block_count=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def mm_compute():
+            a_blk = a_dfb.wait()
+            b_blk = b_dfb.wait()
+            with out_dfb.reserve() as o:
+                o.store(a_blk @ b_blk)
+            a_blk.pop()
+            b_blk.pop()
+
+        @ttl.datamovement()
+        def dm_read():
+            x, y = ttl.node(dims=2)
+            with a_dfb.reserve() as a_blk:
+                tx = ttl.copy(a[y, 0], a_blk)
+                tx.wait()
+            with b_dfb.reserve() as b_blk:
+                tx = ttl.copy(b[0, x], b_blk)
+                tx.wait()
+
+        @ttl.datamovement()
+        def dm_write():
+            x, y = ttl.node(dims=2)
+            with out_dfb.wait() as o:
+                tx = ttl.copy(o, out[y, x])
+                tx.wait()
+
+    return matmul
+
+
+matmul_default = _make_matmul_op()
+matmul_specialized = _make_matmul_op()
+
+
+def _make_matmul_inputs(device):
+    M = GRID_Y * TILE_SIZE
+    N = GRID_X * TILE_SIZE
+    K = TILE_SIZE  # single K tile per core
+    a_torch = torch.randn((M, K), dtype=torch.bfloat16)
+    b_torch = torch.randn((K, N), dtype=torch.bfloat16)
+    expected = (a_torch.float() @ b_torch.float()).to(torch.bfloat16)
+    a = to_dram(a_torch, device)
+    b = to_dram(b_torch, device)
+    return a, b, expected
+
+
+def test_specialize_cores_matmul_matches_reference(device, monkeypatch, tmp_path):
+    """Specialized per-core matmul matches torch and the unspecialized path."""
+    a, b, expected = _make_matmul_inputs(device)
+    out_default = to_dram(torch.zeros_like(expected), device)
+    out_spec = to_dram(torch.zeros_like(expected), device)
+
+    # Unspecialized baseline (specialization off by default).
+    matmul_default(a, b, out_default)
+    default_result = ttnn.to_torch(out_default)
+
+    # Specialized path (opt in). Dump the final MLIR so we can confirm the
+    # pass ran.
+    final_mlir = tmp_path / "matmul_specialized_final.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir))
+    matmul_specialized(a, b, out_spec, options="--ttl-specialize-cores")
+    spec_result = ttnn.to_torch(out_spec)
+
+    # Numerical correctness vs torch, and equivalence to the default path.
+    assert_pcc(expected.float(), spec_result.float(), threshold=0.999)
+    assert_pcc(default_result.float(), spec_result.float(), threshold=0.999)
+
+    # These kernels address through the coordinate but never branch on it, so
+    # specialization must leave them un-cloned.
+    _assert_not_cloned(str(final_mlir))
+
+
+# A kernel that actually branches on the core coordinate. The reader swaps the
+# two tile-columns: core (x, y) reads source column `1 - x`, so the output is
+# the input with its two column-blocks swapped. The branch (`if x == 0`) lowers
+# to an scf.if on the coordinate, so specialization clones the reader per core
+# and const-folds each clone's branch. The compute and writer never branch, so
+# they stay whole-grid -- this also exercises the mixed cloned/uncloned kernel
+# validation path. The column-swap assumes GRID_X == 2.
+#
+# Fresh op objects share this body so each has an independent compilation
+# cache. The cache is keyed on tensor properties, not on env vars like
+# TTLANG_EMIT_RUNNER / TTLANG_COMPILE_ONLY, so tests that toggle those must
+# call _make_branch_swap_op() again rather than reuse branch_swap_*.
+def _make_branch_swap_op():
+    @ttl.operation(grid=(GRID_X, GRID_Y))
+    def branch_swap(a, out):
+        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute_fn():
+            with a_dfb.wait() as a_tile, out_dfb.reserve() as o:
+                o.store(a_tile)
+
+        @ttl.datamovement()
+        def dm_read():
+            x, y = ttl.node(dims=2)
+            with a_dfb.reserve() as blk:
+                # Default (x == 1) reads column 0; column-0 cores read column 1.
+                tx = ttl.copy(a[y, 0], blk)
+                if x == 0:
+                    tx = ttl.copy(a[y, 1], blk)
+                tx.wait()
+
+        @ttl.datamovement()
+        def dm_write():
+            x, y = ttl.node(dims=2)
+            with out_dfb.wait() as blk:
+                tx = ttl.copy(blk, out[y, x])
+                tx.wait()
+
+    return branch_swap
+
+
+branch_swap_default = _make_branch_swap_op()
+branch_swap_specialized = _make_branch_swap_op()
+
+
+def _make_swap_inputs(device):
+    assert GRID_X == 2, "branch_swap column-swap reference assumes GRID_X == 2"
+    shape = (GRID_Y * TILE_SIZE, GRID_X * TILE_SIZE)
+    a_torch = torch.randn(shape, dtype=torch.bfloat16)
+    left = a_torch[:, :TILE_SIZE]
+    right = a_torch[:, TILE_SIZE:]
+    expected = torch.cat([right, left], dim=1).contiguous()
+    a = to_dram(a_torch, device)
+    return a, expected
+
+
+def _make_branch_broadcast_op():
+    """Build an operation whose reader depends on x but not y."""
+
+    @ttl.operation(grid=(GRID_X, GRID_Y))
+    def branch_broadcast(input_tensor, output_tensor):
+        input_dfb = ttl.make_dataflow_buffer_like(
+            input_tensor, shape=(1, 1), block_count=2
+        )
+        output_dfb = ttl.make_dataflow_buffer_like(
+            output_tensor, shape=(1, 1), block_count=2
+        )
+
+        @ttl.compute()
+        def compute_fn():
+            with input_dfb.wait() as input_tile, output_dfb.reserve() as output_block:
+                output_block.store(input_tile)
+
+        @ttl.datamovement()
+        def dm_read():
+            node_x, _node_y = ttl.node(dims=2)
+            with input_dfb.reserve() as input_block:
+                if node_x == 0:
+                    ttl.copy(input_tensor[0, 1], input_block).wait()
+                else:
+                    ttl.copy(input_tensor[0, 0], input_block).wait()
+
+        @ttl.datamovement()
+        def dm_write():
+            node_x, node_y = ttl.node(dims=2)
+            with output_dfb.wait() as output_block:
+                ttl.copy(output_block, output_tensor[node_y, node_x]).wait()
+
+    return branch_broadcast
+
+
+def _make_broadcast_inputs(device, dtype, to_device):
+    """Create input and expected output for the x-dependent reader branch."""
+
+    tensor_shape = (GRID_Y * TILE_SIZE, GRID_X * TILE_SIZE)
+    input_host = torch.randn(tensor_shape, dtype=dtype)
+    first_tile_row = input_host[:TILE_SIZE]
+    expected_tile_row = torch.cat(
+        (
+            first_tile_row[:, TILE_SIZE:],
+            first_tile_row[:, :TILE_SIZE],
+        ),
+        dim=1,
+    )
+    expected = expected_tile_row.repeat(GRID_Y, 1).contiguous()
+    return to_device(input_host, device), expected
+
+
+def _assert_reader_cloned(final_mlir_path):
+    """Confirm the branching reader was cloned once per core.
+
+    Only the reader branches on the coordinate, so there must be exactly one
+    clone per launch coordinate (compute and writer stay whole-grid), each
+    tagged with `ttl.core_coord`, and the clones must cover every coordinate.
+    """
+    with open(final_mlir_path) as fd:
+        mlir = fd.read()
+    assert (
+        "ttl.core_coord" in mlir
+    ), "a kernel that branches on the coordinate must be cloned (no ttl.core_coord)"
+    clones = re.findall(r"func\.func @\w+_c(\d+)_(\d+)", mlir)
+    coords = {(int(x), int(y)) for x, y in clones}
+    expected_coords = {(x, y) for y in range(GRID_Y) for x in range(GRID_X)}
+    assert coords == expected_coords, (
+        f"reader clones cover {sorted(coords)}, expected " f"{sorted(expected_coords)}"
+    )
+    assert len(clones) == GRID_X * GRID_Y, (
+        f"expected exactly {GRID_X * GRID_Y} clones (reader only), got "
+        f"{len(clones)}: {clones}"
+    )
+
+
+def test_specialize_cores_branch_matches_reference(device, monkeypatch, tmp_path):
+    """A coordinate-branching kernel is cloned per core and stays correct."""
+    a, expected = _make_swap_inputs(device)
+    out_default = to_dram(torch.zeros_like(expected), device)
+    out_spec = to_dram(torch.zeros_like(expected), device)
+
+    # Unspecialized baseline: the runtime coordinate read + scf.if already
+    # produce the swap correctly on the default path.
+    branch_swap_default(a, out_default)
+    default_result = ttnn.to_torch(out_default)
+
+    # Specialized path (opt in). Dump the final MLIR so we can confirm the
+    # reader was cloned per core.
+    final_mlir = tmp_path / "branch_specialized_final.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir))
+    branch_swap_specialized(a, out_spec, options="--ttl-specialize-cores")
+    spec_result = ttnn.to_torch(out_spec)
+
+    # Numerical correctness vs torch, and equivalence to the default path.
+    assert_pcc(expected.float(), spec_result.float())
+    assert_pcc(default_result.float(), spec_result.float())
+
+    # The reader branches on core_x, so it must be cloned once per core.
+    _assert_reader_cloned(str(final_mlir))
+
+
+@ttl.operation(grid=(GRID_X, 1))
+def coordinate_loop_copy(inp, out):
+    loop_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+
+    @ttl.datamovement()
+    def dm_read_coordinate_loop():
+        node_x, _node_y = ttl.node(dims=2)
+        for column_index in range(node_x + 1):
+            with loop_dfb.reserve() as loop_block:
+                ttl.copy(inp[node_x, column_index], loop_block).wait()
+
+    @ttl.datamovement()
+    def dm_write_coordinate_loop():
+        node_x, _node_y = ttl.node(dims=2)
+        for column_index in range(node_x + 1):
+            with loop_dfb.wait() as loop_block:
+                ttl.copy(loop_block, out[node_x, column_index]).wait()
+
+
+def _assert_coordinate_loop_cloned(final_mlir_path):
+    with open(final_mlir_path) as final_mlir_file:
+        final_mlir = final_mlir_file.read()
+
+    expected_coords = {(0, 0), (1, 0)}
+    for kernel_name in ("dm_read_coordinate_loop", "dm_write_coordinate_loop"):
+        assert re.search(rf"func\.func @{kernel_name}\b", final_mlir) is None
+        clone_matches = re.findall(
+            rf"func\.func @{kernel_name}_c(\d+)_(\d+)", final_mlir
+        )
+        clone_coords = {(int(node_x), int(node_y)) for node_x, node_y in clone_matches}
+        assert clone_coords == expected_coords
+        assert len(clone_matches) == len(expected_coords)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+def test_specialize_cores_coordinate_loop_matches_reference(
+    device, monkeypatch, tmp_path, dtype
+):
+    """Coordinate-dependent loop bounds specialize and execute correctly."""
+    torch.manual_seed(0)
+    tensor_shape = (GRID_X * TILE_SIZE, GRID_X * TILE_SIZE)
+    input_host = torch.randn(tensor_shape, dtype=dtype)
+    expected = torch.zeros_like(input_host)
+    expected[:TILE_SIZE, :TILE_SIZE] = input_host[:TILE_SIZE, :TILE_SIZE]
+    expected[TILE_SIZE:, :] = input_host[TILE_SIZE:, :]
+
+    inp = to_dram(input_host, device)
+    out = to_dram(torch.zeros_like(input_host), device)
+    final_mlir = tmp_path / f"coordinate_loop_{dtype}_final.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir))
+
+    coordinate_loop_copy(inp, out, options="--ttl-specialize-cores")
+    ttnn.synchronize_device(device)
+
+    actual = ttnn.to_torch(out).float()
+    assert_allclose(actual, expected.float(), rtol=0.0, atol=0.0)
+    _assert_coordinate_loop_cloned(str(final_mlir))
+
+
+# An extra DFB is live only on column-0 cores. The reader and compute both
+# branch on `x == 0`, so specialization clones them and folds the extra
+# reserve/wait away on column 1. Column 0 writes `a + extra`; column 1 writes
+# `a`. Extra is one tile-column so only the live cores address it.
+def _make_subset_dfb_op():
+    @ttl.operation(grid=(GRID_X, GRID_Y))
+    def subset_dfb(a, extra, out):
+        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
+        extra_dfb = ttl.make_dataflow_buffer_like(extra, shape=(1, 1), block_count=2)
+        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute_fn():
+            x, _y = ttl.node(dims=2)
+            if x == 0:
+                with (
+                    a_dfb.wait() as a_tile,
+                    extra_dfb.wait() as extra_tile,
+                    out_dfb.reserve() as o,
+                ):
+                    o.store(a_tile + extra_tile)
+            else:
+                with a_dfb.wait() as a_tile, out_dfb.reserve() as o:
+                    o.store(a_tile)
+
+        @ttl.datamovement()
+        def dm_read():
+            x, y = ttl.node(dims=2)
+            with a_dfb.reserve() as blk:
+                tx = ttl.copy(a[y, x], blk)
+                tx.wait()
+            if x == 0:
+                with extra_dfb.reserve() as extra_blk:
+                    tx = ttl.copy(extra[y, 0], extra_blk)
+                    tx.wait()
+
+        @ttl.datamovement()
+        def dm_write():
+            x, y = ttl.node(dims=2)
+            with out_dfb.wait() as blk:
+                tx = ttl.copy(blk, out[y, x])
+                tx.wait()
+
+    return subset_dfb
+
+
+subset_dfb_specialized = _make_subset_dfb_op()
+
+# Clone names and DFB slots for the specialized subset-DFB kernel. Column-0
+# keeps the shared tile (0) and the extra tile (1); column-1 keeps only 0.
+# Compute also uses the output tile (2).
+_SUBSET_DFB_SPECIALIZED_MLIR = """
+module {
+  func.func @dm_read_c0_0() attributes {
+    ttl.used_dfb_indices = array<i32: 0, 1>
+  } {
+    return
+  }
+  func.func @dm_read_c1_0() attributes {
+    ttl.used_dfb_indices = array<i32: 0>
+  } {
+    return
+  }
+  func.func @compute_fn_c0_0() attributes {
+    ttl.used_dfb_indices = array<i32: 0, 1, 2>
+  } {
+    return
+  }
+  func.func @compute_fn_c1_0() attributes {
+    ttl.used_dfb_indices = array<i32: 0, 2>
+  } {
+    return
+  }
+}
+"""
+
+
+def test_specialize_cores_used_dfb_indices_match_cloned_funcs():
+    """Column-0 clones keep DFB 1; column-1 clones keep only the shared slots."""
+    context = Context()
+    ttl_dialect.ensure_dialects_registered(context)
+    with context:
+        module = Module.parse(_SUBSET_DFB_SPECIALIZED_MLIR)
+        assert ttl_api._get_kernel_optional_i32_array_attr(
+            module, "dm_read_c0_0", "ttl.used_dfb_indices"
+        ) == [0, 1]
+        assert ttl_api._get_kernel_optional_i32_array_attr(
+            module, "dm_read_c1_0", "ttl.used_dfb_indices"
+        ) == [0]
+        assert ttl_api._get_kernel_optional_i32_array_attr(
+            module, "compute_fn_c0_0", "ttl.used_dfb_indices"
+        ) == [0, 1, 2]
+        assert ttl_api._get_kernel_optional_i32_array_attr(
+            module, "compute_fn_c1_0", "ttl.used_dfb_indices"
+        ) == [0, 2]
+
+
+def test_specialize_cores_subset_dfb_runs_on_device(device):
+    """A DFB used only on column-0 cores stays correct after specialization."""
+    assert GRID_X == 2, "subset DFB reference assumes a two-column launch grid"
+    a_shape = (GRID_Y * TILE_SIZE, GRID_X * TILE_SIZE)
+    extra_shape = (GRID_Y * TILE_SIZE, TILE_SIZE)
+    a_torch = torch.randn(a_shape, dtype=torch.bfloat16)
+    extra_torch = torch.randn(extra_shape, dtype=torch.bfloat16)
+    expected = a_torch.clone()
+    expected[:, :TILE_SIZE] = a_torch[:, :TILE_SIZE] + extra_torch
+
+    a = to_dram(a_torch, device)
+    extra = to_dram(extra_torch, device)
+    out = to_dram(torch.zeros(a_shape, dtype=torch.bfloat16), device)
+
+    subset_dfb_specialized(a, extra, out, options="--ttl-specialize-cores")
+
+    assert_pcc(expected.float(), ttnn.to_torch(out).float())
+
+
+def test_specialize_cores_emit_runner_no_crash(device, monkeypatch, tmp_path):
+    """Regression: TTLANG_EMIT_RUNNER must stay clone-aligned.
+
+    The emit block indexed thread_tensor_indices (one per original thread)
+    against kernel_paths (one per clone), so it raised IndexError.
+    """
+    monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
+    runner_path = tmp_path / "runner.py"
+    monkeypatch.setenv("TTLANG_EMIT_RUNNER", str(runner_path))
+    a, _ = _make_swap_inputs(device)
+    out = to_dram(
+        torch.zeros((GRID_Y * TILE_SIZE, GRID_X * TILE_SIZE), dtype=torch.bfloat16),
+        device,
+    )
+    _make_branch_swap_op()(a, out, options="--ttl-specialize-cores")
+    assert runner_path.exists(), "no runner emitted"
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
+def test_specialize_cores_emit_runner_executes(
+    device, monkeypatch, tmp_path, dtype, to_device
+):
+    """Reader clones with identical code share descriptors during first execution.
+
+    For each x coordinate, the y=0 and y=1 clones select the same branch and
+    generate identical C++. Compile-only avoids warming the program cache before
+    the emitted runner executes.
+    """
+    import importlib.util
+
+    monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
+    runner_path = tmp_path / "runner.py"
+    monkeypatch.setenv("TTLANG_EMIT_RUNNER", str(runner_path))
+    a, expected = _make_broadcast_inputs(device, dtype, to_device)
+    out = to_device(torch.zeros_like(expected), device)
+    _make_branch_broadcast_op()(a, out, options="--ttl-specialize-cores")
+
+    spec = importlib.util.spec_from_file_location("emitted_runner", str(runner_path))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    # Compute and writer cover the whole grid. The two reader descriptors each
+    # cover both y coordinates for one x-dependent branch result.
+    assert len(module.KERNEL_PATHS) == 4
+    specialized_ranges = [
+        ranges for ranges in module.KERNEL_CORE_RANGES if ranges is not None
+    ]
+    assert {tuple(ranges) for ranges in specialized_ranges} == {
+        (((0, 0), (0, 0)), ((0, 1), (0, 1))),
+        (((1, 0), (1, 0)), ((1, 1), (1, 1))),
+    }
+    monkeypatch.delenv("TTLANG_COMPILE_ONLY", raising=False)
+    module.run([a, out], device=device)
+    assert_pcc(expected.float(), ttnn.to_torch(out).float())
+
+
+if __name__ == "__main__":
+    # Manual repro: run the specialized path directly (no pytest) and print a
+    # summary plus the specialized-vs-torch comparison.
+    from ttlang_test_utils import require_hardware
+
+    print("=== Per-core specialization repro ===")
+    require_hardware()
+
+    final_mlir = "/tmp/specialize_cores_final.mlir"
+    os.environ["TTLANG_FINAL_MLIR"] = final_mlir
+
+    dev = ttnn.open_device(device_id=0)
+    try:
+        a, b, expected = _make_matmul_inputs(dev)
+        out = to_dram(torch.zeros_like(expected), dev)
+
+        print(
+            f"Grid: {GRID_X}x{GRID_Y} "
+            f"(these kernels address through the coordinate but never branch on "
+            f"it, so specialization is a no-op: no clones expected)"
+        )
+        matmul_specialized(a, b, out, options="--ttl-specialize-cores")
+
+        result = ttnn.to_torch(out)
+        assert_pcc(expected.float(), result.float(), threshold=0.999)
+        _assert_not_cloned(final_mlir)
+        print(f"OK: specialized result matches torch reference (no clones).")
+        print(f"Final MLIR written to {final_mlir}")
+    finally:
+        ttnn.close_device(dev)

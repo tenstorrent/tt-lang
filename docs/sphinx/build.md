@@ -252,16 +252,53 @@ Public PyPI publishing requires these tags to have the same `vX.Y.Z` component;
 S3-hosted bundled wheels can use a newer `TT_METAL_TAG` before a compatible
 public `ttnn` wheel is available.
 
+Also update the simulator pin. The macOS/simulator harness downloads a pinned
+`tenstorrent/ttsim` release whose `libttsim.so` must be ABI-compatible with the
+tt-metal being built, so set `TTSIM_VERSION` in `test/hw-sim/vm-install-sim.sh` to
+a ttsim release compatible with the new tt-metal (see the
+[libttsim API](https://github.com/tenstorrent/ttsim/blob/main/docs/libttsim_api.md)).
+
 Background: `third-party/tt-metal-version` is the single source of truth for
 the `ttnn` dependency version, the public `ttnn` provenance tag, and the
 tt-metal tag passed to `Dockerfile.base`. CI runs
 `.github/scripts/check-tt-metal-version.sh` on every PR to catch submodule
 drift.
 
+### Two-phase uplift: publishable release, then latest (S3-only)
+
+When the newest tt-metal tag is ahead of the latest public `ttnn` wheel, a
+single uplift to that tag cannot publish to public PyPI: `ttnn_pypi_aligned`
+(`.github/scripts/lib/tt-metal-version-utils.sh`) requires `TT_METAL_TAG` and
+`TTNN_PYPI_TT_METAL_TAG` to share a `vX.Y.Z` component, and `publish-pypi.yml`
+refuses the release otherwise. To ship a public PyPI release *and* pick up the
+newest tt-metal, split the work into two uplifts and land the publishable one
+first:
+
+1. **Publishable phase.** Set `TT_METAL_TAG` to the tt-metal tag whose `vX.Y.Z`
+   matches `TTNN_PYPI_TT_METAL_TAG`, and keep `TTNN_PYPI` at that public `ttnn`
+   version. The `-rc` suffix is ignored by the check, so `TT_METAL_TAG="v0.73.1"`
+   aligns with `TTNN_PYPI_TT_METAL_TAG="v0.73.1-rc5"`. This uplift's `vX.Y.Z`
+   release tag publishes to public PyPI.
+2. **Latest phase.** On top of the first, bump `TT_METAL_TAG` to the latest
+   tt-metal tag and leave `TTNN_PYPI`/`TTNN_PYPI_TT_METAL_TAG` unchanged. The tags
+   now diverge on `vX.Y.Z`, so the wheel is S3-only until a matching public
+   `ttnn` ships (S3 publishing runs from the weekly schedule or a manual
+   dispatch on `main`, never a tag push).
+
+Build, validate, and commit each phase separately (see [Rebuilding and
+committing](#rebuilding-and-committing)) as its own PR. When both phases move the
+same `third-party/tt-metal` gitlink and `TT_METAL_TAG` line, restack the second
+PR after the first merges so it applies onto the updated `main`.
+
 ### Updating LLVM
 
+`third-party/llvm-project` is a shallow clone, so a bare `git fetch` only
+refreshes the default branch tip and may leave an arbitrary commit unreachable
+("reference is not a tree"). Fetch the exact SHA:
+
 ```bash
-cd third-party/llvm-project && git fetch && git checkout <commit> && cd ../..
+git -C third-party/llvm-project fetch --depth 1 origin <full-sha>
+git -C third-party/llvm-project checkout --detach <full-sha>
 ```
 
 ### Rebuilding and committing
@@ -278,6 +315,23 @@ in case the uplift fails to build. `scripts/build-and-install.sh` uses
 to keep the existing `build-toolchain/` artifacts untouched if desired. It
 is best to remove any pre-existing uplift-related toolchain build directory
 before starting the new toolchain build.
+
+**Toolchain reuse is keyed on file existence, not on the submodule SHA.**
+`BuildLLVM` skips the LLVM build when
+`$TTLANG_TOOLCHAIN_DIR/lib/cmake/mlir/MLIRConfig.cmake` already exists (a SHA
+mismatch against the submodule is only an `AUTHOR_WARNING`, never an error), and
+`BuildTTMetal` skips when `$CMAKE_BINARY_DIR/tt-metal/ttnn/_ttnn.so` already
+exists. Rebuilding an uplift into a populated toolchain or build directory
+therefore silently keeps the *old* LLVM and tt-metal, and the uplifted SHAs are
+never actually compiled or tested. When the SHAs change, remove both the uplift
+toolchain build directory and the target toolchain directory first (or pass
+`--force-rebuild`). If the target lives under `/opt`, recreate and chown it:
+
+```bash
+sudo rm -rf /opt/ttlang-toolchain-<version>
+sudo mkdir -p /opt/ttlang-toolchain-<version>
+sudo chown "$USER": /opt/ttlang-toolchain-<version>
+```
 
 Build the toolchain (LLVM + tt-metal) into the parallel locations:
 
@@ -300,9 +354,22 @@ ninja -C build-uplift check-ttlang-mlir          # MLIR lit tests, no hardware
 ninja -C build-uplift check-ttlang-all           # full suite (Docker for hw)
 ```
 
-Test failures here mean the new submodule combination is incompatible —
-fix patches under `third-party/patches/` or pick a different SHA before
-installing the uplifted toolchain to `/opt/ttlang-toolchain`.
+Uplift failures land in three distinct stages:
+
+- **A tt-metal patch fails to apply**, aborting the toolchain configure with a
+  `FATAL_ERROR`. The patches in `third-party/patches/` are context-sensitive and
+  drift whenever tt-metal moves. Regenerate the patch against the new source and
+  commit the updated `.patch` alongside the uplift. Pre-check before starting the
+  long build with
+  `git -C third-party/tt-metal apply --check third-party/patches/<name>.patch`.
+- **tt-lang fails to compile against the new LLVM.** This surfaces in the
+  validation build, not the toolchain build, because `--toolchain-only` never
+  builds tt-lang. The cause is upstream MLIR API churn; fix the tt-lang source and
+  include it in the uplift commit. `third-party/patches/` only patches tt-metal
+  and cannot address this.
+- **Tests fail**, meaning the submodule combination is incompatible. Pick a
+  different SHA before installing the uplifted toolchain to
+  `/opt/ttlang-toolchain`.
 
 Once the uplift builds and tests cleanly, replace the system toolchain by
 re-running without the overrides (so `CMAKE_BINARY_DIR=build-toolchain` and
@@ -311,10 +378,16 @@ pointer changes together:
 
 ```bash
 git add third-party/llvm-project third-party/tt-metal \
-        third-party/tt-metal-version pyproject.toml
+        third-party/tt-metal-version
 git commit -m "Uplift submodules"
 git push
 ```
+
+Add any regenerated `third-party/patches/*.patch`, and any tt-lang source fix the
+new LLVM required, to the same commit. `pyproject.toml` needs no edit: its
+version, readme and dependencies are all `dynamic`, the wheel version is derived
+from git tags, and `setup.py` reads the `ttnn` pin out of
+`third-party/tt-metal-version` at build time.
 
 On push, `resolve-docker-tag` (see [Auto-resolved tag in PR /
 push workflows](#auto-resolved-tag-in-pr--push-workflows)) sees the
@@ -324,16 +397,45 @@ the `build-docker` job builds and pushes it before any other downstream
 job consumes it. Subsequent pushes of the same submodule SHA set reuse
 the cached image.
 
+(tagging-after-an-uplift-merge)=
+### Tagging after an uplift merge
+
+Wait for the merge's CI run on `main` to finish building the toolchain before
+pushing the release tag. A run reads caches only from its own ref and the
+default branch, and the uplift PR's cache lives under `refs/pull/<N>/merge`, so
+a tag pushed before `main` has cached the toolchain rebuilds it from source --
+about an hour and a half, concurrent with the identical build on `main`.
+
+The tag run cannot skip it: `call-build-docker.yml`'s `build-images` restores
+the toolchain with `fail-on-cache-miss: true` and bakes it into the IRD image.
+Dispatching `call-build-docker.yml` separately resolves the same cache scopes
+and rebuilds too.
+
+Confirm the cache exists first; the key uses seven-character IDs, the two
+submodule gitlink commits and the tree of `third-party/patches`:
+
+```bash
+gh api "repos/tenstorrent/tt-lang/actions/caches?per_page=100" \
+  --jq '.actions_caches[] | select(.key | startswith("Linux-toolchain")) | "\(.ref)  \(.key)"'
+```
+
+Look for `Linux-toolchain_llvm-<llvm7>_ttmetal-<ttmetal7>_patches-<patches7>`
+at `ref=refs/heads/main` matching the uplifted submodules, then push the tag.
+
 ### CI: toolchain cache and Docker images
 
-CI uses two caching layers that must be rebuilt when submodule SHAs change:
+CI uses two caching layers that must be rebuilt when what the toolchain is
+built from changes:
 
 1. **GitHub Actions toolchain cache** -- a cached LLVM + tt-metal build keyed
-   by the LLVM and tt-metal submodule SHAs
-   (`Linux-toolchain_llvm-<sha>_ttmetal-<sha>`). When an uplift changes either
-   SHA, the cache key changes and the
-   `call-build-toolchain.yml` workflow automatically builds and caches a new
-   toolchain.
+   by the LLVM and tt-metal submodule SHAs together with the tree hash of
+   `third-party/patches`
+   (`Linux-toolchain_llvm-<sha>_ttmetal-<sha>_patches-<tree>`). When an uplift
+   changes either SHA, or a patch is added, edited or removed, the cache key
+   changes and the `call-build-toolchain.yml` workflow automatically builds and
+   caches a new toolchain. The patches belong in the key because
+   `BuildTTMetal` applies them to the tt-metal source at configure time, so a
+   patch change alters the built toolchain exactly as a submodule bump does.
 
 2. **Docker images** -- `ird` and `dist` container images at GHCR, tagged by
    `.github/containers/get-version-tag.sh` (see [Docker tag scheme](#docker-tag-scheme)).
@@ -360,7 +462,7 @@ the current checkout:
   `.github/scripts/uplift-paths.sh` match the nearest version tag commit.
   The script returns the tag name itself, with `+` translated to `-` because
   Docker tags allow only `[A-Za-z0-9_.-]`.
-- **Uplift state** (`vX.Y.Z-uplift-<8char>`): one or more of those files
+- **Uplift state** (`vX.Y.Z-<8char>`): one or more of those files
   differ from the nearest version tag. The hash is
   `git ls-tree HEAD -- <uplift-files> | sha256sum | cut -c1-8`, so two
   branches with identical submodule SHAs and Dockerfile/requirements content
@@ -378,12 +480,15 @@ to query GHCR. If the image is present, `build-docker` is skipped and
 downstream jobs proceed immediately. If the image is missing and the
 resolved tag is the uplift form, `build-docker` runs `call-build-docker.yml`
 with `push: true` and uploads the rebuilt image so downstream jobs
-(`build`, `build-wheels`, `test-hardware`, `test-dist-tutorials`) can pull
-it. If the image is missing and the resolved tag is the bare release form
+(`build`, `build-wheels`, `test-hardware`, `test-exabox`,
+`test-dist-tutorials`) can pull it. If the image is missing and the resolved
+tag is the bare release form
 (e.g. `vX.Y.Z`), the probe step fails the job with an error directing the
-maintainer to re-publish the release via `publish-pypi.yml`; rebuilding the
-release tag from a PR or main commit would push newer content under the
-release tag and overwrite the released image.
+maintainer to run `call-build-docker.yml` with `push: true` at that exact
+release tag. Recovery uses that workflow rather than `publish-pypi.yml` so the
+image is rebuilt from the tagged commit alone; rebuilding the release tag from
+a PR or main commit would push newer content under the release tag and
+overwrite the released image.
 
 `ci.yml` also has a `dryrun-docker` job that runs only on
 pull_request events when the PR touches container-relevant files
@@ -397,6 +502,13 @@ every PR. The path-change detection is in
 `.github/scripts/wheel-or-container-changed.sh` (path list in
 `wheel-or-container-paths.sh`).
 
+Manylinux wheel-builder images use the same deterministic tag format, but
+their input list extends `.github/scripts/uplift-paths.sh` with the
+manylinux builder Dockerfile, CMake driver, and builder driver scripts. This
+keeps changes to those builder-only files from invalidating the shared
+ird/dist image tag while still producing a new manylinux builder tag when the
+builder assembly changes.
+
 `call-build.yml` retains its `build_toolchain` input for manual
 `workflow_dispatch` runs, but the automated workflows no longer set it:
 the correct toolchain is always available inside the container at the
@@ -404,11 +516,38 @@ resolved tag.
 
 #### Hardware test timeouts
 
-`call-test-hardware.yml` and `call-test-dist-tutorials.yml` pass
-`--timeout=60 --timeout-method=signal` to every pytest invocation so a hung
-test exits within ~60 seconds instead of holding the single `n150` runner
-until the 90-minute job timeout. Tests that legitimately need longer should
-set their own `@pytest.mark.timeout(...)` override.
+`call-test-hardware.yml` and `call-test-exabox.yml` pass
+`--timeout=60 --timeout-method=signal` to simulator tests. Device suites run
+through `.github/scripts/run-hardware-pytests.sh`, which passes
+`--timeout=300 --timeout-method=thread`; the thread method interrupts C-level
+device deadlocks that `SIGALRM` cannot. `call-test-dist-tutorials.yml` uses the
+60-second signal timeout for its distribution tests. Tests that legitimately
+need longer set their own `@pytest.mark.timeout(...)` override. On multi-chip
+hosts, `compile_only` and `multi_device` tests execute serially while
+single-device tests execute in parallel with one worker per chip.
+
+#### Exabox Galaxy tests
+
+`call-build.yml` runs N150 tests through `call-test-hardware.yml` and Galaxy
+tests through `call-test-exabox.yml`. The Exabox job uses
+`exabox-multihost-ci-sc1`, which provisions a Galaxy allocation from the IRD
+image while Actions steps execute in a CPU-side container. The checkout is
+staged on `/ci`, copied to `/home/user/tt-lang` on every worker host, and reset,
+build, and test commands execute through `mpirun --pernode --bind-to none` so
+OpenMPI does not restrict each worker shell and its child processes to one core.
+
+`manual-test-exabox.yml` builds and publishes the current revision's IRD image,
+then dispatches the same reusable workflow with the resulting tag. This keeps
+the worker toolchain and Exabox services aligned with the tested source.
+
+Exabox workers and `/ci` storage have job lifetime. The CPU-side Actions
+container restores ccache state under shared `/ci` storage, and the staging
+script makes the job-scoped cache writable by controller and worker UIDs. The
+reusable workflow defaults to a 90-minute timeout.
+
+The Galaxy job runs Python lit, simulator, and device pytest execution with 32
+parallel workers, matching the Galaxy chip count without exceeding the 64-thread
+host allocation. Device pytests retain the shared 300-second timeout.
 
 #### Rebuilding Docker images
 
@@ -424,11 +563,18 @@ Push policy across events:
 | PR (uplift)                            | refused by probe     | yes                            | no                           |
 | PR (non-uplift, container content)     | no (dryrun)          | n/a                            | no                           |
 | Main push (uplift)                     | refused by probe     | yes                            | yes                          |
-| Main push (non-uplift)                 | n/a (image exists)   | n/a                            | no (`build-docker` skipped)  |
+| Main push (non-uplift)                 | n/a (image exists)   | n/a                            | yes (`retag-latest`)         |
 | Tag push (release, via publish-pypi)   | yes                  | n/a                            | no                           |
 | `workflow_dispatch`                    | only if `push: true` | only if `push: true`           | only if `push: true` on main |
 
-For a final release:
+`build-docker` pushes `:latest`, but runs only when the probe reports the image
+missing. For an image published before the main push -- by an uplift PR's run or
+a release tag's `publish-pypi.yml` run -- the `retag-latest` job moves `:latest`
+onto the resolved tag instead, copying the manifest with
+`docker buildx imagetools create` rather than rebuilding.
+
+For a final release (see [Tagging after an uplift
+merge](#tagging-after-an-uplift-merge) before tagging an uplift):
 
 ```bash
 git tag vX.Y.Z
@@ -460,95 +606,126 @@ they cannot be distinguished by `pip install`. Prefer `-dev<YYYYMMDD>` or
 (publishing-to-pypi)=
 #### Publishing to PyPI
 
-`publish-pypi.yml` is the orchestrator that turns a release tag into a wheel
-on PyPI. It triggers automatically on push of `v*.*.*`, `v*.*.*-rc*`,
-`v*.*.*-dev*`, or `v*.*.*+*` tags, and can also be dispatched manually for
-re-runs and dry-runs.
+`publish-pypi.yml` prepares release images and wheels on release-tag pushes,
+but PyPI upload requires a manual dispatch from `refs/heads/main`. Manual
+dispatch takes the full SHA of the release-tagged commit and an optional
+manylinux wheel-builder tag. The selected commit must be an ancestor of the
+dispatching main commit and must have exactly one supported public release tag
+(`vX.Y.Z` or `vX.Y.Z-<prerelease>`). Local-version tags containing `+` are
+rejected.
 
 ```text
    push release tag
  or workflow_dispatch
           |
+          +---------------------------+
+          |                           v
+          |                    +--------------+
+          v                    | build-docker |   call-build-docker.yml
+   +--------------+            +--------------+   (release-tag pushes only;
+   |  preflight   |                                publishes the dist and IRD
+   +--------------+                                images under the release tag;
+          |                                        independent of preflight so
+          |   verify the selected source            an S3-only pin still gets
+          |   and release tag (release              its image)
+          |   checks skipped if dry_run=true)
+          v
+   +--------------------+
+   | build-wheel-images |   call-build-wheel-images.yml
+   +--------------------+   (skipped if docker_tag input is set;
+          |                  reuses separate LLVM and tt-metal caches)
           v
    +--------------+
-   |  preflight   |   verify GITHUB_REF is a v* tag
-   +--------------+   (skipped if dry_run=true)
-          |
-          v
-   +--------------+
-   | build-docker |   call-build-docker.yml
-   +--------------+   (skipped if docker_tag input is set;
-          |            smoke-tests image before push to GHCR)
-          v
-   +--------------+
-   | build-wheels |   call-build-wheels.yml
-   +--------------+   (builds + smoke-tests wheel inside ird container,
+   | build-wheels |   call-build-manylinux-wheels.yml
+   +--------------+   (builds cp310/cp312 public wheels and tt-lang-sim,
           |            uploads tt-lang-wheels artifact)
           |
           +-----------------------+
           v                       |
-   +---------------------+        |
-   | test-dist-tutorials |        |  (skipped under dry_run=true)
-   +---------------------+        |
-          |                       |
+   +-------------+                |
+   | test-wheels |                |  (also runs for dry runs)
+   +-------------+                |
+          | workflow_dispatch     |
+          | with dry_run=false    |
           +-----------------------+
           v                       v
    +--------------+        +------------------+
    |   publish    |        | dry-run-summary  |
    +--------------+        +------------------+
-   tag push or              workflow_dispatch
-   dry_run=false            with dry_run=true
+   workflow_dispatch        workflow_dispatch
+   from main with           with dry_run=true
+   dry_run=false
    (uploads to PyPI)        (lists artifacts only)
+
+   Release-tag pushes complete after build-docker and test-wheels.
 ```
 
 Job-by-job:
 
-1. **`preflight`** — runs `require-release-tag.sh`, which fails unless
-   `GITHUB_REF` looks like `refs/tags/v[0-9]...`, then runs
-   `require-pypi-ttnn-alignment.sh`, which fails when the public `ttnn` wheel
-   recorded in `third-party/tt-metal-version` was built from a different
-   tt-metal `vX.Y.Z` component than TT-Lang. Skipped under `dry_run: true`. Exposes
-   `tag_version` (tag with leading `v` stripped) for the wheel-version check.
-2. **`build-docker`** — calls `call-build-docker.yml` on tag push (where no
-   `docker_tag` input is supplied). Skipped on `workflow_dispatch`, which
-   requires `docker_tag`. Outputs the freshly built ird tag.
-3. **`build-wheels`** — calls `call-build-wheels.yml` against either the
-   `docker_tag` input (manual dispatch) or the `build-docker` output (tag
-   push). Builds the wheel inside the ird container, runs
-   `smoke-test-wheel.py` in an isolated venv (imports + `tt-lang-sim --help`
-   + `tt-lang-sim-stats --help`), and runs the CMake-install regression test
-   (`cmake --install` + `bin/tt-lang-sim --help` against the parallel-install
-   layout). Uploads the result as the `tt-lang-wheels` artifact.
-4. **`test-dist-tutorials`**: calls `call-test-dist-tutorials.yml` against
-   the dist image at the resolved tag, running the tutorial suite on the
-   `n150` hardware runner. Gates `publish`. Skipped under `dry_run: true`.
-5. **`publish`**: runs on tag push or when `dry_run` is false **and**
-   `test-dist-tutorials` succeeded. Downloads the artifact, verifies every
-   wheel filename's version field matches `preflight.outputs.tag_version`,
-   and uploads via `pypa/gh-action-pypi-publish` using OIDC trusted
-   publishing (`environment: pypi`, `id-token: write`).
-6. **`dry-run-summary`**: runs only on `workflow_dispatch` with
+1. **`preflight`** — keeps the workflow source checkout separate from the
+   selected release source. For manual publishing, it verifies that
+   `ttlang_sha` is an ancestor of the dispatching main commit and resolves the
+   release tag. Current workflow scripts validate that tag and the selected
+   source's `third-party/tt-metal-version`. Release checks are skipped under
+   `dry_run: true`. Exposes `tag_version` for the wheel-version check.
+2. **`build-wheel-images`** — calls `call-build-wheel-images.yml` when no
+   `docker_tag` is supplied. The multi-stage `manylinux_2_34` build stores LLVM
+   caches separately for Python 3.10 and 3.12 and stores tt-metal in a third
+   cache. Unchanged component inputs restore from GHCR instead of recompiling.
+3. **`build-docker`** — calls `call-build-docker.yml` with `push: true` on a
+   release-tag push, publishing the dist and IRD images under the release tag.
+   It passes no source override, so the images are built from the tagged commit
+   that `github.sha` already points at. Manual PyPI dispatches skip it, because
+   the release images belong to the tag rather than to the dispatch. This job
+   is what `ci.yml`'s `resolve-docker-tag` probe depends on: without it, a
+   release tag resolves to an IRD image that was never published.
+
+   It declares no `needs`, so it starts immediately and never waits on
+   `preflight`. That independence is required, not incidental: `preflight`
+   decides whether the release is publishable to public PyPI, and an S3-only
+   pin fails that check by design (see [Two-phase
+   uplift](#two-phase-uplift-publishable-release-then-latest-s3-only)). A
+   dependent job is skipped when its `needs` fail, so gating image publication
+   on `preflight` would leave every S3-only release without the image `ci.yml`
+   requires. The image tag comes from `get-version-tag.sh` at checkout rather
+   than from `preflight`, and `on.push.tags` already restricts the event to
+   release tags.
+4. **`build-wheels`** — calls `call-build-manylinux-wheels.yml` against either
+   the `docker_tag` input or the image-build output. It builds Python 3.10 and
+   3.12 `tt-lang` wheels with an exact public `ttnn` dependency and builds the
+   ABI-independent `tt-lang-sim` wheel. The workflow verifies wheel names,
+   versions, dependency metadata, and the `manylinux_2_34` platform tag before
+   uploading the `tt-lang-wheels` artifact.
+5. **`test-wheels`**: installs the Python 3.12 public wheel and its PyPI `ttnn`
+   dependency in an isolated environment on an `n150` runner, installs the sfpi
+   release recorded by `ttnn`, then runs the smoke test and tutorials. It runs
+   during dry runs and must pass before `publish`.
+6. **`publish`**: runs only for a manual dispatch from `main` when `dry_run` is
+   false and `test-wheels` succeeded. Downloads the artifact, verifies
+   every wheel filename's version field matches `preflight.outputs.tag_version`,
+   and uploads via `pypa/gh-action-pypi-publish` using OIDC trusted publishing
+   (`environment: pypi`, `id-token: write`).
+7. **`dry-run-summary`**: runs only on `workflow_dispatch` with
    `dry_run: true`. Downloads the artifact and lists what would have been
    uploaded. No `environment`, no PyPI credentials.
 
-Common scenarios:
+Common scenarios (`<TAG>` denotes a release tag, `<SHA>` its full commit SHA,
+and `<DOCKER_TAG>` an existing manylinux wheel-builder tag):
 
-Common scenarios (`<TAG>` denotes a release tag, `<DOCKER_TAG>` an existing
-ird image tag):
-
-| Trigger                                                       | docker_tag input | Result                                                              |
-| ------------------------------------------------------------- | ---------------- | ------------------------------------------------------------------- |
-| `git push origin <TAG>`                                       | (n/a)            | Build docker, build wheel, publish to PyPI as the tag's version     |
-| Dispatch from a tag ref with `docker_tag: <DOCKER_TAG>`       | required         | Skip docker build, reuse the supplied ird image, publish to PyPI    |
-| Dispatch from a non-tag ref with `dry_run: true`              | required         | Build wheel against the supplied tag, skip PyPI upload              |
-| Dispatch from a non-tag ref with `dry_run: false`             | required         | Fails at `preflight` because `GITHUB_REF` is not a release tag      |
+| Trigger                                                        | docker_tag input | Result                                                              |
+| -------------------------------------------------------------- | ---------------- | ------------------------------------------------------------------- |
+| `git push origin <TAG>`                                        | (n/a)            | Build and test the release images and wheels; do not upload to PyPI |
+| Dispatch from `main` with `ttlang_sha: <SHA>`                   | optional         | Build the tagged commit and publish its version to PyPI             |
+| Dispatch with `ttlang_sha: <SHA>` and `dry_run: true`           | optional         | Build and test the selected commit; skip PyPI upload                |
+| Non-main dispatch with `ttlang_sha: <SHA>` and `dry_run: false` | optional         | Fail at `preflight`                                                 |
 
 (publishing-to-s3-pypi)=
 #### Publishing to S3 PyPI
 
 `publish-s3-pypi.yml` publishes S3-hosted wheels to the Tenstorrent S3 PyPI
-index at `https://pypi.eng.aws.tenstorrent.com/`. It runs nightly on a GitHub
-schedule and can also be dispatched manually. Publishing is restricted to
+index at `https://pypi.eng.aws.tenstorrent.com/`. It runs weekly at 08:00 UTC
+on Monday (00:00 PST / 01:00 PDT) and can also be dispatched manually.
+Publishing is restricted to
 workflow runs on `refs/heads/main` because the AWS OIDC role is limited to
 main-branch refs; a manual dispatch from another ref can only perform a dry run.
 The workflow uses GitHub OIDC for AWS access. Regular publishes upload wheel
@@ -560,8 +737,9 @@ browser, but it keeps hidden anchors for final-release root wheels so
 `pip --find-links https://pypi.eng.aws.tenstorrent.com/tt-lang` remains
 backward-compatible for `X.Y.Z` S3 releases.
 Non-main dry runs must provide an existing `docker_tag`. If `docker_tag` is
-empty, the workflow builds and pushes GHCR IRD and manylinux wheel-builder images
-before the wheel build; that image publication is also restricted to
+empty, the workflow builds only the builder images required by the selected
+variants: the IRD image for bundled wheels and the shared manylinux images for
+light or PyPI-style wheels. Image publication is also restricted to
 `refs/heads/main`.
 
 The workflow prevents publishing a bundled S3 `tt-lang` wheel with the
@@ -581,24 +759,29 @@ S3 publishing uses this policy:
 - Do not mix public PyPI and S3 indexes for a `tt-lang` version whose artifacts
   have different dependency semantics. Use the S3 install command emitted by the
   workflow summary for S3 release wheels.
-- Nightly builds do not create Git tags. The scheduled workflow computes a
+- Scheduled builds do not create Git tags. The workflow computes a
   PEP 440 development version of the form `<MAJOR.MINOR.PATCH>.dev<YYYYMMDD>`,
   where the base version matches the latest stable tag reachable from `HEAD`,
   and the numeric suffix is a UTC date.
-- Scheduled reruns overwrite the same date-based version in the S3 index. This
-  keeps nightly versions readable, but existing local pip caches may still hold
-  the older wheel for that version.
+- Before building, a scheduled run compares the selected source SHA with the
+  marker written by the last successful scheduled publish. An equal SHA skips
+  all image, wheel, publish, and per-tt-metal work. A changed SHA publishes and
+  updates the marker only after the wheel objects and index are complete.
+- Scheduled reruns after a source update overwrite the same date-based version
+  in the S3 index. Existing local pip caches may still hold an older wheel for
+  that version.
 
-Manual stable-version publishes set `version_override` explicitly, build and
-push the matching IRD image when `docker_tag` is empty, build the selected wheel
-variants from that image, verify the wheel versions, and publish the result to
-S3 PyPI.
+Manual stable-version publishes set `version_override` explicitly, build any
+missing selected builder images when `docker_tag` is empty, verify each wheel
+set, and publish the result to S3 PyPI.
 
 The scheduled workflow defaults to `wheel_variant: bundled-and-light`. It keeps
 building the complete bundled wheel from the IRD image, and also builds and
 pushes the matching manylinux_2_34 wheel-builder images for Python 3.10 and
-Python 3.12 light wheels. The workflow verifies all wheel versions before
-publishing the combined result to S3 PyPI.
+Python 3.12 light wheels. The manylinux images use separate BuildKit registry
+caches for the two LLVM/Python combinations and for tt-metal, so unchanged
+components are restored instead of rebuilt. The workflow verifies all wheel
+versions before publishing the combined result to S3 PyPI.
 
 For a manual bundled S3 wheel with an existing IRD image, dispatch the
 workflow with:
@@ -630,6 +813,11 @@ wheels. Those wheels omit `Requires-Dist: ttnn`; the normal PyPI build keeps
 that requirement. The same build also emits
 `tt-lang-light==<version_override>`, a metapackage that depends on
 `tt-lang==<version_override>+light`.
+
+The `pypi` selection uses the same manylinux_2_34 base and build process but
+retains public package semantics: `tt-lang==<version_override>` has no `+light`
+label, requires the exact `ttnn` version from `third-party/tt-metal-version`,
+and includes `tt-lang-sim`. It does not emit the `tt-lang-light` metapackage.
 
 To publish bundled and light wheels from the same workflow run, dispatch with:
 
@@ -672,7 +860,7 @@ because auto-detection reads the dispatch ref's `third-party/tt-metal-version`
 rather than the pinned ref's. With `dry_run: true` the workflow builds and
 validates without publishing and needs no S3 credentials, so it can run from a
 feature branch; the scheduled per-tt-metal-SHA build in `publish-s3-pypi.yml`
-is best-effort and does not fail the nightly publish.
+is best-effort and does not fail the scheduled publish.
 
 Successful per-SHA publishes place the wheel files (both tt-lang and
 tt-lang-light) under `https://pypi.eng.aws.tenstorrent.com/tt-lang/ttmetal/<ttmetal7>/`
@@ -736,6 +924,19 @@ Writes require `refs/heads/main`; `dry_run` defaults to true. Operations are
 restricted to the `tt-lang/` prefix and cannot touch other teams' packages
 (including the sibling `tt-lang-light/` and `tt-lang-sim/` package indexes) or
 the bucket root. `delete` requires a `confirm` token equal to the prefix.
+
+`s3-wheel-maintenance.yml` provides wheel-specific storage maintenance.
+`deduplicate` removes older object versions only when the key, size, and ETag
+match a newer retained version. It never deletes the logical wheel key.
+`remove-dev-range` permanently removes every object version and delete marker
+for top-level `tt-lang` wheels whose `.devYYYYMMDD` version date is within the
+inclusive `start_date` and `end_date`; per-tt-metal wheel directories are
+excluded. A live date removal regenerates affected month views and the root
+index.
+
+Both operations require `refs/heads/main` and default to `dry_run: true`. Live
+deduplication requires `confirm: delete-duplicate-versions`; live date removal
+requires `confirm: delete-dev-versions`.
 
 #### Local S3 wheel testing
 

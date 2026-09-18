@@ -7,6 +7,9 @@
 
 #include "mlir/Pass/PassOptions.h"
 
+#include <cstdint>
+#include <string>
+
 namespace mlir {
 class OpPassManager;
 } // namespace mlir
@@ -22,13 +25,21 @@ struct TTLToTTKernelPipelineOptions
       *this, "maximize-dst",
       llvm::cl::desc("Enable DST maximization via subblock compute."),
       llvm::cl::init(true)};
+  // TODO(#649): Replace maximize-dst with granular options for accumulation
+  // strategy, compute subblocking, and tile-op scheduling.
+  Option<std::string> accumulationStrategy{
+      *this, "accumulation-strategy",
+      llvm::cl::desc("Select tensor recurrence accumulation storage strategy: "
+                     "auto, dst, or l1-pack."),
+      llvm::cl::init("auto")};
   Option<bool> enableFPUBinaryOps{
       *this, "enable-fpu-binary-ops",
-      llvm::cl::desc("Use FPU for binary add/sub/mul."), llvm::cl::init(true)};
+      llvm::cl::desc("Allow FPU strategy selection for binary add/sub/mul."),
+      llvm::cl::init(true)};
   Option<bool> useBlockMatmul{
       *this, "use-block-matmul",
       llvm::cl::desc("Lower matmul to block-level hardware calls "
-                     "(experimental::matmul_block) instead of per-tile loops."),
+                     "(matmul_block) instead of per-tile loops."),
       llvm::cl::init(true)};
   Option<bool> subblockSync{
       *this, "subblock-sync",
@@ -42,7 +53,11 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::init(true)};
   Option<bool> reduceFullFp32{
       *this, "reduce-full-fp32",
-      llvm::cl::desc("Enable FP32 accumulation for reduce operations."),
+      llvm::cl::desc("Prefer FP32 accumulation for reduce operations."),
+      llvm::cl::init(true)};
+  Option<bool> matmulFullFp32{
+      *this, "matmul-full-fp32",
+      llvm::cl::desc("Prefer FP32 accumulation for matmul operations."),
       llvm::cl::init(true)};
   Option<bool> strictF32Acc{
       *this, "strict-f32-acc",
@@ -50,16 +65,74 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::init(false)};
   Option<bool> compilerDFBs{
       *this, "compiler-dfbs",
-      llvm::cl::desc("Insert compiler-allocated intermediate DFBs for fused "
-                     "computations. When disabled, emit an error if any "
-                     "operation requires a compiler-allocated DFB."),
+      llvm::cl::desc("Insert compiler-allocated intermediate DFBs when "
+                     "materialization is required. When disabled, emit an "
+                     "error if materialization through a compiler-allocated "
+                     "DFB is required."),
       llvm::cl::init(true)};
+  Option<bool> pipeComputedAddresses{
+      *this, "pipe-computed-addresses",
+      llvm::cl::desc("Use computed receiver DFB addresses for eligible pipe "
+                     "transfers."),
+      llvm::cl::init(true)};
+  Option<bool> pipeCapacitySync{
+      *this, "pipe-capacity-sync",
+      llvm::cl::desc("Use capacity-counter synchronization for eligible pipe "
+                     "transfers. When disabled, computed-address transfers "
+                     "use receiver-post synchronization."),
+      llvm::cl::init(true)};
+  Option<bool> pipeGlobalSemaphoresOnly{
+      *this, "pipe-global-semaphores-only",
+      llvm::cl::desc("Allocate all compiler-managed PipeNet synchronization "
+                     "counters in GlobalSemaphore storage."),
+      llvm::cl::init(false)};
+  Option<int64_t> pipeBatchTiles{
+      *this, "pipe-batch-tiles",
+      llvm::cl::desc("Limit logical transfers per PipeTransport group. "
+                     "Zero selects automatically; one disables grouping."),
+      llvm::cl::init(0)};
+  Option<uint32_t> l1BudgetOverride{
+      *this, "l1-budget-override",
+      llvm::cl::desc("Override the combined DFB, PipeNet, and synchronized-"
+                     "reset L1 allocation budget."),
+      llvm::cl::init(0)};
+  Option<bool> reuseUserDFBs{
+      *this, "reuse-user-dfbs",
+      llvm::cl::desc("Reuse physical DFB indices when concurrent-kernel "
+                     "liveness proves that logical lifetimes do not overlap."),
+      llvm::cl::init(true)};
+  Option<bool> unsafeAssumeAllocationGroups{
+      *this, "unsafe-assume-allocation-groups",
+      llvm::cl::desc("Trust explicit DFB allocation groups when runtime "
+                     "handoff cannot be proven."),
+      llvm::cl::init(false)};
+  Option<std::uint64_t> exactColoringSearchStateLimit{
+      *this, "exact-coloring-search-limit",
+      llvm::cl::desc("Maximum states examined by exact DFB allocation before "
+                     "reporting an inconclusive result."),
+      llvm::cl::init(1000000)};
+  Option<bool> specializeCores{
+      *this, "specialize-cores",
+      llvm::cl::desc(
+          "Clone TTKernel functions whose control flow depends on a core "
+          "coordinate once per launch coordinate "
+          "(ttkernel-specialize-cores)."),
+      llvm::cl::init(false)};
 };
 
 void createTTLToTTKernelPipeline(mlir::OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options);
 
+/// Add DFB synchronization insertion and acquire coalescing passes.
 void buildTTLAutoSyncPipeline(mlir::OpPassManager &pm);
+
+/// Add the ordered PipeNet launch-domain and synchronization verifiers.
+void buildTTLVerifyPipeNetPipeline(mlir::OpPassManager &pm);
+
+/// Clone kernels per launch coordinate, apply shared record cleanup and runtime
+/// argument finalization, then record surviving DFB compile-time argument
+/// indices.
+void buildTTKernelSpecializationPipeline(mlir::OpPassManager &pm);
 
 void registerTTLPipelines();
 

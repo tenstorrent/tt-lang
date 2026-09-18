@@ -13,8 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Deque, Dict, Optional, Set, Tuple, TypedDict
 from .pipe import AnyPipe
-from .typedefs import Count, Shape, BindableTemplate
-from .blockstate import KernelType
+from .typedefs import BindableTemplate, Count, IndexType, Shape
+from .kernel import KernelKind
 
 if TYPE_CHECKING:
     from .ttnnsim import Tensor
@@ -51,17 +51,27 @@ class TraceEvent:
 
 
 @dataclass(frozen=True)
+class ByteCopyFormat:
+    """Layout and dtype facts retained when a byte-counted payload is absent."""
+
+    layout: IndexType
+    dtype: Any
+
+
+@dataclass(frozen=True)
 class PipeMessage:
     """A single message queued on a pipe.
 
     ``grid_shape`` (the tile-grid shape of the sent block) is always populated
     so the destination shape check runs identically in dry-run and normal mode.
-    ``data`` holds the backing tile tensor, or is ``None`` in dry-run mode where
-    the payload bytes are not moved.
+    ``byte_copy_format`` preserves the source DFB format when ``data`` is
+    ``None`` in dry-run mode.
     """
 
     grid_shape: Shape
     data: Optional[Tensor] = None
+    byte_count: Optional[int] = None
+    byte_copy_format: Optional[ByteCopyFormat] = None
 
 
 class PipeEntry(TypedDict):
@@ -104,7 +114,7 @@ class SimulatorContext:
     copy_state: CopySystemState = field(default_factory=CopySystemState)
     warnings: WarningState = field(default_factory=WarningState)
     scheduler: Any = None  # Optional[GreenletScheduler] - avoid import cycle
-    current_kernel_type: Optional[KernelType] = None
+    current_kernel_type: Optional[KernelKind] = None
     kernel_registry: list[BindableTemplate] = field(
         default_factory=list[BindableTemplate]
     )  # pyright: ignore[reportUnknownVariableType]
@@ -113,16 +123,18 @@ class SimulatorContext:
         0  # Total L1 capacity of DFBs created in the current kernel body
     )
     trace_events: list[TraceEvent] = field(default_factory=list)
-    # Maps kernel function objects to their precomputed InjectionPoint tuples.
-    # Populated once per kernel invocation before the node loop runs.
-    # Typed as Any to avoid importing analysis (which imports dfb -> context).
-    injection_points_cache: Dict[Any, Any] = field(default_factory=dict)
     # Active copy-wait injection hooks for this simulation run.
     # Maps id(CodeType) -> (by_lineno, return_ips) lookup tables used by
     # callbacks in analysis.py.  Cleared automatically when the context is
     # replaced by reset_context(), requiring no sys.monitoring reconfiguration.
     # Typed as Any to avoid importing analysis.
     active_hooks: Dict[Any, Any] = field(default_factory=dict)
+    # Code-object identities with copy waits deferred until normal return.
+    deferred_copy_wait_codes: Set[int] = field(default_factory=set)
+    # Copy call sites whose dynamic requests require deferred waits.
+    deferred_copy_wait_sites: Set[Tuple[int, int]] = field(default_factory=set)
+    # Deferred requests indexed by the executing Python frame.
+    deferred_copy_wait_requests: Dict[Any, list[Any]] = field(default_factory=dict)
     # Set of (code_object, abs_lineno) pairs identifying bare ttl.copy() calls
     # (i.e. calls whose return value is not assigned).  The copy() function
     # checks this set to immediately call wait() for those call sites.

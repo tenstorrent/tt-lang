@@ -9,6 +9,7 @@ context manager syntax, state machine enforcement) and the low-level ring-buffer
 primitives (reserve/wait/push/pop, error contracts, per-node limits).
 """
 
+import inspect
 import pytest
 import subprocess
 import tempfile
@@ -26,7 +27,7 @@ from test_utils import (
     tensors_exact_equal,
 )
 
-from sim import TILE_SHAPE, copy, ttnn
+from sim import Kernel, KernelKind, TILE_SHAPE, copy, ttnn
 from sim.ttnnsim import ROW_MAJOR_LAYOUT, TILE_LAYOUT, Tensor
 from sim.dfb import (
     Block,
@@ -34,10 +35,7 @@ from sim.dfb import (
     make_dataflow_buffer_like,
 )
 from sim.block import broadcast
-from sim.blockstate import (
-    KernelType,
-    BlockAcquisition,
-)
+from sim.blockstate import BlockAcquisition
 from sim.context import (
     set_current_kernel_type,
     clear_current_kernel_type,
@@ -104,6 +102,39 @@ def test_dataflow_buffer_basic() -> None:
     print("Basic DataflowBuffer test passed!")
 
 
+@pytest.mark.parametrize("source_shape", [(1, 2, 2), (1, 4)])
+def test_store_requires_exact_shape(source_shape: tuple[int, ...]) -> None:
+    """Store rejects rank and extent mismatches with equal tile counts."""
+    destination_shape = (2, 2)
+    destination = DataflowBuffer(
+        likeness_tensor=make_element_for_buffer_shape(destination_shape),
+        shape=destination_shape,
+        block_count=2,
+    ).reserve()
+    source = Block.from_list([make_ones_tile() for _ in range(4)], shape=source_shape)
+
+    with pytest.raises(ValueError, match="must exactly match destination shape"):
+        destination.store(source)
+
+
+def test_logical_kernel_release_selectors_are_inert() -> None:
+    """Simulator releases accept both public selector forms."""
+    dfb = DataflowBuffer(likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=1)
+
+    write_view = dfb.reserve()
+    write_view.store(Block.from_tensor(make_ones_tile()))
+    write_view.push(kernel=KernelKind.COMPUTE)
+
+    read_view = dfb.wait()
+    output_dfb = DataflowBuffer(
+        likeness_tensor=make_ones_tile(), shape=(1, 1), block_count=1
+    )
+    output_view = output_dfb.reserve()
+    output_view.store(read_view)
+    output_view.push()
+    read_view.pop(kernel=Kernel(KernelKind.DATA_MOVEMENT))
+
+
 def test_dataflow_buffer_multi_tile() -> None:
     """Test DataflowBuffer with multiple tiles per operation."""
     element = make_element_for_buffer_shape((2, 1))
@@ -154,7 +185,7 @@ def test_dataflow_buffer_multi_tile() -> None:
 
 def test_copy_operations_with_dm_context() -> None:
     """Test copy operations between tensor and DataflowBuffer with proper DM kernel context."""
-    set_current_kernel_type(KernelType.DM)
+    set_current_kernel_type(KernelKind.DATA_MOVEMENT)
 
     try:
         tensor_a = make_rand_tensor(TILE_SHAPE[0] * 2, TILE_SHAPE[1] * 2)
@@ -253,7 +284,7 @@ def test_copy_in_dm_kernel_context() -> None:
         assert c_in_dfb.capacity_tiles == 2
 
         # DM kernel: Producer side - copy data into DFBs
-        set_current_kernel_type(KernelType.DM)
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
 
         # Copy c_in data
         c_block = c_in_dfb.reserve()
@@ -270,7 +301,7 @@ def test_copy_in_dm_kernel_context() -> None:
         a_block.push()
 
         # Switch to COMPUTE kernel: Consumer side - read data back
-        set_current_kernel_type(KernelType.COMPUTE)
+        set_current_kernel_type(KernelKind.COMPUTE)
 
         c_data = c_in_dfb.wait()
         a_data = a_in_dfb.wait()
@@ -320,7 +351,7 @@ def test_single_pending_reserve_constraint() -> None:
     machine rejects the push with a diagnostic.
     """
 
-    set_current_kernel_type(KernelType.DM)
+    set_current_kernel_type(KernelKind.DATA_MOVEMENT)
 
     try:
         element = make_ones_tile()
@@ -364,13 +395,13 @@ def test_single_pending_wait_constraint() -> None:
     rejects the pop with a diagnostic.
     """
 
-    set_current_kernel_type(KernelType.COMPUTE)
+    set_current_kernel_type(KernelKind.COMPUTE)
 
     try:
         element = make_ones_tile()
         dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
 
-        set_current_kernel_type(KernelType.DM)
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
         block = dfb.reserve()
         test_data = make_rand_tensor(TILE_SHAPE[0], TILE_SHAPE[1])
         test_slice = test_data[0:1, 0:1]
@@ -379,7 +410,7 @@ def test_single_pending_wait_constraint() -> None:
         block.push()
 
         # Switch to COMPUTE kernel for consumption
-        set_current_kernel_type(KernelType.COMPUTE)
+        set_current_kernel_type(KernelKind.COMPUTE)
 
         # First wait() should succeed
         data1 = dfb.wait()
@@ -397,13 +428,13 @@ def test_single_pending_wait_constraint() -> None:
         data1.pop()
 
         # Add more data (using DM kernel)
-        set_current_kernel_type(KernelType.DM)
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
         block = dfb.reserve()
         tx = copy(test_slice, block)
         tx.wait()
         block.push()
 
-        set_current_kernel_type(KernelType.COMPUTE)
+        set_current_kernel_type(KernelKind.COMPUTE)
         data2 = dfb.wait()
         assert data2 is not None
         # Use second waited block as STORE_SRC before pop
@@ -808,7 +839,6 @@ def test_iadd_raises_on_non_temporary() -> None:
 def test_pending_confirmation_cleared_when_result_is_stored() -> None:
     """Block used in arithmetic clears its pending confirmation when the result is stored."""
     from sim import ttnn, TILE_SHAPE
-    from sim.blockstate import KernelType
     from sim.context import set_current_kernel_type, clear_current_kernel_type
     from sim.copy import copy as dm_copy
 
@@ -817,7 +847,7 @@ def test_pending_confirmation_cleared_when_result_is_stored() -> None:
     dst_dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
 
     # DM kernel: write a value into src_dfb
-    set_current_kernel_type(KernelType.DM)
+    set_current_kernel_type(KernelKind.DATA_MOVEMENT)
     src_blk = src_dfb.reserve()
     tx = dm_copy(ttnn.Tensor(torch.full(TILE_SHAPE, 3.0)), src_blk)
     tx.wait()
@@ -825,7 +855,7 @@ def test_pending_confirmation_cleared_when_result_is_stored() -> None:
     clear_current_kernel_type()
 
     # Compute kernel: use src_blk in arithmetic, store the result
-    set_current_kernel_type(KernelType.COMPUTE)
+    set_current_kernel_type(KernelKind.COMPUTE)
     try:
         with src_dfb.wait() as c_blk:
             # arithmetic use registers pending confirmation
@@ -848,7 +878,6 @@ def test_pending_confirmation_cleared_when_result_is_stored() -> None:
 def test_pending_confirmation_raises_at_termination_if_never_stored() -> None:
     """validate_no_pending_blocks() raises if block data was used in arithmetic but never stored."""
     from sim import ttnn, TILE_SHAPE
-    from sim.blockstate import KernelType
     from sim.context import set_current_kernel_type, clear_current_kernel_type
     from sim.copy import copy as dm_copy
 
@@ -856,7 +885,7 @@ def test_pending_confirmation_raises_at_termination_if_never_stored() -> None:
     src_dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
 
     # DM kernel: write a value
-    set_current_kernel_type(KernelType.DM)
+    set_current_kernel_type(KernelKind.DATA_MOVEMENT)
     src_blk = src_dfb.reserve()
     tx = dm_copy(ttnn.Tensor(torch.full(TILE_SHAPE, 1.0)), src_blk)
     tx.wait()
@@ -864,7 +893,7 @@ def test_pending_confirmation_raises_at_termination_if_never_stored() -> None:
     clear_current_kernel_type()
 
     # Compute kernel: use block in arithmetic but discard the result without storing
-    set_current_kernel_type(KernelType.COMPUTE)
+    set_current_kernel_type(KernelKind.COMPUTE)
     try:
         with src_dfb.wait(name="arith_src") as c_blk:
             _unused = c_blk + Block.from_tensor(
@@ -1009,7 +1038,7 @@ def test_per_node_dfb_limit_exceeds_max() -> None:
         def noop_dm1():
             pass
 
-    with pytest.warns(UserWarning, match="hardware limit"):
+    with pytest.warns(UserWarning, match="configured limit"):
         test_kernel(element)
 
 
@@ -1047,13 +1076,137 @@ def test_l1_limit_counts_unreferenced_dfbs() -> None:
         def noop_dm1():
             pass
 
-    with pytest.warns(UserWarning, match="exceeds the L1 memory limit"):
+    with pytest.warns(UserWarning, match="exceeds the L1 memory limit") as record:
         test_kernel(element)
+
+    # One node, so nothing to attribute: the warning does not name a node.
+    assert "on node" not in str(record[0].message)
+
+
+def test_l1_limit_warns_about_the_worst_node_not_the_first() -> None:
+    """A node-dependent footprint is judged by its largest node, and named.
+
+    The operation body is re-run per node, so a block_count derived from
+    ttl.node() gives each node a footprint of its own: here 2 blocks (4096
+    bytes) on node 0 up to 5 blocks (10240 bytes) on node 3.  Reporting the
+    first node's footprint would report no problem at all, since node 0 fits
+    inside the limit.
+    """
+    from sim import ttl
+    from sim.program import set_max_l1_bytes
+
+    set_max_l1_bytes(8192)  # Allows two 4096-byte blocks, so nodes 0 and 1 fit
+
+    element = make_ones_tile()
+
+    @ttl.operation(grid=(4,))
+    def test_kernel(a):
+        _dfb = ttl.make_dataflow_buffer_like(
+            a, shape=(1, 1), block_count=2 + ttl.node(dims=1)
+        )
+
+        @ttl.compute()
+        def noop_compute():
+            pass
+
+        @ttl.datamovement()
+        def noop_dm0():
+            pass
+
+        @ttl.datamovement()
+        def noop_dm1():
+            pass
+
+    with pytest.warns(UserWarning, match="exceeds the L1 memory limit") as record:
+        test_kernel(element)
+
+    message = str(record[0].message)
+    assert "10240 bytes on node 3" in message, message
+
+
+def test_the_l1_warning_points_at_the_line_that_ran_the_operation() -> None:
+    """The warning names the caller's line, not a simulator source file.
+
+    A warning is something to act on, and the action is in the caller's code: the
+    buffers to shrink are in the operation it called.  Attributing it inside the
+    simulator also decides where a ``-W`` filter by module applies, and puts the
+    entry in ``sim.program``'s registry rather than the caller's.
+    """
+    from sim import ttl
+    from sim.program import set_max_l1_bytes
+
+    set_max_l1_bytes(4096)
+
+    element = make_ones_tile()
+
+    @ttl.operation(grid=(1,))
+    def test_kernel(a):
+        _dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=4)
+
+        @ttl.compute()
+        def noop_compute():
+            pass
+
+        @ttl.datamovement()
+        def noop_dm0():
+            pass
+
+        @ttl.datamovement()
+        def noop_dm1():
+            pass
+
+    here = inspect.currentframe()
+    assert here is not None
+    with pytest.warns(UserWarning, match="exceeds the L1 memory limit") as record:
+        call_line = here.f_lineno + 1
+        test_kernel(element)
+
+    assert record[0].filename == __file__, record[0].filename
+    assert record[0].lineno == call_line, record[0].lineno
+
+
+def test_a_tensor_whose_logical_shape_is_not_tile_aligned_backs_a_buffer() -> None:
+    """A buffer is described in the tiles the tensor is stored as, padding included.
+
+    The specification defines a tile grid over ``tensor.padded_shape``, and gives
+    (2, 2, 120, 30) -> [2, 2, 4, 1] as the case that shows why: the trailing
+    dimensions are padded up to whole tiles, so a tensor no dimension of which is
+    a multiple of 32 still has 4 x 1 tiles per batch entry.  Reading the logical
+    shape instead refuses this tensor outright, and every other test here uses an
+    aligned tensor where the two shapes agree.
+    """
+    set_current_kernel_type(KernelKind.DATA_MOVEMENT)
+
+    try:
+        ragged = ttnn.from_torch(
+            torch.rand(2, 2, 120, 30, dtype=torch.float32), layout=TILE_LAYOUT
+        )
+        assert tuple(ragged.padded_shape) == (2, 2, 128, 32)
+
+        dfb = DataflowBuffer(likeness_tensor=ragged, shape=(2, 2, 4, 1), block_count=2)
+        assert dfb.capacity_tiles == 2 * (2 * 2 * 4 * 1)
+
+        # And the copy paths agree with the buffer about the extent: a round trip
+        # through it returns the tensor, padding and all.
+        out = ttnn.zeros(
+            ttnn.Shape([2, 2, 120, 30]), layout=TILE_LAYOUT, dtype=torch.float32
+        )
+        block = dfb.reserve()
+        copy(ragged, block).wait()
+        block.push()
+
+        held = dfb.wait()
+        copy(held, out).wait()
+        held.pop()
+
+        assert torch.equal(out.to_torch(), ragged.to_torch())
+    finally:
+        clear_current_kernel_type()
 
 
 def test_heterogeneous_dfbs_independent() -> None:
     """Test that multiple DataflowBuffers operate independently."""
-    set_current_kernel_type(KernelType.COMPUTE)
+    set_current_kernel_type(KernelKind.COMPUTE)
 
     try:
         element = make_full_tensor(64, 64, 1.0)
@@ -1096,7 +1249,7 @@ def test_heterogeneous_dfbs_independent() -> None:
 
 def test_two_dfbs_independent_state() -> None:
     """Test that two DataflowBuffers have fully independent ring-buffer state."""
-    set_current_kernel_type(KernelType.COMPUTE)
+    set_current_kernel_type(KernelKind.COMPUTE)
 
     try:
         element = make_full_tensor(32, 32, 1.0)
@@ -1377,7 +1530,6 @@ def test_1d_block_from_list():
 
 def test_1d_dataflow_buffer_reserve_push_wait_pop():
     """DataflowBuffer with 1-D shape correctly reserves, pushes, and delivers data."""
-    from sim.blockstate import KernelType
     from sim.context import set_current_kernel_type, clear_current_kernel_type
 
     element = Tensor(torch.zeros(32))
@@ -1386,7 +1538,7 @@ def test_1d_dataflow_buffer_reserve_push_wait_pop():
     assert dfb.shape == (1,)
     assert dfb.capacity_tiles == 2
 
-    set_current_kernel_type(KernelType.COMPUTE)
+    set_current_kernel_type(KernelKind.COMPUTE)
     try:
         write = dfb.reserve()
         assert len(write) == 1
@@ -1413,7 +1565,6 @@ def test_1d_dataflow_buffer_reserve_push_wait_pop():
 
 def test_1d_multi_tile_dataflow_buffer():
     """DataflowBuffer with 1-D shape (4,) operates over 4 tiles per operation."""
-    from sim.blockstate import KernelType
     from sim.context import set_current_kernel_type, clear_current_kernel_type
 
     # Full buffer element shape for 4 tiles of size 32 each
@@ -1423,7 +1574,7 @@ def test_1d_multi_tile_dataflow_buffer():
     assert dfb.shape == (4,)
     assert dfb.capacity_tiles == 8
 
-    set_current_kernel_type(KernelType.COMPUTE)
+    set_current_kernel_type(KernelKind.COMPUTE)
     try:
         write = dfb.reserve()
         assert len(write) == 4
@@ -1484,6 +1635,38 @@ def test_tiled_dfb_rejects_degenerate_innermost_dim():
     likeness_h = Tensor(torch.ones((1, 32), dtype=torch.float32), TILE_LAYOUT)
     with pytest.raises(ValueError, match="not a multiple of TILE_SIZE"):
         make_dataflow_buffer_like(likeness_h, shape=(1, 1))
+
+
+def test_a_tile_grid_the_likeness_tensor_cannot_supply_is_rejected():
+    """A buffer's block must fit inside the tensor it is built to look like.
+
+    The likeness tensor is what says how big a tile is and how many there are, so
+    asking for a block the tensor cannot describe is answered at construction
+    rather than at the first copy into it, where the mismatch would surface as a
+    shape error about tiles the user never asked for.
+
+    Each of the three ways the request can exceed the likeness is checked: a rank
+    it does not have, more tiles than it holds, and more of a leading dimension
+    than it has.
+    """
+    square = Tensor(torch.ones((32, 32), dtype=torch.float32), TILE_LAYOUT)
+
+    # A rank the likeness does not have: a block may cover a trailing sub-slab
+    # of the likeness, but it cannot have more dimensions than the likeness has.
+    with pytest.raises(ValueError, match="dimensionality 3 exceeds"):
+        DataflowBuffer(likeness_tensor=square, shape=(1, 1, 1), block_count=2)
+
+    # More tiles than the likeness holds: 64x64 is two tiles by two.
+    four_tiles = Tensor(torch.ones((64, 64), dtype=torch.float32), TILE_LAYOUT)
+    too_many_tiles = "has 2 tiles, but tile shape requires at least 4"
+    with pytest.raises(ValueError, match=too_many_tiles):
+        DataflowBuffer(likeness_tensor=four_tiles, shape=(4, 4), block_count=2)
+
+    # More of a leading dimension than the likeness has: leading dimensions count
+    # tiles' worth of batch, not scalars, so 2 is all there is.
+    batched = Tensor(torch.ones((2, 32, 32), dtype=torch.float32), TILE_LAYOUT)
+    with pytest.raises(ValueError, match="size 2, but tile shape requires at least 4"):
+        DataflowBuffer(likeness_tensor=batched, shape=(4, 1, 1), block_count=2)
 
 
 def test_1d_arithmetic_on_blocks():
@@ -1865,3 +2048,132 @@ class TestRowMajorBlockGuards:
         rm_tensor = Tensor(torch.zeros(32, 32, dtype=torch.float32), ROW_MAJOR_LAYOUT)
         with pytest.raises(ValueError, match="Layout mismatch in copy_as_dest"):
             blk.copy_as_dest(rm_tensor)
+
+
+class TestToListBufferRankMismatch:
+    """to_list() when the backing buffer carries more axes than the tile grid.
+
+    A buffer allocated at a higher rank than its block leaves redundant leading
+    axes.  The tile grid must stay bound to the last two axes, which are the
+    ones the tile extents are measured from.
+    """
+
+    @staticmethod
+    def _block(buf: torch.Tensor, shape) -> Block:
+        return Block(
+            tensor=Tensor(buf),
+            shape=shape,
+            acquisition=BlockAcquisition.RESERVE,
+            kernel_type=KernelKind.COMPUTE,
+            is_temporary=True,
+        )
+
+    def test_extra_leading_axis_yields_correctly_sliced_tiles(self) -> None:
+        """A (4, 1) grid over a (1, 128, 32) buffer slices the last two axes."""
+        buf = torch.arange(128 * 32, dtype=torch.float32).reshape(1, 128, 32)
+        tiles = self._block(buf, (4, 1)).to_list()
+
+        assert len(tiles) == 4
+        for r, tile in enumerate(tiles):
+            raw = tile.to_torch()
+            assert raw.shape == (32, 32)
+            assert torch.equal(raw, buf[0, r * 32 : (r + 1) * 32, :])
+
+    def test_extra_leading_axis_survives_transpose_round_trip(self) -> None:
+        """transpose() of such a block reassembles without a stack size mismatch."""
+        from sim.block import transpose
+
+        buf = torch.arange(128 * 32, dtype=torch.float32).reshape(1, 128, 32)
+        result = transpose(self._block(buf, (4, 1)))
+
+        assert result.shape == (1, 4)
+        tiles = result.to_list()
+        assert len(tiles) == 4
+        for c, tile in enumerate(tiles):
+            assert torch.equal(tile.to_torch(), buf[0, c * 32 : (c + 1) * 32, :].T)
+
+    def test_non_singleton_leading_axis_raises(self) -> None:
+        """A leading axis carrying data cannot be addressed by a smaller grid."""
+        buf = torch.zeros(2, 128, 32, dtype=torch.float32)
+        with pytest.raises(ValueError, match="cannot address a buffer of shape"):
+            self._block(buf, (4, 1)).to_list()
+
+    def test_one_dimensional_grid_ignores_leading_axis_guard(self) -> None:
+        """A 1-D grid indexes axis 0 directly, so a rank-2 buffer is not a mismatch."""
+        buf = torch.zeros(2, 1, dtype=torch.float32)
+        assert len(self._block(buf, (2,)).to_list()) == 2
+
+
+class TestBlockListStorageMetadata:
+    """Splitting and reassembling a block preserves its declared storage."""
+
+    @pytest.mark.parametrize(
+        "layout, shape",
+        [(TILE_LAYOUT, (32, 32)), (ROW_MAJOR_LAYOUT, (4, 8))],
+    )
+    def test_round_trip_preserves_dtype_layout_and_memory_config(
+        self, layout, shape
+    ) -> None:
+        source = Tensor(
+            torch.ones(shape, dtype=torch.float32),
+            layout,
+            ttnn.L1_MEMORY_CONFIG,
+            dtype=ttnn.bfloat16,
+        )
+        block = Block.from_tensor(source)
+
+        units = block.to_list()
+        rebuilt = Block.from_list(units, block.shape).to_tensor()
+
+        for tensor in [*units, rebuilt]:
+            assert tensor.dtype == ttnn.bfloat16
+            assert tensor.layout == layout
+            assert tensor.memory_config == ttnn.L1_MEMORY_CONFIG
+
+
+class TestScalarOperandDiagnostic:
+    """Binary block operators reject a scalar operand by name.
+
+    The compiler accepts ``blk * scalar`` via ttl.mul_unary_const, but the
+    simulator does not implement it (issue #869).  Until it does, the refusal
+    must name the operand rather than leak an attribute error from the layout
+    check.
+    """
+
+    @staticmethod
+    def _block() -> Block:
+        return Block(
+            tensor=Tensor(torch.full((1, 1, 32, 32), 2.0, dtype=torch.float32)),
+            shape=(1, 1),
+            acquisition=BlockAcquisition.RESERVE,
+            kernel_type=KernelKind.COMPUTE,
+            is_temporary=True,
+        )
+
+    @pytest.mark.parametrize(
+        "apply, name",
+        [
+            (lambda b: b * 0.5, "mul"),
+            (lambda b: b + 1.0, "add"),
+            (lambda b: b - 1.0, "sub"),
+            (lambda b: b / 2.0, "truediv"),
+        ],
+    )
+    def test_a_scalar_operand_is_refused_by_name(self, apply, name: str) -> None:
+        with pytest.raises(
+            TypeError, match=rf"unsupported operand for block {name}: float"
+        ):
+            apply(self._block())
+
+    def test_the_refusal_points_at_the_supported_alternative(self) -> None:
+        with pytest.raises(TypeError, match=r"ttl\.block\.fill"):
+            self._block() * 0.5
+
+    def test_an_integer_exponent_is_still_accepted(self) -> None:
+        """__pow__ handles int before reaching the binary path, so the guard misses it."""
+        squared = (self._block() ** 2).to_list()[0].to_torch()
+        assert squared[0, 0].item() == pytest.approx(4.0)
+
+    def test_a_block_operand_is_unaffected(self) -> None:
+        product = (self._block() * self._block()).to_list()[0].to_torch()
+        assert product[0, 0].item() == pytest.approx(4.0)

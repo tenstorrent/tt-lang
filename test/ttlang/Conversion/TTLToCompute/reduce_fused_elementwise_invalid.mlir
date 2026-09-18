@@ -22,7 +22,7 @@ module {
     %reserve = ttl.cb_reserve %cb3 : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
 
     %mul = ttl.mul %a_cb, %b_cb : tensor<1x4x!ttcore.tile<32x32, bf16>>, tensor<1x4x!ttcore.tile<32x32, bf16>> -> tensor<1x4x!ttcore.tile<32x32, bf16>>
-    // expected-error @below {{elementwise operations feeding into reduce cannot be fused yet; store the intermediate result to a dataflow buffer before passing it to reduce (see issue #474)}}
+    // expected-error @below {{cannot lower tensor store to ttl.compute: reduce input is an unstored compute result; store the intermediate result to a dataflow buffer before passing it to reduce (see issue #474)}}
     %result = ttl.reduce %mul, %sc_cb 0 : i32 [0, 1] : (tensor<1x4x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.store %result, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.cb_push %cb3 : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -49,7 +49,7 @@ module {
     %reserve = ttl.cb_reserve %cb2 : <[2, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<2x1x!ttcore.tile<32x32, bf16>>
 
     %abs = ttl.abs %inp_cb : tensor<2x2x!ttcore.tile<32x32, bf16>> -> tensor<2x2x!ttcore.tile<32x32, bf16>>
-    // expected-error @below {{elementwise operations feeding into reduce cannot be fused yet; store the intermediate result to a dataflow buffer before passing it to reduce (see issue #474)}}
+    // expected-error @below {{cannot lower tensor store to ttl.compute: reduce input is an unstored compute result; store the intermediate result to a dataflow buffer before passing it to reduce (see issue #474)}}
     %result = ttl.reduce %abs, %sc_cb 0 : i32 [1] : (tensor<2x2x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>) -> tensor<2x1x!ttcore.tile<32x32, bf16>>
     ttl.store %result, %reserve : tensor<2x1x!ttcore.tile<32x32, bf16>>, tensor<2x1x!ttcore.tile<32x32, bf16>>
     ttl.cb_push %cb2 : !ttl.cb<[2, 1], !ttcore.tile<32x32, bf16>, 2>

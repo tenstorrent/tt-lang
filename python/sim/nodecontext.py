@@ -151,10 +151,11 @@ def node(dims: Size = 2) -> NodeCoord:
         NodeCoord: The node coordinates (int for 1D, tuple for > 1D)
 
     Raises:
-        RuntimeError: If called outside of a Program context
+        RuntimeError: If called outside of an operation or kernel context
     """
     nid = _get_from_frame(
-        "_node", "node not available - function must be called within Program context"
+        "_node",
+        "node not available - function must be called within an operation or kernel context",
     )
 
     grid = _get_from_frame(

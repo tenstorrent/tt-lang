@@ -13,7 +13,7 @@ from dataclasses import dataclass
 
 import torch
 
-from .config import E2EConfig, MemoryLayout
+from .config import BufferType, E2EConfig, MemoryLayout
 
 # Expected failures keyed by partial parameter match (config/dtype/op level).
 # For per-op xfails, see ops/XFAILS.py (uses fully-qualified test IDs).
@@ -81,10 +81,13 @@ class TestConfig:
             enum value. Default is INTERLEAVED. Other options include HEIGHT_SHARDED,
             WIDTH_SHARDED, and BLOCK_SHARDED for distributed memory configurations.
 
+        buffer_type: Device storage used for input and output tensors. Default
+            is DRAM; L1 permits local and sharded tensor coverage.
+
         maximize_dst: Enable DST subblocking and operation scheduling passes.
             When False, uses basic loop lowering without subblocking. Default is True.
 
-        enable_fpu_binary_ops: Enable FPU binary op detection for add/sub/mul.
+        enable_fpu_binary_ops: Allow FPU strategy selection for add/sub/mul.
             When False, all binary ops use the copy_tile + SFPU path. Default is True.
 
     Examples:
@@ -120,6 +123,7 @@ class TestConfig:
     # Pipeline options.
     maximize_dst: bool = True
     enable_fpu_binary_ops: bool = True
+    buffer_type: BufferType = BufferType.DRAM
 
     def __str__(self) -> str:
         """
@@ -140,6 +144,7 @@ class TestConfig:
 
         # Layout indicator (always explicit, using enum value)
         layout_str = f"_{self.memory_layout.value}"
+        storage_str = "" if self.buffer_type == BufferType.DRAM else "_l1"
 
         # Pipeline mode suffix.
         pipeline_str = ""
@@ -148,7 +153,7 @@ class TestConfig:
         if not self.enable_fpu_binary_ops:
             pipeline_str += "_sfpu"
 
-        return f"{self.block_h}x{self.block_w}_{dtype_str}{buffer_str}{layout_str}{pipeline_str}"
+        return f"{self.block_h}x{self.block_w}_{dtype_str}{buffer_str}{layout_str}{storage_str}{pipeline_str}"
 
     def to_e2e_config(self) -> E2EConfig:
         """
@@ -167,6 +172,7 @@ class TestConfig:
             dtype=self.dtype,
             block_count=self.block_count,
             memory_layout=self.memory_layout,
+            buffer_type=self.buffer_type,
         )
 
 
@@ -177,7 +183,7 @@ CONFIGS = [
     TestConfig(num_tiles=4, block_h=2, block_w=2),  # 2x2 grid (4 tiles)
     # Maximize-DST disabled: no subblocking or scheduling (basic loop lowering).
     TestConfig(num_tiles=4, block_h=2, block_w=2, maximize_dst=False),
-    # SFPU path: FPU binary detection disabled (all binary ops use copy_tile + SFPU).
+    # SFPU execution: FPU selection disabled, so binary inputs use copy_tile.
     TestConfig(num_tiles=4, block_h=2, block_w=2, enable_fpu_binary_ops=False),
     # Both disabled: basic loop lowering with SFPU binary path.
     TestConfig(

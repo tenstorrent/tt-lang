@@ -7,14 +7,29 @@
 from __future__ import annotations
 
 import ast
+import copy as _copy
 import functools
 import inspect
 import os
 import random
+import sys
+import threading
+import weakref
+from collections.abc import Hashable, MutableMapping
+from dataclasses import dataclass, field
+from enum import Enum, IntEnum
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Union
 
 ttnn = None  # Lazy-loaded on first access via _ensure_ttnn()
+
+
+def _forward_mlir_warning(diagnostic):
+    """Print MLIR warnings while preserving the existing error handler."""
+    if diagnostic.severity != DiagnosticSeverity.WARNING:
+        return False
+    print(f"warning: {diagnostic}", file=sys.stderr)
+    return True
 
 
 def _ensure_ttnn():
@@ -39,14 +54,14 @@ def _ensure_ttnn():
 import ttl._mlir_libs._ttlang  # Register tt-lang passes
 from ttl._mlir_libs._ttlang import ttl_ir as _ttl_ir
 from ttl.pykernel._src.utils import _cleanup_source_code
-from ttl.dialects import ttkernel
+from ttl.dialects import ttcore, ttkernel, ttl as ttl_dialect
 from ttl.ir import *
-from ttl.ir import DenseI32ArrayAttr
+from ttl.ir import DenseI32ArrayAttr, DenseI64ArrayAttr, DictAttr, SymbolTable
 from ttl.passes import (
-    get_ttkernel_arg_spec,
     get_ttkernel_names,
-    ttkernel_to_cpp_by_name,
+    ttkernels_to_cpp,
 )
+
 from ttl.passmanager import PassManager
 
 
@@ -67,15 +82,40 @@ from ._src.tensor_registry import (
     register_tensor_name,
     register_tensor_source,
 )
+from ._src.global_semaphore import is_ttnn_global_semaphore
 from ._src.ttl_ast import TTLGenericCompiler
 from .dataflow_buffer import (
     CircularBuffer,
-    CompilerAllocatedDFBConfig,
     DataflowBuffer,
+    DFBConfigurationEpoch,
+    DFBReconfigurationPlan,
+    DFBStorageSegment,
+    PhysicalDFBConfig,
     get_cb_count,
 )
+from .domains import DeviceDomain
 from .pipe import Pipe, PipeNet
-from .constants import SUPPORTED_MEMORY_SPACES
+from .scalar import ScalarType
+from .condition import (
+    _BoundDispatchCondition,
+    DispatchCondition,
+    _bind_current_dispatch_condition,
+    _dispatch_condition_binding_scope,
+)
+from .dfb_reset import (
+    DFBReset,
+    _BoundDFBReset,
+    _bind_current_dfb_reset,
+    _dfb_reset_binding_scope,
+)
+from .dfb_allocation_group import _dfb_allocation_group_binding_scope
+from .dfb_reconfiguration import (
+    DFBReconfiguration,
+    _BoundDFBReconfiguration,
+    _bind_current_dfb_reconfiguration,
+    _dfb_reconfiguration_binding_scope,
+)
+from .constants import SUPPORTED_MEMORY_SPACES, validate_math_fidelity
 from .diagnostics import (
     TTLangCompileError,
     find_variable_assignment,
@@ -84,18 +124,122 @@ from .diagnostics import (
 )
 from .dtype_utils import (
     is_ttnn_tensor,
-    tile_bytes_from_dtype,
     torch_dtype_to_ttnn_datatype,
 )
 from .kernel_runner import (
-    KernelSpec,
+    _FabricRouteCache,
+    _detect_device_arch,
+    _device_identity,
+    _same_device,
+    attach_runtime_resource_finalizer,
+    FabricManagerIntervalKind,
+    FabricManagerIntervalSpec,
+    FabricRouteSpec,
+    get_min_remaining_l1_excluding_cached_resources,
     get_min_remaining_l1_for_device,
-    run_kernel_on_device,
+    KernelRuntimeResourceCache,
+    KernelSpec,
+    MeshProgramPlacement,
+    normalize_mesh_program_placements,
     emit_runner_file,
+    run_kernel_on_device,
 )
-from .operators import CopyTransferHandler, TensorBlock, copy
+from .layouts import get_tensor_configuration
+from .kernel import (
+    Kernel,
+    KernelKind,
+    KernelSelector,
+    _PIPE_SOURCE_KERNEL_ROLE,
+    _bind_kernel_declarations,
+    _format_kernel_capacity_error,
+    _operation_identity,
+    _referenced_operation_values,
+    _selector_implicit_role,
+    _selector_kind,
+)
+from .fabric import FabricManagerClaim, _bind_fabric_manager_claims
+from .runtime_resources import ProgramRuntimeResources
+from .operators import (
+    CopyTransferHandler,
+    ReadyReceive,
+    ReceiveRequest,
+    TensorBlock,
+    copy,
+    wait_any,
+)
 from .compiler_options import CompilerOptions
 from .ttl_utils import get_thread_type_string
+
+_TTCORE_ARCH_BY_DEVICE_NAME = {
+    "blackhole": ttcore.Arch.Blackhole,
+    "wormhole_b0": ttcore.Arch.WormholeB0,
+}
+
+_FACTORY_CACHE_LOCK = threading.RLock()
+
+
+@dataclass(frozen=True)
+class _FactoryCacheEntryKey:
+    operation_code: object
+    factory_key: Hashable
+    compilation_key: tuple
+    requires_runtime_resources: bool
+
+
+@dataclass(frozen=True)
+class _BackendKernelSlot:
+    kind: KernelKind
+    kernel_type: str
+    source_name: str
+    implicit_role: Optional[str] = None
+
+
+_COMMON_BACKEND_KERNEL_SLOTS = (
+    _BackendKernelSlot(KernelKind.COMPUTE, "compute", "trisc"),
+    _BackendKernelSlot(KernelKind.DATA_MOVEMENT, "datamovement", "ncrisc"),
+    _BackendKernelSlot(
+        KernelKind.DATA_MOVEMENT,
+        "datamovement",
+        "brisc",
+        implicit_role=_PIPE_SOURCE_KERNEL_ROLE,
+    ),
+)
+_BACKEND_KERNEL_SLOTS_BY_ARCH = {
+    target_arch: _COMMON_BACKEND_KERNEL_SLOTS
+    for target_arch in _TTCORE_ARCH_BY_DEVICE_NAME
+}
+
+
+def _backend_kernel_slots(
+    target_arch: Optional[str] = None,
+) -> tuple[_BackendKernelSlot, ...]:
+    """Return the processor slots declared by the selected backend target."""
+    if target_arch is None:
+        return _COMMON_BACKEND_KERNEL_SLOTS
+    try:
+        return _BACKEND_KERNEL_SLOTS_BY_ARCH[target_arch]
+    except KeyError:
+        raise ValueError(f"unsupported target architecture {target_arch!r}") from None
+
+
+def _backend_kernel_capacities(
+    target_arch: Optional[str] = None,
+) -> Mapping[KernelKind, int]:
+    slots = _backend_kernel_slots(target_arch)
+    return {kind: sum(slot.kind == kind for slot in slots) for kind in KernelKind}
+
+
+def _slot_idle_kernel(slot: _BackendKernelSlot) -> KernelSelector:
+    """Return the logical identity a slot carries when it holds no work.
+
+    A slot the target reserves for a compiler-owned affinity keeps that role. Any
+    other slot is the canonical kernel of its kind, which is unoccupied precisely
+    when no selector of that kind was planned.
+    """
+    if slot.implicit_role is None:
+        return slot.kind
+    return Kernel._implicit(slot.kind, slot.implicit_role)
+
 
 # Thread registry for automatic collection of @compute and @datamovement threads
 _thread_registry: List[Callable] = []
@@ -118,16 +262,59 @@ def _get_registered_threads() -> List[Callable]:
     return threads
 
 
+def _validate_explicit_logical_kernel_uses(
+    threads: List[Callable],
+    kernel_capacities: Optional[Mapping[KernelKind, int]] = None,
+) -> None:
+    """Require each named logical kernel to identify one explicit thread."""
+    thread_by_kernel: Dict[Kernel, Callable] = {}
+    for thread in threads:
+        logical_kernel = thread._logical_kernel
+        if not isinstance(logical_kernel, Kernel):
+            continue
+        previous_thread = thread_by_kernel.get(logical_kernel)
+        if previous_thread is not None:
+            raise ValueError(
+                f"logical Kernel {logical_kernel.identity!r} is selected by "
+                "multiple explicit threads: "
+                f"{previous_thread.__name__!r} and {thread.__name__!r}"
+            )
+        thread_by_kernel[logical_kernel] = thread
+
+    if kernel_capacities is None:
+        return
+    selectors = tuple(thread._logical_kernel for thread in threads)
+    for kind in KernelKind:
+        capacity = kernel_capacities[kind]
+        selected = tuple(
+            selector for selector in selectors if _selector_kind(selector) == kind
+        )
+        if len(selected) > capacity:
+            raise ValueError(_format_kernel_capacity_error(kind, selected, capacity))
+
+
+def _captured_kernel_declarations(function: Callable) -> Dict[str, Kernel]:
+    """Return logical kernels referenced by an explicit operation."""
+    return {
+        name: value
+        for name, value in _referenced_operation_values(function).items()
+        if isinstance(value, Kernel)
+    }
+
+
+def _captured_fabric_manager_claims(
+    function: Callable,
+) -> Dict[str, FabricManagerClaim]:
+    return {
+        name: value
+        for name, value in _referenced_operation_values(function).items()
+        if isinstance(value, FabricManagerClaim)
+    }
+
+
 def _get_tensor_cache_info(tensor) -> tuple:
-    """Extract cache-relevant info from a tensor: (shape, dtype, memory_space, layout)."""
-    shape = tuple(tensor.shape)
-    dtype = str(tensor.dtype)
-    mem_config = tensor.memory_config()
-    memory_space = (
-        str(mem_config.buffer_type) if hasattr(mem_config, "buffer_type") else "unknown"
-    )
-    layout = str(tensor.layout) if hasattr(tensor, "layout") else "unknown"
-    return (shape, dtype, memory_space, layout)
+    """Extract tensor properties that affect compilation or DFB descriptors."""
+    return get_tensor_configuration(tensor)
 
 
 def _make_cache_key(
@@ -135,29 +322,39 @@ def _make_cache_key(
     resolved_grid: Union[tuple, List[int]],
     fp32_dest_acc_en: Optional[bool],
     dst_full_sync_en: Optional[bool],
+    math_fidelity: Optional[str],
     target_arch: Optional[str],
     compiler_options: CompilerOptions = CompilerOptions(),
+    l1_budget_override: Any = 0,
 ) -> tuple:
     """Create cache key from tensor properties and runtime compute config parameters."""
     grid_key = tuple(resolved_grid)
-    tensor_key = tuple(
-        _get_tensor_cache_info(arg) for arg in args if is_ttnn_tensor(arg)
-    )
+    tensor_args = [arg for arg in args if is_ttnn_tensor(arg)]
+    tensor_key = tuple(_get_tensor_cache_info(tensor) for tensor in tensor_args)
+    first_position_by_identity = {}
+    alias_partition = []
+    for position, tensor in enumerate(tensor_args):
+        identity = id(tensor)
+        first_position_by_identity.setdefault(identity, position)
+        alias_partition.append(first_position_by_identity[identity])
     # Include mesh shape so that single-device and multi-device compilations
     # with different shard shapes don't collide in the cache.
     mesh_key = None
-    for arg in args:
-        if is_ttnn_tensor(arg) and _is_mesh_tensor(arg):
-            mesh_key = tuple(arg.device().shape)
+    for tensor in tensor_args:
+        if _is_mesh_tensor(tensor):
+            mesh_key = tuple(tensor.device().shape)
             break
     return (
         tensor_key,
+        tuple(alias_partition),
         mesh_key,
         grid_key,
         fp32_dest_acc_en,
         dst_full_sync_en,
+        math_fidelity,
         target_arch,
         compiler_options,
+        l1_budget_override,
     )
 
 
@@ -363,27 +560,117 @@ def _is_mesh_tensor(tensor) -> bool:
     return prod(shape) > 1
 
 
-def _detect_memory_space_from_tensor(tensor, default: str) -> str:
-    """Detect memory space (L1/DRAM) from a ttnn tensor's buffer type."""
-    mem_config = tensor.memory_config()
-    if hasattr(mem_config, "buffer_type"):
-        buffer_type_str = str(mem_config.buffer_type)
-        if "L1" in buffer_type_str:
-            return "L1"
-        elif "DRAM" in buffer_type_str:
-            return "DRAM"
-    return default
+def _mesh_tensor_extent(args: tuple):
+    """Return the first distributed tensor's runtime mesh extent."""
+    for arg in args:
+        if not _is_mesh_tensor(arg):
+            continue
+        return tuple(int(dimension) for dimension in arg.device().shape)
+    return None
 
 
-def _same_device(a, b) -> bool:
-    """Return True when *a* and *b* refer to the same TTNN device."""
-    if a is b:
-        return True
-    a_id = getattr(a, "id", None)
-    b_id = getattr(b, "id", None)
-    if callable(a_id) and callable(b_id):
-        return a_id() == b_id()
-    return False
+def _default_mesh_program_placements(args: tuple):
+    """Return a full-mesh placement for mesh tensor execution."""
+    mesh_extent = _mesh_tensor_extent(args)
+    if mesh_extent is None:
+        return None
+    start = tuple(0 for _ in mesh_extent)
+    end = tuple(dimension - 1 for dimension in mesh_extent)
+    return [MeshProgramPlacement(start, end)]
+
+
+def _mesh_program_placements_from_device_domain(device_domain):
+    """Return the default mesh placement for a logical device domain."""
+    if device_domain is None:
+        return None
+
+    from math import prod
+
+    if not isinstance(device_domain, DeviceDomain):
+        raise TypeError(
+            f"device_domain must be a DeviceDomain, got {type(device_domain).__name__}"
+        )
+
+    extent = device_domain.flattened_extent
+    if prod(extent) <= 1:
+        return None
+    start = tuple(0 for _ in extent)
+    end = tuple(dim - 1 for dim in extent)
+    return [MeshProgramPlacement(start, end)]
+
+
+def _default_mesh_program_placements_with_domain(args: tuple, device_domain):
+    """Return mesh placements from tensors, or from device_domain metadata."""
+    tensor_placements = _default_mesh_program_placements(args)
+    domain_placements = _mesh_program_placements_from_device_domain(device_domain)
+    if tensor_placements is None:
+        return domain_placements
+    if domain_placements is None:
+        return tensor_placements
+    if tensor_placements != domain_placements:
+        raise ValueError(
+            "mesh tensor shape does not match operation device_domain extent"
+        )
+    return tensor_placements
+
+
+def _resolve_mesh_program_placements(
+    args: tuple,
+    device_domain,
+    requested_placements,
+    *,
+    required_devices=(),
+):
+    """Validate requested placements against args' mesh and device_domain.
+
+    Explicit placements must cover required_devices. Without an override,
+    use the complete tensor mesh or logical device domain.
+    """
+    if requested_placements is None:
+        default_placements = _default_mesh_program_placements_with_domain(
+            args, device_domain
+        )
+        return normalize_mesh_program_placements(
+            default_placements,
+            extent=(None if device_domain is None else device_domain.flattened_extent),
+            extent_name="device domain",
+        )
+
+    if device_domain is not None and not isinstance(device_domain, DeviceDomain):
+        raise TypeError(
+            f"device_domain must be a DeviceDomain, got "
+            f"{type(device_domain).__name__}"
+        )
+    placements = normalize_mesh_program_placements(
+        requested_placements,
+        extent=(None if device_domain is None else device_domain.flattened_extent),
+        extent_name="device domain",
+    )
+    mesh_tensor_extent = _mesh_tensor_extent(args)
+    if mesh_tensor_extent is not None:
+        placements = normalize_mesh_program_placements(
+            placements,
+            extent=mesh_tensor_extent,
+            extent_name="mesh tensor",
+        )
+
+    if required_devices:
+        if device_domain is None:
+            raise ValueError(
+                "PipeNet endpoint coverage requires an operation device_domain"
+            )
+        missing_coordinates = []
+        for device_ref in required_devices:
+            coordinate = device_domain.flattened_coordinates(device_ref)
+            if not any(placement.contains(coordinate) for placement in placements):
+                missing_coordinates.append(coordinate)
+        missing_coordinates.sort()
+        if missing_coordinates:
+            raise ValueError(
+                "mesh_program_placements must cover every PipeNet endpoint; "
+                f"missing {missing_coordinates}"
+            )
+    return placements
 
 
 def _require_device(args):
@@ -428,46 +715,54 @@ def _require_device(args):
     )
 
 
-def _detect_device_arch(device) -> Optional[str]:
-    """Return a normalized architecture string from a TTNN device if present."""
-    arch_attrs = (
-        "arch",
-        "architecture",
-        "chip_type",
-        "device_type",
-        "_arch",
-        "_architecture",
-    )
-    for attr in arch_attrs:
-        # Properties on device handles may raise for reasons other than
-        # AttributeError (e.g., closed handle); guard both attribute access
-        # and the optional method call.
-        try:
-            arch_value = getattr(device, attr)
-        except Exception:
-            continue
-        if callable(arch_value):
-            try:
-                arch_value = arch_value()
-            except Exception:
-                continue
-        return str(arch_value).lower().rsplit(".", maxsplit=1)[-1]
-    return None
+def _resolve_l1_budget(
+    args: tuple,
+    compiler_options: CompilerOptions,
+    runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
+) -> int:
+    """Return the explicit or device-derived L1 compilation budget."""
+    if compiler_options.l1_budget != 0:
+        return compiler_options.l1_budget
+    if not any(is_ttnn_tensor(arg) for arg in args):
+        return 0
+    try:
+        device = _require_device(args)
+        if runtime_resource_cache is not None:
+            return get_min_remaining_l1_excluding_cached_resources(
+                runtime_resource_cache, device
+            )
+        return get_min_remaining_l1_for_device(device)
+    except ValueError:
+        return 0
 
 
 def _device_target_arch(args) -> Optional[str]:
-    """Return the first detected tensor device architecture, or None."""
+    """Return the common tensor device architecture, or None for host inputs."""
+    target_arch = None
     for arg in args:
-        if not is_ttnn_tensor(arg) or not hasattr(arg, "device"):
+        if not is_ttnn_tensor(arg):
             continue
-        device = arg.device()
+        try:
+            device = arg.device()
+        except Exception as error:
+            raise ValueError(
+                "Unsupported or undetectable TT device architecture"
+            ) from error
         if device is None:
             continue
         arch = _detect_device_arch(device)
         if arch is None:
-            continue
-        return arch
-    return None
+            raise ValueError("Unsupported or undetectable TT device architecture")
+        if arch not in _TTCORE_ARCH_BY_DEVICE_NAME:
+            raise ValueError(f"Unsupported TT device architecture: {arch}")
+        if target_arch is None:
+            target_arch = arch
+        elif target_arch != arch:
+            raise ValueError(
+                "Tensor arguments use different TT device architectures: "
+                f"{target_arch} and {arch}"
+            )
+    return target_arch
 
 
 def _resolve_grid(grid, args, kwargs):
@@ -547,7 +842,9 @@ class CompiledTTNNKernel:
         num_tensors,
         core_ranges,
         kernel_tensor_indices,
+        kernel_core_ranges=None,
         cb_configs=None,
+        dfb_reconfiguration_plan=None,
         program_hash=None,
         source_lines=None,
         all_source_lines=None,
@@ -556,6 +853,22 @@ class CompiledTTNNKernel:
         num_pipe_sync_semaphores=0,
         pipe_sram_scratch_bytes=0,
         num_pipe_global_semaphores=0,
+        num_dfb_resets=0,
+        opaque_include_paths=None,
+        kernel_pipe_computed_address_dfb_indices=None,
+        kernel_fabric_routes=None,
+        kernel_fabric_runtime_arg_base_common_indices=None,
+        kernel_fabric_manager_intervals=None,
+        mesh_program_placements=None,
+        device_domain=None,
+        kernel_logical_selectors=None,
+        operation_name="<anonymous>",
+        runtime_resource_factory: Optional[
+            Callable[..., ProgramRuntimeResources]
+        ] = None,
+        runtime_resource_cache=None,
+        kernel_used_dfb_indices=None,
+        kernel_local_tensor_indices=None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -567,7 +880,12 @@ class CompiledTTNNKernel:
             num_tensors: Number of input/output tensors
             core_ranges: CoreRangeSet for kernel execution
             kernel_tensor_indices: List of global tensor indices used by each kernel
-            cb_configs: List of (shape, block_count) tuples for each CB, indexed by cb_index
+            kernel_core_ranges: Optional list of per-kernel CoreRangeSet aligned
+                with kernel_paths. Set by the per-core specialization path so
+                each specialized clone is dispatched only to its own core; None
+                entries fall back to the whole-grid core_ranges.
+            cb_configs: Final physical DFB configurations indexed by cb_index
+            dfb_reconfiguration_plan: Final boundary order and epoch configs.
             program_hash: Hash for tt-metal program cache
             source_lines: Source code lines for auto-profiling reports (deprecated)
             all_source_lines: Dict mapping kernel name to source lines
@@ -578,24 +896,127 @@ class CompiledTTNNKernel:
             pipe_sram_scratch_bytes: Per-core SRAM scratch bytes used by
                 PipeNet metadata.
             num_pipe_global_semaphores: Number of GlobalSemaphore-backed
-                PipeNet ready counters used by this kernel.
+                PipeNet counters used by this kernel.
+            num_dfb_resets: Number of synchronized DFB reset boundaries.
+            kernel_pipe_computed_address_dfb_indices: Per-kernel receiver DFB indices whose
+                L1 bases are supplied as common runtime args.
+            kernel_fabric_routes: Per-kernel routing-plane connection metadata.
+            kernel_fabric_runtime_arg_base_common_indices: Per-kernel common
+                argument indices containing fabric unique-argument bases.
+            kernel_fabric_manager_intervals: Per-kernel fabric manager
+                ownership intervals.
+            mesh_program_placements: Optional mesh device ranges. When present,
+                execution uses ttnn.MeshProgramDescriptor.
+            device_domain: Logical device domain used for per-device dispatch.
+            kernel_logical_selectors: Logical selector for each compiled kernel.
+            operation_name: User-facing operation name for runtime diagnostics.
+            runtime_resource_factory: Optional per-invocation resource callback.
+            runtime_resource_cache: Operation-owned persistent L1 resources.
+            kernel_used_dfb_indices: Physical DFB indices referenced by each
+                final specialized kernel. None entries are conservative.
+            kernel_local_tensor_indices: Global tensor indices whose local L1
+                shards are accessed directly by each kernel.
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
         self.kernel_arg_specs = kernel_arg_specs
         self.num_tensors = num_tensors
         self.core_ranges = core_ranges
-        self.kernel_tensor_indices = kernel_tensor_indices
+        self.kernel_tensor_indices = list(kernel_tensor_indices)
+        self.kernel_local_tensor_indices = (
+            [[] for _ in kernel_paths]
+            if kernel_local_tensor_indices is None
+            else list(kernel_local_tensor_indices)
+        )
+        if len(self.kernel_tensor_indices) != len(kernel_paths):
+            raise ValueError(
+                "kernel tensor-index metadata count must match kernel count"
+            )
+        if len(self.kernel_local_tensor_indices) != len(kernel_paths):
+            raise ValueError(
+                "kernel local-tensor metadata count must match kernel count"
+            )
+        self.kernel_core_ranges = kernel_core_ranges or [None] * len(kernel_paths)
         self.cb_configs = cb_configs or []
+        self.dfb_reconfiguration_plan = dfb_reconfiguration_plan
         self.program_hash = program_hash
         self.source_lines = source_lines
         self.all_source_lines = all_source_lines or {}
         self.thread_to_kernel = thread_to_kernel or {}
         self.kernel_line_offsets = kernel_line_offsets or {}
         self.num_pipe_sync_semaphores = num_pipe_sync_semaphores
+        self.num_dfb_resets = num_dfb_resets
         self.pipe_sram_scratch_bytes = pipe_sram_scratch_bytes
         self.num_pipe_global_semaphores = num_pipe_global_semaphores
-        self._pipe_global_semaphore_lifetime = []
+        self.kernel_pipe_computed_address_dfb_indices = (
+            kernel_pipe_computed_address_dfb_indices or [[] for _ in kernel_paths]
+        )
+        self.kernel_fabric_routes = kernel_fabric_routes or [[] for _ in kernel_paths]
+        self.kernel_fabric_runtime_arg_base_common_indices = (
+            kernel_fabric_runtime_arg_base_common_indices
+            or [None for _ in kernel_paths]
+        )
+        self.kernel_fabric_manager_intervals = kernel_fabric_manager_intervals or [
+            () for _ in kernel_paths
+        ]
+        self.mesh_program_placements = mesh_program_placements
+        self.device_domain = device_domain
+        self.kernel_logical_selectors = (
+            list(kernel_logical_selectors)
+            if kernel_logical_selectors is not None
+            else [None for _ in kernel_paths]
+        )
+        if runtime_resource_factory is not None:
+            if len(self.kernel_logical_selectors) != len(kernel_paths):
+                raise ValueError(
+                    f"@ttl.operation {operation_name!r}: runtime_resource_factory "
+                    "requires one logical-kernel selector per compiled kernel; "
+                    f"got {len(self.kernel_logical_selectors)} selectors for "
+                    f"{len(kernel_paths)} kernels"
+                )
+            missing_selector_indices = [
+                kernel_index
+                for kernel_index, selector in enumerate(self.kernel_logical_selectors)
+                if selector is None
+            ]
+            if missing_selector_indices:
+                raise ValueError(
+                    f"@ttl.operation {operation_name!r}: runtime_resource_factory "
+                    "requires logical-kernel selectors for compiled kernel indices "
+                    f"{missing_selector_indices}"
+                )
+        self.kernel_used_dfb_indices = (
+            kernel_used_dfb_indices
+            if kernel_used_dfb_indices is not None
+            else [None for _ in kernel_paths]
+        )
+        self.operation_name = operation_name
+        self.runtime_resource_factory = runtime_resource_factory
+        owns_runtime_resource_cache = runtime_resource_cache is None
+        self._runtime_resource_cache = (
+            KernelRuntimeResourceCache()
+            if owns_runtime_resource_cache
+            else runtime_resource_cache
+        )
+        if owns_runtime_resource_cache:
+            self._runtime_resource_finalizer = attach_runtime_resource_finalizer(
+                self, self._runtime_resource_cache
+            )
+        self.opaque_include_paths = opaque_include_paths or []
+        self._fabric_route_cache = _FabricRouteCache()
+
+    def _with_runtime_resources(
+        self,
+        runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]],
+        runtime_resource_cache: Optional[KernelRuntimeResourceCache],
+    ) -> CompiledTTNNKernel:
+        """Copy compiled artifacts and replace operation-owned runtime state."""
+        compiled_kernel = _copy.copy(self)
+        compiled_kernel.runtime_resource_factory = runtime_resource_factory
+        compiled_kernel._runtime_resource_cache = runtime_resource_cache
+        compiled_kernel._fabric_route_cache = _FabricRouteCache()
+        compiled_kernel.__dict__.pop("_runtime_resource_finalizer", None)
+        return compiled_kernel
 
     def __call__(self, *args):
         """Execute the kernel with the given tensors."""
@@ -623,6 +1044,20 @@ class CompiledTTNNKernel:
                 thread_type=thread_type,
                 tensor_indices=tensor_indices,
                 config=config,
+                compiler_include_paths=self.opaque_include_paths,
+                pipe_computed_address_dfb_indices=self.kernel_pipe_computed_address_dfb_indices[
+                    kernel_idx
+                ],
+                core_ranges=self.kernel_core_ranges[kernel_idx],
+                fabric_runtime_arg_base_common_index=(
+                    self.kernel_fabric_runtime_arg_base_common_indices[kernel_idx]
+                ),
+                logical_kernel=self.kernel_logical_selectors[kernel_idx],
+                fabric_manager_intervals=self.kernel_fabric_manager_intervals[
+                    kernel_idx
+                ],
+                used_dfb_indices=self.kernel_used_dfb_indices[kernel_idx],
+                local_tensor_indices=self.kernel_local_tensor_indices[kernel_idx],
             )
             kernel_specs.append(spec)
 
@@ -631,13 +1066,124 @@ class CompiledTTNNKernel:
             kernel_specs=kernel_specs,
             tensors=list(args),
             cb_configs=self.cb_configs,
+            dfb_reconfiguration_plan=self.dfb_reconfiguration_plan,
             core_ranges=self.core_ranges,
             program_hash=self.program_hash,
             num_pipe_sync_semaphores=self.num_pipe_sync_semaphores,
+            num_dfb_resets=self.num_dfb_resets,
             pipe_sram_scratch_bytes=self.pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=self.num_pipe_global_semaphores,
-            pipe_global_semaphore_lifetime=self._pipe_global_semaphore_lifetime,
+            mesh_program_placements=self.mesh_program_placements,
+            device_domain=self.device_domain,
+            kernel_fabric_routes=self.kernel_fabric_routes,
+            fabric_route_cache=self._fabric_route_cache,
+            runtime_resource_factory=self.runtime_resource_factory,
+            operation_name=self.operation_name,
+            runtime_resource_cache=self._runtime_resource_cache,
+            device=device,
         )
+
+
+@dataclass(frozen=True)
+class _CompiledTTNNKernelTemplate:
+    compiled_kernel: CompiledTTNNKernel
+
+    @classmethod
+    def create(cls, compiled_kernel: CompiledTTNNKernel) -> _CompiledTTNNKernelTemplate:
+        if not isinstance(compiled_kernel, CompiledTTNNKernel):
+            raise TypeError(
+                "factory cache compilation must produce CompiledTTNNKernel, got "
+                f"{type(compiled_kernel).__name__}"
+            )
+        return cls(compiled_kernel._with_runtime_resources(None, None))
+
+    def instantiate(
+        self,
+        runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]],
+        runtime_resource_cache: KernelRuntimeResourceCache,
+    ) -> CompiledTTNNKernel:
+        return self.compiled_kernel._with_runtime_resources(
+            runtime_resource_factory, runtime_resource_cache
+        )
+
+
+@dataclass
+class _FactoryCacheSlot:
+    lock: threading.RLock = field(default_factory=threading.RLock, repr=False)
+    template: Optional[_CompiledTTNNKernelTemplate] = None
+
+
+@dataclass(frozen=True)
+class _PostSemaphoreCacheEntry:
+    cache_key: tuple
+    compiled_kernel: CompiledTTNNKernel
+    device_identity: object
+    pipe_resources_ref: weakref.ReferenceType
+
+
+def _matches_post_semaphore_cache_entry(
+    entry: _PostSemaphoreCacheEntry,
+    cache_key: tuple,
+    runtime_args: tuple,
+    runtime_resource_cache: KernelRuntimeResourceCache,
+) -> bool:
+    if entry.cache_key != cache_key:
+        return False
+    try:
+        device = _require_device(runtime_args)
+    except ValueError:
+        return False
+    with runtime_resource_cache.lock:
+        pipe_resources = runtime_resource_cache.pipe_resources
+        return (
+            entry.device_identity == _device_identity(device)
+            and _same_device(runtime_resource_cache.device, device)
+            and pipe_resources is not None
+            and entry.pipe_resources_ref() is pipe_resources
+        )
+
+
+def _make_post_semaphore_cache_entry(
+    cache_key: tuple,
+    compiled_kernel: CompiledTTNNKernel,
+    runtime_args: tuple,
+    runtime_resource_cache: KernelRuntimeResourceCache,
+) -> Optional[_PostSemaphoreCacheEntry]:
+    try:
+        device = _require_device(runtime_args)
+    except ValueError:
+        return None
+    with runtime_resource_cache.lock:
+        pipe_resources = runtime_resource_cache.pipe_resources
+        if (
+            not _same_device(runtime_resource_cache.device, device)
+            or pipe_resources is None
+            or len(pipe_resources.global_semaphores)
+            != compiled_kernel.num_pipe_global_semaphores
+        ):
+            return None
+        return _PostSemaphoreCacheEntry(
+            cache_key,
+            compiled_kernel,
+            _device_identity(device),
+            weakref.ref(pipe_resources),
+        )
+
+
+def _get_factory_cache_slot(
+    factory_cache: MutableMapping, entry_key: _FactoryCacheEntryKey
+) -> _FactoryCacheSlot:
+    with _FACTORY_CACHE_LOCK:
+        slot = factory_cache.get(entry_key)
+        if slot is None:
+            slot = _FactoryCacheSlot()
+            factory_cache[entry_key] = slot
+        if not isinstance(slot, _FactoryCacheSlot):
+            raise TypeError(
+                "factory cache contains an invalid TT-Lang entry for "
+                f"{entry_key.factory_key!r}"
+            )
+        return slot
 
 
 def _write_kernel_to_tmp(name: str, source: str) -> str:
@@ -679,16 +1225,30 @@ def _write_kernel_to_tmp(name: str, source: str) -> str:
     return str(path)
 
 
-def _lookup_kernel_func_op(module, kernel_name: str):
-    """Return the func.func operation for a kernel symbol."""
-    for op_view in module.body.operations:
-        operation = getattr(op_view, "operation", op_view)
-        if operation.name != "func.func":
-            continue
-        sym_name = operation.attributes.get("sym_name", None)
-        if sym_name is not None and str(sym_name).strip('"') == kernel_name:
-            return operation
-    raise RuntimeError(f"Could not find TTKernel function '{kernel_name}'")
+def _lookup_kernel_func_op(module, kernel_name: str, *, symbol_table=None):
+    """Return a kernel's ``func.func``, using ``symbol_table`` when supplied."""
+    if symbol_table is None:
+        symbol_table = SymbolTable(module.operation)
+    try:
+        op_view = symbol_table[kernel_name]
+    except KeyError as error:
+        raise RuntimeError(
+            f"Could not find TTKernel function '{kernel_name}'"
+        ) from error
+    operation = getattr(op_view, "operation", op_view)
+    if operation.name != "func.func":
+        raise RuntimeError(f"TTKernel symbol '{kernel_name}' is not a function")
+    return operation
+
+
+def _get_kernel_attributes(module, kernel_name: str, kernel_operation=None):
+    """Return attributes from a resolved kernel or its symbol name."""
+    operation = (
+        _lookup_kernel_func_op(module, kernel_name)
+        if kernel_operation is None
+        else kernel_operation
+    )
+    return operation.attributes
 
 
 def _set_unpack_to_dest_fp32(config, ttnn_mod, cb_indices) -> None:
@@ -711,12 +1271,27 @@ def _set_unpack_to_dest_fp32(config, ttnn_mod, cb_indices) -> None:
         )
 
 
-def _get_kernel_bool_attr(module, kernel_name: str, attr_name: str) -> bool:
+def _set_math_fidelity(config, ttnn_mod, math_fidelity: str) -> None:
+    try:
+        config.math_fidelity = getattr(ttnn_mod.MathFidelity, math_fidelity)
+    except AttributeError as error:
+        raise RuntimeError(
+            f"TTNN does not provide MathFidelity.{math_fidelity}"
+        ) from error
+
+
+def _get_kernel_bool_attr(
+    module, kernel_name: str, attr_name: str, *, kernel_operation=None
+) -> bool:
     """Read a boolean func.func attribute from a compiled kernel."""
-    operation = _lookup_kernel_func_op(module, kernel_name)
-    attr = operation.attributes.get(attr_name, None)
+    attr = _get_kernel_attributes(module, kernel_name, kernel_operation).get(
+        attr_name, None
+    )
     if attr is None:
-        return False
+        raise ValueError(
+            f"Required compiler-generated attribute '{attr_name}' is missing "
+            f"from compute kernel '{kernel_name}'"
+        )
     attr_text = str(attr).strip()
     if attr_text == "true":
         return True
@@ -728,17 +1303,18 @@ def _get_kernel_bool_attr(module, kernel_name: str, attr_name: str) -> bool:
     )
 
 
-def _get_kernel_i32_array_attr(module, kernel_name: str, attr_name: str):
-    """Read a `DenseI32ArrayAttr` func.func attribute as a list of ints.
-
-    Returns an empty list when the attribute is missing. Used by the runtime
-    bridge to consume the per-CB UnpackToDestFp32 selection emitted by
-    `ttl-set-compute-kernel-config`.
-    """
-    operation = _lookup_kernel_func_op(module, kernel_name)
-    attr = operation.attributes.get(attr_name, None)
+def _get_kernel_i32_array_attr(
+    module, kernel_name: str, attr_name: str, *, kernel_operation=None
+):
+    """Read a required `DenseI32ArrayAttr` kernel attribute."""
+    attr = _get_kernel_attributes(module, kernel_name, kernel_operation).get(
+        attr_name, None
+    )
     if attr is None:
-        return []
+        raise ValueError(
+            f"Required compiler-generated attribute '{attr_name}' is missing "
+            f"from compute kernel '{kernel_name}'"
+        )
     if not isinstance(attr, DenseI32ArrayAttr):
         raise ValueError(
             f"Expected DenseI32ArrayAttr for '{attr_name}' on kernel "
@@ -747,16 +1323,626 @@ def _get_kernel_i32_array_attr(module, kernel_name: str, attr_name: str):
     return list(attr)
 
 
+def _get_kernel_optional_i32_array_attr(
+    module, kernel_name: str, attr_name: str, *, kernel_operation=None
+):
+    """Read an optional `DenseI32ArrayAttr`. Missing returns None, empty returns []."""
+    attr = _get_kernel_attributes(module, kernel_name, kernel_operation).get(
+        attr_name, None
+    )
+    if attr is None:
+        return None
+    if not isinstance(attr, DenseI32ArrayAttr):
+        raise ValueError(
+            f"Expected DenseI32ArrayAttr for '{attr_name}' on kernel "
+            f"'{kernel_name}', got {attr}"
+        )
+    return list(attr)
+
+
+def _get_kernel_core_coords(module, kernel_name: str, *, kernel_operation=None):
+    """Return a specialized kernel's ``(x, y)`` launch coordinates.
+
+    Returns ``None`` when the function serves the complete launch grid. Each
+    coordinate has two dimensions because worker launch grids are two-dimensional.
+    """
+    attr = _get_kernel_attributes(module, kernel_name, kernel_operation).get(
+        _ttl_ir.CORE_COORD_ATTR, None
+    )
+    if attr is None:
+        return None
+    if not isinstance(attr, ArrayAttr):
+        raise ValueError(
+            f"Expected an array for '{_ttl_ir.CORE_COORD_ATTR}' on kernel "
+            f"'{kernel_name}', got {attr}"
+        )
+    coords = []
+    for pair in attr:
+        pair = ArrayAttr(pair)
+        if len(pair) != 2:
+            raise ValueError(
+                f"Expected length-2 [x, y] entries in "
+                f"'{_ttl_ir.CORE_COORD_ATTR}' on "
+                f"kernel '{kernel_name}', got {pair}"
+            )
+        coords.append(
+            (int(IntegerAttr(pair[0]).value), int(IntegerAttr(pair[1]).value))
+        )
+    return coords
+
+
+def _get_kernel_logical_selector(
+    module, kernel_name: str, *, kernel_operation=None
+) -> Optional[KernelSelector]:
+    """Recover logical-kernel metadata retained by specialization clones."""
+    raw_attribute = _get_kernel_attributes(module, kernel_name, kernel_operation).get(
+        _ttl_ir.LOGICAL_KERNEL_ATTR, None
+    )
+    if raw_attribute is None:
+        return None
+    attribute = ttl_dialect.LogicalKernelAttr.maybe_downcast(raw_attribute)
+    if attribute is None:
+        raise ValueError(
+            f"Invalid '{_ttl_ir.LOGICAL_KERNEL_ATTR}' on kernel {kernel_name!r}"
+        )
+
+    if attribute.kind == ttl_dialect.ir.LogicalKernelKind.Compute:
+        kind = KernelKind.COMPUTE
+    elif attribute.kind == ttl_dialect.ir.LogicalKernelKind.DataMovement:
+        kind = KernelKind.DATA_MOVEMENT
+    else:
+        raise ValueError(f"Unknown logical kernel kind on kernel {kernel_name!r}")
+
+    if not attribute.identity:
+        return kind
+    return Kernel._from_metadata(
+        kind,
+        attribute.identity,
+        operation_identity=attribute.operation,
+        implicit_role=attribute.role,
+    )
+
+
+class _KernelThreadType(str, Enum):
+    """Worker-kernel execution thread supported by TTNN descriptors."""
+
+    NOC = "noc"
+    COMPUTE = "compute"
+
+
+class _DataMovementRole(IntEnum):
+    """Reader or writer role assigned to a NOC data-movement kernel."""
+
+    READER = 0
+    WRITER = 1
+
+
+def _get_kernel_data_movement_role(module, kernel_name: str, *, kernel_operation=None):
+    """Return the reader or writer role encoded by `ttl.noc_index`.
+
+    Reading the role from the function attribute keeps descriptor selection
+    independent of function ordering.
+    """
+    attr = _get_kernel_attributes(module, kernel_name, kernel_operation).get(
+        _ttl_ir.NOC_INDEX_ATTR, None
+    )
+    if attr is None:
+        raise ValueError(
+            f"Missing '{_ttl_ir.NOC_INDEX_ATTR}' on datamovement kernel "
+            f"'{kernel_name}'"
+        )
+    raw_role = int(IntegerAttr(attr).value)
+    try:
+        return _DataMovementRole(raw_role)
+    except ValueError as error:
+        raise ValueError(
+            f"Invalid '{_ttl_ir.NOC_INDEX_ATTR}' value {raw_role} on "
+            f"datamovement kernel '{kernel_name}'; expected 0 for reader or "
+            "1 for writer"
+        ) from error
+
+
+@dataclass(frozen=True)
+class _TTKernelFunction:
+    """TTKernel function with metadata needed before EmitC conversion.
+
+    Attributes:
+        name: MLIR symbol name.
+        thread_type: Execution thread selected by ``ttkernel.thread``.
+        operation: Resolved ``func.func`` operation.
+        core_coordinates: Launch coordinates assigned by core specialization,
+            or ``None`` when the function serves the complete launch grid.
+        logical_selector: Source-level kernel used to resolve runtime resources.
+    """
+
+    name: str
+    thread_type: _KernelThreadType
+    operation: Any
+    core_coordinates: Optional[tuple[tuple[int, int], ...]]
+    logical_selector: Optional[KernelSelector]
+
+
+def _collect_ttkernel_functions(module) -> list[_TTKernelFunction]:
+    """Resolve each TTKernel symbol before EmitC removes function attributes."""
+    symbol_table = SymbolTable(module.operation)
+    kernel_functions = []
+    for kernel_name, raw_thread_type in get_ttkernel_names(module):
+        operation = _lookup_kernel_func_op(
+            module, kernel_name, symbol_table=symbol_table
+        )
+        try:
+            thread_type = _KernelThreadType(raw_thread_type)
+        except ValueError as error:
+            raise ValueError(
+                f"Invalid TTKernel thread type {raw_thread_type!r} on kernel "
+                f"'{kernel_name}'"
+            ) from error
+        coordinates = _get_kernel_core_coords(
+            module, kernel_name, kernel_operation=operation
+        )
+        kernel_functions.append(
+            _TTKernelFunction(
+                name=kernel_name,
+                thread_type=thread_type,
+                operation=operation,
+                core_coordinates=(None if coordinates is None else tuple(coordinates)),
+                logical_selector=_get_kernel_logical_selector(
+                    module, kernel_name, kernel_operation=operation
+                ),
+            )
+        )
+    return kernel_functions
+
+
+def _get_kernel_index_array_attribute(
+    module,
+    kernel_name: str,
+    attribute_name: str,
+    *,
+    required: bool = False,
+    kernel_operation=None,
+):
+    """Return integer values from a kernel ``ArrayAttr``.
+
+    Missing optional attributes return an empty list. Missing required
+    attributes or non-array values raise ``ValueError``.
+    """
+    attribute = _get_kernel_attributes(module, kernel_name, kernel_operation).get(
+        attribute_name, None
+    )
+    if attribute is None:
+        if required:
+            raise ValueError(
+                f"Required attribute '{attribute_name}' is missing from "
+                f"kernel '{kernel_name}'"
+            )
+        return []
+    if not isinstance(attribute, ArrayAttr):
+        raise ValueError(
+            f"Expected ArrayAttr for '{attribute_name}' on kernel "
+            f"'{kernel_name}', got {attribute}"
+        )
+    return [int(IntegerAttr(index).value) for index in attribute]
+
+
+def _get_kernel_crta_indices(module, kernel_name: str, *, kernel_operation=None):
+    """Read finalized global tensor indices for one kernel's runtime arguments."""
+    return _get_kernel_index_array_attribute(
+        module,
+        kernel_name,
+        _ttl_ir.CRTA_INDICES_ATTR,
+        required=True,
+        kernel_operation=kernel_operation,
+    )
+
+
+def _get_kernel_local_tensor_indices(
+    module, kernel_name: str, *, kernel_operation=None
+):
+    """Read global tensor indices requiring core-local storage."""
+    return _get_kernel_index_array_attribute(
+        module,
+        kernel_name,
+        _ttl_ir.LOCAL_TENSOR_INDICES_ATTR,
+        kernel_operation=kernel_operation,
+    )
+
+
+def _get_kernel_fabric_routes(module, kernel_name: str, *, kernel_operation=None):
+    """Return runtime fabric routes recorded on a kernel function."""
+    attr = _get_kernel_attributes(module, kernel_name, kernel_operation).get(
+        _ttl_ir.FABRIC_ROUTES_ATTR, None
+    )
+    if attr is None:
+        return []
+
+    routes = []
+    for route_attr in ArrayAttr(attr):
+        route = DictAttr(route_attr)
+        local = ttl_dialect.DeviceRefAttr.maybe_downcast(route["local"])
+        remote = ttl_dialect.DeviceRefAttr.maybe_downcast(route["remote"])
+        if local is None or remote is None:
+            raise ValueError(
+                f"Expected DeviceRefAttr entries in ttl.fabric_routes on "
+                f"kernel '{kernel_name}'"
+            )
+        source_nodes = tuple(
+            tuple(DenseI64ArrayAttr(source_node))
+            for source_node in ArrayAttr(route["source_nodes"])
+        )
+        routes.append(
+            FabricRouteSpec(
+                local_device=tuple(
+                    value for coordinate in local.coordinates for value in coordinate
+                ),
+                remote_device=tuple(
+                    value for coordinate in remote.coordinates for value in coordinate
+                ),
+                source_nodes=source_nodes,
+                route_index=int(route["route_index"]),
+            )
+        )
+    return routes
+
+
+def _get_kernel_fabric_runtime_arg_base_common_index(
+    module, kernel_name: str, *, kernel_operation=None
+):
+    """Return the common-argument index for fabric runtime arguments."""
+    attr = _get_kernel_attributes(module, kernel_name, kernel_operation).get(
+        _ttl_ir.FABRIC_RUNTIME_ARG_BASE_COMMON_INDEX_ATTR, None
+    )
+    return None if attr is None else int(IntegerAttr(attr).value)
+
+
+def _get_kernel_fabric_manager_intervals(
+    module, kernel_name: str, *, kernel_operation=None
+):
+    """Return fabric-manager ownership intervals recorded on a kernel."""
+    attr = _get_kernel_attributes(module, kernel_name, kernel_operation).get(
+        _ttl_ir.FABRIC_MANAGER_INTERVALS_ATTR, None
+    )
+    if attr is None:
+        return ()
+
+    kind_map = {
+        _ttl_ir.FabricManagerIntervalKind.GeneratedReceiver: (
+            FabricManagerIntervalKind.GENERATED_RECEIVER
+        ),
+        _ttl_ir.FabricManagerIntervalKind.GeneratedSender: (
+            FabricManagerIntervalKind.GENERATED_SENDER
+        ),
+        _ttl_ir.FabricManagerIntervalKind.GeneratedMixed: (
+            FabricManagerIntervalKind.GENERATED_MIXED
+        ),
+        _ttl_ir.FabricManagerIntervalKind.External: (
+            FabricManagerIntervalKind.EXTERNAL
+        ),
+    }
+    intervals = []
+    for interval_attr in ArrayAttr(attr):
+        interval = ttl_dialect.FabricManagerIntervalAttr.maybe_downcast(interval_attr)
+        if interval is None:
+            raise ValueError(
+                "Expected FabricManagerIntervalAttr entries in "
+                f"ttl.fabric_manager_intervals on kernel {kernel_name!r}"
+            )
+        intervals.append(
+            FabricManagerIntervalSpec(
+                identity=interval.identity,
+                kind=kind_map[interval.kind],
+                claim=interval.claim,
+                route_indices=tuple(interval.route_indices),
+                interfering_intervals=tuple(interval.interfering_intervals),
+                launch_nodes=(
+                    None
+                    if interval.launch_nodes is None
+                    else tuple(tuple(node) for node in interval.launch_nodes)
+                ),
+            )
+        )
+    return tuple(intervals)
+
+
+@dataclass(frozen=True)
+class _KernelConfigurationMetadata:
+    """Effective TT-Metal configuration for one generated kernel.
+
+    Attributes:
+        thread_type: TTKernel execution thread.
+        math_fidelity: Compute math-fidelity override.
+        fp32_dest_acc_en: Whether compute accumulates into FP32 destinations.
+        dst_full_sync_en: Whether compute uses full destination synchronization.
+        unpack_to_dest_fp32: DFB indices unpacked directly into FP32 destinations.
+        data_movement_role: Reader or writer role for a NOC thread; unset for
+            compute threads.
+    """
+
+    thread_type: _KernelThreadType
+    math_fidelity: Optional[str] = None
+    fp32_dest_acc_en: Optional[bool] = None
+    dst_full_sync_en: Optional[bool] = None
+    unpack_to_dest_fp32: tuple[int, ...] = ()
+    data_movement_role: Optional[_DataMovementRole] = None
+
+
+_SYMBOL_NAME_ATTR = "sym_name"
+_FUNCTION_ATTRIBUTES_EXCLUDED_FROM_DESCRIPTOR_EQUIVALENCE = frozenset(
+    {
+        _SYMBOL_NAME_ATTR,
+        _ttl_ir.CORE_COORD_ATTR,
+    }
+)
+
+
+def _descriptor_relevant_function_attributes(
+    attributes,
+) -> tuple[tuple[str, str], ...]:
+    """Return function attributes that must match for descriptor sharing.
+
+    The result excludes `sym_name`, which identifies the cloned function, and
+    `ttl.core_coord`, which selects its launch cores. Neither attribute changes
+    the TT-Metal descriptor constructed for the generated kernel.
+    """
+    return tuple(
+        sorted(
+            (str(name), str(value))
+            for name, value in attributes.items()
+            if str(name)
+            not in _FUNCTION_ATTRIBUTES_EXCLUDED_FROM_DESCRIPTOR_EQUIVALENCE
+        )
+    )
+
+
+@dataclass(frozen=True)
+class _KernelDescriptorMetadata:
+    """Properties that must agree before generated kernels share a descriptor.
+
+    Frozen-dataclass equality includes every field, so additions participate in
+    descriptor comparison unless explicitly excluded at their declaration.
+
+    Attributes:
+        runtime_arg_spec: Ordered runtime arguments.
+        configuration: TT-Metal kernel type and processor settings.
+        pipe_computed_address_dfb_indices: DFB addresses supplied as common
+            runtime arguments.
+        used_dfb_indices: Referenced DFBs, or ``None`` when this set is unknown.
+        tensor_indices: Global tensor arguments.
+        local_tensor_indices: Tensors accessed through core-local L1 addresses.
+        fabric_routes: Fabric routes used by the kernel.
+        fabric_runtime_arg_base_common_index: Common runtime-argument index for
+            compiler-managed fabric arguments.
+        fabric_manager_intervals: Fabric-manager ownership intervals.
+        logical_selector: Source-level kernel used to resolve runtime resources.
+        function_attributes: Function attributes other than the symbol name and
+            launch coordinates. Any difference prevents descriptor sharing.
+    """
+
+    runtime_arg_spec: tuple
+    configuration: _KernelConfigurationMetadata
+    pipe_computed_address_dfb_indices: tuple[int, ...]
+    used_dfb_indices: Optional[tuple[int, ...]]
+    tensor_indices: tuple[int, ...]
+    local_tensor_indices: tuple[int, ...]
+    fabric_routes: tuple
+    fabric_runtime_arg_base_common_index: Optional[int]
+    fabric_manager_intervals: tuple
+    logical_selector: Optional[KernelSelector]
+    function_attributes: tuple[tuple[str, str], ...]
+
+
+def _snapshot_kernel_descriptor_metadata(
+    module,
+    function: _TTKernelFunction,
+    *,
+    math_fidelity: Optional[str],
+    fp32_dest_acc_en: Optional[bool],
+    dst_full_sync_en: Optional[bool],
+) -> _KernelDescriptorMetadata:
+    """Capture descriptor properties before EmitC removes function attributes.
+
+    Typed fields construct the TTNN descriptor. Comparison also includes every
+    function attribute except the symbol and launch coordinates, including
+    attributes added later.
+    """
+    kernel_name = function.name
+    kernel_operation = function.operation
+    pipe_computed_address_dfb_indices = (
+        _get_kernel_optional_i32_array_attr(
+            module,
+            kernel_name,
+            _ttl_ir.PIPE_COMPUTED_ADDRESS_DFB_INDICES_ATTR,
+            kernel_operation=kernel_operation,
+        )
+        or []
+    )
+    used_dfb_indices = _get_kernel_optional_i32_array_attr(
+        module,
+        kernel_name,
+        _ttl_ir.USED_DFB_INDICES_ATTR,
+        kernel_operation=kernel_operation,
+    )
+
+    raw_arg_spec = kernel_operation.attributes.get(ttkernel.ir.ARG_SPEC_ATTR, None)
+    arg_spec = (
+        None
+        if raw_arg_spec is None
+        else ttkernel.ir.ArgSpecAttr.maybe_downcast(raw_arg_spec)
+    )
+    runtime_arg_spec = tuple(arg_spec.rt_args) if arg_spec else ()
+
+    if function.thread_type == _KernelThreadType.COMPUTE:
+        configuration = _KernelConfigurationMetadata(
+            thread_type=function.thread_type,
+            math_fidelity=math_fidelity,
+            fp32_dest_acc_en=(
+                fp32_dest_acc_en
+                if fp32_dest_acc_en is not None
+                else _get_kernel_bool_attr(
+                    module,
+                    kernel_name,
+                    _ttl_ir.FP32_DEST_ACC_EN_ATTR,
+                    kernel_operation=kernel_operation,
+                )
+            ),
+            dst_full_sync_en=(
+                dst_full_sync_en
+                if dst_full_sync_en is not None
+                else _get_kernel_bool_attr(
+                    module,
+                    kernel_name,
+                    _ttl_ir.DST_FULL_SYNC_EN_ATTR,
+                    kernel_operation=kernel_operation,
+                )
+            ),
+            unpack_to_dest_fp32=tuple(
+                _get_kernel_i32_array_attr(
+                    module,
+                    kernel_name,
+                    _ttl_ir.UNPACK_TO_DEST_FP32_ATTR,
+                    kernel_operation=kernel_operation,
+                )
+            ),
+        )
+    else:
+        assert function.thread_type == _KernelThreadType.NOC
+        configuration = _KernelConfigurationMetadata(
+            thread_type=function.thread_type,
+            data_movement_role=_get_kernel_data_movement_role(
+                module, kernel_name, kernel_operation=kernel_operation
+            ),
+        )
+
+    return _KernelDescriptorMetadata(
+        runtime_arg_spec=runtime_arg_spec,
+        configuration=configuration,
+        pipe_computed_address_dfb_indices=tuple(pipe_computed_address_dfb_indices),
+        used_dfb_indices=(
+            None if used_dfb_indices is None else tuple(used_dfb_indices)
+        ),
+        tensor_indices=tuple(
+            _get_kernel_crta_indices(
+                module, kernel_name, kernel_operation=kernel_operation
+            )
+        ),
+        local_tensor_indices=tuple(
+            _get_kernel_local_tensor_indices(
+                module, kernel_name, kernel_operation=kernel_operation
+            )
+        ),
+        fabric_routes=tuple(
+            _get_kernel_fabric_routes(
+                module, kernel_name, kernel_operation=kernel_operation
+            )
+        ),
+        fabric_runtime_arg_base_common_index=(
+            _get_kernel_fabric_runtime_arg_base_common_index(
+                module, kernel_name, kernel_operation=kernel_operation
+            )
+        ),
+        fabric_manager_intervals=_get_kernel_fabric_manager_intervals(
+            module, kernel_name, kernel_operation=kernel_operation
+        ),
+        logical_selector=function.logical_selector,
+        function_attributes=_descriptor_relevant_function_attributes(
+            kernel_operation.attributes
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class _KernelDescriptorCandidate:
+    """Generated kernel considered for descriptor sharing.
+
+    Attributes:
+        name: Specialized function symbol used for diagnostics and filenames.
+        core_coordinates: Launch coordinates served by the function, or
+            ``None`` for an unspecialized function.
+        cpp_source: Generated C++ compiled by TT-Metal.
+        descriptor_metadata: Runtime requirements that determine whether the
+            descriptor can be shared.
+    """
+
+    name: str
+    core_coordinates: Optional[tuple[tuple[int, int], ...]]
+    cpp_source: str
+    descriptor_metadata: _KernelDescriptorMetadata
+
+
+def _kernel_processor_name(configuration: _KernelConfigurationMetadata) -> str:
+    if configuration.thread_type == _KernelThreadType.COMPUTE:
+        return "compute processor"
+    assert configuration.data_movement_role is not None
+    return f"{configuration.data_movement_role.name.lower()} data-movement processor"
+
+
+def _group_equivalent_specialized_kernels(
+    candidates: List[_KernelDescriptorCandidate],
+) -> List[List[_KernelDescriptorCandidate]]:
+    """Group generated kernels that can share one TT-Metal descriptor.
+
+    Coordinate-specialized kernels share a group only when their generated C++
+    and runtime contracts match. Unspecialized kernels remain separate because
+    each already represents its complete launch range.
+    """
+    groups: List[List[_KernelDescriptorCandidate]] = []
+    group_index_by_signature = {}
+    coordinate_owners_by_processor = {}
+    for candidate in candidates:
+        coordinates = candidate.core_coordinates
+        if coordinates is None:
+            # Specialization clones for the whole grid and erases the original,
+            # so a processor slot is never split between whole-grid and
+            # specialized functions.
+            groups.append([candidate])
+            continue
+
+        coordinate_set = set(coordinates)
+        if len(coordinate_set) != len(coordinates):
+            raise ValueError(
+                f"specialized kernel {candidate.name!r} has duplicate "
+                "launch coordinates"
+            )
+        configuration = candidate.descriptor_metadata.configuration
+        processor = (
+            configuration.thread_type,
+            configuration.data_movement_role,
+        )
+        coordinate_owners = coordinate_owners_by_processor.setdefault(processor, {})
+        for coordinate in coordinates:
+            previous_owner = coordinate_owners.get(coordinate)
+            if previous_owner is not None:
+                raise ValueError(
+                    f"specialized kernels {previous_owner!r} and "
+                    f"{candidate.name!r} both assign the "
+                    f"{_kernel_processor_name(configuration)} to launch "
+                    f"coordinate {coordinate}"
+                )
+            coordinate_owners[coordinate] = candidate.name
+        signature = (
+            candidate.cpp_source,
+            candidate.descriptor_metadata,
+        )
+        group_index = group_index_by_signature.get(signature)
+        if group_index is None:
+            group_index_by_signature[signature] = len(groups)
+            groups.append([candidate])
+            continue
+        groups[group_index].append(candidate)
+    return groups
+
+
 def _compile_ttnn_kernel(
     module,
     args,
     grid,
     num_outs,
-    thread_tensor_indices,
     cb_configs=None,
+    dfb_reconfiguration_plan=None,
     program_hash=None,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
+    math_fidelity: Optional[str] = None,
     verbose=True,
     source_lines=None,
     all_source_lines=None,
@@ -764,6 +1950,14 @@ def _compile_ttnn_kernel(
     num_pipe_sync_semaphores: int = 0,
     pipe_sram_scratch_bytes: int = 0,
     num_pipe_global_semaphores: int = 0,
+    num_dfb_resets: int = 0,
+    opaque_include_paths: Optional[List[str]] = None,
+    mesh_program_placements=None,
+    device_domain=None,
+    target_arch: Optional[str] = None,
+    operation_name: str = "<anonymous>",
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+    runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -782,8 +1976,7 @@ def _compile_ttnn_kernel(
     Returns:
         CompiledTTNNKernel ready for execution
     """
-    # Get kernel info from module
-    kernel_info = get_ttkernel_names(module)
+    kernel_functions = _collect_ttkernel_functions(module)
 
     # Validate tensor types: must be all TTNN or all torch, not mixed.
     # Mixed tensors would generate ToLayoutOps for host tensors, creating extra
@@ -796,41 +1989,99 @@ def _compile_ttnn_kernel(
             f"Mixed tensor types would generate extra bounce kernels."
         )
 
-    # Validate TTNN tensors - must be L1 or DRAM and tilized
     for i, arg in enumerate(args):
         if is_ttnn_tensor(arg):
-            mem_space = _detect_memory_space_from_tensor(arg, "unknown")
-            if mem_space not in ("L1", "DRAM"):
-                raise ValueError(
-                    f"TTNN interop requires L1 or DRAM memory space, but tensor {i} is in {mem_space}."
-                )
-            if hasattr(arg, "layout") and "TILE" not in str(arg.layout):
-                raise ValueError(
-                    f"TTNN interop requires tilized tensors, but tensor {i} has layout {arg.layout}. "
-                    f"Use ttnn.to_layout(tensor, ttnn.TILE_LAYOUT) to convert."
-                )
+            from .layouts import detect_buffer_type, detect_tensor_layout
 
-    # Validate kernel count: for now we must have exactly 3 kernels (1 compute + 2 data movement).
-    # Each core has only 2 NOCs, so more than 2 DM kernels causes NOC conflicts.
-    # TODO: in the future we should figure out how to map arbitrary kernels.
-    if len(kernel_info) != 3:
-        compute_count = sum(1 for _, t in kernel_info if t == "compute")
-        dm_count = sum(1 for _, t in kernel_info if t == "noc")
-        raise ValueError(
-            f"TTNN interop requires exactly 3 kernels (1 compute + 2 data movement), "
-            f"got {len(kernel_info)} kernels ({compute_count} compute, {dm_count} data movement). "
-            f"Each core has only 2 NOCs, so more than 2 DM kernels causes NOC conflicts."
-        )
+            try:
+                detect_buffer_type(arg)
+                detect_tensor_layout(arg)
+            except ValueError as error:
+                raise ValueError(f"Invalid TTNN tensor {i}: {error}") from error
+
+    specialize_cores = any(
+        function.core_coordinates is not None for function in kernel_functions
+    )
+
+    compute_count = sum(
+        function.thread_type == _KernelThreadType.COMPUTE
+        for function in kernel_functions
+    )
+    dm_count = sum(
+        function.thread_type == _KernelThreadType.NOC for function in kernel_functions
+    )
+    kernel_capacities = _backend_kernel_capacities(target_arch)
+    kernel_counts = {
+        KernelKind.COMPUTE: compute_count,
+        KernelKind.DATA_MOVEMENT: dm_count,
+    }
+    if not specialize_cores:
+        for kind in KernelKind:
+            if kernel_counts[kind] > kernel_capacities[kind]:
+                selected = tuple(
+                    function.logical_selector
+                    for function in kernel_functions
+                    if function.logical_selector is not None
+                    and _selector_kind(function.logical_selector) == kind
+                )
+                if len(selected) != kernel_counts[kind]:
+                    selected = (kind,) * kernel_counts[kind]
+                raise ValueError(
+                    _format_kernel_capacity_error(
+                        kind, selected, kernel_capacities[kind]
+                    )
+                )
+        if kernel_counts != kernel_capacities:
+            required = ", ".join(
+                f"{kernel_capacities[kind]} {kind.value}" for kind in KernelKind
+            )
+            provided = ", ".join(
+                f"{kernel_counts[kind]} {kind.value}" for kind in KernelKind
+            )
+            raise ValueError(
+                f"TTNN interop requires the target kernel set ({required}); "
+                f"the operation provides {provided}"
+            )
+    else:
+        # Validate every specialized core against the selected target.
+        grid_cols, grid_rows = grid
+        all_cores = [(x, y) for y in range(grid_rows) for x in range(grid_cols)]
+        per_core_counts = {}
+        for function in kernel_functions:
+            covered = (
+                function.core_coordinates
+                if function.core_coordinates is not None
+                else all_cores
+            )
+            for coord in covered:
+                counts = per_core_counts.setdefault(tuple(coord), [0, 0])
+                if function.thread_type == _KernelThreadType.COMPUTE:
+                    counts[0] += 1
+                elif function.thread_type == _KernelThreadType.NOC:
+                    counts[1] += 1
+        for coord, (n_compute, n_noc) in per_core_counts.items():
+            if (
+                n_compute > kernel_capacities[KernelKind.COMPUTE]
+                or n_noc > kernel_capacities[KernelKind.DATA_MOVEMENT]
+            ):
+                raise ValueError(
+                    f"Per-core specialization assigned {n_compute} compute and "
+                    f"{n_noc} data movement kernels to core {coord}. The target "
+                    f"supports at most "
+                    f"{kernel_capacities[KernelKind.COMPUTE]} compute and "
+                    f"{kernel_capacities[KernelKind.DATA_MOVEMENT]} data movement "
+                    "kernels per core."
+                )
 
     if verbose:
         print("=" * 60)
         print("TTNN INTEROP: Compiling kernel")
         print("=" * 60)
-        print(f"Found {len(kernel_info)} kernels:")
+        print(f"Found {len(kernel_functions)} kernels:")
 
     if verbose:
-        for name, thread_type in kernel_info:
-            print(f"  - {name} ({thread_type})")
+        for function in kernel_functions:
+            print(f"  - {function.name} ({function.thread_type.value})")
 
     _ensure_ttnn()
     if ttnn is None:
@@ -847,66 +2098,136 @@ def _compile_ttnn_kernel(
     if verbose:
         print(f"\nCore range: {core_ranges}")
 
+    # EmitC conversion removes TTKernel attributes, so collect the complete
+    # descriptor contract before translating any function.
+    descriptor_metadata_by_name = {
+        function.name: _snapshot_kernel_descriptor_metadata(
+            module,
+            function,
+            math_fidelity=math_fidelity,
+            fp32_dest_acc_en=fp32_dest_acc_en,
+            dst_full_sync_en=dst_full_sync_en,
+        )
+        for function in kernel_functions
+    }
+
+    cpp_sources = ttkernels_to_cpp(
+        module, [function.name for function in kernel_functions]
+    )
+    if len(cpp_sources) != len(kernel_functions):
+        raise RuntimeError(
+            "TTKernel translation returned "
+            f"{len(cpp_sources)} sources for {len(kernel_functions)} kernels"
+        )
+
+    descriptor_candidates = [
+        _KernelDescriptorCandidate(
+            name=function.name,
+            core_coordinates=function.core_coordinates,
+            cpp_source=cpp_source,
+            descriptor_metadata=descriptor_metadata_by_name[function.name],
+        )
+        for function, cpp_source in zip(kernel_functions, cpp_sources, strict=True)
+    ]
+    kernel_groups = _group_equivalent_specialized_kernels(descriptor_candidates)
+
     kernel_paths = []
     kernel_configs = []
     kernel_arg_specs = []
-    noc_kernel_idx = 0
-    kernel_config_attrs = {
-        name: {
-            "fp32_dest_acc_en": _get_kernel_bool_attr(module, name, "fp32_dest_acc_en"),
-            "dst_full_sync_en": _get_kernel_bool_attr(module, name, "dst_full_sync_en"),
-            "unpack_to_dest_fp32": _get_kernel_i32_array_attr(
-                module, name, "ttl.unpack_to_dest_fp32"
-            ),
-        }
-        for name, _ in kernel_info
-    }
-
-    # Build thread-to-kernel mapping for profiling
-    # Maps RISC thread names to kernel names
+    kernel_pipe_computed_address_dfb_indices = []
+    kernel_used_dfb_indices = []
+    kernel_tensor_indices = []
+    kernel_local_tensor_indices = []
+    kernel_core_ranges = []
+    kernel_fabric_routes = []
+    kernel_fabric_runtime_arg_base_common_indices = []
+    kernel_fabric_manager_intervals = []
+    grouped_kernel_logical_selectors = []
+    # Profiling reports use the representative source name for each RISC.
     thread_to_kernel = {}
 
-    for name, thread_type in kernel_info:
-        cpp_source = ttkernel_to_cpp_by_name(module, name)
+    for kernel_group in kernel_groups:
+        representative = kernel_group[0]
+        name = representative.name
+        cpp_source = representative.cpp_source
+        descriptor_metadata = representative.descriptor_metadata
+        configuration = descriptor_metadata.configuration
+        thread_type = configuration.thread_type
         kernel_path = _write_kernel_to_tmp(name, cpp_source)
-        kernel_paths.append((kernel_path, thread_type))
+        kernel_paths.append((kernel_path, thread_type.value))
+        kernel_pipe_computed_address_dfb_indices.append(
+            list(descriptor_metadata.pipe_computed_address_dfb_indices)
+        )
+        kernel_used_dfb_indices.append(
+            None
+            if descriptor_metadata.used_dfb_indices is None
+            else list(descriptor_metadata.used_dfb_indices)
+        )
+        kernel_fabric_routes.append(list(descriptor_metadata.fabric_routes))
+        kernel_fabric_manager_intervals.append(
+            descriptor_metadata.fabric_manager_intervals
+        )
+        kernel_fabric_runtime_arg_base_common_indices.append(
+            descriptor_metadata.fabric_runtime_arg_base_common_index
+        )
+        kernel_tensor_indices.append(list(descriptor_metadata.tensor_indices))
+        kernel_local_tensor_indices.append(
+            list(descriptor_metadata.local_tensor_indices)
+        )
+        kernel_arg_specs.append(list(descriptor_metadata.runtime_arg_spec))
+        grouped_kernel_logical_selectors.append(descriptor_metadata.logical_selector)
 
-        if thread_type == "compute":
+        if thread_type == _KernelThreadType.COMPUTE:
             config = ttnn.ComputeConfigDescriptor()
-            if fp32_dest_acc_en is not None:
-                config.fp32_dest_acc_en = fp32_dest_acc_en
-            elif kernel_config_attrs[name]["fp32_dest_acc_en"]:
+            if configuration.math_fidelity is not None:
+                _set_math_fidelity(config, ttnn, configuration.math_fidelity)
+            if configuration.fp32_dest_acc_en:
                 config.fp32_dest_acc_en = True
-            if dst_full_sync_en is not None:
-                config.dst_full_sync_en = dst_full_sync_en
-            elif kernel_config_attrs[name]["dst_full_sync_en"]:
+            if configuration.dst_full_sync_en:
                 config.dst_full_sync_en = True
-            unpack_fp32_cbs = kernel_config_attrs[name]["unpack_to_dest_fp32"]
+            unpack_fp32_cbs = configuration.unpack_to_dest_fp32
             if unpack_fp32_cbs:
                 _set_unpack_to_dest_fp32(config, ttnn, unpack_fp32_cbs)
-            # Compute kernels run on TRISC threads
             thread_to_kernel["TRISC_0"] = name
             thread_to_kernel["TRISC_1"] = name
             thread_to_kernel["TRISC_2"] = name
-        elif thread_type == "noc":
-            if noc_kernel_idx == 0:
-                config = ttnn.ReaderConfigDescriptor()
-                thread_to_kernel["NCRISC"] = name  # Reader
-            else:
-                config = ttnn.WriterConfigDescriptor()
-                thread_to_kernel["BRISC"] = name  # Writer
-            noc_kernel_idx += 1
         else:
-            config = ttnn.ReaderConfigDescriptor()
+            assert thread_type == _KernelThreadType.NOC
+            data_movement_role = configuration.data_movement_role
+            assert data_movement_role is not None
+            if data_movement_role == _DataMovementRole.READER:
+                config = ttnn.ReaderConfigDescriptor()
+                thread_to_kernel["NCRISC"] = name
+            else:
+                assert data_movement_role == _DataMovementRole.WRITER
+                config = ttnn.WriterConfigDescriptor()
+                thread_to_kernel["BRISC"] = name
         kernel_configs.append(config)
 
-        # Extract runtime args from kernel's arg_spec attribute
-        arg_spec = get_ttkernel_arg_spec(module, name)
-        if arg_spec is not None:
-            arg_spec = ttkernel.ir.ArgSpecAttr.maybe_downcast(arg_spec)
-            kernel_arg_specs.append(arg_spec.rt_args if arg_spec else [])
+        coordinates = representative.core_coordinates
+        if coordinates is not None:
+            grouped_coordinates = []
+            for grouped_kernel in kernel_group:
+                kernel_coordinates = grouped_kernel.core_coordinates
+                assert kernel_coordinates is not None
+                grouped_coordinates.extend(kernel_coordinates)
+            coordinates = sorted(
+                grouped_coordinates,
+                key=lambda coordinate: (coordinate[1], coordinate[0]),
+            )
+            kernel_core_ranges.append(
+                ttnn.CoreRangeSet(
+                    [
+                        ttnn.CoreRange(
+                            ttnn.CoreCoord(core_x, core_y),
+                            ttnn.CoreCoord(core_x, core_y),
+                        )
+                        for core_x, core_y in coordinates
+                    ]
+                )
+            )
         else:
-            kernel_arg_specs.append([])
+            kernel_core_ranges.append(None)
 
     compiled_kernel = CompiledTTNNKernel(
         kernel_paths=kernel_paths,
@@ -914,16 +2235,34 @@ def _compile_ttnn_kernel(
         kernel_arg_specs=kernel_arg_specs,
         num_tensors=len(args),
         core_ranges=core_ranges,
-        kernel_tensor_indices=thread_tensor_indices,
+        kernel_tensor_indices=kernel_tensor_indices,
+        kernel_local_tensor_indices=kernel_local_tensor_indices,
+        kernel_core_ranges=kernel_core_ranges,
         cb_configs=cb_configs,
+        dfb_reconfiguration_plan=dfb_reconfiguration_plan,
         program_hash=program_hash,
         source_lines=source_lines,
         all_source_lines=all_source_lines,
         thread_to_kernel=thread_to_kernel,
         kernel_line_offsets=kernel_line_offsets,
         num_pipe_sync_semaphores=num_pipe_sync_semaphores,
+        num_dfb_resets=num_dfb_resets,
         pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
         num_pipe_global_semaphores=num_pipe_global_semaphores,
+        opaque_include_paths=opaque_include_paths or [],
+        kernel_pipe_computed_address_dfb_indices=kernel_pipe_computed_address_dfb_indices,
+        kernel_fabric_routes=kernel_fabric_routes,
+        kernel_fabric_runtime_arg_base_common_indices=(
+            kernel_fabric_runtime_arg_base_common_indices
+        ),
+        kernel_fabric_manager_intervals=kernel_fabric_manager_intervals,
+        mesh_program_placements=mesh_program_placements,
+        device_domain=device_domain,
+        kernel_logical_selectors=grouped_kernel_logical_selectors,
+        operation_name=operation_name,
+        runtime_resource_factory=runtime_resource_factory,
+        runtime_resource_cache=runtime_resource_cache,
+        kernel_used_dfb_indices=kernel_used_dfb_indices,
     )
 
     if verbose:
@@ -934,12 +2273,24 @@ def _compile_ttnn_kernel(
     if emit_runner_path:
         kernel_specs_for_emit = []
         for kernel_idx, (kernel_path, thread_type) in enumerate(kernel_paths):
-            tensor_indices = thread_tensor_indices[kernel_idx]
+            tensor_indices = kernel_tensor_indices[kernel_idx]
             spec = KernelSpec(
                 path=kernel_path,
                 thread_type=thread_type,
                 tensor_indices=tensor_indices,
                 config=kernel_configs[kernel_idx],
+                compiler_include_paths=opaque_include_paths or [],
+                pipe_computed_address_dfb_indices=kernel_pipe_computed_address_dfb_indices[
+                    kernel_idx
+                ],
+                core_ranges=kernel_core_ranges[kernel_idx],
+                fabric_runtime_arg_base_common_index=(
+                    kernel_fabric_runtime_arg_base_common_indices[kernel_idx]
+                ),
+                logical_kernel=grouped_kernel_logical_selectors[kernel_idx],
+                fabric_manager_intervals=kernel_fabric_manager_intervals[kernel_idx],
+                used_dfb_indices=kernel_used_dfb_indices[kernel_idx],
+                local_tensor_indices=kernel_local_tensor_indices[kernel_idx],
             )
             kernel_specs_for_emit.append(spec)
 
@@ -957,10 +2308,17 @@ def _compile_ttnn_kernel(
             num_tensors=len(args),
             output_path=runner_path,
             program_hash=program_hash,
-            kernel_name="ttlang_kernel",
+            tensor_configurations=tuple(get_tensor_configuration(arg) for arg in args),
+            kernel_name=operation_name,
             num_pipe_sync_semaphores=num_pipe_sync_semaphores,
+            num_dfb_resets=num_dfb_resets,
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=num_pipe_global_semaphores,
+            mesh_program_placements=mesh_program_placements,
+            device_domain=device_domain,
+            kernel_fabric_routes=kernel_fabric_routes,
+            requires_runtime_resource_factory=runtime_resource_factory is not None,
+            dfb_reconfiguration_plan=dfb_reconfiguration_plan,
         )
 
     return compiled_kernel
@@ -977,33 +2335,39 @@ def _build_operation_pipenets(f: Callable, threads):
     captured PipeNet referenced from multiple threads contributes one
     entry.
     """
-    from ._pipenets import OperationPipeNets
-    from .pipe import _pipe_to_pipe_use
-
     seen: Dict[int, PipeNet] = {}
 
     def visit(func):
         if func is None:
             return
-        closure = getattr(func, "__closure__", None) or ()
-        for cell in closure:
-            try:
-                value = cell.cell_contents
-            except ValueError:
-                continue
-            if isinstance(value, PipeNet) and id(value) not in seen:
-                seen[id(value)] = value
-        fn_globals = getattr(func, "__globals__", None) or {}
-        for value in fn_globals.values():
-            if isinstance(value, PipeNet) and id(value) not in seen:
-                seen[id(value)] = value
+        closure_vars = inspect.getclosurevars(func)
+        for namespace in (closure_vars.nonlocals, closure_vars.globals):
+            for value in namespace.values():
+                if isinstance(value, PipeNet) and id(value) not in seen:
+                    seen[id(value)] = value
 
     visit(f)
     for thread in threads:
         visit(getattr(thread, "__wrapped__", None))
 
+    return _build_pipenet_graph(seen.values())
+
+
+def _build_pipenet_graph(nets):
+    """Build the OperationPipeNets graph for a sequence of PipeNet objects,
+    assigning each net (and its pipes) a dense operation-local id and
+    validating the result. Shared by @ttl.operation (closure discovery)
+    and unified @ttl.operation bodies (lifted PipeNet assigns)."""
+    from ._pipenets import OperationPipeNets
+    from .pipe import _pipe_to_pipe_use
+
     graph = OperationPipeNets()
-    for net in seen.values():
+    for net in nets:
+        if net.is_graph:
+            net_use = graph.add_graph_pipe_net(net.graph)
+            net._graph_edges = net_use.edges
+            net.pipe_net_id = net_use.pipe_net_id
+            continue
         net_use = graph.add_pipe_net(_pipe_to_pipe_use(p) for p in net.pipes)
         net.pipe_net_id = net_use.id
         # Assign every Pipe in this net the operation-local id so the AST
@@ -1017,7 +2381,10 @@ def _build_operation_pipenets(f: Callable, threads):
 
 def _collect_captures(
     f: Callable,
-) -> Dict[str, Union[int, DataflowBuffer, Pipe]]:
+    bound_dispatch_conditions: Optional[Mapping[str, _BoundDispatchCondition]] = None,
+    bound_dfb_resets: Optional[Mapping[str, _BoundDFBReset]] = None,
+    bound_dfb_reconfigurations: Optional[Mapping[str, _BoundDFBReconfiguration]] = None,
+) -> Dict[str, Any]:
     """
     Collect and convert captured variables from function closure.
 
@@ -1034,7 +2401,11 @@ def _collect_captures(
         return {}
 
     def convert(name, val):
+        if val is None:
+            return val
         if isinstance(val, (int, float)):
+            return val
+        elif is_ttnn_global_semaphore(val):
             return val
         elif is_ttnn_tensor(val):
             return val
@@ -1044,6 +2415,47 @@ def _collect_captures(
             return val
         elif isinstance(val, PipeNet):
             return val
+        elif isinstance(val, DeviceDomain):
+            return val
+        elif isinstance(val, FabricManagerClaim):
+            return val
+        # A tuple or list of scalars is a compile-time shape or axis list. It
+        # reaches the same consumers as the equivalent literal written inline,
+        # so it stays a Python value rather than becoming an SSA operand.
+        elif isinstance(val, (tuple, list)) and all(
+            isinstance(elt, (int, float)) for elt in val
+        ):
+            return val
+        elif val is ScalarType or isinstance(val, ScalarType):
+            return val
+        elif isinstance(val, DispatchCondition):
+            bound_condition = (
+                bound_dispatch_conditions.get(name)
+                if bound_dispatch_conditions is not None
+                else None
+            )
+            if bound_condition is not None and bound_condition.declaration is val:
+                return bound_condition
+            return _bind_current_dispatch_condition(val)
+        elif isinstance(val, DFBReset):
+            bound_reset = (
+                bound_dfb_resets.get(name) if bound_dfb_resets is not None else None
+            )
+            if bound_reset is not None and bound_reset.declaration is val:
+                return bound_reset
+            return _bind_current_dfb_reset(val)
+        elif isinstance(val, DFBReconfiguration):
+            bound_reconfiguration = (
+                bound_dfb_reconfigurations.get(name)
+                if bound_dfb_reconfigurations is not None
+                else None
+            )
+            if (
+                bound_reconfiguration is not None
+                and bound_reconfiguration.declaration is val
+            ):
+                return bound_reconfiguration
+            return _bind_current_dfb_reconfiguration(val)
         else:
             raise TypeError(f"Unhandled capture for vars of type({type(val)})")
 
@@ -1053,89 +2465,313 @@ def _collect_captures(
     }
 
 
-def _collect_cb_configs(threads):
-    """Extract DataflowBuffer objects from thread closures, indexed by dfb index.
-
-    Returns a list of DataflowBuffer objects indexed by dfb index. Each DFB has
-    shape, block_count, tensor (for dtype), and _cb_index attributes.
-    """
-    cb_configs_dict = {}
-    for thread_fn in threads:
-        wrapped = getattr(thread_fn, "__wrapped__", None)
-        closure = getattr(wrapped, "__closure__", None) if wrapped else None
-        if not closure:
-            continue
-        for cell in closure:
-            val = cell.cell_contents
-            if isinstance(val, DataflowBuffer):
-                cb_configs_dict[val._cb_index] = val
-
-    if not cb_configs_dict:
-        return []
-    max_idx = max(cb_configs_dict.keys())
-    return [cb_configs_dict.get(i) for i in range(max_idx + 1)]
-
-
-# Map MLIR element type names to ttnn-compatible data format names.
-# Keyed by exact MLIR type mnemonic (no substring matching).
-_MLIR_TYPE_TO_FORMAT = {
+# Map scalar MLIR element types to ttnn-compatible data format names.
+_MLIR_SCALAR_TYPE_TO_FORMAT = {
     "bf16": "bfloat16",
     "f16": "float16",
     "f32": "float32",
     "i32": "int32",
+    "si32": "int32",
+    "ui8": "uint8",
     "ui32": "uint32",
     "ui16": "uint16",
 }
 
 
-def _parse_mlir_element_type(type_str: str) -> str:
-    """Extract the base data format name from an MLIR TypeAttr string.
+_MLIR_TILE_DATA_TYPE_TO_FORMAT = {
+    ttcore.DataType.Float32: "float32",
+    ttcore.DataType.Float16: "float16",
+    ttcore.DataType.BFloat16: "bfloat16",
+    ttcore.DataType.BFP_BFloat8: "bfloat8_b",
+    ttcore.DataType.BFP_BFloat4: "bfloat4_b",
+    ttcore.DataType.UInt32: "uint32",
+    ttcore.DataType.UInt16: "uint16",
+    ttcore.DataType.UInt8: "uint8",
+    ttcore.DataType.Int32: "int32",
+}
+
+
+def _parse_mlir_element_type(
+    element_type_attr,
+) -> tuple[str, Optional[tuple[int, int]]]:
+    """Extract the data format and optional tile dimensions from a TypeAttr.
 
     The TypeAttr prints as e.g. "bf16" or "!ttcore.tile<32x32, bf16>".
-    This function extracts the trailing type mnemonic and maps it to a
-    ttnn-compatible format name.
     """
-    # For compound types like "!ttcore.tile<32x32, bf16>", extract the
-    # type after the last comma. For bare types like "bf16", use as-is.
-    token = type_str.strip()
-    if "," in token:
-        token = token.rsplit(",", 1)[1].strip().rstrip(">").strip()
-    fmt = _MLIR_TYPE_TO_FORMAT.get(token)
-    if fmt is not None:
-        return fmt
+    if not isinstance(element_type_attr, TypeAttr):
+        raise ValueError(
+            "Physical DFB element_type metadata must be a TypeAttr, "
+            f"got {element_type_attr}"
+        )
+    element_type = element_type_attr.value
+    tile_type = ttcore.ir.TileType.maybe_downcast(element_type)
+    if tile_type is not None:
+        data_type = ttcore.DataType(tile_type.data_type_as_int)
+        data_format = _MLIR_TILE_DATA_TYPE_TO_FORMAT.get(data_type)
+        if data_format is None:
+            raise ValueError(
+                "Physical DFB tile data type "
+                f"'{data_type.name}' is not supported by the ttnn runtime"
+            )
+        return data_format, tuple(tile_type.shape)
+
+    type_str = str(element_type).strip()
+    data_format = _MLIR_SCALAR_TYPE_TO_FORMAT.get(type_str)
+    if data_format is not None:
+        return data_format, None
+    known_types = list(_MLIR_SCALAR_TYPE_TO_FORMAT.keys())
     raise ValueError(
-        f"Unrecognized MLIR element type '{token}' (from '{type_str}'). "
-        f"Known types: {list(_MLIR_TYPE_TO_FORMAT.keys())}"
+        f"Unrecognized MLIR scalar element type '{type_str}'. "
+        f"Known types: {known_types}"
     )
 
 
-def _extract_compiler_allocated_dfbs(module):
-    """Read ttl.compiler_allocated_dfbs module attribute.
+def _extract_dfb_node_coordinates(
+    nodes_attr, *, context: str, allow_empty: bool
+) -> tuple[tuple[int, int], ...]:
+    nodes = []
+    for node_position, node_attr in enumerate(nodes_attr):
+        node = ArrayAttr(node_attr)
+        if len(node) != 2:
+            raise ValueError(f"{context}[{node_position}] must contain [x, y]")
+        coordinate = tuple(int(IntegerAttr(component).value) for component in node)
+        if coordinate[0] < 0 or coordinate[1] < 0:
+            raise ValueError(f"{context} contains negative coordinate {coordinate}")
+        if coordinate in nodes:
+            raise ValueError(f"{context} contains duplicate coordinate {coordinate}")
+        nodes.append(coordinate)
+    if not allow_empty and not nodes:
+        raise ValueError(f"{context} must not be empty")
+    return tuple(sorted(nodes))
 
-    Returns an empty list when the attribute is absent (no compiler-allocated
-    DFBs). Each entry is a DictionaryAttr with dfb_index, num_tiles,
-    element_type, and block_count.
-    """
-    attr = module.operation.attributes.get("ttl.compiler_allocated_dfbs", None)
-    if attr is None:
-        return []
 
-    configs = []
-    for entry in attr:
-        dfb_index = int(entry["dfb_index"])
+def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
+    """Parse and validate one compiler-emitted physical DFB configuration."""
+    required_fields = ("num_tiles", "element_type", "block_count", "page_size")
+    for field in required_fields:
+        if field not in entry:
+            raise ValueError(f"{context} is missing '{field}'")
+    try:
         num_tiles = int(entry["num_tiles"])
         block_count = int(entry["block_count"])
-        data_format = _parse_mlir_element_type(str(entry["element_type"]))
+        page_size = int(entry["page_size"])
+        data_format, tile = _parse_mlir_element_type(entry["element_type"])
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"Invalid {context}: {error}") from None
+    for field, value in (
+        ("num_tiles", num_tiles),
+        ("block_count", block_count),
+        ("page_size", page_size),
+    ):
+        if value <= 0:
+            raise ValueError(f"{context}.{field} must be positive, got {value}")
 
-        configs.append(
-            CompilerAllocatedDFBConfig(
-                dfb_index=dfb_index,
-                num_tiles=num_tiles,
-                data_format=data_format,
-                block_count=block_count,
+    allocation_nodes = None
+    if "allocation_nodes" in entry:
+        allocation_nodes = _extract_dfb_node_coordinates(
+            entry["allocation_nodes"],
+            context=f"{context}.allocation_nodes",
+            allow_empty=True,
+        )
+
+    storage_segments = []
+    seen_nodes = set()
+    storage_segment_entries = (
+        entry["storage_segments"] if "storage_segments" in entry else []
+    )
+    for segment_position, segment in enumerate(storage_segment_entries):
+        segment_context = f"{context}.storage_segments[{segment_position}]"
+        if "nodes" not in segment:
+            raise ValueError(f"{segment_context} is missing 'nodes'")
+        nodes = _extract_dfb_node_coordinates(
+            segment["nodes"],
+            context=f"{segment_context}.nodes",
+            allow_empty=False,
+        )
+        for coordinate in nodes:
+            if coordinate in seen_nodes:
+                raise ValueError(
+                    f"{context} assigns launch node {coordinate} to multiple segments"
+                )
+            seen_nodes.add(coordinate)
+
+        tensor_index = None
+        byte_offset = 0
+        byte_size = None
+        if "tensor_backing" in segment:
+            backing = ttl_dialect.TensorBackingAttr.maybe_downcast(
+                segment["tensor_backing"]
+            )
+            if backing is None:
+                raise ValueError(f"{segment_context}.tensor_backing has the wrong type")
+            tensor_index = backing.tensor_index
+            byte_offset = backing.byte_offset
+            byte_size = backing.byte_size
+            expected_size = num_tiles * block_count * page_size
+            if byte_size != expected_size:
+                raise ValueError(
+                    f"{context} tensor backing byte_size must equal "
+                    f"{expected_size}, got {byte_size}"
+                )
+        storage_segments.append(
+            DFBStorageSegment(
+                nodes=nodes,
+                tensor_index=tensor_index,
+                byte_offset=byte_offset,
+                byte_size=byte_size,
             )
         )
+    storage_index = None
+    if "storage_index" in entry:
+        try:
+            storage_index = int(entry["storage_index"])
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"Invalid {context}.storage_index: {error}") from None
+        if storage_index < 0:
+            raise ValueError(
+                f"{context}.storage_index must be a nonnegative integer, "
+                f"got {storage_index!r}"
+            )
+    return PhysicalDFBConfig(
+        dfb_index=dfb_index,
+        num_tiles=num_tiles,
+        data_format=data_format,
+        block_count=block_count,
+        page_size=page_size,
+        tile=tile,
+        storage_segments=tuple(storage_segments),
+        allocation_nodes=allocation_nodes,
+        storage_index=storage_index,
+    )
+
+
+def _extract_dfb_allocations(module):
+    """Read `ttl.dfb_allocations` and require dense physical indices."""
+    attribute_name = "ttl.dfb_allocations"
+    attr = module.operation.attributes.get(attribute_name, None)
+    if attr is None:
+        return None
+
+    configs = []
+    seen_indices = set()
+    for position, entry in enumerate(attr):
+        context = f"{attribute_name}[{position}]"
+        if "dfb_index" not in entry:
+            raise ValueError(f"{context} is missing 'dfb_index'")
+        dfb_index = int(entry["dfb_index"])
+        if dfb_index < 0:
+            raise ValueError(f"{context}.dfb_index must be non-negative")
+        if dfb_index in seen_indices:
+            raise ValueError(
+                f"{attribute_name} contains duplicate dfb_index {dfb_index}"
+            )
+        seen_indices.add(dfb_index)
+        configs.append(
+            _parse_physical_dfb_config(entry, dfb_index=dfb_index, context=context)
+        )
+
+    configs.sort(key=lambda config: config.dfb_index)
+    indices = [config.dfb_index for config in configs]
+    expected_indices = list(range(len(configs)))
+    if indices != expected_indices:
+        raise ValueError(
+            f"{attribute_name} must contain a dense physical index range "
+            f"{expected_indices}, got {indices}"
+        )
     return configs
+
+
+def _extract_dfb_reconfiguration_plan(module, physical_configs):
+    """Read finalized configuration epochs and boundary order."""
+    attribute_name = "ttl.dfb_reconfiguration_plan"
+    plan_attr = module.operation.attributes.get(attribute_name, None)
+    if plan_attr is None:
+        return None
+    for field in ("boundary_ordinals", "dfbs"):
+        if field not in plan_attr:
+            raise ValueError(f"{attribute_name} is missing '{field}'")
+    boundary_ordinals = tuple(int(value) for value in plan_attr["boundary_ordinals"])
+    if not boundary_ordinals or any(ordinal < 0 for ordinal in boundary_ordinals):
+        raise ValueError(f"{attribute_name}.boundary_ordinals must be non-empty")
+    if len(set(boundary_ordinals)) != len(boundary_ordinals):
+        raise ValueError(f"{attribute_name}.boundary_ordinals must be unique")
+
+    dfb_epochs_by_index = {}
+    for position, dfb_entry in enumerate(plan_attr["dfbs"]):
+        context = f"{attribute_name}.dfbs[{position}]"
+        for field in ("dfb_index", "configurations"):
+            if field not in dfb_entry:
+                raise ValueError(f"{context} is missing '{field}'")
+        dfb_index = int(dfb_entry["dfb_index"])
+        if dfb_index in dfb_epochs_by_index:
+            raise ValueError(f"{attribute_name} contains duplicate index {dfb_index}")
+        epochs = []
+        seen_entries = set()
+        for epoch_position, epoch_entry in enumerate(dfb_entry["configurations"]):
+            epoch_context = f"{context}.configurations[{epoch_position}]"
+            entry_ordinal = (
+                int(epoch_entry["entry_reconfiguration"])
+                if "entry_reconfiguration" in epoch_entry
+                else None
+            )
+            if entry_ordinal in seen_entries:
+                raise ValueError(f"{context} contains a duplicate configuration epoch")
+            if entry_ordinal is not None and entry_ordinal not in boundary_ordinals:
+                raise ValueError(
+                    f"{epoch_context}.entry_reconfiguration is not a boundary"
+                )
+            seen_entries.add(entry_ordinal)
+            epochs.append(
+                DFBConfigurationEpoch(
+                    entry_reconfiguration_ordinal=entry_ordinal,
+                    config=_parse_physical_dfb_config(
+                        epoch_entry, dfb_index=dfb_index, context=epoch_context
+                    ),
+                )
+            )
+        if not epochs:
+            raise ValueError(f"{context}.configurations must not be empty")
+        dfb_epochs_by_index[dfb_index] = tuple(epochs)
+
+    expected_indices = list(range(len(physical_configs)))
+    if sorted(dfb_epochs_by_index) != expected_indices:
+        raise ValueError(
+            f"{attribute_name}.dfbs must contain indices {expected_indices}"
+        )
+    for dfb_index, physical_config in enumerate(physical_configs):
+        epochs = dfb_epochs_by_index[dfb_index]
+        initial_epoch = next(
+            (epoch for epoch in epochs if epoch.entry_reconfiguration_ordinal is None),
+            epochs[0],
+        )
+        initial_config = initial_epoch.config
+        same_geometry = (
+            initial_config.dfb_index == physical_config.dfb_index
+            and initial_config.num_tiles == physical_config.num_tiles
+            and initial_config.data_format == physical_config.data_format
+            and initial_config.block_count == physical_config.block_count
+            and initial_config.page_size == physical_config.page_size
+            and initial_config.tile == physical_config.tile
+        )
+        initial_tensor_segments = tuple(
+            segment
+            for segment in initial_config.storage_segments
+            if segment.is_tensor_backed
+        )
+        physical_tensor_segments = tuple(
+            segment
+            for segment in physical_config.storage_segments
+            if segment.is_tensor_backed
+        )
+        if not same_geometry or initial_tensor_segments != physical_tensor_segments:
+            raise ValueError(
+                f"{attribute_name}.dfbs[{dfb_index}] initial configuration "
+                "does not match ttl.dfb_allocations"
+            )
+    return DFBReconfigurationPlan(
+        boundary_ordinals=boundary_ordinals,
+        dfb_epochs=tuple(dfb_epochs_by_index[index] for index in expected_indices),
+    )
 
 
 def _extract_pipe_sync_semaphore_count(module) -> Optional[int]:
@@ -1143,6 +2779,14 @@ def _extract_pipe_sync_semaphore_count(module) -> Optional[int]:
     attr = module.operation.attributes.get(_ttl_ir.PIPE_SYNC_SEMAPHORE_COUNT_ATTR, None)
     if attr is None:
         return None
+    return int(attr)
+
+
+def _extract_dfb_reset_count(module) -> int:
+    """Read the number of synchronized DFB reset boundaries."""
+    attr = module.operation.attributes.get(_ttl_ir.DFB_RESET_COUNT_ATTR, None)
+    if attr is None:
+        return 0
     return int(attr)
 
 
@@ -1164,33 +2808,62 @@ def _extract_pipe_global_semaphore_count(module) -> int:
     return int(attr)
 
 
-def _merge_dfb_configs(cb_configs, compiler_allocated_dfbs):
-    """Merge compiler-allocated DFBs into the CB config list.
+def _resolve_dfb_configs(module):
+    """Return finalized physical DFB configurations from required metadata."""
+    physical_allocations = _extract_dfb_allocations(module)
+    if physical_allocations is None:
+        raise ValueError(
+            "compiled module is missing ttl.dfb_allocations; "
+            "ttl-finalize-dfb-indices must run before runtime construction"
+        )
+    return physical_allocations
 
-    Extends cb_configs to cover all DFB indices. Compiler-allocated DFBs
-    are placed at their dfb_index positions.
+
+def _run_thread_compiler(
+    name,
+    kernel_type,
+    captures,
+    globals_,
+    args,
+    kwargs,
+    module_ast,
+    source_lines,
+    source_file,
+    verbose=False,
+):
+    """Construct a TTLGenericCompiler for one thread, visit its AST, and
+    verify. Returns the compiler instance (the compiled thread).
+
+    Shared by @ttl.operation thread wrappers (which build module_ast from
+    the thread function source) and unified @ttl.operation (which feeds a
+    synthesized per-thread function AST), so the per-thread lowering entry
+    is in one place.
     """
-    if not compiler_allocated_dfbs:
-        return cb_configs
-
-    user_max = len(cb_configs) - 1 if cb_configs else -1
-    alloc_max = max(dfb.dfb_index for dfb in compiler_allocated_dfbs)
-    total = max(user_max, alloc_max) + 1
-
-    merged = list(cb_configs) + [None] * (total - len(cb_configs))
-    for dfb in compiler_allocated_dfbs:
-        if merged[dfb.dfb_index] is not None:
-            raise ValueError(
-                f"Compiler-allocated DFB index {dfb.dfb_index} collides with "
-                f"an existing DFB."
-            )
-        merged[dfb.dfb_index] = dfb
-    return merged
+    b = TTLGenericCompiler(
+        name,
+        kernel_type,
+        captures,
+        *args,
+        _globals=globals_,
+        **kwargs,
+    )
+    if verbose:
+        print(ast.dump(module_ast, indent=4) + "\n")
+    b.visit(module_ast)
+    if verbose:
+        print(b.module)
+    try:
+        b.module.operation.verify()
+    except Exception as e:
+        formatted = format_mlir_error(str(e), source_lines, source_file)
+        raise RuntimeError(formatted) from None
+    return b
 
 
 def _compile(
     kernel_type: Optional[str] = None,
     verbose: bool = False,
+    logical_kernel: Optional[KernelSelector] = None,
 ) -> Callable:
     """
     Internal decorator for compiling kernel threads.
@@ -1198,17 +2871,55 @@ def _compile(
     Args:
         kernel_type: Type of kernel ("compute" or "datamovement")
         verbose: Enable verbose compilation output
+        logical_kernel: Target-independent logical kernel selector
 
     Returns:
         Decorator function for kernel compilation
     """
 
     def _decorator(f):
+        expected_kind = {
+            "compute": KernelKind.COMPUTE,
+            "datamovement": KernelKind.DATA_MOVEMENT,
+        }[kernel_type]
+        selected_kernel = expected_kind if logical_kernel is None else logical_kernel
+        if not isinstance(selected_kernel, (KernelKind, Kernel)):
+            raise TypeError(
+                "kernel must be a KernelKind or Kernel, got "
+                f"{type(selected_kernel).__name__}"
+            )
+        if _selector_kind(selected_kernel) != expected_kind:
+            raise ValueError(
+                f"{kernel_type} thread kernel kind must be "
+                f"{expected_kind.value}, got {_selector_kind(selected_kernel).value}"
+            )
+        if isinstance(selected_kernel, Kernel) and selected_kernel._identity is None:
+            raise ValueError(
+                "kernel handle must be captured by the enclosing @ttl.operation "
+                "before it is used by a thread decorator"
+            )
+
         # Capture source file at decoration time
         try:
             source_file = inspect.getfile(f)
         except (TypeError, OSError):
             source_file = "<unknown>"
+
+        bound_dispatch_conditions = {
+            name: _bind_current_dispatch_condition(cell.cell_contents)
+            for name, cell in zip(f.__code__.co_freevars, f.__closure__ or ())
+            if isinstance(cell.cell_contents, DispatchCondition)
+        }
+        bound_dfb_resets = {
+            name: _bind_current_dfb_reset(cell.cell_contents)
+            for name, cell in zip(f.__code__.co_freevars, f.__closure__ or ())
+            if isinstance(cell.cell_contents, DFBReset)
+        }
+        bound_dfb_reconfigurations = {
+            name: _bind_current_dfb_reconfiguration(cell.cell_contents)
+            for name, cell in zip(f.__code__.co_freevars, f.__closure__ or ())
+            if isinstance(cell.cell_contents, DFBReconfiguration)
+        }
 
         @functools.wraps(f)
         def _wrapper(*args, **kwargs):
@@ -1224,37 +2935,30 @@ def _compile(
             kwargs["_source_lines"] = source_lines
             kwargs["_line_offset"] = _get_source_line_offset(f)
             kwargs["debug_locations"] = True
+            kwargs["_logical_kernel"] = selected_kernel
 
             m = ast.parse(source_code)
-            line_offset = kwargs.get("_line_offset", 0)
-
-            b = TTLGenericCompiler(
+            return _run_thread_compiler(
                 f.__name__,
                 kernel_type,
-                _collect_captures(f),
-                *args,
-                _globals=f.__globals__,
-                **kwargs,
+                _collect_captures(
+                    f,
+                    bound_dispatch_conditions,
+                    bound_dfb_resets,
+                    bound_dfb_reconfigurations,
+                ),
+                f.__globals__,
+                args,
+                kwargs,
+                m,
+                source_lines,
+                source_file,
+                verbose=verbose,
             )
-
-            if verbose:
-                print(ast.dump(m, indent=4) + "\n")
-
-            b.visit(m)
-
-            if verbose:
-                print(b.module)
-
-            try:
-                b.module.operation.verify()
-            except Exception as e:
-                formatted = format_mlir_error(str(e), source_lines, source_file)
-                raise RuntimeError(formatted) from None
-
-            return b
 
         _wrapper._decorator_name = kernel_type + "_thread"
         _wrapper._source_file = source_file
+        _wrapper._logical_kernel = selected_kernel
         # Register thread for automatic collection
         _register_thread(_wrapper)
         if inspect.ismethod(f):
@@ -1264,7 +2968,9 @@ def _compile(
     return _decorator
 
 
-def compute(verbose: bool = False) -> Callable:
+def compute(
+    verbose: bool = False, *, kernel: Optional[KernelSelector] = None
+) -> Callable:
     """
     Decorator for compute thread functions.
 
@@ -1272,6 +2978,7 @@ def compute(verbose: bool = False) -> Callable:
 
     Args:
         verbose: Enable verbose compilation output
+        kernel: Logical compute kernel selected for this thread
 
     Returns:
         Decorator for compute kernel compilation
@@ -1279,10 +2986,13 @@ def compute(verbose: bool = False) -> Callable:
     return _compile(
         kernel_type="compute",
         verbose=verbose,
+        logical_kernel=kernel,
     )
 
 
-def datamovement(verbose: bool = False) -> Callable:
+def datamovement(
+    verbose: bool = False, *, kernel: Optional[KernelSelector] = None
+) -> Callable:
     """
     Decorator for data movement thread functions.
 
@@ -1290,6 +3000,7 @@ def datamovement(verbose: bool = False) -> Callable:
 
     Args:
         verbose: Enable verbose compilation output
+        kernel: Logical data-movement kernel selected for this thread
 
     Returns:
         Decorator for data movement kernel compilation
@@ -1297,6 +3008,7 @@ def datamovement(verbose: bool = False) -> Callable:
     return _compile(
         kernel_type="datamovement",
         verbose=verbose,
+        logical_kernel=kernel,
     )
 
 
@@ -1343,8 +3055,14 @@ def _compile_kernel(
     program_hash: int,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
+    math_fidelity: Optional[str] = None,
     target_arch: Optional[str] = None,
     compiler_options: CompilerOptions = CompilerOptions(),
+    device_domain=None,
+    mesh_program_placements=None,
+    l1_budget_override: int = 0,
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+    runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
 ) -> Optional[CompiledTTNNKernel]:
     """
     Compile kernel function to MLIR and return CompiledTTNNKernel.
@@ -1362,8 +3080,12 @@ def _compile_kernel(
         program_hash: Hash for tt-metal program cache
         fp32_dest_acc_en: Optional override for fp32_dest_acc_en
         dst_full_sync_en: Optional override for dst_full_sync_en
+        math_fidelity: Optional TTNN compute math fidelity
         target_arch: Optional TT device architecture for target-specific lowering
         compiler_options: Compiler pipeline options
+        device_domain: Optional logical device domain for mesh execution
+        l1_budget_override: Explicit or device-derived L1 allocation budget
+        runtime_resource_cache: Persistent resources shared by operation variants
 
     Returns:
         CompiledTTNNKernel ready for execution
@@ -1380,30 +3102,7 @@ def _compile_kernel(
 
     has_ttnn_tensors = any(is_ttnn_tensor(arg) for arg in args)
 
-    # For mesh tensors, tensor.shape already returns the per-device shard
-    # dimensions, so no wrapping is needed.
-    is_mesh = has_ttnn_tensors and any(_is_mesh_tensor(arg) for arg in args)
     compile_args = args
-
-    # For TTNN tensors, detect memory space from tensor's buffer type.
-    # L1 tensors use simple NOC addressing, DRAM uses bank-aware addressing.
-    # TODO: Check all tensors and handle mixed memory spaces.
-    if has_ttnn_tensors:
-        first_ttnn_tensor = next((arg for arg in args if is_ttnn_tensor(arg)), None)
-        if first_ttnn_tensor is not None:
-            memory_space = _detect_memory_space_from_tensor(
-                first_ttnn_tensor, memory_space
-            )
-            print(f"[TTNN interop] Detected {memory_space} memory space")
-
-    l1_budget_override = compiler_options.l1_budget
-    if l1_budget_override == 0 and has_ttnn_tensors:
-        try:
-            device = _require_device(args)
-            l1_budget_override = get_min_remaining_l1_for_device(device)
-        except ValueError:
-            pass
-
     for idx, (param_name, arg) in enumerate(zip(f_params, compile_args)):
         register_tensor_name(arg, param_name, index=idx)
 
@@ -1426,7 +3125,20 @@ def _compile_kernel(
     _set_current_grid(grid)
 
     _clear_thread_registry()
-    f(*compile_args, **kwargs)
+    call_args = []
+    call_kwargs = dict(kwargs)
+    for param, value in zip(f_params.values(), compile_args):
+        if param.kind == inspect.Parameter.KEYWORD_ONLY:
+            call_kwargs[param.name] = value
+        else:
+            call_args.append(value)
+    with (
+        _dispatch_condition_binding_scope(),
+        _dfb_allocation_group_binding_scope(),
+        _dfb_reset_binding_scope(),
+        _dfb_reconfiguration_binding_scope(),
+    ):
+        f(*call_args, **call_kwargs)
     threads = _get_registered_threads()
 
     if not threads:
@@ -1435,11 +3147,20 @@ def _compile_kernel(
             "@ttl.datamovement() function inside your kernel."
         )
 
+    _validate_explicit_logical_kernel_uses(
+        threads, _backend_kernel_capacities(target_arch)
+    )
+
     pipenets = _build_operation_pipenets(f, threads)
+    device_domain = pipenets.resolve_device_domain(device_domain)
+    resolved_mesh_program_placements = _resolve_mesh_program_placements(
+        args,
+        device_domain,
+        mesh_program_placements,
+        required_devices=pipenets.device_endpoints(),
+    )
 
     launch_grid = grid
-
-    cb_configs = _collect_cb_configs(threads)
 
     injected_program_kwargs = {
         "grid": grid,
@@ -1453,16 +3174,69 @@ def _compile_kernel(
         kwargs=injected_program_kwargs,
     )
 
+    return _lower_program_to_kernel(
+        program=program,
+        args=args,
+        launch_grid=launch_grid,
+        num_outs=num_outs,
+        target_arch=target_arch,
+        fp32_dest_acc_en=fp32_dest_acc_en,
+        dst_full_sync_en=dst_full_sync_en,
+        math_fidelity=math_fidelity,
+        compiler_options=compiler_options,
+        program_hash=program_hash,
+        l1_budget_override=l1_budget_override,
+        kernel_source_file=kernel_source_file,
+        kernel_line_offset=kernel_line_offset,
+        mesh_program_placements=resolved_mesh_program_placements,
+        device_domain=device_domain,
+        logical_kernels=[thread._logical_kernel for thread in threads],
+        operation_name=f.__name__,
+        runtime_resource_factory=runtime_resource_factory,
+        runtime_resource_cache=runtime_resource_cache,
+    )
+
+
+def _lower_program_to_kernel(
+    *,
+    program,
+    args,
+    launch_grid,
+    num_outs,
+    target_arch,
+    fp32_dest_acc_en,
+    dst_full_sync_en,
+    math_fidelity,
+    compiler_options,
+    program_hash,
+    l1_budget_override,
+    kernel_source_file,
+    kernel_line_offset,
+    mesh_program_placements,
+    device_domain,
+    logical_kernels=None,
+    operation_name="<anonymous>",
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+    runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
+):
+    """Lower compiled threads to a CompiledTTNNKernel.
+
+    Assembles the per-thread MLIR funcs into a module, runs the TTL pass
+    pipeline, and builds the runner. Shared by both @ttl.operation forms
+    so the compiler pipeline lives in one place.
+    """
     # Always generate source locations for error messages
     # TTLANG_DEBUG_LOCATIONS only controls whether locations are printed in MLIR output
     print_debug_locations = os.environ.get("TTLANG_DEBUG_LOCATIONS", "0") == "1"
+    if logical_kernels is not None and len(logical_kernels) != len(program.threads):
+        raise ValueError(
+            "logical kernel metadata must align one-to-one with program threads"
+        )
 
     ctx = Context()
     loc = Location.unknown(ctx)
     with ctx, loc:
         compiled_threads = []
-        # Track which global tensor indices each thread uses (for building common_runtime_args)
-        thread_tensor_indices = []
         # Collect source info for error formatting
         all_source_lines = {}
         all_source_files = {}
@@ -1471,7 +3245,7 @@ def _compile_kernel(
         kernel_line_offsets = {}
         noc_kernel_idx = 0
 
-        for compile_thread in program.threads:
+        for thread_index, compile_thread in enumerate(program.threads):
             try:
                 ct = compile_thread(*program.args, **program.kwargs)
             except TTLangCompileError as e:
@@ -1484,8 +3258,6 @@ def _compile_kernel(
                 )
                 raise type(e)(formatted) from None
             compiled_threads.append(ct)
-            thread_tensor_indices.append(ct._tensor_accessor_global_indices)
-
             # Set TensorAccessor indexing attributes for C++ lowering
             base_cta = get_cb_count()
             ct.func_entry.attributes["ttl.base_cta_index"] = IntegerAttr.get(
@@ -1500,13 +3272,53 @@ def _compile_kernel(
                 ctx,
             )
 
-            # Tag noc functions with their index so pipe semaphore
-            # allocation can distinguish threads.
+            # Compute creation needs explicit DST constraints before the final
+            # kernel-wide configuration analysis resolves automatic choices.
+            if ct.kernel_type == "compute":
+                if fp32_dest_acc_en is not None:
+                    ct.func_entry.attributes[_ttl_ir.FP32_DEST_ACC_EN_ATTR] = (
+                        BoolAttr.get(fp32_dest_acc_en, ctx)
+                    )
+                if dst_full_sync_en is not None:
+                    ct.func_entry.attributes[_ttl_ir.DST_FULL_SYNC_EN_ATTR] = (
+                        BoolAttr.get(dst_full_sync_en, ctx)
+                    )
+
+            # Tag noc functions with their index so pipe semaphore allocation
+            # and TTNN reader/writer role assignment can distinguish threads.
             if ct.kernel_type == "datamovement":
-                ct.func_entry.attributes["ttl.noc_index"] = IntegerAttr.get(
+                ct.func_entry.attributes[_ttl_ir.NOC_INDEX_ATTR] = IntegerAttr.get(
                     IntegerType.get_signless(32, ctx), noc_kernel_idx
                 )
                 noc_kernel_idx += 1
+
+            logical_kernel = (
+                logical_kernels[thread_index] if logical_kernels is not None else None
+            )
+            if logical_kernel is not None:
+                kind = _selector_kind(logical_kernel)
+                ir_kind = {
+                    KernelKind.COMPUTE: ttl_dialect.ir.LogicalKernelKind.Compute,
+                    KernelKind.DATA_MOVEMENT: (
+                        ttl_dialect.ir.LogicalKernelKind.DataMovement
+                    ),
+                }[kind]
+                identity = None
+                operation_identity = None
+                implicit_role = None
+                if isinstance(logical_kernel, Kernel):
+                    identity = logical_kernel.identity
+                    operation_identity = logical_kernel._operation_identity
+                    implicit_role = _selector_implicit_role(logical_kernel)
+                ct.func_entry.attributes[_ttl_ir.LOGICAL_KERNEL_ATTR] = (
+                    ttl_dialect.LogicalKernelAttr.get(
+                        ctx,
+                        ir_kind,
+                        identity,
+                        operation_identity,
+                        implicit_role,
+                    )
+                )
 
             # Collect source info for error reporting
             if hasattr(ct, "source_file") and hasattr(ct, "source_lines"):
@@ -1515,6 +3327,11 @@ def _compile_kernel(
             # Track per-kernel line offset
             if hasattr(ct, "line_offset"):
                 kernel_line_offsets[ct.name] = ct.line_offset
+
+        # Collect include paths from call_extern_func across all threads.
+        opaque_include_paths = []
+        for ct in compiled_threads:
+            opaque_include_paths.extend(getattr(ct, "_opaque_include_paths", []))
 
         module = Module.create(loc)
         module.operation.attributes["ttl.launch_grid"] = ArrayAttr.get(
@@ -1525,7 +3342,9 @@ def _compile_kernel(
             ctx,
         )
         if target_arch is not None:
-            module.operation.attributes["ttl.target_arch"] = StringAttr.get(target_arch)
+            module.operation.attributes["ttl.target_arch"] = ttcore.ir.ArchAttr.get(
+                ctx, int(_TTCORE_ARCH_BY_DEVICE_NAME[target_arch])
+            )
 
         # Insert standalone thread functions directly into module
         with InsertionPoint(module.body):
@@ -1546,15 +3365,17 @@ def _compile_kernel(
         verify = True
 
         # fmt: off
-        set_compute_config_pass = "func.func(ttl-set-compute-kernel-config)"
+        set_compute_config_pass = "ttl-set-compute-kernel-config"
         config_options = []
         if fp32_dest_acc_en is not None:
             config_options.append(
-                f"fp32-dest-acc-en={1 if fp32_dest_acc_en else 0}"
+                "fp32-dest-acc-en="
+                + ("enabled" if fp32_dest_acc_en else "disabled")
             )
         if dst_full_sync_en is not None:
             config_options.append(
-                f"dst-full-sync-en={1 if dst_full_sync_en else 0}"
+                "dst-full-sync-en="
+                + ("enabled" if dst_full_sync_en else "disabled")
             )
         config_options.append(
             f"reduce-full-fp32={int(compiler_options.reduce_full_fp32)}"
@@ -1567,23 +3388,60 @@ def _compile_kernel(
         )
         if config_options:
             set_compute_config_pass = (
-                "func.func(ttl-set-compute-kernel-config{"
+                "ttl-set-compute-kernel-config{"
                 + " ".join(config_options)
-                + "})"
+                + "}"
             )
 
-        # NOTE: Pipeline pass ordering is mirrored in
-        # test/me2e/builder/pipeline.py and lib/Dialect/TTL/Pipelines/TTLPipelines.cpp.
+        # NOTE: Pipeline pass ordering mirrors
+        # lib/Dialect/TTL/Pipelines/TTLPipelines.cpp.
         assign_dst_pass = "ttl-assign-dst"
 
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
+        accumulation_strategy = compiler_options.accumulation_strategy
+        pipe_batch_tiles = compiler_options.pipe_batch_tiles
+        pipe_transport_options = [f"group-size={pipe_batch_tiles}"]
+        if l1_budget_override > 0:
+            pipe_transport_options.append(
+                f"l1-budget-override={l1_budget_override}"
+            )
+        pipe_transport_pass = (
+            "ttl-form-pipe-transports{" + " ".join(pipe_transport_options) + "}"
+        )
+        reuse_user_dfbs_flag = int(compiler_options.reuse_user_dfbs)
+        unsafe_assume_allocation_groups_flag = int(
+            compiler_options.unsafe_assume_dfb_allocation_groups
+        )
+        exact_coloring_search_limit = (
+            compiler_options.dfb_exact_coloring_search_limit
+        )
+        tensor_recurrence_pipeline = (
+            "ttl-form-accumulation-scopes{"
+            f"strategy={accumulation_strategy}"
+            "},"
+            f"ttl-lower-accumulation-scopes{{strategy={accumulation_strategy}}},"
+            "ttl-materialize-loop-state"
+        )
         pipeline_passes = [
-            "func.func(ttl-materialize-loop-state)",
-            f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
+            f"func.func({tensor_recurrence_pipeline})",
             "func.func(ttl-insert-copy-wait)",
             "func.func(ttl-auto-sync)",
-            "func.func(ttl-annotate-l1-acc-loops)",
+            "func.func(ttl-insert-accumulation-scopes{kind=dfb})",
+            "func.func(ttl-lower-accumulation-scopes{kind=dfb})",
+            "func.func(ttl-create-producer-compute)",
+            f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
             "func.func(convert-ttl-to-compute)",
+            "func.func(ttl-insert-cb-sync)",
+            "ttl-verify-pipenet",
+            pipe_transport_pass,
+            "func.func(ttl-coalesce-dfb-acquires)",
+            "ttl-finalize-dfb-indices{"
+            f"reuse-user-dfbs={reuse_user_dfbs_flag} "
+            "unsafe-assume-allocation-groups="
+            f"{unsafe_assume_allocation_groups_flag} "
+            f"exact-coloring-search-limit={exact_coloring_search_limit} "
+            f"l1-budget-override={l1_budget_override}"
+            "}",
             set_compute_config_pass,
             f"func.func({assign_dst_pass})",
         ]
@@ -1600,9 +3458,7 @@ def _compile_kernel(
         )
         if compiler_options.maximize_dst:
             pipeline_passes.append("func.func(ttl-schedule-operations)")
-        pipeline_passes.append("ttl-finalize-dfb-indices")
         pipeline_passes.append("func.func(ttl-annotate-cb-associations)")
-        pipeline_passes.append("ttl-verify-pipenet-guards")
         pipeline_passes.append("ttl-verify-dfb-spsc")
         pipeline_passes.append("ttl-erase-pipenet-scopes")
         if l1_budget_override > 0:
@@ -1634,9 +3490,20 @@ def _compile_kernel(
             pipeline_passes.append(f'ttl-dump-cb-flow-graph{{output="{cb_flow_json}"}}')
 
         reduce_fp32_flag = int(compiler_options.reduce_full_fp32)
+        pipe_computed_flag = int(compiler_options.pipe_computed_addresses)
+        pipe_capacity_sync_flag = int(compiler_options.pipe_capacity_sync)
+        pipe_global_semaphores_only_flag = int(
+            compiler_options.pipe_global_semaphores_only
+        )
         pipeline_passes += [
             "ttl-lower-dprint-to-emitc",
-            f"convert-ttl-to-ttkernel{{reduce-full-fp32={reduce_fp32_flag}}}",
+            (
+                f"convert-ttl-to-ttkernel{{reduce-full-fp32={reduce_fp32_flag} "
+                f"pipe-computed-addresses={pipe_computed_flag} "
+                f"pipe-capacity-sync={pipe_capacity_sync_flag} "
+                f"pipe-global-semaphores-only={pipe_global_semaphores_only_flag} "
+                f"l1-budget-override={l1_budget_override}}}"
+            ),
             "func.func(ttkernel-lower-scalar-fp-types)",
             "ttkernel-insert-inits",
             "ttkernel-insert-l1-accumulation",
@@ -1646,9 +3513,16 @@ def _compile_kernel(
         pipeline_passes += [
             "canonicalize",
             "cse",
-            "lower-affine",
+        ]
+        # Both registered pipelines share record cleanup and finalize only
+        # the runtime arguments that survive it, matching the C++ pipeline.
+        if compiler_options.specialize_cores:
+            pipeline_passes.append("ttkernel-specialize-and-annotate-dfb-use")
+        else:
+            pipeline_passes.append("ttkernel-cleanup-and-finalize-runtime-args")
+        pipeline_passes += [
             "ttl-lower-signpost-to-emitc",
-            "func.func(convert-ttkernel-to-emitc)",
+            "convert-ttkernel-to-emitc",
             "symbol-dce",
         ]
 
@@ -1682,7 +3556,8 @@ def _compile_kernel(
 
         try:
             # Run the pass manager with error handling for source-aware diagnostics
-            pm.run(module.operation)
+            with ctx.attach_diagnostic_handler(_forward_mlir_warning):
+                pm.run(module.operation)
         except Exception as e:
             error_msg = str(e)
             # Try to format error with source context
@@ -1714,15 +3589,15 @@ def _compile_kernel(
             first_thread = next(iter(all_source_lines.keys()))
             profile_source_lines = all_source_lines[first_thread]
 
-        # Merge compiler-allocated DFBs into the CB config list.
-        compiler_allocated_dfbs = _extract_compiler_allocated_dfbs(module)
-        cb_configs = _merge_dfb_configs(cb_configs, compiler_allocated_dfbs)
+        cb_configs = _resolve_dfb_configs(module)
+        dfb_reconfiguration_plan = _extract_dfb_reconfiguration_plan(module, cb_configs)
         pipe_sync_semaphore_count = _extract_pipe_sync_semaphore_count(module)
         if pipe_sync_semaphore_count is None:
             raise RuntimeError(
                 "compiled module is missing "
                 f"{_ttl_ir.PIPE_SYNC_SEMAPHORE_COUNT_ATTR}"
             )
+        dfb_reset_count = _extract_dfb_reset_count(module)
         pipe_sram_scratch_bytes = _extract_pipe_sram_scratch_bytes(module)
         pipe_global_semaphore_count = _extract_pipe_global_semaphore_count(module)
 
@@ -1734,19 +3609,256 @@ def _compile_kernel(
             args,
             launch_grid,
             num_outs,
-            thread_tensor_indices,
             cb_configs,
+            dfb_reconfiguration_plan=dfb_reconfiguration_plan,
             program_hash=program_hash,
             fp32_dest_acc_en=fp32_dest_acc_en,
             dst_full_sync_en=dst_full_sync_en,
+            math_fidelity=math_fidelity,
             source_lines=profile_source_lines,
             all_source_lines=all_source_lines,
             kernel_line_offsets=kernel_line_offsets,
             num_pipe_sync_semaphores=pipe_sync_semaphore_count,
+            num_dfb_resets=dfb_reset_count,
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=pipe_global_semaphore_count,
+            opaque_include_paths=opaque_include_paths,
+            mesh_program_placements=mesh_program_placements,
+            device_domain=device_domain,
+            target_arch=target_arch,
+            operation_name=operation_name,
+            runtime_resource_factory=runtime_resource_factory,
+            runtime_resource_cache=runtime_resource_cache,
         )
         return compiled_kernel
+
+
+def _canonical_tensor_args(
+    function: Callable,
+    args: tuple,
+    kwargs: dict,
+    *,
+    expand_only_params=(),
+) -> tuple:
+    """Bind a call and return tensor arguments in signature order."""
+    if expand_only_params:
+        names = ", ".join(repr(name) for name in expand_only_params)
+        raise ValueError(
+            f"@ttl.operation {function.__name__!r} is expand-only because it has "
+            f"DFB or PipeNet parameter(s): {names}; it cannot be called directly"
+        )
+
+    signature = inspect.signature(function)
+    bound = signature.bind(*args, **kwargs)
+    runtime_args = tuple(bound.arguments[name] for name in signature.parameters)
+    for name, value in bound.arguments.items():
+        if not is_ttnn_tensor(value):
+            raise TypeError(
+                f"@ttl.operation runtime argument {name!r} must be a TT-NN "
+                f"tensor, got {type(value).__name__}"
+            )
+    return runtime_args
+
+
+def _validate_factory_cache_options(
+    factory_cache: Optional[MutableMapping], factory_cache_key: Optional[Hashable]
+) -> None:
+    if (factory_cache is None) != (factory_cache_key is None):
+        raise ValueError(
+            "factory_cache and factory_cache_key must be supplied together"
+        )
+    if factory_cache is None:
+        return
+    if not isinstance(factory_cache, MutableMapping):
+        raise TypeError(
+            "factory_cache must be a mutable mapping, got "
+            f"{type(factory_cache).__name__}"
+        )
+    try:
+        hash(factory_cache_key)
+    except TypeError as error:
+        raise TypeError("factory_cache_key must be hashable") from error
+
+
+def _make_operation_wrapper(
+    function: Callable,
+    compile_callback: Callable,
+    *,
+    grid,
+    fp32_dest_acc_en: Optional[bool],
+    dst_full_sync_en: Optional[bool],
+    math_fidelity: Optional[str],
+    options: Optional[str],
+    prepare_call: Optional[Callable] = None,
+    factory_cache: Optional[MutableMapping] = None,
+    factory_cache_key: Optional[Hashable] = None,
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+) -> Callable:
+    """Build the shared top-level operation cache and execution wrapper."""
+    _validate_factory_cache_options(factory_cache, factory_cache_key)
+    kernel_id = random.getrandbits(64)
+    cache: Dict[tuple, CompiledTTNNKernel] = {}
+    cache_lock = threading.RLock()
+    runtime_resource_cache = KernelRuntimeResourceCache()
+    post_semaphore_cache_entry: Optional[_PostSemaphoreCacheEntry] = None
+
+    @functools.wraps(function)
+    def _wrapper(*args, **kwargs):
+        nonlocal post_semaphore_cache_entry
+        kwargs = dict(kwargs)
+        opts_str = kwargs.pop("options", options)
+        runtime_args = args
+        grid_kwargs = kwargs
+        if prepare_call is not None:
+            runtime_args = prepare_call(args, kwargs)
+            grid_kwargs = {}
+        resolved_grid = _resolve_grid(grid, runtime_args, grid_kwargs)
+
+        env_opts = os.environ.get("TTLANG_COMPILER_OPTIONS")
+        if env_opts:
+            opts_str = f"{opts_str or ''} {env_opts}".strip() or None
+        compiler_options = CompilerOptions.from_string(opts_str).merge(
+            CompilerOptions.from_argv()
+        )
+        target_arch = _device_target_arch(runtime_args)
+
+        def make_cache_key(effective_l1_budget):
+            return _make_cache_key(
+                runtime_args,
+                resolved_grid=resolved_grid,
+                fp32_dest_acc_en=fp32_dest_acc_en,
+                dst_full_sync_en=dst_full_sync_en,
+                math_fidelity=math_fidelity,
+                target_arch=target_arch,
+                compiler_options=compiler_options,
+                l1_budget_override=effective_l1_budget,
+            )
+
+        with cache_lock:
+            l1_budget_override = _resolve_l1_budget(
+                runtime_args, compiler_options, runtime_resource_cache
+            )
+            cache_key = make_cache_key(l1_budget_override)
+            compiled_kernel = cache.get(cache_key)
+            if (
+                compiled_kernel is None
+                and post_semaphore_cache_entry is not None
+                and _matches_post_semaphore_cache_entry(
+                    post_semaphore_cache_entry,
+                    cache_key,
+                    runtime_args,
+                    runtime_resource_cache,
+                )
+            ):
+                compiled_kernel = post_semaphore_cache_entry.compiled_kernel
+            if compiled_kernel is None:
+                if factory_cache is None:
+                    compiled_kernel = compile_callback(
+                        runtime_args,
+                        kwargs,
+                        resolved_grid,
+                        hash((kernel_id, cache_key)),
+                        target_arch,
+                        compiler_options,
+                        l1_budget_override,
+                        runtime_resource_cache,
+                    )
+                else:
+                    entry_key = _FactoryCacheEntryKey(
+                        function.__code__,
+                        factory_cache_key,
+                        cache_key,
+                        runtime_resource_factory is not None,
+                    )
+                    slot = _get_factory_cache_slot(factory_cache, entry_key)
+                    with slot.lock:
+                        if slot.template is None:
+                            compiled_kernel = compile_callback(
+                                runtime_args,
+                                kwargs,
+                                resolved_grid,
+                                hash((kernel_id, cache_key)),
+                                target_arch,
+                                compiler_options,
+                                l1_budget_override,
+                                runtime_resource_cache,
+                            )
+                            if compiled_kernel is not None:
+                                slot.template = _CompiledTTNNKernelTemplate.create(
+                                    compiled_kernel
+                                )
+                        else:
+                            compiled_kernel = slot.template.instantiate(
+                                runtime_resource_factory, runtime_resource_cache
+                            )
+                if compiled_kernel is not None:
+                    cache[cache_key] = compiled_kernel
+
+        if compiled_kernel is None or not _should_execute():
+            return None
+
+        result = compiled_kernel(*runtime_args)
+        if compiled_kernel.num_pipe_global_semaphores > 0:
+            post_allocation_budget = _resolve_l1_budget(
+                runtime_args, compiler_options, runtime_resource_cache
+            )
+            post_semaphore_entry = _make_post_semaphore_cache_entry(
+                make_cache_key(post_allocation_budget),
+                compiled_kernel,
+                runtime_args,
+                runtime_resource_cache,
+            )
+            with cache_lock:
+                post_semaphore_cache_entry = post_semaphore_entry
+
+        if is_auto_profile_enabled() and compiled_kernel.all_source_lines:
+            _run_profiling_pipeline(
+                runtime_args,
+                compiled_kernel.all_source_lines,
+                compiled_kernel.thread_to_kernel,
+                compiled_kernel.kernel_line_offsets,
+            )
+
+        if os.environ.get("TTLANG_PERF_DUMP") == "1":
+            _run_perf_dump(runtime_args, function.__name__)
+
+        if is_signpost_profile_enabled():
+            _run_signpost_profile(runtime_args)
+
+        if os.environ.get("TTLANG_PERF_SERV") == "1":
+            tt_metal_home = os.environ.get("TT_METAL_HOME", "")
+            if not tt_metal_home:
+                raise ValueError("TTLANG_PERF_SERV=1 requires TT_METAL_HOME")
+            csv_path = (
+                Path(tt_metal_home)
+                / "generated"
+                / "profiler"
+                / ".logs"
+                / "profile_log_device.csv"
+            )
+            if csv_path.exists():
+                serve_trace(csv_path)
+            del os.environ["TTLANG_PERF_SERV"]
+
+        return result
+
+    attach_runtime_resource_finalizer(_wrapper, runtime_resource_cache)
+    return _wrapper
+
+
+def _validate_operation_options(
+    num_outs, memory_space, tiled, math_fidelity: Optional[str]
+) -> None:
+    if num_outs != 1:
+        raise ValueError(f"num_outs must be 1, got {num_outs}")
+    if memory_space not in SUPPORTED_MEMORY_SPACES:
+        raise ValueError(
+            f"Invalid memory_space: {memory_space!r}. "
+            f"Must be one of: {', '.join(sorted(SUPPORTED_MEMORY_SPACES))}"
+        )
+    if not isinstance(tiled, bool):
+        raise TypeError(f"tiled must be a boolean, got {type(tiled).__name__}")
+    validate_math_fidelity(math_fidelity)
 
 
 def pykernel_gen(
@@ -1758,7 +3870,14 @@ def pykernel_gen(
     tiled: bool = True,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
+    math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
+    runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
+    factory_cache: Optional[MutableMapping] = None,
+    factory_cache_key: Optional[Hashable] = None,
+    _prepare_call: Optional[Callable] = None,
+    device_domain=None,
+    mesh_program_placements=None,
 ) -> Callable:
     """
     Decorator for generating TTL kernels from Python functions.
@@ -1776,25 +3895,29 @@ def pykernel_gen(
         tiled: Whether to use tiled layout
         fp32_dest_acc_en: Optional override for fp32_dest_acc_en
         dst_full_sync_en: Optional override for dst_full_sync_en
+        math_fidelity: Optional TTNN compute math fidelity
         options: Compiler option string (e.g., "--no-ttl-maximize-dst")
+        device_domain: Optional logical device domain for mesh execution.
+        mesh_program_placements: Optional logical device coordinate tuples or
+            inclusive ``ttl.MeshProgramPlacement`` ranges that receive program
+            descriptors. The full device domain is used when omitted. Explicit
+            placements must include every graph-based PipeNet endpoint, use one
+            coordinate rank, and not overlap.
+        runtime_resource_factory: Optional per-invocation resource callback
+        factory_cache: Mutable mapping that shares compiled artifacts between
+            separately constructed operations.
+        factory_cache_key: Hashable identity for compile-time captures. Must be
+            supplied with ``factory_cache``.
 
     Returns:
         Decorated function that compiles and executes the kernel
 
     Raises:
-        AssertionError: If required parameters are missing or invalid
+        ValueError: If required parameters or compute configuration are invalid
     """
     if grid is None:
         raise ValueError("grid parameter is required")
-    if num_outs != 1:
-        raise ValueError(f"num_outs must be 1, got {num_outs}")
-    if memory_space not in SUPPORTED_MEMORY_SPACES:
-        raise ValueError(
-            f"Invalid memory_space: {memory_space!r}. "
-            f"Must be one of: {', '.join(sorted(SUPPORTED_MEMORY_SPACES))}"
-        )
-    if not isinstance(tiled, bool):
-        raise TypeError(f"tiled must be a boolean, got {type(tiled).__name__}")
+    _validate_operation_options(num_outs, memory_space, tiled, math_fidelity)
     if iterator_types is not None and indexing_maps is None:
         raise ValueError("indexing_maps must be set when iterator_types is set")
 
@@ -1814,108 +3937,64 @@ def pykernel_gen(
         iterator_types = []
 
     def _decorator(f):
-        # Per-kernel state: random ID and cache
-        kernel_id = random.getrandbits(64)
-        cache: Dict[tuple, CompiledTTNNKernel] = {}
+        operation_identity = _operation_identity(f)
+        captured_kernels = _captured_kernel_declarations(f)
+        _bind_kernel_declarations(captured_kernels, operation_identity)
+        _bind_fabric_manager_claims(
+            _captured_fabric_manager_claims(f),
+            operation_identity,
+            captured_kernels,
+        )
 
-        @functools.wraps(f)
-        def _wrapper(*args, **kwargs):
-            resolved_grid = _resolve_grid(grid, args, kwargs)
-            fp32_override = fp32_dest_acc_en
-            dst_sync_override = dst_full_sync_en
-
-            # Extract runtime options (allow per-call override via kwarg).
-            # Priority: sys.argv > env var > decorator options=
-            # Env var is appended to decorator string (later tokens win),
-            # then sys.argv is merged on top as the highest-priority override.
-            opts_str = kwargs.pop("options", options)
-            env_opts = os.environ.get("TTLANG_COMPILER_OPTIONS")
-            if env_opts:
-                # Env var tokens appended after explicit options.
-                opts_str = f"{opts_str or ''} {env_opts}".strip() or None
-            base = CompilerOptions.from_string(opts_str)
-            argv_overrides = CompilerOptions.from_argv()
-            compiler_options = base.merge(argv_overrides)
-            target_arch = _device_target_arch(args)
-
-            # Build cache key from tensor properties
-            cache_key = _make_cache_key(
-                args,
-                resolved_grid=resolved_grid,
-                # Runtime options:
-                fp32_dest_acc_en=fp32_override,
-                dst_full_sync_en=dst_sync_override,
+        def _compile_explicit(
+            runtime_args,
+            runtime_kwargs,
+            resolved_grid,
+            program_hash,
+            target_arch,
+            compiler_options,
+            l1_budget_override,
+            runtime_resource_cache,
+        ):
+            compile_kwargs = runtime_kwargs
+            if _prepare_call is not None:
+                compile_kwargs = {}
+            return _compile_kernel(
+                f,
+                runtime_args,
+                compile_kwargs,
+                resolved_grid,
+                indexing_maps,
+                iterator_types,
+                num_outs,
+                memory_space,
+                tiled,
+                program_hash,
+                fp32_dest_acc_en=fp32_dest_acc_en,
+                dst_full_sync_en=dst_full_sync_en,
+                math_fidelity=math_fidelity,
                 target_arch=target_arch,
                 compiler_options=compiler_options,
+                device_domain=device_domain,
+                mesh_program_placements=mesh_program_placements,
+                l1_budget_override=l1_budget_override,
+                runtime_resource_factory=runtime_resource_factory,
+                runtime_resource_cache=runtime_resource_cache,
             )
 
-            # Check cache for previously compiled kernel
-            if cache_key in cache:
-                compiled_kernel = cache[cache_key]
-            else:
-                # Compute program_hash for tt-metal cache
-                program_hash = hash((kernel_id, cache_key))
-
-                # Compile kernel
-                compiled_kernel = _compile_kernel(
-                    f,
-                    args,
-                    kwargs,
-                    resolved_grid,
-                    indexing_maps,
-                    iterator_types,
-                    num_outs,
-                    memory_space,
-                    tiled,
-                    program_hash,
-                    fp32_dest_acc_en=fp32_override,
-                    dst_full_sync_en=dst_sync_override,
-                    target_arch=target_arch,
-                    compiler_options=compiler_options,
-                )
-
-                if compiled_kernel is not None:
-                    cache[cache_key] = compiled_kernel
-
-            # Execute (unless compile-only mode)
-            if compiled_kernel is not None and _should_execute():
-                result = compiled_kernel(*args)
-
-                # Run auto-profiling after execution
-                if is_auto_profile_enabled() and compiled_kernel.all_source_lines:
-                    _run_profiling_pipeline(
-                        args,
-                        compiled_kernel.all_source_lines,
-                        compiled_kernel.thread_to_kernel,
-                        compiled_kernel.kernel_line_offsets,
-                    )
-
-                if os.environ.get("TTLANG_PERF_DUMP") == "1":
-                    _run_perf_dump(args, f.__name__)
-
-                if is_signpost_profile_enabled():
-                    _run_signpost_profile(args)
-
-                # Serve profiler data as Perfetto trace (runs last,
-                # after other profilers have dumped their data)
-                if os.environ.get("TTLANG_PERF_SERV") == "1":
-                    tt_metal_home = os.environ.get("TT_METAL_HOME", "")
-                    if not tt_metal_home:
-                        raise ValueError("TTLANG_PERF_SERV=1 requires TT_METAL_HOME")
-                    csv_path = (
-                        Path(tt_metal_home)
-                        / "generated"
-                        / "profiler"
-                        / ".logs"
-                        / "profile_log_device.csv"
-                    )
-                    if csv_path.exists():
-                        serve_trace(csv_path)
-                    del os.environ["TTLANG_PERF_SERV"]
-
-                return result
-
-        return _wrapper
+        return _make_operation_wrapper(
+            f,
+            _compile_explicit,
+            grid=grid,
+            fp32_dest_acc_en=fp32_dest_acc_en,
+            dst_full_sync_en=dst_full_sync_en,
+            math_fidelity=math_fidelity,
+            options=options,
+            prepare_call=_prepare_call,
+            factory_cache=factory_cache,
+            factory_cache_key=factory_cache_key,
+            runtime_resource_factory=runtime_resource_factory,
+        )
 
     return _decorator
 
@@ -1934,6 +4013,9 @@ __all__ = [
     "DataflowBuffer",
     "CircularBuffer",
     "CopyTransferHandler",
+    "ReceiveRequest",
+    "ReadyReceive",
     "copy",
+    "wait_any",
     "CompiledTTNNKernel",
 ]

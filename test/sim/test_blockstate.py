@@ -23,12 +23,12 @@ from sim.blockstate import (
     AccessState,
     BlockAcquisition,
     ExpectedOp,
-    KernelType,
     format_block_finished_error,
     format_cannot_read_block,
     format_cannot_write_block,
     format_validate_mismatch,
 )
+from sim.kernel import KernelKind
 from sim.context import (
     clear_current_kernel_type,
     set_current_kernel_type,
@@ -85,14 +85,14 @@ def test_block_state_machine_restrictions() -> None:
 
 def test_copy_sets_block_to_na_state() -> None:
     """Test that copy operations set blocks to NAW (No Access while Writing) state."""
-    set_current_kernel_type(KernelType.DM)
+    set_current_kernel_type(KernelKind.DATA_MOVEMENT)
 
     try:
         block = Block(
             ttnn.Tensor(torch.zeros((64, 32))),
             (2, 1),
             BlockAcquisition.RESERVE,
-            KernelType.DM,
+            KernelKind.DATA_MOVEMENT,
         )
 
         source_tensor = ttnn.Tensor(torch.ones((64, 32)))
@@ -117,14 +117,14 @@ def test_copy_sets_block_to_na_state() -> None:
 
 def test_push_validates_expected_state() -> None:
     """Test that push() validates the block is in a valid state before completing."""
-    set_current_kernel_type(KernelType.COMPUTE)
+    set_current_kernel_type(KernelKind.COMPUTE)
 
     try:
         element = make_ones_tile()
         dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
 
         # Populate the DFB from a DM kernel
-        set_current_kernel_type(KernelType.DM)
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
         from sim.copy import copy as dm_copy
 
         src = make_ones_tile()
@@ -134,7 +134,7 @@ def test_push_validates_expected_state() -> None:
         blk.push()
 
         # Now wait for it in COMPUTE kernel
-        set_current_kernel_type(KernelType.COMPUTE)
+        set_current_kernel_type(KernelKind.COMPUTE)
         waited_block = dfb.wait()
 
         # push() on a wait() block must fail: STORE_SRC is expected, not PUSH
@@ -172,7 +172,7 @@ class TestAssignSrcTransition:
         self,
     ) -> tuple["DataflowBuffer", "Block"]:
         """Return a DFB and a WAIT/COMPUTE block ready for use."""
-        set_current_kernel_type(KernelType.DM)
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
         element = make_ones_tile()
         dfb = DataflowBuffer(likeness_tensor=element, shape=(1, 1), block_count=2)
         from sim.copy import copy as dm_copy
@@ -183,7 +183,7 @@ class TestAssignSrcTransition:
         tx.wait()
         blk.push()
 
-        set_current_kernel_type(KernelType.COMPUTE)
+        set_current_kernel_type(KernelKind.COMPUTE)
         waited = dfb.wait(name="compute_in")
         return dfb, waited
 
@@ -265,7 +265,7 @@ class TestRORState:
 
     def _make_wait_block(self) -> Block:
         """Return a DM WAIT block pre-loaded with data via a DFB reserve/push cycle."""
-        set_current_kernel_type(KernelType.DM)
+        set_current_kernel_type(KernelKind.DATA_MOVEMENT)
         dfb = DataflowBuffer(
             likeness_tensor=make_element_for_buffer_shape((2, 1)),
             shape=(2, 1),
@@ -397,7 +397,7 @@ def test_format_validate_mismatch_includes_what_to_do_and_details() -> None:
         {ExpectedOp.STORE_SRC, ExpectedOp.POP},
         AccessState.MR,
         BlockAcquisition.WAIT,
-        KernelType.COMPUTE,
+        KernelKind.COMPUTE,
     )
     assert "Next:" in msg
     assert "Details: expected one of" in msg
@@ -417,7 +417,7 @@ def test_format_validate_mismatch_store_on_waited_block_mentions_out_block_store
         {ExpectedOp.STORE_SRC},
         AccessState.MR,
         BlockAcquisition.WAIT,
-        KernelType.COMPUTE,
+        KernelKind.COMPUTE,
     )
     assert "wait() block" in msg
     assert "out_block.store" in msg
@@ -431,7 +431,7 @@ def test_format_validate_mismatch_push_on_wait_block_mentions_pop_not_push() -> 
         {ExpectedOp.STORE_SRC},
         AccessState.MR,
         BlockAcquisition.WAIT,
-        KernelType.COMPUTE,
+        KernelKind.COMPUTE,
     )
     assert "push() is for reserve() only" in msg
     assert "pop()" in msg
@@ -445,7 +445,7 @@ def test_format_validate_mismatch_naw_mentions_in_flight_and_wait() -> None:
         {ExpectedOp.TX_WAIT},
         AccessState.NAW,
         BlockAcquisition.RESERVE,
-        KernelType.DM,
+        KernelKind.DATA_MOVEMENT,
     )
     assert (
         "may still be in flight" in msg.lower() or "wait until the copy" in msg.lower()
@@ -462,7 +462,7 @@ def test_format_validate_mismatch_includes_copy_callsite_when_pending_provided()
         {ExpectedOp.TX_WAIT},
         AccessState.NAW,
         BlockAcquisition.RESERVE,
-        KernelType.DM,
+        KernelKind.DATA_MOVEMENT,
         pending_copy_location=("/x/y/z.py", 12),
     )
     assert "Where: the copy involving this block was requested at /x/y/z.py:12" in msg
@@ -593,7 +593,7 @@ def test_validate_no_pending_wait_mentions_pop_and_incomplete(
     tx.wait()
     blk.push()
 
-    set_current_kernel_type(KernelType.COMPUTE)
+    set_current_kernel_type(KernelKind.COMPUTE)
     try:
         waited = dfb.wait(name="consumer_view")
         with pytest.raises(RuntimeError) as err:

@@ -19,6 +19,17 @@ import os
 import sys
 from typing import Optional, Sequence
 
+# TODO(#649): Add dfb-state after explicit DFB fallback becomes a selectable
+# accumulation strategy.
+_ACCUMULATION_STRATEGIES = frozenset({"auto", "dst", "l1-pack"})
+
+
+def _nonnegative_int(value: str) -> int:
+    parsed_value = int(value)
+    if parsed_value < 0:
+        raise argparse.ArgumentTypeError("must be nonnegative")
+    return parsed_value
+
 
 def _make_parser() -> argparse.ArgumentParser:
     """Build the compiler options parser.
@@ -35,11 +46,20 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Enable DST maximization via subblock compute and scheduling (default: enabled).",
     )
     p.add_argument(
+        "--ttl-accumulation-strategy",
+        default=None,
+        dest="accumulation_strategy",
+        help=(
+            "Select tensor recurrence accumulation storage strategy: auto, "
+            "dst, or l1-pack (default: auto)."
+        ),
+    )
+    p.add_argument(
         "--ttl-fpu-binary-ops",
         default=None,
         dest="enable_fpu_binary_ops",
         action=argparse.BooleanOptionalAction,
-        help="Use FPU for binary add/sub/mul (default: enabled).",
+        help="Allow FPU strategy selection for binary add/sub/mul (default: enabled).",
     )
     p.add_argument(
         "--ttl-block-matmul",
@@ -67,14 +87,14 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="reduce_full_fp32",
         action=argparse.BooleanOptionalAction,
-        help="Enable FP32 accumulation for reduce operations (default: enabled).",
+        help="Prefer FP32 accumulation for reduce operations (default: enabled).",
     )
     p.add_argument(
         "--ttl-matmul-full-fp32",
         default=None,
         dest="matmul_full_fp32",
         action=argparse.BooleanOptionalAction,
-        help="Enable FP32 accumulation for matmul operations (default: enabled).",
+        help="Prefer FP32 accumulation for matmul operations (default: enabled).",
     )
     p.add_argument(
         "--ttl-strict-f32-acc",
@@ -88,15 +108,96 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="compiler_dfbs",
         action=argparse.BooleanOptionalAction,
-        help="Insert compiler-allocated intermediate DFBs for fused computations (default: enabled).",
+        help=(
+            "Insert compiler-allocated intermediate DFBs when materialization "
+            "is required for DFB-only operands, source lifetimes, or computed "
+            "values stored by operations in multiple MLIR basic blocks "
+            "(default: enabled)."
+        ),
+    )
+    p.add_argument(
+        "--ttl-pipe-computed-addresses",
+        default=None,
+        dest="pipe_computed_addresses",
+        action=argparse.BooleanOptionalAction,
+        help="Use computed receiver DFB addresses for eligible pipe transfers; receiver-published multicast still requires proven equal runtime addresses (default: enabled).",
+    )
+    p.add_argument(
+        "--ttl-pipe-capacity-sync",
+        default=None,
+        dest="pipe_capacity_sync",
+        action=argparse.BooleanOptionalAction,
+        help="Use capacity-counter synchronization when a computed-address "
+        "transfer's receiver wait and pop run on the receiver NOC thread and "
+        "pass the DFB ownership and count proofs; disabling uses receiver-post "
+        "synchronization (default: enabled).",
+    )
+    p.add_argument(
+        "--ttl-pipe-global-semaphores-only",
+        default=None,
+        dest="pipe_global_semaphores_only",
+        action=argparse.BooleanOptionalAction,
+        help=(
+            "Allocate all compiler-managed PipeNet synchronization counters in "
+            "GlobalSemaphore storage, leaving local hardware semaphore ids "
+            "available to the application (default: disabled)."
+        ),
+    )
+    p.add_argument(
+        "--ttl-pipe-batch-tiles",
+        default=None,
+        dest="pipe_batch_tiles",
+        type=int,
+        help="Limit logical transfers per PipeTransport group; 0 selects automatically and 1 disables grouping (default: 0).",
+    )
+    p.add_argument(
+        "--ttl-reuse-user-dfbs",
+        default=None,
+        dest="reuse_user_dfbs",
+        action=argparse.BooleanOptionalAction,
+        help="Reuse physical DFB indices and compiler-managed storage only "
+        "for lifetimes proven not to overlap across concurrent kernels "
+        "(default: enabled).",
+    )
+    p.add_argument(
+        "--ttl-unsafe-assume-dfb-allocation-groups",
+        default=None,
+        dest="unsafe_assume_dfb_allocation_groups",
+        action=argparse.BooleanOptionalAction,
+        help=(
+            "Trust explicit DFB allocation groups when runtime handoff cannot "
+            "be proven; emits warnings and assumption metadata "
+            "(default: disabled)."
+        ),
+    )
+    p.add_argument(
+        "--ttl-dfb-exact-coloring-search-limit",
+        default=None,
+        dest="dfb_exact_coloring_search_limit",
+        type=_nonnegative_int,
+        help="Limit exact DFB allocation to this many deterministic search "
+        "states (default: 1000000).",
+    )
+    p.add_argument(
+        "--ttl-specialize-cores",
+        default=None,
+        dest="specialize_cores",
+        action=argparse.BooleanOptionalAction,
+        help="Clone each kernel whose structured branch or loop control depends on a "
+        "core coordinate once per launch coordinate, const-folding core_x / "
+        "core_y to resolve that control flow (ttkernel-specialize-cores). "
+        "Opt-in (default: disabled).",
     )
     p.add_argument(
         "--ttl-l1-budget",
         default=None,
         dest="l1_budget",
         type=int,
-        help="Override L1 CB budget in bytes (default: auto-detect from device, "
-        "or architecture default when no device is available).",
+        help="Override the per-core L1 allocation budget in bytes used by DFB "
+        "allocation, synchronized reset and reconfiguration state, PipeNet "
+        "resources, and final combined validation (default: auto-detect from "
+        "device, or "
+        "architecture default when no device is available).",
     )
     return p
 
@@ -116,7 +217,14 @@ def _parse_explicit(tokens: Sequence[str], *, reject_unknown: bool = False) -> d
             raise ValueError(f"Unknown kernel option(s): {unknown}")
     else:
         ns, _ = _PARSER.parse_known_args(tokens)
-    return {k: v for k, v in vars(ns).items() if v is not None}
+    explicit = {k: v for k, v in vars(ns).items() if v is not None}
+    strategy = explicit.get("accumulation_strategy")
+    if strategy is not None and strategy not in _ACCUMULATION_STRATEGIES:
+        raise ValueError(
+            "Invalid accumulation strategy "
+            f"{strategy!r}; expected one of {sorted(_ACCUMULATION_STRATEGIES)}"
+        )
+    return explicit
 
 
 @dataclasses.dataclass(frozen=True)
@@ -124,7 +232,8 @@ class CompilerOptions:
     """Compiler pipeline options for kernel compilation.
 
     Frozen so it's hashable and usable directly as a cache key component.
-    Does NOT include TTNN compute config (fp32_dest_acc_en, dst_full_sync_en).
+    Does NOT include TTNN compute config (fp32_dest_acc_en, dst_full_sync_en,
+    math_fidelity).
 
     Priority ordering (highest wins)::
 
@@ -137,6 +246,7 @@ class CompilerOptions:
     """
 
     maximize_dst: bool = True
+    accumulation_strategy: str = "auto"
     enable_fpu_binary_ops: bool = True
     use_block_matmul: bool = True
     subblock_sync: bool = False
@@ -145,6 +255,14 @@ class CompilerOptions:
     matmul_full_fp32: bool = True
     strict_f32_acc: bool = False
     compiler_dfbs: bool = True
+    pipe_computed_addresses: bool = True
+    pipe_capacity_sync: bool = True
+    pipe_global_semaphores_only: bool = False
+    pipe_batch_tiles: int = 0
+    reuse_user_dfbs: bool = True
+    unsafe_assume_dfb_allocation_groups: bool = False
+    dfb_exact_coloring_search_limit: int = 1_000_000
+    specialize_cores: bool = False
     l1_budget: int = dataclasses.field(default=0, compare=False, hash=False)
 
     # Fields that were explicitly provided (not defaulted). Excluded from
@@ -153,6 +271,15 @@ class CompilerOptions:
     _explicit: frozenset = dataclasses.field(
         default=frozenset(), compare=False, hash=False, repr=False
     )
+
+    def __post_init__(self):
+        """Validate options that can be constructed without argparse."""
+        if self.accumulation_strategy not in _ACCUMULATION_STRATEGIES:
+            raise ValueError(
+                "Invalid accumulation strategy "
+                f"{self.accumulation_strategy!r}; expected one of "
+                f"{sorted(_ACCUMULATION_STRATEGIES)}"
+            )
 
     @staticmethod
     def from_string(options: Optional[str] = None) -> CompilerOptions:

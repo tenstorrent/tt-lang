@@ -112,6 +112,16 @@ def TTKernel_TensorAccessor : TTKernel_Type<"TensorAccessor", "TensorAccessor"> 
   let description = "Accessor that encapsulates logic to access tensor information";
 }
 
+def TTKernel_LocalTensorAccessor
+    : TTKernel_Type<"LocalTensorAccessor", "LocalTensorAccessor"> {
+  let summary = "LocalTensorAccessor byte-storage type";
+  let description = [{
+    Typed view of a tensor whose storage is directly addressable in the local
+    core's SRAM. The element type is fixed to bytes so accessor formation
+    is independent of the tensor's logical dtype and layout.
+  }];
+}
+
 def TTKernel_TensorAccessorPageMapping : TTKernel_Type<"TensorAccessorPageMapping", "PageMapping"> {
   let summary = "TensorAccessor PageMapping struct";
   let description = "TensorAccessor struct that holds bank_id and bank_page_offset";
@@ -127,6 +137,15 @@ def TTKernel_FabricConnectionManager : TTKernel_Type<"FabricConnectionManager", 
     let description = "Fabric connection manager type in TTKernel dialect";
 }
 
+def TTKernel_RoutingPlaneConnectionManager :
+    TTKernel_Type<"RoutingPlaneConnectionManager",
+                  "routing_plane_connection_manager"> {
+  let summary = "TTKernel routing-plane connection manager";
+  let description = [{
+    Connection manager used by the routing-plane fabric API.
+  }];
+}
+
 def TTKernel_MeshPosition : TTKernel_Type<"MeshPosition", "mesh_position"> {
     let summary = "TTKernel logical mesh position";
     let description = [{
@@ -139,6 +158,23 @@ class TTKernel_Attr<string name, string attrMnemonic, list<Trait> traits = [],
     : AttrDef<TTKernel_Dialect, name, traits, baseCppClass> {
   let mnemonic = attrMnemonic;
   let attrName = "ttkernel." # attrMnemonic;
+}
+
+def TTKernel_DFBDescriptorAttr
+    : TTKernel_Attr<"DFBDescriptor", "dfb_descriptor"> {
+  let summary = "Compile-time dataflow buffer allocation descriptor";
+  let description = [{
+    Preserves the finalized physical index and allocation geometry needed by
+    an external C++ template after the TTL dataflow buffer type is lowered.
+  }];
+  let parameters = (ins
+    "int64_t":$index,
+    "int64_t":$pagesPerBlock,
+    "int64_t":$blockCount,
+    "int64_t":$pageSizeBytes
+  );
+  let assemblyFormat = "`<` $index `,` $pagesPerBlock `,` $blockCount `,` $pageSizeBytes `>`";
+  let genVerifyDecl = 1;
 }
 
 def TTKernel_ArgAttr : TTKernel_Attr<"Arg", "arg"> {

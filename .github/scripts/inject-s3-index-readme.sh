@@ -83,7 +83,8 @@ if ! aws s3api get-object --bucket "$bucket" --key "$key" "$index_html" >/dev/nu
     fi
 fi
 
-python3 .github/scripts/inject_s3_index_readme.py \
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+python3 "$script_dir/inject_s3_index_readme.py" \
     --create-from-dist "$dist_dir" \
     "$readme" \
     "$index_html"

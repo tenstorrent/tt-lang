@@ -7,6 +7,55 @@
 
 include "mlir/IR/OpBase.td"
 
+def TTL_DFBAccessOpInterface : OpInterface<"DFBAccessOpInterface"> {
+  let description = [{
+    Operations that expose dataflow buffer dependencies, ordered protocol
+    actions, and typed non-transactional accesses. Dependencies identify every
+    statically known DFB storage access. Protocol effects identify synchronous
+    reserve, push, wait, and pop actions that occur on every operation
+    execution, in execution order. Non-transactional summaries describe
+    synchronous accesses that do not change queue state. Unknown access is
+    distinct from a malformed or partial summary and conservatively applies to
+    user-managed DFB storage.
+  }];
+
+  let cppNamespace = "::mlir::tt::ttl";
+
+  let methods = [
+    InterfaceMethod<
+      /*desc=*/"Return DFB dependencies addressed by DFBProtocolEffect::dependencyIndex.",
+      /*retTy=*/"::llvm::SmallVector<::mlir::Value>",
+      /*methodName=*/"getDFBDependencyOperands",
+      /*args=*/(ins)>,
+    InterfaceMethod<
+      /*desc=*/"Return ordered, synchronous protocol effects.",
+      /*retTy=*/"::llvm::SmallVector<::mlir::tt::ttl::DFBProtocolEffect>",
+      /*methodName=*/"getDFBProtocolEffects",
+      /*args=*/(ins)>,
+    InterfaceMethod<
+      /*desc=*/"Return typed, synchronous non-transactional accesses.",
+      /*retTy=*/"::llvm::SmallVector<::mlir::tt::ttl::DFBNonTransactionalAccess>",
+      /*methodName=*/"getDFBNonTransactionalAccesses",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/"return {};">,
+    InterfaceMethod<
+      /*desc=*/"Return DFBs whose physical indices are consumed by the operation.",
+      /*retTy=*/"::llvm::SmallVector<::mlir::Value>",
+      /*methodName=*/"getDFBIndexOperands",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/"return {};">,
+    InterfaceMethod<
+      /*desc=*/"Return true when the operation may access unlisted user DFBs.",
+      /*retTy=*/"bool",
+      /*methodName=*/"hasUnknownDFBAccess",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/"return false;">
+  ];
+}
+
 def TTL_DFBInputOpInterface : OpInterface<"DFBInputOpInterface"> {
   let description = [{
     Tensor-level ops whose tile-level lowerings may read one or more
@@ -36,23 +85,40 @@ def TTL_DFBInputOpInterface : OpInterface<"DFBInputOpInterface"> {
 def TTL_PipeNetPredicateOpInterface
     : OpInterface<"PipeNetPredicateOpInterface"> {
   let description = [{
-    Predicate ops (`ttl.is_src`, `ttl.is_dst`, `ttl.is_active`) whose `i1`
-    result evaluates to `true` on a per-PipeNet role-defined node set.
+    PipeNet role-query operations. `ttl.is_src` selects source nodes,
+    `ttl.is_dst` selects destination nodes, and `ttl.is_active` selects their
+    union. When the operation has a `records` attribute, those static transfer
+    records define the selected nodes. Logical-device records match both the
+    launch node and endpoint device; local records match the launch node alone.
+    For compatibility with older generated or serialized TTL modules,
+    `records` is optional. Without it, `pipe_net_id` identifies the pipes
+    declared by `ttl.create_pipe`, `ttl.pipenet_foreach_src`, and
+    `ttl.pipenet_foreach_dst` for that PipeNet.
   }];
 
   let cppNamespace = "::mlir::tt::ttl";
 
   let methods = [
     InterfaceMethod<
-      /*desc=*/"Return the PipeNet id this predicate references.",
+      /*desc=*/"Return the PipeNet id this role-query operation references.",
       /*retTy=*/"int64_t",
       /*methodName=*/"getReferencedPipeNetId",
       /*args=*/(ins)>,
     InterfaceMethod<
-      /*desc=*/"Return the PipeNet role this predicate selects.",
+      /*desc=*/"Return the PipeNet role this operation queries.",
       /*retTy=*/"::mlir::tt::ttl::PipeRole",
       /*methodName=*/"getReferencedRole",
       /*args=*/(ins)>,
+    InterfaceMethod<
+      /*desc=*/"Return the operation's static PipeNet records, when present.",
+      /*retTy=*/"::mlir::tt::ttl::PipeNetRecordsAttr",
+      /*methodName=*/"getReferencedRecords",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        return $_op->template getAttrOfType<
+            ::mlir::tt::ttl::PipeNetRecordsAttr>("records");
+      }]>,
   ];
 }
 
@@ -98,6 +164,30 @@ def TTL_AccumulationScopeOpInterface
   ];
 }
 
+def TTL_ComputePrimitiveOpInterface
+    : OpInterface<"ComputePrimitiveOpInterface"> {
+  let description = [{
+    Operations that implement a target-independent compute primitive. The
+    primitive identifies the hardware capability required by both tensor-level
+    and tile-level forms without depending on operation-name dispatch.
+  }];
+
+  let cppNamespace = "::mlir::tt::ttl";
+
+  let methods = [
+    InterfaceMethod<
+      /*desc=*/"Return the target-independent compute primitive implemented "
+               "by this operation.",
+      /*retTy=*/"::mlir::tt::ttl::ComputePrimitive",
+      /*methodName=*/"getComputePrimitive",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        return ConcreteOp::getComputePrimitiveKind();
+      }]>
+  ];
+}
+
 def TTL_DstAccessOpInterface : OpInterface<"DstAccessOpInterface"> {
   let description = [{
     Tile-level operations that expose concrete DST register reads, writes, and
@@ -110,8 +200,8 @@ def TTL_DstAccessOpInterface : OpInterface<"DstAccessOpInterface"> {
 
   let methods = [
     InterfaceMethod<
-      /*desc=*/"Return DST slots read by this operation.",
-      /*retTy=*/"::llvm::SmallVector<::mlir::tt::ttl::DstFootprint, 2>",
+      /*desc=*/"Return DST slots read by this operation after tile execution semantics and DST residency are resolved.",
+      /*retTy=*/"::mlir::FailureOr<::llvm::SmallVector<::mlir::tt::ttl::DstFootprint, 2>>",
       /*methodName=*/"getDstReadFootprints",
       /*args=*/(ins),
       /*methodBody=*/"",
@@ -140,6 +230,39 @@ def TTL_DstAccessOpInterface : OpInterface<"DstAccessOpInterface"> {
             $_op.getOperation(), result);
       }]
     >
+  ];
+}
+
+def TTL_TileExecutionOpInterface : OpInterface<"TileExecutionOpInterface"> {
+  let description = [{
+    Tile operations expose target-independent execution semantics through this
+    interface. An execution strategy determines operand routes and DST
+    behavior independently of target capabilities.
+  }];
+
+  let cppNamespace = "::mlir::tt::ttl";
+
+  let methods = [
+    InterfaceMethod<
+      /*desc=*/"Return execution strategies structurally permitted by the current operands.",
+      /*retTy=*/"::llvm::SmallVector<::mlir::tt::ttl::TileExecutionStrategy, 2>",
+      /*methodName=*/"getLegalExecutionStrategies",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        return ::mlir::tt::ttl::getDefaultLegalTileExecutionStrategies(
+            $_op.getOperation());
+      }]>,
+    InterfaceMethod<
+      /*desc=*/"Return execution semantics for the supplied strategy.",
+      /*retTy=*/"::mlir::FailureOr<::mlir::tt::ttl::TileExecutionInfo>",
+      /*methodName=*/"getTileExecutionInfo",
+      /*args=*/(ins "::std::optional<::mlir::tt::ttl::TileExecutionStrategy>":$strategy),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        return ::mlir::tt::ttl::getDefaultTileExecutionInfo(
+            $_op.getOperation(), strategy);
+      }]>
   ];
 }
 

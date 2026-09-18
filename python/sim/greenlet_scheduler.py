@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from greenlet import greenlet
 
-from .blockstate import KernelType
+from .kernel import KernelKind
 from .context import get_context, set_current_kernel_type, clear_current_kernel_type
 from .diagnostics import (
     print_diagnostic_error,
@@ -38,7 +38,7 @@ class KernelId:
     """
 
     linear_node: int
-    kind: KernelType
+    kind: KernelKind
     func_name: str
     # Cached hash; populated in __post_init__ and returned by __hash__.  Declared
     # as a non-init, non-repr, non-compare, non-hash field so the dataclass
@@ -104,9 +104,9 @@ class _KernelState:
 
     __slots__ = ("g", "kernel_type", "blocking_obj", "operation")
 
-    def __init__(self, g: greenlet, kernel_type: KernelType) -> None:
+    def __init__(self, g: greenlet, kernel_type: KernelKind) -> None:
         self.g: greenlet = g
-        self.kernel_type: KernelType = kernel_type
+        self.kernel_type: KernelKind = kernel_type
         self.blocking_obj: Any = None
         self.operation: str = ""
 
@@ -166,7 +166,7 @@ class GreenletScheduler:
 
         Args:
             kernel_id: Stable kernel identity. Its ``kind`` field doubles as the
-                kernel role (COMPUTE or DM); two kernels with the same
+                kernel role (COMPUTE or DATA_MOVEMENT); two kernels with the same
                 ``(linear_node, kind, func_name)`` triple is rejected.
             func: Kernel entry function to execute.
 

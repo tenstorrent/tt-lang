@@ -1,6 +1,6 @@
 // Tests for subblock compute edge cases not covered by the main subblock test.
 //
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst{dst-capacity=4},ttl-subblock-compute-for-dst))' --split-input-file | FileCheck %s --check-prefix=TILED
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0},func.func(ttl-assign-dst{dst-capacity=4},ttl-subblock-compute-for-dst))' --split-input-file | FileCheck %s --check-prefix=TILED
 
 #map = affine_map<(d0, d1) -> (d0, d1)>
 
@@ -148,8 +148,8 @@ func.func @consecutive_computes(
 // Exercises mapOffsetsAndSizes where the FIRST result is a constant (0) and
 // the second is a dim expression. The col broadcast test in the main file
 // covers the reverse case (first dim, second constant).
-// Inputs have different indexing maps (identity vs row broadcast), so FPU
-// binary detection is skipped. SFPU path: dstPerIteration=2.
+// Different indexing maps make the FPU strategy illegal, so configuration
+// selects SFPU with dstPerIteration=2.
 // DST capacity=4 (f32), dstPerIteration=2, totalTiles=36.
 // unroll_factor = min(4/2, 36) = 2. subblock = [1,2].
 // Both dims tiled: dim0 0..6 step 1, dim1 0..6 step 2.
@@ -214,8 +214,8 @@ func.func @subblock_row_broadcast(
 // broadcast input (1x1) should always extract the full tensor regardless
 // of loop IVs. With 2D subblocking, neither outer loop variable appears
 // in the broadcast input's extract_slice.
-// Inputs have different indexing maps (identity vs scalar broadcast), so FPU
-// binary detection is skipped. SFPU path: dstPerIteration=2.
+// Different indexing maps make the FPU strategy illegal, so configuration
+// selects SFPU with dstPerIteration=2.
 // DST capacity=4 (f32), dstPerIteration=2. subblock=[1,2].
 
 // TILED-LABEL: func.func @subblock_scalar_broadcast

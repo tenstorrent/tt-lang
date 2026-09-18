@@ -18,6 +18,11 @@ on:
         required: false
         type: string
         default: 'latest'
+      ttlang_sha_override:
+        description: 'tt-lang SHA/tag to test. Leave empty to use the caller ref.'
+        required: false
+        type: string
+        default: ''
   workflow_call:
     inputs:
       runs-on:
@@ -35,6 +40,11 @@ on:
         required: false
         type: string
         default: 'latest'
+      ttlang_sha_override:
+        description: 'tt-lang SHA/tag to test. Leave empty to use the caller ref.'
+        required: false
+        type: string
+        default: ''
 
 permissions:
   checks: write
@@ -67,6 +77,7 @@ jobs:
       - name: Checkout (for test script)
         uses: actions/checkout@v6
         with:
+          ref: ${{ inputs.ttlang_sha_override || github.sha }}
           fetch-depth: 1
 
       - name: Run tutorial examples

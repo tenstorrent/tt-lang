@@ -46,6 +46,40 @@ class TestCountLocalRemoteL1Dram:
         local, remote, dram = count_local_remote_l1_dram(t, 0)
         assert dram == 4096
 
+    def test_counts_cover_the_padding_a_tiled_tensor_is_stored_with(self) -> None:
+        """The counts are over stored elements, so they add up to the padded extent.
+
+        A tiled tensor is stored as whole tiles, and a logical (50, 40) occupies a
+        64 x 64 store.  Counting the logical extent instead leaves the padding
+        unaccounted: a height shard is then reported as part local and part
+        nothing at all, and the totals no longer say where the tensor is.
+        """
+        ragged = ttnn.from_torch(
+            torch.zeros(50, 40, dtype=torch.float32), layout=ttnn.TILE_LAYOUT
+        )
+        assert tuple(ragged.padded_shape) == (64, 64)
+        stored = 64 * 64
+
+        # Interleaved: all of the store is in DRAM, padding included.
+        assert count_local_remote_l1_dram(ragged, 0) == (0, 0, stored)
+
+        # Height-sharded over two nodes, 32 rows each: each node owns half the
+        # store and reads the other half remotely, and the two add to all of it.
+        spec = ShardSpec(shard_grid=(2,), shard_shape=(32, 64))
+        sharded = ttnn.from_torch(
+            torch.zeros(50, 40, dtype=torch.float32),
+            layout=ttnn.TILE_LAYOUT,
+            memory_config=MemoryConfig(
+                strategy=ShardingStrategy.HEIGHT_SHARDED, shard_spec=spec
+            ),
+        )
+        for node in (0, 1):
+            local, remote, dram = count_local_remote_l1_dram(sharded, node)
+            assert local == 32 * 64, node
+            assert remote == 32 * 64, node
+            assert dram == 0, node
+            assert local + remote + dram == stored, node
+
     # ---- HEIGHT_SHARDED (shard_shape in elements) ----
 
     def test_height_sharded_local_access(self) -> None:
@@ -175,6 +209,28 @@ class TestNdSharding:
         mc = MemoryConfig(strategy=ShardingStrategy.ND_SHARDED)
         t = ttnn.Tensor(torch.zeros(64, 64), memory_config=mc)
         with pytest.raises(ValueError, match="nd_shard_spec"):
+            count_local_remote_l1_dram(t, 0)
+
+    @pytest.mark.parametrize(
+        "strategy",
+        [
+            ShardingStrategy.HEIGHT_SHARDED,
+            ShardingStrategy.WIDTH_SHARDED,
+            ShardingStrategy.BLOCK_SHARDED,
+        ],
+    )
+    def test_a_sharded_config_without_a_spec_raises(
+        self, strategy: ShardingStrategy
+    ) -> None:
+        """A config that calls itself sharded and names no shards is not a locality.
+
+        The counts feed the L1 accounting, so returning "all DRAM" for this would
+        report a sharded tensor as absent from L1 and the caller would read that as
+        a measurement. Said out loud instead, as the ND case already does.
+        """
+        mc = MemoryConfig(strategy=strategy)
+        t = ttnn.Tensor(torch.zeros(64, 64), memory_config=mc)
+        with pytest.raises(ValueError, match="requires shard_spec"):
             count_local_remote_l1_dram(t, 0)
 
     def test_grid2d_equivalent_to_block_sharded(self) -> None:
@@ -399,7 +455,7 @@ class TestNdShardingTechReportExamples:
             shard_grid=(2, 2, 1),
             shard_shape=(2, 32, 96),
             distribution=ShardDistributionStrategy.ROUND_ROBIN_1D,
-            num_cores=3,
+            round_robin_cores=3,
         )
         mc = MemoryConfig(strategy=ShardingStrategy.ND_SHARDED, nd_shard_spec=spec)
         t = ttnn.Tensor(torch.zeros(4, 64, 96), memory_config=mc)
@@ -421,7 +477,7 @@ class TestNdShardingTechReportExamples:
             shard_shape=(2, 64, 96),
             shard_grid=(2, 3, 1),
             distribution=ShardDistributionStrategy.ROUND_ROBIN_1D,
-            num_cores=2,
+            round_robin_cores=2,
         )
         mc = MemoryConfig(strategy=ShardingStrategy.ND_SHARDED, nd_shard_spec=spec)
         t = ttnn.Tensor(torch.zeros(4, 192, 96), memory_config=mc)

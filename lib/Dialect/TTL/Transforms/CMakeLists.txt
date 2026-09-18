@@ -1,9 +1,35 @@
 add_mlir_dialect_library(TTLangTTLTransforms
+  AccumulationAnalysis.cpp
+  AccumulationUtils.cpp
+  CommonRuntimeArgLayout.cpp
+  ComputeOpCreationPlanning.cpp
+  ComputeTarget.cpp
+  ComputeKernelConfigAnalysis.cpp
+  IntermediateDFBPlanning.cpp
   ConvertTTLToTTKernel.cpp
   DFBAcquireReleaseAnalysis.cpp
+  DFBAllocationDebugReport.cpp
+  DFBAllocationLimits.cpp
+  DFBLogicalIdentityAnalysis.cpp
+  DFBValueLifetimeAnalysis.cpp
   DFBMaterialization.cpp
+  FabricManagerLifetimeAnalysis.cpp
+  PipeCapacityAnalysis.cpp
+  PipeCounter.cpp
+  DFBConcurrentKernelLivenessAnalysis.cpp
+  DFBPhysicalAllocationPlan.cpp
+  InterferenceGraphColoring.cpp
+  PipeNetExecutionUtils.cpp
+  PipeNetForeachLowering.cpp
+  PipeReceiveBatching.cpp
+  PipeNetParticipantPlan.cpp
   PipeGraph.cpp
   PipeLowering.cpp
+  PipePlanning.cpp
+  PipeTransferAnalysis.cpp
+  PipeTransferExpansion.cpp
+  PipeTransportDFBAnalysis.cpp
+  PipeTransportPlan.cpp
   ConvertTTLToCompute.cpp
   ConvertTTLComputeToSCF.cpp
   ConvertTTLTileOpsToTTKernel.cpp
@@ -11,23 +37,31 @@ add_mlir_dialect_library(TTLangTTLTransforms
   LaunchNodeDomainAnalysis.cpp
 
   LowerMatmulCompute.cpp
+  LowerRowNormalizationCompute.cpp
   LowerSignpostToEmitC.cpp
   TTLAnnotateCBAssociations.cpp
-  TTLAnnotateL1AccLoops.cpp
   TTLCoalesceDFBAcquires.cpp
   TTLDumpCBFlowGraph.cpp
   TTLFinalizeDFBIndices.cpp
+  TTKernelFinalizeTensorRuntimeArgs.cpp
+  TTLFormAccumulationScopes.cpp
+  TTLFormPipeTransports.cpp
   TTLValidateCBBudget.cpp
+  TTLInsertAccumulationScopes.cpp
   TTLInsertCBSync.cpp
   TTLInsertCopyWait.cpp
   TTLInsertIntermediateDFBs.cpp
+  TTLLowerAccumulationScopes.cpp
   TTLMaterializeLoopState.cpp
+  TTLPrintDFBValueLifetimes.cpp
+  TTLPrintComputeOpCreationPlans.cpp
   TTLVerifyDFBSPSC.cpp
   TTLVerifyPipeNetGuards.cpp
   TTLErasePipeNetScopes.cpp
   TTLAssignDST.cpp
   TTLScheduleOperations.cpp
   TTLSetComputeKernelConfig.cpp
+  TransferProvenance.cpp
   DstSubblockUtils.cpp
   TTLSubblockComputeForDST.cpp
 
@@ -43,11 +77,14 @@ add_mlir_dialect_library(TTLangTTLTransforms
   MLIRLinalgDialect
   MLIRMathDialect
   MLIRSCFDialect
+  MLIRSCFTransforms
   MLIRSCFUtils
   MLIRPass
   MLIRTensorDialect
   MLIRTilingInterface
+  MLIRTransforms
   MLIRTTKernelDialect
   MLIRTTLDialect
+  TTLangAnalysis
   TTLangTTKernelTransforms
 )

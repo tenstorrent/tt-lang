@@ -2,12 +2,8 @@
 // matmul_block. Verifies that scale * acc is computed into DST before
 // matmul_block accumulates A @ B into the same output slots.
 
-// RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute, ttl-set-compute-kernel-config{enable-fpu-binary-ops=0 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst, ttl-lower-to-loops))' \
-// RUN:   --split-input-file | FileCheck %s --check-prefix=TTL
-// RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute, ttl-set-compute-kernel-config{enable-fpu-binary-ops=0 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst, ttl-lower-to-loops, ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' \
-// RUN:   --split-input-file | FileCheck %s --check-prefix=TTK
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute),ttl-set-compute-kernel-config{enable-fpu-binary-ops=0 matmul-full-fp32=0 reduce-full-fp32=0},func.func(ttl-assign-dst,ttl-lower-to-loops))' --split-input-file | FileCheck %s --check-prefix=TTL
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(func.func(convert-ttl-to-compute),ttl-set-compute-kernel-config{enable-fpu-binary-ops=0 matmul-full-fp32=0 reduce-full-fp32=0},func.func(ttl-assign-dst,ttl-lower-to-loops,ttl-annotate-cb-associations), convert-ttl-to-ttkernel, ttkernel-insert-inits, canonicalize, cse)' --split-input-file | FileCheck %s --check-prefix=TTK
 
 // Simple scaled accumulator: out = scale * acc + (a @ b). The store must use
 // the indexed post-matmul DST slot, not the raw ranged matmul result.

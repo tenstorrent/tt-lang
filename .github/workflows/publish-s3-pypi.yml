@@ -6,17 +6,17 @@ name: Publish S3 PyPI Wheels
 
 on:
   schedule:
-    # Nightly S3-only wheel publish. GitHub cron uses UTC.
-    - cron: "0 8 * * *"
+    # Weekly S3-only publish: 08:00 UTC Monday (00:00 PST / 01:00 PDT).
+    - cron: "0 8 * * 1"
   workflow_dispatch:
     inputs:
       docker_tag:
-        description: "Docker image tag for required builder containers. Leave empty to build and push them first."
+        description: "Existing tag for all required builder images. Empty builds the images."
         type: string
         default: ""
         required: false
       version_override:
-        description: "PEP 440 version for the S3 wheel. Leave empty to compute a nightly dev version."
+        description: "PEP 440 wheel version. Empty computes a date-based dev version."
         type: string
         default: ""
         required: false
@@ -41,12 +41,12 @@ on:
         default: true
         required: true
       ttlang_ref:
-        description: "tt-lang SHA or tag to build the wheels from. Leave empty to use the triggering commit."
+        description: "tt-lang SHA or tag to build. Empty uses the triggering commit."
         type: string
         default: ""
         required: false
       apply_patches:
-        description: "Apply wheel patches from .github/wheel-patches/ before building (e.g., correct the numpy version constraints when rebuilding an older ref)."
+        description: "Apply .github/wheel-patches from the workflow commit before building."
         type: boolean
         default: false
         required: false
@@ -63,18 +63,24 @@ jobs:
   preflight:
     name: "Resolve S3 publish inputs"
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write
     outputs:
+      allow_final_internal_version: ${{ steps.resolve.outputs.allow_final_internal_version }}
+      bundled_selected: ${{ steps.resolve.outputs.bundled_selected }}
       docker_tag: ${{ steps.resolve.outputs.docker_tag }}
       dry_run: ${{ steps.resolve.outputs.dry_run }}
+      manylinux_selected: ${{ steps.resolve.outputs.manylinux_selected }}
+      manylinux_wheel_matrix: ${{ steps.resolve.outputs.manylinux_wheel_matrix }}
       overwrite_releases: ${{ steps.resolve.outputs.overwrite_releases }}
+      publish_needed: ${{ steps.nightly.outputs.publish-needed }}
+      publish_prefix: ${{ steps.publish-prefix.outputs.prefix }}
+      ttlang_sha: ${{ steps.nightly.outputs.ttlang-sha }}
       version_override: ${{ steps.resolve.outputs.version_override }}
       wheel_variant: ${{ steps.resolve.outputs.wheel_variant }}
       wheel_variants: ${{ steps.resolve.outputs.wheel_variants }}
-      wheel_matrix: ${{ steps.resolve.outputs.wheel_matrix }}
-      standard_wheel_matrix: ${{ steps.resolve.outputs.standard_wheel_matrix }}
-      allow_final_internal_version: ${{ steps.resolve.outputs.allow_final_internal_version }}
-
     steps:
       - name: Checkout tt-lang
         uses: actions/checkout@v6
@@ -82,6 +88,19 @@ jobs:
           ref: ${{ inputs.ttlang_ref || github.sha }}
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Checkout workflow wheel helpers
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .wheel-workflow-src
+          sparse-checkout: |
+            .github/actions/configure-tt-s3-credentials
+            .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Install packaging
+        run: python3 -m pip install --user packaging
 
       - name: Resolve publish inputs
         id: resolve
@@ -92,21 +111,29 @@ jobs:
           DISPATCH_VERSION_OVERRIDE: ${{ github.event_name == 'workflow_dispatch' && inputs.version_override || '' }}
           DISPATCH_WHEEL_VARIANT: ${{ github.event_name == 'workflow_dispatch' && inputs.wheel_variant || '' }}
           EVENT_NAME: ${{ github.event_name }}
-        run: .github/scripts/resolve-s3-publish-inputs.sh
+        run: .wheel-workflow-src/.github/scripts/resolve-s3-publish-inputs.sh
 
-      - name: Require main ref for publishing
-        if: ${{ github.ref != 'refs/heads/main' && (steps.resolve.outputs.dry_run != 'true' || steps.resolve.outputs.docker_tag == '') }}
-        run: |
-          echo "Publishing is restricted to refs/heads/main (got ${GITHUB_REF}). Non-main dry runs must provide docker_tag." >&2
-          exit 1
+      - name: Resolve publish prefix
+        id: publish-prefix
+        env:
+          TTLANG_WHEEL_VERSION: ${{ steps.resolve.outputs.version_override }}
+        run: .wheel-workflow-src/.github/scripts/resolve-s3-publish-prefix.sh "$TTLANG_WHEEL_VERSION"
+
+      - name: Configure AWS Credentials
+        if: ${{ github.event_name == 'schedule' }}
+        uses: ./.wheel-workflow-src/.github/actions/configure-tt-s3-credentials
+
+      - name: Check scheduled publish state
+        id: nightly
+        run: .wheel-workflow-src/.github/scripts/s3-nightly-state.py check --event "${{ github.event_name }}"
 
   build-docker:
     needs: preflight
-    if: ${{ needs.preflight.outputs.docker_tag == '' }}
+    if: ${{ needs.preflight.outputs.publish_needed == 'true' && needs.preflight.outputs.docker_tag == '' && needs.preflight.outputs.bundled_selected == 'true' }}
     permissions:
+      checks: write
       contents: read
       packages: write
-      checks: write
     uses: ./.github/workflows/call-build-docker.yml
     secrets: inherit
     with:
@@ -115,7 +142,7 @@ jobs:
 
   build-wheel-images:
     needs: preflight
-    if: ${{ needs.preflight.outputs.docker_tag == '' && contains(fromJSON(needs.preflight.outputs.wheel_variants), 'light') }}
+    if: ${{ needs.preflight.outputs.publish_needed == 'true' && needs.preflight.outputs.docker_tag == '' && needs.preflight.outputs.manylinux_selected == 'true' }}
     permissions:
       contents: read
       packages: write
@@ -124,172 +151,71 @@ jobs:
     with:
       ttlang_sha_override: ${{ inputs.ttlang_ref }}
 
-  build-standard-wheels:
+  build-bundled-wheels:
     needs: [preflight, build-docker]
-    if: ${{ always() && needs.preflight.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') && (contains(fromJSON(needs.preflight.outputs.wheel_variants), 'bundled') || contains(fromJSON(needs.preflight.outputs.wheel_variants), 'pypi')) }}
-    name: "Build ${{ matrix.wheel_variant }} wheels"
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.preflight.outputs.standard_wheel_matrix) }}
+    if: ${{ always() && needs.preflight.result == 'success' && needs.preflight.outputs.publish_needed == 'true' && needs.preflight.outputs.bundled_selected == 'true' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') }}
+    name: "Build bundled wheels"
     permissions:
       contents: read
       packages: read
     uses: ./.github/workflows/call-build-wheels.yml
     with:
       docker_tag: ${{ needs.preflight.outputs.docker_tag != '' && needs.preflight.outputs.docker_tag || needs.build-docker.outputs.docker-tag }}
-      ttnn_dep_mode: ${{ matrix.ttnn_dep_mode }}
+      ttnn_dep_mode: bundled
       version_override: ${{ needs.preflight.outputs.version_override }}
-      external_tt_metal_dir: ${{ matrix.ttnn_dep_mode == 'external' && '/opt/ttlang-toolchain/tt-metal' || '' }}
-      external_python_venv: ${{ matrix.ttnn_dep_mode == 'external' && '/opt/ttlang-toolchain/venv' || '' }}
-      bundled_tt_metal_dir: ${{ matrix.ttnn_dep_mode == 'bundled' && '/opt/ttlang-toolchain/tt-metal' || '' }}
+      bundled_tt_metal_dir: /opt/ttlang-toolchain/tt-metal
       build_sim_wheel: true
+      allow_final_internal_version: ${{ needs.preflight.outputs.allow_final_internal_version == 'true' }}
+      artifact_name: tt-lang-wheels-bundled
+      ttlang_sha_override: ${{ inputs.ttlang_ref }}
+      apply_patches: ${{ github.event_name == 'workflow_dispatch' && inputs.apply_patches }}
+
+  build-manylinux-wheels:
+    needs: [preflight, build-wheel-images]
+    if: ${{ always() && needs.preflight.result == 'success' && needs.preflight.outputs.publish_needed == 'true' && needs.preflight.outputs.manylinux_selected == 'true' && (needs.build-wheel-images.result == 'success' || needs.build-wheel-images.result == 'skipped') }}
+    name: "Build ${{ matrix.wheel_variant }} wheels"
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.preflight.outputs.manylinux_wheel_matrix) }}
+    permissions:
+      contents: read
+      packages: read
+    uses: ./.github/workflows/call-build-manylinux-wheels.yml
+    with:
+      docker_tag: ${{ needs.preflight.outputs.docker_tag != '' && needs.preflight.outputs.docker_tag || needs.build-wheel-images.outputs.docker-tag }}
+      version_override: ${{ needs.preflight.outputs.version_override }}
+      ttnn_dep_mode: ${{ matrix.ttnn_dep_mode }}
+      build_sim_wheel: ${{ matrix.build_sim_wheel }}
       allow_final_internal_version: ${{ needs.preflight.outputs.allow_final_internal_version == 'true' }}
       artifact_name: tt-lang-wheels-${{ matrix.wheel_variant }}
       ttlang_sha_override: ${{ inputs.ttlang_ref }}
       apply_patches: ${{ github.event_name == 'workflow_dispatch' && inputs.apply_patches }}
 
-  build-light-wheels:
-    needs: [preflight, build-docker, build-wheel-images]
-    if: ${{ always() && needs.preflight.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') && (needs.build-wheel-images.result == 'success' || needs.build-wheel-images.result == 'skipped') && contains(fromJSON(needs.preflight.outputs.wheel_variants), 'light') }}
-    name: "Build light wheel (${{ matrix.python_tag }})"
-    runs-on: mlir-large-runner-lang
-    timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        python_tag: [cp310, cp312]
-    container:
-      image: ghcr.io/tenstorrent/tt-lang/tt-lang-wheel-manylinux-2-34-${{ matrix.python_tag }}:${{ needs.preflight.outputs.docker_tag != '' && needs.preflight.outputs.docker_tag || needs.build-docker.outputs.docker-tag }}
-
-    defaults:
-      run:
-        shell: bash
-
-    permissions:
-      contents: read
-      packages: read
-
-    steps:
-      - name: Checkout tt-lang
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.ttlang_ref || github.sha }}
-          fetch-depth: 0
-          fetch-tags: true
-
-      - name: Fix git safe directory
-        run: git config --global --add safe.directory '*'
-
-      # The patch runner and patches come from the workflow commit, not the
-      # (possibly older) target ref being rebuilt, which may predate them.
-      - name: Check out wheel patches from the workflow commit
-        if: ${{ inputs.apply_patches }}
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ github.sha }}
-          path: .wheel-patch-src
-          sparse-checkout: |
-            .github/scripts/apply-wheel-patches.sh
-            .github/wheel-patches
-          sparse-checkout-cone-mode: false
-
-      - name: Apply wheel patches
-        if: ${{ inputs.apply_patches }}
-        run: .wheel-patch-src/.github/scripts/apply-wheel-patches.sh --target-dir "$GITHUB_WORKSPACE"
-
-      - name: Build light core wheel
-        env:
-          TTLANG_ALLOW_FINAL_INTERNAL_VERSION: ${{ needs.preflight.outputs.allow_final_internal_version }}
-        run: |
-          # inputs.ttlang_ref may be a tag or branch; record the resolved commit.
-          TTLANG_GIT_COMMIT="$(git rev-parse HEAD)"
-          export TTLANG_GIT_COMMIT
-          # Submodules aren't checked out here; read tt-metal's commit from the gitlink.
-          TT_METAL_COMMIT="$(git rev-parse HEAD:third-party/tt-metal)"
-          export TT_METAL_COMMIT
-          .github/scripts/build-s3-light-core-wheel.sh --python-tag "${{ matrix.python_tag }}" --version "${{ needs.preflight.outputs.version_override }}" --dist-dir dist
-
-      - name: Build tt-lang-light metapackage
-        if: ${{ matrix.python_tag == 'cp312' }}
-        env:
-          TTLANG_ALLOW_FINAL_INTERNAL_VERSION: ${{ needs.preflight.outputs.allow_final_internal_version }}
-        run: .github/scripts/build-s3-light-metapackage-wheel.sh --version "${{ needs.preflight.outputs.version_override }}" --dist-dir dist
-
-      - name: Upload per-ABI wheels
-        uses: actions/upload-artifact@v7
-        with:
-          name: tt-lang-s3-light-${{ matrix.python_tag }}
-          path: dist/*.whl
-          retention-days: 14
-
-  collect-light-wheels:
-    name: "Verify S3 light wheel set"
-    needs: [preflight, build-docker, build-light-wheels]
-    if: ${{ always() && needs.preflight.result == 'success' && (needs.build-docker.result == 'success' || needs.build-docker.result == 'skipped') && needs.build-light-wheels.result == 'success' && contains(fromJSON(needs.preflight.outputs.wheel_variants), 'light') }}
-    runs-on: ubuntu-24.04
-    timeout-minutes: 30
-
-    defaults:
-      run:
-        shell: bash
-
-    permissions:
-      contents: read
-      packages: read
-
-    steps:
-      - name: Checkout tt-lang
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ inputs.ttlang_ref || github.sha }}
-
-      - name: Download per-ABI wheels
-        uses: actions/download-artifact@v8
-        with:
-          pattern: tt-lang-s3-light-*
-          path: dist
-          merge-multiple: true
-
-      - name: Verify wheel filenames and versions
-        run: .github/scripts/verify-s3-wheel-versions.sh --no-sim light "${{ needs.preflight.outputs.version_override }}" dist
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.repository_owner }}
-          password: ${{ github.token }}
-
-      - name: Install-test light wheels
-        run: .github/scripts/test-s3-light-wheels.sh --version "${{ needs.preflight.outputs.version_override }}" --docker-tag "${{ needs.preflight.outputs.docker_tag != '' && needs.preflight.outputs.docker_tag || needs.build-docker.outputs.docker-tag }}" --dist-dir dist
-
-      - name: Upload combined wheels
-        uses: actions/upload-artifact@v7
-        with:
-          name: tt-lang-wheels-light
-          path: dist/*.whl
-          retention-days: 14
-
   publish:
     name: "Publish wheels to S3 PyPI"
-    needs: [preflight, build-standard-wheels, collect-light-wheels]
-    if: ${{ always() && needs.preflight.result == 'success' && (needs.build-standard-wheels.result == 'success' || needs.build-standard-wheels.result == 'skipped') && (needs.collect-light-wheels.result == 'success' || needs.collect-light-wheels.result == 'skipped') && (needs.preflight.outputs.dry_run == 'true' || github.ref == 'refs/heads/main') }}
+    needs: [preflight, build-bundled-wheels, build-manylinux-wheels]
+    if: ${{ always() && needs.preflight.result == 'success' && needs.preflight.outputs.publish_needed == 'true' && (needs.preflight.outputs.bundled_selected != 'true' || needs.build-bundled-wheels.result == 'success') && (needs.preflight.outputs.manylinux_selected != 'true' || needs.build-manylinux-wheels.result == 'success') && (needs.preflight.outputs.dry_run == 'true' || github.ref == 'refs/heads/main') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-
-    defaults:
-      run:
-        shell: bash
-
     permissions:
       contents: read
       id-token: write
-
     steps:
       - name: Checkout tt-lang
         uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ttlang_ref || github.sha }}
+
+      - name: Checkout workflow wheel helpers
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .wheel-workflow-src
+          sparse-checkout: |
+            .github/actions/configure-tt-s3-credentials
+            .github/scripts
+            packaging/s3-index/README.md
+          sparse-checkout-cone-mode: false
 
       - name: Download bundled wheels
         if: ${{ contains(fromJSON(needs.preflight.outputs.wheel_variants), 'bundled') }}
@@ -313,93 +239,53 @@ jobs:
           path: wheel-artifacts/pypi
 
       - name: Prepare publish dist
-        run: |
-          set -euo pipefail
-          prepare_args=()
-          if [ -d wheel-artifacts/bundled ]; then
-            prepare_args+=(bundled=wheel-artifacts/bundled)
-          fi
-          if [ -d wheel-artifacts/light ]; then
-            prepare_args+=(light:no-sim=wheel-artifacts/light)
-          fi
-          if [ -d wheel-artifacts/pypi ]; then
-            prepare_args+=(pypi=wheel-artifacts/pypi)
-          fi
-          .github/scripts/prepare-s3-publish-dist.sh \
-            "${{ needs.preflight.outputs.version_override }}" \
-            dist \
-            "${prepare_args[@]}"
-
-      # Regular S3 publishes upload wheel objects under tt-lang/. Dev versions
-      # use a generated year-month view; final versions use the releases view.
-      - name: Derive publish prefix
-        id: publish_prefix
-        run: |
-          set -euo pipefail
-          version="${{ needs.preflight.outputs.version_override }}"
-          prefix="tt-lang/releases"
-          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.dev([0-9]{4})([0-9]{2})[0-9]{2} ]]; then
-            prefix="tt-lang/${BASH_REMATCH[1]}-${BASH_REMATCH[2]}"
-          fi
-          echo "prefix=$prefix" >> "$GITHUB_OUTPUT"
-          echo "Publish prefix: $prefix"
+        env:
+          TTLANG_WHEEL_VERSION: ${{ needs.preflight.outputs.version_override }}
+        run: .wheel-workflow-src/.github/scripts/prepare-selected-s3-publish-dist.sh "$TTLANG_WHEEL_VERSION" wheel-artifacts dist
 
       - name: Configure AWS Credentials
         if: ${{ needs.preflight.outputs.dry_run != 'true' }}
-        uses: ./.github/actions/configure-tt-s3-credentials
+        uses: ./.wheel-workflow-src/.github/actions/configure-tt-s3-credentials
 
       - name: Publish wheels
         if: ${{ needs.preflight.outputs.dry_run != 'true' }}
-        run: |
-          set -euo pipefail
-          publish_args=()
-          if [ "${{ needs.preflight.outputs.overwrite_releases }}" = "true" ]; then
-            publish_args+=(--overwrite)
-          fi
-          publish_args+=(--prefix "${{ steps.publish_prefix.outputs.prefix }}")
-          .github/scripts/publish-s3-wheels.sh "${publish_args[@]}" dist
+        env:
+          OVERWRITE_RELEASES: ${{ needs.preflight.outputs.overwrite_releases }}
+          PUBLISH_PREFIX: ${{ needs.preflight.outputs.publish_prefix }}
+        run: .wheel-workflow-src/.github/scripts/publish-s3-wheels.sh --overwrite-if "$OVERWRITE_RELEASES" --prefix "$PUBLISH_PREFIX" dist
 
-      # Direct monthly publishes regenerate the tt-lang/ slash-key listing.
-      # Restore the README afterward.
-      - name: Inject S3 index README
+      - name: Install Markdown renderer
         if: ${{ needs.preflight.outputs.dry_run != 'true' }}
-        run: |
-          set -euo pipefail
-          python3 -m pip install markdown
-          prefix="${{ steps.publish_prefix.outputs.prefix }}"
-          parent="$(dirname "$prefix")"
-          key="$parent/"
-          .github/scripts/inject-s3-index-readme.sh \
-            --key "$key" \
-            --require-existing \
-            --dist-dir dist
+        run: python3 -m pip install markdown
+
+      - name: Restore S3 index README
+        if: ${{ needs.preflight.outputs.dry_run != 'true' }}
+        env:
+          PUBLISH_PREFIX: ${{ needs.preflight.outputs.publish_prefix }}
+        run: .wheel-workflow-src/.github/scripts/inject-s3-publish-readme.sh "$PUBLISH_PREFIX" dist
+
+      - name: Record scheduled publish state
+        if: ${{ github.event_name == 'schedule' && needs.preflight.outputs.dry_run != 'true' }}
+        env:
+          TTLANG_SHA: ${{ needs.preflight.outputs.ttlang_sha }}
+          TTLANG_WHEEL_VERSION: ${{ needs.preflight.outputs.version_override }}
+        run: .wheel-workflow-src/.github/scripts/s3-nightly-state.py record --event schedule --sha "$TTLANG_SHA" --version "$TTLANG_WHEEL_VERSION"
 
       - name: Report install command
-        run: |
-          set -euo pipefail
-          summary_args=()
-          if [ "${{ needs.preflight.outputs.dry_run }}" = "true" ]; then
-            summary_args+=(--dry-run)
-          fi
-          summary_args+=(--find-links-subdir "${{ steps.publish_prefix.outputs.prefix }}")
-          .github/scripts/publish-s3-summary.sh \
-            "${summary_args[@]}" \
-            "${{ needs.preflight.outputs.wheel_variant }}" \
-            "${{ needs.preflight.outputs.version_override }}"
+        env:
+          DRY_RUN: ${{ needs.preflight.outputs.dry_run }}
+          PUBLISH_PREFIX: ${{ needs.preflight.outputs.publish_prefix }}
+          TTLANG_WHEEL_VERSION: ${{ needs.preflight.outputs.version_override }}
+          WHEEL_VARIANT: ${{ needs.preflight.outputs.wheel_variant }}
+        run: .wheel-workflow-src/.github/scripts/publish-s3-summary.sh --dry-run-if "$DRY_RUN" --find-links-subdir "$PUBLISH_PREFIX" "$WHEEL_VARIANT" "$TTLANG_WHEEL_VERSION"
 
-  # Reuse this run's freshly pushed ird and manylinux images. Best-effort:
-  # continue-on-error here and soft_fail on the reusable build below keep a
-  # failure in this extra wheel from failing the nightly publish.
   ttmetal-light-detect:
     name: "Detect tt-lang-light per-tt-metal-SHA build"
     needs: preflight
-    if: ${{ github.event_name == 'schedule' }}
+    if: ${{ github.event_name == 'schedule' && needs.preflight.outputs.publish_needed == 'true' }}
     continue-on-error: true
     runs-on: ubuntu-24.04
     timeout-minutes: 15
-    defaults:
-      run:
-        shell: bash
     permissions:
       contents: read
       id-token: write
@@ -409,9 +295,6 @@ jobs:
     steps:
       - name: Checkout tt-lang
         uses: actions/checkout@v6
-
-      - name: Git safe directory
-        run: git config --global --add safe.directory "$(pwd)"
 
       - name: Configure AWS Credentials
         uses: ./.github/actions/configure-tt-s3-credentials
@@ -423,15 +306,15 @@ jobs:
   ttmetal-light-build:
     name: "Build tt-lang-light per-tt-metal-SHA wheel"
     needs: [preflight, build-docker, build-wheel-images, ttmetal-light-detect]
-    if: ${{ github.event_name == 'schedule' && needs.ttmetal-light-detect.outputs.uplift == 'true' }}
+    if: ${{ github.event_name == 'schedule' && needs.preflight.outputs.publish_needed == 'true' && needs.ttmetal-light-detect.outputs.uplift == 'true' }}
     permissions:
       contents: read
-      packages: read
       id-token: write
+      packages: read
     uses: ./.github/workflows/call-ttmetal-light-wheel.yml
     secrets: inherit
     with:
       tt_metal_sha: ${{ needs.ttmetal-light-detect.outputs.tt_metal_sha }}
-      docker_tag: ${{ needs.preflight.outputs.docker_tag != '' && needs.preflight.outputs.docker_tag || needs.build-docker.outputs.docker-tag }}
+      docker_tag: ${{ needs.preflight.outputs.docker_tag != '' && needs.preflight.outputs.docker_tag || needs.build-wheel-images.outputs.docker-tag }}
       dry_run: false
       soft_fail: true

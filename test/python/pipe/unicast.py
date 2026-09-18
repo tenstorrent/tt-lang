@@ -5,7 +5,9 @@
 # REQUIRES: ttnn, tt-device
 # RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
-# RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
+# Permit only the expected completion publication; reject any additional inline
+# word write that would publish a receiver address.
+# RUN: FileCheck %s --check-prefix=CHECK-CPP --implicit-check-not=noc0.inline_dw_write < %t.output
 
 """
 PipeNet unicast: core 1 sends a tile to core 0 via a single unicast pipe.
@@ -70,31 +72,47 @@ def unicast_pipe(inp, out):
 # CHECK-LABEL: func.func @dm_read
 # CHECK-SAME: ttl.kernel_thread = #ttkernel.thread<noc>
 
-# CHECK: ttl.create_pipe src(1, 0) dst(0, 0) to(0, 0)
-# CHECK: ttl.if_src
+# CHECK: ttl.pipenet_foreach_src
+# CHECK-SAME: name "net"
+# CHECK-SAME: <srcX = 1, srcY = 0
+# CHECK-SAME: dstEndX = 0, dstEndY = 0>
+# CHECK: ^bb0(%[[SRC_PIPE:.*]]: !ttl.selected_pipe_src):
+# CHECK: ttl.copy %{{.*}}, %[[SRC_PIPE]]
 
-# CHECK: ttl.create_pipe src(1, 0) dst(0, 0) to(0, 0)
-# CHECK: ttl.if_dst
+# CHECK: ttl.pipenet_foreach_dst
+# CHECK-SAME: name "net"
+# CHECK-SAME: <srcX = 1, srcY = 0
+# CHECK-SAME: dstEndX = 0, dstEndY = 0>
+# CHECK: ^bb0(%[[DST_PIPE:.*]]: !ttl.selected_pipe_dst):
+# CHECK: ttl.copy %[[DST_PIPE]], %{{.*}}
 
 # =============================================================================
 # C++ Output Checks (unicast pipe)
 # =============================================================================
 
-# Sender side: wait for receiver address publication, then unicast write and
-# completion signal.
+# Sender side: compute the receiver DFB address, preconfigure the payload write,
+# wait for receiver readiness, then issue ordered posted payload and completion
+# writes before flushing the source command stream.
 # CHECK-CPP: === dm_read kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
+# The receiver DFB base is loop-invariant and may be materialized before the
+# synchronization sequence.
+# CHECK-CPP-DAG: get_common_arg_val<uint32_t>(
+# CHECK-CPP: noc_async_write_one_packet_set_state<true>(
 # CHECK-CPP: experimental::semaphore_wait(
 # CHECK-CPP: noc_semaphore_set(
-# CHECK-CPP: noc0.async_write(
-# CHECK-CPP: noc0.async_write_barrier();
-# CHECK-CPP: noc_semaphore_inc(
+# CHECK-CPP-NOT: noc0.async_write(
+# CHECK-CPP: noc_async_write_one_packet_with_state<true>(
+# CHECK-CPP-NOT: noc0.async_write_barrier();
+# CHECK-CPP-NOT: noc_semaphore_inc(
+# CHECK-CPP: noc0.inline_dw_write<NocOptions::INLINE_L1 | NocOptions::POSTED>(
+# CHECK-CPP-NOT: noc0.async_write_barrier();
+# CHECK-CPP-NOT: noc_semaphore_inc(
+# CHECK-CPP: noc0.async_writes_flushed<NocOptions::POSTED>();
 
-# Receiver side: publish the reserved DFB address, then wait for sender
-# completion.
+# Receiver side: signal readiness without publishing an address, then wait for
+# sender completion.
 # CHECK-CPP: reserve_back(
-# CHECK-CPP: noc0.inline_dw_write<NocOptions::INLINE_L1>
-# CHECK-CPP-SAME: get_write_ptr()
 # CHECK-CPP: noc_semaphore_inc(
 # CHECK-CPP: experimental::semaphore_wait_min(
 # CHECK-CPP: push_back(

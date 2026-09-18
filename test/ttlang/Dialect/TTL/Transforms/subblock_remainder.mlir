@@ -4,7 +4,7 @@
 // Multi-dim tiling finds tileSizes=[1,3] (product=3), producing 3 subblocks
 // of 3 tiles each with constant loop bounds. Loop on dim 0 (0 to 3 step 1).
 
-// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-set-compute-kernel-config,ttl-assign-dst,ttl-subblock-compute-for-dst),canonicalize,cse)' | FileCheck %s --check-prefix=SUBBLOCK
+// RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute),ttl-set-compute-kernel-config,func.func(ttl-assign-dst,ttl-subblock-compute-for-dst),canonicalize,cse)' | FileCheck %s --check-prefix=SUBBLOCK
 
 // SUBBLOCK-LABEL: func.func @remainder_3x3
 // SUBBLOCK-DAG:     %[[C0:.*]] = arith.constant 0 : index

@@ -22,11 +22,10 @@
 // CHECK:   auto [[ARGS0:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 1>(), 0>();
 // CHECK:   TensorAccessor [[ACCESSOR0:v[0-9]+]] = TensorAccessor([[ARGS0]], [[RT_ARG0]], [[ADDR]]);
 // CHECK-NEXT:   noc0.async_read([[ACCESSOR0]], CoreLocalMem<uint32_t>([[CB]].get_write_ptr()), [[ACCESSOR0]].get_aligned_page_size(), {.page_id = static_cast<uint32_t>([[ZERO]])}, {});
+// CHECK:   noc0.async_read_barrier();
 // CHECK:   for (size_t [[IV:i[0-9]+]] = [[LB]]; [[IV]] < [[UB]]; [[IV]] += [[STEP]]) {
-// In-loop copy: create accessor reusing hoisted runtime arg, get CB write ptr, cast chain
-// CHECK:     auto [[ARGS1:tensor_accessor_args_[0-9]+]] = TensorAccessorArgs<tensor_accessor::detail::get_tensor_accessor_args_cta_offset<0, 1>(), 0>();
-// CHECK:     TensorAccessor [[ACCESSOR1:v[0-9]+]] = TensorAccessor([[ARGS1]], [[RT_ARG0]], [[ADDR]]);
-// CHECK-NEXT:     noc0.async_read([[ACCESSOR1]], CoreLocalMem<uint32_t>([[CB]].get_write_ptr()), [[ACCESSOR1]].get_aligned_page_size(), {.page_id = static_cast<uint32_t>([[ZERO]])}, {});
+// In-loop copy: reuse the hoisted runtime arg and tensor accessor.
+// CHECK:     noc0.async_read([[ACCESSOR0]], CoreLocalMem<uint32_t>([[CB]].get_write_ptr()), [[ACCESSOR0]].get_aligned_page_size(), {.page_id = static_cast<uint32_t>([[ZERO]])}, {});
 // CHECK:     noc0.async_read_barrier();
 // CHECK:   }
 // CHECK:   noc0.async_read_barrier();
@@ -35,7 +34,7 @@
 module {
   func.func @dma_pipelined_loop(%t: tensor<1x1x!ttcore.tile<32x32, f32>, #layout>) attributes {ttl.base_cta_index = 1 : i32, ttl.crta_indices = [0], ttl.kernel_thread = #ttkernel.thread<noc>} {
     %c0 = arith.constant 0 : index
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
     %c3 = arith.constant 3 : index
     %c1 = arith.constant 1 : index
 

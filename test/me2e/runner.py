@@ -11,15 +11,16 @@ Follows the elementwise example pattern.
 
 import os
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import torch
 from ttlang_test_utils import make_compare_inputs
 
+from .builder.device_arch import get_mock_arch_from_device
 from .builder.kernels import (
     KernelSpec,
-    ThreadType,
     translate_module_to_kernels,
     write_kernels,
 )
@@ -30,7 +31,7 @@ from .config_specs import TestConfig
 from .op_specs import ComputeOpSpec
 
 # Kernel cache to avoid redundant compilation.
-_kernel_cache: Dict[str, str] = {}
+_kernel_cache: Dict[tuple, str] = {}
 
 
 def get_compute_kernel(
@@ -47,10 +48,7 @@ def get_compute_kernel(
     Returns:
         C++ source code for the compute kernel.
     """
-    cache_key = (
-        f"{op.name}_{op.ttl_op}_{config.block_h}x{config.block_w}_{config.dtype}"
-        f"_dst{config.maximize_dst}_fpu{config.enable_fpu_binary_ops}"
-    )
+    cache_key = (op.name, op.ttl_op, config, get_mock_arch_from_device(device))
     if cache_key in _kernel_cache:
         return _kernel_cache[cache_key]
 
@@ -139,11 +137,7 @@ def run_compute_test(
     noc_kernels, compute_kernel_spec = translate_module_to_kernels(compiled_module)
 
     # Replace compute kernel source with cached/generated one.
-    compute_kernel_spec = KernelSpec(
-        name=compute_kernel_spec.name,
-        thread_type=ThreadType.COMPUTE,
-        source=compute_cpp,
-    )
+    compute_kernel_spec = replace(compute_kernel_spec, source=compute_cpp)
 
     # 4. Write kernels to temporary directory.
     user = os.environ.get("USER", "default")
@@ -155,7 +149,6 @@ def run_compute_test(
     from .builder.ttnn_runner import run_binary_op, run_unary_op
 
     try:
-        fp32_accum = config.dtype == torch.float32
         if op.arity == 2:
             result = run_binary_op(
                 device=device,
@@ -164,7 +157,7 @@ def run_compute_test(
                 input_a=torch_inputs[0],
                 input_b=torch_inputs[1],
                 kernel_dir=kernel_dir,
-                enable_fp32_accumulation=fp32_accum,
+                config=e2e_config,
             )
         else:
             result = run_unary_op(
@@ -173,7 +166,7 @@ def run_compute_test(
                 compute_kernel=compute_kernel_spec,
                 input_a=torch_inputs[0],
                 kernel_dir=kernel_dir,
-                enable_fp32_accumulation=fp32_accum,
+                config=e2e_config,
             )
 
         # 6. Validate against golden.

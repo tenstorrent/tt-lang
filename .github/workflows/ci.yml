@@ -2,14 +2,27 @@ name: CI
 
 on:
   pull_request:
+    branches: ["main"]
     types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches: ["main"]
   schedule:
     - cron: "0 22 * * *"
   workflow_dispatch:
+    inputs:
+      run_galaxy_tests:
+        description: "Run hardware tests on a shared Exabox Galaxy."
+        required: false
+        type: boolean
+        default: false
+      run_quietbox_tests:
+        description: "Run hardware tests on the Blackhole Quietbox."
+        required: false
+        type: boolean
+        default: false
 
 permissions:
+  actions: read
   checks: write
   contents: read
   packages: read
@@ -20,10 +33,12 @@ concurrency:
 
 jobs:
   pre-commit:
+    if: ${{ github.event_name != 'pull_request' || github.base_ref == 'main' }}
     uses: ./.github/workflows/call-pre-commit.yml
     secrets: inherit
 
   check-tt-metal-version:
+    if: ${{ github.event_name != 'pull_request' || github.base_ref == 'main' }}
     name: Verify tt-metal version (third-party/tt-metal-version)
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -34,6 +49,7 @@ jobs:
       - run: .github/scripts/check-tt-metal-version.sh
 
   resolve-docker-tag:
+    if: ${{ github.event_name != 'pull_request' || github.base_ref == 'main' }}
     name: Resolve docker tag for this branch
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -77,12 +93,35 @@ jobs:
     with:
       push: true
 
-  # Wheel-builder images are only consumed by the S3 light-wheel publish, never
-  # by hardware tests or standard wheels. Build them alongside build-docker so
-  # the `build` job (hardware tests) does not wait on this 360-min build.
-  build-wheel-images:
+  # build-docker pushes :latest but runs only when the image is missing, which
+  # leaves :latest stale for images published before the main push.
+  retag-latest:
+    name: Point :latest at the resolved image
     needs: resolve-docker-tag
-    if: ${{ needs.resolve-docker-tag.outputs.needs_rebuild == 'true' }}
+    if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.resolve-docker-tag.outputs.needs_rebuild == 'false' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: false
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ github.token }}
+      - name: Move :latest
+        run: .github/scripts/retag-docker-latest.sh "${{ needs.resolve-docker-tag.outputs.docker_tag }}"
+
+  # Manylinux wheel-builder images are independent of the IRD image. Build them
+  # alongside build-docker so hardware tests do not wait for toolchain caches.
+  build-wheel-images:
+    needs: [resolve-docker-tag, changes]
+    if: ${{ needs.resolve-docker-tag.outputs.needs_rebuild == 'true' || needs.changes.outputs.wheel_or_container == 'true' }}
     permissions:
       contents: read
       packages: write
@@ -90,6 +129,7 @@ jobs:
     secrets: inherit
 
   changes:
+    if: ${{ github.event_name != 'pull_request' || github.base_ref == 'main' }}
     name: Detect wheel/container-affecting changes
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -135,6 +175,8 @@ jobs:
     secrets: inherit
     with:
       docker_tag: ${{ needs.resolve-docker-tag.outputs.docker_tag }}
+      run_galaxy_tests: ${{ github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_galaxy_tests) }}
+      run_quietbox_tests: ${{ github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main') || (github.event_name == 'workflow_dispatch' && inputs.run_quietbox_tests) }}
 
   build-docs:
     name: Build documentation
@@ -188,10 +230,12 @@ jobs:
       docker_tag: ${{ needs.resolve-docker-tag.outputs.docker_tag }}
 
   test-sim:
+    if: ${{ github.event_name != 'pull_request' || github.base_ref == 'main' }}
     uses: ./.github/workflows/call-test-sim.yml
     secrets: inherit
 
   test-scripts:
+    if: ${{ github.event_name != 'pull_request' || github.base_ref == 'main' }}
     uses: ./.github/workflows/call-test-scripts.yml
 
   test-dist-tutorials:
@@ -232,7 +276,7 @@ jobs:
         uses: actions/deploy-pages@v5
 
   check-all-green:
-    if: always()
+    if: ${{ always() && (github.event_name != 'pull_request' || github.base_ref == 'main') }}
     needs:
       - pre-commit
       - check-tt-metal-version

@@ -21,6 +21,17 @@ ARG BASE_IMAGE
 FROM scratch AS ird-toolchain
 FROM scratch AS dist-toolchain
 
+# Keep triage's debugger stack separate from the main toolchain venv. tt-smi
+# and tt-exalens can require different tt-umd versions.
+FROM ${BASE_IMAGE} AS tt-triage-python
+ENV TT_TRIAGE_VENV=/opt/ttlang-toolchain/tt-triage-venv
+COPY third-party/tt-metal/tools/triage/requirements.txt /tmp/tt-triage-requirements.txt
+RUN python3.12 -m venv "$TT_TRIAGE_VENV" && \
+    "$TT_TRIAGE_VENV/bin/python" -m pip install \
+        --no-cache-dir -r /tmp/tt-triage-requirements.txt && \
+    "$TT_TRIAGE_VENV/bin/python" -m pip check && \
+    rm /tmp/tt-triage-requirements.txt
+
 # =============================================================================
 # IRD (for developers who will clone and build their own tt-lang)
 # =============================================================================
@@ -29,6 +40,11 @@ SHELL ["/bin/bash", "-c"]
 
 ENV TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain
 ENV DEBIAN_FRONTEND=noninteractive
+ENV OMPI_TAG=v5.0.7
+ENV OMPI_PREFIX=/opt/openmpi-v5.0.7-ulfm
+ENV PATH=$OMPI_PREFIX/bin:$PATH
+
+COPY --from=tt-triage-python /opt/ttlang-toolchain/tt-triage-venv $TTLANG_TOOLCHAIN_DIR/tt-triage-venv/
 
 # Split toolchain into multiple layers for parallel pulls.
 # Largest directories get their own layer; the rest go in one layer.
@@ -47,17 +63,18 @@ COPY --from=ird-toolchain --chmod=777 /src $TTLANG_TOOLCHAIN_DIR/src/
 # `-r requirements-runtime.txt`, so all three sibling files must be copied.
 COPY requirements.txt requirements-runtime.txt dev-requirements.txt /tmp/
 COPY docs/requirements.txt /tmp/docs/requirements.txt
+COPY .github/containers/install-exabox-worker.sh /tmp/install-exabox-worker.sh
 RUN $TTLANG_TOOLCHAIN_DIR/venv/bin/python -m pip install -r /tmp/dev-requirements.txt tt-smi --no-cache-dir && \
     rm -rf /tmp/requirements.txt /tmp/requirements-runtime.txt /tmp/docs /tmp/dev-requirements.txt && \
     apt-get update && apt-get install -y \
-    ssh \
-    sudo \
     vim \
     nano \
     tmux \
     psmisc \
     bash-completion \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* && \
+    /tmp/install-exabox-worker.sh && \
+    rm /tmp/install-exabox-worker.sh
 
 # Setup entrypoint
 COPY .github/containers/entrypoint.sh /usr/local/bin/entrypoint.sh
@@ -76,6 +93,8 @@ FROM ${BASE_IMAGE} AS dist
 SHELL ["/bin/bash", "-c"]
 
 ENV TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain
+
+COPY --from=tt-triage-python /opt/ttlang-toolchain/tt-triage-venv $TTLANG_TOOLCHAIN_DIR/tt-triage-venv/
 
 # Split toolchain into multiple layers for parallel pulls.
 COPY --from=dist-toolchain --chmod=777 /bin $TTLANG_TOOLCHAIN_DIR/bin/

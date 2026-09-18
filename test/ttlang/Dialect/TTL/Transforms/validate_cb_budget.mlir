@@ -2,8 +2,8 @@
 // layout/dtype combinations for CB element types:
 //   - ttcore.tile<32x32, bf16>  -> 2048 bytes per slot (explicit tile)
 //   - ttcore.tile<32x32, f32>   -> 4096 bytes per slot (explicit tile)
-//   - bf16 (row-wise, builtin)  -> TileType::get(bf16)  -> 2048 bytes per slot
-//   - f32  (row-wise, builtin)  -> TileType::get(f32)   -> 4096 bytes per slot
+//   - bf16 (row-wise, builtin)  -> 2 bytes per slot
+//   - f32  (row-wise, builtin)  -> 4 bytes per slot
 // WH/BH fallback budget B = 1432 * 1024 = 1466368 bytes when the module has no system_desc.
 // Final tests use a ttcore.system_desc with a smaller L1 to verify the pass reads the descriptor.
 // RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-validate-cb-budget)'
@@ -134,7 +134,7 @@ func.func @high_usage_under_budget_tile_f32() {
 
 // -----
 
-// Row-wise builtin bf16 (2048 bytes per slot; same footprint as tile bf16).
+// Row-wise builtin bf16 uses the default 32x32 physical tile allocation.
 
 func.func @under_budget_row_bf16() {
   %cb0 = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], bf16, 2>
@@ -158,7 +158,7 @@ func.func @high_usage_under_budget_row_bf16() {
 
 // -----
 
-// Row-wise builtin f32 (4096 bytes per slot; same footprint as tile f32).
+// Row-wise builtin f32 uses the default 32x32 physical tile allocation.
 
 func.func @under_budget_row_f32() {
   %cb0 = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], f32, 2>

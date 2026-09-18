@@ -6,7 +6,11 @@
 
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 
+#include "ttlang/Target/TTKernel/DFBDescriptorPrelude_generated.h"
+#include "ttlang/Target/TTKernel/LLKs/experimental_constant_table_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_coord_translation_generated.h"
+#include "ttlang/Target/TTKernel/LLKs/experimental_dfb_reconfiguration_generated.h"
+#include "ttlang/Target/TTKernel/LLKs/experimental_dfb_reset_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_fabric_1d_routing_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_fabric_2d_routing_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_fabric_api_generated.h"
@@ -16,6 +20,8 @@
 #include "ttlang/Target/TTKernel/LLKs/experimental_pack_untilize_llks_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_padding_llks_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_reg_api_generated.h"
+#include "ttlang/Target/TTKernel/LLKs/experimental_routing_plane_generated.h"
+#include "ttlang/Target/TTKernel/LLKs/experimental_row_normalization_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_semaphore_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_tilize_llks_generated.h"
 #include "ttlang/Target/TTKernel/LLKs/experimental_untilize_llks_generated.h"
@@ -27,10 +33,12 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Target/Cpp/CppEmitter.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/raw_ostream.h"
@@ -50,7 +58,6 @@ public:
     std::set<llvm::StringRef> headers;
 
     // Baseline, always required.
-    headers.insert("<cstdint>");
     switch (threadType) {
     case ThreadType::Compute:
       headers.insert("api/compute/common.h");
@@ -85,6 +92,7 @@ public:
     };
 
     bool hasDevicePrint = false;
+    bool requiresDFBDescriptor = false;
     region->walk([&](emitc::CallOpaqueOp callOp) {
       llvm::StringRef callee = callOp.getCallee();
 
@@ -96,6 +104,13 @@ public:
       if (callee.starts_with("ttmlir::dprint")) {
         hasDevicePrint = true;
       }
+
+      if (auto headerAttr =
+              callOp->getAttrOfType<StringAttr>("ttlang.opaque_header")) {
+        headers.insert(headerAttr.getValue());
+      }
+      requiresDFBDescriptor |=
+          callOp->hasAttr("ttlang.requires_dfb_descriptor");
 
       // Our experimental kernel code snippets.
       if (callee == "experimental::unpack_stall_on_pack") {
@@ -114,7 +129,8 @@ public:
         emitLlk(experimental_pack_untilize_llks_generated,
                 experimental_pack_untilize_llks_generated_len);
       }
-      if (callee == "experimental::semaphore_wait" ||
+      if (callee == "experimental::semaphore_reached" ||
+          callee == "experimental::semaphore_wait" ||
           callee == "experimental::semaphore_wait_min") {
         emitLlk(experimental_semaphore_generated,
                 experimental_semaphore_generated_len);
@@ -123,6 +139,26 @@ public:
           callee == "experimental::convert_logical_y_to_translated") {
         emitLlk(experimental_coord_translation_generated,
                 experimental_coord_translation_generated_len);
+      }
+      if (callee == "experimental::constant_table_lookup" ||
+          callee == "experimental::constant_table_lookup_word") {
+        emitLlk(experimental_constant_table_generated,
+                experimental_constant_table_generated_len);
+      }
+      if (callee == "experimental::routing_plane_atomic_inc" ||
+          callee == "experimental::routing_plane_fused_write_atomic_inc") {
+        emitLlk(experimental_routing_plane_generated,
+                experimental_routing_plane_generated_len);
+        headers.insert("tt_metal/fabric/fabric_edm_packet_header.hpp");
+        headers.insert("tt_metal/fabric/hw/inc/fabric_config.h");
+      }
+      if (callee == "experimental::reset_dfb_interfaces") {
+        emitLlk(experimental_dfb_reset_generated,
+                experimental_dfb_reset_generated_len);
+      }
+      if (callee == "experimental::reconfigure_dfb_interfaces") {
+        emitLlk(experimental_dfb_reconfiguration_generated,
+                experimental_dfb_reconfiguration_generated_len);
       }
       if (callee == "experimental::close_fabric_connections" ||
           callee == "experimental::setup_fabric_connections" ||
@@ -150,6 +186,10 @@ public:
         emitLlk(experimental_matmul_llks_generated,
                 experimental_matmul_llks_generated_len);
       }
+      if (callee == "experimental::row_normalization_block") {
+        emitLlk(experimental_row_normalization_generated,
+                experimental_row_normalization_generated_len);
+      }
       if (callee == "experimental::write_row_mask_tile" ||
           callee == "experimental::write_col_mask_tile" ||
           callee == "experimental::fill_arange_tile") {
@@ -174,6 +214,10 @@ public:
         headers.insert("api/core_local_mem.h");
         headers.insert("api/dataflow/endpoints.h");
         headers.insert("api/dataflow/noc.h");
+      }
+
+      if (value.starts_with("tt::tt_fabric::RoutingPlaneConnectionManager")) {
+        headers.insert("tt_metal/fabric/hw/inc/linear/api.h");
       }
 
       // Some callees are embedded in VerbatimOps.
@@ -207,7 +251,16 @@ public:
           loc, "#define REDUCE_DIM ReduceDim::REDUCE_COL");
     }
 
-    // Emit the headers.
+    // The descriptor definition must precede user headers because those
+    // headers may name it in their function declarations.
+    emitc::IncludeOp::create(*builder, loc, "cstdint", /*isStandard=*/true);
+    if (requiresDFBDescriptor) {
+      emitc::VerbatimOp::create(
+          *builder, loc,
+          llvm::StringRef(dfb_descriptor_prelude_generated,
+                          dfb_descriptor_prelude_generated_len));
+    }
+
     for (llvm::StringRef header : headers) {
       bool isStandard = false;
       if (header.starts_with("<") && header.ends_with(">")) {
@@ -318,6 +371,27 @@ cloneEntryIntoStandaloneModule(func::FuncOp origEntry, ThreadType threadType) {
 
   OpBuilder builder(ctx);
 
+  SymbolTableCollection symbolTables;
+  llvm::DenseSet<emitc::GlobalOp> seenGlobals;
+  SmallVector<emitc::GlobalOp> referencedGlobals;
+  bool missingGlobal = false;
+  origEntry.walk([&](emitc::GetGlobalOp getGlobalOp) {
+    emitc::GlobalOp global =
+        symbolTables.lookupNearestSymbolFrom<emitc::GlobalOp>(
+            getGlobalOp, getGlobalOp.getNameAttr());
+    if (!global) {
+      getGlobalOp.emitOpError("does not reference an emitc.global");
+      missingGlobal = true;
+      return;
+    }
+    if (seenGlobals.insert(global).second) {
+      referencedGlobals.push_back(global);
+    }
+  });
+  if (missingGlobal) {
+    return failure();
+  }
+
   // We will wrap everything in a standalone module op so that we can run the
   // translation.
   auto moduleWrapper = builder.create<mlir::ModuleOp>(loc, "module_wrapper");
@@ -326,6 +400,10 @@ cloneEntryIntoStandaloneModule(func::FuncOp origEntry, ThreadType threadType) {
   Region *kernelMainRegion;
   {
     ScopedModuleHelper threadConfigHelper(&builder, loc, region, threadType);
+
+    for (emitc::GlobalOp global : referencedGlobals) {
+      builder.clone(*global);
+    }
 
     // Clone 'region' into a new func op nested inside 'moduleWrapper':
     auto kernelMain = builder.create<func::FuncOp>(
@@ -352,7 +430,7 @@ LogicalResult translateKernelFuncToCpp(func::FuncOp entry,
   if (failed(kernelModule)) {
     return failure();
   }
-  auto moduleCleanup = llvm::make_scope_exit([&]() { kernelModule->erase(); });
+  llvm::scope_exit moduleCleanup([&]() { kernelModule->erase(); });
   return emitc::translateToCpp(*kernelModule, os);
 }
 

@@ -1,0 +1,174 @@
+name: Build Manylinux Wheels
+
+on:
+  workflow_call:
+    inputs:
+      docker_tag:
+        description: "Tag for the cp310 and cp312 manylinux wheel-builder images."
+        required: true
+        type: string
+      version_override:
+        description: "PEP 440 version for the generated wheels."
+        required: true
+        type: string
+      ttnn_dep_mode:
+        description: "ttnn dependency mode: pypi or external."
+        required: true
+        type: string
+      build_sim_wheel:
+        description: "Build and test the pure-Python tt-lang-sim wheel."
+        required: false
+        type: boolean
+        default: true
+      allow_final_internal_version:
+        description: "Allow final versions for external-ttnn S3 wheels."
+        required: false
+        type: boolean
+        default: false
+      artifact_name:
+        description: "Name of the combined wheel artifact."
+        required: false
+        type: string
+        default: tt-lang-manylinux-wheels
+      ttlang_sha_override:
+        description: "tt-lang SHA/tag to build. Empty uses the caller ref."
+        required: false
+        type: string
+        default: ""
+      apply_patches:
+        description: "Apply wheel patches from the caller workflow commit."
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  validate:
+    name: "Validate manylinux wheel inputs"
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Validate inputs
+        env:
+          TTLANG_TTNN_DEP_MODE: ${{ inputs.ttnn_dep_mode }}
+          TTLANG_WHEEL_VERSION: ${{ inputs.version_override }}
+        run: .github/scripts/validate-manylinux-wheel-inputs.sh "$TTLANG_TTNN_DEP_MODE" "$TTLANG_WHEEL_VERSION"
+
+  build-core:
+    name: "Build ${{ inputs.ttnn_dep_mode }} core wheel (${{ matrix.python_tag }})"
+    needs: validate
+    runs-on: mlir-large-runner-lang
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        python_tag: [cp310, cp312]
+    container:
+      image: ghcr.io/${{ github.repository }}/tt-lang-wheel-manylinux-2-34-${{ matrix.python_tag }}:${{ inputs.docker_tag }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ttlang_sha_override || github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Checkout workflow wheel helpers
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .wheel-workflow-src
+          sparse-checkout: |
+            .github/scripts
+            .github/wheel-patches
+          sparse-checkout-cone-mode: false
+
+      - name: Fix git safe directory
+        run: git config --global --add safe.directory '*'
+
+      - name: Apply wheel patches
+        if: ${{ inputs.apply_patches }}
+        run: .wheel-workflow-src/.github/scripts/apply-wheel-patches.sh --target-dir "$GITHUB_WORKSPACE"
+
+      - name: Build core wheel
+        env:
+          BUILD_SIM_WHEEL: ${{ inputs.build_sim_wheel }}
+          PYTHON_TAG: ${{ matrix.python_tag }}
+          TTLANG_ALLOW_FINAL_INTERNAL_VERSION: ${{ inputs.allow_final_internal_version }}
+          TTLANG_TTNN_DEP_MODE: ${{ inputs.ttnn_dep_mode }}
+          TTLANG_WHEEL_VERSION: ${{ inputs.version_override }}
+        run: .wheel-workflow-src/.github/scripts/build-manylinux-wheel-set-member.sh --python-tag "$PYTHON_TAG" --version "$TTLANG_WHEEL_VERSION" --ttnn-dep-mode "$TTLANG_TTNN_DEP_MODE" --build-sim "$BUILD_SIM_WHEEL" --dist-dir dist
+
+      - name: Upload per-ABI wheel
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact_name }}-${{ matrix.python_tag }}
+          path: dist/*.whl
+          retention-days: 14
+
+  collect:
+    name: "Verify manylinux wheel set"
+    needs: [validate, build-core]
+    if: ${{ always() && needs.validate.result == 'success' && needs.build-core.result == 'success' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ttlang_sha_override || github.sha }}
+
+      - name: Checkout workflow wheel helpers
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          path: .wheel-workflow-src
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: false
+
+      - name: Download wheel set
+        uses: actions/download-artifact@v8
+        with:
+          pattern: ${{ inputs.artifact_name }}-*
+          path: dist
+          merge-multiple: true
+
+      - name: Verify wheel filenames and versions
+        env:
+          BUILD_SIM_WHEEL: ${{ inputs.build_sim_wheel }}
+          TTLANG_TTNN_DEP_MODE: ${{ inputs.ttnn_dep_mode }}
+          TTLANG_WHEEL_VERSION: ${{ inputs.version_override }}
+        run: .wheel-workflow-src/.github/scripts/verify-manylinux-wheel-set.sh --ttnn-dep-mode "$TTLANG_TTNN_DEP_MODE" --build-sim "$BUILD_SIM_WHEEL" "$TTLANG_WHEEL_VERSION" dist
+
+      - name: Log in to GitHub Container Registry
+        if: ${{ inputs.ttnn_dep_mode == 'external' }}
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ github.token }}
+
+      - name: Install-test external-ttnn wheels
+        if: ${{ inputs.ttnn_dep_mode == 'external' }}
+        env:
+          DOCKER_TAG: ${{ inputs.docker_tag }}
+          TTLANG_WHEEL_VERSION: ${{ inputs.version_override }}
+        run: .wheel-workflow-src/.github/scripts/test-s3-light-wheels.sh --version "$TTLANG_WHEEL_VERSION" --docker-tag "$DOCKER_TAG" --dist-dir dist
+
+      - name: Upload combined wheels
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: dist/*.whl
+          retention-days: 14

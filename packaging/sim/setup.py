@@ -74,7 +74,7 @@ def stage() -> None:
     ttl.mkdir(parents=True)
 
     src_ttl = REPO_ROOT / "python" / "ttl"
-    for fn in ("__init__.py", "version.py", "constants.py"):
+    for fn in ("__init__.py", "version.py", "constants.py", "domains.py"):
         shutil.copy(src_ttl / fn, ttl / fn)
 
     (ttl / "config.py").write_text(
@@ -87,6 +87,13 @@ def stage() -> None:
     )
 
     shutil.copytree(REPO_ROOT / "python" / "sim", ttl / "sim")
+    # To run unified @ttl.operation bodies the simulator reuses the compiler
+    # frontend's thread-assignment splitter and the syntactic rules both frontends
+    # apply to an operation body. Both are stdlib-only and loaded by path, so
+    # bundle just these modules next to the sim package (ttl._src is otherwise not
+    # shipped in the sim wheel).
+    for module in ("atom_rules.py", "atom_split.py"):
+        shutil.copy(src_ttl / "_src" / module, ttl / "sim" / module)
     shutil.copytree(src_ttl / "_pipenets", ttl / "_pipenets")
     shutil.copytree(src_ttl / "_setup", ttl / "_setup")
     shutil.copytree(REPO_ROOT / "python" / "utils", ttl / "utils")

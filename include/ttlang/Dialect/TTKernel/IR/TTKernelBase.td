@@ -58,6 +58,27 @@ def TTKernel_DeviceZoneOpTrait : TTKernel_Trait<"TTKernelDeviceZoneOpTrait", []>
 
 def TTKernel_TridNocOpTrait : TTKernel_Trait<"TTKernelTridNocOpTrait", []>;
 
+def TTKernel_NocOpTrait : TTKernel_Trait<"TTKernelNocOpTrait", []>;
+
+def TTKernel_NocReadCommandOpTrait
+    : TTKernel_Trait<"TTKernelNocReadCommandOpTrait", []>;
+
+def TTKernel_NocWriteCommandOpTrait
+    : TTKernel_Trait<"TTKernelNocWriteCommandOpTrait", []>;
+
+def TTKernel_NocAtomicCommandOpTrait
+    : TTKernel_Trait<"TTKernelNocAtomicCommandOpTrait", []>;
+
+def TTKernel_NocCommandStatePreservingOpTrait
+    : TTKernel_Trait<"TTKernelNocCommandStatePreservingOpTrait", []>;
+
+def TTKernel_NocCommandStateDependentOpTrait
+    : TTKernel_Trait<"TTKernelNocCommandStateDependentOpTrait",
+                     [TTKernel_NocOpTrait]>;
+
+def TTKernel_NocCommandStateUnknownOpTrait
+    : TTKernel_Trait<"TTKernelNocCommandStateUnknownOpTrait", []>;
+
 def TTKernel_LayoutOpTrait : TTKernel_Trait<"TTKernelLayoutOpTrait", []>;
 
 //===----------------------------------------------------------------------===//
@@ -76,5 +97,16 @@ class TTKernel_SFPUOp<string mnemonic, list<Trait> traits = []> :
 class TTKernel_InitOp<string mnemonic, list<Trait> traits = []> :
         TTKernel_Op<mnemonic, [TTKernel_InitOpTrait] # traits>;
 
+class TTKernel_NocOp<string mnemonic, list<Trait> traits = []> :
+        TTKernel_Op<mnemonic, [TTKernel_NocOpTrait] # traits>;
+
+class TTKernel_NocReadCommandOp<string mnemonic, list<Trait> traits = []> :
+        TTKernel_NocOp<mnemonic, [TTKernel_NocReadCommandOpTrait] # traits>;
+
+class TTKernel_NocWriteCommandOp<string mnemonic, list<Trait> traits = []> :
+        TTKernel_NocOp<mnemonic, [TTKernel_NocWriteCommandOpTrait] # traits>;
+
+class TTKernel_NocAtomicCommandOp<string mnemonic, list<Trait> traits = []> :
+        TTKernel_NocOp<mnemonic, [TTKernel_NocAtomicCommandOpTrait] # traits>;
 
 #endif

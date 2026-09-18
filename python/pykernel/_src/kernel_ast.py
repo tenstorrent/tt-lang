@@ -16,6 +16,26 @@ from .kernel_types import ClassRegistry
 from .utils import _cast, _get_type_str
 
 
+_MISSING_BINARY_OPERAND = object()
+
+
+def _signed_integer_literal(node):
+    if isinstance(node, ast.Constant):
+        if isinstance(node.value, int) and not isinstance(node.value, bool):
+            return node.value
+        return None
+    if not isinstance(node, ast.UnaryOp):
+        return None
+    operand = _signed_integer_literal(node.operand)
+    if operand is None:
+        return None
+    if isinstance(node.op, ast.USub):
+        return -operand
+    if isinstance(node.op, ast.UAdd):
+        return operand
+    return None
+
+
 def _extract_target_names(target):
     """Names bound by a single assignment target, supporting nested tuples
     and starred unpacking. Subscript/Attribute targets bind storage, not
@@ -260,6 +280,8 @@ def _is_attach_cb_block(value):
     """Block targets (`out_blk = cb.reserve()` / `cb.wait()`) wrap the
     result of `ttl.attach_cb` and lower `+=` via __iadd__ to an L1 acc
     store. They are not scf.for iter_arg / scf.if result candidates."""
+    if getattr(value, "_ttlang_guarded_dfb_block", False):
+        return True
     inner = _get_single_result(value)
     owner = getattr(inner, "owner", None)
     if owner is None or not hasattr(owner, "name"):
@@ -840,27 +862,27 @@ class TTCompilerBase(PyKernelAstBase):
         memref.StoreOp(result, target, [arith.ConstantOp(IndexType.get(self.ctx), 0)])
 
     # Function calls
-    def visit_Call(self, node):
-        def _format_expr(expr):
-            try:
-                return ast.unparse(expr)
-            except Exception:
-                return type(expr).__name__
+    @staticmethod
+    def _format_expr(expr):
+        try:
+            return ast.unparse(expr)
+        except Exception:
+            return type(expr).__name__
 
-        def _load_func_arg(func_arg, arg_node):
-            if func_arg is None:
-                raise ValueError(
-                    f"unable to resolve argument '{_format_expr(arg_node)}' "
-                    f"while compiling call '{_format_expr(node.func)}'; "
-                    "check that the value is defined in this scope"
-                )
-            if hasattr(func_arg, "type") and isinstance(
-                func_arg.type, memref.MemRefType
-            ):
-                func_arg = memref.LoadOp(
-                    func_arg, arith.ConstantOp(IndexType.get(self.ctx), 0)
-                )
-            return func_arg
+    def _load_func_arg(self, func_arg, arg_node, call_node):
+        if func_arg is None:
+            raise ValueError(
+                f"unable to resolve argument '{self._format_expr(arg_node)}' "
+                f"while compiling call '{self._format_expr(call_node.func)}'; "
+                "check that the value is defined in this scope"
+            )
+        if hasattr(func_arg, "type") and isinstance(func_arg.type, memref.MemRefType):
+            func_arg = memref.LoadOp(
+                func_arg, arith.ConstantOp(IndexType.get(self.ctx), 0)
+            )
+        return func_arg
+
+    def visit_Call(self, node):
 
         if not isinstance(node.func, ast.Attribute):
             # print is special case to handle string formatting
@@ -879,20 +901,24 @@ class TTCompilerBase(PyKernelAstBase):
             assert len(node.args) == len(args_as_attr)
             for arg, as_attr in zip(node.args, args_as_attr):
                 arg._ttkernel_as_attr = as_attr
-                func_arg = _load_func_arg(self.visit(arg), arg)
+                func_arg = self._load_func_arg(self.visit(arg), arg, node)
                 func_args.append(func_arg)
             kwargs = {}
             for kw in node.keywords:
-                kwargs[kw.arg] = _load_func_arg(self.visit(kw.value), kw.value)
+                kwargs[kw.arg] = self._load_func_arg(
+                    self.visit(kw.value), kw.value, node
+                )
             return func(*func_args, **kwargs)  # type checking will occur downstream
         else:
             func_args = []
             for arg in node.args:
-                func_arg = _load_func_arg(self.visit(arg), arg)
+                func_arg = self._load_func_arg(self.visit(arg), arg, node)
                 func_args.append(func_arg)
             kwargs = {}
             for kw in node.keywords:
-                kwargs[kw.arg] = _load_func_arg(self.visit(kw.value), kw.value)
+                kwargs[kw.arg] = self._load_func_arg(
+                    self.visit(kw.value), kw.value, node
+                )
             return self.visit(
                 node.func, func_args=func_args, kwargs=kwargs
             )  # visit_Attribute
@@ -982,46 +1008,96 @@ class TTCompilerBase(PyKernelAstBase):
 
         return chained_op
 
-    def visit_BinOp(self, node):
-        def materialize(value):
-            if not value:
-                raise ValueError("Binary operands not found")
-            if isinstance(value, OpView):
-                value = value.result
-            if hasattr(value, "type") and isinstance(value.type, memref.MemRefType):
-                value = memref.LoadOp(
-                    value, arith.ConstantOp(IndexType.get(self.ctx), 0)
-                ).result
-            return value
+    def _coerce_binary_operands(self, left_value, right_value, left_node, right_node):
+        if left_value.type != right_value.type:
+            right_value = _cast(right_value, left_value.type)
+        return left_value, right_value
 
+    def _materialize_binary_operand(self, value):
+        if isinstance(value, int) and not isinstance(value, bool):
+            return arith.ConstantOp(IndexType.get(self.ctx), value).result
+        if value is None:
+            raise ValueError("Binary operands not found")
+        if isinstance(value, OpView):
+            value = value.result
+        if hasattr(value, "type") and isinstance(value.type, memref.MemRefType):
+            value = memref.LoadOp(
+                value, arith.ConstantOp(IndexType.get(self.ctx), 0)
+            ).result
+        return value
+
+    def _materialize_integer_literal(self, node, value, integer_type):
+        return arith.ConstantOp(integer_type, value).result
+
+    def _visit_binary_operands(
+        self,
+        left_node,
+        right_node,
+        left_value=_MISSING_BINARY_OPERAND,
+        right_value=_MISSING_BINARY_OPERAND,
+    ):
+        def materialize(node, value):
+            if value is _MISSING_BINARY_OPERAND:
+                value = self.visit(node)
+            return self._materialize_binary_operand(value)
+
+        left_literal = _signed_integer_literal(left_node)
+        right_literal = _signed_integer_literal(right_node)
+        if left_literal is not None and right_literal is None:
+            right_value = materialize(right_node, right_value)
+            if isinstance(right_value.type, IntegerType):
+                left_value = self._materialize_integer_literal(
+                    left_node, left_literal, right_value.type
+                )
+                return left_value, right_value
+            left_value = materialize(left_node, left_value)
+            return left_value, right_value
+        elif right_literal is not None and left_literal is None:
+            left_value = materialize(left_node, left_value)
+            if isinstance(left_value.type, IntegerType):
+                right_value = self._materialize_integer_literal(
+                    right_node, right_literal, left_value.type
+                )
+                return left_value, right_value
+            right_value = materialize(right_node, right_value)
+            return left_value, right_value
+        return (
+            materialize(left_node, left_value),
+            materialize(right_node, right_value),
+        )
+
+    def visit_BinOp(self, node):
         def try_scalar_tensor_mul(scalar, tensor_node):
             if scalar is None:
-                return None
-            tensor_side = materialize(self.visit(tensor_node))
+                return None, _MISSING_BINARY_OPERAND
+            tensor_side = self._materialize_binary_operand(self.visit(tensor_node))
             if not (
                 hasattr(tensor_side, "type")
                 and isinstance(tensor_side.type, RankedTensorType)
             ):
-                return None
+                return None, tensor_side
             mlir_type = _get_type_str(tensor_side.type)
             fn = self._fn_map.get(f"{mlir_type}.__mul__")
             if fn is None:
-                return None
-            return fn(tensor_side, scalar)
+                return None, tensor_side
+            return fn(tensor_side, scalar), tensor_side
 
+        left_value = _MISSING_BINARY_OPERAND
+        right_value = _MISSING_BINARY_OPERAND
         if isinstance(node.op, ast.Mult):
             lhs_scalar = _eval_host_scalar_expr(node.left)
             rhs_scalar = _eval_host_scalar_expr(node.right)
             if not (lhs_scalar is not None and rhs_scalar is not None):
-                result = try_scalar_tensor_mul(lhs_scalar, node.right)
+                result, right_value = try_scalar_tensor_mul(lhs_scalar, node.right)
                 if result is not None:
                     return result
-                result = try_scalar_tensor_mul(rhs_scalar, node.left)
+                result, left_value = try_scalar_tensor_mul(rhs_scalar, node.left)
                 if result is not None:
                     return result
 
-        lhs = materialize(self.visit(node.left))
-        rhs = materialize(self.visit(node.right))
+        lhs, rhs = self._visit_binary_operands(
+            node.left, node.right, left_value, right_value
+        )
 
         # Matmul: operands have different shapes (A[M,K] @ B[K,N]), so dispatch
         # before the elementwise type-matching cast.
@@ -1055,8 +1131,7 @@ class TTCompilerBase(PyKernelAstBase):
                     if fn is not None:
                         return fn(tensor_side, scalar_side)
 
-        if lhs.type != rhs.type:
-            rhs = _cast(rhs, lhs.type)
+        lhs, rhs = self._coerce_binary_operands(lhs, rhs, node.left, node.right)
         assert lhs.type == rhs.type, f"{lhs.type} != {rhs.type}"
         mlir_type = _get_type_str(lhs.type)
 
@@ -1127,22 +1202,17 @@ class TTCompilerBase(PyKernelAstBase):
     def visit_Compare(self, node):
         assert len(node.ops) == 1, "Only single operators supported"
         assert len(node.comparators) == 1, "Only single comparators supported"
-        lhs = self.visit(node.left)
-        rhs = self.visit(node.comparators[0])
-        if not lhs or not rhs:
-            raise ValueError("Compare operands not found")
+        lhs, rhs = self._visit_binary_operands(node.left, node.comparators[0])
 
-        if isinstance(lhs.type, memref.MemRefType):
-            lhs = memref.LoadOp(
-                lhs, arith.ConstantOp(IndexType.get(self.ctx), 0)
-            ).result
-        if isinstance(rhs.type, memref.MemRefType):
-            rhs = memref.LoadOp(
-                rhs, arith.ConstantOp(IndexType.get(self.ctx), 0)
-            ).result
+        if not hasattr(lhs, "type") or not hasattr(rhs, "type"):
+            raise TypeError(
+                "comparison operands must be compiler values, got "
+                f"{type(lhs).__name__} and {type(rhs).__name__}"
+            )
 
-        if lhs.type != rhs.type:
-            rhs = _cast(rhs, lhs.type)
+        lhs, rhs = self._coerce_binary_operands(
+            lhs, rhs, node.left, node.comparators[0]
+        )
         assert lhs.type == rhs.type, f"{lhs.type} != {rhs.type}"
 
         if isinstance(lhs.type, FloatType):

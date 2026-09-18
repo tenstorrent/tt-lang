@@ -47,14 +47,21 @@ python examples/<example_name>.py
 
 | Example | Description | Sim | HW |
 |---------|-------------|:---:|:--:|
-| `singlenode_matmul.py` | Single-node matrix multiplication | ✓ | ✗ |
-| `multinode_matmul.py` | Multi-node matmul with work distribution | ✓ | ✗ |
+| `single_node_matmul.py` | Single-node matrix multiplication | ✓ | ✓ |
+| `multinode_matmul.py` | Multi-node matmul with work distribution | ✓ | ✓ |
 
 ### Demo/Tutorial
 
 | Example | Description | Sim | HW |
 |---------|-------------|:---:|:--:|
 | `demo_one.py` | Comprehensive demo with auto grid and bounds checking | ✓ | ✓ |
+
+### Multidevice PipeNet Designs
+
+| Example | Description | Sim | HW |
+|---------|-------------|:---:|:--:|
+| `multidevice_all_reduce.py` | Structured gather/scatter all-reduce over the discovered logical mesh | - | yes |
+| `multidevice_tree_all_reduce_4_devices.py` | Fixed four-device version with explicit tree stages | - | yes |
 
 ### Error Examples (Negative Tests)
 

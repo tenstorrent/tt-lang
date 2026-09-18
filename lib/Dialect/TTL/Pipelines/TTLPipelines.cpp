@@ -12,53 +12,123 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/Passes.h"
 
+#include <utility>
+
 using namespace mlir;
 
 namespace mlir::tt::ttl {
 
+// Resolve record-loop transfers before finalizing runtime arguments in either
+// specialization mode. Adjacent function passes share one module traversal.
+static void buildTTKernelRecordCleanupPipeline(OpPassManager &pm) {
+  OpPassManager &functionPasses = pm.nest<func::FuncOp>();
+  functionPasses.addPass(createTTKernelBatchStaticPipeNetReceives());
+  functionPasses.addPass(createTTKernelUnrollStaticPipeNetRecordLoops());
+  // Expose affine index arithmetic before folding tables and scheduling writes.
+  pm.addPass(createLowerAffinePass());
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(createCSEPass());
+  pm.addPass(createTTKernelCleanup());
+  pm.addPass(createTTKernelFinalizeTensorRuntimeArgs());
+  pm.addPass(createCanonicalizerPass());
+}
+
 void createTTLToTTKernelPipeline(OpPassManager &pm,
                                  const TTLToTTKernelPipelineOptions &options) {
+  {
+    TTLFormAccumulationScopesOptions formOptions;
+    formOptions.strategy = options.accumulationStrategy;
+    pm.addNestedPass<func::FuncOp>(
+        createTTLFormAccumulationScopes(std::move(formOptions)));
+  }
+  {
+    TTLLowerAccumulationScopesOptions lowerOptions;
+    lowerOptions.strategy = options.accumulationStrategy;
+    pm.addNestedPass<func::FuncOp>(
+        createTTLLowerAccumulationScopes(std::move(lowerOptions)));
+  }
   pm.addNestedPass<func::FuncOp>(createTTLMaterializeLoopState());
+  pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
+  buildTTLAutoSyncPipeline(pm.nest<func::FuncOp>());
+  {
+    TTLInsertAccumulationScopesOptions insertOptions;
+    insertOptions.kind = "dfb";
+    pm.addNestedPass<func::FuncOp>(
+        createTTLInsertAccumulationScopes(std::move(insertOptions)));
+  }
+  {
+    TTLLowerAccumulationScopesOptions lowerOptions;
+    lowerOptions.kind = "dfb";
+    pm.addNestedPass<func::FuncOp>(
+        createTTLLowerAccumulationScopes(std::move(lowerOptions)));
+  }
+  pm.addNestedPass<func::FuncOp>(createTTLProducerComputeCreation());
   {
     TTLInsertIntermediateDFBsOptions dfbOpts;
     dfbOpts.enable = options.compilerDFBs;
     pm.addNestedPass<func::FuncOp>(createTTLInsertIntermediateDFBs(dfbOpts));
   }
-  pm.addNestedPass<func::FuncOp>(createTTLInsertCopyWait());
-  buildTTLAutoSyncPipeline(pm.nest<func::FuncOp>());
-  pm.addPass(createTTLAnnotateL1AccLoops());
-  pm.addPass(createTTLConvertTTLToCompute());
+  pm.addNestedPass<func::FuncOp>(createTTLConvertTTLToCompute());
+  pm.addNestedPass<func::FuncOp>(createTTLInsertCBSync());
+  // Verify the complete high-level schedule while logical DFB identities are
+  // still distinct and before later transformations rewrite pipe operations.
+  buildTTLVerifyPipeNetPipeline(pm);
+  {
+    TTLFormPipeTransportsOptions transportOpts;
+    transportOpts.groupSize = options.pipeBatchTiles;
+    transportOpts.l1BudgetOverride = options.l1BudgetOverride;
+    pm.addPass(createTTLFormPipeTransports(transportOpts));
+  }
+  pm.addNestedPass<func::FuncOp>(createTTLCoalesceDFBAcquires());
+  {
+    TTLFinalizeDFBIndicesOptions finalizeOptions;
+    finalizeOptions.reuseUserDFBs = options.reuseUserDFBs;
+    finalizeOptions.unsafeAssumeAllocationGroups =
+        options.unsafeAssumeAllocationGroups;
+    finalizeOptions.exactColoringSearchStateLimit =
+        options.exactColoringSearchStateLimit;
+    finalizeOptions.l1BudgetOverride = options.l1BudgetOverride;
+    pm.addPass(createTTLFinalizeDFBIndices(finalizeOptions));
+  }
   {
     TTLSetComputeKernelConfigOptions configOpts;
     configOpts.reduceFullFp32 = options.reduceFullFp32;
+    configOpts.matmulFullFp32 = options.matmulFullFp32;
     configOpts.enableFPUBinaryOps = options.enableFPUBinaryOps;
     pm.addPass(createTTLSetComputeKernelConfig(configOpts));
   }
-  pm.addPass(createTTLAssignDST());
+  pm.addNestedPass<func::FuncOp>(createTTLAssignDST());
   if (options.maximizeDST) {
     TTLSubblockComputeForDSTOptions subblockOpts;
     subblockOpts.subblockSync = options.subblockSync;
     subblockOpts.strictF32Acc = options.strictF32Acc;
-    pm.addPass(createTTLSubblockComputeForDST(subblockOpts));
+    pm.addNestedPass<func::FuncOp>(
+        createTTLSubblockComputeForDST(subblockOpts));
   }
   {
     TTLLowerToLoopsOptions loopOpts;
     loopOpts.dstAccumulation = options.maximizeDST;
     loopOpts.useBlockMatmul = options.useBlockMatmul;
-    pm.addPass(createTTLLowerToLoops(loopOpts));
+    pm.addNestedPass<func::FuncOp>(createTTLLowerToLoops(loopOpts));
   }
   if (options.maximizeDST) {
-    pm.addPass(createTTLScheduleOperations());
+    pm.addNestedPass<func::FuncOp>(createTTLScheduleOperations());
   }
-  pm.addPass(createTTLFinalizeDFBIndices());
-  pm.addPass(createTTLAnnotateCBAssociations());
-  pm.addPass(createTTLVerifyPipeNetGuards());
+  pm.addNestedPass<func::FuncOp>(createTTLAnnotateCBAssociations());
   pm.addPass(createTTLVerifyDFBSPSC());
   pm.addPass(createTTLErasePipeNetScopes());
-  pm.addPass(createTTLValidateCBBudget());
+  {
+    TTLValidateCBBudgetOptions budgetOpts;
+    budgetOpts.l1BudgetOverride = options.l1BudgetOverride;
+    pm.addPass(createTTLValidateCBBudget(budgetOpts));
+  }
   {
     TTLConvertTTLToTTKernelOptions ttkOpts;
     ttkOpts.reduceFullFp32 = options.reduceFullFp32;
+    ttkOpts.pipeComputedAddresses = options.pipeComputedAddresses;
+    ttkOpts.pipeCapacitySync = options.pipeCapacitySync;
+    ttkOpts.pipeGlobalSemaphoresOnly = options.pipeGlobalSemaphoresOnly;
+    ttkOpts.l1BudgetOverride = options.l1BudgetOverride;
     pm.addPass(createTTLConvertTTLToTTKernel(ttkOpts));
   }
   pm.addPass(createTTKernelInsertInits());
@@ -68,17 +138,34 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
+  if (options.specializeCores) {
+    buildTTKernelSpecializationPipeline(pm);
+  } else {
+    buildTTKernelRecordCleanupPipeline(pm);
+  }
   if (options.lowerToEmitC) {
-    pm.addPass(createLowerAffinePass());
-    pm.addNestedPass<func::FuncOp>(::mlir::tt::createConvertTTKernelToEmitC());
+    pm.addPass(::mlir::tt::createConvertTTKernelToEmitC());
     pm.addPass(createCanonicalizerPass());
     pm.addPass(mlir::emitc::createFormExpressionsPass());
   }
 }
 
+void buildTTLVerifyPipeNetPipeline(OpPassManager &pm) {
+  pm.addPass(createTTLVerifyPipeNetGuards());
+  pm.addPass(createTTLVerifyPipeNetSchedule());
+}
+
 void buildTTLAutoSyncPipeline(OpPassManager &pm) {
   pm.addPass(createTTLInsertCBSync());
   pm.addPass(createTTLCoalesceDFBAcquires());
+}
+
+void buildTTKernelSpecializationPipeline(OpPassManager &pm) {
+  pm.addPass(createTTKernelSpecializeCores());
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(createCSEPass());
+  buildTTKernelRecordCleanupPipeline(pm);
+  pm.addPass(createTTKernelAnnotateDFBUse());
 }
 
 void registerTTLPipelines() {
@@ -87,9 +174,24 @@ void registerTTLPipelines() {
       "Lower TTL to TTKernel, run cleanup canonicalization/CSE, and optionally "
       "lower TTKernel to EmitC.",
       createTTLToTTKernelPipeline);
+  PassPipelineRegistration<>(
+      "ttl-verify-pipenet",
+      "Verify PipeNet launch domains and synchronization schedules.",
+      buildTTLVerifyPipeNetPipeline);
   PassPipelineRegistration<>("ttl-auto-sync",
                              "Insert auto pop/push and coalesce DFB acquires.",
                              buildTTLAutoSyncPipeline);
+  PassPipelineRegistration<>(
+      "ttkernel-cleanup-and-finalize-runtime-args",
+      "Batch and expand static PipeNet records, optimize resolved transfers, "
+      "and finalize surviving runtime arguments.",
+      buildTTKernelRecordCleanupPipeline);
+  PassPipelineRegistration<>(
+      "ttkernel-specialize-and-annotate-dfb-use",
+      "Specialize kernels per launch coordinate, fold coordinate-dependent "
+      "control flow, compact tensor runtime arguments, and record surviving "
+      "DFB compile-time argument indices.",
+      buildTTKernelSpecializationPipeline);
 }
 
 } // namespace mlir::tt::ttl

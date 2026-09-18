@@ -12,6 +12,9 @@ import sys
 import zipfile
 
 REQUIRED_PATHS = (
+    "triage/inspector.capnp",
+    "triage/requirements.txt",
+    "triage/triage.py",
     "ttnn/__init__.py",
     "ttnn/_ttnn.so",
     "ttnn/build/lib/_ttnncpp.so",

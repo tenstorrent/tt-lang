@@ -17,6 +17,8 @@ set -euo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/s3-index.sh
 . "$script_dir/lib/s3-index.sh"
+# shellcheck source=lib/s3-publish-prefix.sh
+. "$script_dir/lib/s3-publish-prefix.sh"
 
 bucket="${TTLANG_S3_BUCKET:-tenstorrent-pypi}"
 ALLOWED_PREFIXES=(tt-lang/)
@@ -174,7 +176,8 @@ case "$operation" in
                     --require-existing
             elif [[ "$prefix" == "tt-lang/releases" ]]; then
                 s3_regenerate_release_view "$bucket"
-            elif [[ "$prefix" =~ ^tt-lang/[0-9]{4}-[0-9]{2}$ ]]; then
+            elif [[ "$prefix" == tt-lang/* ]] &&
+                ttlang_s3_valid_year_month "${prefix#tt-lang/}"; then
                 s3_regenerate_month_view "$bucket" "$prefix"
             else
                 s3_regenerate_index "$bucket" "$prefix"

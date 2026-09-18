@@ -36,6 +36,7 @@ def TTL_CircularBuffer : TTL_Type<"CircularBuffer", "cb"> {
     "int64_t":$blockCount
   );
   let assemblyFormat = "`<` `[` $shape `]` `,` $elementType `,` $blockCount `>`";
+  let genVerifyDecl = 1;
 
   let extraClassDeclaration = [{
     int64_t getElementsPerBlock() const {
@@ -57,13 +58,31 @@ def TTL_TransferHandle : TTL_Type<"TransferHandle", "transfer_handle"> {
   let assemblyFormat = "(`<` $kind^ `>`)?";
 }
 
-def TTL_PipeTransfer : TTL_Type<"PipeTransfer", "pipe_transfer"> {
-  let summary = "Pipe transfer contract";
+def TTL_ReceiveRequest : TTL_Type<"ReceiveRequest", "receive_request"> {
+  let summary = "Handle for one posted PipeNet receive";
   let description = [{
-    Represents one logical receiver-posted pipe transfer before physical
-    synchronization resources are assigned. The transfer value identifies the
-    source/receiver relation and the point-to-point or collective contract; it
-    is not a TTKernel semaphore, SRAM table, GlobalSemaphore, or DFB slot.
+    Represents one posted PipeNet receive and its expected completion sequence.
+    The handle identifies a logical receive request; it does not expose a
+    physical semaphore, address, or dataflow-buffer index.
+  }];
+}
+
+def TTL_ReadyReceive : TTL_Type<"ReadyReceive", "ready_receive"> {
+  let summary = "Selected completed PipeNet receive";
+  let description = [{
+    Represents the request selected by `ttl.wait_any`. The selected tuple index
+    is available through `ttl.ready_receive_index`. Nonselected requests remain
+    pending.
+  }];
+}
+
+def TTL_PipeTransfer : TTL_Type<"PipeTransfer", "pipe_transfer"> {
+  let summary = "Pipe transfer reference";
+  let description = [{
+    Represents a reference used by a pipe send or receiver post. One logical
+    transfer may have distinct reference values when the sender and receiver
+    callbacks declare the pipe independently. The value is not a TTKernel
+    semaphore, SRAM table, GlobalSemaphore, or DFB slot.
   }];
 }
 
@@ -98,6 +117,13 @@ def TTL_ReduceTypeAttr : EnumAttr<TTL_Dialect, TTL_ReduceType, "reduce_type">;
 def TTL_AccumulationInitialModeAttr
     : EnumAttr<TTL_Dialect, TTL_AccumulationInitialMode,
                "accumulation_initial_mode">;
+def TTL_InputClampingAttr
+    : EnumAttr<TTL_Dialect, TTL_InputClamping, "input_clamping">;
+def TTL_AccumulationCombinerAttr
+    : EnumAttr<TTL_Dialect, TTL_AccumulationCombiner,
+               "accumulation_combiner">;
+def TTL_DFBTileStoreKindAttr
+    : EnumAttr<TTL_Dialect, TTL_DFBTileStoreKind, "dfb_tile_store_kind">;
 
 def TTL_Pipe : TTL_Type<"Pipe", "pipe"> {
   let summary = "Pipe for core-to-core data transfer";
@@ -161,5 +187,42 @@ def TTL_Pipe : TTL_Type<"Pipe", "pipe"> {
     }
   }];
 }
+
+def TTL_SelectedPipeSrc : TTL_Type<"SelectedPipeSrc", "selected_pipe_src"> {
+  let summary = "PipeNet record selected by source iteration";
+  let description = [{
+    Represents a PipeNet record selected because the current launch node is its
+    source. The selected record may be used for a send or receive; copy operand
+    position determines the transfer direction. The enclosing foreach
+    operation or defining select operation supplies the PipeNet id and
+    coordinates.
+  }];
+}
+
+def TTL_SelectedPipeDst : TTL_Type<"SelectedPipeDst", "selected_pipe_dst"> {
+  let summary = "PipeNet record selected by destination iteration";
+  let description = [{
+    Represents a PipeNet record selected because the current launch node is one
+    of its destinations. The selected record may be used for a send or receive;
+    copy operand position determines the transfer direction. The enclosing
+    foreach operation or defining select operation supplies the PipeNet id and
+    coordinates.
+  }];
+}
+
+def TTL_SelectedPipe : TypeConstraint<
+    Or<[
+      CPred<"llvm::isa<mlir::tt::ttl::SelectedPipeSrcType>($_self)">,
+      CPred<"llvm::isa<mlir::tt::ttl::SelectedPipeDstType>($_self)">
+    ]>,
+    "selected PipeNet iteration pipe">;
+
+def TTL_PipeReference : TypeConstraint<
+    Or<[
+      CPred<"llvm::isa<mlir::tt::ttl::PipeType>($_self)">,
+      CPred<"llvm::isa<mlir::tt::ttl::SelectedPipeSrcType>($_self)">,
+      CPred<"llvm::isa<mlir::tt::ttl::SelectedPipeDstType>($_self)">
+    ]>,
+    "static pipe or selected PipeNet iteration pipe">;
 
 #endif // TTLANG_DIALECT_TTL_IR_TTLOPSTYPES_TD

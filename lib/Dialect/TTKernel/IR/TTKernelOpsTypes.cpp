@@ -11,6 +11,8 @@
 #include "llvm/ADT/TypeSwitch.h"
 
 #include <algorithm>
+#include <cstdint>
+#include <limits>
 
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsEnums.cpp.inc"
 
@@ -18,6 +20,32 @@
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.cpp.inc"
 
 namespace mlir::tt::ttkernel {
+
+LogicalResult
+DFBDescriptorAttr::verify(llvm::function_ref<InFlightDiagnostic()> emitError,
+                          int64_t index, int64_t pagesPerBlock,
+                          int64_t blockCount, int64_t pageSizeBytes) {
+  constexpr uint64_t maxFieldValue = std::numeric_limits<uint32_t>::max();
+  auto verifyField = [&](StringRef fieldName, int64_t fieldValue,
+                         bool allowZero) -> LogicalResult {
+    if (fieldValue < 0 || (!allowZero && fieldValue == 0) ||
+        static_cast<uint64_t>(fieldValue) > maxFieldValue) {
+      return emitError() << fieldName << " must be "
+                         << (allowZero ? "nonnegative" : "positive")
+                         << " and representable as uint32_t, got "
+                         << fieldValue;
+    }
+    return success();
+  };
+
+  if (failed(verifyField("index", index, true)) ||
+      failed(verifyField("pages_per_block", pagesPerBlock, false)) ||
+      failed(verifyField("block_count", blockCount, false)) ||
+      failed(verifyField("page_size_bytes", pageSizeBytes, false))) {
+    return failure();
+  }
+  return success();
+}
 
 ArgSpecAttr mlir::tt::ttkernel::ArgSpecAttr::setArgSpec(func::FuncOp op,
                                                         ArgSpecAttr argSpec) {

@@ -340,9 +340,6 @@ def test_matmul_both_intermediates(device):
 
 
 # --- two reduces on same intermediate, results feed elementwise sub ---
-# The add result is materialized as an operand DFB for each reduce.
-# Each reduce result feeds sub without a store, requiring result DFB
-# materialization (not yet implemented, see #508).
 
 
 @ttl.operation(grid=(1, 1))
@@ -359,9 +356,6 @@ def two_reduces_kernel(a, b, out):
             out_dfb.reserve() as o,
         ):
             added = ttl.add(av, bv)
-            # Both reduces consume the same non-CB-attached add result.
-            # Each reduce result feeds sub without a store, requiring
-            # result DFB materialization (#508).
             sm = ttl.math.reduce_sum(added, dims=[0, 1])
             mx = ttl.math.reduce_max(added, dims=[0, 1])
             o.store(ttl.sub(sm, mx))
@@ -568,9 +562,8 @@ def test_nested_loop_conditional(device):
             assert_allclose(result[r0, c0], expected[r0, c0], rtol=0.01, atol=1.0)
 
 
-@pytest.mark.xfail(reason="Requires result DFB materialization (#508)")
 def test_two_reduces(device):
-    """Two reduces on same input, results feed sub; requires result DFBs (#508)."""
+    """Materialize a shared input and two results consumed together."""
     a_torch = torch.randn(32, 32, dtype=torch.bfloat16)
     b_torch = torch.randn(32, 32, dtype=torch.bfloat16)
     out_torch = torch.zeros(32, 32, dtype=torch.bfloat16)

@@ -34,9 +34,9 @@
 // ADDR-DAG: %[[B_OFF:.*]] = arith.constant 8 : index
 // ADDR-DAG: %[[NOC:.*]] = arith.constant 0 : i8
 // ADDR: scf.for %[[IV0:.*]] =
+// ADDR:   %[[M:.*]] = arith.muli %[[IV0]], %{{.*}}
+// ADDR:   %[[A0:.*]] = arith.addi %[[M]], %[[B_OFF]]
 // ADDR:   scf.for %[[IV1:.*]] =
-// ADDR:     %[[M:.*]] = arith.muli %[[IV0]], %{{.*}}
-// ADDR:     %[[A0:.*]] = arith.addi %[[M]], %[[B_OFF]]
 // ADDR:     %[[TILE:.*]] = arith.addi %[[A0]], %[[IV1]]
 // ADDR:     %[[TILE_I32:.*]] = arith.index_cast %[[TILE]] : index to i32
 // ADDR:     ttkernel.noc_async_read_tile(%[[TILE_I32]], %{{.*}}, %{{.*}}, %[[NOC]])

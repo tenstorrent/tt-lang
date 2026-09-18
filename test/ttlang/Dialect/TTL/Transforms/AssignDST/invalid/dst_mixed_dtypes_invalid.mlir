@@ -1,6 +1,5 @@
 // Negative test: mixed f32 and non-f32 tile arguments in compute.
-// RUN: ttlang-opt %s --verify-diagnostics \
-// RUN:   --pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst))'
+// RUN: ttlang-opt %s --verify-diagnostics --pass-pipeline='builtin.module(ttl-set-compute-kernel-config{enable-fpu-binary-ops=1 matmul-full-fp32=0 reduce-full-fp32=0},func.func(ttl-assign-dst))'
 
 #idx_map = affine_map<(d0, d1) -> (d0, d1)>
 

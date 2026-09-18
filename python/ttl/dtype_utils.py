@@ -4,7 +4,11 @@
 
 """Data type conversion utilities between PyTorch, TTNN, and MLIR types."""
 
+import operator
+
 import torch
+
+from .constants import DEFAULT_TILE_SIZE
 
 ttnn = None  # Lazy-loaded via _ensure_ttnn()
 
@@ -17,6 +21,10 @@ def _ensure_ttnn():
     try:
         import ttnn as _ttnn
 
+        # A toolchain PYTHONPATH hit can yield a namespace package with no
+        # bindings. Treat that as missing rather than caching a stub.
+        if not hasattr(_ttnn, "DataType"):
+            return None
         ttnn = _ttnn
     except (ModuleNotFoundError, ImportError):
         pass
@@ -24,6 +32,25 @@ def _ensure_ttnn():
 
 
 from ttl.dialects import ttcore
+
+TTNN_DTYPE_NAMES_TO_TTCORE_DATATYPES = {
+    "FLOAT32": ttcore.DataType.Float32,
+    "BFLOAT16": ttcore.DataType.BFloat16,
+    "BFLOAT8_B": ttcore.DataType.BFP_BFloat8,
+    "BFLOAT4_B": ttcore.DataType.BFP_BFloat4,
+    "INT32": ttcore.DataType.Int32,
+    "UINT32": ttcore.DataType.UInt32,
+    "UINT16": ttcore.DataType.UInt16,
+    "UINT8": ttcore.DataType.UInt8,
+}
+TTNN_ROW_MAJOR_DTYPE_NAMES = (
+    "FLOAT32",
+    "BFLOAT16",
+    "INT32",
+    "UINT32",
+    "UINT16",
+    "UINT8",
+)
 
 
 def is_ttnn_tensor(tensor) -> bool:
@@ -80,32 +107,13 @@ def ttnn_dtype_to_ttcore_datatype(ttnn_dtype):
     Raises:
         ValueError: If dtype is not supported
     """
-    try:
-        import ttnn
-    except (ModuleNotFoundError, ImportError):
+    module = _ensure_ttnn()
+    if module is None:
         raise ImportError("ttnn module not available")
-
-    match ttnn_dtype:
-        case ttnn.DataType.FLOAT32:
-            return ttcore.DataType.Float32
-        case ttnn.DataType.BFLOAT16:
-            return ttcore.DataType.BFloat16
-        case ttnn.DataType.BFLOAT8_B:
-            return ttcore.DataType.BFP_BFloat8
-        case ttnn.DataType.BFLOAT4_B:
-            return ttcore.DataType.BFP_BFloat4
-        case ttnn.DataType.INT32:
-            return ttcore.DataType.Int32
-        case ttnn.DataType.UINT32:
-            return ttcore.DataType.UInt32
-        case ttnn.DataType.UINT16:
-            return ttcore.DataType.UInt16
-        case ttnn.DataType.UINT8:
-            return ttcore.DataType.UInt8
-        case _:
-            raise ValueError(
-                f"Unsupported ttnn dtype for ttcore.DataType: {ttnn_dtype}"
-            )
+    for dtype_name, ttcore_dtype in TTNN_DTYPE_NAMES_TO_TTCORE_DATATYPES.items():
+        if ttnn_dtype == getattr(module.DataType, dtype_name):
+            return ttcore_dtype
+    raise ValueError(f"Unsupported ttnn dtype for ttcore.DataType: {ttnn_dtype}")
 
 
 def tensor_dtype_to_ttcore_datatype(dtype):
@@ -118,11 +126,13 @@ def tensor_dtype_to_ttcore_datatype(dtype):
     Returns:
         ttcore.DataType enum value
     """
-    dtype_str = str(dtype)
-    if "DataType." in dtype_str:
+    module = _ensure_ttnn()
+    if module is not None and any(
+        dtype == getattr(module.DataType, dtype_name)
+        for dtype_name in TTNN_DTYPE_NAMES_TO_TTCORE_DATATYPES
+    ):
         return ttnn_dtype_to_ttcore_datatype(dtype)
-    else:
-        return torch_dtype_to_ttcore_datatype(dtype)
+    return torch_dtype_to_ttcore_datatype(dtype)
 
 
 def torch_dtype_to_ttnn_datatype(torch_dtype):
@@ -161,66 +171,134 @@ def torch_dtype_to_ttnn_datatype(torch_dtype):
             )
 
 
-def format_name_to_ttnn_dtype(name: str):
+def format_name_to_ttnn_dtype(name: str, ttnn_module=None):
     """Convert a data format name string to a ttnn.DataType enum value.
 
-    Accepts names produced by the compiler's DFB metadata, e.g.,
-    "bfloat16", "float32".
+    Accepts frontend dtype aliases and names produced by the compiler's DFB
+    metadata, e.g., "bf16", "bfloat16", and "float32". ``ttnn_module``
+    selects the ttnn binding; callers that already imported or stubbed ttnn
+    should pass that module so unit tests do not depend on a second global
+    import.
 
     Raises:
         ValueError: If the name is not recognized.
     """
-    _ensure_ttnn()
-    if ttnn is None:
+    module = ttnn_module if ttnn_module is not None else _ensure_ttnn()
+    if module is None:
         raise RuntimeError("ttnn is not available")
 
     match name:
-        case "bfloat16":
-            return ttnn.DataType.BFLOAT16
-        case "float16":
-            return ttnn.DataType.BFLOAT16  # hardware implements f16 as bf16
-        case "float32":
-            return ttnn.DataType.FLOAT32
-        case "int32":
-            return ttnn.DataType.INT32
-        case "uint32":
-            return ttnn.DataType.UINT32
-        case "uint16":
-            return ttnn.DataType.UINT16
+        case "bfloat16" | "bf16":
+            return module.DataType.BFLOAT16
+        case "bfloat4_b" | "bfp_bf4" | "bfp4":
+            return module.DataType.BFLOAT4_B
+        case "bfloat8_b" | "bfp_bf8" | "bfp8":
+            return module.DataType.BFLOAT8_B
+        case "float16" | "f16":
+            return module.DataType.BFLOAT16  # hardware implements f16 as bf16
+        case "float32" | "f32":
+            return module.DataType.FLOAT32
+        case "int32" | "i32" | "si32":
+            return module.DataType.INT32
+        case "uint32" | "u32" | "ui32":
+            return module.DataType.UINT32
+        case "uint16" | "u16" | "ui16":
+            return module.DataType.UINT16
+        case "uint8" | "u8" | "ui8":
+            return module.DataType.UINT8
         case _:
             raise ValueError(
                 f"Unrecognized data format name '{name}' for ttnn.DataType"
             )
 
 
-def tile_bytes_from_dtype(dtype) -> int:
+def normalize_tile_dimensions(tile) -> tuple[int, int]:
+    """Return validated TT-Metal physical tile dimensions."""
+    try:
+        tile_height, tile_width = tile
+        normalized_tile = (
+            operator.index(tile_height),
+            operator.index(tile_width),
+        )
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Tile must contain exactly two integer dimensions, got {tile!r}"
+        ) from None
+
+    if normalized_tile[0] <= 0 or normalized_tile[1] <= 0:
+        raise ValueError(f"Tile dimensions must be positive, got {normalized_tile}")
+    try:
+        is_supported_tile = ttcore.ir.TileType.is_tt_metal_tile_shape(*normalized_tile)
+    except (OverflowError, TypeError):
+        is_supported_tile = False
+    if not is_supported_tile:
+        raise ValueError(
+            "Tile dimensions are not constructible by tt-metal: "
+            f"{normalized_tile[0]}x{normalized_tile[1]}"
+        )
+    return normalized_tile
+
+
+def tile_bytes_from_dtype(dtype, tile=(DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE)) -> int:
     """
     Calculate tile size in bytes from ttnn dtype.
 
-    For tiled tensors, each tile is 32x32 elements. The byte size depends on
-    the data type's element size plus any format-specific overhead.
+    The byte size matches ttcore::TileType::getSizeBytes(). Dense and BFP
+    formats scale with the physical tile dimensions. Every valid ttnn.DataType
+    with a corresponding ttcore::DataType is supported; FP8_E4M3 has no
+    ttcore representation. Compute eligibility is validated separately by the
+    compiler.
 
     Args:
         dtype: ttnn.DataType enum value
+        tile: Physical tile dimensions as (height, width)
 
     Returns:
         Tile size in bytes
 
     Raises:
-        ValueError: If dtype is not supported
+        ValueError: If dtype or its tile dimensions are not supported
     """
-    dtype_int = dtype.value
-    # Map ttnn DataType enum values to tile sizes
-    # Reference: tt-metal/tt_metal/common/constants.hpp
-    if dtype_int in (0, 6):  # BFloat16, UInt16
-        return 32 * 32 * 2  # 2048
-    elif dtype_int in (1, 2, 7):  # Float32, Int32, UInt32
-        return 32 * 32 * 4  # 4096
-    elif dtype_int == 3:  # BFP8
-        return 32 * 32 + 64  # 1088
-    elif dtype_int == 5:  # UInt8/Int8
-        return 32 * 32  # 1024
-    elif dtype_int == 4:  # BFP4
-        return 512 + 64  # 576
-    else:
+    tile_height, tile_width = normalize_tile_dimensions(tile)
+
+    _ensure_ttnn()
+    if ttnn is None:
+        raise RuntimeError("ttnn is not available")
+
+    tile_elements = tile_height * tile_width
+    # Local sizing keeps metadata generation independent of MetalContext, which
+    # tt-metal's Tile::get_tile_size uses to query L1 alignment.
+    # Keep this mapping synchronized with ttcore::TileType::getSizeBytes().
+    if dtype in (ttnn.DataType.BFLOAT16, ttnn.DataType.UINT16):
+        return tile_elements * 2
+    if dtype in (
+        ttnn.DataType.FLOAT32,
+        ttnn.DataType.INT32,
+        ttnn.DataType.UINT32,
+    ):
+        return tile_elements * 4
+    if dtype == ttnn.DataType.UINT8:
+        return tile_elements
+    bfp_dtypes = (
+        ttnn.DataType.BFLOAT8_B,
+        ttnn.DataType.BFLOAT4_B,
+    )
+    if dtype not in bfp_dtypes:
         raise ValueError(f"Unsupported dtype for tile size calculation: {dtype}")
+    # tt-metal Tile::get_tile_size stores one exponent byte per 16-element face
+    # row and aligns the complete exponent section to L1.
+    # TODO(#511): Source L1 alignment from shared target metadata.
+    elements_per_exponent = 16
+    l1_alignment_bytes = 16
+    if tile_elements % elements_per_exponent != 0:
+        raise ValueError(
+            "BFP tile element count must be divisible by "
+            f"{elements_per_exponent}, got {tile_elements}"
+        )
+    exponent_count = tile_elements // elements_per_exponent
+    exponent_bytes = (
+        (exponent_count + l1_alignment_bytes - 1) // l1_alignment_bytes
+    ) * l1_alignment_bytes
+    if dtype == ttnn.DataType.BFLOAT8_B:
+        return tile_elements + exponent_bytes
+    return tile_elements // 2 + exponent_bytes

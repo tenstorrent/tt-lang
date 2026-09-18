@@ -18,7 +18,7 @@ import ttl
 
 from ttlang_test_utils import open_fabric_mesh
 
-# Opens a fabric mesh across all chips; run serially, not in the per-chip pool.
+# Opens a fabric mesh across visible chips; run serially, not in the per-chip pool.
 pytestmark = pytest.mark.multi_device
 
 TILE_SIZE = 32

@@ -7,6 +7,14 @@ on:
                 description: "Build and deploy documentation."
                 type: boolean
                 default: false
+            run_galaxy_tests:
+                description: "Run hardware tests on a shared Exabox Galaxy."
+                type: boolean
+                default: false
+            run_quietbox_tests:
+                description: "Run hardware tests on the Blackhole Quietbox."
+                type: boolean
+                default: false
             docker_tag:
                 description: "Docker image tag for the ird container."
                 type: string
@@ -18,12 +26,23 @@ on:
                 type: boolean
                 required: false
                 default: false
+            run_galaxy_tests:
+                description: "Run hardware tests on a shared Exabox Galaxy."
+                type: boolean
+                required: false
+                default: false
+            run_quietbox_tests:
+                description: "Run hardware tests on the Blackhole Quietbox."
+                type: boolean
+                required: false
+                default: false
             docker_tag:
                 description: "Docker image tag for the ird container."
                 type: string
                 required: true
 
 permissions:
+    actions: read
     checks: write
     contents: read
     packages: read
@@ -121,10 +140,55 @@ jobs:
         strategy:
             fail-fast: false
             matrix:
-                runner: [n150, n300-llmbox]
+                hardware: ${{ inputs.run_quietbox_tests && fromJSON('["n150","BH-Quietbox-2"]') || fromJSON('["n150"]') }}
         uses: ./.github/workflows/call-test-hardware.yml
         secrets: inherit
         with:
-            runs-on: ${{ matrix.runner }}
+            defer_result_check: ${{ matrix.hardware != 'BH-Quietbox-2' }}
+            hardware: ${{ matrix.hardware }}
+            runner_labels_json: ${{ matrix.hardware == 'BH-Quietbox-2' && '["BH-Quietbox-2","in-service"]' || '["tt-ubuntu-2204-n150-stable"]' }}
             timeout: 90
             docker_tag: ${{ inputs.docker_tag }}
+
+    test-exabox:
+        if: ${{ inputs.run_galaxy_tests }}
+        uses: ./.github/workflows/call-test-exabox.yml
+        secrets: inherit
+        with:
+            defer_result_check: true
+            timeout: 90
+            docker_tag: ${{ inputs.docker_tag }}
+
+    report-skipped-galaxy:
+        name: "Report skipped Galaxy hardware tests"
+        if: ${{ !inputs.run_galaxy_tests }}
+        runs-on: ubuntu-24.04
+        timeout-minutes: 5
+
+        steps:
+            - name: Report skipped tests
+              run: echo "::warning::Exabox Galaxy hardware tests are disabled for this workflow run."
+
+    check-hardware:
+        name: "Check aggregate hardware result"
+        needs: [test-hardware, test-exabox]
+        if: ${{ !cancelled() }}
+        runs-on: ubuntu-24.04
+        timeout-minutes: 5
+
+        steps:
+            - name: Checkout tt-lang
+              uses: actions/checkout@v6
+              with:
+                  fetch-depth: 1
+                  submodules: false
+
+            - name: Check hardware job results
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  set -o pipefail
+                  gh api --paginate \
+                      "/repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}/jobs?per_page=100" |
+                      python3 .github/scripts/check-hardware-job-results.py \
+                          --expected-job-count "${{ inputs.run_quietbox_tests && (inputs.run_galaxy_tests && 3 || 2) || (inputs.run_galaxy_tests && 2 || 1) }}"

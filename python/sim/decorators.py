@@ -14,8 +14,8 @@ import types
 from types import CellType, FunctionType
 from typing import Any, Callable, Dict, List
 
-from .blockstate import KernelType
 from .context import get_context
+from .kernel import KernelKind, KernelSelector
 from .typedefs import BindableTemplate
 
 
@@ -78,7 +78,9 @@ def get_registered_kernels() -> List[BindableTemplate]:
     return kernels
 
 
-def compute() -> Callable[[FunctionType], BindableTemplate]:
+def compute(
+    *, kernel: KernelSelector | None = None
+) -> Callable[[FunctionType], BindableTemplate]:
     """
     Decorator to mark a function as a compute operation.
 
@@ -89,11 +91,13 @@ def compute() -> Callable[[FunctionType], BindableTemplate]:
         A BindableTemplate that can be bound to specific execution contexts
     """
 
+    del kernel
+
     def decorator(func: FunctionType) -> BindableTemplate:
         class ComputeTemplate:
             __name__ = func.__name__
             __wrapped__ = func  # Standard convention from functools.wraps
-            kernel_type = KernelType.COMPUTE  # KernelType enum for type safety
+            kernel_type = KernelKind.COMPUTE
 
             def bind(self, ctx: Dict[str, Any]) -> Callable[[], Any]:
                 # rebuild function with per-node closure
@@ -107,7 +111,9 @@ def compute() -> Callable[[FunctionType], BindableTemplate]:
     return decorator
 
 
-def datamovement() -> Callable[[FunctionType], BindableTemplate]:
+def datamovement(
+    *, kernel: KernelSelector | None = None
+) -> Callable[[FunctionType], BindableTemplate]:
     """
     Decorator to mark a function as a data movement operation.
 
@@ -118,11 +124,13 @@ def datamovement() -> Callable[[FunctionType], BindableTemplate]:
         A BindableTemplate that can be bound to specific execution contexts
     """
 
+    del kernel
+
     def decorator(func: FunctionType) -> BindableTemplate:
         class DMTemplate:
             __name__ = func.__name__
             __wrapped__ = func  # Standard convention from functools.wraps
-            kernel_type = KernelType.DM  # KernelType enum for type safety
+            kernel_type = KernelKind.DATA_MOVEMENT
 
             def bind(self, ctx: Dict[str, Any]) -> Callable[[], Any]:
                 bound_func = rebind_func_with_ctx(func, ctx)

@@ -3,13 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: ttnn, tt-device, multi-device
-# RUN: env -u TT_VISIBLE_DEVICES %python %s > %t.output.txt 2>&1
+# RUN: env TT_VISIBLE_DEVICES=0,1 %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.output.txt
 
 """
 Test SPMD mesh tensor compilation and execution.
 
-Logical shape: (32 * num_devices) x 32 -- one 32x32 tile per device.
+Logical shape: (32 * num_devices) x 32 -- one 32x32 tile per visible device.
 Shard shape:    32x32 (1x1 tile) -- dim-0 sharded across all mesh devices.
 
 The kernel processes a single tile (1x1). With the full logical shape the
@@ -17,9 +17,9 @@ kernel would only touch the first tile and produce incorrect results for the
 rest. Correct output for all elements proves the tensor was properly sharded
 so each device sees its own 32x32 slice.
 
-Requires multiple devices for real mesh sharding. The `multi-device` lit
-feature restricts the test so lit reports it unsupported on single-card hosts
-(single-device execution is covered by other tests).
+Requires multiple devices for real mesh sharding. The lit RUN line exposes two
+devices because this test validates SPMD sharding semantics, not full-system
+fabric scale.
 """
 
 import torch

@@ -4,7 +4,7 @@
 // Covers: binary, unary, fused chains, 3 outputs, and larger shapes.
 
 // RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute))' | FileCheck %s --check-prefix=COMPUTE
-// RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute,ttl-set-compute-kernel-config,ttl-assign-dst,ttl-subblock-compute-for-dst,ttl-lower-to-loops,canonicalize,cse))' | FileCheck %s --check-prefix=DST
+// RUN: ttlang-opt %s --split-input-file --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute),ttl-set-compute-kernel-config,func.func(ttl-assign-dst,ttl-subblock-compute-for-dst,ttl-lower-to-loops,canonicalize,cse))' | FileCheck %s --check-prefix=DST
 
 // ---- Test 1: Binary add, 1x1 shape, 2 outputs ----
 
@@ -15,17 +15,17 @@
 // COMPUTE:      %[[CB3:.*]] = ttl.bind_cb{cb_index = 3
 // COMPUTE:      %[[R2:.*]] = ttl.cb_reserve %[[CB2]]
 // COMPUTE:      %[[R3:.*]] = ttl.cb_reserve %[[CB3]]
-// COMPUTE:      %[[INIT_ATT3:.*]] = ttl.attach_cb %{{[^,]+}}, %[[CB3]]
 // COMPUTE:      %[[INIT_ATT2:.*]] = ttl.attach_cb %{{[^,]+}}, %[[CB2]]
+// COMPUTE:      %[[INIT_ATT3:.*]] = ttl.attach_cb %{{[^,]+}}, %[[CB3]]
 // COMPUTE:      %[[C:.*]]:2 = ttl.compute
-// COMPUTE-SAME:   outs(%[[INIT_ATT3]], %[[INIT_ATT2]] :
+// COMPUTE-SAME:   outs(%[[INIT_ATT2]], %[[INIT_ATT3]] :
 // COMPUTE-SAME:   indexing_maps = [#[[$ID]], #[[$ID]], #[[$ID]], #[[$ID]]]
 // COMPUTE:      ^bb0(%[[IN0:.*]]: !ttcore.tile<32x32, bf16>, %[[IN1:.*]]: !ttcore.tile<32x32, bf16>, %[[OUT0:.*]]: !ttcore.tile<32x32, bf16>, %[[OUT1:.*]]: !ttcore.tile<32x32, bf16>):
 // COMPUTE:        ttl.iter_index
 // COMPUTE:        ttl.iter_index
 // COMPUTE:        %[[SUM:.*]] = ttl.tile_add %[[IN0]], %[[IN1]] into dst[%c-1] {{.*}} : !ttcore.tile<32x32, bf16>, !ttcore.tile<32x32, bf16> -> !ttcore.tile<32x32, bf16>
-// COMPUTE-NEXT:   ttl.tile_store %[[SUM]], %[[R3]]
 // COMPUTE-NEXT:   ttl.tile_store %[[SUM]], %[[R2]]
+// COMPUTE-NEXT:   ttl.tile_store %[[SUM]], %[[R3]]
 // COMPUTE-NEXT:   ttl.yield
 // COMPUTE:      -> (tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>)
 

@@ -17,7 +17,6 @@ from typing import (
     AbstractSet,
     Any,
     Callable,
-    Dict,
     List,
     NamedTuple,
     Optional,
@@ -36,7 +35,6 @@ from .blockstate import (
     BlockAcquisition,
     BlockStateMachine,
     ExpectedOp,
-    KernelType,
     format_cannot_read_block,
     format_cannot_write_block,
 )
@@ -45,6 +43,7 @@ from .diagnostics import find_user_code_location
 from .dfbstate import DFBState
 from .constants import TILE_SHAPE
 from .errors import DFBContractError
+from .kernel import KernelKind, KernelSelector
 from .ttnnsim import (
     ROW_MAJOR_LAYOUT,
     TILE_LAYOUT,
@@ -96,7 +95,7 @@ def _dry_run_result(shape: Shape, *sources: "Block") -> "Block":
         tensor=_dry_run_sentinel(layout),
         shape=shape,
         acquisition=BlockAcquisition.RESERVE,
-        kernel_type=KernelType.COMPUTE,
+        kernel_type=KernelKind.COMPUTE,
         is_temporary=True,
     )
     track_source_blocks(result_block, *sources)
@@ -149,7 +148,7 @@ class Block:
         tensor: Tensor,
         shape: Shape,
         acquisition: BlockAcquisition,
-        kernel_type: KernelType,
+        kernel_type: KernelKind,
         is_temporary: bool = False,
         dfb: Optional["DataflowBuffer"] = None,
         name: Optional[str] = None,
@@ -220,14 +219,16 @@ class Block:
             f"expected={expected})"
         )
 
-    def pop(self) -> None:
+    def pop(self, *, kernel: Optional[KernelSelector] = None) -> None:
+        del kernel
         if self.dfb is None:
             raise RuntimeError(
                 "Block.pop() is only valid for blocks acquired from a DataflowBuffer."
             )
         self.dfb.pop_block()
 
-    def push(self) -> None:
+    def push(self, *, kernel: Optional[KernelSelector] = None) -> None:
+        del kernel
         if self.dfb is None:
             raise RuntimeError(
                 "Block.push() is only valid for blocks acquired from a DataflowBuffer."
@@ -473,16 +474,30 @@ class Block:
         tensors each of shape (N,).
         """
         buf = self._buf.to_torch()
-        shape = self._shape
+        shape = tuple(self._shape)
 
         if self.layout == ROW_MAJOR_LAYOUT:
             if len(shape) == 1:
                 # 1-D: the entire buffer is a single row.
-                return [Tensor(buf, ROW_MAJOR_LAYOUT)]
+                return [
+                    Tensor(
+                        buf,
+                        ROW_MAJOR_LAYOUT,
+                        self._buf.memory_config,
+                        dtype=self._buf.dtype,
+                    )
+                ]
             # ND: iterate over all leading dimensions, yield one row per combination.
             rows: List[Tensor] = []
             for coords in _product(*[range(d) for d in shape[:-1]]):
-                rows.append(Tensor(buf[coords], ROW_MAJOR_LAYOUT))
+                rows.append(
+                    Tensor(
+                        buf[coords],
+                        ROW_MAJOR_LAYOUT,
+                        self._buf.memory_config,
+                        dtype=self._buf.dtype,
+                    )
+                )
             return rows
 
         # TILE_LAYOUT path
@@ -491,7 +506,28 @@ class Block:
             tk = shape[0]
             w = buf.shape[-1]
             tile_w = w // tk if tk > 0 else 1
-            return [Tensor(buf[slice(c * tile_w, (c + 1) * tile_w)]) for c in range(tk)]
+            return [
+                Tensor(
+                    buf[slice(c * tile_w, (c + 1) * tile_w)],
+                    TILE_LAYOUT,
+                    self._buf.memory_config,
+                    dtype=self._buf.dtype,
+                )
+                for c in range(tk)
+            ]
+
+        # The tile grid addresses the last two buffer axes, preceded by one
+        # axis per batch dimension.  A buffer may carry extra leading axes
+        # when it was allocated with a higher rank than the block; those
+        # carry no data while they are singleton, and dropping them keeps the
+        # grid aligned with the axes ``tile_h``/``tile_w`` are measured from.
+        while buf.ndim > len(shape) and buf.shape[0] == 1:
+            buf = buf[0]
+        if buf.ndim > len(shape):
+            raise ValueError(
+                f"block shape {tuple(shape)} cannot address a buffer of shape "
+                f"{tuple(buf.shape)}: leading dimension is not 1"
+            )
 
         nb = len(shape) - 2
         tm, tk = shape[nb], shape[nb + 1]
@@ -508,7 +544,14 @@ class Block:
                 slice(r * tile_h, (r + 1) * tile_h),
                 slice(c * tile_w, (c + 1) * tile_w),
             )
-            tiles.append(Tensor(buf[slices]))
+            tiles.append(
+                Tensor(
+                    buf[slices],
+                    TILE_LAYOUT,
+                    self._buf.memory_config,
+                    dtype=self._buf.dtype,
+                )
+            )
         return tiles
 
     def to_tensor(self) -> Tensor:
@@ -532,7 +575,11 @@ class Block:
         (N,) expects a single tensor of shape (N,); an ND shape (A, B, N)
         expects A*B tensors each of shape (N,).
         """
-        layout = tensors[0].layout if tensors else TILE_LAYOUT
+        shape = tuple(shape)
+        if not tensors:
+            raise ValueError("Block.from_list requires at least one tensor")
+        first = tensors[0]
+        layout = first.layout
 
         if layout == ROW_MAJOR_LAYOUT:
             if len(shape) == 1:
@@ -544,10 +591,15 @@ class Block:
                     *shape
                 )
             block = cls(
-                tensor=Tensor(elem_tensor, ROW_MAJOR_LAYOUT),
+                tensor=Tensor(
+                    elem_tensor,
+                    ROW_MAJOR_LAYOUT,
+                    first.memory_config,
+                    dtype=first.dtype,
+                ),
                 shape=shape,
                 acquisition=BlockAcquisition.RESERVE,
-                kernel_type=KernelType.COMPUTE,
+                kernel_type=KernelKind.COMPUTE,
                 is_temporary=True,
             )
             return block
@@ -572,10 +624,15 @@ class Block:
 
         # Create block with derived element shape
         block = cls(
-            tensor=Tensor(elem_tensor),
+            tensor=Tensor(
+                elem_tensor,
+                TILE_LAYOUT,
+                first.memory_config,
+                dtype=first.dtype,
+            ),
             shape=shape,
             acquisition=BlockAcquisition.RESERVE,
-            kernel_type=KernelType.COMPUTE,
+            kernel_type=KernelKind.COMPUTE,
             is_temporary=True,
         )
         return block
@@ -598,18 +655,22 @@ class Block:
             A temporary Block backed directly by t (no copy).
 
         Raises:
-            ValueError: If a TILE_LAYOUT tensor's dimensions are not tile-aligned.
+            ValueError: If a TILE_LAYOUT tensor's stored dimensions are not
+                tile-aligned.  This is ``padded_shape``, not ``shape``, so a
+                tensor whose logical shape is unaligned is accepted: the
+                simulator stores it padded, and blocks address the storage.
         """
         if t.layout == ROW_MAJOR_LAYOUT:
             return cls(
                 tensor=t,
-                shape=t.shape,
+                shape=t.padded_shape,
                 acquisition=BlockAcquisition.RESERVE,
-                kernel_type=KernelType.COMPUTE,
+                kernel_type=KernelKind.COMPUTE,
                 is_temporary=True,
             )
 
-        elem_shape = t.shape
+        # Tile-geometry validation operates on the physical (padded) extent.
+        elem_shape = t.padded_shape
         if len(elem_shape) == 1:
             w = elem_shape[0]
             if w % TILE_SHAPE[0] != 0:
@@ -630,7 +691,7 @@ class Block:
             tensor=t,
             shape=tile_shape,
             acquisition=BlockAcquisition.RESERVE,
-            kernel_type=KernelType.COMPUTE,
+            kernel_type=KernelKind.COMPUTE,
             is_temporary=True,
         )
 
@@ -666,7 +727,7 @@ class Block:
             f"block {self._shape}",
         )
 
-        if tensor.shape == self._buf.shape:
+        if tensor.padded_shape == self._buf.padded_shape:
             # Fast path: same element shape — copy data in-place
             self._buf.to_torch().copy_(tensor.to_torch())
         else:
@@ -680,21 +741,30 @@ class Block:
         """Store data into this block.
 
         Args:
-            items: A Block whose tile count matches this block.
+            items: A Block whose shape exactly matches this block.
 
         Raises:
-            ValueError: If the source tile count does not match this block's.
+            ValueError: If the source shape does not match this block's.
         """
         # Check write access before touching items so state-machine errors are
         # always surfaced first.
         self._check_can_write()
+
+        src_shape = tuple(items._shape)
+        dst_shape = tuple(self._shape)
+        if src_shape != dst_shape:
+            raise ValueError(
+                f"Shape mismatch in store(): source shape {src_shape} must exactly "
+                f"match destination shape {dst_shape}; store() does not reshape its "
+                "source."
+            )
 
         src_tensor = items._buf
         source_blocks_to_mark: List["Block"] = []
         # Track wait() Compute source blocks for state machine
         if (
             items._sm.acquisition == BlockAcquisition.WAIT
-            and items._sm.kernel_type == KernelType.COMPUTE
+            and items._sm.kernel_type == KernelKind.COMPUTE
             and ExpectedOp.STORE_SRC in items._sm.expected_ops
         ):
             source_blocks_to_mark.append(items)
@@ -704,19 +774,6 @@ class Block:
                 for blk in items._source_blocks
                 if ExpectedOp.STORE_SRC in blk._sm.expected_ops
                 or blk._store_confirmation_pending
-            )
-
-        # Validate that tile counts match (allows different dimensionality)
-        src_shape = items._shape
-        dst_shape = self._shape
-        src_tiles = math.prod(src_shape)
-        dst_tiles = math.prod(dst_shape)
-        if src_tiles != dst_tiles:
-            raise ValueError(
-                f"Shape mismatch in store(): "
-                f"source shape {src_shape} ({src_tiles} tiles) does not match "
-                f"destination shape {dst_shape} ({dst_tiles} tiles). "
-                f"Use broadcast() to expand the source before store()."
             )
 
         # Mark source wait() blocks as consumed
@@ -729,7 +786,7 @@ class Block:
             # Skip payload copy; state machine transition above still fires.
             return
 
-        if src_tensor.shape == self._buf.shape:
+        if src_tensor.padded_shape == self._buf.padded_shape:
             # Fast path: same element shape — copy in-place
             self._buf.to_torch().copy_(src_tensor.to_torch())
         else:
@@ -756,7 +813,7 @@ class Block:
             if (
                 not source._is_temporary
                 and source._sm.acquisition == BlockAcquisition.WAIT
-                and source._sm.kernel_type == KernelType.COMPUTE
+                and source._sm.kernel_type == KernelKind.COMPUTE
             ):
                 if result_block._source_blocks is None:
                     result_block._source_blocks = []
@@ -789,7 +846,7 @@ class Block:
             tensor=result_tensor,
             shape=shape,
             acquisition=BlockAcquisition.RESERVE,
-            kernel_type=KernelType.COMPUTE,
+            kernel_type=KernelKind.COMPUTE,
             is_temporary=True,
         )
         # Track all source blocks (self + any additional)
@@ -813,6 +870,14 @@ class Block:
 
         Tracks wait() Compute blocks that contribute to the result.
         """
+        # TODO(#869): Add support for non-Block operands.
+        if not isinstance(other, Block):
+            raise TypeError(
+                f"unsupported operand for block {op.__name__}: "
+                f"{type(other).__name__}. Both operands must be blocks; "
+                f"materialize a scalar with ttl.block.fill() first."
+            )
+
         # Layout consistency is checked before shape so a mismatched-layout
         # error wins over a shape error: pairing the underlying buffers is
         # only meaningful when both operands agree on layout, regardless of
@@ -892,7 +957,7 @@ class Block:
         """In-place add for temporary accumulator blocks.
 
         Allows the pattern:
-            y = ttl.math.fill(0, shape=(...))
+            y = ttl.block.fill(0, shape=(...))
             y += a_blk @ b_blk   # repeated accumulation
             dst_blk.store(y)
 
@@ -921,7 +986,7 @@ class Block:
         return self._sm.acquisition
 
     @property
-    def kernel_type(self) -> KernelType:
+    def kernel_type(self) -> KernelKind:
         """Get the kernel role (DM or Compute) that acquired this block."""
         return self._sm.kernel_type
 
@@ -955,6 +1020,19 @@ class Block:
     def shape(self) -> Shape:
         """Get the shape (rows, cols in tiles) of this block from its associated DFB."""
         return self._shape
+
+    @property
+    def tile(self) -> Tuple[int, int]:
+        """Get the physical dimensions of one tile in this block."""
+        if self.layout == ROW_MAJOR_LAYOUT:
+            raise ValueError("Row-major blocks do not have physical tile dimensions")
+        if _is_dry_run():
+            return TILE_SHAPE
+        element_shape = self._buf.shape
+        return (
+            element_shape[-2] // self._shape[-2],
+            element_shape[-1] // self._shape[-1],
+        )
 
     @property
     def layout(self) -> IndexType:
@@ -1037,35 +1115,43 @@ class DataflowBuffer:
             # per-pixel block of shape (C,)).
             self._element_shape = shape
         else:
-            # Tiled: validate tile alignment and derive element shape.
-            if len(likeness_tensor.shape) != len(shape):
+            # Tiled: validate tile alignment and derive element shape.  Tile
+            # geometry is a property of the physical (padded) extent, so
+            # validate against padded_shape rather than the logical shape.
+            likeness_elem_shape = tuple(likeness_tensor.padded_shape)
+            ndims = len(shape)
+            # The likeness tensor supplies dtype and shape unit; a block may
+            # cover a trailing sub-slab of it, so its rank only has to fit
+            # within the tensor rank (e.g. a (1, k) block of a (B, H, S, D)
+            # tensor).  Validate against the innermost len(shape) dimensions.
+            if ndims > len(likeness_elem_shape):
                 raise ValueError(
-                    f"Element shape dimensionality {len(likeness_tensor.shape)} does not match "
-                    f"tile shape dimensionality {len(shape)}. Element shape: {likeness_tensor.shape}, "
-                    f"tile shape: {shape}"
+                    f"Tile shape dimensionality {ndims} exceeds element shape "
+                    f"dimensionality {len(likeness_elem_shape)}. Element shape: "
+                    f"{likeness_elem_shape}, tile shape: {shape}"
                 )
+            base = len(likeness_elem_shape) - ndims
 
             TILE_SIZE = TILE_SHAPE[0]  # 32
-            ndims = len(shape)
-            for i, (edim, tdim) in enumerate(zip(likeness_tensor.shape, shape)):
+            for i, (edim, tdim) in enumerate(zip(likeness_elem_shape[base:], shape)):
                 if i == ndims - 1 or i == ndims - 2:
                     # Last two dimensions are tile dimensions: must be a
                     # multiple of TILE_SIZE per spec (every tile is 32x32).
                     if edim % TILE_SIZE != 0:
                         raise ValueError(
-                            f"Element shape dimension {i} has size {edim}, which is not a multiple of TILE_SIZE ({TILE_SIZE}). "
-                            f"Element shape: {likeness_tensor.shape}, tile shape: {shape}"
+                            f"Element shape dimension {base + i} has size {edim}, which is not a multiple of TILE_SIZE ({TILE_SIZE}). "
+                            f"Element shape: {likeness_elem_shape}, tile shape: {shape}"
                         )
                     if edim // TILE_SIZE < tdim:
                         raise ValueError(
-                            f"Element shape dimension {i} has {edim // TILE_SIZE} tiles, but tile shape requires at least {tdim} tiles. "
-                            f"Element shape: {likeness_tensor.shape}, tile shape: {shape}"
+                            f"Element shape dimension {base + i} has {edim // TILE_SIZE} tiles, but tile shape requires at least {tdim} tiles. "
+                            f"Element shape: {likeness_elem_shape}, tile shape: {shape}"
                         )
                 else:
                     if edim < tdim:
                         raise ValueError(
-                            f"Element shape dimension {i} has size {edim}, but tile shape requires at least {tdim}. "
-                            f"Element shape: {likeness_tensor.shape}, tile shape: {shape}"
+                            f"Element shape dimension {base + i} has size {edim}, but tile shape requires at least {tdim}. "
+                            f"Element shape: {likeness_elem_shape}, tile shape: {shape}"
                         )
 
             self._element_shape = tuple(
@@ -1444,20 +1530,6 @@ class DataflowBuffer:
                 + "\n\n---\n\n".join(f"{i+1}) {err}" for i, err in enumerate(errors))
             )
 
-    def __deepcopy__(self, memo: Dict[int, Any]) -> "DataflowBuffer":
-        """Return a fresh DataflowBuffer with the same configuration.
-
-        Deep-copying a DataflowBuffer yields an independent buffer with the same
-        shape/capacity settings and a clean ring-buffer state.
-        """
-        new_dfb = DataflowBuffer(
-            likeness_tensor=self.likeness_tensor,
-            shape=self._shape,
-            block_count=self._block_count,
-        )
-        memo[id(self)] = new_dfb
-        return new_dfb
-
     def __repr__(self) -> str:
         s = self._state
         return (
@@ -1521,7 +1593,7 @@ def track_source_blocks(result_block: Block, *input_blocks: Block) -> None:
         if (
             not is_temporary
             and getattr(block, "acquisition", None) == BlockAcquisition.WAIT
-            and getattr(block, "kernel_type", None) == KernelType.COMPUTE
+            and getattr(block, "kernel_type", None) == KernelKind.COMPUTE
         ):
             # ``_source_blocks`` is now lazy-init on Block (``None`` until
             # the first source append) to skip ~17M empty-list allocations
@@ -1632,7 +1704,7 @@ def matmul(a: Block, b: Block, _output_hint: Optional[Block] = None) -> Block:
         tensor=result_tensor,
         shape=result_shape,
         acquisition=BlockAcquisition.RESERVE,
-        kernel_type=KernelType.COMPUTE,
+        kernel_type=KernelKind.COMPUTE,
         is_temporary=True,
     )
     track_source_blocks(result_block, a, b)

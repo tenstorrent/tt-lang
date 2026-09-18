@@ -172,20 +172,7 @@ inline std::optional<DataType> elementTypeToDataTypeImpl(Type elementType) {
   }
 
   if (auto tileType = dyn_cast<TileType>(elementType)) {
-    switch (tileType.getDataType()) {
-    case DataType::BFP_BFloat8:
-    case DataType::BFP_BFloat4:
-    case DataType::BFP_BFloat2:
-    case DataType::BFP_Float8:
-    case DataType::BFP_Float4:
-    case DataType::BFP_Float2:
-    case DataType::Float32:
-    case DataType::BFloat16:
-    case DataType::Int32:
-      return tileType.getDataType();
-    default:
-      assert(false && "Unsupported tile type in elementTypeToDataTypeImpl");
-    }
+    return tileType.getDataType();
   }
 
   if (auto floatType = dyn_cast<mlir::FloatType>(elementType)) {

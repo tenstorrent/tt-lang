@@ -13,6 +13,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 from conftest import REPO_ROOT
 
 
@@ -50,6 +52,7 @@ def _load_ttlang_test_utils(
     else:
         # None in sys.modules makes `from ttl.config import ...` raise ImportError.
         monkeypatch.setitem(sys.modules, "ttl", None)
+        monkeypatch.setitem(sys.modules, "ttl.config", None)
 
     real_glob = glob.glob
 
@@ -71,6 +74,59 @@ def _load_ttlang_test_utils(
     monkeypatch.setitem(sys.modules, module_name, module)
     spec.loader.exec_module(module)
     return module
+
+
+def _create_fake_fabric_ttnn(
+    discovered_shape: tuple[int, ...],
+    configured_shapes: dict[object, tuple[int, ...]] | None = None,
+    configuration_errors: dict[object, RuntimeError] | None = None,
+):
+    events = []
+    configured_shapes = configured_shapes or {}
+    configuration_errors = configuration_errors or {}
+    active_config = None
+
+    class MeshShape:
+        def __init__(self, shape):
+            self.shape = tuple(shape)
+
+    class SystemMeshDescriptor:
+        def shape(self):
+            return configured_shapes.get(active_config, discovered_shape)
+
+    fabric_config = types.SimpleNamespace(FABRIC_1D="fabric-1d", DISABLED="disabled")
+    mesh_device = object()
+
+    def set_fabric_config(config, **kwargs):
+        nonlocal active_config
+        active_config = config
+        event = ("configure", config)
+        if kwargs:
+            event += (kwargs,)
+        events.append(event)
+        if config in configuration_errors:
+            raise configuration_errors[config]
+
+    def open_mesh_device(shape):
+        events.append(("open", shape.shape))
+        return mesh_device
+
+    def close_mesh_device(mesh):
+        events.append(("close", mesh))
+
+    fake_ttnn = types.SimpleNamespace(
+        FabricConfig=fabric_config,
+        MeshShape=MeshShape,
+        _ttnn=types.SimpleNamespace(
+            multi_device=types.SimpleNamespace(
+                SystemMeshDescriptor=SystemMeshDescriptor
+            )
+        ),
+        set_fabric_config=set_fabric_config,
+        open_mesh_device=open_mesh_device,
+        close_mesh_device=close_mesh_device,
+    )
+    return fake_ttnn, events, mesh_device
 
 
 def test_runtime_device_nodes_override_no_device_build_config(monkeypatch) -> None:
@@ -112,3 +168,214 @@ def test_no_nodes_and_ttl_unimportable_is_unavailable(monkeypatch) -> None:
     # driver directory as available).
     module = _load_ttlang_test_utils(monkeypatch, ttl_importable=False)
     assert module.is_hardware_available() is False
+
+
+# Strict mode rejects an unexpected pass while the required binding is absent.
+@pytest.mark.parametrize("has_binding", [False, True])
+def test_forwarding_link_indices_compatibility_marker(
+    monkeypatch, has_binding: bool
+) -> None:
+    module = _load_ttlang_test_utils(monkeypatch)
+    fake_ttnn = types.SimpleNamespace()
+    if has_binding:
+        fake_ttnn.get_forwarding_link_indices = lambda: None
+
+    marker = module.requires_forwarding_link_indices(fake_ttnn).mark
+
+    assert marker.name == "xfail"
+    assert marker.kwargs == {
+        "condition": not has_binding,
+        "reason": "requires TTNN get_forwarding_link_indices()",
+        "strict": True,
+    }
+
+
+def test_fabric_mesh_uses_discovered_shape(monkeypatch) -> None:
+    module = _load_ttlang_test_utils(monkeypatch)
+    fake_ttnn, events, mesh_device = _create_fake_fabric_ttnn(
+        (2, 4), {"fabric-1d": (2, 2)}
+    )
+    monkeypatch.setattr(module, "_get_ttnn", lambda: fake_ttnn)
+
+    with module.open_fabric_mesh() as opened_mesh:
+        assert opened_mesh is mesh_device
+
+    assert events == [
+        ("configure", "fabric-1d"),
+        ("open", (2, 2)),
+        ("close", mesh_device),
+        ("configure", "disabled"),
+    ]
+
+
+def test_fabric_mesh_discovers_shape_for_requested_config(monkeypatch) -> None:
+    module = _load_ttlang_test_utils(monkeypatch)
+    fake_ttnn, events, _mesh_device = _create_fake_fabric_ttnn(
+        (2, 4), {"fabric-torus": (2, 2)}
+    )
+    monkeypatch.setattr(module, "_get_ttnn", lambda: fake_ttnn)
+
+    mesh_shape = module.get_fabric_mesh_shape(
+        fabric_config="fabric-torus", reliability_mode="relaxed"
+    )
+
+    assert mesh_shape == (2, 2)
+    assert events == [
+        ("configure", "fabric-torus", {"reliability_mode": "relaxed"}),
+        ("configure", "disabled"),
+    ]
+
+
+def test_fabric_mesh_reports_unmappable_configuration(monkeypatch) -> None:
+    module = _load_ttlang_test_utils(monkeypatch)
+    mapping_error = RuntimeError(
+        "Graph specified in MGD could not fit in the discovered physical topology"
+    )
+    fake_ttnn, events, _mesh_device = _create_fake_fabric_ttnn(
+        (2, 4), configuration_errors={"fabric-torus": mapping_error}
+    )
+    monkeypatch.setattr(module, "_get_ttnn", lambda: fake_ttnn)
+
+    with pytest.raises(
+        module.FabricMeshUnavailable,
+        match="fabric configuration fabric-torus cannot be mapped",
+    ):
+        module.get_fabric_mesh_shape(fabric_config="fabric-torus")
+
+    assert events == [
+        ("configure", "fabric-torus"),
+        ("configure", "disabled"),
+    ]
+
+
+def test_fabric_mesh_preserves_other_configuration_errors(monkeypatch) -> None:
+    module = _load_ttlang_test_utils(monkeypatch)
+    fake_ttnn, events, _mesh_device = _create_fake_fabric_ttnn(
+        (2, 4),
+        configuration_errors={"fabric-torus": RuntimeError("configuration failed")},
+    )
+    monkeypatch.setattr(module, "_get_ttnn", lambda: fake_ttnn)
+
+    with pytest.raises(RuntimeError, match="configuration failed"):
+        module.get_fabric_mesh_shape(fabric_config="fabric-torus")
+
+    assert events == [
+        ("configure", "fabric-torus"),
+        ("configure", "disabled"),
+    ]
+
+
+def test_fabric_mesh_uses_requested_shape_and_config(monkeypatch) -> None:
+    module = _load_ttlang_test_utils(monkeypatch)
+    fake_ttnn, events, mesh_device = _create_fake_fabric_ttnn((2, 4))
+    monkeypatch.setattr(module, "_get_ttnn", lambda: fake_ttnn)
+
+    with module.open_fabric_mesh((2, 2), fabric_config="fabric-2d") as opened_mesh:
+        assert opened_mesh is mesh_device
+
+    assert events == [
+        ("configure", "fabric-2d"),
+        ("open", (2, 2)),
+        ("close", mesh_device),
+        ("configure", "disabled"),
+    ]
+
+
+def test_fabric_mesh_uses_router_config(monkeypatch) -> None:
+    module = _load_ttlang_test_utils(monkeypatch)
+    fake_ttnn, events, mesh_device = _create_fake_fabric_ttnn((2, 4))
+    monkeypatch.setattr(module, "_get_ttnn", lambda: fake_ttnn)
+    router_config = object()
+
+    with module.open_fabric_mesh(
+        fabric_config="fabric-2d", router_config=router_config
+    ) as opened_mesh:
+        assert opened_mesh is mesh_device
+
+    assert events == [
+        ("configure", "fabric-2d", {"router_config": router_config}),
+        ("open", (2, 4)),
+        ("close", mesh_device),
+        ("configure", "disabled"),
+    ]
+
+
+def test_fabric_mesh_uses_reliability_mode(monkeypatch) -> None:
+    module = _load_ttlang_test_utils(monkeypatch)
+    fake_ttnn, events, mesh_device = _create_fake_fabric_ttnn((2, 4))
+    monkeypatch.setattr(module, "_get_ttnn", lambda: fake_ttnn)
+
+    with module.open_fabric_mesh(
+        fabric_config="fabric-2d", reliability_mode="relaxed"
+    ) as opened_mesh:
+        assert opened_mesh is mesh_device
+
+    assert events == [
+        ("configure", "fabric-2d", {"reliability_mode": "relaxed"}),
+        ("open", (2, 4)),
+        ("close", mesh_device),
+        ("configure", "disabled"),
+    ]
+
+
+def test_fabric_mesh_cleans_up_after_context_failure(monkeypatch) -> None:
+    module = _load_ttlang_test_utils(monkeypatch)
+    fake_ttnn, events, mesh_device = _create_fake_fabric_ttnn((2, 4))
+    monkeypatch.setattr(module, "_get_ttnn", lambda: fake_ttnn)
+
+    with pytest.raises(RuntimeError, match="test context failure"):
+        with module.open_fabric_mesh() as opened_mesh:
+            assert opened_mesh is mesh_device
+            raise RuntimeError("test context failure")
+
+    assert events == [
+        ("configure", "fabric-1d"),
+        ("open", (2, 4)),
+        ("close", mesh_device),
+        ("configure", "disabled"),
+    ]
+
+
+def test_fabric_mesh_disables_fabric_after_open_failure(monkeypatch) -> None:
+    module = _load_ttlang_test_utils(monkeypatch)
+    fake_ttnn, events, _mesh_device = _create_fake_fabric_ttnn((2, 4))
+    monkeypatch.setattr(module, "_get_ttnn", lambda: fake_ttnn)
+
+    def fail_open(mesh_shape):
+        events.append(("open", mesh_shape.shape))
+        raise RuntimeError("test open failure")
+
+    fake_ttnn.open_mesh_device = fail_open
+
+    with pytest.raises(RuntimeError, match="test open failure"):
+        with module.open_fabric_mesh():
+            pass
+
+    assert events == [
+        ("configure", "fabric-1d"),
+        ("open", (2, 4)),
+        ("configure", "disabled"),
+    ]
+
+
+def test_fabric_mesh_disables_fabric_after_close_failure(monkeypatch) -> None:
+    module = _load_ttlang_test_utils(monkeypatch)
+    fake_ttnn, events, mesh_device = _create_fake_fabric_ttnn((2, 4))
+    monkeypatch.setattr(module, "_get_ttnn", lambda: fake_ttnn)
+
+    def fail_close(mesh):
+        events.append(("close", mesh))
+        raise RuntimeError("test close failure")
+
+    fake_ttnn.close_mesh_device = fail_close
+
+    with pytest.raises(RuntimeError, match="test close failure"):
+        with module.open_fabric_mesh() as opened_mesh:
+            assert opened_mesh is mesh_device
+
+    assert events == [
+        ("configure", "fabric-1d"),
+        ("open", (2, 4)),
+        ("close", mesh_device),
+        ("configure", "disabled"),
+    ]

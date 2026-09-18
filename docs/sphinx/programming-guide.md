@@ -16,6 +16,18 @@ python examples/elementwise-tutorial/step_4_multinode_grid_full.py --no-ttl-maxi
 
 See the [full compiler options reference](reference/compiler-options.md) for all decorator parameters, `CompilerOptions` flags with their MLIR pass mappings, environment variables, and `ttlang-opt` pass options.
 
+## External Functions
+
+`ttl.call_extern_func` invokes custom C++ from a selected compute or data-movement kernel. The [external functions reference](reference/external-functions.md) documents template arguments, runtime arguments, DFB descriptors, tensor addresses, include directories, and logical `kernel=` selectors.
+
+## Operation Runtime Resources
+
+`runtime_resource_factory` creates invocation-specific program semaphores,
+per-logical-kernel runtime arguments and definitions, and retained host owners.
+The [operation runtime resources reference](reference/operation-runtime-resources.md)
+documents its typed records, validation, specialization, cache identity,
+factory-level compilation reuse, and emitted-runner contract.
+
 ## Print Debugging
 
 Use `print()` inside kernel code to emit device debug prints. Enable at runtime with `TT_METAL_DPRINT_CORES`:
@@ -47,6 +59,7 @@ def dm_write():
 - Prints can be extremely large and slow; redirect output to a file and use grep.
 - In compute kernels, guard prints with `thread="math"`, `thread="pack"`, or `thread="unpack"` to avoid overlapping output from the three TRISC threads.
 - When using multi-tile block sizes (DFB shape > 1x1), prints inside the generated loop will dump all tiles in the block.
+- With `--ttl-specialize-cores`, DFB and tile prints remain only on cores that still have a non-print use of that DFB.
 
 See the [full print debugging reference](reference/print-debugging.md) for all supported modes (scalars, tiles, tensor pages, DFB details, DST registers, thread conditioning).
 

@@ -32,6 +32,7 @@ build/env/
 
 # Git
 .git/
+.wheel-workflow-src/.git/
 .gitignore
 
 # Docker temp

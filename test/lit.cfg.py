@@ -30,13 +30,12 @@ config.suffixes = [".mlir", ".py"]
 config.test_source_root = os.path.dirname(__file__)
 
 # test_exec_root: The root path where tests should be run.
-_default_obj_root = os.environ.get("TTLANG_OBJ_ROOT")
-if not _default_obj_root:
-    _default_obj_root = os.path.abspath(
-        os.path.join(config.test_source_root, os.pardir, "build")
-    )
+if not hasattr(config, "ttlang_obj_root"):
+    config.ttlang_obj_root = os.environ.get("TTLANG_OBJ_ROOT")
+    if not config.ttlang_obj_root:
+        from ttl.config import BUILD_DIR
 
-config.ttlang_obj_root = getattr(config, "ttlang_obj_root", _default_obj_root)
+        config.ttlang_obj_root = os.fspath(BUILD_DIR)
 config.ttlang_source_dir = getattr(
     config,
     "ttlang_source_dir",
@@ -45,8 +44,32 @@ config.ttlang_source_dir = getattr(
         os.path.abspath(os.path.join(config.test_source_root, os.pardir)),
     ),
 )
+config.python_executable = getattr(config, "python_executable", sys.executable)
 
-config.test_exec_root = os.path.join(config.ttlang_obj_root, "test")
+build_type = getattr(config, "ttlang_build_type", None)
+if build_type is None:
+    build_type_prefix = "CMAKE_BUILD_TYPE:STRING="
+    try:
+        with open(
+            os.path.join(config.ttlang_obj_root, "CMakeCache.txt"), encoding="utf-8"
+        ) as cache_file:
+            build_type = next(
+                (
+                    line.removeprefix(build_type_prefix).strip()
+                    for line in cache_file
+                    if line.startswith(build_type_prefix)
+                ),
+                "",
+            )
+    except OSError:
+        build_type = ""
+if build_type in {"MinSizeRel", "Release", "RelWithDebInfo"}:
+    config.available_features.add("optimized")
+
+# Concurrent hardware shards require separate timing and temporary files.
+config.test_exec_root = os.environ.get(
+    "TTLANG_LIT_TEST_EXEC_ROOT", os.path.join(config.ttlang_obj_root, "test")
+)
 
 # Create Output directories for lit temp files (%t substitution).
 # This is needed when running from pre-built artifacts where the build
@@ -66,8 +89,6 @@ config.excludes = [
 ]
 
 # Exclude pytest-style tests (test_*.py) from lit collection.
-import os
-
 for _root, _dirs, _files in os.walk(config.test_source_root):
     for _f in _files:
         if _f.startswith("test_") and _f.endswith(".py"):
@@ -95,8 +116,16 @@ if llvm_config is not None:
     for dirs in tool_dirs:
         llvm_config.with_environment("PATH", dirs, append_path=True)
 
-# Add ttlang-opt, and ttlang-translate tools
-tools = ["ttlang-opt", "ttlang-translate"]
+# Add tt-lang tools used by lit tests.
+tools = [
+    "ttlang-execution-count-test",
+    "ttlang-dfb-allocation-oracle-test",
+    "ttlang-launch-node-domain-test",
+    "ttlang-op-stats",
+    "ttlang-value-origin-test",
+    "ttlang-opt",
+    "ttlang-translate",
+]
 
 if llvm_config is not None:
     llvm_config.add_tool_substitutions(tools, tool_dirs)
@@ -105,7 +134,7 @@ if llvm_config is not None:
 # Note: We cannot use %t directly in env var values because lit doesn't expand
 # substitutions recursively. Instead, tests should use %t explicitly:
 # RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir TTLANG_FINAL_MLIR=%t.final.mlir %python %s
-config.substitutions.append(("%python", sys.executable))
+config.substitutions.append(("%python", config.python_executable))
 
 # Get Python packages directory from site config, or fall back to default build location.
 build_python = getattr(config, "TTLANG_PYTHON_PACKAGES_DIR", None)
@@ -175,16 +204,14 @@ if _ttnn_check.returncode == 0:
 if getattr(config, "ttlang_has_device", False) or os.environ.get("TT_METAL_SIMULATOR"):
     config.available_features.add("tt-device")
 
-# Add multi-device feature when >= 4 Tenstorrent chips are physically present.
+# Add multi-device feature when at least two Tenstorrent chips are physically present.
 # Count /dev/tenstorrent device nodes (cheap, no cluster open) instead of probing
-# ttnn, which would open the device at config time for every lit run. Tests that
-# need a fabric mesh expose all chips via `env -u TT_VISIBLE_DEVICES`, so the
-# physical chip count is what they will see.
+# ttnn, which would open the device at config time for every lit run.
 try:
     _tt_chip_count = sum(
         1 for entry in os.listdir("/dev/tenstorrent") if entry.isdigit()
     )
 except OSError:
     _tt_chip_count = 0
-if _tt_chip_count >= 4:
+if _tt_chip_count >= 2:
     config.available_features.add("multi-device")

@@ -25,6 +25,12 @@ void semaphore_wait_min(volatile tt_l1_ptr uint32_t *sem_addr, uint32_t val) {
   } while (sem_val < val);
 }
 
+FORCE_INLINE
+bool semaphore_reached(volatile tt_l1_ptr uint32_t *sem_addr, uint32_t val) {
+  invalidate_l1_cache();
+  return *sem_addr >= val;
+}
+
 } // namespace experimental
 
 #endif

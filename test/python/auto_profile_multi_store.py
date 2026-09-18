@@ -51,11 +51,19 @@ def multi_store_kernel(a, b, out1, out2, out3):
 
     @ttl.datamovement()
     def dm_read():
-        pass
+        with a_dfb.reserve() as a_block:
+            ttl.copy(a[0, 0], a_block).wait()
+        with b_dfb.reserve() as b_block:
+            ttl.copy(b[0, 0], b_block).wait()
 
     @ttl.datamovement()
     def dm_write():
-        pass
+        with out1_dfb.wait() as out1_block:
+            ttl.copy(out1_block, out1[0, 0]).wait()
+        with out2_dfb.wait() as out2_block:
+            ttl.copy(out2_block, out2[0, 0]).wait()
+        with out3_dfb.wait() as out3_block:
+            ttl.copy(out3_block, out3[0, 0]).wait()
 
 
 # CHECK: === compute kernel written to {{.*}} ===
@@ -85,9 +93,9 @@ def multi_store_kernel(a, b, out1, out2, out3):
 # CHECK-NEXT:     add_binary_tile(
 # CHECK:          tile_regs_commit();
 # CHECK-NEXT:     tile_regs_wait();
-# CHECK-NEXT:     pack_tile<true>({{.*}}, get_compile_time_arg_val(4), {{.*}});
-# CHECK-NEXT:     pack_tile<true>({{.*}}, get_compile_time_arg_val(3), {{.*}});
 # CHECK-NEXT:     pack_tile<true>({{.*}}, get_compile_time_arg_val(2), {{.*}});
+# CHECK-NEXT:     pack_tile<true>({{.*}}, get_compile_time_arg_val(3), {{.*}});
+# CHECK-NEXT:     pack_tile<true>({{.*}}, get_compile_time_arg_val(4), {{.*}});
 # CHECK-NEXT:     tile_regs_release();
 
 # 3 cb_push_back and 2 cb_pop_front with auto-profile scopes
@@ -102,6 +110,7 @@ def multi_store_kernel(a, b, out1, out2, out3):
 # CHECK:          DeviceZoneScopedN("compute_L{{[0-9]+}}_implicit_cb_pop");
 # CHECK-NEXT:     [[CB0]].pop_front({{.*}});
 # CHECK-NOT:      DeviceZoneScopedN(
+# CHECK: === dm_read kernel written to {{.*}} ===
 
 # =============================================================================
 # FPU path checks (default: --ttl-maximize-dst --ttl-fpu-binary-ops)
@@ -128,15 +137,15 @@ def multi_store_kernel(a, b, out1, out2, out3):
 
 # Compute body: FPU binary add with 3 pack_tiles
 # CHECK-FPU:          DeviceZoneScopedN("compute_L{{[0-9]+}}");
-# CHECK-FPU:          binary_op_init_common(get_compile_time_arg_val(0), get_compile_time_arg_val(1), get_compile_time_arg_val(4));
+# CHECK-FPU:          binary_op_init_common(get_compile_time_arg_val(0), get_compile_time_arg_val(1), get_compile_time_arg_val(2));
 # CHECK-FPU-NEXT:     tile_regs_acquire();
 # CHECK-FPU-NEXT:     add_tiles_init(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
 # CHECK-FPU-NEXT:     add_tiles(get_compile_time_arg_val(0), get_compile_time_arg_val(1),
 # CHECK-FPU-NEXT:     tile_regs_commit();
 # CHECK-FPU-NEXT:     tile_regs_wait();
-# CHECK-FPU-NEXT:     pack_tile<true>({{.*}}, get_compile_time_arg_val(4), {{.*}});
-# CHECK-FPU-NEXT:     pack_tile<true>({{.*}}, get_compile_time_arg_val(3), {{.*}});
 # CHECK-FPU-NEXT:     pack_tile<true>({{.*}}, get_compile_time_arg_val(2), {{.*}});
+# CHECK-FPU-NEXT:     pack_tile<true>({{.*}}, get_compile_time_arg_val(3), {{.*}});
+# CHECK-FPU-NEXT:     pack_tile<true>({{.*}}, get_compile_time_arg_val(4), {{.*}});
 # CHECK-FPU-NEXT:     tile_regs_release();
 
 # 3 cb_push_back and 2 cb_pop_front with auto-profile scopes
@@ -151,6 +160,7 @@ def multi_store_kernel(a, b, out1, out2, out3):
 # CHECK-FPU:          DeviceZoneScopedN("compute_L{{[0-9]+}}_implicit_cb_pop");
 # CHECK-FPU-NEXT:     [[CB0]].pop_front({{.*}});
 # CHECK-FPU-NOT:      DeviceZoneScopedN(
+# CHECK-FPU: === dm_read kernel written to {{.*}} ===
 
 if __name__ == "__main__":
     import torch

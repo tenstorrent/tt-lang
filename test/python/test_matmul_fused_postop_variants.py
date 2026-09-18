@@ -591,13 +591,6 @@ def _make_multinode_matmul_relu_bias(m_blk, k_blk, n_blk):
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture(scope="module")
-def device():
-    dev = ttnn.open_device(device_id=0)
-    yield dev
-    ttnn.close_device(dev)
-
-
 def _random_inputs(device, seed=42):
     """Return A, B torch tensors and their DRAM copies."""
     torch.manual_seed(seed)

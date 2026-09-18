@@ -3,10 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: tt-device
-# RUN: env TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.reuse.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
+# RUN: FileCheck %s --check-prefix=CHECK-CPP-REUSE < %t.reuse.output
+# Stable logical-index checks run separately from the default allocator checks.
+# RUN: env %python %s --no-ttl-reuse-user-dfbs --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.output 2>&1
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
-# RUN: env %python %s > %t.fpu.output 2>&1
+# RUN: env %python %s --no-ttl-reuse-user-dfbs > %t.fpu.output 2>&1
 # RUN: FileCheck %s --check-prefix=CHECK-CPP-FPU < %t.fpu.output
 
 """
@@ -72,7 +75,7 @@ def add_with_kernel(lhs, rhs, out):
 # =============================================================================
 
 # CHECK-LABEL: func.func @add_compute
-# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}
+# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>, ttl.logical_kernel = #ttl.logical_kernel<kind = compute>}
 
 # DFB binding (alphabetical order: lhs_cb=0, out_cb=2, rhs_cb=1)
 # CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
@@ -94,15 +97,16 @@ def add_with_kernel(lhs, rhs, out):
 
 # 'with' exit: push output, pop inputs (reverse order)
 # CHECK: ttl.cb_push %[[CB2]]
-# CHECK: ttl.cb_pop %[[CB1]]
-# CHECK: ttl.cb_pop %[[CB0]]
+# CHECK-NEXT: ttl.cb_pop %[[CB1]]
+# CHECK-NEXT: ttl.cb_pop %[[CB0]]
+# CHECK-NEXT: return
 
 # =============================================================================
 # Initial IR Checks - Data movement with 'with' pattern
 # =============================================================================
 
 # CHECK-LABEL: func.func @dm_read
-# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [0 : i32, 1 : i32], ttl.kernel_thread = #ttkernel.thread<noc>, ttl.noc_index = 0 : i32}
+# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [0 : i32, 1 : i32], ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>, ttl.noc_index = 0 : i32}
 
 # First DFB: reserve (with DFB association), copy, push
 # CHECK: ttl.cb_reserve
@@ -112,14 +116,15 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK: ttl.cb_push
 
 # Second DFB: reserve (with DFB association), copy, push
-# CHECK: ttl.cb_reserve
+# CHECK-NEXT: {{.*}}ttl.cb_reserve
 # CHECK: ttl.attach_cb
 # CHECK: ttl.copy {{.*}} -> !ttl.transfer_handle<read>
 # CHECK: ttl.wait
 # CHECK: ttl.cb_push
+# CHECK-NEXT: return
 
 # CHECK-LABEL: func.func @dm_write
-# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [2 : i32], ttl.kernel_thread = #ttkernel.thread<noc>, ttl.noc_index = 1 : i32}
+# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [2 : i32], ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>, ttl.noc_index = 1 : i32}
 
 # Output DFB: wait (with DFB association), copy, pop
 # CHECK: ttl.cb_wait
@@ -127,10 +132,29 @@ def add_with_kernel(lhs, rhs, out):
 # CHECK: ttl.copy {{.*}} -> !ttl.transfer_handle<write>
 # CHECK: ttl.wait
 # CHECK: ttl.cb_pop
+# CHECK-NEXT: return
 
 # =============================================================================
 # C++ Kernel Checks - Verify generated code
 # =============================================================================
+
+# Default allocation may permute physical indices while preserving every
+# logical DFB use across the three kernels.
+# CHECK-CPP-REUSE-LABEL: === add_compute kernel written to {{.*}} ===
+# CHECK-CPP-REUSE: cb_ctarg_0.wait_front(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_2.wait_front(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_1.reserve_back(
+# CHECK-CPP-REUSE: cb_ctarg_1.push_back(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_2.pop_front(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_0.pop_front(
+# CHECK-CPP-REUSE-LABEL: === dm_read kernel written to {{.*}} ===
+# CHECK-CPP-REUSE: cb_ctarg_0.reserve_back(
+# CHECK-CPP-REUSE: cb_ctarg_0.push_back(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_2.reserve_back(
+# CHECK-CPP-REUSE: cb_ctarg_2.push_back(
+# CHECK-CPP-REUSE-LABEL: === dm_write kernel written to {{.*}} ===
+# CHECK-CPP-REUSE: cb_ctarg_1.wait_front(
+# CHECK-CPP-REUSE: cb_ctarg_1.pop_front(
 
 # CHECK-CPP: === add_compute kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()

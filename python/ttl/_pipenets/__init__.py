@@ -10,19 +10,15 @@ The graph is the single source of truth for which PipeNets an operation
 uses. It is built from the operation's closure (captured PipeNets) plus
 its body (PipeNets constructed in-line). The compiler and the simulator
 both compute the PipeNet work extent and run validation against this graph.
-
-Multi-device readiness: NodeCoord is intra-chip. Inter-chip pipes would
-be a separate type wrapping NodeCoord plus a mesh coordinate, and
-OperationPipeNets would hold both lists.
 """
 
 from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass, field
-from typing import Any, Iterable, List, Optional, Set, Tuple, Union
+from typing import Any, FrozenSet, Iterable, List, Optional, Set, Tuple, Union
 
-from ttl.constants import MAX_HARDWARE_SEMAPHORE_IDS
+from ttl.domains import DeviceRange, DeviceRef, TransferEdge, TransferGraph
 
 
 @dataclass(frozen=True)
@@ -75,16 +71,50 @@ class PipeNetUse:
     pipes: Tuple[PipeUse, ...]
 
 
+@dataclass(frozen=True)
+class GraphPipeNetUse:
+    """One graph-based PipeNet consumed by one operation invocation."""
+
+    pipe_net_id: int
+    edges: Tuple[TransferEdge, ...]
+    transfer_graph: TransferGraph
+
+
 @dataclass
 class OperationPipeNets:
     """All PipeNets used by one operation invocation."""
 
     pipe_nets: List[PipeNetUse] = field(default_factory=list)
+    graph_pipe_nets: List[GraphPipeNetUse] = field(default_factory=list)
+    _next_id: int = 0
+
+    def _next_pipe_net_id(self) -> int:
+        pipe_net_id = self._next_id
+        self._next_id += 1
+        return pipe_net_id
 
     def add_pipe_net(self, pipes: Iterable[PipeUse]) -> PipeNetUse:
         """Append a new PipeNetUse with the next operation-local id."""
-        use = PipeNetUse(id=len(self.pipe_nets), pipes=tuple(pipes))
+        use = PipeNetUse(id=self._next_pipe_net_id(), pipes=tuple(pipes))
         self.pipe_nets.append(use)
+        return use
+
+    def add_graph_pipe_net(self, transfer_graph: TransferGraph) -> GraphPipeNetUse:
+        """Append a graph PipeNet with one ordered device-edge record set."""
+        edges = tuple(transfer_graph.iter_edges())
+        if not edges:
+            raise ValueError("graph-based PipeNet requires at least one transfer edge")
+        if any(isinstance(edge.destination, DeviceRange) for edge in edges):
+            raise ValueError(
+                "graph-based PipeNet DeviceRange destinations require multicast "
+                "transport lowering"
+            )
+        use = GraphPipeNetUse(
+            pipe_net_id=self._next_pipe_net_id(),
+            edges=edges,
+            transfer_graph=transfer_graph,
+        )
+        self.graph_pipe_nets.append(use)
         return use
 
     def active_node_set(self, grid: Tuple[int, ...]) -> Optional[Set[int]]:
@@ -93,7 +123,7 @@ class OperationPipeNets:
         Returns None when the graph is empty, signaling that no active-set
         filtering should be applied (every node participates).
         """
-        if not self.pipe_nets:
+        if self.graph_pipe_nets or not self.pipe_nets:
             return None
         active: Set[int] = set()
         for net in self.pipe_nets:
@@ -112,39 +142,37 @@ class OperationPipeNets:
             _validate_no_mixed_kinds(net.pipes)
         _validate_consistent_coord_rank(self.pipe_nets)
 
-    def num_pipe_sync_semaphores(self) -> int:
-        """Return the total semaphore count required by pipe lowering."""
-        if not self.pipe_nets:
-            return 0
+    def resolve_device_domain(self, operation_domain: Any) -> Any:
+        """Reconcile graph transfer domains with the operation domain."""
+        if not self.graph_pipe_nets:
+            return operation_domain
 
-        num_pipe_nets = len(self.pipe_nets)
-        max_pipes_per_source = self._max_pipes_per_source()
-        if _uses_global_ready_counters(num_pipe_nets, max_pipes_per_source):
-            return num_pipe_nets
-        return num_pipe_nets + max_pipes_per_source
-
-    def num_pipe_global_semaphores(self) -> int:
-        """Return the GlobalSemaphore count required by pipe lowering."""
-        if not self.pipe_nets:
-            return 0
-        num_pipe_nets = len(self.pipe_nets)
-        max_pipes_per_source = self._max_pipes_per_source()
-        if not _uses_global_ready_counters(num_pipe_nets, max_pipes_per_source):
-            return 0
-        return sum(len(net.pipes) for net in self.pipe_nets)
-
-    def _max_pipes_per_source(self) -> int:
-        pipe_count_by_source = {}
-        for net in self.pipe_nets:
-            for pipe in net.pipes:
-                pipe_count_by_source[pipe.src.coords] = (
-                    pipe_count_by_source.get(pipe.src.coords, 0) + 1
+        graph_domain = self.graph_pipe_nets[0].transfer_graph.domain
+        for graph_pipe_net in self.graph_pipe_nets[1:]:
+            if graph_pipe_net.transfer_graph.domain != graph_domain:
+                raise ValueError(
+                    "graph-based PipeNets in one operation must use the same "
+                    "DeviceDomain"
                 )
-        return max(pipe_count_by_source.values(), default=0)
 
+        if operation_domain is None:
+            return graph_domain
+        if operation_domain != graph_domain:
+            raise ValueError(
+                "operation device_domain must match the DeviceDomain used by "
+                "its graph-based PipeNets"
+            )
+        return operation_domain
 
-def _uses_global_ready_counters(num_pipe_nets: int, max_pipes_per_source: int) -> bool:
-    return num_pipe_nets + max_pipes_per_source > MAX_HARDWARE_SEMAPHORE_IDS
+    def device_endpoints(self) -> FrozenSet[DeviceRef]:
+        """Return every logical device referenced by graph-based PipeNets."""
+        endpoints: Set[DeviceRef] = set()
+        for pipe_net in self.graph_pipe_nets:
+            for edge in pipe_net.edges:
+                assert isinstance(edge.destination, DeviceRef)
+                endpoints.add(edge.source)
+                endpoints.add(edge.destination)
+        return frozenset(endpoints)
 
 
 def _linearize(coords: Tuple[int, ...], grid: Tuple[int, ...]) -> int:
@@ -212,5 +240,6 @@ __all__ = [
     "NodeRange",
     "PipeUse",
     "PipeNetUse",
+    "GraphPipeNetUse",
     "OperationPipeNets",
 ]

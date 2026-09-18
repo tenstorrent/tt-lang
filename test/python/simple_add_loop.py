@@ -3,10 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: ttnn, tt-device
-# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.reuse.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
+# RUN: FileCheck %s --check-prefix=CHECK-CPP-REUSE < %t.reuse.output
+# Stable logical-index checks run separately from the default allocator checks.
+# RUN: env TTLANG_COMPILE_ONLY=1 %python %s --no-ttl-reuse-user-dfbs --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.output 2>&1
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
-# RUN: env TTLANG_COMPILE_ONLY=1 %python %s > %t.fpu.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 %python %s --no-ttl-reuse-user-dfbs > %t.fpu.output 2>&1
 # RUN: FileCheck %s --check-prefix=CHECK-CPP-FPU < %t.fpu.output
 
 """
@@ -62,7 +65,7 @@ def add_loop_kernel(lhs, rhs, out):
 # =============================================================================
 
 # CHECK-LABEL: func.func @add_compute
-# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}
+# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>, ttl.logical_kernel = #ttl.logical_kernel<kind = compute>}
 # CHECK: %[[LHS:.+]] = ttl.bind_cb{cb_index = 0
 # CHECK: %[[OUT:.+]] = ttl.bind_cb{cb_index = 2
 # CHECK: %[[RHS:.+]] = ttl.bind_cb{cb_index = 1
@@ -79,6 +82,24 @@ def add_loop_kernel(lhs, rhs, out):
 # =============================================================================
 # C++ Kernel Checks - Verify for loop in generated compute code
 # =============================================================================
+
+# Default allocation may permute physical indices while preserving every
+# logical DFB use across the three kernels.
+# CHECK-CPP-REUSE-LABEL: === add_compute kernel written to {{.*}} ===
+# CHECK-CPP-REUSE: cb_ctarg_0.wait_front(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_2.wait_front(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_1.reserve_back(
+# CHECK-CPP-REUSE: cb_ctarg_1.push_back(
+# CHECK-CPP-REUSE: cb_ctarg_2.pop_front(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_0.pop_front(
+# CHECK-CPP-REUSE-LABEL: === dm_read kernel written to {{.*}} ===
+# CHECK-CPP-REUSE: cb_ctarg_0.reserve_back(
+# CHECK-CPP-REUSE: cb_ctarg_0.push_back(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_2.reserve_back(
+# CHECK-CPP-REUSE: cb_ctarg_2.push_back(
+# CHECK-CPP-REUSE-LABEL: === dm_write kernel written to {{.*}} ===
+# CHECK-CPP-REUSE: cb_ctarg_1.wait_front(
+# CHECK-CPP-REUSE: cb_ctarg_1.pop_front(
 
 # CHECK-CPP: === add_compute kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
@@ -100,9 +121,10 @@ def add_loop_kernel(lhs, rhs, out):
 # CHECK-CPP: tile_regs_release();
 # CHECK-CPP: init_sfpu(get_compile_time_arg_val(1), get_compile_time_arg_val(2));
 # CHECK-CPP: llk_pack_reconfig_l1_acc([[ONE]])
+# One initialization serves all iterations of this nonempty copy/pack loop.
+# CHECK-CPP: copy_tile_init(get_compile_time_arg_val(1));
 # CHECK-CPP: for (size_t {{.*}} < {{.*}};
 # CHECK-CPP: tile_regs_acquire();
-# CHECK-CPP: copy_tile_init(get_compile_time_arg_val(1));
 # CHECK-CPP: copy_tile(get_compile_time_arg_val(1),
 # CHECK-CPP: tile_regs_commit();
 # CHECK-CPP: tile_regs_wait();
@@ -137,9 +159,9 @@ def add_loop_kernel(lhs, rhs, out):
 # CHECK-CPP-FPU: tile_regs_release();
 # CHECK-CPP-FPU: init_sfpu(get_compile_time_arg_val(1), get_compile_time_arg_val(2));
 # CHECK-CPP-FPU: llk_pack_reconfig_l1_acc([[ONE]])
+# CHECK-CPP-FPU: copy_tile_init(get_compile_time_arg_val(1));
 # CHECK-CPP-FPU: for (size_t {{.*}} < {{.*}};
 # CHECK-CPP-FPU: tile_regs_acquire();
-# CHECK-CPP-FPU: copy_tile_init(get_compile_time_arg_val(1));
 # CHECK-CPP-FPU: copy_tile(get_compile_time_arg_val(1),
 # CHECK-CPP-FPU: tile_regs_commit();
 # CHECK-CPP-FPU: tile_regs_wait();

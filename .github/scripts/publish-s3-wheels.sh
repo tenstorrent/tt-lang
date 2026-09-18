@@ -7,16 +7,18 @@
 # those top-level wheel objects, not physical copies. With --overwrite, replace
 # existing direct wheel objects.
 #
-# Usage: publish-s3-wheels.sh [--overwrite] --prefix <tt-lang/YYYY-MM|tt-lang/releases> <dist_dir>
+# Usage: publish-s3-wheels.sh [--overwrite] [--overwrite-if true|false] --prefix <tt-lang/YYYY-MM|tt-lang/releases> <dist_dir>
 
 set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/s3-index.sh
 . "$script_dir/lib/s3-index.sh"
+# shellcheck source=lib/s3-publish-prefix.sh
+. "$script_dir/lib/s3-publish-prefix.sh"
 
 usage() {
-    echo "Usage: $0 [--overwrite] --prefix <tt-lang/YYYY-MM|tt-lang/releases> <dist_dir>" >&2
+    echo "Usage: $0 [--overwrite] [--overwrite-if true|false] --prefix <tt-lang/YYYY-MM|tt-lang/releases> <dist_dir>" >&2
     exit 2
 }
 
@@ -27,6 +29,15 @@ while [[ $# -gt 0 ]]; do
         --overwrite)
             overwrite=1
             shift
+            ;;
+        --overwrite-if)
+            [[ $# -ge 2 ]] || usage
+            case "$2" in
+                true) overwrite=1 ;;
+                false) overwrite=0 ;;
+                *) usage ;;
+            esac
+            shift 2
             ;;
         --prefix)
             [[ $# -ge 2 ]] || usage
@@ -46,7 +57,7 @@ done
 if [[ $# -ne 1 || -z "$prefix" ]]; then
     usage
 fi
-if [[ ! "$prefix" =~ ^tt-lang/[0-9]{4}-[0-9]{2}$ && "$prefix" != "tt-lang/releases" ]]; then
+if ! ttlang_s3_valid_publish_prefix "$prefix"; then
     echo "Publish prefix must be tt-lang/<YYYY-MM> or tt-lang/releases: $prefix" >&2
     exit 2
 fi

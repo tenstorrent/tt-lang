@@ -12,6 +12,7 @@ Functions: broadcast, fill, mask, mask_posinf, where, squeeze, unsqueeze,
 transpose.
 """
 
+import operator
 from typing import Callable, List, Tuple
 
 import torch
@@ -19,8 +20,9 @@ import torch
 from .constants import TILE_SHAPE
 from .context import get_context
 from .dfb import Block, check_same_layout, track_source_blocks, _dry_run_result
-from .blockstate import BlockAcquisition, KernelType
-from .ttnnsim import ROW_MAJOR_LAYOUT, Tensor
+from .blockstate import BlockAcquisition
+from .kernel import KernelKind
+from .ttnnsim import DType, ROW_MAJOR_LAYOUT, Tensor, bfloat16, promote_dtype
 
 
 def _is_dry_run() -> bool:
@@ -223,19 +225,26 @@ def broadcast(
         tensor=Tensor(result_elem),
         shape=shape,
         acquisition=BlockAcquisition.RESERVE,
-        kernel_type=KernelType.COMPUTE,
+        kernel_type=KernelKind.COMPUTE,
         is_temporary=True,
     )
     track_source_blocks(result_block, block)
     return result_block
 
 
-def fill(value: float, shape: Tuple[int, ...]) -> Block:
+def fill(
+    value: float,
+    shape: Tuple[int, ...],
+    dtype: DType = bfloat16,
+    tile: Tuple[int, int] = TILE_SHAPE,
+) -> Block:
     """Return a temporary tiled block of the specified shape filled with value.
 
     Args:
         value: The scalar value to fill every element with.
         shape: Grid shape of the resulting block (at least 2-dimensional).
+        dtype: Per-element dtype of the resulting block; defaults to bfloat16.
+        tile: Physical tile dimensions as ``(height, width)``.
 
     Returns:
         A temporary Block of the specified shape with every element set to value.
@@ -245,24 +254,33 @@ def fill(value: float, shape: Tuple[int, ...]) -> Block:
         raise ValueError(
             "fill requires a shape with at least 2 dimensions for tiled layout"
         )
+    try:
+        tile_h, tile_w = tile
+        tile_h = operator.index(tile_h)
+        tile_w = operator.index(tile_w)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Tile must contain exactly two integer dimensions, got {tile!r}"
+        ) from None
+    if tile_h <= 0 or tile_w <= 0:
+        raise ValueError(f"Tile dimensions must be positive, got {tile}")
 
     if _is_dry_run():
         return _dry_run_result(shape)
 
-    tile_h, tile_w = TILE_SHAPE
     batch = shape[:-2]
     TM, TK = shape[-2], shape[-1]
 
     elem = torch.full(
         (*batch, TM * tile_h, TK * tile_w),
         value,
-        dtype=torch.bfloat16,
+        dtype=promote_dtype(dtype),
     )
     return Block(
-        tensor=Tensor(elem),
+        tensor=Tensor(elem, dtype=dtype),
         shape=shape,
         acquisition=BlockAcquisition.RESERVE,
-        kernel_type=KernelType.COMPUTE,
+        kernel_type=KernelKind.COMPUTE,
         is_temporary=True,
     )
 
@@ -378,6 +396,8 @@ def unsqueeze(block: Block, dims: List[int]) -> Block:
     Position values in ``dims`` refer to positions in the resulting shape.
     Dimension indexing uses standard Python convention: positive 0 is
     outermost, negative -1 is innermost.
+    Duplicate positions are rejected because each result position can hold
+    only one inserted axis.
 
     Args:
         block: Input block.
@@ -401,17 +421,23 @@ def unsqueeze(block: Block, dims: List[int]) -> Block:
     ndim = len(block_shape)
     new_ndim = ndim + len(dims)
 
-    norm_positions: List[int] = []
+    norm_positions: set[int] = set()
     for d in dims:
         if d >= new_ndim or d < -new_ndim:
             raise ValueError(
                 f"Cannot unsqueeze at dimension {d}: resulting shape would have "
                 f"{new_ndim} dimensions"
             )
-        norm_positions.append(d % new_ndim)
+        normalized = d % new_ndim
+        if normalized in norm_positions:
+            raise ValueError(
+                f"Cannot unsqueeze duplicate dimension {d}: result position "
+                f"{normalized} is already selected"
+            )
+        norm_positions.add(normalized)
 
     result_list: List[int] = list(block_shape)
-    for pos in sorted(set(norm_positions)):
+    for pos in sorted(norm_positions):
         result_list.insert(pos, 1)
     new_shape = tuple(result_list)
 

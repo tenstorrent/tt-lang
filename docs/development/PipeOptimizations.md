@@ -2,19 +2,12 @@
 
 ## 1. Introduction
 
-This document specifies proposed lowering rewrites for `ttl.create_pipe`
-that select the NoC primitive based on the PipeNet pattern. The current
-`convert-ttl-to-ttkernel` policy is one fixed primitive per Pipe shape
-(`noc_async_write_multicast` for `slice` destinations,
-`noc_async_write` for point destinations, slot-per-pipe receiver
-dataflow buffers when multiple pipes target the same receiver). This
-policy is independent of
-the receiver compute and the destination geometry, and emits a
-sub-optimal primitive for several common patterns. The
-performance-tuned tt-metal kernels (`minimal_matmul`,
-`llama_all_gather_matmul_async`, `reduce_scatter_minimal_async`)
-select different primitives for these patterns by hand. Closing the
-gap is a lowering-policy change, not a dialect change.
+This document describes implemented PipeNet communication protocols in
+section 2 and proposed optimizations in sections 3 onward. A PipeNet describes
+which worker cores exchange data. Lowering selects NoC operations and
+synchronization from those endpoints, receiver DFB reservations, and transfer
+counts. The [PipeNet reference](PipeNets.md#semantics) defines the address and
+synchronization mechanisms used here.
 
 Goals:
 
@@ -23,50 +16,44 @@ Goals:
 2. Emit the primitives that the tuned tt-metal kernels use for each
    pattern (forwarding chain for 1→K broadcast, ring for N→1
    reductions), without changing the user-facing PipeNet language.
-3. Remove the limit on overlapping multicast width. Today, when `N`
-   pipes target the same receiver and share its dataflow buffer, the
-   receiver's `block_count` must be at least `N` because each pipe
-   gets its own dedicated slot in that buffer. With the tt-metal
-   per-Tensix CB cap of 32 (`NUM_CIRCULAR_BUFFERS` in
-   [`tt_metal/llrt/hal.hpp:409-411`][hal-num-cb]), this constrains
-   overlapping multicast to `N <= 32`. The compiler should let one
-   wide overlapping multicast lower without that constraint.
+3. Bound storage for overlapping multicast. If `N` receive reservations remain
+   live together, their DFB needs space for all `N` payloads. Scheduling those
+   reservations in smaller groups would reduce the required L1 storage.
 
 ## 2. Background
 
-Currently `convert-ttl-to-ttkernel` lowers each `ttl.create_pipe` to one fixed
-primitive based on the Pipe shape. The mapping is:
+The ordinary payload and completion operations are listed below. Eligible
+one-shot point-to-point transfers use the posted-write protocol described later
+in this section. DFB capacity follows the reservation schedule; it is not a
+fixed number determined by whether the transfer is unicast or multicast.
 
-| Pipe shape | Primitive | Receiver dataflow buffer |
-| --- | --- | --- |
-| `Pipe(src=p, dst=p')` (point) | `noc_async_write` + `noc_semaphore_inc` | `block_count = 2` |
-| `Pipe(src=p, dst=slice(...))` (rectangular multicast) | `noc_async_write_multicast` + `noc_semaphore_inc_multicast` | `block_count = max gather slot + 1` |
-| Loopback multicast (`src` in dst range) | `noc_async_write_multicast_loopback_src` + remote `inc_multicast` + local `noc_semaphore_inc` | same as above |
+| Endpoints | Payload and completion operations |
+| --- | --- |
+| `Pipe(src=p, dst=p')` (point) | `noc_async_write` + `noc_semaphore_inc` |
+| `Pipe(src=p, dst=slice(...))` (rectangular multicast) | `noc_async_write_multicast` + `noc_semaphore_inc_multicast` |
+| Loopback multicast (`src` in destination range) | `noc_async_write_multicast_loopback_src` + remote `inc_multicast` + local `noc_semaphore_inc` |
 
 When several pipes target the same receiver and share its dataflow
-buffer, the receiver-side slot allocation is handled by
-`PipeGraph::assignGatherSlotIndices` (in
-`lib/Dialect/TTL/Transforms/PipeGraph.h`). It greedy-colors the pipes
-that share a `(receiver, cbIndex)` pair so each pipe gets a distinct
-slot index in the receiver dataflow buffer. `verifyReceiverDFBBlockCounts`
-then requires `block_count >= max_slot_idx + 1` per receiver. This
-makes overlapping multicast unrepresentable when more than 32 pipes
-target the same receiver: the tt-metal per-Tensix CB cap is 32
-(`NUM_CIRCULAR_BUFFERS` in
-[`tt_metal/llrt/hal.hpp:409-411`][hal-num-cb], enforced in tt-lang
-at `python/ttl/dataflow_buffer.py:66`), and the slot table requires
-the count to equal the number of pipes.
+buffer, the receiver-side slot allocation is handled by `PipeGraph` (in
+`lib/Dialect/TTL/Transforms/PipeGraph.h`). It follows receiver post
+order so each pipe gets the DFB slot reserved by its receive post, and
+requires multicast receivers to reserve the same destination L1 address
+because TT-Metal NoC multicast carries one destination address.
+The compiler checks that each reservation fits within the DFB. Storage grows
+with simultaneously live reservations; completed reservations can release
+space for later transfers.
 
 ### Multicast handshake protocol
 
-The sender and receiver in each multicast pipe coordinate via a
-per-PipeNet receiver counter, allocated by
-`allocatePipeNetCountersForMulticast` as a kernel-local
-`memref<1xi32>`. The lowering in `lib/Dialect/TTL/Transforms/PipeLowering.cpp`
-emits the following sequence (some arguments elided for brevity):
+The sender and receiver in each multicast pipe coordinate via a local
+receiver-completion semaphore and a kernel-local expected sequence allocated
+by `allocatePipePostSequenceCounters`. Pipe endpoint relations sharing a
+receiver use distinct completion semaphores; disjoint receiver sets may reuse
+an index. The lowering in `lib/Dialect/TTL/Transforms/PipeLowering.cpp` emits
+the following sequence (some arguments elided for brevity):
 
 ```
-                // one per (receiver, PipeNet); kernel-local memref<1xi32>
+                // one per completion semaphore used by this kernel
                 int32_t recv_counter[1] = {0};
 
 sender:    noc_async_write_multicast(data, recv_slot_addr, num_dests)
@@ -78,23 +65,388 @@ receiver:  ++recv_counter[0]
            consume tile
 ```
 
-`inc_multicast` adds to the remote semaphore, so `N` senders each
-calling `inc(+1)` once per round produce a monotonically increasing
-arrival count at every receiver. The receiver maintains a local
-expectation in `recv_counter[0]` (one entry per `(receiver, PipeNet)`
-pair) and waits with `experimental::semaphore_wait_min` until the
-remote semaphore reaches at least that count. Each sender writes its
-data to a distinct slot in the receiver's CB (slot assignment from
-`PipeGraph::assignGatherSlotIndices`), so the data writes themselves
-also do not collide.
+Each transfer has its own completion counter at each receiver. Repeated sends
+increment that counter, and each receive waits for its corresponding sequence
+number. Distinct senders sharing a receiver update distinct counters, so one
+sender cannot satisfy another sender's wait. Their simultaneously live
+payloads occupy distinct reserved DFB storage.
 
-Loopback (`src` in `dst` range) skips the increment on the source
-core itself: the sender's `if_src` callback has already deposited the
-tile in the local CB, so the loopback receiver advances its counter
-expectation without waiting on the remote semaphore. The compiler
-emits `noc_async_write_multicast_loopback_src` for the data write to
-keep the multicast topology uniform across all receivers including
-the source core.
+For loopback multicast, the payload write includes the source core as a
+receiver. The multicast atomic updates remote receivers, and a separate local
+atomic increments the source core's completion counter. The local receiver
+uses the same completion wait as other receivers.
+
+### One-shot posted point-to-point protocol
+
+A same-device point-to-point transfer to another core can replace the payload
+barrier and completion atomic when planning proves all of the following:
+
+- The transfer uses receiver-post synchronization, has one remote receiver,
+  and uses a fixed computed receiver DFB address.
+- The completion counter receives exactly one update over its complete
+  lifetime. Repeated transfers and counters shared by a wait-any completion
+  group therefore retain cumulative atomics.
+- The payload fits the target's one-packet limit and does not require
+  page-addressed writes.
+- The send signals completion itself rather than deferring the signal to a
+  later credit update. Capacity synchronization, fabric, multicast, loopback,
+  and receiver-published addressing retain their existing protocols.
+
+A posted write does not request a remote acknowledgement. The receiver instead
+relies on the payload and completion writes arriving in order. The sender uses
+the following sequence when write-state setup can move before the wait:
+
+```text
+configure the destination NoC node, transfer size, and posted response mode
+wait for receiver readiness and reset the readiness counter
+issue the payload write with its source and destination L1 addresses
+store completion value 1 with a posted inline word write
+flush posted writes before source reuse
+```
+
+`noc_async_write_one_packet_set_state<true>` configures the destination core,
+byte count, and posted mode without sending data.
+`noc_async_write_one_packet_with_state<true>` then supplies the two L1 addresses
+and starts the transfer. This separates command setup from issuing the write,
+so setup can execute before waiting for receiver readiness.
+
+TT-Metal uses `NOC_UNICAST_WRITE_VC` for both the stateful payload write and
+the inline completion write unless a caller requests a custom virtual channel
+([NoC API defaults](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/tt_metal/hw/inc/api/dataflow/noc.h#L420-L453),
+[inline write selection](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/tt_metal/hw/inc/api/dataflow/noc.h#L543-L578)).
+This lowering does not request a custom virtual channel. The Wormhole NoC
+ordering contract states that packets with the same route and virtual channel
+do not reorder or interleave
+([NoC ordering](https://github.com/tenstorrent/tt-isa-documentation/blob/5287a62727350bcef35f7b411d1b8a706172ec4c/WormholeB0/NoC/Ordering.md#L9-L16)).
+Blackhole programs a static virtual channel for the stateful write and emulates
+an L1 inline write with a normal asynchronous write after flushing prior posted
+writes
+([stateful write setup](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/tt_metal/hw/inc/internal/tt-1xx/blackhole/noc_nonblocking_api.h#L1451-L1459),
+[L1 inline write](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/tt_metal/hw/inc/internal/tt-1xx/blackhole/noc_nonblocking_api.h#L963-L1030)).
+The receiver therefore observes the payload before completion on both targets.
+The final flush waits for posted writes to leave the sender; it does not add a
+remote acknowledgement. The receiver keeps the same completion wait and
+observes no protocol semantic change.
+
+TTKernel cleanup may move one-packet state configuration before the blocking
+receiver-readiness wait. It does so only when the destination coordinates,
+size, and NoC selection can be computed before the wait without side effects,
+and intervening operations do not overwrite or use that command configuration.
+Otherwise the payload uses an ordinary posted `noc_async_write`. A send selected
+from a PipeNet endpoint table uses this protocol only when every possible
+selected transfer meets the conditions above.
+
+The shared record-cleanup pipeline reapplies these patterns with
+`ttkernel-cleanup` after static record-loop expansion and endpoint
+simplification, with or without core specialization.
+Initial TTL lowering cannot configure a constant destination while that
+destination still depends on an unresolved record index.
+
+The same cleanup shares copy initialization across statically nonempty
+copy/pack loops. It moves `copy_tile_init(source)` before the loop only when
+the source DFB is defined outside the loop and every body operation preserves
+the unpack/math configuration. Copies from another DFB, other initialization,
+unknown calls, nested control flow, and a possibly empty loop prevent this
+transformation. Queue synchronization and packing remain in the loop. This
+avoids reinitializing copying for every incoming tile during L1 accumulation.
+
+Write-state verification and cleanup share `NocCommandEffectsAnalysis` to
+classify command changes and dependencies, including effects inside called
+functions. Unknown and recursive callees conservatively use and overwrite
+state. Cleanup must preserve existing dependent uses when moving a setup;
+verification instead checks that no overwrite separates a setup from its
+issue, including an overwrite carried into the next loop iteration.
+
+A setup in one `scf.if` may cover an issue in another only when the issue's
+enclosing conditions include every setup condition and select the same
+branches. For other enclosing regions, the issue must remain in the setup's
+region. This conservatively rejects escaping conditional or loop-local setups
+without assuming that an unknown region executes. Proven-distinct constant
+NoC selectors distinguish set-state operations; other command changes remain
+conservative when their NoC selection is not analyzed.
+
+### Grouped PipeTransport lowering
+
+Repeated point-to-point transfers previously retained the scalar protocol
+inside the loop:
+
+```text
+for each logical transfer:
+  reserve one source DFB block
+  issue one tensor read
+  wait for the read
+  send one block
+  wait for the write
+  signal one completion
+  acquire and release one receiver slot
+```
+
+This sequence programs and synchronizes the NoC for every logical transfer.
+`ttl-form-pipe-transports` now proves eligible loops and strip-mines them into
+groups of `R` logical transfers:
+
+```text
+select R logical transfers per group
+select K resident destination groups
+prove the grouped source and destination DFB lifecycles are private
+allocate R source blocks and R * K destination blocks in per-core scratch
+
+for base = 0; base < grouped_end; base += R:
+  issue R tensor reads into source scratch
+  wait once for the read group
+  wait until one destination scratch group is free
+  send R pages to destination scratch slot (enqueue_sequence mod K)
+  wait once for the write group
+  publish one data credit
+  write R pages from destination scratch slot to the output
+  publish R free credits
+  advance the destination slot modulo K
+
+complete outstanding data and free credit updates
+
+run remaining logical transfers through the original DFBs
+```
+
+The generated TTKernel code uses one read barrier, one write barrier, and one
+receiver data-credit update per group. An overlapped unicast payload that
+exceeds the target one-packet limit is decomposed into pages. TTKernel cleanup
+programs the write command once outside the group loop and reuses it for every
+page. Payloads that fit one packet use one stateful contiguous write per group
+when command state is invariant. Other schedules and topologies retain the
+generic contiguous NoC write.
+
+Stateful write selection treats resident NoC command state as an explicit
+hardware effect. TTKernel NoC operations declare their command class and
+whether they preserve or depend on resident state through traits. A write is
+converted only when its enclosing loop has a statically positive trip count and
+no operation that may reprogram or use the write command can execute on the same
+node. The positive trip count prevents setup from changing state when the
+original loop would not execute. Rejecting another state user prevents hoisted
+setup from changing a preceding `_with_state` operation. Resolved function calls
+are analyzed transitively. Unresolved calls and opaque external calls invalidate
+the state because their device implementation is not available to the compiler.
+
+Data and free credits use cumulative counters. An overlapped stream therefore
+does not require each non-posted credit update to complete before the next
+group starts. `PipeTransportPlan` records iteration-domain credit completion,
+and TTKernel lowering emits one NoC atomic barrier after the innermost source or
+receiver loop that issues those updates. Source and receiver roles in the same
+SPMD loop share one barrier. Scalar, receiver-post, and mixed-completion
+sequences retain immediate barriers.
+
+The source and destination scratch allocations use the same byte offset because
+each node receives a distinct per-core scratch buffer. Different transport
+streams receive non-overlapping aligned segments. The module-level
+`ttl.pipe_sram_scratch_bytes` attribute records the required per-core size.
+Existing runtime support allocates that buffer and passes its address as the
+first PipeNet common argument.
+
+#### PipeTransport contract
+
+`PipeTransportPlan` separates logical scheduling from backend emission:
+
+- `block_span` records the number of original source DFB blocks represented by
+  one transfer.
+- Each receiver endpoint records its own DFB slot span. Source and receiver
+  block geometries are independent and must not be equated.
+- `destination_group_depth` records the maximum number of complete transfers
+  that the schedule may leave resident in each receiver DFB.
+- Capacity counters use receiver DFB blocks as their unit. A send acquires the
+  endpoint slot span, and the matching receiver pop releases that same span.
+- Credit completion is explicit. `Immediate` completes a credit update at its
+  operation; `IterationDomain` completes all outstanding updates after the
+  innermost loop containing the corresponding send or receiver DFB pop.
+- Storage ownership is explicit. `DFB` retains the original reserve, push,
+  wait, and pop operations. `Transport` proves that one grouped stream owns the
+  complete lifecycle, replaces its storage with scratch, and removes those DFB
+  operations during TTKernel conversion.
+- A transport-owned destination with depth `K` uses the recurrence
+  `slot(i) = i mod K`. Sender and receiver counters start at zero and advance
+  once per grouped transfer. Capacity credits prevent sender reuse before the
+  receiver finishes the corresponding slot.
+
+This contract supports the common scalar-tile case, where source and receiver
+spans are both `R`, and transfers between different source and receiver DFB
+block geometries.
+
+#### Backend scope
+
+Loop grouping, bounded-capacity scheduling, packetization, storage ownership,
+and credit-completion decisions are transport-independent. A fabric lowering
+can consume the same `PipeTransportPlan` when its emitter provides equivalent
+payload, completion, capacity-release, and completion-barrier operations.
+
+The current implementation emits same-device NoC operations. Stateful
+one-packet command reuse and NoC command-state preservation apply only to this
+emitter. Fabric lowering must select fabric payload primitives and define the
+completion semantics for fused payload and semaphore operations. Endpoint
+alias checks must compare complete device-and-node identities rather than local
+2-D node coordinates. These backend requirements do not change the grouping or
+bounded-capacity protocol.
+
+#### Eligibility and selection
+
+The pass groups a loop only after proving all of the following:
+
+- The `scf.for` has constant bounds, unit step, no loop-carried values, and at
+  least two iterations. Its transfer count must be representable as `int64_t`;
+  nonzero lower bounds are supported.
+- Every grouped transfer is scalar before the rewrite and executes in the
+  candidate loop.
+- The source and receiver DFB values are direct `ttl.bind_cb` results whose
+  complete reserve/push/wait/pop lifecycles are inside the loop.
+- Each transport DFB block contains one tile and has one contiguous
+  loop-indexed tensor copy. Its acquired views do not escape the source or
+  destination role. Grouping wider blocks requires a separate proof that the
+  tensor slice start advances by the block width on each scalar iteration.
+- The transfer is point-to-point with one receiver. Source and destination use
+  different nodes and different DFBs, and the receiver starts at DFB tile
+  offset zero.
+- The loop contains no unrelated side effects.
+- Every transfer value has unique, valid provenance.
+
+The pass uses MLIR's `moveLoopInvariantCode` utility to move pure setup
+operations out of candidate loops. A recursive purity proof accepts
+loop-invariant index expressions without enumerating specific operation
+classes.
+
+`group-size=0` selects automatically, `group-size=1` disables grouping, and a
+larger value limits `R`. The Python option `--ttl-pipe-batch-tiles` configures
+the same bound. The automatic policy first prefers a schedule with at least
+two complete receiver groups, then minimizes completion groups, capacity
+waits, and L1 allocation bytes. It selects the minimum legal destination depth
+`K`: two groups for bounded overlap, or a larger depth when required to
+preserve existing receiver storage.
+
+Formation temporarily widens the grouped DFB types so the reserve and wait
+views remain valid IR until TTKernel conversion proves and removes their
+lifecycle. Scalar residual operations retain their original one-block
+acquisition counts. The current runtime derives user DFB allocations from the
+frontend declarations rather than the widened intermediate types. Grouped code
+uses scratch, and only the scalar residual accesses the original runtime DFB.
+This contract does not depend on the finalized logical-to-physical DFB
+allocation interface.
+
+Group selection conservatively counts the widened temporary DFB types,
+receiver-published address-table storage, and transport scratch against the L1
+budget. It reuses `buildPipeResourcePlan` in all-published mode for the
+address-table bound, so the selector and final lowering use the same liveness
+coloring and alignment rules. DFB block counts are rounded up to multiples of
+`R`, so this estimate is non-monotonic in `R`; for example, `R=5` can fit an
+existing five-block DFB when `R=4` requires eight blocks. Selection evaluates
+every `R` within a finite upper bound derived from the L1 budget and the
+mandatory bytes per group. It does not use a binary search over `R`.
+Production Python and the registered C++ pipeline pass the same explicit or
+device-derived L1 budget to grouping and final DFB validation. The effective
+budget is part of the operation cache key because it can change the selected
+group size and generated code.
+
+#### Pipeline placement and allocation
+
+The standard TTL lowering pipeline orders the relevant passes as follows:
+
+```text
+ttl-insert-cb-sync
+  -> ttl-form-pipe-transports
+  -> ttl-coalesce-dfb-acquires
+  -> ttl-finalize-dfb-indices
+  -> PipeNet planning and TTKernel lowering
+```
+
+Grouping runs after DFB synchronization is explicit because its proof requires
+the complete lifecycle. It runs before acquire coalescing and DFB finalization
+because it changes acquire widths and temporary DFB types. The transport plan
+later replaces eligible grouped lifecycles with direct scratch accesses.
+Remaining DFB operations follow the ordinary finalization and runtime
+allocation mechanism. This ordering does not require compiler-allocated DFBs
+or the finalized DFB runtime allocation contract.
+
+`ttl.cb_wait` remains an observable synchronization operation even when its
+returned view has no SSA uses. This prevents intermediate greedy rewrites from
+removing the wait before PipeTransport planning proves and replaces the complete
+DFB lifecycle.
+
+#### Measured result
+
+The pipes microbenchmark was measured on Blackhole with 128 distinct tiles,
+five warmup iterations, and twenty measured iterations. The default
+transport-owned scratch lowering was bit-exact for bf16 and fp32. Automatic
+selection uses `(R=64, K=2)`:
+
+| Data type | tt-lang sender | C++ bounded-ring sender | tt-lang receiver | C++ bounded-ring receiver |
+| --- | ---: | ---: | ---: | ---: |
+| bf16 | 7.789 us | 8.346 us | 9.807 us | 10.924 us |
+| fp32 | 14.351 us | 13.847 us | 17.873 us | 17.419 us |
+
+The bf16 sender and receiver are faster than the hand-written bounded ring. The
+fp32 sender is 3.6% slower and the receiver is 2.6% slower.
+
+Forced group sizes compare the same bounded protocol at identical `R` and
+`K=2`. Negative differences indicate that tt-lang is faster:
+
+| Group size R | Computed PipeTransport | C++ bounded ring | Difference |
+| ---: | ---: | ---: | ---: |
+| 8 | 17.116 us | 16.927 us | +1.12% |
+| 16 | 11.956 us | 11.973 us | -0.14% |
+| 32 | 9.284 us | 9.672 us | -4.01% |
+| 64 | 7.934 us | 8.346 us | -4.93% |
+
+An R=8 sweep over `N=16,32,64,128,256` separates fixed kernel cost from
+communication cost. Linear regression gives `0.13203 us/transfer` for the
+computed PipeTransport and `0.13195 us/transfer` for the C++ bounded ring, a
+0.06% difference. The remaining approximately 0.22 us intercept difference is
+fixed generated-kernel overhead rather than per-transfer communication cost.
+
+The unconstrained batched/stateful NoC ceiling takes 6.96 us for 128 transfers,
+but does not enforce bounded receiver residency. The scalar C++ baseline is
+approximately 0.60 us per transfer.
+
+The bounded fan-in mux microbenchmark uses four saturated producers and one
+arbiter. Each producer owns a two-group landing ring (`K=2`) at the arbiter and
+sends four tiles per group (`R=4`). An ordinary least-squares fit over
+`T=64,128,256` distinct tiles per producer measures the recurring cost:
+
+| Metric | Default PipeTransport | Postprocessed reference | Difference |
+| --- | ---: | ---: | ---: |
+| Producer | 0.403399 us/tile | 0.404456 us/tile | -0.26% |
+| Arbiter | 0.403375 us/tile | 0.404443 us/tile | -0.26% |
+
+Both current fits have `r2 > 0.99998`, and every result is bit-exact. The
+reference numbers were previously obtained by removing DFB lifecycle
+operations from tt-lang-generated C++ before device-kernel compilation. The
+current numbers use compiler output without postprocessing. Generated kernels
+contain the stateful grouped writes and batched credit completion, with no DFB
+reserve, push, wait, pop, or pointer operations for transport-owned source or
+destination storage.
+
+At commit `a900dabb`, a clean Docker rebuild and `check-ttlang-all` passed 204
+MLIR tests, 3 binding tests, 162 packaging tests, 1,897 Python tests, 868 ME2E
+tests, and 81 Python lit tests. The suites also reported 3 skipped Python
+tests, 8 expected Python failures, 35 expected ME2E failures, and 1 unsupported
+Python lit test.
+
+#### Metal 2.0 DFB integration
+
+The proposed Metal 2.0 BLOCKED DFB interface in
+[tt-metal PR #47589](https://github.com/tenstorrent/tt-metal/pull/47589)
+adds `DFBAccessPattern::BLOCKED`, a `block_size` binding field, and
+`BlockedProducerOf` / `BlockedConsumerOf` helpers. This interface is
+experimental and is not the current PipeTransport backend.
+
+`PipeTransportPlan` is intentionally independent of that interface. A future
+Metal 2.0 backend can map a scalar-tile grouped schedule to
+`block_size = R` and at least `R * K` DFB entries when the target supports the
+required producer/consumer combination. General mappings must derive producer
+and consumer block sizes independently when their DFB block geometries differ.
+Metal 2.0 restrictions, including block-size limits, entry-count divisibility,
+thread-count ratios, and supported producer/consumer combinations, are backend
+capability predicates. They do not change PipeTransport semantics.
+
+Until that interface is available and validated for the required targets,
+tt-lang continues to lower grouped schedules to explicit batched NoC
+operations over transport-owned scratch. BLOCKED DFB support can replace the
+final backend-specific storage, synchronization, and addressing without
+changing loop grouping, transport planning, or capacity accounting.
 
 ## 3. Optimization opportunities
 
@@ -513,7 +865,7 @@ CCL receiver staging DFB feeding a matmul operand-reader DFB.
 operand-reader DFB occupies; the operand-reader waits on a semaphore
 (signaled by the multicast sender) instead of doing a
 `cb_wait_front` on the staging DFB. Saves one CB index (one of the
-32 per-Tensix tt-metal CB slots that DFBs lower to), one
+target-dependent physical slots that DFBs lower to), one
 `cb_push_back` / `cb_pop_front` pair, and the implicit L1 region
 reservation for the staging DFB.
 
@@ -524,9 +876,9 @@ DFB exists between gather and matmul-A. The companion compute
 kernel is
 [`bmm_large_block_zm_fused_bias_activation_gathered.cpp`][llama-compute].
 
-**Why this is faster.** Frees one of the 32 per-Tensix CB indices
-that DFBs lower to and removes one push/pop pair per delivered
-tile. For kernels approaching the index ceiling (e.g.
+**Why this is faster.** Frees one physical DFB index and removes one push/pop
+pair per delivered tile. For kernels approaching the target's index capacity
+(e.g.
 `make_balanced_relu_kernel` in `test_mcast_matmul.py` already uses
 4-5 DFBs), the index headroom is the limiting factor.
 
@@ -537,8 +889,8 @@ needs a separate analysis pass.
 
 #### 3.2.6 Wave decomposition for wide overlapping multicast
 
-**Pattern.** A single PipeNet whose slot-per-pipe `block_count`
-exceeds the L1 budget or the tt-metal per-Tensix CB cap of 32.
+**Pattern.** A single PipeNet whose slot-per-pipe `block_count` exceeds the L1
+budget.
 
 **Rewrite.** The pass splits the PipeNet into `K` narrower PipeNets
 executed sequentially, each with `block_count = ceil(N/K)` where `N`
@@ -581,11 +933,6 @@ queries. At minimum the interface exposes:
 - `l1BandwidthPerCycle()`: per-Tensix L1 bandwidth in bytes per
   cycle, used to bound the receiver-side staging cost subtracted by
   3.2.5.
-- `dataflowBufferDepthCap()`: 32 on Wormhole and Blackhole, the
-  static maximum `block_count` enforced by `python/ttl/circular_buffer.py`.
-  3.2.6 applies only when the slot-per-pipe `block_count` would
-  exceed this value.
-
 Each rewrite then implements `costOfRewritten(pipeNet, ctx)` and
 `costOfFallback(pipeNet, ctx)` returning a comparable scalar; the
 rewrite applies when the difference exceeds a target-specific threshold.
@@ -747,7 +1094,7 @@ TTKernel op
 regions larger than 4 bytes, host-side `Buffer::create_l1_sharded`
 returns an L1 base address that can be passed similarly. This
 mechanism is sufficient for any future rewrite that needs a small
-fixed-size L1 region (e.g., a per-PipeNet shared counter) without
+fixed-size L1 region (e.g., a cross-core shared counter) without
 any new dialect surface; allocate a fresh semaphore alongside the
 existing `senderSem` / `recvSem` and operate on it with
 `noc_semaphore_inc` etc.
@@ -764,21 +1111,19 @@ should grow its own TTL-side allocator targeting the same
 underlying tt-metal `Buffer` mechanism but driven from PipeGraph
 liveness rather than D2M's.
 
-Distinction from the existing per-PipeNet receiver counter: that
-counter is a `memref<1xi32>` with no memory-space attribute. The standard
-MemRefToEmitC patterns lower it to a stack-allocated `int32_t
-counter[1]` inside the kernel function — not L1-allocated. This is
-sufficient for that counter (each kernel invocation needs a fresh
-counter, no cross-core sharing). It is not sufficient for any
-counter that must be visible to other cores; that case requires
-the host-side semaphore mechanism above.
+Distinction from the existing receiver expected-sequence counter: that counter
+is a `memref<1xi32>` with no memory-space attribute. The standard MemRefToEmitC
+patterns lower it to a stack-allocated `int32_t counter[1]` inside the kernel
+function, not L1-allocated. This is sufficient because each kernel invocation
+needs fresh local state. A counter visible to other cores requires the
+host-side semaphore mechanism above.
 
 Recommendation by rewrite:
 
 | Rewrite | L1 need | Mechanism |
 |---|---|---|
 | 3.2.5 receiver-DFB sharing | Reuses an existing DFB | None; no new allocation |
-| Future cross-core counter | One 4-byte semaphore per PipeNet | Host-side `CreateSemaphore` |
+| Future cross-core counter | One 4-byte semaphore per synchronization relation | Host-side `CreateSemaphore` |
 | Future intermediate accumulator | Sized L1 region with liveness | TTL-side allocator (does not exist today; D2M's allocator is not an option) |
 
 The host-side mechanism covers every L1 need the §3.2 rewrites
@@ -1006,8 +1351,6 @@ tt-metal (at SHA `c296ef469fe6aab65ab0d359e164b14b62d92bfc`):
 - [`tests/tt_metal/tt_metal/perf_microbenchmark/2_noc_rtor/test_noc_rtor.cpp`](https://github.com/tenstorrent/tt-metal/blob/c296ef469fe6aab65ab0d359e164b14b62d92bfc/tests/tt_metal/tt_metal/perf_microbenchmark/2_noc_rtor/test_noc_rtor.cpp) — random-source-to-random-destination NoC sweep
 - [tt-benchmarking repository](https://github.com/tenstorrent/tt-benchmarking) — op-level perf harnesses
 - [`Kernel::compute_hash` (tt-metal JIT cache key)](https://github.com/tenstorrent/tt-metal/blob/c296ef469fe6aab65ab0d359e164b14b62d92bfc/tt_metal/impl/kernels/kernel.cpp#L374-L399) — hashes emitted source, compile-time args, defines, and config
-- [`NUM_CIRCULAR_BUFFERS = 32` (tt-metal per-Tensix CB cap)](https://github.com/tenstorrent/tt-metal/blob/c296ef469fe6aab65ab0d359e164b14b62d92bfc/tt_metal/llrt/hal.hpp#L409-L411) — the limit `block_count` is bounded by
-
 <!--
 The reference labels below back the in-text [text][label] links and
 should be left in place; markdown renders them as invisible link
@@ -1030,7 +1373,6 @@ definitions.
 [llvm-lv-force-ordered]: https://github.com/llvm/llvm-project/blob/705cdc3a9d0adb4c0667aa840a1f23165eca297b/llvm/lib/Transforms/Vectorize/LoopVectorize.cpp#L344
 [dm-in0-chain]: https://github.com/tenstorrent/tt-metal/blob/c296ef469fe6aab65ab0d359e164b14b62d92bfc/ttnn/cpp/ttnn/operations/experimental/minimal_matmul/device/kernels/dm_in0_sender.cpp#L287-L315
 [noc-mcast-docstring]: https://github.com/tenstorrent/tt-metal/blob/c296ef469fe6aab65ab0d359e164b14b62d92bfc/tt_metal/hw/inc/api/dataflow/dataflow_api.h#L885-L924
-[hal-num-cb]: https://github.com/tenstorrent/tt-metal/blob/c296ef469fe6aab65ab0d359e164b14b62d92bfc/tt_metal/llrt/hal.hpp#L409-L411
 [dm-in1-out]: https://github.com/tenstorrent/tt-metal/blob/c296ef469fe6aab65ab0d359e164b14b62d92bfc/ttnn/cpp/ttnn/operations/experimental/minimal_matmul/device/kernels/dm_in1_sender_out.cpp
 [factory-in0-next]: https://github.com/tenstorrent/tt-metal/blob/c296ef469fe6aab65ab0d359e164b14b62d92bfc/ttnn/cpp/ttnn/operations/experimental/minimal_matmul/device/minimal_matmul_program_factory.cpp#L719-L722
 [factory-in1-next]: https://github.com/tenstorrent/tt-metal/blob/c296ef469fe6aab65ab0d359e164b14b62d92bfc/ttnn/cpp/ttnn/operations/experimental/minimal_matmul/device/minimal_matmul_program_factory.cpp#L770-L773

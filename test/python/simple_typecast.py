@@ -53,7 +53,7 @@ def typecast_kernel(inp, out):
 # =============================================================================
 
 # CHECK-LABEL: func.func @compute_fn
-# CHECK-SAME: attributes {{{.*}}ttl.kernel_thread = #ttkernel.thread<compute>}
+# CHECK-SAME: attributes {{{.*}}ttl.kernel_thread = #ttkernel.thread<compute>, ttl.logical_kernel = #ttl.logical_kernel<kind = compute>}
 
 # Bind input (bf16) and output (f32) circular buffers.
 # CHECK: %[[IN_CB:.+]] = ttl.bind_cb{cb_index = 0

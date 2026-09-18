@@ -11,6 +11,7 @@ setup() {
     unset TT_METAL_CACHE
     unset TTLANG_PIN_XDIST_WORKERS_TO_DEVICES
     unset TTLANG_XDIST_TT_METAL_CACHE_ROOT
+    unset TTLANG_XDIST_VISIBLE_DEVICE_GROUPS
 }
 
 @test "xdist worker pinning assigns one visible chip and cache directory" {
@@ -24,6 +25,32 @@ setup() {
     assert_success
     assert_line "3"
     assert_line "$BATS_TEST_TMPDIR/cache/worker-3"
+}
+
+@test "xdist worker pinning assigns a topology-valid device group" {
+    run env \
+        PYTHONPATH="$TTLANG_REPO_ROOT/test" \
+        TTLANG_PIN_XDIST_WORKERS_TO_DEVICES=1 \
+        PYTEST_XDIST_WORKER=gw1 \
+        TTLANG_XDIST_VISIBLE_DEVICE_GROUPS='0,1;2,3;' \
+        TTLANG_XDIST_TT_METAL_CACHE_ROOT="$BATS_TEST_TMPDIR/cache" \
+        python3 -c 'import os; from ttlang_test_utils import pin_xdist_worker_to_device; pin_xdist_worker_to_device(); print(os.environ["TT_VISIBLE_DEVICES"]); print(os.environ["TT_METAL_CACHE"])'
+
+    assert_success
+    assert_line "2,3"
+    assert_line "$BATS_TEST_TMPDIR/cache/worker-1"
+}
+
+@test "xdist worker pinning rejects a missing device group" {
+    run env \
+        PYTHONPATH="$TTLANG_REPO_ROOT/test" \
+        TTLANG_PIN_XDIST_WORKERS_TO_DEVICES=1 \
+        PYTEST_XDIST_WORKER=gw2 \
+        TTLANG_XDIST_VISIBLE_DEVICE_GROUPS='0,1;2,3' \
+        python3 -c 'from ttlang_test_utils import pin_xdist_worker_to_device; pin_xdist_worker_to_device()'
+
+    assert_failure
+    assert_output --partial "TTLANG_XDIST_VISIBLE_DEVICE_GROUPS does not define a group for xdist worker gw2"
 }
 
 @test "xdist worker pinning preserves an existing visible chip and still isolates cache" {

@@ -21,6 +21,8 @@
 #ifndef TTLANG_DIALECT_TTL_TRANSFORMS_LIVEINTERVALUTILS_H
 #define TTLANG_DIALECT_TTL_TRANSFORMS_LIVEINTERVALUTILS_H
 
+#include "ttlang/Dialect/TTL/Transforms/InterferenceGraphColoring.h"
+
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/Value.h"
@@ -28,6 +30,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <limits>
@@ -190,25 +193,32 @@ assignGreedyIntervalColors(ArrayRef<ItemT> items, IsBeforeFn isBefore,
   SmallVector<ItemT> sortedItems(items.begin(), items.end());
   llvm::sort(sortedItems, isBefore);
 
-  SmallVector<SmallVector<ItemT>> colorUsers;
-  for (const ItemT &item : sortedItems) {
-    unsigned selectedColor = 0;
-    for (;; ++selectedColor) {
-      if (selectedColor == colorUsers.size()) {
-        colorUsers.push_back({});
-        break;
-      }
-      bool hasConflict =
-          llvm::any_of(colorUsers[selectedColor], [&](const ItemT &assigned) {
-            return conflicts(item, assigned);
-          });
-      if (!hasConflict) {
-        break;
+  InterferenceGraph graph(sortedItems.size());
+  for (unsigned lhs = 0; lhs < sortedItems.size(); ++lhs) {
+    for (unsigned rhs = lhs + 1; rhs < sortedItems.size(); ++rhs) {
+      if (conflicts(sortedItems[lhs], sortedItems[rhs])) {
+        graph.addInterference(lhs, rhs);
       }
     }
-    colorUsers[selectedColor].push_back(item);
   }
 
+  SmallVector<unsigned> priorityOrder;
+  priorityOrder.reserve(sortedItems.size());
+  for (unsigned vertex = 0; vertex < sortedItems.size(); ++vertex) {
+    priorityOrder.push_back(vertex);
+  }
+  SmallVector<unsigned> vertexColors =
+      colorInterferenceGraphFirstFit(graph, priorityOrder);
+
+  unsigned colorCount = 0;
+  for (unsigned color : vertexColors) {
+    colorCount = std::max(colorCount, color + 1);
+  }
+  SmallVector<SmallVector<ItemT>> colorUsers(colorCount);
+  for (auto indexedItem : llvm::enumerate(sortedItems)) {
+    colorUsers[vertexColors[indexedItem.index()]].push_back(
+        indexedItem.value());
+  }
   return colorUsers;
 }
 

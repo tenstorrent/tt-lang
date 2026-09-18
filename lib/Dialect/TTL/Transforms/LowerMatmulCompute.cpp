@@ -52,6 +52,8 @@ struct PendingStore {
   Value view;
   SmallVector<Value> indices;
   Value dstIndex;
+  DFBTileStoreKind storeKind = DFBTileStoreKind::Producer;
+  UnitAttr rowPrefix;
 };
 
 /// Non-mutating preflight for one block matmul compute. Shared by the
@@ -524,14 +526,14 @@ LogicalResult generateMatmulCompute(PatternRewriter &rewriter, Location loc,
       }
       pendingStores.push_back(
           {storedTile, expansion.mapping.lookupOrDefault(store.getView()),
-           storeIndices,
-           createConstantIndex(secBuilder, loc, *storedDstIndex)});
+           storeIndices, createConstantIndex(secBuilder, loc, *storedDstIndex),
+           store.getStoreKind(), store.getRowPrefixAttr()});
     }
   }
 
   for (PendingStore &store : pendingStores) {
     TileStoreOp::create(secBuilder, loc, store.tile, store.view, store.indices,
-                        store.dstIndex);
+                        store.dstIndex, store.storeKind, store.rowPrefix);
   }
 
   SmallVector<Value> replacements;

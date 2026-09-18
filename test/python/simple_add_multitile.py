@@ -3,10 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: ttnn, tt-device
-# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.reuse.output 2>&1
 # RUN: FileCheck %s < %t.initial.mlir
+# RUN: FileCheck %s --check-prefix=CHECK-CPP-REUSE < %t.reuse.output
+# Stable logical-index checks run separately from the default allocator checks.
+# RUN: env TTLANG_COMPILE_ONLY=1 %python %s --no-ttl-reuse-user-dfbs --no-ttl-maximize-dst --no-ttl-fpu-binary-ops > %t.output 2>&1
 # RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
-# RUN: env TTLANG_COMPILE_ONLY=1 %python %s > %t.fpu.output 2>&1
+# RUN: env TTLANG_COMPILE_ONLY=1 %python %s --no-ttl-reuse-user-dfbs > %t.fpu.output 2>&1
 # RUN: FileCheck %s --check-prefix=CHECK-CPP-FPU < %t.fpu.output
 
 """
@@ -67,7 +70,7 @@ def add_multitile_kernel(lhs, rhs, out):
 # =============================================================================
 
 # CHECK-LABEL: func.func @add_compute
-# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>}
+# CHECK-SAME: attributes {ttl.base_cta_index = 3 : i32, ttl.crta_indices = [], ttl.kernel_thread = #ttkernel.thread<compute>, ttl.logical_kernel = #ttl.logical_kernel<kind = compute>}
 
 # DFB operations (alphabetical order: lhs_cb=0, out_cb=2, rhs_cb=1)
 # CHECK: %[[CB0:.+]] = ttl.bind_cb{cb_index = 0
@@ -95,6 +98,24 @@ def add_multitile_kernel(lhs, rhs, out):
 # C++ Kernel Checks - Verify loops are generated for multi-tile
 # =============================================================================
 
+# Default allocation may permute physical indices while preserving every
+# logical DFB use across the three kernels.
+# CHECK-CPP-REUSE-LABEL: === add_compute kernel written to {{.*}} ===
+# CHECK-CPP-REUSE: cb_ctarg_0.wait_front(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_2.wait_front(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_1.reserve_back(
+# CHECK-CPP-REUSE: cb_ctarg_0.pop_front(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_2.pop_front(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_1.push_back(
+# CHECK-CPP-REUSE-LABEL: === dm_read kernel written to {{.*}} ===
+# CHECK-CPP-REUSE: cb_ctarg_0.reserve_back(
+# CHECK-CPP-REUSE: cb_ctarg_0.push_back(
+# CHECK-CPP-REUSE-NEXT: cb_ctarg_2.reserve_back(
+# CHECK-CPP-REUSE: cb_ctarg_2.push_back(
+# CHECK-CPP-REUSE-LABEL: === dm_write kernel written to {{.*}} ===
+# CHECK-CPP-REUSE: cb_ctarg_1.wait_front(
+# CHECK-CPP-REUSE: cb_ctarg_1.pop_front(
+
 # CHECK-CPP: === add_compute kernel written to {{.*}} ===
 # CHECK-CPP: void kernel_main()
 # Loop bound constant for 2x2 tile grid, plus CB instance bindings.
@@ -111,13 +132,10 @@ def add_multitile_kernel(lhs, rhs, out):
 # CHECK-CPP: [[CB2]].reserve_back(
 # CHECK-CPP: init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
 
-# Nested loops for 2x2 tile grid
+# Hoist the invariant row offset outside the inner loop of the 2x2 tile grid.
 # CHECK-CPP: for (size_t [[I:i[0-9]+]] = {{.*}}; [[I]] < [[BOUND]]; [[I]] += {{.*}}) {
-# CHECK-CPP: for (size_t [[J:j[0-9]+]] = {{.*}}; [[J]] < [[BOUND]]; [[J]] += {{.*}}) {
-
-# Linearized index calculation: i * 2 + j
-# CHECK-CPP: size_t [[COLS:v[0-9]+]] = 2;
-# CHECK-CPP: size_t [[ROW_OFF:v[0-9]+]] = [[I]] * [[COLS]];
+# CHECK-CPP-NEXT: size_t [[ROW_OFF:v[0-9]+]] = [[I]] * [[BOUND]];
+# CHECK-CPP-NEXT: for (size_t [[J:j[0-9]+]] = {{.*}}; [[J]] < [[BOUND]]; [[J]] += {{.*}}) {
 # CHECK-CPP: size_t [[LIN_IDX:v[0-9]+]] = [[ROW_OFF]] + [[J]];
 
 # Copy tiles using linearized index (at first use: CB0 then CB1)

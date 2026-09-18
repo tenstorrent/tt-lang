@@ -19,14 +19,22 @@ setup() {
     unset TT_METAL_CACHE
     unset TTLANG_PIN_XDIST_WORKERS_TO_DEVICES
     unset TTLANG_XDIST_TT_METAL_CACHE_ROOT
+    unset TTLANG_XDIST_VISIBLE_DEVICE_GROUPS
+    unset HW_TEST_WORKERS
+    unset HW_PYTEST_TIMEOUT
 }
 
 # Fake python3 recording each invocation's args, exiting with $1 (default 0).
 write_fake_python() {
     local exit_code="${1:-0}"
+    local minimum_group_size="${2:-1}"
     cat > "$BIN/python3" <<EOF
 #!/usr/bin/env bash
-printf 'env:%s cache-root:%s args:%s vis:%s\n' "\${TTLANG_PIN_XDIST_WORKERS_TO_DEVICES:-}" "\${TTLANG_XDIST_TT_METAL_CACHE_ROOT:-}" "\$*" "\${TT_VISIBLE_DEVICES:-}" >> "$CALLS"
+if [ "\${1:-}" = "-c" ]; then
+    [ "\${3:-0}" -ge "$minimum_group_size" ]
+    exit
+fi
+printf 'env:%s cache-root:%s groups:%s args:%s vis:%s\n' "\${TTLANG_PIN_XDIST_WORKERS_TO_DEVICES:-}" "\${TTLANG_XDIST_TT_METAL_CACHE_ROOT:-}" "\${TTLANG_XDIST_VISIBLE_DEVICE_GROUPS:-}" "\$*" "\${TT_VISIBLE_DEVICES:-}" >> "$CALLS"
 exit $exit_code
 EOF
     chmod +x "$BIN/python3"
@@ -35,38 +43,115 @@ EOF
 write_fake_python_sequence() {
     local first_exit="$1"
     local second_exit="$2"
+    local third_exit="$3"
     local count_file="$BATS_TEST_TMPDIR/python-call-count"
     cat > "$BIN/python3" <<EOF
 #!/usr/bin/env bash
+if [ "\${1:-}" = "-c" ]; then
+    exit 0
+fi
 call_count=0
 [ -f "$count_file" ] && call_count=\$(cat "$count_file")
 call_count=\$((call_count + 1))
 printf '%s\n' "\$call_count" > "$count_file"
-printf 'env:%s cache-root:%s args:%s vis:%s\n' "\${TTLANG_PIN_XDIST_WORKERS_TO_DEVICES:-}" "\${TTLANG_XDIST_TT_METAL_CACHE_ROOT:-}" "\$*" "\${TT_VISIBLE_DEVICES:-}" >> "$CALLS"
+printf 'env:%s cache-root:%s groups:%s args:%s vis:%s\n' "\${TTLANG_PIN_XDIST_WORKERS_TO_DEVICES:-}" "\${TTLANG_XDIST_TT_METAL_CACHE_ROOT:-}" "\${TTLANG_XDIST_VISIBLE_DEVICE_GROUPS:-}" "\$*" "\${TT_VISIBLE_DEVICES:-}" >> "$CALLS"
 case "\$call_count" in
     1) exit $first_exit ;;
-    *) exit $second_exit ;;
+    2) exit $second_exit ;;
+    *) exit $third_exit ;;
 esac
 EOF
     chmod +x "$BIN/python3"
 }
 
-@test "multi-chip: parallel single-device run, then serial multi_device run" {
+@test "multi-chip: parallel device run, then serial compile-only and multi-device runs" {
     write_fake_python 0
 
     HW_PYTEST_CHIPS=4 run "$SCRIPT" test/python build/test/pytest-report
 
     assert_success
     run cat "$CALLS"
-    assert_line --partial "env:1 cache-root:$PWD/build/test/pytest-report-tt-metal-cache args:-m pytest"
-    assert_line --partial "pytest test/python -m not multi_device -n 4"
+    assert_line --partial "env:1 cache-root:$PWD/build/test/pytest-report-tt-metal-cache groups:0;1;2;3 args:-m pytest"
+    assert_line --partial "pytest test/python -m not multi_device and not compile_only -n 4"
+    # Crash-restart disabled and flaky-retry enabled on the parallel phase.
+    assert_line --partial "-n 4 --max-worker-restart=0"
+    assert_line --partial "--reruns 3"
     assert_line --partial "pytest-report-parallel.xml"
-    assert_line --partial "env: cache-root: args:-m pytest test/python -m multi_device"
+    assert_line --partial "env: cache-root: groups: args:-m pytest test/python -m compile_only"
+    assert_line --partial "pytest-report-compile-only.xml"
+    assert_line --partial "env: cache-root: groups: args:-m pytest test/python -m multi_device"
     assert_line --partial "pytest-report-multidevice.xml"
-    [ "${#lines[@]}" -eq 2 ]
+    [ "${#lines[@]}" -eq 3 ]
 }
 
-@test "multi-chip: a preset TT_VISIBLE_DEVICES is cleared for both phases" {
+@test "multi-chip: worker cap limits xdist concurrency" {
+    write_fake_python 0
+
+    HW_PYTEST_CHIPS=4 HW_TEST_WORKERS=2 run "$SCRIPT" \
+        test/python build/test/pytest-report
+
+    assert_success
+    assert_output --partial "Detected 4 chips as 4 valid device groups: single-device tests in parallel (-n 2)"
+    run cat "$CALLS"
+    assert_line --partial "pytest test/python -m not multi_device and not compile_only -n 2"
+}
+
+@test "multi-chip: paired-chip topology runs one worker per valid device group" {
+    write_fake_python 0 2
+
+    HW_PYTEST_CHIPS=4 run "$SCRIPT" \
+        test/python build/test/pytest-report
+
+    assert_success
+    assert_output --partial "Detected 4 chips as 2 valid device groups: single-device tests in parallel (-n 2)"
+    run cat "$CALLS"
+    assert_line --partial "env:1 cache-root:$PWD/build/test/pytest-report-tt-metal-cache groups:0,1;2,3 args:-m pytest"
+    assert_line --partial "pytest test/python -m not multi_device and not compile_only -n 2"
+    assert_line --partial "env: cache-root: groups: args:-m pytest test/python -m compile_only"
+    assert_line --partial "env: cache-root: groups: args:-m pytest test/python -m multi_device"
+    [ "${#lines[@]}" -eq 3 ]
+}
+
+@test "multi-chip: no valid device grouping runs once with full topology visibility" {
+    write_fake_python 0 5
+
+    TT_VISIBLE_DEVICES=2 HW_PYTEST_CHIPS=4 run "$SCRIPT" \
+        test/python build/test/pytest-report
+
+    assert_success
+    assert_output --partial "No valid device grouping found"
+    run cat "$CALLS"
+    assert_output --partial "vis:"
+    assert_output --partial "pytest test/python"
+    assert_output --partial "pytest-report.xml"
+    refute_output --partial "vis:2"
+    refute_output --partial " -n "
+    [ "${#lines[@]}" -eq 1 ]
+}
+
+@test "per-test timeout is configurable" {
+    write_fake_python 0
+
+    HW_PYTEST_CHIPS=1 HW_PYTEST_TIMEOUT=600 run "$SCRIPT" \
+        test/python build/test/pytest-report
+
+    assert_success
+    run cat "$CALLS"
+    assert_output --partial "--timeout=600"
+}
+
+@test "per-test timeout defaults to 300 seconds" {
+    write_fake_python 0
+
+    HW_PYTEST_CHIPS=1 run "$SCRIPT" \
+        test/python build/test/pytest-report
+
+    assert_success
+    run cat "$CALLS"
+    assert_output --partial "--timeout=300"
+}
+
+@test "multi-chip: a preset TT_VISIBLE_DEVICES is cleared for every phase" {
     write_fake_python 0
 
     TT_VISIBLE_DEVICES=2 HW_PYTEST_CHIPS=4 run "$SCRIPT" test/python build/test/pytest-report
@@ -74,7 +159,23 @@ EOF
     assert_success
     run cat "$CALLS"
     refute_output --partial "vis:2"
-    [ "${#lines[@]}" -eq 2 ]
+    [ "${#lines[@]}" -eq 3 ]
+}
+
+@test "multi-chip: serial test visibility override applies to multi_device phase" {
+    write_fake_python 0
+
+    HW_PYTEST_CHIPS=4 HW_SERIAL_TEST_VISIBLE_DEVICES=0,1 run "$SCRIPT" test/python build/test/pytest-report
+
+    assert_success
+    assert_output --partial "Restricting serial multi_device pytest phase to TT_VISIBLE_DEVICES=0,1"
+    run cat "$CALLS"
+    assert_line --partial "pytest test/python -m not multi_device and not compile_only"
+    assert_line --partial "vis:"
+    assert_line --partial "pytest test/python -m compile_only"
+    assert_line --partial "pytest test/python -m multi_device"
+    assert_line --partial "vis:0,1"
+    [ "${#lines[@]}" -eq 3 ]
 }
 
 @test "single chip: one serial run over the whole suite" {
@@ -88,8 +189,27 @@ EOF
     refute_output --partial "env:1"
     refute_output --partial "cache-root:build"
     refute_output --partial " -n "
+    # Flaky-retry applies to the serial run too; the xdist-only restart flag does not.
+    assert_output --partial "--reruns 3"
+    refute_output --partial "max-worker-restart"
     refute_output --partial "multi_device"
     assert_output --partial "pytest-report.xml"
+    [ "${#lines[@]}" -eq 1 ]
+}
+
+@test "uses the generated pytest config beside the report" {
+    write_fake_python 0
+    pytest_config="$BATS_TEST_TMPDIR/build/test/pytest.ini"
+    mkdir -p "$(dirname "$pytest_config")"
+    touch "$pytest_config"
+
+    HW_PYTEST_CHIPS=1 run "$SCRIPT" test/python \
+        "$BATS_TEST_TMPDIR/build/test/pytest-report"
+
+    assert_success
+    run cat "$CALLS"
+    assert_output --partial "-c $pytest_config"
+    assert_output --partial "--rootdir="
     [ "${#lines[@]}" -eq 1 ]
 }
 
@@ -103,38 +223,48 @@ EOF
     [ "${#lines[@]}" -eq 1 ]
 }
 
-@test "multi-chip: both runs execute even when the parallel run fails" {
+@test "multi-chip: all runs execute even when the parallel run fails" {
     write_fake_python 1
 
     HW_PYTEST_CHIPS=4 run "$SCRIPT" test/python build/test/pytest-report
 
     assert_failure
     run cat "$CALLS"
-    [ "${#lines[@]}" -eq 2 ]
+    [ "${#lines[@]}" -eq 3 ]
 }
 
 @test "multi-chip: empty parallel phase is allowed when multi_device tests run" {
-    write_fake_python_sequence 5 0
+    write_fake_python_sequence 5 5 0
 
     HW_PYTEST_CHIPS=4 run "$SCRIPT" test/python/only_multidevice.py build/test/pytest-report
 
     assert_success
     run cat "$CALLS"
-    [ "${#lines[@]}" -eq 2 ]
+    [ "${#lines[@]}" -eq 3 ]
 }
 
 @test "multi-chip: empty multi_device phase is allowed when parallel tests run" {
-    write_fake_python_sequence 0 5
+    write_fake_python_sequence 0 5 5
 
     HW_PYTEST_CHIPS=4 run "$SCRIPT" test/python/only_single_device.py build/test/pytest-report
 
     assert_success
     run cat "$CALLS"
-    [ "${#lines[@]}" -eq 2 ]
+    [ "${#lines[@]}" -eq 3 ]
 }
 
-@test "multi-chip: both phases empty is an error" {
-    write_fake_python_sequence 5 5
+@test "multi-chip: compile-only tests can be the only selected phase" {
+    write_fake_python_sequence 5 0 5
+
+    HW_PYTEST_CHIPS=4 run "$SCRIPT" test/python/only_compile.py build/test/pytest-report
+
+    assert_success
+    run cat "$CALLS"
+    [ "${#lines[@]}" -eq 3 ]
+}
+
+@test "multi-chip: all phases empty is an error" {
+    write_fake_python_sequence 5 5 5
 
     HW_PYTEST_CHIPS=4 run "$SCRIPT" test/python/empty.py build/test/pytest-report
 
@@ -155,4 +285,23 @@ EOF
 
     assert_failure 2
     assert_output --partial "chip count"
+}
+
+@test "rejects invalid worker and timeout overrides" {
+    write_fake_python 0
+
+    HW_PYTEST_CHIPS=1 HW_TEST_WORKERS=0 run "$SCRIPT" \
+        test/python build/test/pytest-report
+    assert_failure 2
+    assert_output --partial "worker count must be a positive integer"
+
+    HW_PYTEST_CHIPS=4 HW_TEST_WORKERS=5 run "$SCRIPT" \
+        test/python build/test/pytest-report
+    assert_failure 2
+    assert_output --partial "worker count 5 exceeds chip count 4"
+
+    HW_PYTEST_CHIPS=4 HW_PYTEST_TIMEOUT=invalid run "$SCRIPT" \
+        test/python build/test/pytest-report
+    assert_failure 2
+    assert_output --partial "timeout must be a positive integer"
 }

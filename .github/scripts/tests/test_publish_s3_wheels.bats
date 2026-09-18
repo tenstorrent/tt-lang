@@ -99,6 +99,8 @@ EOF
     assert_output --partial "Publish prefix must be tt-lang/<YYYY-MM> or tt-lang/releases"
     run -2 "$SCRIPT" --prefix tt-lang/ttmetal "$dir"
     assert_output --partial "Publish prefix must be tt-lang/<YYYY-MM> or tt-lang/releases"
+    run -2 "$SCRIPT" --prefix tt-lang/2026-13 "$dir"
+    assert_output --partial "Publish prefix must be tt-lang/<YYYY-MM> or tt-lang/releases"
 }
 
 @test "--prefix publishes top-level wheels and regenerates a month view" {
@@ -182,6 +184,36 @@ EOF
 
     run cat "$FAKE_AWS_ARGS"
     assert_output --partial "s3://tenstorrent-pypi/tt-lang/tt_lang-1.0-py3-none-any.whl"
+}
+
+@test "--overwrite-if true skips object-existence checks" {
+    dir=$(make_dist_dir "tt_lang-1.0-py3-none-any.whl")
+    HEAD_OBJECT_EXISTS=true run -0 "$SCRIPT" \
+        --overwrite-if true \
+        --prefix tt-lang/2026-07 \
+        "$dir"
+
+    run cat "$FAKE_AWS_ARGS"
+    refute_output --partial "s3api head-object"
+    assert_output --partial "s3 cp $dir/tt_lang-1.0-py3-none-any.whl"
+}
+
+@test "--overwrite-if false preserves object-existence checks" {
+    dir=$(make_dist_dir "tt_lang-1.0-py3-none-any.whl")
+    HEAD_OBJECT_EXISTS=true run -1 "$SCRIPT" \
+        --overwrite-if false \
+        --prefix tt-lang/2026-07 \
+        "$dir"
+
+    assert_output --partial "S3 object already exists"
+}
+
+@test "--overwrite-if rejects non-boolean values" {
+    dir=$(make_dist_dir "tt_lang-1.0-py3-none-any.whl")
+    run -2 "$SCRIPT" \
+        --overwrite-if yes \
+        --prefix tt-lang/2026-07 \
+        "$dir"
 }
 
 @test "--prefix without --overwrite rejects an existing wheel object" {

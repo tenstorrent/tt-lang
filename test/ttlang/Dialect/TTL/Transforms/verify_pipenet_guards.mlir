@@ -3,12 +3,14 @@
 // Summary: Verifies that ttl-verify-pipenet-guards accepts role-contained
 // PipeNet work, and that ttl-erase-pipenet-scopes inlines and erases the
 // `ttl.pipenet_scope` markers so downstream lowering sees a scope-free IR.
+// Each split module includes the finalization metadata required by the
+// verifier; its descriptor contents are irrelevant to guard analysis.
 
 // A copy into a pipe is valid only on the source node. A copy out of a pipe is
 // valid only on destination nodes. Existing ttl.if_src/ttl.if_dst regions
 // provide those execution domains.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @copy_roles_valid
   // CHECK: %[[PIPE0:.*]] = ttl.create_pipe
   // CHECK: %[[CB0:.*]] = ttl.bind_cb
@@ -20,7 +22,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @copy_roles_valid() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
       %send = ttl.copy %cb, %pipe
@@ -35,7 +37,78 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %recv = ttl.copy %pipe, %recv_dst
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
+    }
+    func.return
+  }
+}
+
+// -----
+
+// A result-selection branch preserves the enclosing destination domain.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @selected_receive_producer
+  // CHECK: ttl.wait_any
+  // CHECK: scf.if
+  // CHECK: ttl.cb_push
+  // CHECK-LABEL: func.func @selected_receive_consumer
+  // CHECK: ttl.cb_wait
+  func.func @selected_receive_producer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %pipe1 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 1
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1>
+    %landing0 = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %landing1 = ttl.bind_cb {cb_index = 1, block_count = 2}
+        {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_dst %pipe0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %block0 = ttl.cb_reserve %landing0
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %block1 = ttl.cb_reserve %landing1
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %request0 = ttl.copy %pipe0, %block0
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.receive_request
+      %request1 = ttl.copy %pipe1, %block1
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.receive_request
+      %start = arith.constant 0 : index
+      %ready = ttl.wait_any %request0, %request1 start %start
+          : (!ttl.receive_request, !ttl.receive_request, index)
+          -> !ttl.ready_receive
+      %selected = ttl.ready_receive_index %ready : !ttl.ready_receive
+      %zero = arith.constant 0 : index
+      %selected0 = arith.cmpi eq, %selected, %zero : index
+      scf.if %selected0 {
+        ttl.cb_push %landing0
+            : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      }
+    }
+    func.return
+  }
+
+  func.func @selected_receive_consumer()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %pipe0 = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %landing0 = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_dst %pipe0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      %block = ttl.cb_wait %landing0
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     }
     func.return
   }
@@ -46,7 +119,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // A ttl.pipenet_scope is accepted when the surrounding predicate is contained
 // in the declared role domain. The verifier erases the scope.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @scope_erased_after_verification
   // CHECK-NOT: ttl.pipenet_scope
   // CHECK: ttl.if_src
@@ -71,9 +144,9 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // -----
 
 // DFB waits are accepted when every waiting node is covered by a producer
-// domain for the same DFB index.
+// domain for the same logical DFB.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @producer
   // CHECK: ttl.cb_push
   // CHECK-LABEL: func.func @consumer
@@ -81,7 +154,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 4, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 4, block_count = 2} {dfb_id = 4 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
       ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -92,7 +165,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @consumer() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 4, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 4, block_count = 2} {dfb_id = 4 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
       %view = ttl.cb_wait %cb
@@ -105,18 +178,19 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
-// `getCBIndex` traces through a chain of `unrealized_conversion_cast` ops
-// before reaching the `bind_cb`. Without iteration, only the first cast
-// is followed and the producer domain is silently lost, causing a false
-// "no other thread fills" diagnostic on the consumer's `cb_wait`.
+// Logical DFB resolution traces through a chain of
+// `unrealized_conversion_cast` ops before reaching the `bind_cb`. Without
+// iteration, only the first cast is followed and the producer domain is
+// silently lost, causing a false "no other thread fills" diagnostic on the
+// consumer's `cb_wait`.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @producer_chained_cb_casts
   // CHECK-LABEL: func.func @consumer_chained_cb_casts
   func.func @producer_chained_cb_casts() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 5, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 5, block_count = 2} {dfb_id = 5 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %cast1 = builtin.unrealized_conversion_cast %cb
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -133,7 +207,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @consumer_chained_cb_casts() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 5, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 5, block_count = 2} {dfb_id = 5 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
       %view = ttl.cb_wait %cb
@@ -149,14 +223,14 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // ttl.is_src is recognized structurally: the verifier doesn't fall back to
 // per-node arith analysis.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @is_src_predicate
   // CHECK: ttl.is_src
   // CHECK: ttl.copy
   func.func @is_src_predicate() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %cond = ttl.is_src {pipe_net_id = 0 : i64}
     scf.if %cond {
@@ -173,7 +247,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // ttl.is_dst recognition.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @is_dst_predicate
   // CHECK: ttl.is_dst
   // CHECK: %[[RECV1:.*]] = ttl.cb_reserve
@@ -181,7 +255,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @is_dst_predicate() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %cond = ttl.is_dst {pipe_net_id = 0 : i64}
     scf.if %cond {
@@ -191,7 +265,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %recv = ttl.copy %pipe, %recv_dst
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     }
     func.return
   }
@@ -202,7 +276,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // Two PipeNets with disjoint active sets: each ttl.copy validates against
 // its own pipe's role, not the union.
 
-module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [4 : i64, 4 : i64]} {
   // CHECK-LABEL: func.func @two_pipenets_disjoint
   // CHECK: %[[RECV_A:.*]] = ttl.cb_reserve
   // CHECK: ttl.copy {{.*}}, %[[RECV_A]]
@@ -213,7 +287,7 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
         : !ttl.pipe<src(0, 0) dst(0, 1) to(0, 3) net 0>
     %pb = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 1
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 1>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.if_dst %pa : !ttl.pipe<src(0, 0) dst(0, 1) to(0, 3) net 0> {
       %recv_a_dst = ttl.cb_reserve %cb
@@ -222,7 +296,7 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
       %ra = ttl.copy %pa, %recv_a_dst
           : (!ttl.pipe<src(0, 0) dst(0, 1) to(0, 3) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     }
     ttl.if_dst %pb : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 1> {
       %recv_b_dst = ttl.cb_reserve %cb
@@ -231,7 +305,7 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
       %rb = ttl.copy %pb, %recv_b_dst
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 1>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     }
     func.return
   }
@@ -242,14 +316,14 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
 // Loops do not narrow the execution domain. A user guard outside an scf.for
 // still covers a pipe-coupled op inside the loop body.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @scf_for_no_predicate
   // CHECK: scf.for
   // CHECK: ttl.copy
   func.func @scf_for_no_predicate() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %c0 = arith.constant 0 : index
     %c4 = arith.constant 4 : index
@@ -272,14 +346,14 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // affine.if user guard whose IntegerSet implies the source role.
 
 #srcSet = affine_set<(d0) : (d0 == 0)>
-module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [4 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_guard
   // CHECK: affine.if
   // CHECK: ttl.copy
   func.func @affine_if_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     affine.if #srcSet(%x) {
@@ -294,9 +368,153 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
 
 // -----
 
+// Repeated occurrences of one PipeKey form independent FIFO rendezvous. The
+// first send must not acquire a dependency on the second receiver post.
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @repeated_pipe_key_schedule
+  // CHECK: return
+  func.func @repeated_pipe_key_schedule() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0> {
+      %recv0 = ttl.cb_reserve %recv_cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %post0 = ttl.copy %pipe, %recv0
+          : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.receive_request
+      %send0 = ttl.copy %send_cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send0 : !ttl.transfer_handle<write>
+      ttl.wait %post0 : !ttl.receive_request
+      %recv1 = ttl.cb_reserve %recv_cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %post1 = ttl.copy %pipe, %recv1
+          : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.receive_request
+      %send1 = ttl.copy %send_cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send1 : !ttl.transfer_handle<write>
+      ttl.wait %post1 : !ttl.receive_request
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Corresponding events may use different structured control after thread
+// splitting. The receiver posts once, and the sender executes only on the last
+// loop iteration, so both endpoints execute one rendezvous event.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @post_outside_sender_loop
+  // CHECK: return
+  func.func @post_outside_sender_loop() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %is_dst = ttl.is_dst {pipe_net_id = 0 : i64}
+    scf.if %is_dst {
+      %recv_reserve = ttl.cb_reserve %recv_cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      %recv = ttl.copy %pipe, %recv_reserve
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.receive_request
+      ttl.wait %recv : !ttl.receive_request
+    }
+    func.return
+  }
+
+  // CHECK-LABEL: func.func @send_on_last_iteration
+  // CHECK: return
+  func.func @send_on_last_iteration() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c3 = arith.constant 3 : index
+    %c4 = arith.constant 4 : index
+    %is_src = ttl.is_src {pipe_net_id = 0 : i64}
+    scf.if %is_src {
+      scf.for %iteration = %c0 to %c4 step %c1 {
+        %is_last = arith.cmpi eq, %iteration, %c3 : index
+        scf.if %is_last {
+          %send = ttl.copy %send_cb, %pipe
+              : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+                 !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+              -> !ttl.transfer_handle<write>
+          ttl.wait %send : !ttl.transfer_handle<write>
+        }
+      }
+    }
+    func.return
+  }
+}
+
+// -----
+
+// A common unresolved loop gives the source and destination equal execution
+// counts because its runtime bounds are identical at both launch nodes.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @shared_runtime_loop_schedule
+  // CHECK: return
+  func.func @shared_runtime_loop_schedule(%upper: index)
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %lower = arith.constant 0 : index
+    %step = arith.constant 1 : index
+    scf.for %iteration = %lower to %upper step %step {
+      ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+        %recv_reserve = ttl.cb_reserve %recv_cb
+            : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        %recv = ttl.copy %pipe, %recv_reserve
+            : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+               tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> !ttl.receive_request
+        ttl.wait %recv : !ttl.receive_request
+      }
+      ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+        %send = ttl.copy %send_cb, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+               !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+    }
+    func.return
+  }
+}
+
+// -----
+
 // ttl.is_active in a scope spanning both src and dst roles.
 
-module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [4 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @is_active_scope
   // CHECK: ttl.is_active
   // CHECK-NOT: ttl.pipenet_scope
@@ -304,7 +522,7 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
   func.func @is_active_scope() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %cond = ttl.is_active {pipe_net_id = 0 : i64}
     scf.if %cond {
@@ -321,7 +539,7 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
 // nodes active in BOTH PipeNets. Used for relay-style threads that touch
 // two nets in the same body.
 
-module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [4 : i64, 4 : i64]} {
   // CHECK-LABEL: func.func @nested_is_active_intersect
   // CHECK: ttl.is_active
   // CHECK: ttl.is_active
@@ -331,7 +549,7 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
         : !ttl.pipe<src(0, 0) dst(0, 1) to(0, 3) net 0>
     %pb = ttl.create_pipe src(0, 1) dst(1, 1) to(3, 1) net 1
         : !ttl.pipe<src(0, 1) dst(1, 1) to(3, 1) net 1>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %a_active = ttl.is_active {pipe_net_id = 0 : i64}
     scf.if %a_active {
@@ -354,17 +572,75 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
 
 // -----
 
+// Unsigned comparison uses the index bit pattern. At core 0, `x - 1` is the
+// maximum unsigned index value and is greater than zero.
+
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @unsigned_wrapped_coordinate_guard
+  // CHECK: arith.cmpi ugt
+  // CHECK: ttl.copy
+  func.func @unsigned_wrapped_coordinate_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %x = ttl.core_x : index
+    %zero = arith.constant 0 : index
+    %one = arith.constant 1 : index
+    %wrapped = arith.subi %x, %one : index
+    %is_src = arith.cmpi ugt, %wrapped, %zero : index
+    scf.if %is_src {
+      %send = ttl.copy %cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Standard integer folding evaluates remainder expressions in launch-node
+// predicates. On a two-core row, `x % 2 == 0` selects only the source core.
+
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @remainder_coordinate_guard
+  // CHECK: arith.remsi
+  // CHECK: ttl.copy
+  func.func @remainder_coordinate_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %x = ttl.core_x : index
+    %zero = arith.constant 0 : index
+    %two = arith.constant 2 : index
+    %remainder = arith.remsi %x, %two : index
+    %is_src = arith.cmpi eq, %remainder, %zero : index
+    scf.if %is_src {
+      %send = ttl.copy %cb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+          -> !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
+
+// -----
+
 // `arith.cmpi ne`: the guard `x != 1` is true on coords {0}, which is the
 // pipe source.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @cmpi_ne_guard
   // CHECK: arith.cmpi ne
   // CHECK: ttl.copy
   func.func @cmpi_ne_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     %c1 = arith.constant 1 : index
@@ -383,14 +659,14 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // `arith.cmpi sle`: `x <= 0` is true on {0}.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @cmpi_sle_guard
   // CHECK: arith.cmpi sle
   // CHECK: ttl.copy
   func.func @cmpi_sle_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     %c0 = arith.constant 0 : index
@@ -409,7 +685,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // `arith.cmpi sgt`: `x > 0` is true on dst nodes.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @cmpi_sgt_guard
   // CHECK: arith.cmpi sgt
   // CHECK: %[[RECV2:.*]] = ttl.cb_reserve
@@ -417,7 +693,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @cmpi_sgt_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     %c0 = arith.constant 0 : index
@@ -429,7 +705,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %recv = ttl.copy %pipe, %recv_dst
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     }
     func.return
   }
@@ -439,7 +715,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // `arith.cmpi sge`: `x >= 1` is true on dst nodes.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @cmpi_sge_guard
   // CHECK: arith.cmpi sge
   // CHECK: %[[RECV3:.*]] = ttl.cb_reserve
@@ -447,7 +723,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @cmpi_sge_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     %c1 = arith.constant 1 : index
@@ -459,7 +735,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %recv = ttl.copy %pipe, %recv_dst
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     }
     func.return
   }
@@ -469,14 +745,14 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // Conjunction of two coord predicates narrows by intersection.
 
-module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [4 : i64, 4 : i64]} {
   // CHECK-LABEL: func.func @andi_two_coords
   // CHECK: arith.andi
   // CHECK: ttl.copy
   func.func @andi_two_coords() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     %y = ttl.core_y : index
@@ -499,7 +775,7 @@ module attributes {ttl.launch_grid = [4 : i64, 4 : i64]} {
 // Disjunction over two coord predicates: each clause covers a distinct
 // pipe role; the joint then-domain covers both src and dst.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @ori_two_coords
   // CHECK: arith.ori
   // CHECK: ttl.is_src
@@ -507,7 +783,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @ori_two_coords() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     %c0 = arith.constant 0 : index
@@ -538,7 +814,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // reads as "exactly one of A, B is true". Here `x == 0` xor `false` reduces
 // to `x == 0`, the source.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @xori_guard
   // CHECK: arith.xori
   // CHECK: ttl.is_src
@@ -546,7 +822,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @xori_guard() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     %c0 = arith.constant 0 : index
@@ -574,7 +850,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // `arith.subi` and `arith.index_cast` inside the predicate are both
 // recognized by `evalIndex`.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @evalindex_subi_indexcast
   // CHECK: arith.index_cast
   // CHECK: arith.subi
@@ -582,7 +858,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @evalindex_subi_indexcast() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     %x_i32 = arith.index_cast %x : index to i32
@@ -605,14 +881,14 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // `affine.if` constraint with `Mul`: `2 * d0 == 0` is true at `d0 = 0`.
 
 #mulSet = affine_set<(d0) : (2 * d0 == 0)>
-module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [4 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_mul
   // CHECK: affine.if
   // CHECK: ttl.copy
   func.func @affine_if_mul() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     affine.if #mulSet(%x) {
@@ -633,14 +909,14 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
 // {1, 2, 3} are outside src and the copy would be rejected.
 
 #modSet = affine_set<(d0) : (d0 mod 4 == 0)>
-module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [4 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_mod
   // CHECK: affine.if
   // CHECK: ttl.copy
   func.func @affine_if_mod() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     affine.if #modSet(%x) {
@@ -660,7 +936,7 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
 // guard before the source copy.
 
 #floordivSet = affine_set<(d0) : (d0 floordiv 2 == 0)>
-module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [4 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_floordiv
   // CHECK: affine.if
   // CHECK: arith.cmpi
@@ -668,7 +944,7 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
   func.func @affine_if_floordiv() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     affine.if #floordivSet(%x) {
@@ -690,14 +966,14 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
 // `affine.if` constraint with `CeilDiv`: `d0 ceildiv 2 == 0` is true on {0}.
 
 #ceildivSet = affine_set<(d0) : (d0 ceildiv 2 == 0)>
-module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [4 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_ceildiv
   // CHECK: affine.if
   // CHECK: ttl.copy
   func.func @affine_if_ceildiv() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     affine.if #ceildivSet(%x) {
@@ -717,14 +993,14 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
 // the dim value. Here `s0 = 0`, so `d0 - s0 == 0` reduces to `d0 == 0`.
 
 #symSet = affine_set<(d0)[s0] : (d0 - s0 == 0)>
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_symbol
   // CHECK: affine.if
   // CHECK: ttl.copy
   func.func @affine_if_symbol() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     %s0 = arith.constant 0 : index
@@ -745,7 +1021,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // special-case verifier code; the user guard at the head of bb1 still covers
 // the pipe-coupled op there.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @multi_block
   // CHECK: cf.cond_br
   // CHECK: ttl.is_src
@@ -753,7 +1029,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @multi_block(%flag: i1) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     cf.cond_br %flag, ^bb1, ^bb2
   ^bb1:
@@ -777,7 +1053,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // `arith.cmpi` evaluation. The conjunction's then-domain is the intersection
 // of {(0,0)} (src) and {(x,0) for x in 0..2}, which is {(0,0)}.
 
-module attributes {ttl.launch_grid = [3 : i64, 2 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [3 : i64, 2 : i64]} {
   // CHECK-LABEL: func.func @mixed_predicate_andi
   // CHECK: ttl.is_src
   // CHECK: arith.andi
@@ -785,7 +1061,7 @@ module attributes {ttl.launch_grid = [3 : i64, 2 : i64]} {
   func.func @mixed_predicate_andi() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %is_src = ttl.is_src {pipe_net_id = 0 : i64}
     %y = ttl.core_y : index
@@ -811,7 +1087,7 @@ module attributes {ttl.launch_grid = [3 : i64, 2 : i64]} {
 // else-side pipe receive must validate against the else-domain being a subset
 // of the pipe destination.
 
-module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 2 : i64]} {
   // CHECK-LABEL: func.func @andi_else_domain
   // CHECK: arith.andi
   // CHECK: ttl.copy
@@ -820,7 +1096,7 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
   func.func @andi_else_domain() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(1, 1) net 0
         : !ttl.pipe<src(0, 0) dst(0, 0) to(1, 1) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     %y = ttl.core_y : index
@@ -840,7 +1116,7 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
       %recv = ttl.copy %pipe, %recv_dst
           : (!ttl.pipe<src(0, 0) dst(0, 0) to(1, 1) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     }
     func.return
   }
@@ -853,7 +1129,7 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
 // the else region runs on {1} (dst), where a pipe-to-DFB copy is valid.
 
 #srcOnly = affine_set<(d0) : (d0 == 0)>
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_else_branch
   // CHECK: affine.if
   // CHECK: ttl.copy
@@ -862,7 +1138,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @affine_if_else_branch() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     affine.if #srcOnly(%x) {
@@ -877,7 +1153,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %recv = ttl.copy %pipe, %recv_dst
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     }
     func.return
   }
@@ -888,14 +1164,14 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // `scf.while` adds no predicate to its body. The user guard outside still
 // covers the pipe-coupled op inside the after-region.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @scf_while_no_predicate
   // CHECK: scf.while
   // CHECK: ttl.copy
   func.func @scf_while_no_predicate() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %c0 = arith.constant 0 : index
     %c4 = arith.constant 4 : index
@@ -923,14 +1199,14 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // `scf.execute_region` adds no predicate. User guard outside still covers.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @scf_execute_region_no_predicate
   // CHECK: scf.execute_region
   // CHECK: ttl.copy
   func.func @scf_execute_region_no_predicate() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %cond = ttl.is_src {pipe_net_id = 0 : i64}
     scf.if %cond {
@@ -951,7 +1227,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // `scf.while` at function top level, with the pipe-coupled op behind an
 // `if_src` inside the body.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @scf_while_top_level
   // CHECK: scf.while
   // CHECK: ttl.if_src
@@ -959,7 +1235,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @scf_while_top_level() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %c0 = arith.constant 0 : index
     %c4 = arith.constant 4 : index
@@ -986,14 +1262,14 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // `affine.for` adds no predicate. User guard outside still covers.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_for_no_predicate
   // CHECK: affine.for
   // CHECK: ttl.copy
   func.func @affine_for_no_predicate() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %cond = ttl.is_src {pipe_net_id = 0 : i64}
     scf.if %cond {
@@ -1014,7 +1290,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // performs the `ttl.copy(cb, pipe)`. Helper relies on the caller-side
 // guard flowing through the call edge.
 
-module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func private @send_helper
   // CHECK: ttl.copy
   // CHECK-LABEL: func.func @kernel_caller_guards
@@ -1032,7 +1308,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
   func.func @kernel_caller_guards() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
       func.call @send_helper(%cb, %pipe) : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>, !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>) -> ()
@@ -1049,7 +1325,7 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 // the verifier should accept.
 
 #dstRange = affine_set<(d0) : (d0 - 1 >= 0)>
-module attributes {ttl.launch_grid = [3 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [3 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_inequality
   // CHECK: affine.if
   // CHECK: %[[RECV6:.*]] = ttl.cb_reserve
@@ -1057,7 +1333,7 @@ module attributes {ttl.launch_grid = [3 : i64, 1 : i64]} {
   func.func @affine_if_inequality() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     affine.if #dstRange(%x) {
@@ -1067,8 +1343,48 @@ module attributes {ttl.launch_grid = [3 : i64, 1 : i64]} {
       %recv = ttl.copy %pipe, %recv_dst
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     }
+    func.return
+  }
+}
+
+// -----
+
+// A negated destination predicate executes the receive only on the destination
+// node. This verifies coordinate dependence through boolean composition.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  // CHECK-LABEL: func.func @negated_destination_predicate
+  func.func @negated_destination_predicate()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // CHECK: %[[PIPE:.*]] = ttl.create_pipe
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    // CHECK: %[[RECV_CB:.*]] = ttl.bind_cb
+    %recv_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // CHECK: %[[IS_DST:.*]] = ttl.is_dst
+    %is_dst = ttl.is_dst {pipe_net_id = 0 : i64}
+    // CHECK-NEXT: %[[TRUE:.*]] = arith.constant true
+    %true = arith.constant true
+    // CHECK-NEXT: %[[NOT_DST:.*]] = arith.xori %[[IS_DST]], %[[TRUE]]
+    %not_dst = arith.xori %is_dst, %true : i1
+    // CHECK-NEXT: scf.if %[[NOT_DST]] {
+    scf.if %not_dst {
+    // CHECK-NEXT: } else {
+    } else {
+      // CHECK-NEXT: %[[RESERVE:.*]] = ttl.cb_reserve %[[RECV_CB]]
+      %reserve = ttl.cb_reserve %recv_cb
+          : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+          -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      // CHECK-NEXT: %[[RECEIVE:.*]] = ttl.copy %[[PIPE]], %[[RESERVE]]
+      %receive = ttl.copy %pipe, %reserve
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+             tensor<1x1x!ttcore.tile<32x32, bf16>>)
+          -> !ttl.receive_request
+    }
+    // CHECK-NOT: ttl.copy
     func.return
   }
 }
@@ -1080,14 +1396,14 @@ module attributes {ttl.launch_grid = [3 : i64, 1 : i64]} {
 // constraint loop that breaks on the first failing constraint.
 
 #twoConstraints = affine_set<(d0) : (d0 >= 0, 0 - d0 >= 0)>
-module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [4 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_multi_constraint
   // CHECK: affine.if
   // CHECK: ttl.copy
   func.func @affine_if_multi_constraint() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(3, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(3, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     affine.if #twoConstraints(%x) {
@@ -1108,14 +1424,14 @@ module attributes {ttl.launch_grid = [4 : i64, 1 : i64]} {
 // launch grid.
 
 #originSet = affine_set<(d0, d1) : (d0 == 0, d1 == 0)>
-module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [2 : i64, 2 : i64]} {
   // CHECK-LABEL: func.func @affine_if_multi_dim
   // CHECK: affine.if
   // CHECK: ttl.copy
   func.func @affine_if_multi_dim() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 1) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 1) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     %y = ttl.core_y : index
@@ -1137,7 +1453,7 @@ module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
 // runs on {1, 2} (the pipe destination range) and validates the receive.
 
 #dstHalf = affine_set<(d0) : (d0 - 1 >= 0)>
-module attributes {ttl.launch_grid = [3 : i64, 1 : i64]} {
+module attributes {ttl.dfb_allocations = [], ttl.launch_grid = [3 : i64, 1 : i64]} {
   // CHECK-LABEL: func.func @affine_if_inequality_else
   // CHECK: affine.if
   // CHECK: %[[RECV7:.*]] = ttl.cb_reserve
@@ -1146,7 +1462,7 @@ module attributes {ttl.launch_grid = [3 : i64, 1 : i64]} {
   func.func @affine_if_inequality_else() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(2, 0) net 0
         : !ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>
-    %cb = ttl.bind_cb {cb_index = 0, block_count = 2}
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %x = ttl.core_x : index
     affine.if #dstHalf(%x) {
@@ -1156,7 +1472,7 @@ module attributes {ttl.launch_grid = [3 : i64, 1 : i64]} {
       %recv = ttl.copy %pipe, %recv_dst
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(2, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
-          -> !ttl.transfer_handle
+          -> !ttl.receive_request
     } else {
       %send = ttl.copy %cb, %pipe
           : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,

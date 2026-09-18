@@ -1,6 +1,4 @@
-// RUN: ttlang-opt %s \
-// RUN:   -pass-pipeline='builtin.module(func.func(ttl-set-compute-kernel-config{enable-fpu-binary-ops=0 matmul-full-fp32=0 reduce-full-fp32=0}, ttl-assign-dst))' \
-// RUN:   | FileCheck %s
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-set-compute-kernel-config{enable-fpu-binary-ops=0 matmul-full-fp32=0 reduce-full-fp32=0},func.func(ttl-assign-dst))' | FileCheck %s
 //
 // Verify that f32 tiles get the correct DST capacity (4, not the bf16
 // default of 8). With dstPerIteration = 2 (SFPU binary: copy lhs + copy rhs),

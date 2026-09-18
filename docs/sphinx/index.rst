@@ -22,6 +22,8 @@ TT-Lang Documentation
 
    TT-Lang Spec <specs/TTLangSpecification>
    reference/compiler-options
+   reference/external-functions
+   reference/operation-runtime-resources
    reference/print-debugging
    reference/performance-tools
 
@@ -30,6 +32,7 @@ TT-Lang Documentation
    :caption: Contributor Guide
 
    build
+   macos-simulator-testing
    guidelines
    contributor-guide
    implementation

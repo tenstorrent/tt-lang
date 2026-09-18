@@ -79,8 +79,10 @@ run_script_default_build_dir() {
     : > "$(cmake_log)"
     : > "$(bash_log)"
     setup_stubs
-    create_build_env build-toolchain
-    create_build_env build
+    if [ "${CREATE_BUILD_ENV:-true}" = true ]; then
+        create_build_env build-toolchain
+        create_build_env build
+    fi
     mkdir -p "$BATS_TEST_TMPDIR/toolchain"
     mkdir -p "$BATS_TEST_TMPDIR/home"
 
@@ -216,26 +218,31 @@ setup() {
     [[ ! -s "$(cmake_log)" ]]
 }
 
-@test "llvm-toolchain-only requires external tt-metal directory" {
-    run run_script_default_build_dir --llvm-toolchain-only
-    assert_failure
-    assert_output --partial "ERROR: --llvm-toolchain-only requires --external-tt-metal-dir"
-    [[ ! -s "$(cmake_log)" ]]
-}
-
 @test "llvm-toolchain-only configures LLVM without installing tt-metal" {
-    run run_script_default_build_dir \
+    CREATE_BUILD_ENV=false run run_script_default_build_dir \
         --llvm-toolchain-only \
-        --force-rebuild \
-        --external-tt-metal-dir "$BATS_TEST_TMPDIR/external-metal"
+        --force-rebuild
     assert_success
     grep -q '^-B$' "$(cmake_log)"
     grep -q '^build-toolchain$' "$(cmake_log)"
     grep -q '^-DTTLANG_FORCE_TOOLCHAIN_REBUILD=ON$' "$(cmake_log)"
-    grep -q '^-DTTLANG_BUILD_TOOLCHAIN=OFF$' "$(cmake_log)"
-    grep -q "^-DTTLANG_EXTERNAL_TT_METAL_DIR=$BATS_TEST_TMPDIR/external-metal$" "$(cmake_log)"
+    grep -q '^-DTTLANG_BUILD_TOOLCHAIN=ON$' "$(cmake_log)"
+    grep -q '^-DTTLANG_TOOLCHAIN_COMPONENT=llvm$' "$(cmake_log)"
     ! grep -q 'scripts/install-ttmetal.sh' "$(bash_log)"
     assert_output --partial "=== LLVM toolchain build complete ==="
+}
+
+@test "ttmetal-toolchain-only configures tt-metal without installing it twice" {
+    CREATE_BUILD_ENV=false run run_script_default_build_dir \
+        --ttmetal-toolchain-only \
+        --force-rebuild
+    assert_success
+    grep -q '^-B$' "$(cmake_log)"
+    grep -q '^build-toolchain$' "$(cmake_log)"
+    grep -q '^-DTTLANG_BUILD_TOOLCHAIN=ON$' "$(cmake_log)"
+    grep -q '^-DTTLANG_TOOLCHAIN_COMPONENT=tt-metal$' "$(cmake_log)"
+    ! grep -q 'scripts/install-ttmetal.sh' "$(bash_log)"
+    assert_output --partial "=== tt-metal toolchain build complete ==="
 }
 
 @test "unknown flag aborts with a non-zero exit" {

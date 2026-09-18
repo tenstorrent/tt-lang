@@ -32,20 +32,20 @@ with inp_dfb.wait() as tile:
 
 Prints DFB metadata: size, limit, page_size, num_pages, rd_ptr, wr_ptr.
 
-### Tile from DFB (full tile)
+### Tile from DFB
 
 ```python
 with inp_dfb.wait() as tile:
     print(tile, thread="pack")
 ```
 
-Prints the full 32x32 tile contents from the DFB. The tile must be live (between wait/pop or reserve/push).
+Prints the physical tile contents from the DFB using its tile dimensions. The tile must be live (between wait/pop or reserve/push).
 
 Note: will dump all registers in a block if using multi-tile block size (DFB shape > 1x1) as the print will be inside the loop generated.
 
 Note: unsupported on math thread.
 
-Example output:
+Example output for a 32x32 tile:
 ```
 0:(x=1,y=1):TR2: ======
 0:(x=1,y=1):TR2: 0 : 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
@@ -88,6 +88,14 @@ print(inp_dfb, thread="unpack")
 ```
 
 When `thread` is specified, the print is wrapped in the corresponding `DPRINT_MATH(...)`, `DPRINT_PACK(...)`, or `DPRINT_UNPACK(...)` macro. In compute kernels, the thread is automatically selected based on the print mode when no explicit `thread` is given: scalar and DST prints use `math`, DFB and tile prints use `pack`. Tensor page prints (`num_pages=`) are only supported in datamovement kernels. In datamovement kernels, no wrapping is applied when `thread` is omitted.
+
+### Core specialization
+
+`--ttl-specialize-cores` clones kernels per launch coordinate and folds
+branches that depend on the core coordinate. A DFB or tile print that
+survives only on a core with no remaining wait, reserve, or other
+non-print use of that DFB is dropped. Cores that still use the DFB keep
+both the descriptor and the print. Scalar and DST prints are unaffected.
 
 ## In depth + code gen
 

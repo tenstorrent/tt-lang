@@ -1,4 +1,5 @@
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(convert-ttl-to-compute))' --split-input-file | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(func.func(ttl-print-compute-op-creation-plans))' -o /dev/null 2>&1 | FileCheck %s --check-prefix=PLAN
 
 // Matmul+add fold: add is eliminated, producing 3-operand tile_matmul_block.
 // Post-matmul unary: applied in-place in the same fused compute body.
@@ -8,6 +9,12 @@
 // CHECK-DAG: #[[$PAR:.*]] = affine_map<(d0, d1, d2) -> (d0, d1)>
 
 // CHECK-LABEL: func.func @matmul_add
+// PLAN-LABEL: ComputeOp creation plan @matmul_add
+// PLAN:       kind=fused recipe=fused legal=true inputs=3
+// PLAN-NEXT:  iterators=[parallel, parallel, reduction] input-maps=3
+// PLAN-NEXT:  fused {{.*}} deferred-matmul operands=2
+// PLAN-NEXT:  fused {{.*}} matmul-accumulator operands=3
+// PLAN-NEXT:  order=[C0]
 // CHECK:         %[[A:.*]] = ttl.attach_cb
 // CHECK:         %[[B:.*]] = ttl.attach_cb
 // CHECK:         %[[C:.*]] = ttl.attach_cb
@@ -414,4 +421,79 @@ func.func @matmul_add_non_square() attributes {ttl.base_cta_index = 4 : i32, ttl
   ttl.cb_pop %cb1 : <[4, 3], !ttcore.tile<32x32, bf16>, 2>
   ttl.cb_pop %cb2 : <[2, 3], !ttcore.tile<32x32, bf16>, 2>
   func.return
+}
+
+// -----
+
+// Adding two matmul results cannot use the accumulating matmul form because
+// neither result exists as the other's accumulator. Both matmuls remain
+// explicit and the add consumes their tile results. The first matmul's RHS is
+// also the second matmul's LHS, so the compute must pass that tensor twice with
+// distinct affine maps.
+// CHECK-LABEL: func.func @two_matmuls_add
+// CHECK:       %[[SHARED_DFB:.*]] = ttl.bind_cb{{.*}}cb_index = 1
+// CHECK:       %[[SHARED_WAIT:.*]] = ttl.cb_wait %[[SHARED_DFB]]
+// CHECK:       %[[SHARED:.*]] = ttl.attach_cb %[[SHARED_WAIT]], %[[SHARED_DFB]]
+// CHECK:       ttl.compute ins({{.*}}, %[[SHARED]], %[[SHARED]], {{.*}} :
+// CHECK:       %[[LHS:.*]] = ttl.tile_matmul_block
+// CHECK:       %[[RHS:.*]] = ttl.tile_matmul_block
+// CHECK:       %[[SUM:.*]] = ttl.tile_add %[[LHS]], %[[RHS]]
+// CHECK:       ttl.tile_store %[[SUM]]
+// PLAN-LABEL: ComputeOp creation plan @two_matmuls_add
+// PLAN:       kind=fused recipe=fused legal=true inputs=4
+// PLAN-NEXT:  iterators=[parallel, parallel, reduction] input-maps=4 [(d0, d1, d2) -> (d0, d2), (d0, d1, d2) -> (d2, d1), (d0, d1, d2) -> (d0, d2), (d0, d1, d2) -> (d1, d2)]
+// PLAN:       fused {{.*}} matmul operands=2
+// PLAN-NEXT:  fused {{.*}} matmul operands=2
+// PLAN-NEXT:  fused {{.*}} tile-operation operands=2
+// PLAN-NEXT:  order=[C0]
+func.func @two_matmuls_add()
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %lhs0_dfb = ttl.bind_cb {cb_index = 0, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %rhs0_dfb = ttl.bind_cb {cb_index = 1, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %rhs1_dfb = ttl.bind_cb {cb_index = 2, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %output_dfb = ttl.bind_cb {cb_index = 3, block_count = 2}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %lhs0_wait = ttl.cb_wait %lhs0_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %lhs0 = ttl.attach_cb %lhs0_wait, %lhs0_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %rhs0_wait = ttl.cb_wait %rhs0_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %rhs0 = ttl.attach_cb %rhs0_wait, %rhs0_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %rhs1_wait = ttl.cb_wait %rhs1_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %rhs1 = ttl.attach_cb %rhs1_wait, %rhs1_dfb
+      : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+         !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %lhs_product = ttl.matmul %lhs0, %rhs0
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %rhs_product = ttl.matmul %rhs0, %rhs1 {transpose_rhs}
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %sum = ttl.add %lhs_product, %rhs_product
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %output = ttl.cb_reserve %output_dfb
+      : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %sum, %output
+      : tensor<1x1x!ttcore.tile<32x32, bf16>>,
+        tensor<1x1x!ttcore.tile<32x32, bf16>>
+  return
 }

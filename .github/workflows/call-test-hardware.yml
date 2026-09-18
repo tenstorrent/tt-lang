@@ -3,11 +3,16 @@ name: Hardware Tests
 on:
   workflow_dispatch:
     inputs:
-      runs-on:
-        description: 'Hardware type to run on'
+      hardware:
+        description: 'Hardware configuration name.'
         required: false
         type: string
         default: 'n150'
+      runner_labels_json:
+        description: 'JSON array of GitHub Actions runner labels.'
+        required: false
+        type: string
+        default: '["tt-ubuntu-2204-n150-stable"]'
       timeout:
         description: 'Job timeout in minutes'
         required: false
@@ -19,11 +24,21 @@ on:
         type: string
   workflow_call:
     inputs:
-      runs-on:
-        description: 'Hardware type to run on'
+      hardware:
+        description: 'Hardware configuration name.'
         required: false
         type: string
         default: 'n150'
+      runner_labels_json:
+        description: 'JSON array of GitHub Actions runner labels.'
+        required: false
+        type: string
+        default: '["tt-ubuntu-2204-n150-stable"]'
+      defer_result_check:
+        description: 'Allow the calling workflow to check the aggregate hardware result.'
+        required: false
+        type: boolean
+        default: false
       timeout:
         description: 'Job timeout in minutes'
         required: false
@@ -39,10 +54,11 @@ permissions:
   contents: read
 
 jobs:
-  test-n150:
-    name: "Hardware Tests (${{ inputs.runs-on }})"
-    runs-on: ${{ format('tt-ubuntu-2204-{0}-stable', inputs.runs-on) }}
+  test-hardware:
+    name: "Hardware Tests (${{ inputs.hardware }})"
+    runs-on: ${{ fromJSON(inputs.runner_labels_json) }}
     timeout-minutes: ${{ fromJSON(inputs.timeout) }}
+    continue-on-error: ${{ inputs.defer_result_check }}
 
     container:
       image: ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04:${{ inputs.docker_tag }}
@@ -58,7 +74,7 @@ jobs:
         shell: bash
 
     env:
-      RUNS_ON: ${{ inputs.runs-on }}
+      RUNS_ON: ${{ inputs.hardware }}
       PYTHONDONTWRITEBYTECODE: 1
       TTLANG_TEST_SEED: 42
 
@@ -72,77 +88,56 @@ jobs:
         run: git config --global --add safe.directory "$(pwd)"
 
       - name: Configure tt-lang
-        run: |
-          cmake -G Ninja -B build \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DTTLANG_USE_TOOLCHAIN=ON \
-              -DTTLANG_ENABLE_PERF_TRACE=ON
+        run: .github/scripts/run-hardware-test-phase.sh configure
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
-          key: Linux-ttlang-hw-${{ inputs.runs-on }}
+          key: Linux-ttlang-hw-${{ inputs.hardware }}
           max-size: 200M
 
       - name: Build tt-lang
-        run: |
-          source build/env/activate
-          cmake --build build
+        run: .github/scripts/run-hardware-test-phase.sh build
 
       - name: Install test dependencies
-        run: |
-          source build/env/activate
-          pip install -r dev-requirements.txt
+        run: .github/scripts/run-hardware-test-phase.sh install-dependencies
 
       - name: Smoketest
-        run: |
-          source build/env/activate
-          python3 test/python/smoketest.py
+        run: .github/scripts/run-hardware-test-phase.sh smoketest
 
       - name: Single test (just python)
-        run: |
-          source build/env/activate
-          python test/python/simple_add.py
+        run: .github/scripts/run-hardware-test-phase.sh simple-add
 
       - name: Simulator tests
-        run: |
-          source build/env/activate
-          python3 -m pytest test/sim -m requires_ttnn -v -n auto --tb=short --timeout=60 --timeout-method=signal --junitxml=build/test/sim-report.xml
+        run: .github/scripts/run-hardware-test-phase.sh simulator
 
       - name: Python lit tests
-        run: |
-          source build/env/activate
-          .github/scripts/run-hardware-lit.sh build/test/python build/test/python-lit-report
+        run: .github/scripts/run-hardware-test-phase.sh python-lit
 
       - name: Pytests (Python DSL end-to-end tests)
-        run: |
-          source build/env/activate
-          .github/scripts/run-hardware-pytests.sh test/python build/test/pytest-report
+        run: .github/scripts/run-hardware-test-phase.sh python-pytests
 
       - name: ME2E tests (MLIR input end-to-end tests)
-        run: |
-          source build/env/activate
-          .github/scripts/run-hardware-pytests.sh test/me2e build/test/me2e-report
+        run: .github/scripts/run-hardware-test-phase.sh me2e
 
       - name: Hardware compiler example scripts
-        run: |
-          set -eo pipefail
-          source build/env/activate
-          bash .github/scripts/compile-and-run-examples.sh
+        run: .github/scripts/run-hardware-test-phase.sh examples
 
       - name: Tutorial examples
-        run: |
-          source build/env/activate
-          bash .github/scripts/run-tutorials.sh .
+        run: .github/scripts/run-hardware-test-phase.sh tutorials
 
       - name: Upload test reports
         uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: hardware-test-reports-${{ inputs.runs-on }}
+          name: hardware-test-reports-${{ inputs.hardware }}
           path: |
             build/test/me2e-report*.xml
             build/test/python-lit-report*.xml
             build/test/pytest-report*.xml
             build/test/sim-report.xml
+            build/test/tutorial-report*.xml
           retention-days: 7
+
+      - name: Mark hardware tests complete
+        run: echo "Hardware tests completed successfully."

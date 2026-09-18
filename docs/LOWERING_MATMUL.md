@@ -132,7 +132,7 @@ ttl.tile_regs_release
 
 Pass: [lib/Dialect/TTL/Transforms/ConvertTTLToTTKernel.cpp](../lib/Dialect/TTL/Transforms/ConvertTTLToTTKernel.cpp)
 
-TTL ops are converted 1:1 to TTKernel hardware ops. The 3-operand `tile_matmul_block` emits `rt*ct` `copy_tile` ops for the accumulator CB before the `experimental::matmul_block` call. Init ops are inserted by `ttkernel-insert-inits`: `mm_block_init` (full init) before the sync region, `copy_tile_init` before the first copy, `mm_block_init_short` before the matmul, `relu_tile_init` before the first relu.
+TTL ops are converted 1:1 to TTKernel hardware ops. The 3-operand `tile_matmul_block` emits `rt*ct` `copy_tile` ops for the accumulator CB before the `matmul_block` call. Init ops are inserted by `ttkernel-insert-inits`: `mm_block_init` (full init) before the sync region, `copy_tile_init` before the first copy, `mm_block_init_short` before the matmul, `relu_tile_init` before the first relu.
 
 ```mlir
 "ttkernel.mm_block_init"(%a_cb, %b_cb, %out_cb, ...)
@@ -146,7 +146,7 @@ ttkernel.copy_tile(%c_cb, %c2, %c2)       // C[1,0] -> DST[2]
 ttkernel.copy_tile(%c_cb, %c3, %c3)       // C[1,1] -> DST[3]
 
 "ttkernel.mm_block_init_short"(%a_cb, %b_cb, ...)
-"ttkernel.experimental::matmul_block"(%a_cb, %b_cb, %c0, %c0, %c0,
+"ttkernel.matmul_block"(%a_cb, %b_cb, %c0, %c0, %c0,
     /*transpose=*/0, /*ct=*/2, /*rt=*/2, /*kt=*/1, /*nt=*/2)
                                             // DST[0..3] += A[2x1] * B[1x2]
 
@@ -196,7 +196,7 @@ void kernel_main() {
   // Matmul accumulates (DST += A * B)
   mm_block_init_short(a_cb, b_cb, /*transpose=*/0,
                       /*ct=*/2, /*rt=*/2, /*kt=*/1);
-  experimental::matmul_block(a_cb, b_cb, 0, 0, 0,
+  matmul_block(a_cb, b_cb, 0, 0, 0,
       /*transpose=*/0, /*ct=*/2, /*rt=*/2, /*kt=*/1, /*nt=*/2);
 
   // Relu in-place on each DST tile

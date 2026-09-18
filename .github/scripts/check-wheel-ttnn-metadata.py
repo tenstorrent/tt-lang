@@ -51,7 +51,7 @@ def _tt_metal_commit(wheel_path: str) -> str:
     return match.group(1)
 
 
-def _requires_ttnn(metadata: str) -> bool:
+def _ttnn_requirement(metadata: str) -> Requirement | None:
     for line in metadata.splitlines():
         if not line.startswith("Requires-Dist:"):
             continue
@@ -60,8 +60,8 @@ def _requires_ttnn(metadata: str) -> bool:
         except InvalidRequirement as error:
             raise ValueError(f"invalid Requires-Dist line: {line}: {error}") from error
         if requirement.name.lower() == "ttnn":
-            return True
-    return False
+            return requirement
+    return None
 
 
 def main() -> int:
@@ -69,6 +69,7 @@ def main() -> int:
     parser.add_argument("--mode", required=True, choices=MODES)
     parser.add_argument("--dist-dir", required=True)
     parser.add_argument("--expect-tt-metal-commit")
+    parser.add_argument("--expect-ttnn-version")
     args = parser.parse_args()
 
     wheels = glob.glob(f"{args.dist_dir}/tt_lang-*.whl")
@@ -80,11 +81,12 @@ def main() -> int:
         return 1
 
     try:
-        has_ttnn = _requires_ttnn(_read_metadata(wheels[0]))
+        ttnn_requirement = _ttnn_requirement(_read_metadata(wheels[0]))
     except ValueError as error:
         print(str(error), file=sys.stderr)
         return 1
 
+    has_ttnn = ttnn_requirement is not None
     if args.mode in ("external", "bundled") and has_ttnn:
         print(f"{args.mode} wheel metadata must not require ttnn", file=sys.stderr)
         return 1
@@ -94,6 +96,21 @@ def main() -> int:
     if args.mode == "pypi" and not has_ttnn:
         print("default wheel metadata must require ttnn", file=sys.stderr)
         return 1
+    if args.expect_ttnn_version is not None:
+        if args.mode != "pypi":
+            print(
+                "--expect-ttnn-version is valid only in pypi mode",
+                file=sys.stderr,
+            )
+            return 1
+        expected_specifier = f"=={args.expect_ttnn_version}"
+        if str(ttnn_requirement.specifier) != expected_specifier:
+            print(
+                "tt-lang wheel ttnn dependency mismatch: "
+                f"expected {expected_specifier}, got {ttnn_requirement.specifier}",
+                file=sys.stderr,
+            )
+            return 1
     if args.expect_tt_metal_commit is not None:
         try:
             tt_metal_commit = _tt_metal_commit(wheels[0])
