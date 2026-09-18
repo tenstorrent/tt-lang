@@ -48,6 +48,92 @@ setup() {
     MOCK_PY="$ROOT/mock_python"
 }
 
+make_mock_emule_runner() {
+    local target="$1"
+    cat > "$target" <<'EOF'
+#!/usr/bin/env bash
+if [ -n "${TTLANG_EMULE_IMAGE:-}" ]; then
+    echo "image=$TTLANG_EMULE_IMAGE"
+fi
+for a in "$@"; do
+    echo "argv=$a"
+done
+exit 0
+EOF
+    chmod +x "$target"
+}
+
+@test "emule backend selects an explicit versioned runtime image" {
+    make_layout "$ROOT" source
+    local runner="$ROOT/emule-runner"
+    make_mock_emule_runner "$runner"
+    TTLANG_EMULE_RUNNER="$runner" run -0 "$ROOT/bin/tt-lang-sim" \
+        program.py --backend emule --runtime-image registry/runtime:tested
+    assert_line --index 0 "image=registry/runtime:tested"
+    assert_line --index 1 "argv=program.py"
+}
+
+@test "emule smoke test dispatches the bundled compiler example" {
+    make_layout "$ROOT" source
+    mkdir -p "$ROOT/examples"
+    : > "$ROOT/examples/compiler_only_external_call.py"
+    local runner="$ROOT/emule-runner"
+    make_mock_emule_runner "$runner"
+    TTLANG_EMULE_RUNNER="$runner" run -0 "$ROOT/bin/tt-lang-sim" \
+        --backend emule --smoke-test
+    assert_output "argv=$ROOT/examples/compiler_only_external_call.py"
+}
+
+@test "emule-only launcher options are rejected by the Python backend" {
+    make_layout "$ROOT" source
+    run -2 "$ROOT/bin/tt-lang-sim" program.py \
+        --runtime-image registry/runtime:tested
+    assert_output --partial "require --backend emule"
+}
+
+@test "emule smoke test rejects a competing script" {
+    make_layout "$ROOT" source
+    local runner="$ROOT/emule-runner"
+    make_mock_emule_runner "$runner"
+    TTLANG_EMULE_RUNNER="$runner" run -2 "$ROOT/bin/tt-lang-sim" \
+        program.py --backend emule --smoke-test
+    assert_output --partial "does not accept a script"
+}
+
+@test "emule test flag forwards suite and report arguments to the host helper" {
+    make_layout "$ROOT" source
+    mkdir -p "$ROOT/scripts"
+    : > "$ROOT/scripts/tt-lang-emule.py"
+    make_mock_python "$MOCK_PY"
+    TTLANG_EMULE_HOST_PYTHON="$MOCK_PY" run -0 "$ROOT/bin/tt-lang-sim" \
+        --suite bindings --test --backend=emule --reports-dir "reports with spaces"
+    assert_line --index 1 "argv=$ROOT/scripts/tt-lang-emule.py"
+    assert_line --index 2 "argv=--test"
+    assert_line --index 3 "argv=--suite"
+    assert_line --index 4 "argv=bindings"
+    assert_line --index 5 "argv=--reports-dir"
+    assert_line --index 6 "argv=reports with spaces"
+}
+
+@test "emule actions require a source checkout helper" {
+    make_layout "$ROOT" installed
+    run -1 "$ROOT/bin/tt-lang-sim" --backend emule --test
+    assert_output --partial "--test requires a source checkout"
+}
+
+@test "action-looking script arguments after separator remain literal" {
+    make_layout "$ROOT" source
+    local runner="$ROOT/emule-runner"
+    make_mock_emule_runner "$runner"
+    TTLANG_EMULE_RUNNER="$runner" run -0 "$ROOT/bin/tt-lang-sim" \
+        program.py --backend=emule -- --test --setup --examples --smoke-test
+    assert_line --index 0 "argv=program.py"
+    assert_line --index 1 "argv=--test"
+    assert_line --index 2 "argv=--setup"
+    assert_line --index 3 "argv=--examples"
+    assert_line --index 4 "argv=--smoke-test"
+}
+
 @test "source layout: dispatches sim.ttlang_sim with PYTHONPATH=<root>/python" {
     make_layout "$ROOT" source
     make_mock_python "$MOCK_PY"
@@ -117,4 +203,69 @@ EOF
     PYTHON="$MOCK_PY" PYTHONPATH="" run -0 "$ROOT/bin/tt-lang-sim" "two words" "--opt=value with space"
     assert_line --index 3 "argv=two words"
     assert_line --index 4 "argv=--opt=value with space"
+}
+
+@test "emule backend dispatches to its runner and removes backend option" {
+    make_layout "$ROOT" source
+    local runner="$ROOT/emule-runner"
+    make_mock_emule_runner "$runner"
+    TTLANG_EMULE_RUNNER="$runner" run -0 "$ROOT/bin/tt-lang-sim" \
+        "two words.py" --backend emule --script-option
+    assert_line --index 0 "argv=two words.py"
+    assert_line --index 1 "argv=--script-option"
+}
+
+@test "emule backend accepts the environment default" {
+    make_layout "$ROOT" source
+    local runner="$ROOT/emule-runner"
+    make_mock_emule_runner "$runner"
+    TTLANG_SIM_BACKEND=emule TTLANG_EMULE_RUNNER="$runner" \
+        run -0 "$ROOT/bin/tt-lang-sim" program.py
+    assert_output "argv=program.py"
+}
+
+@test "emule environment default does not intercept global help" {
+    make_layout "$ROOT" source
+    make_mock_python "$MOCK_PY"
+    local runner="$ROOT/emule-runner"
+    make_mock_emule_runner "$runner"
+    TTLANG_SIM_BACKEND=emule TTLANG_EMULE_RUNNER="$runner" \
+        PYTHON="$MOCK_PY" PYTHONPATH="" \
+        run -0 "$ROOT/bin/tt-lang-sim" --help
+    assert_line --index 2 "argv=sim.ttlang_sim"
+    assert_line --index 3 "argv=--help"
+}
+
+@test "backend-looking script argument after separator is preserved" {
+    make_layout "$ROOT" source
+    make_mock_python "$MOCK_PY"
+    PYTHON="$MOCK_PY" PYTHONPATH="" run -0 "$ROOT/bin/tt-lang-sim" \
+        program.py -- --backend emule
+    assert_line "argv=--"
+    assert_line "argv=--backend"
+    assert_line "argv=emule"
+}
+
+@test "emule removes the separator before passing script arguments" {
+    make_layout "$ROOT" source
+    local runner="$ROOT/emule-runner"
+    make_mock_emule_runner "$runner"
+    TTLANG_SIM_BACKEND=emule TTLANG_EMULE_RUNNER="$runner" \
+        run -0 "$ROOT/bin/tt-lang-sim" program.py -- --backend emule
+    assert_line --index 0 "argv=program.py"
+    assert_line --index 1 "argv=--backend"
+    assert_line --index 2 "argv=emule"
+    refute_line "argv=--"
+}
+
+@test "unknown backend is rejected before dispatch" {
+    make_layout "$ROOT" source
+    run -2 "$ROOT/bin/tt-lang-sim" program.py --backend unknown
+    assert_output --partial "unknown backend 'unknown'"
+}
+
+@test "backend without a value is rejected" {
+    make_layout "$ROOT" source
+    run -2 "$ROOT/bin/tt-lang-sim" program.py --backend
+    assert_output --partial "--backend requires python or emule"
 }
