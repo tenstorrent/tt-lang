@@ -3,8 +3,9 @@
 // RUN: ttlang-translate --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
 // RUN: FileCheck %s --input-file=%t.cpp
 
-// CHECK: #include "tt_metal/fabric/hw/inc/fabric_config.h"
-// CHECK: #include "tt_metal/fabric/hw/inc/linear/api.h"
+// CHECK: #include "tt_metal/fabric/fabric_edm_packet_header.hpp"
+// CHECK-NEXT: #include "tt_metal/fabric/hw/inc/fabric_config.h"
+// CHECK-NEXT: #include "tt_metal/fabric/hw/inc/linear/api.h"
 // CHECK: static __attribute__((noinline)) void
 // CHECK: routing_plane_atomic_inc(
 // CHECK: packet_header->to_noc_unicast_atomic_inc(
