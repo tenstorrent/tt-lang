@@ -36,6 +36,28 @@ if [ ! -f "${TT_METAL_MOCK_CLUSTER_DESC_PATH}" ]; then
     exit 1
 fi
 
+_EXPECTED_LLVM_SHA="${TTLANG_EMULE_EXPECTED_LLVM_SHA:-}"
+_LLVM_REVISION_HEADER=/opt/ttlang-toolchain/include/llvm/Support/VCSRevision.h
+_ACTUAL_LLVM_SHA=""
+if [ -f "$_LLVM_REVISION_HEADER" ]; then
+    _ACTUAL_LLVM_SHA="$(sed -nE \
+        's/^[[:space:]]*#define[[:space:]]+LLVM_REVISION[[:space:]]+(R)?"\(?([0-9a-f]{7,40})\)?"[[:space:]]*$/\2/p' \
+        "$_LLVM_REVISION_HEADER")"
+fi
+if [ "${#_EXPECTED_LLVM_SHA}" -ne 40 ] || \
+   [[ "$_EXPECTED_LLVM_SHA" == *[!0-9a-f]* ]]; then
+    echo "tt-lang emule container: expected LLVM revision is missing or invalid; use ./bin/tt-lang-sim --backend=emule." >&2
+    exit 1
+fi
+if [ -z "$_ACTUAL_LLVM_SHA" ] || \
+   [[ "$_EXPECTED_LLVM_SHA" != "$_ACTUAL_LLVM_SHA"* ]]; then
+    echo "tt-lang emule container: runtime LLVM revision does not match the compiler checkout." >&2
+    echo "  expected: $_EXPECTED_LLVM_SHA" >&2
+    echo "  installed: ${_ACTUAL_LLVM_SHA:-unknown ($_LLVM_REVISION_HEADER)}" >&2
+    echo "Select a compatible runtime image or rebuild it with --setup --source/--source-url and TTLANG_EMULE_REBUILD=1." >&2
+    exit 1
+fi
+
 cmake -G Ninja -S "$TTLANG_SOURCE_DIR" -B "$TTLANG_BUILD_DIR" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_C_COMPILER=clang-20 \

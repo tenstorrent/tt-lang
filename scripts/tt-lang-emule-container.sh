@@ -77,6 +77,17 @@ _TEMP_STACK_CONTEXT=""
 "$_PYTHON" "$_STACK_TOOL" --manifest "$_STACK_MANIFEST" validate \
     --compiler-source "$_REPO_ROOT" --quiet
 
+_EXPECTED_LLVM_SHA="$(
+    git -C "$_REPO_ROOT" ls-tree HEAD -- third-party/llvm-project |
+        awk '$1 == "160000" && $2 == "commit" {print $3}'
+)"
+if [ "${#_EXPECTED_LLVM_SHA}" -ne 40 ] || \
+   [[ "$_EXPECTED_LLVM_SHA" == *[!0-9a-f]* ]]; then
+    echo "tt-lang-sim: cannot read the compiler's LLVM gitlink from HEAD." >&2
+    exit 1
+fi
+readonly _EXPECTED_LLVM_SHA
+
 cleanup() {
     for _TEMP_DIR in \
         "$_TEMP_EMULE_SOURCE" \
@@ -139,10 +150,12 @@ _RUN_ARGS=(
     run
     --rm
     --platform "$_PLATFORM"
+    --entrypoint /workspace/scripts/tt-lang-emule-entrypoint.sh
     --mount "type=bind,src=${_REPO_ROOT},dst=/workspace"
     --mount "type=volume,src=${_BUILD_VOLUME},dst=/ttlang-build"
     --mount "type=volume,src=${_CACHE_VOLUME},dst=/tt-metal-cache"
     -e "TTLANG_EMULE_TARGET_NAME=${_MANIFEST_TARGET}"
+    -e "TTLANG_EMULE_EXPECTED_LLVM_SHA=${_EXPECTED_LLVM_SHA}"
     -e "TT_METAL_MOCK_CLUSTER_DESC_PATH=/opt/tt-emule/${_REQUIRED_EMULE_FILE}"
     -e "TT_METAL_ALLOCATOR_MODE_HYBRID=1"
     -e "MESH_DEVICE=${_MANIFEST_MESH_DEVICE}"

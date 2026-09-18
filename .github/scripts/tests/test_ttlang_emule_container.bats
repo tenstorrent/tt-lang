@@ -118,6 +118,24 @@ EOF
     chmod +x "$target_dir/cmake" "$target_dir/nproc" "$target_dir/python"
 }
 
+make_entrypoint_fixture() {
+    MOCK_ENTRYPOINT_LOG="$BATS_TEST_TMPDIR/entrypoint.log"
+    export MOCK_ENTRYPOINT_LOG
+    mock_bin="$BATS_TEST_TMPDIR/entrypoint-bin"
+    build_dir="$BATS_TEST_TMPDIR/build"
+    cluster="$BATS_TEST_TMPDIR/blackhole_P150_unharvested.yaml"
+    program="$BATS_TEST_TMPDIR/program.py"
+    llvm_revision_header="$BATS_TEST_TMPDIR/toolchain/include/llvm/Support/VCSRevision.h"
+    test_entrypoint="$BATS_TEST_TMPDIR/entrypoint.sh"
+    expected_llvm_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    make_mock_entrypoint_commands "$mock_bin"
+    mkdir -p "$build_dir/env" "$(dirname "$llvm_revision_header")"
+    touch "$build_dir/env/activate" "$cluster" "$program"
+    printf '#define LLVM_REVISION "%s"\n' "$expected_llvm_sha" > "$llvm_revision_header"
+    sed "s|/opt/ttlang-toolchain|$BATS_TEST_TMPDIR/toolchain|g" \
+        "$ENTRYPOINT" > "$test_entrypoint"
+}
+
 @test "emule runtime fetches only the pinned source revisions" {
     run -0 grep -F -- \
         'fetch --depth 1 origin "$_TT_EMULE_COMMIT"' "$RUNNER"
@@ -190,6 +208,10 @@ EOF
         "type=bind,src=${TTLANG_REPO_ROOT},dst=/workspace"
     assert_log_line "/workspace/examples/eltwise_add.py"
     assert_log_line "argument with spaces"
+    assert_log_line "--entrypoint"
+    assert_log_line "/workspace/scripts/tt-lang-emule-entrypoint.sh"
+    assert_log_line \
+        "TTLANG_EMULE_EXPECTED_LLVM_SHA=$(git -C "$TTLANG_REPO_ROOT" rev-parse HEAD:third-party/llvm-project)"
     [[ "$runtime_id" == 7292395c-b6c508c4-r* ]]
     assert_log_line \
         "type=volume,src=tt-lang-emule-build-${runtime_id}-${source_id},dst=/ttlang-build"
@@ -232,6 +254,8 @@ EOF
     touch "$synthetic_root/examples/program.py"
     git -C "$synthetic_root" init -q
     git -C "$synthetic_root" add .
+    git -C "$synthetic_root" update-index --add --cacheinfo \
+        160000,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,third-party/llvm-project
     git -C "$synthetic_root" \
         -c user.name=test -c user.email=test@example.com \
         commit -q -m "Synthetic runtime inputs"
@@ -244,6 +268,9 @@ EOF
 
     TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$synthetic_runner" \
         "$synthetic_root/examples/program.py"
+    assert_log_line \
+        "TTLANG_EMULE_EXPECTED_LLVM_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    [ ! -e "$synthetic_root/third-party/llvm-project/.git" ]
     first_image="$(awk '/^tt-lang-emule:/{print; exit}' "$MOCK_DOCKER_LOG")"
 
     : > "$MOCK_DOCKER_LOG"
@@ -563,23 +590,16 @@ PY
 }
 
 @test "entrypoint configures, builds, and runs with emule runtime state" {
-    local mock_bin="$BATS_TEST_TMPDIR/entrypoint-bin"
-    local build_dir="$BATS_TEST_TMPDIR/build"
-    local cluster="$BATS_TEST_TMPDIR/blackhole_P150_unharvested.yaml"
-    local program="$BATS_TEST_TMPDIR/program.py"
-    MOCK_ENTRYPOINT_LOG="$BATS_TEST_TMPDIR/entrypoint.log"
-    export MOCK_ENTRYPOINT_LOG
-    make_mock_entrypoint_commands "$mock_bin"
-    mkdir -p "$build_dir/env"
-    touch "$build_dir/env/activate" "$cluster" "$program"
+    make_entrypoint_fixture
 
     PATH="$mock_bin:$PATH" \
         TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
+        TTLANG_EMULE_EXPECTED_LLVM_SHA="$expected_llvm_sha" \
         TTLANG_COMPILE_ONLY=1 \
         TTLANG_SIM_ONLY=1 \
         TTLANG_EMULE_BUILD_DIR="$build_dir" \
         TTLANG_EMULE_SOURCE_DIR="$TTLANG_REPO_ROOT" \
-        run -0 "$ENTRYPOINT" "$program" "argument with spaces"
+        run -0 /bin/bash "$test_entrypoint" "$program" "argument with spaces"
 
     assert_line "emule=1"
     assert_line "slow_dispatch=1"
@@ -597,6 +617,75 @@ PY
     run -0 grep -F -x -- \
         "cmake=-DTTLANG_EXTERNAL_TT_METAL_DIR=/opt/tt-emule-runtime/tt-metal" \
         "$MOCK_ENTRYPOINT_LOG"
+}
+
+@test "entrypoint accepts the matching raw-string LLVM revision before configuring" {
+    make_entrypoint_fixture
+    printf '#define LLVM_REVISION R"(%s)"\n' "$expected_llvm_sha" > "$llvm_revision_header"
+
+    PATH="$mock_bin:$PATH" \
+        TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
+        TTLANG_EMULE_EXPECTED_LLVM_SHA="$expected_llvm_sha" \
+        TTLANG_EMULE_BUILD_DIR="$build_dir" \
+        run -0 /bin/bash "$test_entrypoint" "$program"
+
+    [ -s "$MOCK_ENTRYPOINT_LOG" ]
+}
+
+@test "entrypoint rejects a different LLVM revision before configuring" {
+    make_entrypoint_fixture
+    printf '#define LLVM_REVISION "%s"\n' \
+        bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb > "$llvm_revision_header"
+
+    PATH="$mock_bin:$PATH" \
+        TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
+        TTLANG_EMULE_EXPECTED_LLVM_SHA="$expected_llvm_sha" \
+        run -1 /bin/bash "$test_entrypoint" "$program"
+
+    assert_output --partial "runtime LLVM revision does not match"
+    assert_output --partial "expected: $expected_llvm_sha"
+    assert_output --partial "installed: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    assert_output --partial "Select a compatible runtime image or rebuild"
+    [ ! -e "$MOCK_ENTRYPOINT_LOG" ]
+}
+
+@test "entrypoint rejects an unknown installed LLVM revision before configuring" {
+    make_entrypoint_fixture
+    printf '#define LLVM_REVISION "unknown"\n' > "$llvm_revision_header"
+
+    PATH="$mock_bin:$PATH" \
+        TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
+        TTLANG_EMULE_EXPECTED_LLVM_SHA="$expected_llvm_sha" \
+        run -1 /bin/bash "$test_entrypoint" "$program"
+
+    assert_output --partial "installed: unknown"
+    [ ! -e "$MOCK_ENTRYPOINT_LOG" ]
+}
+
+@test "entrypoint rejects a missing LLVM revision header before configuring" {
+    make_entrypoint_fixture
+    rm "$llvm_revision_header"
+
+    PATH="$mock_bin:$PATH" \
+        TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
+        TTLANG_EMULE_EXPECTED_LLVM_SHA="$expected_llvm_sha" \
+        run -1 /bin/bash "$test_entrypoint" "$program"
+
+    assert_output --partial "installed: unknown"
+    assert_output --partial "$llvm_revision_header"
+    [ ! -e "$MOCK_ENTRYPOINT_LOG" ]
+}
+
+@test "entrypoint requires the launcher's expected LLVM revision" {
+    make_entrypoint_fixture
+
+    PATH="$mock_bin:$PATH" \
+        TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
+        TTLANG_EMULE_EXPECTED_LLVM_SHA="" \
+        run -1 /bin/bash "$test_entrypoint" "$program"
+
+    assert_output --partial "expected LLVM revision is missing or invalid"
+    [ ! -e "$MOCK_ENTRYPOINT_LOG" ]
 }
 
 @test "entrypoint defaults to the runtime's full P150 descriptor" {
