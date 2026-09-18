@@ -56,6 +56,15 @@ def test_sweep_command_runs_only_native_with_native_fabric_configuration():
     assert command[command.index("--ttmetal-source-root") + 1] == "/tmp/tt-metal"
     assert "--ttlang-fabric-config" not in command
 
+    candidate_command = build_native_command(
+        arguments,
+        "3072x5120x3840_8x8_agmm_plain",
+        Path("/tmp/native-ring.json"),
+        compute_grid=(8, 8),
+    )
+    grid_index = candidate_command.index("--native-compute-grid")
+    assert candidate_command[grid_index + 1 : grid_index + 3] == ["8", "8"]
+
 
 def test_native_case_selection_includes_agmm_epilogues_and_excludes_sagmm():
     cases, unsupported = select_native_cases(None)

@@ -43,7 +43,10 @@ def parse_args() -> argparse.Namespace:
 
 
 def build_native_command(
-    arguments: argparse.Namespace, case_id: str, report: Path
+    arguments: argparse.Namespace,
+    case_id: str,
+    report: Path,
+    compute_grid: tuple[int, int] | None = None,
 ) -> list[str]:
     command = [
         sys.executable,
@@ -67,6 +70,10 @@ def build_native_command(
     ]
     if arguments.ttmetal_source_root is not None:
         command.extend(["--ttmetal-source-root", str(arguments.ttmetal_source_root)])
+    if compute_grid is not None:
+        command.extend(
+            ["--native-compute-grid", str(compute_grid[0]), str(compute_grid[1])]
+        )
     return command
 
 
@@ -149,7 +156,12 @@ def main() -> None:
             case.case_id if arguments.all_grid_candidates else case.comparison_id
         )
         report = arguments.output_dir / f"{report_id}_{arguments.topology}.json"
-        command = build_native_command(arguments, case.case_id, report)
+        command = build_native_command(
+            arguments,
+            case.case_id,
+            report,
+            case.compute_grid if arguments.all_grid_candidates else None,
+        )
         print(" ".join(command), flush=True)
         if not arguments.dry_run:
             try:
