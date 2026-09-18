@@ -20,10 +20,14 @@ from pathlib import Path
 import torch
 import ttnn
 
-from benchmarks.all_gather_minimal_matmul.native_heuristic import resolve_agmm_config
+from benchmarks.all_gather_minimal_matmul.native_heuristic import (
+    load_ttmetal_symbol,
+    resolve_agmm_config,
+)
 from benchmarks.all_gather_minimal_matmul.sweep_cases import (
     COMPARABLE_OPERATION_KINDS,
     COMPARABLE_USE_CASES,
+    NATIVE_SUPPORTED_USE_CASES,
     TT_METAL_SWEEP_REVISION,
     UPSTREAM_AGMM_CASES,
 )
@@ -316,6 +320,7 @@ def make_configs(arguments):
         native = replace(
             native,
             chunks=3 if native.use_case == "qkv" else 1,
+            math_approx_mode=native.use_case in ("qkv", "to_out"),
         )
     if common.dtype == "fp32" and not common.fp32_dest_acc:
         raise ValueError("FP32 inputs require FP32 destination accumulation")
@@ -595,6 +600,65 @@ def create_ttlang_workload(mesh, common, ttlang):
     return Workload(run, validate, lambda _result: None), operation_config
 
 
+def make_native_inputs(mesh, common, native):
+    activation_host, weight_host, bias_host, expected = make_host_inputs(common)
+    shard_mapper = ttnn.ShardTensorToMesh(mesh, dim=1)
+    fused_activation = None
+    fuse_swiglu = native.use_case == "ff1_swiglu"
+    scalar = None
+    addcmul_tensor1 = None
+    addcmul_tensor2 = None
+
+    if native.use_case in ("ff1_gelu", "plain_gelu"):
+        approximate = native.use_case == "ff1_gelu"
+        fused_activation = (ttnn.UnaryOpType.GELU, approximate)
+        expected = torch.nn.functional.gelu(
+            expected, approximate="tanh" if approximate else "none"
+        )
+    elif native.use_case == "to_out":
+        scalar = 1.0
+        generator = torch.Generator().manual_seed(common.seed + 1)
+        addcmul_host1 = torch.randn(
+            expected.shape, dtype=activation_host.dtype, generator=generator
+        )
+        addcmul_host2 = torch.randn(
+            expected.shape,
+            dtype=activation_host.dtype,
+            generator=generator,
+        )
+        expected = addcmul_host1.float() + scalar * expected * addcmul_host2.float()
+        addcmul_tensor1 = to_dram(addcmul_host1, mesh, mesh_mapper=shard_mapper)
+        addcmul_tensor2 = to_dram(addcmul_host2, mesh, mesh_mapper=shard_mapper)
+    elif fuse_swiglu:
+        up, gate = torch.chunk(expected, 2, dim=-1)
+        expected = torch.nn.functional.silu(gate) * up
+        prepare_for_fused_swiglu = load_ttmetal_symbol(
+            "models.tt_dit.utils.tensor",
+            "prepare_for_fused_swiglu",
+            native.source_root,
+            TT_METAL_SWEEP_REVISION,
+        )
+        weight_host = prepare_for_fused_swiglu(
+            weight_host, ndev=common.device_count, gate_is_first=False
+        )
+        bias_host = prepare_for_fused_swiglu(
+            bias_host, ndev=common.device_count, gate_is_first=False
+        )
+
+    return (
+        activation_host,
+        expected,
+        to_dram(activation_host, mesh, mesh_mapper=shard_mapper),
+        to_dram(weight_host, mesh, mesh_mapper=shard_mapper),
+        to_dram(bias_host, mesh, mesh_mapper=shard_mapper),
+        addcmul_tensor1,
+        addcmul_tensor2,
+        fused_activation,
+        fuse_swiglu,
+        scalar,
+    )
+
+
 def create_native_workload(mesh, cluster_axis, common, native):
     if native.use_heuristic:
         (
@@ -634,7 +698,18 @@ def create_native_workload(mesh, cluster_axis, common, native):
         "n_tiles_per_device": common.n_tiles_per_device,
         **asdict(native),
     }
-    activation_host, expected, activation, weight, bias, _ = make_inputs(mesh, common)
+    (
+        activation_host,
+        expected,
+        activation,
+        weight,
+        bias,
+        addcmul_tensor1,
+        addcmul_tensor2,
+        fused_activation,
+        fuse_swiglu,
+        scalar,
+    ) = make_native_inputs(mesh, common, native)
     gathered = to_dram(
         torch.zeros_like(activation_host),
         mesh,
@@ -673,6 +748,7 @@ def create_native_workload(mesh, cluster_axis, common, native):
             activation,
             weight,
             bias_tensor=bias,
+            fused_activation=fused_activation,
             config=matmul_config,
             compute_kernel_config=compute_config,
             persistent_output_buffer=gathered,
@@ -689,6 +765,10 @@ def create_native_workload(mesh, cluster_axis, common, native):
             num_workers_per_link=native.workers_per_link,
             num_buffers_per_channel=native.channel_buffers,
             chunks=native.chunks,
+            fuse_swiglu=fuse_swiglu,
+            scalar=scalar,
+            addcmul_input_tensor1=addcmul_tensor1,
+            addcmul_input_tensor2=addcmul_tensor2,
         )
         if len(outputs) != native.chunks:
             raise RuntimeError(
@@ -903,11 +983,17 @@ def run_isolated_workers(arguments):
 
 def list_sweep_cases():
     for case in UPSTREAM_AGMM_CASES:
-        comparable = (
+        native_supported = (
             case.operation_kind in COMPARABLE_OPERATION_KINDS
-            and case.use_case in COMPARABLE_USE_CASES
+            and case.use_case in NATIVE_SUPPORTED_USE_CASES
         )
-        status = "comparable" if comparable else "unsupported"
+        ttlang_comparable = native_supported and case.use_case in COMPARABLE_USE_CASES
+        if ttlang_comparable:
+            status = "native and TT-Lang comparable"
+        elif native_supported:
+            status = "native only"
+        else:
+            status = "unsupported operation kind"
         print(f"{case.case_id}: {status}")
 
 

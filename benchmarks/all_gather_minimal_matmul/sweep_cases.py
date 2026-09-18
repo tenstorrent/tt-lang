@@ -11,7 +11,7 @@ are retained so the sweep reports them explicitly instead of relabeling them.
 
 from dataclasses import dataclass
 
-TT_METAL_SWEEP_REVISION = "975015c2f03bb818eaee2422c3845fba381eaf8c"
+TT_METAL_SWEEP_REVISION = "0e9d200db976120c129ab0deb13aa3f6d972b723"
 
 
 @dataclass(frozen=True)
@@ -214,3 +214,6 @@ COMPARABLE_OPERATION_KINDS = frozenset({"agmm"})
 # The current TT-Lang benchmark has only the plain bias epilogue.  QKV chunking,
 # addcmul, and fused activations remain listed but are not timed as plain AGMM.
 COMPARABLE_USE_CASES = frozenset({"plain"})
+NATIVE_SUPPORTED_USE_CASES = frozenset(
+    {"plain", "qkv", "to_out", "ff1_gelu", "plain_gelu", "ff1_swiglu"}
+)

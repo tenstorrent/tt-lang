@@ -11,7 +11,7 @@ from pathlib import Path
 
 from benchmarks.all_gather_minimal_matmul.sweep_cases import (
     COMPARABLE_OPERATION_KINDS,
-    COMPARABLE_USE_CASES,
+    NATIVE_SUPPORTED_USE_CASES,
     UPSTREAM_AGMM_CASES,
 )
 
@@ -57,28 +57,33 @@ def build_native_command(
     ]
 
 
-def main() -> None:
-    arguments = parse_args()
+def select_native_cases(case_ids: list[str] | None):
     cases = [
         case
         for case in UPSTREAM_AGMM_CASES
         if case.operation_kind in COMPARABLE_OPERATION_KINDS
-        and case.use_case in COMPARABLE_USE_CASES
-        and (not arguments.case_ids or case.case_id in arguments.case_ids)
+        and case.use_case in NATIVE_SUPPORTED_USE_CASES
+        and (not case_ids or case.case_id in case_ids)
     ]
     unsupported = [
         case.case_id
         for case in UPSTREAM_AGMM_CASES
         if case.operation_kind not in COMPARABLE_OPERATION_KINDS
-        or case.use_case not in COMPARABLE_USE_CASES
+        or case.use_case not in NATIVE_SUPPORTED_USE_CASES
     ]
+    return cases, unsupported
+
+
+def main() -> None:
+    arguments = parse_args()
+    cases, unsupported = select_native_cases(arguments.case_ids)
     arguments.output_dir.mkdir(parents=True, exist_ok=True)
     summary = {
         "native_fabric_config": arguments.native_fabric_config,
         "topology": arguments.topology,
         "warmup": arguments.warmup,
         "samples": arguments.samples,
-        "comparable_case_ids": [case.case_id for case in cases],
+        "native_case_ids": [case.case_id for case in cases],
         "unsupported_case_ids": unsupported,
         "results": [],
     }
