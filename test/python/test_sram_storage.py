@@ -881,6 +881,34 @@ def _make_accumulate_with_temporary_storage(grid):
     return accumulate_with_temporary_storage
 
 
+def _make_accumulate_tensor_backing(grid):
+    @ttl.operation(grid=grid)
+    def accumulate_tensor_backing(input_tensor, state):
+        input_dfb = ttl.make_tensor_backed_dfb(
+            input_tensor, shape=(1, 1), block_count=1
+        )
+        state_dfb = ttl.make_tensor_backed_dfb(state, shape=(1, 1), block_count=1)
+
+        @ttl.compute()
+        def accumulate():
+            with (
+                input_dfb.wait() as input_block,
+                state_dfb.wait() as state_block,
+            ):
+                state_block.store(state_block + input_block)
+
+        @ttl.datamovement()
+        def publish():
+            input_dfb.publish()
+            state_dfb.publish()
+
+        @ttl.datamovement()
+        def unused():
+            pass
+
+    return accumulate_tensor_backing
+
+
 @pytest.mark.requires_device
 @pytest.mark.parametrize(
     ("torch_dtype", "ttnn_dtype"),
@@ -1057,6 +1085,72 @@ def test_persistent_state_with_compiler_managed_temporary_storage(
     else:
         assert_allclose(actual_state, expected, rtol=1e-5, atol=1e-6)
         assert_allclose(actual_output, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.requires_device
+@pytest.mark.parametrize(
+    ("torch_dtype", "ttnn_dtype"),
+    [(torch.bfloat16, ttnn.bfloat16), (torch.float32, ttnn.float32)],
+    ids=["bf16", "fp32"],
+)
+def test_prepared_operation_rebinds_compatible_tensor_backing(
+    device, torch_dtype, ttnn_dtype
+):
+    shape = (32, 32)
+    core_grid = ttnn.CoreRangeSet(
+        {ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))}
+    )
+    shard_spec = ttnn.ShardSpec(core_grid, shape, ttnn.ShardOrientation.ROW_MAJOR)
+    memory_config = ttnn.MemoryConfig(
+        ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+        ttnn.BufferType.L1,
+        shard_spec,
+    )
+    first_input = ttnn.to_memory_config(
+        to_dram(torch.ones(shape, dtype=torch_dtype), device),
+        memory_config=memory_config,
+    )
+    second_input = ttnn.to_memory_config(
+        to_dram(torch.full(shape, 2, dtype=torch_dtype), device),
+        memory_config=memory_config,
+    )
+    assert first_input.buffer_address() != second_input.buffer_address()
+    accumulate = _make_accumulate_tensor_backing((1, 1))
+
+    with SRAMStorage(device=device) as storage:
+        state = storage.tensor(
+            shape=shape,
+            shard_shape=shape,
+            cores=((0, 0),),
+            dtype=ttnn_dtype,
+            layout=ttnn.TILE_LAYOUT,
+            addressing="uniform",
+            sharding=ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+        )
+        storage.prepare_operation(
+            accumulate,
+            first_input,
+            state,
+            options="--ttl-memory-model=compiler-l1",
+        )
+        storage.allocate()
+        accumulate(
+            first_input,
+            state,
+            options="--ttl-memory-model=compiler-l1",
+        )
+        accumulate(
+            second_input,
+            state,
+            options="--ttl-memory-model=compiler-l1",
+        )
+        actual = storage.submit(ttnn.to_torch, state).float()
+
+    expected = torch.full(shape, 3, dtype=torch_dtype).float()
+    if torch_dtype == torch.bfloat16:
+        assert_allclose(actual, expected, rtol=0.05, atol=1.0)
+    else:
+        assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
 
 
 @pytest.mark.parametrize("dtype", [ttnn.bfloat16, ttnn.float32], ids=["bf16", "fp32"])
