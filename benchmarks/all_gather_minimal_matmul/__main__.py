@@ -913,7 +913,8 @@ def run_worker(arguments):
                     / "examples/matmul_reduce_scatter_2d/config.py",
                     Path(__file__).resolve().parents[2]
                     / "examples/matmul_reduce_scatter_2d/operation.py",
-                ]
+                ],
+                ttmetal_source_root=arguments.ttmetal_source_root,
             ),
             "references": {
                 "operation": f"{REFERENCE_ROOT}/ttnn/cpp/ttnn/operations/experimental/ccl/all_gather_minimal_matmul_async",

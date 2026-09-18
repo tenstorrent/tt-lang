@@ -36,7 +36,7 @@ def loaded_library_path(filename, maps_file=Path("/proc/self/maps")):
     return matches.pop()
 
 
-def collect_provenance(sources):
+def collect_provenance(sources, *, ttmetal_source_root=None):
     root = Path(__file__).resolve().parents[1]
     source_files = {Path(source).resolve() for source in sources}
     source_files.update((Path(__file__).resolve(), root / "benchmarks/common.py"))
@@ -52,6 +52,7 @@ def collect_provenance(sources):
     metal_runtime_root = Path(
         os.environ.get("TT_METAL_RUNTIME_ROOT", root / "third-party/tt-metal")
     ).resolve()
+    metal_source_root = Path(ttmetal_source_root or metal_runtime_root).resolve()
     compiler_directory = Path(_ttlang.__file__).parent
     binaries = (
         Path(_ttlang.__file__),
@@ -73,9 +74,10 @@ def collect_provenance(sources):
         "dependency_pins": git_output(
             root, "ls-tree", "HEAD", "third-party/tt-metal", "third-party/llvm-project"
         ),
-        "ttmetal_revision": git_output(metal_runtime_root, "rev-parse", "HEAD"),
+        "ttmetal_revision": git_output(metal_source_root, "rev-parse", "HEAD"),
         "ttmetal_home": str(metal_home),
         "ttmetal_runtime_root": str(metal_runtime_root),
+        "ttmetal_source_root": str(metal_source_root),
         "container_image": os.getenv("BENCHMARK_CONTAINER_IMAGE", "unrecorded"),
         "hostname": platform.node(),
         "python_version": platform.python_version(),
