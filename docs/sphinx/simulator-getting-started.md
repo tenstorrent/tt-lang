@@ -102,8 +102,9 @@ the saved selection only after another successful smoke test.
 The first source build can take a long time and use substantial CPU, memory,
 and disk space. Docker retains the runtime image, compiler build, and kernel
 caches for later commands. `--jobs 8` limits compiler build parallelism; a lower
-value reduces peak build memory use. It can also be changed without selecting
-another runtime:
+value reduces that build's peak memory use, but does not limit the initial
+tt-metal build inside the runtime image. It can also be changed without
+selecting another runtime:
 
 ```bash
 ./bin/tt-lang-sim --backend=emule --setup --jobs 4

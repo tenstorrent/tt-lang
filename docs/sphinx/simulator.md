@@ -236,7 +236,8 @@ The first invocation builds a pinned tt-emule/tt-metal image and then builds
 TT-Lang. The TT-Lang build directory and the tt-metal and tt-emule JIT caches
 live in named Docker volumes, so subsequent source edits rebuild incrementally.
 Set `TTLANG_EMULE_REBUILD=1` to rebuild the runtime image, or
-`TTLANG_EMULE_JOBS=N` to limit build parallelism.
+`TTLANG_EMULE_JOBS=N` to limit compiler build parallelism. This does not limit
+the initial tt-metal build inside the runtime image.
 
 The initial supported target is a single emulated Blackhole P150 device with
 the full, unharvested 13x10 compute grid. The launcher selects the emulator's

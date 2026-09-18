@@ -133,3 +133,18 @@ def test_candidate_workflow_validates_without_publishing():
     assert workflow.count("fetch-depth: 0") == 2
     assert "docker push" not in workflow
     assert "packages: write" not in workflow
+
+
+def test_candidate_reference_suite_keeps_manifest_without_rebuilding():
+    workflow = WORKFLOW.read_text(encoding="utf-8")
+    reference_step = workflow.split("      - name: Run the reference suite\n", 1)[
+        1
+    ].split("\n      - name:", 1)[0]
+
+    assert (
+        "        env:\n" "          TTLANG_EMULE_STACK_MANIFEST: candidate-stack.json\n"
+    ) in reference_step
+    assert '--runtime-image "tt-lang-emule:candidate-${{ github.run_id }}"' in (
+        reference_step
+    )
+    assert "TTLANG_EMULE_REBUILD" not in reference_step

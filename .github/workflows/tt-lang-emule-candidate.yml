@@ -132,6 +132,8 @@ jobs:
         run: ./bin/tt-lang-sim --backend emule --smoke-test
 
       - name: Run the reference suite
+        env:
+          TTLANG_EMULE_STACK_MANIFEST: candidate-stack.json
         run: |
           python3 scripts/run-tt-lang-emule-examples.py \
             --runtime-image "tt-lang-emule:candidate-${{ github.run_id }}"
