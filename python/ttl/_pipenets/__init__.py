@@ -18,7 +18,7 @@ import itertools
 from dataclasses import dataclass, field
 from typing import Any, FrozenSet, Iterable, List, Optional, Set, Tuple, Union
 
-from ttl.domains import DeviceRange, DeviceRef, TransferEdge, TransferGraph
+from ttl.domains import DeviceRange, DeviceRef, TransferGraph
 
 
 @dataclass(frozen=True)
@@ -72,12 +72,20 @@ class PipeNetUse:
 
 
 @dataclass(frozen=True)
+class GraphPipeMappingUse:
+    """One device graph and its list of node-level Pipes."""
+
+    transfer_graph: TransferGraph
+    pipes: Optional[Tuple[PipeUse, ...]]
+
+
+@dataclass(frozen=True)
 class GraphPipeNetUse:
     """One graph-based PipeNet consumed by one operation invocation."""
 
     pipe_net_id: int
-    edges: Tuple[TransferEdge, ...]
-    transfer_graph: TransferGraph
+    mappings: Tuple[GraphPipeMappingUse, ...]
+    uses_matching_node_coordinates: bool
 
 
 @dataclass
@@ -99,31 +107,61 @@ class OperationPipeNets:
         self.pipe_nets.append(use)
         return use
 
-    def add_graph_pipe_net(self, transfer_graph: TransferGraph) -> GraphPipeNetUse:
-        """Append a graph PipeNet with one ordered device-edge record set."""
-        edges = tuple(transfer_graph.iter_edges())
-        if not edges:
-            raise ValueError("graph-based PipeNet requires at least one transfer edge")
-        if any(isinstance(edge.destination, DeviceRange) for edge in edges):
-            raise ValueError(
-                "graph-based PipeNet DeviceRange destinations require multicast "
-                "transport lowering"
+    def add_graph_pipe_net(
+        self,
+        mappings: Iterable[Tuple[TransferGraph, Optional[Tuple[PipeUse, ...]]]],
+        *,
+        uses_matching_node_coordinates: bool = False,
+    ) -> GraphPipeNetUse:
+        """Append device graphs and their node Pipes in callback execution order."""
+        normalized_mappings = []
+        for transfer_graph, pipes in mappings:
+            if transfer_graph.is_explicit and any(
+                isinstance(edge.destination, DeviceRange)
+                for edge in transfer_graph.transfer_edges
+            ):
+                raise ValueError(
+                    "graph-based PipeNet DeviceRange destinations require multicast "
+                    "transport lowering"
+                )
+            normalized_mappings.append(
+                GraphPipeMappingUse(
+                    transfer_graph=transfer_graph,
+                    pipes=pipes,
+                )
             )
+        if not normalized_mappings:
+            raise ValueError("graph-based PipeNet requires at least one relation")
+        if uses_matching_node_coordinates:
+            if (
+                len(normalized_mappings) != 1
+                or normalized_mappings[0].pipes is not None
+            ):
+                raise ValueError(
+                    "a same-coordinate graph PipeNet requires exactly one relation "
+                    "without node pipes"
+                )
+        elif any(mapping.pipes is None for mapping in normalized_mappings):
+            raise ValueError("graph PipeNet relations require node pipes")
+        if any(mapping.pipes == () for mapping in normalized_mappings):
+            raise ValueError("graph PipeNet relations require at least one node pipe")
         use = GraphPipeNetUse(
             pipe_net_id=self._next_pipe_net_id(),
-            edges=edges,
-            transfer_graph=transfer_graph,
+            mappings=tuple(normalized_mappings),
+            uses_matching_node_coordinates=uses_matching_node_coordinates,
         )
         self.graph_pipe_nets.append(use)
         return use
 
     def active_node_set(self, grid: Tuple[int, ...]) -> Optional[Set[int]]:
-        """Linearized active node set across every PipeNet in the graph.
+        """Return the linearized nodes used by the operation's PipeNets.
 
-        Returns None when the graph is empty, signaling that no active-set
-        filtering should be applied (every node participates).
+        None means that no PipeNet restricts participation or that a graph-only
+        PipeNet uses every launch node.
         """
-        if self.graph_pipe_nets or not self.pipe_nets:
+        if any(net.uses_matching_node_coordinates for net in self.graph_pipe_nets):
+            return None
+        if not self.graph_pipe_nets and not self.pipe_nets:
             return None
         active: Set[int] = set()
         for net in self.pipe_nets:
@@ -131,6 +169,13 @@ class OperationPipeNets:
                 active.add(_linearize(pipe.src.coords, grid))
                 for coord in _expand_dst(pipe.dst):
                     active.add(_linearize(coord, grid))
+        for net in self.graph_pipe_nets:
+            for mapping in net.mappings:
+                assert mapping.pipes is not None
+                for pipe in mapping.pipes:
+                    active.add(_linearize(pipe.src.coords, grid))
+                    for coord in _expand_dst(pipe.dst):
+                        active.add(_linearize(coord, grid))
         return active
 
     def validate(self) -> None:
@@ -140,16 +185,32 @@ class OperationPipeNets:
             if not net.pipes:
                 raise ValueError("PipeNet requires at least one pipe")
             _validate_no_mixed_kinds(net.pipes)
-        _validate_consistent_coord_rank(self.pipe_nets)
+        graph_pipe_nets = [
+            PipeNetUse(id=net.pipe_net_id, pipes=mapping.pipes)
+            for net in self.graph_pipe_nets
+            for mapping in net.mappings
+            if mapping.pipes is not None
+        ]
+        for net in graph_pipe_nets:
+            assert net.pipes
+            _validate_no_mixed_kinds(net.pipes)
+        for net in self.graph_pipe_nets:
+            _validate_graph_mapping_duplicates(net)
+        _validate_consistent_coord_rank([*self.pipe_nets, *graph_pipe_nets])
 
     def resolve_device_domain(self, operation_domain: Any) -> Any:
         """Reconcile graph transfer domains with the operation domain."""
         if not self.graph_pipe_nets:
             return operation_domain
 
-        graph_domain = self.graph_pipe_nets[0].transfer_graph.domain
-        for graph_pipe_net in self.graph_pipe_nets[1:]:
-            if graph_pipe_net.transfer_graph.domain != graph_domain:
+        graph_mappings = [
+            mapping
+            for graph_pipe_net in self.graph_pipe_nets
+            for mapping in graph_pipe_net.mappings
+        ]
+        graph_domain = graph_mappings[0].transfer_graph.domain
+        for mapping in graph_mappings[1:]:
+            if mapping.transfer_graph.domain != graph_domain:
                 raise ValueError(
                     "graph-based PipeNets in one operation must use the same "
                     "DeviceDomain"
@@ -168,10 +229,8 @@ class OperationPipeNets:
         """Return every logical device referenced by graph-based PipeNets."""
         endpoints: Set[DeviceRef] = set()
         for pipe_net in self.graph_pipe_nets:
-            for edge in pipe_net.edges:
-                assert isinstance(edge.destination, DeviceRef)
-                endpoints.add(edge.source)
-                endpoints.add(edge.destination)
+            for mapping in pipe_net.mappings:
+                endpoints.update(mapping.transfer_graph.device_endpoints())
         return frozenset(endpoints)
 
 
@@ -235,11 +294,44 @@ def _validate_no_mixed_kinds(pipes: Tuple[PipeUse, ...]) -> None:
         )
 
 
+def _validate_graph_mapping_duplicates(net: GraphPipeNetUse) -> None:
+    """Reject repeated device-edge and node-Pipe pairs without expanding them."""
+    edge_sets = {}
+
+    def get_edges(mapping: GraphPipeMappingUse) -> Set:
+        if mapping.transfer_graph not in edge_sets:
+            edge_sets[mapping.transfer_graph] = set(mapping.transfer_graph.iter_edges())
+        return edge_sets[mapping.transfer_graph]
+
+    previous_mappings = []
+    for mapping in net.mappings:
+        assert mapping.pipes is not None or net.uses_matching_node_coordinates
+        if mapping.pipes is None:
+            continue
+        mapping_pipes = set(mapping.pipes)
+        if len(mapping_pipes) != len(mapping.pipes):
+            raise ValueError("graph PipeNet relation contains a duplicate node pipe")
+        current_edges = None
+        for previous_mapping, previous_pipes in previous_mappings:
+            if mapping_pipes.isdisjoint(previous_pipes):
+                continue
+            previous_edges = get_edges(previous_mapping)
+            if current_edges is None:
+                current_edges = get_edges(mapping)
+            if not previous_edges.isdisjoint(current_edges):
+                raise ValueError(
+                    "graph PipeNet relations contain a duplicate device-edge and "
+                    "node-Pipe pair"
+                )
+        previous_mappings.append((mapping, mapping_pipes))
+
+
 __all__ = [
     "NodeCoord",
     "NodeRange",
     "PipeUse",
     "PipeNetUse",
+    "GraphPipeMappingUse",
     "GraphPipeNetUse",
     "OperationPipeNets",
 ]

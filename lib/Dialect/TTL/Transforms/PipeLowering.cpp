@@ -34,6 +34,7 @@
 #include "ttlang/Dialect/TTL/Transforms/TransferProvenance.h"
 #include "ttlang/Dialect/Utils/ConversionUtils.h"
 #include "ttlang/Target/TargetInfo.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseMapInfo.h"
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/IntEqClasses.h"
@@ -715,11 +716,17 @@ LogicalResult buildFabricRoutePlan(
     }
     assert(pipeReference->isSelected() == recordIndex.has_value() &&
            "fabric graph record identity must match its pipe reference");
-    std::size_t recordCount =
-        pipeReference->isSelected()
-            ? pipeReference->getRecords().getPipes().size()
-            : 1;
-    std::size_t selectedIndex = recordIndex.value_or(0);
+    std::size_t recordCount = 1;
+    std::size_t selectedIndex = 0;
+    if (pipeReference->isSelected()) {
+      FailureOr<std::uint64_t> selectedRecordCount =
+          getPipeRecordCount(pipeReference->getRecords());
+      assert(succeeded(selectedRecordCount) &&
+             *recordIndex < *selectedRecordCount &&
+             "selected record index must be in bounds");
+      recordCount = static_cast<std::size_t>(*selectedRecordCount);
+      selectedIndex = static_cast<std::size_t>(*recordIndex);
+    }
     return routeIndices.set(
         operation, recordCount, selectedIndex, routeIndex,
         [](Operation *operation, std::size_t existingRouteIndex,
@@ -749,6 +756,10 @@ LogicalResult buildFabricRoutePlan(
     }
 
     DeviceRefAttr source = transfer.getEdge().getSource();
+    // Same-device graph edges use NoC and require no fabric route.
+    if (source == destination) {
+      continue;
+    }
     FuncOp sendFunc = send->getParentOfType<FuncOp>();
     FailureOr<FunctionFabricRoutePlan *> maybeSendFunctionPlan =
         getFunctionFabricRoutePlan(sendFunc, transfer.getDomain(), send, plan);
@@ -1628,32 +1639,22 @@ struct SelectedPipeFields {
 
 static SelectedPipeFields getSelectedPipeFields(const PipeReference &pipeRef) {
   assert(pipeRef.isSelected() && "expected selected pipe reference");
-  if (pipeRef.isSelectedSrc()) {
-    SelectPipeSrcOp op = pipeRef.getSelectedSrc();
+  FailureOr<PipeRecordAttr> firstRecord =
+      getFirstNodePipeRecord(pipeRef.getRecords());
+  assert(succeeded(firstRecord) &&
+         "verified PipeNet records must contain a node pipe");
+  auto buildFields = [&](auto op) {
     return SelectedPipeFields{
-        op.getRecordIndex(),
-        op.getSrcX(),
-        op.getSrcY(),
-        op.getDstStartX(),
-        op.getDstStartY(),
-        op.getDstEndX(),
-        op.getDstEndY(),
-        op.getNumDests(),
-        op.getSrcInDstRange(),
-        op.getRecords().getPipes().front().getIsCollective()};
+        op.getRecordIndex(),   op.getSrcX(),
+        op.getSrcY(),          op.getDstStartX(),
+        op.getDstStartY(),     op.getDstEndX(),
+        op.getDstEndY(),       op.getNumDests(),
+        op.getSrcInDstRange(), firstRecord->getIsCollective()};
+  };
+  if (pipeRef.isSelectedSrc()) {
+    return buildFields(pipeRef.getSelectedSrc());
   }
-  SelectPipeDstOp op = pipeRef.getSelectedDst();
-  return SelectedPipeFields{
-      op.getRecordIndex(),
-      op.getSrcX(),
-      op.getSrcY(),
-      op.getDstStartX(),
-      op.getDstStartY(),
-      op.getDstEndX(),
-      op.getDstEndY(),
-      op.getNumDests(),
-      op.getSrcInDstRange(),
-      op.getRecords().getPipes().front().getIsCollective()};
+  return buildFields(pipeRef.getSelectedDst());
 }
 
 /// Compute the exact DFB address selected by ttl.copy(pipe, dst). Receivers
@@ -3941,6 +3942,8 @@ buildDevicePipeRoleTables(PipeNetRecordsAttr records, PipeRole role,
   using PipeRoleRecord =
       std::tuple<int64_t, int64_t, int64_t, int64_t, int64_t>;
   SmallVector<PipeRoleRecord> roleRecords;
+  assert(records.getMappings().empty() &&
+         "table-based device queries require materialized records");
   for (PipeRecordAttr record : records.getPipes()) {
     for (const PipeRecordRoleFacts &facts :
          getPipeRecordRoleFacts(record, role)) {
@@ -3979,8 +3982,10 @@ static Value lowerDeviceRoleQuery(
   Location loc = op->getLoc();
   DevicePipeRoleTables tables =
       buildDevicePipeRoleTables(records, role, deduplicateRecords);
+  assert(records.getMappings().empty() && !records.getPipes().empty() &&
+         "table-based device queries require materialized records");
   DeviceTransferAttr transfer = records.getPipes().front().getDeviceTransfer();
-  assert(transfer && "device role query requires device transfer records");
+  assert(transfer && "selected device role requires device transfer records");
 
   Value nodeX =
       ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
@@ -4020,10 +4025,140 @@ static Value lowerDeviceRoleQuery(
   return loop.getResult(0);
 }
 
+static Value buildNodePipeRoleMatch(OpBuilder &builder, Location loc,
+                                    PipeRecordAttr nodePipe, PipeRole role,
+                                    Value nodeX, Value nodeY) {
+  Value matches = arith::ConstantIntOp::create(builder, loc, 0, 1);
+  for (const PipeRecordRoleFacts &facts :
+       getPipeRecordRoleFacts(nodePipe, role)) {
+    Value minX = arith::ConstantIndexOp::create(builder, loc, facts.minX);
+    Value minY = arith::ConstantIndexOp::create(builder, loc, facts.minY);
+    Value maxX = arith::ConstantIndexOp::create(builder, loc, facts.maxX);
+    Value maxY = arith::ConstantIndexOp::create(builder, loc, facts.maxY);
+    Value recordMatches =
+        buildNodeRangeMatch(builder, loc, nodeX, nodeY, minX, minY, maxX, maxY);
+    matches = arith::OrIOp::create(builder, loc, matches, recordMatches);
+  }
+  return matches;
+}
+
+static Value buildNodePipeRolePredicate(OpBuilder &builder, Location loc,
+                                        ArrayRef<PipeRecordAttr> nodePipes,
+                                        PipeRole role, Value nodeX,
+                                        Value nodeY) {
+  Value matches = arith::ConstantIntOp::create(builder, loc, 0, 1);
+  for (PipeRecordAttr nodePipe : nodePipes) {
+    Value pipeMatches =
+        buildNodePipeRoleMatch(builder, loc, nodePipe, role, nodeX, nodeY);
+    matches = arith::OrIOp::create(builder, loc, matches, pipeMatches);
+  }
+  return matches;
+}
+
+// Return whether the current device and launch node participate with `role`
+// in any mapping of `records`.
+static Value lowerGraphPipeRolePredicate(Operation *op,
+                                         PipeNetRecordsAttr records,
+                                         PipeRole role,
+                                         ConversionPatternRewriter &rewriter) {
+  Location loc = op->getLoc();
+  FailureOr<std::pair<int64_t, int64_t>> launchGrid = getLaunchGrid(op);
+  assert(succeeded(launchGrid) &&
+         "graph PipeNet role queries require a verified launch grid");
+  Value nodeX =
+      ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
+  Value nodeY =
+      ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
+  DeviceDomainAttr domain =
+      records.getMappings().front().getGraph().getDomain();
+  Value currentDevice = CurrentDeviceIndexOp::create(
+      rewriter, loc, rewriter.getIndexType(), domain);
+  Value matches = arith::ConstantIntOp::create(rewriter, loc, 0, 1);
+  for (PipeMappingAttr mapping : records.getMappings()) {
+    std::unique_ptr<TransferGraph> graph =
+        createTransferGraph(mapping.getGraph());
+    bool usesMatchingNodeCoordinates = hasMatchingPipeForEveryLaunchNode(
+        mapping.getPipes(), launchGrid->first, launchGrid->second);
+    auto buildEndpointMatch = [&](PipeRole endpointRole) {
+      Value count = graph->buildIncidentEdgeCount(rewriter, loc, currentDevice,
+                                                  endpointRole);
+      Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+      Value deviceMatches = arith::CmpIOp::create(
+          rewriter, loc, arith::CmpIPredicate::sgt, count, zero);
+      Value nodeMatches =
+          usesMatchingNodeCoordinates
+              ? Value(arith::ConstantIntOp::create(rewriter, loc, 1, 1))
+              : buildNodePipeRolePredicate(rewriter, loc, mapping.getPipes(),
+                                           endpointRole, nodeX, nodeY);
+      return Value(
+          arith::AndIOp::create(rewriter, loc, deviceMatches, nodeMatches));
+    };
+    Value mappingMatches;
+    if (role == PipeRole::Active) {
+      mappingMatches = arith::OrIOp::create(
+          rewriter, loc, buildEndpointMatch(PipeRole::Source),
+          buildEndpointMatch(PipeRole::Destination));
+    } else {
+      mappingMatches = buildEndpointMatch(role);
+    }
+    matches = arith::OrIOp::create(rewriter, loc, matches, mappingMatches);
+  }
+  return matches;
+}
+
+// Count graph edges paired with node pipes that target the current device and
+// launch node.
+static Value
+lowerGraphPipeDestinationCount(Operation *op, PipeNetRecordsAttr records,
+                               ConversionPatternRewriter &rewriter) {
+  Location loc = op->getLoc();
+  FailureOr<std::pair<int64_t, int64_t>> launchGrid = getLaunchGrid(op);
+  assert(succeeded(launchGrid) &&
+         "graph PipeNet destination counts require a verified launch grid");
+  Value nodeX =
+      ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
+  Value nodeY =
+      ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
+  DeviceDomainAttr domain =
+      records.getMappings().front().getGraph().getDomain();
+  Value currentDevice = CurrentDeviceIndexOp::create(
+      rewriter, loc, rewriter.getIndexType(), domain);
+  Value totalCount = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  for (PipeMappingAttr mapping : records.getMappings()) {
+    std::unique_ptr<TransferGraph> graph =
+        createTransferGraph(mapping.getGraph());
+    bool usesMatchingNodeCoordinates = hasMatchingPipeForEveryLaunchNode(
+        mapping.getPipes(), launchGrid->first, launchGrid->second);
+    Value incomingEdgeCount = graph->buildIncidentEdgeCount(
+        rewriter, loc, currentDevice, PipeRole::Destination);
+    Value matchingNodePipeCount = arith::ConstantIndexOp::create(
+        rewriter, loc, usesMatchingNodeCoordinates ? 1 : 0);
+    Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    if (!usesMatchingNodeCoordinates) {
+      for (PipeRecordAttr nodePipe : mapping.getPipes()) {
+        Value nodeMatches = buildNodePipeRoleMatch(
+            rewriter, loc, nodePipe, PipeRole::Destination, nodeX, nodeY);
+        Value increment =
+            arith::SelectOp::create(rewriter, loc, nodeMatches, one, zero);
+        matchingNodePipeCount = arith::AddIOp::create(
+            rewriter, loc, matchingNodePipeCount, increment);
+      }
+    }
+    Value mappingCount = arith::MulIOp::create(rewriter, loc, incomingEdgeCount,
+                                               matchingNodePipeCount);
+    totalCount = arith::AddIOp::create(rewriter, loc, totalCount, mappingCount);
+  }
+  return totalCount;
+}
+
 static Value lowerSelectedRolePredicate(Operation *op,
                                         PipeNetRecordsAttr records,
                                         PipeRole role,
                                         ConversionPatternRewriter &rewriter) {
+  if (!records.getMappings().empty()) {
+    return lowerGraphPipeRolePredicate(op, records, role, rewriter);
+  }
   Location loc = op->getLoc();
   Value initialMatch = arith::ConstantIntOp::create(rewriter, loc, 0, 1);
   return lowerDeviceRoleQuery(
@@ -4140,7 +4275,8 @@ static LogicalResult lowerRolePredicate(
         roleBuilder) {
   auto loc = op.getLoc();
   if (PipeNetRecordsAttr records = op.getRecordsAttr()) {
-    if (records.getPipes().front().getDeviceTransfer()) {
+    if (!records.getMappings().empty() ||
+        records.getPipes().front().getDeviceTransfer()) {
       rewriter.replaceOp(
           op, lowerSelectedRolePredicate(op, records, role, rewriter));
       return success();
@@ -4223,6 +4359,11 @@ struct PipeNetDestinationCountLowering
   matchAndRewrite(PipeNetDestinationCountOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
     PipeNetRecordsAttr records = op.getRecords();
+    if (!records.getMappings().empty()) {
+      rewriter.replaceOp(op,
+                         lowerGraphPipeDestinationCount(op, records, rewriter));
+      return success();
+    }
     // Regular records use one indexed lookup. Irregular records retain exact
     // per-record matching because they cannot use the participant table.
     if (records.getPipes().front().getDeviceTransfer()) {
@@ -4317,11 +4458,11 @@ LogicalResult buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
             getPipeTransferContract(op));
   });
   auto addRecords = [&](PipeNetRecordsAttr records) {
-    for (PipeRecordAttr record : records.getPipes()) {
+    forEachNodePipeRecord(records, [&](PipeRecordAttr record) {
       addPipe(getPipeTypeFromRecord(mod.getContext(), record,
                                     records.getPipeNetId()),
               getPipeTransferContract(record));
-    }
+    });
   };
   mod.walk([&](PipeNetForeachSrcOp op) { addRecords(op.getRecords()); });
   mod.walk([&](PipeNetForeachDstOp op) { addRecords(op.getRecords()); });
@@ -4331,19 +4472,23 @@ LogicalResult buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index) {
   // location.
   WalkResult validation = mod.walk([&](PipeNetPredicateOpInterface predicate) {
     if (PipeNetRecordsAttr records = predicate.getReferencedRecords()) {
-      if (!records.getPipes().front().getDeviceTransfer()) {
+      if (!records.getMappings().empty() ||
+          !records.getPipes().front().getDeviceTransfer()) {
         FailureOr<std::pair<int64_t, int64_t>> launchGrid =
             getLaunchGrid(predicate);
         if (failed(launchGrid)) {
           predicate->emitError()
-              << "local PipeNet role query requires a valid ttl.launch_grid "
-                 "with two positive integer extents; set the operation's "
-                 "launch grid to include its PipeNet endpoints";
+              << (records.getMappings().empty() ? "local" : "graph")
+              << " PipeNet role query requires a valid ttl.launch_grid with "
+                 "two positive integer extents; set the operation's launch "
+                 "grid to include its PipeNet endpoints";
           return WalkResult::interrupt();
         }
-        if (failed(validateLocalPipeNetParticipantPlanInputs(
-                records, predicate.getReferencedRole(), launchGrid->first,
-                launchGrid->second,
+        PipeRole validationRole = !records.getMappings().empty()
+                                      ? PipeRole::Active
+                                      : predicate.getReferencedRole();
+        if (failed(validatePipeNetLaunchNodeRelation(
+                records, validationRole, launchGrid->first, launchGrid->second,
                 [&]() { return predicate->emitError(); }))) {
           return WalkResult::interrupt();
         }
@@ -5207,8 +5352,12 @@ LogicalResult buildPipeResourcePlan(
           getPipeReferenceForProtocolOp(protocolOp, transferIndex);
       assert(succeeded(pipeRef) && pipeRef->isSelected() &&
              "selected protocol operation requires a selected pipe reference");
+      FailureOr<std::uint64_t> recordCount =
+          getPipeRecordCount(pipeRef->getRecords());
+      assert(succeeded(recordCount) &&
+             "verified PipeNet record count must fit in uint64_t");
       if (failed(selectedResources.set(
-              protocolOp, pipeRef->getRecords().getPipes().size(), recordIndex,
+              protocolOp, static_cast<std::size_t>(*recordCount), recordIndex,
               pipeResource,
               [](Operation *operation, const PipeResourceInfo &,
                  const PipeResourceInfo &) {
