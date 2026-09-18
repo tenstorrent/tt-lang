@@ -82,8 +82,11 @@ apply the validated kernel plan:
 Intermediate DFB insertion uses the same separation. It computes a monotone
 fixed point of exact consumer operands requiring storage, groups those
 requirements by producer, and applies the complete materialization plan only
-after analysis terminates. The final conversion analyzes the modified kernel
-again; plans are never reused after mutation.
+after analysis terminates. A planned output store makes its expression a
+standalone producer, so its input requirements also participate in that fixed
+point. This includes producers that have no store in the original IR. The final
+conversion analyzes the modified kernel again; plans are never reused after
+mutation.
 
 ## Terminology
 
