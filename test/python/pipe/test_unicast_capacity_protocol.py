@@ -144,14 +144,33 @@ def test_unicast_dataflow_capacity_loop(
         pytest.param(torch.float32, 1e-5, 1e-5, id="fp32"),
     ],
 )
-def test_unicast_grouped_transport_storage(device, dtype, rtol, atol):
+@pytest.mark.parametrize(
+    "memory_model", ["metal-cb", "compiler-l1"], ids=["metal", "compiler-l1"]
+)
+def test_unicast_grouped_transport_storage(
+    device,
+    dtype,
+    rtol,
+    atol,
+    memory_model,
+    reject_metal_dfb_descriptor_creation,
+):
+    if memory_model == "compiler-l1":
+        reject_metal_dfb_descriptor_creation()
     input_torch = torch.randn(TILE, GROUPED_TRANSFERS * TILE, dtype=dtype)
     output_torch = torch.zeros_like(input_torch)
 
     input_tensor = to_dram(input_torch, device)
     output_tensor = to_dram(output_torch, device)
 
-    unicast_grouped_transport_storage(input_tensor, output_tensor)
+    unicast_grouped_transport_storage(
+        input_tensor,
+        output_tensor,
+        options=(
+            f"--ttl-pipe-batch-tiles {GROUP_SIZE_LIMIT} "
+            f"--ttl-memory-model={memory_model}"
+        ),
+    )
     ttnn.synchronize_device(device)
 
     result = ttnn.to_torch(output_tensor)
