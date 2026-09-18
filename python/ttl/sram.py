@@ -526,9 +526,8 @@ class SRAMStorage:
             get_min_remaining_l1_for_device,
         )
 
-        create_view = getattr(
-            self._api, "experimental_create_sharded_tensor_view", None
-        )
+        experimental_api = getattr(self._api, "experimental", None)
+        create_view = getattr(experimental_api, "create_sharded_tensor_view", None)
         if not callable(create_view):
             raise RuntimeError(
                 "joint SRAM allocation requires owner-retaining TTNN tensor views"

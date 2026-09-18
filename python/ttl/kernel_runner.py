@@ -4930,7 +4930,9 @@ def _run_kernel_on_device_impl(
         if resource_device is None:
             resource_device = device if device is not None else _first_device(tensors)
     try:
-        operation = ttnn.prepare_generic_op if prepare_only else ttnn.generic_op
+        operation = (
+            ttnn.experimental.prepare_generic_op if prepare_only else ttnn.generic_op
+        )
         result = operation(io_tensors, program)
     except BaseException as dispatch_error:
         if synchronize_after_dispatch_error:

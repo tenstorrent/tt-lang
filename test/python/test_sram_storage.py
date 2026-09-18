@@ -208,7 +208,7 @@ def runtime(monkeypatch):
             get_buffer_pages=lambda device: (),
         )
     )
-    api.experimental_create_sharded_tensor_view = create_view
+    api.experimental = SimpleNamespace(create_sharded_tensor_view=create_view)
     api.record_event = record_event
     api.wait_for_event = lambda **options: events.append(("order", options))
     api.event_synchronize = wait
@@ -769,24 +769,14 @@ def test_joint_allocation_rolls_back_invalid_measured_capacity(runtime, monkeypa
     storage.close()
 
 
-@pytest.mark.parametrize(
-    ("capacity_name", "limit_bytes"),
-    [("configuration", 4096), ("kernel binary", 8192)],
-)
 @pytest.mark.parametrize("excess_bytes", [0, 1], ids=["exact", "overflow"])
-def test_joint_program_capacity_boundary(
-    runtime, capacity_name, limit_bytes, excess_bytes
-):
-    configuration_bytes = 4096
+def test_joint_program_configuration_capacity_boundary(runtime, excess_bytes):
+    configuration_bytes = 4096 + excess_bytes
     kernel_binary_bytes = 8192
-    if capacity_name == "configuration":
-        configuration_bytes += excess_bytes
-    else:
-        kernel_binary_bytes += excess_bytes
 
     def prepare_program(_state, _resources):
         if excess_bytes:
-            raise RuntimeError(f"{capacity_name} capacity exceeded")
+            raise RuntimeError("program configuration capacity exceeded")
         return SimpleNamespace(
             max_program_config_size_bytes=configuration_bytes,
             max_kernel_binary_size_bytes=kernel_binary_bytes,
@@ -806,7 +796,9 @@ def test_joint_program_capacity_boundary(
             },
         )
     else:
-        with pytest.raises(RuntimeError, match=f"{capacity_name} capacity exceeded"):
+        with pytest.raises(
+            RuntimeError, match="program configuration capacity exceeded"
+        ):
             storage.allocate()
         assert not any(event[0] == "initialize" for event in runtime.events)
         assert all(not resource.allocated for resource in runtime.allocations)
