@@ -4,9 +4,12 @@
 """Run the pinned four-device AGMM cases and collect concise summaries."""
 
 import argparse
+import fcntl
 import json
+import os
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -126,12 +129,31 @@ def write_summary(summary_path: Path, summary: dict[str, Any]) -> None:
     temporary_path.replace(summary_path)
 
 
-def main() -> None:
-    arguments = parse_args()
+@contextmanager
+def exclusive_output_lock(output_dir: Path):
+    """Reject concurrent sweeps that would overwrite the same checkpoint."""
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = output_dir / ".sweep.lock"
+    lock_file = lock_path.open("w")
+    try:
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError(
+                f"another sweep is writing to {output_dir}; lock: {lock_path}"
+            ) from error
+        lock_file.write(f"pid={os.getpid()}\n")
+        lock_file.flush()
+        yield
+    finally:
+        lock_file.close()
+
+
+def run_sweep(arguments: argparse.Namespace) -> None:
     cases, unsupported = select_native_cases(
         arguments.case_ids, arguments.all_grid_candidates
     )
-    arguments.output_dir.mkdir(parents=True, exist_ok=True)
     summary = {
         "native_fabric_config": arguments.native_fabric_config,
         "topology": arguments.topology,
@@ -190,6 +212,12 @@ def main() -> None:
                 continue
             write_summary(summary_path, summary)
     print(f"Summary: {summary_path}", flush=True)
+
+
+def main() -> None:
+    arguments = parse_args()
+    with exclusive_output_lock(arguments.output_dir):
+        run_sweep(arguments)
 
 
 if __name__ == "__main__":

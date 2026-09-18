@@ -12,6 +12,7 @@ import pytest
 from benchmarks.all_gather_minimal_matmul import native_heuristic
 from benchmarks.all_gather_minimal_matmul.sweep import (
     build_native_command,
+    exclusive_output_lock,
     read_measurement,
     select_native_cases,
     write_summary,
@@ -110,6 +111,13 @@ def test_sweep_measurement_resume_validates_case_and_checkpoints_atomically(tmp_
     write_summary(summary_path, {"results": [measurement]})
     assert json.loads(summary_path.read_text()) == {"results": [measurement]}
     assert not summary_path.with_suffix(".tmp").exists()
+
+
+def test_output_lock_rejects_concurrent_sweeps(tmp_path):
+    with exclusive_output_lock(tmp_path):
+        with pytest.raises(RuntimeError, match="another sweep is writing"):
+            with exclusive_output_lock(tmp_path):
+                pass
 
 
 def test_native_resolver_reproduces_model_configuration(monkeypatch):
