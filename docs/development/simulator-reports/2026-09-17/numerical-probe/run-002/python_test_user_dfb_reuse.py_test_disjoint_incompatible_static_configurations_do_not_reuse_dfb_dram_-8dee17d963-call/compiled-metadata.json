@@ -1,0 +1,98 @@
+[
+  {
+    "operation": "_incompatible_static_configuration_kernel",
+    "kernel_paths": [
+      [
+        "/tmp/default/ttlang_kernel_compute_30a2881e.cpp",
+        "compute"
+      ],
+      [
+        "/tmp/default/ttlang_kernel_read_52564b45.cpp",
+        "noc"
+      ],
+      [
+        "/tmp/default/ttlang_kernel_write_f063e49d.cpp",
+        "noc"
+      ]
+    ],
+    "kernel_core_ranges": [
+      null,
+      null,
+      null
+    ],
+    "kernel_used_dfb_indices": [
+      null,
+      null,
+      null
+    ],
+    "kernel_configs": [
+      "<ttnn._ttnn.program_descriptor.ComputeConfigDescriptor object at 0x7ffef069a430>",
+      "<ttnn._ttnn.program_descriptor.ReaderConfigDescriptor object at 0x7ffef03b0690>",
+      "<ttnn._ttnn.program_descriptor.WriterConfigDescriptor object at 0x7ffef03b0a30>"
+    ],
+    "core_ranges": "{[0-0 - 1-0]}",
+    "cb_configs": [
+      {
+        "dfb_index": 0,
+        "num_tiles": 1,
+        "data_format": "float32",
+        "block_count": 2,
+        "page_size": 4096,
+        "tile": [
+          32,
+          32
+        ],
+        "storage_segments": [],
+        "allocation_nodes": [
+          [
+            0,
+            0
+          ]
+        ],
+        "storage_index": 0
+      },
+      {
+        "dfb_index": 1,
+        "num_tiles": 1,
+        "data_format": "float32",
+        "block_count": 2,
+        "page_size": 4096,
+        "tile": [
+          32,
+          32
+        ],
+        "storage_segments": [],
+        "allocation_nodes": [
+          [
+            0,
+            0
+          ],
+          [
+            1,
+            0
+          ]
+        ],
+        "storage_index": 1
+      },
+      {
+        "dfb_index": 2,
+        "num_tiles": 1,
+        "data_format": "float32",
+        "block_count": 2,
+        "page_size": 4096,
+        "tile": [
+          32,
+          32
+        ],
+        "storage_segments": [],
+        "allocation_nodes": [
+          [
+            1,
+            0
+          ]
+        ],
+        "storage_index": 0
+      }
+    ]
+  }
+]

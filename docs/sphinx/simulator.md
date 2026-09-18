@@ -11,15 +11,21 @@ The `tt-lang-sim` console command installed by either PyPI package contains
 only the `python` backend. The `emule` backend requires a source checkout and
 must be selected through `./bin/tt-lang-sim`.
 
+For the Docker backend, start with
+[Getting started with Docker simulation](simulator-getting-started.md), which
+covers host prerequisites, source access, runtime setup, program execution,
+and test reports.
+
 The Python backend runs operations without requiring Tenstorrent hardware or
 the full compiler stack. Use it to validate kernel logic and iterate quickly
 during development.
 
 The simulator typically supports more language features than the compiler at any given point — see the [functionality matrix](specs/TTLangSpecification.md#appendix-d-functionality-matrix) for current coverage.
 
+(simulator-python-setup)=
 ## Setup
 
-The recommended path is to install the simulator from PyPI:
+For the Python backend, the recommended path is to install from PyPI:
 
 ```bash
 python3 -m venv --prompt ttlang ttlang-venv
@@ -58,35 +64,60 @@ tt-lang-sim examples/eltwise_add.py
 
 ### Compiler-backed emulation
 
-From a TT-Lang source checkout, select the `emule` backend to compile the
-program and execute the resulting kernels through tt-metal and tt-emule:
+The Docker backend uses the same launcher interface as the Python backend.
+The [Docker getting-started guide](simulator-getting-started.md) describes
+installation and runtime selection. From a configured source checkout:
 
 ```bash
-./bin/tt-lang-sim examples/eltwise_add.py --backend emule
+./bin/tt-lang-sim --backend=emule examples/eltwise_add.py
+./bin/tt-lang-sim --backend=emule --smoke-test
+./bin/tt-lang-sim --backend=emule --examples
+./bin/tt-lang-sim --backend=emule --test
 ```
 
-To run a minimal compiler-to-runtime acceptance check without choosing a
-program, use the bundled smoke test. It compiles and executes the external-call
-example and verifies its tensor result:
+One-time setup selects emulator source or a compatible runtime image, builds
+the required components, and saves `.ttlang-sim/emule.json` after a successful
+smoke test:
 
 ```bash
-./bin/tt-lang-sim --backend emule --smoke-test
+./bin/tt-lang-sim --backend=emule --setup --source-url REPOSITORY_URL --jobs 8
 ```
 
-Once the smoke test passes, run the four-program reference suite. It covers
-elementwise addition, single-node matrix multiplication, reduction, and fused
-matrix multiplication with bias. Every program compares the emulated result
-with a Torch reference before it exits successfully:
+`REPOSITORY_URL` must contain the pinned emulator revision and be accessible
+with the host's Git credentials. `--source /path/to/emulator` selects an exact
+local checkout instead; `--image REGISTRY/IMAGE:TAG` selects a compatible
+existing or downloadable runtime image. No default public simulator image is
+published. Explicit `TTLANG_EMULE_*` environment settings take precedence over
+saved settings, and `--runtime-image IMAGE` overrides the saved runtime for one
+invocation. The Python backend does not read emulator settings.
+
+The smoke test executes the external C++ call example and checks its tensor
+result. The example suite covers addition, matrix multiplication, reduction,
+and fused matrix multiplication with bias. Each program contains a Torch
+reference check. The current reduction example has a compiler tensor-rank
+mismatch described in the
+{ref}`getting-started guide <docker-simulator-examples-and-tests>`.
+
+The test command runs the six compiler suites with emulation enabled. It
+continues after failures and returns nonzero if any suite fails. It includes
+compiler-only tests as well as runtime tests; successful compiler tests do not
+establish emulator execution coverage. The sweep excludes `test/sim` and the
+tutorial suite. Select suites and the report parent directory with:
 
 ```bash
-python3 scripts/run-tt-lang-emule-examples.py
+./bin/tt-lang-sim --backend=emule --test --suite mlir --suite bindings
+./bin/tt-lang-sim --backend=emule --test --suite pytest --reports-dir ./test-results
 ```
 
-Use `--list` to inspect the suite or `--example NAME` to run one case. CI can
-reuse a promoted artifact with `--runtime-image IMAGE`.
+Suite names are `mlir`, `bindings`, `packaging`, `pytest`, `me2e`, and
+`python-lit`. Each test invocation uses a new report directory, by default
+under `.ttlang-sim/reports/`. Completed test runs retain suite logs, JUnit
+reports, a summary, and available compiler/runtime provenance on the host.
+See the getting-started guide for setup failures that occur before test reports
+are produced.
 
-The complete validation plan deliberately separates compilation from emulated
-execution:
+The developer qualification plan separately distinguishes compilation from
+emulated execution:
 
 ```bash
 python3 scripts/run-tt-lang-emule-tests.py --list
@@ -95,12 +126,13 @@ python3 scripts/run-tt-lang-emule-tests.py --build-dir build
 
 `compiler-core` and `compiler-python-lit` validate the compiler with
 `TTLANG_COMPILE_ONLY=1`; they do not need, or test, the emulator. The
-`emule-reference` phase runs the four qualified programs above. Broad Python
+`emule-reference` phase runs the four reference programs above. Broad Python
 device pytest, me2e, and tutorial suites are listed as inventory-only because
 they combine compiler checks with runtime, topology, and device assumptions.
 They must be qualified case by case instead of being treated as supported just
 because the compiler-only suites pass.
 
+(simulator-updating-supported-stack)=
 ### Updating the supported stack
 
 Prepare a candidate from an exact emulator checkout. The tool reads that
@@ -127,7 +159,7 @@ Automation can select an already-built, versioned artifact explicitly instead
 of relying on the manifest-derived local tag:
 
 ```bash
-./bin/tt-lang-sim --backend emule \
+./bin/tt-lang-sim --backend=emule \
   --runtime-image registry.example/tt-lang-emule:tested \
   examples/compiler_only_external_call.py
 ```
@@ -213,8 +245,10 @@ Options specific to the Python backend, such as `--grid`, `--trace`, and
 after `--` are always passed to the user script:
 
 ```bash
-./bin/tt-lang-sim program.py --backend emule -- --program-option value
+./bin/tt-lang-sim --backend=emule program.py -- --program-option value
 ```
+
+### Testing the Python backend
 
 Run the simulator test suite:
 

@@ -22,6 +22,17 @@ case "${1:-}" in
         exit "${MOCK_DOCKER_INFO_STATUS:-0}"
         ;;
     image)
+        if [ "${MOCK_DOCKER_IMAGE_ERROR+x}" = x ]; then
+            printf '%s\n' "$MOCK_DOCKER_IMAGE_ERROR" >&2
+        elif [ "${MOCK_DOCKER_IMAGE_STATUS:-0}" -eq 1 ]; then
+            printf 'Error response from daemon: No such image: %s\n' "$3" >&2
+        fi
+        if [ -n "${MOCK_DOCKER_IMAGE_OUTPUT:-}" ]; then
+            printf '%s\n' "$MOCK_DOCKER_IMAGE_OUTPUT"
+        fi
+        if [ -n "${MOCK_DOCKER_IMAGE_SIGNAL:-}" ]; then
+            kill -s "$MOCK_DOCKER_IMAGE_SIGNAL" "$$"
+        fi
         exit "${MOCK_DOCKER_IMAGE_STATUS:-0}"
         ;;
     build)
@@ -187,6 +198,22 @@ EOF
     refute_log_line "build"
 }
 
+@test "test reports and compiler provenance reach the container" {
+    local reports="$BATS_TEST_TMPDIR/reports with spaces"
+    mkdir -p "$reports"
+    reports="$(cd "$reports" && pwd -P)"
+    cd "$TTLANG_REPO_ROOT"
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        TTLANG_EMULE_REPORT_DIR="$reports" \
+        TTLANG_EMULE_COMPILER_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+        TTLANG_EMULE_COMPILER_DIRTY=1 \
+        run -0 "$RUNNER" examples/eltwise_add.py
+
+    assert_log_line "type=bind,src=${reports},dst=/ttlang-reports"
+    assert_log_line "TTLANG_EMULE_COMPILER_SHA"
+    assert_log_line "TTLANG_EMULE_COMPILER_DIRTY"
+}
+
 @test "runtime image identity changes when an image input changes" {
     local synthetic_root="$BATS_TEST_TMPDIR/synthetic-repo"
     local synthetic_runner="$synthetic_root/scripts/tt-lang-emule-container.sh"
@@ -267,12 +294,14 @@ PY
     refute_log_line "-t"
 }
 
-@test "missing image exports pinned source before the build" {
+@test "missing image or explicit rebuild exports pinned source before the build" {
     local emule_source="$BATS_TEST_TMPDIR/external-emule"
     local runtime_tmp="$BATS_TEST_TMPDIR/runtime-tmp"
     local emule_commit
     local source_mode
     local source_dir
+    local rebuild
+    local inspect_status
     mkdir -p "$emule_source"
     mkdir -p "$runtime_tmp"
     git -C "$emule_source" init -q
@@ -289,16 +318,23 @@ PY
     emule_commit="$(git -C "$emule_source" rev-parse HEAD)"
     emule_source="$(cd "$emule_source" && pwd -P)"
     cd "$TTLANG_REPO_ROOT"
-    for source_mode in directory url; do
+    for source_mode in directory url rebuild; do
         source_dir=""
-        if [ "$source_mode" = directory ]; then
+        if [ "$source_mode" != url ]; then
             source_dir="$emule_source"
+        fi
+        rebuild=0
+        inspect_status=1
+        if [ "$source_mode" = rebuild ]; then
+            rebuild=1
+            inspect_status=143
         fi
         : > "$MOCK_DOCKER_LOG"
         TMPDIR="$runtime_tmp" \
-            MOCK_DOCKER_IMAGE_STATUS=1 \
+            MOCK_DOCKER_IMAGE_STATUS="$inspect_status" \
             MOCK_DOCKER_REQUIRE_SANITIZED_CONTEXT=1 \
             TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            TTLANG_EMULE_REBUILD="$rebuild" \
             TTLANG_EMULE_RUNTIME_SOURCE_DIR="$source_dir" \
             TTLANG_EMULE_RUNTIME_SOURCE_URL="$emule_source" \
             TTLANG_EMULE_RUNTIME_COMMIT="$emule_commit" \
@@ -320,6 +356,9 @@ PY
         refute_log_line "tt-emule-source=$emule_source"
         assert_log_line "${TTLANG_REPO_ROOT}/scripts"
         assert_log_line "run"
+        if [ "$source_mode" = rebuild ]; then
+            refute_log_line "image"
+        fi
         shopt -s nullglob
         local retained_runtime_dirs=(
             "$runtime_tmp"/tt-lang-emule.*
@@ -402,6 +441,79 @@ PY
 
     assert_output --partial "cannot connect to the Docker daemon"
     refute_log_line "image"
+    refute_log_line "build"
+    refute_log_line "run"
+}
+
+@test "image inspection daemon errors stop before sourcing building or running" {
+    local diagnostic
+    cd "$TTLANG_REPO_ROOT"
+    for diagnostic in \
+        "Cannot connect to the Docker daemon at unix:///var/run/docker.sock" \
+        "permission denied while trying to connect to the Docker daemon socket" \
+        $'Cannot connect to context\nError response from daemon: No such image: runtime'; do
+        : > "$MOCK_DOCKER_LOG"
+        MOCK_DOCKER_IMAGE_STATUS=1 \
+            MOCK_DOCKER_IMAGE_ERROR="$diagnostic" \
+            TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            TTLANG_EMULE_RUNTIME_SOURCE_DIR="$BATS_TEST_TMPDIR/never-read-source" \
+            run -1 "$RUNNER" examples/eltwise_add.py
+
+        assert_output --partial "Docker could not inspect image"
+        assert_output --partial "$diagnostic"
+        assert_output --partial "Check the Docker daemon and selected context"
+        refute_output --partial "emulator source directory not found"
+        assert_log_line "image"
+        refute_log_line "build"
+        refute_log_line "run"
+    done
+}
+
+@test "image inspection nonmissing exit statuses never trigger a build" {
+    local inspect_status
+    cd "$TTLANG_REPO_ROOT"
+    for inspect_status in 2 125 130 137 143; do
+        : > "$MOCK_DOCKER_LOG"
+        MOCK_DOCKER_IMAGE_STATUS="$inspect_status" \
+            MOCK_DOCKER_IMAGE_ERROR="Error response from daemon: No such image: runtime" \
+            TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            TTLANG_EMULE_RUNTIME_SOURCE_DIR="$BATS_TEST_TMPDIR/never-read-source" \
+            run -"$inspect_status" "$RUNNER" examples/eltwise_add.py
+
+        assert_output --partial "Docker could not inspect image"
+        assert_output --partial "exit $inspect_status"
+        refute_output --partial "emulator source directory not found"
+        refute_log_line "build"
+        refute_log_line "run"
+    done
+}
+
+@test "terminated image inspection preserves failure without building" {
+    cd "$TTLANG_REPO_ROOT"
+    MOCK_DOCKER_IMAGE_SIGNAL=TERM \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        TTLANG_EMULE_RUNTIME_SOURCE_DIR="$BATS_TEST_TMPDIR/never-read-source" \
+        run -143 "$RUNNER" examples/eltwise_add.py
+
+    assert_output --partial "Docker could not inspect image"
+    assert_output --partial "exit 143"
+    refute_output --partial "emulator source directory not found"
+    refute_log_line "build"
+    refute_log_line "run"
+}
+
+@test "image inspection stdout cannot substitute for a missing image diagnostic" {
+    cd "$TTLANG_REPO_ROOT"
+    MOCK_DOCKER_IMAGE_STATUS=1 \
+        MOCK_DOCKER_IMAGE_ERROR="" \
+        MOCK_DOCKER_IMAGE_OUTPUT="Error response from daemon: No such image: runtime" \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        TTLANG_EMULE_RUNTIME_SOURCE_DIR="$BATS_TEST_TMPDIR/never-read-source" \
+        run -1 "$RUNNER" examples/eltwise_add.py
+
+    assert_output --partial "Docker could not inspect image"
+    refute_output --partial "No such image: runtime"
+    refute_output --partial "emulator source directory not found"
     refute_log_line "build"
     refute_log_line "run"
 }

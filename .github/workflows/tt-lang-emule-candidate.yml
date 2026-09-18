@@ -50,8 +50,10 @@ jobs:
         run: |
           python -m pytest -q \
             test/packaging/test_ttlang_emule_candidate.py \
+            test/packaging/test_ttlang_emule_cli.py \
             test/packaging/test_ttlang_emule_examples.py \
             test/packaging/test_ttlang_emule_stack.py \
+            test/packaging/test_ttlang_emule_suite.py \
             test/packaging/test_ttlang_emule_test_plan.py
 
       - name: Install BATS and helpers

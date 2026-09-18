@@ -1,0 +1,177 @@
+[
+  {
+    "operation": "operation",
+    "kernel_paths": [
+      [
+        "/tmp/default/ttlang_kernel_exchange_3249908d.cpp",
+        "noc"
+      ],
+      [
+        "/tmp/default/ttlang_kernel_compute_3a6c1e3e.cpp",
+        "compute"
+      ],
+      [
+        "/tmp/default/ttlang_kernel_store_output_bf146192.cpp",
+        "noc"
+      ]
+    ],
+    "kernel_core_ranges": [
+      null,
+      null,
+      null
+    ],
+    "kernel_used_dfb_indices": [
+      null,
+      null,
+      null
+    ],
+    "kernel_configs": [
+      "<ttnn._ttnn.program_descriptor.ReaderConfigDescriptor object at 0x7ffef0328910>",
+      "<ttnn._ttnn.program_descriptor.ComputeConfigDescriptor object at 0x7ffef0334a70>",
+      "<ttnn._ttnn.program_descriptor.WriterConfigDescriptor object at 0x7ffef0328990>"
+    ],
+    "core_ranges": "{[0-0 - 7-0]}",
+    "cb_configs": [
+      {
+        "dfb_index": 0,
+        "num_tiles": 1,
+        "data_format": "float32",
+        "block_count": 1,
+        "page_size": 4096,
+        "tile": [
+          32,
+          32
+        ],
+        "storage_segments": [],
+        "allocation_nodes": [
+          [
+            1,
+            0
+          ],
+          [
+            2,
+            0
+          ],
+          [
+            3,
+            0
+          ],
+          [
+            4,
+            0
+          ],
+          [
+            5,
+            0
+          ],
+          [
+            6,
+            0
+          ],
+          [
+            7,
+            0
+          ]
+        ],
+        "storage_index": 1
+      },
+      {
+        "dfb_index": 1,
+        "num_tiles": 1,
+        "data_format": "float32",
+        "block_count": 3,
+        "page_size": 4096,
+        "tile": [
+          32,
+          32
+        ],
+        "storage_segments": [],
+        "allocation_nodes": [
+          [
+            0,
+            0
+          ],
+          [
+            2,
+            0
+          ],
+          [
+            4,
+            0
+          ],
+          [
+            6,
+            0
+          ]
+        ],
+        "storage_index": 0
+      },
+      {
+        "dfb_index": 2,
+        "num_tiles": 1,
+        "data_format": "float32",
+        "block_count": 1,
+        "page_size": 4096,
+        "tile": [
+          32,
+          32
+        ],
+        "storage_segments": [],
+        "allocation_nodes": [
+          [
+            0,
+            0
+          ],
+          [
+            1,
+            0
+          ],
+          [
+            2,
+            0
+          ],
+          [
+            3,
+            0
+          ],
+          [
+            4,
+            0
+          ],
+          [
+            5,
+            0
+          ],
+          [
+            6,
+            0
+          ],
+          [
+            7,
+            0
+          ]
+        ],
+        "storage_index": 2
+      },
+      {
+        "dfb_index": 3,
+        "num_tiles": 1,
+        "data_format": "float32",
+        "block_count": 1,
+        "page_size": 2048,
+        "tile": [
+          16,
+          32
+        ],
+        "storage_segments": [],
+        "allocation_nodes": [
+          [
+            0,
+            0
+          ]
+        ],
+        "storage_index": 1
+      }
+    ]
+  }
+]

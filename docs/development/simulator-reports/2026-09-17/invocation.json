@@ -1,0 +1,14 @@
+{
+  "compiler_commit": "70c5d093df06d211aa78332447bbd8d602d2ba79",
+  "compiler_dirty": false,
+  "suites": [
+    "mlir",
+    "bindings",
+    "packaging",
+    "pytest",
+    "me2e",
+    "python-lit"
+  ],
+  "runtime_image": "tt-lang-emule:compiler-suite-7292395",
+  "source_directory": "<source-checkout>"
+}
