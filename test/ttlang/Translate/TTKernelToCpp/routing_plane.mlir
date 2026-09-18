@@ -3,8 +3,9 @@
 // RUN: ttlang-translate --ttkernel-to-cpp -o %t.cpp %t.emitc.mlir
 // RUN: FileCheck %s --input-file=%t.cpp
 
-// CHECK: #include "tt_metal/fabric/hw/inc/linear/api.h"
-// CHECK: #include "tt_metal/fabric/hw/inc/fabric_config.h"
+// CHECK: #include "tt_metal/fabric/fabric_edm_packet_header.hpp"
+// CHECK-NEXT: #include "tt_metal/fabric/hw/inc/fabric_config.h"
+// CHECK-NEXT: #include "tt_metal/fabric/hw/inc/linear/api.h"
 // CHECK: while (muxSender.get_num_free_write_slots() != muxNumBuffers) {
 // CHECK-NEXT: }
 // CHECK-NEXT: tt::tt_fabric::fabric_client_disconnect(muxSender);

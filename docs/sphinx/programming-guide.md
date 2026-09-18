@@ -25,8 +25,8 @@ See the [full compiler options reference](reference/compiler-options.md) for all
 `runtime_resource_factory` creates invocation-specific program semaphores,
 per-logical-kernel runtime arguments and definitions, and retained host owners.
 The [operation runtime resources reference](reference/operation-runtime-resources.md)
-documents its typed records, validation, specialization, cache identity, and
-emitted-runner contract.
+documents its typed records, validation, specialization, cache identity,
+factory-level compilation reuse, and emitted-runner contract.
 
 ## Print Debugging
 

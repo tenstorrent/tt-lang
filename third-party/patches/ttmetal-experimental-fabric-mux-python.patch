@@ -1,0 +1,315 @@
+Backport of tenstorrent/tt-metal#56433.
+
+Exposes the experimental fabric mux descriptor configuration to Python, which
+tt-lang needs and the pinned tt-metal does not carry. Upstream's own unit test
+is left out: tt-lang does not run tt-metal's test suite, and omitting it keeps
+the patch to the files the binding needs. Remove this patch once TT_METAL_TAG
+names a tt-metal that contains that pull request.
+
+diff --git a/ttnn/cpp/ttnn/operations/ccl/ccl_common.cpp b/ttnn/cpp/ttnn/operations/ccl/ccl_common.cpp
+index 3b7616d6af89..fe0f95c6b2ab 100644
+--- a/ttnn/cpp/ttnn/operations/ccl/ccl_common.cpp
++++ b/ttnn/cpp/ttnn/operations/ccl/ccl_common.cpp
+@@ -2050,8 +2050,10 @@ void fabric_mux_connection_rt_args(
+         mux_kernel_config.get_buffer_index_address(channel_type, worker_id));  // fabric_mux_buffer_index_address 8
+     worker_rt_args.push_back(
+         mux_kernel_config.get_channel_credits_stream_id(channel_type, worker_id));  // fabric_mux_channel_id 9
+-    worker_rt_args.push_back(termination_master_semaphore_id.value_or(
+-        CreateSemaphore(program, {worker_logical_core}, 0)));                      // termination_sync_address 10
++    const uint32_t termination_sync_semaphore_id = termination_master_semaphore_id.has_value()
++                                                       ? *termination_master_semaphore_id
++                                                       : CreateSemaphore(program, {worker_logical_core}, 0);
++    worker_rt_args.push_back(termination_sync_semaphore_id);                       // termination_sync_address 10
+     worker_rt_args.push_back(CreateSemaphore(program, {worker_logical_core}, 0));  // local_fabric_mux_status_address 11
+     worker_rt_args.push_back(CreateSemaphore(program, {worker_logical_core}, 0));  // local_flow_control_address 12
+     worker_rt_args.push_back(CreateSemaphore(program, {worker_logical_core}, 0));  // local_teardown_address 13
+@@ -2060,11 +2062,8 @@ void fabric_mux_connection_rt_args(
+     worker_rt_args.push_back(termination_master_virtual_core.y);                   // termination_master_noc_y 16
+ }
+ 
+-// ProgramDescriptor (Contract-2) variant — mirrors the legacy Program& helper above.
+-// Allocates the same five mux-side semaphores by pushing SemaphoreDescriptors into
+-// desc.semaphores and recording their IDs into worker_rt_args. The arg-vector
+-// layout (positions 0..16) is identical to the legacy helper so worker kernels
+-// are byte-compatible across the two variants.
++// Preserve the Program& helper's 17-word client ABI while recording semaphore
++// allocation in the descriptor for later program construction.
+ void fabric_mux_connection_rt_args(
+     const bool mux_connection_valid,
+     const bool is_termination_master,
+@@ -2113,7 +2112,9 @@ void fabric_mux_connection_rt_args(
+         mux_kernel_config.get_buffer_index_address(channel_type, worker_id));  // fabric_mux_buffer_index_address 8
+     worker_rt_args.push_back(
+         mux_kernel_config.get_channel_credits_stream_id(channel_type, worker_id));    // fabric_mux_channel_id 9
+-    worker_rt_args.push_back(termination_master_semaphore_id.value_or(alloc_sem()));  // termination_sync_address 10
++    const uint32_t termination_sync_semaphore_id =
++        termination_master_semaphore_id.has_value() ? *termination_master_semaphore_id : alloc_sem();
++    worker_rt_args.push_back(termination_sync_semaphore_id);      // termination_sync_address 10
+     worker_rt_args.push_back(alloc_sem());                        // local_fabric_mux_status_address 11
+     worker_rt_args.push_back(alloc_sem());                        // local_flow_control_address 12
+     worker_rt_args.push_back(alloc_sem());                        // local_teardown_address 13
+diff --git a/ttnn/cpp/ttnn/operations/ccl/ccl_common.hpp b/ttnn/cpp/ttnn/operations/ccl/ccl_common.hpp
+index 7abc764aefc3..feb1cfa06227 100644
+--- a/ttnn/cpp/ttnn/operations/ccl/ccl_common.hpp
++++ b/ttnn/cpp/ttnn/operations/ccl/ccl_common.hpp
+@@ -822,14 +822,8 @@ void fabric_mux_connection_rt_args(
+     std::vector<uint32_t>& worker_rt_args,
+     std::optional<uint32_t> = std::nullopt);
+ 
+-// ProgramDescriptor (Contract-2) variant of fabric_mux_connection_rt_args.
+-// Mirrors the legacy Program& helper but allocates the five mux-side semaphores by
+-// pushing SemaphoreDescriptors into desc.semaphores and recording their IDs into
+-// worker_rt_args at the same positions. Semaphore IDs are obtained from
+-// ProgramDescriptor::find_available_semaphore_id so they don't collide with IDs
+-// already allocated on the same worker_logical_core. An optional
+-// termination_master_semaphore_id can be supplied if the caller already owns one
+-// (e.g. the termination master worker on this core).
++// Preserves the Program& helper's 17-word client ABI while recording new
++// semaphores in the descriptor. A supplied termination semaphore is reused.
+ void fabric_mux_connection_rt_args(
+     bool mux_connection_valid,
+     bool is_termination_master,
+diff --git a/ttnn/cpp/ttnn/operations/experimental/ccl/fabric_mux/fabric_mux_nanobind.cpp b/ttnn/cpp/ttnn/operations/experimental/ccl/fabric_mux/fabric_mux_nanobind.cpp
+new file mode 100644
+index 000000000000..80e3e01c4881
+--- /dev/null
++++ b/ttnn/cpp/ttnn/operations/experimental/ccl/fabric_mux/fabric_mux_nanobind.cpp
+@@ -0,0 +1,154 @@
++// SPDX-FileCopyrightText: © 2026 Tenstorrent USA, Inc.
++//
++// SPDX-License-Identifier: Apache-2.0
++
++#include "fabric_mux_nanobind.hpp"
++
++#include <cstddef>
++#include <cstdint>
++#include <optional>
++#include <vector>
++
++#include <nanobind/nanobind.h>
++#include <nanobind/stl/optional.h>
++#include <nanobind/stl/vector.h>
++
++#include <tt-metalium/experimental/fabric/fabric.hpp>
++#include <tt-metalium/kernel_types.hpp>
++#include <tt-metalium/program_descriptors.hpp>
++
++#include "ttnn-nanobind/export_enum.hpp"
++#include "ttnn/operations/ccl/ccl_common.hpp"
++
++namespace ttnn::operations::experimental::fabric_mux {
++namespace {
++
++// The C++ helper appends arguments to an existing vector; Python callers need
++// an independent value that can be inserted into a kernel descriptor.
++std::vector<uint32_t> client_compile_time_args(
++    uint32_t num_clients,
++    tt::tt_fabric::FabricMuxChannelType channel_type,
++    const tt::tt_fabric::FabricMuxConfig& config) {
++    std::vector<uint32_t> arguments;
++    ttnn::ccl::fabric_mux_connection_ct_args(num_clients, channel_type, config, arguments);
++    return arguments;
++}
++
++// Keep semaphore allocation in TT-Metal so descriptor construction uses the
++// same runtime-argument ABI and semaphore ownership rules as native CCLs.
++std::vector<uint32_t> client_runtime_args(
++    bool connection_valid,
++    bool is_termination_master,
++    tt::tt_fabric::FabricMuxChannelType channel_type,
++    const tt::tt_metal::CoreCoord& mux_virtual_core,
++    uint32_t client_index,
++    const tt::tt_metal::CoreCoord& client_logical_core,
++    const tt::tt_fabric::FabricMuxConfig& config,
++    tt::tt_metal::ProgramDescriptor& program_descriptor,
++    const tt::tt_metal::CoreCoord& termination_master_virtual_core,
++    std::optional<uint32_t> termination_master_semaphore_id) {
++    std::vector<uint32_t> arguments;
++    ttnn::ccl::fabric_mux_connection_rt_args(
++        connection_valid,
++        is_termination_master,
++        channel_type,
++        mux_virtual_core,
++        client_index,
++        client_logical_core,
++        config,
++        program_descriptor,
++        termination_master_virtual_core,
++        arguments,
++        termination_master_semaphore_id);
++    return arguments;
++}
++
++// Route setup must remain in TT-Metal because it owns fabric topology state
++// and appends the resulting connection resources to the descriptor.
++std::vector<uint32_t> kernel_runtime_args(
++    const tt::tt_fabric::FabricMuxConfig& config,
++    const tt::tt_fabric::FabricNodeId& source_node_id,
++    const tt::tt_fabric::FabricNodeId& destination_node_id,
++    uint32_t link_index,
++    tt::tt_metal::ProgramDescriptor& program_descriptor,
++    const tt::tt_metal::CoreCoord& mux_logical_core) {
++    return config.get_fabric_mux_run_time_args<tt::tt_metal::ProgramDescriptor>(
++        source_node_id, destination_node_id, link_index, program_descriptor, mux_logical_core);
++}
++
++}  // namespace
++
++void bind_fabric_mux(nb::module_& experimental_module) {
++    auto fabric_mux_module = experimental_module.def_submodule(
++        "fabric_mux", "Experimental program-descriptor configuration for a program-local fabric mux.");
++
++    nb::enum_<tt::tt_fabric::FabricMuxChannelType>(fabric_mux_module, "ChannelType", "Fabric mux channel payload type.")
++        .value("FULL_SIZE", tt::tt_fabric::FabricMuxChannelType::FULL_SIZE_CHANNEL)
++        .value("HEADER_ONLY", tt::tt_fabric::FabricMuxChannelType::HEADER_ONLY_CHANNEL);
++
++    export_enum<tt::tt_metal::KernelBuildOptLevel>(fabric_mux_module, "KernelBuildOptLevel");
++
++    nb::class_<tt::tt_fabric::FabricMuxConfig>(
++        fabric_mux_module, "Config", "Computes the kernel arguments and L1 layout for a program-local fabric mux.")
++        .def(
++            nb::init<uint8_t, uint8_t, uint8_t, uint8_t, size_t, size_t, tt::CoreType>(),
++            nb::kw_only(),
++            nb::arg("num_full_size_channels"),
++            nb::arg("num_header_only_channels"),
++            nb::arg("num_buffers_per_full_size_channel"),
++            nb::arg("num_buffers_per_header_only_channel"),
++            nb::arg("full_size_channel_buffer_size_bytes"),
++            nb::arg("base_l1_address"),
++            nb::arg("core_type") = nb::cast(tt::CoreType::WORKER),
++            "Create a mux configuration whose private memory begins at base_l1_address.")
++        .def(
++            "kernel_compile_time_args",
++            &tt::tt_fabric::FabricMuxConfig::get_fabric_mux_compile_time_args,
++            "Return compile-time arguments for tt_fabric_mux.cpp.")
++        .def(
++            "kernel_runtime_args",
++            &kernel_runtime_args,
++            nb::kw_only(),
++            nb::arg("source_node_id"),
++            nb::arg("destination_node_id"),
++            nb::arg("link_index"),
++            nb::arg("program_descriptor"),
++            nb::arg("mux_logical_core"),
++            "Return mux-kernel runtime arguments and append its fabric connection resources to the descriptor.")
++        .def("num_channels", &tt::tt_fabric::FabricMuxConfig::get_num_channels, nb::arg("channel_type"))
++        .def("num_buffers", &tt::tt_fabric::FabricMuxConfig::get_num_buffers, nb::arg("channel_type"))
++        .def("buffer_size_bytes", &tt::tt_fabric::FabricMuxConfig::get_buffer_size_bytes, nb::arg("channel_type"))
++        .def("memory_map_end_address", &tt::tt_fabric::FabricMuxConfig::get_memory_map_end_address);
++
++    fabric_mux_module.def(
++        "client_compile_time_args",
++        &client_compile_time_args,
++        nb::kw_only(),
++        nb::arg("num_clients"),
++        nb::arg("channel_type"),
++        nb::arg("config"),
++        "Return the compile-time arguments required by a fabric-mux client kernel.");
++
++    fabric_mux_module.def(
++        "client_runtime_args",
++        &client_runtime_args,
++        nb::kw_only(),
++        nb::arg("connection_valid"),
++        nb::arg("is_termination_master"),
++        nb::arg("channel_type"),
++        nb::arg("mux_virtual_core"),
++        nb::arg("client_index"),
++        nb::arg("client_logical_core"),
++        nb::arg("config"),
++        nb::arg("program_descriptor"),
++        nb::arg("termination_master_virtual_core"),
++        nb::arg("termination_master_semaphore_id") = nb::none(),
++        "Return one client's runtime arguments and append its semaphores to the descriptor.");
++
++    fabric_mux_module.def(
++        "channel_buffer_size_bytes",
++        &tt::tt_fabric::get_tt_fabric_channel_buffer_size_bytes,
++        "Return the maximum buffer size for one full-size mux channel.");
++}
++
++}  // namespace ttnn::operations::experimental::fabric_mux
+diff --git a/ttnn/cpp/ttnn/operations/experimental/ccl/fabric_mux/fabric_mux_nanobind.hpp b/ttnn/cpp/ttnn/operations/experimental/ccl/fabric_mux/fabric_mux_nanobind.hpp
+new file mode 100644
+index 000000000000..9ae7dcd6866a
+--- /dev/null
++++ b/ttnn/cpp/ttnn/operations/experimental/ccl/fabric_mux/fabric_mux_nanobind.hpp
+@@ -0,0 +1,15 @@
++// SPDX-FileCopyrightText: © 2026 Tenstorrent USA, Inc.
++//
++// SPDX-License-Identifier: Apache-2.0
++
++#pragma once
++
++#include "ttnn-nanobind/nanobind_fwd.hpp"
++
++namespace ttnn::operations::experimental::fabric_mux {
++
++namespace nb = nanobind;
++
++void bind_fabric_mux(nb::module_& experimental_module);
++
++}  // namespace ttnn::operations::experimental::fabric_mux
+diff --git a/ttnn/cpp/ttnn/operations/experimental/ccl/sources.cmake b/ttnn/cpp/ttnn/operations/experimental/ccl/sources.cmake
+index 0fb79dd0b4b9..1df7fd53fee2 100644
+--- a/ttnn/cpp/ttnn/operations/experimental/ccl/sources.cmake
++++ b/ttnn/cpp/ttnn/operations/experimental/ccl/sources.cmake
+@@ -142,6 +142,7 @@ set(TTNN_OP_EXPERIMENTAL_CCL_API_HEADERS
+ # metalium-developers-infra as a required co-owner.
+ set(TTNN_OP_EXPERIMENTAL_CCL_NANOBIND_SRCS
+     ccl_experimental_nanobind.cpp
++    fabric_mux/fabric_mux_nanobind.cpp
+     llama_all_gather_matmul_async/llama_all_gather_matmul_async_nanobind.cpp
+     all_gather_async/all_gather_async_nanobind.cpp
+     strided_all_gather_async/strided_all_gather_async_nanobind.cpp
+diff --git a/ttnn/cpp/ttnn/operations/experimental/experimental_nanobind.cpp b/ttnn/cpp/ttnn/operations/experimental/experimental_nanobind.cpp
+index 2af54d1b28ca..502c29a9d1ec 100644
+--- a/ttnn/cpp/ttnn/operations/experimental/experimental_nanobind.cpp
++++ b/ttnn/cpp/ttnn/operations/experimental/experimental_nanobind.cpp
+@@ -50,6 +50,7 @@
+ #include "ttnn/operations/experimental/matmul/group_attn_matmul/group_attn_matmul_nanobind.hpp"
+ #include "ttnn/operations/experimental/matmul_decode/matmul_decode_nanobind.hpp"
+ #include "ttnn/operations/experimental/ccl/ccl_experimental_nanobind.hpp"
++#include "ttnn/operations/experimental/ccl/fabric_mux/fabric_mux_nanobind.hpp"
+ #include "ttnn/operations/experimental/plusone/plusone_nanobind.hpp"
+ #include "ttnn/operations/experimental/fft/fft_nanobind.hpp"
+ #include "ttnn/operations/experimental/quasar/quasar_nanobind.hpp"
+@@ -192,6 +193,7 @@ void py_module(nb::module_& mod) {
+     bind_tensor_prefetcher(mod);
+ 
+     // CCL ops
++    fabric_mux::bind_fabric_mux(mod);
+     auto m_experimental_ccl = mod.def_submodule("ccl_experimental", "experimental collective communication operations");
+     ccl::py_module(m_experimental_ccl);
+ 
+diff --git a/ttnn/ttnn/_experimental/fabric_mux.py b/ttnn/ttnn/_experimental/fabric_mux.py
+new file mode 100644
+index 000000000000..70546d5a7c86
+--- /dev/null
++++ b/ttnn/ttnn/_experimental/fabric_mux.py
+@@ -0,0 +1,25 @@
++# SPDX-FileCopyrightText: © 2026 Tenstorrent USA, Inc.
++#
++# SPDX-License-Identifier: Apache-2.0
++
++"""Program-descriptor configuration for TT-Metal's experimental fabric mux."""
++
++import ttnn
++
++_fabric_mux = ttnn._ttnn.operations.experimental.fabric_mux
++
++ChannelType = _fabric_mux.ChannelType
++Config = _fabric_mux.Config
++KernelBuildOptLevel = _fabric_mux.KernelBuildOptLevel
++channel_buffer_size_bytes = _fabric_mux.channel_buffer_size_bytes
++client_compile_time_args = _fabric_mux.client_compile_time_args
++client_runtime_args = _fabric_mux.client_runtime_args
++
++__all__ = [
++    "ChannelType",
++    "Config",
++    "KernelBuildOptLevel",
++    "channel_buffer_size_bytes",
++    "client_compile_time_args",
++    "client_runtime_args",
++]
