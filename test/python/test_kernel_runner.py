@@ -2943,8 +2943,12 @@ def test_compiler_sram_failed_completion_detaches_cached_owners(
 
 
 # Compiler-managed reset and reconfiguration state uses compiler scratch.
-@pytest.mark.parametrize("reset_count", [0, 1])
-def test_compiler_l1_composes_with_lifecycle_scratch(monkeypatch, reset_count):
+@pytest.mark.parametrize(
+    ("scratch_bytes", "reset_count"), [(16, 0), (16, 1), (32, 1)]
+)
+def test_compiler_l1_composes_with_lifecycle_scratch(
+    monkeypatch, scratch_bytes, reset_count
+):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     device = object()
@@ -2956,7 +2960,7 @@ def test_compiler_l1_composes_with_lifecycle_scratch(monkeypatch, reset_count):
 
     def allocate_storage(ranges, num_bytes, allocation_device, *, zero_initialize):
         allocation_calls.append((ranges, num_bytes, allocation_device, zero_initialize))
-        return scratch if num_bytes == 16 else arena
+        return scratch if num_bytes == scratch_bytes else arena
 
     monkeypatch.setattr(
         kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_storage
@@ -2966,14 +2970,14 @@ def test_compiler_l1_composes_with_lifecycle_scratch(monkeypatch, reset_count):
         tensors=[tensor],
         cb_configs=[_compiler_l1_config()],
         core_ranges=core_ranges,
-        pipe_sram_scratch_bytes=16,
+        pipe_sram_scratch_bytes=scratch_bytes,
         num_dfb_resets=reset_count,
         device=device,
     )
 
     assert allocation_calls == [
         (core_ranges, 2112, device, True),
-        (core_ranges, 16, device, True),
+        (core_ranges, scratch_bytes, device, True),
     ]
     assert result["tensors"] == [scratch, arena, tensor]
     assert fake_ttnn.synchronize_calls == [device]
