@@ -8,6 +8,40 @@ RUNNER="$TTLANG_REPO_ROOT/scripts/tt-lang-emule-container.sh"
 ENTRYPOINT="$TTLANG_REPO_ROOT/scripts/tt-lang-emule-entrypoint.sh"
 DOCKERFILE="$TTLANG_REPO_ROOT/.github/containers/Dockerfile.emule"
 
+make_stack_manifest() {
+    local compiler_root="$1"
+    local target="$2"
+    local compiler_commit
+    compiler_commit="$(git -C "$compiler_root" rev-parse HEAD)"
+    sed \
+        "s/\"base_commit\": \"[0-9a-f]*\"/\"base_commit\": \"$compiler_commit\"/" \
+        "$TTLANG_REPO_ROOT/config/tt-lang-emule-stack.json" > "$target"
+}
+
+make_runner_fixture() {
+    local root="$1"
+    mkdir -p "$root/.github/containers" "$root/config" \
+        "$root/examples" "$root/scripts"
+    cp "$DOCKERFILE" "$root/.github/containers/Dockerfile.emule"
+    cp "$ENTRYPOINT" "$root/scripts/tt-lang-emule-entrypoint.sh"
+    cp "$RUNNER" "$root/scripts/tt-lang-emule-container.sh"
+    cp "$TTLANG_REPO_ROOT/scripts/tt-lang-emule-stack.py" \
+        "$root/scripts/tt-lang-emule-stack.py"
+    touch "$root/examples/program.py"
+    git -C "$root" init -q
+    git -C "$root" add .
+    git -C "$root" update-index --add --cacheinfo \
+        160000,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,third-party/llvm-project
+    git -C "$root" \
+        -c user.name=test -c user.email=test@example.com \
+        commit -q -m "Synthetic runtime inputs"
+    make_stack_manifest "$root" "$root/config/tt-lang-emule-stack.json"
+    git -C "$root" add config/tt-lang-emule-stack.json
+    git -C "$root" \
+        -c user.name=test -c user.email=test@example.com \
+        commit -q -m "Pin synthetic compiler baseline"
+}
+
 make_mock_docker() {
     local target="$1"
     cat > "$target" <<'EOF'
@@ -72,6 +106,11 @@ setup() {
     MOCK_DOCKER_LOG="$BATS_TEST_TMPDIR/docker.log"
     export MOCK_DOCKER_LOG
     make_mock_docker "$MOCK_DOCKER"
+    # Docker argument tests do not require the production baseline's history.
+    # Pin this checkout's HEAD so shallow CI checkouts exercise the same paths.
+    TTLANG_EMULE_STACK_MANIFEST="$BATS_TEST_TMPDIR/stack.json"
+    export TTLANG_EMULE_STACK_MANIFEST
+    make_stack_manifest "$TTLANG_REPO_ROOT" "$TTLANG_EMULE_STACK_MANIFEST"
 }
 
 assert_log_line() {
@@ -241,30 +280,8 @@ EOF
     local synthetic_runner="$synthetic_root/scripts/tt-lang-emule-container.sh"
     local first_image
     local second_image
-    mkdir -p "$synthetic_root/.github/containers" \
-        "$synthetic_root/config" "$synthetic_root/examples" \
-        "$synthetic_root/scripts"
-    cp "$DOCKERFILE" "$synthetic_root/.github/containers/Dockerfile.emule"
-    cp "$TTLANG_REPO_ROOT/config/tt-lang-emule-stack.json" \
-        "$synthetic_root/config/tt-lang-emule-stack.json"
-    cp "$ENTRYPOINT" "$synthetic_root/scripts/tt-lang-emule-entrypoint.sh"
-    cp "$RUNNER" "$synthetic_runner"
-    cp "$TTLANG_REPO_ROOT/scripts/tt-lang-emule-stack.py" \
-        "$synthetic_root/scripts/tt-lang-emule-stack.py"
-    touch "$synthetic_root/examples/program.py"
-    git -C "$synthetic_root" init -q
-    git -C "$synthetic_root" add .
-    git -C "$synthetic_root" update-index --add --cacheinfo \
-        160000,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,third-party/llvm-project
-    git -C "$synthetic_root" \
-        -c user.name=test -c user.email=test@example.com \
-        commit -q -m "Synthetic runtime inputs"
-    local synthetic_commit
-    synthetic_commit="$(git -C "$synthetic_root" rev-parse HEAD)"
-    sed -i.bak \
-        "s/\"base_commit\": \"[0-9a-f]*\"/\"base_commit\": \"$synthetic_commit\"/" \
-        "$synthetic_root/config/tt-lang-emule-stack.json"
-    rm "$synthetic_root/config/tt-lang-emule-stack.json.bak"
+    make_runner_fixture "$synthetic_root"
+    TTLANG_EMULE_STACK_MANIFEST="$synthetic_root/config/tt-lang-emule-stack.json"
 
     TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$synthetic_runner" \
         "$synthetic_root/examples/program.py"
@@ -281,6 +298,28 @@ EOF
     second_image="$(awk '/^tt-lang-emule:/{print; exit}' "$MOCK_DOCKER_LOG")"
 
     [ "$first_image" != "$second_image" ]
+}
+
+@test "shallow checkout accepts its pinned HEAD but rejects an unavailable baseline" {
+    local source_root="$BATS_TEST_TMPDIR/source"
+    local shallow_root="$BATS_TEST_TMPDIR/shallow"
+    local shallow_runner="$shallow_root/scripts/tt-lang-emule-container.sh"
+    make_runner_fixture "$source_root"
+    git clone -q --depth 1 "file://$source_root" "$shallow_root"
+    [ "$(git -C "$shallow_root" rev-parse --is-shallow-repository)" = true ]
+
+    TTLANG_EMULE_STACK_MANIFEST="$shallow_root/config/tt-lang-emule-stack.json" \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -1 "$shallow_runner" "$shallow_root/examples/program.py"
+    assert_output --partial "compiler checkout does not contain the manifest compiler baseline"
+    [ ! -e "$MOCK_DOCKER_LOG" ]
+
+    make_stack_manifest "$shallow_root" "$TTLANG_EMULE_STACK_MANIFEST"
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -0 "$shallow_runner" "$shallow_root/examples/program.py"
+    assert_log_line "run"
+    assert_log_line "TTLANG_EMULE_EXPECTED_LLVM_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    refute_log_line "build"
 }
 
 @test "non-tty launch keeps stdin open without allocating a tty" {
@@ -377,7 +416,7 @@ PY
         assert_log_line \
             "TT_LANG_COMPILER_BASE_COMMIT=$(python3 -c \
                 'import json, sys; print(json.load(open(sys.argv[1]))["compiler"]["base_commit"])' \
-                "$TTLANG_REPO_ROOT/config/tt-lang-emule-stack.json")"
+                "$TTLANG_EMULE_STACK_MANIFEST")"
         assert_log_contains "STACK_MANIFEST_SHA256="
         assert_log_line "RUNTIME_PLATFORM=linux/amd64"
         assert_log_contains "tt-lang-stack=$runtime_tmp/tt-lang-stack-context."
