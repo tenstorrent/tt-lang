@@ -228,13 +228,17 @@ private:
     SmallVector<int64_t> parallelSubblockSizes =
         computeMultiDimSubblockSizes(parallelDimSizes, parallelBudget);
 
-    // Rescue the prime-fallback case: when the divisor heuristic could not find
-    // ANY subblock -- every parallel dimension forced to size 1, e.g. an
-    // all-prime block larger than the DST budget like 11x11 -- raise dimensions
-    // to the largest power of two <= min(dim, remaining budget) and let
-    // remainder peeling (below) handle the leftover tiles. Inner (higher-index)
-    // dimensions are rescued first to match the heuristic's inner-dimension
-    // preference.
+    // Rescue the fallback case: when the divisor heuristic could not find ANY
+    // subblock -- every parallel dimension forced to size 1 -- give the budget
+    // to the innermost dimension that can use it, and let remainder peeling
+    // (below) handle the tiles left over.
+    //
+    // Reaching this point means every parallel dimension is either 1 or larger
+    // than the budget, because a dimension no larger than the budget divides
+    // itself and the heuristic would have selected it. One dimension can
+    // therefore always absorb the entire budget, and splitting the budget
+    // across dimensions can never exceed it -- so exactly one dimension is
+    // raised, and at most one dimension peels.
     //
     // Only this no-subblocking-at-all case is rescued: if the heuristic already
     // found a subblock > 1 (e.g. 3x3 -> (1,3), 11x3 -> (1,3)) the result is
@@ -244,18 +248,12 @@ private:
                                               parallelSubblockSizes.end(),
                                               int64_t{1}, std::multiplies<>());
     if (!hasMatmulBlock && parallelProduct == 1) {
-      int64_t usedProduct = 1;
       for (int64_t pd = static_cast<int64_t>(parallelDimSizes.size()) - 1;
            pd >= 0; --pd) {
-        int64_t remaining = parallelBudget / usedProduct;
-        int64_t cap = std::min<int64_t>(parallelDimSizes[pd], remaining);
-        int64_t pow = 1;
-        while (pow * 2 <= cap) {
-          pow *= 2;
-        }
-        if (pow > 1) {
-          parallelSubblockSizes[pd] = pow;
-          usedProduct *= pow;
+        int64_t size = std::min<int64_t>(parallelDimSizes[pd], parallelBudget);
+        if (size > 1) {
+          parallelSubblockSizes[pd] = size;
+          break;
         }
       }
     }
@@ -279,30 +277,24 @@ private:
                         std::multiplies<>());
 
     // If a non-matmul subblock product is 1, no subblocking benefit -- skip.
+    // After the rescue above this means every parallel dimension is 1, or the
+    // budget is below two tiles, so there is nothing left to partition.
     // Block matmul may still need a one-output-tile subblock because each
     // output tile can consume multiple DST slots.
-    // TODO: consider supporting peeling/remainder loops for dimensions whose
-    // only divisor <= unrollFactor is 1 (e.g. primes larger than unrollFactor).
-    // Currently these fall back to processing one tile at a time, wasting DST
-    // capacity. Examples: a 7x1 block with unrollFactor=4 could process 4
-    // tiles then 3 via a remainder loop, but currently processes 1 at a time;
-    // a 5x3 block with unrollFactor=8 has no exact 2D subblock and also
-    // falls back to single-tile. In practice, users can avoid this by choosing
-    // block sizes with non-prime dimensions (e.g. 8x1 instead of 7x1).
     if (subblockProduct <= 1 && !hasMatmulBlock) {
       return success();
     }
 
     // When a chosen subblock size does not evenly divide its dimension -- e.g.
-    // a prime/awkward dimension rescued to a power of two above -- tile-and-
+    // a dimension raised to the available budget above -- tile-and-
     // peel. Split each dimension into a main region (a multiple of the subblock
     // size, emitted as a step loop when it spans more than one subblock) and a
     // remainder region (the leftover tiles). The cartesian product of the
     // per-dimension segments yields statically-shaped inner ttl.compute ops.
     // Remainder subblocks are emitted loop-free: the tile offset rides on the
     // tensor.extract_slice that getTiledImplementation bakes in, so no
-    // subblock-loop annotation is required (a single-trip loop would be folded
-    // away downstream regardless). subblock-sync is not applied on this path.
+    // subblock-loop annotation is required. Preserve the original reservation
+    // and publication across all peeled regions.
     bool hasPeeling = false;
     for (int64_t d = 0; d < rank; ++d) {
       if (subblockSizes[d] < dimSizes[d] &&
@@ -422,6 +414,8 @@ private:
         }
       }
 
+      assert(computeOp.getResults().size() == computeOp.getOutputs().size() &&
+             "result count must match output count for RAUW");
       computeOp.replaceAllUsesWith(computeOp.getOutputs());
       computeOp.erase();
       return success();
