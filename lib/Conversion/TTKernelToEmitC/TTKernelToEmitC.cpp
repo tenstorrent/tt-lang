@@ -30,6 +30,7 @@
 #include "mlir/Target/Cpp/CppEmitter.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
@@ -397,9 +398,43 @@ struct TTKernelToEmitCConversionState {
   llvm::DenseMap<Block *, llvm::StringSet<>> cbDeclarations;
   llvm::DenseMap<Operation *, llvm::StringSet<>> functionScopedDeclarations;
   llvm::DenseMap<Operation *, std::array<bool, 2>> staticNocDeclarations;
+  llvm::DenseMap<Operation *, llvm::DenseSet<int32_t>>
+      ownedSequenceReloadIndices;
+  llvm::DenseSet<Operation *> reloadAllOwnedSequences;
   llvm::DenseMap<Operation *, uint64_t> resultVariableCounters;
 };
 } // namespace
+
+static bool
+requiresOwnedSequenceReload(Operation *operation, int32_t index,
+                            const TTKernelToEmitCConversionState &state) {
+  func::FuncOp function = operation->getParentOfType<func::FuncOp>();
+  if (!function || state.reloadAllOwnedSequences.contains(function)) {
+    return true;
+  }
+  auto indices = state.ownedSequenceReloadIndices.find(function);
+  return indices != state.ownedSequenceReloadIndices.end() &&
+         indices->second.contains(index);
+}
+
+static void planOwnedSequenceReloads(func::FuncOp function,
+                                     TTKernelToEmitCConversionState &state) {
+  // A call may advance an interface through a separately constructed object.
+  bool hasFunctionCall = false;
+  function.walk([&](func::CallOp) { hasFunctionCall = true; });
+  if (hasFunctionCall) {
+    state.reloadAllOwnedSequences.insert(function);
+  }
+
+  function.walk([&](ttkernel::OpaqueCallOp call) {
+    std::optional<ArrayRef<int32_t>> indices = call.getDfbResourceIndices();
+    if (!indices) {
+      return;
+    }
+    state.ownedSequenceReloadIndices[function].insert(indices->begin(),
+                                                      indices->end());
+  });
+}
 
 static void setInsertionPointAfterDefOrBlockStart(Value value,
                                                   OpBuilder &builder) {
@@ -444,7 +479,9 @@ static std::string ensureCBDeclaration(Value cb, Operation *useOp,
          Twine(allocation.pagesPerBlock) + ", " + Twine(allocation.blockCount) +
          ", " + Twine(allocation.storageCapacityPages) + ", " +
          Twine(allocation.payloadOffsetExpression) + ", " +
-         Twine(*tensorCommonArgIndex) + ">")
+         Twine(*tensorCommonArgIndex) + ", " +
+         (requiresOwnedSequenceReload(useOp, index.getInt(), state) ? "true>"
+                                                                    : "false>"))
             .str();
   }
   std::string cbDecl = bufferType + " " + cbName + "({});";
@@ -706,10 +743,9 @@ getCompilerL1GeometryTemplateArguments(const SRAMAllocation &allocation,
       .str();
 }
 
-static std::string
-getCompilerL1OperandTypeName(Operation *operation,
-                             const SRAMAllocation &allocation,
-                             ttcore::TileType tile, bool directToDestination) {
+static std::string getCompilerL1OperandTypeName(
+    Operation *operation, const SRAMAllocation &allocation,
+    ttcore::TileType tile, bool directToDestination, bool reloadOwnedSequence) {
   FailureOr<int64_t> tensorCommonArgIndex =
       getCompilerL1TensorCommonArgIndex(operation, allocation);
   assert(succeeded(tensorCommonArgIndex) &&
@@ -718,7 +754,8 @@ getCompilerL1OperandTypeName(Operation *operation,
           getCompilerL1GeometryTemplateArguments(allocation, tile) + ", " +
           Twine(allocation.payloadOffsetExpression) + ", " +
           Twine(*tensorCommonArgIndex) + ", " +
-          (directToDestination ? "true>" : "false>"))
+          (directToDestination ? "true, " : "false, ") +
+          (reloadOwnedSequence ? "true>" : "false>"))
       .str();
 }
 
@@ -1140,8 +1177,10 @@ static void emitCompilerL1ComputeCall(Operation *operation,
     bool directToDestination =
         directOperands &&
         llvm::is_contained(directOperands.asArrayRef(), *identity);
+    bool reloadOwnedSequence =
+        !state || requiresOwnedSequenceReload(operation, *identity, *state);
     std::string operandType = getCompilerL1OperandTypeName(
-        operation, allocation, tile, directToDestination);
+        operation, allocation, tile, directToDestination, reloadOwnedSequence);
     if (state) {
       std::string cbName =
           ensureCBDeclaration(converted, operation, rewriter, *state);
@@ -3804,6 +3843,11 @@ public:
       }
     }
     TTKernelToEmitCConversionState state;
+    for (func::FuncOp funcOp : module.getOps<func::FuncOp>()) {
+      if (usesCompilerL1(funcOp)) {
+        planOwnedSequenceReloads(funcOp, state);
+      }
+    }
     ConversionPlan config(module.getContext(), state);
     for (func::FuncOp funcOp : module.getOps<func::FuncOp>()) {
       if (!funcOp->hasAttr(ttkernel::ThreadTypeAttr::name)) {

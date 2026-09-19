@@ -25,6 +25,15 @@ inline uint32_t load(uint32_t address) {
                : "memory");
   return value;
 }
+/// Loads a sequence advanced only by this processor after reset completion.
+inline uint32_t loadOwned(uint32_t address) {
+  uint32_t value;
+  asm volatile("lw %[value], (%[address])\n\tand x0, x0, %[value]"
+               : [value] "=r"(value)
+               : [address] "r"(address)
+               : "memory");
+  return value;
+}
 inline void store(uint32_t address, uint32_t value) {
   asm volatile("sw %[value], (%[address])\n\tlw %[value], (%[address])\n\tand "
                "x0, x0, %[value]"
@@ -44,14 +53,32 @@ __attribute__((noinline)) inline void complete() {
 #endif
 }
 inline uint32_t loadSequence16(uint32_t address) {
-  return static_cast<uint16_t>(load(address));
+  asm volatile("fence" ::: "memory");
+  uint32_t value;
+  asm volatile("lhu %[value], (%[address])\n\tand x0, x0, %[value]"
+               : [value] "=r"(value)
+               : [address] "r"(address)
+               : "memory");
+  return value;
+}
+inline uint32_t loadOwnedSequence16(uint32_t address) {
+  uint32_t value;
+  asm volatile("lhu %[value], (%[address])\n\tand x0, x0, %[value]"
+               : [value] "=r"(value)
+               : [address] "r"(address)
+               : "memory");
+  return value;
 }
 template <bool PayloadComplete = false>
 inline void publishSequence16(uint32_t address, uint32_t value) {
   if constexpr (!PayloadComplete) {
     complete();
   }
-  store(address, value);
+  asm volatile("sh %[value], (%[address])\n\tlhu %[value], (%[address])\n\tand "
+               "x0, x0, %[value]"
+               : [value] "+r"(value)
+               : [address] "r"(address)
+               : "memory");
 }
 #if defined(TRISC_UNPACK) || defined(TRISC_MATH)
 inline constexpr bool ownsProducer = false;

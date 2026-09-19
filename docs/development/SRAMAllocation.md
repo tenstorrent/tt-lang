@@ -12,7 +12,7 @@ TT-Lang normally assigns each logical dataflow buffer (DFB) a TT-Metal DFB descr
 | Storage address | TT-Metal descriptor | Compiler arena or tensor base plus byte offset |
 | Capacity limit | SRAM capacity and 32 or 64 descriptor indices | SRAM capacity, control records, and alignment |
 | Payload reuse | Requires the Metal descriptor and backing-storage contracts | Requires noninterfering completed lifetimes or an explicit validated allocation group |
-| Producer/consumer state | TT-Metal DFB interface state | Two 32-bit SRAM sequence counters per storage owner; no DFB index or local semaphore id |
+| Producer/consumer state | TT-Metal DFB interface state | Two four-byte SRAM sequence slots per storage owner; no DFB index or local semaphore id |
 | Tensor-backed storage | Installed through a TT-Metal descriptor | Addressed directly through the tensor runtime argument |
 | Allocation groups | Reuse a physical descriptor and its storage contract | Share one validated storage owner and control record |
 | Reset and reconfiguration | Blackhole TT-Metal interface reset and runtime descriptor reconfiguration | Blackhole address-based state reset; page size, pages per block, block count, and storage capacity remain unchanged |
@@ -38,7 +38,7 @@ The arena has two sections:
 +----------------------+----------------------------------+
 ```
 
-Each storage owner has one 8-byte record. An ungrouped logical DFB is its own storage owner. A validated allocation group has one storage owner shared by its members. The first 32-bit word is the published-page sequence and the second is the consumed-page sequence. Allocation-group validation requires one element type and therefore one page size. Page units preserve one cursor interpretation when members use different pages-per-block and block-count values. Separate words allow the producer and consumer to update state without an atomic read-modify-write operation.
+Each storage owner has one 8-byte record. An ungrouped logical DFB is its own storage owner. A validated allocation group has one storage owner shared by its members. The first 32-bit slot is the published-page sequence and the second is the consumed-page sequence. A capacity of at most 32,768 pages permits native 16-bit loads and stores because the sequence modulus is twice the capacity; larger capacities use all 32 bits. Allocation-group validation requires one element type and therefore one page size. Page units preserve one cursor interpretation when members use different pages-per-block and block-count values. Separate slots allow the producer and consumer to update state without an atomic read-modify-write operation.
 
 Payload storage can overlap when the compiler proves that the corresponding lifetimes cannot be active concurrently. Control records are independent except within an explicit allocation group whose validation proves state ownership transfer.
 
@@ -64,7 +64,9 @@ DFB transactions operate on one block, or publish/consume a tensor-backed DFB's 
 
 `wait_front` and `reserve_back` capture the acquired sequence after their availability checks succeed. Every address-bearing operation in that transaction derives its payload address from the captured sequence, so all tile accesses remain in the same acquired window across counter wrap. Initialization and configuration use storage metadata without acquiring a window. A release completes outstanding payload access before updating its sequence counter. When the immediately preceding `ttl.wait` already proves completion of the exact transaction, the release reuses that directional NoC barrier instead of issuing a second full NoC barrier.
 
-The 32-index Wormhole B0 and 64-index Blackhole limits apply only to TT-Metal DFB descriptors. A compiler-managed logical DFB does not allocate one of those descriptors. Its local producer/consumer protocol polls two 32-bit SRAM sequence counters and does not allocate a local semaphore id. Logical DFB count is therefore limited by SRAM use, generated code and configuration size, runtime arguments, and Metal program capacity instead of the hardware descriptor count.
+The runtime clears every control record before dispatch. Within a generated kernel, one `Buffer` object retains the sequence advanced by its processor and reloads only the peer sequence needed to test availability. A function call, opaque DFB user, reset, reconfiguration, or external descriptor prevents this optimization because another object may advance the same interface. Peer loads retain the target memory fence.
+
+The 32-index Wormhole B0 and 64-index Blackhole limits apply only to TT-Metal DFB descriptors. A compiler-managed logical DFB does not allocate one of those descriptors. Its local producer/consumer protocol polls two SRAM sequence slots and does not allocate a local semaphore id. Logical DFB count is therefore limited by SRAM use, generated code and configuration size, runtime arguments, and Metal program capacity instead of the hardware descriptor count.
 
 PipeNet synchronization is a separate resource. TT-Lang currently has 16 local hardware semaphore ids. Generated PipeNet counters use available local ids and then use host-created `GlobalSemaphore` SRAM words; exhaustion of the 16 local ids does not restore a 16-DFB limit. Global counters add SRAM allocations and runtime arguments and remain subject to the combined SRAM and program-capacity checks.
 
@@ -542,7 +544,7 @@ TT-Metal compute APIs normally read the data format and tile dimensions from a D
 
 Compute setup is shared by operands with equal formats, page sizes, tile dimensions, and direct-to-destination settings. Storage offsets and capacities remain properties of each DFB. Separating hardware properties from storage identity prevents repeated setup code from exhausting kernel instruction storage in large DFB compositions.
 
-A generated compute kernel can use different tile dimensions during one execution. `ComputeContext` records the currently programmed input formats, page sizes, and face dimensions, together with the output format and tile dimensions. The first operation configures UNPACK, MATH, and PACK. Later operations reconfigure only state that differs. A PACK tile-dimension change requires data-format reconfiguration followed by pack initialization that preserves the existing address modifiers. This sequence follows the TT-Metal LLK contract and avoids repeating hardware configuration.
+A generated compute kernel can use different tile dimensions during one execution. `ComputeContext` records the currently programmed input formats, page sizes, and face dimensions, together with the output format and tile dimensions. An exact packed identity makes the common unchanged-configuration check constant-sized. The first operation configures UNPACK, MATH, and PACK. Later operations reconfigure only state that differs. A PACK tile-dimension change requires data-format reconfiguration followed by pack initialization that preserves the existing address modifiers. This sequence follows the TT-Metal LLK contract and avoids repeating hardware configuration. Address-based copy helpers are inlined so the RISC compiler can retain loop-invariant addresses.
 
 ```text
 configureCompute(inputA, inputB, output):
@@ -649,7 +651,18 @@ The fixed state cost can dominate heavily reused payloads. For 96 ungrouped one-
 
 Domain placement addresses a different source of waste: reserving the busiest core's layout everywhere. In the two-core 16-tile/one-tile regression, uniform allocation reserves 65,664 bytes for BF16 and 131,200 for FP32. Per-core allocation reserves 34,944 and 69,760 respectively, including control prefixes. These are measured backing extents, not execution-speed results or a claim of globally optimal host placement.
 
-A matched Blackhole benchmark copies one 4x4-tile block 256 times per dispatch through read, compute, and write kernels. Across 200 measured dispatches per backend, compiler-managed storage takes 225.89 us versus 220.79 us for Metal DFBs with BF16, and 476.32 us versus 443.48 us with FP32. These 1.023x and 1.074x ratios include sequence-counter synchronization and explicit-address handling. Both measurements satisfy the benchmark's statistical acceptance checks, and exact outputs pass before and after measurement. Compilation and allocation are outside the measured interval.
+A matched Blackhole benchmark copies one 4x4-tile block 256 times per dispatch through read, compute, and write kernels. Each result below contains 200 measured dispatches per backend after 20 paired warmups; exact outputs pass before and after measurement. Compilation and allocation are outside the measured interval.
+
+| Type and run | Compiler-managed SRAM | Metal DFB | Compiler / Metal | Compiler-managed p95 |
+| --- | ---: | ---: | ---: | ---: |
+| BF16, first | 220.155 us | 220.558 us | 0.99817 | 220.834 us |
+| BF16, repeat | 220.179 us | 220.486 us | 0.99861 | 220.992 us |
+| FP32, first | 417.492 us | 443.448 us | 0.94147 | 418.543 us |
+| FP32, repeat | 417.514 us | 443.447 us | 0.94152 | 418.733 us |
+
+All four comparisons meet the benchmark's eligibility requirements and have no material order effect. One BF16 run reports serial dependence; its median and ratio agree with the independent repeat. This establishes parity for the measured block-copy workload: compiler-managed SRAM is 0.14% to 0.18% faster for BF16 and approximately 5.85% faster for FP32. It does not establish parity for every operation.
+
+The final Blackhole validation covers 180 direct-address compute cases, 220 sub-tile cases, 20 lifecycle cases, 8 external reconfiguration cases, 12 variants of a 70-logical-DFB composition, and 12 cases with 96 simultaneously live logical DFBs. The largest 70-DFB binary has 48,924 bytes of combined TRISC text. Wormhole compile-only validation covers BF16 and FP32 reader, writer, unpack, math, and pack processors.
 
 ### Validation Responsibilities
 
