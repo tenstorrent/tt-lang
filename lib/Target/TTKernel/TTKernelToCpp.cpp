@@ -156,7 +156,9 @@ public:
                 experimental_dfb_reset_generated_len);
       }
       if (callee == "experimental::reconfigure_dfb_interfaces" ||
-          callee == "experimental::reconfigure_dfb_descriptors") {
+          callee == "experimental::reconfigure_dfb_descriptors" ||
+          callee == "experimental::reconfigure_dfb_interfaces_specialized" ||
+          callee == "experimental::reconfigure_dfb_descriptors_specialized") {
         emitLlk(experimental_dfb_reconfiguration_generated,
                 experimental_dfb_reconfiguration_generated_len);
       }

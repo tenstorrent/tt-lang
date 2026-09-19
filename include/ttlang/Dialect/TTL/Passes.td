@@ -1673,6 +1673,23 @@ def TTKernelAnnotateDFBUse
   let dependentDialects = [];
 }
 
+def TTKernelSpecializeDFBReconfiguration
+    : Pass<"ttkernel-specialize-dfb-reconfiguration", "::mlir::ModuleOp"> {
+  let summary = "Specialize DFB reconfiguration for each launch core";
+  let description = [{
+    Runs after per-core specialization. The pass removes reconfiguration
+    records that do not apply to the specialized core and records the runtime
+    address offset for every retained DFB. Size, page-count, page-size, and
+    descriptor fields remain compile-time constants, while the selected L1
+    address remains runtime data.
+
+    The pass also records each call's physical DFB resource indices for
+    subsequent per-kernel resource-use analysis. Calls in functions without a
+    specialized coordinate retain the generic masked-record implementation.
+  }];
+  let dependentDialects = ["::mlir::tt::ttkernel::TTKernelDialect"];
+}
+
 def TTKernelFinalizeTensorRuntimeArgs
     : Pass<"ttkernel-finalize-tensor-runtime-args", "::mlir::ModuleOp"> {
   let summary = "Finalize tensor common runtime arguments";

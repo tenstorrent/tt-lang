@@ -37,6 +37,7 @@ namespace dfb_reconfiguration_detail {
 constexpr uint32_t activeMaskWordCount = 2;
 constexpr uint32_t synchronizationWordCount = 6;
 constexpr uint32_t recordWordCount = 12;
+constexpr uint32_t specializedRecordWordCount = recordWordCount + 1;
 constexpr uint32_t dm0StateWord = 0;
 constexpr uint32_t unpackStateWord = 1;
 constexpr uint32_t packStateWord = 2;
@@ -273,6 +274,34 @@ FORCE_INLINE void applyDescriptor() {
 
 #endif
 
+template <bool updateReadPointer, bool updateWritePointer,
+          bool updateWriteTilePointer, bool resetStreamCounters,
+          uint32_t dfbIndex, uint32_t totalBytes, uint32_t numPages,
+          uint32_t pageBytes, uint32_t updateDescriptor, uint32_t l1Format,
+          uint32_t tileHeight, uint32_t tileWidth, uint32_t faceHeight,
+          uint32_t numFaces, uint32_t unpackDstFormat, uint32_t packSrcFormat>
+FORCE_INLINE void applyRecord(uint32_t configuredAddress) {
+#if !defined(TTL_DFB_RECONFIGURATION_MATH)
+  LocalCBInterface &interface = get_local_cb_interface(dfbIndex);
+  uint32_t fifoAddress = configuredAddress == preserveFifoAddress
+                             ? interface.fifo_limit - interface.fifo_size
+                             : configuredAddress >> cb_addr_shift;
+  applyInterface<updateReadPointer, updateWritePointer, updateWriteTilePointer,
+                 resetStreamCounters>(dfbIndex, fifoAddress,
+                                      totalBytes >> cb_addr_shift, numPages,
+                                      pageBytes >> cb_addr_shift);
+#endif
+#if defined(TTLANG_RUNTIME_DFB_RECONFIGURATION)
+  if constexpr (updateDescriptor != 0) {
+    applyDescriptor<dfbIndex, pageBytes, l1Format, tileHeight, tileWidth,
+                    faceHeight, numFaces, unpackDstFormat, packSrcFormat>();
+  }
+#else
+  static_assert(updateDescriptor == 0,
+                "descriptor updates require runtime descriptor storage");
+#endif
+}
+
 template <uint32_t recordOffset, uint32_t... recordWords>
 struct ApplyRecords;
 
@@ -298,26 +327,11 @@ struct ApplyRecords<recordOffset, dfbIndex, totalBytes, numPages, pageBytes,
                                uint32_t lowMask, uint32_t highMask) {
     uint32_t activeMask = dfbIndex < 32 ? lowMask : highMask;
     if ((activeMask & (1U << (dfbIndex % 32))) != 0) {
-#if !defined(TTL_DFB_RECONFIGURATION_MATH)
-      uint32_t configuredAddress = configuration[recordOffset];
-      LocalCBInterface &interface = get_local_cb_interface(dfbIndex);
-      uint32_t fifoAddress = configuredAddress == preserveFifoAddress
-                                 ? interface.fifo_limit - interface.fifo_size
-                                 : configuredAddress >> cb_addr_shift;
-      applyInterface<updateReadPointer, updateWritePointer,
-                     updateWriteTilePointer, resetStreamCounters>(
-          dfbIndex, fifoAddress, totalBytes >> cb_addr_shift, numPages,
-          pageBytes >> cb_addr_shift);
-#endif
-#if defined(TTLANG_RUNTIME_DFB_RECONFIGURATION)
-      if constexpr (updateDescriptor != 0) {
-        applyDescriptor<dfbIndex, pageBytes, l1Format, tileHeight, tileWidth,
-                        faceHeight, numFaces, unpackDstFormat, packSrcFormat>();
-      }
-#else
-      static_assert(updateDescriptor == 0,
-                    "descriptor updates require runtime descriptor storage");
-#endif
+      applyRecord<updateReadPointer, updateWritePointer,
+                  updateWriteTilePointer, resetStreamCounters, dfbIndex,
+                  totalBytes, numPages, pageBytes, updateDescriptor, l1Format,
+                  tileHeight, tileWidth, faceHeight, numFaces, unpackDstFormat,
+                  packSrcFormat>(configuration[recordOffset]);
     }
     ApplyRecords<recordOffset + 1, remainingWords...>::template run<
         updateReadPointer, updateWritePointer, updateWriteTilePointer,
@@ -325,9 +339,55 @@ struct ApplyRecords<recordOffset, dfbIndex, totalBytes, numPages, pageBytes,
   }
 };
 
-template <bool includeMath, uint32_t recordCount, uint32_t... recordWords>
+template <uint32_t... recordWords>
+struct ApplySpecializedRecords;
+
+template <>
+struct ApplySpecializedRecords<> {
+  template <bool updateReadPointer, bool updateWritePointer,
+            bool updateWriteTilePointer, bool resetStreamCounters>
+  static FORCE_INLINE void run(uint32_t tt_l1_ptr *) {}
+};
+
+template <uint32_t runtimeAddressOffset, uint32_t dfbIndex,
+          uint32_t totalBytes, uint32_t numPages, uint32_t pageBytes,
+          uint32_t updateDescriptor, uint32_t l1Format, uint32_t tileHeight,
+          uint32_t tileWidth, uint32_t faceHeight, uint32_t numFaces,
+          uint32_t unpackDstFormat, uint32_t packSrcFormat,
+          uint32_t... remainingWords>
+struct ApplySpecializedRecords<
+    runtimeAddressOffset, dfbIndex, totalBytes, numPages, pageBytes,
+    updateDescriptor, l1Format, tileHeight, tileWidth, faceHeight, numFaces,
+    unpackDstFormat, packSrcFormat, remainingWords...> {
+  template <bool updateReadPointer, bool updateWritePointer,
+            bool updateWriteTilePointer, bool resetStreamCounters>
+  static FORCE_INLINE void run(uint32_t tt_l1_ptr *configuration) {
+    applyRecord<updateReadPointer, updateWritePointer,
+                updateWriteTilePointer, resetStreamCounters, dfbIndex,
+                totalBytes, numPages, pageBytes, updateDescriptor, l1Format,
+                tileHeight, tileWidth, faceHeight, numFaces, unpackDstFormat,
+                packSrcFormat>(configuration[runtimeAddressOffset]);
+    ApplySpecializedRecords<remainingWords...>::template run<
+        updateReadPointer, updateWritePointer, updateWriteTilePointer,
+        resetStreamCounters>(configuration);
+  }
+};
+
+template <uint32_t runtimeRecordCount, uint32_t... recordWords>
+struct ApplyMaskedRecords {
+  template <bool updateReadPointer, bool updateWritePointer,
+            bool updateWriteTilePointer, bool resetStreamCounters>
+  static FORCE_INLINE void run(uint32_t tt_l1_ptr *configuration) {
+    ApplyRecords<0, recordWords...>::template run<
+        updateReadPointer, updateWritePointer, updateWriteTilePointer,
+        resetStreamCounters>(configuration, configuration[runtimeRecordCount],
+                             configuration[runtimeRecordCount + 1]);
+  }
+};
+
+template <bool includeMath, uint32_t runtimeRecordCount,
+          typename RecordApplication>
 FORCE_INLINE void applyReconfiguration(uint32_t configurationAddress) {
-  static_assert(sizeof...(recordWords) == recordCount * recordWordCount);
 #if defined(TTL_DFB_RECONFIGURATION_DM1) ||                                    \
     defined(TTL_DFB_RECONFIGURATION_DM0) ||                                    \
     defined(TTL_DFB_RECONFIGURATION_UNPACK) ||                                 \
@@ -362,16 +422,14 @@ FORCE_INLINE void applyReconfiguration(uint32_t configurationAddress) {
 
   auto *configuration =
       reinterpret_cast<uint32_t tt_l1_ptr *>(configurationAddress);
-  constexpr uint32_t lowMaskWord = recordCount;
-  constexpr uint32_t highMaskWord = lowMaskWord + 1;
-  constexpr uint32_t synchronizationWord = recordCount + activeMaskWordCount;
+  constexpr uint32_t synchronizationWord =
+      runtimeRecordCount + activeMaskWordCount;
   auto *synchronizationState = reinterpret_cast<volatile uint32_t tt_l1_ptr *>(
       &configuration[synchronizationWord]);
   enter<includeMath>(synchronizationState);
-  ApplyRecords<0, recordWords...>::template run<
+  RecordApplication::template run<
       updateReadPointer, updateWritePointer, updateWriteTilePointer,
-      resetStreamCounters>(configuration, configuration[lowMaskWord],
-                           configuration[highMaskWord]);
+      resetStreamCounters>(configuration);
   asm volatile("" ::: "memory");
   exit<includeMath>(synchronizationState);
 #else
@@ -383,16 +441,52 @@ FORCE_INLINE void applyReconfiguration(uint32_t configurationAddress) {
 
 template <uint32_t recordCount, uint32_t... recordWords>
 FORCE_INLINE void reconfigure_dfb_interfaces(uint32_t configurationAddress) {
-  dfb_reconfiguration_detail::applyReconfiguration<false, recordCount,
-                                                   recordWords...>(
+  static_assert(sizeof...(recordWords) == recordCount *
+                                              dfb_reconfiguration_detail::
+                                                  recordWordCount);
+  dfb_reconfiguration_detail::applyReconfiguration<
+      false, recordCount,
+      dfb_reconfiguration_detail::ApplyMaskedRecords<recordCount,
+                                                     recordWords...>>(
+      configurationAddress);
+}
+
+template <uint32_t runtimeRecordCount, uint32_t selectedRecordCount,
+          uint32_t... recordWords>
+FORCE_INLINE void
+reconfigure_dfb_interfaces_specialized(uint32_t configurationAddress) {
+  static_assert(sizeof...(recordWords) ==
+                selectedRecordCount *
+                    dfb_reconfiguration_detail::specializedRecordWordCount);
+  dfb_reconfiguration_detail::applyReconfiguration<
+      false, runtimeRecordCount,
+      dfb_reconfiguration_detail::ApplySpecializedRecords<recordWords...>>(
       configurationAddress);
 }
 
 #if defined(TTLANG_RUNTIME_DFB_RECONFIGURATION)
 template <uint32_t recordCount, uint32_t... recordWords>
 FORCE_INLINE void reconfigure_dfb_descriptors(uint32_t configurationAddress) {
-  dfb_reconfiguration_detail::applyReconfiguration<true, recordCount,
-                                                   recordWords...>(
+  static_assert(sizeof...(recordWords) == recordCount *
+                                              dfb_reconfiguration_detail::
+                                                  recordWordCount);
+  dfb_reconfiguration_detail::applyReconfiguration<
+      true, recordCount,
+      dfb_reconfiguration_detail::ApplyMaskedRecords<recordCount,
+                                                     recordWords...>>(
+      configurationAddress);
+}
+
+template <uint32_t runtimeRecordCount, uint32_t selectedRecordCount,
+          uint32_t... recordWords>
+FORCE_INLINE void
+reconfigure_dfb_descriptors_specialized(uint32_t configurationAddress) {
+  static_assert(sizeof...(recordWords) ==
+                selectedRecordCount *
+                    dfb_reconfiguration_detail::specializedRecordWordCount);
+  dfb_reconfiguration_detail::applyReconfiguration<
+      true, runtimeRecordCount,
+      dfb_reconfiguration_detail::ApplySpecializedRecords<recordWords...>>(
       configurationAddress);
 }
 #endif

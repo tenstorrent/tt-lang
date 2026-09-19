@@ -21,6 +21,7 @@
 // SUBPIPELINE-NEXT: ttkernel-cleanup,
 // SUBPIPELINE-NEXT: ttkernel-finalize-tensor-runtime-args,
 // SUBPIPELINE-NEXT: canonicalize{{.*}},
+// SUBPIPELINE-NEXT: ttkernel-specialize-dfb-reconfiguration,
 // SUBPIPELINE-NEXT: ttkernel-annotate-dfb-use
 // SUBPIPELINE-NOT:  ttkernel-specialize-cores
 // SUBPIPELINE-NOT:  ttkernel-annotate-dfb-use
@@ -54,6 +55,7 @@
 // ENABLED-NEXT: ttkernel-cleanup,
 // ENABLED-NEXT: ttkernel-finalize-tensor-runtime-args,
 // ENABLED-NEXT: canonicalize{{.*}},
+// ENABLED-NEXT: ttkernel-specialize-dfb-reconfiguration,
 // ENABLED-NEXT: ttkernel-annotate-dfb-use
 
 // DISABLED: ttkernel-insert-l1-accumulation

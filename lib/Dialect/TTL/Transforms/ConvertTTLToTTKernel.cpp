@@ -2047,7 +2047,7 @@ struct DFBReconfigurationLowering : OpConversionPattern<DFBReconfigurationOp> {
         rewriter, op.getLoc(),
         IntegerType::get(rewriter.getContext(), 32, IntegerType::Unsigned),
         runtimeArgIndex);
-    ttk::OpaqueCallOp::create(
+    auto reconfigurationCall = ttk::OpaqueCallOp::create(
         rewriter, op.getLoc(), TypeRange{},
         rewriter.getStringAttr(
             updatePlan->updatesDescriptors
@@ -2056,6 +2056,8 @@ struct DFBReconfigurationLowering : OpConversionPattern<DFBReconfigurationOp> {
         rewriter.getStringAttr("<cstdint>"), ValueRange{configurationAddress},
         rewriter.getArrayAttr(updatePlan->templateArguments),
         rewriter.getDenseI32ArrayAttr({0}), DenseI32ArrayAttr());
+    reconfigurationCall->setAttr(kDFBReconfigurationOrdinalAttrName,
+                                 rewriter.getI64IntegerAttr(ordinal));
     rewriter.eraseOp(op);
     return success();
   }
