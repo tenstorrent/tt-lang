@@ -12,7 +12,7 @@ import sys
 import tempfile
 from collections.abc import Callable
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from math import prod
 from pathlib import Path
@@ -20,6 +20,17 @@ from pathlib import Path
 import torch
 import ttnn
 
+from benchmarks.all_gather_minimal_matmul.native_heuristic import (
+    load_ttmetal_symbol,
+    resolve_agmm_config,
+)
+from benchmarks.all_gather_minimal_matmul.sweep_cases import (
+    COMPARABLE_OPERATION_KINDS,
+    COMPARABLE_USE_CASES,
+    NATIVE_SUPPORTED_USE_CASES,
+    TT_METAL_SWEEP_REVISION,
+    UPSTREAM_AGMM_CASES,
+)
 from benchmarks.device_timing import latest_kernel_duration, read_device_profile
 from benchmarks.provenance import collect_provenance
 from examples.all_gather_minimal_matmul import (
@@ -42,7 +53,7 @@ from examples.matmul_reduce_scatter_2d import (
 from ttlang_test_utils import get_fabric_mesh_shape, to_dram
 from utils.correctness import assert_allclose, assert_pcc
 
-REFERENCE_REVISION = "f8c4ce59dd04a3eeeb11abf01ffc9dbce0059eba"
+REFERENCE_REVISION = TT_METAL_SWEEP_REVISION
 REFERENCE_ROOT = f"https://github.com/tenstorrent/tt-metal/blob/{REFERENCE_REVISION}"
 MATH_FIDELITIES = {"HiFi2": ttnn.MathFidelity.HiFi2, "HiFi4": ttnn.MathFidelity.HiFi4}
 
@@ -83,7 +94,7 @@ class TTLangConfig:
 
 @dataclass(frozen=True)
 class NativeConfig:
-    compute_grid: tuple[int, int]
+    compute_grid: tuple[int, int] | None
     m_block_tiles: int
     k_block_tiles: int
     n_block_tiles: int
@@ -93,6 +104,10 @@ class NativeConfig:
     channel_buffers: int
     chunks: int
     math_approx_mode: bool
+    topology: str
+    use_heuristic: bool
+    source_root: str | None
+    use_case: str
 
 
 @dataclass
@@ -128,6 +143,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--m-tiles", type=positive_int, default=296)
     parser.add_argument("--k-tiles-per-device", type=positive_int, default=40)
     parser.add_argument("--n-tiles", type=positive_int, default=480)
+    parser.add_argument(
+        "--sweep-case",
+        choices=tuple(case.case_id for case in UPSTREAM_AGMM_CASES),
+        help="load one pinned TT-Metal AGMM sweep row and derive four-device dimensions",
+    )
+    parser.add_argument(
+        "--list-sweep-cases",
+        action="store_true",
+        help="list pinned upstream AGMM rows and whether this harness supports them",
+    )
     parser.add_argument("--dtype", choices=("bf16", "fp32"), default="bf16")
     parser.add_argument("--math-fidelity", choices=("HiFi2", "HiFi4"), default="HiFi2")
     parser.add_argument(
@@ -163,7 +188,10 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
-        "--native-compute-grid", type=positive_int, nargs=2, default=(12, 9)
+        "--native-compute-grid",
+        type=positive_int,
+        nargs=2,
+        help="override the grid selected by the native configuration resolver",
     )
     parser.add_argument("--native-m-block-tiles", type=positive_int, default=7)
     parser.add_argument("--native-k-block-tiles", type=positive_int, default=5)
@@ -178,8 +206,43 @@ def parse_args() -> argparse.Namespace:
         action=argparse.BooleanOptionalAction,
         default=True,
     )
+    parser.add_argument(
+        "--native-heuristic",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "derive native blocking with the TT-Metal AGMM heuristic; enabled "
+            "by default for --sweep-case"
+        ),
+    )
+    parser.add_argument(
+        "--ttmetal-source-root",
+        type=Path,
+        help=(
+            "TT-Metal source tree providing models.tt_dit.utils.matmul; "
+            "defaults to TT_METAL_RUNTIME_ROOT"
+        ),
+    )
 
     parser.add_argument("--fabric-router-payload", type=positive_int, default=8192)
+    parser.add_argument(
+        "--ttlang-fabric-config",
+        choices=("auto", "1d-ring", "1d-line", "2d"),
+        default="auto",
+        help="TT-Lang fabric configuration; auto selects the accepted 2D configuration",
+    )
+    parser.add_argument(
+        "--native-fabric-config",
+        choices=("auto", "1d-ring", "1d-line", "2d"),
+        default="auto",
+        help="TT-Metal fabric configuration; auto selects the native 1D ring",
+    )
+    parser.add_argument(
+        "--topology",
+        choices=("ring", "linear"),
+        default="ring",
+        help="collective topology passed to the native AGMM operation",
+    )
     parser.add_argument("--device-aggregation", choices=("mean", "max"), default="mean")
     parser.add_argument("--warmup", type=positive_int, default=3)
     parser.add_argument("--samples", type=positive_int, default=10)
@@ -193,6 +256,42 @@ def parse_args() -> argparse.Namespace:
 
 
 def make_configs(arguments):
+    sweep_case = None
+    if arguments.sweep_case is not None:
+        sweep_case = next(
+            case for case in UPSTREAM_AGMM_CASES if case.case_id == arguments.sweep_case
+        )
+        if arguments.mesh_shape != (4, 1):
+            raise ValueError("--sweep-case currently requires --mesh-shape 4x1")
+        if sweep_case.operation_kind not in COMPARABLE_OPERATION_KINDS:
+            raise ValueError(
+                f"{sweep_case.case_id} uses operation kind {sweep_case.operation_kind}; "
+                "this runner measures all_gather_minimal_matmul_async only"
+            )
+        if (
+            sweep_case.use_case not in COMPARABLE_USE_CASES
+            and arguments.implementation != "ttmetal"
+        ):
+            raise ValueError(
+                f"{sweep_case.case_id} uses epilogue {sweep_case.use_case}; "
+                "matching TT-Lang epilogue support is required before timing"
+            )
+        arguments.m_tiles = sweep_case.m_tiles
+        arguments.k_tiles_per_device = sweep_case.k_tiles_per_device(4)
+        arguments.n_tiles = sweep_case.n_tiles_per_device * 4
+
+    native_use_heuristic = (
+        arguments.native_heuristic
+        if arguments.native_heuristic is not None
+        else sweep_case is not None
+    )
+    if arguments.native_compute_grid is not None:
+        native_compute_grid = tuple(arguments.native_compute_grid)
+    elif native_use_heuristic:
+        native_compute_grid = None
+    else:
+        native_compute_grid = (12, 9)
+
     common = CommonConfig(
         mesh_shape=arguments.mesh_shape,
         m_tiles=arguments.m_tiles,
@@ -214,7 +313,7 @@ def make_configs(arguments):
         reuse_activation=arguments.ttlang_reuse_activation,
     )
     native = NativeConfig(
-        compute_grid=tuple(arguments.native_compute_grid),
+        compute_grid=native_compute_grid,
         m_block_tiles=arguments.native_m_block_tiles,
         k_block_tiles=arguments.native_k_block_tiles,
         n_block_tiles=arguments.native_n_block_tiles,
@@ -224,7 +323,21 @@ def make_configs(arguments):
         channel_buffers=arguments.native_channel_buffers,
         chunks=arguments.native_chunks,
         math_approx_mode=arguments.native_math_approx_mode,
+        topology=arguments.topology,
+        use_heuristic=native_use_heuristic,
+        source_root=(
+            str(arguments.ttmetal_source_root)
+            if arguments.ttmetal_source_root is not None
+            else None
+        ),
+        use_case=sweep_case.use_case if sweep_case is not None else "plain",
     )
+    if native.use_heuristic:
+        native = replace(
+            native,
+            chunks=3 if native.use_case == "qkv" else 1,
+            math_approx_mode=native.use_case in ("qkv", "to_out"),
+        )
     if common.dtype == "fp32" and not common.fp32_dest_acc:
         raise ValueError("FP32 inputs require FP32 destination accumulation")
     return common, ttlang, native
@@ -237,12 +350,21 @@ def fabric_router_config(max_payload_size: int):
 
 
 @contextmanager
-def open_participant_mesh(requested_shape, implementation, router_payload):
-    fabric_config = (
-        ttnn.FabricConfig.FABRIC_2D
-        if implementation == "ttlang"
-        else ttnn.FabricConfig.FABRIC_1D_RING
-    )
+def open_participant_mesh(
+    requested_shape, implementation, router_payload, fabric_config_name="auto"
+):
+    if fabric_config_name == "auto":
+        fabric_config = (
+            ttnn.FabricConfig.FABRIC_2D
+            if implementation == "ttlang"
+            else ttnn.FabricConfig.FABRIC_1D_RING
+        )
+    else:
+        fabric_config = {
+            "1d-ring": ttnn.FabricConfig.FABRIC_1D_RING,
+            "1d-line": ttnn.FabricConfig.FABRIC_1D,
+            "2d": ttnn.FabricConfig.FABRIC_2D,
+        }[fabric_config_name]
     reliability = ttnn.FabricReliabilityMode.STRICT_INIT
     router_config = fabric_router_config(router_payload)
     discovered_shape = get_fabric_mesh_shape(
@@ -324,14 +446,20 @@ def make_inputs(mesh, common, padded_m_tiles=None):
 
 def validate_output(actual, expected, dtype):
     assert_pcc(expected, actual, threshold=0.99 if dtype == "bf16" else 0.999)
-    tolerance = 0.05 if dtype == "bf16" else 0.005
-    assert_allclose(actual, expected, rtol=tolerance, atol=tolerance)
+    relative_tolerance = 0.05 if dtype == "bf16" else 0.005
+    absolute_tolerance = 1.0 if dtype == "bf16" else 0.005
+    assert_allclose(
+        actual,
+        expected,
+        rtol=relative_tolerance,
+        atol=absolute_tolerance,
+    )
     absolute_error = (actual - expected).abs()
     return {
         "max_abs_error": absolute_error.max().item(),
         "mean_abs_error": absolute_error.mean().item(),
-        "rtol": tolerance,
-        "atol": tolerance,
+        "rtol": relative_tolerance,
+        "atol": absolute_tolerance,
     }
 
 
@@ -494,7 +622,98 @@ def create_ttlang_workload(mesh, common, ttlang):
     return Workload(run, validate, lambda _result: None), operation_config
 
 
+def make_native_inputs(mesh, common, native):
+    activation_host, weight_host, bias_host, expected = make_host_inputs(common)
+    shard_mapper = ttnn.ShardTensorToMesh(mesh, dim=1)
+    fused_activation = None
+    fuse_swiglu = native.use_case == "ff1_swiglu"
+    scalar = None
+    addcmul_tensor1 = None
+    addcmul_tensor2 = None
+
+    if native.use_case in ("ff1_gelu", "plain_gelu"):
+        approximate = native.use_case == "ff1_gelu"
+        fused_activation = (ttnn.UnaryOpType.GELU, approximate)
+        expected = torch.nn.functional.gelu(
+            expected, approximate="tanh" if approximate else "none"
+        )
+    elif native.use_case == "to_out":
+        scalar = 1.0
+        generator = torch.Generator().manual_seed(common.seed + 1)
+        addcmul_host1 = torch.randn(
+            expected.shape, dtype=activation_host.dtype, generator=generator
+        )
+        addcmul_host2 = torch.randn(
+            expected.shape,
+            dtype=activation_host.dtype,
+            generator=generator,
+        )
+        expected = addcmul_host1.float() + scalar * expected * addcmul_host2.float()
+        addcmul_tensor1 = to_dram(addcmul_host1, mesh, mesh_mapper=shard_mapper)
+        addcmul_tensor2 = to_dram(addcmul_host2, mesh, mesh_mapper=shard_mapper)
+    elif fuse_swiglu:
+        up, gate = torch.chunk(expected, 2, dim=-1)
+        expected = torch.nn.functional.silu(gate) * up
+        prepare_for_fused_swiglu = load_ttmetal_symbol(
+            "models.tt_dit.utils.tensor",
+            "prepare_for_fused_swiglu",
+            native.source_root,
+            TT_METAL_SWEEP_REVISION,
+        )
+        weight_host = prepare_for_fused_swiglu(
+            weight_host, ndev=common.device_count, gate_is_first=False
+        )
+        bias_host = prepare_for_fused_swiglu(
+            bias_host, ndev=common.device_count, gate_is_first=False
+        )
+
+    return (
+        activation_host,
+        expected,
+        to_dram(activation_host, mesh, mesh_mapper=shard_mapper),
+        to_dram(weight_host, mesh, mesh_mapper=shard_mapper),
+        to_dram(bias_host, mesh, mesh_mapper=shard_mapper),
+        addcmul_tensor1,
+        addcmul_tensor2,
+        fused_activation,
+        fuse_swiglu,
+        scalar,
+    )
+
+
 def create_native_workload(mesh, cluster_axis, common, native):
+    if native.use_heuristic:
+        (
+            compute_grid,
+            m_block_tiles,
+            k_block_tiles,
+            n_block_tiles,
+            subblock,
+            workers_per_link,
+        ) = resolve_agmm_config(
+            ttnn_module=ttnn,
+            m_elements=common.m_tiles * 32,
+            full_k_elements=common.k_tiles_per_device * common.device_count * 32,
+            n_elements_per_device=common.n_tiles_per_device * 32,
+            full_grid=mesh.compute_with_storage_grid_size(),
+            device_count=common.device_count,
+            num_links=native.num_links,
+            compute_grid=native.compute_grid,
+            source_root=native.source_root,
+            expected_revision=TT_METAL_SWEEP_REVISION,
+            fuse_swiglu=native.use_case == "ff1_swiglu",
+            use_addcmul=native.use_case == "to_out",
+        )
+        native = replace(
+            native,
+            compute_grid=compute_grid,
+            m_block_tiles=m_block_tiles,
+            k_block_tiles=k_block_tiles,
+            n_block_tiles=n_block_tiles,
+            subblock=subblock,
+            workers_per_link=workers_per_link,
+        )
+    assert native.compute_grid is not None
     operation_config = {
         "mesh_shape": tuple(mesh.shape),
         "m_tiles": common.m_tiles,
@@ -502,7 +721,18 @@ def create_native_workload(mesh, cluster_axis, common, native):
         "n_tiles_per_device": common.n_tiles_per_device,
         **asdict(native),
     }
-    activation_host, expected, activation, weight, bias, _ = make_inputs(mesh, common)
+    (
+        activation_host,
+        expected,
+        activation,
+        weight,
+        bias,
+        addcmul_tensor1,
+        addcmul_tensor2,
+        fused_activation,
+        fuse_swiglu,
+        scalar,
+    ) = make_native_inputs(mesh, common, native)
     gathered = to_dram(
         torch.zeros_like(activation_host),
         mesh,
@@ -541,11 +771,16 @@ def create_native_workload(mesh, cluster_axis, common, native):
             activation,
             weight,
             bias_tensor=bias,
+            fused_activation=fused_activation,
             config=matmul_config,
             compute_kernel_config=compute_config,
             persistent_output_buffer=gathered,
             multi_device_global_semaphore=semaphores,
-            topology=ttnn.Topology.Ring,
+            topology=(
+                ttnn.Topology.Ring
+                if native.topology == "ring"
+                else ttnn.Topology.Linear
+            ),
             cluster_axis=cluster_axis,
             memory_config=ttnn.DRAM_MEMORY_CONFIG,
             force_transpose=True,
@@ -553,6 +788,10 @@ def create_native_workload(mesh, cluster_axis, common, native):
             num_workers_per_link=native.workers_per_link,
             num_buffers_per_channel=native.channel_buffers,
             chunks=native.chunks,
+            fuse_swiglu=fuse_swiglu,
+            scalar=scalar,
+            addcmul_input_tensor1=addcmul_tensor1,
+            addcmul_input_tensor2=addcmul_tensor2,
         )
         if len(outputs) != native.chunks:
             raise RuntimeError(
@@ -639,8 +878,16 @@ def run_worker(arguments):
         and ttlang.operation == "2d-reduce-scatter"
     ):
         requested_shape = (common.device_count, 1)
+    fabric_config_name = (
+        arguments.ttlang_fabric_config
+        if arguments.implementation == "ttlang"
+        else arguments.native_fabric_config
+    )
     with open_participant_mesh(
-        requested_shape, arguments.implementation, arguments.fabric_router_payload
+        requested_shape,
+        arguments.implementation,
+        arguments.fabric_router_payload,
+        fabric_config_name,
     ) as (mesh, cluster_axis, discovered_shape, fabric_config):
         if arguments.implementation == "ttlang":
             workload, operation_config = create_ttlang_workload(mesh, common, ttlang)
@@ -655,6 +902,7 @@ def run_worker(arguments):
         report = {
             "timestamp_utc": datetime.now(timezone.utc).isoformat(),
             "implementation": arguments.implementation,
+            "sweep_case": arguments.sweep_case,
             "common_config": asdict(common),
             "implementation_config": implementation_config,
             "operation_config": (
@@ -673,6 +921,8 @@ def run_worker(arguments):
             "provenance": collect_provenance(
                 [
                     __file__,
+                    Path(__file__).resolve().parent / "native_heuristic.py",
+                    Path(__file__).resolve().parent / "sweep_cases.py",
                     Path(__file__).resolve().parents[1] / "device_timing.py",
                     Path(__file__).resolve().parents[2]
                     / "examples/all_gather_minimal_matmul/operation.py",
@@ -686,7 +936,8 @@ def run_worker(arguments):
                     / "examples/matmul_reduce_scatter_2d/config.py",
                     Path(__file__).resolve().parents[2]
                     / "examples/matmul_reduce_scatter_2d/operation.py",
-                ]
+                ],
+                ttmetal_source_root=arguments.ttmetal_source_root,
             ),
             "references": {
                 "operation": f"{REFERENCE_ROOT}/ttnn/cpp/ttnn/operations/experimental/ccl/all_gather_minimal_matmul_async",
@@ -754,8 +1005,27 @@ def run_isolated_workers(arguments):
     print(f"Results: {arguments.json}", flush=True)
 
 
+def list_sweep_cases():
+    for case in UPSTREAM_AGMM_CASES:
+        native_supported = (
+            case.operation_kind in COMPARABLE_OPERATION_KINDS
+            and case.use_case in NATIVE_SUPPORTED_USE_CASES
+        )
+        ttlang_comparable = native_supported and case.use_case in COMPARABLE_USE_CASES
+        if ttlang_comparable:
+            status = "native and TT-Lang comparable"
+        elif native_supported:
+            status = "native only"
+        else:
+            status = "unsupported operation kind"
+        print(f"{case.case_id}: {status}")
+
+
 def main():
     arguments = parse_args()
+    if arguments.list_sweep_cases:
+        list_sweep_cases()
+        return
     for variable in (
         "TTLANG_COMPILE_ONLY",
         "TTLANG_AUTO_PROFILE",

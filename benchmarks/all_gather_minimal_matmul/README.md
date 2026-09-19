@@ -2,7 +2,7 @@
 
 This benchmark compares the [TT-Lang bidirectional-L1 column-parallel operation](../../examples/all_gather_minimal_matmul/operation_bidirectional_l1.py)
 with TT-Metal's
-[`all_gather_minimal_matmul_async`](https://github.com/tenstorrent/tt-metal/tree/f8c4ce59dd04a3eeeb11abf01ffc9dbce0059eba/ttnn/cpp/ttnn/operations/experimental/ccl/all_gather_minimal_matmul_async).
+[`all_gather_minimal_matmul_async`](https://github.com/tenstorrent/tt-metal/tree/967ce00c724cd27bf107e00fbfe7406014cfc14e/ttnn/cpp/ttnn/operations/experimental/ccl/all_gather_minimal_matmul_async).
 Both receive K-sharded activation and N-sharded weight and bias, then return one
 distinct N-sharded output per device.
 
@@ -17,8 +17,8 @@ which preserves two-dimensional tensor placement for larger device counts.
 
 ## Run
 
-The defaults reproduce the fastest measured four-device Wan2.2 QKV comparison documented in
-[`PERFORMANCE.md`](PERFORMANCE.md):
+The defaults run the accepted four-device comparison. Its configuration and
+provenance are in [`PERFORMANCE.md`](PERFORMANCE.md):
 
 ```bash
 python -m benchmarks.all_gather_minimal_matmul \
@@ -29,27 +29,47 @@ The parent process runs TT-Lang and TT-Metal in separate profiler processes.
 All tensor, worker-grid, block, fabric, and native collective parameters are
 CLI options; `--help` lists the measured defaults.
 
-Eight-device comparison:
+List the pinned AGMM rows imported from the TT-Metal sweep and their current
+semantic support status:
+
+```bash
+python -m benchmarks.all_gather_minimal_matmul --list-sweep-cases
+```
+
+Run one comparable row on a four-device physical ring. `--sweep-case` derives
+the four-device tensor dimensions from the upstream full-K/per-device-N tuple;
+`--native-heuristic` applies TT-Metal's published blocking rule:
 
 ```bash
 python -m benchmarks.all_gather_minimal_matmul \
-    --mesh-shape 8x1 \
-    --m-tiles 296 \
-    --k-tiles-per-device 20 \
-    --n-tiles 480 \
-    --ttlang-compute-grid 11 10 \
-    --ttlang-m-block-tiles 9 \
-    --ttlang-k-block-tiles 10 \
-    --ttlang-n-block-tiles 6 \
-    --native-compute-grid 12 9 \
-    --native-m-block-tiles 7 \
-    --native-k-block-tiles 10 \
-    --native-n-block-tiles 8 \
-    --native-subblock 1 2 \
+    --implementation ttmetal \
+    --sweep-case 3072x5120x3840_8x8_agmm_plain \
+    --native-fabric-config 1d-ring \
+    --topology ring \
+    --native-heuristic \
     --warmup 3 \
     --samples 10 \
-    --json /tmp/all-gather-minimal-matmul-8-device.json
+    --json /tmp/agmm-3072x5120x3840-ring.json
 ```
+
+Use `--native-fabric-config 1d-line --topology linear` for the secondary line
+comparison. Rows marked unsupported require matching TT-Lang fused-epilogue or
+operation-kind support and are not timed as plain AGMM.
+
+Run every currently comparable row with the sweep orchestrator; it writes one
+small report per row and a summary under the specified private directory:
+
+```bash
+python -m benchmarks.all_gather_minimal_matmul.sweep \
+    --native-fabric-config 1d-ring \
+    --topology ring \
+    --warmup 3 \
+    --samples 10 \
+    --output-dir ~/tt/perf/agmm-four-device-ring
+```
+
+The earlier eight-device comparison remains archived in `PERFORMANCE.md`; it is
+not part of the current four-device sweep.
 
 Four-device 2D result:
 
