@@ -998,3 +998,62 @@ module attributes {ttl.launch_grid = array<i64: 2, 2>} {
     func.return
   }
 }
+
+// -----
+
+// A push whose receiver post executes only on some iterations advances the
+// receiver DFB write pointer without advancing the sender's computed slot
+// counter.
+
+#fabric_domain = #ttl.device_domain<components = <name = "device", extent = [2]>>
+#fabric_transfer = #ttl.device_transfer<
+    domain = #fabric_domain,
+    edge = <source = <coordinates = [0]>, destination = <coordinates = [1]>>>
+
+module attributes {ttl.launch_grid = array<i64: 2, 1>} {
+  func.func @fabric_requires_post_in_push_control_context()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %src = ttl.bind_cb {cb_index = 0, block_count = 2}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %dst = ttl.bind_cb {cb_index = 1, block_count = 2}
+        {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 {
+        deviceTransfer = #fabric_transfer}
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %zero = arith.constant 0 : index
+    %one = arith.constant 1 : index
+    %four = arith.constant 4 : index
+    scf.for %iter = %zero to %four step %one {
+      %is_local = arith.cmpi eq, %iter, %zero : index
+      ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+        %reserved = ttl.cb_reserve %dst
+            : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, f32>>
+        scf.if %is_local {
+        } else {
+          // expected-note @below {{receiver DFB 1: push does not execute in the control context of its receiver post}}
+          %post = ttl.copy %pipe, %reserved
+              : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+                 tensor<1x1x!ttcore.tile<32x32, f32>>)
+              -> !ttl.receive_request
+          ttl.wait %post : !ttl.receive_request
+        }
+        ttl.cb_push %dst : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      }
+      ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+        scf.if %is_local {
+        } else {
+          // expected-error @below {{fabric pipe transfer requires computed receiver addresses}}
+          %send = ttl.copy %src, %pipe
+              : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+                 !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+              -> !ttl.transfer_handle<write>
+          ttl.wait %send : !ttl.transfer_handle<write>
+        }
+      }
+    }
+    func.return
+  }
+}
