@@ -46,6 +46,44 @@ def _kernel_specs(compiled):
     ]
 
 
+def test_aliased_tensor_arguments_use_first_global_index(monkeypatch):
+    """A later alias must not replace the index used by the first parameter."""
+    monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")
+
+    @ttl.operation(grid=(1, 1))
+    def copy_aliased_input(input_tensor, unused_alias, output_tensor):
+        transfer_dfb = ttl.make_dataflow_buffer_like(
+            input_tensor, shape=(1, 1), block_count=1
+        )
+        with transfer_dfb.reserve() as destination:
+            ttl.copy(input_tensor[0, 0], destination).wait()
+        with transfer_dfb.wait() as source:
+            ttl.copy(source, output_tensor[0, 0]).wait()
+
+    input_tensor = ttnn.from_torch(
+        torch.zeros((32, 32), dtype=torch.bfloat16),
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+    )
+    output_tensor = ttnn.from_torch(
+        torch.zeros((32, 32), dtype=torch.bfloat16),
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
+    )
+
+    copy_aliased_input(input_tensor, input_tensor, output_tensor)
+
+    tensor_indices = {
+        tensor_index
+        for kernel_indices in _compiled_kernel(
+            copy_aliased_input
+        ).kernel_tensor_indices
+        for tensor_index in kernel_indices
+    }
+    assert 0 in tensor_indices
+    assert 1 not in tensor_indices
+
+
 def test_every_emitted_kernel_spec_has_a_logical_identity(monkeypatch):
     """One explicit selector still leaves every other slot identifiable."""
     monkeypatch.setenv("TTLANG_COMPILE_ONLY", "1")

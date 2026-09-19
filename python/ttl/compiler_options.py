@@ -171,6 +171,20 @@ def _make_parser() -> argparse.ArgumentParser:
         ),
     )
     p.add_argument(
+        "--ttl-unsafe-split-static-dfb-descriptors",
+        default=None,
+        dest="unsafe_split_static_dfb_descriptors",
+        action=argparse.BooleanOptionalAction,
+        help=(
+            "UNSAFE, TEMPORARY (removed once the compiler-managed SRAM "
+            "allocator is merged): let the runtime split a static DFB descriptor "
+            "per core when a core's L1 budget overflows. Split descriptors give "
+            "one DFB different addresses on different cores, which breaks "
+            "kernels that write a DFB on another core by its local address "
+            "(default: disabled)."
+        ),
+    )
+    p.add_argument(
         "--ttl-dfb-exact-coloring-search-limit",
         default=None,
         dest="dfb_exact_coloring_search_limit",
@@ -261,6 +275,7 @@ class CompilerOptions:
     pipe_batch_tiles: int = 0
     reuse_user_dfbs: bool = True
     unsafe_assume_dfb_allocation_groups: bool = False
+    unsafe_split_static_dfb_descriptors: bool = False
     dfb_exact_coloring_search_limit: int = 1_000_000
     specialize_cores: bool = False
     l1_budget: int = dataclasses.field(default=0, compare=False, hash=False)

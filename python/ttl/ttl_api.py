@@ -16,7 +16,7 @@ import sys
 import threading
 import weakref
 from collections.abc import Hashable, MutableMapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum, IntEnum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Union
@@ -79,7 +79,7 @@ from ._src.signpost_profile import is_signpost_profile_enabled
 from ._src.tensor_registry import (
     get_tensor_global_index,
     get_tensor_source,
-    register_tensor_name,
+    register_tensor_arguments,
     register_tensor_source,
 )
 from ._src.global_semaphore import is_ttnn_global_semaphore
@@ -869,6 +869,7 @@ class CompiledTTNNKernel:
         runtime_resource_cache=None,
         kernel_used_dfb_indices=None,
         kernel_local_tensor_indices=None,
+        unsafe_split_static_dfb_descriptors=False,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -898,6 +899,8 @@ class CompiledTTNNKernel:
             num_pipe_global_semaphores: Number of GlobalSemaphore-backed
                 PipeNet counters used by this kernel.
             num_dfb_resets: Number of synchronized DFB reset boundaries.
+            unsafe_split_static_dfb_descriptors: Let the runtime split static DFB
+                descriptors per core on L1 overflow (unsafe, temporary).
             kernel_pipe_computed_address_dfb_indices: Per-kernel receiver DFB indices whose
                 L1 bases are supplied as common runtime args.
             kernel_fabric_routes: Per-kernel routing-plane connection metadata.
@@ -946,6 +949,7 @@ class CompiledTTNNKernel:
         self.kernel_line_offsets = kernel_line_offsets or {}
         self.num_pipe_sync_semaphores = num_pipe_sync_semaphores
         self.num_dfb_resets = num_dfb_resets
+        self.unsafe_split_static_dfb_descriptors = unsafe_split_static_dfb_descriptors
         self.pipe_sram_scratch_bytes = pipe_sram_scratch_bytes
         self.num_pipe_global_semaphores = num_pipe_global_semaphores
         self.kernel_pipe_computed_address_dfb_indices = (
@@ -1071,6 +1075,7 @@ class CompiledTTNNKernel:
             program_hash=self.program_hash,
             num_pipe_sync_semaphores=self.num_pipe_sync_semaphores,
             num_dfb_resets=self.num_dfb_resets,
+            unsafe_split_static_dfb_descriptors=self.unsafe_split_static_dfb_descriptors,
             pipe_sram_scratch_bytes=self.pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=self.num_pipe_global_semaphores,
             mesh_program_placements=self.mesh_program_placements,
@@ -1219,9 +1224,10 @@ def _write_kernel_to_tmp(name: str, source: str) -> str:
                 os.unlink(temp_path)
             except FileNotFoundError:
                 pass
-    print(f"=== {name} kernel written to {path} ===")
-    print(source)
-    print("=" * 60)
+    if os.environ.get("TTLANG_VERBOSE_KERNELS", "1") != "0":
+        print(f"=== {name} kernel written to {path} ===")
+        print(source)
+        print("=" * 60)
     return str(path)
 
 
@@ -1958,6 +1964,7 @@ def _compile_ttnn_kernel(
     operation_name: str = "<anonymous>",
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
+    unsafe_split_static_dfb_descriptors: bool = False,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -2247,6 +2254,7 @@ def _compile_ttnn_kernel(
         kernel_line_offsets=kernel_line_offsets,
         num_pipe_sync_semaphores=num_pipe_sync_semaphores,
         num_dfb_resets=num_dfb_resets,
+        unsafe_split_static_dfb_descriptors=unsafe_split_static_dfb_descriptors,
         pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
         num_pipe_global_semaphores=num_pipe_global_semaphores,
         opaque_include_paths=opaque_include_paths or [],
@@ -2312,6 +2320,7 @@ def _compile_ttnn_kernel(
             kernel_name=operation_name,
             num_pipe_sync_semaphores=num_pipe_sync_semaphores,
             num_dfb_resets=num_dfb_resets,
+            unsafe_split_static_dfb_descriptors=unsafe_split_static_dfb_descriptors,
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=num_pipe_global_semaphores,
             mesh_program_placements=mesh_program_placements,
@@ -2703,6 +2712,8 @@ def _extract_dfb_reconfiguration_plan(module, physical_configs):
             if field not in dfb_entry:
                 raise ValueError(f"{context} is missing '{field}'")
         dfb_index = int(dfb_entry["dfb_index"])
+        if dfb_index < 0 or dfb_index >= len(physical_configs):
+            raise ValueError(f"{context}.dfb_index must reference ttl.dfb_allocations")
         if dfb_index in dfb_epochs_by_index:
             raise ValueError(f"{attribute_name} contains duplicate index {dfb_index}")
         epochs = []
@@ -2721,12 +2732,22 @@ def _extract_dfb_reconfiguration_plan(module, physical_configs):
                     f"{epoch_context}.entry_reconfiguration is not a boundary"
                 )
             seen_entries.add(entry_ordinal)
+            config = _parse_physical_dfb_config(
+                epoch_entry, dfb_index=dfb_index, context=epoch_context
+            )
+            physical_storage_index = physical_configs[dfb_index].storage_index
+            if (
+                config.storage_index is not None
+                and config.storage_index != physical_storage_index
+            ):
+                raise ValueError(
+                    f"{epoch_context}.storage_index does not match "
+                    "ttl.dfb_allocations"
+                )
             epochs.append(
                 DFBConfigurationEpoch(
                     entry_reconfiguration_ordinal=entry_ordinal,
-                    config=_parse_physical_dfb_config(
-                        epoch_entry, dfb_index=dfb_index, context=epoch_context
-                    ),
+                    config=replace(config, storage_index=physical_storage_index),
                 )
             )
         if not epochs:
@@ -3103,8 +3124,10 @@ def _compile_kernel(
     has_ttnn_tensors = any(is_ttnn_tensor(arg) for arg in args)
 
     compile_args = args
-    for idx, (param_name, arg) in enumerate(zip(f_params, compile_args)):
-        register_tensor_name(arg, param_name, index=idx)
+    register_tensor_arguments(
+        (arg, param_name, idx)
+        for idx, (param_name, arg) in enumerate(zip(f_params, compile_args))
+    )
 
     # For pretty error printing only:
     _track_tensor_sources(f_params, args, kernel_source_file)
@@ -3620,6 +3643,7 @@ def _lower_program_to_kernel(
             kernel_line_offsets=kernel_line_offsets,
             num_pipe_sync_semaphores=pipe_sync_semaphore_count,
             num_dfb_resets=dfb_reset_count,
+            unsafe_split_static_dfb_descriptors=compiler_options.unsafe_split_static_dfb_descriptors,
             pipe_sram_scratch_bytes=pipe_sram_scratch_bytes,
             num_pipe_global_semaphores=pipe_global_semaphore_count,
             opaque_include_paths=opaque_include_paths,

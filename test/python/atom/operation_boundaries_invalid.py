@@ -83,12 +83,12 @@ def external_dfb_capture():
         external_dfb.wait()
 
 
-# Resource declarations must remain at operation top level.
+# Runtime-dependent branches cannot determine operation-owned resources.
 def nested_resource_declaration():
     # NESTED: ValueError: @ttl.operation 'invalid': resource declaration 'make_dfb' must be a simple top-level assignment
     @ttl.operation(grid=(1, 1))
     def invalid():
-        if True:
+        if ttl.node(dims=2)[0] == 0:
             scratch = ttl.make_dfb("bf16", shape=(1, 1), block_count=2)
 
 

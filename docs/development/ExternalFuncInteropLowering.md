@@ -64,6 +64,12 @@ in every selected logical kernel. A call may omit `kernel=` when its enclosing
 callback already determines one logical kernel. Otherwise, omission is invalid
 because opaque code cannot be assigned by inspecting its implementation.
 
+`func_args`, `dfb_effects`, and `dfb_accesses` may be lists shared by every
+selected kernel or mappings from selected kernel selectors to lists. During
+unified-body splitting, each emitted call receives its kernel's list. A missing
+mapping entry removes that keyword from the emitted call. Empty lists are valid
+for `func_args`; effect and access mapping values must be nonempty.
+
 `TensorBlock.push` and `TensorBlock.pop` also accept `kernel=`, but only one
 selector. An explicit selector assigns an otherwise-unused DFB transaction:
 
@@ -280,11 +286,12 @@ ttl.call_extern_func(
 )
 ```
 
-`dfb_effects` is one call-wide execution sequence. List position specifies the
-order in which the external C++ executes protocol actions, including actions on
-different DFBs. Different DFBs do not share an order position; their actions
-occupy distinct positions in the same sequence. The call above produces this
-dependency sequence and effect sequence:
+After kernel-specific selection, `dfb_effects` is one execution sequence for
+the emitted call. List position specifies the order in which the external C++
+executes protocol actions, including actions on different DFBs. Different DFBs
+do not share an order position; their actions occupy distinct positions in the
+same sequence. The call above produces this dependency sequence and effect
+sequence:
 
 ```text
 Sequence returned by getDFBDependencyOperands():
