@@ -24,6 +24,7 @@ from benchmarks.all_gather_minimal_matmul.native_heuristic import (
     load_ttmetal_symbol,
     resolve_agmm_config,
 )
+from benchmarks.all_gather_minimal_matmul.sweep import command_argument
 from benchmarks.all_gather_minimal_matmul.sweep_cases import (
     COMPARABLE_OPERATION_KINDS,
     COMPARABLE_USE_CASES,
@@ -978,14 +979,15 @@ def run_isolated_workers(arguments):
                 sys.executable,
                 "-m",
                 "benchmarks.all_gather_minimal_matmul",
-                *sys.argv[1:],
+                *(command_argument(argument) for argument in sys.argv[1:]),
                 "--worker",
                 "--implementation",
-                implementation,
+                command_argument(implementation),
                 "--json",
-                str(output_file),
+                command_argument(output_file),
             ],
             env=environment,
+            shell=False,
             check=True,
             timeout=arguments.worker_timeout,
         )

@@ -7,6 +7,7 @@ import argparse
 import fcntl
 import json
 import os
+import re
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -18,6 +19,17 @@ from benchmarks.all_gather_minimal_matmul.sweep_cases import (
     NATIVE_SUPPORTED_USE_CASES,
     UPSTREAM_AGMM_CASES,
 )
+
+_COMMAND_ARGUMENT = re.compile(r"^[A-Za-z0-9_./:@+=-]+$")
+
+
+def command_argument(value: object) -> str:
+    """Return `value` as a command argument, rejecting shell metacharacters."""
+
+    text = str(value)
+    if not _COMMAND_ARGUMENT.fullmatch(text):
+        raise ValueError(f"refusing to pass {text!r} to a subprocess")
+    return text
 
 
 def parse_args() -> argparse.Namespace:
@@ -58,24 +70,30 @@ def build_native_command(
         "--implementation",
         "ttmetal",
         "--sweep-case",
-        case_id,
+        command_argument(case_id),
         "--native-fabric-config",
-        arguments.native_fabric_config,
+        command_argument(arguments.native_fabric_config),
         "--topology",
-        arguments.topology,
+        command_argument(arguments.topology),
         "--native-heuristic",
         "--warmup",
-        str(arguments.warmup),
+        command_argument(arguments.warmup),
         "--samples",
-        str(arguments.samples),
+        command_argument(arguments.samples),
         "--json",
-        str(report),
+        command_argument(report),
     ]
     if arguments.ttmetal_source_root is not None:
-        command.extend(["--ttmetal-source-root", str(arguments.ttmetal_source_root)])
+        command.extend(
+            ["--ttmetal-source-root", command_argument(arguments.ttmetal_source_root)]
+        )
     if compute_grid is not None:
         command.extend(
-            ["--native-compute-grid", str(compute_grid[0]), str(compute_grid[1])]
+            [
+                "--native-compute-grid",
+                command_argument(compute_grid[0]),
+                command_argument(compute_grid[1]),
+            ]
         )
     return command
 
@@ -190,6 +208,7 @@ def run_sweep(arguments: argparse.Namespace) -> None:
                 if not (arguments.resume and report.exists()):
                     subprocess.run(
                         command,
+                        shell=False,
                         check=True,
                         timeout=arguments.case_timeout_seconds,
                     )
