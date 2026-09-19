@@ -3087,21 +3087,26 @@ def test_reconfiguration_runtime_storage_backs_unreconfigured_local_storage(
         device=device,
     )
 
-    expected_allocations = (
-        [(4096, device), (2048, device)] if hybrid_allocation else [(2048, device)]
-    )
-    assert [allocation[1:] for allocation in scratch_allocations] == (
-        expected_allocations
-    )
-    assert resources.scratch_tensors == [scratch_tensor] * len(expected_allocations)
+    # The hybrid allocator packs both local storage indices into one per-core
+    # arena, ordered by alignment, so the 2048-byte index follows the 4096-byte
+    # one; the remote-uniform index keeps static descriptor storage either way.
+    expected_arena_bytes = 6144 if hybrid_allocation else 2048
+    assert [allocation[1:] for allocation in scratch_allocations] == [
+        (expected_arena_bytes, device)
+    ]
+    assert resources.scratch_tensors == [scratch_tensor]
     assert set(resources.scratch_segments_by_index) == (
         {0, 1} if hybrid_allocation else {0}
     )
+    expected_byte_offset = 4096 if hybrid_allocation else 0
+    assert resources.scratch_segments_by_index[0][0].byte_offset == expected_byte_offset
+    if hybrid_allocation:
+        assert resources.scratch_segments_by_index[1][0].byte_offset == 0
     assert len(host_configurations) == 1
     encoded = host_configurations[0][0]
     assert int(encoded[kernel_runner._DFB_RECONFIGURATION_LOW_MASK_WORD]) == 1
     assert tuple(int(value) for value in encoded[:8]) == (
-        0x8000,
+        0x8000 + expected_byte_offset,
         2048,
         1,
         2048,
@@ -3186,6 +3191,76 @@ def test_reconfiguration_runtime_storage_honors_launch_formats(monkeypatch):
     assert [
         descriptor.page_size for descriptor in descriptors[0].format_descriptors
     ] == [64, 2048]
+
+
+def test_reconfiguration_runtime_storage_offsets_packed_backing(monkeypatch):
+    monkeypatch.setenv("TT_METAL_ALLOCATOR_MODE_HYBRID", "1")
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.uint32 = "uint32"
+    fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
+    fake_ttnn.ShardOrientation = type("ShardOrientation", (), {"ROW_MAJOR": 0})
+    fake_ttnn.TensorMemoryLayout = type("TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0})
+    fake_ttnn.BufferType = type("BufferType", (), {"L1": 0})
+    fake_ttnn.ShardSpec = lambda *args: args
+    fake_ttnn.MemoryConfig = lambda *args: args
+    device = object()
+    scratch_tensor = _FakeTensor(device, address=0x8000)
+    scratch_allocations = []
+    fake_ttnn.from_torch = lambda *_args, **_kwargs: _FakeTensor(device, address=0x9000)
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+
+    def allocate_scratch(core_ranges, num_bytes, allocation_device, *, per_core=False):
+        assert per_core
+        scratch_allocations.append((core_ranges, num_bytes, allocation_device))
+        return scratch_tensor
+
+    monkeypatch.setattr(
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        allocate_scratch,
+    )
+    monkeypatch.setattr(
+        kernel_runner,
+        "_l1_buffer_addresses_by_core",
+        lambda tensor, _device: {(0, 0): tensor.buffer_address()},
+    )
+
+    narrow = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32), storage_index=4)
+    wide = PhysicalDFBConfig(1, 1, "float32", 1, 4096, (32, 32), storage_index=5)
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=tuple(
+            (
+                DFBConfigurationEpoch(None, config),
+                DFBConfigurationEpoch(7, config),
+            )
+            for config in (narrow, wide)
+        ),
+    )
+
+    resources = kernel_runner.build_dfb_reconfiguration_runtime_resources(
+        tensors=[],
+        core_ranges=_FakeCoreRanges(),
+        plan=plan,
+        device=device,
+    )
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[],
+        cb_configs=[narrow, wide],
+        core_ranges=_FakeCoreRanges(),
+        dfb_reconfiguration_scratch_segments=resources.scratch_segments_by_index,
+        dfb_reconfiguration_plan=plan,
+    )
+
+    assert [allocation[1] for allocation in scratch_allocations] == [6144]
+    backing_by_index = {
+        descriptor.backing_desc["cb_index"]: descriptor.backing_desc
+        for descriptor in descriptors
+    }
+    assert backing_by_index[0]["address_offset"] == 4096
+    assert backing_by_index[0]["total_size"] == 2048
+    assert backing_by_index[1]["address_offset"] == 0
+    assert backing_by_index[1]["total_size"] == 4096
 
 
 def test_reconfiguration_rejects_launch_formats_outside_the_plan(monkeypatch):
