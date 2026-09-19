@@ -226,9 +226,24 @@ direction with 6 clients per link on both hosts. Reducing TT-Lang's client
 count per direction (header-only channels for credit-only receivers, or
 fewer endpoint rows when links are scarce) is therefore a host-independent
 improvement alongside the transport depth. Deepening the distribution DFBs to two blocks
-produces incorrect output on every input tried (the smallest input gives PCC
-0.63), a multi-slot pipe-endpoint lowering defect that is recorded with its
-reproducer and not adopted. Relaying each half as soon as the sender row
+first produced incorrect output on every input tried (the smallest input gives
+PCC 0.63). The cause is in the compiler: the computed-address protocol advances
+the sender's slot counter once per receiver post, and the producer-stream proof
+accepted the assembly rows' distribution DFB although it is pushed four times
+per K block (one DRAM fill at source distance 0, three fabric receives) while
+the sender sends three times, so the receiver's write pointer drifted from the
+computed address. The proof now rejects a push that is not in the control
+context of its post unless the push spans the whole DFB, which turns the
+defect into a compile-time diagnostic; the one-block operation is unaffected.
+A two-block variant that compiles reserves the distribution DFB on the
+assembly rows only at source distance 1 to 3, loads the local half straight
+into the compute DFB at distance 0, and multicasts from the compute block at
+every distance. It is correct but no faster: 1.369 versus 1.357 ms for
+4096/6144/4608 and 1.821 versus 1.835 ms for the 12x10 control configuration
+on the 13x10 host, 2.465 versus 2.478 ms for 4096/6144/4608 and 4.905 versus
+4.908 ms for 16384/6144/2304 on the all-shape host (three warmups and ten
+samples each), and the 11x10 control configuration no longer fits in L1. The
+depth is therefore not adopted. Relaying each half as soon as the sender row
 receives it, with the left relay issued after the right multicast receive is
 posted (the schedule verifier rejects the relay before that receive as a
 wait-for cycle), is correct and gives one to two percent on both hosts: 4096/6144/18432
