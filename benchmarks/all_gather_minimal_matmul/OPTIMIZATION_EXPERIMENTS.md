@@ -202,10 +202,32 @@ block changes nothing for the worst rows (4768/5376/21504 QKV 3.785 to 3.773
 ms; 4096/6144/18432 2.462 to 2.468; 8192/6144/36864 9.835 to 9.853;
 8192/6144/18432 QKV 4.918 to 4.928; 8192/1536/36864 2.959 to 3.018), and the
 11x10 M9/K8/N12 configuration of the 9472/5120/15360 input cannot host it
-(1,548,288 bytes). On that host every
-thread on every core runs about 85% longer than on the 13x10 host for the
-same configuration, so its losses come from a slower shared resource rather
-than the epilogue; that decomposition is pending. Removing the source-last
+(1,548,288 bytes). The same decomposition on the all-shape host for 4096/6144/18432
+(TT-Lang 2.502 ms, native 1.402 ms) attributes the whole difference to
+activation delivery: on the critical compute core TT-Lang waits 1365 us for
+activation (187 us on the 13x10 host) and 88 us for weights, while native
+waits 466 us for activation (200 us on the 13x10 host) and 17 us for weights;
+matmul and control is 1011 us for TT-Lang and 868 us for native on both hosts.
+TT-Lang's per-half waits grow with the source distance (10, 26, and 57 us for
+one, two, and three hops at the far core) because its two distribution DFBs
+are one block deep and each hop relays a half only after both halves have been
+multicast and copied locally, so a slower link is paid three times per K block;
+native's transport has 24 channel buffers per client and DRAM staging, and
+absorbs the same slower hops. The hosts differ in Ethernet provisioning: the
+13x10 host's ring has four channels per edge, while the all-shape host is an
+eight-chip cube with two channels per edge whose participants 7, 3, 1, 5 form
+a face (direct neighbors, two channels per edge). TT-Lang plans four links
+per direction with 24 fabric clients per direction (12 senders and 12
+receivers that only return credits), so on the four-channel host every mux
+serves 6 clients with 21 buffers each, while on the two-channel host one
+direction is served by two muxes of 12 clients with 10 buffers and the other
+by a single mux of 24 clients with 5 buffers. Native uses two links per
+direction with 6 clients per link on both hosts. Reducing TT-Lang's client
+count per direction (header-only channels for credit-only receivers, or
+fewer endpoint rows when links are scarce) is therefore a host-independent
+improvement alongside the transport depth. Deepening the distribution DFBs to two blocks
+produced incorrect output (PCC undefined) and is under investigation; relaying
+each half immediately after the sender row receives it is being measured. Removing the source-last
 publish is the next step on the 13x10 host; the earlier "push source
 weight DFB before row-multicast wait" experiment targeted it and was
 rejected only because the generated C++ kept the original ordering.
