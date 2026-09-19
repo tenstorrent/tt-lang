@@ -14,7 +14,7 @@ TT-Lang normally assigns each logical dataflow buffer (DFB) a TT-Metal DFB descr
 | Payload reuse | Requires the Metal descriptor and backing-storage contracts | Requires noninterfering completed lifetimes |
 | Producer/consumer state | TT-Metal DFB interface state | Two 32-bit sequence counters per logical DFB |
 | Reset and reconfiguration in this PR | Blackhole TT-Metal interface reset and runtime descriptor reconfiguration | Blackhole address-based state reset with fixed geometry |
-| External C++ DFB access | Numeric index or descriptor metadata | Typed address-bearing descriptor |
+| External C++ DFB access | Numeric index or typed descriptor bound to a TT-Metal DFB | Typed descriptor bound to compiler-assigned storage |
 
 Shared terminology is defined in the [TT-Lang specification glossary](../sphinx/specs/TTLangSpecification.md#appendix-a-glossary). The DFB protocol and lifecycle rules are defined in [DFB Management](DFBManagement.md).
 
@@ -230,9 +230,9 @@ Common allocation and lowering contain no architecture branches. `compiler_l1_ta
 
 ## Runtime Arena
 
-The runtime allocates the arena as a row-major, height-sharded TTNN L1 tensor with one equal-length row per participating worker core. Height sharding directly represents one arena row per core. Width sharding provides no capacity benefit, and block sharding introduces an unused partition dimension.
+The runtime allocates the arena as a row-major, height-sharded TTNN L1 tensor with one equal-length row per participating worker core. Height sharding directly represents one arena row per core. Width sharding provides no capacity benefit, and block sharding introduces an unused partition dimension. A mesh tensor uses TT-Metal's lockstep allocation, which assigns the same L1 address on every selected device. Device-domain descriptors therefore combine device-specific logical coordinates with one common arena base.
 
-The arena is passed as an auxiliary `generic_op` input so TTNN retains it through device execution while preserving the user output position. Arena and synchronization scratch are zero-initialized. Runtime resource caching includes the allocation metadata and reset count, so incompatible layouts do not share resources.
+The arena is passed as an auxiliary `generic_op` input so TTNN retains it through device execution while preserving the user output position. Arena and synchronization scratch are zero-initialized. Declarative runtime resources compose with the arena: semaphore descriptors, per-kernel runtime arguments, compile-time defines, external fabric bindings, and their lifetime owners retain their existing validation and program-hash contracts. Runtime resource caching includes the allocation metadata and reset count, so incompatible layouts do not share resources.
 
 Uniform allocation reserves the largest required arena on every participating core. This can waste capacity when activity is sparse. Per-core layouts require target-independent per-node allocation metadata and are follow-on work.
 
@@ -251,16 +251,17 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 
 ## Implemented Contract
 
-- One device and one uniform worker-core arena.
+- One uniform worker-core arena layout at a lockstep address across the selected devices.
 - Compiler-owned static storage. Tensor-backed DFBs and allocation groups are rejected.
 - Full-block transactions with positive capacity below `2^31` pages.
 - Full 32x32 BF16 and FP32 tiles for address-based compute.
 - Address-based tensor transfer, elementwise compute, matmul, reductions, broadcast, transpose, and selected activation operations covered by the implementation tests.
 - Typed external C++ calls with explicit DFB effects.
+- Device-domain and mesh program placement with declarative external runtime resources.
 - Blackhole selected reset, reset-all, and reconfiguration.
 - Wormhole allocation, transfer, compute, and external descriptors without reset or reconfiguration.
 
-PipeNet transfers, computed-address DFBs, device-domain placement, multi-device execution, and external runtime resources are outside this contract and are rejected before device execution. The compiler does not fall back to Metal descriptors.
+PipeNet transfers and computed-address DFBs are outside this contract and are rejected before runtime-resource construction. The compiler does not fall back to Metal descriptors.
 
 ## Validation
 
@@ -270,20 +271,20 @@ PipeNet transfers, computed-address DFBs, device-domain placement, multi-device 
 | External calls and lifecycle boundaries | 20 Blackhole device cases across BF16/FP32 and DRAM/L1, including repeated selected reset, reset-all, reconfiguration, live state preservation, payload reuse, and reset of allocation index 65 |
 | Allocation | 20,888 compile-only generated placements covering both strategies, conflicts, alignment, reuse enabled and disabled, determinism, and exact budget boundaries; a focused fragmented graph verifies distinct strategy results |
 | Wormhole | Compile-only allocation, typed external descriptor, and UNPACK/MATH/PACK target compilation; negative reset and reconfiguration diagnostics |
+| Runtime placement and resources | Runtime-unit evidence for one-device and device-domain descriptors, replicated mesh placement, lockstep arena binding, external fabric bindings, resource lifetimes, program hashes, and retained PipeNet rejection; 18 Blackhole device-correctness cases for typed external calls with semaphores, runtime arguments, defines, repeated invocations, BF16/FP32, DRAM/L1, generic/specialized kernels, and both memory models |
 | Invalid contracts | Compiler diagnostics for malformed metadata, unsupported transactions and tile forms, unknown external effects, numeric external DFB indices, storage ownership, and budget overflow |
 
-Relevant tests are [transfer and allocator device tests](../../test/python/test_compiler_l1.py), [compute device tests](../../test/python/test_compiler_l1_compute.py), [lifecycle and external-call device tests](../../test/python/test_compiler_l1_lifecycle.py), and [generated allocator stress tests](../../test/ttlang/Dialect/TTL/Transforms/compiler_l1_stress.py).
+Relevant tests are [transfer and allocator device tests](../../test/python/test_compiler_l1.py), [compute device tests](../../test/python/test_compiler_l1_compute.py), [lifecycle and external-call device tests](../../test/python/test_compiler_l1_lifecycle.py), [runtime placement tests](../../test/python/test_kernel_runner.py), [external runtime-resource device tests](../../test/python/test_operation_runtime_resources.py), and [generated allocator stress tests](../../test/ttlang/Dialect/TTL/Transforms/compiler_l1_stress.py).
 
 ## Follow-on PRs
 
 The intended dependency order after this POC is:
 
-1. Add multi-device arena ownership, device-domain placement, mesh program placement, and external runtime-resource composition. Preserve one validated arena layout per participating device and core.
-2. Add tensor-backed DFB and allocation-group ownership. Represent external byte ranges, aliasing, and synchronized ownership transitions in the immutable allocation plan.
-3. Add PipeNet and computed-address transfers. Extend lifetime completion through remote transfer and destination consumption before permitting payload reuse.
-4. Qualify representative external C++ kernels against the typed descriptor interface and add common adapters for required address, geometry, and completion operations.
-5. Add sub-tile and row-major metadata, partial-block transactions, and the corresponding address and capacity rules.
-6. Add Wormhole reset and reconfiguration after defining and device-qualifying a Wormhole synchronization protocol behind the existing target interface.
-7. Qualify complete model layers, then measure device cycles, arena high-water usage, initialization cost, compile time, and generated code size against `metal-cb`.
+1. Add tensor-backed DFB and allocation-group ownership. Represent external byte ranges, aliasing, and synchronized ownership transitions in the immutable allocation plan.
+2. Add PipeNet and computed-address transfers. Extend lifetime completion through remote transfer and destination consumption before permitting payload reuse.
+3. Qualify representative external C++ kernels against the typed descriptor interface and add common adapters for required address, geometry, and completion operations.
+4. Add sub-tile and row-major metadata, partial-block transactions, and the corresponding address and capacity rules.
+5. Add Wormhole reset and reconfiguration after defining and device-qualifying a Wormhole synchronization protocol behind the existing target interface.
+6. Qualify complete model layers, then measure device cycles, arena high-water usage, initialization cost, compile time, and generated code size against `metal-cb`.
 
 Each extension must preserve the fail-before-mutation rule, architecture isolation, explicit ownership, and compiler-managed descriptor independence.
