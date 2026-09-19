@@ -226,8 +226,14 @@ direction with 6 clients per link on both hosts. Reducing TT-Lang's client
 count per direction (header-only channels for credit-only receivers, or
 fewer endpoint rows when links are scarce) is therefore a host-independent
 improvement alongside the transport depth. Deepening the distribution DFBs to two blocks
-produced incorrect output (PCC undefined) and is under investigation; relaying
-each half immediately after the sender row receives it is being measured. Removing the source-last
+produces incorrect output on every input tried (the smallest input gives PCC
+0.63), a multi-slot pipe-endpoint lowering defect that is recorded with its
+reproducer and not adopted. Relaying each half as soon as the sender row
+receives it, with the left relay issued after the right multicast receive is
+posted (the schedule verifier rejects the relay before that receive as a
+wait-for cycle), is correct and gives about 2% on both hosts: 4096/6144/18432
+2.455 ms on the all-shape host (2.449 ms with the two-block output DFB) and
+1.357 ms on the 13x10 host (1.356 ms with two output blocks). Removing the source-last
 publish is the next step on the 13x10 host; the earlier "push source
 weight DFB before row-multicast wait" experiment targeted it and was
 rejected only because the generated C++ kept the original ordering.
