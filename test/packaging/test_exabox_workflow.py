@@ -22,6 +22,7 @@ INSTALL_EXABOX_WORKER = (
     REPO_ROOT / ".github" / "containers" / "install-exabox-worker.sh"
 )
 UPLIFT_PATHS = REPO_ROOT / ".github" / "scripts" / "uplift-paths.sh"
+WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
 
 
 def test_pull_request_ci_targets_main_without_metadata_edits() -> None:
@@ -41,13 +42,31 @@ def test_pull_request_ci_targets_main_without_metadata_edits() -> None:
     assert root_jobs["build-docs"]["if"].endswith(
         "github.event_name != 'pull_request' }}"
     )
+    # prune-caches runs only on the nightly schedule, which excludes pull
+    # requests outright rather than by checking their base branch.
+    assert root_jobs["prune-caches"]["if"] == "${{ github.event_name == 'schedule' }}"
     for job_name, job in root_jobs.items():
-        if job_name != "build-docs":
+        if job_name not in ("build-docs", "prune-caches"):
             assert job["if"] == pull_request_guard
     assert ci_jobs["check-all-green"]["if"] == (
         "${{ always() && (github.event_name != 'pull_request' || "
         "github.base_ref == 'main') }}"
     )
+
+
+def test_ccache_is_restored_everywhere_but_saved_only_from_main() -> None:
+    ccache_steps = []
+    for workflow_path in WORKFLOWS_DIR.glob("*.yml"):
+        workflow = yaml.safe_load(workflow_path.read_text())
+        for job in workflow.get("jobs", {}).values():
+            for step in job.get("steps", []):
+                if step.get("uses") == "hendrikmuhs/ccache-action@v1.2":
+                    ccache_steps.append(step)
+
+    assert len(ccache_steps) == 4
+    for step in ccache_steps:
+        assert step["with"]["save"] == "${{ github.ref == 'refs/heads/main' }}"
+        assert step["with"]["evict-old-files"] == "job"
 
 
 def test_hardware_event_policy_and_manual_controls() -> None:

@@ -275,6 +275,25 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v5
 
+  # Prune ccache entries that will never be used again to avoid filling up the cache
+  # and evicting the reusable cached toolchain build (LLVM and metal)
+  prune-caches:
+    name: Prune superseded ccache entries
+    if: ${{ github.event_name == 'schedule' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: false
+      - name: Delete ccache entries superseded by a newer run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: .github/scripts/prune-actions-caches.sh --dry-run false
+
   check-all-green:
     if: ${{ always() && (github.event_name != 'pull_request' || github.base_ref == 'main') }}
     needs:
