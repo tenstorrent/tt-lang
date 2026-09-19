@@ -1371,7 +1371,12 @@ PipeGraph::proveReceiverProducerStreams(PipeGraphAnalysisState &analysisState) {
             std::optional<ReceiverControlContext> pushContext =
                 getReceiverControlContext(pushOp, *maybeLocation,
                                           analysisState);
-            if ((!postContext || postContext != pushContext) &&
+            // Both contexts must be known and equal. Two unknown contexts
+            // compare equal as optionals, so the known-ness is tested
+            // explicitly.
+            bool contextsKnownAndEqual =
+                postContext && pushContext && *postContext == *pushContext;
+            if (!contextsKnownAndEqual &&
                 *maybePushedBlocks % physicalBlockCount != 0) {
               pushOutsidePostContext = true;
             }
