@@ -2189,8 +2189,13 @@ def _allocate_l1_sharded_storage_tensor(
     *,
     zero_initialize: bool = False,
     per_core: bool = False,
+    range_lockstep: bool = False,
 ):
     """Allocate row-major L1 storage with one 4-byte element per storage word."""
+    if per_core and range_lockstep:
+        raise ValueError(
+            "L1 storage cannot use per-core and range-lockstep allocation together"
+        )
     aligned_bytes = _align_up(num_bytes, 32)
     elements_per_core = max(1, aligned_bytes // 4)
     num_cores = core_ranges.num_cores()
@@ -2206,6 +2211,8 @@ def _allocate_l1_sharded_storage_tensor(
     )
     if per_core:
         memory_config.experimental_set_per_core_allocation(True)
+    if range_lockstep:
+        memory_config.experimental_set_range_lockstep_allocation(True)
     allocator = ttnn.zeros if zero_initialize else ttnn.empty
     return allocator(
         (num_cores, elements_per_core),
@@ -2978,31 +2985,6 @@ def build_dfb_reconfiguration_runtime_resources(
 
     scratch_tensors = []
     owned_l1_buffer_addresses = set()
-    for storage_index, required_bytes, cores in pending_uniform_allocations:
-        scratch_tensor = _allocate_l1_sharded_storage_tensor(
-            _make_singleton_core_ranges(sorted(cores)),
-            required_bytes,
-            resource_device,
-        )
-        scratch_tensors.append(scratch_tensor)
-        addresses_by_core = _l1_buffer_addresses_by_core(
-            scratch_tensor, resource_device
-        )
-        tensor_addresses_by_identity[id(scratch_tensor)] = addresses_by_core
-        missing_cores = set(cores).difference(addresses_by_core)
-        if missing_cores:
-            raise RuntimeError(
-                f"storage[{storage_index}] scratch has no L1 address for launch "
-                f"nodes {sorted(missing_cores)}"
-            )
-        owned_l1_buffer_addresses.update(addresses_by_core[core] for core in cores)
-        for core in cores:
-            backing_by_storage_and_core[(storage_index, core)] = (
-                scratch_tensor,
-                required_bytes,
-                0,
-            )
-
     pending_local_arenas = []
     for core, members in pending_local_members_by_core.items():
         next_offset = 0
@@ -3040,6 +3022,35 @@ def build_dfb_reconfiguration_runtime_resources(
                 scratch_tensor,
                 required_bytes,
                 byte_offset,
+            )
+
+    # Range lockstep narrows the allocator's dependency scan to the cores the
+    # allocation occupies, so per-core arenas elsewhere on the grid cannot
+    # prevent a uniform address from being placed.
+    for storage_index, required_bytes, cores in pending_uniform_allocations:
+        scratch_tensor = _allocate_l1_sharded_storage_tensor(
+            _make_singleton_core_ranges(sorted(cores)),
+            required_bytes,
+            resource_device,
+            range_lockstep=True,
+        )
+        scratch_tensors.append(scratch_tensor)
+        addresses_by_core = _l1_buffer_addresses_by_core(
+            scratch_tensor, resource_device
+        )
+        tensor_addresses_by_identity[id(scratch_tensor)] = addresses_by_core
+        missing_cores = set(cores).difference(addresses_by_core)
+        if missing_cores:
+            raise RuntimeError(
+                f"storage[{storage_index}] scratch has no L1 address for launch "
+                f"nodes {sorted(missing_cores)}"
+            )
+        owned_l1_buffer_addresses.update(addresses_by_core[core] for core in cores)
+        for core in cores:
+            backing_by_storage_and_core[(storage_index, core)] = (
+                scratch_tensor,
+                required_bytes,
+                0,
             )
 
     scratch_segments_by_index = {}

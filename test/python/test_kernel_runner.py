@@ -3041,8 +3041,16 @@ def test_reconfiguration_runtime_storage_backs_unreconfigured_local_storage(
     fake_ttnn.from_torch = allocate_configuration
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
 
-    def allocate_scratch(core_ranges, num_bytes, allocation_device, *, per_core=False):
+    def allocate_scratch(
+        core_ranges,
+        num_bytes,
+        allocation_device,
+        *,
+        per_core=False,
+        range_lockstep=False,
+    ):
         assert per_core == hybrid_allocation
+        assert range_lockstep == (not hybrid_allocation)
         scratch_allocations.append((core_ranges, num_bytes, allocation_device))
         return scratch_tensor
 
@@ -3381,8 +3389,16 @@ def test_reconfiguration_runtime_storage_splits_local_storage_per_core(
     fake_ttnn.from_torch = lambda *_args, **_kwargs: configuration_tensor
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
 
-    def allocate_scratch(core_ranges, num_bytes, allocation_device, *, per_core=False):
+    def allocate_scratch(
+        core_ranges,
+        num_bytes,
+        allocation_device,
+        *,
+        per_core=False,
+        range_lockstep=False,
+    ):
         assert per_core == hybrid_allocation
+        assert range_lockstep == (not hybrid_allocation)
         scratch_tensor = _FakeTensor(
             allocation_device, address=0x8000 + len(scratch_allocations) * 0x1000
         )
@@ -3469,7 +3485,7 @@ def test_reconfiguration_runtime_storage_splits_local_storage_per_core(
     assert all(descriptor.backing_desc is not None for descriptor in descriptors)
 
 
-def test_reconfiguration_runtime_storage_allocates_remote_uniform_first(
+def test_reconfiguration_runtime_storage_locks_uniform_ranges_after_local_storage(
     monkeypatch,
 ):
     monkeypatch.setenv("TT_METAL_ALLOCATOR_MODE_HYBRID", "1")
@@ -3486,7 +3502,14 @@ def test_reconfiguration_runtime_storage_allocates_remote_uniform_first(
     fake_ttnn.from_torch = lambda *_args, **_kwargs: _FakeTensor(device, address=0xA000)
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
 
-    def allocate_scratch(core_ranges, num_bytes, allocation_device, *, per_core=False):
+    def allocate_scratch(
+        core_ranges,
+        num_bytes,
+        allocation_device,
+        *,
+        per_core=False,
+        range_lockstep=False,
+    ):
         scratch_tensor = _FakeTensor(
             allocation_device, address=0x8000 + len(scratch_allocations) * 0x1000
         )
@@ -3496,6 +3519,7 @@ def test_reconfiguration_runtime_storage_allocates_remote_uniform_first(
         }
         scratch_allocations.append((scratch_cores, num_bytes, scratch_tensor))
         assert per_core == (len(scratch_cores) == 1)
+        assert range_lockstep == (len(scratch_cores) > 1)
         return scratch_tensor
 
     monkeypatch.setattr(
@@ -3557,17 +3581,17 @@ def test_reconfiguration_runtime_storage_allocates_remote_uniform_first(
         (scratch_cores, num_bytes)
         for scratch_cores, num_bytes, _ in scratch_allocations
     ] == [
-        ({(0, 0), (1, 0)}, 4096),
         ({(0, 0)}, 8192),
+        ({(0, 0), (1, 0)}, 4096),
     ]
     assert (
-        resources.scratch_segments_by_index[0][0].tensor is resources.scratch_tensors[0]
+        resources.scratch_segments_by_index[0][0].tensor is resources.scratch_tensors[1]
     )
     assert (
-        resources.scratch_segments_by_index[1][0].tensor is resources.scratch_tensors[0]
+        resources.scratch_segments_by_index[1][0].tensor is resources.scratch_tensors[1]
     )
     assert (
-        resources.scratch_segments_by_index[2][0].tensor is resources.scratch_tensors[1]
+        resources.scratch_segments_by_index[2][0].tensor is resources.scratch_tensors[0]
     )
 
 
@@ -7666,15 +7690,19 @@ def test_l1_sharded_storage_counts_sparse_cores(monkeypatch):
     assert empty_calls[0][0] == (2, 512)
 
 
-def test_l1_sharded_storage_enables_per_core_allocation(monkeypatch):
+def test_l1_sharded_storage_selects_experimental_allocation_modes(monkeypatch):
     fake_ttnn = _FakeTTNN()
     fake_ttnn.ShardSpec = lambda *args: args
-    memory_config = SimpleNamespace(per_core=False)
+    memory_config = SimpleNamespace(per_core=False, range_lockstep=False)
 
     def enable_per_core(enable):
         memory_config.per_core = enable
 
+    def enable_range_lockstep(enable):
+        memory_config.range_lockstep = enable
+
     memory_config.experimental_set_per_core_allocation = enable_per_core
+    memory_config.experimental_set_range_lockstep_allocation = enable_range_lockstep
     fake_ttnn.MemoryConfig = lambda *args: memory_config
     fake_ttnn.ShardOrientation = SimpleNamespace(ROW_MAJOR=object())
     fake_ttnn.TensorMemoryLayout = SimpleNamespace(HEIGHT_SHARDED=object())
@@ -7695,7 +7723,26 @@ def test_l1_sharded_storage_enables_per_core_allocation(monkeypatch):
     )
 
     assert memory_config.per_core
+    assert not memory_config.range_lockstep
     assert empty_calls[0][1]["memory_config"] is memory_config
+
+    kernel_runner._allocate_l1_sharded_storage_tensor(
+        _FakeExplicitCoreRanges((0, 0), (1, 0)),
+        num_bytes=2048,
+        device=object(),
+        range_lockstep=True,
+    )
+
+    assert memory_config.range_lockstep
+
+    with pytest.raises(ValueError, match="cannot use per-core and range-lockstep"):
+        kernel_runner._allocate_l1_sharded_storage_tensor(
+            _FakeExplicitCoreRanges((0, 0), (1, 0)),
+            num_bytes=2048,
+            device=object(),
+            per_core=True,
+            range_lockstep=True,
+        )
 
 
 def test_l1_buffer_addresses_uses_per_core_tensor_addresses(monkeypatch):
