@@ -170,6 +170,7 @@ make_entrypoint_fixture() {
     cluster="$BATS_TEST_TMPDIR/blackhole_P150_unharvested.yaml"
     program="$BATS_TEST_TMPDIR/program.py"
     llvm_revision_header="$BATS_TEST_TMPDIR/toolchain/include/llvm/Support/VCSRevision.h"
+    memory_max_file="$BATS_TEST_TMPDIR/memory.max"
     test_entrypoint="$BATS_TEST_TMPDIR/entrypoint.sh"
     expected_llvm_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     source_fingerprint=source-fingerprint
@@ -179,6 +180,7 @@ make_entrypoint_fixture() {
     printf '%s\n' "$source_fingerprint" > \
         "$build_dir/.ttlang-emule-source-fingerprint"
     printf '#define LLVM_REVISION "%s"\n' "$expected_llvm_sha" > "$llvm_revision_header"
+    printf '%s\n' "$((6 * 1024 * 1024 * 1024))" > "$memory_max_file"
     sed "s|/opt/ttlang-toolchain|$BATS_TEST_TMPDIR/toolchain|g" \
         "$ENTRYPOINT" > "$test_entrypoint"
 }
@@ -267,6 +269,25 @@ EOF
     assert_log_line \
         "type=volume,src=tt-lang-emule-cache-${runtime_id},dst=/tt-metal-cache"
     refute_log_line "build"
+}
+
+@test "linked worktree mounts its external Git metadata read-only" {
+    local source_root="$BATS_TEST_TMPDIR/source"
+    local worktree_root="$BATS_TEST_TMPDIR/worktree"
+    local worktree_runner="$worktree_root/scripts/tt-lang-emule-container.sh"
+    local git_common_dir
+    make_runner_fixture "$source_root"
+    git -C "$source_root" worktree add -q --detach "$worktree_root" HEAD
+    git_common_dir="$(
+        git -C "$worktree_root" rev-parse --path-format=absolute --git-common-dir
+    )"
+
+    TTLANG_EMULE_STACK_MANIFEST="$worktree_root/config/tt-lang-emule-stack.json" \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -0 "$worktree_runner" "$worktree_root/examples/program.py"
+
+    assert_log_line \
+        "type=bind,src=${git_common_dir},dst=${git_common_dir},readonly"
 }
 
 @test "compiler source identity reaches the container" {
@@ -681,6 +702,7 @@ PY
 
     PATH="$mock_bin:$PATH" \
         TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
+        _TTLANG_EMULE_CGROUP_MEMORY_MAX_PATH="$memory_max_file" \
         TTLANG_EMULE_EXPECTED_LLVM_SHA="$expected_llvm_sha" \
         TTLANG_EMULE_INSTALL=1 \
         TTLANG_EMULE_COMPILER_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
@@ -691,9 +713,10 @@ PY
 
     assert_output --partial \
         "Installed compiler-backed emule environment for bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb."
+    assert_output --partial "Building TT-Lang with 3 parallel job(s)."
     refute_output --partial "python="
     run -0 grep -F -x -- "cmake=--parallel" "$MOCK_ENTRYPOINT_LOG"
-    run -0 grep -F -x -- "cmake=4" "$MOCK_ENTRYPOINT_LOG"
+    run -0 grep -F -x -- "cmake=3" "$MOCK_ENTRYPOINT_LOG"
     run -0 grep -F -x -- \
         "cmake=-DTTLANG_EXTERNAL_TT_METAL_DIR=/opt/tt-emule-runtime/tt-metal" \
         "$MOCK_ENTRYPOINT_LOG"

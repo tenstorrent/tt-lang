@@ -142,7 +142,9 @@ tests do not execute tt-emule; device tests require a compatible emule-enabled
 Linux build environment. See
 [`test/TESTING.md`](https://github.com/tenstorrent/tt-lang/blob/main/test/TESTING.md)
 for the suite boundaries, device requirements, pytest selection, lit paths, and
-output locations. See [Testing](testing.md) for the short command reference.
+output locations. See [Testing](testing.md) for the short command reference and
+[Compiler suite on tt-emule](compiler-emule-test-status.md) for the latest full
+suite result and failure triage.
 
 Representative programs do not need another launcher command. Run them through
 the normal interface one at a time:

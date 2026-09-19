@@ -78,7 +78,41 @@ if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ]; then
         -DTTLANG_EXTERNAL_TT_METAL_DIR="$TT_METAL_SOURCE_DIR" \
         -DTTLANG_EXTERNAL_TT_METAL_BUILD_DIR="$TT_METAL_BUILD_DIR" \
         -DTTLANG_ENABLE_PERF_TRACE=OFF
-    cmake --build "$TTLANG_BUILD_DIR" --parallel "$(nproc)"
+    _BUILD_JOBS="$(nproc)"
+    _MEMORY_MAX_PATH="${_TTLANG_EMULE_CGROUP_MEMORY_MAX_PATH:-/sys/fs/cgroup/memory.max}"
+    _MEMINFO_PATH="${_TTLANG_EMULE_MEMINFO_PATH:-/proc/meminfo}"
+    _MEMORY_BYTES=""
+    if [ -r "$_MEMORY_MAX_PATH" ]; then
+        _MEMORY_MAX="$(cat "$_MEMORY_MAX_PATH")"
+        if [[ "$_MEMORY_MAX" =~ ^[0-9]+$ ]]; then
+            _MEMORY_BYTES="$_MEMORY_MAX"
+        fi
+    fi
+    if [ -r "$_MEMINFO_PATH" ]; then
+        _MEMTOTAL_KIB="$(awk '$1 == "MemTotal:" { print $2; exit }' "$_MEMINFO_PATH")"
+        if [[ "$_MEMTOTAL_KIB" =~ ^[0-9]+$ ]]; then
+            _MEMTOTAL_BYTES="$((_MEMTOTAL_KIB * 1024))"
+            if [ -z "$_MEMORY_BYTES" ] || \
+               [ "$_MEMTOTAL_BYTES" -lt "$_MEMORY_BYTES" ]; then
+                _MEMORY_BYTES="$_MEMTOTAL_BYTES"
+            fi
+        fi
+    fi
+    if [ -n "$_MEMORY_BYTES" ]; then
+        # MLIR translation units can use close to 2 GiB each.  Docker can
+        # expose every host CPU while granting the VM or container much less
+        # memory, so CPU-count parallelism alone can OOM without a useful
+        # compiler diagnostic.
+        _MEMORY_JOBS="$((_MEMORY_BYTES / (2 * 1024 * 1024 * 1024)))"
+        if [ "$_MEMORY_JOBS" -lt 1 ]; then
+            _MEMORY_JOBS=1
+        fi
+        if [ "$_MEMORY_JOBS" -lt "$_BUILD_JOBS" ]; then
+            _BUILD_JOBS="$_MEMORY_JOBS"
+        fi
+    fi
+    echo "Building TT-Lang with ${_BUILD_JOBS} parallel job(s)."
+    cmake --build "$TTLANG_BUILD_DIR" --parallel "$_BUILD_JOBS"
     printf '%s\n' "${TTLANG_EMULE_SOURCE_FINGERPRINT}" > \
         "$_COMPILER_MARKER_TEMP"
     mv -- "$_COMPILER_MARKER_TEMP" "$_COMPILER_MARKER"

@@ -182,6 +182,23 @@ _RUN_ARGS=(
     -e "TTLANG_EMULE_SOURCE_FINGERPRINT=${_COMPILER_SOURCE_FINGERPRINT}"
 )
 
+# A linked Git worktree stores only a .git pointer inside the checkout. Mount
+# its external common directory at the same absolute path so packaging and
+# versioning code inside the container can still resolve the checkout's HEAD.
+_GIT_COMMON_DIR="$(
+    git -C "$_REPO_ROOT" rev-parse --path-format=absolute --git-common-dir
+)"
+readonly _GIT_COMMON_DIR
+case "${_GIT_COMMON_DIR}/" in
+    "${_REPO_ROOT}/"*) ;;
+    *)
+        _RUN_ARGS+=(
+            --mount
+            "type=bind,src=${_GIT_COMMON_DIR},dst=${_GIT_COMMON_DIR},readonly"
+        )
+        ;;
+esac
+
 if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ]; then
     _RUN_ARGS+=(-e TTLANG_EMULE_INSTALL=1)
 fi
