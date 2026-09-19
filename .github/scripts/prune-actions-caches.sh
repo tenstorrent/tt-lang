@@ -4,13 +4,12 @@
 #
 # Delete superseded compiler caches so they stop evicting the toolchain cache.
 #
-# hendrikmuhs/ccache-action appends a timestamp to every key it writes, so each
-# run leaves a new entry and restores the newest one through restore-keys. The
-# older entries in a series are never restored again, but they still count
-# against the repository's 10 GB Actions cache budget. Once that budget is full
-# GitHub evicts least recently used entries, and the ~1 GB toolchain caches are
-# the largest targets, so an uplift rebuilds LLVM and tt-metal from source even
-# though a matching cache was saved days earlier.
+# GitHub Actions caches are immutable, so hendrikmuhs/ccache-action appends a
+# timestamp when it saves an updated cache. Each entry can be restored until a
+# newer prefix match supersedes it. The older entries still count against the
+# repository's 10 GB cache budget and can cause unrelated toolchain caches to
+# be evicted. Pull requests restore the default-branch caches without saving;
+# this script bounds the history produced by rolling default-branch caches.
 #
 # Entries are grouped by ref and by key with the trailing timestamp removed; the
 # newest KEEP entries of each group survive. Only keys matching PREFIX are ever
