@@ -18,10 +18,14 @@ repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:
+      # Patches under third-party/patches are verbatim diffs: a blank context
+      # line is a single space, and rewriting it stops the patch applying.
       - id: trailing-whitespace
         stages: [pre-commit]
+        exclude: ^third-party/patches/.*\.patch$
       - id: end-of-file-fixer
         stages: [pre-commit]
+        exclude: ^third-party/patches/.*\.patch$
       - id: check-added-large-files
         stages: [pre-commit]
       - id: check-yaml

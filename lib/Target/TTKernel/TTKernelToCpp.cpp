@@ -149,6 +149,7 @@ public:
           callee == "experimental::routing_plane_fused_write_atomic_inc") {
         emitLlk(experimental_routing_plane_generated,
                 experimental_routing_plane_generated_len);
+        headers.insert("tt_metal/fabric/fabric_edm_packet_header.hpp");
         headers.insert("tt_metal/fabric/hw/inc/fabric_config.h");
       }
       if (callee == "experimental::reset_dfb_interfaces") {
