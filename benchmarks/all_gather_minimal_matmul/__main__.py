@@ -90,6 +90,7 @@ class TTLangConfig:
     k_block_tiles: int
     n_block_tiles: int
     reuse_activation: bool
+    output_block_count: int
 
 
 @dataclass(frozen=True)
@@ -181,6 +182,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ttlang-m-block-tiles", type=positive_int, default=5)
     parser.add_argument("--ttlang-k-block-tiles", type=positive_int, default=10)
     parser.add_argument("--ttlang-n-block-tiles", type=positive_int, default=12)
+    parser.add_argument("--ttlang-output-block-count", type=positive_int, default=2)
     parser.add_argument(
         "--ttlang-reuse-activation",
         action=argparse.BooleanOptionalAction,
@@ -311,6 +313,7 @@ def make_configs(arguments):
         k_block_tiles=arguments.ttlang_k_block_tiles,
         n_block_tiles=arguments.ttlang_n_block_tiles,
         reuse_activation=arguments.ttlang_reuse_activation,
+        output_block_count=arguments.ttlang_output_block_count,
     )
     native = NativeConfig(
         compute_grid=native_compute_grid,
@@ -553,6 +556,7 @@ def create_ttlang_workload(mesh, common, ttlang):
         k_block_tiles=ttlang.k_block_tiles,
         n_block_tiles=ttlang.n_block_tiles,
         reuse_activation=ttlang.reuse_activation,
+        output_block_count=ttlang.output_block_count,
     )
     _, expected, activation, weight, bias, shard_mapper = make_inputs(
         mesh, common, operation_config.padded_m_tiles
