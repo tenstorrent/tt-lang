@@ -80,8 +80,19 @@ def _make_external_selected_reset(data_format):
     @ttl.operation(grid=(1, 1))
     def external_selected_reset(input_tensor, output_tensor):
         stale_source = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
-        reset_target = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
-        current_source = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        shared_allocation = ttl.make_dfb_allocation_group()
+        reset_target = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=2,
+            allocation_group=shared_allocation,
+        )
+        current_source = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=2,
+            allocation_group=shared_allocation,
+        )
         output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
 
         @ttl.compute(kernel=compute_kernel)
@@ -302,12 +313,16 @@ def test_compiler_l1_scalar_external_compute(device, dtype, to_device):
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
-def test_compiler_l1_external_selected_reset(device, dtype, to_device):
+def test_compiler_l1_external_selected_reset(
+    device, dtype, to_device, monkeypatch, tmp_path
+):
     if ttl_api._detect_device_arch(device) != "blackhole":
         pytest.skip("requires Blackhole synchronized DFB reset support")
     input_host = torch.randn(TILE, 2 * TILE, dtype=dtype)
     input_tensor = to_device(input_host, device)
     output_tensor = to_device(torch.zeros((TILE, TILE), dtype=dtype), device)
+    final_mlir = tmp_path / "compiler_l1_external_group_reset.mlir"
+    monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir))
 
     operation = _make_external_selected_reset(_data_format(dtype))
     for _invocation_index in range(2):
@@ -317,6 +332,15 @@ def test_compiler_l1_external_selected_reset(device, dtype, to_device):
             options="--ttl-memory-model=compiler-l1",
         )
         _assert_exact(ttnn.to_torch(output_tensor), input_host[:, TILE:])
+
+    allocation_line = final_mlir.read_text().splitlines()[0]
+    storage_records = re.findall(
+        r"dfb_index = \d+.*?l1_offset = (\d+).*?"
+        r"l1_payload_offset = (\d+).*?storage_index = (\d+)",
+        allocation_line,
+    )
+    assert len(storage_records) == 4
+    assert len(set(storage_records)) == 3
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
