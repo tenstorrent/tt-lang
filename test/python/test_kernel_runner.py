@@ -3159,7 +3159,7 @@ def test_reconfiguration_runtime_storage_preserves_shared_storage(monkeypatch):
     assert descriptors[0].backing_desc["tensor"] is scratch_tensor
 
 
-def test_reconfiguration_runtime_storage_preserves_per_core_capacity(monkeypatch):
+def test_reconfiguration_runtime_storage_uses_maximum_per_core_capacity(monkeypatch):
     fake_ttnn = _FakeTTNN()
     fake_ttnn.uint32 = "uint32"
     fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
@@ -3242,11 +3242,11 @@ def test_reconfiguration_runtime_storage_preserves_per_core_capacity(monkeypatch
         dfb_reconfiguration_plan=plan,
     )
 
-    assert [allocation[1] for allocation in scratch_allocations] == [4096, 2048]
-    assert len(resources.scratch_tensors) == 2
-    assert resources.scratch_segments_by_index[0][0].allocation_bytes == 2048
+    assert [allocation[1] for allocation in scratch_allocations] == [4096]
+    assert len(resources.scratch_tensors) == 1
+    assert resources.scratch_segments_by_index[0][0].allocation_bytes == 4096
     assert resources.scratch_segments_by_index[1][0].allocation_bytes == 4096
-    assert [descriptor.total_size for descriptor in descriptors] == [2048, 4096]
+    assert [descriptor.total_size for descriptor in descriptors] == [4096, 4096]
     assert [
         descriptor.format_descriptors[0].buffer_index for descriptor in descriptors
     ] == [0, 1]
