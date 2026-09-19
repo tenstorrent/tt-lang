@@ -1377,7 +1377,7 @@ PipeGraph::proveReceiverProducerStreams(PipeGraphAnalysisState &analysisState) {
             bool contextsKnownAndEqual =
                 postContext && pushContext && *postContext == *pushContext;
             if (!contextsKnownAndEqual &&
-                *maybePushedBlocks % physicalBlockCount != 0) {
+                *maybePushedBlocks != physicalBlockCount) {
               pushOutsidePostContext = true;
             }
             if (!hasMatchingReceiveWaitBeforePush(
