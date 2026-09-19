@@ -3012,7 +3012,15 @@ def test_reconfiguration_runtime_storage_uses_exact_node_union(monkeypatch):
     )
 
 
-def test_reconfiguration_runtime_storage_excludes_unmodified_descriptors(monkeypatch):
+@pytest.mark.parametrize(
+    "hybrid_allocation", [False, True], ids=["reconfigured-only", "local"]
+)
+def test_reconfiguration_runtime_storage_backs_unreconfigured_local_storage(
+    monkeypatch, hybrid_allocation
+):
+    monkeypatch.setenv(
+        "TT_METAL_ALLOCATOR_MODE_HYBRID", "1" if hybrid_allocation else "0"
+    )
     fake_ttnn = _FakeTTNN()
     fake_ttnn.uint32 = "uint32"
     fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
@@ -3033,7 +3041,8 @@ def test_reconfiguration_runtime_storage_excludes_unmodified_descriptors(monkeyp
     fake_ttnn.from_torch = allocate_configuration
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
 
-    def allocate_scratch(core_ranges, num_bytes, allocation_device, **_kwargs):
+    def allocate_scratch(core_ranges, num_bytes, allocation_device, *, per_core=False):
+        assert per_core == hybrid_allocation
         scratch_allocations.append((core_ranges, num_bytes, allocation_device))
         return scratch_tensor
 
@@ -3050,6 +3059,15 @@ def test_reconfiguration_runtime_storage_excludes_unmodified_descriptors(monkeyp
 
     reconfigured = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32))
     unchanged = PhysicalDFBConfig(1, 1, "float32", 1, 4096, (32, 32))
+    unchanged_remote = PhysicalDFBConfig(
+        2,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        address_scope=DFBAddressScope.REMOTE_UNIFORM,
+    )
     plan = DFBReconfigurationPlan(
         boundary_ordinals=(7,),
         dfb_epochs=(
@@ -3058,6 +3076,7 @@ def test_reconfiguration_runtime_storage_excludes_unmodified_descriptors(monkeyp
                 DFBConfigurationEpoch(7, reconfigured),
             ),
             (DFBConfigurationEpoch(None, unchanged),),
+            (DFBConfigurationEpoch(None, unchanged_remote),),
         ),
     )
 
@@ -3068,10 +3087,16 @@ def test_reconfiguration_runtime_storage_excludes_unmodified_descriptors(monkeyp
         device=device,
     )
 
-    assert len(scratch_allocations) == 1
-    assert scratch_allocations[0][1:] == (2048, device)
-    assert resources.scratch_tensors == [scratch_tensor]
-    assert set(resources.scratch_segments_by_index) == {0}
+    expected_allocations = (
+        [(4096, device), (2048, device)] if hybrid_allocation else [(2048, device)]
+    )
+    assert [allocation[1:] for allocation in scratch_allocations] == (
+        expected_allocations
+    )
+    assert resources.scratch_tensors == [scratch_tensor] * len(expected_allocations)
+    assert set(resources.scratch_segments_by_index) == (
+        {0, 1} if hybrid_allocation else {0}
+    )
     assert len(host_configurations) == 1
     encoded = host_configurations[0][0]
     assert int(encoded[kernel_runner._DFB_RECONFIGURATION_LOW_MASK_WORD]) == 1

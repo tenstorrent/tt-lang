@@ -2817,9 +2817,23 @@ def build_dfb_reconfiguration_runtime_resources(
         ):
             reconfigured_storage_indices.add(storage_index)
 
+    hybrid_allocation = os.environ.get("TT_METAL_ALLOCATOR_MODE_HYBRID", "0") == "1"
+
     # Runtime backing removes reconfigured scratch from the static program
-    # allocation, which cannot hold every epoch's capacity on every core.
+    # allocation, which cannot hold every epoch's capacity on every core. Local
+    # storage is backed as well once per-core addresses are available, because
+    # it then no longer needs the interval static descriptors reserve across
+    # every core of the storage index.
     runtime_backed_storage_indices = set(reconfigured_storage_indices)
+    if hybrid_allocation:
+        runtime_backed_storage_indices.update(
+            storage_index_by_dfb[dfb_index]
+            for dfb_index, scratch_layout_by_core in (
+                scratch_layout_by_core_by_dfb.items()
+            )
+            if scratch_layout_by_core
+            and storage_index_by_dfb[dfb_index] not in remote_uniform_storage_indices
+        )
 
     required_layout_by_core_by_storage = {}
     for dfb_index, scratch_layout_by_core in scratch_layout_by_core_by_dfb.items():
@@ -2891,7 +2905,6 @@ def build_dfb_reconfiguration_runtime_resources(
     # Remote writers address remote-uniform storage locally, so it needs one
     # common address across its cores. Local storage accepts independent
     # per-core addresses, which only the hybrid allocator can produce.
-    hybrid_allocation = os.environ.get("TT_METAL_ALLOCATOR_MODE_HYBRID", "0") == "1"
     per_core_storage_indices = (
         set(required_bytes_by_core_by_storage).difference(
             remote_uniform_storage_indices
