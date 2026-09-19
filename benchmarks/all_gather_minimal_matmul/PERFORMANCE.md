@@ -111,7 +111,7 @@ intervals reported as median (minimum-maximum). Every invocation passed PCC >=
 
 | M | Full K | Full N | TT-Lang ms | Native ms | TT-Lang/native | Provenance |
 | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| 9472 | 5120 | 15360 | 1.847 (1.802-1.879) | 1.970 (1.950-2.035) | 0.937 | [P4](#p4-four-device-column-parallel) |
+| 9472 | 5120 | 15360 | 1.800 (1.776-1.820) | 1.980 (1.951-1.996) | 0.909 | [P4](#p4-four-device-column-parallel) |
 
 Native blocking for this result is the upstream
 [model configuration heuristic](https://github.com/tenstorrent/tt-metal/blob/0e9d200db976120c129ab0deb13aa3f6d972b723/models/tt_dit/layers/linear.py#L415).
@@ -130,12 +130,12 @@ communication configuration for the same inputs and N-sharded output.
 | Compute grid | 12 x 10; 120 compute workers | 12 x 9; 108 compute workers |
 | M/K/N blocks | 5/10/12 tiles | 7/5/16 tiles |
 | Output subblock | 1 x 4 tiles; direct FP32 packer accumulation | 1 x 2 tiles |
-| Output blocks in L1 | one block as measured; the operation now defaults to two (`output_block_count`) | output written per subblock during compute |
+| Output blocks in L1 | two blocks (`output_block_count`) | output written per subblock during compute |
 | Communication workers | 48 fabric clients in four compute rows; eight mux-only workers | 24 compute workers are fabric clients; four mux-only workers |
 | Activation collective | bidirectional ring into L1; boundary rows multicast each K half through compute columns | bidirectional ring into DRAM, followed by unicast worker-chain distribution |
 | Fabric configuration | 2D, strict initialization | 1D ring, strict initialization |
 | Payload | 8192 bytes | 8192 bytes |
-| Links/clients/buffers | four links/direction; six clients/link; 22 buffers/client channel | two links/direction; six clients/link; 24 buffers/client channel |
+| Links/clients/buffers | four links/direction; six clients/link; 21 buffers/client channel | two links/direction; six clients/link; 24 buffers/client channel |
 | Arithmetic | BF16 input/output; HiFi2; FP32 destination and packer accumulation | same; approximate math; three output chunks |
 
 The native grid and blocks are the TT-Metal
@@ -236,15 +236,18 @@ See the [reproduction commands](README.md#run).
 
 ### P4: Four-device column-parallel
 
-- Measured: 2026-09-15 09:34-09:35 UTC.
-- TT-Lang source: 71b471e6c72c9fa67221230d87cb2094786d9302.
-- Operation SHA-256: 6d7cfba54a5b37ca401ad03abd8865f1c113a9a8663e0219483eb35be630b793.
-- TT-Lang compiler SHA-256: 6f4f849342e3064c03182172ed15d4d73539bb5a595b5b872d9f960d33288dc8.
-- TT-Metal runtime: 41859079d93962001854fb9e0c466a693e8789e2.
-- Native binary SHA-256: 9815624f3813041d7b322e09d9b220b1989726e49bbc97606843af21ff2927a8.
-- libtt_metal SHA-256: 019f18c42901dfe9c9d47bb6194ee02f562027a6333d4b6384b116772cc71cdc.
-- LLVM: 37aca9d384347f4f965fa137b0f5463156ba590f.
-- Firmware 18.12.1; IRD v1.1.9. The container image digest was not recorded.
+- Measured: 2026-09-19 22:26-22:31 UTC.
+- TT-Lang source: b0eb413d78c27efdb1f3c560bc681c5460246b88, clean worktree.
+- Operation SHA-256: 4e2e0fdcb1d30a35deaa6117e2cc1e8b50a681fdcfca06de34ca5a7925b7980a.
+- TT-Lang compiler SHA-256: 8c5ac733d8395705c95883845447625bd6c8b92f5c9eec006994e7d291689a79.
+- TT-Metal runtime: 0e9d200db976120c129ab0deb13aa3f6d972b723.
+- Native binary SHA-256: 4efa4f824c0d90d0bc15ed0e8eea714b66f62d1b3be0df1fc5754b0e4c5adf80.
+- libtt_metal SHA-256: cd74b5c1468eaaad72688cf3bc78ac7db2408add2ee4dc2a0aef4a293ee7eae4.
+- LLVM: d6b0c1b9a79d5fdd3d6f94ae36adb266930bd68e.
+- Firmware 18.12.1; 1350 MHz; IRD v1.1.10 image digest
+  sha256:e153267665bf1d1f48577698979b2b166f78810c74a2a49a083d37bf18249b52.
+- The previous accepted pair, 1.847 and 1.970 ms at 71b471e6c72c9fa67221230d87cb2094786d9302 on 2026-09-15,
+  preceded the two-block output DFB and the early activation relay.
 
 ### PC: Component measurements
 

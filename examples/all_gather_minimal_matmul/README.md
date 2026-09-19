@@ -9,7 +9,7 @@ output shards collectively contain one `M x N` result.
 | 1 | [`operation.py`](operation.py) | One M block per fabric transfer; direct L1 injection | Correct; 2.613 ms control |
 | 2 | [`operation_bidirectional_dram.py`](operation_bidirectional_dram.py) | Bidirectional K halves staged in receiver DRAM | Correct; slower than direct L1 |
 | 3 | [`operation_grouped_rows.py`](operation_grouped_rows.py) | Three contiguous M blocks per fabric transfer; L1 subview injection | Correct; 2.269 ms |
-| 4 | [`operation_bidirectional_l1.py`](operation_bidirectional_l1.py) | Bidirectional K halves received into L1 and distributed from opposite rows | Selected; 1.847 ms on 4 devices, 1.798 ms on 8 devices |
+| 4 | [`operation_bidirectional_l1.py`](operation_bidirectional_l1.py) | Bidirectional K halves received into L1 and distributed from opposite rows | Selected; 1.800 ms on 4 devices, 1.798 ms on 8 devices |
 | 5 | [`../matmul_reduce_scatter_2d/operation.py`](../matmul_reduce_scatter_2d/operation.py) | Exchange partial results between two K groups and reduce into M/N-sharded output | Correct; 3.233 ms on four devices |
 
 Comparison reference: TT-Metal
