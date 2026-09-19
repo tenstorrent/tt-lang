@@ -275,10 +275,8 @@ jobs:
         id: deployment
         uses: actions/deploy-pages@v5
 
-  # ccache-action stamps every key with a timestamp, so each run leaves an entry
-  # that restore-keys will never pick again. Left alone they fill the 10 GB
-  # repository cache budget and GitHub evicts the ~1 GB toolchain caches, which
-  # makes the next uplift rebuild LLVM and tt-metal from source.
+  # Prune ccache entries that will never be used again to avoid filling up the cache
+  # and evicting the reusable cached toolchain build (LLVM and metal)
   prune-caches:
     name: Prune superseded ccache entries
     if: ${{ github.event_name == 'schedule' }}
