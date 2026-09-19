@@ -8775,31 +8775,15 @@ def test_emit_runner_source_preserves_fabric_binding_metadata(monkeypatch):
 @pytest.mark.parametrize(
     "requested_bytes, reserved_bytes", [(64, 0), (64, 63), (64, 64), (64, 96), (8, 64)]
 )
-def test_sram_report_reservation_accounting(
-    monkeypatch, capsys, requested_bytes, reserved_bytes
-):
+def test_sram_report_reservation_accounting(capsys, requested_bytes, reserved_bytes):
     import json
     import ttl.kernel_runner as runner
 
-    buffer = SimpleNamespace(
-        buffer_type="sram", address=4096, max_size_per_bank=reserved_bytes
+    arena = SimpleNamespace(
+        buffer_aligned_page_size=lambda: reserved_bytes,
+        buffer_num_pages=lambda: 3,
     )
-    unrelated = SimpleNamespace(
-        buffer_type="sram", address=8192, max_size_per_bank=1024
-    )
-    device = object()
-    arena = SimpleNamespace(buffer_address=lambda: 4096, device=lambda: device)
     cores = SimpleNamespace(num_cores=lambda: 3)
-    monkeypatch.setattr(
-        runner,
-        "ttnn",
-        SimpleNamespace(
-            BufferType=SimpleNamespace(L1="sram"),
-            _ttnn=SimpleNamespace(
-                reports=SimpleNamespace(get_buffers=lambda current: [unrelated, buffer])
-            ),
-        ),
-    )
     if reserved_bytes < requested_bytes:
         with pytest.raises(RuntimeError, match="smaller than"):
             runner._print_sram_runtime_report(
@@ -8817,25 +8801,32 @@ def test_sram_report_reservation_accounting(
     assert record["operation"] == "test_operation"
 
 
-@pytest.mark.parametrize("matching_count", [0, 2])
-def test_sram_report_requires_unique_allocation(monkeypatch, matching_count):
+@pytest.mark.parametrize(
+    "core_count, page_count", [(0, 0), (3, 0), (3, 1), (3, 2), (3, 4)]
+)
+def test_sram_report_requires_uniform_pages(core_count, page_count):
     import ttl.kernel_runner as runner
 
-    buffer = SimpleNamespace(buffer_type="sram", address=4096, max_size_per_bank=64)
-    monkeypatch.setattr(
-        runner,
-        "ttnn",
-        SimpleNamespace(
-            BufferType=SimpleNamespace(L1="sram"),
-            _ttnn=SimpleNamespace(
-                reports=SimpleNamespace(
-                    get_buffers=lambda current: [buffer] * matching_count
-                )
-            ),
-        ),
+    arena = SimpleNamespace(
+        buffer_aligned_page_size=lambda: 64,
+        buffer_num_pages=lambda: page_count,
     )
-    arena = SimpleNamespace(buffer_address=lambda: 4096, device=lambda: object())
-    with pytest.raises(RuntimeError, match="one reference-device"):
+    with pytest.raises(RuntimeError, match="uniform arena pages"):
         runner._print_sram_runtime_report(
-            arena, SimpleNamespace(num_cores=lambda: 1), 64, "test"
+            arena, SimpleNamespace(num_cores=lambda: core_count), 64, "test"
         )
+
+
+def test_sram_report_accounts_for_multiple_pages_per_core(capsys):
+    import json
+    import ttl.kernel_runner as runner
+
+    arena = SimpleNamespace(
+        buffer_aligned_page_size=lambda: 64,
+        buffer_num_pages=lambda: 6,
+    )
+    runner._print_sram_runtime_report(
+        arena, SimpleNamespace(num_cores=lambda: 3), 96, "test"
+    )
+    record = json.loads(capsys.readouterr().err.split("ttlang-sram-report: ", 1)[1])
+    assert record["reserved_bytes_per_core"] == 128

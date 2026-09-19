@@ -2024,21 +2024,18 @@ def _allocate_l1_sharded_storage_tensor(
 
 
 def _print_sram_runtime_report(arena, core_ranges, requested_bytes, operation_name):
-    """Report the arena's reservation from TTNN's reference-device allocator."""
-    address = int(arena.buffer_address())
-    buffers = [
-        buffer
-        for buffer in ttnn._ttnn.reports.get_buffers(arena.device())
-        if buffer.buffer_type == ttnn.BufferType.L1 and int(buffer.address) == address
-    ]
-    if len(buffers) != 1:
-        raise RuntimeError("SRAM report requires one reference-device arena allocation")
-    reserved_bytes = int(buffers[0].max_size_per_bank)
+    """Report the arena's reservation from its uniform sharded buffer."""
+    core_count = core_ranges.num_cores()
+    page_count = int(arena.buffer_num_pages())
+    if core_count <= 0 or page_count < core_count or page_count % core_count != 0:
+        raise RuntimeError(
+            "SRAM report requires uniform arena pages across participating cores"
+        )
+    reserved_bytes = page_count // core_count * int(arena.buffer_aligned_page_size())
     if reserved_bytes < requested_bytes:
         raise RuntimeError(
             "SRAM report reservation is smaller than its requested arena"
         )
-    core_count = core_ranges.num_cores()
     report = {
         "schema_version": 1,
         "phase": "runtime",
