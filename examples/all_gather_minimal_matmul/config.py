@@ -18,6 +18,7 @@ class AllGatherMinimalMatmulConfig:
     k_block_tiles: int = 1
     n_block_tiles: int = 1
     reuse_activation: bool = True
+    output_block_count: int = 2
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "mesh_shape", tuple(self.mesh_shape))
@@ -36,6 +37,7 @@ class AllGatherMinimalMatmulConfig:
             "m_block_tiles": self.m_block_tiles,
             "k_block_tiles": self.k_block_tiles,
             "n_block_tiles": self.n_block_tiles,
+            "output_block_count": self.output_block_count,
         }
         for field_name, value in tile_fields.items():
             if value <= 0:

@@ -51,6 +51,7 @@ def make_bidirectional_l1_all_gather_matmul_operation(
     device_domain = ttl.DeviceDomain(config.mesh_shape)
     m_worker_count = config.m_workers
     n_worker_count = config.n_workers
+    output_block_count = config.output_block_count
     forward_assembly_row = 0
     backward_assembly_row = n_worker_count - 1
     forward_client_row = n_worker_count - 2
@@ -155,7 +156,9 @@ def make_bidirectional_l1_all_gather_matmul_operation(
             bias_shard, shape=(1, n_block_tiles), block_count=1
         )
         output_dfb = ttl.make_dataflow_buffer_like(
-            output_shard, shape=(m_block_tiles, n_block_tiles), block_count=2
+            output_shard,
+            shape=(m_block_tiles, n_block_tiles),
+            block_count=output_block_count,
         )
         accumulation_dtype = ttnn.float32 if fp32_dest_acc_en else output_shard.dtype
         matmul_accumulator_dfb = ttl.make_dfb(
