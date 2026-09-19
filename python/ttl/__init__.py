@@ -69,6 +69,7 @@ else:
         MeshProgramPlacement,
         DispatchCondition,
         DFBReset,
+        DFBAddressScope,
         DFBAllocationGroup,
         DFBReconfiguration,
         ScalarType,
@@ -92,6 +93,7 @@ else:
         reset_all_dfbs,
         reset_dfbs,
         reconfigure_dfbs,
+        uint32,
         wait_any,
     )
 
@@ -128,6 +130,7 @@ else:
         "MeshProgramPlacement",
         "DispatchCondition",
         "DFBReset",
+        "DFBAddressScope",
         "DFBAllocationGroup",
         "DFBReconfiguration",
         "ScalarType",
@@ -172,6 +175,7 @@ else:
         "reset_dfbs",
         "reset_all_dfbs",
         "reconfigure_dfbs",
+        "uint32",
         "wait_any",
         *_elementwise_all,
     ]

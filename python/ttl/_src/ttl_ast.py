@@ -51,6 +51,7 @@ from ..kernel import (
     _selector_sort_key,
 )
 from ..scalar import ScalarType
+from ..template_argument import UInt32TemplateArgument
 from ..ttl_utils import get_thread_type_string
 from .auto_profile import (
     get_line_mapper,
@@ -1805,6 +1806,8 @@ class TTLGenericCompiler(TTCompilerBase):
             "block_count": cb.block_count,
             "dfb_id": cb._cb_index,
         }
+        if cb.address_scope is not None:
+            bind_attributes["address_scope"] = cb.address_scope.value
         if tensor_backing is not None:
             bind_attributes["tensor_backing"] = tensor_backing
         if cb.allocation_group is not None:
@@ -2412,6 +2415,7 @@ class TTLGenericCompiler(TTCompilerBase):
         - ``ttl.dfb_descriptor(dfb)`` -- typed allocation descriptor
         - ``ttl.get_dfb_id(dfb)`` -- compatibility integer index
         - ``int`` literals / module-level ints -- signed 32-bit payload
+        - ``ttl.uint32(value)`` -- unsigned 32-bit payload
         - ``bool`` literals / module-level bools -- boolean payload
         - ``float`` literals / module-level floats -- binary32 bit payload
         """
@@ -2479,6 +2483,12 @@ class TTLGenericCompiler(TTCompilerBase):
             return _dfb_reference(arg_kind.DFBIndex)
         if isinstance(node, ast.Call) and self._is_ttl_api_call(node, "dfb_descriptor"):
             return _dfb_reference(arg_kind.DFBDescriptor)
+        if isinstance(node, ast.Call) and self._is_ttl_api_call(node, "uint32"):
+            if len(node.args) != 1 or node.keywords:
+                self._raise_error(node, "ttl.uint32() requires exactly 1 argument")
+            return _unsigned_integer(
+                self._resolve_static_int(node.args[0], "ttl.uint32() argument")
+            )
 
         if isinstance(node, ast.Constant):
             # bool is a subclass of int; check explicitly first.
@@ -2504,6 +2514,8 @@ class TTLGenericCompiler(TTCompilerBase):
 
         if isinstance(node, ast.Name) and node.id in self.captures:
             val = self.captures[node.id]
+            if isinstance(val, UInt32TemplateArgument):
+                return _unsigned_integer(val.value)
             if type(val) is bool:
                 return _boolean(val)
             if type(val) is int:
@@ -2516,6 +2528,8 @@ class TTLGenericCompiler(TTCompilerBase):
 
         if isinstance(node, ast.Name) and node.id in self.fn_globals:
             val = self.fn_globals[node.id]
+            if isinstance(val, UInt32TemplateArgument):
+                return _unsigned_integer(val.value)
             if type(val) is bool:
                 return _boolean(val)
             if type(val) is int:

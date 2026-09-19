@@ -31,6 +31,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -214,10 +215,14 @@ static bool tryCoalesceGroup(SmallVectorImpl<AcquireOp> &group,
 // outer iteration must not depend on `getNextNode()` after the rewrite
 // erases ops in place.
 template <typename AcquireOp, typename ReleaseOp>
-static void coalesceInBlock(Block &block, OpBuilder &builder) {
+static void coalesceInBlock(Block &block, OpBuilder &builder,
+                            bool syncUserDFBs) {
   SmallVector<AcquireOp> candidates;
   for (Operation &op : block) {
     if (auto acquire = dyn_cast<AcquireOp>(&op)) {
+      if (!syncUserDFBs && isUserManagedDFB(acquire.getCb())) {
+        continue;
+      }
       candidates.push_back(acquire);
     }
   }
@@ -244,6 +249,9 @@ static void coalesceInBlock(Block &block, OpBuilder &builder) {
 
 struct TTLCoalesceDFBAcquiresPass
     : public impl::TTLCoalesceDFBAcquiresBase<TTLCoalesceDFBAcquiresPass> {
+  using impl::TTLCoalesceDFBAcquiresBase<
+      TTLCoalesceDFBAcquiresPass>::TTLCoalesceDFBAcquiresBase;
+
   void runOnOperation() override {
     func::FuncOp func = getOperation();
     OpBuilder builder(func.getContext());
@@ -252,8 +260,8 @@ struct TTLCoalesceDFBAcquiresPass
       if (block->empty()) {
         return;
       }
-      coalesceInBlock<CBWaitOp, CBPopOp>(*block, builder);
-      coalesceInBlock<CBReserveOp, CBPushOp>(*block, builder);
+      coalesceInBlock<CBWaitOp, CBPopOp>(*block, builder, syncUserDFBs);
+      coalesceInBlock<CBReserveOp, CBPushOp>(*block, builder, syncUserDFBs);
     });
   }
 };

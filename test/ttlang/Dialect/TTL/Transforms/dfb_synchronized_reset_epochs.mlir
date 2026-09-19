@@ -293,12 +293,15 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
 
 // -----
 
-// A conditional reset cannot order unconditional accesses across logical
-// kernels because the synchronization does not execute on the disabled branch.
+// A conditional reset cannot complete the preceding unconditional lifecycle
+// because the synchronization does not execute on the disabled branch. The
+// independent following lifecycle remains complete, but cannot reuse storage
+// with the incomplete lifecycle.
 // CHECK: DFB logical_id=0 bounded=0
 // CHECK: lifecycle_completion=unsupported-control-flow
-// CHECK: DFB logical_id=1 bounded=0
-// CHECK: lifecycle_completion=unsupported-control-flow
+// CHECK: DFB logical_id=1 bounded=1
+// CHECK: lifecycle_completion=complete
+// CHECK: DFB conflict lhs=0 rhs=1 reason=access-completion-not-proven
 // CHECK: Total DFB count: 2
 
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {

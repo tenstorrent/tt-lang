@@ -87,6 +87,7 @@ from ._src.ttl_ast import TTLGenericCompiler
 from .dataflow_buffer import (
     CircularBuffer,
     DataflowBuffer,
+    DFBAddressScope,
     DFBConfigurationEpoch,
     DFBReconfigurationPlan,
     DFBStorageSegment,
@@ -1938,6 +1939,28 @@ def _group_equivalent_specialized_kernels(
     return groups
 
 
+def _make_data_movement_config(
+    data_movement_role: _DataMovementRole, dynamic_noc: bool
+):
+    """Build the TTNN descriptor for a compiler-assigned data-movement thread."""
+    if not dynamic_noc:
+        if data_movement_role == _DataMovementRole.READER:
+            return ttnn.ReaderConfigDescriptor()
+        return ttnn.WriterConfigDescriptor()
+
+    if data_movement_role == _DataMovementRole.READER:
+        processor = ttnn.DataMovementProcessor.RISCV_1
+        noc = ttnn.NOC.RISCV_0_default
+    else:
+        processor = ttnn.DataMovementProcessor.RISCV_0
+        noc = ttnn.NOC.RISCV_1_default
+    return ttnn.DataMovementConfigDescriptor(
+        processor=processor,
+        noc=noc,
+        noc_mode=ttnn.NOC_MODE.DM_DYNAMIC_NOC,
+    )
+
+
 def _compile_ttnn_kernel(
     module,
     args,
@@ -1965,6 +1988,7 @@ def _compile_ttnn_kernel(
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
     unsafe_split_static_dfb_descriptors: bool = False,
+    dynamic_noc: bool = False,
 ):
     """
     Compile kernel to CompiledTTNNKernel for execution via ttnn.generic_op.
@@ -2202,12 +2226,11 @@ def _compile_ttnn_kernel(
             assert thread_type == _KernelThreadType.NOC
             data_movement_role = configuration.data_movement_role
             assert data_movement_role is not None
+            config = _make_data_movement_config(data_movement_role, dynamic_noc)
             if data_movement_role == _DataMovementRole.READER:
-                config = ttnn.ReaderConfigDescriptor()
                 thread_to_kernel["NCRISC"] = name
             else:
                 assert data_movement_role == _DataMovementRole.WRITER
-                config = ttnn.WriterConfigDescriptor()
                 thread_to_kernel["BRISC"] = name
         kernel_configs.append(config)
 
@@ -2575,6 +2598,17 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
         if value <= 0:
             raise ValueError(f"{context}.{field} must be positive, got {value}")
 
+    address_scope = DFBAddressScope.LOCAL
+    if "address_scope" in entry:
+        scope_name = StringAttr(entry["address_scope"]).value
+        try:
+            address_scope = DFBAddressScope(scope_name)
+        except ValueError:
+            raise ValueError(
+                f"{context}.address_scope must be 'local' or 'remote_uniform', "
+                f"got {scope_name!r}"
+            ) from None
+
     allocation_nodes = None
     if "allocation_nodes" in entry:
         allocation_nodes = _extract_dfb_node_coordinates(
@@ -2651,6 +2685,7 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
         storage_segments=tuple(storage_segments),
         allocation_nodes=allocation_nodes,
         storage_index=storage_index,
+        address_scope=address_scope,
     )
 
 
@@ -3421,6 +3456,13 @@ def _lower_program_to_kernel(
         assign_dst_pass = "ttl-assign-dst"
 
         compiler_dfbs_flag = int(compiler_options.compiler_dfbs)
+        sync_user_dfbs_flag = int(compiler_options.auto_sync_user_dfbs)
+        insert_dfb_sync_pass = (
+            f"ttl-insert-cb-sync{{sync-user-dfbs={sync_user_dfbs_flag}}}"
+        )
+        coalesce_dfb_acquires_pass = (
+            f"ttl-coalesce-dfb-acquires{{sync-user-dfbs={sync_user_dfbs_flag}}}"
+        )
         accumulation_strategy = compiler_options.accumulation_strategy
         pipe_batch_tiles = compiler_options.pipe_batch_tiles
         pipe_transport_options = [f"group-size={pipe_batch_tiles}"]
@@ -3448,16 +3490,16 @@ def _lower_program_to_kernel(
         pipeline_passes = [
             f"func.func({tensor_recurrence_pipeline})",
             "func.func(ttl-insert-copy-wait)",
-            "func.func(ttl-auto-sync)",
+            f"func.func({insert_dfb_sync_pass},{coalesce_dfb_acquires_pass})",
             "func.func(ttl-insert-accumulation-scopes{kind=dfb})",
             "func.func(ttl-lower-accumulation-scopes{kind=dfb})",
             "func.func(ttl-create-producer-compute)",
             f"func.func(ttl-insert-intermediate-dfbs{{enable={compiler_dfbs_flag}}})",
             "func.func(convert-ttl-to-compute)",
-            "func.func(ttl-insert-cb-sync)",
+            f"func.func({insert_dfb_sync_pass})",
             "ttl-verify-pipenet",
             pipe_transport_pass,
-            "func.func(ttl-coalesce-dfb-acquires)",
+            f"func.func({coalesce_dfb_acquires_pass})",
             "ttl-finalize-dfb-indices{"
             f"reuse-user-dfbs={reuse_user_dfbs_flag} "
             "unsafe-assume-allocation-groups="
@@ -3653,6 +3695,7 @@ def _lower_program_to_kernel(
             operation_name=operation_name,
             runtime_resource_factory=runtime_resource_factory,
             runtime_resource_cache=runtime_resource_cache,
+            dynamic_noc=compiler_options.dynamic_noc,
         )
         return compiled_kernel
 
