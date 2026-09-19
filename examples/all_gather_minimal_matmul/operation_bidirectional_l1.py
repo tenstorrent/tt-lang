@@ -155,7 +155,7 @@ def make_bidirectional_l1_all_gather_matmul_operation(
             bias_shard, shape=(1, n_block_tiles), block_count=1
         )
         output_dfb = ttl.make_dataflow_buffer_like(
-            output_shard, shape=(m_block_tiles, n_block_tiles), block_count=1
+            output_shard, shape=(m_block_tiles, n_block_tiles), block_count=2
         )
         accumulation_dtype = ttnn.float32 if fp32_dest_acc_en else output_shard.dtype
         matmul_accumulator_dfb = ttl.make_dfb(
