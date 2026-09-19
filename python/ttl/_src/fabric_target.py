@@ -1092,28 +1092,27 @@ def _build_mux_groups(
         ttnn_api, program_descriptor, mesh_device, len(group_assignments)
     )
     channel_buffer_size = int(fabric_mux_api.channel_buffer_size_bytes())
-    mux_groups = []
-    for (
-        direction,
-        link_index,
-        connection_node_id,
-        client_keys,
-    ), logical_core in zip(group_assignments, mux_cores):
+
+    def build_config(client_count: int, buffer_count: int):
+        return fabric_mux_api.Config(
+            num_full_size_channels=client_count,
+            num_header_only_channels=0,
+            num_buffers_per_full_size_channel=buffer_count,
+            num_buffers_per_header_only_channel=0,
+            full_size_channel_buffer_size_bytes=channel_buffer_size,
+            base_l1_address=mux_base_l1_address,
+            core_type=ttnn_api.CoreType.WORKER,
+        )
+
+    # The channel depth is a compile-time constant of every client kernel, and
+    # one kernel's clients may be spread over several mux cores, so every
+    # group uses the deepest channel that fits the smallest group's L1 share.
+    buffer_count = _FABRIC_MUX_MAX_BUFFERS_PER_CHANNEL
+    for _, _, _, client_keys in group_assignments:
         client_count = len(client_keys)
-
-        def build_config(buffer_count: int):
-            return fabric_mux_api.Config(
-                num_full_size_channels=client_count,
-                num_header_only_channels=0,
-                num_buffers_per_full_size_channel=buffer_count,
-                num_buffers_per_header_only_channel=0,
-                full_size_channel_buffer_size_bytes=channel_buffer_size,
-                base_l1_address=mux_base_l1_address,
-                core_type=ttnn_api.CoreType.WORKER,
-            )
-
-        minimum_config = build_config(1)
-        minimum_end_address = int(minimum_config.memory_map_end_address())
+        minimum_end_address = int(
+            build_config(client_count, 1).memory_map_end_address()
+        )
         if minimum_end_address > mux_l1_end_address:
             raise ValueError(
                 "fabric mux L1 allocation exceeds the available interval: "
@@ -1125,10 +1124,19 @@ def _build_mux_groups(
         # because TT-Metal rejects L1 overflow with a fatal assertion.
         additional_buffer_bytes = client_count * channel_buffer_size
         buffer_count = min(
-            _FABRIC_MUX_MAX_BUFFERS_PER_CHANNEL,
+            buffer_count,
             1 + (mux_l1_end_address - minimum_end_address) // additional_buffer_bytes,
         )
-        config = build_config(buffer_count)
+
+    mux_groups = []
+    for (
+        direction,
+        link_index,
+        connection_node_id,
+        client_keys,
+    ), logical_core in zip(group_assignments, mux_cores):
+        client_count = len(client_keys)
+        config = build_config(client_count, buffer_count)
         client_compile_time_args = tuple(
             int(argument)
             for argument in fabric_mux_api.client_compile_time_args(
