@@ -297,19 +297,6 @@ struct TTLFinalizeDFBIndicesPass
       signalPassFailure();
       return;
     }
-    if (memoryModel == kCompilerL1MemoryModel) {
-      PipeTransferCreateOp pipeTransfer;
-      moduleOp.walk([&](PipeTransferCreateOp operation) {
-        pipeTransfer = operation;
-        return WalkResult::interrupt();
-      });
-      if (pipeTransfer) {
-        pipeTransfer.emitOpError(
-            "compiler-l1 does not support PipeNet transfers");
-        signalPassFailure();
-        return;
-      }
-    }
     const DFBLogicalIdentityAnalysis &logicalIdentityAnalysis =
         getAnalysis<DFBLogicalIdentityAnalysis>();
     if (!logicalIdentityAnalysis.succeeded()) {
