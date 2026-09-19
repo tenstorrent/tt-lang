@@ -3159,7 +3159,15 @@ def test_reconfiguration_runtime_storage_preserves_shared_storage(monkeypatch):
     assert descriptors[0].backing_desc["tensor"] is scratch_tensor
 
 
-def test_reconfiguration_runtime_storage_uses_maximum_per_core_capacity(monkeypatch):
+@pytest.mark.parametrize(
+    "hybrid_allocation", [False, True], ids=["unified", "per-core"]
+)
+def test_reconfiguration_runtime_storage_splits_local_storage_per_core(
+    monkeypatch, hybrid_allocation
+):
+    monkeypatch.setenv(
+        "TT_METAL_ALLOCATOR_MODE_HYBRID", "1" if hybrid_allocation else "0"
+    )
     fake_ttnn = _FakeTTNN()
     fake_ttnn.uint32 = "uint32"
     fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
@@ -3174,7 +3182,8 @@ def test_reconfiguration_runtime_storage_uses_maximum_per_core_capacity(monkeypa
     fake_ttnn.from_torch = lambda *_args, **_kwargs: configuration_tensor
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
 
-    def allocate_scratch(core_ranges, num_bytes, allocation_device, **_kwargs):
+    def allocate_scratch(core_ranges, num_bytes, allocation_device, *, per_core=False):
+        assert per_core == hybrid_allocation
         scratch_tensor = _FakeTensor(
             allocation_device, address=0x8000 + len(scratch_allocations) * 0x1000
         )
@@ -3242,20 +3251,29 @@ def test_reconfiguration_runtime_storage_uses_maximum_per_core_capacity(monkeypa
         dfb_reconfiguration_plan=plan,
     )
 
-    assert [allocation[1] for allocation in scratch_allocations] == [4096]
-    assert len(resources.scratch_tensors) == 1
-    assert resources.scratch_segments_by_index[0][0].allocation_bytes == 4096
+    expected_allocations = [4096, 2048] if hybrid_allocation else [4096]
+    expected_small_bytes = 2048 if hybrid_allocation else 4096
+    assert [allocation[1] for allocation in scratch_allocations] == expected_allocations
+    assert len(resources.scratch_tensors) == len(expected_allocations)
+    assert (
+        resources.scratch_segments_by_index[0][0].allocation_bytes
+        == expected_small_bytes
+    )
     assert resources.scratch_segments_by_index[1][0].allocation_bytes == 4096
-    assert [descriptor.total_size for descriptor in descriptors] == [4096, 4096]
+    assert [descriptor.total_size for descriptor in descriptors] == [
+        expected_small_bytes,
+        4096,
+    ]
     assert [
         descriptor.format_descriptors[0].buffer_index for descriptor in descriptors
     ] == [0, 1]
     assert all(descriptor.backing_desc is not None for descriptor in descriptors)
 
 
-def test_reconfiguration_runtime_storage_reuses_and_allocates_broadest_first(
+def test_reconfiguration_runtime_storage_allocates_remote_uniform_first(
     monkeypatch,
 ):
+    monkeypatch.setenv("TT_METAL_ALLOCATOR_MODE_HYBRID", "1")
     fake_ttnn = _FakeTTNN()
     fake_ttnn.uint32 = "uint32"
     fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
@@ -3269,7 +3287,7 @@ def test_reconfiguration_runtime_storage_reuses_and_allocates_broadest_first(
     fake_ttnn.from_torch = lambda *_args, **_kwargs: _FakeTensor(device, address=0xA000)
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
 
-    def allocate_scratch(core_ranges, num_bytes, allocation_device, **_kwargs):
+    def allocate_scratch(core_ranges, num_bytes, allocation_device, *, per_core=False):
         scratch_tensor = _FakeTensor(
             allocation_device, address=0x8000 + len(scratch_allocations) * 0x1000
         )
@@ -3278,6 +3296,7 @@ def test_reconfiguration_runtime_storage_reuses_and_allocates_broadest_first(
             for core in fake_ttnn.corerange_to_cores(core_ranges)
         }
         scratch_allocations.append((scratch_cores, num_bytes, scratch_tensor))
+        assert per_core == (len(scratch_cores) == 1)
         return scratch_tensor
 
     monkeypatch.setattr(
@@ -3300,6 +3319,7 @@ def test_reconfiguration_runtime_storage_reuses_and_allocates_broadest_first(
         (32, 32),
         (DFBStorageSegment(nodes=((0, 0),)),),
         storage_index=3,
+        address_scope=DFBAddressScope.REMOTE_UNIFORM,
     )
     shared_second = replace(
         shared_first,

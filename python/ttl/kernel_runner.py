@@ -2888,9 +2888,19 @@ def build_dfb_reconfiguration_runtime_resources(
                 required_bytes,
             )
 
+    # Remote writers address remote-uniform storage locally, so it needs one
+    # common address across its cores. Local storage accepts independent
+    # per-core addresses, which only the hybrid allocator can produce.
+    hybrid_allocation = os.environ.get("TT_METAL_ALLOCATOR_MODE_HYBRID", "0") == "1"
+    per_core_storage_indices = (
+        set(required_bytes_by_core_by_storage).difference(
+            remote_uniform_storage_indices
+        )
+        if hybrid_allocation
+        else set()
+    )
+
     pending_allocations = []
-    # One multi-format descriptor preserves the compiler-selected backing alias;
-    # separate descriptors would represent the same tensor as independent L1.
     for (
         storage_index,
         required_bytes_by_core,
@@ -2900,7 +2910,17 @@ def build_dfb_reconfiguration_runtime_resources(
             if (storage_index, core) in backing_by_storage_and_core:
                 continue
             unbacked_required_bytes_by_core[core] = required_bytes
-        if unbacked_required_bytes_by_core:
+        if not unbacked_required_bytes_by_core:
+            continue
+        if storage_index in per_core_storage_indices:
+            pending_allocations.extend(
+                (storage_index, required_bytes, (core,))
+                for core, required_bytes in unbacked_required_bytes_by_core.items()
+            )
+        else:
+            # A uniformly addressed storage index must remain one TT-Metal
+            # allocation; splitting it by per-core capacity fragments the
+            # dependency-constrained L1 ranges the allocator searches.
             pending_allocations.append(
                 (
                     storage_index,
@@ -2908,18 +2928,12 @@ def build_dfb_reconfiguration_runtime_resources(
                     tuple(unbacked_required_bytes_by_core),
                 )
             )
-    # A physical storage index must remain one TT-Metal allocation. Splitting it
-    # by per-core capacity fragments dependency-constrained L1 ranges.
-    # TT-Metal needs one common free address across all selected cores, so
-    # allocate the widest ranges before narrower allocations fragment them.
+    # A uniform allocation needs one common free address across all its cores,
+    # so allocate the widest ranges before narrower allocations fragment them.
     pending_allocations.sort(
         key=lambda allocation: (-len(allocation[2]), -allocation[1], allocation[0])
     )
 
-    # Independent per-core addresses avoid cross-core free-space fragmentation
-    # under the hybrid allocator, but remote-uniform storage must keep one
-    # address on every core because remote writers address it locally.
-    per_core_allocation = os.environ.get("TT_METAL_ALLOCATOR_MODE_HYBRID", "0") == "1"
     scratch_tensors = []
     owned_l1_buffer_addresses = set()
     for storage_index, required_bytes, cores in pending_allocations:
@@ -2927,10 +2941,7 @@ def build_dfb_reconfiguration_runtime_resources(
             _make_singleton_core_ranges(sorted(cores)),
             required_bytes,
             resource_device,
-            per_core=(
-                per_core_allocation
-                and storage_index not in remote_uniform_storage_indices
-            ),
+            per_core=storage_index in per_core_storage_indices,
         )
         scratch_tensors.append(scratch_tensor)
         addresses_by_core = _l1_buffer_addresses_by_core(
