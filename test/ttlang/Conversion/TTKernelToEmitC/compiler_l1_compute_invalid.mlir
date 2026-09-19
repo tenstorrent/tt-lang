@@ -14,7 +14,7 @@ module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [{cb_
 
 // -----
 
-// Every allocation entry must contain the geometry and ordered offsets used by generated address types.
+// Every allocation entry must contain the sizes, counts, and ordered offsets used by generated address types.
 // expected-error @below {{'builtin.module' op compiler-l1 allocation entry 0 must define positive uint32 page_size, num_tiles, and block_count values, storage_capacity_pages at least num_tiles times block_count and less than 2^31, and representable ordered L1 offsets}}
 module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [{block_count = 1 : i64, storage_capacity_pages = 1 : i64, l1_offset = 64 : i64, l1_payload_offset = 32 : i64, num_tiles = 1 : i64, page_size = 2048 : i64}]} {
   func.func @invalid_allocation_offsets() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
@@ -47,11 +47,22 @@ module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [{blo
 
 // -----
 
-// An external descriptor must agree with the finalized allocation geometry.
+// An external descriptor must agree with the finalized page and block metadata.
 module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [{block_count = 1 : i64, element_type = !ttcore.tile<32x32, bf16>, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i64, page_size = 2048 : i64, storage_capacity_pages = 1 : i64}]} {
-  func.func @descriptor_geometry_mismatch() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
-    // expected-error @below {{'ttkernel.opaque_call' op compiler-l1 descriptor geometry differs from its allocation metadata}}
+  func.func @descriptor_allocation_mismatch() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{'ttkernel.opaque_call' op compiler-l1 descriptor page size, pages per block, or block count differs from its allocation metadata}}
     ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<0, 2, 1, 2048>] () {dfb_resource_indices = array<i32: 0>, header = "describe.hpp"} : () -> ()
+    return
+  }
+}
+
+// -----
+
+// A tensor-backed descriptor requires its tensor runtime argument.
+module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [{block_count = 1 : i64, element_type = !ttcore.tile<32x32, bf16>, l1_offset = 0 : i64, num_tiles = 1 : i64, page_size = 2048 : i64, storage_capacity_pages = 1 : i64, storage_segments = [{tensor_backing = #ttl.tensor_backing<tensor_index = 7, byte_offset = 0, byte_size = 2048>}]}]} {
+  func.func @descriptor_missing_tensor_argument() attributes {ttkernel.thread = #ttkernel.thread<compute>, ttl.crta_indices = [0]} {
+    // expected-error @below {{'ttkernel.opaque_call' op compiler-l1 tensor backing is absent from the kernel's common tensor arguments}}
+    ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<0, 1, 1, 2048>] () {dfb_resource_indices = array<i32: 0>, header = "describe.hpp"} : () -> ()
     return
   }
 }
@@ -124,6 +135,18 @@ module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [{cb_
     %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
     // expected-error @below {{'ttkernel.compute_kernel_hw_startup' op has no compiler-l1 lowering for ttkernel.compute_kernel_hw_startup; Metal DFB fallback is disabled}}
     ttkernel.compute_kernel_hw_startup(%storage, %storage) : (!ttkernel.cb<1, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>) -> ()
+    return
+  }
+}
+
+// -----
+
+// A DFB function argument denotes a numeric Metal descriptor index.
+module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [{cb_index = 0 : i64, page_size = 2048 : i64, num_tiles = 1 : i64, block_count = 1 : i64, storage_capacity_pages = 1 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64}]} {
+  func.func @external_numeric_dfb_argument() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+    %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
+    // expected-error @below {{'ttkernel.opaque_call' op has no compiler-l1 lowering for ttkernel.opaque_call; Metal DFB fallback is disabled}}
+    ttkernel.opaque_call "use_index"(%storage) {header = "use_index.hpp"} : (!ttkernel.cb<1, !ttcore.tile<32x32, bf16>>) -> ()
     return
   }
 }
