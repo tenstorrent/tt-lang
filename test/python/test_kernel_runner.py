@@ -632,7 +632,13 @@ class _FakeFabricMux:
     def client_compile_time_args(*, num_clients, channel_type, config):
         assert channel_type == _FakeFabricMux.ChannelType.FULL_SIZE
         assert num_clients == config.num_full_size_channels
-        return [1, config.full_size_channel_buffer_size_bytes, 0x40, 0x44, num_clients]
+        return [
+            config.num_buffers_per_full_size_channel,
+            config.full_size_channel_buffer_size_bytes,
+            0x40,
+            0x44,
+            num_clients,
+        ]
 
     def client_runtime_args(self, **arguments):
         self.ttnn_api.mux_client_runtime_calls.append(arguments.copy())
@@ -4039,7 +4045,7 @@ def test_routing_plane_supports_direct_and_mux_instances_of_one_kernel(monkeypat
     assert "TTLANG_FABRIC_MUX_CLIENT" in dict(kernel.defines)
 
 
-def test_routing_plane_sizes_each_mux_for_its_assigned_clients(monkeypatch):
+def test_routing_plane_sizes_muxes_to_one_channel_depth(monkeypatch):
     fake_ttnn = _FakeTTNN()
     destination = _FakeFabricNodeId(0, 1)
     fake_ttnn.fabric_forwarding_links[destination] = [0, 1]
@@ -4101,9 +4107,86 @@ def test_routing_plane_sizes_each_mux_for_its_assigned_clients(monkeypatch):
 
     mux_kernels = program.kernels[len(kernels) :]
     assert sorted(kernel.compile_time_args[0] for kernel in mux_kernels) == [2, 3]
+    # The three-client mux fits two buffers per channel, so the two-client mux
+    # also uses two: the depth is a compile-time constant of the client kernels.
+    assert {
+        (
+            call["config"].num_full_size_channels,
+            call["config"].num_buffers_per_full_size_channel,
+        )
+        for call in fake_ttnn.mux_client_runtime_calls
+    } == {(2, 2), (3, 2)}
     assert sorted(
         kernel.runtime_args[source_node[0]][source_node[1]][-1]
         for kernel, source_node in zip(kernels, source_nodes)
+    ) == [2, 2, 3, 3, 3]
+    assert all(
+        dict(kernel.defines)["TTLANG_FABRIC_MUX_NUM_BUFFERS"] == "2"
+        for kernel in kernels
+    )
+
+
+def test_routing_plane_shares_one_channel_depth_across_a_kernels_muxes(monkeypatch):
+    """One kernel whose clients span muxes with different client counts."""
+    fake_ttnn = _FakeTTNN()
+    destination = _FakeFabricNodeId(0, 1)
+    fake_ttnn.fabric_forwarding_links[destination] = [0, 1]
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    source_nodes = ((0, 0), (1, 0), (2, 0), (3, 0), (0, 1))
+    kernel = _FakeTTNN.KernelDescriptor(
+        kernel_source="/tmp/kernel_0.cpp",
+        core_ranges=_FakeTTNN.CoreRangeSet(
+            [
+                _FakeTTNN.CoreRange(
+                    _FakeTTNN.CoreCoord(*source_node),
+                    _FakeTTNN.CoreCoord(*source_node),
+                )
+                for source_node in source_nodes
+            ]
+        ),
+        compile_time_args=[],
+        common_runtime_args=[0],
+        config=object(),
+    )
+    program = _FakeTTNN.ProgramDescriptor(kernels=[kernel], cbs=[], semaphores=[])
+    routes = [[kernel_runner.FabricRouteSpec((0, 0), (0, 1), source_nodes, 0)]]
+    manager_intervals = [
+        (
+            _fabric_manager_interval(
+                "manager",
+                interfering_intervals=(),
+                launch_nodes=source_nodes,
+            ),
+        )
+    ]
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=routes,
+        kernel_fabric_runtime_arg_base_common_indices=[0],
+        kernel_fabric_manager_intervals=manager_intervals,
+        kernel_fabric_mux_capable=[True],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=4,
+        grid_rows=2,
+        mux_base_l1_address=0x10000,
+        mux_l1_end_address=0x20000,
+    )
+
+    mux_kernels = program.kernels[1:]
+    assert sorted(mux_kernel.compile_time_args[0] for mux_kernel in mux_kernels) == [
+        2,
+        3,
+    ]
+    assert {
+        call["config"].num_buffers_per_full_size_channel
+        for call in fake_ttnn.mux_client_runtime_calls
+    } == {2}
+    assert dict(kernel.defines)["TTLANG_FABRIC_MUX_NUM_BUFFERS"] == "2"
+    assert sorted(
+        kernel.runtime_args[source_node[0]][source_node[1]][-1]
+        for source_node in source_nodes
     ) == [2, 2, 3, 3, 3]
 
 

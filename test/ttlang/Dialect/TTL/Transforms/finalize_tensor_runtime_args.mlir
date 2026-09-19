@@ -3,6 +3,7 @@
 // Tensor address slots are compacted before compiler-managed arguments.
 // CHECK-LABEL: func.func @compact_direct_indices
 // CHECK-SAME: ttl.crta_indices = [12 : i32]
+// CHECK-SAME: ttl.fabric_runtime_arg_base_common_index = 2 : i64
 // CHECK-SAME: ttl.local_tensor_indices = [12 : i32]
 // CHECK: %[[TENSOR_INDEX:.*]] = arith.constant 0 : index
 // CHECK-NEXT: %[[BANK_BASE:.*]] = ttkernel.get_common_arg_val(%[[TENSOR_INDEX]])
@@ -14,6 +15,7 @@
 // CHECK-NEXT: ttkernel.TensorAccessorArgs({{.*}}, %[[CRTA_BASE]])
 func.func @compact_direct_indices()
     attributes {ttl.crta_indices = [4, 8, 12],
+                ttl.fabric_runtime_arg_base_common_index = 4 : i64,
                 ttl.kernel_thread = #ttkernel.thread<compute>} {
   %tensor_index = arith.constant 2 : index
   %bank_base = ttkernel.get_common_arg_val(%tensor_index) : (index) -> i32
@@ -64,9 +66,11 @@ func.func @preserve_shared_constant_table(%selector: index) -> index
 // Verbatim common-argument accesses retain the complete tensor prefix.
 // CHECK-LABEL: func.func @preserve_hidden_indices
 // CHECK-SAME: ttl.crta_indices = [30 : i32, 31 : i32]
+// CHECK-SAME: ttl.fabric_runtime_arg_base_common_index = 3 : i64
 // CHECK-NOT: ttl.local_tensor_indices
 func.func @preserve_hidden_indices()
     attributes {ttl.crta_indices = [30, 31],
+                ttl.fabric_runtime_arg_base_common_index = 3 : i64,
                 ttl.kernel_thread = #ttkernel.thread<noc>} {
   emitc.verbatim "auto address = get_common_arg_val<uint32_t>(1);"
   return
