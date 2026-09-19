@@ -15,9 +15,11 @@ inline void resetState(uint32_t state) {
 }
 
 /// Single-producer/single-consumer storage with two page sequence counters.
+/// A false ReloadOwnedSequence requires this object to be the only object that
+/// advances the processor-owned sequence between its method calls.
 template <uint32_t PageBytes, uint32_t PagesPerBlock, uint32_t BlockCount,
           uint32_t StorageCapacityPages, uint32_t PayloadOffset,
-          int32_t PayloadCommonArgIndex>
+          int32_t PayloadCommonArgIndex, bool ReloadOwnedSequence = true>
 class Buffer {
   static_assert(PageBytes > 0 && PagesPerBlock > 0 && BlockCount > 0 &&
                 uint64_t{PagesPerBlock} * BlockCount <= StorageCapacityPages &&
@@ -65,6 +67,13 @@ class Buffer {
     return target::load(address);
   }
 
+  static uint32_t loadOwnedSequence(uint32_t address) {
+    if constexpr (use16BitSequence) {
+      return target::loadOwnedSequence16(address);
+    }
+    return target::loadOwned(address);
+  }
+
   template <bool PayloadComplete>
   static void publishSequence(uint32_t address, uint32_t sequence) {
     if constexpr (use16BitSequence) {
@@ -95,7 +104,9 @@ public:
       return;
     }
     validatePages(pages);
-    acquiredProducerSequence = loadSequence(state + published);
+    if constexpr (ReloadOwnedSequence) {
+      acquiredProducerSequence = loadOwnedSequence(state + published);
+    }
     while (StorageCapacityPages - occupancy(acquiredProducerSequence,
                                             loadSequence(state + consumed)) <
            pages) {
@@ -107,7 +118,9 @@ public:
       return;
     }
     validatePages(pages);
-    acquiredConsumerSequence = loadSequence(state + consumed);
+    if constexpr (ReloadOwnedSequence) {
+      acquiredConsumerSequence = loadOwnedSequence(state + consumed);
+    }
     while (occupancy(loadSequence(state + published),
                      acquiredConsumerSequence) < pages) {
     }
@@ -119,6 +132,9 @@ public:
       return;
     }
     validatePages(pages);
+    if constexpr (ReloadOwnedSequence) {
+      acquiredProducerSequence = loadOwnedSequence(state + published);
+    }
     acquiredProducerSequence = advance(acquiredProducerSequence, pages);
     publishSequence<PayloadComplete>(state + published,
                                      acquiredProducerSequence);
@@ -129,6 +145,9 @@ public:
       return;
     }
     validatePages(pages);
+    if constexpr (ReloadOwnedSequence) {
+      acquiredConsumerSequence = loadOwnedSequence(state + consumed);
+    }
     acquiredConsumerSequence = advance(acquiredConsumerSequence, pages);
     publishSequence<PayloadComplete>(state + consumed,
                                      acquiredConsumerSequence);
@@ -142,10 +161,10 @@ template <uint32_t PageBytes, uint32_t PagesPerBlock, uint32_t BlockCount,
           uint32_t PayloadOffset, int32_t PayloadCommonArgIndex>
 class DFBDescriptor
     : public Buffer<PageBytes, PagesPerBlock, BlockCount, StorageCapacityPages,
-                    PayloadOffset, PayloadCommonArgIndex> {
+                    PayloadOffset, PayloadCommonArgIndex, true> {
 public:
   using Buffer<PageBytes, PagesPerBlock, BlockCount, StorageCapacityPages,
-               PayloadOffset, PayloadCommonArgIndex>::Buffer;
+               PayloadOffset, PayloadCommonArgIndex, true>::Buffer;
   /// Binds this descriptor to its compile-time allocation in the core arena.
   static DFBDescriptor bind() {
     return DFBDescriptor(target::arenaBase() + StateOffset);

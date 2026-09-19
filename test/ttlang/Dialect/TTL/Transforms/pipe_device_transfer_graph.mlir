@@ -18,13 +18,13 @@
 // COMPILER-L1-LABEL: func.func @senders
 // COMPILER-L1-SAME: ttl.fabric_routes = [
 // COMPILER-L1-SAME: ttl.fabric_runtime_arg_base_common_index = 4 : i64
-// COMPILER-L1: emitc.verbatim "ttlang::l1::Buffer<4096, 1, 1, 1, 64, -1> cb_ctarg_0({});"
+// COMPILER-L1: emitc.verbatim "ttlang::l1::Buffer<4096, 1, 1, 1, 64, -1, false> cb_ctarg_0({});"
 // COMPILER-L1: call_opaque "experimental::routing_plane_fused_write_atomic_inc"
 // COMPILER-L1-NOT: !ttkernel.cb<
 // COMPILER-L1-LABEL: func.func @receivers
 // COMPILER-L1-SAME: ttl.fabric_routes = [
 // COMPILER-L1-SAME: ttl.fabric_runtime_arg_base_common_index = 2 : i64
-// COMPILER-L1: emitc.verbatim "ttlang::l1::Buffer<4096, 1, 1, 1, 4152, -1> cb_ctarg_1({});"
+// COMPILER-L1: emitc.verbatim "ttlang::l1::Buffer<4096, 1, 1, 1, 4152, -1, false> cb_ctarg_1({});"
 // COMPILER-L1: call_opaque "experimental::routing_plane_atomic_inc"
 // COMPILER-L1-NOT: !ttkernel.cb<
 

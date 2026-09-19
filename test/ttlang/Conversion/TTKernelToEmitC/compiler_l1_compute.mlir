@@ -13,7 +13,7 @@ module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [
   // CHECK: ttlang::l1::target::ComputeContext l1_compute_context;
   // CHECK: get_common_arg_val<uint32_t>(get_compile_time_arg_val(0)) + 0
   // CHECK: get_common_arg_val<uint32_t>(get_compile_time_arg_val(0)) + 8
-  // CHECK: ttlang::l1::Operand<static_cast<uint32_t>(DataFormat::Float32), 4096, 32, 32, 1, 3, 3, 64, -1, true>
+  // CHECK: ttlang::l1::Operand<static_cast<uint32_t>(DataFormat::Float32), 4096, 32, 32, 1, 3, 3, 64, -1, true, true>
   // CHECK: l1_compute_context.configure
   // CHECK: ttlang::l1::target::copy_tile
   // CHECK: ttlang::l1::target::pack_tile
@@ -28,12 +28,18 @@ module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [
   // CPP-NOT: cb_reserve_back
   // CPP-NOT: cb_push_back
   // CPP-NOT: cb_pop_front
+  // CPP: void push_back
+  // CPP: if constexpr (ReloadOwnedSequence)
+  // CPP-NEXT: acquiredProducerSequence = loadOwnedSequence(state + published);
+  // CPP: void pop_front
+  // CPP: if constexpr (ReloadOwnedSequence)
+  // CPP-NEXT: acquiredConsumerSequence = loadOwnedSequence(state + consumed);
   // CPP: return address(acquiredProducerSequence);
   // CPP: return address(acquiredConsumerSequence);
   // CPP: #ifndef TTLANG_COMPILER_L1_COMPUTE_TARGET_H
   // CPP: ttlang::l1::target::ComputeContext l1_compute_context;
-  // CPP: ttlang::l1::Buffer<4096, 1, 3, 3, 64, -1> [[INPUT:cb_ctarg_[0-9]+]]
-  // CPP: ttlang::l1::Buffer<4096, 1, 3, 3, 12344, -1> [[OUTPUT:cb_ctarg_[0-9]+]]
+  // CPP: ttlang::l1::Buffer<4096, 1, 3, 3, 64, -1, false> [[INPUT:cb_ctarg_[0-9]+]]
+  // CPP: ttlang::l1::Buffer<4096, 1, 3, 3, 12344, -1, false> [[OUTPUT:cb_ctarg_[0-9]+]]
   // CPP: for (size_t
   // CPP: [[INPUT]].wait_front
   // CPP: [[OUTPUT]].reserve_back
@@ -73,7 +79,7 @@ module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [
   // CHECK: emitc.call_opaque "ttlang::l1::target::add_tiles"
   // CHECK-SAME: ttlang.requires_compiler_l1
   // CPP: void kernel_main()
-  // CPP: ttlang::l1::Buffer<4096, 1, 3, 3, 64, -1> [[ADDRESS_INPUT:cb_ctarg_[0-9]+]]
+  // CPP: ttlang::l1::Buffer<4096, 1, 3, 3, 64, -1, false> [[ADDRESS_INPUT:cb_ctarg_[0-9]+]]
   // CPP: [[ADDRESS_INPUT]].wait_front
   // CPP: ttlang::l1::target::add_tiles(ttlang::l1::Operand<{{.*}}>([[ADDRESS_INPUT]]), ttlang::l1::Operand<{{.*}}>([[ADDRESS_INPUT]])
   // CPP: ttlang::l1::target::sub_tiles(ttlang::l1::Operand<{{.*}}>([[ADDRESS_INPUT]]), ttlang::l1::Operand<{{.*}}>([[ADDRESS_INPUT]])
@@ -106,9 +112,9 @@ module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [
 
   // Sub-tile operands preserve their height and width in the generated C++ type.
   // CHECK-LABEL: func.func @subtile_compute
-  // CHECK: ttlang::l1::Operand<static_cast<uint32_t>(DataFormat::Float16_b), 512, 8, 32, 1, 2, 2, 24616, -1, false>
+  // CHECK: ttlang::l1::Operand<static_cast<uint32_t>(DataFormat::Float16_b), 512, 8, 32, 1, 2, 2, 24616, -1, false, true>
   // CHECK: ttlang::l1::target::copy_tile_init
-  // CPP: ttlang::l1::Operand<static_cast<uint32_t>(DataFormat::Float16_b), 512, 8, 32, 1, 2, 2, 24616, -1, false>
+  // CPP: ttlang::l1::Operand<static_cast<uint32_t>(DataFormat::Float16_b), 512, 8, 32, 1, 2, 2, 24616, -1, false, true>
   // CPP: ttlang::l1::target::copy_tile_init
   func.func @subtile_compute() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
     %input = ttkernel.get_compile_time_arg_val(3) : () -> !ttkernel.cb<2, !ttcore.tile<8x32, bf16>>
@@ -133,7 +139,7 @@ module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [
   // Consumer replacement packs to the acquired read window without changing occupancy.
   // CHECK-LABEL: func.func @replace_waited
   // CHECK: ttlang::l1::target::pack_waited_tile
-  // CPP: ttlang::l1::Buffer<4096, 1, 3, 3, 64, -1> [[WAITED:cb_ctarg_[0-9]+]]
+  // CPP: ttlang::l1::Buffer<4096, 1, 3, 3, 64, -1, false> [[WAITED:cb_ctarg_[0-9]+]]
   // CPP: [[WAITED]].wait_front
   // CPP: ttlang::l1::target::pack_waited_tile<true>({{.*}}ttlang::l1::Operand<{{.*}}>([[WAITED]])
   func.func @replace_waited() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
@@ -147,10 +153,10 @@ module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [
 
   // A tensor-backed DFB can publish its complete capacity as one contiguous transaction.
   // CHECK-LABEL: func.func @publish_tensor_capacity
-  // CHECK: ttlang::l1::Buffer<2048, 1, 2, 2, 0, 0>
+  // CHECK: ttlang::l1::Buffer<2048, 1, 2, 2, 0, 0, false>
   // CHECK: .reserve_back({{.*}})
   // CHECK: .push_back({{.*}})
-  // CPP: ttlang::l1::Buffer<2048, 1, 2, 2, 0, 0>
+  // CPP: ttlang::l1::Buffer<2048, 1, 2, 2, 0, 0, false>
   func.func @publish_tensor_capacity() attributes {ttkernel.thread = #ttkernel.thread<noc>, ttl.crta_indices = [0]} {
     %storage = ttkernel.get_compile_time_arg_val(2) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>
     %capacity = arith.constant 2 : i32
@@ -174,6 +180,46 @@ module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [
         : (!ttkernel.cb<3, !ttcore.tile<32x32, f32>>, i32) -> ()
     return
   }
+
+  // Opaque DFB users retain owned-sequence reloads because they may advance the same interface.
+  // CHECK-LABEL: func.func @opaque_dfb_user
+  // CHECK: ttlang::l1::Buffer<4096, 1, 3, 3, 64, -1, true>
+  // CPP: ttlang::l1::Buffer<4096, 1, 3, 3, 64, -1, true>
+  func.func @opaque_dfb_user() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+    %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<3, !ttcore.tile<32x32, f32>>
+    %one = arith.constant 1 : i32
+    ttkernel.opaque_call "advance"() {dfb_resource_indices = array<i32: 0>, header = "advance.hpp"} : () -> ()
+    ttkernel.cb_reserve_back(%storage, %one) : (!ttkernel.cb<3, !ttcore.tile<32x32, f32>>, i32) -> ()
+    return
+  }
+
+  // An opaque user invalidates only the DFB indices declared by its effect contract.
+  // CHECK-LABEL: func.func @opaque_other_dfb_user
+  // CHECK: ttlang::l1::Buffer<4096, 1, 3, 3, 64, -1, false>
+  // CHECK: ttlang::l1::Buffer<4096, 1, 3, 3, 12344, -1, true>
+  func.func @opaque_other_dfb_user() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+    %unaffected = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<3, !ttcore.tile<32x32, f32>>
+    %affected = ttkernel.get_compile_time_arg_val(1) : () -> !ttkernel.cb<3, !ttcore.tile<32x32, f32>>
+    %one = arith.constant 1 : i32
+    ttkernel.opaque_call "advance"() {dfb_resource_indices = array<i32: 1>, header = "advance.hpp"} : () -> ()
+    ttkernel.cb_reserve_back(%unaffected, %one) : (!ttkernel.cb<3, !ttcore.tile<32x32, f32>>, i32) -> ()
+    ttkernel.cb_reserve_back(%affected, %one) : (!ttkernel.cb<3, !ttcore.tile<32x32, f32>>, i32) -> ()
+    return
+  }
+
+  // Function calls retain owned-sequence reloads because callees may advance a DFB interface.
+  // CHECK-LABEL: func.func @function_dfb_user
+  // CHECK: ttlang::l1::Buffer<4096, 1, 3, 3, 64, -1, true>
+  // CPP: ttlang::l1::Buffer<4096, 1, 3, 3, 64, -1, true>
+  func.func @function_dfb_user() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+    %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<3, !ttcore.tile<32x32, f32>>
+    %one = arith.constant 1 : i32
+    func.call @unknown() : () -> ()
+    ttkernel.cb_reserve_back(%storage, %one) : (!ttkernel.cb<3, !ttcore.tile<32x32, f32>>, i32) -> ()
+    return
+  }
+
+  func.func private @unknown()
 
   // Frontend Boolean negation is a pure expression and does not obscure DFB effects.
   // CHECK-LABEL: func.func @logical_not
