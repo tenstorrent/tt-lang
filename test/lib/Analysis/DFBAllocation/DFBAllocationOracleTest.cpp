@@ -750,11 +750,11 @@ static bool compareMultiOrderLargeGraphs() {
       ++cases;
     }
   }
-  llvm::outs() << "l1_multi_order_large_cases=" << cases << "\n";
+  llvm::outs() << "sram_multi_order_large_cases=" << cases << "\n";
   return true;
 }
 
-static bool compareL1PlacementWithOracle() {
+static bool compareSRAMPlacementWithOracle() {
   constexpr unsigned kVertexCount = 4;
   constexpr unsigned kGraphCount = 1U << 6;
   constexpr unsigned kSizeValueCount = 3;
@@ -777,7 +777,8 @@ static bool compareL1PlacementWithOracle() {
           failureReason);
   if (mlir::failed(exactAllocator) || mlir::failed(firstFitAllocator) ||
       mlir::failed(bestFitAllocator)) {
-    llvm::errs() << "failed to create L1 allocators: " << failureReason << "\n";
+    llvm::errs() << "failed to create SRAM allocators: " << failureReason
+                 << "\n";
     return false;
   }
 
@@ -840,7 +841,7 @@ static bool compareL1PlacementWithOracle() {
           repeated->offsets != exact->offsets ||
           firstFit->arenaBytes < exact->arenaBytes ||
           bestFit->arenaBytes < exact->arenaBytes) {
-        llvm::errs() << "L1 placement mismatch: edge_mask=" << edgeMask
+        llvm::errs() << "SRAM placement mismatch: edge_mask=" << edgeMask
                      << " encoded_sizes=" << encodedSizes
                      << " expected=" << expectedArenaBytes;
         if (mlir::succeeded(exact)) {
@@ -865,51 +866,51 @@ static bool compareL1PlacementWithOracle() {
     }
   }
 
-  llvm::outs() << "l1_multi_order_suboptimal_cases="
+  llvm::outs() << "sram_multi_order_suboptimal_cases="
                << multiQuality.suboptimalCount << "\n"
-               << "l1_multi_order_excess_units=" << multiQuality.excessUnits
+               << "sram_multi_order_excess_units=" << multiQuality.excessUnits
                << "\n"
-               << "l1_multi_order_aggregate_efficiency_basis_points="
+               << "sram_multi_order_aggregate_efficiency_basis_points="
                << getEfficiencyBasisPoints(multiQuality.optimalUnits,
                                            multiQuality.allocatedUnits)
                << "\n"
-               << "l1_multi_order_worst_efficiency_basis_points="
+               << "sram_multi_order_worst_efficiency_basis_points="
                << getEfficiencyBasisPoints(multiQuality.worstOptimalUnits,
                                            multiQuality.worstAllocatedUnits)
                << "\n";
   llvm::outs()
-      << "l1_placement_cases=" << checkedCaseCount << "\n"
-      << "l1_first_fit_suboptimal_cases=" << firstFitQuality.suboptimalCount
+      << "sram_placement_cases=" << checkedCaseCount << "\n"
+      << "sram_first_fit_suboptimal_cases=" << firstFitQuality.suboptimalCount
       << "\n"
-      << "l1_best_fit_suboptimal_cases=" << bestFitQuality.suboptimalCount
+      << "sram_best_fit_suboptimal_cases=" << bestFitQuality.suboptimalCount
       << "\n"
-      << "l1_first_fit_excess_units=" << firstFitQuality.excessUnits << "\n"
-      << "l1_best_fit_excess_units=" << bestFitQuality.excessUnits << "\n"
-      << "l1_first_fit_max_excess_units=" << firstFitQuality.maximumExcessUnits
+      << "sram_first_fit_excess_units=" << firstFitQuality.excessUnits << "\n"
+      << "sram_best_fit_excess_units=" << bestFitQuality.excessUnits << "\n"
+      << "sram_first_fit_max_excess_units="
+      << firstFitQuality.maximumExcessUnits << "\n"
+      << "sram_best_fit_max_excess_units=" << bestFitQuality.maximumExcessUnits
       << "\n"
-      << "l1_best_fit_max_excess_units=" << bestFitQuality.maximumExcessUnits
-      << "\n"
-      << "l1_first_fit_aggregate_efficiency_basis_points="
+      << "sram_first_fit_aggregate_efficiency_basis_points="
       << getEfficiencyBasisPoints(firstFitQuality.optimalUnits,
                                   firstFitQuality.allocatedUnits)
       << "\n"
-      << "l1_best_fit_aggregate_efficiency_basis_points="
+      << "sram_best_fit_aggregate_efficiency_basis_points="
       << getEfficiencyBasisPoints(bestFitQuality.optimalUnits,
                                   bestFitQuality.allocatedUnits)
       << "\n"
-      << "l1_first_fit_suboptimal_efficiency_basis_points="
+      << "sram_first_fit_suboptimal_efficiency_basis_points="
       << getEfficiencyBasisPoints(firstFitQuality.suboptimalOptimalUnits,
                                   firstFitQuality.suboptimalAllocatedUnits)
       << "\n"
-      << "l1_best_fit_suboptimal_efficiency_basis_points="
+      << "sram_best_fit_suboptimal_efficiency_basis_points="
       << getEfficiencyBasisPoints(bestFitQuality.suboptimalOptimalUnits,
                                   bestFitQuality.suboptimalAllocatedUnits)
       << "\n"
-      << "l1_first_fit_worst_efficiency_basis_points="
+      << "sram_first_fit_worst_efficiency_basis_points="
       << getEfficiencyBasisPoints(firstFitQuality.worstOptimalUnits,
                                   firstFitQuality.worstAllocatedUnits)
       << "\n"
-      << "l1_best_fit_worst_efficiency_basis_points="
+      << "sram_best_fit_worst_efficiency_basis_points="
       << getEfficiencyBasisPoints(bestFitQuality.worstOptimalUnits,
                                   bestFitQuality.worstAllocatedUnits)
       << "\n";
@@ -981,7 +982,7 @@ int main() {
                  verifyFixedLimitAvoidsMinimumSearch() &&
                  verifyWeightedColoringAcrossComponents() &&
                  compareWeightedSolverWithOracle() &&
-                 compareL1PlacementWithOracle() &&
+                 compareSRAMPlacementWithOracle() &&
                  verifyTargetDFBIndexCapacities() &&
                  compareAssignmentContracts()
              ? 0

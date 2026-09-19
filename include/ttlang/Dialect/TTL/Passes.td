@@ -1078,10 +1078,10 @@ def TTLFinalizeDFBIndices
 
     `memory-model=compiler-l1` assigns explicit byte ranges instead of Metal
     descriptor slots. Logical identities retain independent 8-byte control
-    records. The selected L1 allocation strategy places payloads over the
+    records. The selected SRAM allocation strategy places payloads over the
     concurrent-kernel storage conflict graph; unknown completion prohibits reuse.
     The complete plan is validated before mutation. Runtime metadata supplies
-    state and payload offsets within one allocator-owned L1 arena. The arena
+    state and payload offsets within one allocator-owned SRAM arena. The arena
     high-water mark includes alignment and state. The decreasing strategies
     produce feasible placements. The default compares stable and conflict-degree
     ordering among equal extents and retains the smaller arena, preserving stable
@@ -1271,7 +1271,7 @@ def TTLFinalizeDFBIndices
            "compiler-l1 payload placement.">,
     Option<"l1ExactAllocationSearchLimit",
            "l1-exact-allocation-search-limit", "uint64_t", "1000000",
-           "Maximum work items examined by exact compiler-l1 placement before "
+           "Maximum work items examined by exact compiler-managed SRAM placement before "
            "reporting an inconclusive result.">,
     Option<"unsafeAssumeAllocationGroups", "unsafe-assume-allocation-groups",
            "bool", "false",
@@ -1282,7 +1282,7 @@ def TTLFinalizeDFBIndices
            "Maximum states examined by exact DFB allocation before reporting "
            "an inconclusive result.">,
     Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
-           "Override the per-core L1 budget used by DFB allocation and "
+           "Override the per-core SRAM budget used by DFB allocation and "
            "conservative PipeNet reservation. 0 selects the target budget.">
   ];
 }

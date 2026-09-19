@@ -285,7 +285,7 @@ def test_l1_allocation_strategy_cache_identity():
     assert CompilerOptions() != CompilerOptions(
         l1_allocation_strategy="best-fit-decreasing"
     )
-    with pytest.raises(ValueError, match="Invalid L1 allocation strategy"):
+    with pytest.raises(ValueError, match="Invalid SRAM allocation strategy"):
         CompilerOptions(l1_allocation_strategy="invalid")
 
 
