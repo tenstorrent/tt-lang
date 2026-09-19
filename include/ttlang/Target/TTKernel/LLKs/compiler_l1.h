@@ -85,7 +85,8 @@ public:
   static constexpr uint32_t storage_capacity_pages = StorageCapacityPages;
   static constexpr uint32_t payload_offset = PayloadOffset;
   explicit Buffer(uint32_t address)
-      : state(address), payload(getPayloadAddress(address)) {}
+      : state(address), payload(getPayloadAddress(address)),
+        acquiredProducerSequence(0), acquiredConsumerSequence(0) {}
   void reserve_back(uint32_t pages) const {
     if constexpr (!target::ownsProducer) {
       return;
@@ -125,12 +126,8 @@ public:
     acquiredConsumerSequence = advance(acquiredConsumerSequence, pages);
     publishSequence(state + consumed, acquiredConsumerSequence);
   }
-  uint32_t get_write_ptr() const {
-    return address(loadSequence(state + published));
-  }
-  uint32_t get_read_ptr() const {
-    return address(loadSequence(state + consumed));
-  }
+  uint32_t get_write_ptr() const { return address(acquiredProducerSequence); }
+  uint32_t get_read_ptr() const { return address(acquiredConsumerSequence); }
 };
 
 template <uint32_t PageBytes, uint32_t PagesPerBlock, uint32_t BlockCount,
