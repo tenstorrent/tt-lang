@@ -46,6 +46,7 @@ readonly _TT_EMULE_SOURCE_URL="${TTLANG_EMULE_RUNTIME_SOURCE_URL:-$_MANIFEST_EMU
 readonly _TT_METAL_SOURCE_URL="${TTLANG_EMULE_RUNTIME_METAL_SOURCE_URL:-$_MANIFEST_METAL_REPOSITORY}"
 readonly _BASE_IMAGE="${TTLANG_EMULE_RUNTIME_BASE_IMAGE:-$_MANIFEST_BASE_IMAGE}"
 readonly _REQUIRED_EMULE_FILE="$_MANIFEST_CLUSTER_DESCRIPTOR"
+readonly _PLATFORM="${TTLANG_EMULE_PLATFORM:-$_MANIFEST_PLATFORM}"
 
 for _COMMIT in "$_TT_EMULE_COMMIT" "$_TT_METAL_COMMIT"; do
     if [ "${#_COMMIT}" -ne 40 ] || [[ "$_COMMIT" == *[!0-9a-f]* ]]; then
@@ -55,17 +56,19 @@ for _COMMIT in "$_TT_EMULE_COMMIT" "$_TT_METAL_COMMIT"; do
 done
 
 _IMAGE_INPUT_ID="$(
-    cksum "$_STACK_MANIFEST" \
-        "${_REPO_ROOT}/.github/containers/Dockerfile.emule" \
-        "${_SCRIPT_DIR}/tt-lang-emule-entrypoint.sh" |
-        awk '{print $1, $2}' |
+    {
+        cksum "$_STACK_MANIFEST" \
+            "${_REPO_ROOT}/.github/containers/Dockerfile.emule" \
+            "${_SCRIPT_DIR}/tt-lang-emule-entrypoint.sh" |
+            awk '{print $1, $2}'
+        printf '%s\n' "$_BASE_IMAGE" "$_PLATFORM"
+    } |
         cksum |
         awk '{print $1}'
 )"
 readonly _IMAGE_INPUT_ID
 readonly _RUNTIME_ID="${_TT_EMULE_COMMIT:0:8}-${_TT_METAL_COMMIT:0:8}-r${_IMAGE_INPUT_ID}"
 _DOCKER="${TTLANG_EMULE_DOCKER:-docker}"
-_PLATFORM="${TTLANG_EMULE_PLATFORM:-$_MANIFEST_PLATFORM}"
 _IMAGE="${TTLANG_EMULE_IMAGE:-tt-lang-emule:${_RUNTIME_ID}}"
 _SOURCE_ID="$(printf '%s' "$_REPO_ROOT" | cksum | awk '{print $1}')"
 _BUILD_VOLUME="${TTLANG_EMULE_BUILD_VOLUME:-tt-lang-emule-build-${_RUNTIME_ID}-${_SOURCE_ID}}"

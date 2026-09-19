@@ -119,22 +119,6 @@ The {ref}`scope and validation guidance <docker-simulator-coverage>` explains
 the single-device target and how to interpret results for an exact dependency
 combination. Running the suites does not imply support for every workload.
 
-The developer qualification plan separately distinguishes compilation from
-emulated execution:
-
-```bash
-python3 scripts/run-tt-lang-emule-tests.py --list
-python3 scripts/run-tt-lang-emule-tests.py --build-dir build
-```
-
-`compiler-core` and `compiler-python-lit` validate the compiler with
-`TTLANG_COMPILE_ONLY=1`; they do not need, or test, the emulator. The
-`emule-reference` phase runs the four reference programs above. Broad Python
-device pytest, me2e, and tutorial suites are listed as inventory-only because
-they combine compiler checks with runtime, topology, and device assumptions.
-They must be qualified case by case instead of being treated as supported just
-because the compiler-only suites pass.
-
 (simulator-updating-supported-stack)=
 ### Updating the supported stack
 

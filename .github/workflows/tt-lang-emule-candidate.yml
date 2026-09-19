@@ -53,8 +53,7 @@ jobs:
             test/packaging/test_ttlang_emule_cli.py \
             test/packaging/test_ttlang_emule_examples.py \
             test/packaging/test_ttlang_emule_stack.py \
-            test/packaging/test_ttlang_emule_suite.py \
-            test/packaging/test_ttlang_emule_test_plan.py
+            test/packaging/test_ttlang_emule_suite.py
 
       - name: Install BATS and helpers
         uses: bats-core/bats-action@2.0.0
@@ -109,10 +108,12 @@ jobs:
           persist-credentials: false
 
       - name: Prepare and validate the candidate manifest
+        env:
+          EMULATOR_COMMIT: ${{ inputs.emulator_commit }}
         run: |
           python3 scripts/prepare-tt-lang-emule-candidate.py \
             --emulator-source .candidate-emulator \
-            --emulator-commit "${{ inputs.emulator_commit }}" \
+            --emulator-commit "$EMULATOR_COMMIT" \
             --output candidate-stack.json
 
       - name: Login to the container registry

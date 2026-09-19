@@ -13,13 +13,13 @@ STACK_TOOL = REPO_ROOT / "scripts" / "tt-lang-emule-stack.py"
 STACK_MANIFEST = REPO_ROOT / "config" / "tt-lang-emule-stack.json"
 
 
-def run_stack(*arguments):
+def run_stack(*arguments, manifest=STACK_MANIFEST):
     return subprocess.run(
         [
             "python3",
             str(STACK_TOOL),
             "--manifest",
-            str(STACK_MANIFEST),
+            str(manifest),
             *arguments,
         ],
         check=False,
@@ -85,8 +85,46 @@ def test_manifest_emits_exact_runtime_inputs():
     assert "@sha256:" in values["TTLANG_EMULE_BASE_IMAGE"]
 
 
-def test_manifest_accepts_the_current_compiler_checkout():
-    result = run_stack("validate", "--compiler-source", str(REPO_ROOT))
+def test_manifest_accepts_a_compiler_descendant_of_its_baseline(tmp_path):
+    compiler = tmp_path / "compiler"
+    compiler.mkdir()
+    subprocess.run(["git", "init", "-q", str(compiler)], check=True)
+    (compiler / "tracked").write_text("baseline\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(compiler), "add", "tracked"], check=True)
+    commit = [
+        "git",
+        "-C",
+        str(compiler),
+        "-c",
+        "user.name=test",
+        "-c",
+        "user.email=test@example.com",
+        "commit",
+        "-q",
+        "-m",
+    ]
+    subprocess.run([*commit, "Baseline"], check=True)
+    baseline = subprocess.run(
+        ["git", "-C", str(compiler), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    (compiler / "tracked").write_text("descendant\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(compiler), "add", "tracked"], check=True)
+    subprocess.run([*commit, "Descendant"], check=True)
+
+    manifest = json.loads(STACK_MANIFEST.read_text(encoding="utf-8"))
+    manifest["compiler"]["base_commit"] = baseline
+    test_manifest = tmp_path / "stack.json"
+    test_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = run_stack(
+        "validate",
+        "--compiler-source",
+        str(compiler),
+        manifest=test_manifest,
+    )
 
     assert result.returncode == 0, result.stderr
     assert "Validated tt-lang/emule stack" in result.stdout

@@ -134,6 +134,13 @@ def test_candidate_workflow_validates_without_publishing():
     assert "docker push" not in workflow
     assert "packages: write" not in workflow
 
+    prepare_step = workflow.split(
+        "      - name: Prepare and validate the candidate manifest\n", 1
+    )[1].split("\n      - name:", 1)[0]
+    assert "EMULATOR_COMMIT: ${{ inputs.emulator_commit }}" in prepare_step
+    assert '--emulator-commit "$EMULATOR_COMMIT"' in prepare_step
+    assert '"${{ inputs.emulator_commit }}"' not in prepare_step
+
 
 def test_candidate_reference_suite_keeps_manifest_without_rebuilding():
     workflow = WORKFLOW.read_text(encoding="utf-8")

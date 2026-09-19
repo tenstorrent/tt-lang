@@ -484,31 +484,6 @@ def launcher_checkout(tmp_path):
     return root, environment
 
 
-@pytest.mark.parametrize("command", [[], ["setup"], ["smoke"], ["examples"], ["test"]])
-def test_launcher_help_needs_no_docker_or_saved_configuration(
-    launcher_checkout, command
-):
-    root, environment = launcher_checkout
-    config = root / ".ttlang-sim" / "emule.json"
-    config.parent.mkdir()
-    config.write_text("invalid configuration", encoding="utf-8")
-
-    result = subprocess.run(
-        [str(root / "bin" / "tt-lang-sim"), "emule", *command, "--help"],
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "usage:" in result.stdout
-    assert "--launch" not in result.stdout
-    if not command:
-        assert "{setup,smoke,examples,test}" in result.stdout
-    assert not Path(environment["LAUNCH_LOG"]).exists()
-
-
 def test_launcher_preserves_program_arguments_and_exit_status(launcher_checkout):
     root, environment = launcher_checkout
     script = root / "program with spaces.py"
@@ -767,7 +742,7 @@ def test_launcher_keeps_direct_runner_fallback_without_management_helper(
         ),
     ],
 )
-def test_action_flags_use_the_same_options_as_legacy_aliases(
+def test_action_flags_map_to_the_management_commands(
     cli, monkeypatch, flag, alias, options
 ):
     monkeypatch.setattr(sys, "argv", [str(CLI), flag, *options])

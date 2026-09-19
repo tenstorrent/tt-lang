@@ -70,9 +70,8 @@ RUN printf '%s  %s\n' "$STACK_MANIFEST_SHA256" \
         "$TARGET_CLUSTER_DESCRIPTOR" "$TARGET_MESH_DEVICE" \
         > /opt/tt-emule-runtime/stack.json
 
-RUN if [ -f /opt/tt-emule/tt-metal-pin.txt ]; then \
-        grep -F -x -- "$TT_METAL_COMMIT" /opt/tt-emule/tt-metal-pin.txt; \
-    fi \
+RUN test -f /opt/tt-emule/tt-metal-pin.txt \
+    && grep -F -x -- "$TT_METAL_COMMIT" /opt/tt-emule/tt-metal-pin.txt \
     && mkdir -p "$TT_EMULE_RUNTIME_ROOT" \
     && git init "$TT_METAL_SOURCE_DIR" \
     && git -C "$TT_METAL_SOURCE_DIR" remote add origin "$TT_METAL_SOURCE_URL" \

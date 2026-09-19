@@ -44,7 +44,7 @@ def parse_args():
     if action_flag:
         arguments = [action_flags[action_flag], *arguments[1:]]
     parser = argparse.ArgumentParser(
-        prog="tt-lang-sim emule",
+        prog="tt-lang-sim --backend=emule",
         description="Configure and test the compiler-backed simulator.",
         epilog="Run programs with: tt-lang-sim --backend=emule SCRIPT.py [-- ARGS...]",
     )

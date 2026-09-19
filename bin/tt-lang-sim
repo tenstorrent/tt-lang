@@ -15,15 +15,6 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _REPO_ROOT="$(dirname "$_SCRIPT_DIR")"
 _EMULE_CLI="${_REPO_ROOT}/scripts/tt-lang-emule.py"
 
-if [ "${1:-}" = "emule" ]; then
-    shift
-    if [ ! -f "$_EMULE_CLI" ]; then
-        echo "tt-lang-sim: emule commands require a source checkout." >&2
-        exit 1
-    fi
-    exec "${TTLANG_EMULE_HOST_PYTHON:-python3}" "$_EMULE_CLI" "$@"
-fi
-
 # Extract the launcher-owned option before forwarding the remaining arguments.
 # The simulator CLI already uses `--` to separate its options from script
 # arguments, so stop scanning there as well.
