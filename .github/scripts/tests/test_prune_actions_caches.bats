@@ -15,6 +15,9 @@ stub_gh() {
     mkdir -p "$BATS_TEST_TMPDIR/bin"
     cat > "$BATS_TEST_TMPDIR/bin/gh" <<'STUB'
 #!/usr/bin/env bash
+if [[ "${GH_API_FAIL:-false}" == true ]]; then
+    exit 1
+fi
 if [[ "$1" == "api" && "$2" == "-X" && "$3" == "DELETE" ]]; then
     echo "${4##*/}" >> "$DELETED_FILE"
     exit 0
@@ -50,6 +53,7 @@ write_caches() {
 }
 
 setup() {
+    unset GH_API_FAIL
     stub_gh
 }
 
@@ -103,6 +107,14 @@ EOF
     assert_success
     assert_equal "$(cat "$DELETED_FILE")" ""
     assert_output --partial "would delete"
+}
+
+@test "fails when the cache listing request fails" {
+    export GH_API_FAIL=true
+    run "$SCRIPT_UNDER_TEST"
+    assert_failure
+    assert_output --partial "failed to list caches"
+    refute_output --partial "no caches match"
 }
 
 @test "rejects a non-numeric --keep" {

@@ -78,13 +78,22 @@ esac
 # then by creation time descending, so the entries restore-keys would pick come
 # first in each group.
 timestamp_suffix='-[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$'
-mapfile -t entries < <(
+cache_rows=""
+if ! cache_rows="$(
     gh api --paginate "repos/$REPO/actions/caches?per_page=100" \
         --jq ".actions_caches[] | select(.key | startswith(\"$PREFIX\")) |
               [.id, .created_at, .size_in_bytes, .ref, .key,
                (.key | sub(\"$timestamp_suffix\"; \"\"))] | @tsv" |
         sort -t"$(printf '\t')" -k4,4 -k6,6 -k2,2r
-)
+)"; then
+    echo "prune-actions-caches.sh: failed to list caches for '$REPO'" >&2
+    exit 1
+fi
+
+entries=()
+if [[ -n "$cache_rows" ]]; then
+    mapfile -t entries <<<"$cache_rows"
+fi
 
 if ((${#entries[@]} == 0)); then
     echo "no caches match prefix '$PREFIX'"
