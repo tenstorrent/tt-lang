@@ -25,6 +25,7 @@
 #include "mlir/Dialect/SCF/Transforms/Patterns.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/BuiltinDialect.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
@@ -2847,6 +2848,30 @@ static void cleanupComputeKernels(ModuleOp mod, MLIRContext &ctx) {
 // DstSectionOp expansion
 //===----------------------------------------------------------------------===//
 
+/// Every op between `op` and `dstSection` is a single-trip loop, so an op
+/// placed at `op` still executes exactly once per DST acquire.
+[[maybe_unused]] static bool isSingleTripNest(Operation *op,
+                                              DstSectionOp dstSection) {
+  for (Operation *parent = op ? op->getParentOp() : nullptr;
+       parent && parent != dstSection.getOperation();
+       parent = parent->getParentOp()) {
+    auto forOp = mlir::dyn_cast<mlir::scf::ForOp>(parent);
+    if (!forOp) {
+      return false;
+    }
+    std::optional<int64_t> lb =
+        mlir::getConstantIntValue(forOp.getLowerBound());
+    std::optional<int64_t> ub =
+        mlir::getConstantIntValue(forOp.getUpperBound());
+    std::optional<int64_t> step = mlir::getConstantIntValue(forOp.getStep());
+    if (!lb || !ub || !step || *step <= 0 ||
+        llvm::divideCeil(*ub - *lb, *step) != 1) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /// Expand DstSectionOp: insert sync ops at the math/pack boundary (first
 /// TileStoreOp), then inline the body. LowerToLoops ensures pack-phase ops
 /// are already grouped at the end.
@@ -2855,14 +2880,20 @@ static void expandDstSection(DstSectionOp dstSection) {
   Block *parentBlock = dstSection->getBlock();
   Location loc = dstSection.getLoc();
 
-  // Find the first TileStoreOp -- this is the math/pack boundary.
+  // Find the math/pack boundary: the first TileStoreOp, wherever it sits. A
+  // store is not always a direct child of the body -- a single-tile subblock
+  // keeps a trivial scf.for nest that is not folded away before this point --
+  // so the sync pair is placed in the store's own block, between the math that
+  // produced the tiles and the stores that pack them. Enclosing loops are
+  // single-trip, so one commit/wait pair still executes exactly once per
+  // acquire.
   Operation *firstStore = nullptr;
-  for (Operation &op : body.without_terminator()) {
-    if (mlir::isa<TileStoreOp>(&op)) {
-      firstStore = &op;
-      break;
-    }
-  }
+  body.walk([&](TileStoreOp store) {
+    firstStore = store;
+    return WalkResult::interrupt();
+  });
+  assert(isSingleTripNest(firstStore, dstSection) &&
+         "commit/wait would be placed inside a multi-trip loop");
 
   // Insert sync ops within the body at the correct positions.
   OpBuilder builder(dstSection->getContext());
