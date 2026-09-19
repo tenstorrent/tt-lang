@@ -43,6 +43,13 @@ __attribute__((noinline)) inline void complete() {
   noc_async_full_barrier();
 #endif
 }
+inline uint32_t loadSequence16(uint32_t address) {
+  return static_cast<uint16_t>(load(address));
+}
+inline void publishSequence16(uint32_t address, uint32_t value) {
+  complete();
+  store(address, value);
+}
 #if defined(TRISC_UNPACK) || defined(TRISC_MATH)
 inline constexpr bool ownsProducer = false;
 #else

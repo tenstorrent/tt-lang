@@ -23,10 +23,14 @@ class Buffer {
                 uint64_t{PagesPerBlock} * BlockCount <= StorageCapacityPages &&
                 StorageCapacityPages < (uint64_t{1} << 31));
   static constexpr uint32_t sequenceModulus = 2 * StorageCapacityPages;
+  static constexpr bool use16BitSequence =
+      sequenceModulus <= (uint64_t{1} << 16);
   static constexpr uint32_t published = 0;
   static constexpr uint32_t consumed = 4;
   uint32_t state;
   uint32_t payload;
+  mutable uint32_t acquiredProducerSequence;
+  mutable uint32_t acquiredConsumerSequence;
 
   static uint32_t getPayloadAddress(uint32_t stateAddress) {
     if constexpr (PayloadCommonArgIndex < 0) {
@@ -35,9 +39,7 @@ class Buffer {
     return target::commonArg(PayloadCommonArgIndex) + PayloadOffset;
   }
 
-  uint32_t occupancy() const {
-    uint32_t producer = target::load(state + published);
-    uint32_t consumer = target::load(state + consumed);
+  static uint32_t occupancy(uint32_t producer, uint32_t consumer) {
     return producer >= consumer ? producer - consumer
                                 : sequenceModulus - (consumer - producer);
   }
@@ -47,22 +49,33 @@ class Buffer {
     ASSERT(pages <= StorageCapacityPages);
   }
 
-  void assertContiguous(uint32_t counter, uint32_t pages) const {
-    ASSERT(target::load(state + counter) % StorageCapacityPages + pages <=
-           StorageCapacityPages);
+  static void assertContiguous(uint32_t sequence, uint32_t pages) {
+    ASSERT(sequence % StorageCapacityPages + pages <= StorageCapacityPages);
   }
 
-  void advance(uint32_t counter, uint32_t pages) const {
-    uint32_t current = target::load(state + counter);
+  static uint32_t advance(uint32_t current, uint32_t pages) {
     uint32_t wrapThreshold = sequenceModulus - pages;
-    uint32_t next =
-        current >= wrapThreshold ? current - wrapThreshold : current + pages;
-    target::store(state + counter, next);
+    return current >= wrapThreshold ? current - wrapThreshold : current + pages;
   }
 
-  uint32_t address(uint32_t counter) const {
-    return payload +
-           (target::load(state + counter) % StorageCapacityPages) * PageBytes;
+  static uint32_t loadSequence(uint32_t address) {
+    if constexpr (use16BitSequence) {
+      return target::loadSequence16(address);
+    }
+    return target::load(address);
+  }
+
+  static void publishSequence(uint32_t address, uint32_t sequence) {
+    if constexpr (use16BitSequence) {
+      target::publishSequence16(address, sequence);
+      return;
+    }
+    target::complete();
+    target::store(address, sequence);
+  }
+
+  uint32_t address(uint32_t sequence) const {
+    return payload + (sequence % StorageCapacityPages) * PageBytes;
   }
 
 public:
@@ -78,37 +91,46 @@ public:
       return;
     }
     validatePages(pages);
-    while (StorageCapacityPages - occupancy() < pages) {
+    acquiredProducerSequence = loadSequence(state + published);
+    while (StorageCapacityPages - occupancy(acquiredProducerSequence,
+                                            loadSequence(state + consumed)) <
+           pages) {
     }
-    assertContiguous(published, pages);
+    assertContiguous(acquiredProducerSequence, pages);
   }
   void wait_front(uint32_t pages) const {
     if constexpr (!target::ownsConsumer) {
       return;
     }
     validatePages(pages);
-    while (occupancy() < pages) {
+    acquiredConsumerSequence = loadSequence(state + consumed);
+    while (occupancy(loadSequence(state + published),
+                     acquiredConsumerSequence) < pages) {
     }
-    assertContiguous(consumed, pages);
+    assertContiguous(acquiredConsumerSequence, pages);
   }
   void push_back(uint32_t pages) const {
     if constexpr (!target::ownsProducer) {
       return;
     }
     validatePages(pages);
-    target::complete();
-    advance(published, pages);
+    acquiredProducerSequence = advance(acquiredProducerSequence, pages);
+    publishSequence(state + published, acquiredProducerSequence);
   }
   void pop_front(uint32_t pages) const {
     if constexpr (!target::ownsConsumer) {
       return;
     }
     validatePages(pages);
-    target::complete();
-    advance(consumed, pages);
+    acquiredConsumerSequence = advance(acquiredConsumerSequence, pages);
+    publishSequence(state + consumed, acquiredConsumerSequence);
   }
-  uint32_t get_write_ptr() const { return address(published); }
-  uint32_t get_read_ptr() const { return address(consumed); }
+  uint32_t get_write_ptr() const {
+    return address(loadSequence(state + published));
+  }
+  uint32_t get_read_ptr() const {
+    return address(loadSequence(state + consumed));
+  }
 };
 
 template <uint32_t PageBytes, uint32_t PagesPerBlock, uint32_t BlockCount,
