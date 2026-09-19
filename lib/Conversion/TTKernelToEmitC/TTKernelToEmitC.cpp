@@ -256,21 +256,19 @@ static SRAMAllocation getSRAMAllocation(Operation *operation, int64_t index) {
 
 static bool isCompilerL1ComputeOperation(Operation *operation) {
   return isa<
-      ttkernel::SubTilesInitOp, ttkernel::SubTilesOp,
-      ttkernel::TransposeInitOp, ttkernel::TransposeTileOp,
-      ttkernel::BinaryDestReuseTilesInitOp,
+      ttkernel::SubTilesInitOp, ttkernel::SubTilesOp, ttkernel::TransposeInitOp,
+      ttkernel::TransposeTileOp, ttkernel::BinaryDestReuseTilesInitOp,
       ttkernel::BinaryDestReuseTilesOp, ttkernel::UnaryBcastInitOp,
       ttkernel::UnaryBcastTileOp, ttkernel::ReduceInitOp,
-      ttkernel::ReduceTileOp, ttkernel::ReduceUninitOp,
-      ttkernel::MatmulInitOp, ttkernel::MatmulBlockInitOp,
-      ttkernel::MatmulInitShortOp, ttkernel::MatmulBlockInitShortOp,
-      ttkernel::MatmulTilesOp, ttkernel::MatmulBlockOp,
-      ttkernel::ExperimentalMatmulBlockOp, ttkernel::InitSFPUOp,
-      ttkernel::UnaryOpInitCommonOp, ttkernel::CopyTileInitOp,
-      ttkernel::CopyTileOp, ttkernel::BinaryOpInitCommonOp,
-      ttkernel::AddTilesInitOp, ttkernel::AddTilesOp,
-      ttkernel::MulTilesInitOp, ttkernel::MulTilesOp, ttkernel::PackTileOp,
-      ttkernel::PackWaitedTileOp>(operation);
+      ttkernel::ReduceTileOp, ttkernel::ReduceUninitOp, ttkernel::MatmulInitOp,
+      ttkernel::MatmulBlockInitOp, ttkernel::MatmulInitShortOp,
+      ttkernel::MatmulBlockInitShortOp, ttkernel::MatmulTilesOp,
+      ttkernel::MatmulBlockOp, ttkernel::ExperimentalMatmulBlockOp,
+      ttkernel::InitSFPUOp, ttkernel::UnaryOpInitCommonOp,
+      ttkernel::CopyTileInitOp, ttkernel::CopyTileOp,
+      ttkernel::BinaryOpInitCommonOp, ttkernel::AddTilesInitOp,
+      ttkernel::AddTilesOp, ttkernel::MulTilesInitOp, ttkernel::MulTilesOp,
+      ttkernel::PackTileOp, ttkernel::PackWaitedTileOp>(operation);
 }
 
 static LogicalResult
@@ -1984,10 +1982,15 @@ public:
     auto operands = adaptor.getOperands();
     TT_assert(operands.size() == 2u);
 
+    std::string templateArgs;
+    if (usesCompilerL1(op.getOperation()) &&
+        op->hasAttr(ttkernel::kPayloadCompleteAttrName)) {
+      templateArgs = "<true>";
+    }
     std::string callStr =
         ensureCBDeclaration(operands.front(), op.getOperation(), rewriter,
                             state) +
-        "." + methodName + "({});";
+        "." + methodName + templateArgs + "({});";
 
     rewriter.create<emitc::VerbatimOp>(op.getLoc(), callStr,
                                        operands.drop_front());

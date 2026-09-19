@@ -159,6 +159,22 @@ module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [
     return
   }
 
+  // Proven transfer completion suppresses only the redundant release barrier.
+  // CHECK-LABEL: func.func @completed_transfer_release
+  // CHECK: .push_back<true>({{.*}})
+  // CHECK: .pop_front<true>({{.*}})
+  // CPP: .push_back<true>({{.*}})
+  // CPP: .pop_front<true>({{.*}})
+  func.func @completed_transfer_release() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+    %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<3, !ttcore.tile<32x32, f32>>
+    %one = arith.constant 1 : i32
+    ttkernel.cb_push_back(%storage, %one) {payload_complete}
+        : (!ttkernel.cb<3, !ttcore.tile<32x32, f32>>, i32) -> ()
+    ttkernel.cb_pop_front(%storage, %one) {payload_complete}
+        : (!ttkernel.cb<3, !ttcore.tile<32x32, f32>>, i32) -> ()
+    return
+  }
+
   // Frontend Boolean negation is a pure expression and does not obscure DFB effects.
   // CHECK-LABEL: func.func @logical_not
   // CHECK: emitc.logical_not
