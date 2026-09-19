@@ -37,8 +37,11 @@ class Operand
     : public Buffer<PageBytes, PagesPerBlock, BlockCount, StorageCapacityPages,
                     PayloadOffset, PayloadCommonArgIndex> {
 public:
-  using Buffer<PageBytes, PagesPerBlock, BlockCount, StorageCapacityPages,
-               PayloadOffset, PayloadCommonArgIndex>::Buffer;
+  using BufferBase =
+      Buffer<PageBytes, PagesPerBlock, BlockCount, StorageCapacityPages,
+             PayloadOffset, PayloadCommonArgIndex>;
+  using BufferBase::BufferBase;
+  explicit Operand(const BufferBase &buffer) : BufferBase(buffer) {}
   using TileMetadata = ComputeTileMetadata<Format, PageBytes, TileHeight,
                                            TileWidth, DirectToDestination>;
   static constexpr uint32_t format = TileMetadata::format;
