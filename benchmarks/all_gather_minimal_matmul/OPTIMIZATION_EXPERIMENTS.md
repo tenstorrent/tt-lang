@@ -231,9 +231,10 @@ produces incorrect output on every input tried (the smallest input gives PCC
 reproducer and not adopted. Relaying each half as soon as the sender row
 receives it, with the left relay issued after the right multicast receive is
 posted (the schedule verifier rejects the relay before that receive as a
-wait-for cycle), is correct and gives about 2% on both hosts: 4096/6144/18432
-2.455 ms on the all-shape host (2.449 ms with the two-block output DFB) and
-1.357 ms on the 13x10 host (1.356 ms with two output blocks). Removing the source-last
+wait-for cycle), is correct and gives one to two percent on both hosts: 4096/6144/18432
+2.455 and 2.480 ms in two runs on the all-shape host (2.449 ms with the
+two-block output DFB) against 2.502 ms, and 1.357 ms on the 13x10 host
+(1.356 ms with two output blocks) against 1.381 ms. Removing the source-last
 publish is the next step on the 13x10 host; the earlier "push source
 weight DFB before row-multicast wait" experiment targeted it and was
 rejected only because the generated C++ kept the original ordering.
