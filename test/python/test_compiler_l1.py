@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compiler-owned L1 transfer correctness and descriptor independence."""
+"""Compiler-managed SRAM transfer correctness and descriptor independence."""
 import importlib.util
 import json
 import re

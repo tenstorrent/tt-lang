@@ -26,7 +26,10 @@ struct SRAMRegion {
   SmallVector<BindCBOp> declarations;
 };
 
-/// One control record and its arena payload; members index plan regions.
+/// One storage owner with a control record and optional arena payload.
+///
+/// `members` indexes plan regions. `stateOffset` identifies the control record;
+/// `allocationBytes` and `offset` describe compiler-owned payload storage.
 struct SRAMStorage {
   uint64_t capacityPages = 0;
   uint64_t allocationBytes = 0;
