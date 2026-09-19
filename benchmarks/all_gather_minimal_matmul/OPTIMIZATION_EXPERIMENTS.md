@@ -243,7 +243,19 @@ every distance. It is correct but no faster: 1.369 versus 1.357 ms for
 on the 13x10 host, 2.465 versus 2.478 ms for 4096/6144/4608 and 4.905 versus
 4.908 ms for 16384/6144/2304 on the all-shape host (three warmups and ten
 samples each), and the 11x10 control configuration no longer fits in L1. The
-depth is therefore not adopted. Relaying each half as soon as the sender row
+depth is therefore not adopted. Publishing the source column's weight half to
+its own compute before the row multicast was measured two ways on the 13x10
+host: staging the DRAM read in a separate DFB and copying it into the compute
+block before multicasting from the staging block is correct but adds a local
+copy per half (1.354 versus 1.357 ms for 4096/6144/4608, 1.908 versus 1.835 ms
+for the 12x10 control configuration), and a timing-only probe that publishes
+the compute block without filling it bounds the gain of a copy-free early
+publish at 1.348 versus 1.357 ms and 1.812 versus 1.835 ms. The generated code
+keeps the push after the multicast because `ttl-insert-cb-sync` places a
+producer release after the block's last use, and an explicit `push()` before
+the multicast is replaced; supporting a push before a trailing read of the
+block would buy at most about one percent, so the source-last publish stays.
+Relaying each half as soon as the sender row
 receives it, with the left relay issued after the right multicast receive is
 posted (the schedule verifier rejects the relay before that receive as a
 wait-for cycle), is correct and gives one to two percent on both hosts: 4096/6144/18432
