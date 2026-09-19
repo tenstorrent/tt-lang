@@ -65,12 +65,15 @@ class Buffer {
     return target::load(address);
   }
 
+  template <bool PayloadComplete>
   static void publishSequence(uint32_t address, uint32_t sequence) {
     if constexpr (use16BitSequence) {
-      target::publishSequence16(address, sequence);
+      target::publishSequence16<PayloadComplete>(address, sequence);
       return;
     }
-    target::complete();
+    if constexpr (!PayloadComplete) {
+      target::complete();
+    }
     target::store(address, sequence);
   }
 
@@ -110,21 +113,25 @@ public:
     }
     assertContiguous(acquiredConsumerSequence, pages);
   }
+  template <bool PayloadComplete = false>
   void push_back(uint32_t pages) const {
     if constexpr (!target::ownsProducer) {
       return;
     }
     validatePages(pages);
     acquiredProducerSequence = advance(acquiredProducerSequence, pages);
-    publishSequence(state + published, acquiredProducerSequence);
+    publishSequence<PayloadComplete>(state + published,
+                                     acquiredProducerSequence);
   }
+  template <bool PayloadComplete = false>
   void pop_front(uint32_t pages) const {
     if constexpr (!target::ownsConsumer) {
       return;
     }
     validatePages(pages);
     acquiredConsumerSequence = advance(acquiredConsumerSequence, pages);
-    publishSequence(state + consumed, acquiredConsumerSequence);
+    publishSequence<PayloadComplete>(state + consumed,
+                                     acquiredConsumerSequence);
   }
   uint32_t get_write_ptr() const { return address(acquiredProducerSequence); }
   uint32_t get_read_ptr() const { return address(acquiredConsumerSequence); }

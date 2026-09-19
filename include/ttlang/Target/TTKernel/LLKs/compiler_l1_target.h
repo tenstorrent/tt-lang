@@ -46,8 +46,11 @@ __attribute__((noinline)) inline void complete() {
 inline uint32_t loadSequence16(uint32_t address) {
   return static_cast<uint16_t>(load(address));
 }
+template <bool PayloadComplete = false>
 inline void publishSequence16(uint32_t address, uint32_t value) {
-  complete();
+  if constexpr (!PayloadComplete) {
+    complete();
+  }
   store(address, value);
 }
 #if defined(TRISC_UNPACK) || defined(TRISC_MATH)

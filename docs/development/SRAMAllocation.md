@@ -62,9 +62,9 @@ Compiler-planned scratch storage is live for one completed `ttl.operation` launc
 
 DFB transactions operate on one block, or publish/consume a tensor-backed DFB's complete capacity. Capacity is positive and below `2^31` pages. Consumer-owned replacement writes remain within the acquired read window and do not change occupancy or sequence counters. Compute formats and tile dimensions, reset synchronization, and external/transport bindings are specified in the backend subsections below.
 
-`wait_front` and `reserve_back` capture the acquired sequence after their availability checks succeed. Every address-bearing operation in that transaction derives its payload address from the captured sequence, so all tile accesses remain in the same acquired window across counter wrap. Initialization and configuration use storage metadata without acquiring a window. `pop_front` and `push_back` retain the completion and publication rules described below.
+`wait_front` and `reserve_back` capture the acquired sequence after their availability checks succeed. Every address-bearing operation in that transaction derives its payload address from the captured sequence, so all tile accesses remain in the same acquired window across counter wrap. Initialization and configuration use storage metadata without acquiring a window. A release completes outstanding payload access before updating its sequence counter. When the immediately preceding `ttl.wait` already proves completion of the exact transaction, the release reuses that directional NoC barrier instead of issuing a second full NoC barrier.
 
-The 32-index Wormhole B0 and 64-index Blackhole limits apply only to TT-Metal DFB descriptors. A compiler-managed logical DFB does not allocate one of those descriptors. Its local producer/consumer protocol polls two 32-bit SRAM sequence counters and executes a processor-specific completion barrier before publishing or consuming pages. It does not allocate a local semaphore id. Logical DFB count is therefore limited by SRAM use, generated code and configuration size, runtime arguments, and Metal program capacity instead of the hardware descriptor count.
+The 32-index Wormhole B0 and 64-index Blackhole limits apply only to TT-Metal DFB descriptors. A compiler-managed logical DFB does not allocate one of those descriptors. Its local producer/consumer protocol polls two 32-bit SRAM sequence counters and does not allocate a local semaphore id. Logical DFB count is therefore limited by SRAM use, generated code and configuration size, runtime arguments, and Metal program capacity instead of the hardware descriptor count.
 
 PipeNet synchronization is a separate resource. TT-Lang currently has 16 local hardware semaphore ids. Generated PipeNet counters use available local ids and then use host-created `GlobalSemaphore` SRAM words; exhaustion of the 16 local ids does not restore a 16-DFB limit. Global counters add SRAM allocations and runtime arguments and remain subject to the combined SRAM and program-capacity checks.
 
@@ -77,6 +77,30 @@ DFB control and payload ranges are uses of a requirement, not additional owners.
 Persistent declarations use the same requirement type. They remain movable until `SRAMStorage.allocate()` jointly places them with the arenas of every prepared operation. Caller-supplied tensors retain their existing addresses and remain outside these owned pools. The storage owner enforces completion between prepared operations before allowing their scratch arenas to reuse bytes.
 
 ### Completion and Storage Conflicts
+
+Payload completion and storage lifetime are separate proofs. The release optimization applies only to one acquired transaction whose complete storage-use set contains one asynchronous copy and its direct wait. The transfer direction must match the release: a NoC read completes producer writes before `push_back`, and a NoC write completes consumer reads before `pop_front`. The acquire and release must cover the same tile count, and the wait must immediately precede the release. Multiple copies, indirect handles, additional storage users, ambiguous ownership, partial releases, and control-flow-mediated transfer handles retain the target completion barrier.
+
+```text
+reserve -> NoC read  -> read barrier  -> publish sequence
+wait    -> NoC write -> write barrier -> consume sequence
+                              |
+                              +-- exact transaction proof permits state update
+
+Without the proof:
+payload accesses -> target completion barrier -> sequence update
+```
+
+```text
+provePayloadComplete(release):
+    require exactly one structural acquire owner
+    require acquire and release tile counts to match
+    collect every storage use owned by the acquired transaction
+    require exactly one ttl.copy and one ttl.wait
+    require the wait to consume that copy's only transfer handle
+    require the copy direction and SRAM operand to match the transaction
+    require the wait to immediately precede the release
+    return true
+```
 
 Allocation consumes the existing logical-identity, allocation-group, and completion-aware lifetime analyses. The compiler validates every allocation group and builds the complete conflict relation before changing IR. Unknown launch domains, unproved completion, concurrent lifetimes, and incompatible storage ownership remain conflicts.
 
@@ -518,7 +542,7 @@ The fixed state cost can dominate heavily reused payloads. For 96 ungrouped one-
 
 Domain placement addresses a different source of waste: reserving the busiest core's layout everywhere. In the two-core 16-tile/one-tile regression, uniform allocation reserves 65,664 bytes for BF16 and 131,200 for FP32. Per-core allocation reserves 34,944 and 69,760 respectively, including control prefixes. These are measured backing extents, not execution-speed results or a claim of globally optimal host placement.
 
-A matched Blackhole benchmark copies one 4x4-tile block 256 times per dispatch through read, compute, and write kernels. Across 200 measured dispatches per backend, compiler-managed storage takes 261.96 us versus 212.14 us for Metal DFBs with BF16, and 482.14 us versus 446.32 us with FP32. These 1.233x and 1.080x ratios include sequence-counter synchronization, explicit-address handling, and target barriers. Exact outputs pass before and after measurement; compilation and allocation are outside the measured interval.
+A matched Blackhole benchmark copies one 4x4-tile block 256 times per dispatch through read, compute, and write kernels. Across 200 measured dispatches per backend, compiler-managed storage takes 225.89 us versus 220.79 us for Metal DFBs with BF16, and 476.32 us versus 443.48 us with FP32. These 1.023x and 1.074x ratios include sequence-counter synchronization and explicit-address handling. Both measurements satisfy the benchmark's statistical acceptance checks, and exact outputs pass before and after measurement. Compilation and allocation are outside the measured interval.
 
 ### Validation Responsibilities
 
