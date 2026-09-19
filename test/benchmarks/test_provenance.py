@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from benchmarks.provenance import loaded_library_path
+from benchmarks.provenance import (
+    dependency_revision,
+    loaded_library_path,
+    resolve_ttmetal_revision,
+)
 
 
 def test_loaded_library_path(tmp_path):
@@ -29,3 +33,19 @@ def test_loaded_library_path_rejects_ambiguous_libraries(tmp_path):
 
     with pytest.raises(RuntimeError, match="expected one loaded _ttnncpp.so, found 2"):
         loaded_library_path("_ttnncpp.so", maps_file)
+
+
+def test_dependency_revision_extracts_submodule_commit():
+    tree = (
+        "160000 commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\tthird-party/llvm-project\n"
+        "160000 commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\tthird-party/tt-metal"
+    )
+
+    assert dependency_revision(tree, "third-party/tt-metal") == "b" * 40
+
+
+def test_ttmetal_revision_falls_back_to_dependency_pin():
+    revision, source = resolve_ttmetal_revision(None, None, "c" * 40)
+
+    assert revision == "c" * 40
+    assert source == "ttlang_dependency_pin"
