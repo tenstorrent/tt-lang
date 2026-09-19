@@ -255,6 +255,12 @@ keeps the push after the multicast because `ttl-insert-cb-sync` places a
 producer release after the block's last use, and an explicit `push()` before
 the multicast is replaced; supporting a push before a trailing read of the
 block would buy at most about one percent, so the source-last publish stays.
+The fabric mux channel depth is not the all-shape host's multiplier either:
+capping the 13x10 host's 21 buffers per client channel to the 10 and 5 the
+all-shape host's muxes get gives 1.365 ms for 4096/6144/4608 in both cases,
+and 2 buffers 1.392 ms, against 1.357 ms uncapped, so header-only channels
+for the credit-only receivers (which would roughly double the all-shape
+host's depth) are not pursued.
 Relaying each half as soon as the sender row
 receives it, with the left relay issued after the right multicast receive is
 posted (the schedule verifier rejects the relay before that receive as a
