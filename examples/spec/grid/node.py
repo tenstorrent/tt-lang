@@ -22,13 +22,13 @@ import ttl
 @ttl.operation(grid=(8, 8))
 def node_example() -> None:
     # spec:begin
-    # for (8, 8) single chip or SPMD grid gets x = [0, 64)
+    # flattening grid (8, 8) gives x = [0, 64)
     x = ttl.node(dims=1)
 
-    # for (8, 8, 8) multi-chip grid gets x = [0, 8), y = [0, 64)
+    # preserving both grid dimensions gives x = [0, 8), y = [0, 8)
     x, y = ttl.node(dims=2)
 
-    # for (8, 8) single-chip or SPMD grid gets x = [0, 8), y = [0, 8), z = 0
+    # requesting a third dimension pads it with z = 0
     x, y, z = ttl.node(dims=3)
     # spec:end
 

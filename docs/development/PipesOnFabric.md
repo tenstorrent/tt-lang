@@ -128,6 +128,33 @@ kernel does not reconstruct a topology model or search connection tags.
 The selected operation is a target-runtime decision. Neither the fabric mode
 nor either route encoding is part of the TTL domain or transfer-graph model.
 
+### Fabric PipeNet synchronization protocol
+
+The compiler represents cross-device PipeNet synchronization as
+`PipeSynchronizationProtocol::Fabric`. It implements the logical
+[`CA/RP` protocol](PipeNets.md#semantics): the sender computes the destination
+DFB address and waits for the receiver to post its reservation before writing
+the payload.
+
+One transfer occurrence executes these synchronization operations:
+
+1. The receiver reserves the destination DFB block.
+2. The receiver calls `experimental::routing_plane_atomic_inc` over the
+   reverse fabric route to increment the sender's readiness `GlobalSemaphore`.
+3. The sender advances its kernel-local expected readiness count and calls
+   `experimental::semaphore_wait_min` on that cumulative value.
+4. The sender calls `experimental::routing_plane_fused_write_atomic_inc` to
+   submit the payload and increment the receiver's completion
+   `GlobalSemaphore` as one fused fabric command.
+5. The receiver calls `experimental::semaphore_wait_min` on the completion
+   sequence returned by its post, then consumes the destination block.
+
+The readiness and completion semaphores are cumulative; lowering does not
+reset them between transfer occurrences. TT-Fabric link-level flow control
+manages packet transport resources. It does not reserve receiver DFB storage
+or replace PipeNet readiness and completion synchronization. Fabric transfers
+do not use the `CA/CC` capacity-counter protocol.
+
 ### Payload and completion ordering
 
 The current fabric transport uses the fused packet command

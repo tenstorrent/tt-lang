@@ -970,14 +970,14 @@ pipe in isolation. A producer reservation contributes its span once even when
 multiple receive posts share it. Its matching push commits that span to the DFB
 ring. Consumer waits and pops do not participate in address-sequence
 construction because only the reserve/push sequence determines the write
-addresses. For local `RP`, a reserve does not complete until the DFB has
-enough free blocks, and the sender does not transfer data until that reserve
-posts readiness. After an advance reaches the physical DFB end, the next
-reserve may select the first block safely even when the consumer is in another
-kernel thread. Fabric
-transport does not use receiver-post admission and requires a separate capacity
-proof; an address sequence alone does not prove that a fabric destination slot
-is available.
+addresses. For `RP`, a reserve does not complete until the DFB has enough free
+blocks, and the sender does not transfer data until that reserve posts
+readiness. After an advance reaches the physical DFB end, the next reserve may
+select the first block safely even when the consumer is in another kernel
+thread. Fabric transport implements this admission relation with cumulative
+global readiness counters. The computed address sequence identifies the
+reserved slot; the receiver post confirms that the reservation completed
+before the sender uses that address.
 
 Current recurrence construction requires every post to one receiver DFB to
 share one data-movement function and the same enclosing runtime-selected
@@ -1069,7 +1069,7 @@ for T in pipe_graph.transfer_nodes:
         address_mode(T) = RA
 
     if fabric_transport(T):
-        synchronization_mode(T) = FABRIC_FLOW_CONTROL
+        synchronization_mode(T) = FABRIC
     else if address_mode(T) == CA
        and capacity_sync_enabled
        and capacity_proof(T):
@@ -1079,10 +1079,12 @@ for T in pipe_graph.transfer_nodes:
 ```
 
 The current capacity proof restricts `CC` to intra-device point-to-point NoC
-transfers, so intra-device collectives select `CA/RP` or `RA/RP`. Fabric
-transfers use `CA`, routing-plane flow control, and a receiver-completion
-counter. They use neither receiver-post sender readiness nor the `CC` capacity
-protocol.
+transfers, so intra-device collectives select `CA/RP` or `RA/RP`. `FABRIC` is
+the routing-plane implementation of `CA/RP`: the receiver remotely increments
+a cumulative sender-readiness counter after reserving its DFB block, and the
+sender remotely increments a cumulative receiver-completion counter with the
+final payload packet. See the
+[fabric synchronization protocol](PipesOnFabric.md#fabric-pipenet-synchronization-protocol).
 
 ##### Partial-overlap example
 
@@ -2445,11 +2447,17 @@ The shared graph and proof must preserve these fabric invariants:
 * corresponding send and receiver-post declarations identify the same logical
   device transfer;
 * fabric transfers require a proven computed receiver address;
-* fabric senders do not wait for receiver-post readiness, so a receiver pop does
-  not make the assigned slot available to another fabric transfer in the same
-  invocation;
-* fabric completion uses remotely addressable synchronization storage;
+* each receiver post increments a cumulative readiness counter on the sender,
+  and the sender waits for the corresponding count before writing;
+* the final payload packet increments a cumulative completion counter on the
+  receiver, and the receiver waits for the corresponding count before
+  consuming the DFB block;
+* readiness and completion counters use remotely addressable synchronization
+  storage;
 * `CC` capacity counters are not selected for fabric transfers.
+
+The complete operation sequence and generated C++ calls are described in the
+[fabric synchronization protocol](PipesOnFabric.md#fabric-pipenet-synchronization-protocol).
 
 ## Future work
 
