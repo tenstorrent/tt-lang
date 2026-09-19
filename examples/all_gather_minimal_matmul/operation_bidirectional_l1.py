@@ -263,6 +263,18 @@ def make_bidirectional_l1_all_gather_matmul_operation(
                                     receive_right_activation
                                 )
 
+                            if source_distance < device_count - 1:
+                                if n_worker_index == backward_client_row:
+
+                                    def send_backward_half(pipe):
+                                        ttl.copy(
+                                            left_activation,
+                                            pipe,
+                                            byte_count=activation_half_bytes,
+                                        ).wait()
+
+                                    activation_backward_net.if_src(send_backward_half)
+
                             right_activation = right_distribution_dfb.wait()
                             compute_right_activation = matmul_activation_dfb.reserve()
                             ttl.copy(
@@ -280,17 +292,6 @@ def make_bidirectional_l1_all_gather_matmul_operation(
                                 )
 
                             if source_distance < device_count - 1:
-                                if n_worker_index == backward_client_row:
-
-                                    def send_backward_half(pipe):
-                                        ttl.copy(
-                                            left_activation,
-                                            pipe,
-                                            byte_count=activation_half_bytes,
-                                        ).wait()
-
-                                    activation_backward_net.if_src(send_backward_half)
-
                                 if n_worker_index == forward_client_row:
 
                                     def send_forward_half(pipe):
