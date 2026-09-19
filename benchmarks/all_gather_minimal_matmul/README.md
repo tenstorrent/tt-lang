@@ -68,7 +68,7 @@ python -m benchmarks.all_gather_minimal_matmul.sweep \
     --topology ring \
     --warmup 3 \
     --samples 10 \
-    --output-dir ~/tt/perf/agmm-four-device-ring
+    --output-dir ./agmm-four-device-ring
 ```
 
 The paired all-shape results in `PERFORMANCE.md` were collected with the
