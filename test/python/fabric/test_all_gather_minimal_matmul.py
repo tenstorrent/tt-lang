@@ -109,7 +109,12 @@ def run_case(
     "torch_dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"]
 )
 @pytest.mark.parametrize("reuse_activation", [False, True], ids=["stream", "cache"])
-def test_all_gather_minimal_matmul(mesh_shape, torch_dtype, reuse_activation):
+@pytest.mark.parametrize(
+    "output_block_count", [2, 1], ids=["double-output", "single-output"]
+)
+def test_all_gather_minimal_matmul(
+    mesh_shape, torch_dtype, reuse_activation, output_block_count
+):
     require_mesh(mesh_shape)
     config = AllGatherMinimalMatmulConfig(
         mesh_shape=mesh_shape,
@@ -121,6 +126,7 @@ def test_all_gather_minimal_matmul(mesh_shape, torch_dtype, reuse_activation):
         k_block_tiles=2,
         n_block_tiles=1,
         reuse_activation=reuse_activation,
+        output_block_count=output_block_count,
     )
     with open_participant_mesh(mesh_shape) as mesh:
         run_case(mesh, config, 1, torch_dtype)
