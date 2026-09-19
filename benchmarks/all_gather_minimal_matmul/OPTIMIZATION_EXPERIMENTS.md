@@ -93,6 +93,125 @@ fabric and compute configurations.
 | Six-block receive/relay communication DFB | 491,520 bytes required; 313,600 bytes available |
 | Alternate ten-tile K blocks | 1,474,560 bytes required; 1,461,376-byte L1 budget |
 
+## All-shape configuration search
+
+The paired all-shape table in [Performance](PERFORMANCE.md) reports one
+confirmed configuration per implementation and semantic input. This section
+records how those configurations were selected. Screening used one warmup and
+three samples; confirmation reruns used three warmups and ten samples at one
+TT-Lang revision. Raw screen reports are archived outside Git.
+
+### Native
+
+The pinned manifest lists 155 AGMM/SAGMM rows covering 63 semantic inputs that
+the native operation supports; 46 of them (plain and QKV) are also comparable
+with TT-Lang. Several inputs appear in multiple rows that differ only in the
+upstream source grid.
+
+- Source-grid sweep: every legal source-grid row was measured with the upstream
+  blocking heuristic and `FABRIC_1D_RING`. 132 candidates completed: 107
+  passed and 25 failed. The rows cover 45 inputs; 41 had a passing candidate.
+  Failures were oversized or invalid alternate grids, validation results that
+  the dtype-aware BF16 tolerance later superseded, and process-contention
+  artifacts. Winners are selected per input, not per row.
+- Recovery screen: the four inputs without a passing row were rerun on the
+  `12x9` grid; all passed. A `13x9` grid is invalid because the device
+  exposes at most 12 compute columns.
+- Full-K 768 and 1536 screen: the upstream heuristic returns an eight-tile K
+  block for local K shards of 6 or 12 tiles, which the operation rejects. A
+  constrained screen ranked local-K divisors, upstream-style block candidates,
+  the `12x9` source grid, and configurations below a 1400 KiB L1 estimate,
+  then measured the three highest-ranked configurations for each of the 18
+  affected inputs: 54 candidates, 53 passed. `16384x768x4608` with
+  `M4/K6/N8` terminated its isolated worker with `SIGBUS` and is excluded;
+  the crash left the UMD system-memory mapping in place, and the next launch
+  failed before program creation until the mapping was released.
+- Confirmation: the fastest correct candidate per input across the three
+  screens was rerun with three warmups and ten samples.
+
+### TT-Lang
+
+The operation was not modified during this search. A roofline model
+enumerates compute grids whose worker count plus the eight fabric-mux workers
+fits the device's Tensix worker grid, even K-block divisors of the per-device
+K shard, N blocks that divide the per-device N shard across the grid rows,
+and modeled DFB allocations below 1,350,000 bytes. Candidates are ordered by
+the maximum of the compute, fabric, and DRAM lower bounds plus a
+per-matmul-call term. With the 130-worker grid of the accepted result's
+host, the model ranks the accepted `12x10`, `M5/K10/N12` configuration first
+for the 9472/5120/15360 input; that agreement is the control before applying
+the model to the remaining inputs.
+
+The P150b boards on the all-shape host expose a 12x10 worker grid (120
+workers), so the accepted 12x10 configuration cannot host its eight mux
+workers there, and the all-shape screen is limited to 112 compute workers.
+For 9472/5120/15360 the model then ranks `11x10`, `M9/K8/N12` first. The
+three highest-ranked configurations for each of the 46 comparable inputs
+were measured: 138 candidates, 138 passed. An earlier pass that admitted
+13-column grids failed 25 candidates before the device grid became an
+explicit model input; those grids are excluded, not re-ranked failures. The
+fastest correct candidate per input was confirmed with three warmups and ten
+samples.
+
+### Where TT-Lang loses on the all-shape inputs
+
+Measured on the 13x10 host with the same builds, three warmups and ten
+samples, using per-call signpost scopes on the compute thread's activation
+and weight waits, on its prologue, output reserve, and output store, and on
+the weight thread's previous-block output write; native used accumulated
+wait counters in its compute kernel. Times are on the operation-ending
+compute core.
+
+| Input (M, full K, full N) | TT-Lang ms | Native ms | TT-Lang activation wait | TT-Lang weight wait | TT-Lang output store | Native activation wait | Native weight wait |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4096, 6144, 18432 (both 12x9 M11/K8/N8) | 1.381 | 1.143 | 187 us | 157 us | 142 us (2 blocks) | 200 us | 22 us |
+| 16384, 768, 18432 (12x9 M11/K6/N8; native M4/K6/N16) | 1.312 | 1.174 | 163 us | 4 us | 674 us (8 blocks) | 501 us | 197 us |
+| 16384, 6144, 9216 (12x9 M11/K8/N8; native M12/K6/N8) | 2.712 | 2.666 | >= 236 us | >= 157 us | 344 us (4 blocks) | 799 us | 102 us |
+
+The matmul itself is not the gap: per-call time is 8.9 us for an 11x4x8-tile
+half block and 6.7 us for 11x3x8, within 7% of the compute bound. Two
+structural costs remain.
+
+- Output write burst. The output store costs 30.8 us for the first block of
+  a core and 88 to 121 us for every later block. The extra time is the pack
+  thread's `reserve_back` on the one-block output DFB, which waits for the
+  weight thread to write the previous block to DRAM. That write takes 7 us
+  on the core nearest the NoC origin and 70 to 100 us at the far corner
+  because all 108 cores write a 176 KiB block at the same block boundary,
+  a 19 MB burst that DRAM absorbs at about 200 GB/s in NoC arbitration
+  order. Native writes output subblocks during the matmul and never forms
+  the burst. The cost scales with output blocks per core: eight for
+  16384/768/18432, four for 16384/6144/9216, two for 4096/6144/18432.
+- Source-last weight publish. The column-0 worker multicasts each weight
+  half along its row and publishes it to its own compute only after the
+  multicast completes, so weight wait is about 210 us on the two columns
+  nearest the source and about 2 us on the far column. Native's weight wait
+  on the ending core is 22 us for the same blocks.
+
+With a two-block output DFB the store becomes a constant 30.7 us and the
+reserve wait disappears, but device time improves only 1 to 4% (4096/6144/
+18432 1.358 ms; 16384/6144/9216 2.692 ms; 16384/768/18432 1.255 ms; accepted
+9472/5120/15360 1.821 ms versus 1.843 ms) because the slowest core moves from
+the far corner to the source-adjacent column, whose input waits are of the
+same size. The two-block DFB fits 41 of the 46 confirmed TT-Lang configurations
+within the 1,461,248-byte L1 budget (the 12x9 M11/K8/N8 rows keep 134,144
+bytes of margin) and is now the operation's default (`output_block_count`,
+with 1 available for the five 11x10 M9/K8/N12 and 11x9 M6/K8/N16 rows that
+exceed it); the all-shape table was measured with the one-block DFB. On the all-shape host the second
+block changes nothing for the worst rows (4768/5376/21504 QKV 3.785 to 3.773
+ms; 4096/6144/18432 2.462 to 2.468; 8192/6144/36864 9.835 to 9.853;
+8192/6144/18432 QKV 4.918 to 4.928; 8192/1536/36864 2.959 to 3.018), and the
+11x10 M9/K8/N12 configuration of the 9472/5120/15360 input cannot host it
+(1,548,288 bytes). On that host every
+thread on every core runs about 85% longer than on the 13x10 host for the
+same configuration, so its losses come from a slower shared resource rather
+than the epilogue; that decomposition is pending. Removing the source-last
+publish is the next step on the 13x10 host; the earlier "push source
+weight DFB before row-multicast wait" experiment targeted it and was
+rejected only because the generated C++ kept the original ordering.
+16384/768/18432 is DRAM-bound for both implementations: its output rate
+during compute is about 350 GB/s.
+
 ## Eight-device configuration search
 
 The native screen retained the published 12 x 9 transport configuration and

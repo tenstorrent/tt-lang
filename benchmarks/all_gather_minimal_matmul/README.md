@@ -13,7 +13,10 @@ which preserves two-dimensional tensor placement for larger device counts.
 | File | Contents |
 | --- | --- |
 | [`__main__.py`](__main__.py) | Workload construction, correctness checks, and device-profiler timing |
-| [`PERFORMANCE.md`](PERFORMANCE.md) | Accepted result, complete configuration, and provenance |
+| [`sweep_cases.py`](sweep_cases.py) | Pinned AGMM rows imported from the TT-Metal model sweep table |
+| [`sweep.py`](sweep.py) | Sweep orchestrator that measures each comparable row and writes a summary |
+| [`PERFORMANCE.md`](PERFORMANCE.md) | Paired all-shape table, accepted 9472/5120/15360 result, configurations, and provenance |
+| [`OPTIMIZATION_EXPERIMENTS.md`](OPTIMIZATION_EXPERIMENTS.md) | Implementation search, configuration search, and rejected experiments |
 
 ## Run
 
@@ -68,8 +71,13 @@ python -m benchmarks.all_gather_minimal_matmul.sweep \
     --output-dir ~/tt/perf/agmm-four-device-ring
 ```
 
-The earlier eight-device comparison remains archived in `PERFORMANCE.md`; it is
-not part of the current four-device sweep.
+The paired all-shape results in `PERFORMANCE.md` were collected with the
+sweep-case interface above: each native row uses the fastest correct
+configuration found by the source-grid, recovery, and full-K 768/1536 screens,
+and each TT-Lang row uses the fastest correct roofline-ranked configuration,
+both confirmed with three warmups and ten samples. The earlier eight-device
+comparison remains archived in `PERFORMANCE.md`; it is not part of the current
+four-device sweep.
 
 Four-device 2D result:
 
