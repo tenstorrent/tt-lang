@@ -6,7 +6,7 @@ collectively contain one M x N result.
 
 ## All-shape four-device comparison
 
-Measured 2026-09-19 01:29-16:24 UTC on `bh-lb-120-a08u24`: four Blackhole P150b
+Measured 2026-09-19 01:29-16:24 UTC on an Exabox eight-chip host: four Blackhole P150b
 devices (IDs 7, 3, 1, 5) in a physical ring, firmware 19.8.1, KMD 2.8.0,
 1350 MHz. TT-Lang `07118bf88eb29070ca064ab382387f04c84ef409`; TT-Metal
 `0e9d200db976120c129ab0deb13aa3f6d972b723`; IRD image
@@ -225,7 +225,7 @@ See the [reproduction commands](README.md#run).
 
 ### PA: All-shape four-device comparison
 
-- Measured: 2026-09-19 01:29-16:24 UTC on bh-lb-120-a08u24; devices 7, 3, 1, 5.
+- Measured: 2026-09-19 01:29-16:24 UTC on an Exabox eight-chip host; devices 7, 3, 1, 5.
 - TT-Lang source: 07118bf88eb29070ca064ab382387f04c84ef409, clean worktree.
 - TT-Metal source and runtime: 0e9d200db976120c129ab0deb13aa3f6d972b723.
 - IRD v1.1.10 image digest
@@ -272,7 +272,7 @@ See the [reproduction commands](README.md#run).
 
 ### P8: Eight-device column-parallel
 
-- Measured: 2026-09-16 05:26-05:50 UTC on bh-lb-120-a08u28.
+- Measured: 2026-09-16 05:26-05:50 UTC on a second Exabox eight-chip host.
 - TT-Lang source: 1de0765a4eaf5d1f77f96264fcf8b4b9cfb353dc.
 - Operation SHA-256: cd1877ea6787c28d16b02e1286d7d8a47b87e10ddf2645d6faeed78e2567cc88.
 - TT-Lang compiler SHA-256: ddc32628bb6efa687c3b9d0e9864eccdb9d695b95cf5e7a2d47f319ed6c36462.
