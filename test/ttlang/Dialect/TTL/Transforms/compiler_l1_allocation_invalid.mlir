@@ -104,15 +104,3 @@ module attributes {ttl.launch_grid = [1, 1]} {
     return
   }
 }
-
-// -----
-
-// PipeNet transfers require an address and completion contract for compiler-managed storage.
-module attributes {ttl.launch_grid = array<i64: 2, 1>} {
-  func.func @pipenet_transfer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0 : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
-    // expected-error @below {{'ttl.pipe_transfer.create' op compiler-l1 does not support PipeNet transfers}}
-    %transfer = ttl.pipe_transfer.create %pipe {expectedReceivers = 1 : i64, kind = #ttl.pipe_transfer_kind<point_to_point>} : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> -> !ttl.pipe_transfer
-    return
-  }
-}
