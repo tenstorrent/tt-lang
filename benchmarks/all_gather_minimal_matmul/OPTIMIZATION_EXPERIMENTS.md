@@ -15,7 +15,7 @@ is the authoritative provenance record. Each report records the TT-Lang Git
 revision, modified-source SHA-256 values, compiler binary SHA-256, dependency
 pins, firmware, and timestamp. Modified operation content differs between
 experiments, so its SHA-256, not the Git revision alone, identifies the tested
-implementation. The selected 1.847 ms result has provenance
+implementation. The selected 1.800 ms result has provenance
 [P4](PERFORMANCE.md#p4-four-device-column-parallel).
 
 ## Results
@@ -42,6 +42,8 @@ implementation. The selected 1.847 ms result has provenance
 | Bidirectional L1 transport, 22 mux buffers/client channel | 2.243 (2.179-2.255) | 3/10 | +0.2% vs adjacent controls | Accepted; maximum uniform depth fitting mux L1. |
 | Defer output writes to the weight thread | 1.959 (1.945-1.983) | 3/10 | -11.0% vs adjacent controls | Accepted; paired native was 1.969 ms. |
 | Publish received weight halves directly into matmul DFB | 1.847 (1.802-1.879) | 3/10 | -6.2% vs 1.968 ms control | Accepted; paired native was 1.970 ms. |
+| Relay each activation half as it lands, two output blocks | 1.800 (1.776-1.820) | 3/10 | -2.5% vs 1.847 ms | Accepted; paired native was 1.980 ms. |
+| 11 x 10 compute grid, M/K/N blocks 9/8/12, one output block | 1.811 (1.780-1.835) | 3/10 | +0.6% vs 1.800 ms | Rejected; not faster than the default configuration with two output blocks. |
 | Reduce weight DFB from three half-blocks to two | 1.986 (1.980-1.993) | 1/3 | +7.6% | Rejected; three half-blocks are required to hide delivery. |
 | Push source weight DFB before row-multicast wait | 1.827 (1.825-1.832) | 1/3 | -1.1% | Rejected; generated C++ retained the prior ordering. |
 | 13 x 10 compute grid, M/K/N blocks 4/10/12 | not measured | full-size launch | n/a | Rejected; no nodes remain for eight mux workers. |
