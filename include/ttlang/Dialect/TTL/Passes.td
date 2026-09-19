@@ -1422,9 +1422,10 @@ def TTKernelInsertInits
 
     Per-op inits (`exp_tile_init`, `add_tiles_init`, etc.) configure the
     MATH pipeline for a specific operation type. An init is emitted
-    whenever the op type changes from the previous compute op in
-    linear block order. Init tracking resets at sync boundaries
-    (`tile_regs_acquire`/`commit`/`wait`/`release`).
+    whenever the op type changes from the previous compute op in execution
+    order. Operations nested beneath one sync region are initialized within
+    their blocks so each loop iteration and control-flow region observes the
+    required hardware mode. Init tracking resets at sync and region boundaries.
 
     Example (consecutive same-type ops share one init):
     ```mlir
