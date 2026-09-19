@@ -4868,7 +4868,7 @@ static ComputedAddressPlan buildComputedAddressPlan(
     }
   });
   auto memoryModel = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
-  const bool usesCompilerL1Storage =
+  const bool usesCompilerManagedSRAM =
       memoryModel && memoryModel.getValue() == kCompilerL1MemoryModel;
 
   /// One transfer whose recurrence can be materialized by its sender.
@@ -4888,10 +4888,10 @@ static ComputedAddressPlan buildComputedAddressPlan(
       continue;
     }
     const ReceiverDFBInfo &receiverInfo = receiverEndpoint->receiverDFBInfo;
-    // A Metal DFB index does not identify one L1 address when backed by a
+    // A Metal DFB index does not identify one SRAM address when backed by a
     // tensor or reused after reconfiguration. Compiler-managed DFB metadata
     // identifies the backing allocation and permits direct address computation.
-    if (!usesCompilerL1Storage &&
+    if (!usesCompilerManagedSRAM &&
         (tensorBackedDFBIndices.contains(receiverInfo.dfbIndex) ||
          sharedStorageDFBIndices.contains(receiverInfo.dfbIndex))) {
       continue;
