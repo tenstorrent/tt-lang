@@ -8914,6 +8914,39 @@ def test_sram_report_accounts_for_multiple_pages_per_node(capsys):
     assert record["reserved_bytes_per_node"] == 128
 
 
+def test_sram_domain_report_uses_arena_geometry(monkeypatch, capsys):
+    import json
+    import ttl.kernel_runner as runner
+
+    cores = [
+        SimpleNamespace(x=0, y=0),
+        SimpleNamespace(x=1, y=0),
+        SimpleNamespace(x=2, y=0),
+    ]
+    monkeypatch.setattr(
+        runner,
+        "ttnn",
+        SimpleNamespace(corerange_to_cores=lambda ranges, row_wise: cores),
+    )
+    arena = SimpleNamespace(
+        buffer_aligned_page_size=lambda: 64,
+        buffer_num_pages=lambda: 6,
+        buffer_address=lambda: pytest.fail("domain report queried a global address"),
+    )
+    runner._print_sram_runtime_report(
+        arena,
+        SimpleNamespace(num_cores=lambda: len(cores)),
+        96,
+        "test",
+        allocation_domain=True,
+    )
+    record = json.loads(capsys.readouterr().err.split("ttlang-sram-report: ", 1)[1])
+    assert record["scope"] == "arena-domain-reference-device"
+    assert record["accounting_source"] == "tensor-buffer-geometry"
+    assert record["reserved_bytes_per_core"] == 128
+    assert record["cores"] == [[0, 0], [1, 0], [2, 0]]
+
+
 class _IndependentSRAMArena(_FakeTensor):
     def device_coords(self):
         return [(0, 0), (0, 1)]
