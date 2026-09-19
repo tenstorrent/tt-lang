@@ -25,6 +25,20 @@ source build/env/activate
 python examples/<example_name>.py
 ```
 
+### With the Compiler and tt-emule
+
+Examples that use compiler-only APIs can run without hardware through the
+compiler-backed tt-emule backend:
+
+```bash
+./bin/tt-lang-sim --backend=emule examples/compiler_only_external_call.py
+```
+
+A source checkout and Docker are required. The
+[installation guide](../docs/sphinx/simulator-getting-started.md)
+describes installing the repository's pinned compiler, emulator, and tt-metal
+environment before running examples.
+
 ## Example Categories
 
 ### Element-wise Operations
@@ -55,6 +69,12 @@ python examples/<example_name>.py
 | Example | Description | Sim | HW |
 |---------|-------------|:---:|:--:|
 | `demo_one.py` | Comprehensive demo with auto grid and bounds checking | ✓ | ✓ |
+
+### Compiler-only Features
+
+| Example | Description | Python Sim | Emule |
+|---------|-------------|:----------:|:-----:|
+| `compiler_only_external_call.py` | Calls user-provided C++ from a compiled compute kernel and checks the tensor result | ✗ | ✓ |
 
 ### Multidevice PipeNet Designs
 
