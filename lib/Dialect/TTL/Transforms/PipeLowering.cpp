@@ -4798,7 +4798,7 @@ static int64_t getReceiverDFBStaticByteOffset(const ReceiverDFBInfo &info) {
 static std::optional<PipeComputedAddressInfo>
 getComputedAddressInfo(const PipeReceiverEndpoint &receiverEndpoint) {
   const ReceiverDFBInfo &receiverInfo = receiverEndpoint.receiverDFBInfo;
-  if (receiverInfo.isTensorBacked || !receiverInfo.hasStaticTileOffset) {
+  if (!receiverInfo.hasStaticTileOffset) {
     return std::nullopt;
   }
   if (!llvm::isa<ttcore::TileType>(receiverInfo.dfbType.getElementType())) {
@@ -4867,6 +4867,9 @@ static ComputedAddressPlan buildComputedAddressPlan(
       tensorBackedDFBIndices.insert(bind.getCbIndex().getSExtValue());
     }
   });
+  auto memoryModel = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
+  const bool usesCompilerManagedSRAM =
+      memoryModel && memoryModel.getValue() == kCompilerL1MemoryModel;
 
   /// One transfer whose recurrence can be materialized by its sender.
   struct Candidate {
@@ -4885,10 +4888,12 @@ static ComputedAddressPlan buildComputedAddressPlan(
       continue;
     }
     const ReceiverDFBInfo &receiverInfo = receiverEndpoint->receiverDFBInfo;
-    // One common runtime argument supplies the physical DFB base. Tensor-backed
-    // or shared storage does not provide one stable compiler-owned base.
-    if (tensorBackedDFBIndices.contains(receiverInfo.dfbIndex) ||
-        sharedStorageDFBIndices.contains(receiverInfo.dfbIndex)) {
+    // A Metal DFB index does not identify one SRAM address when backed by a
+    // tensor or reused after reconfiguration. Compiler-managed DFB metadata
+    // identifies the backing allocation and permits direct address computation.
+    if (!usesCompilerManagedSRAM &&
+        (tensorBackedDFBIndices.contains(receiverInfo.dfbIndex) ||
+         sharedStorageDFBIndices.contains(receiverInfo.dfbIndex))) {
       continue;
     }
     std::optional<PipeComputedAddressInfo> maybeComputedAddress =
