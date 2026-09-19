@@ -1673,6 +1673,39 @@ def TTKernelAnnotateDFBUse
   let dependentDialects = [];
 }
 
+def TTKernelSpecializeDFBReconfiguration
+    : Pass<"ttkernel-specialize-dfb-reconfiguration", "::mlir::ModuleOp"> {
+  let summary = "Specialize DFB reconfiguration descriptor fields";
+  let description = [{
+    Rewrites every `experimental::reconfigure_dfb_interfaces` call carrying
+    `ttl.dfb_reconfiguration_ordinal` and removes that attribute. A call in a
+    function without `ttl.core_coord` keeps the runtime form, which derives the
+    reconfigured DFBs from the active masks in the runtime record.
+
+    In a function specialized to one launch coordinate,
+    `ttl.dfb_reconfiguration_plan` already determines which physical DFBs the
+    boundary reconfigures there. For each entry in `dfbs` the pass selects the
+    configuration whose `entry_reconfiguration` matches the ordinal, provided
+    its `storage_segments` cover the coordinate or it declares none. The
+    selection becomes `template_args`
+    `[recordCount, (dfbIndex, totalBytes, numPages, pageBytes)...]`, where
+    `numPages` is `num_tiles * block_count` and `totalBytes` is
+    `numPages * page_size`. The specialized call reads no active masks and no
+    descriptor sizes from the runtime record.
+
+    Each DFB's L1 address still comes from its runtime record word, because
+    tensor-backed storage binds a launch-time address and compiler-managed
+    storage requests preserving the address the interface already holds.
+
+    `dfb_resource_indices` lists the physical DFBs the specialized call writes,
+    so that the descriptors it touches count as used on this core.
+
+    Plan entries must have ascending, unique `dfb_index` values below the
+    64-record capacity of the runtime configuration area.
+  }];
+  let dependentDialects = ["::mlir::tt::ttkernel::TTKernelDialect"];
+}
+
 def TTKernelFinalizeTensorRuntimeArgs
     : Pass<"ttkernel-finalize-tensor-runtime-args", "::mlir::ModuleOp"> {
   let summary = "Finalize tensor common runtime arguments";
