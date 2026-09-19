@@ -496,7 +496,7 @@ def assert_allclose(actual, expected, rtol=1e-5, atol=1e-8, verbose=True):
 
 
 def make_single_core_sharded_l1_memory_config(tensor_shape, memory_layout):
-    """Create an L1 memory configuration with one full-tensor shard."""
+    """Create an SRAM configuration using TTNN's L1 buffer type."""
     ttnn = _get_ttnn()
     if ttnn is None:
         raise RuntimeError("TTNN not available")

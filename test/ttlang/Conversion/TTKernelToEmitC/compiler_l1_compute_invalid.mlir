@@ -79,7 +79,7 @@ module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [{blo
 
 // -----
 
-// External compute descriptors reject unqualified block-float formats.
+// External compute descriptors reject unsupported block-float formats.
 module attributes {ttl.memory_model = "compiler-l1", ttl.target_arch = #ttcore.arch<blackhole>, ttl.dfb_allocations = [{block_count = 1 : i64, element_type = !ttcore.tile<32x32, bfp_bf2>, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i64, page_size = 320 : i64, storage_capacity_pages = 1 : i64}]} {
   func.func @descriptor_bfp2() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
     // expected-error @below {{'ttkernel.opaque_call' op compiler-l1 compute descriptor requires BF16, FP32, BFP4_B, or BFP8_B tiles}}
