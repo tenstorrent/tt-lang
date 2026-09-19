@@ -57,6 +57,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--m-block-tiles", type=positive_int, default=2)
     parser.add_argument("--k-block-tiles", type=positive_int, default=2)
     parser.add_argument("--n-block-tiles", type=positive_int, default=1)
+    parser.add_argument("--output-block-count", type=positive_int, default=2)
     parser.add_argument(
         "--reuse-activation", action=argparse.BooleanOptionalAction, default=True
     )
@@ -121,6 +122,7 @@ def main() -> None:
         k_block_tiles=arguments.k_block_tiles,
         n_block_tiles=arguments.n_block_tiles,
         reuse_activation=arguments.reuse_activation,
+        output_block_count=arguments.output_block_count,
     )
     math_fidelity = "HiFi2" if arguments.dtype == "bf16" else "HiFi4"
     if arguments.activation_strategy == "bidirectional-l1":
