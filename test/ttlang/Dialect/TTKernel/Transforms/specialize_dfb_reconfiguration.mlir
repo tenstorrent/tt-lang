@@ -52,10 +52,11 @@ module attributes {
 
 // -----
 
-// A storage-source change retains the runtime-record implementation.
+// Storage-source changes still specialize fixed descriptor fields because the
+// selected DFB address remains loaded from its runtime record.
 // CHECK-LABEL: func.func @variable_storage
-// CHECK: ttkernel.opaque_call "experimental::reconfigure_dfb_interfaces"(%arg0)
-// CHECK-NOT: dfb_resource_indices
+// CHECK: ttkernel.opaque_call "experimental::reconfigure_dfb_interfaces" template_args [1 : ui32, 3 : ui32, 2048 : ui32, 1 : ui32, 2048 : ui32](%arg0)
+// CHECK-SAME: dfb_resource_indices = array<i32: 3>
 // CHECK-NOT: ttl.dfb_reconfiguration_ordinal
 module attributes {
   ttl.dfb_reconfiguration_plan = {
