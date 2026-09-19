@@ -1113,11 +1113,15 @@ def test_live_payload_crosses_reconfiguration_and_cached_execution(
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
 @pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
 @pytest.mark.parametrize("enabled_column", [0, 1], ids=["left", "right"])
+@pytest.mark.parametrize(
+    "specialize_cores", [False, True], ids=["generic-cores", "specialized-cores"]
+)
 def test_conditional_reconfiguration_executes_with_post_boundary_dfbs(
     device,
     dtype,
     to_device,
     enabled_column,
+    specialize_cores,
     monkeypatch,
     tmp_path,
 ):
@@ -1130,16 +1134,26 @@ def test_conditional_reconfiguration_executes_with_post_boundary_dfbs(
         "TTLANG_FINAL_MLIR",
         str(tmp_path / f"conditional_{enabled_column}.mlir"),
     )
+    specialization_option = (
+        "--ttl-specialize-cores" if specialize_cores else "--no-ttl-specialize-cores"
+    )
     input_host = torch.arange(32 * 64, dtype=torch.float32).reshape(32, 64).to(dtype)
     output = to_device(torch.zeros_like(input_host), device)
     operation(
         to_device(input_host, device),
         output,
-        options="--ttl-reuse-user-dfbs",
+        options=f"--ttl-reuse-user-dfbs {specialization_option}",
     )
 
     final_mlir = (tmp_path / f"conditional_{enabled_column}.mlir").read_text()
     assert final_mlir.count("experimental::reconfigure_dfb_interfaces") == 3
+    # Specialized kernels resolve the reconfigured descriptors at compile time;
+    # the storage address still comes from the runtime record.
+    specialized_calls = sum(
+        "reconfigure_dfb_interfaces" in line and "template_args" in line
+        for line in final_mlir.splitlines()
+    )
+    assert specialized_calls == (3 if specialize_cores else 0)
     expected = torch.zeros_like(input_host)
     column_start = enabled_column * 32
     expected[:, column_start : column_start + 32] = input_host[
