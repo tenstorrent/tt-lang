@@ -142,16 +142,21 @@ def test_candidate_workflow_validates_without_publishing():
     assert '"${{ inputs.emulator_commit }}"' not in prepare_step
 
 
-def test_candidate_reference_suite_keeps_manifest_without_rebuilding():
+def test_candidate_installs_once_and_runs_reference_programs_without_rebuilding():
     workflow = WORKFLOW.read_text(encoding="utf-8")
+    install_step = workflow.split(
+        "      - name: Install and smoke-test the candidate\n", 1
+    )[1].split("\n      - name:", 1)[0]
     reference_step = workflow.split("      - name: Run the reference suite\n", 1)[
         1
     ].split("\n      - name:", 1)[0]
 
+    assert "./scripts/install-tt-lang-emule.sh" in install_step
+    assert "examples/compiler_only_external_call.py" in install_step
+    assert 'TTLANG_EMULE_REBUILD: "1"' in install_step
     assert (
-        "        env:\n" "          TTLANG_EMULE_STACK_MANIFEST: candidate-stack.json\n"
+        "TTLANG_EMULE_IMAGE: tt-lang-emule:candidate-${{ github.run_id }}"
     ) in reference_step
-    assert '--runtime-image "tt-lang-emule:candidate-${{ github.run_id }}"' in (
-        reference_step
-    )
+    assert "examples/eltwise_add.py" in reference_step
+    assert "examples/single_node_matmul.py" in reference_step
     assert "TTLANG_EMULE_REBUILD" not in reference_step

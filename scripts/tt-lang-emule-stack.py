@@ -82,7 +82,6 @@ def load_stack(path):
         raise StackError(
             "emulator.repository_environment must be " "TTLANG_EMULE_RUNTIME_SOURCE_URL"
         )
-
     values = {
         "TTLANG_EMULE_STACK_MANIFEST_SHA256": hashlib.sha256(
             manifest_bytes

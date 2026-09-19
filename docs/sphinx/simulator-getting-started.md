@@ -1,28 +1,26 @@
-# Getting started with Docker simulation
+# Getting started with compiler-backed emulation
 
-The `emule` backend compiles TT-Lang programs and executes the generated kernels
-through tt-metal and tt-emule inside Docker. The launcher prepares the runtime,
-builds the compiler, and activates the container environment automatically.
-Tenstorrent hardware, a host compiler build, and host Python package installation
-are not required.
+The `emule` backend compiles TT-Lang programs and executes their generated
+kernels through tt-metal and tt-emule inside Docker. It uses one supported stack:
+the TT-Lang checkout, tt-emule revision, tt-metal revision, base image, and P150
+target recorded in `config/tt-lang-emule-stack.json`.
 
-The separate `python` backend remains the lightweight option for kernel logic
-and Python debugging. Its installation is described in
-{ref}`Python backend setup <simulator-python-setup>`; it does not require Docker.
+Users do not select these components independently. Install the recorded
+environment once, then run programs with the same `tt-lang-sim` interface used
+by the Python backend.
 
 ## Host prerequisites
 
 - Git and Python 3.10 or newer on `PATH`.
 - Docker Desktop on macOS, or Docker Engine on Linux, with the daemon running
-  and accessible to the current user without `sudo`.
-- Support for `linux/amd64` containers. Native x86-64 Linux executes this runtime
-  directly. Apple Silicon requires x86-64 emulation in Docker Desktop; enabling
-  Rosetta support reduces translation overhead where available.
-- Access to the approved emulator source repository, or a compatible runtime
-  image supplied by a maintainer. Source setup uses the host's Git credentials.
-  Initial builds also require access to the base image and dependency downloads.
+  and accessible without `sudo`.
+- Support for `linux/amd64` containers. Apple Silicon uses Docker's x86-64
+  virtualization; enabling Rosetta support reduces translation overhead where
+  available.
+- The approved tt-emule repository URL and Git access to that repository. The
+  installer uses the host's existing Git credentials.
 
-Check the host tools before setup:
+Check the host tools before installation:
 
 ```bash
 git --version
@@ -30,96 +28,62 @@ python3 --version
 docker info
 ```
 
-If `python3` selects an older system interpreter, select an installed compatible
-interpreter for the launcher. For example:
+## Obtain TT-Lang
+
+The compiler-backed backend currently requires a TT-Lang source checkout. Check
+out the branch or release that contains the desired stack, including its
+submodules:
 
 ```bash
-export TTLANG_EMULE_HOST_PYTHON=python3.12
-```
-
-This selection applies to the host launcher. The container supplies its own
-Python environment and compiler tools.
-
-## Obtain the source checkout
-
-The emule backend requires a TT-Lang source checkout containing this backend;
-the PyPI simulator provides only the Python backend. Replace `TT_LANG_REF` with
-the branch or release tag being evaluated:
-
-```bash
-git clone --branch TT_LANG_REF \
-  https://github.com/tenstorrent/tt-lang.git
+git clone --recurse-submodules https://github.com/tenstorrent/tt-lang.git
 cd tt-lang
 ```
 
-All remaining commands run from the checkout root and use
-`./bin/tt-lang-sim`. The Docker workflow provides the compiler dependencies;
-it does not require a separate host compiler build or environment activation.
+The installer validates that the checkout contains the compiler baseline
+recorded in the stack manifest. It also fetches the exact
+tt-emule revision and verifies that tt-emule pins the same tt-metal revision as
+the manifest; it does not search for or accept another combination.
 
-## Set up the runtime once
+## Install the environment
 
-Source setup fetches the exact emulator commit in
-`config/tt-lang-emule-stack.json` and builds the corresponding Docker runtime.
-Replace `REPOSITORY_URL` with the approved repository URL accessible through
-the host's Git credentials:
-
-```bash
-./bin/tt-lang-sim --backend=emule --setup \
-  --source-url REPOSITORY_URL --jobs 8
-```
-
-The stack manifest records the compiler baseline, emulator and tt-metal commits,
-base image, and emulated device. Source setup checks the emulator revision and
-its tt-metal pin against that manifest. An arbitrary latest checkout is not a
-substitute for the recorded commit.
-
-An existing Git checkout at that exact emulator commit can be used instead:
+The public manifest deliberately records the exact emulator commit without
+publishing its source coordinate. Set the repository location supplied by the
+tt-emule owners, then run the installer from the checkout root:
 
 ```bash
-./bin/tt-lang-sim --backend=emule --setup \
-  --source /path/to/emulator --jobs 8
+export TTLANG_EMULE_RUNTIME_SOURCE_URL=REPOSITORY_URL
+./scripts/install-tt-lang-emule.sh
 ```
 
-If a compatible runtime image is already available, source building can be
-replaced with image selection:
+The URL locates the pinned source; it does not select the emulator version.
+The installer checks out only the manifest's exact commit and verifies its
+tt-metal pin.
 
-```bash
-./bin/tt-lang-sim --backend=emule --setup --image REGISTRY/IMAGE:TAG
-```
+Installation builds the pinned tt-emule/tt-metal Docker image and compiles this
+TT-Lang checkout into a persistent Docker volume. It can take substantial time,
+CPU, memory, and disk space on its first run. On success it prints the compiler
+commit for which the environment was installed.
 
-The image must contain the toolchain, emulator runtime, and entrypoint provided
-by this project's emulator Dockerfile. Setup reuses an existing local image;
-if Docker confirms that it is absent, setup attempts to download the named
-image. There is currently no default published simulator image. A local image
-tag does not imply that the same name is downloadable from a registry.
+Installation is separate from execution. `tt-lang-sim` never configures or
+builds TT-Lang. If the runtime image is absent, the compiler environment is
+incomplete, or the checkout has moved to another commit, execution stops with
+an instruction to run the installer again.
 
-Setup builds TT-Lang as needed and runs the smoke test. Only successful setup
-saves the selected runtime and build parallelism in `.ttlang-sim/emule.json`.
-That file is local to this checkout and ignored by Git. Repeating setup replaces
-the saved selection only after another successful smoke test.
-
-The first source build can take a long time and use substantial CPU, memory,
-and disk space. Docker retains the runtime image, compiler build, and kernel
-caches for later commands. `--jobs 8` limits compiler build parallelism; a lower
-value reduces that build's peak memory use, but does not limit the initial
-tt-metal build inside the runtime image. It can also be changed without
-selecting another runtime:
-
-```bash
-./bin/tt-lang-sim --backend=emule --setup --jobs 4
-```
+There is no per-checkout configuration file and no independently selectable
+compiler, emulator, or tt-metal version. Docker's image and volume caches retain
+the installed environment.
 
 ## Run a program
 
-After setup, the launcher loads the saved runtime automatically:
+After installation:
 
 ```bash
 ./bin/tt-lang-sim --backend=emule examples/eltwise_add.py
 ```
 
-The program imports the real `ttl` and `ttnn` packages inside the container.
-The compiler generates the kernels, and tt-emule executes them on an emulated
-Blackhole P150 device. The example checks its output against a Torch reference.
+The program imports the real `ttl` and `ttnn` packages from the installed
+environment. The compiler generates kernels and tt-emule executes them on the
+recorded emulated P150 target.
 
 Arguments belonging to the program follow `--`:
 
@@ -127,145 +91,98 @@ Arguments belonging to the program follow `--`:
 ./bin/tt-lang-sim --backend=emule program.py -- --program-option value
 ```
 
-The launcher mounts the source checkout and the program's working directory.
-Absolute host paths supplied as program arguments are not rewritten into
-container paths; relative paths under the mounted working directory are the
-simplest way to provide program inputs.
+The launcher mounts the checkout and the current working directory. Relative
+program inputs beneath the current working directory are portable into the
+container; arbitrary absolute host paths are not rewritten.
 
-Run the small compiler-to-emulator acceptance check at any time:
-
-```bash
-./bin/tt-lang-sim --backend=emule --smoke-test
-```
-
-This compiles and executes the external C++ call example and verifies its
-tensor result. A successful smoke test confirms that the selected stack works
-for that program; broader coverage is checked separately.
-
-(docker-simulator-examples-and-tests)=
-## Run examples and tests
-
-The reference example set exercises addition, matrix multiplication, reduction,
-and fused matrix multiplication with bias:
+The Python backend remains the default and does not require Docker:
 
 ```bash
-./bin/tt-lang-sim --backend=emule --examples
+./bin/tt-lang-sim program.py
+./bin/tt-lang-sim --backend=python program.py
 ```
 
-The command reports failures and continues through the remaining examples.
-Each example checks its output against a Torch reference. Programs remain
-subject to the compiler's input and operation restrictions, so compilation can
-fail before any emulator kernel executes.
+## Run tests with the existing test framework
 
-A short initial test selection checks compiler passes, Python bindings, and
-packaging:
+`tt-lang-sim` executes programs; it does not provide a second test-selection or
+reporting interface. Use TT-Lang's normal CMake, pytest, and lit commands from an
+activated compiler build environment.
+
+Run the complete compiler suite:
 
 ```bash
-./bin/tt-lang-sim --backend=emule --test \
-  --suite mlir --suite bindings --suite packaging
+cmake --build build --target check-ttlang-all
 ```
 
-Run all six compiler suites with:
+Run the device-independent compiler suites:
 
 ```bash
-./bin/tt-lang-sim --backend=emule --test
+cmake --build build --target check-ttlang
 ```
 
-The available suite names are:
-
-| Suite | Coverage |
-|---|---|
-| `mlir` | Compiler IR, dialect, and transformation tests. |
-| `bindings` | Python compiler binding tests. |
-| `packaging` | Packaging and launcher tests. |
-| `pytest` | Python compiler and device tests. |
-| `me2e` | Compiler stages and device execution tests. |
-| `python-lit` | Python lowering checks and selected device execution tests. |
-
-The first three suites do not execute kernels in tt-emule. The remaining suites
-mix compilation, rejection checks, and runtime execution; their total test
-counts are not counts of emulator kernel launches. Running the sweep does not
-establish that every compiler workload is supported; its failures and skips
-must be inspected. It excludes the Python simulator's `test/sim` suite and the
-tutorial suite.
-Execution can take substantially longer on an emulated x86-64 Mac environment
-than on native x86-64 Linux.
-
-Run one emulator command at a time per checkout. Commands share the compiler
-build and kernel caches, so overlapping builds or test runs can interfere.
-
-The test command continues after a failed suite and returns nonzero if any
-suite fails. Every invocation creates a new report directory beneath
-`.ttlang-sim/reports/` and prints its path. After the container starts the test
-runner, that directory contains suite logs, fresh JUnit reports where produced,
-and `summary.json`. `invocation.json` records the host checkout and requested
-suites; the summary also records available runtime provenance. A failure during
-image preparation or compiler building can prevent test reports from being
-produced.
-
-Select another report parent directory or repeat `--suite` to narrow a run:
+Run or select pytest tests directly, including ordinary pytest filtering and
+reporting options:
 
 ```bash
-./bin/tt-lang-sim --backend=emule --test \
-  --suite bindings --reports-dir ./test-results
+pytest -v test/python
+pytest -v test/me2e
+pytest -v test/python/test_elementwise_ops.py -k add
 ```
 
-(docker-simulator-coverage)=
-### Scope and validation
+Run lit suites or individual cases directly:
 
-The configured target is one emulated Blackhole P150 device. This execution
-path does not establish support for full models or multi-device workloads.
-Compiler support and emulator support are separate requirements: successful
-compilation does not guarantee successful kernel execution.
+```bash
+cmake --build build --target check-ttlang-mlir
+llvm-lit -v build/test/python
+llvm-lit -v build/test/python/simple_add.py
+```
 
-Validation applies to the exact compiler, emulator, tt-metal, and toolchain
-combination recorded in each run's reports. Inspect suite failures, skips, and
-runtime provenance before qualifying a workload or changing the pinned stack.
-Keep compiler rejection, runtime errors, and output mismatches separate when
-triaging failures; a failed test alone does not identify which component needs
-a change.
+These commands use the runtime configured for that compiler build. Compiler-only
+tests do not execute tt-emule; device tests require a compatible emule-enabled
+Linux build environment. See
+[`test/TESTING.md`](https://github.com/tenstorrent/tt-lang/blob/main/test/TESTING.md)
+for the suite boundaries, device requirements, pytest selection, lit paths, and
+output locations. See [Testing](testing.md) for the short command reference.
+
+Representative programs do not need another launcher command. Run them through
+the normal interface one at a time:
+
+```bash
+./bin/tt-lang-sim --backend=emule examples/eltwise_add.py
+./bin/tt-lang-sim --backend=emule examples/single_node_matmul.py
+```
 
 ## Troubleshooting
 
-### Docker is unavailable or cannot inspect the selected image
+### Docker is unavailable
 
-Check the daemon and context from the same terminal used for the launcher:
+Check the daemon and selected context:
 
 ```bash
 docker info
 docker context show
-docker image inspect REGISTRY/IMAGE:TAG
 ```
 
-Replace the image name with the saved selection in `.ttlang-sim/emule.json`.
-Different Docker contexts can point to different daemons and therefore different
-local image stores. Image inspection errors are reported with their diagnostics;
-an inspection failure is not treated as proof that an image must be downloaded.
+### The environment is not installed
 
-### Image download is denied
+Run the installer from the same checkout:
 
-A missing local image must either be available from the selected registry or
-be rebuilt from emulator source. For a private published image, authenticate
-to that registry with `docker login REGISTRY`. For a local-only tag, use
-`--setup --source-url REPOSITORY_URL` or `--setup --source /path/to/emulator`
-instead. The setup options select one runtime source at a time.
+```bash
+./scripts/install-tt-lang-emule.sh
+```
 
-### Source access or pin validation fails
+The simulator intentionally does not build or download missing components while
+executing a program.
 
-The source URL must be accessible using the host's Git authentication, and the
-repository must contain the full emulator commit recorded in the stack manifest.
-For local source setup, the checkout's `HEAD` and its `tt-metal-pin.txt` must
-match the manifest. Setup reports the mismatch instead of selecting a different
-revision automatically. Source repository access is required even though the
-compiler and emulator execute in Docker.
+### The compiler checkout changed
 
-### A saved setting appears to be ignored
+The installed compiler is tied to the exact TT-Lang source used during
+installation. Re-run the installer after switching branches, pulling new
+commits, or changing local source files.
 
-Explicit `TTLANG_EMULE_*` environment settings take precedence over saved
-configuration. The one-run `--runtime-image IMAGE` launcher option also
-overrides the saved runtime. A shell carrying overrides from an earlier
-experiment can therefore select a different runtime than `.ttlang-sim/emule.json`.
-The Python backend does not read this emulator configuration.
+### Emulator source access fails
 
-See {ref}`Updating the supported stack <simulator-updating-supported-stack>` for
-stack validation, candidate workflows, and advanced compatibility overrides.
+Confirm that `TTLANG_EMULE_RUNTIME_SOURCE_URL` names the approved repository and
+that the host can read it. The installer fetches only the exact commit from the
+manifest and uses the host's Git credentials; it never substitutes a different
+emulator revision.

@@ -11,7 +11,6 @@ third_party/ttnn-python
 .venv/*
 /venv
 .cache
-/.ttlang-sim/
 .claude/*
 # Skills checked in for everyone working on this repo.
 !.claude/skills/

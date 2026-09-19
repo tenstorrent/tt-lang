@@ -50,10 +50,7 @@ jobs:
         run: |
           python -m pytest -q \
             test/packaging/test_ttlang_emule_candidate.py \
-            test/packaging/test_ttlang_emule_cli.py \
-            test/packaging/test_ttlang_emule_examples.py \
-            test/packaging/test_ttlang_emule_stack.py \
-            test/packaging/test_ttlang_emule_suite.py
+            test/packaging/test_ttlang_emule_stack.py
 
       - name: Install BATS and helpers
         uses: bats-core/bats-action@2.0.0
@@ -123,21 +120,27 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
-      - name: Build and smoke-test the candidate
+      - name: Install and smoke-test the candidate
         env:
           TTLANG_EMULE_IMAGE: tt-lang-emule:candidate-${{ github.run_id }}
-          TTLANG_EMULE_JOBS: "8"
           TTLANG_EMULE_REBUILD: "1"
           TTLANG_EMULE_RUNTIME_SOURCE_DIR: .candidate-emulator
           TTLANG_EMULE_STACK_MANIFEST: candidate-stack.json
-        run: ./bin/tt-lang-sim --backend emule --smoke-test
+        run: |
+          ./scripts/install-tt-lang-emule.sh
+          ./bin/tt-lang-sim --backend=emule \
+            examples/compiler_only_external_call.py
 
       - name: Run the reference suite
         env:
+          TTLANG_EMULE_IMAGE: tt-lang-emule:candidate-${{ github.run_id }}
           TTLANG_EMULE_STACK_MANIFEST: candidate-stack.json
         run: |
-          python3 scripts/run-tt-lang-emule-examples.py \
-            --runtime-image "tt-lang-emule:candidate-${{ github.run_id }}"
+          ./bin/tt-lang-sim --backend=emule examples/eltwise_add.py
+          ./bin/tt-lang-sim --backend=emule examples/single_node_matmul.py
+          ./bin/tt-lang-sim --backend=emule \
+            examples/spec/block/elementwise_broadcast_reduce.py
+          ./bin/tt-lang-sim --backend=emule examples/matmul_acc.py
 
       - name: Capture exact runtime provenance
         run: |

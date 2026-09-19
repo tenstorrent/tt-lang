@@ -54,23 +54,54 @@ if [ -z "$_ACTUAL_LLVM_SHA" ] || \
     echo "tt-lang emule container: runtime LLVM revision does not match the compiler checkout." >&2
     echo "  expected: $_EXPECTED_LLVM_SHA" >&2
     echo "  installed: ${_ACTUAL_LLVM_SHA:-unknown ($_LLVM_REVISION_HEADER)}" >&2
-    echo "Select a compatible runtime image or rebuild it with --setup --source/--source-url and TTLANG_EMULE_REBUILD=1." >&2
+    echo "Reinstall the compiler-backed environment with scripts/install-tt-lang-emule.sh." >&2
     exit 1
 fi
 
-cmake -G Ninja -S "$TTLANG_SOURCE_DIR" -B "$TTLANG_BUILD_DIR" \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_C_COMPILER=clang-20 \
-    -DCMAKE_CXX_COMPILER=clang++-20 \
-    -DLLVM_USE_LINKER=lld-20 \
-    -DTTLANG_USE_TOOLCHAIN=ON \
-    -DTTLANG_USE_TOOLCHAIN_TTMETAL=OFF \
-    -DTTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain \
-    -DTTLANG_EXTERNAL_TT_METAL_DIR="$TT_METAL_SOURCE_DIR" \
-    -DTTLANG_EXTERNAL_TT_METAL_BUILD_DIR="$TT_METAL_BUILD_DIR" \
-    -DTTLANG_ENABLE_PERF_TRACE=OFF
+readonly _COMPILER_MARKER="${TTLANG_BUILD_DIR}/.ttlang-emule-source-fingerprint"
+if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ]; then
+    if [ -z "${TTLANG_EMULE_SOURCE_FINGERPRINT:-}" ] || \
+       [ -z "${TTLANG_EMULE_COMPILER_SHA:-}" ]; then
+        echo "tt-lang emule container: installer source identity is missing." >&2
+        exit 1
+    fi
+    _COMPILER_MARKER_TEMP="${_COMPILER_MARKER}.tmp"
+    rm -f -- "$_COMPILER_MARKER" "$_COMPILER_MARKER_TEMP"
+    cmake -G Ninja -S "$TTLANG_SOURCE_DIR" -B "$TTLANG_BUILD_DIR" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_C_COMPILER=clang-20 \
+        -DCMAKE_CXX_COMPILER=clang++-20 \
+        -DLLVM_USE_LINKER=lld-20 \
+        -DTTLANG_USE_TOOLCHAIN=ON \
+        -DTTLANG_USE_TOOLCHAIN_TTMETAL=OFF \
+        -DTTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain \
+        -DTTLANG_EXTERNAL_TT_METAL_DIR="$TT_METAL_SOURCE_DIR" \
+        -DTTLANG_EXTERNAL_TT_METAL_BUILD_DIR="$TT_METAL_BUILD_DIR" \
+        -DTTLANG_ENABLE_PERF_TRACE=OFF
+    cmake --build "$TTLANG_BUILD_DIR" --parallel "$(nproc)"
+    printf '%s\n' "${TTLANG_EMULE_SOURCE_FINGERPRINT}" > \
+        "$_COMPILER_MARKER_TEMP"
+    mv -- "$_COMPILER_MARKER_TEMP" "$_COMPILER_MARKER"
+    echo "Installed compiler-backed emule environment for ${TTLANG_EMULE_COMPILER_SHA}."
+    exit 0
+fi
 
-cmake --build "$TTLANG_BUILD_DIR" --parallel "${TTLANG_EMULE_JOBS:-$(nproc)}"
+if [ ! -f "$_COMPILER_MARKER" ]; then
+    echo "tt-lang emule container: the compiler environment is not installed." >&2
+    echo "Run scripts/install-tt-lang-emule.sh on the host, then retry." >&2
+    exit 1
+fi
+_INSTALLED_SOURCE_FINGERPRINT="$(cat "$_COMPILER_MARKER")"
+if [ "$_INSTALLED_SOURCE_FINGERPRINT" != "${TTLANG_EMULE_SOURCE_FINGERPRINT:-}" ]; then
+    echo "tt-lang emule container: the installed compiler does not match this checkout." >&2
+    echo "Reinstall with scripts/install-tt-lang-emule.sh." >&2
+    exit 1
+fi
+if [ ! -f "${TTLANG_BUILD_DIR}/env/activate" ]; then
+    echo "tt-lang emule container: the installed compiler environment is incomplete." >&2
+    echo "Reinstall with scripts/install-tt-lang-emule.sh." >&2
+    exit 1
+fi
 
 # activate is generated for bash and may legitimately reference variables that
 # are absent from a non-interactive container shell.

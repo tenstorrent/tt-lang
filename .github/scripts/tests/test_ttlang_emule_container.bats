@@ -6,6 +6,7 @@ load test_helper
 
 RUNNER="$TTLANG_REPO_ROOT/scripts/tt-lang-emule-container.sh"
 ENTRYPOINT="$TTLANG_REPO_ROOT/scripts/tt-lang-emule-entrypoint.sh"
+INSTALLER="$TTLANG_REPO_ROOT/scripts/install-tt-lang-emule.sh"
 DOCKERFILE="$TTLANG_REPO_ROOT/.github/containers/Dockerfile.emule"
 
 make_stack_manifest() {
@@ -125,6 +126,10 @@ refute_log_line() {
     run -1 grep -F -x -- "$1" "$MOCK_DOCKER_LOG"
 }
 
+refute_log_contains() {
+    run -1 grep -F -- "$1" "$MOCK_DOCKER_LOG"
+}
+
 make_mock_entrypoint_commands() {
     local target_dir="$1"
     mkdir -p "$target_dir"
@@ -167,9 +172,12 @@ make_entrypoint_fixture() {
     llvm_revision_header="$BATS_TEST_TMPDIR/toolchain/include/llvm/Support/VCSRevision.h"
     test_entrypoint="$BATS_TEST_TMPDIR/entrypoint.sh"
     expected_llvm_sha=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+    source_fingerprint=source-fingerprint
     make_mock_entrypoint_commands "$mock_bin"
     mkdir -p "$build_dir/env" "$(dirname "$llvm_revision_header")"
     touch "$build_dir/env/activate" "$cluster" "$program"
+    printf '%s\n' "$source_fingerprint" > \
+        "$build_dir/.ttlang-emule-source-fingerprint"
     printf '#define LLVM_REVISION "%s"\n' "$expected_llvm_sha" > "$llvm_revision_header"
     sed "s|/opt/ttlang-toolchain|$BATS_TEST_TMPDIR/toolchain|g" \
         "$ENTRYPOINT" > "$test_entrypoint"
@@ -261,20 +269,26 @@ EOF
     refute_log_line "build"
 }
 
-@test "test reports and compiler provenance reach the container" {
-    local reports="$BATS_TEST_TMPDIR/reports with spaces"
-    mkdir -p "$reports"
-    reports="$(cd "$reports" && pwd -P)"
+@test "compiler source identity reaches the container" {
     cd "$TTLANG_REPO_ROOT"
     TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
-        TTLANG_EMULE_REPORT_DIR="$reports" \
-        TTLANG_EMULE_COMPILER_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
-        TTLANG_EMULE_COMPILER_DIRTY=1 \
         run -0 "$RUNNER" examples/eltwise_add.py
 
-    assert_log_line "type=bind,src=${reports},dst=/ttlang-reports"
-    assert_log_line "TTLANG_EMULE_COMPILER_SHA"
-    assert_log_line "TTLANG_EMULE_COMPILER_DIRTY"
+    assert_log_line \
+        "TTLANG_EMULE_COMPILER_SHA=$(git -C "$TTLANG_REPO_ROOT" rev-parse HEAD)"
+    assert_log_contains "TTLANG_EMULE_SOURCE_FINGERPRINT="
+    refute_log_contains "/ttlang-reports"
+}
+
+@test "installer is the only public path that enables installation" {
+    cd "$TTLANG_REPO_ROOT"
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$INSTALLER"
+
+    assert_log_line "TTLANG_EMULE_INSTALL=1"
+    assert_log_line "/workspace/examples/compiler_only_external_call.py"
+
+    run -2 "$INSTALLER" unexpected
+    assert_output --partial "Usage: scripts/install-tt-lang-emule.sh"
 }
 
 @test "runtime image identity changes when an image input changes" {
@@ -420,6 +434,7 @@ PY
             MOCK_DOCKER_IMAGE_STATUS="$inspect_status" \
             MOCK_DOCKER_REQUIRE_SANITIZED_CONTEXT=1 \
             TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            TTLANG_EMULE_INSTALL=1 \
             TTLANG_EMULE_REBUILD="$rebuild" \
             TTLANG_EMULE_RUNTIME_SOURCE_DIR="$source_dir" \
             TTLANG_EMULE_RUNTIME_SOURCE_URL="$emule_source" \
@@ -466,13 +481,14 @@ PY
     cd "$TTLANG_REPO_ROOT"
     MOCK_DOCKER_IMAGE_STATUS=1 \
         TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        TTLANG_EMULE_INSTALL=1 \
         TTLANG_EMULE_RUNTIME_SOURCE_DIR="$TTLANG_REPO_ROOT" \
         TTLANG_EMULE_RUNTIME_COMMIT="$source_commit" \
         TTLANG_EMULE_RUNTIME_METAL_COMMIT=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
         run -1 "$RUNNER" examples/eltwise_add.py
 
     assert_output --partial "does not provide the required P150 descriptor"
-    assert_output --partial "TTLANG_EMULE_RUNTIME_SOURCE_DIR"
+    assert_output --partial "Update the supported stack manifest"
     refute_log_line "build"
     refute_log_line "run"
 }
@@ -480,6 +496,7 @@ PY
 @test "an unpinned emulator checkout fails before the image build" {
     cd "$TTLANG_REPO_ROOT"
     MOCK_DOCKER_IMAGE_STATUS=1 \
+        TTLANG_EMULE_INSTALL=1 \
         TTLANG_EMULE_RUNTIME_SOURCE_DIR="$TTLANG_REPO_ROOT" \
         TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
         run -1 "$RUNNER" examples/eltwise_add.py
@@ -492,6 +509,7 @@ PY
 @test "a missing emulator source directory fails before the image build" {
     cd "$TTLANG_REPO_ROOT"
     MOCK_DOCKER_IMAGE_STATUS=1 \
+        TTLANG_EMULE_INSTALL=1 \
         TTLANG_EMULE_RUNTIME_SOURCE_DIR="$BATS_TEST_TMPDIR/missing" \
         TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
         run -1 "$RUNNER" examples/eltwise_add.py
@@ -501,16 +519,25 @@ PY
     refute_log_line "run"
 }
 
-@test "a missing emulator source coordinate fails before fetching" {
+@test "a missing image never causes ordinary execution to build" {
     cd "$TTLANG_REPO_ROOT"
-    MOCK_DOCKER_IMAGE_STATUS=1 \
-        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
-        run -1 "$RUNNER" examples/eltwise_add.py
+    local diagnostic
+    for diagnostic in \
+        "Error response from daemon: No such image: runtime" \
+        'Error response from daemon: {"message":"No such image: runtime"}' \
+        '{"message":"No such image: runtime"}'; do
+        : > "$MOCK_DOCKER_LOG"
+        MOCK_DOCKER_IMAGE_STATUS=1 \
+            MOCK_DOCKER_IMAGE_ERROR="$diagnostic" \
+            TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            TTLANG_EMULE_IMAGE=runtime \
+            run -1 "$RUNNER" examples/eltwise_add.py
 
-    assert_output --partial "no emulator source was configured"
-    assert_output --partial "TTLANG_EMULE_RUNTIME_SOURCE_URL"
-    refute_log_line "build"
-    refute_log_line "run"
+        assert_output --partial "environment is not installed"
+        assert_output --partial "scripts/install-tt-lang-emule.sh"
+        refute_log_line "build"
+        refute_log_line "run"
+    done
 }
 
 @test "a symbolic emulator revision is rejected before Docker" {
@@ -648,16 +675,43 @@ PY
     assert_log_line "/ttlang-script/program.py"
 }
 
-@test "entrypoint configures, builds, and runs with emule runtime state" {
+@test "entrypoint installation configures and builds without running a program" {
     make_entrypoint_fixture
+    rm "$build_dir/.ttlang-emule-source-fingerprint"
 
     PATH="$mock_bin:$PATH" \
         TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
         TTLANG_EMULE_EXPECTED_LLVM_SHA="$expected_llvm_sha" \
-        TTLANG_COMPILE_ONLY=1 \
-        TTLANG_SIM_ONLY=1 \
+        TTLANG_EMULE_INSTALL=1 \
+        TTLANG_EMULE_COMPILER_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+        TTLANG_EMULE_SOURCE_FINGERPRINT="$source_fingerprint" \
         TTLANG_EMULE_BUILD_DIR="$build_dir" \
         TTLANG_EMULE_SOURCE_DIR="$TTLANG_REPO_ROOT" \
+        run -0 /bin/bash "$test_entrypoint" "$program" "argument with spaces"
+
+    assert_output --partial \
+        "Installed compiler-backed emule environment for bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb."
+    refute_output --partial "python="
+    run -0 grep -F -x -- "cmake=--parallel" "$MOCK_ENTRYPOINT_LOG"
+    run -0 grep -F -x -- "cmake=4" "$MOCK_ENTRYPOINT_LOG"
+    run -0 grep -F -x -- \
+        "cmake=-DTTLANG_EXTERNAL_TT_METAL_DIR=/opt/tt-emule-runtime/tt-metal" \
+        "$MOCK_ENTRYPOINT_LOG"
+    run -0 grep -F -x -- "$source_fingerprint" \
+        "$build_dir/.ttlang-emule-source-fingerprint"
+}
+
+@test "entrypoint runs from the installed environment without configuring" {
+    make_entrypoint_fixture
+    printf '#define LLVM_REVISION R"(%s)"\n' "$expected_llvm_sha" > "$llvm_revision_header"
+
+    PATH="$mock_bin:$PATH" \
+        TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
+        TTLANG_EMULE_EXPECTED_LLVM_SHA="$expected_llvm_sha" \
+        TTLANG_EMULE_SOURCE_FINGERPRINT="$source_fingerprint" \
+        TTLANG_EMULE_BUILD_DIR="$build_dir" \
+        TTLANG_COMPILE_ONLY=1 \
+        TTLANG_SIM_ONLY=1 \
         run -0 /bin/bash "$test_entrypoint" "$program" "argument with spaces"
 
     assert_line "emule=1"
@@ -671,24 +725,30 @@ PY
     assert_line "sim_only="
     assert_line "python=$program"
     assert_line "python=argument with spaces"
-    run -0 grep -F -x -- "cmake=--parallel" "$MOCK_ENTRYPOINT_LOG"
-    run -0 grep -F -x -- "cmake=4" "$MOCK_ENTRYPOINT_LOG"
-    run -0 grep -F -x -- \
-        "cmake=-DTTLANG_EXTERNAL_TT_METAL_DIR=/opt/tt-emule-runtime/tt-metal" \
-        "$MOCK_ENTRYPOINT_LOG"
+    [ ! -e "$MOCK_ENTRYPOINT_LOG" ]
 }
 
-@test "entrypoint accepts the matching raw-string LLVM revision before configuring" {
+@test "entrypoint rejects an absent or stale installed compiler" {
     make_entrypoint_fixture
-    printf '#define LLVM_REVISION R"(%s)"\n' "$expected_llvm_sha" > "$llvm_revision_header"
+    rm "$build_dir/.ttlang-emule-source-fingerprint"
 
     PATH="$mock_bin:$PATH" \
         TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
         TTLANG_EMULE_EXPECTED_LLVM_SHA="$expected_llvm_sha" \
+        TTLANG_EMULE_SOURCE_FINGERPRINT="$source_fingerprint" \
         TTLANG_EMULE_BUILD_DIR="$build_dir" \
-        run -0 /bin/bash "$test_entrypoint" "$program"
+        run -1 /bin/bash "$test_entrypoint" "$program"
+    assert_output --partial "compiler environment is not installed"
 
-    [ -s "$MOCK_ENTRYPOINT_LOG" ]
+    printf '%s\n' stale-fingerprint > \
+        "$build_dir/.ttlang-emule-source-fingerprint"
+    PATH="$mock_bin:$PATH" \
+        TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
+        TTLANG_EMULE_EXPECTED_LLVM_SHA="$expected_llvm_sha" \
+        TTLANG_EMULE_SOURCE_FINGERPRINT="$source_fingerprint" \
+        TTLANG_EMULE_BUILD_DIR="$build_dir" \
+        run -1 /bin/bash "$test_entrypoint" "$program"
+    assert_output --partial "installed compiler does not match this checkout"
 }
 
 @test "entrypoint rejects a different LLVM revision before configuring" {
@@ -704,7 +764,7 @@ PY
     assert_output --partial "runtime LLVM revision does not match"
     assert_output --partial "expected: $expected_llvm_sha"
     assert_output --partial "installed: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    assert_output --partial "Select a compatible runtime image or rebuild"
+    assert_output --partial "Reinstall the compiler-backed environment"
     [ ! -e "$MOCK_ENTRYPOINT_LOG" ]
 }
 

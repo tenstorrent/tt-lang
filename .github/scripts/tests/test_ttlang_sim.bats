@@ -52,73 +52,12 @@ make_mock_emule_runner() {
     local target="$1"
     cat > "$target" <<'EOF'
 #!/usr/bin/env bash
-if [ -n "${TTLANG_EMULE_IMAGE:-}" ]; then
-    echo "image=$TTLANG_EMULE_IMAGE"
-fi
 for a in "$@"; do
     echo "argv=$a"
 done
 exit 0
 EOF
     chmod +x "$target"
-}
-
-@test "emule backend selects an explicit versioned runtime image" {
-    make_layout "$ROOT" source
-    local runner="$ROOT/emule-runner"
-    make_mock_emule_runner "$runner"
-    TTLANG_EMULE_RUNNER="$runner" run -0 "$ROOT/bin/tt-lang-sim" \
-        program.py --backend emule --runtime-image registry/runtime:tested
-    assert_line --index 0 "image=registry/runtime:tested"
-    assert_line --index 1 "argv=program.py"
-}
-
-@test "emule smoke test dispatches the bundled compiler example" {
-    make_layout "$ROOT" source
-    mkdir -p "$ROOT/examples"
-    : > "$ROOT/examples/compiler_only_external_call.py"
-    local runner="$ROOT/emule-runner"
-    make_mock_emule_runner "$runner"
-    TTLANG_EMULE_RUNNER="$runner" run -0 "$ROOT/bin/tt-lang-sim" \
-        --backend emule --smoke-test
-    assert_output "argv=$ROOT/examples/compiler_only_external_call.py"
-}
-
-@test "emule-only launcher options are rejected by the Python backend" {
-    make_layout "$ROOT" source
-    run -2 "$ROOT/bin/tt-lang-sim" program.py \
-        --runtime-image registry/runtime:tested
-    assert_output --partial "require --backend emule"
-}
-
-@test "emule smoke test rejects a competing script" {
-    make_layout "$ROOT" source
-    local runner="$ROOT/emule-runner"
-    make_mock_emule_runner "$runner"
-    TTLANG_EMULE_RUNNER="$runner" run -2 "$ROOT/bin/tt-lang-sim" \
-        program.py --backend emule --smoke-test
-    assert_output --partial "does not accept a script"
-}
-
-@test "emule test flag forwards suite and report arguments to the host helper" {
-    make_layout "$ROOT" source
-    mkdir -p "$ROOT/scripts"
-    : > "$ROOT/scripts/tt-lang-emule.py"
-    make_mock_python "$MOCK_PY"
-    TTLANG_EMULE_HOST_PYTHON="$MOCK_PY" run -0 "$ROOT/bin/tt-lang-sim" \
-        --suite bindings --test --backend=emule --reports-dir "reports with spaces"
-    assert_line --index 1 "argv=$ROOT/scripts/tt-lang-emule.py"
-    assert_line --index 2 "argv=--test"
-    assert_line --index 3 "argv=--suite"
-    assert_line --index 4 "argv=bindings"
-    assert_line --index 5 "argv=--reports-dir"
-    assert_line --index 6 "argv=reports with spaces"
-}
-
-@test "emule actions require a source checkout helper" {
-    make_layout "$ROOT" installed
-    run -1 "$ROOT/bin/tt-lang-sim" --backend emule --test
-    assert_output --partial "--test requires a source checkout"
 }
 
 @test "action-looking script arguments after separator remain literal" {

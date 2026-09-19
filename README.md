@@ -41,7 +41,7 @@ TT-Lang bridges this gap through progressive disclosure: simple kernels require 
 ## 2. Quick Start
 
 The compiler-backed Docker simulator runs TT-Lang kernels through tt-emule
-without Tenstorrent hardware. Its setup and test commands are
+without Tenstorrent hardware. Its environment installation and execution are
 described in [Getting started with Docker simulation](docs/sphinx/simulator-getting-started.md).
 
 ### 2.1 Install from PyPI

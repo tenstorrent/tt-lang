@@ -80,6 +80,22 @@ _TEMP_STACK_CONTEXT=""
 "$_PYTHON" "$_STACK_TOOL" --manifest "$_STACK_MANIFEST" validate \
     --compiler-source "$_REPO_ROOT" --quiet
 
+_COMPILER_SHA="$(git -C "$_REPO_ROOT" rev-parse HEAD)"
+_COMPILER_SOURCE_FINGERPRINT="$(
+    {
+        printf '%s\n' "$_COMPILER_SHA"
+        git -C "$_REPO_ROOT" diff --no-ext-diff --binary HEAD --
+        while IFS= read -r -d '' _UNTRACKED; do
+            [ -f "${_REPO_ROOT}/${_UNTRACKED}" ] || continue
+            printf 'untracked:%s\n' "$_UNTRACKED"
+            cksum "${_REPO_ROOT}/${_UNTRACKED}"
+        done < <(git -C "$_REPO_ROOT" ls-files --others --exclude-standard -z)
+    } |
+        cksum |
+        awk '{print $1, $2}'
+)"
+readonly _COMPILER_SHA _COMPILER_SOURCE_FINGERPRINT
+
 _EXPECTED_LLVM_SHA="$(
     git -C "$_REPO_ROOT" ls-tree HEAD -- third-party/llvm-project |
         awk '$1 == "160000" && $2 == "commit" {print $3}'
@@ -112,7 +128,7 @@ trap 'exit 143' TERM
 
 usage() {
     cat >&2 <<'EOF'
-Usage: tt-lang-sim SCRIPT.py [arguments] --backend emule
+Usage: ./bin/tt-lang-sim --backend=emule SCRIPT.py [arguments]
 
 Runs SCRIPT.py unchanged with the TT-Lang compiler and tt-emule. A working
 Docker-compatible daemon is required. On Apple Silicon the image runs as
@@ -162,11 +178,12 @@ _RUN_ARGS=(
     -e "TT_METAL_MOCK_CLUSTER_DESC_PATH=/opt/tt-emule/${_REQUIRED_EMULE_FILE}"
     -e "TT_METAL_ALLOCATOR_MODE_HYBRID=1"
     -e "MESH_DEVICE=${_MANIFEST_MESH_DEVICE}"
+    -e "TTLANG_EMULE_COMPILER_SHA=${_COMPILER_SHA}"
+    -e "TTLANG_EMULE_SOURCE_FINGERPRINT=${_COMPILER_SOURCE_FINGERPRINT}"
 )
 
-if [ -n "${TTLANG_EMULE_REPORT_DIR:-}" ]; then
-    _REPORT_DIR="$(cd "$TTLANG_EMULE_REPORT_DIR" && pwd -P)"
-    _RUN_ARGS+=(--mount "type=bind,src=${_REPORT_DIR},dst=/ttlang-reports")
+if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ]; then
+    _RUN_ARGS+=(-e TTLANG_EMULE_INSTALL=1)
 fi
 
 case "${_HOST_CWD}/" in
@@ -201,9 +218,6 @@ if [ -t 0 ] && [ -t 1 ]; then
 fi
 
 for _ENV_NAME in \
-    TTLANG_EMULE_COMPILER_SHA \
-    TTLANG_EMULE_COMPILER_DIRTY \
-    TTLANG_EMULE_JOBS \
     TTLANG_KEEP_GENERATED_KERNELS \
     TT_METAL_DPRINT_CHIPS \
     TT_METAL_DPRINT_CORES \
@@ -215,14 +229,34 @@ done
 
 _BUILD_IMAGE=0
 if [ "${TTLANG_EMULE_REBUILD:-0}" = "1" ]; then
+    if [ "${TTLANG_EMULE_INSTALL:-0}" != "1" ]; then
+        echo "tt-lang-sim: runtime rebuilding is only available during installation." >&2
+        echo "Run scripts/install-tt-lang-emule.sh instead." >&2
+        exit 1
+    fi
     _BUILD_IMAGE=1
 elif _IMAGE_INSPECT_ERROR="$("$_DOCKER" image inspect "$_IMAGE" 2>&1 >/dev/null)"; then
     :
 else
     _IMAGE_INSPECT_STATUS=$?
-    if [ "$_IMAGE_INSPECT_STATUS" -eq 1 ] && \
-       [[ "$_IMAGE_INSPECT_ERROR" == "Error response from daemon: No such image:"* ]]; then
-        _BUILD_IMAGE=1
+    _IMAGE_IS_MISSING=0
+    if [ "$_IMAGE_INSPECT_STATUS" -eq 1 ]; then
+        case "$_IMAGE_INSPECT_ERROR" in
+            "Error response from daemon: No such image: ${_IMAGE}"*|\
+            "Error response from daemon: {\"message\":\"No such image: ${_IMAGE}\"}"|\
+            "{\"message\":\"No such image: ${_IMAGE}\"}")
+                _IMAGE_IS_MISSING=1
+                ;;
+        esac
+    fi
+    if [ "$_IMAGE_IS_MISSING" -eq 1 ]; then
+        if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ]; then
+            _BUILD_IMAGE=1
+        else
+            echo "tt-lang-sim: the compiler-backed emule environment is not installed." >&2
+            echo "Run scripts/install-tt-lang-emule.sh, then retry." >&2
+            exit 1
+        fi
     else
         printf 'tt-lang-sim: Docker could not inspect image %s (exit %s).\n' \
             "$_IMAGE" "$_IMAGE_INSPECT_STATUS" >&2
@@ -239,8 +273,8 @@ if [ "$_BUILD_IMAGE" -eq 1 ]; then
     if [ -z "$_EMULE_SOURCE" ]; then
         if [ -z "$_TT_EMULE_SOURCE_URL" ]; then
             echo "tt-lang-sim: no emulator source was configured." >&2
-            echo "Set TTLANG_EMULE_RUNTIME_SOURCE_DIR to an exact local checkout or" >&2
-            echo "TTLANG_EMULE_RUNTIME_SOURCE_URL to the approved source repository." >&2
+            echo "Set TTLANG_EMULE_RUNTIME_SOURCE_URL to the approved repository" >&2
+            echo "before running scripts/install-tt-lang-emule.sh." >&2
             exit 1
         fi
         if ! command -v git >/dev/null 2>&1; then
@@ -278,8 +312,7 @@ if [ "$_BUILD_IMAGE" -eq 1 ]; then
     if [ ! -f "${_TEMP_EMULE_CONTEXT}/${_REQUIRED_EMULE_FILE}" ]; then
         echo "tt-lang-sim: selected emulator does not provide the required P150 descriptor." >&2
         echo "  missing: ${_REQUIRED_EMULE_FILE}" >&2
-        echo "  Select a compatible pinned runtime with TTLANG_EMULE_RUNTIME_SOURCE_DIR," >&2
-        echo "  TTLANG_EMULE_RUNTIME_COMMIT, and TTLANG_EMULE_RUNTIME_METAL_COMMIT." >&2
+        echo "  Update the supported stack manifest before installing another runtime." >&2
         exit 1
     fi
     _TEMP_STACK_CONTEXT="$(mktemp -d "${TMPDIR:-/tmp}/tt-lang-stack-context.XXXXXX")"

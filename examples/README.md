@@ -35,9 +35,9 @@ compiler-backed tt-emule backend:
 ```
 
 A source checkout and Docker are required. The
-[setup guide](../docs/sphinx/simulator-getting-started.md)
-describes selecting emulator source or a compatible runtime image. Later runs
-reuse the selected image and persistent build caches.
+[installation guide](../docs/sphinx/simulator-getting-started.md)
+describes installing the repository's pinned compiler, emulator, and tt-metal
+environment before running examples.
 
 ## Example Categories
 
