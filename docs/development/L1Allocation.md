@@ -407,7 +407,7 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 
 | Scenario | Evidence |
 | --- | --- |
-| Sub-tile compute | 220 compiler-L1 Blackhole device-correctness cases across BF16/FP32, DRAM/L1 tensors, both allocation strategies, supported tile dimensions, a tensor-backed multi-page expression, elementwise operations, broadcast, matmul, transpose, reductions, mixed dimensions in one compute kernel, equal-byte-size width transitions, and typed external descriptors; 192 Metal device-correctness cases preserve existing behavior |
+| Sub-tile compute | 220 compiler-managed SRAM Blackhole device-correctness cases across BF16/FP32, DRAM/SRAM tensors, both allocation strategies, supported tile dimensions, a tensor-backed multi-page expression, elementwise operations, broadcast, matmul, transpose, reductions, mixed dimensions in one compute kernel, equal-byte-size width transitions, and typed external descriptors; 192 Metal DFB device-correctness cases preserve existing behavior |
 | Blackhole transfer and compute | Device correctness across BF16/FP32, DRAM/L1 tensors, repeated executions, counter wraparound, 96 live DFBs, arithmetic with 66 allocated DFBs, matmul, reductions, residual, MLP, attention, and expert merge |
 | Tensor-backed storage | 46 Blackhole device-correctness cases across BF16/FP32, compiler-owned scratch and tensor-backed storage, height/width/block sharding, row/column shard orientation, nonzero byte offsets, complete-capacity publication, replacement, and repeated execution; compile-only metadata checks cover both allocator strategies |
 | Allocation groups | Four compiler-L1 Blackhole device-correctness cases across BF16/FP32 and DRAM/L1 tensors for repeated shared-state handoff with different member capacities; compile-only checks cover both allocator strategies, tensor-backed ownership, rejection with reuse disabled, and tensor byte-range alias diagnostics |
@@ -430,7 +430,7 @@ The intended dependency order after generated fabric support is:
 1. Support additional external C++ kernels beyond elementwise multiply and block matmul through the typed descriptor interface. Add target operations only when a kernel requires an address, page/block, or completion operation that the common interface does not provide.
 2. Add row-major metadata, partial-block and general contiguous multi-block transactions, and the corresponding address, stride, capacity, and wrap rules.
 3. Add per-core arena layouts if sparse-placement measurements justify the additional per-node allocation metadata and runtime binding.
-4. Add Wormhole reset and reconfiguration after defining and device-qualifying a Wormhole synchronization protocol behind the existing target interface.
-5. Qualify complete model layers, then measure device cycles, arena high-water usage, initialization cost, compile time, and generated code size against `metal-cb`.
+4. Add Wormhole reset and reconfiguration after defining and validating a Wormhole synchronization protocol behind the existing target interface.
+5. Validate complete model layers, then measure device cycles, arena high-water usage, initialization cost, compile time, and generated code size against `metal-cb`.
 
 Each extension must preserve the fail-before-mutation rule, architecture isolation, explicit ownership, and compiler-managed descriptor independence.

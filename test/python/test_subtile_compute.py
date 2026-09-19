@@ -295,7 +295,9 @@ def subtile_reduce(inp, out):
     def compute():
         with input_dfb.wait() as input_block:
             with output_dfb.reserve() as output_block:
-                output_block.store(ttl.math.reduce_sum(input_block, dims=[0, 1]))
+                output_block.store(
+                    ttl.math.reduce_sum(input_block, dims=[0, 1], shape=(1, 1))
+                )
 
     @ttl.datamovement()
     def reader():
@@ -317,7 +319,9 @@ def subtile_reduce_sum_row(inp, out):
     def compute():
         with input_dfb.wait() as input_block:
             with output_dfb.reserve() as output_block:
-                output_block.store(ttl.math.reduce_sum(input_block, dims=[1]))
+                output_block.store(
+                    ttl.math.reduce_sum(input_block, dims=[1], shape=(1, 1))
+                )
 
     @ttl.datamovement()
     def reader():
@@ -339,7 +343,9 @@ def subtile_reduce_max_row(inp, out):
     def compute():
         with input_dfb.wait() as input_block:
             with output_dfb.reserve() as output_block:
-                output_block.store(ttl.math.reduce_max(input_block, dims=[1]))
+                output_block.store(
+                    ttl.math.reduce_max(input_block, dims=[1], shape=(1, 1))
+                )
 
     @ttl.datamovement()
     def reader():
