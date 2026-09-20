@@ -2196,7 +2196,13 @@ def _allocate_l1_sharded_storage_tensor(
         raise ValueError(
             "L1 storage cannot use per-core and range-lockstep allocation together"
         )
-    aligned_bytes = _align_up(num_bytes, 32)
+    # TT-Metal's L1 banking allocator uses DRAM alignment for its bank manager,
+    # and range allocation requires an extent that is a multiple of it. That
+    # alignment is coarser than the 32-byte page on some architectures.
+    storage_alignment = int(ttnn.get_dram_alignment())
+    if storage_alignment <= 0:
+        raise ValueError("TT-Metal reported an invalid L1 storage alignment")
+    aligned_bytes = _align_up(num_bytes, storage_alignment)
     elements_per_core = max(1, aligned_bytes // 4)
     num_cores = core_ranges.num_cores()
     shard_spec = ttnn.ShardSpec(

@@ -3202,6 +3202,34 @@ def test_reconfiguration_runtime_storage_honors_launch_formats(monkeypatch):
     ] == [64, 2048]
 
 
+def test_l1_storage_tensor_aligns_to_l1_allocator_alignment(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.float32 = "float32"
+    fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
+    fake_ttnn.ShardOrientation = type("ShardOrientation", (), {"ROW_MAJOR": 0})
+    fake_ttnn.TensorMemoryLayout = type("TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0})
+    fake_ttnn.BufferType = type("BufferType", (), {"L1": 0})
+    fake_ttnn.ShardSpec = lambda *args: args
+    fake_ttnn.MemoryConfig = lambda *args: SimpleNamespace(
+        experimental_set_per_core_allocation=lambda _value: None,
+        experimental_set_range_lockstep_allocation=lambda _value: None,
+    )
+    requests = []
+    fake_ttnn.empty = lambda shape, **keywords: requests.append(shape) or shape
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+
+    core_ranges = SimpleNamespace(num_cores=lambda: 2)
+    kernel_runner._allocate_l1_sharded_storage_tensor(
+        core_ranges,
+        32,
+        object(),
+        range_lockstep=True,
+    )
+
+    # One 32-byte page still occupies a full 64-byte allocator extent.
+    assert requests == [(2, 16)]
+
+
 def test_reconfiguration_runtime_storage_offsets_packed_backing(monkeypatch):
     monkeypatch.setenv("TT_METAL_ALLOCATOR_MODE_HYBRID", "1")
     fake_ttnn = _FakeTTNN()
