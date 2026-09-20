@@ -558,9 +558,9 @@ getConservativePipeResources(ModuleOp sourceModule) {
   }
 
   PipeResourcePlan resourcePlan;
+  PipeTransferNodeSet computedAddressTransfers;
   if (failed(buildPipeResourcePlan(module, transferIndex, *maybePipeGraph,
-                                   resourcePlan,
-                                   /*enableComputedAddresses=*/false,
+                                   resourcePlan, computedAddressTransfers,
                                    PipeCounterAllocationPolicy::GlobalOnly,
                                    /*synchronizationSelection=*/nullptr))) {
     return failure();

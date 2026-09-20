@@ -385,6 +385,13 @@ FailureOr<FabricForwarderPlan> buildFabricForwarderPlan(
     bool isReceiver = isa<PipeTransferPostOp>(operation);
     assert((isSender || isReceiver) &&
            "fabric routes belong to sends or receiver posts");
+    // Aggregation is valid only when every selected record sends readiness;
+    // otherwise lowering handles each readiness-producing record separately.
+    if (isReceiver &&
+        !fabricRoutePlan.receiversWithReadinessForEveryRecord.contains(
+            operation)) {
+      continue;
+    }
     bool selectedEndpoint = pipeReference->isSelected() &&
                             (!isSender || pipeReference->isSelectedSrc()) &&
                             (!isReceiver || pipeReference->isSelectedDst());

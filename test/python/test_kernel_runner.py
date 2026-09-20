@@ -3327,6 +3327,61 @@ def test_routing_plane_runtime_args_are_dense_per_device(monkeypatch):
     ]
 
 
+def test_routing_plane_skips_routes_without_generated_manager_interval(
+    monkeypatch,
+):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(1)
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
+        kernel_fabric_manager_intervals=[()],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=1,
+        grid_rows=1,
+    )
+
+    assert program.kernels[0].runtime_args[0][0][:5] == [0] * 5
+    assert fake_ttnn.fabric_direction_calls == []
+    assert fake_ttnn.fabric_setup_calls == []
+    assert program.semaphores == []
+
+
+def test_routing_plane_restricts_generated_routes_to_interval_nodes(
+    monkeypatch,
+):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program(1)
+    program.kernels[0].core_ranges = _make_fake_core_ranges((1, 0))
+    route = kernel_runner.FabricRouteSpec(
+        (0, 0), (0, 1), ((0, 0), (1, 0)), 0
+    )
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
+        kernel_fabric_manager_intervals=[
+            (_fabric_manager_interval("sender", launch_nodes=((1, 0),)),)
+        ],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=2,
+        grid_rows=1,
+    )
+
+    assert program.kernels[0].runtime_args[0][0][:5] == [0] * 5
+    assert program.kernels[0].runtime_args[1][0][:5] == [1, 0, 1, 0, 0]
+    assert len(fake_ttnn.fabric_setup_calls) == 1
+    assert fake_ttnn.fabric_setup_calls[0][-1] == (1, 0)
+
+
 def test_routing_plane_accepts_route_cache_as_eighth_positional_argument(
     monkeypatch,
 ):

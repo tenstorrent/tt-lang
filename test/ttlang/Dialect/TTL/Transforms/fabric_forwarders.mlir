@@ -498,16 +498,18 @@ module @too_many_operations attributes {
          <srcX = 2, srcY = 0, dstStartX = 3, dstStartY = 0,
           dstEndX = 3, dstEndY = 0>]>>
 
-// Worker 0 executes two source records in each callback. Direct connections
-// retain independent progress for the two transfers instead of aliasing one
-// forwarder payload slot and counter sequence.
+// Worker 0 executes two source records in each callback. Sender connections
+// remain direct so the transfers retain independent payload slots. One-shot
+// receiver records require no readiness manager.
 // CHECK-LABEL: module @repeated_local_record attributes
 // CHECK-LABEL: func.func @shared_source_sender
 // CHECK-SAME: ttl.fabric_routes = [{
 // CHECK-SAME: source_nodes = [array<i64: 0, 0>, array<i64: 1, 0>, array<i64: 2, 0>]
 // CHECK-LABEL: func.func @shared_source_receiver
+// CHECK-NOT: ttl.fabric_manager_intervals
 // CHECK-SAME: ttl.fabric_routes = [{
-// CHECK-SAME: source_nodes = [array<i64: 0, 0>, array<i64: 2, 0>]
+// CHECK-SAME: source_nodes = [array<i64: 0, 0>, array<i64: 1, 0>, array<i64: 2, 0>, array<i64: 3, 0>]
+// CHECK-NOT: ttkernel.routing_plane.create_connection_manager
 module @repeated_local_record attributes {
   ttl.launch_grid = [4, 1],
   ttl.target_arch = #ttcore.arch<blackhole>

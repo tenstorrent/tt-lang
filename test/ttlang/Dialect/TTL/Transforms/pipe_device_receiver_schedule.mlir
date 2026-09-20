@@ -1,16 +1,18 @@
-// RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s --implicit-check-not=ttkernel.noc_inline_dw_write
+// RUN: ttlang-opt %s --split-input-file -convert-ttl-to-ttkernel | FileCheck %s --implicit-check-not=ttkernel.noc_inline_dw_write
+// RUN: ttlang-opt %s --split-input-file -convert-ttl-to-ttkernel | FileCheck %s --check-prefix=NO-RECEIVER-MANAGER
 
 // Summary: Verify computed receiver addresses for multiple logical-device
 // transfers that reserve successive blocks in one destination DFB.
-// Computed-address fabric lowering must not publish receiver DFB addresses
-// with NoC inline writes.
+// Computed-address fabric lowering must not publish receiver DFB addresses or
+// create reverse fabric managers.
 
 // Two source devices send to one destination device. The destination executes
 // both reservations in program order, so the second transfer uses DFB block 1.
-// Each function opens its host-specialized connection records once.
+// The sender opens its connection records once; the receiver only waits for
+// completion.
 
 // CHECK-LABEL: module attributes
-// CHECK-SAME: ttl.pipe_global_semaphore_count = 3 : i64
+// CHECK-SAME: ttl.pipe_global_semaphore_count = 2 : i64
 // CHECK-SAME: ttl.pipe_sync_semaphore_count = 0 : i64
 // CHECK-LABEL: func.func @senders
 // CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
@@ -20,9 +22,8 @@
 // CHECK-DAG: %[[BASE_ARG:.*]] = arith.constant 0 : index
 // CHECK-DAG: %[[COMPLETION_0_ARG:.*]] = arith.constant 1 : index
 // CHECK-DAG: %[[COMPLETION_1_ARG:.*]] = arith.constant 2 : index
-// CHECK-DAG: %[[READY_ARG:.*]] = arith.constant 3 : index
-// CHECK-DAG: %[[FABRIC_BASE_ARG:.*]] = arith.constant 4 : index
-// CHECK-DAG: %[[DEVICE_ARG:.*]] = arith.constant 5 : index
+// CHECK-DAG: %[[FABRIC_BASE_ARG:.*]] = arith.constant 3 : index
+// CHECK-DAG: %[[DEVICE_ARG:.*]] = arith.constant 4 : index
 // CHECK: %[[SOURCE_DFB:.*]] = ttkernel.get_compile_time_arg_val(0)
 // CHECK: %[[DEVICE_0:.*]] = ttkernel.get_common_arg_val(%[[DEVICE_ARG]])
 // CHECK-NEXT: %[[IS_DEVICE_0:.*]] = arith.cmpi eq, %[[DEVICE_0]], %[[ZERO]]
@@ -32,28 +33,24 @@
 // CHECK-NEXT: %[[CONNECTION_MANAGER:.*]] = ttkernel.routing_plane.create_connection_manager
 // CHECK-NEXT: %[[RUNTIME_ARG_BASE:.*]] = arith.addi %[[FABRIC_BASE_INDEX_0]],
 // CHECK-NEXT: %[[ROUTE_ID:.*]] = ttkernel.routing_plane.open_connections %[[CONNECTION_MANAGER]], %[[CONNECTIONS_0]] runtime_arg_base = %[[RUNTIME_ARG_BASE]]
-// CHECK-NEXT: %[[READY_0:.*]] = ttkernel.get_common_arg_val(%[[READY_ARG]])
-// CHECK-NEXT: %[[READY_PTR_0:.*]] = ttkernel.reinterpret_cast(%[[READY_0]])
 // CHECK-NEXT: %[[BASE_0:.*]] = ttkernel.get_common_arg_val(%[[BASE_ARG]])
 // CHECK-NEXT: %[[COMPLETION_0:.*]] = ttkernel.get_common_arg_val(%[[COMPLETION_0_ARG]])
 // CHECK: %[[DATA_NOC_0:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[BASE_0]],
 // CHECK: %[[COMPLETION_NOC_0:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[COMPLETION_0]],
 // CHECK-NEXT: scf.if %[[IS_DEVICE_0]] {
-// CHECK: ttkernel.experimental.semaphore_wait_min(%[[READY_PTR_0]]
+// CHECK-NOT: ttkernel.experimental.semaphore_wait
 // CHECK-NEXT: %[[PAYLOAD_0:.*]] = ttkernel.get_write_ptr(%[[SOURCE_DFB]])
 // CHECK: ttkernel.routing_plane.fused_write_atomic_inc(%[[CONNECTION_MANAGER]], %[[ROUTE_ID]], {{.*}}, {{.*}}, {{.*}}, %[[PAYLOAD_0]], %[[BLOCK_BYTES]], %[[DATA_NOC_0]], %[[COMPLETION_NOC_0]], %[[ONE]])
 // CHECK-NEXT: }
 // CHECK-NEXT: %[[DEVICE_1:.*]] = ttkernel.get_common_arg_val(%[[DEVICE_ARG]])
 // CHECK-NEXT: %[[IS_DEVICE_1:.*]] = arith.cmpi eq, %[[DEVICE_1]], %[[ONE]]
-// CHECK-NEXT: %[[READY_1:.*]] = ttkernel.get_common_arg_val(%[[READY_ARG]])
-// CHECK-NEXT: %[[READY_PTR_1:.*]] = ttkernel.reinterpret_cast(%[[READY_1]])
 // CHECK-NEXT: %[[BASE_1:.*]] = ttkernel.get_common_arg_val(%[[BASE_ARG]])
 // CHECK-NEXT: %[[BLOCK_1:.*]] = arith.addi %[[BASE_1]], %[[BLOCK_BYTES]] : i32
 // CHECK-NEXT: %[[COMPLETION_1:.*]] = ttkernel.get_common_arg_val(%[[COMPLETION_1_ARG]])
 // CHECK: %[[DATA_NOC_1:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[BLOCK_1]],
 // CHECK: %[[COMPLETION_NOC_1:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[COMPLETION_1]],
 // CHECK-NEXT: scf.if %[[IS_DEVICE_1]] {
-// CHECK: ttkernel.experimental.semaphore_wait_min(%[[READY_PTR_1]]
+// CHECK-NOT: ttkernel.experimental.semaphore_wait
 // CHECK-NEXT: %[[PAYLOAD_1:.*]] = ttkernel.get_write_ptr(%[[SOURCE_DFB]])
 // CHECK: ttkernel.routing_plane.fused_write_atomic_inc(%[[CONNECTION_MANAGER]], %[[ROUTE_ID]], {{.*}}, {{.*}}, {{.*}}, %[[PAYLOAD_1]], %[[BLOCK_BYTES]], %[[DATA_NOC_1]], %[[COMPLETION_NOC_1]], %[[ONE]])
 // CHECK-NEXT: }
@@ -66,25 +63,15 @@
 // CHECK-DAG: %[[RECEIVER_TWO:.*]] = arith.constant 2 : i32
 // CHECK-DAG: %[[RECEIVER_COMPLETION_0_ARG:.*]] = arith.constant 0 : index
 // CHECK-DAG: %[[RECEIVER_COMPLETION_1_ARG:.*]] = arith.constant 1 : index
-// CHECK-DAG: %[[RECEIVER_READY_ARG:.*]] = arith.constant 2 : index
-// CHECK-DAG: %[[RECEIVER_FABRIC_BASE_ARG:.*]] = arith.constant 3 : index
-// CHECK-DAG: %[[RECEIVER_DEVICE_ARG:.*]] = arith.constant 4 : index
+// CHECK-DAG: %[[RECEIVER_DEVICE_ARG:.*]] = arith.constant 3 : index
 // CHECK: %[[RECEIVER_DFB:.*]] = ttkernel.get_compile_time_arg_val(1)
 // CHECK: %[[RECEIVER_DEVICE_0:.*]] = ttkernel.get_common_arg_val(%[[RECEIVER_DEVICE_ARG]])
 // CHECK-NEXT: %[[IS_RECEIVER_DEVICE_0:.*]] = arith.cmpi eq, %[[RECEIVER_DEVICE_0]], %[[RECEIVER_TWO]]
-// CHECK-NEXT: %[[RECEIVER_FABRIC_BASE:.*]] = ttkernel.get_common_arg_val(%[[RECEIVER_FABRIC_BASE_ARG]])
-// CHECK-NEXT: %[[RECEIVER_FABRIC_BASE_INDEX:.*]] = arith.index_cast %[[RECEIVER_FABRIC_BASE]] : i32 to index
-// CHECK-NEXT: %[[RECEIVER_CONNECTIONS:.*]] = ttkernel.get_arg_val(%[[RECEIVER_FABRIC_BASE_INDEX]])
-// CHECK-NEXT: %[[RECEIVER_CONNECTION_MANAGER:.*]] = ttkernel.routing_plane.create_connection_manager
-// CHECK-NEXT: %[[RECEIVER_RUNTIME_ARG_BASE:.*]] = arith.addi %[[RECEIVER_FABRIC_BASE_INDEX]],
-// CHECK-NEXT: %[[RECEIVER_ROUTE_ID:.*]] = ttkernel.routing_plane.open_connections %[[RECEIVER_CONNECTION_MANAGER]], %[[RECEIVER_CONNECTIONS]] runtime_arg_base = %[[RECEIVER_RUNTIME_ARG_BASE]]
-// CHECK-NEXT: %[[RECEIVER_READY_0:.*]] = ttkernel.get_common_arg_val(%[[RECEIVER_READY_ARG]])
-// CHECK: %[[RECEIVER_READY_NOC_0:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[RECEIVER_READY_0]], {{.*}})
 // CHECK: %[[COMPLETION_ADDRESS_0:.*]] = ttkernel.get_common_arg_val(%[[RECEIVER_COMPLETION_0_ARG]])
 // CHECK-NEXT: %[[COMPLETION_POINTER_0:.*]] = ttkernel.reinterpret_cast(%[[COMPLETION_ADDRESS_0]])
 // CHECK-NEXT: scf.if %[[IS_RECEIVER_DEVICE_0]] {
 // CHECK-NEXT: ttkernel.cb_reserve_back(%[[RECEIVER_DFB]], %[[RECEIVER_ONE]])
-// CHECK-NEXT: ttkernel.routing_plane.atomic_inc(%[[RECEIVER_CONNECTION_MANAGER]], %[[RECEIVER_ROUTE_ID]], {{.*}}, {{.*}}, {{.*}}, %[[RECEIVER_READY_NOC_0]], {{.*}})
+// CHECK-NOT: ttkernel.routing_plane.atomic_inc
 // CHECK: %[[COMPLETION_COUNT_0:.*]] = arith.addi {{.*}}, %[[RECEIVER_ONE]] : i32
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[COMPLETION_POINTER_0]], %[[COMPLETION_COUNT_0]])
 // CHECK-NEXT: ttkernel.cb_push_back(%[[RECEIVER_DFB]], %[[RECEIVER_ONE]])
@@ -92,21 +79,24 @@
 // CHECK-NOT: ttkernel.routing_plane.close_connections
 // CHECK-NEXT: %[[RECEIVER_DEVICE_1:.*]] = ttkernel.get_common_arg_val(%[[RECEIVER_DEVICE_ARG]])
 // CHECK-NEXT: %[[IS_RECEIVER_DEVICE_1:.*]] = arith.cmpi eq, %[[RECEIVER_DEVICE_1]], %[[RECEIVER_TWO]]
-// CHECK-NEXT: %[[RECEIVER_READY_1:.*]] = ttkernel.get_common_arg_val(%[[RECEIVER_READY_ARG]])
-// CHECK: %[[RECEIVER_READY_NOC_1:.*]] = ttkernel.get_noc_addr({{.*}}, {{.*}}, %[[RECEIVER_READY_1]], {{.*}})
 // CHECK: %[[COMPLETION_ADDRESS_1:.*]] = ttkernel.get_common_arg_val(%[[RECEIVER_COMPLETION_1_ARG]])
 // CHECK-NEXT: %[[COMPLETION_POINTER_1:.*]] = ttkernel.reinterpret_cast(%[[COMPLETION_ADDRESS_1]])
 // CHECK-NEXT: scf.if %[[IS_RECEIVER_DEVICE_1]] {
 // CHECK-NEXT: ttkernel.cb_reserve_back(%[[RECEIVER_DFB]], %[[RECEIVER_ONE]])
-// CHECK-NEXT: ttkernel.routing_plane.atomic_inc(%[[RECEIVER_CONNECTION_MANAGER]], %[[RECEIVER_ROUTE_ID]], {{.*}}, {{.*}}, {{.*}}, %[[RECEIVER_READY_NOC_1]], {{.*}})
+// CHECK-NOT: ttkernel.routing_plane.atomic_inc
 // CHECK: %[[COMPLETION_COUNT_1:.*]] = arith.addi {{.*}}, %[[RECEIVER_ONE]] : i32
 // CHECK: ttkernel.experimental.semaphore_wait_min(%[[COMPLETION_POINTER_1]], %[[COMPLETION_COUNT_1]])
 // CHECK-NEXT: ttkernel.cb_push_back(%[[RECEIVER_DFB]], %[[RECEIVER_ONE]])
 // CHECK-NOT: ttkernel.cb_reserve_back
 // CHECK-NOT: ttkernel.experimental.semaphore_wait_min
 // CHECK-NEXT: }
-// CHECK-NEXT: ttkernel.routing_plane.close_connections(%[[RECEIVER_CONNECTION_MANAGER]], %[[RECEIVER_CONNECTIONS]])
 // CHECK-NEXT: return
+
+// NO-RECEIVER-MANAGER-LABEL: func.func @receiver
+// NO-RECEIVER-MANAGER-NOT: ttkernel.routing_plane.create_connection_manager
+// NO-RECEIVER-MANAGER-NOT: ttkernel.routing_plane.open_connections
+// NO-RECEIVER-MANAGER-NOT: ttkernel.routing_plane.close_connections
+// NO-RECEIVER-MANAGER: return
 
 #domain = #ttl.device_domain<components = <name = "device", extent = [3]>>
 #transfer_0 = #ttl.device_transfer<
@@ -180,6 +170,82 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
       ttl.wait %post_1 : !ttl.receive_request
       ttl.cb_push %destination
           : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Repeated transfers retain readiness synchronization because the destination
+// DFB slot can contain payload from an earlier iteration.
+
+// CHECK-LABEL: func.func @repeated_sender
+// CHECK: scf.for
+// CHECK: ttkernel.experimental.semaphore_wait_min
+// CHECK: ttkernel.routing_plane.fused_write_atomic_inc
+// CHECK-LABEL: func.func @repeated_receiver
+// CHECK-SAME: ttl.fabric_manager_intervals = [#ttl.fabric_manager_interval<
+// CHECK-SAME: kind = generated_receiver
+// CHECK: scf.for
+// CHECK: ttkernel.routing_plane.atomic_inc
+// CHECK: ttkernel.experimental.semaphore_wait_min
+
+#repeated_domain = #ttl.device_domain<components = <name = "device", extent = [2]>>
+#repeated_transfer = #ttl.device_transfer<
+    domain = #repeated_domain,
+    edge = <source = <coordinates = [0]>, destination = <coordinates = [1]>>>
+
+module attributes {ttl.launch_grid = array<i64: 1, 1>} {
+  func.func @repeated_sender()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %zero = arith.constant 0 : index
+    %one = arith.constant 1 : index
+    %two = arith.constant 2 : index
+    %source = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0 {
+        deviceTransfer = #repeated_transfer}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %is_source = ttl.is_device <coordinates = [0]> in #repeated_domain : i1
+    scf.if %is_source {
+      scf.for %iteration = %zero to %two step %one {
+        %send = ttl.copy %source, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>,
+               !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+    }
+    func.return
+  }
+
+  func.func @repeated_receiver()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %zero = arith.constant 0 : index
+    %one = arith.constant 1 : index
+    %two = arith.constant 2 : index
+    %destination = ttl.bind_cb {cb_index = 1, block_count = 2}
+        {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 2>
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0 {
+        deviceTransfer = #repeated_transfer}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %is_destination = ttl.is_device <coordinates = [1]>
+        in #repeated_domain : i1
+    scf.if %is_destination {
+      scf.for %iteration = %zero to %two step %one {
+        %reserved = ttl.cb_reserve %destination
+            : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, f32>>
+        %post = ttl.copy %pipe, %reserved
+            : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+               tensor<1x1x!ttcore.tile<32x32, f32>>)
+            -> !ttl.receive_request
+        ttl.wait %post : !ttl.receive_request
+        ttl.cb_push %destination
+            : <[1, 1], !ttcore.tile<32x32, f32>, 2>
+      }
     }
     func.return
   }

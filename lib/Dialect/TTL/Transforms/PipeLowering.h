@@ -15,6 +15,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -30,6 +31,8 @@ namespace mlir::tt::ttl {
 
 class PipeTransferIndex;
 class FabricForwarderPlan;
+
+using PipeTransferNodeSet = llvm::DenseSet<PipeTransferNodeId>;
 
 /// One logical device route used by `sourceNodes` in a kernel function.
 /// `routeIndex` selects this route's target metadata; host binding separately
@@ -94,6 +97,8 @@ struct FabricRoutePlan {
   SmallVector<FabricRuntimeIntervalPlan> runtimeIntervals;
   /// Generated and external manager intervals used by target binding.
   SmallVector<FabricManagerIntervalPlan, 0> managerIntervals;
+  /// Receivers eligible for one aggregated readiness-forwarding transaction.
+  llvm::SmallPtrSet<Operation *, 16> receiversWithReadinessForEveryRecord;
   /// Number of local semaphores required by generated ownership sequences.
   int64_t ownershipSemaphoreCount = 0;
 
@@ -328,7 +333,14 @@ LogicalResult buildFabricRoutePlan(
     ModuleOp module, const PipeTransferIndex &transferIndex,
     const PipeGraph &pipeGraph, const PipeForeachLoweringInfo &foreachInfo,
     ArrayRef<ExternalFabricManagerInterval> externalManagerIntervals,
+    const PipeTransferNodeSet &computedAddressTransfers,
     FabricRoutePlan &plan);
+
+/// Return transfers whose destination addresses can be computed from finalized
+/// DFB storage and the receiver schedule.
+FailureOr<PipeTransferNodeSet>
+analyzeComputedAddressEligibility(ModuleOp module, const PipeGraph &pipeGraph,
+                                  bool enableComputedAddresses);
 
 /// Plan manager ownership after all route-owner substitutions are complete.
 void finalizeFabricRoutePlan(FabricRoutePlan &plan, const PipeGraph &pipeGraph,
@@ -354,7 +366,7 @@ void initializeFabricForwarderCounterExpectations(
 LogicalResult buildPipeResourcePlan(
     ModuleOp mod, const PipeTransferIndex &transferIndex,
     const PipeGraph &pipeGraph, PipeResourcePlan &info,
-    bool enableComputedAddresses = true,
+    const PipeTransferNodeSet &computedAddressTransfers,
     PipeCounterAllocationPolicy counterPolicy =
         PipeCounterAllocationPolicy::LocalThenGlobal,
     const PipeSynchronizationSelection *synchronizationSelection = nullptr);

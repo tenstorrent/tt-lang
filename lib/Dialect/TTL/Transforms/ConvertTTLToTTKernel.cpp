@@ -2546,10 +2546,18 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
     return failure();
   }
 
+  FailureOr<PipeTransferNodeSet> computedAddressTransfers =
+      analyzeComputedAddressEligibility(mod, *pipeGraphOrErr,
+                                        pipeComputedAddresses);
+  if (failed(computedAddressTransfers)) {
+    return failure();
+  }
+
   FabricRoutePlan fabricRoutePlan;
   if (failed(buildFabricRoutePlan(
           mod, transferIndex, *pipeGraphOrErr, foreachLoweringInfo,
-          *externalManagerIntervals, fabricRoutePlan))) {
+          *externalManagerIntervals, *computedAddressTransfers,
+          fabricRoutePlan))) {
     return failure();
   }
 
@@ -2577,7 +2585,8 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   if (failed(userManagedPhysicalDFBIndices)) {
     return failure();
   }
-  pipePlanningOptions.enableComputedAddresses = pipeComputedAddresses;
+  pipePlanningOptions.computedAddressTransfers =
+      std::move(*computedAddressTransfers);
   pipePlanningOptions.enableCapacitySynchronization = pipeCapacitySync;
   pipePlanningOptions.counterAllocationPolicy =
       pipeGlobalSemaphoresOnly ? PipeCounterAllocationPolicy::GlobalOnly

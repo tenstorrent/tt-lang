@@ -681,9 +681,12 @@ def build_fabric_target_binding_plan(
         kernel_fabric_routes,
         kernel_fabric_runtime_arg_base_common_indices,
     )
-    manager_intervals = kernel_fabric_manager_intervals or [
-        () for _ in program_descriptor.kernels
-    ]
+    has_explicit_manager_intervals = kernel_fabric_manager_intervals is not None
+    manager_intervals = (
+        kernel_fabric_manager_intervals
+        if has_explicit_manager_intervals
+        else [() for _ in program_descriptor.kernels]
+    )
     if len(manager_intervals) != len(program_descriptor.kernels):
         raise ValueError(
             "kernel_fabric_manager_intervals must have one entry per kernel "
@@ -716,11 +719,29 @@ def build_fabric_target_binding_plan(
         for node_coordinates in _iter_descriptor_nodes(
             ttnn_api, kernel_descriptor, grid_cols, grid_rows
         ):
+            active_generated_intervals = tuple(
+                interval
+                for interval in manager_intervals[kernel_index]
+                if interval.kind != FabricManagerIntervalKind.EXTERNAL
+                and (
+                    interval.launch_nodes is None
+                    or node_coordinates in interval.launch_nodes
+                )
+            )
+            generated_manager_route_indices = {
+                route_index
+                for interval in active_generated_intervals
+                for route_index in interval.route_indices
+            }
             active_routes = [
                 route
                 for route in routes
                 if route.local_device == device_coordinates
                 and node_coordinates in route.source_nodes
+                and (
+                    not has_explicit_manager_intervals
+                    or route.route_index in generated_manager_route_indices
+                )
             ]
             active_remote_devices = tuple(
                 dict.fromkeys(route.remote_device for route in active_routes)
@@ -806,9 +827,8 @@ def build_fabric_target_binding_plan(
             )
             generated_interval_ids = tuple(
                 interval.identity
-                for interval in manager_intervals[kernel_index]
-                if interval.kind != FabricManagerIntervalKind.EXTERNAL
-                and any(
+                for interval in active_generated_intervals
+                if any(
                     route_index in active_route_indices
                     for route_index in interval.route_indices
                 )
