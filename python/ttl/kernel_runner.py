@@ -4274,6 +4274,9 @@ def _build_dfb_descriptors(
                 core_ranges=source_ranges,
             )
             descriptor.set_buffer_from_cb(backing_descriptor)
+            # set_buffer_from_cb copies only the buffer; the arena offset must be
+            # carried onto the launch descriptor itself.
+            descriptor.address_offset = address_offset
             descriptor_plans.append(
                 _DFBDescriptorPlan(
                     descriptor=descriptor,

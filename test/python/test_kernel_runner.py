@@ -432,6 +432,7 @@ class _FakeTTNN:
             self.core_ranges = core_ranges
             self.format_descriptors = format_descriptors
             self.backing_desc = None
+            self.address_offset = 0
 
         def set_buffer_from_cb(self, backing_desc):
             self.backing_desc = backing_desc
@@ -3269,6 +3270,12 @@ def test_reconfiguration_runtime_storage_offsets_packed_backing(monkeypatch):
     assert backing_by_index[0]["total_size"] == 2048
     assert backing_by_index[1]["address_offset"] == 0
     assert backing_by_index[1]["total_size"] == 4096
+    launch_offset_by_index = {
+        descriptor.backing_desc["cb_index"]: descriptor.address_offset
+        for descriptor in descriptors
+        if descriptor.backing_desc is not None
+    }
+    assert launch_offset_by_index == {0: 4096, 1: 0}
 
 
 def test_reconfiguration_rejects_launch_formats_outside_the_plan(monkeypatch):
