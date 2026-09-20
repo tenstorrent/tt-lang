@@ -171,8 +171,10 @@ static RecordInductionMap buildGridMajorRecordInductionValues(
 // iteration so execution-count analysis can evaluate the cloned body.
 static RecordInductionMap
 buildGraphRecordInductionValues(PipeNetRecordsAttr records, PipeRole role) {
+  assert(records.getMappings().size() == 1 &&
+         "one graph callback loop must contain one mapping");
   FailureOr<SmallVector<PipeRecordLocalIndex>> localIndices =
-      getPipeRecordLocalIndices(records, role);
+      getPipeMappingRecordLocalIndices(records.getMappings().front(), role);
   assert(succeeded(localIndices) &&
          "verified graph records must have endpoint-local indices");
 
@@ -330,10 +332,12 @@ tryLowerGridMajorPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
   rewriter.setInsertionPointToStart(forOp.getBody());
   Value edgeBlock = buildConstantIndexTableLookup(
       rewriter, loc, tableData.edgeBlocks, forOp.getInductionVar());
-  Value edgeRecordOffset =
+  auto edgeRecordOffset =
       arith::MulIOp::create(rewriter, loc, edgeBlock, gridArea);
-  Value recordIndex =
+  edgeRecordOffset.setOverflowFlags(arith::IntegerOverflowFlags::nuw);
+  auto recordIndex =
       arith::AddIOp::create(rewriter, loc, edgeRecordOffset, nodeIndex);
+  recordIndex.setOverflowFlags(arith::IntegerOverflowFlags::nuw);
   auto selectedPipe = buildGridMajorSelectedPipe<SelectOp, SelectedPipeType>(
       rewriter, loc, records, tableData, recordIndex, edgeBlock, nodeX, nodeY);
   clonePipeForeachBody(op, selectedPipe.getPipe(), rewriter, foreachWorklist);
@@ -454,7 +458,7 @@ buildGraphPipeMappingForeachPlans(PipeNetRecordsAttr records,
 }
 
 template <typename ForeachOp, typename SelectOp, typename SelectedPipeType>
-static LogicalResult
+static void
 lowerGraphPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
                          PipeForeachLoweringInfo &foreachLoweringInfo,
                          PipeRole role, PipeNetRecordSelection recordSelection,
@@ -516,10 +520,12 @@ lowerGraphPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
     TransferGraphEdgeIndexValues edgeIndices =
         plan.graph->buildIncidentEdgeIndexValues(rewriter, loc, currentDevice,
                                                  incidentEdgeIndex, role);
-    Value edgeRecordBase = arith::MulIOp::create(
+    auto edgeRecordBase = arith::MulIOp::create(
         rewriter, loc, edgeIndices.edgeOrdinal, nodePipeCount);
-    Value recordIndex =
+    edgeRecordBase.setOverflowFlags(arith::IntegerOverflowFlags::nuw);
+    auto recordIndex =
         arith::AddIOp::create(rewriter, loc, edgeRecordBase, nodePipeIndex);
+    recordIndex.setOverflowFlags(arith::IntegerOverflowFlags::nuw);
     auto selectedPipe = [&]() -> SelectOp {
       if (!plan.usesMatchingNodeCoordinates) {
         return buildSelectedPipe<SelectOp, SelectedPipeType>(
@@ -564,11 +570,10 @@ lowerGraphPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
     rewriter.setInsertionPointAfter(forOp);
   }
   rewriter.eraseOp(op);
-  return success();
 }
 
 template <typename ForeachOp, typename SelectOp, typename SelectedPipeType>
-static LogicalResult
+static void
 lowerPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
                     PipeForeachLoweringInfo &foreachLoweringInfo, PipeRole role,
                     PipeNetRecordSelection recordSelection,
@@ -578,24 +583,25 @@ lowerPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
   rewriter.setInsertionPoint(op);
   PipeNetRecordsAttr records = op.getRecords();
   if (!records.getMappings().empty()) {
-    return lowerGraphPipeNetForeach<ForeachOp, SelectOp, SelectedPipeType>(
+    lowerGraphPipeNetForeach<ForeachOp, SelectOp, SelectedPipeType>(
         op, rewriter, foreachLoweringInfo, role, recordSelection,
         plansByRecordsAndGrid, foreachWorklist);
+    return;
   }
   if (shouldLowerPipeNetForeachDirect(records)) {
     lowerPipeNetForeachDirect(op, rewriter, role, foreachLoweringInfo,
                               foreachWorklist);
-    return success();
+    return;
   }
   if (tryLowerLocalPipeNetForeach<ForeachOp, SelectOp, SelectedPipeType>(
           op, rewriter, foreachLoweringInfo, role, recordSelection,
           foreachWorklist)) {
-    return success();
+    return;
   }
   if (tryLowerGridMajorPipeNetForeach<ForeachOp, SelectOp, SelectedPipeType>(
           op, rewriter, foreachLoweringInfo, role, recordSelection,
           foreachWorklist)) {
-    return success();
+    return;
   }
 
   PipeRecordTables tables = buildPipeRecordTables(records.getPipes());
@@ -653,27 +659,26 @@ lowerPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
   rewriter.setInsertionPointToStart(&ifOp.getThenRegion().front());
   clonePipeForeachBody(op, selectedPipe.getPipe(), rewriter, foreachWorklist);
   rewriter.eraseOp(op);
-  return success();
 }
 
-static LogicalResult
+static void
 lowerPipeNetForeachSrc(PipeNetForeachSrcOp op, RewriterBase &rewriter,
                        PipeForeachLoweringInfo &foreachLoweringInfo,
                        const GraphPipeNetForeachPlans &plansByRecordsAndGrid,
                        SmallVectorImpl<Operation *> &foreachWorklist) {
-  return lowerPipeNetForeach<PipeNetForeachSrcOp, SelectPipeSrcOp,
-                             SelectedPipeSrcType>(
+  lowerPipeNetForeach<PipeNetForeachSrcOp, SelectPipeSrcOp,
+                      SelectedPipeSrcType>(
       op, rewriter, foreachLoweringInfo, PipeRole::Source,
       PipeNetRecordSelection::Source, plansByRecordsAndGrid, foreachWorklist);
 }
 
-static LogicalResult
+static void
 lowerPipeNetForeachDst(PipeNetForeachDstOp op, RewriterBase &rewriter,
                        PipeForeachLoweringInfo &foreachLoweringInfo,
                        const GraphPipeNetForeachPlans &plansByRecordsAndGrid,
                        SmallVectorImpl<Operation *> &foreachWorklist) {
-  return lowerPipeNetForeach<PipeNetForeachDstOp, SelectPipeDstOp,
-                             SelectedPipeDstType>(
+  lowerPipeNetForeach<PipeNetForeachDstOp, SelectPipeDstOp,
+                      SelectedPipeDstType>(
       op, rewriter, foreachLoweringInfo, PipeRole::Destination,
       PipeNetRecordSelection::Destination, plansByRecordsAndGrid,
       foreachWorklist);
@@ -722,7 +727,7 @@ buildGraphPipeNetForeachPlans(ModuleOp module) {
   return plansByRecordsAndGrid;
 }
 
-LogicalResult
+void
 lowerPipeNetForeachOps(ModuleOp module,
                        PipeForeachLoweringInfo &foreachLoweringInfo,
                        const GraphPipeNetForeachPlans &plansByRecordsAndGrid) {
@@ -738,20 +743,14 @@ lowerPipeNetForeachOps(ModuleOp module,
     // Lower an outer callback before its nested callbacks. The outer rewrite
     // queues only the outermost callbacks cloned from its body.
     if (auto foreachSrcOp = mlir::dyn_cast<PipeNetForeachSrcOp>(foreachOp)) {
-      if (failed(lowerPipeNetForeachSrc(
-              foreachSrcOp, rewriter, foreachLoweringInfo,
-              plansByRecordsAndGrid, foreachWorklist))) {
-        return failure();
-      }
+      lowerPipeNetForeachSrc(foreachSrcOp, rewriter, foreachLoweringInfo,
+                             plansByRecordsAndGrid, foreachWorklist);
       continue;
     }
-    if (failed(lowerPipeNetForeachDst(
-            mlir::cast<PipeNetForeachDstOp>(foreachOp), rewriter,
-            foreachLoweringInfo, plansByRecordsAndGrid, foreachWorklist))) {
-      return failure();
-    }
+    lowerPipeNetForeachDst(mlir::cast<PipeNetForeachDstOp>(foreachOp), rewriter,
+                           foreachLoweringInfo, plansByRecordsAndGrid,
+                           foreachWorklist);
   }
-  return success();
 }
 
 } // namespace mlir::tt::ttl

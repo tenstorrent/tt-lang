@@ -2491,10 +2491,7 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   // Preserve the generated record-selection regions so pipe graph ordering
   // does not mistake them for independent user control flow.
   PipeForeachLoweringInfo foreachLoweringInfo;
-  if (failed(lowerPipeNetForeachOps(mod, foreachLoweringInfo,
-                                    graphForeachPlans))) {
-    return failure();
-  }
+  lowerPipeNetForeachOps(mod, foreachLoweringInfo, graphForeachPlans);
 
   // Validate explicit transfer IR and resolve every high-level pipe copy before
   // expansion mutates the values used by the analysis.

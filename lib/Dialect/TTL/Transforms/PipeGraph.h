@@ -310,7 +310,9 @@ struct PipeReceiverEndpoint {
   PipeReceiverCoord receiver;
   PipeReceiverDFBKey receiverDFB;
   ReceiverDFBInfo receiverDFBInfo;
+  /// Selected callback identity; both fields are absent for a static post.
   std::optional<std::uint64_t> postRecordIndex;
+  std::optional<PipeRecordAttr> postRecord;
   Operation *postOp = nullptr;
   ReceiverAddressSequenceProof addressSequence;
 };

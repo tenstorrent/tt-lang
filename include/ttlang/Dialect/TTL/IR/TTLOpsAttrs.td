@@ -309,7 +309,8 @@ def TTL_TransferGraphAttr : TTL_Attr<"TransferGraph", "transfer_graph"> {
     coordinates change. `properties` contains only parameters specific to
     that relation:
 
-    - `explicit`: `edges` as an array of `#ttl.transfer_edge` attributes;
+    - `explicit`: `edges` as an array of `#ttl.transfer_edge` attributes, each
+      with one destination device;
     - `axis_neighbor`: `axis`, positive `offset`, and `wrap`;
     - `stencil`: `offsets` and `wrap`;
     - `gather`: component-local `root`;

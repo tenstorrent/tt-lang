@@ -14,8 +14,8 @@ func.func @signed_device_count_overflow() attributes {
 
 // -----
 
-// Detect multiplication overflow inside one component before lowering allocates
-// per-device incident-edge tables.
+// Detect multiplication overflow inside one component before lowering uses the
+// device count in signed index arithmetic.
 func.func @component_device_count_overflow() attributes {
   // expected-error @below {{transfer graph device count exceeds the supported index range}}
   test.graph = #ttl.transfer_graph<

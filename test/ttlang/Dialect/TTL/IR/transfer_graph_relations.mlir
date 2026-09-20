@@ -43,6 +43,18 @@ func.func @stencil_wrapped() attributes {
     properties = {offsets = [array<i64: 0, -1>, array<i64: 1, 0>, array<i64: 0, 1>], wrap = true}>
 } { return }
 
+#product_domain = #ttl.device_domain<
+  components = <name = "host", extent = [2]>,
+               <name = "group", extent = [2, 3]>,
+               <name = "device", extent = [2]>>
+
+// CHECK: stencil_middle_component: 24 devices, 44 edges, both endpoint roles verified
+func.func @stencil_middle_component() attributes {
+  test.graph = #ttl.transfer_graph<domain = #product_domain,
+    kind = stencil, componentName = "group",
+    properties = {offsets = [array<i64: 0, -1>, array<i64: 1, 0>, array<i64: 0, 1>], wrap = false}>
+} { return }
+
 // CHECK: explicit: 12 devices, 4 edges, both endpoint roles verified
 func.func @explicit() attributes {
   test.graph = #ttl.transfer_graph<domain = #domain,

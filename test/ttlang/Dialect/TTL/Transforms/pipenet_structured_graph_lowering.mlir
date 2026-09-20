@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s --implicit-check-not='array<12xi64>'
+// RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s --implicit-check-not='array<12xi64>' --implicit-check-not='array<1000000xi64>'
 
 // Summary: Verifies every structured graph kind lowers by examining only the
 // graph edges matching the current device role.
@@ -48,6 +48,16 @@
    pipes[<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
           dstEndX = 0, dstEndY = 0>]>>
 
+#sparse_explicit_records = #ttl.pipenet_records<net 6 mappings
+  <graph = <domain = <components = <name = "device", extent = [1000000]>>,
+    kind = explicit, properties = {
+      edges = [#ttl.transfer_edge<source = <coordinates = [0]>,
+                                  destination = <coordinates = [999999]>>,
+               #ttl.transfer_edge<source = <coordinates = [500000]>,
+                                  destination = <coordinates = [7]>>]}>,
+   pipes[<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
+          dstEndX = 0, dstEndY = 0>]>>
+
 module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   func.func private @consume(index, index)
 
@@ -85,6 +95,7 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   // CHECK: arith.cmpi
   // CHECK: arith.andi
   // CHECK: scf.for
+  // CHECK-NOT: ttkernel.experimental.constant_table_lookup
   // CHECK: func.call @consume(%[[STENCIL_SOURCE:.*]], %[[STENCIL_SOURCE]])
   func.func @stencil_destination()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -140,17 +151,45 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
     func.return
   }
 
-  // Explicit graphs use compact device-indexed adjacency tables instead of a
-  // device-edge by node-pipe table.
+  // Explicit graphs scan their declared endpoints instead of allocating
+  // device-indexed offset and count tables.
   // CHECK-LABEL: func.func @explicit_source
   // CHECK: %[[EXPLICIT_DEVICE_I32:.*]] = ttkernel.get_common_arg_val
   // CHECK: %[[EXPLICIT_DEVICE:.*]] = arith.index_cast %[[EXPLICIT_DEVICE_I32]]
-  // CHECK: ttkernel.experimental.constant_table_lookup %[[EXPLICIT_DEVICE]], [1, 0, 1, 0]
+  // CHECK: arith.cmpi eq, %[[EXPLICIT_DEVICE]], %{{.*}}
+  // CHECK: arith.select
+  // CHECK: arith.cmpi eq, %[[EXPLICIT_DEVICE]], %{{.*}}
+  // CHECK: arith.select
+  // CHECK: arith.addi
   // CHECK: scf.for
+  // CHECK: ttkernel.experimental.constant_table_lookup {{.*}}, [1, 3]
   // CHECK: func.call @consume(%[[EXPLICIT_DESTINATION:.*]], %[[EXPLICIT_DESTINATION]])
   func.func @explicit_source()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     ttl.pipenet_foreach_src attributes {records = #explicit_records} {
+    ^bb0(%pipe: !ttl.selected_pipe_src):
+      %destination = ttl.selected_pipe_destination_device_index %pipe
+          : !ttl.selected_pipe_src
+      func.call @consume(%destination, %destination) : (index, index) -> ()
+      ttl.yield
+    }
+    func.return
+  }
+
+  // Sparse explicit-graph IR scales with declared edges, not domain size.
+  // CHECK-LABEL: func.func @sparse_explicit_source
+  // CHECK: %[[SPARSE_DEVICE_I32:.*]] = ttkernel.get_common_arg_val
+  // CHECK: %[[SPARSE_DEVICE:.*]] = arith.index_cast %[[SPARSE_DEVICE_I32]]
+  // CHECK: arith.cmpi eq, %[[SPARSE_DEVICE]], %{{.*}}
+  // CHECK: arith.select
+  // CHECK: arith.cmpi eq, %[[SPARSE_DEVICE]], %{{.*}}
+  // CHECK: arith.select
+  // CHECK: scf.for
+  // CHECK: ttkernel.experimental.constant_table_lookup {{.*}}, [999999, 7]
+  // CHECK: func.call @consume(%[[SPARSE_DESTINATION:.*]], %[[SPARSE_DESTINATION]])
+  func.func @sparse_explicit_source()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    ttl.pipenet_foreach_src attributes {records = #sparse_explicit_records} {
     ^bb0(%pipe: !ttl.selected_pipe_src):
       %destination = ttl.selected_pipe_destination_device_index %pipe
           : !ttl.selected_pipe_src

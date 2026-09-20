@@ -865,6 +865,12 @@ matchStridedTableIndex(Value index, std::size_t tableSize) {
   Value product = index;
   int64_t offset = 0;
   if (auto add = index.getDefiningOp<arith::AddIOp>()) {
+    // Replacing the expression with varyingIndex is valid only when the
+    // original unsigned index arithmetic cannot wrap.
+    if (!bitEnumContainsAll(add.getOverflowFlags(),
+                            arith::IntegerOverflowFlags::nuw)) {
+      return std::nullopt;
+    }
     std::optional<int64_t> lhs = getConstantIntValue(add.getLhs());
     std::optional<int64_t> rhs = getConstantIntValue(add.getRhs());
     if (lhs.has_value() == rhs.has_value()) {
@@ -875,7 +881,9 @@ matchStridedTableIndex(Value index, std::size_t tableSize) {
   }
 
   auto multiply = product.getDefiningOp<arith::MulIOp>();
-  if (!multiply) {
+  if (!multiply ||
+      !bitEnumContainsAll(multiply.getOverflowFlags(),
+                          arith::IntegerOverflowFlags::nuw)) {
     return std::nullopt;
   }
   std::optional<int64_t> lhs = getConstantIntValue(multiply.getLhs());

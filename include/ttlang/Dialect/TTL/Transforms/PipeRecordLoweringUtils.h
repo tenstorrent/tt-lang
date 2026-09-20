@@ -17,7 +17,7 @@
 
 namespace mlir::tt::ttl {
 
-/// Constant tables aligned with one `PipeNetRecordsAttr` record order.
+/// Constant tables aligned with an ordered node-pipe record sequence.
 struct PipeRecordTables {
   SmallVector<int64_t> srcX;
   SmallVector<int64_t> srcY;

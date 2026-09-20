@@ -63,7 +63,7 @@ module attributes {ttl.launch_grid = array<i64: 4, 1>} {
                 destination = <coordinates = [1]>>>>
 ]>
 
-// Dense graph records lower to one logical-device-indexed count lookup.
+// Materialized device-transfer records lower to one device-indexed count lookup.
 module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   func.func private @consume(index)
 
@@ -110,7 +110,11 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
 
   // CHECK-LABEL: func.func @mixed_destination_count
   // CHECK: %[[REMOTE_COUNT:.*]] = arith.constant 3 : index
-  // CHECK: %[[LOCAL_COUNT:.*]] = ttkernel.experimental.constant_table_lookup {{.*}}, [1, 1, 1, 1]
+  // CHECK: %[[DEVICE_I32:.*]] = ttkernel.get_common_arg_val
+  // CHECK: %[[DEVICE:.*]] = arith.index_cast %[[DEVICE_I32]]
+  // CHECK: %[[DEVICE_THREE:.*]] = arith.cmpi eq, %[[DEVICE]], %[[REMOTE_COUNT]]
+  // CHECK-NEXT: %[[DEVICE_THREE_COUNT:.*]] = arith.select %[[DEVICE_THREE]]
+  // CHECK-NEXT: %[[LOCAL_COUNT:.*]] = arith.addi %{{.*}}, %[[DEVICE_THREE_COUNT]]
   // CHECK: %[[TOTAL_COUNT:.*]] = arith.addi %[[LOCAL_COUNT]], %[[REMOTE_COUNT]]
   // CHECK: call @consume(%[[TOTAL_COUNT]])
   func.func @mixed_destination_count()

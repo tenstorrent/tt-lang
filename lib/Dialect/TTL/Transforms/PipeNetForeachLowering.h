@@ -43,7 +43,7 @@ FailureOr<GraphPipeNetForeachPlans>
 buildGraphPipeNetForeachPlans(ModuleOp module);
 
 /// Lower all PipeNet callbacks using the previously validated graph plans.
-LogicalResult
+void
 lowerPipeNetForeachOps(ModuleOp module,
                        PipeForeachLoweringInfo &foreachLoweringInfo,
                        const GraphPipeNetForeachPlans &plansByRecordsAndGrid);

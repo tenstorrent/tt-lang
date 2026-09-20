@@ -4055,8 +4055,6 @@ static Value buildNodePipeRolePredicate(OpBuilder &builder, Location loc,
   return matches;
 }
 
-// Return whether the current device and launch node participate with `role`
-// in any mapping of `records`.
 static Value lowerGraphPipeRolePredicate(Operation *op,
                                          PipeNetRecordsAttr records,
                                          PipeRole role,
@@ -4106,8 +4104,6 @@ static Value lowerGraphPipeRolePredicate(Operation *op,
   return matches;
 }
 
-// Count graph edges paired with node pipes that target the current device and
-// launch node.
 static Value
 lowerGraphPipeDestinationCount(Operation *op, PipeNetRecordsAttr records,
                                ConversionPatternRewriter &rewriter) {
@@ -4192,7 +4188,7 @@ lowerDeviceDestinationCountByRecord(Operation *op, PipeNetRecordsAttr records,
       rewriter);
 }
 
-// Dense grid-major records permit one device-indexed count-table lookup.
+// Dense grid-major device-transfer records permit one count-table lookup.
 static FailureOr<Value>
 lowerPlannedDeviceDestinationCount(Operation *op, PipeNetRecordsAttr records,
                                    ConversionPatternRewriter &rewriter) {

@@ -303,36 +303,20 @@ buildEdgeIndexTableLookups(DeviceDomainAttr domain,
           buildIndexTableLookup(builder, loc, destinationIndices, edgeIndex)};
 }
 
-struct ExplicitIncidentEdgeTables {
-  // Each device's offset and count select its contiguous edge-ordinal range.
-  SmallVector<int64_t> offsets;
-  SmallVector<int64_t> counts;
-  SmallVector<int64_t> edgeOrdinals;
-};
-
-ExplicitIncidentEdgeTables buildExplicitIncidentEdgeTables(
-    DeviceDomainAttr domain, ArrayRef<TransferEdgeAttr> edges, PipeRole role) {
+// Scan only declared endpoints so sparse graphs never allocate by domain size.
+SmallVector<int64_t>
+getExplicitEndpointIndices(DeviceDomainAttr domain,
+                           ArrayRef<TransferEdgeAttr> edges, PipeRole role) {
   assert(role != PipeRole::Active &&
          "dynamic incident iteration requires one endpoint role");
-  FailureOr<std::uint64_t> deviceCount = getDomainDeviceCount(domain);
-  assert(succeeded(deviceCount) &&
-         "graph verification must reject overflowing domain extents");
-  SmallVector<SmallVector<int64_t>> edgeOrdinalsByDevice(*deviceCount);
-  for (auto [edgeOrdinal, edge] : llvm::enumerate(edges)) {
+  SmallVector<int64_t> endpointIndices;
+  endpointIndices.reserve(edges.size());
+  for (TransferEdgeAttr edge : edges) {
     DeviceRefAttr endpoint =
         role == PipeRole::Source ? edge.getSource() : edge.getDestination();
-    edgeOrdinalsByDevice[getLogicalDeviceIndex(domain, endpoint)].push_back(
-        edgeOrdinal);
+    endpointIndices.push_back(getLogicalDeviceIndex(domain, endpoint));
   }
-
-  ExplicitIncidentEdgeTables tables;
-  for (ArrayRef<int64_t> deviceEdgeOrdinals : edgeOrdinalsByDevice) {
-    tables.offsets.push_back(tables.edgeOrdinals.size());
-    tables.counts.push_back(deviceEdgeOrdinals.size());
-    tables.edgeOrdinals.append(deviceEdgeOrdinals.begin(),
-                               deviceEdgeOrdinals.end());
-  }
-  return tables;
+  return endpointIndices;
 }
 
 class ExplicitTransferGraph final : public TransferGraph {
@@ -400,9 +384,21 @@ public:
   Value buildIncidentEdgeCount(OpBuilder &builder, Location loc,
                                Value deviceIndex,
                                PipeRole role) const override {
-    ExplicitIncidentEdgeTables tables =
-        buildExplicitIncidentEdgeTables(getDomain(), getEdges(), role);
-    return buildIndexTableLookup(builder, loc, tables.counts, deviceIndex);
+    SmallVector<int64_t> endpointIndices =
+        getExplicitEndpointIndices(getDomain(), getEdges(), role);
+    Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
+    Value one = arith::ConstantIndexOp::create(builder, loc, 1);
+    Value count = zero;
+    for (int64_t endpointIndex : endpointIndices) {
+      Value endpoint =
+          arith::ConstantIndexOp::create(builder, loc, endpointIndex);
+      Value matches = arith::CmpIOp::create(
+          builder, loc, arith::CmpIPredicate::eq, deviceIndex, endpoint);
+      Value contribution =
+          arith::SelectOp::create(builder, loc, matches, one, zero);
+      count = arith::AddIOp::create(builder, loc, count, contribution);
+    }
+    return count;
   }
 
   TransferGraphEdgeIndexValues
@@ -410,15 +406,33 @@ public:
                                Value deviceIndex, Value incidentEdgeIndex,
                                PipeRole role) const override {
     SmallVector<TransferEdgeAttr> edges = getEdges();
-    ExplicitIncidentEdgeTables tables =
-        buildExplicitIncidentEdgeTables(getDomain(), edges, role);
-    Value deviceOffset =
-        buildIndexTableLookup(builder, loc, tables.offsets, deviceIndex);
-    Value flattenedIndex =
-        arith::AddIOp::create(builder, loc, deviceOffset, incidentEdgeIndex);
-    Value edgeOrdinal = buildIndexTableLookup(builder, loc, tables.edgeOrdinals,
-                                              flattenedIndex);
-    return buildExplicitEdgeIndexValues(builder, loc, edgeOrdinal);
+    SmallVector<int64_t> endpointIndices =
+        getExplicitEndpointIndices(getDomain(), edges, role);
+    Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
+    Value one = arith::ConstantIndexOp::create(builder, loc, 1);
+    Value matchingPrefix = zero;
+    Value selectedEdgeOrdinal = zero;
+    for (auto [edgeOrdinal, endpointIndex] :
+         llvm::enumerate(endpointIndices)) {
+      Value endpoint =
+          arith::ConstantIndexOp::create(builder, loc, endpointIndex);
+      Value matches = arith::CmpIOp::create(
+          builder, loc, arith::CmpIPredicate::eq, deviceIndex, endpoint);
+      Value hasRequestedOrdinal = arith::CmpIOp::create(
+          builder, loc, arith::CmpIPredicate::eq, matchingPrefix,
+          incidentEdgeIndex);
+      Value selectsEdge = arith::AndIOp::create(builder, loc, matches,
+                                                hasRequestedOrdinal);
+      Value ordinal = arith::ConstantIndexOp::create(
+          builder, loc, static_cast<int64_t>(edgeOrdinal));
+      selectedEdgeOrdinal = arith::SelectOp::create(
+          builder, loc, selectsEdge, ordinal, selectedEdgeOrdinal);
+      Value contribution =
+          arith::SelectOp::create(builder, loc, matches, one, zero);
+      matchingPrefix =
+          arith::AddIOp::create(builder, loc, matchingPrefix, contribution);
+    }
+    return buildExplicitEdgeIndexValues(builder, loc, selectedEdgeOrdinal);
   }
 };
 
@@ -1188,33 +1202,115 @@ private:
     return isValid;
   }
 
-  SmallVector<int64_t> getSourceEdgeOffsets() const {
-    // Source-prefix counts preserve the established source-major callback
-    // order without storing one table row per edge.
-    SmallVector<StencilOffsetDescriptor> descriptors = getDescriptors();
-    SmallVector<int64_t> offsets;
-    offsets.reserve(getDevices().size() + 1);
-    int64_t edgeCount = 0;
-    for (DeviceRefAttr source : getDevices()) {
-      offsets.push_back(edgeCount);
-      for (const StencilOffsetDescriptor &descriptor : descriptors) {
-        if (translateComponent(source, descriptor.offset.asArrayRef(),
-                               /*direction=*/1)) {
-          ++edgeCount;
-        }
+  struct DynamicComponentPrefix {
+    Value count;
+    Value containsCoordinate;
+  };
+
+  DynamicComponentPrefix buildValidComponentPrefix(
+      OpBuilder &builder, Location loc, Value source,
+      const StencilOffsetDescriptor &descriptor) const {
+    SmallVector<Value> coordinates =
+        getComponentCoordinatesFromDevice(builder, loc, source);
+    Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
+    Value prefixCount = zero;
+    Value precedingAxesValid =
+        arith::ConstantIntOp::create(builder, loc, 1, 1);
+    for (auto [axis, coordinate] : llvm::enumerate(coordinates)) {
+      int64_t lowerBound = descriptor.sourceLowerBounds[axis];
+      int64_t validExtent = descriptor.sourceExtents[axis];
+      int64_t upperBound = lowerBound + validExtent;
+      std::uint64_t trailingValidExtent = 1;
+      for (int64_t trailingExtent :
+           ArrayRef<int64_t>(descriptor.sourceExtents).drop_front(axis + 1)) {
+        trailingValidExtent *= trailingExtent;
       }
+
+      Value lower =
+          arith::ConstantIndexOp::create(builder, loc, lowerBound);
+      Value upper =
+          arith::ConstantIndexOp::create(builder, loc, upperBound);
+      Value extent =
+          arith::ConstantIndexOp::create(builder, loc, validExtent);
+      Value belowLower = arith::CmpIOp::create(
+          builder, loc, arith::CmpIPredicate::slt, coordinate, lower);
+      Value atOrAboveUpper = arith::CmpIOp::create(
+          builder, loc, arith::CmpIPredicate::sge, coordinate, upper);
+      Value offset = arith::SubIOp::create(builder, loc, coordinate, lower);
+      Value lowerClamped =
+          arith::SelectOp::create(builder, loc, belowLower, zero, offset);
+      Value validChoicesBefore = arith::SelectOp::create(
+          builder, loc, atOrAboveUpper, extent, lowerClamped);
+      Value suffixSize = arith::ConstantIndexOp::create(
+          builder, loc, static_cast<int64_t>(trailingValidExtent));
+      Value axisContribution = arith::MulIOp::create(
+          builder, loc, validChoicesBefore, suffixSize);
+      axisContribution = arith::SelectOp::create(
+          builder, loc, precedingAxesValid, axisContribution, zero);
+      prefixCount =
+          arith::AddIOp::create(builder, loc, prefixCount, axisContribution);
+
+      Value atOrAboveLower = arith::CmpIOp::create(
+          builder, loc, arith::CmpIPredicate::sge, coordinate, lower);
+      Value belowUpper = arith::CmpIOp::create(
+          builder, loc, arith::CmpIPredicate::slt, coordinate, upper);
+      Value axisValid =
+          arith::AndIOp::create(builder, loc, atOrAboveLower, belowUpper);
+      precedingAxesValid = arith::AndIOp::create(
+          builder, loc, precedingAxesValid, axisValid);
     }
-    offsets.push_back(edgeCount);
-    return offsets;
+    return {prefixCount, precedingAxesValid};
+  }
+
+  Value buildSourcePrefixForDescriptor(
+      OpBuilder &builder, Location loc, Value source,
+      const StencilOffsetDescriptor &descriptor) const {
+    FailureOr<std::uint64_t> componentSize = getComponentSize();
+    FailureOr<std::uint64_t> trailingSize = getTrailingComponentSize();
+    assert(succeeded(componentSize) && succeeded(trailingSize) &&
+           "graph verification must reject overflowing domain extents");
+    std::uint64_t completeBlockSize = *componentSize * *trailingSize;
+    std::uint64_t validEdgesPerOuterBlock =
+        descriptor.sourceCount * *trailingSize;
+    Value completeBlock = arith::ConstantIndexOp::create(
+        builder, loc, static_cast<int64_t>(completeBlockSize));
+    Value trailing = arith::ConstantIndexOp::create(
+        builder, loc, static_cast<int64_t>(*trailingSize));
+    Value edgesPerOuterBlock = arith::ConstantIndexOp::create(
+        builder, loc, static_cast<int64_t>(validEdgesPerOuterBlock));
+    Value outerIndex =
+        arith::DivSIOp::create(builder, loc, source, completeBlock);
+    Value trailingIndex =
+        arith::RemSIOp::create(builder, loc, source, trailing);
+    Value outerPrefix = arith::MulIOp::create(
+        builder, loc, outerIndex, edgesPerOuterBlock);
+    DynamicComponentPrefix componentPrefix =
+        buildValidComponentPrefix(builder, loc, source, descriptor);
+    Value componentContribution = arith::MulIOp::create(
+        builder, loc, componentPrefix.count, trailing);
+    Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
+    Value trailingContribution = arith::SelectOp::create(
+        builder, loc, componentPrefix.containsCoordinate, trailingIndex, zero);
+    Value prefix = arith::AddIOp::create(builder, loc, outerPrefix,
+                                        componentContribution);
+    return arith::AddIOp::create(builder, loc, prefix,
+                                 trailingContribution);
   }
 
   Value buildEdgeOrdinalForSource(OpBuilder &builder, Location loc,
                                   Value source,
                                   std::size_t descriptorIndex) const {
-    Value sourceEdgeBase =
-        buildIndexTableLookup(builder, loc, getSourceEdgeOffsets(), source);
-    Value validOffsetCount = arith::ConstantIndexOp::create(builder, loc, 0);
+    // Summing each offset rectangle's prefix preserves source-major order
+    // without materializing one prefix-table entry per logical device.
+    Value sourceEdgeBase = arith::ConstantIndexOp::create(builder, loc, 0);
     SmallVector<StencilOffsetDescriptor> descriptors = getDescriptors();
+    for (const StencilOffsetDescriptor &descriptor : descriptors) {
+      Value descriptorPrefix =
+          buildSourcePrefixForDescriptor(builder, loc, source, descriptor);
+      sourceEdgeBase = arith::AddIOp::create(builder, loc, sourceEdgeBase,
+                                            descriptorPrefix);
+    }
+    Value validOffsetCount = arith::ConstantIndexOp::create(builder, loc, 0);
     for (const StencilOffsetDescriptor &earlierDescriptor :
          ArrayRef<StencilOffsetDescriptor>(descriptors)
              .take_front(descriptorIndex)) {
@@ -1733,112 +1829,55 @@ void forEachPipeRecord(
   }
 }
 
-FailureOr<PipeRecordAttr> getPipeRecord(PipeNetRecordsAttr records,
-                                        std::uint64_t recordIndex) {
-  if (records.getMappings().empty()) {
-    if (recordIndex >= records.getPipes().size()) {
-      return failure();
-    }
-    return records.getPipes()[recordIndex];
-  }
-
-  for (PipeMappingAttr mapping : records.getMappings()) {
-    std::unique_ptr<TransferGraph> graph =
-        createTransferGraph(mapping.getGraph());
-    FailureOr<std::uint64_t> edgeCount = graph->getEdgeCount();
-    std::uint64_t nodePipeCount = mapping.getPipes().size();
-    std::optional<std::uint64_t> mappingRecordCount =
-        succeeded(edgeCount)
-            ? llvm::checkedMulUnsigned(*edgeCount, nodePipeCount)
-            : std::nullopt;
-    if (!mappingRecordCount) {
-      return failure();
-    }
-    if (recordIndex >= *mappingRecordCount) {
-      recordIndex -= *mappingRecordCount;
-      continue;
-    }
-
-    std::uint64_t edgeOrdinal = recordIndex / nodePipeCount;
-    std::uint64_t nodePipeIndex = recordIndex % nodePipeCount;
-    SmallVector<TransferEdgeAttr> edges = graph->getEdges();
-    if (edgeOrdinal >= edges.size()) {
-      return failure();
-    }
-    DeviceTransferAttr transfer = DeviceTransferAttr::get(
-        records.getContext(), mapping.getGraph().getDomain(),
-        edges[edgeOrdinal]);
-    PipeRecordAttr nodePipe = mapping.getPipes()[nodePipeIndex];
-    return PipeRecordAttr::get(
-        records.getContext(), nodePipe.getSrcX(), nodePipe.getSrcY(),
-        nodePipe.getDstStartX(), nodePipe.getDstStartY(), nodePipe.getDstEndX(),
-        nodePipe.getDstEndY(), nodePipe.getIsCollective(), transfer);
-  }
-  return failure();
-}
-
 FailureOr<SmallVector<PipeRecordLocalIndex>>
-getPipeRecordLocalIndices(PipeNetRecordsAttr records, PipeRole role) {
+getPipeMappingRecordLocalIndices(PipeMappingAttr mapping, PipeRole role) {
   assert(role != PipeRole::Active &&
          "selected record indexing requires one endpoint role");
-  if (records.getMappings().empty()) {
-    SmallVector<PipeRecordLocalIndex> localIndices;
-    localIndices.reserve(records.getPipes().size());
-    for (std::uint64_t recordIndex = 0; recordIndex < records.getPipes().size();
-         ++recordIndex) {
-      localIndices.push_back(
-          PipeRecordLocalIndex{recordIndex, records.getPipes().size()});
-    }
-    return localIndices;
-  }
-
   SmallVector<PipeRecordLocalIndex> localIndices;
-  for (PipeMappingAttr mapping : records.getMappings()) {
-    std::unique_ptr<TransferGraph> graph =
-        createTransferGraph(mapping.getGraph());
-    std::uint64_t nodePipeCount = mapping.getPipes().size();
-    llvm::DenseMap<DeviceRefAttr, std::uint64_t> incidentEdgeCounts;
-    struct PendingLocalIndex {
-      std::uint64_t index;
-      DeviceRefAttr endpoint;
-    };
-    SmallVector<PendingLocalIndex> mappingIndices;
-    bool overflow = false;
-    graph->forEachEdge([&](TransferEdgeAttr edge) {
-      if (overflow) {
-        return;
-      }
-      DeviceRefAttr endpoint =
-          role == PipeRole::Source ? edge.getSource() : edge.getDestination();
-      std::uint64_t incidentEdgeOrdinal = incidentEdgeCounts[endpoint]++;
-      std::optional<std::uint64_t> localBase =
-          llvm::checkedMulUnsigned(incidentEdgeOrdinal, nodePipeCount);
-      if (!localBase) {
+  std::unique_ptr<TransferGraph> graph =
+      createTransferGraph(mapping.getGraph());
+  std::uint64_t nodePipeCount = mapping.getPipes().size();
+  llvm::DenseMap<DeviceRefAttr, std::uint64_t> incidentEdgeCounts;
+  struct PendingLocalIndex {
+    std::uint64_t index;
+    DeviceRefAttr endpoint;
+  };
+  SmallVector<PendingLocalIndex> mappingIndices;
+  bool overflow = false;
+  graph->forEachEdge([&](TransferEdgeAttr edge) {
+    if (overflow) {
+      return;
+    }
+    DeviceRefAttr endpoint =
+        role == PipeRole::Source ? edge.getSource() : edge.getDestination();
+    std::uint64_t incidentEdgeOrdinal = incidentEdgeCounts[endpoint]++;
+    std::optional<std::uint64_t> localBase =
+        llvm::checkedMulUnsigned(incidentEdgeOrdinal, nodePipeCount);
+    if (!localBase) {
+      overflow = true;
+      return;
+    }
+    for (std::uint64_t nodePipeIndex = 0; nodePipeIndex < nodePipeCount;
+         ++nodePipeIndex) {
+      std::optional<std::uint64_t> localIndex =
+          llvm::checkedAddUnsigned(*localBase, nodePipeIndex);
+      if (!localIndex) {
         overflow = true;
         return;
       }
-      for (std::uint64_t nodePipeIndex = 0; nodePipeIndex < nodePipeCount;
-           ++nodePipeIndex) {
-        std::optional<std::uint64_t> localIndex =
-            llvm::checkedAddUnsigned(*localBase, nodePipeIndex);
-        if (!localIndex) {
-          overflow = true;
-          return;
-        }
-        mappingIndices.push_back(PendingLocalIndex{*localIndex, endpoint});
-      }
-    });
-    if (overflow) {
+      mappingIndices.push_back(PendingLocalIndex{*localIndex, endpoint});
+    }
+  });
+  if (overflow) {
+    return failure();
+  }
+  for (const PendingLocalIndex &pending : mappingIndices) {
+    std::optional<std::uint64_t> localCount = llvm::checkedMulUnsigned(
+        incidentEdgeCounts.lookup(pending.endpoint), nodePipeCount);
+    if (!localCount) {
       return failure();
     }
-    for (const PendingLocalIndex &pending : mappingIndices) {
-      std::optional<std::uint64_t> localCount = llvm::checkedMulUnsigned(
-          incidentEdgeCounts.lookup(pending.endpoint), nodePipeCount);
-      if (!localCount) {
-        return failure();
-      }
-      localIndices.push_back(PipeRecordLocalIndex{pending.index, *localCount});
-    }
+    localIndices.push_back(PipeRecordLocalIndex{pending.index, *localCount});
   }
   return localIndices;
 }

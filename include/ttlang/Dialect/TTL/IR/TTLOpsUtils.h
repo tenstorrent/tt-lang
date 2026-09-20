@@ -158,20 +158,16 @@ void forEachPipeRecord(
     PipeNetRecordsAttr records,
     llvm::function_ref<void(std::uint64_t, PipeRecordAttr)> callback);
 
-/// Return one concrete transfer by its deterministic record ordinal.
-FailureOr<PipeRecordAttr> getPipeRecord(PipeNetRecordsAttr records,
-                                        std::uint64_t recordIndex);
-
 /// Device-local selected-record ordinal and count for one endpoint role.
 struct PipeRecordLocalIndex {
   std::uint64_t index;
   std::uint64_t count;
 };
 
-/// Return each concrete record's position and count among transfers that match
-/// the same logical device and endpoint role.
+/// Return each concrete record in `mapping` and its position and count among
+/// transfers that match the same logical device and endpoint role.
 FailureOr<SmallVector<PipeRecordLocalIndex>>
-getPipeRecordLocalIndices(PipeNetRecordsAttr records, PipeRole role);
+getPipeMappingRecordLocalIndices(PipeMappingAttr mapping, PipeRole role);
 
 /// Return the row-major index of `device` in `domain`.
 inline int64_t getLogicalDeviceIndex(DeviceDomainAttr domain,

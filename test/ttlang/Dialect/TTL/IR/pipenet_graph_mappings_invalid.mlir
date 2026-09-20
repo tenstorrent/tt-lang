@@ -146,6 +146,21 @@ func.func @duplicate_explicit_edge() attributes {
 
 // -----
 
+// Factorized graph lowering requires one destination device per edge.
+func.func @explicit_device_range() attributes {
+    // expected-error @below {{explicit transfer graph edge 0 requires one destination device}}
+    test.graph = #ttl.transfer_graph<
+      domain = <components = <name = "device", extent = [4]>>,
+      kind = explicit, properties = {
+        edges = [#ttl.transfer_edge<
+          source = <coordinates = [0]>,
+          destinationRange = <lo = <coordinates = [1]>,
+                              hi = <coordinates = [4]>>>]}>} {
+  return
+}
+
+// -----
+
 // A structured graph names one component of its logical-device domain.
 func.func @unknown_structured_component() attributes {
     // expected-error @below {{structured transfer graph references unknown domain component 'worker'}}

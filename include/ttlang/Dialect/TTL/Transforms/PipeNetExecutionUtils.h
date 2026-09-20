@@ -50,11 +50,20 @@ getPipeNetRecordLoopInductionValue(const PipeNetRecordLoop &recordLoop,
 
 /// The record selected by one active PipeNet callback loop.
 struct ActivePipeNetRecord {
+  /// Callback loop whose current iteration selected this record.
   Operation *loopOp = nullptr;
+  /// Global concrete-record index within the loop's PipeNet records.
   std::uint64_t recordIndex = 0;
+  /// Concrete record retained because graph callback indices are mapping-local.
+  PipeRecordAttr record;
 };
 
 /// Return the active record selected by `loopOp`, if present.
+std::optional<ActivePipeNetRecord>
+getActivePipeNetRecord(ArrayRef<ActivePipeNetRecord> activeRecords,
+                       Operation *loopOp);
+
+/// Return the index of the active record selected by `loopOp`, if present.
 std::optional<std::uint64_t>
 getActivePipeNetRecordIndex(ArrayRef<ActivePipeNetRecord> activeRecords,
                             Operation *loopOp);
