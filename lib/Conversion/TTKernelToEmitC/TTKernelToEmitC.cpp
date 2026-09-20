@@ -285,6 +285,10 @@ static StringRef getL1PtrOpaqueTypeName(unsigned elementWidth) {
   }
 }
 
+static std::string getVolatileL1PtrOpaqueTypeName(unsigned elementWidth) {
+  return ("volatile " + getL1PtrOpaqueTypeName(elementWidth)).str();
+}
+
 static FailureOr<int64_t> extractNocIndex(Attribute value) {
   auto nocIdxAttr = mlir::dyn_cast_if_present<IntegerAttr>(value);
   if (!nocIdxAttr) {
@@ -669,15 +673,25 @@ public:
   matchAndRewrite(ttkernel::LoadFromL1Op op,
                   ttkernel::LoadFromL1Op::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
-    auto pointerType =
-        mlir::cast<emitc::PointerType>(adaptor.getL1Ptr().getType());
-    auto subscriptOp = rewriter.create<emitc::SubscriptOp>(
-        op->getLoc(),
-        emitc::LValueType::get(op.getContext(), pointerType.getPointee()),
-        adaptor.getL1Ptr(), adaptor.getOffset());
+    Location loc = op->getLoc();
+    const unsigned elementWidth =
+        mlir::cast<ttkernel::L1AddrPtrType>(op.getL1Ptr().getType())
+            .getElementWidth();
+    const std::string elementTypeName =
+        getVolatileL1PtrOpaqueTypeName(elementWidth);
+    auto elementType = emitc::OpaqueType::get(op.getContext(), elementTypeName);
 
-    auto loaded = rewriter.create<emitc::LoadOp>(
-        op->getLoc(), pointerType.getPointee(), subscriptOp);
+    rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{},
+                                         "invalidate_l1_cache", ValueRange{});
+    auto volatilePointer = rewriter.create<emitc::CallOpaqueOp>(
+        loc, TypeRange{emitc::PointerType::get(elementType)},
+        "reinterpret_cast<" + elementTypeName + "*>",
+        ValueRange{adaptor.getL1Ptr()});
+    auto subscriptOp = rewriter.create<emitc::SubscriptOp>(
+        loc, emitc::LValueType::get(op.getContext(), elementType),
+        volatilePointer.getResult(0), adaptor.getOffset());
+
+    auto loaded = rewriter.create<emitc::LoadOp>(loc, elementType, subscriptOp);
     rewriter.replaceOpWithNewOp<emitc::CastOp>(
         op, getTypeConverter()->convertType(op.getValue().getType()), loaded);
     return success();
