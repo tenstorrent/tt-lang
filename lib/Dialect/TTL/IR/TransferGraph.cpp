@@ -412,17 +412,16 @@ public:
     Value one = arith::ConstantIndexOp::create(builder, loc, 1);
     Value matchingPrefix = zero;
     Value selectedEdgeOrdinal = zero;
-    for (auto [edgeOrdinal, endpointIndex] :
-         llvm::enumerate(endpointIndices)) {
+    for (auto [edgeOrdinal, endpointIndex] : llvm::enumerate(endpointIndices)) {
       Value endpoint =
           arith::ConstantIndexOp::create(builder, loc, endpointIndex);
       Value matches = arith::CmpIOp::create(
           builder, loc, arith::CmpIPredicate::eq, deviceIndex, endpoint);
-      Value hasRequestedOrdinal = arith::CmpIOp::create(
-          builder, loc, arith::CmpIPredicate::eq, matchingPrefix,
-          incidentEdgeIndex);
-      Value selectsEdge = arith::AndIOp::create(builder, loc, matches,
-                                                hasRequestedOrdinal);
+      Value hasRequestedOrdinal =
+          arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::eq,
+                                matchingPrefix, incidentEdgeIndex);
+      Value selectsEdge =
+          arith::AndIOp::create(builder, loc, matches, hasRequestedOrdinal);
       Value ordinal = arith::ConstantIndexOp::create(
           builder, loc, static_cast<int64_t>(edgeOrdinal));
       selectedEdgeOrdinal = arith::SelectOp::create(
@@ -1207,15 +1206,14 @@ private:
     Value containsCoordinate;
   };
 
-  DynamicComponentPrefix buildValidComponentPrefix(
-      OpBuilder &builder, Location loc, Value source,
-      const StencilOffsetDescriptor &descriptor) const {
+  DynamicComponentPrefix
+  buildValidComponentPrefix(OpBuilder &builder, Location loc, Value source,
+                            const StencilOffsetDescriptor &descriptor) const {
     SmallVector<Value> coordinates =
         getComponentCoordinatesFromDevice(builder, loc, source);
     Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
     Value prefixCount = zero;
-    Value precedingAxesValid =
-        arith::ConstantIntOp::create(builder, loc, 1, 1);
+    Value precedingAxesValid = arith::ConstantIntOp::create(builder, loc, 1, 1);
     for (auto [axis, coordinate] : llvm::enumerate(coordinates)) {
       int64_t lowerBound = descriptor.sourceLowerBounds[axis];
       int64_t validExtent = descriptor.sourceExtents[axis];
@@ -1226,12 +1224,9 @@ private:
         trailingValidExtent *= trailingExtent;
       }
 
-      Value lower =
-          arith::ConstantIndexOp::create(builder, loc, lowerBound);
-      Value upper =
-          arith::ConstantIndexOp::create(builder, loc, upperBound);
-      Value extent =
-          arith::ConstantIndexOp::create(builder, loc, validExtent);
+      Value lower = arith::ConstantIndexOp::create(builder, loc, lowerBound);
+      Value upper = arith::ConstantIndexOp::create(builder, loc, upperBound);
+      Value extent = arith::ConstantIndexOp::create(builder, loc, validExtent);
       Value belowLower = arith::CmpIOp::create(
           builder, loc, arith::CmpIPredicate::slt, coordinate, lower);
       Value atOrAboveUpper = arith::CmpIOp::create(
@@ -1243,8 +1238,8 @@ private:
           builder, loc, atOrAboveUpper, extent, lowerClamped);
       Value suffixSize = arith::ConstantIndexOp::create(
           builder, loc, static_cast<int64_t>(trailingValidExtent));
-      Value axisContribution = arith::MulIOp::create(
-          builder, loc, validChoicesBefore, suffixSize);
+      Value axisContribution =
+          arith::MulIOp::create(builder, loc, validChoicesBefore, suffixSize);
       axisContribution = arith::SelectOp::create(
           builder, loc, precedingAxesValid, axisContribution, zero);
       prefixCount =
@@ -1256,8 +1251,8 @@ private:
           builder, loc, arith::CmpIPredicate::slt, coordinate, upper);
       Value axisValid =
           arith::AndIOp::create(builder, loc, atOrAboveLower, belowUpper);
-      precedingAxesValid = arith::AndIOp::create(
-          builder, loc, precedingAxesValid, axisValid);
+      precedingAxesValid =
+          arith::AndIOp::create(builder, loc, precedingAxesValid, axisValid);
     }
     return {prefixCount, precedingAxesValid};
   }
@@ -1282,19 +1277,18 @@ private:
         arith::DivSIOp::create(builder, loc, source, completeBlock);
     Value trailingIndex =
         arith::RemSIOp::create(builder, loc, source, trailing);
-    Value outerPrefix = arith::MulIOp::create(
-        builder, loc, outerIndex, edgesPerOuterBlock);
+    Value outerPrefix =
+        arith::MulIOp::create(builder, loc, outerIndex, edgesPerOuterBlock);
     DynamicComponentPrefix componentPrefix =
         buildValidComponentPrefix(builder, loc, source, descriptor);
-    Value componentContribution = arith::MulIOp::create(
-        builder, loc, componentPrefix.count, trailing);
+    Value componentContribution =
+        arith::MulIOp::create(builder, loc, componentPrefix.count, trailing);
     Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
     Value trailingContribution = arith::SelectOp::create(
         builder, loc, componentPrefix.containsCoordinate, trailingIndex, zero);
-    Value prefix = arith::AddIOp::create(builder, loc, outerPrefix,
-                                        componentContribution);
-    return arith::AddIOp::create(builder, loc, prefix,
-                                 trailingContribution);
+    Value prefix =
+        arith::AddIOp::create(builder, loc, outerPrefix, componentContribution);
+    return arith::AddIOp::create(builder, loc, prefix, trailingContribution);
   }
 
   Value buildEdgeOrdinalForSource(OpBuilder &builder, Location loc,
@@ -1307,8 +1301,8 @@ private:
     for (const StencilOffsetDescriptor &descriptor : descriptors) {
       Value descriptorPrefix =
           buildSourcePrefixForDescriptor(builder, loc, source, descriptor);
-      sourceEdgeBase = arith::AddIOp::create(builder, loc, sourceEdgeBase,
-                                            descriptorPrefix);
+      sourceEdgeBase =
+          arith::AddIOp::create(builder, loc, sourceEdgeBase, descriptorPrefix);
     }
     Value validOffsetCount = arith::ConstantIndexOp::create(builder, loc, 0);
     for (const StencilOffsetDescriptor &earlierDescriptor :

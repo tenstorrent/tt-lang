@@ -43,10 +43,9 @@ FailureOr<GraphPipeNetForeachPlans>
 buildGraphPipeNetForeachPlans(ModuleOp module);
 
 /// Lower all PipeNet callbacks using the previously validated graph plans.
-void
-lowerPipeNetForeachOps(ModuleOp module,
-                       PipeForeachLoweringInfo &foreachLoweringInfo,
-                       const GraphPipeNetForeachPlans &plansByRecordsAndGrid);
+void lowerPipeNetForeachOps(
+    ModuleOp module, PipeForeachLoweringInfo &foreachLoweringInfo,
+    const GraphPipeNetForeachPlans &plansByRecordsAndGrid);
 
 } // namespace mlir::tt::ttl
 

@@ -574,8 +574,8 @@ PipeRecordAttr::verify(llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
 }
 
 llvm::LogicalResult PipeMappingAttr::verify(
-    llvm::function_ref<mlir::InFlightDiagnostic()> emitError,
-    TransferGraphAttr, ArrayRef<PipeRecordAttr> pipes) {
+    llvm::function_ref<mlir::InFlightDiagnostic()> emitError, TransferGraphAttr,
+    ArrayRef<PipeRecordAttr> pipes) {
   if (pipes.empty()) {
     return emitError() << "requires at least one node pipe";
   }

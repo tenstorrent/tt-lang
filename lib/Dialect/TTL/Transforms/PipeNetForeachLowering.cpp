@@ -727,10 +727,9 @@ buildGraphPipeNetForeachPlans(ModuleOp module) {
   return plansByRecordsAndGrid;
 }
 
-void
-lowerPipeNetForeachOps(ModuleOp module,
-                       PipeForeachLoweringInfo &foreachLoweringInfo,
-                       const GraphPipeNetForeachPlans &plansByRecordsAndGrid) {
+void lowerPipeNetForeachOps(
+    ModuleOp module, PipeForeachLoweringInfo &foreachLoweringInfo,
+    const GraphPipeNetForeachPlans &plansByRecordsAndGrid) {
   // A module-wide greedy rewrite also deletes unrelated unused pure reads.
   // Rewrite only foreach operations so this expansion cannot change other IR.
   IRRewriter rewriter(module.getContext());

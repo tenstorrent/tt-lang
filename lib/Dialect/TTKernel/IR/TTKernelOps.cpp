@@ -881,9 +881,8 @@ matchStridedTableIndex(Value index, std::size_t tableSize) {
   }
 
   auto multiply = product.getDefiningOp<arith::MulIOp>();
-  if (!multiply ||
-      !bitEnumContainsAll(multiply.getOverflowFlags(),
-                          arith::IntegerOverflowFlags::nuw)) {
+  if (!multiply || !bitEnumContainsAll(multiply.getOverflowFlags(),
+                                       arith::IntegerOverflowFlags::nuw)) {
     return std::nullopt;
   }
   std::optional<int64_t> lhs = getConstantIntValue(multiply.getLhs());

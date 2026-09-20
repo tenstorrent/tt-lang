@@ -835,10 +835,10 @@ LogicalResult PipeGraph::assignReceiverAddressSequences(
       return failure();
     }
     return ReceiverEndpointExecutionInfo{
-        *maybeLocation, getConcreteTransferExecutionCount(
-                            postOp.getOperation(), *maybeLocation, *pipeRef,
-                            endpoint.postRecordIndex, analysisState,
-                            endpoint.postRecord)};
+        *maybeLocation,
+        getConcreteTransferExecutionCount(postOp.getOperation(), *maybeLocation,
+                                          *pipeRef, endpoint.postRecordIndex,
+                                          analysisState, endpoint.postRecord)};
   };
 
   ReceiverEndpointsByDFB endpointsByReceiverDFB =
@@ -1596,8 +1596,7 @@ getSelectedRecordLoop(const PipeReference &pipeRef,
 static std::optional<std::uint64_t> getSelectedRecordExecutionCount(
     Operation *op, const LaunchExecutionLocation &location,
     const PipeReference &pipeRef, std::uint64_t recordIndex,
-    PipeGraphAnalysisState &analysisState,
-    PipeRecordAttr selectedRecord) {
+    PipeGraphAnalysisState &analysisState, PipeRecordAttr selectedRecord) {
   FailureOr<std::uint64_t> recordCount =
       getPipeRecordCount(pipeRef.getRecords());
   assert(pipeRef.isSelected() && succeeded(recordCount) &&
