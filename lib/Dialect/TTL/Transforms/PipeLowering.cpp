@@ -810,8 +810,8 @@ hasOneShotNonOverlappingReceiverBlocks(const PipeReceiverEndpoint &endpoint,
   return true;
 }
 
-// Receiver readiness can be omitted when the destination blocks exist before
-// dispatch and no other producer can occupy them during this invocation.
+// Receiver readiness can be omitted when computed destination addresses are
+// fixed before dispatch and no other producer can occupy those blocks.
 static bool canElideFabricReceiverReadiness(
     const PipeTransferNode &transferNode, const PipeGraph &pipeGraph,
     const PipeTransferNodeSet &computedAddressTransfers) {

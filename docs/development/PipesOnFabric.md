@@ -437,8 +437,8 @@ forwarder. A NoC write barrier completes that write before the worker increments
 the forwarder's arrival counter. The forwarder waits for every group member,
 calls `experimental::routing_plane_fused_write_atomic_inc` once per member,
 and then increments each member's local completion counter. The fabric helper
-uses a blocking payload flush, so the source worker does not reuse its DFB
-until the forwarder has consumed its scratch slot.
+uses a blocking payload flush. The local completion wait prevents a worker
+from overwriting its scratch slot before that flush consumes the payload.
 
 Readiness follows the reverse sequence. Each receiver reserves its destination
 DFB and increments its receiver-side forwarder's arrival counter. After the
