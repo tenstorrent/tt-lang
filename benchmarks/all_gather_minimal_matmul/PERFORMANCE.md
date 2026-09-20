@@ -6,10 +6,13 @@ collectively contain one M x N result.
 
 ## All-shape four-device comparison
 
-Measured 2026-09-19 01:29-16:24 UTC on an Exabox eight-chip host: four Blackhole P150b
-devices (IDs 7, 3, 1, 5) in a physical ring, firmware 19.8.1, KMD 2.8.0,
-1350 MHz. TT-Lang `07118bf88eb29070ca064ab382387f04c84ef409`; TT-Metal
-`0e9d200db976120c129ab0deb13aa3f6d972b723`; IRD image
+Measured on an Exabox eight-chip host: four Blackhole P150b devices (IDs 7,
+3, 1, 5) in a physical ring, firmware 19.8.1, KMD 2.8.0, 1350 MHz. Native
+rows were measured 2026-09-19 01:29-16:24 UTC; TT-Lang rows were measured
+2026-09-19 23:26-2026-09-20 03:00 UTC with the adopted operation at
+`4e1234b35b16e2d0c7e59456269162743e2b8d80` (early activation relay; two
+output blocks on the 39 rows where the L1 model allows them, one on the other
+seven). TT-Metal `0e9d200db976120c129ab0deb13aa3f6d972b723`; IRD image
 `ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04:v1.1.10`
 (`sha256:c64126d459afd77bf1b8c5cf68c5941c1561515d28b1b125d33fc57f950e09c7`).
 Device time is the interval from first kernel start through last kernel end,
@@ -36,52 +39,52 @@ is in [Optimization experiments](OPTIMIZATION_EXPERIMENTS.md#all-shape-configura
 
 | Use case | M | Full K | Full N | TT-Lang ms | Native ms | TT-Lang/native | Configuration (TT-Lang; native) or status |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
-| plain | 64 | 1536 | 36864 | 0.166 (0.163-0.170) | 0.215 (0.212-0.218) | 0.772 | 2x9 M1/K12/N16; 12x9 M2/K6/N16 sub 2x2, 1 chunk |
-| plain | 64 | 6144 | 36864 | 0.615 (0.611-0.624) | 0.701 (0.694-0.708) | 0.877 | 2x9 M1/K16/N16; 12x9 M6/K4/N16 sub 2x2, 1 chunk |
-| plain | 128 | 768 | 18432 | 0.066 (0.065-0.067) | 0.073 (0.072-0.077) | 0.903 | 4x9 M1/K6/N16; 12x9 M2/K3/N16 sub 2x2, 1 chunk |
-| plain | 128 | 6144 | 18432 | 0.342 (0.335-0.348) | 0.357 (0.354-0.364) | 0.957 | 4x9 M1/K16/N16; 12x9 M2/K8/N8 sub 2x2, 1 chunk |
-| plain | 512 | 1536 | 36864 | 0.231 (0.228-0.235) | 0.228 (0.226-0.231) | 1.010 | 8x9 M2/K12/N16; 12x9 M2/K6/N16 sub 2x2, 1 chunk |
-| plain | 512 | 6144 | 36864 | 0.713 (0.699-0.729) | 0.749 (0.743-0.756) | 0.951 | 11x9 M2/K16/N16; 12x9 M4/K8/N8 sub 2x2, 1 chunk |
-| plain | 576 | 1536 | 36864 | 0.233 (0.230-0.240) | 0.231 (0.229-0.233) | 1.008 | 9x9 M2/K12/N16; 12x9 M2/K6/N16 sub 2x2, 1 chunk |
-| plain | 576 | 6144 | 36864 | 0.711 (0.699-0.721) | 0.752 (0.751-0.760) | 0.946 | 10x9 M2/K16/N16; 12x9 M2/K8/N8 sub 2x2, 1 chunk |
-| plain | 1024 | 768 | 18432 | 0.138 (0.138-0.140) | 0.121 (0.118-0.125) | 1.146 | 11x9 M3/K6/N16; 12x9 M3/K3/N16 sub 1x4, 1 chunk |
-| plain | 1024 | 6144 | 18432 | 0.508 (0.497-0.518) | 0.509 (0.505-0.515) | 0.997 | 12x9 M3/K12/N16; 12x8 M3/K6/N10 sub 3x1, 1 chunk |
-| plain | 1152 | 768 | 18432 | 0.145 (0.144-0.146) | 0.132 (0.130-0.137) | 1.096 | 9x9 M4/K6/N16; 12x9 M3/K6/N8 sub 1x4, 1 chunk |
-| plain | 1152 | 6144 | 18432 | 0.506 (0.493-0.521) | 0.489 (0.486-0.492) | 1.034 | 12x9 M3/K12/N16; 12x8 M3/K8/N10 sub 3x1, 1 chunk |
-| plain | 2048 | 1536 | 18432 | 0.327 (0.322-0.374) | 0.294 (0.292-0.296) | 1.111 | 12x9 M6/K6/N16; 12x9 M6/K6/N16 sub 2x2, 1 chunk |
-| plain | 2048 | 1536 | 36864 | 0.614 (0.605-0.657) | 0.458 (0.453-0.463) | 1.342 | 12x9 M6/K6/N16; 12x9 M6/K6/N16 sub 2x2, 1 chunk |
-| plain | 2048 | 6144 | 36864 | 1.632 (1.612-1.665) | 1.290 (1.272-1.296) | 1.265 | 11x9 M6/K8/N16; 12x9 M6/K8/N12 sub 2x2, 1 chunk |
-| plain | 2112 | 1536 | 36864 | 0.614 (0.600-0.648) | 0.461 (0.459-0.466) | 1.333 | 12x9 M3/K12/N16; 12x9 M6/K6/N16 sub 2x2, 1 chunk |
-| plain | 2112 | 6144 | 36864 | 1.649 (1.609-1.660) | 1.329 (1.320-1.336) | 1.241 | 11x9 M6/K8/N16; 12x9 M8/K6/N12 sub 2x2, 1 chunk |
-| plain | 3072 | 5120 | 5120 | 0.695 (0.687-0.734) | 0.637 (0.635-0.637) | 1.092 | 11x10 M9/K10/N4; 8x8 M12/K8/N8 sub 1x4, 1 chunk |
-| plain | 3072 | 5120 | 15360 | 0.822 (0.818-0.867) | 0.833 (0.825-0.839) | 0.988 | 11x10 M9/K8/N12; 12x9 M8/K8/N12 sub 1x4, 1 chunk |
-| plain | 4096 | 768 | 18432 | 0.470 (0.461-0.502) | 0.361 (0.358-0.380) | 1.302 | 12x9 M11/K6/N8; 12x9 M11/K3/N8 sub 1x4, 1 chunk |
-| plain | 4096 | 6144 | 18432 | 2.462 (2.443-2.520) | 1.403 (1.388-1.406) | 1.756 | 12x9 M11/K8/N8; 12x9 M11/K8/N8 sub 1x4, 1 chunk |
-| plain | 4224 | 768 | 18432 | 0.477 (0.465-0.495) | 0.374 (0.372-0.399) | 1.276 | 12x9 M11/K6/N8; 12x9 M11/K3/N8 sub 1x4, 1 chunk |
-| plain | 4224 | 6144 | 18432 | 2.464 (2.437-2.508) | 1.415 (1.404-1.419) | 1.742 | 12x9 M11/K8/N8; 12x9 M11/K8/N8 sub 1x4, 1 chunk |
-| plain | 4768 | 7168 | 5376 | 1.575 (1.567-1.582) | 1.147 (1.141-1.151) | 1.372 | 12x7 M13/K8/N6; 12x9 M8/K8/N6 sub 2x2, 1 chunk |
-| plain | 8192 | 1536 | 18432 | 1.494 (1.476-1.543) | 0.896 (0.892-0.915) | 1.668 | 12x9 M11/K6/N8; 12x9 M11/K6/N8 sub 1x4, 1 chunk |
-| plain | 8192 | 1536 | 36864 | 2.959 (2.835-3.045) | 1.498 (1.495-1.500) | 1.975 | 12x9 M11/K6/N8; 12x9 M11/K6/N8 sub 1x4, 1 chunk |
-| plain | 8192 | 6144 | 36864 | 9.835 (9.764-9.886) | 4.582 (4.553-4.621) | 2.146 | 12x9 M11/K8/N8; 12x9 M8/K6/N12 sub 2x2, 1 chunk |
-| plain | 8256 | 1536 | 36864 | 2.976 (2.906-3.045) | 1.501 (1.498-1.511) | 1.982 | 12x9 M11/K6/N8; 12x9 M11/K6/N8 sub 1x4, 1 chunk |
-| plain | 8256 | 6144 | 36864 | 9.828 (9.733-9.881) | 4.612 (4.597-4.641) | 2.131 | 12x9 M11/K8/N8; 12x9 M8/K6/N12 sub 2x2, 1 chunk |
-| plain | 16384 | 768 | 18432 | 1.793 (1.772-1.867) | 1.174 (1.134-1.202) | 1.527 | 12x9 M11/K6/N8; 12x9 M4/K6/N16 sub 2x2, 1 chunk |
-| plain | 16384 | 6144 | 18432 | 6.327 (6.312-6.385) | 5.512 (5.496-5.536) | 1.148 | 12x9 M4/K12/N16; 12x9 M10/K6/N10 sub 2x2, 1 chunk |
-| plain | 16512 | 768 | 18432 | 1.790 (1.698-1.843) | 1.172 (1.117-1.205) | 1.528 | 12x9 M11/K6/N8; 12x9 M4/K6/N16 sub 2x2, 1 chunk |
-| plain | 16512 | 6144 | 18432 | 6.355 (6.288-6.409) | 5.528 (5.505-5.558) | 1.150 | 12x9 M4/K12/N16; 12x9 M10/K6/N10 sub 2x2, 1 chunk |
-| QKV | 64 | 6144 | 18432 | 0.315 (0.307-0.319) | 0.356 (0.353-0.361) | 0.885 | 2x9 M1/K16/N16; 12x9 M4/K4/N16 sub 2x2, 3 chunks |
-| QKV | 128 | 6144 | 9216 | 0.187 (0.180-0.190) | 0.195 (0.191-0.197) | 0.960 | 4x9 M1/K24/N8; 12x9 M2/K4/N8 sub 2x2, 3 chunks |
-| QKV | 512 | 6144 | 18432 | 0.372 (0.367-0.382) | 0.424 (0.418-0.428) | 0.878 | 10x9 M2/K16/N16; 12x9 M8/K8/N8 sub 2x2, 3 chunks |
-| QKV | 1024 | 6144 | 9216 | 0.371 (0.362-0.377) | 0.303 (0.299-0.309) | 1.221 | 11x9 M3/K24/N8; 12x8 M3/K8/N10 sub 3x1, 3 chunks |
-| QKV | 1152 | 6144 | 9216 | 0.396 (0.389-0.405) | 0.312 (0.307-0.316) | 1.269 | 12x9 M3/K24/N8; 12x8 M3/K8/N10 sub 3x1, 3 chunks |
-| QKV | 2048 | 6144 | 18432 | 0.842 (0.825-0.884) | 0.816 (0.806-0.824) | 1.032 | 11x9 M6/K8/N16; 12x8 M6/K8/N16 sub 1x4, 3 chunks |
-| QKV | 4096 | 768 | 9216 | 0.263 (0.260-0.305) | 0.231 (0.228-0.252) | 1.140 | 12x9 M11/K6/N8; 12x9 M11/K3/N8 sub 1x4, 3 chunks |
-| QKV | 4096 | 6144 | 9216 | 1.246 (1.234-1.284) | 0.941 (0.924-0.943) | 1.325 | 12x9 M11/K8/N8; 12x9 M11/K8/N8 sub 1x4, 3 chunks |
-| QKV | 4768 | 5376 | 21504 | 3.785 (3.747-3.821) | 1.744 (1.730-1.762) | 2.170 | 12x8 M13/K6/N7; 12x9 M8/K7/N12 sub 2x2, 3 chunks |
-| QKV | 8192 | 6144 | 18432 | 4.918 (4.872-4.952) | 3.033 (2.961-3.073) | 1.622 | 12x9 M11/K8/N8; 12x9 M6/K6/N16 sub 2x2, 3 chunks |
-| QKV | 9472 | 5120 | 15360 | 2.373 (2.344-2.429) | 2.473 (2.444-2.515) | 0.960 | 11x10 M9/K8/N12; 12x9 M7/K5/N16 sub 1x2, 3 chunks |
-| QKV | 16384 | 768 | 9216 | 0.929 (0.898-0.951) | 0.775 (0.749-0.784) | 1.198 | 12x9 M9/K6/N8; 12x9 M4/K6/N8 sub 2x2, 3 chunks |
-| QKV | 16384 | 6144 | 9216 | 4.899 (4.874-4.985) | 3.838 (3.814-3.855) | 1.276 | 12x9 M11/K8/N8; 12x9 M12/K6/N8 sub 2x2, 3 chunks |
+| plain | 64 | 1536 | 36864 | 0.165 (0.162-0.169) | 0.215 (0.212-0.218) | 0.767 | 2x9 M1/K12/N16; 12x9 M2/K6/N16 sub 2x2, 1 chunk |
+| plain | 64 | 6144 | 36864 | 0.617 (0.603-0.620) | 0.701 (0.694-0.708) | 0.880 | 2x9 M1/K16/N16; 12x9 M6/K4/N16 sub 2x2, 1 chunk |
+| plain | 128 | 768 | 18432 | 0.066 (0.065-0.068) | 0.073 (0.072-0.077) | 0.911 | 4x9 M1/K6/N16; 12x9 M2/K3/N16 sub 2x2, 1 chunk |
+| plain | 128 | 6144 | 18432 | 0.344 (0.338-0.346) | 0.357 (0.354-0.364) | 0.962 | 4x9 M1/K16/N16; 12x9 M2/K8/N8 sub 2x2, 1 chunk |
+| plain | 512 | 1536 | 36864 | 0.230 (0.226-0.238) | 0.228 (0.226-0.231) | 1.007 | 8x9 M2/K12/N16; 12x9 M2/K6/N16 sub 2x2, 1 chunk |
+| plain | 512 | 6144 | 36864 | 0.712 (0.704-0.747) | 0.749 (0.743-0.756) | 0.950 | 11x9 M2/K16/N16; 12x9 M4/K8/N8 sub 2x2, 1 chunk |
+| plain | 576 | 1536 | 36864 | 0.234 (0.229-0.239) | 0.231 (0.229-0.233) | 1.012 | 9x9 M2/K12/N16; 12x9 M2/K6/N16 sub 2x2, 1 chunk |
+| plain | 576 | 6144 | 36864 | 0.709 (0.694-0.719) | 0.752 (0.751-0.760) | 0.942 | 10x9 M2/K16/N16; 12x9 M2/K8/N8 sub 2x2, 1 chunk |
+| plain | 1024 | 768 | 18432 | 0.139 (0.137-0.181) | 0.121 (0.118-0.125) | 1.148 | 11x9 M3/K6/N16; 12x9 M3/K3/N16 sub 1x4, 1 chunk |
+| plain | 1024 | 6144 | 18432 | 0.532 (0.503-0.540) | 0.509 (0.505-0.515) | 1.045 | 12x9 M3/K12/N16; 12x8 M3/K6/N10 sub 3x1, 1 chunk |
+| plain | 1152 | 768 | 18432 | 0.149 (0.148-0.150) | 0.132 (0.130-0.137) | 1.128 | 9x9 M4/K6/N16; 12x9 M3/K6/N8 sub 1x4, 1 chunk |
+| plain | 1152 | 6144 | 18432 | 0.509 (0.497-0.557) | 0.489 (0.486-0.492) | 1.041 | 12x9 M3/K12/N16; 12x8 M3/K8/N10 sub 3x1, 1 chunk |
+| plain | 2048 | 1536 | 18432 | 0.328 (0.321-0.354) | 0.294 (0.292-0.296) | 1.114 | 12x9 M6/K6/N16; 12x9 M6/K6/N16 sub 2x2, 1 chunk |
+| plain | 2048 | 1536 | 36864 | 0.611 (0.599-0.646) | 0.458 (0.453-0.463) | 1.335 | 12x9 M6/K6/N16; 12x9 M6/K6/N16 sub 2x2, 1 chunk |
+| plain | 2048 | 6144 | 36864 | 1.631 (1.602-1.674) | 1.290 (1.272-1.296) | 1.264 | 11x9 M6/K8/N16; 12x9 M6/K8/N12 sub 2x2, 1 chunk |
+| plain | 2112 | 1536 | 36864 | 0.617 (0.595-0.640) | 0.461 (0.459-0.466) | 1.340 | 12x9 M3/K12/N16; 12x9 M6/K6/N16 sub 2x2, 1 chunk |
+| plain | 2112 | 6144 | 36864 | 1.637 (1.601-1.678) | 1.329 (1.320-1.336) | 1.232 | 11x9 M6/K8/N16; 12x9 M8/K6/N12 sub 2x2, 1 chunk |
+| plain | 3072 | 5120 | 5120 | 0.694 (0.684-0.727) | 0.637 (0.635-0.637) | 1.090 | 11x10 M9/K10/N4; 8x8 M12/K8/N8 sub 1x4, 1 chunk |
+| plain | 3072 | 5120 | 15360 | 0.831 (0.819-0.859) | 0.833 (0.825-0.839) | 0.998 | 11x10 M9/K8/N12; 12x9 M8/K8/N12 sub 1x4, 1 chunk |
+| plain | 4096 | 768 | 18432 | 0.466 (0.448-0.512) | 0.361 (0.358-0.380) | 1.290 | 12x9 M11/K6/N8; 12x9 M11/K3/N8 sub 1x4, 1 chunk |
+| plain | 4096 | 6144 | 18432 | 2.451 (2.410-2.496) | 1.403 (1.388-1.406) | 1.747 | 12x9 M11/K8/N8; 12x9 M11/K8/N8 sub 1x4, 1 chunk |
+| plain | 4224 | 768 | 18432 | 0.480 (0.465-0.522) | 0.374 (0.372-0.399) | 1.283 | 12x9 M11/K6/N8; 12x9 M11/K3/N8 sub 1x4, 1 chunk |
+| plain | 4224 | 6144 | 18432 | 2.500 (2.462-2.526) | 1.415 (1.404-1.419) | 1.767 | 12x9 M11/K8/N8; 12x9 M11/K8/N8 sub 1x4, 1 chunk |
+| plain | 4768 | 7168 | 5376 | 1.575 (1.561-1.586) | 1.147 (1.141-1.151) | 1.373 | 12x7 M13/K8/N6; 12x9 M8/K8/N6 sub 2x2, 1 chunk |
+| plain | 8192 | 1536 | 18432 | 1.512 (1.444-1.557) | 0.896 (0.892-0.915) | 1.687 | 12x9 M11/K6/N8; 12x9 M11/K6/N8 sub 1x4, 1 chunk |
+| plain | 8192 | 1536 | 36864 | 2.953 (2.905-3.058) | 1.498 (1.495-1.500) | 1.971 | 12x9 M11/K6/N8; 12x9 M11/K6/N8 sub 1x4, 1 chunk |
+| plain | 8192 | 6144 | 36864 | 9.745 (9.666-9.878) | 4.582 (4.553-4.621) | 2.127 | 12x9 M11/K8/N8; 12x9 M8/K6/N12 sub 2x2, 1 chunk |
+| plain | 8256 | 1536 | 36864 | 2.988 (2.904-3.031) | 1.501 (1.498-1.511) | 1.990 | 12x9 M11/K6/N8; 12x9 M11/K6/N8 sub 1x4, 1 chunk |
+| plain | 8256 | 6144 | 36864 | 9.776 (9.717-9.852) | 4.612 (4.597-4.641) | 2.120 | 12x9 M11/K8/N8; 12x9 M8/K6/N12 sub 2x2, 1 chunk |
+| plain | 16384 | 768 | 18432 | 1.725 (1.693-1.827) | 1.174 (1.134-1.202) | 1.470 | 12x9 M11/K6/N8; 12x9 M4/K6/N16 sub 2x2, 1 chunk |
+| plain | 16384 | 6144 | 18432 | 6.328 (6.302-6.369) | 5.512 (5.496-5.536) | 1.148 | 12x9 M4/K12/N16; 12x9 M10/K6/N10 sub 2x2, 1 chunk |
+| plain | 16512 | 768 | 18432 | 1.762 (1.708-1.810) | 1.172 (1.117-1.205) | 1.504 | 12x9 M11/K6/N8; 12x9 M4/K6/N16 sub 2x2, 1 chunk |
+| plain | 16512 | 6144 | 18432 | 6.338 (6.301-6.397) | 5.528 (5.505-5.558) | 1.147 | 12x9 M4/K12/N16; 12x9 M10/K6/N10 sub 2x2, 1 chunk |
+| QKV | 64 | 6144 | 18432 | 0.313 (0.310-0.318) | 0.356 (0.353-0.361) | 0.877 | 2x9 M1/K16/N16; 12x9 M4/K4/N16 sub 2x2, 3 chunks |
+| QKV | 128 | 6144 | 9216 | 0.186 (0.181-0.193) | 0.195 (0.191-0.197) | 0.952 | 4x9 M1/K24/N8; 12x9 M2/K4/N8 sub 2x2, 3 chunks |
+| QKV | 512 | 6144 | 18432 | 0.370 (0.367-0.381) | 0.424 (0.418-0.428) | 0.873 | 10x9 M2/K16/N16; 12x9 M8/K8/N8 sub 2x2, 3 chunks |
+| QKV | 1024 | 6144 | 9216 | 0.373 (0.362-0.403) | 0.303 (0.299-0.309) | 1.229 | 11x9 M3/K24/N8; 12x8 M3/K8/N10 sub 3x1, 3 chunks |
+| QKV | 1152 | 6144 | 9216 | 0.410 (0.396-0.432) | 0.312 (0.307-0.316) | 1.312 | 12x9 M3/K24/N8; 12x8 M3/K8/N10 sub 3x1, 3 chunks |
+| QKV | 2048 | 6144 | 18432 | 0.834 (0.827-0.837) | 0.816 (0.806-0.824) | 1.022 | 11x9 M6/K8/N16; 12x8 M6/K8/N16 sub 1x4, 3 chunks |
+| QKV | 4096 | 768 | 9216 | 0.268 (0.256-0.310) | 0.231 (0.228-0.252) | 1.160 | 12x9 M11/K6/N8; 12x9 M11/K3/N8 sub 1x4, 3 chunks |
+| QKV | 4096 | 6144 | 9216 | 1.268 (1.240-1.298) | 0.941 (0.924-0.943) | 1.347 | 12x9 M11/K8/N8; 12x9 M11/K8/N8 sub 1x4, 3 chunks |
+| QKV | 4768 | 5376 | 21504 | 3.770 (3.732-3.802) | 1.744 (1.730-1.762) | 2.162 | 12x8 M13/K6/N7; 12x9 M8/K7/N12 sub 2x2, 3 chunks |
+| QKV | 8192 | 6144 | 18432 | 4.902 (4.834-4.936) | 3.033 (2.961-3.073) | 1.616 | 12x9 M11/K8/N8; 12x9 M6/K6/N16 sub 2x2, 3 chunks |
+| QKV | 9472 | 5120 | 15360 | 2.368 (2.352-2.395) | 2.473 (2.444-2.515) | 0.958 | 11x10 M9/K8/N12; 12x9 M7/K5/N16 sub 1x2, 3 chunks |
+| QKV | 16384 | 768 | 9216 | 0.913 (0.885-0.937) | 0.775 (0.749-0.784) | 1.178 | 12x9 M9/K6/N8; 12x9 M4/K6/N8 sub 2x2, 3 chunks |
+| QKV | 16384 | 6144 | 9216 | 4.891 (4.862-4.929) | 3.838 (3.814-3.855) | 1.274 | 12x9 M11/K8/N8; 12x9 M12/K6/N8 sub 2x2, 3 chunks |
 | to_out | 64 | 6144 | 6144 | -- | 0.142 (0.140-0.144) | -- | native-only fused epilogue; 12x9 M2/K6/N6 sub 2x2, 1 chunk |
 | to_out | 128 | 6144 | 3072 | -- | 0.098 (0.093-0.105) | -- | native-only fused epilogue; 12x9 M2/K12/N6 sub 2x2, 1 chunk |
 | to_out | 512 | 6144 | 6144 | -- | 0.210 (0.208-0.211) | -- | native-only fused epilogue; 12x8 M2/K8/N8 sub 1x4, 1 chunk |
@@ -100,7 +103,7 @@ is in [Optimization experiments](OPTIMIZATION_EXPERIMENTS.md#all-shape-configura
 | FF1 SwiGLU | 1152 | 6144 | 18432 | -- | 0.530 (0.528-0.535) | -- | native-only fused epilogue; 12x8 M3/K8/N10 sub 3x1, 1 chunk |
 | FF1 SwiGLU | 4768 | 5376 | 28672 | -- | 2.453 (2.447-2.488) | -- | native-only fused epilogue; 12x9 M8/K3/N14 sub 2x2, 1 chunk |
 
-All 46 comparable inputs are paired. TT-Lang is faster on 12 of them; the geometric mean of TT-Lang/native is 1.23, ranging from 0.77 to 2.17. The largest ratios are inputs with many output blocks per core; on this host they do not respond to the output-buffer change that helps on the 13x10 host, and their decomposition is recorded in [Optimization experiments](OPTIMIZATION_EXPERIMENTS.md#where-tt-lang-loses-on-the-all-shape-inputs). The table was measured with the one-block output DFB; the operation now defaults to two blocks (`output_block_count`).
+All 46 comparable inputs are paired. TT-Lang is faster on 11 of them; the geometric mean of TT-Lang/native is 1.23, ranging from 0.77 to 2.16. The largest ratios are inputs with many output blocks per core; on this host they do not respond to the output-buffer change that helps on the 13x10 host, and their decomposition is recorded in [Optimization experiments](OPTIMIZATION_EXPERIMENTS.md#where-tt-lang-loses-on-the-all-shape-inputs). Against the earlier one-block TT-Lang measurement at `07118bf88`, the adopted operation changes the row medians by a geometric mean factor of 1.00 (0.96 to 1.05), so the ranking is unchanged.
 
 ## Accepted 9472/5120/15360 result
 
@@ -225,8 +228,12 @@ See the [reproduction commands](README.md#run).
 
 ### PA: All-shape four-device comparison
 
-- Measured: 2026-09-19 01:29-16:24 UTC on an Exabox eight-chip host; devices 7, 3, 1, 5.
-- TT-Lang source: 07118bf88eb29070ca064ab382387f04c84ef409, clean worktree.
+- Measured on an Exabox eight-chip host, devices 7, 3, 1, 5: native rows
+  2026-09-19 01:29-16:24 UTC, TT-Lang rows 2026-09-19 23:26-2026-09-20 03:00 UTC.
+- TT-Lang source: 4e1234b35b16e2d0c7e59456269162743e2b8d80, clean worktree
+  (native rows were collected from the checkout at
+  07118bf88eb29070ca064ab382387f04c84ef409; the native benchmark is unchanged
+  between the two).
 - TT-Metal source and runtime: 0e9d200db976120c129ab0deb13aa3f6d972b723.
 - IRD v1.1.10 image digest
   sha256:c64126d459afd77bf1b8c5cf68c5941c1561515d28b1b125d33fc57f950e09c7.
