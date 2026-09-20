@@ -273,7 +273,7 @@ synchronization mechanism.
 | Mode | Destination address | Send condition |
 | --- | --- | --- |
 | `RA/RP` | Each receiver publishes its reserved DFB address. | Every required receiver has posted. |
-| `CA/RP` | The sender computes each receiver DFB address. | Every required receiver has posted, except for an eligible one-shot fabric transfer to dedicated destination blocks. |
+| `CA/RP` | The sender computes each receiver DFB address. | Every required receiver has posted, except for an eligible one-shot fabric transfer to non-overlapping destination blocks. |
 | `CA/CC` | The sender computes each receiver DFB address. | Every required receiver has capacity. |
 
 `RA/CC` is unsupported because CC permits a send without a current
@@ -292,12 +292,12 @@ remote core may instead use ordered posted payload and completion writes.
 | --- | --- | --- | --- |
 | Receiver reserves a destination DFB block | Yes | Yes | Yes |
 | Receiver publishes the reserved block address | Yes: one inline 32-bit NoC write per post | No | No |
-| Receiver increments the sender-ready counter | After the published address is visible | After reserving the block; omitted for an eligible one-shot fabric transfer to dedicated destination blocks | No |
+| Receiver increments the sender-ready counter | After the published address is visible | After reserving the block; omitted for an eligible one-shot fabric transfer to non-overlapping destination blocks | No |
 | Condition for the sender's payload write | Every required receiver has posted | Every required receiver has posted, or the compiler proves that a one-shot fabric transfer owns its destination blocks | The receiver has available DFB capacity |
 | Sender obtains the destination address | Reads the published address-table entry | Computes `DFB base + slot * block stride + static offset` | Computes the same address |
 | Sender signals receiver completion | Payload barrier followed by an atomic increment | Ordered posted store for an eligible one-shot point-to-point transfer to a remote core; otherwise barrier and atomic increment | Payload barrier followed by an atomic increment |
 | Receiver action after popping a block | No capacity update | No capacity update | Increments the sender's capacity counter |
-| Sender/receiver synchronization | Per-transfer receiver-post rendezvous | Per-transfer receiver-post rendezvous, except for an eligible one-shot fabric transfer to dedicated destination blocks | Sender may use the next computed slot when a capacity credit is available |
+| Sender/receiver synchronization | Per-transfer receiver-post rendezvous | Per-transfer receiver-post rendezvous, except for an eligible one-shot fabric transfer to non-overlapping destination blocks | Sender may use the next computed slot when a capacity credit is available |
 | Multicast | Supported when receiver runtime addresses are proven equal | Supported with proven equal receiver runtime addresses | Not currently supported; uses `CA/RP` instead |
 
 The difference between `RA/RP` and `CA/RP` is how the sender obtains the
@@ -1146,10 +1146,10 @@ addresses. For local `RP`, a reserve does not complete until the DFB has
 enough free blocks, and the sender does not transfer data until that reserve
 posts readiness. After an advance reaches the physical DFB end, the next
 reserve may select the first block safely even when the consumer is in another
-kernel thread. Fabric
-transport does not use receiver-post admission and requires a separate capacity
-proof; an address sequence alone does not prove that a fabric destination slot
-is available.
+kernel thread. Fabric transport normally waits for receiver-post admission. The
+compiler omits that wait only for the one-shot, non-overlapping
+destination-block case described above; an address sequence alone does not
+prove that a fabric destination slot is available.
 
 Current recurrence construction requires every post to one receiver DFB to
 share one data-movement function and the same enclosing runtime-selected

@@ -3733,10 +3733,8 @@ LogicalResult lowerPipeTransferSend(
       FailureOr<PipeCounterTableEntry> maybeReadyProgress =
           lookupPipeCounterTableEntry(fabricReadyCounters, senderFunc,
                                       *pipeResource.readyCounter);
-      if (failed(maybeReadyProgress)) {
-        op.emitError("fabric pipe send has no cumulative readiness counter");
-        return failure();
-      }
+      assert(succeeded(maybeReadyProgress) &&
+             "fabric pipe send is missing its planned readiness counter");
       int64_t expectedReceiverPosts =
           isCollectiveTransfer(pipeResource.transferContract) ? numDests : 1;
       Value readyIndex = arith::ConstantIndexOp::create(
