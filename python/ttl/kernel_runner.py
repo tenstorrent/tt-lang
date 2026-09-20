@@ -2441,6 +2441,8 @@ def _get_cached_runtime_resources_impl(
         device=resource_device,
         kernel_specs=kernel_specs,
         dfb_reconfiguration_plan=dfb_reconfiguration_plan,
+        # Fabric forwarders always allocate global completion semaphores, so
+        # their presence requests zeroed cumulative-counter scratch.
         zero_initialize_sram_scratch=(
             num_dfb_resets > 0 or num_pipe_global_semaphores > 0
         ),
