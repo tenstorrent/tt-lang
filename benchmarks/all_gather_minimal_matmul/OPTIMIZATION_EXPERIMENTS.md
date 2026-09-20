@@ -318,7 +318,10 @@ DRAM 2.078 ms. The DRAM strategy was rejected earlier only on the accepted
 input (DRAM when the configuration needs more than one N round) is the next
 change for the all-shape table; the residual 1.5x on the worst input is the
 first-round ring plus the K-boundary weight stalls, which the DRAM strategy
-does not touch.
+does not touch. On the 13x10 host the same input measures 5.282 ms with the L1
+strategy against 4.389 ms native (ratio 1.20): the N-round repetition costs
+less where the ring's hops are fast, and the DRAM strategy hangs at start-up on
+that host, an open defect.
 
 ## Eight-device configuration search
 
