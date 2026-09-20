@@ -12,7 +12,7 @@ import ttl
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttlang_test_utils import get_fabric_mesh_shape, open_fabric_mesh
+from ttlang_test_utils import get_fabric_mesh_shape, open_fabric_mesh, to_dram, to_l1
 from utils.correctness import assert_allclose
 
 pytestmark = pytest.mark.multi_device
@@ -68,10 +68,10 @@ def _make_cross_node_copy(mesh_shape):
 
 
 @pytest.mark.parametrize(
-    "torch_dtype,ttnn_dtype,rtol,atol",
+    "torch_dtype,rtol,atol",
     [
-        pytest.param(torch.bfloat16, ttnn.bfloat16, 0.05, 1.0, id="bf16"),
-        pytest.param(torch.float32, ttnn.float32, 1e-5, 1e-5, id="fp32"),
+        pytest.param(torch.bfloat16, 0.05, 1.0, id="bf16"),
+        pytest.param(torch.float32, 1e-5, 1e-5, id="fp32"),
     ],
 )
 @pytest.mark.parametrize(
@@ -81,9 +81,7 @@ def _make_cross_node_copy(mesh_shape):
         pytest.param(ttnn.L1_MEMORY_CONFIG, id="l1"),
     ],
 )
-def test_graph_pipe_crosses_node_coordinates(
-    torch_dtype, ttnn_dtype, rtol, atol, memory_config
-):
+def test_graph_pipe_crosses_node_coordinates(torch_dtype, rtol, atol, memory_config):
     mesh_shape = get_fabric_mesh_shape(fabric_config=ttnn.FabricConfig.FABRIC_2D)
     device_count = prod(mesh_shape)
     if device_count < 2:
@@ -99,22 +97,9 @@ def test_graph_pipe_crosses_node_coordinates(
         fabric_config=ttnn.FabricConfig.FABRIC_2D,
     ) as mesh:
         mesh_mapper = ttnn.ShardTensorToMesh(mesh, dim=0)
-        inp = ttnn.from_torch(
-            inp_torch,
-            dtype=ttnn_dtype,
-            layout=ttnn.TILE_LAYOUT,
-            device=mesh,
-            memory_config=memory_config,
-            mesh_mapper=mesh_mapper,
-        )
-        out = ttnn.from_torch(
-            out_torch,
-            dtype=ttnn_dtype,
-            layout=ttnn.TILE_LAYOUT,
-            device=mesh,
-            memory_config=memory_config,
-            mesh_mapper=mesh_mapper,
-        )
+        tensor_factory = to_l1 if memory_config == ttnn.L1_MEMORY_CONFIG else to_dram
+        inp = tensor_factory(inp_torch, mesh, mesh_mapper=mesh_mapper)
+        out = tensor_factory(out_torch, mesh, mesh_mapper=mesh_mapper)
 
         cross_node_copy(inp, out)
 

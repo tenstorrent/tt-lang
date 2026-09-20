@@ -73,7 +73,11 @@ class PipeNetUse:
 
 @dataclass(frozen=True)
 class GraphPipeMappingUse:
-    """One device graph and its list of node-level Pipes."""
+    """One device graph and its node-level Pipes.
+
+    `pipes` is `None` only when every launch node maps to the same coordinates
+    on the source and destination devices.
+    """
 
     transfer_graph: TransferGraph
     pipes: Optional[Tuple[PipeUse, ...]]
@@ -295,7 +299,7 @@ def _validate_no_mixed_kinds(pipes: Tuple[PipeUse, ...]) -> None:
 
 
 def _validate_graph_mapping_duplicates(net: GraphPipeNetUse) -> None:
-    """Reject repeated device-edge and node-Pipe pairs without expanding them."""
+    """Reject duplicates without materializing the edge-by-Pipe cross product."""
     edge_sets = {}
 
     def get_edges(mapping: GraphPipeMappingUse) -> Set:

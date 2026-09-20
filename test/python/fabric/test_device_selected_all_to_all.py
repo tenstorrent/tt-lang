@@ -12,7 +12,7 @@ import ttl
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttlang_test_utils import get_fabric_mesh_shape, open_fabric_mesh, to_dram
+from ttlang_test_utils import get_fabric_mesh_shape, open_fabric_mesh, to_dram, to_l1
 from utils.correctness import assert_allclose
 
 pytestmark = pytest.mark.multi_device
@@ -85,10 +85,9 @@ def _make_selected_allgather(mesh_shape):
 
 def _mesh_tensor(mesh, tensor, memory_config):
     mesh_mapper = ttnn.ShardTensorToMesh(mesh, dim=0)
-    device_tensor = to_dram(tensor, mesh, mesh_mapper=mesh_mapper)
     if memory_config == ttnn.L1_MEMORY_CONFIG:
-        device_tensor = ttnn.to_memory_config(device_tensor, memory_config)
-    return device_tensor
+        return to_l1(tensor, mesh, mesh_mapper=mesh_mapper)
+    return to_dram(tensor, mesh, mesh_mapper=mesh_mapper)
 
 
 @pytest.mark.parametrize(

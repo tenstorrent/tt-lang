@@ -7,7 +7,8 @@
 This module contains architecture-neutral frontend metadata. Explicit graphs
 store O(E) user edges. Axis-neighbor, gather, scatter, and all-to-all graphs
 store only their domain and constructor parameters; stencil graphs also store
-their offsets. No graph allocates runtime host state or device-visible memory.
+their offsets. These objects are immutable compile-time metadata; lowering
+selects the generated kernel arithmetic and immutable tables.
 """
 
 from __future__ import annotations
@@ -119,7 +120,7 @@ class DomainComponent:
         )
 
 
-@dataclass(frozen=True, init=False, eq=False)
+@dataclass(frozen=True, init=False)
 class DeviceRef:
     """Coordinate of one member of a `DeviceDomain`."""
 
@@ -132,10 +133,11 @@ class DeviceRef:
                 "DeviceRef accepts positional coordinates or named coordinates, not both"
             )
         if named_coordinates:
-            component_names = tuple(named_coordinates.keys())
+            named_components = tuple(sorted(named_coordinates.items()))
+            component_names = tuple(name for name, _ in named_components)
             normalized = tuple(
                 _normalize_coordinate(coord, f"DeviceRef {name!r}")
-                for name, coord in named_coordinates.items()
+                for name, coord in named_components
             )
         else:
             if not coordinates:
@@ -151,14 +153,6 @@ class DeviceRef:
     @property
     def is_named(self) -> bool:
         return bool(self.component_names)
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, DeviceRef):
-            return NotImplemented
-        return self.coordinates == other.coordinates
-
-    def __hash__(self) -> int:
-        return hash(self.coordinates)
 
 
 @dataclass(frozen=True)
@@ -222,16 +216,6 @@ class ScatterTransfer(StructuredTransfer):
 @dataclass(frozen=True)
 class AllToAllTransfer(StructuredTransfer):
     """Transfer relation between every ordered pair of distinct devices."""
-
-
-@dataclass(frozen=True)
-class GraphMetadataCost:
-    """Asymptotic storage summary for a `TransferGraph`."""
-
-    storage_class: str
-    compile_time: str
-    runtime_host: str
-    device_visible: str
 
 
 @dataclass(frozen=True, init=False)
@@ -500,6 +484,10 @@ class DevicePoint(DeviceSelection):
     reference: DeviceRef
 
     def __post_init__(self) -> None:
+        if not isinstance(self.domain, DeviceDomain):
+            raise TypeError("device point requires a DeviceDomain")
+        if not isinstance(self.reference, DeviceRef):
+            raise TypeError("device point reference must be a DeviceRef")
         object.__setattr__(
             self, "reference", self.domain.resolve_device_ref(self.reference)
         )
@@ -528,7 +516,18 @@ class DeviceView(DeviceSelection):
     axes: Tuple[int | range, ...]
 
     def __post_init__(self) -> None:
-        axes = tuple(self.axes)
+        if not isinstance(self.domain, DeviceDomain):
+            raise TypeError("device view requires a DeviceDomain")
+        if isinstance(self.axes, (str, bytes)):
+            raise TypeError(
+                "device view axes must be an iterable of integers or ranges"
+            )
+        try:
+            axes = tuple(self.axes)
+        except TypeError as error:
+            raise TypeError(
+                "device view axes must be an iterable of integers or ranges"
+            ) from error
         if len(axes) != len(self.domain.flattened_extent):
             raise ValueError("device view must specify every parent axis")
         for axis, extent in zip(axes, self.domain.flattened_extent):
@@ -601,8 +600,22 @@ class DeviceSet(DeviceSelection):
     references: Tuple[DeviceRef, ...]
 
     def __post_init__(self) -> None:
+        if not isinstance(self.domain, DeviceDomain):
+            raise TypeError("device set requires a DeviceDomain")
+        if isinstance(self.references, (str, bytes)):
+            raise TypeError(
+                "device set references must be an iterable of DeviceRef values"
+            )
+        try:
+            input_references = tuple(self.references)
+        except TypeError as error:
+            raise TypeError(
+                "device set references must be an iterable of DeviceRef values"
+            ) from error
+        if any(not isinstance(reference, DeviceRef) for reference in input_references):
+            raise TypeError("device set references must contain only DeviceRef values")
         references = {
-            self.domain.resolve_device_ref(reference) for reference in self.references
+            self.domain.resolve_device_ref(reference) for reference in input_references
         }
         object.__setattr__(
             self, "references", tuple(sorted(references, key=self.domain.index_order))
@@ -657,6 +670,7 @@ class TransferGraph:
         edges: Iterable[TransferEdge] = (),
         structured: Optional[StructuredTransfer] = None,
     ) -> None:
+        domain = self._require_domain(domain)
         input_edges = tuple(edges)
         if structured is not None and input_edges:
             raise ValueError("TransferGraph must be explicit or structured, not both")
@@ -774,20 +788,6 @@ class TransferGraph:
     @property
     def explicit_edge_count(self) -> Optional[int]:
         return len(self.transfer_edges) if self.is_explicit else None
-
-    def metadata_cost(self) -> GraphMetadataCost:
-        if self.is_explicit:
-            compile_time = "O(E * (C + R)) explicit user edges"
-        elif isinstance(self.structured, StencilTransfer):
-            compile_time = "O(K + C + R) stencil offsets and domain parameters"
-        else:
-            compile_time = "O(1 + C + R) domain and relation parameters"
-        return GraphMetadataCost(
-            storage_class="compile-time metadata",
-            compile_time=compile_time,
-            runtime_host="none allocated by TransferGraph",
-            device_visible="none allocated by TransferGraph",
-        )
 
     def _operation_identity_capture(self) -> tuple:
         """Return the stored graph descriptor used by operation caching."""
@@ -985,6 +985,7 @@ class TransferGraph:
 
     @staticmethod
     def _default_component(domain: DeviceDomain, component_name: Optional[str]) -> str:
+        domain = TransferGraph._require_domain(domain)
         if component_name is not None:
             domain.component_index(component_name)
             return component_name
@@ -993,6 +994,12 @@ class TransferGraph:
         raise ValueError(
             "structured transfers over product domains require an explicit component"
         )
+
+    @staticmethod
+    def _require_domain(domain: Any) -> DeviceDomain:
+        if not isinstance(domain, DeviceDomain):
+            raise TypeError("transfer graph requires a DeviceDomain")
+        return domain
 
     @staticmethod
     def _resolve_component_endpoint(
@@ -1174,7 +1181,6 @@ __all__ = [
     "DeviceView",
     "DomainComponent",
     "GatherTransfer",
-    "GraphMetadataCost",
     "NodeSelection",
     "ScatterTransfer",
     "StencilTransfer",

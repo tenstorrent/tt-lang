@@ -333,7 +333,7 @@ def to_dram(torch_tensor, device, tile=None, *, mesh_mapper=None):
     )
 
 
-def to_l1(torch_tensor, device, tile=None):
+def to_l1(torch_tensor, device, tile=None, *, mesh_mapper=None):
     """Create a TTNN tensor in L1 from a torch tensor.
 
     Default tiles are created in DRAM then moved to L1. Custom tiles are
@@ -341,12 +341,13 @@ def to_l1(torch_tensor, device, tile=None):
     descriptor.
 
     Args:
-        torch_tensor: Source torch tensor
-        device: TTNN device handle
-        tile: Optional physical tile dimensions
+        torch_tensor: Source torch tensor.
+        device: TTNN device or mesh handle.
+        tile: Optional physical tile dimensions.
+        mesh_mapper: Optional mapping from the source tensor to a device mesh.
 
     Returns:
-        TTNN tensor in L1 with TILE_LAYOUT
+        TTNN tensor in L1 with TILE_LAYOUT.
     """
     ttnn = _get_ttnn()
     if ttnn is None:
@@ -362,9 +363,10 @@ def to_l1(torch_tensor, device, tile=None):
             layout=ttnn.TILE_LAYOUT,
             device=device,
             memory_config=ttnn.L1_MEMORY_CONFIG,
+            mesh_mapper=mesh_mapper,
             tile=ttnn.Tile(tile),
         )
-    dram_tensor = to_dram(torch_tensor, device, tile=tile)
+    dram_tensor = to_dram(torch_tensor, device, tile=tile, mesh_mapper=mesh_mapper)
     return ttnn.to_memory_config(dram_tensor, memory_config=ttnn.L1_MEMORY_CONFIG)
 
 
