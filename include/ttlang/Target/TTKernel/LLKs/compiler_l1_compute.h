@@ -10,16 +10,11 @@
 #include "api/compute/tile_move_copy.h"
 #include "api/compute/transpose.h"
 namespace ttlang::l1 {
+/// Properties that select one LLK implementation independently of SRAM
+/// placement.
 template <uint32_t Format, uint32_t PageBytes, uint32_t TileHeight,
-          uint32_t TileWidth, uint32_t PagesPerBlock, uint32_t BlockCount,
-          uint32_t StorageCapacityPages, uint32_t PayloadOffset,
-          int32_t PayloadCommonArgIndex, bool DirectToDestination>
-class Operand
-    : public Buffer<PageBytes, PagesPerBlock, BlockCount, StorageCapacityPages,
-                    PayloadOffset, PayloadCommonArgIndex> {
-public:
-  using Buffer<PageBytes, PagesPerBlock, BlockCount, StorageCapacityPages,
-               PayloadOffset, PayloadCommonArgIndex>::Buffer;
+          uint32_t TileWidth, bool DirectToDestination>
+struct ComputeTileMetadata {
   static constexpr uint32_t format = Format;
   static constexpr bool directToDestination = DirectToDestination;
   static constexpr uint32_t unpackFormat =
@@ -32,6 +27,25 @@ public:
       target::makeTensorShape<TileHeight, TileWidth>();
   static_assert(PageBytes % target::llkAddressWordBytes == 0,
                 "compute page size must use whole LLK address words");
+};
+
+template <uint32_t Format, uint32_t PageBytes, uint32_t TileHeight,
+          uint32_t TileWidth, uint32_t PagesPerBlock, uint32_t BlockCount,
+          uint32_t StorageCapacityPages, uint32_t PayloadOffset,
+          int32_t PayloadCommonArgIndex, bool DirectToDestination>
+class Operand
+    : public Buffer<PageBytes, PagesPerBlock, BlockCount, StorageCapacityPages,
+                    PayloadOffset, PayloadCommonArgIndex> {
+public:
+  using Buffer<PageBytes, PagesPerBlock, BlockCount, StorageCapacityPages,
+               PayloadOffset, PayloadCommonArgIndex>::Buffer;
+  using TileMetadata = ComputeTileMetadata<Format, PageBytes, TileHeight,
+                                           TileWidth, DirectToDestination>;
+  static constexpr uint32_t format = TileMetadata::format;
+  static constexpr bool directToDestination = TileMetadata::directToDestination;
+  static constexpr uint32_t unpackFormat = TileMetadata::unpackFormat;
+  static constexpr uint32_t pageWords = TileMetadata::pageWords;
+  static constexpr ckernel::TensorShape tensorShape = TileMetadata::tensorShape;
   uint32_t readTile(uint32_t tile) const {
     return target::toLlkTileAddress(this->get_read_ptr(), tile, pageWords);
   }
@@ -62,42 +76,50 @@ public:
 namespace target {
 template <typename Source>
 inline void copy_tile_init(Source source);
-template <typename Lhs, typename Rhs>
+template <typename LhsTile, typename RhsTile>
 __attribute__((noinline)) inline void
 matmulInitShape(uint32_t transpose, uint32_t columns, uint32_t rows,
                 uint32_t inner) {
   UNPACK((_llk_unpack_AB_matmul_init_(
-      transpose, columns, rows, inner, Rhs::tensorShape.face_r_dim,
-      Lhs::tensorShape.face_r_dim, Rhs::tensorShape.total_num_faces(),
-      Lhs::tensorShape.total_num_faces(),
-      target::hasPartialFace(Rhs::tensorShape),
-      target::hasPartialFace(Lhs::tensorShape))));
+      transpose, columns, rows, inner, RhsTile::tensorShape.face_r_dim,
+      LhsTile::tensorShape.face_r_dim, RhsTile::tensorShape.total_num_faces(),
+      LhsTile::tensorShape.total_num_faces(),
+      target::hasPartialFace(RhsTile::tensorShape),
+      target::hasPartialFace(LhsTile::tensorShape))));
   MATH((_llk_math_matmul_init_<MATH_FIDELITY, MM_THROTTLE>(
-      Lhs::tensorShape.total_row_dim(), Lhs::tensorShape.total_col_dim(),
-      Rhs::tensorShape.total_row_dim(), Rhs::tensorShape.total_col_dim(),
-      target::hasPartialFace(Lhs::tensorShape), transpose, columns, rows)));
+      LhsTile::tensorShape.total_row_dim(),
+      LhsTile::tensorShape.total_col_dim(),
+      RhsTile::tensorShape.total_row_dim(),
+      RhsTile::tensorShape.total_col_dim(),
+      target::hasPartialFace(LhsTile::tensorShape), transpose, columns, rows)));
   resetMatmulThrottleState();
 }
-template <ckernel::PoolType Pool, ckernel::ReduceDim Dimension, typename Input,
-          typename Output>
+template <ckernel::PoolType Pool, ckernel::ReduceDim Dimension,
+          typename InputTile, typename OutputTile>
 __attribute__((noinline)) inline void reduceInitShape() {
-  UNPACK((_llk_unpack_AB_reduce_init_<Pool, Dimension>(Input::tensorShape)));
+  UNPACK(
+      (_llk_unpack_AB_reduce_init_<Pool, Dimension>(InputTile::tensorShape)));
   MATH((_llk_math_reduce_init_<Pool, Dimension, DST_ACCUM_MODE, MATH_FIDELITY>(
-      Input::tensorShape)));
+      InputTile::tensorShape)));
   PACK((_llk_pack_reduce_mask_config_<Dimension, ckernel::PackMode::Default>(
-      Output::tensorShape.face_r_dim)));
+      OutputTile::tensorShape.face_r_dim)));
+}
+template <ckernel::BroadcastType Broadcast, typename SourceTile>
+__attribute__((noinline)) inline void unaryBcastInitTile() {
+  constexpr auto copyType = SourceTile::directToDestination ||
+                                    Broadcast == ckernel::BroadcastType::NONE
+                                ? ckernel::DataCopyType::A2D
+                                : ckernel::DataCopyType::B2D;
+  UNPACK((_llk_unpack_A_init_<Broadcast, false,
+                              ckernel::EltwiseBinaryReuseDestType::NONE,
+                              SourceTile::directToDestination>(
+      0, 0, SourceTile::tensorShape, SourceTile::format,
+      SourceTile::unpackFormat)));
+  initializeUnaryDataCopy<copyType, Broadcast, SourceTile>();
 }
 template <ckernel::BroadcastType Broadcast, typename Source>
 inline void unaryBcastInit(Source) {
-  constexpr auto copyType =
-      Source::directToDestination || Broadcast == ckernel::BroadcastType::NONE
-          ? ckernel::DataCopyType::A2D
-          : ckernel::DataCopyType::B2D;
-  UNPACK((_llk_unpack_A_init_<Broadcast, false,
-                              ckernel::EltwiseBinaryReuseDestType::NONE,
-                              Source::directToDestination>(
-      0, 0, Source::tensorShape, Source::format, Source::unpackFormat)));
-  initializeUnaryDataCopy<copyType, Broadcast, Source>();
+  unaryBcastInitTile<Broadcast, typename Source::TileMetadata>();
 }
 template <ckernel::BroadcastType Broadcast, typename Source>
 inline void unary_bcast(Source source, uint32_t tile, uint32_t destination) {
@@ -132,110 +154,123 @@ class ComputeContext {
   uint32_t outputHeight = 0;
   uint32_t outputWidth = 0;
 
-  template <typename SourceA, typename SourceB>
+  template <typename SourceATile, typename SourceBTile>
   void recordInputs() {
-    sourceAFormat = SourceA::format;
-    sourceAUnpackFormat = SourceA::unpackFormat;
-    sourceAPageWords = SourceA::pageWords;
-    sourceAFaceRowHeight = SourceA::tensorShape.face_r_dim;
-    sourceAFaceCount = SourceA::tensorShape.total_num_faces();
-    sourceBFormat = SourceB::format;
-    sourceBUnpackFormat = SourceB::unpackFormat;
-    sourceBPageWords = SourceB::pageWords;
-    sourceBFaceRowHeight = SourceB::tensorShape.face_r_dim;
-    sourceBFaceCount = SourceB::tensorShape.total_num_faces();
+    sourceAFormat = SourceATile::format;
+    sourceAUnpackFormat = SourceATile::unpackFormat;
+    sourceAPageWords = SourceATile::pageWords;
+    sourceAFaceRowHeight = SourceATile::tensorShape.face_r_dim;
+    sourceAFaceCount = SourceATile::tensorShape.total_num_faces();
+    sourceBFormat = SourceBTile::format;
+    sourceBUnpackFormat = SourceBTile::unpackFormat;
+    sourceBPageWords = SourceBTile::pageWords;
+    sourceBFaceRowHeight = SourceBTile::tensorShape.face_r_dim;
+    sourceBFaceCount = SourceBTile::tensorShape.total_num_faces();
   }
 
-  template <typename Output>
+  template <typename OutputTile>
   void recordOutput() {
-    outputFormat = Output::format;
-    outputPageWords = Output::pageWords;
-    outputHeight = Output::tensorShape.total_row_dim();
-    outputWidth = Output::tensorShape.total_col_dim();
+    outputFormat = OutputTile::format;
+    outputPageWords = OutputTile::pageWords;
+    outputHeight = OutputTile::tensorShape.total_row_dim();
+    outputWidth = OutputTile::tensorShape.total_col_dim();
+  }
+
+  template <typename SourceATile, typename SourceBTile>
+  __attribute__((noinline)) void configureInputTiles() {
+    bool sourceAGeometryChanged =
+        sourceAPageWords != SourceATile::pageWords ||
+        sourceAFaceRowHeight != SourceATile::tensorShape.face_r_dim ||
+        sourceAFaceCount != SourceATile::tensorShape.total_num_faces();
+    if (sourceAFormat != SourceATile::format ||
+        sourceAUnpackFormat != SourceATile::unpackFormat ||
+        sourceAGeometryChanged) {
+      if (sourceAGeometryChanged) {
+        UNPACK((_llk_unpack_reconfig_data_format_srca_impl_<
+                DST_ACCUM_MODE, p_dim_stride_target::FACE_ROW_MAJOR>(
+            SourceATile::format, SourceATile::unpackFormat,
+            SourceATile::pageWords, SourceATile::tensorShape.face_r_dim,
+            SourceATile::tensorShape.total_num_faces())));
+      } else {
+        UNPACK((_llk_unpack_reconfig_data_format_srca_impl_<
+                DST_ACCUM_MODE, p_dim_stride_target::IGNORE>(
+            SourceATile::format, SourceATile::unpackFormat,
+            SourceATile::pageWords, SourceATile::tensorShape.face_r_dim,
+            SourceATile::tensorShape.total_num_faces())));
+      }
+      if (sourceAUnpackFormat != SourceATile::unpackFormat) {
+        MATH((_llk_math_reconfig_data_format_srca_<DST_ACCUM_MODE>(
+            SourceATile::unpackFormat)));
+      }
+    }
+    bool sourceBGeometryChanged =
+        sourceBPageWords != SourceBTile::pageWords ||
+        sourceBFaceRowHeight != SourceBTile::tensorShape.face_r_dim ||
+        sourceBFaceCount != SourceBTile::tensorShape.total_num_faces();
+    if (sourceBFormat != SourceBTile::format ||
+        sourceBUnpackFormat != SourceBTile::unpackFormat ||
+        sourceBGeometryChanged) {
+      if (sourceBGeometryChanged) {
+        UNPACK((_llk_unpack_reconfig_data_format_srcb_impl_<
+                DST_ACCUM_MODE, p_dim_stride_target::FACE_ROW_MAJOR>(
+            SourceBTile::format, SourceBTile::unpackFormat,
+            SourceBTile::pageWords, SourceBTile::tensorShape.face_r_dim,
+            SourceBTile::tensorShape.total_num_faces())));
+      } else {
+        UNPACK((_llk_unpack_reconfig_data_format_srcb_impl_<
+                DST_ACCUM_MODE, p_dim_stride_target::IGNORE>(
+            SourceBTile::format, SourceBTile::unpackFormat,
+            SourceBTile::pageWords, SourceBTile::tensorShape.face_r_dim,
+            SourceBTile::tensorShape.total_num_faces())));
+      }
+      if (sourceBUnpackFormat != SourceBTile::unpackFormat) {
+        MATH((_llk_math_reconfig_data_format_srcb_<DST_ACCUM_MODE>(
+            SourceBTile::unpackFormat)));
+      }
+    }
+    recordInputs<SourceATile, SourceBTile>();
+  }
+
+  template <typename SourceATile, typename SourceBTile, typename OutputTile>
+  __attribute__((noinline)) void configureTiles() {
+    if (!initialized) {
+      UNPACK((_llk_unpack_hw_configure_<DST_ACCUM_MODE>(
+          SourceATile::format, SourceBTile::format, SourceATile::unpackFormat,
+          SourceBTile::unpackFormat, SourceATile::tensorShape.face_r_dim,
+          SourceBTile::tensorShape.face_r_dim,
+          SourceATile::tensorShape.total_num_faces(),
+          SourceBTile::tensorShape.total_num_faces(), SourceATile::pageWords,
+          SourceBTile::pageWords)));
+      MATH((llk_math_pack_sync_init<DST_ACCUM_MODE>()));
+      MATH((_llk_math_hw_configure_<DST_ACCUM_MODE>(
+          SourceATile::unpackFormat, SourceBTile::unpackFormat)));
+      initializePack<OutputTile>();
+      initialized = true;
+      recordInputs<SourceATile, SourceBTile>();
+    } else {
+      configureInputTiles<SourceATile, SourceBTile>();
+      if (outputHeight != OutputTile::tensorShape.total_row_dim() ||
+          outputWidth != OutputTile::tensorShape.total_col_dim()) {
+        reconfigurePack<OutputTile, true>();
+      } else if (outputFormat != OutputTile::format ||
+                 outputPageWords != OutputTile::pageWords) {
+        reconfigurePack<OutputTile>();
+      }
+    }
+    recordOutput<OutputTile>();
   }
 
 public:
   template <typename SourceA, typename SourceB, typename Output>
   void configure(SourceA, SourceB, Output) {
-    if (!initialized) {
-      UNPACK((_llk_unpack_hw_configure_<DST_ACCUM_MODE>(
-          SourceA::format, SourceB::format, SourceA::unpackFormat,
-          SourceB::unpackFormat, SourceA::tensorShape.face_r_dim,
-          SourceB::tensorShape.face_r_dim,
-          SourceA::tensorShape.total_num_faces(),
-          SourceB::tensorShape.total_num_faces(), SourceA::pageWords,
-          SourceB::pageWords)));
-      MATH((llk_math_pack_sync_init<DST_ACCUM_MODE>()));
-      MATH((_llk_math_hw_configure_<DST_ACCUM_MODE>(SourceA::unpackFormat,
-                                                    SourceB::unpackFormat)));
-      initializePack<Output>();
-      initialized = true;
-      recordInputs<SourceA, SourceB>();
-    } else {
-      configureInputs<SourceA, SourceB>();
-      if (outputHeight != Output::tensorShape.total_row_dim() ||
-          outputWidth != Output::tensorShape.total_col_dim()) {
-        reconfigurePack<Output, true>();
-      } else if (outputFormat != Output::format ||
-                 outputPageWords != Output::pageWords) {
-        reconfigurePack<Output>();
-      }
-    }
-    recordOutput<Output>();
+    configureTiles<typename SourceA::TileMetadata,
+                   typename SourceB::TileMetadata,
+                   typename Output::TileMetadata>();
   }
   template <typename SourceA, typename SourceB>
-  __attribute__((noinline)) void configureInputs() {
-    bool sourceAGeometryChanged =
-        sourceAPageWords != SourceA::pageWords ||
-        sourceAFaceRowHeight != SourceA::tensorShape.face_r_dim ||
-        sourceAFaceCount != SourceA::tensorShape.total_num_faces();
-    if (sourceAFormat != SourceA::format ||
-        sourceAUnpackFormat != SourceA::unpackFormat ||
-        sourceAGeometryChanged) {
-      if (sourceAGeometryChanged) {
-        UNPACK((_llk_unpack_reconfig_data_format_srca_impl_<
-                DST_ACCUM_MODE, p_dim_stride_target::FACE_ROW_MAJOR>(
-            SourceA::format, SourceA::unpackFormat, SourceA::pageWords,
-            SourceA::tensorShape.face_r_dim,
-            SourceA::tensorShape.total_num_faces())));
-      } else {
-        UNPACK((_llk_unpack_reconfig_data_format_srca_impl_<
-                DST_ACCUM_MODE, p_dim_stride_target::IGNORE>(
-            SourceA::format, SourceA::unpackFormat, SourceA::pageWords,
-            SourceA::tensorShape.face_r_dim,
-            SourceA::tensorShape.total_num_faces())));
-      }
-      if (sourceAUnpackFormat != SourceA::unpackFormat) {
-        MATH((_llk_math_reconfig_data_format_srca_<DST_ACCUM_MODE>(
-            SourceA::unpackFormat)));
-      }
-    }
-    bool sourceBGeometryChanged =
-        sourceBPageWords != SourceB::pageWords ||
-        sourceBFaceRowHeight != SourceB::tensorShape.face_r_dim ||
-        sourceBFaceCount != SourceB::tensorShape.total_num_faces();
-    if (sourceBFormat != SourceB::format ||
-        sourceBUnpackFormat != SourceB::unpackFormat ||
-        sourceBGeometryChanged) {
-      if (sourceBGeometryChanged) {
-        UNPACK((_llk_unpack_reconfig_data_format_srcb_impl_<
-                DST_ACCUM_MODE, p_dim_stride_target::FACE_ROW_MAJOR>(
-            SourceB::format, SourceB::unpackFormat, SourceB::pageWords,
-            SourceB::tensorShape.face_r_dim,
-            SourceB::tensorShape.total_num_faces())));
-      } else {
-        UNPACK((_llk_unpack_reconfig_data_format_srcb_impl_<
-                DST_ACCUM_MODE, p_dim_stride_target::IGNORE>(
-            SourceB::format, SourceB::unpackFormat, SourceB::pageWords,
-            SourceB::tensorShape.face_r_dim,
-            SourceB::tensorShape.total_num_faces())));
-      }
-      if (sourceBUnpackFormat != SourceB::unpackFormat) {
-        MATH((_llk_math_reconfig_data_format_srcb_<DST_ACCUM_MODE>(
-            SourceB::unpackFormat)));
-      }
-    }
-    recordInputs<SourceA, SourceB>();
+  void configureInputs() {
+    configureInputTiles<typename SourceA::TileMetadata,
+                        typename SourceB::TileMetadata>();
   }
   template <typename Lhs, typename Rhs, typename Output>
   void matmulInit(Lhs lhs, Rhs rhs, Output output, uint32_t transpose) {
@@ -245,7 +280,8 @@ public:
   void matmulBlockInit(Lhs lhs, Rhs rhs, Output output, uint32_t transpose,
                        uint32_t columns, uint32_t rows, uint32_t inner) {
     configure(rhs, lhs, output);
-    matmulInitShape<Lhs, Rhs>(transpose, columns, rows, inner);
+    matmulInitShape<typename Lhs::TileMetadata, typename Rhs::TileMetadata>(
+        transpose, columns, rows, inner);
   }
   template <typename Lhs, typename Rhs>
   void matmulInitShort(Lhs lhs, Rhs rhs, uint32_t transpose) {
@@ -255,7 +291,8 @@ public:
   void matmulBlockInitShort(Lhs, Rhs, uint32_t transpose, uint32_t columns,
                             uint32_t rows, uint32_t inner) {
     configureInputs<Rhs, Lhs>();
-    matmulInitShape<Lhs, Rhs>(transpose, columns, rows, inner);
+    matmulInitShape<typename Lhs::TileMetadata, typename Rhs::TileMetadata>(
+        transpose, columns, rows, inner);
   }
   template <ckernel::PoolType Pool, ckernel::ReduceDim Dimension,
             typename Input, typename Scaler, typename Output>
@@ -266,7 +303,8 @@ public:
     } else {
       configure(input, scaler, output);
     }
-    reduceInitShape<Pool, Dimension, Input, Output>();
+    reduceInitShape<Pool, Dimension, typename Input::TileMetadata,
+                    typename Output::TileMetadata>();
   }
   template <ckernel::BroadcastType Broadcast, typename Source, typename Output>
   void broadcastInit(Source source, Output output) {
@@ -294,14 +332,15 @@ public:
   }
 };
 
-template <typename Source>
+template <typename SourceTile>
 __attribute__((noinline)) inline void copyInitFormats() {
   UNPACK((_llk_unpack_A_init_<ckernel::BroadcastType::NONE, false,
                               ckernel::EltwiseBinaryReuseDestType::NONE,
-                              Source::directToDestination>(
-      0, 0, Source::tensorShape, Source::format, Source::unpackFormat)));
+                              SourceTile::directToDestination>(
+      0, 0, SourceTile::tensorShape, SourceTile::format,
+      SourceTile::unpackFormat)));
   initializeUnaryDataCopy<ckernel::DataCopyType::A2D,
-                          ckernel::BroadcastType::NONE, Source>();
+                          ckernel::BroadcastType::NONE, SourceTile>();
   MATH((ckernel::math::_configure_preserve_zero_flag_state_()));
 }
 template <uint32_t Format, uint32_t UnpackFormat, bool Direct>
@@ -318,7 +357,7 @@ __attribute__((noinline)) inline void copyAtAddress(uint32_t address,
 
 template <typename Source>
 inline void copy_tile_init(Source) {
-  copyInitFormats<Source>();
+  copyInitFormats<typename Source::TileMetadata>();
 }
 template <typename Source>
 inline void copy_tile(Source source, uint32_t tile, uint32_t destination) {
@@ -358,37 +397,39 @@ inline void binary_dest_reuse_tiles(Source source, uint32_t tile,
         get_effective_math_fidelity<Operation, MATH_FIDELITY>(), Reuse>(
       Source::tensorShape, destination, true)));
 }
-template <ckernel::EltwiseBinaryType Operation, typename Source>
+template <ckernel::EltwiseBinaryType Operation, typename SourceTile>
 __attribute__((noinline)) inline void binaryInit() {
   UNPACK((_llk_unpack_AB_init_<ckernel::BroadcastType::NONE>(
-      Source::tensorShape, ckernel::Transpose::None)));
+      SourceTile::tensorShape, ckernel::Transpose::None)));
   MATH((_llk_math_eltwise_binary_init_<
         Operation, ckernel::BroadcastType::NONE,
         get_effective_math_fidelity<Operation, MATH_FIDELITY>()>(
-      Source::tensorShape, false)));
+      SourceTile::tensorShape, false)));
 }
 // Sharing instruction emission bounds code size independently of storage
 // identities.
-template <ckernel::EltwiseBinaryType Operation, typename Source>
+template <ckernel::EltwiseBinaryType Operation, typename SourceTile>
 __attribute__((noinline)) inline void
 binaryAtAddresses(uint32_t sourceA, uint32_t sourceB, uint32_t destination) {
   UNPACK((_llk_unpack_AB_<ckernel::BroadcastType::NONE>(sourceA, sourceB)));
   MATH((_llk_math_eltwise_binary_<
         Operation, ckernel::BroadcastType::NONE, DST_SYNC_MODE, DST_ACCUM_MODE,
         get_effective_math_fidelity<Operation, MATH_FIDELITY>()>(
-      Source::tensorShape, destination, true)));
+      SourceTile::tensorShape, destination, true)));
 }
 template <ckernel::EltwiseBinaryType Operation, typename SourceA,
           typename SourceB>
 inline void binary(SourceA sourceA, SourceB sourceB, uint32_t tileA,
                    uint32_t tileB, uint32_t destination) {
-  UNPACK((binaryAtAddresses<Operation, SourceA>(
+  UNPACK((binaryAtAddresses<Operation, typename SourceA::TileMetadata>(
       sourceA.readTile(tileA), sourceB.readTile(tileB), destination)));
-  MATH((binaryAtAddresses<Operation, SourceA>(0, 0, destination)));
+  MATH((binaryAtAddresses<Operation, typename SourceA::TileMetadata>(
+      0, 0, destination)));
 }
 template <typename SourceA, typename SourceB>
 inline void add_tiles_init(SourceA sourceA, SourceB sourceB) {
-  binaryInit<ckernel::EltwiseBinaryType::ELWADD, SourceA>();
+  binaryInit<ckernel::EltwiseBinaryType::ELWADD,
+             typename SourceA::TileMetadata>();
 }
 template <typename SourceA, typename SourceB>
 inline void add_tiles(SourceA sourceA, SourceB sourceB, uint32_t tileA,
@@ -398,7 +439,8 @@ inline void add_tiles(SourceA sourceA, SourceB sourceB, uint32_t tileA,
 }
 template <typename SourceA, typename SourceB>
 inline void sub_tiles_init(SourceA sourceA, SourceB sourceB) {
-  binaryInit<ckernel::EltwiseBinaryType::ELWSUB, SourceA>();
+  binaryInit<ckernel::EltwiseBinaryType::ELWSUB,
+             typename SourceA::TileMetadata>();
 }
 template <typename SourceA, typename SourceB>
 inline void sub_tiles(SourceA sourceA, SourceB sourceB, uint32_t tileA,
@@ -408,7 +450,8 @@ inline void sub_tiles(SourceA sourceA, SourceB sourceB, uint32_t tileA,
 }
 template <typename SourceA, typename SourceB>
 inline void mul_tiles_init(SourceA sourceA, SourceB sourceB) {
-  binaryInit<ckernel::EltwiseBinaryType::ELWMUL, SourceA>();
+  binaryInit<ckernel::EltwiseBinaryType::ELWMUL,
+             typename SourceA::TileMetadata>();
 }
 template <typename SourceA, typename SourceB>
 inline void mul_tiles(SourceA sourceA, SourceB sourceB, uint32_t tileA,
@@ -416,27 +459,29 @@ inline void mul_tiles(SourceA sourceA, SourceB sourceB, uint32_t tileA,
   binary<ckernel::EltwiseBinaryType::ELWMUL>(sourceA, sourceB, tileA, tileB,
                                              destination);
 }
-template <typename Lhs, typename Rhs>
+template <typename LhsTile, typename RhsTile>
 __attribute__((noinline)) inline void
 matmulBlockAtAddresses(uint32_t lhs, uint32_t rhs, uint32_t lhsPageWords,
                        uint32_t rhsPageWords, uint32_t destination,
                        uint32_t transpose, uint32_t columns, uint32_t rows,
                        uint32_t inner) {
   UNPACK((_llk_unpack_AB_matmul_(lhs, rhs, 0, 0, lhsPageWords, rhsPageWords,
-                                 target::hasPartialFace(Rhs::tensorShape),
-                                 target::hasPartialFace(Lhs::tensorShape),
+                                 target::hasPartialFace(RhsTile::tensorShape),
+                                 target::hasPartialFace(LhsTile::tensorShape),
                                  columns, rows, inner)));
-  executeMatmul<Lhs, Rhs>(destination, transpose, columns, rows);
+  executeMatmul<LhsTile, RhsTile>(destination, transpose, columns, rows);
 }
 template <typename Lhs, typename Rhs>
 inline void matmul_block(Lhs lhs, Rhs rhs, uint32_t lhsTile, uint32_t rhsTile,
                          uint32_t destination, uint32_t transpose,
                          uint32_t columns, uint32_t rows, uint32_t inner) {
-  UNPACK((matmulBlockAtAddresses<Lhs, Rhs>(
+  UNPACK((matmulBlockAtAddresses<typename Lhs::TileMetadata,
+                                 typename Rhs::TileMetadata>(
       lhs.readTile(lhsTile), rhs.readTile(rhsTile), Lhs::pageWords,
       Rhs::pageWords, destination, transpose, columns, rows, inner)));
-  MATH((matmulBlockAtAddresses<Lhs, Rhs>(0, 0, 0, 0, destination, transpose,
-                                         columns, rows, inner)));
+  MATH((matmulBlockAtAddresses<typename Lhs::TileMetadata,
+                               typename Rhs::TileMetadata>(
+      0, 0, 0, 0, destination, transpose, columns, rows, inner)));
 }
 template <typename Lhs, typename Rhs>
 inline void matmul_tiles(Lhs lhs, Rhs rhs, uint32_t lhsTile, uint32_t rhsTile,
@@ -449,7 +494,8 @@ matmul_block_strided(Lhs lhs, Rhs rhs, uint32_t lhsTile, uint32_t rhsTile,
                      uint32_t destination, uint32_t transpose, uint32_t columns,
                      uint32_t rows, uint32_t inner, uint32_t rhsStride) {
   if (transpose) {
-    matmulInitShape<Lhs, Rhs>(transpose, 1, 1, 1);
+    matmulInitShape<typename Lhs::TileMetadata, typename Rhs::TileMetadata>(
+        transpose, 1, 1, 1);
     for (uint32_t row = 0; row < rows; ++row) {
       for (uint32_t column = 0; column < columns; ++column) {
         for (uint32_t reduction = 0; reduction < inner; ++reduction) {
@@ -467,20 +513,22 @@ matmul_block_strided(Lhs lhs, Rhs rhs, uint32_t lhsTile, uint32_t rhsTile,
                  destination, transpose, columns, rows, inner);
   }
 }
-template <ckernel::PoolType Pool, ckernel::ReduceDim Dimension, typename Input>
+template <ckernel::PoolType Pool, ckernel::ReduceDim Dimension,
+          typename InputTile>
 __attribute__((noinline)) inline void
 reduceAtAddresses(uint32_t input, uint32_t scaler, uint32_t destination) {
   UNPACK((_llk_unpack_AB_reduce_<Pool, Dimension>(input, scaler)));
   MATH((_llk_math_reduce_<Pool, Dimension, DST_ACCUM_MODE, MATH_FIDELITY>(
-      destination, Input::tensorShape)));
+      destination, InputTile::tensorShape)));
 }
 template <ckernel::PoolType Pool, ckernel::ReduceDim Dimension, typename Input,
           typename Scaler>
 inline void reduce_tile(Input input, Scaler scaler, uint32_t inputTile,
                         uint32_t scalerTile, uint32_t destination) {
-  UNPACK((reduceAtAddresses<Pool, Dimension, Input>(
+  UNPACK((reduceAtAddresses<Pool, Dimension, typename Input::TileMetadata>(
       input.readTile(inputTile), scaler.readTile(scalerTile), destination)));
-  MATH((reduceAtAddresses<Pool, Dimension, Input>(0, 0, destination)));
+  MATH((reduceAtAddresses<Pool, Dimension, typename Input::TileMetadata>(
+      0, 0, destination)));
 }
 inline void reduce_uninit() {
   MATH((_llk_math_reduce_uninit_()));
