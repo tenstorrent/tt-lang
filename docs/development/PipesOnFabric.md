@@ -351,8 +351,9 @@ should describe communication semantics without adding target topology fields.
 Local and fabric transfers use the same logical protocol:
 
 - the receiver owns and reserves the destination DFB block;
-- the receiver publishes readiness or participates in a proven capacity
-  protocol;
+- the receiver publishes readiness, participates in a proven capacity
+  protocol, or uses a fixed one-shot destination block that no other endpoint
+  writes;
 - the sender writes into the receiver-owned block;
 - the receiver waits for a completion signal before consuming the block;
 - source and destination roles are restricted by PipeNet guards;
@@ -642,6 +643,13 @@ Each dictionary entry contains `local` and `remote` `DeviceRefAttr` values,
 `MeshCoordinate` nor queries topology. Python artifact extraction later
 flattens the two device references into `FabricRouteSpec` tuples; physical
 resolution still waits until host execution setup.
+
+Separate send and receiver-post transport interfaces keep PipeNet protocol
+planning independent of transport emission. The NoC implementations emit
+same-device transfers and receiver address publication. The fabric
+implementations emit receiver-readiness atomics when required, sender atomics,
+and fused payload-write-plus-completion operations through the routing-plane
+manager.
 
 Before record-loop materialization, lowering builds immutable plans for every
 graph callback. It then materializes those loops and expands high-level copies
