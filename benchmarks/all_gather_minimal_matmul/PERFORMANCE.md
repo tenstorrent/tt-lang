@@ -103,7 +103,7 @@ is in [Optimization experiments](OPTIMIZATION_EXPERIMENTS.md#all-shape-configura
 | FF1 SwiGLU | 1152 | 6144 | 18432 | -- | 0.530 (0.528-0.535) | -- | native-only fused epilogue; 12x8 M3/K8/N10 sub 3x1, 1 chunk |
 | FF1 SwiGLU | 4768 | 5376 | 28672 | -- | 2.453 (2.447-2.488) | -- | native-only fused epilogue; 12x9 M8/K3/N14 sub 2x2, 1 chunk |
 
-All 46 comparable inputs are paired. TT-Lang is faster on 11 of them; the geometric mean of TT-Lang/native is 1.23, ranging from 0.77 to 2.16. The largest ratios are inputs with many output blocks per core; on this host they do not respond to the output-buffer change that helps on the 13x10 host, and their decomposition is recorded in [Optimization experiments](OPTIMIZATION_EXPERIMENTS.md#where-tt-lang-loses-on-the-all-shape-inputs). Against the earlier one-block TT-Lang measurement at `07118bf88`, the adopted operation changes the row medians by a geometric mean factor of 1.00 (0.96 to 1.05), so the ranking is unchanged.
+All 46 comparable inputs are paired. TT-Lang is faster on 11 of them; the geometric mean of TT-Lang/native is 1.23, ranging from 0.77 to 2.16. The ratio follows the number of N rounds (geometric mean 1.09 with one, 1.25 with two, above 2 with three or four) because the operation re-transports the activation for every N round; the decomposition of the worst input and the DRAM-staged remedy are recorded in [Optimization experiments](OPTIMIZATION_EXPERIMENTS.md#why-the-worst-all-shape-rows-are-more-than-twice-native). Against the earlier one-block TT-Lang measurement at `07118bf88`, the adopted operation changes the row medians by a geometric mean factor of 1.00 (0.96 to 1.05), so the ranking is unchanged.
 
 ## Accepted 9472/5120/15360 result
 

@@ -276,6 +276,50 @@ rejected only because the generated C++ kept the original ordering.
 16384/768/18432 is DRAM-bound for both implementations: its output rate
 during compute is about 350 GB/s.
 
+### Why the worst all-shape rows are more than twice native
+
+The TT-Lang/native ratio in the all-shape table follows the number of N
+rounds an input needs, not its size: on the all-shape host the geometric mean
+ratio is 1.09 over the 23 inputs with one N round, 1.25 over the 18 with two,
+2.16 for the one with three, and 2.05 over the four with four. M rounds do not
+have this effect (the two inputs with eleven M rounds sit at 1.15). The cause
+is structural: the bidirectional-L1 operation nests the activation ring (fabric
+gather and column multicast of every K half) inside the N-round loop, so it
+re-transports the activation once per N round, while native stages each M block
+of the gathered activation in DRAM once and reads it back for every N block.
+
+The per-phase decomposition of the worst plain input, 8192/6144/36864
+(TT-Lang 12x9 M11/K8/N8 with two output blocks, 9.75 ms; native 12x9 M8/K6/N12,
+4.58 ms; two M rounds and four N rounds), measured on the all-shape host with
+signposted variants of the adopted operation and the native wait counters, gives
+this anatomy of the critical compute core. Each of the eight rounds takes 1.12 to
+1.30 ms. Within a round, every half-block matmul takes 8.9 to 9.1 us (48 per
+round, about 0.43 ms), the activation waits sum to about 0.58 ms (the local
+half at distance 0 arrives in under 5 us, each of the three remote halves in 30
+to 70 us, and the right half of a pair arrives with the left), every K-block
+boundary adds a 22 to 67 us gap while the new K block's weights are read from
+DRAM by the source column and multicast (about 0.15 ms per round), and the
+output store takes 31 us. Over the operation that is about 4.6 ms of activation
+waiting against native's 0.92 ms, about 3.5 ms of matmul against native's
+3.5 ms, about 1.2 ms of K-boundary weight stalls against native's 0.16 ms of
+weight waiting, and 0.25 ms of output stores. The signpost zone buffer holds
+125 activation waits per core, so the per-round figures come from the first
+2.6 rounds; the per-round totals come from a zone that spans each round.
+
+The remedy already exists in the repository: `operation_bidirectional_dram.py`
+communicates only in the first N round and reads the staged activation from
+DRAM afterwards. On the all-shape host the worst input drops from 9.75 to
+6.46 ms with `--ttlang-activation-strategy bidirectional-dram` (ratio 1.41
+instead of 2.13). On a second host of the same type, in one session with
+participants 3, 2, 0, 1: 8192/6144/36864 L1 9.031 ms, DRAM 6.476 ms, native
+4.307 ms (ratio 2.10 to 1.50); 4096/6144/18432 with two N rounds L1 2.185 ms,
+DRAM 2.078 ms. The DRAM strategy was rejected earlier only on the accepted
+9472/5120/15360 control, which has one N round. Selecting the strategy per
+input (DRAM when the configuration needs more than one N round) is the next
+change for the all-shape table; the residual 1.5x on the worst input is the
+first-round ring plus the K-boundary weight stalls, which the DRAM strategy
+does not touch.
+
 ## Eight-device configuration search
 
 The native screen retained the published 12 x 9 transport configuration and
