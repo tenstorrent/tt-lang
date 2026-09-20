@@ -2554,10 +2554,10 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
   }
 
   FabricRoutePlan fabricRoutePlan;
-  if (failed(buildFabricRoutePlan(
-          mod, transferIndex, *pipeGraphOrErr, foreachLoweringInfo,
-          *externalManagerIntervals, *computedAddressTransfers,
-          fabricRoutePlan))) {
+  if (failed(
+          buildFabricRoutePlan(mod, transferIndex, *pipeGraphOrErr,
+                               foreachLoweringInfo, *externalManagerIntervals,
+                               *computedAddressTransfers, fabricRoutePlan))) {
     return failure();
   }
 

@@ -333,8 +333,7 @@ LogicalResult buildFabricRoutePlan(
     ModuleOp module, const PipeTransferIndex &transferIndex,
     const PipeGraph &pipeGraph, const PipeForeachLoweringInfo &foreachInfo,
     ArrayRef<ExternalFabricManagerInterval> externalManagerIntervals,
-    const PipeTransferNodeSet &computedAddressTransfers,
-    FabricRoutePlan &plan);
+    const PipeTransferNodeSet &computedAddressTransfers, FabricRoutePlan &plan);
 
 /// Return transfers whose destination addresses can be computed from finalized
 /// DFB storage and the receiver schedule.

@@ -3359,9 +3359,7 @@ def test_routing_plane_restricts_generated_routes_to_interval_nodes(
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     program = _make_fake_fabric_program(1)
     program.kernels[0].core_ranges = _make_fake_core_ranges((1, 0))
-    route = kernel_runner.FabricRouteSpec(
-        (0, 0), (0, 1), ((0, 0), (1, 0)), 0
-    )
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0), (1, 0)), 0)
 
     kernel_runner.configure_routing_plane_runtime_args(
         program_descriptor=program,
