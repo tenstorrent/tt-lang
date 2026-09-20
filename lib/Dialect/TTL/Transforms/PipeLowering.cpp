@@ -1432,6 +1432,8 @@ static Value buildSelectedPipeCounterAddress(
                                  typedLocalAddress);
 }
 
+// Selected tables require a valid counter in every row. Rows that omit
+// readiness use this counter only as inert data behind the generated guard.
 static PipeCounterInfo
 getFallbackSenderReadyCounter(ArrayRef<PipeResourceInfo> resources) {
   auto fallbackResource =
