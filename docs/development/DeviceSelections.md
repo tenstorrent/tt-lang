@@ -93,7 +93,9 @@ It identifies the participating devices but does not define source-to-destinatio
 pairs. Pairing two such sets by their sorted positions could silently connect
 unintended devices. `Pipe.pairwise(...)` therefore accepts rectangular views,
 whose coordinates define the correspondence. Use individual point Pipes when
-specific devices must be paired explicitly.
+specific devices must be paired explicitly and each pair has its own node
+endpoints. When several arbitrary device pairs share one node relation, use an
+explicit `TransferGraph.edges(...)` relation and one node `Pipe` instead.
 
 `Pipe.all_to_all(...)` accepts any device selection because it connects every
 selected source to every selected destination; it does not require pairwise
@@ -149,8 +151,13 @@ because those groups use NoC and fabric synchronization, respectively. A
 `PipeNet` preserves `Pipe` declaration order; it does not move all local
 transfers ahead of remote transfers from earlier Pipes. Within each group,
 pairwise transfers follow the positions in their source and destination views.
-All-to-all transfers process sources in parent-domain order and, for each
-source, destinations in parent-domain order.
+All-to-all transfers process sources in source-selection order and, for each
+source, destinations in destination-selection order. A `DeviceView` follows
+its axis ranges, with the last axis varying fastest. A `DeviceSet` is normalized
+to the parent domain's row-major order: components and axes are flattened in
+declaration order, with the last axis varying fastest. For example,
+`DeviceDomain((2, 3))` orders devices as `(0, 0)`, `(0, 1)`, `(0, 2)`,
+`(1, 0)`, `(1, 1)`, `(1, 2)`.
 
 The direct all-to-all implementation emits one fabric transfer for each ordered
 pair of distinct devices: `P * (P - 1)` transfers for `P` devices. A ring or

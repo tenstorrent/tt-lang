@@ -63,8 +63,21 @@ net = ttl.PipeNet(
 )
 ```
 
-The graph-only form applies every logical-device edge to every launch node. For
-example, this PipeNet transfers from device 0 to device 1:
+A graph PipeNet separates the directed logical-device relation from the
+source and destination Tensix-node relation. This avoids repeating the same
+device relation when it applies to every launch node or to several node
+`Pipe` declarations.
+
+`TransferGraph.edges(...)` is the explicit graph form. It stores each directed
+logical-device pair in declaration order. Use it for sparse or irregular
+connectivity that no structured constructor represents, or when the declared
+edge order is part of the program's transfer order. Its storage is O(E) for E
+edges. For regular domain-wide relations, the structured constructors below
+store only their parameters and derive the edges during lowering, avoiding an
+explicit edge list whose size grows with the domain.
+
+The graph-only form applies every logical-device edge to every launch node.
+For example, this explicit graph transfers from device 0 to device 1:
 
 ```python
 devices = ttl.DeviceDomain((2,))
@@ -85,8 +98,7 @@ device 0, node (1, 1) -> device 1, node (1, 1)
 Supplying `pipes=[ttl.Pipe(src=(1, 0), dst=(0, 0))]` instead describes one
 transfer from node `(1, 0)` on device 0 to node `(0, 0)` on device 1.
 
-`TransferGraph.edges(...)` lists device edges explicitly. The other
-constructors store parameters for common relations instead of an edge list:
+The structured graph constructors describe common relations by parameters:
 
 | Constructor | Device transfers | Order |
 | --- | --- | --- |
@@ -100,9 +112,13 @@ These five constructors omit self-transfers. `component=` selects the
 `DeviceDomain` component whose coordinates change; coordinates in other
 components remain fixed.
 
-Graph PipeNets currently require one destination device per edge. A
-`DeviceRange` destination requires graph multicast lowering and is rejected at
-construction.
+Each `TransferGraph` edge currently requires one destination device. This
+restriction applies to device-level multicast; node-level `Pipe` destination
+ranges remain supported for NoC multicast within one device. TT-Metal provides
+[fabric multicast packets](https://github.com/tenstorrent/tt-metal/blob/v0.79.0-dev20260917/tt_metal/fabric/hw/inc/mesh/api.h#L1124-L1158),
+but tt-lang does not yet lower a `DeviceRange` graph destination into TT-Metal
+multicast route metadata and receiver protocol state. Such a destination is
+therefore rejected at construction.
 
 When the source and destination node coordinates differ, `graph` and
 `pipes` declare both endpoint relations explicitly:
@@ -149,9 +165,12 @@ If either constructor produces both same-device and remote transfers, it
 places the same-device transfers first because NoC and fabric use different
 synchronization protocols. Within each set, pairwise transfers follow the
 positions in their source and destination views. All-to-all transfers process
-sources in parent-domain order and, for each source, destinations in
-parent-domain order. A `PipeNet` preserves `Pipe` declaration order; it does
-not regroup transfers from different Pipes by transport.
+sources in source-selection order and, for each source, destinations in
+destination-selection order. A `DeviceView` follows its axis ranges, with the
+last axis varying fastest. A `DeviceSet` is normalized to the parent domain's
+row-major order: components and axes are flattened in declaration order, with
+the last axis varying fastest. A `PipeNet` preserves `Pipe` declaration order;
+it does not regroup transfers from different Pipes by transport.
 
 The declaration determines logical transfer connectivity. `if_src` and
 `if_dst` iterate the declared transfers. `is_src`, `is_dst`, `is_active`, and

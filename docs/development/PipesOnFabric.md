@@ -189,6 +189,27 @@ TTNN then maps each `MeshCoordinate` to a `FabricNodeId` with
 first acquires a physical fabric identity. A `FabricNodeId::chip_id` is an
 identifier within its physical mesh, not a distance or adjacency relation.
 
+TTL currently has no user-facing placement contract that associates a logical
+axis with a physical fabric axis or requires adjacent `DeviceDomain`
+coordinates to map to adjacent `FabricNodeId` values. The identity binding
+preserves coordinate values, not adjacency. `axis_neighbor` relations and
+stencil offsets therefore identify logical neighbors; they do not guarantee a
+one-hop physical connection. `mesh_program_placements` only restricts which
+logical coordinates execute and cannot remap them or impose an adjacency
+constraint. Runtime route binding checks whether the selected fabric mode can
+configure each resolved route, but that check is not a user-controlled
+logical-to-physical placement guarantee.
+
+A future language extension could support algorithms that intentionally
+program the physical mesh. It would explicitly bind each logical `DeviceRef`
+to a `MeshCoordinate` and express physical-axis or adjacency requirements for
+the target to validate. That placement contract would remain separate from
+the logical communication relation stored by `TransferGraph`. Direct physical
+placement would make a program depend on a target topology and mesh extent,
+reducing portability and automatic scaling. It should therefore be an optional
+target-specific facility; topology-independent programs should continue to use
+logical domains and let runtime binding select physical routes.
+
 Route resolution depends on the active fabric mode:
 
 - In 2D mode, host binding resolves only the source and final destination
@@ -248,6 +269,14 @@ target-specific mapping determines physical placement.
 `DeviceRef` identifies one member of a device domain. `TransferGraph`
 describes the logical communication relation. `PipeNet` applies the existing
 pipe protocol to that relation.
+
+An explicit `TransferGraph.edges(...)` relation enumerates arbitrary directed
+logical-device pairs. It is appropriate for sparse or irregular connectivity
+that has no structured constructor. Here, *explicit* refers only to logical
+connectivity: it does not specify physical placement, links, or forwarding
+routers. Regular axis-neighbor, stencil, gather, scatter, and all-to-all
+relations use compact parameter-based forms so storage does not grow with the
+number of derived edges.
 
 `DeviceDomain.current_index()` returns the zero-based row-major order of the
 current logical device. Pipe callback identities expose source and destination
@@ -741,11 +770,12 @@ links. It validates the complete target-binding plan before modifying program
 descriptors and rejects unsupported resource schedules. General fabric support
 still requires:
 
-- explicit target binding from each logical `DeviceRef` to a
-  `MeshCoordinate`;
+- a language-level physical-mesh placement facility that binds each logical
+  `DeviceRef` to a `MeshCoordinate` and validates requested adjacency;
 - target-level router aggregation and connection reuse beyond the compiler's
   per-node manager intervals, including any transport-specific barriers;
-- multicast lowering for graph transfers with device-range destinations;
+- tt-lang lowering and runtime binding for graph transfers with device-range
+  destinations using TT-Metal fabric multicast;
 - a receiver-address publication protocol for schedules that cannot prove
   computed receiver addresses.
 
