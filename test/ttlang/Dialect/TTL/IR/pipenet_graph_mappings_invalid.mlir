@@ -146,7 +146,7 @@ func.func @duplicate_explicit_edge() attributes {
 
 // -----
 
-// Factorized graph lowering requires one destination device per edge.
+// Graph PipeNet lowering requires one destination device per edge.
 func.func @explicit_device_range() attributes {
     // expected-error @below {{explicit transfer graph edge 0 requires one destination device}}
     test.graph = #ttl.transfer_graph<

@@ -580,11 +580,11 @@ flattens the two device references into `FabricRouteSpec` tuples; physical
 resolution still waits until host execution setup.
 
 Before record-loop materialization, lowering builds immutable plans for every
-factorized graph callback. It then materializes those loops and expands
-high-level copies into explicit transfer operations. From that stable transfer
-IR, it constructs and validates a module-wide fabric plan before applying
-fabric metadata or emitting TTKernel transport operations. Within each
-function it deduplicates equal logical routes and assigns stable route indices.
+graph callback. It then materializes those loops and expands high-level copies
+into explicit transfer operations. From that stable transfer IR, it constructs
+and validates a module-wide fabric plan before applying fabric metadata or
+emitting TTKernel transport operations. Within each function it deduplicates
+equal logical routes and assigns stable route indices.
 Route indices address four aligned runtime tables: connection slot,
 destination device id, destination mesh id, and 1D hop count. The selected
 PipeNet record retains its concrete `PipeRecordAttr` during traversal, so later
