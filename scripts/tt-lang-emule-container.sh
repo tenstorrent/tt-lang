@@ -81,15 +81,30 @@ _TEMP_STACK_CONTEXT=""
     --compiler-source "$_REPO_ROOT" --quiet
 
 _COMPILER_SHA="$(git -C "$_REPO_ROOT" rev-parse HEAD)"
+# Workloads and their output do not change the installed compiler. Include
+# build inputs so edits to compiler sources still require reinstallation.
+_COMPILER_INPUTS=(
+    CMakeLists.txt .gitmodules
+    cmake env include lib python tools third-party
+    setup.py pyproject.toml packaging
+    requirements.txt requirements-runtime.txt dev-requirements.txt
+    docs/requirements.txt scripts config
+    .github/containers/Dockerfile.emule
+    test/CMakeLists.txt test/lib test/pytest.ini.in
+    test/lit.cfg.py test/lit.site.cfg.py.in
+)
+readonly _COMPILER_INPUTS
 _COMPILER_SOURCE_FINGERPRINT="$(
     {
         printf '%s\n' "$_COMPILER_SHA"
-        git -C "$_REPO_ROOT" diff --no-ext-diff --binary HEAD --
+        git -C "$_REPO_ROOT" diff --no-ext-diff --binary HEAD -- \
+            "${_COMPILER_INPUTS[@]}"
         while IFS= read -r -d '' _UNTRACKED; do
             [ -f "${_REPO_ROOT}/${_UNTRACKED}" ] || continue
             printf 'untracked:%s\n' "$_UNTRACKED"
             cksum "${_REPO_ROOT}/${_UNTRACKED}"
-        done < <(git -C "$_REPO_ROOT" ls-files --others --exclude-standard -z)
+        done < <(git -C "$_REPO_ROOT" ls-files --others --exclude-standard -z -- \
+            "${_COMPILER_INPUTS[@]}")
     } |
         cksum |
         awk '{print $1, $2}'
@@ -344,7 +359,6 @@ if [ "$_BUILD_IMAGE" -eq 1 ]; then
         --build-arg "STACK_MANIFEST_SHA256=${_MANIFEST_SHA256}" \
         --build-arg "TT_LANG_COMPILER_REPOSITORY=${_MANIFEST_COMPILER_REPOSITORY}" \
         --build-arg "TT_LANG_COMPILER_BASE_COMMIT=${_MANIFEST_COMPILER_BASE_COMMIT}" \
-        --build-arg "TT_EMULE_SOURCE_URL=${_TT_EMULE_SOURCE_URL}" \
         --build-arg "TT_EMULE_COMMIT=${_TT_EMULE_COMMIT}" \
         --build-arg "TT_METAL_COMMIT=${_TT_METAL_COMMIT}" \
         --build-arg "TT_METAL_SOURCE_URL=${_TT_METAL_SOURCE_URL}" \
@@ -358,4 +372,9 @@ if [ "$_BUILD_IMAGE" -eq 1 ]; then
 fi
 
 cleanup
+if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ]; then
+    printf 'Runtime image: %s\n' "$_IMAGE"
+    printf 'Compiler build volume: %s\n' "$_BUILD_VOLUME"
+    printf 'Runtime cache volume: %s\n' "$_CACHE_VOLUME"
+fi
 exec "$_DOCKER" "${_RUN_ARGS[@]}" "$_IMAGE" "$_CONTAINER_SCRIPT" "$@"

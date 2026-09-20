@@ -79,10 +79,11 @@ before running a program:
 ./scripts/install-tt-lang-emule.sh
 ```
 
-Installation uses the exact tuple in `config/tt-lang-emule-stack.json`; users do
-not select compiler, emulator, and tt-metal versions independently. It builds
-the Docker runtime and compiler environment once. Program execution never
-configures or builds the compiler.
+Installation uses the exact runtime pins in `config/tt-lang-emule-stack.json`
+and builds the current compiler checkout, which must contain the manifest's
+compiler baseline. Users do not select compiler, emulator, and tt-metal
+versions independently. Program execution never configures or builds the
+compiler.
 
 Run compiler tests with their existing CMake, pytest, and lit interfaces rather
 than through `tt-lang-sim`. See the getting-started guide and
@@ -160,7 +161,8 @@ also works but is substantially slower and requires `brew install qemu`.
 The installer builds the pinned tt-emule/tt-metal image and TT-Lang compiler.
 The compiler build and the tt-metal and tt-emule JIT caches live in named Docker
 volumes. Execution requires the installed compiler source to match the current
-checkout; after changing commits or local source files, run the installer again.
+checkout; after changing commits or compiler/build inputs, run the installer
+again. Workload edits and their output files do not invalidate the installation.
 
 The initial supported target is a single emulated Blackhole P150 device with
 the full, unharvested 13x10 compute grid. The launcher selects the emulator's

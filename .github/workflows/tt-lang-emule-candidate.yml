@@ -123,11 +123,10 @@ jobs:
       - name: Install and smoke-test the candidate
         env:
           TTLANG_EMULE_IMAGE: tt-lang-emule:candidate-${{ github.run_id }}
-          TTLANG_EMULE_REBUILD: "1"
           TTLANG_EMULE_RUNTIME_SOURCE_DIR: .candidate-emulator
           TTLANG_EMULE_STACK_MANIFEST: candidate-stack.json
         run: |
-          ./scripts/install-tt-lang-emule.sh
+          TTLANG_EMULE_REBUILD=1 ./scripts/install-tt-lang-emule.sh
           ./bin/tt-lang-sim --backend=emule \
             examples/compiler_only_external_call.py
 

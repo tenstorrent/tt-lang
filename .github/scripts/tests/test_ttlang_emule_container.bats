@@ -22,13 +22,14 @@ make_stack_manifest() {
 make_runner_fixture() {
     local root="$1"
     mkdir -p "$root/.github/containers" "$root/config" \
-        "$root/examples" "$root/scripts"
+        "$root/examples" "$root/scripts" "$root/lib"
     cp "$DOCKERFILE" "$root/.github/containers/Dockerfile.emule"
     cp "$ENTRYPOINT" "$root/scripts/tt-lang-emule-entrypoint.sh"
     cp "$RUNNER" "$root/scripts/tt-lang-emule-container.sh"
     cp "$TTLANG_REPO_ROOT/scripts/tt-lang-emule-stack.py" \
         "$root/scripts/tt-lang-emule-stack.py"
     touch "$root/examples/program.py"
+    touch "$root/lib/compiler.cpp"
     git -C "$root" init -q
     git -C "$root" add .
     git -C "$root" update-index --add --cacheinfo \
@@ -304,12 +305,64 @@ EOF
 @test "installer is the only public path that enables installation" {
     cd "$TTLANG_REPO_ROOT"
     TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$INSTALLER"
+    assert_output --partial "Runtime image: tt-lang-emule:"
+    assert_output --partial "Compiler build volume: tt-lang-emule-build-"
+    assert_output --partial "Runtime cache volume: tt-lang-emule-cache-"
 
     assert_log_line "TTLANG_EMULE_INSTALL=1"
     assert_log_line "/workspace/examples/compiler_only_external_call.py"
 
     run -2 "$INSTALLER" unexpected
     assert_output --partial "Usage: scripts/install-tt-lang-emule.sh"
+}
+
+@test "workload edits and outputs preserve the installed compiler identity" {
+    local synthetic_root="$BATS_TEST_TMPDIR/synthetic-repo"
+    local synthetic_runner="$synthetic_root/scripts/tt-lang-emule-container.sh"
+    local fingerprint
+    make_runner_fixture "$synthetic_root"
+    TTLANG_EMULE_STACK_MANIFEST="$synthetic_root/config/tt-lang-emule-stack.json"
+
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$synthetic_runner" \
+        "$synthetic_root/examples/program.py"
+    fingerprint="$(grep '^TTLANG_EMULE_SOURCE_FINGERPRINT=' "$MOCK_DOCKER_LOG")"
+
+    printf '# Edited workload\n' >> "$synthetic_root/examples/program.py"
+    printf 'print("new workload")\n' > "$synthetic_root/program.py"
+    printf '{"result": 42}\n' > "$synthetic_root/results.json"
+    : > "$MOCK_DOCKER_LOG"
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$synthetic_runner" \
+        "$synthetic_root/program.py"
+
+    assert_log_line "$fingerprint"
+}
+
+@test "tracked and new compiler sources change the installed compiler identity" {
+    local synthetic_root="$BATS_TEST_TMPDIR/synthetic-repo"
+    local synthetic_runner="$synthetic_root/scripts/tt-lang-emule-container.sh"
+    local fingerprint
+    local tracked_fingerprint
+    local new_fingerprint
+    make_runner_fixture "$synthetic_root"
+    TTLANG_EMULE_STACK_MANIFEST="$synthetic_root/config/tt-lang-emule-stack.json"
+
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$synthetic_runner" \
+        "$synthetic_root/examples/program.py"
+    fingerprint="$(grep '^TTLANG_EMULE_SOURCE_FINGERPRINT=' "$MOCK_DOCKER_LOG")"
+
+    printf '// Compiler source edit\n' >> "$synthetic_root/lib/compiler.cpp"
+    : > "$MOCK_DOCKER_LOG"
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$synthetic_runner" \
+        "$synthetic_root/examples/program.py"
+    tracked_fingerprint="$(grep '^TTLANG_EMULE_SOURCE_FINGERPRINT=' "$MOCK_DOCKER_LOG")"
+    [ "$tracked_fingerprint" != "$fingerprint" ]
+
+    printf '// New compiler source\n' > "$synthetic_root/lib/new.cpp"
+    : > "$MOCK_DOCKER_LOG"
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$synthetic_runner" \
+        "$synthetic_root/examples/program.py"
+    new_fingerprint="$(grep '^TTLANG_EMULE_SOURCE_FINGERPRINT=' "$MOCK_DOCKER_LOG")"
+    [ "$new_fingerprint" != "$tracked_fingerprint" ]
 }
 
 @test "runtime image identity changes when an image input changes" {
@@ -421,6 +474,7 @@ PY
     local emule_commit
     local source_mode
     local source_dir
+    local source_url
     local rebuild
     local inspect_status
     mkdir -p "$emule_source"
@@ -441,8 +495,10 @@ PY
     cd "$TTLANG_REPO_ROOT"
     for source_mode in directory url rebuild; do
         source_dir=""
+        source_url="$emule_source"
         if [ "$source_mode" != url ]; then
             source_dir="$emule_source"
+            source_url="https://test-user:source-token@example.invalid/private.git"
         fi
         rebuild=0
         inspect_status=1
@@ -458,7 +514,7 @@ PY
             TTLANG_EMULE_INSTALL=1 \
             TTLANG_EMULE_REBUILD="$rebuild" \
             TTLANG_EMULE_RUNTIME_SOURCE_DIR="$source_dir" \
-            TTLANG_EMULE_RUNTIME_SOURCE_URL="$emule_source" \
+            TTLANG_EMULE_RUNTIME_SOURCE_URL="$source_url" \
             TTLANG_EMULE_RUNTIME_COMMIT="$emule_commit" \
             TTLANG_EMULE_RUNTIME_METAL_COMMIT=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
             run -0 "$RUNNER" examples/eltwise_add.py
@@ -478,6 +534,9 @@ PY
         assert_log_contains "tt-lang-stack=$runtime_tmp/tt-lang-stack-context."
         assert_log_contains "tt-emule-source="
         refute_log_line "tt-emule-source=$emule_source"
+        refute_log_contains "TT_EMULE_SOURCE_URL="
+        refute_log_contains "source-token"
+        refute_log_contains "example.invalid/private.git"
         assert_log_line "${TTLANG_REPO_ROOT}/scripts"
         assert_log_line "run"
         if [ "$source_mode" = rebuild ]; then

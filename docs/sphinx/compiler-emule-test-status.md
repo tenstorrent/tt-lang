@@ -3,15 +3,19 @@
 This is the September 19, 2026 test snapshot for
 [`kostas/tt-lang-sim-emule-consolidated`](https://github.com/tenstorrent/tt-lang/tree/kostas/tt-lang-sim-emule-consolidated),
 the branch proposed by [PR #1063](https://github.com/tenstorrent/tt-lang/pull/1063).
-It used the exact compiler, tt-emule, tt-metal, image, and P150 target recorded
-in `config/tt-lang-emule-stack.json`.
+It ran on the local macOS machine inside `linux/amd64` Docker, using the pinned
+tt-emule/tt-metal stack and P150 target in `config/tt-lang-emule-stack.json`.
+The compiler checkout was `e81a5ac35d023cc385014013c22f9e6ecda761fc`, with the
+installer memory-limit fix subsequently committed on this branch. This is a
+historical full-suite result, not a claim that every later branch revision has
+had the complete suite rerun.
 
 ## What was run
 
 The complete compiler suite was started with:
 
 ```bash
-cmake --build build --target check-ttlang-all
+cmake --build /ttlang-build --target check-ttlang-all
 ```
 
 Because that aggregate target stops after a failing group, the later end-to-end
@@ -29,7 +33,7 @@ and Python lit groups were then run separately. The combined result was:
 
 ## What failed
 
-The 165 failures reduce to five emulator/runtime gaps:
+The 165 failures fall into five observed failure groups:
 
 - **132 dynamic-buffer tests:** generated RISC-V inline assembly reaches the
   x86 host JIT and is rejected by Clang.
@@ -42,20 +46,24 @@ The 165 failures reduce to five emulator/runtime gaps:
 - **4 DPRINT lit tests:** kernels execute, but the expected device-side DPRINT
   payload is not emitted.
 
-These are grouped root causes rather than 165 independent bugs. The compiler,
-bindings, packaging, and end-to-end groups all passed completely.
+These are failure groups rather than 165 independent bugs. The assembly and
+missing-header diagnostics identify immediate JIT failures; ownership of the
+incorrect-output and DPRINT failures still requires isolated reproducers.
+They are not all established tt-emule defects. The MLIR, bindings, and packaging
+groups had no failures; end-to-end tests had no unexpected failures.
 
 ## Reproduce or narrow the run
 
 After installing the supported environment as described in
 [Getting started with compiler-backed emulation](simulator-getting-started.md),
-activate that compiler build environment and use the normal test tools:
+enter its Docker test shell and activate the compiler as documented there.
+Inside that shell, use the normal test tools:
 
 ```bash
-cmake --build build --target check-ttlang-all
-pytest -v test/python
-pytest -v test/me2e
-llvm-lit -v build/test/python
+cmake --build /ttlang-build --target check-ttlang-all
+pytest -c /ttlang-build/test/pytest.ini -v test/python
+pytest -c /ttlang-build/test/pytest.ini -v test/me2e
+llvm-lit -v /ttlang-build/test/python
 ```
 
 Normal pytest and lit selectors can be used to reproduce one file or case; no

@@ -163,16 +163,57 @@ EOF
     assert_output "argv=program.py"
 }
 
-@test "emule environment default does not intercept global help" {
+@test "emule environment help does not require host Python or a runner" {
     make_layout "$ROOT" source
-    make_mock_python "$MOCK_PY"
+    TTLANG_SIM_BACKEND=emule TTLANG_EMULE_RUNNER=/bin/false \
+        PYTHON=/bin/false \
+        run -0 "$ROOT/bin/tt-lang-sim" --help
+    assert_output --partial "Usage: tt-lang-sim --backend=emule SCRIPT.py"
+    assert_output --partial "./scripts/install-tt-lang-emule.sh"
+}
+
+@test "explicit emule help does not require host Python or a runner" {
+    make_layout "$ROOT" source
+    local option
+    for option in -h --help; do
+        TTLANG_EMULE_RUNNER=/bin/false PYTHON=/bin/false \
+            run -0 "$ROOT/bin/tt-lang-sim" --backend=emule "$option"
+        assert_output --partial "Usage: tt-lang-sim --backend=emule SCRIPT.py"
+    done
+}
+
+@test "emule without a program reports usage without host Python" {
+    make_layout "$ROOT" source
+    TTLANG_EMULE_RUNNER=/bin/false PYTHON=/bin/false \
+        run -1 "$ROOT/bin/tt-lang-sim" --backend emule
+    assert_output --partial "Usage: tt-lang-sim --backend=emule SCRIPT.py"
+}
+
+@test "emule version reports the source checkout without host Python" {
+    make_layout "$ROOT" source
+    git -C "$ROOT" init -q
+    git -C "$ROOT" add .
+    git -C "$ROOT" -c user.name=Test -c user.email=test@example.com \
+        commit -qm fixture
+    local revision
+    revision="$(git -C "$ROOT" rev-parse --short=12 HEAD)"
+    TTLANG_EMULE_RUNNER=/bin/false PYTHON=/bin/false \
+        run -0 "$ROOT/bin/tt-lang-sim" --backend=emule --version
+    assert_output "tt-lang-sim emule (checkout $revision)"
+    TTLANG_SIM_BACKEND=emule TTLANG_EMULE_RUNNER=/bin/false PYTHON=/bin/false \
+        run -0 "$ROOT/bin/tt-lang-sim" --version
+    assert_output "tt-lang-sim emule (checkout $revision)"
+}
+
+@test "emule preserves program help and version arguments" {
+    make_layout "$ROOT" source
     local runner="$ROOT/emule-runner"
     make_mock_emule_runner "$runner"
-    TTLANG_SIM_BACKEND=emule TTLANG_EMULE_RUNNER="$runner" \
-        PYTHON="$MOCK_PY" PYTHONPATH="" \
-        run -0 "$ROOT/bin/tt-lang-sim" --help
-    assert_line --index 2 "argv=sim.ttlang_sim"
-    assert_line --index 3 "argv=--help"
+    TTLANG_EMULE_RUNNER="$runner" PYTHON=/bin/false \
+        run -0 "$ROOT/bin/tt-lang-sim" --backend=emule program.py -- --help --version
+    assert_line --index 0 "argv=program.py"
+    assert_line --index 1 "argv=--help"
+    assert_line --index 2 "argv=--version"
 }
 
 @test "backend-looking script argument after separator is preserved" {

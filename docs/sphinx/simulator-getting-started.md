@@ -1,9 +1,10 @@
 # Getting started with compiler-backed emulation
 
 The `emule` backend compiles TT-Lang programs and executes their generated
-kernels through tt-metal and tt-emule inside Docker. It uses one supported stack:
-the TT-Lang checkout, tt-emule revision, tt-metal revision, base image, and P150
-target recorded in `config/tt-lang-emule-stack.json`.
+kernels through tt-metal and tt-emule inside Docker. The manifest
+`config/tt-lang-emule-stack.json` records the required compiler baseline,
+tt-emule revision, tt-metal revision, base image, and P150 target. Installation
+builds the actual TT-Lang checkout, which must contain that compiler baseline.
 
 Users do not select these components independently. Install the recorded
 environment once, then run programs with the same `tt-lang-sim` interface used
@@ -61,8 +62,9 @@ tt-metal pin.
 
 Installation builds the pinned tt-emule/tt-metal Docker image and compiles this
 TT-Lang checkout into a persistent Docker volume. It can take substantial time,
-CPU, memory, and disk space on its first run. On success it prints the compiler
-commit for which the environment was installed.
+CPU, memory, and disk space on its first run. The installer prints the runtime
+image, compiler build volume, and runtime cache volume names. On success it also
+prints the compiler commit for which the environment was installed.
 
 Installation is separate from execution. `tt-lang-sim` never configures or
 builds TT-Lang. If the runtime image is absent, the compiler environment is
@@ -108,33 +110,76 @@ The Python backend remains the default and does not require Docker:
 reporting interface. Use TT-Lang's normal CMake, pytest, and lit commands from an
 activated compiler build environment.
 
+### Enter the installed Docker environment
+
+The compiler build is inside Docker, not a host `build` directory. From the
+checkout root in a Bash shell, substitute the three names printed by the
+installer:
+
+```bash
+runtime_image=IMAGE_NAME
+compiler_volume=BUILD_VOLUME_NAME
+runtime_cache_volume=CACHE_VOLUME_NAME
+source_dir="$(pwd -P)"
+git_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
+
+docker run --rm -it --platform linux/amd64 \
+  --mount "type=bind,source=${source_dir},target=/workspace" \
+  --mount "type=bind,source=${git_dir},target=${git_dir},readonly" \
+  --mount "type=volume,source=${compiler_volume},target=/ttlang-build" \
+  --mount "type=volume,source=${runtime_cache_volume},target=/tt-metal-cache" \
+  --workdir /workspace \
+  --env TT_METAL_EMULE_MODE=1 \
+  --env TT_METAL_SLOW_DISPATCH_MODE=1 \
+  --env TT_METAL_MOCK_CLUSTER_DESC_PATH=/opt/tt-emule/cluster_descriptors/blackhole_P150_unharvested.yaml \
+  --env TT_METAL_ALLOCATOR_MODE_HYBRID=1 \
+  --env EMULE_FABRIC8=1 \
+  --env TT_METAL_CACHE=/tt-metal-cache \
+  --env TT_EMULE_JIT_CACHE_DIR=/tt-metal-cache/emule-jit \
+  --env MESH_DEVICE=P150 \
+  --entrypoint /bin/bash "$runtime_image" --noprofile --norc
+```
+
+The Git metadata mount also supports linked worktrees. Inside this container,
+activate the installed compiler before running any tests:
+
+```bash
+source /ttlang-build/env/activate
+unset TTLANG_COMPILE_ONLY TTLANG_SIM_ONLY
+```
+
+### Select tests
+
+The following commands run inside that container shell. A separate native
+Linux build uses its own build directory instead of `/ttlang-build`.
+
 Run the complete compiler suite:
 
 ```bash
-cmake --build build --target check-ttlang-all
+cmake --build /ttlang-build --target check-ttlang-all
 ```
 
 Run the device-independent compiler suites:
 
 ```bash
-cmake --build build --target check-ttlang
+cmake --build /ttlang-build --target check-ttlang
 ```
 
 Run or select pytest tests directly, including ordinary pytest filtering and
 reporting options:
 
 ```bash
-pytest -v test/python
-pytest -v test/me2e
-pytest -v test/python/test_elementwise_ops.py -k add
+pytest -c /ttlang-build/test/pytest.ini -v test/python
+pytest -c /ttlang-build/test/pytest.ini -v test/me2e
+pytest -c /ttlang-build/test/pytest.ini -v test/python/test_elementwise_ops.py -k add
 ```
 
 Run lit suites or individual cases directly:
 
 ```bash
-cmake --build build --target check-ttlang-mlir
-llvm-lit -v build/test/python
-llvm-lit -v build/test/python/simple_add.py
+cmake --build /ttlang-build --target check-ttlang-mlir
+llvm-lit -v /ttlang-build/test/python
+llvm-lit -v /ttlang-build/test/python/simple_add.py
 ```
 
 These commands use the runtime configured for that compiler build. Compiler-only
@@ -146,8 +191,8 @@ output locations. See [Testing](testing.md) for the short command reference and
 [Compiler suite on tt-emule](compiler-emule-test-status.md) for the latest full
 suite result and failure triage.
 
-Representative programs do not need another launcher command. Run them through
-the normal interface one at a time:
+Exit the container shell to run representative programs from the host through
+the normal interface:
 
 ```bash
 ./bin/tt-lang-sim --backend=emule examples/eltwise_add.py
@@ -180,7 +225,8 @@ executing a program.
 
 The installed compiler is tied to the exact TT-Lang source used during
 installation. Re-run the installer after switching branches, pulling new
-commits, or changing local source files.
+commits, or changing compiler/build inputs. Editing workload scripts or creating
+their output files does not require reinstalling the compiler.
 
 ### Emulator source access fails
 

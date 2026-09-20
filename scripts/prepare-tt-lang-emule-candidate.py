@@ -29,6 +29,7 @@ def run_git(source, *arguments):
         check=False,
         capture_output=True,
         text=True,
+        shell=False,
     )
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip()
@@ -98,28 +99,25 @@ def main():
     temporary_output = None
     try:
         manifest = load_manifest(arguments.manifest)
-        compiler_head = run_git(arguments.compiler_source, "rev-parse", "HEAD")
+        compiler_head = require_sha(
+            run_git(arguments.compiler_source, "rev-parse", "HEAD"),
+            "compiler checkout HEAD",
+        )
         compiler_commit = require_sha(
             arguments.compiler_commit or compiler_head, "compiler commit"
         )
-        ancestor = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(arguments.compiler_source),
+        try:
+            run_git(
+                arguments.compiler_source,
                 "merge-base",
                 "--is-ancestor",
                 compiler_commit,
                 compiler_head,
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if ancestor.returncode != 0:
+            )
+        except CandidateError as error:
             raise CandidateError(
                 f"compiler commit {compiler_commit} is not in the compiler checkout"
-            )
+            ) from error
 
         emulator_commit = require_sha(arguments.emulator_commit, "emulator commit")
         emulator_head = run_git(arguments.emulator_source, "rev-parse", "HEAD")

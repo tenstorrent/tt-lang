@@ -46,15 +46,36 @@ while [ "$#" -gt 0 ]; do
 done
 set -- "${_FORWARD_ARGS[@]}"
 
-# Help and version describe the launcher as a whole and never require a
-# backend runtime. Preserve the existing no-argument help path as well.
-case "${1:-}" in
-    ""|-h|--help|--version)
-        _BACKEND=python
-        ;;
-esac
-
 if [ "$_BACKEND" = "emule" ]; then
+    # Docker-only installations need no host Python simulator dependencies.
+    case "${1:-}" in
+        ""|-h|--help)
+            cat <<'EOF'
+Usage: tt-lang-sim --backend=emule SCRIPT.py [-- SCRIPT_ARGS ...]
+
+Compile a TT-Lang program and execute it through tt-metal and tt-emule.
+A source checkout and a running Docker daemon are required.
+
+Install the pinned environment first:
+  ./scripts/install-tt-lang-emule.sh
+
+Run a program:
+  ./bin/tt-lang-sim --backend=emule examples/eltwise_add.py
+
+Pass program arguments after --. Use --backend=python for Python simulation.
+EOF
+            if [ "$#" -eq 0 ]; then
+                exit 1
+            fi
+            exit 0
+            ;;
+        --version)
+            _VERSION_SHA="$(git -C "$_REPO_ROOT" rev-parse --short=12 HEAD 2>/dev/null)" || _VERSION_SHA=unknown
+            printf 'tt-lang-sim emule (checkout %s)\n' "$_VERSION_SHA"
+            exit 0
+            ;;
+    esac
+
     # Unlike the Python backend, emule has no intermediate argparse layer to
     # consume the launcher/script separator before invoking the user program.
     if [ -n "$_SEPARATOR_INDEX" ]; then
