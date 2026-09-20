@@ -3237,6 +3237,55 @@ def test_device_domain_rejects_invalid_mesh_program_placement(
         )
 
 
+@pytest.mark.parametrize(
+    ("device_domain", "placements", "message"),
+    [
+        (DeviceDomain((2,)), None, "flattened rank 1 must match active mesh rank 2"),
+        (DeviceDomain((1, 3)), None, "must fit inside active mesh extent"),
+        (
+            DeviceDomain((4, 8)),
+            [(0, 2)],
+            "mesh program placement must be inside the active mesh",
+        ),
+    ],
+    ids=("rank", "full-domain-extent", "explicit-placement-extent"),
+)
+def test_device_domain_rejects_incompatible_active_mesh(
+    monkeypatch, device_domain, placements, message
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+
+    with pytest.raises(ValueError, match=message):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[_FakeTensor(_FakeMeshDevice())],
+            cb_configs=[],
+            core_ranges=_FakeCoreRanges(),
+            device_domain=device_domain,
+            mesh_program_placements=placements,
+        )
+
+
+def test_device_domain_explicit_placement_may_select_active_mesh_subset(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+    )
+
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[],
+        tensors=[_FakeTensor(_FakeMeshDevice())],
+        cb_configs=[],
+        core_ranges=_FakeCoreRanges(),
+        device_domain=DeviceDomain((4, 8)),
+        mesh_program_placements=[(0, 1)],
+    )
+
+    assert len(result["program"].mesh_programs) == 1
+    mesh_range, _program = result["program"].mesh_programs[0]
+    assert mesh_range.start.coords == (0, 1)
+
+
 def test_routing_plane_runtime_args_are_dense_per_device(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)

@@ -164,14 +164,28 @@ maps `DeviceRef((host,), (device,))` to the tuple `(host, device)`. Component
 names document logical roles; they do not select a host, chip, link, or fabric
 axis.
 
-The current target binding is an identity mapping from that flattened tuple to
-a TTNN `MeshCoordinate`. The same tuple selects the entry in the
-`MeshProgramDescriptor` and is passed to the compiled device-role predicates.
-When no placement is specified, every logical coordinate is materialized. If
-the operation has mesh tensors, their mesh extent must equal the flattened
-domain extent. Explicit `mesh_program_placements` may select a subset inside
-both the logical domain and tensor mesh, but they do not remap coordinates.
-Every selected PipeNet endpoint must remain covered.
+For each materialized logical device, tt-lang currently performs this
+logical-to-TTNN placement conversion:
+
+1. Resolve the `DeviceRef` components in `DeviceDomain` declaration order.
+2. Concatenate every component's axes into one integer tuple.
+3. Construct a TTNN `MeshCoordinate` with that same tuple.
+
+There is no coordinate permutation, offset, or placement lookup. The same
+tuple selects the entry in the `MeshProgramDescriptor` and is passed to the
+compiled device-role predicates. This document calls that conversion the
+*coordinate-preserving placement*. It preserves the coordinate tuple only; it
+does not establish physical-device identity or topology.
+
+There is no rank adaptation. The flattened logical rank must equal the active
+`MeshDevice` rank: tt-lang does not add, remove, combine, or split axes. When no
+placement is specified, every logical coordinate is materialized and the
+flattened domain extent must fit inside the active mesh. If the operation has
+mesh tensors, their mesh extent must equal the flattened domain extent.
+Explicit `mesh_program_placements` may select a subset inside the logical
+domain, tensor mesh, and active mesh, but they do not remap coordinates. Every
+PipeNet endpoint must remain covered. Incompatible ranks or selected
+coordinates are rejected before program descriptors are constructed.
 
 For the product domain above, the mapping stages are:
 
@@ -180,9 +194,10 @@ For the product domain above, the mapping stages are:
 | `DeviceRef(host=0, device=3)` | `(0, 3)` | `MeshCoordinate(0, 3)` | `mesh_device.get_fabric_node_id(MeshCoordinate(0, 3))` |
 | `DeviceRef(host=1, device=0)` | `(1, 0)` | `MeshCoordinate(1, 0)` | `mesh_device.get_fabric_node_id(MeshCoordinate(1, 0))` |
 
-The first three columns are fixed by tt-lang's current identity binding. The
-last column is resolved by the active `MeshDevice`; tt-lang does not derive a
-`mesh_id`, `chip_id`, adjacency, or distance from `(host, device)`.
+tt-lang determines the first three columns through the coordinate-preserving
+placement defined above. The active `MeshDevice` resolves the last column;
+tt-lang does not derive a `mesh_id`, `chip_id`, adjacency, or distance from
+`(host, device)`.
 
 TTNN then maps each `MeshCoordinate` to a `FabricNodeId` with
 `MeshDevice.get_fabric_node_id()`. This is where the logical mesh arrangement
@@ -191,13 +206,13 @@ identifier within its physical mesh, not a distance or adjacency relation.
 
 TTL currently has no user-facing placement contract that associates a logical
 axis with a physical fabric axis or requires adjacent `DeviceDomain`
-coordinates to map to adjacent `FabricNodeId` values. The identity binding
-preserves coordinate values, not adjacency. `axis_neighbor` relations and
-stencil offsets therefore identify logical neighbors; they do not guarantee a
-one-hop physical connection. `mesh_program_placements` only restricts which
-logical coordinates execute and cannot remap them or impose an adjacency
-constraint. Runtime route binding checks whether the selected fabric mode can
-configure each resolved route, but that check is not a user-controlled
+coordinates to map to adjacent `FabricNodeId` values. The
+coordinate-preserving placement does not preserve adjacency. `axis_neighbor`
+relations and stencil offsets therefore identify logical neighbors; they do
+not guarantee a one-hop physical connection. `mesh_program_placements` only
+restricts which logical coordinates execute and cannot remap them or impose an
+adjacency constraint. Runtime route binding checks whether the selected fabric
+mode can configure each resolved route, but that check is not a user-controlled
 logical-to-physical placement guarantee.
 
 A future language extension could support algorithms that intentionally
@@ -231,7 +246,7 @@ differ. In 2D mode, that pair is legal when TT-Metal can route between the two
 resolved `FabricNodeId` values; TT-Metal's routing tables select intermediate
 routers.
 
-This identity mapping is an implementation restriction, not a
+The coordinate-preserving placement is an implementation restriction, not a
 `DeviceDomain` invariant. Supporting arbitrary placement requires an explicit
 mapping from each logical `DeviceRef` to a `MeshCoordinate`; inferring topology
 from component names or coordinate differences would be incorrect.
@@ -448,6 +463,63 @@ first enter during host runtime route binding, after kernel generation and
 before `ttnn.generic_op(...)` submission. Generated kernels consume those
 values as runtime arguments.
 
+### Logical-to-physical binding timeline
+
+The compiler preserves logical coordinates through Pipe lowering. Host
+execution setup performs placement and physical binding:
+
+```text
+Compilation                              Host execution setup                         Device
+
+DeviceRef -> DeviceRefAttr -> ttl.fabric_routes -> (1, 0) -> MeshCoordinate(1, 0)
+ logical      logical          logical              logical    placement key
+                                                              |
+                                               active MeshDevice.get_fabric_node_id()
+                                                              |
+                                                              v
+                              packet route <- route args <- FabricNodeId(mesh, chip)
+                              target-specific             physical identity
+```
+
+For `DeviceRef(host=1, device=0)`, the stages are:
+
+1. Frontend lowering creates a `DeviceRefAttr` containing component
+   coordinates `((1,), (0,))`.
+2. `PipeLowering.cpp` classifies the transfer as cross-device and attaches a
+   `ttl.fabric_routes` entry to each affected kernel function. The entry stores
+   logical `local` and `remote` `DeviceRefAttr` values, a stable route index,
+   and source TENSIX nodes. It contains no physical identifier or route.
+3. Artifact extraction concatenates the component coordinates in declaration
+   order. The corresponding `FabricRouteSpec` contains the tuple `(1, 0)`.
+4. `kernel_runner.py` creates the per-device descriptor at
+   `MeshCoordinate(1, 0)`. It also passes `(1, 0)` separately as the logical
+   coordinates consumed by compiled device-role predicates.
+5. `fabric_target.py` calls
+   `mesh_device.get_fabric_node_id(MeshCoordinate(1, 0))`. The returned
+   `FabricNodeId(mesh_id, chip_id)` is the first physical device identity in
+   this sequence; it is obtained from the active mesh, not calculated from the
+   integers `1` and `0`.
+6. Host binding queries forwarding information and fills the connection slot,
+   destination device id, destination mesh id, and 1D hop-count tables. The
+   generated kernel reads those tables to encode the packet route.
+
+Keeping the two representations separate is intentional. Logical PipeNet IR
+is independent of the machine that executes it, while topology, fabric mode,
+and available links are properties of the active runtime context. The
+separation also provides one explicit insertion point for a future compiler or
+host placement planner: it can replace the current coordinate-preserving
+conversion with a mapping from each logical `DeviceRef` to a
+`MeshCoordinate`. Such a planner could preserve selected neighbor relations,
+reduce hop count or contention, and account for unavailable devices without
+changing the source-level transfer graph or TTL IR. Descriptor placement would
+use the mapped physical coordinate, while device-role predicates would
+continue to receive the original logical coordinate.
+
+Embedding physical coordinates directly in portable source would bypass that
+optimization point and make programs dependent on one mesh rank, extent, and
+topology. A future direct-physical placement facility should therefore remain
+explicit and target-specific.
+
 ### Frontend and TTL IR
 
 The Python domain model is implemented in `python/ttl/domains.py`. The AST
@@ -499,6 +571,13 @@ physical placement, routes, and forwarding links.
 uses the NoC transport. A cross-device transfer uses the fabric transport; its
 sender and receiver-post sides each record the current logical device, remote
 logical device, local injection TENSIX node, and owning function.
+
+The resulting `ttl.fabric_routes` function attribute is deliberately logical.
+Each dictionary entry contains `local` and `remote` `DeviceRefAttr` values,
+`route_index`, and `source_nodes`. `PipeLowering` neither constructs a
+`MeshCoordinate` nor queries topology. Python artifact extraction later
+flattens the two device references into `FabricRouteSpec` tuples; physical
+resolution still waits until host execution setup.
 
 Before record-loop materialization, lowering builds immutable plans for every
 factorized graph callback. It then materializes those loops and expands
@@ -764,11 +843,11 @@ pass does not establish correctness without the full-system result.
 
 ### Remaining capability work
 
-The current implementation supports identity-mapped logical devices and
-programs whose concurrent connection requests fit the available forwarding
-links. It validates the complete target-binding plan before modifying program
-descriptors and rejects unsupported resource schedules. General fabric support
-still requires:
+The current implementation supports coordinate-preserving logical-to-TTNN
+placement and programs whose concurrent connection requests fit the available
+forwarding links. It validates the complete target-binding plan before
+modifying program descriptors and rejects unsupported resource schedules.
+General fabric support still requires:
 
 - a language-level physical-mesh placement facility that binds each logical
   `DeviceRef` to a `MeshCoordinate` and validates requested adjacency;
