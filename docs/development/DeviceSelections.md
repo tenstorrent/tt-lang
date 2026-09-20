@@ -143,12 +143,14 @@ transfer.
 
 ## Transfer order and transport
 
-Device-selected Pipes may contain both same-device and remote transfers. Their
-callbacks process all same-device transfers first because those transfers use
-NoC synchronization, while remote transfers use fabric synchronization.
-Within each group, pairwise transfers follow the positions in their source and
-destination views. All-to-all transfers process sources in parent-domain order
-and, for each source, destinations in parent-domain order.
+Device-selected Pipes may contain both same-device and remote transfers. Each
+`Pipe` constructor emits its same-device transfers before its remote transfers
+because those groups use NoC and fabric synchronization, respectively. A
+`PipeNet` preserves `Pipe` declaration order; it does not move all local
+transfers ahead of remote transfers from earlier Pipes. Within each group,
+pairwise transfers follow the positions in their source and destination views.
+All-to-all transfers process sources in parent-domain order and, for each
+source, destinations in parent-domain order.
 
 The direct all-to-all implementation emits one fabric transfer for each ordered
 pair of distinct devices: `P * (P - 1)` transfers for `P` devices. A ring or
@@ -164,7 +166,9 @@ each destination node.
 `DeviceDomain` coordinates are logical; they do not select physical devices.
 Runtime binding maps them to physical devices and fabric routes. The operation
 must cover every selected logical device, and its launch grid must contain each
-selected node.
+selected node. The current binding concatenates domain-component coordinates
+in declaration order and uses that tuple unchanged as the TTNN mesh coordinate;
+[Pipes on Fabric](PipesOnFabric.md) describes the complete physical mapping.
 
 The examples above establish frontend construction and compiler lowering.
 Execution across two meshes and placement on devices with different Tensix

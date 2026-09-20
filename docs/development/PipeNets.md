@@ -77,8 +77,8 @@ transfers:
 
 ```text
 device 0, node (0, 0) -> device 1, node (0, 0)
-device 0, node (0, 1) -> device 1, node (0, 1)
 device 0, node (1, 0) -> device 1, node (1, 0)
+device 0, node (0, 1) -> device 1, node (0, 1)
 device 0, node (1, 1) -> device 1, node (1, 1)
 ```
 
@@ -99,6 +99,10 @@ constructors store parameters for common relations instead of an edge list:
 These five constructors omit self-transfers. `component=` selects the
 `DeviceDomain` component whose coordinates change; coordinates in other
 components remain fixed.
+
+Graph PipeNets currently require one destination device per edge. A
+`DeviceRange` destination requires graph multicast lowering and is rejected at
+construction.
 
 When the source and destination node coordinates differ, `graph` and
 `pipes` declare both endpoint relations explicitly:
@@ -146,12 +150,13 @@ places the same-device transfers first because NoC and fabric use different
 synchronization protocols. Within each set, pairwise transfers follow the
 positions in their source and destination views. All-to-all transfers process
 sources in parent-domain order and, for each source, destinations in
-parent-domain order.
+parent-domain order. A `PipeNet` preserves `Pipe` declaration order; it does
+not regroup transfers from different Pipes by transport.
 
-The declaration determines topology. `if_src` and `if_dst` iterate the
-declared transfers. `is_src`, `is_dst`, `is_active`, and equivalent coordinate
-conditions restrict execution to declared endpoint roles; guards do not add
-connectivity.
+The declaration determines logical transfer connectivity. `if_src` and
+`if_dst` iterate the declared transfers. `is_src`, `is_dst`, `is_active`, and
+equivalent coordinate conditions restrict execution to declared endpoint
+roles; guards do not add connectivity or describe physical fabric routes.
 
 TTL IR stores each device graph once beside its associated list of node Pipes.
 It does not create a separate IR record for every combination of device edge
@@ -159,17 +164,18 @@ and node Pipe. Lowering processes these entries in declaration order. Within
 one entry, it processes device edges in the graph's documented order, then node
 Pipes in list order.
 
-For an explicit graph, the compiler stores source and destination edge-index
-lists. Each logical device has an offset and count identifying its entries, so
-its kernel iterates only edges for which that device is the source or
-destination. Graphs built with the five constructors above store their
-parameters. Every transfer receives a stable integer used to select its address
-and synchronization resources. Core specialization removes node-coordinate
-table columns whose value is constant on that core.
+For an explicit graph, the compiler stores the declared edges and compares
+their source or destination indices with the current logical device. Generated
+IR therefore scales with the declared edge count rather than the complete
+domain. Graphs built with the five constructors above store their parameters.
+Every transfer receives a stable integer used to select its address and
+synchronization resources. Core specialization removes node-coordinate table
+columns whose value is constant on that core.
 
-Transfer topology is compile-time information, but one Python function can
-construct a collective for several device counts. The function accepts domain
-extents and constructs the corresponding `DeviceDomain` and `TransferGraph`.
+The logical transfer relation is compile-time information, but one Python
+function can construct a collective for several device counts. The function
+accepts domain extents and constructs the corresponding `DeviceDomain` and
+`TransferGraph`.
 Each compiled operation instance has fixed logical domain extents. Runtime
 binding determines physical device placement and fabric routes; the graph does
 not encode them.
@@ -196,19 +202,21 @@ device.
 
 TTKernel conversion uses three representations:
 
-- For one to four records, conversion emits one static pipe and one coordinate
-  condition per record. This avoids loop and table-lookup overhead for small
-  PipeNets.
-- For five or more records, conversion emits one loop over immutable coordinate
-  and resource tables. `ttl.select_pipe_src` or `ttl.select_pipe_dst`
-  represents the current record inside the loop. This table-driven form emits
-  one callback and transfer protocol body; only the immutable table contents
-  grow with the number of records.
-- For graph PipeNets, conversion emits one loop over device edges where the
-  current logical device is the source or destination, then one loop over the
-  associated node Pipes. The five standard graph constructors calculate
-  endpoints from their parameters. For explicit graphs, an offset and count
-  locate the source or destination edge-index entries for the current device.
+- For a local PipeNet with one to four records, conversion emits one static
+  pipe and one coordinate condition per record. This avoids loop and
+  table-lookup overhead for small local PipeNets.
+- Other materialized record lists use participant-indexed or complete immutable
+  coordinate and resource tables. `ttl.select_pipe_src` or
+  `ttl.select_pipe_dst` represents the current record inside one loop. This
+  table-driven form emits one callback and transfer protocol body; only the
+  immutable table contents grow with the number of records.
+- For each graph mapping, conversion emits one loop over the incident
+  edge/node-Pipe combinations for the current logical device. When every
+  launch node maps to the same coordinate, the loop contains only incident
+  edges and derives the node Pipe from the current launch coordinate. The five
+  standard graph constructors calculate endpoints from their parameters.
+  Explicit graphs select incident edges by comparing the current device index
+  with each declared endpoint.
 
 The immutable tables become bit-packed C++ template arguments stored outside
 the kernel stack. Inside a callback loop, `ttl.select_pipe_src` or
@@ -1979,8 +1987,8 @@ queries.
 
 ### Pipe transfer and receiver-address graph
 
-`PipeGraph` is the source of truth for pipe topology, transfer definitions,
-receiver DFB ownership, and receiver address sequences. Its
+`PipeGraph` is the source of truth for logical pipe connectivity, transfer
+definitions, receiver DFB ownership, and receiver address sequences. Its
 relationships are:
 
 ```text
@@ -2450,6 +2458,12 @@ compile-time properties not runtime-observable.
 | 90 | Sixteen overlapping completion resources move sender-ready counters to GlobalSemaphore storage | | | X |
 | 91 | A seventeenth overlapping completion counter uses GlobalSemaphore storage | | | X |
 | 92 | A capacity counter uses GlobalSemaphore storage when completion and readiness consume all local semaphore ids | | | X |
+| 93 | Device-domain slicing, point/set unions, ordering, and invalid selections | | X | |
+| 94 | Structured relations preserve product components and match dynamic incident-edge arithmetic | | X | X |
+| 95 | Transfer-graph and graph-PipeNet attributes reject malformed domains, relations, mappings, and launch grids | | | X |
+| 96 | Factorized callbacks lower every graph kind for source and destination roles without cloning callback bodies | | | X |
+| 97 | Device-selected all-to-all covers mixed local/fabric transfers for BF16/FP32 and DRAM/L1 | X | | |
+| 98 | Cross-device graph transfers cover distinct launch-node endpoints for BF16/FP32 and DRAM/L1 | X | | |
 
 (1) Device-only due to a simulator divergence outside PipeNet
 verification: the simulator's block-state machine accepts
@@ -2571,7 +2585,11 @@ Cross-device PipeNets use explicit logical device domains and device-transfer
 edges. `PipeKey` continues to describe the node-level relation within a device;
 it does not encode physical topology. `PipeReceiverDFBKey` and every schedule
 query are additionally qualified by logical receiver device. The host runtime
-resolves logical device edges to physical fabric routes.
+concatenates domain-component coordinates in declaration order, uses that tuple
+unchanged as the TTNN mesh coordinate, and asks the active TT-Metal control
+plane to resolve the physical fabric route. See
+[Pipes on Fabric](PipesOnFabric.md) for the complete mapping and lowering
+contract.
 
 The shared graph and proof must preserve these fabric invariants:
 
@@ -2579,9 +2597,8 @@ The shared graph and proof must preserve these fabric invariants:
 * corresponding send and receiver-post declarations identify the same logical
   device transfer;
 * fabric transfers require a proven computed receiver address;
-* fabric senders do not wait for receiver-post readiness, so a receiver pop does
-  not make the assigned slot available to another fabric transfer in the same
-  invocation;
+* fabric receiver posts publish readiness with a reverse-route atomic increment,
+  and senders wait for the corresponding cumulative ready count before writing;
 * fabric completion uses remotely addressable synchronization storage;
 * `CC` capacity counters are not selected for fabric transfers.
 
