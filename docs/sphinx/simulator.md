@@ -90,36 +90,13 @@ than through `tt-lang-sim`. See the getting-started guide and
 [`test/TESTING.md`](https://github.com/tenstorrent/tt-lang/blob/main/test/TESTING.md)
 for commands and suite boundaries.
 
-(simulator-updating-supported-stack)=
-### Updating the supported stack
-
-Prepare a candidate from an exact emulator checkout. The tool reads that
-checkout's Metal pin, records the current compiler commit, and runs the same
-source validations as the launcher:
-
-```bash
-python3 scripts/prepare-tt-lang-emule-candidate.py \
-  --emulator-source /path/to/emulator \
-  --emulator-commit FULL_COMMIT_SHA \
-  --output candidate-stack.json
-```
-
-The `Validate compiler-backed emulation candidate` workflow automates the same
-process on the large x86 runner. It installs the candidate environment, runs
-representative programs, and uploads the resolved stack plus image metadata as
-evidence. It does not publish an image or change the supported manifest;
-promotion remains an ordinary reviewed manifest change. The workflow obtains
-the cross-repository source from the `TTLANG_EMULE_SOURCE_REPOSITORY` repository
-variable and `TTLANG_EMULE_SOURCE_TOKEN` secret, so credentials and internal
-source coordinates are not baked into the runtime image.
-
 This is not the Python simulator with a different tensor implementation. The
 script imports the real `ttl` and `ttnn` packages, TT-Lang compiles each
 operation, and tt-metal dispatches the generated kernels to tt-emule.
 
-The default compiler, emulator commit, tt-metal, container, and target inputs
-are recorded together in `config/tt-lang-emule-stack.json`. The installer
-validates that the current TT-Lang checkout contains the compiler baseline. It
+The supported compiler baseline, emulator commit, tt-metal, container, and
+target inputs are recorded together in `config/tt-lang-emule-stack.json`. The
+installer validates that the current TT-Lang checkout contains the compiler baseline. It
 also verifies the emulator checkout commit, the P150 descriptor, and the
 emulator's exact tt-metal pin before building. Run the same checks directly
 with:
@@ -133,9 +110,9 @@ python3 scripts/tt-lang-emule-stack.py \
 Every built image records its resolved inputs as OCI labels and in
 `/opt/tt-emule-runtime/stack.json`. The original supported-stack manifest is
 stored beside it as `source-manifest.json`, and its SHA-256 is verified while
-the image is built. This means an image built with experimental overrides still
-reports both the supported manifest it started from and the exact revisions it
-actually used. Inspect an artifact without running a workload with:
+the image is built. These records identify the supported manifest and exact
+runtime inputs used to build the image. Inspect an artifact without running a
+workload with:
 
 ```bash
 docker image inspect tt-lang-emule:TAG \

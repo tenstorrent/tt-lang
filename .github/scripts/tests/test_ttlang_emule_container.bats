@@ -4,6 +4,7 @@
 
 load test_helper
 
+SOURCE_REPO_ROOT="$TTLANG_REPO_ROOT"
 RUNNER="$TTLANG_REPO_ROOT/scripts/tt-lang-emule-container.sh"
 ENTRYPOINT="$TTLANG_REPO_ROOT/scripts/tt-lang-emule-entrypoint.sh"
 INSTALLER="$TTLANG_REPO_ROOT/scripts/install-tt-lang-emule.sh"
@@ -16,19 +17,23 @@ make_stack_manifest() {
     compiler_commit="$(git -C "$compiler_root" rev-parse HEAD)"
     sed \
         "s/\"base_commit\": \"[0-9a-f]*\"/\"base_commit\": \"$compiler_commit\"/" \
-        "$TTLANG_REPO_ROOT/config/tt-lang-emule-stack.json" > "$target"
+        "$SOURCE_REPO_ROOT/config/tt-lang-emule-stack.json" > "$target"
 }
 
 make_runner_fixture() {
     local root="$1"
     mkdir -p "$root/.github/containers" "$root/config" \
-        "$root/examples" "$root/scripts" "$root/lib"
-    cp "$DOCKERFILE" "$root/.github/containers/Dockerfile.emule"
-    cp "$ENTRYPOINT" "$root/scripts/tt-lang-emule-entrypoint.sh"
-    cp "$RUNNER" "$root/scripts/tt-lang-emule-container.sh"
-    cp "$TTLANG_REPO_ROOT/scripts/tt-lang-emule-stack.py" \
-        "$root/scripts/tt-lang-emule-stack.py"
+        "$root/examples" "$root/scripts" "$root/lib" "$root/cmake/modules"
+    cp "$SOURCE_REPO_ROOT/.github/containers/Dockerfile.emule" \
+        "$root/.github/containers/Dockerfile.emule"
+    cp "$SOURCE_REPO_ROOT/scripts/tt-lang-emule-entrypoint.sh" \
+        "$SOURCE_REPO_ROOT/scripts/tt-lang-emule-container.sh" \
+        "$SOURCE_REPO_ROOT/scripts/tt-lang-emule-stack.py" \
+        "$SOURCE_REPO_ROOT/scripts/install-tt-lang-emule.sh" "$root/scripts/"
+    cp "$SOURCE_REPO_ROOT/cmake/modules/TTLangUtils.cmake" "$root/cmake/modules/"
     touch "$root/examples/program.py"
+    touch "$root/examples/eltwise_add.py"
+    touch "$root/examples/compiler_only_external_call.py"
     touch "$root/lib/compiler.cpp"
     git -C "$root" init -q
     git -C "$root" add .
@@ -42,6 +47,20 @@ make_runner_fixture() {
     git -C "$root" \
         -c user.name=test -c user.email=test@example.com \
         commit -q -m "Pin synthetic compiler baseline"
+}
+
+pin_emulator_runtime() {
+    python3 - "$TTLANG_REPO_ROOT/config/tt-lang-emule-stack.json" "$1" "$2" <<'PY'
+import json
+import pathlib
+import sys
+
+manifest = pathlib.Path(sys.argv[1])
+stack = json.loads(manifest.read_text())
+stack["emulator"]["commit"] = sys.argv[2]
+stack["metal"]["commit"] = sys.argv[3]
+manifest.write_text(json.dumps(stack, indent=2) + "\n")
+PY
 }
 
 make_mock_docker() {
@@ -108,11 +127,16 @@ setup() {
     MOCK_DOCKER_LOG="$BATS_TEST_TMPDIR/docker.log"
     export MOCK_DOCKER_LOG
     make_mock_docker "$MOCK_DOCKER"
-    # Docker argument tests do not require the production baseline's history.
-    # Pin this checkout's HEAD so shallow CI checkouts exercise the same paths.
-    TTLANG_EMULE_STACK_MANIFEST="$BATS_TEST_TMPDIR/stack.json"
-    export TTLANG_EMULE_STACK_MANIFEST
-    make_stack_manifest "$TTLANG_REPO_ROOT" "$TTLANG_EMULE_STACK_MANIFEST"
+    unset TTLANG_EMULE_STACK_MANIFEST TTLANG_EMULE_RUNTIME_COMMIT \
+        TTLANG_EMULE_RUNTIME_METAL_COMMIT TTLANG_EMULE_RUNTIME_METAL_SOURCE_URL \
+        TTLANG_EMULE_RUNTIME_BASE_IMAGE TTLANG_EMULE_PLATFORM
+    # Keep the test manifest inside its own checkout, independent of CI depth.
+    make_runner_fixture "$BATS_TEST_TMPDIR/checkout"
+    TTLANG_REPO_ROOT="$(cd "$BATS_TEST_TMPDIR/checkout" && pwd -P)"
+    RUNNER="$TTLANG_REPO_ROOT/scripts/tt-lang-emule-container.sh"
+    ENTRYPOINT="$TTLANG_REPO_ROOT/scripts/tt-lang-emule-entrypoint.sh"
+    INSTALLER="$TTLANG_REPO_ROOT/scripts/install-tt-lang-emule.sh"
+    DOCKERFILE="$TTLANG_REPO_ROOT/.github/containers/Dockerfile.emule"
 }
 
 assert_log_line() {
@@ -283,8 +307,7 @@ EOF
         git -C "$worktree_root" rev-parse --path-format=absolute --git-common-dir
     )"
 
-    TTLANG_EMULE_STACK_MANIFEST="$worktree_root/config/tt-lang-emule-stack.json" \
-        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
         run -0 "$worktree_runner" "$worktree_root/examples/program.py"
 
     assert_log_line \
@@ -321,7 +344,6 @@ EOF
     local synthetic_runner="$synthetic_root/scripts/tt-lang-emule-container.sh"
     local fingerprint
     make_runner_fixture "$synthetic_root"
-    TTLANG_EMULE_STACK_MANIFEST="$synthetic_root/config/tt-lang-emule-stack.json"
 
     TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$synthetic_runner" \
         "$synthetic_root/examples/program.py"
@@ -344,7 +366,6 @@ EOF
     local tracked_fingerprint
     local new_fingerprint
     make_runner_fixture "$synthetic_root"
-    TTLANG_EMULE_STACK_MANIFEST="$synthetic_root/config/tt-lang-emule-stack.json"
 
     TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$synthetic_runner" \
         "$synthetic_root/examples/program.py"
@@ -371,7 +392,6 @@ EOF
     local first_image
     local second_image
     make_runner_fixture "$synthetic_root"
-    TTLANG_EMULE_STACK_MANIFEST="$synthetic_root/config/tt-lang-emule-stack.json"
 
     TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$synthetic_runner" \
         "$synthetic_root/examples/program.py"
@@ -390,24 +410,6 @@ EOF
     [ "$first_image" != "$second_image" ]
 }
 
-@test "runtime image identity includes an experimental base image override" {
-    local first_image
-    local second_image
-    cd "$TTLANG_REPO_ROOT"
-
-    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$RUNNER" \
-        examples/eltwise_add.py
-    first_image="$(awk '/^tt-lang-emule:/{print; exit}' "$MOCK_DOCKER_LOG")"
-
-    : > "$MOCK_DOCKER_LOG"
-    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
-        TTLANG_EMULE_RUNTIME_BASE_IMAGE="example.invalid/toolchain@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" \
-        run -0 "$RUNNER" examples/eltwise_add.py
-    second_image="$(awk '/^tt-lang-emule:/{print; exit}' "$MOCK_DOCKER_LOG")"
-
-    [ "$first_image" != "$second_image" ]
-}
-
 @test "shallow checkout accepts its pinned HEAD but rejects an unavailable baseline" {
     local source_root="$BATS_TEST_TMPDIR/source"
     local shallow_root="$BATS_TEST_TMPDIR/shallow"
@@ -416,13 +418,12 @@ EOF
     git clone -q --depth 1 "file://$source_root" "$shallow_root"
     [ "$(git -C "$shallow_root" rev-parse --is-shallow-repository)" = true ]
 
-    TTLANG_EMULE_STACK_MANIFEST="$shallow_root/config/tt-lang-emule-stack.json" \
-        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
         run -1 "$shallow_runner" "$shallow_root/examples/program.py"
     assert_output --partial "compiler checkout does not contain the manifest compiler baseline"
     [ ! -e "$MOCK_DOCKER_LOG" ]
 
-    make_stack_manifest "$shallow_root" "$TTLANG_EMULE_STACK_MANIFEST"
+    make_stack_manifest "$shallow_root" "$shallow_root/config/tt-lang-emule-stack.json"
     TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
         run -0 "$shallow_runner" "$shallow_root/examples/program.py"
     assert_log_line "run"
@@ -484,14 +485,18 @@ PY
     touch "$emule_source/tracked-source"
     touch \
         "$emule_source/cluster_descriptors/blackhole_P150_unharvested.yaml"
+    printf '%s\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb > \
+        "$emule_source/tt-metal-pin.txt"
     git -C "$emule_source" add \
-        tracked-source cluster_descriptors/blackhole_P150_unharvested.yaml
+        tracked-source cluster_descriptors/blackhole_P150_unharvested.yaml \
+        tt-metal-pin.txt
     git -C "$emule_source" \
         -c user.name=test -c user.email=test@example.com \
         commit -q -m "Pinned source"
     touch "$emule_source/untracked-secret"
     emule_commit="$(git -C "$emule_source" rev-parse HEAD)"
     emule_source="$(cd "$emule_source" && pwd -P)"
+    pin_emulator_runtime "$emule_commit" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
     cd "$TTLANG_REPO_ROOT"
     for source_mode in directory url rebuild; do
         source_dir=""
@@ -515,8 +520,6 @@ PY
             TTLANG_EMULE_REBUILD="$rebuild" \
             TTLANG_EMULE_RUNTIME_SOURCE_DIR="$source_dir" \
             TTLANG_EMULE_RUNTIME_SOURCE_URL="$source_url" \
-            TTLANG_EMULE_RUNTIME_COMMIT="$emule_commit" \
-            TTLANG_EMULE_RUNTIME_METAL_COMMIT=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
             run -0 "$RUNNER" examples/eltwise_add.py
 
         assert_log_line "build"
@@ -528,7 +531,7 @@ PY
         assert_log_line \
             "TT_LANG_COMPILER_BASE_COMMIT=$(python3 -c \
                 'import json, sys; print(json.load(open(sys.argv[1]))["compiler"]["base_commit"])' \
-                "$TTLANG_EMULE_STACK_MANIFEST")"
+                "$TTLANG_REPO_ROOT/config/tt-lang-emule-stack.json")"
         assert_log_contains "STACK_MANIFEST_SHA256="
         assert_log_line "RUNTIME_PLATFORM=linux/amd64"
         assert_log_contains "tt-lang-stack=$runtime_tmp/tt-lang-stack-context."
@@ -558,17 +561,16 @@ PY
 @test "P150 target rejects an incompatible pinned runtime before Docker build" {
     local source_commit
     source_commit="$(git -C "$TTLANG_REPO_ROOT" rev-parse HEAD)"
+    pin_emulator_runtime "$source_commit" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
     cd "$TTLANG_REPO_ROOT"
     MOCK_DOCKER_IMAGE_STATUS=1 \
         TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
         TTLANG_EMULE_INSTALL=1 \
         TTLANG_EMULE_RUNTIME_SOURCE_DIR="$TTLANG_REPO_ROOT" \
-        TTLANG_EMULE_RUNTIME_COMMIT="$source_commit" \
-        TTLANG_EMULE_RUNTIME_METAL_COMMIT=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
         run -1 "$RUNNER" examples/eltwise_add.py
 
-    assert_output --partial "does not provide the required P150 descriptor"
-    assert_output --partial "Update the supported stack manifest"
+    assert_output --partial "emulator target descriptor is missing"
+    assert_output --partial "blackhole_P150_unharvested.yaml"
     refute_log_line "build"
     refute_log_line "run"
 }
@@ -620,13 +622,50 @@ PY
     done
 }
 
-@test "a symbolic emulator revision is rejected before Docker" {
+@test "a symbolic emulator revision in the manifest is rejected before Docker" {
+    pin_emulator_runtime main bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
     cd "$TTLANG_REPO_ROOT"
-    TTLANG_EMULE_RUNTIME_COMMIT=main TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
-        run -2 "$RUNNER" examples/eltwise_add.py
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -1 "$RUNNER" examples/eltwise_add.py
 
-    assert_output --partial "must be full lowercase commit SHAs"
+    assert_output --partial "emulator.commit must be a full lowercase commit SHA"
     [ ! -e "$MOCK_DOCKER_LOG" ]
+}
+
+@test "independent runtime overrides are rejected before any Docker action" {
+    local setting
+    cd "$TTLANG_REPO_ROOT"
+    for setting in \
+        TTLANG_EMULE_STACK_MANIFEST \
+        TTLANG_EMULE_RUNTIME_COMMIT \
+        TTLANG_EMULE_RUNTIME_METAL_COMMIT \
+        TTLANG_EMULE_RUNTIME_METAL_SOURCE_URL \
+        TTLANG_EMULE_RUNTIME_BASE_IMAGE \
+        TTLANG_EMULE_PLATFORM; do
+        run -2 env "$setting=unsupported" \
+            TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            "$RUNNER" examples/eltwise_add.py
+
+        assert_output --partial "$setting is not supported"
+        assert_output --partial "repository's pinned stack manifest"
+        [ ! -e "$MOCK_DOCKER_LOG" ]
+    done
+}
+
+@test "empty retired runtime settings do not override the pinned manifest" {
+    cd "$TTLANG_REPO_ROOT"
+    TTLANG_EMULE_STACK_MANIFEST= \
+        TTLANG_EMULE_RUNTIME_COMMIT= \
+        TTLANG_EMULE_RUNTIME_METAL_COMMIT= \
+        TTLANG_EMULE_RUNTIME_METAL_SOURCE_URL= \
+        TTLANG_EMULE_RUNTIME_BASE_IMAGE= \
+        TTLANG_EMULE_PLATFORM= \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -0 "$RUNNER" examples/eltwise_add.py
+
+    assert_log_line "run"
+    assert_log_line "linux/amd64"
+    refute_log_line "build"
 }
 
 @test "an unavailable daemon fails before inspecting or building the image" {
