@@ -1279,6 +1279,7 @@ PipeGraph::proveReceiverProducerStreams(PipeGraphAnalysisState &analysisState) {
     };
     LogicalResult result = success();
     llvm::DenseMap<Operation *, SmallVector<Operation *>> pushesByPost;
+    bool pushOutsidePostContext = false;
 
     forEachReceiverDFBPhysicalStreamEvent(
         analysisState.pushesByPhysicalStream, receiverDFB,
@@ -1364,6 +1365,21 @@ PipeGraph::proveReceiverProducerStreams(PipeGraphAnalysisState &analysisState) {
               result = failure();
               return;
             }
+            std::optional<ReceiverControlContext> postContext =
+                getReceiverControlContext(postOp, *maybeLocation,
+                                          analysisState);
+            std::optional<ReceiverControlContext> pushContext =
+                getReceiverControlContext(pushOp, *maybeLocation,
+                                          analysisState);
+            // Both contexts must be known and equal. Two unknown contexts
+            // compare equal as optionals, so the known-ness is tested
+            // explicitly.
+            bool contextsKnownAndEqual =
+                postContext && pushContext && *postContext == *pushContext;
+            if (!contextsKnownAndEqual &&
+                *maybePushedBlocks != physicalBlockCount) {
+              pushOutsidePostContext = true;
+            }
             if (!hasMatchingReceiveWaitBeforePush(
                     postOp, pushOp, analysisState.receiveWaitsByPost,
                     analysisState.receiveWaitAnysByPost, *maybeLocation,
@@ -1409,6 +1425,13 @@ PipeGraph::proveReceiverProducerStreams(PipeGraphAnalysisState &analysisState) {
         rejectBoth("post is not consumed by a receiver push");
         break;
       }
+    }
+    // The sender advances its slot counter once per post, so a push that can
+    // execute without its post leaves the counter behind the receiver's write
+    // pointer unless every push returns the pointer to the same slot.
+    if (pushOutsidePostContext) {
+      rejectBoth("push does not execute in the control context of its "
+                 "receiver post");
     }
 
     if (pipeOnlyValid) {

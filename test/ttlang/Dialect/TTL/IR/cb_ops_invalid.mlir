@@ -136,11 +136,11 @@ module {
 
 // -----
 
-// cb_push with num_tiles exceeding CB capacity (across all blocks).
+// One push transaction cannot advance by multiple complete DFB capacities.
 module {
-  func.func @cb_push_num_tiles_exceeds_capacity(%cb: !ttl.cb<[3, 3], !ttcore.tile<32x32, bf16>, 2>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
-    // expected-error @below {{'ttl.cb_push' op num_tiles (24) exceeds DFB capacity (18)}}
-    ttl.cb_push %cb {num_tiles = 24 : i64} : <[3, 3], !ttcore.tile<32x32, bf16>, 2>
+  func.func @cb_push_multiple_capacities(%cb: !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{'ttl.cb_push' op num_tiles (4) exceeds DFB capacity (2)}}
+    ttl.cb_push %cb {num_tiles = 4 : i64} : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     func.return
   }
 }
