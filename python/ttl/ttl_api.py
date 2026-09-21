@@ -3973,7 +3973,9 @@ def _make_operation_wrapper(
         return result
 
     attach_runtime_resource_finalizer(_wrapper, runtime_resource_cache)
-    return with_persistent_storage(_wrapper)
+    wrapped = with_persistent_storage(_wrapper)
+    wrapped.__wrapped__ = function
+    return wrapped
 
 
 def _validate_operation_options(
