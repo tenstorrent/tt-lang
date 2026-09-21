@@ -85,6 +85,10 @@ def pytest_configure(config):
         "multi_device: needs a fabric mesh; excluded from the "
         "per-chip parallel run and executed serially",
     )
+    config.addinivalue_line(
+        "markers",
+        "hybrid_allocator: opens the device with TT-Metal hybrid allocation",
+    )
 
 
 # =============================================================================
@@ -93,13 +97,16 @@ def pytest_configure(config):
 
 
 @pytest.fixture
-def ttnn_device():
+def ttnn_device(request, monkeypatch):
     """Provide an isolated TTNN device using WORKER dispatch."""
     global _ttnn_import_failed
     if not _ttnn_available or _ttnn_import_failed:
         pytest.skip("TTNN not available")
     if not _hardware_available:
         pytest.skip("No Tenstorrent device available")
+
+    if request.node.get_closest_marker("hybrid_allocator") is not None:
+        monkeypatch.setenv("TT_METAL_ALLOCATOR_MODE_HYBRID", "1")
 
     try:
         import ttnn
