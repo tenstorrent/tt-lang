@@ -2880,12 +2880,48 @@ def build_dfb_reconfiguration_runtime_resources(
                 continue
             allocation = _get_dfb_allocation(config)
             required_layout_by_core = required_layout_by_core_by_storage[storage_index]
-            for core in scratch_layout_by_core_by_dfb[dfb_index]:
-                current_size, current_alignment = required_layout_by_core[core]
+            # A core can carry the DFB at launch without appearing in any
+            # epoch, so the launch nodes join the epoch nodes rather than
+            # filtering against them; storage is reserved per core over both.
+            if config.storage_segments and all(
+                segment.is_tensor_backed for segment in config.storage_segments
+            ):
+                launch_cores = set()
+            elif config.allocation_nodes is not None:
+                launch_cores = set(config.allocation_nodes)
+            elif config.storage_segments:
+                launch_cores = {
+                    node
+                    for segment in config.storage_segments
+                    if not segment.is_tensor_backed
+                    for node in segment.nodes
+                }
+            else:
+                # A launch configuration that names no node carries no evidence
+                # of a core beyond the epochs, and reserving the whole grid for
+                # it exhausts L1 on programs that reconfigure wide buffers.
+                launch_cores = set()
+            outside_nodes = launch_cores.difference(core_rows)
+            if outside_nodes:
+                outside_node = min(outside_nodes)
+                raise ValueError(
+                    f"DFB[{dfb_index}] configuration references launch node "
+                    f"{outside_node} outside the kernel grid"
+                )
+            scratch_layout_by_core = scratch_layout_by_core_by_dfb[dfb_index]
+            for core in launch_cores.union(scratch_layout_by_core):
+                current_size, current_alignment = required_layout_by_core.get(
+                    core, (0, 1)
+                )
                 required_layout_by_core[core] = (
                     max(current_size, allocation.total_size),
                     math.lcm(current_alignment, allocation.page_size),
                 )
+                if core not in scratch_layout_by_core:
+                    scratch_layout_by_core[core] = (
+                        allocation.total_size,
+                        allocation.page_size,
+                    )
 
     required_bytes_by_core_by_storage = {
         storage_index: {
