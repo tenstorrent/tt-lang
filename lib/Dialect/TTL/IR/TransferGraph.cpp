@@ -848,6 +848,13 @@ public:
             destination};
   }
 
+  std::uint64_t getIncidentEdgeOrdinal(TransferEdgeAttr,
+                                       PipeRole role) const override {
+    assert(role != PipeRole::Active &&
+           "static incident iteration requires one endpoint role");
+    return 0;
+  }
+
 private:
   Value buildEdgeOrdinalForSource(OpBuilder &builder, Location loc,
                                   Value source) const {
@@ -1050,6 +1057,49 @@ public:
       }
     }
     return {selectedOrdinal, selectedSource, selectedDestination};
+  }
+
+  std::uint64_t getIncidentEdgeOrdinal(TransferEdgeAttr edge,
+                                       PipeRole role) const override {
+    assert(
+        role != PipeRole::Active && edge.getDestination() &&
+        "static incident iteration requires one endpoint role and point edge");
+    SmallVector<StencilOffsetDescriptor> descriptors = getDescriptors();
+    if (role == PipeRole::Source) {
+      std::uint64_t incidentOrdinal = 0;
+      for (const StencilOffsetDescriptor &descriptor : descriptors) {
+        std::optional<DeviceRefAttr> destination = translateComponent(
+            edge.getSource(), descriptor.offset.asArrayRef(), /*direction=*/1);
+        if (!destination) {
+          continue;
+        }
+        if (*destination == edge.getDestination()) {
+          return incidentOrdinal;
+        }
+        ++incidentOrdinal;
+      }
+      llvm_unreachable("verified stencil edge must match one source offset");
+    }
+
+    std::uint64_t sourceIndex =
+        getLogicalDeviceIndex(getDomain(), edge.getSource());
+    std::uint64_t incidentOrdinal = 0;
+    bool foundEdge = false;
+    for (const StencilOffsetDescriptor &descriptor : descriptors) {
+      std::optional<DeviceRefAttr> source = translateComponent(
+          edge.getDestination(), descriptor.offset.asArrayRef(),
+          /*direction=*/-1);
+      if (!source) {
+        continue;
+      }
+      std::uint64_t candidateIndex =
+          getLogicalDeviceIndex(getDomain(), *source);
+      incidentOrdinal += candidateIndex < sourceIndex;
+      foundEdge |= *source == edge.getSource();
+    }
+    assert(foundEdge &&
+           "verified stencil edge must match one destination offset");
+    return incidentOrdinal;
   }
 
 private:
@@ -1443,6 +1493,23 @@ public:
         builder, loc, source, rootIndex);
     return {edgeOrdinal, source, destination};
   }
+
+  std::uint64_t getIncidentEdgeOrdinal(TransferEdgeAttr edge,
+                                       PipeRole role) const override {
+    assert(
+        role != PipeRole::Active && edge.getDestination() &&
+        "static incident iteration requires one endpoint role and point edge");
+    if (role == PipeRole::Source) {
+      return 0;
+    }
+    DeviceRefAttr root = getProperties().getAs<DeviceRefAttr>("root");
+    std::uint64_t rootIndex =
+        getComponentLinearIndex(root.getCoordinates().front());
+    std::uint64_t sourceIndex = getComponentLinearIndex(
+        edge.getSource().getCoordinates()[componentIndex]);
+    assert(sourceIndex != rootIndex && "gather relation excludes self edges");
+    return sourceIndex < rootIndex ? sourceIndex : sourceIndex - 1;
+  }
 };
 
 class ScatterTransferGraph final : public StructuredTransferGraph {
@@ -1541,6 +1608,25 @@ public:
     Value edgeOrdinal = compressDeviceOrdinalExcludingComponent(
         builder, loc, destination, sourceIndex);
     return {edgeOrdinal, source, destination};
+  }
+
+  std::uint64_t getIncidentEdgeOrdinal(TransferEdgeAttr edge,
+                                       PipeRole role) const override {
+    assert(
+        role != PipeRole::Active && edge.getDestination() &&
+        "static incident iteration requires one endpoint role and point edge");
+    if (role == PipeRole::Destination) {
+      return 0;
+    }
+    DeviceRefAttr source = getProperties().getAs<DeviceRefAttr>("source");
+    std::uint64_t sourceIndex =
+        getComponentLinearIndex(source.getCoordinates().front());
+    std::uint64_t destinationIndex = getComponentLinearIndex(
+        edge.getDestination().getCoordinates()[componentIndex]);
+    assert(destinationIndex != sourceIndex &&
+           "scatter relation excludes self edges");
+    return destinationIndex < sourceIndex ? destinationIndex
+                                          : destinationIndex - 1;
   }
 };
 
@@ -1660,6 +1746,24 @@ public:
         arith::AddIOp::create(builder, loc, sourceBlock, compressedDestination);
     return {edgeOrdinal, source, destination};
   }
+
+  std::uint64_t getIncidentEdgeOrdinal(TransferEdgeAttr edge,
+                                       PipeRole role) const override {
+    assert(
+        role != PipeRole::Active && edge.getDestination() &&
+        "static incident iteration requires one endpoint role and point edge");
+    std::uint64_t sourceIndex = getComponentLinearIndex(
+        edge.getSource().getCoordinates()[componentIndex]);
+    std::uint64_t destinationIndex = getComponentLinearIndex(
+        edge.getDestination().getCoordinates()[componentIndex]);
+    assert(sourceIndex != destinationIndex &&
+           "all-to-all relation excludes self edges");
+    if (role == PipeRole::Source) {
+      return destinationIndex < sourceIndex ? destinationIndex
+                                            : destinationIndex - 1;
+    }
+    return sourceIndex < destinationIndex ? sourceIndex : sourceIndex - 1;
+  }
 };
 
 } // namespace
@@ -1719,6 +1823,12 @@ TransferGraphEdgeIndexValues
 TransferGraph::buildIncidentEdgeIndexValues(OpBuilder &, Location, Value, Value,
                                             PipeRole) const {
   llvm_unreachable("closed-form incident iteration must build edge indices");
+}
+
+std::uint64_t TransferGraph::getIncidentEdgeOrdinal(TransferEdgeAttr,
+                                                    PipeRole) const {
+  llvm_unreachable(
+      "closed-form incident iteration must map static edge ordinals");
 }
 
 Value TransferGraph::buildEdgeIncidence(OpBuilder &, Location, Value, Value,
@@ -1846,59 +1956,6 @@ void forEachPipeRecord(
       }
     });
   }
-}
-
-FailureOr<SmallVector<PipeRecordLocalIndex>>
-getPipeMappingRecordLocalIndices(PipeMappingAttr mapping, PipeRole role) {
-  assert(role != PipeRole::Active &&
-         "selected record indexing requires one endpoint role");
-  SmallVector<PipeRecordLocalIndex> localIndices;
-  std::unique_ptr<TransferGraph> graph =
-      createTransferGraph(mapping.getGraph());
-  std::uint64_t nodePipeCount = mapping.getPipes().size();
-  llvm::DenseMap<DeviceRefAttr, std::uint64_t> incidentEdgeCounts;
-  struct PendingLocalIndex {
-    std::uint64_t index;
-    DeviceRefAttr endpoint;
-  };
-  SmallVector<PendingLocalIndex> mappingIndices;
-  bool overflow = false;
-  graph->forEachEdge([&](TransferEdgeAttr edge) {
-    if (overflow) {
-      return;
-    }
-    DeviceRefAttr endpoint =
-        role == PipeRole::Source ? edge.getSource() : edge.getDestination();
-    std::uint64_t incidentEdgeOrdinal = incidentEdgeCounts[endpoint]++;
-    std::optional<std::uint64_t> localBase =
-        llvm::checkedMulUnsigned(incidentEdgeOrdinal, nodePipeCount);
-    if (!localBase) {
-      overflow = true;
-      return;
-    }
-    for (std::uint64_t nodePipeIndex = 0; nodePipeIndex < nodePipeCount;
-         ++nodePipeIndex) {
-      std::optional<std::uint64_t> localIndex =
-          llvm::checkedAddUnsigned(*localBase, nodePipeIndex);
-      if (!localIndex) {
-        overflow = true;
-        return;
-      }
-      mappingIndices.push_back(PendingLocalIndex{*localIndex, endpoint});
-    }
-  });
-  if (overflow) {
-    return failure();
-  }
-  for (const PendingLocalIndex &pending : mappingIndices) {
-    std::optional<std::uint64_t> localCount = llvm::checkedMulUnsigned(
-        incidentEdgeCounts.lookup(pending.endpoint), nodePipeCount);
-    if (!localCount) {
-      return failure();
-    }
-    localIndices.push_back(PipeRecordLocalIndex{pending.index, *localCount});
-  }
-  return localIndices;
 }
 
 } // namespace mlir::tt::ttl

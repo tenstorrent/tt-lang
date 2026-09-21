@@ -134,6 +134,11 @@ public:
                                Value deviceIndex, Value incidentEdgeIndex,
                                PipeRole role) const;
 
+  /// Return an edge's endpoint-local ordinal in static enumeration order.
+  /// Implemented by `ClosedForm` relations.
+  virtual std::uint64_t getIncidentEdgeOrdinal(TransferEdgeAttr edge,
+                                               PipeRole role) const;
+
   /// Build the predicate selecting edges incident to `deviceIndex` in `role`.
   /// Implemented by `Filtered` relations.
   virtual Value buildEdgeIncidence(OpBuilder &builder, Location loc,
@@ -185,17 +190,6 @@ FailureOr<PipeRecordAttr> getFirstNodePipeRecord(PipeNetRecordsAttr records);
 void forEachPipeRecord(
     PipeNetRecordsAttr records,
     llvm::function_ref<void(std::uint64_t, PipeRecordAttr)> callback);
-
-/// Device-local selected-record ordinal and count for one endpoint role.
-struct PipeRecordLocalIndex {
-  std::uint64_t index;
-  std::uint64_t count;
-};
-
-/// Return each concrete record in `mapping` and its position and count among
-/// transfers that match the same logical device and endpoint role.
-FailureOr<SmallVector<PipeRecordLocalIndex>>
-getPipeMappingRecordLocalIndices(PipeMappingAttr mapping, PipeRole role);
 
 /// Return the row-major index of `device` in `domain`.
 inline int64_t getLogicalDeviceIndex(DeviceDomainAttr domain,

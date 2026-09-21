@@ -14,7 +14,51 @@ namespace mlir::tt::ttl {
 std::optional<std::uint64_t>
 getPipeNetRecordLoopInductionValue(const PipeNetRecordLoop &recordLoop,
                                    const LaunchExecutionLocation &location,
-                                   std::uint64_t recordIndex) {
+                                   std::uint64_t recordIndex,
+                                   PipeRecordAttr selectedRecord) {
+  if (recordLoop.closedFormMapping) {
+    assert(selectedRecord &&
+           "closed-form graph induction requires one concrete graph record");
+    DeviceTransferAttr transfer = selectedRecord.getDeviceTransfer();
+    assert(transfer &&
+           "closed-form graph induction requires one concrete graph record");
+    PipeRole role = recordLoop.selection == PipeNetRecordSelection::Source
+                        ? PipeRole::Source
+                        : PipeRole::Destination;
+    bool selectsLocation = llvm::any_of(
+        getPipeRecordRoleFacts(selectedRecord, role),
+        [&](const PipeRecordRoleFacts &facts) {
+          assert(facts.device &&
+                 "closed-form graph records identify endpoint devices");
+          return facts.deviceDomain == location.deviceDomain &&
+                 facts.device == location.device &&
+                 facts.minX <= location.node.x &&
+                 location.node.x <= facts.maxX &&
+                 facts.minY <= location.node.y && location.node.y <= facts.maxY;
+        });
+    if (!selectsLocation) {
+      return std::nullopt;
+    }
+    std::unique_ptr<TransferGraph> graph =
+        createTransferGraph(recordLoop.closedFormMapping.getGraph());
+    std::uint64_t incidentEdgeOrdinal =
+        graph->getIncidentEdgeOrdinal(transfer.getEdge(), role);
+    std::uint64_t nodePipeCount =
+        recordLoop.closedFormMapping.getPipes().size();
+    assert(nodePipeCount != 0 && "verified graph mapping has a node pipe");
+    if (recordLoop.usesMatchingNodeCoordinates) {
+      return incidentEdgeOrdinal;
+    }
+    std::optional<std::uint64_t> localBase =
+        llvm::checkedMulUnsigned(incidentEdgeOrdinal, nodePipeCount);
+    std::optional<std::uint64_t> localIndex =
+        localBase
+            ? llvm::checkedAddUnsigned(*localBase, recordIndex % nodePipeCount)
+            : std::nullopt;
+    assert(localIndex &&
+           "verified graph record count keeps local indices representable");
+    return *localIndex;
+  }
   if (recordLoop.indirectInductionValues.empty()) {
     assert(recordLoop.inductionValueStride != 0 &&
            "a record loop must advance its induction value");

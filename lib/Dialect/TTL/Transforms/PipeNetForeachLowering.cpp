@@ -167,57 +167,6 @@ static RecordInductionMap buildGridMajorRecordInductionValues(
   return inductionValues;
 }
 
-// Associate each concrete graph record with the callback iteration that selects
-// it, so execution-count analysis can evaluate the cloned body.
-static RecordInductionMap buildGraphRecordInductionValues(
-    PipeNetRecordsAttr records, PipeRole role,
-    llvm::function_ref<std::uint64_t(std::uint64_t)> iterationForRecord) {
-  RecordInductionMap inductionValues;
-  forEachPipeRecord(records, [&](std::uint64_t recordIndex,
-                                 PipeRecordAttr record) {
-    for (const PipeRecordRoleFacts &facts :
-         getPipeRecordRoleFacts(record, role)) {
-      assert(facts.device &&
-             "graph records must identify their endpoint device");
-      for (int64_t nodeY = facts.minY; nodeY <= facts.maxY; ++nodeY) {
-        for (int64_t nodeX = facts.minX; nodeX <= facts.maxX; ++nodeX) {
-          bool inserted =
-              inductionValues
-                  .try_emplace(
-                      std::make_pair(LaunchExecutionLocation({nodeX, nodeY},
-                                                             facts.deviceDomain,
-                                                             facts.device),
-                                     recordIndex),
-                      iterationForRecord(recordIndex))
-                  .second;
-          assert(inserted &&
-                 "a graph record must select each endpoint node once");
-        }
-      }
-    }
-  });
-  return inductionValues;
-}
-
-static RecordInductionMap buildGraphCallbackRecordInductionValues(
-    PipeNetRecordsAttr records, PipeRole role, std::uint64_t nodePipeCount,
-    bool usesMatchingNodeCoordinates) {
-  assert(records.getMappings().size() == 1 &&
-         "one graph callback loop must contain one mapping");
-  FailureOr<SmallVector<PipeRecordLocalIndex>> localIndices =
-      getPipeMappingRecordLocalIndices(records.getMappings().front(), role);
-  assert(succeeded(localIndices) &&
-         "verified graph records must have endpoint-local indices");
-  return buildGraphRecordInductionValues(
-      records, role, [&](std::uint64_t recordIndex) {
-        assert(recordIndex < localIndices->size() &&
-               "each graph record must have a local index");
-        std::uint64_t localIndex = (*localIndices)[recordIndex].index;
-        return usesMatchingNodeCoordinates ? localIndex / nodePipeCount
-                                           : localIndex;
-      });
-}
-
 template <typename ForeachOp, typename SelectOp, typename SelectedPipeType>
 static bool
 tryLowerLocalPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
@@ -500,23 +449,21 @@ lowerGraphPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
                             rewriter, loc, iterationCount, nodePipeCount));
     Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
     auto forOp = scf::ForOp::create(rewriter, loc, lower, upper, step);
-    // A filtered callback visits every graph ordinal in order, so the record
-    // index alone determines the iteration and no per-record table is built.
-    foreachLoweringInfo.recordLoops[forOp] =
-        filteredIteration
-            ? PipeNetRecordLoop{plan.records,
-                                recordSelection,
-                                {},
-                                plan.usesMatchingNodeCoordinates
-                                    ? static_cast<std::uint64_t>(
-                                          plan.nodePipeCount)
-                                    : 1}
-            : PipeNetRecordLoop{
-                  plan.records, recordSelection,
-                  buildGraphCallbackRecordInductionValues(
-                      plan.records, role,
-                      static_cast<std::uint64_t>(plan.nodePipeCount),
-                      plan.usesMatchingNodeCoordinates)};
+    PipeNetRecordLoop recordLoop{plan.records, recordSelection};
+    if (filteredIteration) {
+      // A filtered callback visits every graph ordinal in order, so its
+      // induction value follows directly from the concrete record index.
+      recordLoop.inductionValueStride =
+          plan.usesMatchingNodeCoordinates
+              ? static_cast<std::uint64_t>(plan.nodePipeCount)
+              : 1;
+    } else {
+      // Closed-form relations recover endpoint-local ordinals from the
+      // selected edge instead of retaining one map entry per concrete record.
+      recordLoop.closedFormMapping = plan.records.getMappings().front();
+      recordLoop.usesMatchingNodeCoordinates = plan.usesMatchingNodeCoordinates;
+    }
+    foreachLoweringInfo.recordLoops[forOp] = std::move(recordLoop);
 
     rewriter.setInsertionPointToStart(forOp.getBody());
     Value localRecordIndex = forOp.getInductionVar();

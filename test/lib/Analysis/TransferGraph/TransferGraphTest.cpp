@@ -37,6 +37,10 @@ LogicalResult checkGraph(func::FuncOp fixture, TransferGraphAttr attribute) {
 
   for (int64_t deviceIndex = 0; deviceIndex < deviceCount; ++deviceIndex) {
     for (PipeRole role : {PipeRole::Source, PipeRole::Destination}) {
+      // A filtered relation has no closed-form incident mapping, so its
+      // contract is the per-edge predicate rather than an ordinal mapping.
+      const bool filtered =
+          graph->getIncidentEdgeIteration() == IncidentEdgeIteration::Filtered;
       SmallVector<int64_t> expected{0};
       for (auto [ordinal, edge] : llvm::enumerate(edges)) {
         int64_t source =
@@ -44,15 +48,16 @@ LogicalResult checkGraph(func::FuncOp fixture, TransferGraphAttr attribute) {
         int64_t destination =
             getLogicalDeviceIndex(graph->getDomain(), edge.getDestination());
         if ((role == PipeRole::Source ? source : destination) == deviceIndex) {
+          if (!filtered && graph->getIncidentEdgeOrdinal(edge, role) !=
+                               static_cast<std::uint64_t>(expected.front())) {
+            return fixture.emitError("static endpoint-local edge ordinal "
+                                     "disagrees with enumeration");
+          }
           ++expected.front();
           expected.append({static_cast<int64_t>(ordinal), source, destination});
         }
       }
 
-      // A filtered relation has no closed-form incident mapping, so its
-      // contract is the per-edge predicate rather than an ordinal mapping.
-      const bool filtered =
-          graph->getIncidentEdgeIteration() == IncidentEdgeIteration::Filtered;
       OpBuilder builder(fixture.getContext());
       Location location = fixture.getLoc();
       OwningOpRef<ModuleOp> generated(ModuleOp::create(location));

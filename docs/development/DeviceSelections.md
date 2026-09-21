@@ -124,11 +124,11 @@ Each PipeNet contains 16 transfers. Every device sends to four devices and
 receives from four devices. `include_self=True` adds four same-device transfers;
 the other 12 use fabric.
 
-`Pipe.all_to_all(...)` records each selected source and destination pair, so it
-supports rows, unions, and other subsets. When every device in a regular domain
-participates and self-transfers are not required,
-`TransferGraph.all_to_all(...)` represents the connections using the domain
-extents and all-to-all parameters:
+`Pipe.all_to_all(...)` supports rows, unions, and other subsets by recording
+each selected source and destination pair. When both endpoints cover a complete
+single-component domain and self-transfers are excluded, it automatically uses
+the compact all-to-all relation instead. The same relation can be declared
+directly when its node Pipes are supplied separately:
 
 ```python
 from ttl.domains import TransferGraph
@@ -140,8 +140,8 @@ allgather = PipeNet(
 )
 ```
 
-This form avoids storing one source and destination coordinate pair for every
-transfer.
+Both forms avoid storing one source and destination coordinate pair for every
+transfer in this complete-domain case.
 
 ## Transfer order and transport
 

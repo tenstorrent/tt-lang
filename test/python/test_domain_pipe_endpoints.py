@@ -171,7 +171,7 @@ def test_compact_all_to_all_matches_the_enumerated_edges():
 
     assert compact_graph.is_structured
     assert enumerated_graph.is_explicit
-    assert len(tuple(enumerated_graph.iter_edges())) == 12
+    assert tuple(compact_graph.iter_edges()) == tuple(enumerated_graph.iter_edges())
 
 
 def test_all_to_all_keeps_explicit_edges_for_self_transfers():

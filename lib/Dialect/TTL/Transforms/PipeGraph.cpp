@@ -1607,7 +1607,8 @@ static std::optional<std::uint64_t> getSelectedRecordExecutionCount(
   const PipeNetRecordLoop &recordLoopInfo =
       analysisState.pipeRecordLoops.at(recordLoop);
   std::optional<std::uint64_t> maybeInductionValue =
-      getPipeNetRecordLoopInductionValue(recordLoopInfo, location, recordIndex);
+      getPipeNetRecordLoopInductionValue(recordLoopInfo, location, recordIndex,
+                                         selectedRecord);
   if (!maybeInductionValue) {
     return std::nullopt;
   }
@@ -2011,18 +2012,20 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
           };
           auto sendForOp = cast<scf::ForOp>(sendRecordLoop);
           auto postForOp = cast<scf::ForOp>(postRecordLoop);
+          PipeRecordAttr sendRecord = *candidates.sends[sendIndex].record;
+          PipeRecordAttr postRecord = *postsIt->second[sendIndex].record;
           std::optional<std::uint64_t> sendInductionValue =
               getPipeNetRecordLoopInductionValue(
                   analysisState.pipeRecordLoops.at(sendRecordLoop),
-                  *maybeSendLocation, *candidates.sends[sendIndex].recordIndex);
+                  *maybeSendLocation, *candidates.sends[sendIndex].recordIndex,
+                  sendRecord);
           std::optional<std::uint64_t> postInductionValue =
               getPipeNetRecordLoopInductionValue(
                   analysisState.pipeRecordLoops.at(postRecordLoop),
-                  *maybePostLocation, *postsIt->second[sendIndex].recordIndex);
+                  *maybePostLocation, *postsIt->second[sendIndex].recordIndex,
+                  postRecord);
           assert(sendInductionValue && postInductionValue &&
                  "selected pipe candidates must execute in their record loops");
-          PipeRecordAttr sendRecord = *candidates.sends[sendIndex].record;
-          PipeRecordAttr postRecord = *postsIt->second[sendIndex].record;
           auto evaluateSendContextValue = [&](Value value) {
             if (value == sendForOp.getInductionVar()) {
               return std::optional<llvm::APInt>(llvm::APInt(
