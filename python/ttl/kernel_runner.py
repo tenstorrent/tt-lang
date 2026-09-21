@@ -2880,12 +2880,38 @@ def build_dfb_reconfiguration_runtime_resources(
                 continue
             allocation = _get_dfb_allocation(config)
             required_layout_by_core = required_layout_by_core_by_storage[storage_index]
-            for core in scratch_layout_by_core_by_dfb[dfb_index]:
-                current_size, current_alignment = required_layout_by_core[core]
+            # A core can carry the DFB at launch without appearing in any epoch,
+            # so the launch nodes join the epoch nodes rather than filtering
+            # against them; storage is reserved per core over both.
+            launch_segments = config.storage_segments or (
+                DFBStorageSegment(nodes=tuple(core_keys)),
+            )
+            launch_cores = set()
+            for segment in launch_segments:
+                if segment.is_tensor_backed:
+                    continue
+                outside_nodes = set(segment.nodes).difference(core_rows)
+                if outside_nodes:
+                    outside_node = min(outside_nodes)
+                    raise ValueError(
+                        f"DFB[{dfb_index}] configuration references launch node "
+                        f"{outside_node} outside the kernel grid"
+                    )
+                launch_cores.update(segment.nodes)
+            scratch_layout_by_core = scratch_layout_by_core_by_dfb[dfb_index]
+            for core in launch_cores.union(scratch_layout_by_core):
+                current_size, current_alignment = required_layout_by_core.get(
+                    core, (0, 1)
+                )
                 required_layout_by_core[core] = (
                     max(current_size, allocation.total_size),
                     math.lcm(current_alignment, allocation.page_size),
                 )
+                if core not in scratch_layout_by_core:
+                    scratch_layout_by_core[core] = (
+                        allocation.total_size,
+                        allocation.page_size,
+                    )
 
     required_bytes_by_core_by_storage = {
         storage_index: {
