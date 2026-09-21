@@ -18,6 +18,12 @@ from ttlang_test_utils import to_dram
 from utils.correctness import assert_allclose
 
 
+DEVICE_ADDRESSING_MODES = (
+    "uniform",
+    pytest.param("per-core", marks=pytest.mark.hybrid_allocator),
+)
+
+
 class Device:
     def __init__(self):
         self.open = True
@@ -252,7 +258,7 @@ def _make_accumulate_with_temporary_storage(grid):
     [(torch.bfloat16, ttnn.bfloat16), (torch.float32, ttnn.float32)],
     ids=["bf16", "fp32"],
 )
-@pytest.mark.parametrize("addressing", ["uniform", "per-core"])
+@pytest.mark.parametrize("addressing", DEVICE_ADDRESSING_MODES)
 @pytest.mark.parametrize("sharding_name", ["height", "width", "block"])
 def test_persistent_state_shared_by_distinct_operations(
     device, torch_dtype, ttnn_dtype, addressing, sharding_name
@@ -318,7 +324,7 @@ def test_persistent_state_shared_by_distinct_operations(
     [(torch.bfloat16, ttnn.bfloat16), (torch.float32, ttnn.float32)],
     ids=["bf16", "fp32"],
 )
-@pytest.mark.parametrize("addressing", ["uniform", "per-core"])
+@pytest.mark.parametrize("addressing", DEVICE_ADDRESSING_MODES)
 @pytest.mark.parametrize("sharding_name", ["height", "width", "block"])
 def test_persistent_state_with_compiler_managed_temporary_storage(
     device, torch_dtype, ttnn_dtype, addressing, sharding_name
