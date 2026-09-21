@@ -146,6 +146,8 @@ canonicalize, cse                  (Module) Fold selected record tables
 ttkernel-cleanup                  (Module) Optimize writes with resolved endpoints
 ttkernel-finalize-tensor-runtime-args (Module) Finalize tensor and DFB argument indices
 canonicalize                       (Module) Remove obsolete argument expressions
+ttkernel-specialize-dfb-reconfiguration
+                                    (Module, specialized only) Resolve per-core reconfiguration descriptors
 ttkernel-annotate-dfb-use          (Module, specialized only) Record surviving physical DFB uses
 ```
 
@@ -153,6 +155,7 @@ Core specialization and DFB-use annotation are optional. [Initial receive
 batching](PipeReceiveBatching.md), record-loop unrolling,
 cleanup, and tensor runtime-argument finalization run in both modes. Finalization
 follows record-loop cleanup so eliminated uses cannot retain obsolete arguments;
+DFB reconfiguration specialization resolves each boundary's descriptor fields;
 annotation then records only surviving DFB uses on each clone's launch node.
 The Python kernel builder combines specialized clones only when their generated
 C++ and complete runtime descriptor metadata match, then dispatches the shared

@@ -275,34 +275,54 @@ def _make_conditional_reconfiguration_operation(data_format, enabled_column):
     )
 
     @ttl.operation(grid=(2, 1))
-    def conditional_reconfiguration_operation(input_tensor, output_tensor):
-        source_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
-        result_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+    def conditional_reconfiguration_operation(
+        first_input,
+        first_output,
+        second_input,
+        second_output,
+    ):
+        first_source = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        first_result = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        second_source = ttl.make_dfb(data_format, shape=(1, 2), block_count=3)
+        second_result = ttl.make_dfb(data_format, shape=(1, 2), block_count=3)
 
         @ttl.compute(kernel=compute_kernel)
         def compute():
             node_x, node_y = ttl.node(dims=2)
             if node_x == enabled_column:
+                with first_source.wait() as source:
+                    with first_result.reserve() as result:
+                        result.store(source)
                 ttl.reconfigure_dfbs(boundary)
-                with source_dfb.wait() as source:
-                    with result_dfb.reserve() as result:
+                with second_source.wait() as source:
+                    with second_result.reserve() as result:
                         result.store(source)
 
         @ttl.datamovement(kernel=reader_kernel)
         def read():
             node_x, node_y = ttl.node(dims=2)
             if node_x == enabled_column:
+                with first_source.reserve() as destination:
+                    ttl.copy(first_input[0, node_x], destination).wait()
                 ttl.reconfigure_dfbs(boundary)
-                with source_dfb.reserve() as destination:
-                    ttl.copy(input_tensor[0, node_x], destination).wait()
+                with second_source.reserve() as destination:
+                    ttl.copy(
+                        second_input[0:1, node_x * 2 : node_x * 2 + 2],
+                        destination,
+                    ).wait()
 
         @ttl.datamovement(kernel=writer_kernel)
         def write():
             node_x, node_y = ttl.node(dims=2)
             if node_x == enabled_column:
+                with first_result.wait() as source:
+                    ttl.copy(source, first_output[0, node_x]).wait()
                 ttl.reconfigure_dfbs(boundary)
-                with result_dfb.wait() as source:
-                    ttl.copy(source, output_tensor[0, node_x]).wait()
+                with second_result.wait() as source:
+                    ttl.copy(
+                        source,
+                        second_output[0:1, node_x * 2 : node_x * 2 + 2],
+                    ).wait()
 
     return conditional_reconfiguration_operation
 
@@ -1137,15 +1157,29 @@ def test_conditional_reconfiguration_executes_with_post_boundary_dfbs(
     specialization_option = (
         "--ttl-specialize-cores" if specialize_cores else "--no-ttl-specialize-cores"
     )
-    input_host = torch.arange(32 * 64, dtype=torch.float32).reshape(32, 64).to(dtype)
-    output = to_device(torch.zeros_like(input_host), device)
+    first_host = torch.arange(32 * 64, dtype=torch.float32).reshape(32, 64).to(dtype)
+    second_host = (
+        torch.arange(32 * 128, dtype=torch.float32)
+        .reshape(32, 128)
+        .remainder(257)
+        .to(dtype)
+    )
+    first_output = to_device(torch.zeros_like(first_host), device)
+    second_output = to_device(torch.zeros_like(second_host), device)
     operation(
-        to_device(input_host, device),
-        output,
+        to_device(first_host, device),
+        first_output,
+        to_device(second_host, device),
+        second_output,
         options=f"--ttl-reuse-user-dfbs {specialization_option}",
     )
 
     final_mlir = (tmp_path / f"conditional_{enabled_column}.mlir").read_text()
+    allocation_metadata = final_mlir.partition("ttl.dfb_reconfiguration_plan")[0]
+    assert allocation_metadata.count("dfb_index = ") == 2
+    assert final_mlir.count("entry_reconfiguration = 0 : i64") == 2
+    assert final_mlir.count("block_count = 3 : i32") == 2
+    assert final_mlir.count("num_tiles = 2 : i32") == 2
     assert final_mlir.count("experimental::reconfigure_dfb_interfaces") == 3
     # Specialized kernels resolve the reconfigured descriptors at compile time;
     # the storage address still comes from the runtime record.
@@ -1154,12 +1188,34 @@ def test_conditional_reconfiguration_executes_with_post_boundary_dfbs(
         for line in final_mlir.splitlines()
     )
     assert specialized_calls == (3 if specialize_cores else 0)
-    expected = torch.zeros_like(input_host)
-    column_start = enabled_column * 32
-    expected[:, column_start : column_start + 32] = input_host[
-        :, column_start : column_start + 32
-    ]
-    _assert_output(output, expected, dtype)
+
+    cached_first_host = (first_host.float() + 3).to(dtype)
+    cached_second_host = (second_host.float() - 5).to(dtype)
+    cached_first_output = to_device(torch.zeros_like(cached_first_host), device)
+    cached_second_output = to_device(torch.zeros_like(cached_second_host), device)
+    operation(
+        to_device(cached_first_host, device),
+        cached_first_output,
+        to_device(cached_second_host, device),
+        cached_second_output,
+        options=f"--ttl-reuse-user-dfbs {specialization_option}",
+    )
+
+    def expected_enabled_columns(host, columns_per_core):
+        expected = torch.zeros_like(host)
+        column_start = enabled_column * columns_per_core
+        expected[:, column_start : column_start + columns_per_core] = host[
+            :, column_start : column_start + columns_per_core
+        ]
+        return expected
+
+    for actual, expected in (
+        (first_output, expected_enabled_columns(first_host, 32)),
+        (second_output, expected_enabled_columns(second_host, 64)),
+        (cached_first_output, expected_enabled_columns(cached_first_host, 32)),
+        (cached_second_output, expected_enabled_columns(cached_second_host, 64)),
+    ):
+        _assert_output(actual, expected, dtype)
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
@@ -1278,8 +1334,11 @@ def test_reconfiguration_switches_tensor_backed_storage_and_cached_execution(
 
 
 # A later-active core receives static placeholder storage before reconfiguration.
+@pytest.mark.parametrize(
+    "specialize_cores", [False, True], ids=["generic-cores", "specialized-cores"]
+)
 def test_reconfiguration_enables_later_tensor_backed_core(
-    device, monkeypatch, tmp_path
+    device, specialize_cores, monkeypatch, tmp_path
 ):
     if ttl_api._detect_device_arch(device) != "blackhole":
         pytest.skip("requires Blackhole DFB reconfiguration support")
@@ -1309,12 +1368,21 @@ def test_reconfiguration_enables_later_tensor_backed_core(
     operation(
         input_tensor,
         output,
-        options="--ttl-reuse-user-dfbs",
+        options=(
+            "--ttl-reuse-user-dfbs --ttl-specialize-cores"
+            if specialize_cores
+            else "--ttl-reuse-user-dfbs --no-ttl-specialize-cores"
+        ),
     )
 
     final_mlir = mlir_file.read_text()
     allocation_metadata = final_mlir.partition("ttl.dfb_reconfiguration_plan")[0]
     assert allocation_metadata.count("dfb_index = ") == 1
+    specialized_calls = sum(
+        "reconfigure_dfb_interfaces" in line and "template_args" in line
+        for line in final_mlir.splitlines()
+    )
+    assert specialized_calls == (4 if specialize_cores else 0)
     actual = ttnn.to_torch(output).float()
     assert_pcc(input_host.float(), actual, 0.9999)
     assert_allclose(actual, input_host.float(), rtol=0, atol=0)
