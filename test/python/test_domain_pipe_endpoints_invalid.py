@@ -63,8 +63,17 @@ def test_all_to_all_requires_boolean_include_self():
 
 def test_all_to_all_rejects_an_empty_relation():
     devices = DeviceDomain((1,))
-    with pytest.raises(ValueError, match="at least one transfer"):
+    with pytest.raises(ValueError, match="contains no edges"):
         Pipe.all_to_all(
             src=devices[:].at_node(1, 0),
             dst=devices[:].at_node(0, 0),
+        )
+
+
+def test_all_to_all_rejects_an_empty_enumerated_relation():
+    devices = DeviceDomain((1,))
+    with pytest.raises(ValueError, match="at least one transfer"):
+        Pipe.all_to_all(
+            src=devices.select([devices[0]]).at_node(1, 0),
+            dst=devices.select([devices[0]]).at_node(0, 0),
         )

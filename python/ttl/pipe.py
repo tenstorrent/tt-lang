@@ -21,6 +21,7 @@ from .domains import (
     DeviceDomain,
     DevicePoint,
     DeviceRef,
+    DeviceSelection,
     DeviceView,
     NodeSelection,
     TransferGraph,
@@ -181,6 +182,10 @@ class Pipe:
             raise ValueError("Pipe endpoints must share a parent device domain")
         if not isinstance(include_self, bool):
             raise TypeError("include_self must be a boolean")
+        if cls._matches_component_all_to_all(src.devices, dst.devices, include_self):
+            pipe = cls(src.node, dst.node)
+            pipe._device_graphs = (TransferGraph.all_to_all(src.devices.domain),)
+            return pipe
         edges = (
             (source, destination)
             for source in src.devices.iter_device_refs()
@@ -192,6 +197,28 @@ class Pipe:
             src.devices.domain, edges
         )
         return pipe
+
+    @staticmethod
+    def _matches_component_all_to_all(
+        src_devices: DeviceSelection,
+        dst_devices: DeviceSelection,
+        include_self: bool,
+    ) -> bool:
+        """Whether the compact all-to-all relation spans exactly these edges.
+
+        The relation connects devices that differ only in one component and
+        never connects a device to itself, so it is equivalent only when both
+        selections cover a single-component domain and self-transfers are
+        excluded.
+        """
+        return (
+            not include_self
+            and isinstance(src_devices, DeviceView)
+            and isinstance(dst_devices, DeviceView)
+            and src_devices.domain.component_count == 1
+            and src_devices.covers_domain
+            and dst_devices.covers_domain
+        )
 
     @staticmethod
     def _partition_edges_by_transport(

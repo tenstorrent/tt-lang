@@ -548,6 +548,14 @@ class DeviceView(DeviceSelection):
     def shape(self) -> Coordinate:
         return tuple(len(axis) for axis in self.axes if isinstance(axis, range))
 
+    @property
+    def covers_domain(self) -> bool:
+        """Whether the view selects every device of its parent domain."""
+        return all(
+            isinstance(axis, range) and axis == range(extent)
+            for axis, extent in zip(self.axes, self.domain.flattened_extent)
+        )
+
     def __getitem__(self, index: Any) -> DeviceView | DevicePoint:
         indices = index if isinstance(index, tuple) else (index,)
         rank = len(self.shape)

@@ -135,3 +135,64 @@ def test_row_all_to_all_can_exclude_local_transfers():
 
     assert len(relations) == 1
     assert len(tuple(relations[0][0].iter_edges())) == 12
+
+
+def test_full_component_all_to_all_uses_the_compact_relation():
+    devices = DeviceDomain((8, 4))
+    pipe = Pipe.all_to_all(
+        src=devices[:, :].at_node(0, 0),
+        dst=devices[:, :].at_node(0, 0),
+    )
+
+    relations = PipeNet([pipe])._device_relations
+
+    assert len(relations) == 1
+    relation_graph = relations[0][0]
+    assert relation_graph.is_structured
+    assert relation_graph.explicit_edge_count is None
+
+
+def test_compact_all_to_all_matches_the_enumerated_edges():
+    devices = DeviceDomain((4,))
+    compact = Pipe.all_to_all(
+        src=devices[:].at_node(0, 0), dst=devices[:].at_node(0, 0)
+    )
+    enumerated = Pipe.all_to_all(
+        src=devices.select([devices[0], devices[1], devices[2], devices[3]]).at_node(
+            0, 0
+        ),
+        dst=devices.select([devices[0], devices[1], devices[2], devices[3]]).at_node(
+            0, 0
+        ),
+    )
+
+    compact_graph = PipeNet([compact])._device_relations[0][0]
+    enumerated_graph = PipeNet([enumerated])._device_relations[0][0]
+
+    assert compact_graph.is_structured
+    assert enumerated_graph.is_explicit
+    assert len(tuple(enumerated_graph.iter_edges())) == 12
+
+
+def test_all_to_all_keeps_explicit_edges_for_self_transfers():
+    devices = DeviceDomain((4,))
+    pipe = Pipe.all_to_all(
+        src=devices[:].at_node(0, 0),
+        dst=devices[:].at_node(0, 0),
+        include_self=True,
+    )
+
+    relations = PipeNet([pipe])._device_relations
+
+    assert all(relation_graph.is_explicit for relation_graph, _ in relations)
+
+
+def test_all_to_all_keeps_explicit_edges_across_components():
+    domain = DeviceDomain.product(row=[4], col=[8])
+    pipe = Pipe.all_to_all(
+        src=domain[:, :].at_node(0, 0), dst=domain[:, :].at_node(0, 0)
+    )
+
+    relation_graph = PipeNet([pipe])._device_relations[0][0]
+
+    assert relation_graph.is_explicit
