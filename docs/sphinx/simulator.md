@@ -81,9 +81,9 @@ before running a program:
 
 Installation uses the exact runtime pins in `config/tt-lang-emule-stack.json`
 and builds the current compiler checkout, which must contain the manifest's
-compiler baseline. Users do not select compiler, emulator, and tt-metal
-versions independently. Program execution never configures or builds the
-compiler.
+compiler baseline. The supported user workflow does not select compiler,
+emulator, and tt-metal versions independently. Program execution never
+configures or builds the compiler.
 
 Run compiler tests with their existing CMake, pytest, and lit interfaces rather
 than through `tt-lang-sim`. See the getting-started guide and
@@ -96,10 +96,10 @@ operation, and tt-metal dispatches the generated kernels to tt-emule.
 
 The supported compiler baseline, emulator commit, tt-metal, container, and
 target inputs are recorded together in `config/tt-lang-emule-stack.json`. The
-installer validates that the current TT-Lang checkout contains the compiler baseline. It
-also verifies the emulator checkout commit, the P150 descriptor, and the
-emulator's exact tt-metal pin before building. Run the same checks directly
-with:
+installer validates that the current TT-Lang checkout contains the compiler
+baseline. It also verifies the emulator checkout commit, the P150 descriptor,
+and the emulator's exact tt-metal pin before building. Run the same checks
+directly with:
 
 ```bash
 python3 scripts/tt-lang-emule-stack.py \
@@ -108,11 +108,11 @@ python3 scripts/tt-lang-emule-stack.py \
 ```
 
 Every built image records its resolved inputs as OCI labels and in
-`/opt/tt-emule-runtime/stack.json`. The original supported-stack manifest is
-stored beside it as `source-manifest.json`, and its SHA-256 is verified while
-the image is built. These records identify the supported manifest and exact
-runtime inputs used to build the image. Inspect an artifact without running a
-workload with:
+`/opt/tt-emule-runtime/stack.json`. The source manifest is stored beside it as
+`source-manifest.json`, and its SHA-256 is verified while the image is built.
+These records identify both the starting manifest and the exact runtime inputs,
+including any maintainer overrides. Provenance does not establish compatibility.
+Inspect an artifact without running a workload with:
 
 ```bash
 docker image inspect tt-lang-emule:TAG \
@@ -154,6 +154,63 @@ after `--` are always passed to the user script:
 ```bash
 ./bin/tt-lang-sim --backend=emule program.py -- --program-option value
 ```
+
+(simulator-updating-supported-stack)=
+### Updating the supported stack
+
+The following tools are for maintainers evaluating a new stack, not the
+supported user installation path. Prepare a candidate from an exact emulator
+checkout. The tool reads that checkout's Metal pin, records the current compiler
+commit, and runs the same source validations as the launcher:
+
+```bash
+python3 scripts/prepare-tt-lang-emule-candidate.py \
+  --emulator-source /path/to/emulator \
+  --emulator-commit FULL_COMMIT_SHA \
+  --output candidate-stack.json
+```
+
+Select the candidate manifest and its existing source checkout during
+installation. Keep the candidate manifest selected when running programs:
+
+```bash
+export TTLANG_EMULE_STACK_MANIFEST="$PWD/candidate-stack.json"
+export TTLANG_EMULE_RUNTIME_SOURCE_DIR=/path/to/emulator
+./scripts/install-tt-lang-emule.sh
+./bin/tt-lang-sim --backend=emule examples/eltwise_add.py
+```
+
+The `Validate compiler-backed emulation candidate` workflow automates the same
+process on the large x86 runner. It installs the candidate environment, runs
+representative programs, and uploads the resolved stack plus image metadata as
+evidence. It does not publish an image or change the supported manifest;
+promotion remains an ordinary reviewed manifest change. The workflow obtains
+the cross-repository source from the `TTLANG_EMULE_SOURCE_REPOSITORY` repository
+variable and `TTLANG_EMULE_SOURCE_TOKEN` secret, so credentials and internal
+source coordinates are not baked into the runtime image.
+
+For lower-level experiments, maintainers can override individual runtime inputs:
+
+| Environment variable | Experimental input |
+|---|---|
+| `TTLANG_EMULE_RUNTIME_COMMIT` | Emulator commit, as a full lowercase SHA |
+| `TTLANG_EMULE_RUNTIME_METAL_COMMIT` | tt-metal commit, as a full lowercase SHA |
+| `TTLANG_EMULE_RUNTIME_METAL_SOURCE_URL` | Repository supplying the selected tt-metal commit |
+| `TTLANG_EMULE_RUNTIME_BASE_IMAGE` | Base container image supplying the compiler toolchain |
+| `TTLANG_EMULE_PLATFORM` | Docker build and execution platform |
+
+These overrides do not establish a supported combination or compatibility.
+The image build still requires the selected Metal commit to match the emulator's
+Metal pin, and the compiler requires its matching LLVM toolchain. Only
+`linux/amd64` is supported; a platform override does not add a port. The current
+TT-Lang checkout remains the compiler source. The same overrides must be present
+during installation and execution so both select the same runtime.
+
+Candidate preparation and source validation check revisions and required files,
+not kernel correctness. Run the compiler tests and representative workloads
+before proposing a supported-manifest update. The
+[historical compiler-suite report](compiler-emule-test-status.md) records one
+earlier pinned-stack run; it does not validate a new candidate.
 
 ### Testing the Python backend
 

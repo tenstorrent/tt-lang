@@ -6,9 +6,9 @@ kernels through tt-metal and tt-emule inside Docker. The manifest
 tt-emule revision, tt-metal revision, base image, and P150 target. Installation
 builds the actual TT-Lang checkout, which must contain that compiler baseline.
 
-Users do not select these components independently. Install the recorded
-environment once, then run programs with the same `tt-lang-sim` interface used
-by the Python backend.
+The supported user workflow does not select these components independently.
+Install the recorded environment once, then run programs with the same
+`tt-lang-sim` interface used by the Python backend.
 
 ## Host prerequisites
 
@@ -58,8 +58,9 @@ export TTLANG_EMULE_RUNTIME_SOURCE_URL=REPOSITORY_URL
 
 The URL locates the pinned source; it does not select the emulator version.
 The installer checks out only the manifest's exact commit and verifies its
-tt-metal pin. Independent emulator, tt-metal, base-image, platform, and custom
-manifest overrides are rejected.
+tt-metal pin. Maintainer-only candidate manifests and runtime overrides are
+described in [Updating the supported stack](simulator.md#updating-the-supported-stack);
+they are not part of this supported installation path.
 
 Installation builds the pinned tt-emule/tt-metal Docker image and compiles this
 TT-Lang checkout into a persistent Docker volume. It can take substantial time,
@@ -72,9 +73,9 @@ builds TT-Lang. If the runtime image is absent, the compiler environment is
 incomplete, or the checkout has moved to another commit, execution stops with
 an instruction to run the installer again.
 
-There is no per-checkout configuration file and no independently selectable
-compiler, emulator, or tt-metal version. Docker's image and volume caches retain
-the installed environment.
+There is no per-checkout configuration file. The supported workflow uses the
+recorded compiler baseline, emulator, and tt-metal together. Docker's image and
+volume caches retain the installed environment.
 
 ## Run a program
 
@@ -188,7 +189,9 @@ tests do not execute tt-emule; device tests require a compatible emule-enabled
 Linux build environment. See
 [`test/TESTING.md`](https://github.com/tenstorrent/tt-lang/blob/main/test/TESTING.md)
 for the suite boundaries, device requirements, pytest selection, lit paths, and
-output locations. See [Testing](testing.md) for the short command reference.
+output locations. See [Testing](testing.md) for the short command reference and
+[Compiler suite on tt-emule](compiler-emule-test-status.md) for a historical
+full-suite result and failure triage, not a result for every later revision.
 
 Exit the container shell to run representative programs from the host through
 the normal interface:
