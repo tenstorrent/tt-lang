@@ -167,22 +167,14 @@ static RecordInductionMap buildGridMajorRecordInductionValues(
   return inductionValues;
 }
 
-// Associate each concrete graph record with its endpoint-local callback
-// iteration so execution-count analysis can evaluate the cloned body.
-static RecordInductionMap
-buildGraphRecordInductionValues(PipeNetRecordsAttr records, PipeRole role) {
-  assert(records.getMappings().size() == 1 &&
-         "one graph callback loop must contain one mapping");
-  FailureOr<SmallVector<PipeRecordLocalIndex>> localIndices =
-      getPipeMappingRecordLocalIndices(records.getMappings().front(), role);
-  assert(succeeded(localIndices) &&
-         "verified graph records must have endpoint-local indices");
-
+// Associate each concrete graph record with the callback iteration that selects
+// it, so execution-count analysis can evaluate the cloned body.
+static RecordInductionMap buildGraphRecordInductionValues(
+    PipeNetRecordsAttr records, PipeRole role,
+    llvm::function_ref<std::uint64_t(std::uint64_t)> iterationForRecord) {
   RecordInductionMap inductionValues;
   forEachPipeRecord(records, [&](std::uint64_t recordIndex,
                                  PipeRecordAttr record) {
-    assert(recordIndex < localIndices->size() &&
-           "each graph record must have a local index");
     for (const PipeRecordRoleFacts &facts :
          getPipeRecordRoleFacts(record, role)) {
       assert(facts.device &&
@@ -196,7 +188,7 @@ buildGraphRecordInductionValues(PipeNetRecordsAttr records, PipeRole role) {
                                                              facts.deviceDomain,
                                                              facts.device),
                                      recordIndex),
-                      (*localIndices)[recordIndex].index)
+                      iterationForRecord(recordIndex))
                   .second;
           assert(inserted &&
                  "a graph record must select each endpoint node once");
@@ -207,16 +199,23 @@ buildGraphRecordInductionValues(PipeNetRecordsAttr records, PipeRole role) {
   return inductionValues;
 }
 
-// Map each same-coordinate transfer to its position among graph edges that
-// select the same logical device and endpoint role.
-static RecordInductionMap buildGraphSameCoordinateRecordInductionValues(
-    PipeNetRecordsAttr records, PipeRole role, std::uint64_t nodePipeCount) {
-  RecordInductionMap inductionValues =
-      buildGraphRecordInductionValues(records, role);
-  for (auto &entry : inductionValues) {
-    entry.second /= nodePipeCount;
-  }
-  return inductionValues;
+static RecordInductionMap buildGraphCallbackRecordInductionValues(
+    PipeNetRecordsAttr records, PipeRole role, std::uint64_t nodePipeCount,
+    bool usesMatchingNodeCoordinates) {
+  assert(records.getMappings().size() == 1 &&
+         "one graph callback loop must contain one mapping");
+  FailureOr<SmallVector<PipeRecordLocalIndex>> localIndices =
+      getPipeMappingRecordLocalIndices(records.getMappings().front(), role);
+  assert(succeeded(localIndices) &&
+         "verified graph records must have endpoint-local indices");
+  return buildGraphRecordInductionValues(
+      records, role, [&](std::uint64_t recordIndex) {
+        assert(recordIndex < localIndices->size() &&
+               "each graph record must have a local index");
+        std::uint64_t localIndex = (*localIndices)[recordIndex].index;
+        return usesMatchingNodeCoordinates ? localIndex / nodePipeCount
+                                           : localIndex;
+      });
 }
 
 template <typename ForeachOp, typename SelectOp, typename SelectedPipeType>
@@ -481,45 +480,74 @@ lowerGraphPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
         ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
     Value currentDevice = CurrentDeviceIndexOp::create(
         rewriter, loc, rewriter.getIndexType(), plan.graph->getDomain());
-    Value incidentEdgeCount =
-        plan.graph->buildIncidentEdgeCount(rewriter, loc, currentDevice, role);
+    const bool filteredIteration = plan.graph->getIncidentEdgeIteration() ==
+                                   IncidentEdgeIteration::Filtered;
+    FailureOr<std::uint64_t> edgeCount = plan.graph->getEdgeCount();
+    assert(succeeded(edgeCount) &&
+           "preflight validated the graph edge count of every mapping");
+    Value iterationCount =
+        filteredIteration
+            ? Value(arith::ConstantIndexOp::create(
+                  rewriter, loc, static_cast<int64_t>(*edgeCount)))
+            : plan.graph->buildIncidentEdgeCount(rewriter, loc, currentDevice,
+                                                 role);
     Value nodePipeCount =
         arith::ConstantIndexOp::create(rewriter, loc, plan.nodePipeCount);
     Value lower = arith::ConstantIndexOp::create(rewriter, loc, 0);
     Value upper = plan.usesMatchingNodeCoordinates
-                      ? incidentEdgeCount
+                      ? iterationCount
                       : Value(arith::MulIOp::create(
-                            rewriter, loc, incidentEdgeCount, nodePipeCount));
+                            rewriter, loc, iterationCount, nodePipeCount));
     Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
     auto forOp = scf::ForOp::create(rewriter, loc, lower, upper, step);
-    foreachLoweringInfo.recordLoops[forOp] = {
-        plan.records, recordSelection,
-        plan.usesMatchingNodeCoordinates
-            ? buildGraphSameCoordinateRecordInductionValues(
-                  plan.records, role,
-                  static_cast<std::uint64_t>(plan.nodePipeCount))
-            : buildGraphRecordInductionValues(plan.records, role)};
+    // A filtered callback visits every graph ordinal in order, so the record
+    // index alone determines the iteration and no per-record table is built.
+    foreachLoweringInfo.recordLoops[forOp] =
+        filteredIteration
+            ? PipeNetRecordLoop{plan.records,
+                                recordSelection,
+                                {},
+                                plan.usesMatchingNodeCoordinates
+                                    ? static_cast<std::uint64_t>(
+                                          plan.nodePipeCount)
+                                    : 1}
+            : PipeNetRecordLoop{
+                  plan.records, recordSelection,
+                  buildGraphCallbackRecordInductionValues(
+                      plan.records, role,
+                      static_cast<std::uint64_t>(plan.nodePipeCount),
+                      plan.usesMatchingNodeCoordinates)};
 
     rewriter.setInsertionPointToStart(forOp.getBody());
     Value localRecordIndex = forOp.getInductionVar();
-    Value incidentEdgeIndex;
+    // Filtered relations iterate graph ordinals; closed-form relations iterate
+    // the ordinals incident to the current device.
+    Value edgeIterationIndex;
     Value nodePipeIndex;
     if (plan.usesMatchingNodeCoordinates) {
-      incidentEdgeIndex = localRecordIndex;
+      edgeIterationIndex = localRecordIndex;
       Value gridX =
           arith::ConstantIndexOp::create(rewriter, loc, plan.launchGridX);
       Value nodeRowOffset = arith::MulIOp::create(rewriter, loc, nodeY, gridX);
       nodePipeIndex =
           arith::AddIOp::create(rewriter, loc, nodeRowOffset, nodeX);
     } else {
-      incidentEdgeIndex = arith::DivSIOp::create(
+      edgeIterationIndex = arith::DivSIOp::create(
           rewriter, loc, localRecordIndex, nodePipeCount);
       nodePipeIndex = arith::RemSIOp::create(rewriter, loc, localRecordIndex,
                                              nodePipeCount);
     }
-    TransferGraphEdgeIndexValues edgeIndices =
-        plan.graph->buildIncidentEdgeIndexValues(rewriter, loc, currentDevice,
-                                                 incidentEdgeIndex, role);
+    Value edgeIsIncident;
+    TransferGraphEdgeIndexValues edgeIndices;
+    if (filteredIteration) {
+      edgeIndices =
+          plan.graph->buildEdgeIndexValues(rewriter, loc, edgeIterationIndex);
+      edgeIsIncident = plan.graph->buildEdgeIncidence(
+          rewriter, loc, currentDevice, edgeIterationIndex, role);
+    } else {
+      edgeIndices = plan.graph->buildIncidentEdgeIndexValues(
+          rewriter, loc, currentDevice, edgeIterationIndex, role);
+    }
     auto edgeRecordBase = arith::MulIOp::create(
         rewriter, loc, edgeIndices.edgeOrdinal, nodePipeCount);
     edgeRecordBase.setOverflowFlags(arith::IntegerOverflowFlags::nuw);
@@ -543,24 +571,31 @@ lowerGraphPipeNetForeach(ForeachOp op, RewriterBase &rewriter,
           edgeIndices.destinationDeviceIndex, plan.records);
     }();
     foreachLoweringInfo.controlOps.push_back(forOp);
-    if (plan.usesMatchingNodeCoordinates) {
+    Value bodyCondition = edgeIsIncident;
+    if (!plan.usesMatchingNodeCoordinates) {
+      Value roleMatches;
+      if (role == PipeRole::Source) {
+        roleMatches =
+            buildNodePointMatch(rewriter, loc, nodeX, nodeY,
+                                selectedPipe.getSrcX(), selectedPipe.getSrcY());
+      } else {
+        roleMatches = buildNodeRangeMatch(
+            rewriter, loc, nodeX, nodeY, selectedPipe.getDstStartX(),
+            selectedPipe.getDstStartY(), selectedPipe.getDstEndX(),
+            selectedPipe.getDstEndY());
+      }
+      bodyCondition = bodyCondition
+                          ? Value(arith::AndIOp::create(
+                                rewriter, loc, bodyCondition, roleMatches))
+                          : roleMatches;
+    }
+    if (!bodyCondition) {
       clonePipeForeachBody(op, selectedPipe.getPipe(), rewriter,
                            foreachWorklist);
       rewriter.setInsertionPointAfter(forOp);
       continue;
     }
-    Value roleMatches;
-    if (role == PipeRole::Source) {
-      roleMatches =
-          buildNodePointMatch(rewriter, loc, nodeX, nodeY,
-                              selectedPipe.getSrcX(), selectedPipe.getSrcY());
-    } else {
-      roleMatches = buildNodeRangeMatch(
-          rewriter, loc, nodeX, nodeY, selectedPipe.getDstStartX(),
-          selectedPipe.getDstStartY(), selectedPipe.getDstEndX(),
-          selectedPipe.getDstEndY());
-    }
-    auto ifOp = scf::IfOp::create(rewriter, loc, roleMatches,
+    auto ifOp = scf::IfOp::create(rewriter, loc, bodyCondition,
                                   /*withElseRegion=*/false);
     foreachLoweringInfo.controlOps.push_back(ifOp);
     foreachLoweringInfo.ifThenDomains[ifOp] =

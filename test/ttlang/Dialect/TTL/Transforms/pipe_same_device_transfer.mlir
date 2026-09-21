@@ -14,9 +14,10 @@
 module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   // CHECK-LABEL: func.func @sender
   // CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
-  // CHECK: arith.cmpi eq
-  // CHECK: arith.select
   // CHECK: scf.for
+  // CHECK: ttkernel.experimental.constant_table_lookup
+  // CHECK: arith.cmpi eq
+  // CHECK: scf.if
   // CHECK: ttkernel.experimental.constant_table_lookup {{.*}}, [1]
   // CHECK: ttkernel.noc_async_write
   // CHECK: ttkernel.noc_async_write_barrier
@@ -37,9 +38,10 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   }
 
   // CHECK-LABEL: func.func @receiver
-  // CHECK: arith.cmpi eq
-  // CHECK: arith.select
   // CHECK: scf.for
+  // CHECK: ttkernel.experimental.constant_table_lookup
+  // CHECK: arith.cmpi eq
+  // CHECK: scf.if
   // CHECK: ttkernel.cb_reserve_back
   // CHECK: ttkernel.experimental.constant_table_lookup {{.*}}, [1]
   // CHECK: ttkernel.noc_semaphore_inc

@@ -82,6 +82,16 @@ verifyTransferEdgeInDomain(DeviceDomainAttr domain, TransferEdgeAttr edge,
                            llvm::function_ref<InFlightDiagnostic()> emitError,
                            StringRef context);
 
+/// How lowering enumerates the edges incident to one logical device.
+enum class IncidentEdgeIteration {
+  /// Closed-form arithmetic maps an incident ordinal to its graph ordinal, so
+  /// the callback loop runs once per incident edge.
+  ClosedForm,
+  /// A scan over every graph edge selects the incident ones by predicate, so
+  /// the callback loop runs once per graph edge and its body is conditional.
+  Filtered,
+};
+
 /// Abstract semantics for one verified transfer graph.
 class TransferGraph {
 public:
@@ -107,16 +117,34 @@ public:
   /// Return the number of graph edges without constructing node-pipe records.
   virtual FailureOr<std::uint64_t> getEdgeCount() const = 0;
 
+  /// Report how lowering must enumerate edges incident to one device.
+  virtual IncidentEdgeIteration getIncidentEdgeIteration() const {
+    return IncidentEdgeIteration::ClosedForm;
+  }
+
   /// Build the number of edges incident to one dynamic logical device.
+  /// Implemented by `ClosedForm` relations.
   virtual Value buildIncidentEdgeCount(OpBuilder &builder, Location loc,
-                                       Value deviceIndex,
-                                       PipeRole role) const = 0;
+                                       Value deviceIndex, PipeRole role) const;
 
   /// Build one incident edge and its global graph ordinal.
+  /// Implemented by `ClosedForm` relations.
   virtual TransferGraphEdgeIndexValues
   buildIncidentEdgeIndexValues(OpBuilder &builder, Location loc,
                                Value deviceIndex, Value incidentEdgeIndex,
-                               PipeRole role) const = 0;
+                               PipeRole role) const;
+
+  /// Build the predicate selecting edges incident to `deviceIndex` in `role`.
+  /// Implemented by `Filtered` relations.
+  virtual Value buildEdgeIncidence(OpBuilder &builder, Location loc,
+                                   Value deviceIndex, Value edgeOrdinal,
+                                   PipeRole role) const;
+
+  /// Build the endpoint indices of one graph edge ordinal.
+  /// Implemented by `Filtered` relations.
+  virtual TransferGraphEdgeIndexValues
+  buildEdgeIndexValues(OpBuilder &builder, Location loc,
+                       Value edgeOrdinal) const;
 
   /// Return graph edges in deterministic callback iteration order.
   SmallVector<TransferEdgeAttr> getEdges() const;

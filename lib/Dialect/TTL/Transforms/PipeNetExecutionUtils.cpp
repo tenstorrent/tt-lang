@@ -16,7 +16,9 @@ getPipeNetRecordLoopInductionValue(const PipeNetRecordLoop &recordLoop,
                                    const LaunchExecutionLocation &location,
                                    std::uint64_t recordIndex) {
   if (recordLoop.indirectInductionValues.empty()) {
-    return recordIndex;
+    assert(recordLoop.inductionValueStride != 0 &&
+           "a record loop must advance its induction value");
+    return recordIndex / recordLoop.inductionValueStride;
   }
   auto iteration =
       recordLoop.indirectInductionValues.find({location, recordIndex});

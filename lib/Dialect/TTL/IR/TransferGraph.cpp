@@ -12,6 +12,8 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
+
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/Support/CheckedArithmetic.h"
@@ -374,65 +376,42 @@ public:
     return getProperties().getAs<ArrayAttr>("edges").size();
   }
 
-  TransferGraphEdgeIndexValues
-  buildExplicitEdgeIndexValues(OpBuilder &builder, Location loc,
-                               Value edgeIndex) const {
-    return buildEdgeIndexTableLookups(getDomain(), getEdges(), builder, loc,
-                                      edgeIndex);
+  // Scanning every edge keeps the emitted instruction count independent of the
+  // edge count; an incident-ordinal mapping would need a per-edge comparison
+  // chain because the match set depends on the runtime device index.
+  IncidentEdgeIteration getIncidentEdgeIteration() const override {
+    return IncidentEdgeIteration::Filtered;
   }
 
-  Value buildIncidentEdgeCount(OpBuilder &builder, Location loc,
-                               Value deviceIndex,
-                               PipeRole role) const override {
+  Value buildEdgeIncidence(OpBuilder &builder, Location loc, Value deviceIndex,
+                           Value edgeOrdinal, PipeRole role) const override {
+    assert(role != PipeRole::Active &&
+           "dynamic incident iteration requires one endpoint role");
     SmallVector<int64_t> endpointIndices =
-        getExplicitEndpointIndices(getDomain(), getEdges(), role);
-    Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
-    Value one = arith::ConstantIndexOp::create(builder, loc, 1);
-    Value count = zero;
-    for (int64_t endpointIndex : endpointIndices) {
-      Value endpoint =
-          arith::ConstantIndexOp::create(builder, loc, endpointIndex);
-      Value matches = arith::CmpIOp::create(
-          builder, loc, arith::CmpIPredicate::eq, deviceIndex, endpoint);
-      Value contribution =
-          arith::SelectOp::create(builder, loc, matches, one, zero);
-      count = arith::AddIOp::create(builder, loc, count, contribution);
-    }
-    return count;
+        getExplicitEndpointIndices(getDomain(), getCachedEdges(), role);
+    Value endpoint =
+        buildIndexTableLookup(builder, loc, endpointIndices, edgeOrdinal);
+    return arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::eq,
+                                 deviceIndex, endpoint);
   }
 
   TransferGraphEdgeIndexValues
-  buildIncidentEdgeIndexValues(OpBuilder &builder, Location loc,
-                               Value deviceIndex, Value incidentEdgeIndex,
-                               PipeRole role) const override {
-    SmallVector<TransferEdgeAttr> edges = getEdges();
-    SmallVector<int64_t> endpointIndices =
-        getExplicitEndpointIndices(getDomain(), edges, role);
-    Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
-    Value one = arith::ConstantIndexOp::create(builder, loc, 1);
-    Value matchingPrefix = zero;
-    Value selectedEdgeOrdinal = zero;
-    for (auto [edgeOrdinal, endpointIndex] : llvm::enumerate(endpointIndices)) {
-      Value endpoint =
-          arith::ConstantIndexOp::create(builder, loc, endpointIndex);
-      Value matches = arith::CmpIOp::create(
-          builder, loc, arith::CmpIPredicate::eq, deviceIndex, endpoint);
-      Value hasRequestedOrdinal =
-          arith::CmpIOp::create(builder, loc, arith::CmpIPredicate::eq,
-                                matchingPrefix, incidentEdgeIndex);
-      Value selectsEdge =
-          arith::AndIOp::create(builder, loc, matches, hasRequestedOrdinal);
-      Value ordinal = arith::ConstantIndexOp::create(
-          builder, loc, static_cast<int64_t>(edgeOrdinal));
-      selectedEdgeOrdinal = arith::SelectOp::create(
-          builder, loc, selectsEdge, ordinal, selectedEdgeOrdinal);
-      Value contribution =
-          arith::SelectOp::create(builder, loc, matches, one, zero);
-      matchingPrefix =
-          arith::AddIOp::create(builder, loc, matchingPrefix, contribution);
-    }
-    return buildExplicitEdgeIndexValues(builder, loc, selectedEdgeOrdinal);
+  buildEdgeIndexValues(OpBuilder &builder, Location loc,
+                       Value edgeOrdinal) const override {
+    return buildEdgeIndexTableLookups(getDomain(), getCachedEdges(), builder,
+                                      loc, edgeOrdinal);
   }
+
+private:
+  // The verifier rejects an empty edge array, so an empty cache means unfilled.
+  ArrayRef<TransferEdgeAttr> getCachedEdges() const {
+    if (cachedEdges.empty()) {
+      cachedEdges = getEdges();
+    }
+    return cachedEdges;
+  }
+
+  mutable SmallVector<TransferEdgeAttr> cachedEdges;
 };
 
 class StructuredTransferGraph : public TransferGraph {
@@ -1704,6 +1683,52 @@ SmallVector<TransferEdgeAttr> TransferGraph::getEdges() const {
   SmallVector<TransferEdgeAttr> edges;
   forEachEdge([&](TransferEdgeAttr edge) { edges.push_back(edge); });
   return edges;
+}
+
+// Accumulating over the edge table keeps the emitted instruction count
+// independent of the edge count, which an unrolled per-edge sum would not.
+Value TransferGraph::buildIncidentEdgeCount(OpBuilder &builder, Location loc,
+                                            Value deviceIndex,
+                                            PipeRole role) const {
+  assert(getIncidentEdgeIteration() == IncidentEdgeIteration::Filtered &&
+         "closed-form relations must build their own incident edge count");
+  FailureOr<std::uint64_t> edgeCount = getEdgeCount();
+  assert(succeeded(edgeCount) &&
+         "verified relations report a representable edge count");
+  Value lower = arith::ConstantIndexOp::create(builder, loc, 0);
+  Value upper = arith::ConstantIndexOp::create(
+      builder, loc, static_cast<int64_t>(*edgeCount));
+  Value step = arith::ConstantIndexOp::create(builder, loc, 1);
+  Value zero = arith::ConstantIndexOp::create(builder, loc, 0);
+  auto loop =
+      scf::ForOp::create(builder, loc, lower, upper, step, ValueRange{zero});
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToStart(loop.getBody());
+  Value incidence = buildEdgeIncidence(builder, loc, deviceIndex,
+                                       loop.getInductionVar(), role);
+  Value accumulated = loop.getRegionIterArg(0);
+  Value one = arith::ConstantIndexOp::create(builder, loc, 1);
+  Value incremented = arith::AddIOp::create(builder, loc, accumulated, one);
+  Value updated = arith::SelectOp::create(builder, loc, incidence, incremented,
+                                          accumulated);
+  scf::YieldOp::create(builder, loc, ValueRange{updated});
+  return loop.getResult(0);
+}
+
+TransferGraphEdgeIndexValues
+TransferGraph::buildIncidentEdgeIndexValues(OpBuilder &, Location, Value, Value,
+                                            PipeRole) const {
+  llvm_unreachable("closed-form incident iteration must build edge indices");
+}
+
+Value TransferGraph::buildEdgeIncidence(OpBuilder &, Location, Value, Value,
+                                        PipeRole) const {
+  llvm_unreachable("filtered incident iteration must build an edge predicate");
+}
+
+TransferGraphEdgeIndexValues
+TransferGraph::buildEdgeIndexValues(OpBuilder &, Location, Value) const {
+  llvm_unreachable("filtered incident iteration must build edge indices");
 }
 
 std::unique_ptr<TransferGraph> createTransferGraph(TransferGraphAttr graph) {

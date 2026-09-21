@@ -151,18 +151,17 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
     func.return
   }
 
-  // Explicit graphs scan their declared endpoints instead of allocating
-  // device-indexed offset and count tables.
+  // Explicit graphs iterate every declared edge and select the incident ones
+  // with a table predicate, so the emitted instruction count does not grow
+  // with the edge count.
   // CHECK-LABEL: func.func @explicit_source
   // CHECK: %[[EXPLICIT_DEVICE_I32:.*]] = ttkernel.get_common_arg_val
   // CHECK: %[[EXPLICIT_DEVICE:.*]] = arith.index_cast %[[EXPLICIT_DEVICE_I32]]
-  // CHECK: arith.cmpi eq, %[[EXPLICIT_DEVICE]], %{{.*}}
-  // CHECK: arith.select
-  // CHECK: arith.cmpi eq, %[[EXPLICIT_DEVICE]], %{{.*}}
-  // CHECK: arith.select
-  // CHECK: arith.addi
-  // CHECK: scf.for
-  // CHECK: ttkernel.experimental.constant_table_lookup {{.*}}, [1, 3]
+  // CHECK: scf.for %[[EXPLICIT_ORDINAL:.*]] = %{{.*}} to %{{.*}} step
+  // CHECK: ttkernel.experimental.constant_table_lookup %[[EXPLICIT_ORDINAL]], [1, 3]
+  // CHECK: %[[EXPLICIT_SOURCE:.*]] = ttkernel.experimental.constant_table_lookup %[[EXPLICIT_ORDINAL]], [0, 2]
+  // CHECK: %[[EXPLICIT_INCIDENT:.*]] = arith.cmpi eq, %[[EXPLICIT_DEVICE]], %[[EXPLICIT_SOURCE]]
+  // CHECK: scf.if %[[EXPLICIT_INCIDENT]]
   // CHECK: func.call @consume(%[[EXPLICIT_DESTINATION:.*]], %[[EXPLICIT_DESTINATION]])
   func.func @explicit_source()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
@@ -180,12 +179,11 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   // CHECK-LABEL: func.func @sparse_explicit_source
   // CHECK: %[[SPARSE_DEVICE_I32:.*]] = ttkernel.get_common_arg_val
   // CHECK: %[[SPARSE_DEVICE:.*]] = arith.index_cast %[[SPARSE_DEVICE_I32]]
-  // CHECK: arith.cmpi eq, %[[SPARSE_DEVICE]], %{{.*}}
-  // CHECK: arith.select
-  // CHECK: arith.cmpi eq, %[[SPARSE_DEVICE]], %{{.*}}
-  // CHECK: arith.select
-  // CHECK: scf.for
-  // CHECK: ttkernel.experimental.constant_table_lookup {{.*}}, [999999, 7]
+  // CHECK: scf.for %[[SPARSE_ORDINAL:.*]] = %{{.*}} to %{{.*}} step
+  // CHECK: ttkernel.experimental.constant_table_lookup %[[SPARSE_ORDINAL]], [999999, 7]
+  // CHECK: %[[SPARSE_SOURCE:.*]] = ttkernel.experimental.constant_table_lookup %[[SPARSE_ORDINAL]], [0, 500000]
+  // CHECK: %[[SPARSE_INCIDENT:.*]] = arith.cmpi eq, %[[SPARSE_DEVICE]], %[[SPARSE_SOURCE]]
+  // CHECK: scf.if %[[SPARSE_INCIDENT]]
   // CHECK: func.call @consume(%[[SPARSE_DESTINATION:.*]], %[[SPARSE_DESTINATION]])
   func.func @sparse_explicit_source()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {

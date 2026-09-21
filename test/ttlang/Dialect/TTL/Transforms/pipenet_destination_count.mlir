@@ -112,9 +112,10 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   // CHECK: %[[REMOTE_COUNT:.*]] = arith.constant 3 : index
   // CHECK: %[[DEVICE_I32:.*]] = ttkernel.get_common_arg_val
   // CHECK: %[[DEVICE:.*]] = arith.index_cast %[[DEVICE_I32]]
-  // CHECK: %[[DEVICE_THREE:.*]] = arith.cmpi eq, %[[DEVICE]], %[[REMOTE_COUNT]]
-  // CHECK-NEXT: %[[DEVICE_THREE_COUNT:.*]] = arith.select %[[DEVICE_THREE]]
-  // CHECK-NEXT: %[[LOCAL_COUNT:.*]] = arith.addi %{{.*}}, %[[DEVICE_THREE_COUNT]]
+  // CHECK: %[[LOCAL_COUNT:.*]] = scf.for %[[LOCAL_ORDINAL:.*]] = %{{.*}} iter_args
+  // CHECK: %[[LOCAL_ENDPOINT:.*]] = ttkernel.experimental.constant_table_lookup %[[LOCAL_ORDINAL]]
+  // CHECK-NEXT: %[[LOCAL_MATCH:.*]] = arith.cmpi eq, %[[DEVICE]], %[[LOCAL_ENDPOINT]]
+  // CHECK: arith.select %[[LOCAL_MATCH]]
   // CHECK: %[[TOTAL_COUNT:.*]] = arith.addi %[[LOCAL_COUNT]], %[[REMOTE_COUNT]]
   // CHECK: call @consume(%[[TOTAL_COUNT]])
   func.func @mixed_destination_count()

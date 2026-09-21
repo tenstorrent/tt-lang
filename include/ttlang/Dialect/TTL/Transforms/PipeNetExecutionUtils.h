@@ -37,9 +37,12 @@ enum class PipeNetRecordSelection { Source, Destination };
 struct PipeNetRecordLoop {
   PipeNetRecordsAttr records;
   PipeNetRecordSelection selection;
-  /// Empty when the loop induction value is the original record index.
+  /// Empty when the loop induction value follows from the record index alone.
   std::map<std::pair<LaunchExecutionLocation, std::uint64_t>, std::uint64_t>
       indirectInductionValues;
+  /// Node pipes visited per induction value when `indirectInductionValues` is
+  /// empty, so a loop over graph edges needs no per-record table.
+  std::uint64_t inductionValueStride = 1;
 };
 
 /// Return the loop induction value that selects `recordIndex` at `location`.
