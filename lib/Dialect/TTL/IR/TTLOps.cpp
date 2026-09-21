@@ -606,6 +606,7 @@ llvm::LogicalResult PipeNetRecordsAttr::verify(
   }
   if (!mappings.empty()) {
     struct MappingRelation {
+      TransferGraphAttr attribute;
       std::unique_ptr<TransferGraph> graph;
       llvm::DenseSet<PipeRecordAttr> pipes;
       llvm::DenseSet<TransferEdgeAttr> edges;
@@ -634,6 +635,7 @@ llvm::LogicalResult PipeNetRecordsAttr::verify(
       domain = mappingDomain;
 
       MappingRelation currentRelation;
+      currentRelation.attribute = mapping.getGraph();
       currentRelation.graph = createTransferGraph(mapping.getGraph());
       FailureOr<std::uint64_t> edgeCount =
           currentRelation.graph->getEdgeCount();
@@ -666,6 +668,12 @@ llvm::LogicalResult PipeNetRecordsAttr::verify(
             });
         if (!sharesPipe) {
           continue;
+        }
+        // Equal relations repeat every edge, so a shared node pipe already
+        // repeats a record and neither edge set has to be materialized.
+        if (previousRelation.attribute == currentRelation.attribute) {
+          return emitError() << "graph mappings repeat the same device edge "
+                                "and node pipe";
         }
         llvm::DenseSet<TransferEdgeAttr> &currentEdges =
             getEdges(currentRelation);
