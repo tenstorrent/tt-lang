@@ -7,9 +7,9 @@ The source-tree `./bin/tt-lang-sim` launcher has two complementary backends:
 | `python` (default) | Python interpreter with torch-backed tensors | Fast kernel iteration, Python debugging, and native macOS use |
 | `emule` | TT-Lang compiler, tt-metal, and tt-emule | Testing generated kernels and runtime behavior without silicon |
 
-The `tt-lang-sim` console command installed by either PyPI package contains
-only the `python` backend. The `emule` backend requires a source checkout and
-must be selected through `./bin/tt-lang-sim`.
+The `tt-lang-sim` console command installed by either PyPI package provides the
+`python` backend. For compiler-backed emulation, use
+`./bin/tt-lang-sim --backend=emule` from a TT-Lang source checkout.
 
 For the Docker backend, start with
 [Getting started with Docker simulation](simulator-getting-started.md), which
@@ -81,25 +81,23 @@ before running a program:
 
 Installation uses the exact runtime pins in `config/tt-lang-emule-stack.json`
 and builds the current compiler checkout, which must contain the manifest's
-compiler baseline. Users do not select compiler, emulator, and tt-metal
-versions independently. Program execution never configures or builds the
-compiler.
+compiler baseline. The installer prepares these components together as a
+reusable environment. Program runs use the installed compiler and runtime.
 
-Run compiler tests with their existing CMake, pytest, and lit interfaces rather
-than through `tt-lang-sim`. See the getting-started guide and
+Run and select compiler tests with CMake, pytest, and lit. See the
+getting-started guide and
 [`test/TESTING.md`](https://github.com/tenstorrent/tt-lang/blob/main/test/TESTING.md)
 for commands and suite boundaries.
 
-This is not the Python simulator with a different tensor implementation. The
-script imports the real `ttl` and `ttnn` packages, TT-Lang compiles each
+The script imports the real `ttl` and `ttnn` packages, TT-Lang compiles each
 operation, and tt-metal dispatches the generated kernels to tt-emule.
 
 The supported compiler baseline, emulator commit, tt-metal, container, and
 target inputs are recorded together in `config/tt-lang-emule-stack.json`. The
-installer validates that the current TT-Lang checkout contains the compiler baseline. It
-also verifies the emulator checkout commit, the P150 descriptor, and the
-emulator's exact tt-metal pin before building. Run the same checks directly
-with:
+installer validates that the current TT-Lang checkout contains the compiler
+baseline. It also verifies the emulator checkout commit, the P150 descriptor,
+and the emulator's exact tt-metal pin before building. Run the same checks
+directly with:
 
 ```bash
 python3 scripts/tt-lang-emule-stack.py \
@@ -139,17 +137,17 @@ The installer builds the pinned tt-emule/tt-metal image and TT-Lang compiler.
 The compiler build and the tt-metal and tt-emule JIT caches live in named Docker
 volumes. Execution requires the installed compiler source to match the current
 checkout; after changing commits or compiler/build inputs, run the installer
-again. Workload edits and their output files do not invalidate the installation.
+again. Workload scripts can be edited and rerun using the installed compiler.
 
 The initial supported target is a single emulated Blackhole P150 device with
 the full, unharvested 13x10 compute grid. The launcher selects the emulator's
 P150 descriptor and configures tt-metal's hybrid allocator before the device
-is opened. The installer rejects a runtime without the required P150 descriptor
-before the Docker build starts.
+is opened. The installer checks that the runtime supplies the required P150
+descriptor before starting the Docker build.
 
-Options specific to the Python backend, such as `--grid`, `--trace`, and
-`--no-float32-promotion`, do not apply to compiler-backed emulation. Arguments
-after `--` are always passed to the user script:
+Use the Python backend for simulator options such as `--grid`, `--trace`, and
+`--no-float32-promotion`. For the emule backend, the pinned environment supplies
+the device configuration. Pass program arguments after `--`:
 
 ```bash
 ./bin/tt-lang-sim --backend=emule program.py -- --program-option value

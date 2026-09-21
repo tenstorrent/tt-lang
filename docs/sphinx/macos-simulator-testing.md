@@ -8,7 +8,7 @@ Lima VM rather than on the macOS host.
 
 ## Three non-silicon execution paths
 
-Do not conflate them:
+Choose an execution path based on the behavior under test:
 
 | | Functional simulator | Compiler-backed emulator | Hardware simulator |
 |---|---|---|---|
