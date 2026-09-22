@@ -1319,6 +1319,38 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
+// Iteration-dependent pipe control requires concrete schedule occurrences. A
+// loop that exceeds the bounded event graph must be rejected.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @large_iteration_dependent_schedule()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4097 = arith.constant 4097 : index
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %send_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{cannot expand the PipeNet schedule beyond 4096}}
+    scf.for %iteration = %c0 to %c4097 step %c1 {
+      %is_first = arith.cmpi eq, %iteration, %c0 : index
+      scf.if %is_first {
+        ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+          %send = ttl.copy %send_dfb, %pipe
+              : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+                 !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+              -> !ttl.transfer_handle<write>
+          ttl.wait %send : !ttl.transfer_handle<write>
+        }
+      }
+    }
+    func.return
+  }
+}
+
+// -----
+
 // A send can be separated from the matching receiver post by other pipe
 // events. The verifier should still report the real protocol violation instead
 // of the intermediate program-order edge.

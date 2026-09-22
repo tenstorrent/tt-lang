@@ -46,6 +46,51 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 
 // -----
 
+// Large loops with iteration-invariant pipe control retain compact execution-
+// count analysis instead of materializing every schedule occurrence.
+
+// CHECK-LABEL: func.func @large_iteration_invariant_schedule
+// CHECK-COUNT-2: scf.for
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @large_iteration_invariant_schedule()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c8192 = arith.constant 8192 : index
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %send_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %receive_dfb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      scf.for %iteration = %c0 to %c8192 step %c1 {
+        %send = ttl.copy %send_dfb, %pipe
+            : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+               !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+            -> !ttl.transfer_handle<write>
+        ttl.wait %send : !ttl.transfer_handle<write>
+      }
+    }
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+      scf.for %iteration = %c0 to %c8192 step %c1 {
+        %reserved = ttl.cb_reserve %receive_dfb
+            : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+            -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        %receive = ttl.copy %pipe, %reserved
+            : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
+               tensor<1x1x!ttcore.tile<32x32, bf16>>)
+            -> !ttl.receive_request
+        ttl.wait %receive : !ttl.receive_request
+      }
+    }
+    func.return
+  }
+}
+
+// -----
+
 // One completed candidate is sufficient even when another candidate's send is
 // ordered after wait-any.
 
