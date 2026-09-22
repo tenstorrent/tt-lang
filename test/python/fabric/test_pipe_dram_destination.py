@@ -162,19 +162,20 @@ def _make_concurrent_bidirectional_direct_dram_receive(mesh_shape, worker_count)
     source_devices = tuple(product(*(range(extent) for extent in mesh_shape)))
     destination_devices = source_devices[1:] + source_devices[:1]
     worker_nodes = tuple((0, worker_index) for worker_index in range(worker_count))
+    worker_pipes = tuple(ttl.Pipe(src=node, dst=node) for node in worker_nodes)
     forward_net = ttl.PipeNet(
+        pipes=worker_pipes,
         graph=ttl.TransferGraph.edges(
             device_domain,
             edges=list(zip(source_devices, destination_devices, strict=True)),
         ),
-        local_nodes=worker_nodes,
     )
     reverse_net = ttl.PipeNet(
+        pipes=worker_pipes,
         graph=ttl.TransferGraph.edges(
             device_domain,
             edges=list(zip(destination_devices, source_devices, strict=True)),
         ),
-        local_nodes=worker_nodes,
     )
 
     @ttl.operation(grid=(1, worker_count), device_domain=device_domain)
@@ -234,6 +235,7 @@ def _make_repeated_one_to_many_direct_dram_receive(mesh_shape, repeat_count):
     source_device = device_coordinates[0]
     destination_devices = device_coordinates[1:3]
     transfer_net = ttl.PipeNet(
+        pipes=[ttl.Pipe(src=(0, 0), dst=(0, 0))],
         graph=ttl.TransferGraph.edges(
             device_domain,
             edges=[
@@ -241,7 +243,6 @@ def _make_repeated_one_to_many_direct_dram_receive(mesh_shape, repeat_count):
                 for destination_device in destination_devices
             ],
         ),
-        local_nodes=((0, 0),),
     )
 
     @ttl.operation(grid=(1, 1), device_domain=device_domain)
