@@ -347,6 +347,25 @@ if [ "$_BUILD_IMAGE" -eq 1 ]; then
         echo "  Update the supported stack manifest before installing another runtime." >&2
         exit 1
     fi
+    if ! _EMULE_METAL_PIN="$(
+            awk '
+                /^[[:space:]]*#/ { next }
+                /^[[:space:]]*$/ { next }
+                { gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print; exit }
+            ' "${_TEMP_EMULE_CONTEXT}/tt-metal-pin.txt" 2>/dev/null
+        )"; then
+        _EMULE_METAL_PIN=""
+    fi
+    if [ "${#_EMULE_METAL_PIN}" -ne 40 ] || \
+       [[ "$_EMULE_METAL_PIN" == *[!0-9a-f]* ]]; then
+        echo "tt-lang-sim: selected emulator has an invalid Metal pin." >&2
+        exit 1
+    fi
+    if [ "$_EMULE_METAL_PIN" != "$_TT_METAL_COMMIT" ]; then
+        echo "tt-lang-sim: selected emulator pins Metal ${_EMULE_METAL_PIN}." >&2
+        echo "  selected Metal: ${_TT_METAL_COMMIT}" >&2
+        exit 1
+    fi
     _TEMP_STACK_CONTEXT="$(mktemp -d "${TMPDIR:-/tmp}/tt-lang-stack-context.XXXXXX")"
     cp -- "$_STACK_MANIFEST" \
         "${_TEMP_STACK_CONTEXT}/tt-lang-emule-stack.json"

@@ -662,7 +662,7 @@ PY
     local emule_commit
     local metal_commit=cccccccccccccccccccccccccccccccccccccccc
     local base_image="example.invalid/toolchain@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    make_emulator_fixture "$emule_source" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    make_emulator_fixture "$emule_source" "$metal_commit"
     emule_commit="$(git -C "$emule_source" rev-parse HEAD)"
     cd "$TTLANG_REPO_ROOT"
 
@@ -687,6 +687,29 @@ PY
     assert_log_contains "tt-lang-emule:${emule_commit:0:8}-${metal_commit:0:8}-r"
     assert_log_line "build"
     assert_log_line "run"
+}
+
+@test "experimental Metal override must match the emulator pin" {
+    local emule_source="$BATS_TEST_TMPDIR/experimental-emule"
+    local emule_commit
+    local emulator_metal=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    local selected_metal=cccccccccccccccccccccccccccccccccccccccc
+    make_emulator_fixture "$emule_source" "$emulator_metal"
+    emule_commit="$(git -C "$emule_source" rev-parse HEAD)"
+    cd "$TTLANG_REPO_ROOT"
+
+    MOCK_DOCKER_IMAGE_STATUS=1 \
+        TTLANG_EMULE_INSTALL=1 \
+        TTLANG_EMULE_RUNTIME_SOURCE_DIR="$emule_source" \
+        TTLANG_EMULE_RUNTIME_COMMIT="$emule_commit" \
+        TTLANG_EMULE_RUNTIME_METAL_COMMIT="$selected_metal" \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -1 "$RUNNER" examples/eltwise_add.py
+
+    assert_output --partial "selected emulator pins Metal $emulator_metal"
+    assert_output --partial "selected Metal: $selected_metal"
+    refute_log_line "build"
+    refute_log_line "run"
 }
 
 @test "an alternate candidate manifest supplies the runtime pins and build context" {
