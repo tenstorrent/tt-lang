@@ -36,7 +36,18 @@
                 destination = <coordinates = [1]>>>>
 ]>
 
-module attributes {ttl.launch_grid = [2 : i64, 2 : i64]} {
+#closed_form_records = #ttl.pipenet_records<net 2 mappings
+  <graph = <domain = <components = <name = "device", extent = [3]>>,
+    kind = all_to_all, componentName = "device", properties = {}>,
+   pipes[<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
+          dstEndX = 0, dstEndY = 0>,
+         <srcX = 1, srcY = 0, dstStartX = 1, dstStartY = 0,
+          dstEndX = 1, dstEndY = 0>]>>
+
+module attributes {
+  ttl.launch_grid = [2 : i64, 2 : i64],
+  test.closed_form_records = #closed_form_records
+} {
   func.func @domains(%runtime: index)
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     "test.observe"() {test.label = "entry"} : () -> ()

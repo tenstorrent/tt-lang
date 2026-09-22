@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # REQUIRES: ttnn, tt-device, multi-device
-# RUN: env TT_VISIBLE_DEVICES=0,1 %python %s > %t.output.txt 2>&1
+# RUN: %python %s > %t.output.txt 2>&1
 # RUN: FileCheck %s < %t.output.txt
 
 """
@@ -17,9 +17,9 @@ kernel would only touch the first tile and produce incorrect results for the
 rest. Correct output for all elements proves the tensor was properly sharded
 so each device sees its own 32x32 slice.
 
-Requires multiple devices for real mesh sharding. The lit RUN line exposes two
-devices because this test validates SPMD sharding semantics, not full-system
-fabric scale.
+Requires multiple devices for real mesh sharding. The test uses the complete
+visible device group because selecting a subset can invalidate its discovered
+physical topology.
 """
 
 import torch

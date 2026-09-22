@@ -39,8 +39,8 @@ semantics used by both local NoC and fabric transports.
 ```
 
 High-level TTL records the logical transfer only. The active TT-Metal control
-plane selects the injection connection, and device routing tables encode the
-packet route from the final physical destination.
+plane selects the injection connection, host binding supplies the target route
+encoding, and device routing tables forward the packet.
 
 ## Hardware capabilities
 
@@ -80,7 +80,8 @@ runtime arguments and a `MeshProgramDescriptor`. During this execution-setup
 stage, called *host runtime route binding* below, it resolves each logical
 device to a `FabricNodeId`, queries the outgoing direction, and asks the
 control plane owned by the active `MeshDevice` runtime context to configure an
-injection connection. Binding completes before
+injection connection. When explicit link assignment is required, binding also
+queries the eligible forwarding links. Binding completes before
 `ttnn.generic_op(...)` submits the program; it does not execute in a device
 kernel. The packet's NoC command is built separately from the destination node
 coordinates and receiver DFB address.
@@ -151,24 +152,104 @@ target-aware packetization, with the completion increment in the final packet.
 
 ### Physical and logical device arrangements
 
-A `MeshDevice` logical arrangement is not necessarily the physical fabric
-arrangement. General collective tests query the control-plane extent and
-construct the logical `DeviceDomain` from it instead of encoding a fixed
-extent. The extent defines logical membership and row-major ordering; it does
-not define fabric adjacency.
+A `DeviceDomain` defines a logical product index space. Component coordinates
+are concatenated in component declaration order to produce a flattened tuple.
+For example:
 
-The current host runtime uses an identity binding from flattened
-`DeviceDomain` coordinates to the `MeshDevice` logical arrangement and
-requires their extents to match. This is a target-binding restriction, not a
-`DeviceDomain` invariant. A general binding maps each `DeviceRef` to a
-`MeshCoordinate`, passes the original logical coordinates to device role
-predicates, and uses the mapped coordinate with `get_fabric_node_id()` for
-control-plane route resolution.
+```python
+devices = ttl.DeviceDomain.product(host=(2,), device=(4,))
+```
 
-The same distinction applies to `FabricNodeId::chip_id`. It is an identifier
-within a physical mesh, not a general distance metric. A target resolver must
-consult TT-Metal's control-plane description to determine whether a transfer
-is directly routable and how to encode it.
+maps `DeviceRef((host,), (device,))` to the tuple `(host, device)`. Component
+names document logical roles; they do not select a host, chip, link, or fabric
+axis.
+
+For each materialized logical device, tt-lang currently performs this
+logical-to-TTNN placement conversion:
+
+1. Resolve the `DeviceRef` components in `DeviceDomain` declaration order.
+2. Concatenate every component's axes into one integer tuple.
+3. Construct a TTNN `MeshCoordinate` with that same tuple.
+
+There is no coordinate permutation, offset, or placement lookup. The same
+tuple selects the entry in the `MeshProgramDescriptor` and is passed to the
+compiled device-role predicates. This document calls that conversion the
+*coordinate-preserving placement*. It preserves the coordinate tuple only; it
+does not establish physical-device identity or topology.
+
+There is no rank adaptation. The flattened logical rank must equal the active
+`MeshDevice` rank: tt-lang does not add, remove, combine, or split axes. When no
+placement is specified, every logical coordinate is materialized and the
+flattened domain extent must fit inside the active mesh. If the operation has
+mesh tensors, their mesh extent must equal the flattened domain extent.
+Explicit `mesh_program_placements` may select a subset inside the logical
+domain, tensor mesh, and active mesh, but they do not remap coordinates. Every
+PipeNet endpoint must remain covered. Incompatible ranks or selected
+coordinates are rejected before program descriptors are constructed.
+
+For the product domain above, the mapping stages are:
+
+| Logical value | Flattened coordinate | TTNN placement | Physical identity |
+| --- | --- | --- | --- |
+| `DeviceRef(host=0, device=3)` | `(0, 3)` | `MeshCoordinate(0, 3)` | `mesh_device.get_fabric_node_id(MeshCoordinate(0, 3))` |
+| `DeviceRef(host=1, device=0)` | `(1, 0)` | `MeshCoordinate(1, 0)` | `mesh_device.get_fabric_node_id(MeshCoordinate(1, 0))` |
+
+tt-lang determines the first three columns through the coordinate-preserving
+placement defined above. The active `MeshDevice` resolves the last column;
+tt-lang does not derive a `mesh_id`, `chip_id`, adjacency, or distance from
+`(host, device)`.
+
+TTNN then maps each `MeshCoordinate` to a `FabricNodeId` with
+`MeshDevice.get_fabric_node_id()`. This is where the logical mesh arrangement
+first acquires a physical fabric identity. A `FabricNodeId::chip_id` is an
+identifier within its physical mesh, not a distance or adjacency relation.
+
+TTL currently has no user-facing placement contract that associates a logical
+axis with a physical fabric axis or requires adjacent `DeviceDomain`
+coordinates to map to adjacent `FabricNodeId` values. The
+coordinate-preserving placement does not preserve adjacency. `axis_neighbor`
+relations and stencil offsets therefore identify logical neighbors; they do
+not guarantee a one-hop physical connection. `mesh_program_placements` only
+restricts which logical coordinates execute and cannot remap them or impose an
+adjacency constraint. Runtime route binding checks whether the selected fabric
+mode can configure each resolved route, but that check is not a user-controlled
+logical-to-physical placement guarantee.
+
+A future language extension could support algorithms that intentionally
+program the physical mesh. It would explicitly bind each logical `DeviceRef`
+to a `MeshCoordinate` and express physical-axis or adjacency requirements for
+the target to validate. That placement contract would remain separate from
+the logical communication relation stored by `TransferGraph`. Direct physical
+placement would make a program depend on a target topology and mesh extent,
+reducing portability and automatic scaling. It should therefore be an optional
+target-specific facility; topology-independent programs should continue to use
+logical domains and let runtime binding select physical routes.
+
+Route resolution depends on the active fabric mode:
+
+- In 2D mode, host binding resolves only the source and final destination
+  `FabricNodeId` values. TT-Metal's routing tables select all intermediate
+  forwarding decisions.
+- In 1D mode, the source and destination must differ along exactly one logical
+  mesh axis. Host binding enumerates every intervening logical coordinate,
+  maps each coordinate to a `FabricNodeId`, and requires every consecutive hop
+  to use the same forwarding direction. Neighbor-exchange mode additionally
+  requires exactly one logical hop. The generated packet encodes the validated
+  hop count and opens its connection toward the first mapped hop.
+
+For example, a 1D transfer from `(0, 0)` to `(0, 3)` enumerates `(0, 0)`,
+`(0, 1)`, `(0, 2)`, and `(0, 3)`. The runtime maps all four coordinates to
+physical node ids, validates that the three hops use one forwarding direction,
+opens the connection toward the node for `(0, 1)`, and encodes hop count three.
+A 1D transfer from `(0, 3)` to `(1, 0)` is rejected because two logical axes
+differ. In 2D mode, that pair is legal when TT-Metal can route between the two
+resolved `FabricNodeId` values; TT-Metal's routing tables select intermediate
+routers.
+
+The coordinate-preserving placement is an implementation restriction, not a
+`DeviceDomain` invariant. Supporting arbitrary placement requires an explicit
+mapping from each logical `DeviceRef` to a `MeshCoordinate`; inferring topology
+from component names or coordinate differences would be incorrect.
 
 ## Design
 
@@ -178,7 +259,7 @@ Fabric pipes extend PipeNet communication across devices without making the
 TTL programming model depend on a current Tenstorrent system topology. The
 design has the following invariants:
 
-- `DeviceDomain`, `DomainMap`, `DeviceRef`, and `TransferGraph` contain no
+- `DeviceDomain`, `DeviceRef`, and `TransferGraph` contain no
   fabric mode, physical mesh identifier, route direction, link index, packet
   limit, or NoC selection.
 - `DeviceRef` identifies a logical member of a `DeviceDomain`. It is not a
@@ -200,10 +281,17 @@ design has the following invariants:
 used by Chapel domains and locales: the domain defines membership, while a
 target-specific mapping determines physical placement.
 
-`DeviceRef` identifies one member of a device domain. `DomainMap` describes
-ownership and distribution over a domain. `TransferGraph` describes the
-logical communication relation. `PipeNet` applies the existing pipe protocol
-to that relation.
+`DeviceRef` identifies one member of a device domain. `TransferGraph`
+describes the logical communication relation. `PipeNet` applies the existing
+pipe protocol to that relation.
+
+An explicit `TransferGraph.edges(...)` relation enumerates arbitrary directed
+logical-device pairs. It is appropriate for sparse or irregular connectivity
+that has no structured constructor. Here, *explicit* refers only to logical
+connectivity: it does not specify physical placement, links, or forwarding
+routers. Regular axis-neighbor, stencil, gather, scatter, and all-to-all
+relations use compact parameter-based forms so storage does not grow with the
+number of derived edges.
 
 `DeviceDomain.current_index()` returns the zero-based row-major order of the
 current logical device. Pipe callback identities expose source and destination
@@ -221,14 +309,42 @@ transfers = ttl.TransferGraph.edges(
 net = ttl.PipeNet(graph=transfers)
 ```
 
+Graph-only construction applies the transfer relation to every launch node. For
+example, in an operation with a `(2, 2)` launch grid, the graph above describes
+these four transfers:
+
+```text
+device (0, 0), node (0, 0) -> device (0, 3), node (0, 0)
+device (0, 0), node (1, 0) -> device (0, 3), node (1, 0)
+device (0, 0), node (0, 1) -> device (0, 3), node (0, 1)
+device (0, 0), node (1, 1) -> device (0, 3), node (1, 1)
+```
+
+Each transfer uses the same node coordinate on its source and destination
+device. A transfer between distinct node coordinates declares the node
+relation separately:
+
+```python
+net = ttl.PipeNet(
+    graph=transfers,
+    pipes=[ttl.Pipe(src=(1, 0), dst=(0, 0))],
+)
+```
+
+Each transfer is `(source device, source node) ->
+(destination device, destination node)`. Device-indexed `ttl.Pipe` endpoints
+allow one `PipeNet` to contain different device and node relations without a
+separate public association type. PipeNet guards restrict which declared
+endpoints execute protocol operations; they do not infer or modify the
+relation.
+
 The graph does not state whether the target uses a line, ring, torus, mesh, or
 another interconnect. It also does not require `(0, 0)` and `(0, 3)` to be one
 hardware packet apart.
 
-Structured transfers share common domain and component properties through
-`StructuredTransfer`. Current derived forms include axis-neighbor, gather, and
-scatter relations. Additional collectives should add semantic transfer forms
-such as all-to-all without adding target topology fields.
+`TransferGraph` supports explicit edge lists and parameter-based axis-neighbor,
+stencil, gather, scatter, and all-to-all relations. Additional common relations
+should describe communication semantics without adding target topology fields.
 
 ### Shared pipe protocol
 
@@ -269,8 +385,9 @@ coordinates. Host runtime binding accepts only source and destination pairs
 that the active TT-Metal control plane can route. The current implementation:
 
 - resolves logical endpoints to `FabricNodeId` values;
-- queries the outgoing direction and eligible forwarding links for each
-  source-destination pair;
+- queries the outgoing direction along each resolved route and, when the
+  target exposes link enumeration, the eligible injection links for its
+  connection target;
 - reuses one injection connection for destinations with the same direction
   and a common forwarding link;
 - assigns links by manager lifetime, allowing a proven receiver/sender
@@ -279,9 +396,11 @@ that the active TT-Metal control plane can route. The current implementation:
 - supplies final destination identifiers for 2D routing or a validated hop
   count for 1D routing.
 
-The resulting transport plan records the connection slot, target route, source
-and destination TENSIX nodes, L1 addresses, payload constraints, and
-synchronization objects. It contains no topology inferred from a `DeviceDomain`.
+Together, the compiler's fabric route and Pipe module plans record logical
+route indices, source and destination TENSIX nodes, L1 address formulas,
+payload constraints, and synchronization objects. Host binding maps each
+logical route index to a connection slot and final physical target. Neither
+plan infers topology from a `DeviceDomain`.
 
 A future route optimizer belongs in this late planner. When the control plane
 exposes multiple legal routes or links, the planner can reject candidates that
@@ -344,6 +463,63 @@ first enter during host runtime route binding, after kernel generation and
 before `ttnn.generic_op(...)` submission. Generated kernels consume those
 values as runtime arguments.
 
+### Logical-to-physical binding timeline
+
+The compiler preserves logical coordinates through Pipe lowering. Host
+execution setup performs placement and physical binding:
+
+```text
+Compilation                              Host execution setup                         Device
+
+DeviceRef -> DeviceRefAttr -> ttl.fabric_routes -> (1, 0) -> MeshCoordinate(1, 0)
+ logical      logical          logical              logical    placement key
+                                                              |
+                                               active MeshDevice.get_fabric_node_id()
+                                                              |
+                                                              v
+                              packet route <- route args <- FabricNodeId(mesh, chip)
+                              target-specific             physical identity
+```
+
+For `DeviceRef(host=1, device=0)`, the stages are:
+
+1. Frontend lowering creates a `DeviceRefAttr` containing component
+   coordinates `((1,), (0,))`.
+2. `PipeLowering.cpp` classifies the transfer as cross-device and attaches a
+   `ttl.fabric_routes` entry to each affected kernel function. The entry stores
+   logical `local` and `remote` `DeviceRefAttr` values, a stable route index,
+   and source TENSIX nodes. It contains no physical identifier or route.
+3. Artifact extraction concatenates the component coordinates in declaration
+   order. The corresponding `FabricRouteSpec` contains the tuple `(1, 0)`.
+4. `kernel_runner.py` creates the per-device descriptor at
+   `MeshCoordinate(1, 0)`. It also passes `(1, 0)` separately as the logical
+   coordinates consumed by compiled device-role predicates.
+5. `fabric_target.py` calls
+   `mesh_device.get_fabric_node_id(MeshCoordinate(1, 0))`. The returned
+   `FabricNodeId(mesh_id, chip_id)` is the first physical device identity in
+   this sequence; it is obtained from the active mesh, not calculated from the
+   integers `1` and `0`.
+6. Host binding queries forwarding information and fills the connection slot,
+   destination device id, destination mesh id, and 1D hop-count tables. The
+   generated kernel reads those tables to encode the packet route.
+
+Keeping the two representations separate is intentional. Logical PipeNet IR
+is independent of the machine that executes it, while topology, fabric mode,
+and available links are properties of the active runtime context. The
+separation also provides one explicit insertion point for a future compiler or
+host placement planner: it can replace the current coordinate-preserving
+conversion with a mapping from each logical `DeviceRef` to a
+`MeshCoordinate`. Such a planner could preserve selected neighbor relations,
+reduce hop count or contention, and account for unavailable devices without
+changing the source-level transfer graph or TTL IR. Descriptor placement would
+use the mapped physical coordinate, while device-role predicates would
+continue to receive the original logical coordinate.
+
+Embedding physical coordinates directly in portable source would bypass that
+optimization point and make programs dependent on one mesh rank, extent, and
+topology. A future direct-physical placement facility should therefore remain
+explicit and target-specific.
+
 ### Frontend and TTL IR
 
 The Python domain model is implemented in `python/ttl/domains.py`. The AST
@@ -358,51 +534,107 @@ The TTL dialect defines:
 - `DeviceRangeAttr` for a logical device range;
 - `TransferEdgeAttr` for one logical transfer relation;
 - `DeviceTransferAttr` for binding a logical device edge to a node-level
-  pipe.
+  pipe;
+- `TransferGraphAttr` for explicit edge lists or parameter-based
+  logical-device relations;
+- `PipeMappingAttr` for one device graph and its list of node Pipes; every
+  graph edge is combined with every listed Pipe;
+- `PipeNetRecordsAttr` for a local record list or an ordered list of graph
+  mappings;
 - `CurrentDeviceIndexOp` for the current member's row-major logical index.
 
 These attributes contain no target route fields. Their verifiers check domain
 membership, coordinate rank, and transfer structure.
 
-A graph PipeNet lowers to one ordered `PipeNetRecordsAttr` and one callback
-region for each source or destination role. The callback receives a selected
-record whose coordinate and logical-device fields come from immutable tables.
-This keeps callback code independent of the global edge count; it does not
-clone the callback for every transfer edge. The current representation still
-stores one metadata row per edge and launch node combination and scans the
-table on each logical device. Per-device record indices can reduce the scan
-cost, while target-level structured descriptors can reduce metadata, without
-changing the domain or callback semantics.
+A graph PipeNet lowers to one `PipeNetRecordsAttr` containing its mappings and
+one callback region for each source or destination role. The callback receives
+one selected transfer with node coordinates and logical device indices. Graphs
+created with `axis_neighbor`, `stencil`, `gather`, `scatter`, or `all_to_all`
+calculate endpoints from their stored parameters. An explicit graph compares
+the current device index with the declared edge endpoints; its generated IR
+scales with the number of declared edges rather than the complete domain.
+Each device iterates only edges for which it is the source or destination.
+Every transfer has a stable index used to select its resource-table entries.
+Core specialization removes node-coordinate table columns whose value is
+constant on that core. The frontend and TTL IR do not store a separate record
+for every combination of device edge and node Pipe.
+
+One compiled operation fixes its logical domain extents. A Python function may
+accept domain extents and construct the corresponding graph for each supported
+device count. Transfer graphs remain logical; host target binding resolves
+physical placement, routes, and forwarding links.
 
 ### Pipe lowering
 
-`lib/Dialect/TTL/Transforms/PipeLowering.cpp` builds one fabric-route plan for
-the module before lowering individual sends. The current POC records the
-logical local device, logical remote device, and source node set for each
-route. It assigns each fabric send a stable route index.
+`lib/Dialect/TTL/Transforms/PipeLowering.cpp` first classifies every concrete
+`DeviceTransferAttr`. A transfer whose source and destination devices are equal
+uses the NoC transport. A cross-device transfer uses the fabric transport; its
+sender and receiver-post sides each record the current logical device, remote
+logical device, local injection TENSIX node, and owning function.
 
-Separate send and receiver-post transport interfaces keep PipeNet protocol
-planning independent of transport emission. The NoC implementations emit
-same-device transfers and receiver address publication. The fabric
-implementations emit receiver-readiness atomics, sender atomics, and fused
-payload-write-plus-completion operations through the routing-plane manager.
+The resulting `ttl.fabric_routes` function attribute is deliberately logical.
+Each dictionary entry contains `local` and `remote` `DeviceRefAttr` values,
+`route_index`, and `source_nodes`. `PipeLowering` neither constructs a
+`MeshCoordinate` nor queries topology. Python artifact extraction later
+flattens the two device references into `FabricRouteSpec` tuples; physical
+resolution still waits until host execution setup.
 
-The resource planner resolves each synchronization counter to an L1 address
-before transport emission. The transport implementation consumes that address and
-does not interpret a PipeNet id as a semaphore id. A PipeNet containing a
-cross-device transfer allocates its completion counter from the global
-semaphore namespace; local-only PipeNets allocate completion counters densely
-from the local namespace.
+Before record-loop materialization, lowering builds immutable plans for every
+graph callback. It then materializes those loops and expands high-level copies
+into explicit transfer operations. From that stable transfer IR, it constructs
+and validates a module-wide fabric plan before applying fabric metadata or
+emitting TTKernel transport operations. Within each function it deduplicates
+equal logical routes and assigns stable route indices.
+Route indices address four aligned runtime tables: connection slot,
+destination device id, destination mesh id, and 1D hop count. The selected
+PipeNet record retains its concrete `PipeRecordAttr` during traversal, so later
+queries reuse that record instead of expanding the complete transfer graph
+again.
 
-Current fabric lowering requires computed receiver DFB addresses. The sender
-uses the destination DFB base address supplied by the host runtime and builds
-the remote NoC address from the destination node coordinates. Receiver-
-published address-table fallback remains unsupported for fabric transfers.
+Manager lifetime analysis groups fabric operations into scoped intervals.
+Lowering records which routes each interval uses, which generated receiver and
+sender intervals may transfer ownership sequentially, and which intervals may
+execute concurrently. It verifies matching locations, routes, and statically
+bounded invocation counts before permitting ownership transfer. All remaining
+interval pairs interfere. This interval plan is serialized as kernel metadata;
+host binding uses it to assign forwarding links without mutating compiler IR.
+
+After the complete plan is valid, lowering creates the routing-plane manager
+operations and applies their route indices. Separate send and receiver-post
+transport interfaces keep PipeNet protocol planning independent of transport
+emission:
+
+- Same-device receiver posts publish or compute a NoC destination and use
+  local synchronization resources.
+- Cross-device receiver posts send a reverse-route fabric atomic that publishes
+  readiness to the sender.
+- A cross-device sender waits for readiness, combines the host-provided
+  destination DFB base with the destination TENSIX coordinates, and emits one
+  fused fabric payload write plus completion increment on the forward route.
+- The receiver waits on its local completion counter before consuming the DFB
+  block.
+
+The resource planner resolves every synchronization counter to an L1 address
+before transport emission. Transport code consumes that address and never
+interprets a PipeNet id as a semaphore id. Each cross-device transfer uses a
+completion counter from the global semaphore namespace. Same-device completion
+counters use dense local ids unless the selected allocation policy requires
+global storage. If any sender-ready counter uses fabric, all ready-counter
+colors use global storage so one color has one storage kind on every source
+node. Proven receiver/sender manager ownership uses a separate local semaphore
+and generation protocol.
+
+Fabric lowering currently requires computed receiver DFB addresses. The
+sender receives the destination DFB base from host runtime arguments and builds
+the remote NoC address from the destination node coordinates. The
+receiver-published address-table mechanism is limited to the NoC transport.
+After packet injection, TT-Metal fabric routers perform all intermediate
+forwarding; lowering does not generate programs for intermediate devices.
 
 ### TTKernel representation
 
-The POC adds TTKernel operations for the routing-plane manager lifecycle and
-packet submission:
+TTKernel operations represent the routing-plane manager lifecycle and packet
+submission:
 
 - create a `RoutingPlaneConnectionManager` value;
 - open connections from a runtime argument block;
@@ -414,104 +646,6 @@ The send operations take a connection index, destination device id,
 destination mesh id, and destination hop count. The connection index selects
 the injection slot. The active target configuration selects the applicable
 route encoding.
-
-These operations do not use tt-mlir's experimental fabric operations. Those
-operations consume a different runtime argument layout produced by the
-flatbuffer runtime. tt-lang executes through `ttnn.generic_op` and
-`MeshProgramDescriptor`, so its TTKernel operations model the
-`RoutingPlaneConnectionManager` ABI directly.
-
-### Comparison with tt-mlir's experimental manager
-
-Both implementations ultimately use TT-Metal's
-`tt::tt_fabric::RoutingPlaneConnectionManager`. The distinction is where
-topology interpretation and route selection occur. At tt-mlir commit
-[`7a1e911f83`](https://github.com/tenstorrent/tt-mlir/commit/7a1e911f83ff5d380703309732d2a91e70104b07),
-its
-[`experimental::FabricConnectionManager`](https://github.com/tenstorrent/tt-mlir/blob/7a1e911f83ff5d380703309732d2a91e70104b07/include/ttmlir/Target/TTKernel/LLKs/experimental_fabric_api.h#L52-L90)
-wraps the TT-Metal manager with topology state, packet-header ownership, and
-initialization state.
-
-The comparison uses these execution-location markers:
-
-- `[C]`: compiler work performed before invocation;
-- `[H]`: host runtime work performed while constructing program descriptors,
-  before `ttnn.generic_op(...)` submission;
-- `[D]`: worker-kernel work performed on a TENSIX node.
-
-Route-decision work occurs at different locations and frequencies:
-
-```text
-tt-lang
-  [C] Record each logical source/destination relation and assign a route index.
-  [H] Query and cache the outgoing direction for each distinct
-      source/destination pair.
-  [H] Group destinations by direction, configure one injection connection per
-      direction, and write the connection index and target route into runtime
-      args.
-  [D] Once per kernel invocation: open the configured connections.
-  [D] Once per fabric operation: index the selected connection, encode the
-      packet route for the active fabric mode, construct the packet command,
-      and submit it.
-
-tt-mlir experimental API
-  [H] Serialize TopologyInfo and connection descriptors into runtime args.
-  [D] Once per kernel invocation: parse TopologyInfo and open the connections.
-  [D] Once per fabric operation: reconstruct logical positions, calculate the
-      direction and hops, search connection tags, construct the packet command,
-      and submit it.
-```
-
-These markers describe route selection and packet construction. After packet
-submission, TT-Metal's fabric routers perform the actual packet forwarding for
-both approaches.
-
-| Concern | tt-lang | tt-mlir experimental API |
-| --- | --- | --- |
-| C++ object | `[D]` Uses `tt::tt_fabric::RoutingPlaneConnectionManager` directly. | `[D]` Wraps the same manager in `experimental::FabricConnectionManager`. |
-| Route resolution | `[H]` Queries the outgoing direction and eligible links, reuses one connection per direction when its destinations have a common link, and assigns distinct links to concurrent connections. For 1D routing, it validates each logical hop and connects to the adjacent device. `[D]` Packet encoding uses the final destination in 2D mode or the validated hop count in 1D mode. | `[D]` Derives an outgoing direction and hop encoding from destination mesh and device identifiers for each fabric operation. |
-| Transfer operands | `[C]` Routing-plane TTKernel operations represent a connection index, destination device id, destination mesh id, and destination hop count. `[D]` Generated kernels select the applicable route encoding for the active fabric mode. | `[C]` [Fabric TTKernel operations](https://github.com/tenstorrent/tt-mlir/blob/7a1e911f83ff5d380703309732d2a91e70104b07/include/ttmlir/Dialect/TTKernel/IR/TTKernelOps.td#L4227-L4320) represent destination mesh and device identifiers. `[D]` The wrapper resolves them. |
-| Connection selection | `[D]` Generated C++ indexes the selected manager slot directly. | `[D]` The wrapper [searches active connection tags](https://github.com/tenstorrent/tt-mlir/blob/7a1e911f83ff5d380703309732d2a91e70104b07/include/ttmlir/Target/TTKernel/LLKs/experimental_fabric_api.h#L38-L76) for each fabric operation. |
-| Runtime arguments | `[C]` The compiler assigns an explicit base for the connection descriptor block. `[H]` The binder appends connection slots, final destinations, and control-plane-produced connection arguments. `[D]` Connection setup reads them once per kernel invocation. | `[H]` The runtime serializes topology and connection descriptors into a [fixed fabric argument block](https://github.com/tenstorrent/tt-mlir/blob/7a1e911f83ff5d380703309732d2a91e70104b07/include/ttmlir/Target/TTKernel/LLKs/experimental_fabric_api.h#L105-L135). `[D]` Setup parses that block once per kernel invocation. |
-| Topology model | `[C]` Logical TTL domains contain no fabric topology constants. `[H]` Host runtime binding queries TT-Metal for outgoing directions and connections. `[D]` Canonical TT-Metal routing tables determine packet forwarding. | `[H]` The runtime supplies a topology descriptor encoding [two dimensions, four directions, a 32-device limit, and line/ring/mesh/torus categories](https://github.com/tenstorrent/tt-mlir/blob/7a1e911f83ff5d380703309732d2a91e70104b07/include/ttmlir/Target/TTKernel/LLKs/experimental_fabric_topology_info.h#L14-L35). `[D]` Kernel helpers interpret it. |
-| Current operation coverage | Provides the unicast atomic and fused write-plus-atomic operations required by fabric PipeNets. | Also provides arbitrary-length packetization and multicast write and semaphore helpers. |
-| Per-operation kernel work | `[D]` Indexes a preselected connection and encodes either a 2D final destination or a 1D hop count. | `[D]` Performs [logical-position route calculation](https://github.com/tenstorrent/tt-mlir/blob/7a1e911f83ff5d380703309732d2a91e70104b07/include/ttmlir/Target/TTKernel/LLKs/experimental_fabric_1d_routing.h#L36-L108) and connection-tag lookup before constructing the packet command. |
-
-The tt-lang representation is intentionally lower-level at the TTKernel
-boundary. Logical destinations remain available in TTL until host runtime route
-binding, but generated kernels receive only values already validated against
-the active control plane. This avoids embedding the current architecture's
-topology categories in high-level domain attributes. The tt-mlir API currently
-provides broader packet and multicast helpers; equivalent tt-lang functionality
-must preserve host-side route resolution rather than reintroducing an in-kernel
-topology model.
-
-The design comparison has the following implications:
-
-| Goal | tt-lang | tt-mlir experimental API |
-| --- | --- | --- |
-| Architecture portability | `[C]` Logical domains and transfer graphs contain no topology categories or link counts. `[H]` The host runtime obtains connections from the active TT-Metal control plane and writes target routes into kernel runtime arguments. A new route encoding requires corresponding host binding and TTKernel/EmitC lowering support. | `[H]` The runtime serializes explicit line, ring, mesh, and torus models with fixed dimension and device limits. `[D]` The kernel wrapper interprets that model. Supporting a new topology requires changes to the topology descriptor, runtime serialization, and kernel routing helpers. |
-| Extensibility | Logical transfers, route planning, connection reuse, and packet emission are separate components. New route scoring or packet operations do not change domain semantics, but the compiler/runtime argument contract must track TT-Metal API changes. | The wrapper gives TTKernel operations a compact destination-oriented API and already provides broader packetization and multicast helpers. Extending its topology model also increases on-device wrapper state and routing logic. |
-| Kernel performance | `[H]` Direction and eligible-link queries or cache lookups occur before program submission. `[D]` Kernels directly index reused connection slots and encode one target route per operation. Current planning assigns valid links without scoring contention or workload traffic. | `[D]` Destination-oriented operations support runtime-selected destinations within the encoded topology. Each fabric operation reconstructs source and destination logical positions, performs topology-dependent hop calculation, and linearly searches active connection tags. This work is potentially material for small or frequent transfers. |
-| Route optimization | `[H]` A late planner can use global program information when TT-Metal exposes multiple legal route or link candidates. | `[D]` For every fabric operation, kernel helpers calculate the direction and hop encoding from local topology and destination values. This limits access to program-wide traffic information. |
-| Maturity | Generated C++ directly exposes the operations needed to converge on optimized routing-plane kernel sequences. Current packet and multicast coverage is narrower, and comparative performance has not yet been measured. | The experimental API currently covers more unicast, multicast, arbitrary-length write, and semaphore operations, but embeds more current-architecture policy in the kernel support library. |
-
-The tt-mlir routing helpers are `FORCE_INLINE`, which removes function-call
-overhead but does not generally remove the route calculation. `TopologyInfo`
-is populated from runtime arguments, so its topology, dimensions, coordinate
-mapping, and routing directions are not normally compile-time constants. The
-calculation occurs once per fabric operation, before arbitrary-length payload
-packetization, rather than once per packet chunk. Its performance impact has
-not yet been measured.
-
-tt-lang does not use `experimental::FabricConnectionManager` because it
-duplicates TT-Metal control-plane routing in each kernel and embeds a fixed
-topology model. Host route resolution instead supports connection reuse and
-future program-wide route optimization. The runtime-layout difference follows
-from this decision.
-
-tt-mlir's packet splitting, multicast, and semaphore helpers can still be
-adapted to the direct manager without its topology model.
 
 ### EmitC and generated C++
 
@@ -547,17 +681,22 @@ The high-level TTL program does not select this condition.
 
 ### Host runtime route binding
 
-Host runtime route binding is the execution-setup code in
-`python/ttl/kernel_runner.py`. It runs after compiled kernel specifications are
-available and before the invocation calls `ttnn.generic_op(...)`. The binder
-creates one `ProgramDescriptor` per logical device role and places those
-descriptors into a `MeshProgramDescriptor`. For each generated kernel and
-TENSIX node, it determines the active logical routes, resolves remote devices
-with
+`python/ttl/kernel_runner.py` orchestrates execution setup after compiled
+kernel specifications are available and before the invocation calls
+`ttnn.generic_op(...)`. It creates one `ProgramDescriptor` per materialized
+logical device coordinate and places those descriptors into a
+`MeshProgramDescriptor`.
+
+`python/ttl/_src/fabric_target.py` owns target route resolution, complete-plan
+validation, and descriptor mutation. For each generated kernel and TENSIX node,
+it determines the active logical routes, maps remote coordinates with
 `mesh_device.get_fabric_node_id()`, queries forwarding directions and eligible
-links, and groups destinations by direction. It validates a distinct-link
-assignment for all interfering managers before calling
-`ttnn.setup_routing_plane_connection(...)` with explicit link indices.
+links when the target exposes link enumeration, and groups destinations by
+direction. It validates any required link assignment for interfering managers
+before calling `ttnn.setup_routing_plane_connection(...)`. Noninterfering
+managers may leave link selection to the control plane. No
+semaphore, runtime argument, or program descriptor is modified until the
+complete plan is valid.
 
 An operation executes on its complete `device_domain` by default. The
 `mesh_program_placements` operation option can instead select explicit logical
@@ -600,15 +739,15 @@ execute in a device kernel or once per packet.
 
 ### TT-Metal control-plane APIs
 
-tt-lang requires three TTNN bindings during host runtime route binding:
+tt-lang uses these TTNN bindings during host runtime route binding:
 
 - `get_eth_forwarding_direction()` validates a source-destination pair and
   returns its outgoing direction;
 - `get_forwarding_link_indices()` exposes TT-Metal's existing control-plane
-  forwarding-link query to Python;
-- `setup_routing_plane_connection()` validates an explicit link, allocates
-  connection semaphores, adds kernel defines, and appends connection runtime
-  arguments.
+  forwarding-link query to Python when explicit link assignment is needed;
+- `setup_routing_plane_connection()` validates an explicit link when supplied,
+  otherwise selects the control-plane default, allocates connection semaphores,
+  adds kernel defines, and appends connection runtime arguments.
 
 Each `CompiledTTNNKernel` caches forwarding directions and eligible links by
 source and destination `FabricNodeId`. The cache is cleared when the mesh
@@ -622,7 +761,9 @@ links to all other managers. An external manager may reserve a fixed link
 through operation runtime resources; tt-lang validates the reservation but does
 not interpret or modify the external manager's runtime arguments. The complete
 plan is validated before program descriptors, semaphores, or runtime arguments
-are modified.
+are modified. If link enumeration is unavailable, noninterfering managers may
+use the control-plane default; a plan that needs explicit link assignment is
+rejected.
 
 An external scoped manager call inside structured control flow records its
 compiler-proven launch-node domain. Runtime binding resolves each kernel
@@ -702,17 +843,18 @@ pass does not establish correctness without the full-system result.
 
 ### Remaining capability work
 
-The current implementation supports identity-mapped logical devices and
-programs whose concurrent connection requests fit the available forwarding
-links. It validates the complete target-binding plan before modifying program
-descriptors and rejects unsupported resource schedules. General fabric support
-still requires:
+The current implementation supports coordinate-preserving logical-to-TTNN
+placement and programs whose concurrent connection requests fit the available
+forwarding links. It validates the complete target-binding plan before
+modifying program descriptors and rejects unsupported resource schedules.
+General fabric support still requires:
 
-- explicit target binding from each logical `DeviceRef` to a
-  `MeshCoordinate`;
+- a language-level physical-mesh placement facility that binds each logical
+  `DeviceRef` to a `MeshCoordinate` and validates requested adjacency;
 - target-level router aggregation and connection reuse beyond the compiler's
   per-node manager intervals, including any transport-specific barriers;
-- multicast lowering for graph transfers with device-range destinations;
+- tt-lang lowering and runtime binding for graph transfers with device-range
+  destinations using TT-Metal fabric multicast;
 - a receiver-address publication protocol for schedules that cannot prove
   computed receiver addresses.
 
@@ -721,5 +863,5 @@ still requires:
 - Jointly score legal routes and links by hop count, availability, estimated
   contention, connection reuse, and barrier cost.
 - Measure destination-table decoding, host connection setup, connection reuse,
-  packetization, and worker placement against specialized communication
+  packetization, and node placement against specialized communication
   kernels.
