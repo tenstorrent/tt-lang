@@ -1279,8 +1279,6 @@ PipeGraph::proveReceiverProducerStreams(PipeGraphAnalysisState &analysisState) {
     };
     LogicalResult result = success();
     llvm::DenseMap<Operation *, SmallVector<Operation *>> pushesByPost;
-    bool pushOutsidePostContext = false;
-
     forEachReceiverDFBPhysicalStreamEvent(
         analysisState.pushesByPhysicalStream, receiverDFB,
         [&](CBPushOp pushOp) {
@@ -1376,9 +1374,9 @@ PipeGraph::proveReceiverProducerStreams(PipeGraphAnalysisState &analysisState) {
             // explicitly.
             bool contextsKnownAndEqual =
                 postContext && pushContext && *postContext == *pushContext;
-            if (!contextsKnownAndEqual &&
-                *maybePushedBlocks != physicalBlockCount) {
-              pushOutsidePostContext = true;
+            if (!contextsKnownAndEqual) {
+              rejectBoth("push does not execute in the control context of its "
+                         "receiver post");
             }
             if (!hasMatchingReceiveWaitBeforePush(
                     postOp, pushOp, analysisState.receiveWaitsByPost,
@@ -1426,14 +1424,6 @@ PipeGraph::proveReceiverProducerStreams(PipeGraphAnalysisState &analysisState) {
         break;
       }
     }
-    // The sender advances its slot counter once per post, so a push that can
-    // execute without its post leaves the counter behind the receiver's write
-    // pointer unless every push returns the pointer to the same slot.
-    if (pushOutsidePostContext) {
-      rejectBoth("push does not execute in the control context of its "
-                 "receiver post");
-    }
-
     if (pipeOnlyValid) {
       node.hasProvenPipeOnlyProducerStream = true;
       node.pipeOnlyProducerStreamFailureReason.clear();
