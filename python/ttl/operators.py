@@ -19,6 +19,7 @@ from ttl.ir import (
     IntegerAttr,
     IntegerType,
     RankedTensorType,
+    ShapedType,
     Type,
 )
 
@@ -619,6 +620,29 @@ def _is_block(value) -> bool:
     return value.owner.name == "ttl.attach_cb"
 
 
+def _is_block_subview(value) -> bool:
+    owner = getattr(value, "owner", None)
+    return getattr(owner, "name", None) == "tensor.extract_slice" and _is_block(
+        owner.operands[0]
+    )
+
+
+def _is_block_or_subview(value) -> bool:
+    return _is_block(value) or _is_block_subview(value)
+
+
+def _get_cb_from_block_or_subview(value):
+    if _is_block_subview(value):
+        value = value.owner.operands[0]
+    return _get_cb_from_block(value)
+
+
+def _get_block_transfer_shape(value):
+    if not _is_block_or_subview(value):
+        raise ValueError("expected a DFB block or subview")
+    return list(value.type.shape)
+
+
 def _is_inactive_guarded_dfb_value(value) -> bool:
     owner = getattr(value, "owner", None)
     return (
@@ -879,15 +903,21 @@ def _copy_byte_count_attr(byte_count, ctx):
 
 
 @syntax("copy")
-def copy(src, dst, *, byte_count=None) -> Union[CopyTransferHandler, ReceiveRequest]:
+def copy(
+    src, dst, *, byte_count=None, shape=None
+) -> Union[CopyTransferHandler, ReceiveRequest]:
     """
     Initiate an asynchronous data transfer using ttl.copy.
 
     Args:
-        src: Source tensor/slice (for reads), block (for writes), or Pipe (for pipe receive)
+        src: Source tensor/slice (for reads), block or block subview (for
+            writes), or Pipe (for pipe receive)
         dst: Destination block (for reads), tensor/slice (for writes), or Pipe (for pipe send)
         byte_count: Positive static byte count for DFB block-to-block and pipe
             transfers. Tensor-slice transfers always copy complete tiles.
+        shape: Static tile shape of an inter-device, point-to-point
+            pipe-to-DRAM tensor-slice receive. The argument is required because
+            tensor subscripts retain start indices but not range extents.
 
     Returns:
         ReceiveRequest for a PipeNet receive; CopyTransferHandler otherwise.
@@ -897,7 +927,11 @@ def copy(src, dst, *, byte_count=None) -> Union[CopyTransferHandler, ReceiveRequ
 
     For pipe transfers:
         ttl.copy(block, pipe) - send from DFB block to pipe
+        ttl.copy(block_subview, pipe) - send a contiguous DFB block region to
+            pipe
         ttl.copy(pipe, block) - receive from pipe to DFB block
+        ttl.copy(pipe, tensor[r0:r1, c0:c1], shape=(r1-r0, c1-c0)) - receive
+            directly into a DRAM tensor region
     """
     # Check for pipe operands first
     src_is_pipe = _is_pipe(src)
@@ -910,35 +944,63 @@ def copy(src, dst, *, byte_count=None) -> Union[CopyTransferHandler, ReceiveRequ
 
         if dst_is_pipe:
             # DFB -> Pipe send.
-            if not _is_block(src):
+            if not _is_block_or_subview(src):
                 raise ValueError(
-                    "copy() to pipe requires block src (from cb.reserve() or cb.wait())"
+                    "copy() to pipe requires a block or block subview source"
                 )
-            src_cb = _get_cb_from_block(src)
+            if shape is not None:
+                raise ValueError(
+                    "copy() shape is supported only for pipe-to-tensor receives"
+                )
             pipe_val = _get_pipe_mlir_value(dst)
-            ctx = src_cb.type.context
+            ctx = src.type.context
             xf_type = Type.parse("!ttl.transfer_handle<write>", ctx)
             return ttl.copy(
                 xf_type,
-                src_cb,
+                src,
                 pipe_val,
                 byte_count=_copy_byte_count_attr(byte_count, ctx),
             )
         else:
-            # Pipe -> DFB receive. The sender writes into the receiver-owned block.
-            if not _is_block(dst):
+            # A pipe receive writes either a reserved DFB block or an explicitly
+            # sized DRAM tensor region owned by the receiver.
+            if _is_block(dst):
+                if shape is not None:
+                    raise ValueError(
+                        "copy() shape is supported only for pipe-to-tensor receives"
+                    )
+                destination = dst
+            elif isinstance(dst, tuple):
+                if byte_count is not None:
+                    raise ValueError(
+                        "copy() byte_count is not supported for pipe-to-tensor receives"
+                    )
+                if shape is None:
+                    raise ValueError(
+                        "copy() from pipe to tensor subscript requires shape"
+                    )
+                tile_shape = tuple(_get_constant_int(dimension) for dimension in shape)
+                if not tile_shape or any(dimension <= 0 for dimension in tile_shape):
+                    raise ValueError(
+                        f"copy() pipe-to-tensor shape must contain positive dimensions, got {tile_shape}"
+                    )
+                destination = _process_tensor_subscript(dst, tile_shape)
+            else:
                 raise ValueError(
-                    "copy() from pipe requires block dst (from cb.reserve() or cb.wait())"
+                    "copy() from pipe requires a reserved block or tensor subscript destination"
                 )
             pipe_val = _get_pipe_mlir_value(src)
-            ctx = dst.type.context
+            ctx = destination.type.context
             xf_type = ttl.ReceiveRequestType.get(ctx)
             return ttl.copy(
                 xf_type,
                 pipe_val,
-                dst,
+                destination,
                 byte_count=_copy_byte_count_attr(byte_count, ctx),
             )
+
+    if shape is not None:
+        raise ValueError("copy() shape is supported only for pipe-to-tensor receives")
 
     src_is_block = _is_block(src)
     dst_is_block = _is_block(dst)
@@ -968,13 +1030,13 @@ def copy(src, dst, *, byte_count=None) -> Union[CopyTransferHandler, ReceiveRequ
 
     # Identify the block argument to get CB shape
     if dst_is_subscript:
-        if not _is_block(src):
+        if not _is_block_or_subview(src):
             raise ValueError("copy() with tensor subscript dst requires block src")
-        cb_shape = _get_cb_shape(_get_cb_from_block(src))
+        cb_shape = _get_block_transfer_shape(src)
     elif src_is_subscript:
-        if not _is_block(dst):
+        if not _is_block_or_subview(dst):
             raise ValueError("copy() with tensor subscript src requires block dst")
-        cb_shape = _get_cb_shape(_get_cb_from_block(dst))
+        cb_shape = _get_block_transfer_shape(dst)
     else:
         raise ValueError(
             "copy() requires at least one tensor subscript argument "
@@ -990,12 +1052,12 @@ def copy(src, dst, *, byte_count=None) -> Union[CopyTransferHandler, ReceiveRequ
     ctx = src.type.context
 
     # Check if src/dst is a block (result of cb.reserve()/cb.wait())
-    src_is_block = _is_block(src)
-    dst_is_block = _is_block(dst)
+    src_is_block = _is_block_or_subview(src)
+    dst_is_block = _is_block_or_subview(dst)
 
     # Extract CB from block if needed
-    src_cb = _get_cb_from_block(src) if src_is_block else None
-    dst_cb = _get_cb_from_block(dst) if dst_is_block else None
+    src_cb = _get_cb_from_block_or_subview(src) if src_is_block else None
+    dst_cb = _get_cb_from_block_or_subview(dst) if dst_is_block else None
 
     if dst_is_block and not src_is_block:
         # Read: device tensor/slice -> block (CB)
@@ -1006,7 +1068,7 @@ def copy(src, dst, *, byte_count=None) -> Union[CopyTransferHandler, ReceiveRequ
             src.type.element_type, dst_cb_ty.element_type, "tensor", "CB"
         )
         xf_type = Type.parse("!ttl.transfer_handle<read>", ctx)
-        return ttl.copy(xf_type, src, dst_cb)
+        return ttl.copy(xf_type, src, dst if _is_block_subview(dst) else dst_cb)
     elif src_is_block and not dst_is_block:
         # Write: block (CB) -> device tensor/slice
         src_cb_ty = ttl.CircularBufferType.maybe_downcast(src_cb.type)
@@ -1016,7 +1078,7 @@ def copy(src, dst, *, byte_count=None) -> Union[CopyTransferHandler, ReceiveRequ
             dst.type.element_type, src_cb_ty.element_type, "tensor", "CB"
         )
         xf_type = Type.parse("!ttl.transfer_handle<write>", ctx)
-        return ttl.copy(xf_type, src_cb, dst)
+        return ttl.copy(xf_type, src if _is_block_subview(src) else src_cb, dst)
     else:
         raise ValueError(
             f"copy() requires exactly one block argument (result of cb.reserve() or cb.wait()). "
@@ -1306,6 +1368,69 @@ def unsqueeze(input: TensorBlock, *, dims: List[int]) -> TensorBlock:
     reassociation = _singleton_reassociation(result_rank, norm_dims)
     return tensor.ExpandShapeOp(
         result_type, input, reassociation, [], result_shape
+    ).result
+
+
+@syntax("subview")
+def subview(input: TensorBlock, *, offsets, shape) -> TensorBlock:
+    """Return a statically shaped rectangular view of an acquired DFB block."""
+    if not _is_block(input):
+        raise ValueError(
+            "subview input must be a block acquired from reserve() or wait()"
+        )
+    if not isinstance(input.type, RankedTensorType):
+        raise ValueError(f"subview input must be a ranked tensor, got {input.type}")
+
+    source_shape = list(input.type.shape)
+    static_shape = [_get_constant_int(size) for size in shape]
+    if len(offsets) != len(source_shape):
+        raise ValueError(
+            f"subview offsets contain {len(offsets)} dimensions; "
+            f"expected {len(source_shape)}"
+        )
+    if len(static_shape) != len(source_shape):
+        raise ValueError(
+            f"subview shape contains {len(static_shape)} dimensions; "
+            f"expected {len(source_shape)}"
+        )
+    dynamic_offsets = []
+    static_offsets = []
+    for dimension, (offset, size, extent) in enumerate(
+        zip(offsets, static_shape, source_shape)
+    ):
+        if size <= 0:
+            raise ValueError(
+                f"subview size {size} in dimension {dimension} must be positive"
+            )
+        constant_offset = get_constant_int_value(offset)
+        if constant_offset is None:
+            if not hasattr(offset, "type") or not isinstance(offset.type, IndexType):
+                raise ValueError(
+                    "subview offsets must be integers or index values; "
+                    f"dimension {dimension} got {type(offset).__name__}"
+                )
+            dynamic_offsets.append(offset)
+            static_offsets.append(ShapedType.get_dynamic_size())
+            continue
+        if constant_offset < 0 or constant_offset + size > extent:
+            raise ValueError(
+                f"subview [{constant_offset}, {constant_offset + size}) is "
+                f"outside dimension {dimension} extent {extent}"
+            )
+        static_offsets.append(constant_offset)
+
+    result_type = RankedTensorType.get(
+        static_shape, input.type.element_type, input.type.encoding
+    )
+    return tensor.ExtractSliceOp(
+        result_type,
+        input,
+        offsets=dynamic_offsets,
+        sizes=[],
+        strides=[],
+        static_offsets=static_offsets,
+        static_sizes=static_shape,
+        static_strides=[1] * len(source_shape),
     ).result
 
 
@@ -1833,6 +1958,7 @@ __all__ = [
     "grid_size",
     "signpost",
     "matmul",
+    "subview",
     "fill",
     "typecast",
     "exp",

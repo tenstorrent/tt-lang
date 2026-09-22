@@ -501,33 +501,6 @@ static Value getCommonRuntimeArg(unsigned argIdx, Location loc,
       .getResult();
 }
 
-/// Build a TensorAccessor using tt-metal's constexpr CTA offset chaining.
-///
-/// The CTA offset for tensor N is computed at device compile time via
-/// get_tensor_accessor_args_cta_offset<N, baseCTA>(). This chains through
-/// all preceding tensors' configs to find the correct offset, regardless of
-/// whether each tensor is interleaved (2 CTAs) or sharded (variable CTAs).
-static Value buildTensorAccessor(Location loc,
-                                 ConversionPatternRewriter &rewriter,
-                                 int32_t baseCTA, int32_t globalTensorIdx,
-                                 int32_t crtaIndex, Value bankBase,
-                                 Value pageSize = Value()) {
-  std::string ctaExpr =
-      "tensor_accessor::detail::get_tensor_accessor_args_cta_offset<" +
-      std::to_string(globalTensorIdx) + ", " + std::to_string(baseCTA) + ">()";
-
-  // Verifier requires cta_base even when cta_expr is set; EmitC ignores it.
-  auto dummyCTA = arith::ConstantIntOp::create(rewriter, loc, 0, 32);
-  auto crtaConst = arith::ConstantIntOp::create(rewriter, loc, crtaIndex, 32);
-  auto args = ttk::TensorAccessorArgsOp::create(
-      rewriter, loc, dummyCTA.getResult(), crtaConst.getResult(),
-      /*prev_args=*/Value(), rewriter.getStringAttr(ctaExpr),
-      /*crta_expr=*/nullptr);
-  auto accessor = ttk::TensorAccessorOp::create(rewriter, loc, args.getResult(),
-                                                bankBase, pageSize);
-  return accessor.getResult();
-}
-
 template <typename FuncLike>
 static bool eraseUnusedArguments(FuncLike funcLike) {
   if (funcLike.getNumArguments() == 0) {
@@ -974,9 +947,9 @@ static Value materializeTensorAccessor(Value tensor, Value bankBase,
   auto pageSize =
       arith::ConstantIntOp::create(rewriter, loc, info.pageSizeBytes, 32);
 
-  return buildTensorAccessor(loc, rewriter, info.baseCTA, info.globalTensorIdx,
-                             static_cast<int32_t>(info.argIdx), bankBase,
-                             pageSize);
+  return buildDistributedTensorAccessor(
+      loc, rewriter, info.baseCTA, info.globalTensorIdx,
+      static_cast<int32_t>(info.argIdx), bankBase, pageSize);
 }
 
 /// Extract tile grid shape from a Value with a static ranked tensor type.
@@ -1174,6 +1147,9 @@ static LogicalResult lowerTensorCBCopy(
         cbTileIdxOp->setAttr(kExpandLinearizeIndexAttr,
                              loopBuilder.getUnitAttr());
         Value cbTileIdx = cbTileIdxOp.getResult();
+        Value dfbEndpoint = isRead ? op.getDst() : op.getSrc();
+        cbTileIdx =
+            utils::addSliceOffset(dfbEndpoint, cbTileIdx, loopBuilder, bodyLoc);
 
         // Compute CB address: cbPtr + cbTileIdx * pageSize
         Value byteOffset =
@@ -1302,35 +1278,36 @@ struct CopyLowering : OpConversionPattern<CopyOp> {
       return lowerDFBToDFBCopy(op, rewriter, *typeConverter);
     }
 
-    // Non-pipe transfers: validate exactly one TensorSlice and one CB.
-    if (!((srcIsSlice && dstIsCB) || (srcIsCB && dstIsSlice))) {
+    // Non-pipe transfers require one tensor slice and one DFB endpoint.
+    if (!((srcIsSlice && (dstIsCB || dstIsDFBAttachedTensor)) ||
+          ((srcIsCB || srcIsDFBAttachedTensor) && dstIsSlice))) {
       return rewriter.notifyMatchFailure(op, [&](Diagnostic &diag) {
-        diag << "ttl.copy requires one tensor_slice and one circular_buffer, "
+        diag << "ttl.copy requires one tensor_slice and one DFB endpoint, "
              << "got src=" << src.getType() << " dst=" << dst.getType();
       });
     }
 
-    // TensorSlice -> CB: read tiles from tensor into circular buffer.
-    if (srcIsSlice && dstIsCB) {
+    // TensorSlice -> DFB: read tiles from tensor into DFB storage.
+    if (srcIsSlice && (dstIsCB || dstIsDFBAttachedTensor)) {
       auto sliceOp = src.getDefiningOp<TensorSliceOp>();
       if (!sliceOp) {
         return rewriter.notifyMatchFailure(
             op, "tensor_slice source must come from ttl.tensor_slice op");
       }
-      return lowerTensorCBCopy(op, sliceOp, adaptor.getDst(),
-                               NocCopyDirection::Read,
+      Value dstDFB = dstIsCB ? adaptor.getDst() : getAttachedCB(dst);
+      return lowerTensorCBCopy(op, sliceOp, dstDFB, NocCopyDirection::Read,
                                pipeTransportPlan.lookupStorageAccess(op),
                                slotCounters, rewriter, *typeConverter);
     }
 
-    // CB -> TensorSlice: write tiles from circular buffer to tensor.
+    // DFB -> TensorSlice: write tiles from DFB storage to tensor.
     auto sliceOp = dst.getDefiningOp<TensorSliceOp>();
     if (!sliceOp) {
       return rewriter.notifyMatchFailure(
           op, "tensor_slice destination must come from ttl.tensor_slice op");
     }
-    return lowerTensorCBCopy(op, sliceOp, adaptor.getSrc(),
-                             NocCopyDirection::Write,
+    Value srcDFB = srcIsCB ? adaptor.getSrc() : getAttachedCB(src);
+    return lowerTensorCBCopy(op, sliceOp, srcDFB, NocCopyDirection::Write,
                              pipeTransportPlan.lookupStorageAccess(op),
                              slotCounters, rewriter, *typeConverter);
   }
@@ -1392,14 +1369,18 @@ struct PipeTransferSendLowering : OpConversionPattern<PipeTransferSendOp> {
         fabricRuntime(fabricRuntime) {}
 
   LogicalResult
-  matchAndRewrite(PipeTransferSendOp op, OpAdaptor adaptor,
+  matchAndRewrite(PipeTransferSendOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
     if (pipeResourcePlan.staticallyInactiveOps.contains(op.getOperation())) {
       lowerInactivePipeTransferSend(op, rewriter);
       return success();
     }
+    Value sourceDFB = isa<CircularBufferType>(op.getSrc().getType())
+                          ? op.getSrc()
+                          : getAttachedCB(op.getSrc());
+    assert(sourceDFB && "verified pipe send must have a source DFB");
     return lowerPipeTransferSend(
-        op, adaptor.getSrc(), pipeModulePlan.getTransferPlan(op.getOperation()),
+        op, sourceDFB, pipeModulePlan.getTransferPlan(op.getOperation()),
         pipeModulePlan.getTransportPlan(), pipeResourcePlan, pipeCapacityPlan,
         senderCapacityCounters, fabricReadyCounters, computedAddressCounters,
         fabricRuntime, rewriter);
@@ -1940,9 +1921,9 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
       Value accessor;
       if (tensor.ctaInfo) {
         auto [baseCTA, globalTensorIdx] = *tensor.ctaInfo;
-        accessor =
-            buildTensorAccessor(location, rewriter, baseCTA, globalTensorIdx,
-                                static_cast<int32_t>(tensor.argIdx), bankBase);
+        accessor = buildDistributedTensorAccessor(
+            location, rewriter, baseCTA, globalTensorIdx,
+            static_cast<int32_t>(tensor.argIdx), bankBase);
       } else {
         accessor =
             ttk::LocalTensorAccessorOp::create(rewriter, location, bankBase)
@@ -2528,6 +2509,9 @@ lowerTTLOpsToTTKernel(ModuleOp mod, MLIRContext &ctx,
                            ? PipeGraphLaunchDomainMode::WhenPipesPresent
                            : PipeGraphLaunchDomainMode::Required);
   if (failed(pipeGraphOrErr)) {
+    return failure();
+  }
+  if (failed(preparePipeTensorDestinationRuntimeArguments(*pipeGraphOrErr))) {
     return failure();
   }
 
