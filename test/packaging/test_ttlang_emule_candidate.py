@@ -217,6 +217,6 @@ def test_candidate_installs_once_and_runs_reference_programs_without_rebuilding(
         "run:0:--backend=emule examples/compiler_only_external_call.py",
         "run:0:--backend=emule examples/eltwise_add.py",
         "run:0:--backend=emule examples/single_node_matmul.py",
-        "run:0:--backend=emule examples/spec/block/elementwise_broadcast_reduce.py",
+        "run:0:--backend=emule examples/broadcast.py",
         "run:0:--backend=emule examples/matmul_acc.py",
     ]

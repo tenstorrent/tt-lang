@@ -119,8 +119,7 @@ jobs:
         run: |
           ./bin/tt-lang-sim --backend=emule examples/eltwise_add.py
           ./bin/tt-lang-sim --backend=emule examples/single_node_matmul.py
-          ./bin/tt-lang-sim --backend=emule \
-            examples/spec/block/elementwise_broadcast_reduce.py
+          ./bin/tt-lang-sim --backend=emule examples/broadcast.py
           ./bin/tt-lang-sim --backend=emule examples/matmul_acc.py
 
       - name: Capture exact runtime provenance
