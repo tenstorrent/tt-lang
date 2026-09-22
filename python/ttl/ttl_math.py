@@ -17,10 +17,12 @@ from .operators import (
     fill,
     reduce_max,
     reduce_sum,
+    topk_local_sort,
+    topk_merge,
+    topk_rebuild,
     transpose,
     typecast,
 )
-
 
 __all__ = [
     "broadcast",
@@ -28,6 +30,9 @@ __all__ = [
     "fill",
     "reduce_max",
     "reduce_sum",
+    "topk_local_sort",
+    "topk_merge",
+    "topk_rebuild",
     "transpose",
     "typecast",
     *_generated_all,

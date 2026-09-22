@@ -455,54 +455,263 @@ def TTKernel_ExperimentalMatmulBlockOp : TTKernel_FPUOp<"experimental.matmul_blo
                          I32:$in1_k_stride);
 }
 
+// Template parameters shared by the TopK compute ops. `fp32_dest_acc_en` is
+// first so the following default-valued attributes can take C++ defaults.
+// Absent `fp32_dest_acc_en` lowers to DST_ACCUM_MODE when a later template
+// argument is printed. `tag_bits` configures topk_tile_init; only topk_merge
+// also takes it as a call template parameter. `largest` is the kernel-wide
+// sort polarity; it is not a stage template parameter and only selects the
+// slab helpers that TTKernelInsertInits emits around the stages.
+defvar TTKernel_TopkModeAttrs = (ins
+    OptionalAttr<BoolAttr>:$fp32_dest_acc_en,
+    DefaultValuedAttr<BoolAttr, "false">:$stable_sort,
+    DefaultValuedAttr<BoolAttr, "false">:$fused,
+    DefaultValuedAttr<BoolAttr, "false">:$rank_stamped,
+    DefaultValuedAttr<TTKernel_TopkTieOrderAttr,
+        "::mlir::tt::ttkernel::TopkTieOrder::Unset">:$tie_order,
+    DefaultValuedAttr<I32Attr, "16">:$tag_bits,
+    DefaultValuedAttr<BoolAttr, "true">:$largest);
+
 def TTKernel_TopkTileInitOp : TTKernel_InitOp<"topk_tile_init"> {
     let summary = "TopK tile init function";
     let description = [{
       Initialization for the topk operations. Must be called before
-      topk_local_sort/topk_merge/topk_rebuild.
+      topk_local_sort, topk_merge, and topk_rebuild.
+
+      Maps to
+      `topk_tile_init<bool fused, bool rank_stamped, uint32_t tag_bits>()`.
+      Omitted attributes keep the metal defaults and are not printed.
+      `fused` and `rank_stamped` are mutually exclusive. `tag_bits` is 16
+      unless `rank_stamped` is set, in which case it is in the range [6, 16].
     }];
+
+    let arguments = (ins
+      DefaultValuedAttr<BoolAttr, "false">:$fused,
+      DefaultValuedAttr<BoolAttr, "false">:$rank_stamped,
+      DefaultValuedAttr<I32Attr, "16">:$tag_bits);
 
     let assemblyFormat = [{
       `(` `)` attr-dict `:` functional-type(operands, results)
     }];
+
+    let hasVerifier = 1;
 }
 
-def TTKernel_TopkLocalSortOp : TTKernel_SFPUOp<"topk_local_sort"> {
+def TTKernel_TopkLocalSortOp
+    : TTKernel_SFPUOp<"topk_local_sort", [AttrSizedOperandSegments]> {
     let summary = "TopK local sort operation";
     let description = [{
-      Bitonic local-sort stage of TopK over the value and index tiles pre-loaded in DST. Compute engine only.
+      Bitonic local-sort stage of TopK over the value and index tiles
+      pre-loaded in DST. Compute engine only.
+
+      Optional `i_end_step` and `i_start_step` map to the metal arguments of
+      the same name and default to 0 when omitted. `i_start_step` requires
+      `i_end_step`. The attributes map to
+      `topk_local_sort<stable_sort, is_fp32_dest_acc_en, fused, rank_stamped,
+      tie_order>`.
+      `tag_bits` configures `topk_tile_init` and is not a local-sort template
+      parameter. Mode constraints match the metal static assertions.
     }];
 
-    let arguments = (ins IndexLike:$idst, I32:$idir, I32:$i_end_phase, I32:$i_start_phase);
+    let arguments = !con((ins IndexLike:$idst, I32:$idir, I32:$i_end_phase,
+                              I32:$i_start_phase, Optional<I32>:$i_end_step,
+                              Optional<I32>:$i_start_step),
+                         TTKernel_TopkModeAttrs);
+
+    let builders = [
+      OpBuilder<(ins "::mlir::Value":$idst, "::mlir::Value":$idir,
+                     "::mlir::Value":$i_end_phase,
+                     "::mlir::Value":$i_start_phase), [{
+        build($_builder, $_state, idst, idir, i_end_phase, i_start_phase,
+              /*i_end_step=*/::mlir::Value(),
+              /*i_start_step=*/::mlir::Value(),
+              /*fp32_dest_acc_en=*/::mlir::BoolAttr(),
+              /*stable_sort=*/false, /*fused=*/false, /*rank_stamped=*/false,
+              /*tie_order=*/::mlir::tt::ttkernel::TopkTieOrder::Unset,
+              /*tag_bits=*/16, /*largest=*/true);
+      }]>
+    ];
 
     let assemblyFormat = [{
-      `(` $idst `,` $idir `,` $i_end_phase `,` $i_start_phase `)` attr-dict `:` functional-type(operands, results)
+      `(` $idst `,` $idir `,` $i_end_phase `,` $i_start_phase
+          (`,` $i_end_step^)? (`,` $i_start_step^)? `)`
+      attr-dict `:` functional-type(operands, results)
     }];
+
+    let hasVerifier = 1;
 }
 
 def TTKernel_TopkMergeOp : TTKernel_SFPUOp<"topk_merge"> {
     let summary = "TopK merge operation";
     let description = [{
-      Merge stage of TopK combining length-K subsequences in DST. Compute engine only.
+      Merge stage of TopK combining length-K subsequences in DST. Compute
+      engine only.
+
+      Attributes map to
+      `topk_merge<idir, stable_sort, is_fp32_dest_acc_en, fused, rank_stamped,
+      tie_order, tag_bits>`.
+      `direction` is the `idir` template parameter. Mode constraints match
+      `ttkernel.topk_local_sort`.
     }];
 
-    let arguments = (ins IndexLike:$idst, I32:$m_iter, I32:$k);
+    let arguments = !con((ins IndexLike:$idst, I32:$m_iter, I32:$k),
+                         !con(TTKernel_TopkModeAttrs,
+                              (ins
+                               DefaultValuedAttr<BoolAttr, "false">:$direction)));
+
+    let builders = [
+      OpBuilder<(ins "::mlir::Value":$idst, "::mlir::Value":$m_iter,
+                     "::mlir::Value":$k), [{
+        build($_builder, $_state, idst, m_iter, k,
+              /*fp32_dest_acc_en=*/::mlir::BoolAttr(),
+              /*stable_sort=*/false, /*fused=*/false, /*rank_stamped=*/false,
+              /*tie_order=*/::mlir::tt::ttkernel::TopkTieOrder::Unset,
+              /*tag_bits=*/16, /*largest=*/true, /*direction=*/false);
+      }]>
+    ];
 
     let assemblyFormat = [{
       `(` $idst `,` $m_iter `,` $k `)` attr-dict `:` functional-type(operands, results)
     }];
+
+    let hasVerifier = 1;
 }
 
 def TTKernel_TopkRebuildOp : TTKernel_SFPUOp<"topk_rebuild"> {
     let summary = "TopK rebuild operation";
     let description = [{
-      Rebuild stage of TopK re-sorting the surviving subsequences in DST. Compute engine only.
+      Rebuild stage of TopK re-sorting the surviving subsequences in DST.
+      Compute engine only.
+
+      Attributes map to
+      `topk_rebuild<stable_sort, is_fp32_dest_acc_en, fused, rank_stamped,
+      tie_order>`.
+      `tag_bits` configures `topk_tile_init` and is not a rebuild template
+      parameter. Mode constraints match `ttkernel.topk_local_sort`.
     }];
 
-    let arguments = (ins IndexLike:$idst, I32:$idir, I32:$m_iter, I32:$k, I32:$logk, I32:$skip_second);
+    let arguments = !con((ins IndexLike:$idst, I32:$idir, I32:$m_iter, I32:$k,
+                              I32:$logk, I32:$skip_second),
+                         TTKernel_TopkModeAttrs);
+
+    let builders = [
+      OpBuilder<(ins "::mlir::Value":$idst, "::mlir::Value":$idir,
+                     "::mlir::Value":$m_iter, "::mlir::Value":$k,
+                     "::mlir::Value":$logk, "::mlir::Value":$skip_second), [{
+        build($_builder, $_state, idst, idir, m_iter, k, logk, skip_second,
+              /*fp32_dest_acc_en=*/::mlir::BoolAttr(),
+              /*stable_sort=*/false, /*fused=*/false, /*rank_stamped=*/false,
+              /*tie_order=*/::mlir::tt::ttkernel::TopkTieOrder::Unset,
+              /*tag_bits=*/16, /*largest=*/true);
+      }]>
+    ];
 
     let assemblyFormat = [{
       `(` $idst `,` $idir `,` $m_iter `,` $k `,` $logk `,` $skip_second `)` attr-dict `:` functional-type(operands, results)
+    }];
+
+    let hasVerifier = 1;
+}
+
+// Slab helpers required by the TopK modes. TTKernelInsertInits emits them
+// around the stage ops from the stage mode attributes; they have no TTL
+// counterpart and are never written by hand.
+
+def TTKernel_TopkFuseTileOp : TTKernel_SFPUOp<"topk_fuse_tile"> {
+    let summary = "Pack a two-tile TopK slab into fused sort keys";
+    let description = [{
+      Packs the value and index tiles of one DST slab into fused sort keys.
+      Compute engine only. Requires 32-bit destination accumulation.
+
+      Maps to `topk_fuse_tile<bool largest>(uint32_t idst)`.
+    }];
+
+    let arguments = (ins IndexLike:$idst,
+                         DefaultValuedAttr<BoolAttr, "true">:$largest);
+
+    let assemblyFormat = [{
+      `(` $idst `)` attr-dict `:` functional-type(operands, results)
+    }];
+}
+
+def TTKernel_TopkDefuseTileOp : TTKernel_SFPUOp<"topk_defuse_tile"> {
+    let summary = "Unpack fused TopK keys into value and index tiles";
+    let description = [{
+      Splits packed TopK keys back into value and index tiles. Compute engine
+      only. `num_tiles` is 1 or 2. Requires 32-bit destination accumulation.
+
+      Maps to `topk_defuse_tile<bool largest>(uint32_t idst, uint32_t num_tiles)`.
+    }];
+
+    let arguments = (ins IndexLike:$idst, I32:$num_tiles,
+                         DefaultValuedAttr<BoolAttr, "true">:$largest);
+
+    let assemblyFormat = [{
+      `(` $idst `,` $num_tiles `)` attr-dict `:` functional-type(operands, results)
+    }];
+
+    let hasVerifier = 1;
+}
+
+def TTKernel_TopkStampLocalPositionsOp
+    : TTKernel_SFPUOp<"topk_stamp_local_positions"> {
+    let summary = "Stamp local rank tags onto a TopK value slab";
+    let description = [{
+      Writes local rank tags into a two-tile value slab. Compute engine only.
+      Requires 32-bit destination accumulation and the rank-stamped init.
+      `tag_bits` is in the range [6, 16].
+
+      Maps to `topk_stamp_local_positions<bool largest, uint32_t tag_bits>(uint32_t idst)`.
+    }];
+
+    let arguments = (ins IndexLike:$idst,
+                         DefaultValuedAttr<BoolAttr, "true">:$largest,
+                         DefaultValuedAttr<I32Attr, "16">:$tag_bits);
+
+    let assemblyFormat = [{
+      `(` $idst `)` attr-dict `:` functional-type(operands, results)
+    }];
+
+    let hasVerifier = 1;
+}
+
+def TTKernel_TopkStripRankTagsOp : TTKernel_SFPUOp<"topk_strip_rank_tags"> {
+    let summary = "Clear rank tags from one TopK value tile";
+    let description = [{
+      Clears rank tags from one value tile. Compute engine only. Requires
+      32-bit destination accumulation. An explicit `fp32_dest_acc_en = false`
+      is rejected. `tag_bits` is in the range [6, 16].
+
+      Maps to `topk_strip_rank_tags<uint32_t tag_bits, bool is_fp32_dest_acc_en>(uint32_t idst)`.
+    }];
+
+    let arguments = (ins IndexLike:$idst,
+                         OptionalAttr<BoolAttr>:$fp32_dest_acc_en,
+                         DefaultValuedAttr<I32Attr, "16">:$tag_bits);
+
+    let assemblyFormat = [{
+      `(` $idst `)` attr-dict `:` functional-type(operands, results)
+    }];
+
+    let hasVerifier = 1;
+}
+
+def TTKernel_TopkCanonicalizeNegzeroValuesOp
+    : TTKernel_SFPUOp<"topk_canonicalize_negzero_values"> {
+    let summary = "Fold negative zero in a stable TopK value slab";
+    let description = [{
+      Folds -0.0 into +0.0 in a two-tile value slab before a stable local
+      sort. Compute engine only. The call is a no-op unless values are an
+      fp32 family in 32-bit destination registers.
+
+      Maps to `topk_canonicalize_negzero_values<bool is_fp32_dest_acc_en>(uint32_t idst)`.
+    }];
+
+    let arguments = (ins IndexLike:$idst,
+                         OptionalAttr<BoolAttr>:$fp32_dest_acc_en);
+
+    let assemblyFormat = [{
+      `(` $idst `)` attr-dict `:` functional-type(operands, results)
     }];
 }
 

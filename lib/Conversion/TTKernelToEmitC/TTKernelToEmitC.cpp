@@ -777,6 +777,130 @@ getExpTileTemplateArgs(MLIRContext *ctx, BoolAttr approxAttr, bool scaleEn,
   return ArrayAttr::get(ctx, args);
 }
 
+static const char *topkBoolArg(bool value) { return value ? "true" : "false"; }
+
+static std::string topkFp32DestAccArg(BoolAttr fp32DestAccEn) {
+  if (!fp32DestAccEn) {
+    return "DST_ACCUM_MODE";
+  }
+  return fp32DestAccEn.getValue() ? "true" : "false";
+}
+
+static StringRef topkTieOrderArg(ttkernel::TopkTieOrder tieOrder) {
+  switch (tieOrder) {
+  case ttkernel::TopkTieOrder::Unset:
+    return "TopkTieOrder::Unset";
+  case ttkernel::TopkTieOrder::Ascending:
+    return "TopkTieOrder::Ascending";
+  case ttkernel::TopkTieOrder::Descending:
+    return "TopkTieOrder::Descending";
+  }
+  llvm_unreachable("Unhandled ttkernel::TopkTieOrder value");
+}
+
+// Prints template arguments through the last non-default parameter. Earlier
+// parameters that keep the metal default are still printed so the positional
+// template list stays aligned.
+static ArrayAttr emitTopkTemplateArgs(MLIRContext *ctx, ArrayRef<bool> isSet,
+                                      ArrayRef<std::string> spellings) {
+  const int lastSet = getLastSetTemplateArg(isSet);
+  if (lastSet < 0) {
+    return ArrayAttr();
+  }
+  SmallVector<Attribute> args;
+  args.reserve(lastSet + 1);
+  for (int i = 0; i <= lastSet; ++i) {
+    args.push_back(emitc::OpaqueAttr::get(ctx, spellings[i]));
+  }
+  return ArrayAttr::get(ctx, args);
+}
+
+template <typename OpTy>
+static ArrayAttr getTopkSortOrRebuildTemplateArgs(OpTy op) {
+  const bool stableSort = op.getStableSort();
+  BoolAttr fp32DestAccEn = op.getFp32DestAccEnAttr();
+  const bool fused = op.getFused();
+  const bool rankStamped = op.getRankStamped();
+  ttkernel::TopkTieOrder tieOrder = op.getTieOrder();
+  SmallVector<std::string, 5> spellings = {
+      topkBoolArg(stableSort),
+      topkFp32DestAccArg(fp32DestAccEn),
+      topkBoolArg(fused),
+      topkBoolArg(rankStamped),
+      topkTieOrderArg(tieOrder).str(),
+  };
+  const bool isSet[] = {stableSort, static_cast<bool>(fp32DestAccEn), fused,
+                        rankStamped, tieOrder != ttkernel::TopkTieOrder::Unset};
+  return emitTopkTemplateArgs(op.getContext(), isSet, spellings);
+}
+
+static ArrayAttr getTopkMergeTemplateArgs(ttkernel::TopkMergeOp op) {
+  const bool direction = op.getDirection();
+  const bool stableSort = op.getStableSort();
+  BoolAttr fp32DestAccEn = op.getFp32DestAccEnAttr();
+  const bool fused = op.getFused();
+  const bool rankStamped = op.getRankStamped();
+  ttkernel::TopkTieOrder tieOrder = op.getTieOrder();
+  const uint32_t tagBits = op.getTagBits();
+  SmallVector<std::string, 7> spellings = {
+      topkBoolArg(direction),
+      topkBoolArg(stableSort),
+      topkFp32DestAccArg(fp32DestAccEn),
+      topkBoolArg(fused),
+      topkBoolArg(rankStamped),
+      topkTieOrderArg(tieOrder).str(),
+      std::to_string(tagBits),
+  };
+  const bool isSet[] = {
+      direction,    stableSort,  static_cast<bool>(fp32DestAccEn),
+      fused,        rankStamped, tieOrder != ttkernel::TopkTieOrder::Unset,
+      tagBits != 16};
+  return emitTopkTemplateArgs(op.getContext(), isSet, spellings);
+}
+
+static ArrayAttr getTopkLargestTemplateArgs(MLIRContext *ctx, bool largest) {
+  const bool isSet[] = {true};
+  SmallVector<std::string, 1> spellings = {topkBoolArg(largest)};
+  return emitTopkTemplateArgs(ctx, isSet, spellings);
+}
+
+static ArrayAttr
+getTopkStampTemplateArgs(ttkernel::TopkStampLocalPositionsOp op) {
+  const bool largest = op.getLargest();
+  const uint32_t tagBits = op.getTagBits();
+  SmallVector<std::string, 2> spellings = {topkBoolArg(largest),
+                                           std::to_string(tagBits)};
+  const bool isSet[] = {true, tagBits != 16};
+  return emitTopkTemplateArgs(op.getContext(), isSet, spellings);
+}
+
+static ArrayAttr getTopkStripTemplateArgs(ttkernel::TopkStripRankTagsOp op) {
+  const uint32_t tagBits = op.getTagBits();
+  BoolAttr fp32DestAccEn = op.getFp32DestAccEnAttr();
+  SmallVector<std::string, 2> spellings = {std::to_string(tagBits),
+                                           topkFp32DestAccArg(fp32DestAccEn)};
+  const bool isSet[] = {tagBits != 16, static_cast<bool>(fp32DestAccEn)};
+  return emitTopkTemplateArgs(op.getContext(), isSet, spellings);
+}
+
+static ArrayAttr
+getTopkCanonicalizeTemplateArgs(ttkernel::TopkCanonicalizeNegzeroValuesOp op) {
+  BoolAttr fp32DestAccEn = op.getFp32DestAccEnAttr();
+  SmallVector<std::string, 1> spellings = {topkFp32DestAccArg(fp32DestAccEn)};
+  const bool isSet[] = {static_cast<bool>(fp32DestAccEn)};
+  return emitTopkTemplateArgs(op.getContext(), isSet, spellings);
+}
+
+static ArrayAttr getTopkInitTemplateArgs(ttkernel::TopkTileInitOp op) {
+  const bool fused = op.getFused();
+  const bool rankStamped = op.getRankStamped();
+  const uint32_t tagBits = op.getTagBits();
+  SmallVector<std::string, 3> spellings = {
+      topkBoolArg(fused), topkBoolArg(rankStamped), std::to_string(tagBits)};
+  const bool isSet[] = {fused, rankStamped, tagBits != 16};
+  return emitTopkTemplateArgs(op.getContext(), isSet, spellings);
+}
+
 class TTKernelExpTileInitOpRewriter
     : public OpConversionPattern<ttkernel::ExpTileInitOp> {
 public:
@@ -1086,6 +1210,26 @@ public:
       template_args.push_back(
           emitc::OpaqueAttr::get(op.getContext(), "DataFormat::Int32"));
       return ArrayAttr::get(op.getContext(), template_args);
+    } else if constexpr (std::is_same_v<SourceOp, ttkernel::TopkTileInitOp>) {
+      return getTopkInitTemplateArgs(op);
+    } else if constexpr (std::is_same_v<SourceOp, ttkernel::TopkLocalSortOp> ||
+                         std::is_same_v<SourceOp, ttkernel::TopkRebuildOp>) {
+      return getTopkSortOrRebuildTemplateArgs(op);
+    } else if constexpr (std::is_same_v<SourceOp, ttkernel::TopkMergeOp>) {
+      return getTopkMergeTemplateArgs(op);
+    } else if constexpr (std::is_same_v<SourceOp, ttkernel::TopkFuseTileOp> ||
+                         std::is_same_v<SourceOp, ttkernel::TopkDefuseTileOp>) {
+      return getTopkLargestTemplateArgs(op.getContext(), op.getLargest());
+    } else if constexpr (std::is_same_v<SourceOp,
+                                        ttkernel::TopkStampLocalPositionsOp>) {
+      return getTopkStampTemplateArgs(op);
+    } else if constexpr (std::is_same_v<SourceOp,
+                                        ttkernel::TopkStripRankTagsOp>) {
+      return getTopkStripTemplateArgs(op);
+    } else if constexpr (std::is_same_v<
+                             SourceOp,
+                             ttkernel::TopkCanonicalizeNegzeroValuesOp>) {
+      return getTopkCanonicalizeTemplateArgs(op);
     } else if constexpr (std::is_same_v<SourceOp, ttkernel::ExpTileInitOp>) {
       // exp_tile_init<bool approx, uint32_t scale, InputClamping
       // input_clamping>() Emit template args only up to the last explicitly-set
@@ -3297,6 +3441,12 @@ public:
         TTKernelToEmitCOpaqueRewriter<ttkernel::TopkLocalSortOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::TopkMergeOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::TopkRebuildOp>,
+        TTKernelToEmitCOpaqueRewriter<ttkernel::TopkFuseTileOp>,
+        TTKernelToEmitCOpaqueRewriter<ttkernel::TopkDefuseTileOp>,
+        TTKernelToEmitCOpaqueRewriter<ttkernel::TopkStampLocalPositionsOp>,
+        TTKernelToEmitCOpaqueRewriter<ttkernel::TopkStripRankTagsOp>,
+        TTKernelToEmitCOpaqueRewriter<
+            ttkernel::TopkCanonicalizeNegzeroValuesOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::MulTilesInitOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::MulTilesOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::SubTilesInitOp>,

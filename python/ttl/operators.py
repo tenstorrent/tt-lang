@@ -11,6 +11,7 @@ from typing import List, Optional, Tuple, Union
 
 from ttl.dialects import arith, tensor, ttl
 from ttl.ir import (
+    Attribute,
     Context,
     F32Type,
     BF16Type,
@@ -1822,6 +1823,206 @@ def raw_element_write(block, *args):
     ttl.raw_element_write(block, index_vals, val)
 
 
+# TopK tile operations. Integer arguments accept Python integers or integer
+# SSA values. Omitted mode flags keep the metal defaults, so the op prints its
+# plain spelling. The operations read and write a DST slab and must run while
+# destination registers are acquired.
+#
+# The slab helpers each mode requires (fuse/defuse, rank stamp/strip, and
+# negative-zero canonicalization) are emitted by the compiler around the
+# stages of a block and have no entry point here. ``largest`` is the
+# kernel-wide polarity those helpers use; all stages in one block must agree
+# on it and on the mode flags.
+
+
+def _topk_index_operand(value):
+    index_type = IndexType.get()
+    if isinstance(value, int) and not isinstance(value, bool):
+        return arith.ConstantOp(index_type, value).result
+    if isinstance(value.type, IndexType):
+        return value
+    return arith.IndexCastOp(index_type, value).out
+
+
+def _topk_i32_operand(value):
+    i32 = IntegerType.get_signless(32)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return arith.ConstantOp(i32, value).result
+    value_type = value.type
+    if value_type == i32:
+        return value
+    if isinstance(value_type, IndexType):
+        return arith.IndexCastOp(i32, value).out
+    if IntegerType(value_type).width > 32:
+        return arith.TruncIOp(i32, value).out
+    return arith.ExtSIOp(i32, value).out
+
+
+def _topk_tie_order_attr(tie_order):
+    if tie_order is None or not isinstance(tie_order, str):
+        return tie_order
+    return Attribute.parse(f"#ttl.topk_tie_order<{tie_order}>")
+
+
+def _topk_mode_kwargs(
+    *,
+    stable_sort=False,
+    fused=False,
+    rank_stamped=False,
+    tie_order=None,
+    tag_bits=16,
+    largest=True,
+    fp32_dest_acc_en=None,
+    direction=None,
+):
+    """Build the mode attributes shared by the TopK stages.
+
+    A flag left at its metal default is omitted so the ODS default applies.
+    """
+    kwargs = {}
+    if _get_constant_bool(stable_sort):
+        kwargs["stable_sort"] = True
+    if _get_constant_bool(fused):
+        kwargs["fused"] = True
+    if _get_constant_bool(rank_stamped):
+        kwargs["rank_stamped"] = True
+    tie_order_attr = _topk_tie_order_attr(tie_order)
+    if tie_order_attr is not None:
+        kwargs["tie_order"] = tie_order_attr
+    tag_bits_i = _get_constant_int(tag_bits)
+    if tag_bits_i != 16:
+        kwargs["tag_bits"] = tag_bits_i
+    if not _get_constant_bool(largest):
+        kwargs["largest"] = False
+    if fp32_dest_acc_en is not None:
+        kwargs["fp32_dest_acc_en"] = _get_constant_bool(fp32_dest_acc_en)
+    if direction is not None and _get_constant_bool(direction):
+        kwargs["direction"] = True
+    return kwargs
+
+
+@syntax("topk_local_sort")
+def topk_local_sort(
+    dst,
+    direction,
+    end_phase,
+    start_phase,
+    end_step=None,
+    start_step=None,
+    *,
+    stable_sort: bool = False,
+    fused: bool = False,
+    rank_stamped: bool = False,
+    tie_order: Optional[str] = None,
+    tag_bits: int = 16,
+    largest: bool = True,
+    fp32_dest_acc_en: Optional[bool] = None,
+):
+    """Locally sort the four-tile TopK slab at ``dst``.
+
+    ``direction`` is 0 for decreasing values and 1 for increasing values.
+    ``end_phase`` is in [1, 5] and ``start_phase`` is in [0, 5]. Optional
+    steps are 0 or in [4, 6], and ``start_step`` requires ``end_step``.
+    """
+    kwargs = _topk_mode_kwargs(
+        stable_sort=stable_sort,
+        fused=fused,
+        rank_stamped=rank_stamped,
+        tie_order=tie_order,
+        tag_bits=tag_bits,
+        largest=largest,
+        fp32_dest_acc_en=fp32_dest_acc_en,
+    )
+    if end_step is not None:
+        kwargs["end_step"] = _topk_i32_operand(end_step)
+    if start_step is not None:
+        kwargs["start_step"] = _topk_i32_operand(start_step)
+    return ttl.tile_topk_local_sort(
+        _topk_index_operand(dst),
+        _topk_i32_operand(direction),
+        _topk_i32_operand(end_phase),
+        _topk_i32_operand(start_phase),
+        **kwargs,
+    )
+
+
+@syntax("topk_merge")
+def topk_merge(
+    dst,
+    merge_iteration,
+    k,
+    *,
+    direction: bool = False,
+    stable_sort: bool = False,
+    fused: bool = False,
+    rank_stamped: bool = False,
+    tie_order: Optional[str] = None,
+    tag_bits: int = 16,
+    largest: bool = True,
+    fp32_dest_acc_en: Optional[bool] = None,
+):
+    """Merge TopK subsequences in the four-tile slab at ``dst``.
+
+    ``k`` is one of 4, 8, 16, 32, or 64. ``merge_iteration`` is in [0, 9].
+    ``direction`` false sorts toward the larger values.
+    """
+    return ttl.tile_topk_merge(
+        _topk_index_operand(dst),
+        _topk_i32_operand(merge_iteration),
+        _topk_i32_operand(k),
+        **_topk_mode_kwargs(
+            stable_sort=stable_sort,
+            fused=fused,
+            rank_stamped=rank_stamped,
+            tie_order=tie_order,
+            tag_bits=tag_bits,
+            largest=largest,
+            fp32_dest_acc_en=fp32_dest_acc_en,
+            direction=direction,
+        ),
+    )
+
+
+@syntax("topk_rebuild")
+def topk_rebuild(
+    dst,
+    direction,
+    merge_iteration,
+    k,
+    logk,
+    skip_second,
+    *,
+    stable_sort: bool = False,
+    fused: bool = False,
+    rank_stamped: bool = False,
+    tie_order: Optional[str] = None,
+    tag_bits: int = 16,
+    largest: bool = True,
+    fp32_dest_acc_en: Optional[bool] = None,
+):
+    """Rebuild sorted TopK subsequences in the four-tile slab at ``dst``.
+
+    ``logk`` is in [2, 6] and equals log2(``k``). ``skip_second`` is 0 or 1.
+    """
+    return ttl.tile_topk_rebuild(
+        _topk_index_operand(dst),
+        _topk_i32_operand(direction),
+        _topk_i32_operand(merge_iteration),
+        _topk_i32_operand(k),
+        _topk_i32_operand(logk),
+        _topk_i32_operand(skip_second),
+        **_topk_mode_kwargs(
+            stable_sort=stable_sort,
+            fused=fused,
+            rank_stamped=rank_stamped,
+            tie_order=tie_order,
+            tag_bits=tag_bits,
+            largest=largest,
+            fp32_dest_acc_en=fp32_dest_acc_en,
+        ),
+    )
+
+
 __all__ = [
     "TensorBlock",
     "CopyTransferHandler",
@@ -1836,6 +2037,9 @@ __all__ = [
     "fill",
     "typecast",
     "exp",
+    "topk_local_sort",
+    "topk_merge",
+    "topk_rebuild",
     "raw_element_read",
     "raw_element_write",
     "read_index",

@@ -474,6 +474,23 @@ static bool hasDstBackedTileProducer(Value value) {
          (isTileComputeOp(definingOp) || isa<DstIndexOp>(definingOp));
 }
 
+/// Return whether a TopK tile op's mode attributes physically require fp32
+/// destination accumulation, independent of the per-call `fp32_dest_acc_en`
+/// template argument that lowering may still fill in from `DST_ACCUM_MODE`.
+template <typename TopkOp>
+static bool requiresFp32DestinationAccumulationForTopk(TopkOp op) {
+  BoolAttr fp32DestAccEn = op.getFp32DestAccEnAttr();
+  return op.getFused() || op.getRankStamped() ||
+         (fp32DestAccEn && fp32DestAccEn.getValue());
+}
+
+static void setTopkSlabExecution(TileExecutionInfo &info, int64_t slots,
+                                 bool requiresFp32) {
+  info.primitive = TilePrimitive::ElementwiseUnary;
+  info.requiredDstSlots = slots;
+  info.requiresFp32DestinationAccumulation = requiresFp32;
+}
+
 FailureOr<TileExecutionInfo>
 getDefaultTileExecutionInfo(Operation *operation,
                             std::optional<TileExecutionStrategy> strategy) {
@@ -572,6 +589,21 @@ getDefaultTileExecutionInfo(Operation *operation,
             ? TileOperandRoute::Dst
             : TileOperandRoute::DataflowBuffer;
     info.accumulatesIntoDst = true;
+    return info;
+  }
+  if (auto localSort = dyn_cast<TileTopkLocalSortOp>(operation)) {
+    setTopkSlabExecution(info, 4,
+                         requiresFp32DestinationAccumulationForTopk(localSort));
+    return info;
+  }
+  if (auto merge = dyn_cast<TileTopkMergeOp>(operation)) {
+    setTopkSlabExecution(info, 4,
+                         requiresFp32DestinationAccumulationForTopk(merge));
+    return info;
+  }
+  if (auto rebuild = dyn_cast<TileTopkRebuildOp>(operation)) {
+    setTopkSlabExecution(info, 4,
+                         requiresFp32DestinationAccumulationForTopk(rebuild));
     return info;
   }
   if (operation->hasTrait<TTLStrategyDependentBinaryOpTrait>()) {
@@ -848,6 +880,15 @@ appendDstOperandFootprint(SmallVectorImpl<DstFootprint> &footprints,
 
 FailureOr<SmallVector<DstFootprint, 2>>
 getDefaultDstReadFootprints(Operation *op) {
+  if (auto localSort = dyn_cast<TileTopkLocalSortOp>(op)) {
+    return SmallVector<DstFootprint, 2>{{localSort.getDstIndex(), 4}};
+  }
+  if (auto merge = dyn_cast<TileTopkMergeOp>(op)) {
+    return SmallVector<DstFootprint, 2>{{merge.getDstIndex(), 4}};
+  }
+  if (auto rebuild = dyn_cast<TileTopkRebuildOp>(op)) {
+    return SmallVector<DstFootprint, 2>{{rebuild.getDstIndex(), 4}};
+  }
   SmallVector<DstFootprint, 2> footprints;
   FailureOr<TileExecutionInfo> info = getSelectedTileExecutionInfo(op);
   if (failed(info)) {
@@ -877,6 +918,15 @@ SmallVector<DstFootprint, 2> getDefaultDstWriteFootprints(Operation *op) {
   if (auto normalization = dyn_cast<TileRowNormalizationBlockOp>(op)) {
     return {{normalization.getDstIndex(),
              static_cast<int64_t>(normalization.getNumTiles())}};
+  }
+  if (auto localSort = dyn_cast<TileTopkLocalSortOp>(op)) {
+    return {{localSort.getDstIndex(), 4}};
+  }
+  if (auto merge = dyn_cast<TileTopkMergeOp>(op)) {
+    return {{merge.getDstIndex(), 4}};
+  }
+  if (auto rebuild = dyn_cast<TileTopkRebuildOp>(op)) {
+    return {{rebuild.getDstIndex(), 4}};
   }
   if (auto dstIndex = getTileOpDstIndex(op)) {
     return {{*dstIndex, 1}};

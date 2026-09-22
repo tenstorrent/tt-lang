@@ -216,6 +216,21 @@ def TTL_InputClamping : I32EnumAttr<"InputClamping", "TTL exp input clamping mod
   let cppNamespace = "::mlir::tt::ttl";
 }
 
+// Mirrors ckernel::TopkTieOrder. Values match the TTKernel enum so lowering
+// can forward the attribute by its integer value. Unset is the metal default
+// and is rejected when stable_sort is set.
+def TTL_TopkTieOrder_Unset : I32EnumAttrCase<"Unset", 0, "unset">;
+def TTL_TopkTieOrder_Ascending : I32EnumAttrCase<"Ascending", 1, "ascending">;
+def TTL_TopkTieOrder_Descending
+    : I32EnumAttrCase<"Descending", 2, "descending">;
+
+def TTL_TopkTieOrder : I32EnumAttr<"TopkTieOrder", "TTL TopK tie-break order",
+    [TTL_TopkTieOrder_Unset, TTL_TopkTieOrder_Ascending,
+     TTL_TopkTieOrder_Descending]> {
+  let genSpecializedAttr = 0;
+  let cppNamespace = "::mlir::tt::ttl";
+}
+
 def TTL_AccumulationCombiner_Add : I32EnumAttrCase<"Add", 0, "add">;
 def TTL_AccumulationCombiner_Max : I32EnumAttrCase<"Max", 1, "max">;
 

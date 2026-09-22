@@ -8,6 +8,7 @@
 #include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "ttlang/Dialect/Utils/OpaqueCallVerifyUtils.h"
+#include "ttlang/Dialect/Utils/TopkVerify.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
@@ -19,6 +20,7 @@
 #include "mlir/Interfaces/InferIntRangeInterface.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
 #include <limits>
@@ -1084,6 +1086,103 @@ void UnpackStallOnPackOp::getCanonicalizationPatterns(
     }
   }
   return success();
+}
+
+static LogicalResult verifyTopkLocalSortOperands(TopkLocalSortOp op) {
+  if (failed(
+          utils::verifyTopkConstantInRange(op, op.getIdir(), "idir", 0, 1)) ||
+      failed(utils::verifyTopkConstantInRange(op, op.getIEndPhase(),
+                                              "i_end_phase", 1, 5)) ||
+      failed(utils::verifyTopkConstantInRange(op, op.getIStartPhase(),
+                                              "i_start_phase", 0, 5)) ||
+      failed(utils::verifyTopkPhaseOrder(op, op.getIStartPhase(),
+                                         op.getIEndPhase(), "i_start_phase",
+                                         "i_end_phase"))) {
+    return failure();
+  }
+  return success();
+}
+
+static LogicalResult verifyTopkMergeOperands(TopkMergeOp op) {
+  if (failed(utils::verifyTopkConstantInRange(op, op.getMIter(), "m_iter", 0,
+                                              9)) ||
+      failed(utils::verifyTopkConstantK(op, op.getK()))) {
+    return failure();
+  }
+  return success();
+}
+
+static LogicalResult verifyTopkRebuildOperands(TopkRebuildOp op) {
+  if (failed(
+          utils::verifyTopkConstantInRange(op, op.getIdir(), "idir", 0, 1)) ||
+      failed(utils::verifyTopkConstantInRange(op, op.getMIter(), "m_iter", 0,
+                                              9)) ||
+      failed(utils::verifyTopkConstantK(op, op.getK())) ||
+      failed(
+          utils::verifyTopkConstantInRange(op, op.getLogk(), "logk", 2, 6)) ||
+      failed(utils::verifyTopkConstantInRange(op, op.getSkipSecond(),
+                                              "skip_second", 0, 1)) ||
+      failed(utils::verifyTopkLogkMatchesK(op, op.getK(), op.getLogk()))) {
+    return failure();
+  }
+  return success();
+}
+
+LogicalResult TopkTileInitOp::verify() {
+  return utils::verifyTopkMode(*this, /*stableSort=*/false, getFused(),
+                               getRankStamped(), /*tieOrderUnset=*/true,
+                               /*fp32DestAccEn=*/BoolAttr(), getTagBits());
+}
+
+LogicalResult TopkLocalSortOp::verify() {
+  if (getIStartStep() && !getIEndStep()) {
+    return emitOpError("start_step requires end_step");
+  }
+  if (failed(utils::verifyTopkStep(*this, getIEndStep(), "end_step")) ||
+      failed(utils::verifyTopkStep(*this, getIStartStep(), "start_step")) ||
+      failed(verifyTopkLocalSortOperands(*this))) {
+    return failure();
+  }
+  return utils::verifyTopkMode(*this, getStableSort(), getFused(),
+                               getRankStamped(),
+                               getTieOrder() == TopkTieOrder::Unset,
+                               getFp32DestAccEnAttr(), getTagBits());
+}
+
+LogicalResult TopkMergeOp::verify() {
+  if (failed(verifyTopkMergeOperands(*this))) {
+    return failure();
+  }
+  return utils::verifyTopkMode(*this, getStableSort(), getFused(),
+                               getRankStamped(),
+                               getTieOrder() == TopkTieOrder::Unset,
+                               getFp32DestAccEnAttr(), getTagBits());
+}
+
+LogicalResult TopkRebuildOp::verify() {
+  if (failed(verifyTopkRebuildOperands(*this))) {
+    return failure();
+  }
+  return utils::verifyTopkMode(*this, getStableSort(), getFused(),
+                               getRankStamped(),
+                               getTieOrder() == TopkTieOrder::Unset,
+                               getFp32DestAccEnAttr(), getTagBits());
+}
+
+LogicalResult TopkDefuseTileOp::verify() {
+  return utils::verifyTopkConstantInRange(*this, getNumTiles(), "num_tiles", 1,
+                                          2);
+}
+
+LogicalResult TopkStampLocalPositionsOp::verify() {
+  return utils::verifyTopkTagBits(*this, getTagBits());
+}
+
+LogicalResult TopkStripRankTagsOp::verify() {
+  if (failed(utils::verifyTopkTagBits(*this, getTagBits()))) {
+    return failure();
+  }
+  return utils::verifyTopkStripFp32(*this, getFp32DestAccEnAttr());
 }
 
 } // namespace mlir::tt::ttkernel

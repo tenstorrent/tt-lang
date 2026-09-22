@@ -13,7 +13,9 @@
 //      Scans each tile_regs_acquire -> tile_regs_release region to determine
 //      the compute category (FPU binary vs SFPU/copy/bcast) and derives
 //      input/output CBs from compute and pack ops.
-//   2. Per-op inits: emitted in linear block order whenever the op type
+//   2. TopK slab helpers: the fuse/stamp/canonicalize and defuse/strip calls
+//      that the TopK modes require, emitted around the stages of a block.
+//   3. Per-op inits: emitted in linear block order whenever the op type
 //      changes (unary SFPU, binary SFPU, minmax, FPU binary). The init
 //      key is (init op TypeID, operand values). An init is inserted only
 //      when the key changes. Tracking resets at sync boundaries.
@@ -30,9 +32,11 @@
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelTraits.h"
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
+#include "llvm/ADT/TypeSwitch.h"
 
 #define DEBUG_TYPE "ttkernel-insert-inits"
 
@@ -68,6 +72,38 @@ static Value resolveOutputCB(Operation *computeOp, StringRef attrName) {
     return WalkResult::advance();
   });
   return result;
+}
+
+// Arguments of topk_tile_init. The compute stages carry the same values so
+// one init can be shared or replaced when the configuration changes.
+struct TopkInitConfig {
+  bool fused = false;
+  bool rankStamped = false;
+  int64_t tagBits = 16;
+};
+
+static TopkInitConfig getTopkInitConfig(Operation *op) {
+  if (isa<ttk::TopkFuseTileOp, ttk::TopkDefuseTileOp>(op)) {
+    return {true, false, 16};
+  }
+  if (auto stamp = dyn_cast<ttk::TopkStampLocalPositionsOp>(op)) {
+    return {false, true, stamp.getTagBits()};
+  }
+  if (auto strip = dyn_cast<ttk::TopkStripRankTagsOp>(op)) {
+    return {false, true, strip.getTagBits()};
+  }
+  if (isa<ttk::TopkCanonicalizeNegzeroValuesOp>(op)) {
+    return {};
+  }
+  if (auto localSort = dyn_cast<ttk::TopkLocalSortOp>(op)) {
+    return {localSort.getFused(), localSort.getRankStamped(),
+            localSort.getTagBits()};
+  }
+  if (auto merge = dyn_cast<ttk::TopkMergeOp>(op)) {
+    return {merge.getFused(), merge.getRankStamped(), merge.getTagBits()};
+  }
+  auto rebuild = cast<ttk::TopkRebuildOp>(op);
+  return {rebuild.getFused(), rebuild.getRankStamped(), rebuild.getTagBits()};
 }
 
 /// Information about how to create an init op for a given compute op.
@@ -200,6 +236,25 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
                                    expOp.getInputClampingAttr());
       }};
 
+  auto createTopkInit = [](OpBuilder &builder, Location location,
+                           Operation *computeOp) {
+    // fused, rank_stamped, and tag_bits select topk_tile_init. The other
+    // TopK template arguments are compute-only.
+    TopkInitConfig config = getTopkInitConfig(computeOp);
+    ttk::TopkTileInitOp::create(builder, location, config.fused,
+                                config.rankStamped,
+                                static_cast<uint32_t>(config.tagBits));
+  };
+  map[mlir::TypeID::get<ttk::TopkLocalSortOp>()] = {createTopkInit};
+  map[mlir::TypeID::get<ttk::TopkMergeOp>()] = {createTopkInit};
+  map[mlir::TypeID::get<ttk::TopkRebuildOp>()] = {createTopkInit};
+  map[mlir::TypeID::get<ttk::TopkFuseTileOp>()] = {createTopkInit};
+  map[mlir::TypeID::get<ttk::TopkDefuseTileOp>()] = {createTopkInit};
+  map[mlir::TypeID::get<ttk::TopkStampLocalPositionsOp>()] = {createTopkInit};
+  map[mlir::TypeID::get<ttk::TopkStripRankTagsOp>()] = {createTopkInit};
+  map[mlir::TypeID::get<ttk::TopkCanonicalizeNegzeroValuesOp>()] = {
+      createTopkInit};
+
   // Transpose: resolves output CB from annotated attribute.
   map[mlir::TypeID::get<ttk::TransposeTileOp>()] = {
       [](OpBuilder &b, Location l, Operation *computeOp) {
@@ -301,6 +356,19 @@ static InitKey computeInitKey(Operation *op) {
     int64_t disc = (static_cast<int64_t>(scaleBits) << 8) |
                    (static_cast<int64_t>(approx) << 1) | inputClamping;
     return {typeId, {}, disc};
+  }
+
+  if (isa<ttk::TopkLocalSortOp, ttk::TopkMergeOp, ttk::TopkRebuildOp,
+          ttk::TopkFuseTileOp, ttk::TopkDefuseTileOp,
+          ttk::TopkStampLocalPositionsOp, ttk::TopkStripRankTagsOp,
+          ttk::TopkCanonicalizeNegzeroValuesOp>(op)) {
+    // The three stages share one init. Only the init's template arguments
+    // distinguish configurations.
+    TopkInitConfig config = getTopkInitConfig(op);
+    int64_t discriminator = (config.tagBits << 2) |
+                            (static_cast<int64_t>(config.rankStamped) << 1) |
+                            static_cast<int64_t>(config.fused);
+    return {mlir::TypeID::get<ttk::TopkTileInitOp>(), {}, discriminator};
   }
 
   // For all other ops (SFPU unary/binary, CopyDst): key is just the TypeID.
@@ -539,6 +607,139 @@ static LogicalResult insertCommonInits(ModuleOp moduleOp) {
 }
 
 //===----------------------------------------------------------------------===//
+// TopK slab helper insertion
+//===----------------------------------------------------------------------===//
+
+/// topk_fuse_tile packs the two value tiles and the two index tiles of a slab
+/// into this many fused key tiles, which is what topk_defuse_tile unpacks.
+static constexpr int32_t kTopkFusedKeyTiles = 2;
+
+/// The stage mode attributes that select the slab helpers.
+struct TopkSlabMode {
+  bool fused = false;
+  bool rankStamped = false;
+  bool stableSort = false;
+  bool largest = true;
+  uint32_t tagBits = 16;
+  BoolAttr fp32DestAccEn;
+
+  bool operator==(const TopkSlabMode &other) const {
+    return fused == other.fused && rankStamped == other.rankStamped &&
+           stableSort == other.stableSort && largest == other.largest &&
+           tagBits == other.tagBits && fp32DestAccEn == other.fp32DestAccEn;
+  }
+  bool operator!=(const TopkSlabMode &other) const { return !(*this == other); }
+};
+
+static bool isTopkStage(Operation *op) {
+  return isa<ttk::TopkLocalSortOp, ttk::TopkMergeOp, ttk::TopkRebuildOp>(op);
+}
+
+static TopkSlabMode getTopkSlabMode(Operation *op) {
+  return llvm::TypeSwitch<Operation *, TopkSlabMode>(op)
+      .Case<ttk::TopkLocalSortOp, ttk::TopkMergeOp, ttk::TopkRebuildOp>(
+          [](auto stage) {
+            return TopkSlabMode{
+                stage.getFused(),      stage.getRankStamped(),
+                stage.getStableSort(), stage.getLargest(),
+                stage.getTagBits(),    stage.getFp32DestAccEnAttr()};
+          });
+}
+
+static Value getTopkStageDst(Operation *op) {
+  return llvm::TypeSwitch<Operation *, Value>(op)
+      .Case<ttk::TopkLocalSortOp, ttk::TopkMergeOp, ttk::TopkRebuildOp>(
+          [](auto stage) { return stage.getIdst(); });
+}
+
+/// The TopK stages of one sync region and the mode that selects the helpers
+/// surrounding them.
+struct TopkSlabSegment {
+  Operation *firstStage = nullptr;
+  Operation *lastStage = nullptr;
+  TopkSlabMode mode;
+};
+
+/// Group the TopK stages of `block` by sync region. Each group runs on one DST
+/// slab, so the mode that selects the helpers must be uniform within it.
+static FailureOr<SmallVector<TopkSlabSegment>>
+planTopkSlabHelpers(Block &block) {
+  SmallVector<TopkSlabSegment> segments;
+  TopkSlabSegment current;
+  for (Operation &op : block) {
+    if (isSyncBoundary(&op)) {
+      if (current.firstStage) {
+        segments.push_back(current);
+      }
+      current = {};
+      continue;
+    }
+    if (!isTopkStage(&op)) {
+      continue;
+    }
+    TopkSlabMode mode = getTopkSlabMode(&op);
+    if (!current.firstStage) {
+      current.firstStage = &op;
+      current.mode = mode;
+    } else if (mode != current.mode) {
+      InFlightDiagnostic diag = op.emitOpError(
+          "TopK stages in one sync region must share one slab mode");
+      diag.attachNote(current.firstStage->getLoc())
+          << "slab mode established by this stage";
+      return failure();
+    }
+    current.lastStage = &op;
+  }
+  if (current.firstStage) {
+    segments.push_back(current);
+  }
+  return segments;
+}
+
+/// Surround the stages of one segment with the helpers their mode requires.
+/// The slab is unpacked before the segment ends, so the packed form never
+/// reaches a dataflow buffer.
+static void emitTopkSlabHelpers(const TopkSlabSegment &segment) {
+  const TopkSlabMode &mode = segment.mode;
+  OpBuilder builder(segment.firstStage);
+  Value dst = getTopkStageDst(segment.firstStage);
+  Location loc = segment.firstStage->getLoc();
+  if (mode.fused) {
+    ttk::TopkFuseTileOp::create(builder, loc, dst, mode.largest);
+  } else if (mode.rankStamped) {
+    ttk::TopkStampLocalPositionsOp::create(builder, loc, dst, mode.largest,
+                                           mode.tagBits);
+  }
+  if (mode.stableSort) {
+    ttk::TopkCanonicalizeNegzeroValuesOp::create(builder, loc, dst,
+                                                 mode.fp32DestAccEn);
+  }
+
+  builder.setInsertionPointAfter(segment.lastStage);
+  dst = getTopkStageDst(segment.lastStage);
+  loc = segment.lastStage->getLoc();
+  if (mode.fused) {
+    Value numTiles = arith::ConstantOp::create(
+        builder, loc, builder.getI32IntegerAttr(kTopkFusedKeyTiles));
+    ttk::TopkDefuseTileOp::create(builder, loc, dst, numTiles, mode.largest);
+  } else if (mode.rankStamped) {
+    ttk::TopkStripRankTagsOp::create(builder, loc, dst, mode.fp32DestAccEn,
+                                     mode.tagBits);
+  }
+}
+
+static LogicalResult insertTopkSlabHelpers(Block &block) {
+  FailureOr<SmallVector<TopkSlabSegment>> segments = planTopkSlabHelpers(block);
+  if (failed(segments)) {
+    return failure();
+  }
+  for (const TopkSlabSegment &segment : *segments) {
+    emitTopkSlabHelpers(segment);
+  }
+  return success();
+}
+
+//===----------------------------------------------------------------------===//
 // Pass implementation
 //===----------------------------------------------------------------------===//
 
@@ -550,6 +751,15 @@ struct TTKernelInsertInitsPass
     constexpr llvm::StringLiteral kInitInserted("ttk.init_inserted");
 
     if (failed(insertCommonInits(moduleOp))) {
+      signalPassFailure();
+      return;
+    }
+
+    WalkResult topkResult = moduleOp->walk([](Block *block) {
+      return failed(insertTopkSlabHelpers(*block)) ? WalkResult::interrupt()
+                                                   : WalkResult::advance();
+    });
+    if (topkResult.wasInterrupted()) {
       signalPassFailure();
       return;
     }
