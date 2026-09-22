@@ -2622,6 +2622,7 @@ struct PipeProtocolCandidate {
   ProtocolOp op;
   std::optional<std::uint64_t> recordIndex;
   std::optional<PipeRecordAttr> record;
+  std::optional<std::uint64_t> executionCount;
 };
 
 static LogicalResult forEachPipeReferenceRecord(
@@ -2744,7 +2745,7 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
                     candidatesByPipe[{pipeKey, deviceTransfer}];
                 candidates.deviceTransfer = deviceTransfer;
                 candidates.sends.push_back(
-                    {sendOp, selectedRecordIndex, record});
+                    {sendOp, selectedRecordIndex, record, maybeExecutionCount});
                 return success();
       }))) {
         return failure();
@@ -2812,7 +2813,7 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
                         selectedRecordIndex, analysisState, record);
                 if (!maybeExecutionCount || *maybeExecutionCount != 0) {
                   candidates.postsByReceiver[receiver].push_back(
-                      {postOp, selectedRecordIndex, record});
+                      {postOp, selectedRecordIndex, record, maybeExecutionCount});
                 }
               });
               if (failed(receiverResult)) {
@@ -3175,6 +3176,7 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
         pipeReceiverEndpoints.push_back(PipeReceiverEndpoint{
             endpointId, transferNodeId, receiver, std::move(destination),
             postCandidate.recordIndex, postCandidate.record,
+            postCandidate.executionCount,
             postOp.getOperation()});
         transferNode.receiverEndpoints.push_back(endpointId);
         PipeReceiverEndpoint &insertedEndpoint = pipeReceiverEndpoints.back();
