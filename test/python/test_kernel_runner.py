@@ -251,6 +251,9 @@ class _FakeTTNN:
         self.fabric_config_calls = 0
         self.fabric_directions = {}
         self.fabric_forwarding_links = {}
+        self.mux_client_runtime_calls = []
+        self.mux_kernel_runtime_calls = []
+        self.experimental = SimpleNamespace(fabric_mux=_FakeFabricMux(self))
 
     class CoreCoord:
         def __init__(self, x, y):
@@ -262,6 +265,20 @@ class _FakeTTNN:
 
     class WriterConfigDescriptor:
         pass
+
+    class DataMovementProcessor:
+        RISCV_0 = "RISCV_0"
+
+    class NOC:
+        RISCV_1_default = "RISCV_1_default"
+
+    class CoreType:
+        WORKER = "WORKER"
+
+    class DataMovementConfigDescriptor:
+        def __init__(self, processor, noc):
+            self.processor = processor
+            self.noc = noc
 
     class FabricConfig:
         FABRIC_1D = "linear"
@@ -355,6 +372,7 @@ class _FakeTTNN:
             compiler_include_paths=None,
             defines=None,
             runtime_args=None,
+            opt_level=None,
         ):
             self.kernel_source = kernel_source
             self.core_ranges = core_ranges
@@ -363,6 +381,7 @@ class _FakeTTNN:
             self.config = config
             self.compiler_include_paths = compiler_include_paths or []
             self.defines = defines or []
+            self.opt_level = opt_level
             if isinstance(runtime_args, dict):
                 self.runtime_args = runtime_args
             else:
@@ -505,7 +524,7 @@ class _FakeTTNN:
     def get_global_semaphore_address(semaphore):
         return semaphore["address"]
 
-    def setup_routing_plane_connection(
+    def fabric_connection_rt_args(
         self,
         source_node_id,
         destination_node_ids,
@@ -523,7 +542,14 @@ class _FakeTTNN:
                 (worker_node.x, worker_node.y),
             )
         )
+        _append_fake_worker_semaphores(
+            program_descriptor, worker_node, 2 * len(destination_node_ids)
+        )
         return [0xA0, 0xB0]
+
+    @staticmethod
+    def get_fabric_kernel_defines():
+        return [("API_TYPE_Linear", "1"), ("FABRIC_2D", "1")]
 
     def get_eth_forwarding_direction(self, source_node_id, destination_node_id):
         self.fabric_direction_calls.append((source_node_id, destination_node_id))
@@ -546,12 +572,143 @@ class _FakeFabricNodeId(NamedTuple):
     chip_id: int
 
 
+class _FakeFabricMuxConfig:
+    def __init__(
+        self,
+        *,
+        num_full_size_channels,
+        num_header_only_channels,
+        num_buffers_per_full_size_channel,
+        num_buffers_per_header_only_channel,
+        full_size_channel_buffer_size_bytes,
+        base_l1_address,
+        core_type,
+    ):
+        self.num_full_size_channels = num_full_size_channels
+        self.num_header_only_channels = num_header_only_channels
+        self.num_buffers_per_full_size_channel = num_buffers_per_full_size_channel
+        self.num_buffers_per_header_only_channel = num_buffers_per_header_only_channel
+        self.full_size_channel_buffer_size_bytes = full_size_channel_buffer_size_bytes
+        self.base_l1_address = base_l1_address
+        self.core_type = core_type
+
+    def memory_map_end_address(self):
+        return (
+            self.base_l1_address
+            + self.num_full_size_channels
+            * self.num_buffers_per_full_size_channel
+            * self.full_size_channel_buffer_size_bytes
+            + 0x1000
+        )
+
+    def kernel_compile_time_args(self):
+        return [self.num_full_size_channels, self.base_l1_address]
+
+    def kernel_runtime_args(self, **arguments):
+        arguments["program_descriptor"].mux_kernel_runtime_calls = arguments
+        _append_fake_worker_semaphores(
+            arguments["program_descriptor"], arguments["mux_logical_core"], 2
+        )
+        return [0xE0, arguments["link_index"]]
+
+
+class _FakeFabricMux:
+    class ChannelType:
+        FULL_SIZE = "FULL_SIZE"
+
+    class KernelBuildOptLevel:
+        O3 = "O3"
+
+    Config = _FakeFabricMuxConfig
+
+    def __init__(self, ttnn_api):
+        self.ttnn_api = ttnn_api
+
+    @staticmethod
+    def channel_buffer_size_bytes():
+        return 0x2000
+
+    @staticmethod
+    def client_compile_time_args(*, num_clients, channel_type, config):
+        assert channel_type == _FakeFabricMux.ChannelType.FULL_SIZE
+        assert num_clients == config.num_full_size_channels
+        return [1, config.full_size_channel_buffer_size_bytes, 0x40, 0x44, num_clients]
+
+    def client_runtime_args(self, **arguments):
+        self.ttnn_api.mux_client_runtime_calls.append(arguments.copy())
+        client_index = arguments["client_index"]
+        termination_id = arguments["termination_master_semaphore_id"]
+        if termination_id is None:
+            termination_id = _append_fake_worker_semaphores(
+                arguments["program_descriptor"],
+                arguments["client_logical_core"],
+                1,
+            )[0]
+        local_semaphore_ids = _append_fake_worker_semaphores(
+            arguments["program_descriptor"],
+            arguments["client_logical_core"],
+            4,
+        )
+        return [
+            int(arguments["connection_valid"]),
+            int(arguments["is_termination_master"]),
+            arguments["mux_virtual_core"].x,
+            arguments["mux_virtual_core"].y,
+            0x100 + client_index * 0x20,
+            0x104 + client_index * 0x20,
+            0x108 + client_index * 0x20,
+            0x10C + client_index * 0x20,
+            0x110 + client_index * 0x20,
+            8 + client_index,
+            termination_id,
+            *local_semaphore_ids,
+            arguments["termination_master_virtual_core"].x,
+            arguments["termination_master_virtual_core"].y,
+        ]
+
+
+def _append_fake_worker_semaphores(program_descriptor, worker_core, count):
+    used_ids = {
+        semaphore.id
+        for semaphore in program_descriptor.semaphores
+        if semaphore.core_type == _FakeTTNN.CoreType.WORKER
+        and semaphore.core_ranges.contains(worker_core)
+    }
+    allocated_ids = []
+    core_ranges = _FakeTTNN.CoreRangeSet(
+        [_FakeTTNN.CoreRange(worker_core, worker_core)]
+    )
+    for _ in range(count):
+        semaphore_id = next(
+            candidate_id for candidate_id in range(16) if candidate_id not in used_ids
+        )
+        used_ids.add(semaphore_id)
+        allocated_ids.append(semaphore_id)
+        program_descriptor.semaphores.append(
+            _FakeTTNN.SemaphoreDescriptor(
+                semaphore_id,
+                core_ranges,
+                0,
+                core_type=_FakeTTNN.CoreType.WORKER,
+            )
+        )
+    return allocated_ids
+
+
 class _FakeMeshDevice:
     shape = (1, 2)
 
     @staticmethod
     def get_fabric_node_id(coordinate):
         return _FakeFabricNodeId(0, coordinate.coords[-1])
+
+    @staticmethod
+    def compute_with_storage_grid_size():
+        return _FakeGridSize(4, 2)
+
+    @staticmethod
+    def worker_core_from_logical_core(logical_core):
+        return logical_core
 
 
 def _make_fake_core_ranges(end=(0, 0)):
@@ -3823,6 +3980,437 @@ def test_routing_plane_rejects_link_overcommit_before_mutation(monkeypatch):
     assert fake_ttnn.fabric_setup_calls == []
     assert program.semaphores == []
     assert all(not kernel.runtime_args for kernel in program.kernels)
+
+
+def test_routing_plane_uses_mux_when_interfering_managers_exceed_links(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    destination = _FakeFabricNodeId(0, 1)
+    fake_ttnn.fabric_forwarding_links[destination] = [0]
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    kernel = _FakeTTNN.KernelDescriptor(
+        kernel_source="/tmp/kernel.cpp",
+        core_ranges=_make_fake_core_ranges((3, 0)),
+        compile_time_args=[],
+        common_runtime_args=[0],
+        config=object(),
+    )
+    program = _FakeTTNN.ProgramDescriptor(kernels=[kernel], cbs=[], semaphores=[])
+    source_nodes = tuple((node_x, 0) for node_x in range(4))
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), source_nodes, 0)
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
+        kernel_fabric_manager_intervals=[
+            (_fabric_manager_interval("manager", launch_nodes=source_nodes),)
+        ],
+        kernel_fabric_mux_capable=[True],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=4,
+        grid_rows=1,
+        mux_base_l1_address=0x10000,
+        mux_l1_end_address=0x20000,
+    )
+
+    assert fake_ttnn.fabric_setup_calls == []
+    assert len(program.kernels) == 2
+    mux_kernel = program.kernels[1]
+    assert mux_kernel.kernel_source == "tt_metal/fabric/impl/kernels/tt_fabric_mux.cpp"
+    assert mux_kernel.core_ranges.contains(_FakeTTNN.CoreCoord(3, 1))
+    assert mux_kernel.opt_level == _FakeFabricMux.KernelBuildOptLevel.O3
+    assert len(fake_ttnn.mux_client_runtime_calls) == 4
+    assert [call["client_index"] for call in fake_ttnn.mux_client_runtime_calls] == [
+        0,
+        1,
+        2,
+        3,
+    ]
+    assert dict(kernel.defines) == {
+        "API_TYPE_Linear": "1",
+        "FABRIC_2D": "1",
+        "TTLANG_FABRIC_MUX_CLIENT": "1",
+        "TTLANG_FABRIC_MUX_NUM_BUFFERS": "1",
+        "TTLANG_FABRIC_MUX_CHANNEL_BUFFER_SIZE_BYTES": str(0x2000),
+        "TTLANG_FABRIC_MUX_STATUS_ADDRESS": str(0x40),
+        "TTLANG_FABRIC_MUX_TERMINATION_SIGNAL_ADDRESS": str(0x44),
+    }
+    assert len(program.semaphores) == 19
+    assert all(
+        call["program_descriptor"] is not program
+        for call in fake_ttnn.mux_client_runtime_calls
+    )
+    for node_x in range(4):
+        runtime_args = kernel.runtime_args[node_x][0]
+        assert runtime_args[:6] == [1, 0, 1, 0, 0, 1]
+        assert len(runtime_args) == 24
+        assert runtime_args[-1] == 4
+
+
+def test_routing_plane_supports_direct_and_mux_instances_of_one_kernel(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    destination = _FakeFabricNodeId(0, 1)
+    fake_ttnn.fabric_forwarding_links[destination] = [0, 1]
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    source_nodes = ((0, 0), (1, 0), (2, 0))
+    kernel = _FakeTTNN.KernelDescriptor(
+        kernel_source="/tmp/kernel.cpp",
+        core_ranges=_make_fake_core_ranges((2, 0)),
+        compile_time_args=[],
+        common_runtime_args=[0],
+        config=object(),
+    )
+    program = _FakeTTNN.ProgramDescriptor(kernels=[kernel], cbs=[], semaphores=[])
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), source_nodes, 0)
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0],
+        kernel_fabric_manager_intervals=[
+            (_fabric_manager_interval("manager", launch_nodes=source_nodes),)
+        ],
+        kernel_fabric_mux_capable=[True],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=3,
+        grid_rows=1,
+        mux_base_l1_address=0x10000,
+        mux_l1_end_address=0x20000,
+    )
+
+    assert len(program.kernels) == 2
+    assert len(fake_ttnn.mux_client_runtime_calls) == 2
+    assert len(fake_ttnn.fabric_setup_calls) == 1
+    assert sorted(
+        kernel.runtime_args[node_x][node_y][5] for node_x, node_y in source_nodes
+    ) == [0, 1, 1]
+    assert "TTLANG_FABRIC_MUX_CLIENT" in dict(kernel.defines)
+
+
+def test_routing_plane_sizes_each_mux_for_its_assigned_clients(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    destination = _FakeFabricNodeId(0, 1)
+    fake_ttnn.fabric_forwarding_links[destination] = [0, 1]
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    source_nodes = ((0, 0), (1, 0), (2, 0), (3, 0), (0, 1))
+    kernels = [
+        _FakeTTNN.KernelDescriptor(
+            kernel_source=f"/tmp/kernel_{kernel_index}.cpp",
+            core_ranges=_FakeTTNN.CoreRangeSet(
+                [
+                    _FakeTTNN.CoreRange(
+                        _FakeTTNN.CoreCoord(*source_node),
+                        _FakeTTNN.CoreCoord(*source_node),
+                    )
+                ]
+            ),
+            compile_time_args=[],
+            common_runtime_args=[0],
+            config=object(),
+        )
+        for kernel_index, source_node in enumerate(source_nodes)
+    ]
+    program = _FakeTTNN.ProgramDescriptor(kernels=kernels, cbs=[], semaphores=[])
+    routes = [
+        [kernel_runner.FabricRouteSpec((0, 0), (0, 1), (source_node,), 0)]
+        for source_node in source_nodes
+    ]
+    interval_names = tuple(
+        f"manager_{kernel_index}" for kernel_index in range(len(kernels))
+    )
+    manager_intervals = [
+        (
+            _fabric_manager_interval(
+                interval_name,
+                interfering_intervals=tuple(
+                    other_name
+                    for other_name in interval_names
+                    if other_name != interval_name
+                ),
+                launch_nodes=(source_node,),
+            ),
+        )
+        for interval_name, source_node in zip(interval_names, source_nodes)
+    ]
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=routes,
+        kernel_fabric_runtime_arg_base_common_indices=[0] * len(kernels),
+        kernel_fabric_manager_intervals=manager_intervals,
+        kernel_fabric_mux_capable=[True] * len(kernels),
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=4,
+        grid_rows=2,
+        mux_base_l1_address=0x10000,
+        mux_l1_end_address=0x20000,
+    )
+
+    mux_kernels = program.kernels[len(kernels) :]
+    assert sorted(kernel.compile_time_args[0] for kernel in mux_kernels) == [2, 3]
+    assert sorted(
+        kernel.runtime_args[source_node[0]][source_node[1]][-1]
+        for kernel, source_node in zip(kernels, source_nodes)
+    ) == [2, 2, 3, 3, 3]
+
+
+def test_routing_plane_mux_allocation_failure_does_not_mutate_descriptor(
+    monkeypatch,
+):
+    fake_ttnn = _FakeTTNN()
+    destination = _FakeFabricNodeId(0, 1)
+    fake_ttnn.fabric_forwarding_links[destination] = [0]
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    kernel = _FakeTTNN.KernelDescriptor(
+        kernel_source="/tmp/kernel.cpp",
+        core_ranges=_make_fake_core_ranges((3, 0)),
+        compile_time_args=[],
+        common_runtime_args=[0],
+        config=object(),
+    )
+    program = _FakeTTNN.ProgramDescriptor(kernels=[kernel], cbs=[], semaphores=[])
+    source_nodes = tuple((node_x, 0) for node_x in range(4))
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), source_nodes, 0)
+    client_runtime_args = fake_ttnn.experimental.fabric_mux.client_runtime_args
+
+    def return_invalid_client_runtime_args(**arguments):
+        runtime_args = client_runtime_args(**arguments)
+        if arguments["client_index"] == 1:
+            runtime_args.pop()
+        return runtime_args
+
+    fake_ttnn.experimental.fabric_mux.client_runtime_args = (
+        return_invalid_client_runtime_args
+    )
+
+    with pytest.raises(
+        RuntimeError, match="fabric mux client runtime ABI must contain 17 arguments"
+    ):
+        kernel_runner.configure_routing_plane_runtime_args(
+            program_descriptor=program,
+            kernel_fabric_routes=[[route]],
+            kernel_fabric_runtime_arg_base_common_indices=[0],
+            kernel_fabric_manager_intervals=[
+                (_fabric_manager_interval("manager", launch_nodes=source_nodes),)
+            ],
+            kernel_fabric_mux_capable=[True],
+            mesh_device=_FakeMeshDevice(),
+            device_coordinates=(0, 0),
+            grid_cols=4,
+            grid_rows=1,
+            mux_base_l1_address=0x10000,
+            mux_l1_end_address=0x20000,
+        )
+
+    assert program.kernels == [kernel]
+    assert program.semaphores == []
+    assert kernel.defines == []
+    assert kernel.common_runtime_args == [0]
+    assert not kernel.runtime_args
+
+
+def test_routing_plane_rejects_mux_kernel_semaphore_overcommit_before_mutation(
+    monkeypatch,
+):
+    fake_ttnn = _FakeTTNN()
+    destination = _FakeFabricNodeId(0, 1)
+    fake_ttnn.fabric_forwarding_links[destination] = [0]
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    kernel = _FakeTTNN.KernelDescriptor(
+        kernel_source="/tmp/kernel.cpp",
+        core_ranges=_make_fake_core_ranges((3, 0)),
+        compile_time_args=[],
+        common_runtime_args=[0],
+        config=object(),
+    )
+    mux_core = _FakeTTNN.CoreCoord(3, 1)
+    mux_core_range = _FakeTTNN.CoreRangeSet([_FakeTTNN.CoreRange(mux_core, mux_core)])
+    existing_semaphores = [
+        _FakeTTNN.SemaphoreDescriptor(
+            semaphore_id,
+            mux_core_range,
+            0,
+            core_type=_FakeTTNN.CoreType.WORKER,
+        )
+        for semaphore_id in range(15)
+    ]
+    program = _FakeTTNN.ProgramDescriptor(
+        kernels=[kernel], cbs=[], semaphores=existing_semaphores
+    )
+    source_nodes = tuple((node_x, 0) for node_x in range(4))
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), source_nodes, 0)
+
+    with pytest.raises(
+        ValueError,
+        match=r"fabric resources at node \(3, 1\) require 2 worker semaphore IDs",
+    ):
+        kernel_runner.configure_routing_plane_runtime_args(
+            program_descriptor=program,
+            kernel_fabric_routes=[[route]],
+            kernel_fabric_runtime_arg_base_common_indices=[0],
+            kernel_fabric_manager_intervals=[
+                (_fabric_manager_interval("manager", launch_nodes=source_nodes),)
+            ],
+            kernel_fabric_mux_capable=[True],
+            mesh_device=_FakeMeshDevice(),
+            device_coordinates=(0, 0),
+            grid_cols=4,
+            grid_rows=1,
+            mux_base_l1_address=0x10000,
+            mux_l1_end_address=0x20000,
+        )
+
+    assert program.kernels == [kernel]
+    assert program.semaphores == existing_semaphores
+    assert fake_ttnn.mux_client_runtime_calls == []
+
+
+def test_routing_plane_keeps_direct_managers_when_links_are_sufficient(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    program = _make_fake_fabric_program_at_node(2)
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((1, 0),), 0)
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=[[route], [route]],
+        kernel_fabric_runtime_arg_base_common_indices=[0, 0],
+        kernel_fabric_manager_intervals=[
+            (_fabric_manager_interval("first", interfering_intervals=("second",)),),
+            (_fabric_manager_interval("second", interfering_intervals=("first",)),),
+        ],
+        kernel_fabric_mux_capable=[True, True],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=2,
+        grid_rows=1,
+    )
+
+    assert len(program.kernels) == 2
+    assert len(fake_ttnn.fabric_setup_calls) == 2
+    assert sorted(call[2][0] for call in fake_ttnn.fabric_setup_calls) == [0, 1]
+    assert all(
+        "TTLANG_FABRIC_MUX_CLIENT" not in kernel.defines for kernel in program.kernels
+    )
+
+
+def test_routing_plane_uses_mux_only_in_overcommitted_direction(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    first_destination = _FakeFabricNodeId(0, 1)
+    second_destination = _FakeFabricNodeId(0, 2)
+    fake_ttnn.fabric_directions[first_destination] = 1
+    fake_ttnn.fabric_directions[second_destination] = 2
+    fake_ttnn.fabric_forwarding_links[first_destination] = [0]
+    fake_ttnn.fabric_forwarding_links[second_destination] = [0]
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    source_nodes = ((0, 0), (1, 0), (2, 0), (3, 0))
+    kernels = [
+        _FakeTTNN.KernelDescriptor(
+            kernel_source=f"/tmp/kernel_{kernel_index}.cpp",
+            core_ranges=_FakeTTNN.CoreRangeSet(
+                [
+                    _FakeTTNN.CoreRange(
+                        _FakeTTNN.CoreCoord(*source_node),
+                        _FakeTTNN.CoreCoord(*source_node),
+                    )
+                ]
+            ),
+            compile_time_args=[],
+            common_runtime_args=[0],
+            config=object(),
+        )
+        for kernel_index, source_node in enumerate(source_nodes)
+    ]
+    program = _FakeTTNN.ProgramDescriptor(kernels=kernels, cbs=[], semaphores=[])
+    routes = [
+        [kernel_runner.FabricRouteSpec((0, 0), destination, (source_node,), 0)]
+        for destination, source_node in zip(
+            ((0, 1), (0, 1), (0, 2), (0, 2)), source_nodes
+        )
+    ]
+    manager_intervals = [
+        (_fabric_manager_interval("direct_only", launch_nodes=(source_nodes[0],)),),
+        (_fabric_manager_interval("direct_reuse", launch_nodes=(source_nodes[1],)),),
+        (
+            _fabric_manager_interval(
+                "mux_first",
+                interfering_intervals=("mux_second",),
+                launch_nodes=(source_nodes[2],),
+            ),
+        ),
+        (
+            _fabric_manager_interval(
+                "mux_second",
+                interfering_intervals=("mux_first",),
+                launch_nodes=(source_nodes[3],),
+            ),
+        ),
+    ]
+
+    kernel_runner.configure_routing_plane_runtime_args(
+        program_descriptor=program,
+        kernel_fabric_routes=routes,
+        kernel_fabric_runtime_arg_base_common_indices=[0] * len(kernels),
+        kernel_fabric_manager_intervals=manager_intervals,
+        kernel_fabric_mux_capable=[False, True, True, True],
+        mesh_device=_FakeMeshDevice(),
+        device_coordinates=(0, 0),
+        grid_cols=4,
+        grid_rows=1,
+        mux_base_l1_address=0x10000,
+        mux_l1_end_address=0x20000,
+    )
+
+    assert len(program.kernels) == 5
+    assert len(fake_ttnn.fabric_setup_calls) == 2
+    assert len(fake_ttnn.mux_client_runtime_calls) == 2
+    assert all(call[2] == [0] for call in fake_ttnn.fabric_setup_calls)
+
+
+def test_fabric_target_fingerprint_records_mux_selection(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    destination = _FakeFabricNodeId(0, 1)
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    source_nodes = tuple((node_x, 0) for node_x in range(4))
+    route = kernel_runner.FabricRouteSpec((0, 0), (0, 1), source_nodes, 0)
+    intervals = [(_fabric_manager_interval("manager", launch_nodes=source_nodes),)]
+
+    def build_plan(forwarding_links):
+        fake_ttnn.fabric_forwarding_links[destination] = forwarding_links
+        kernel = _FakeTTNN.KernelDescriptor(
+            kernel_source="/tmp/kernel.cpp",
+            core_ranges=_make_fake_core_ranges((3, 0)),
+            compile_time_args=[],
+            common_runtime_args=[0],
+            config=object(),
+        )
+        program = _FakeTTNN.ProgramDescriptor(kernels=[kernel], cbs=[], semaphores=[])
+        return kernel_runner._build_fabric_target_binding_plan(
+            ttnn_api=fake_ttnn,
+            program_descriptor=program,
+            kernel_fabric_routes=[[route]],
+            kernel_fabric_runtime_arg_base_common_indices=[0],
+            kernel_fabric_manager_intervals=intervals,
+            kernel_fabric_mux_capable=[True],
+            mesh_device=_FakeMeshDevice(),
+            device_coordinates=(0, 0),
+            grid_cols=4,
+            grid_rows=1,
+            mux_base_l1_address=0x10000,
+            mux_l1_end_address=0x20000,
+        )
+
+    mux_plan = build_plan([0])
+    repeated_mux_plan = build_plan([0])
+    direct_plan = build_plan([0, 1, 2, 3])
+
+    assert mux_plan.structural_fingerprint == repeated_mux_plan.structural_fingerprint
+    assert mux_plan.structural_fingerprint != direct_plan.structural_fingerprint
+    assert len(mux_plan.mux_groups) == 1
+    assert direct_plan.mux_groups == ()
 
 
 def test_routing_plane_preserves_existing_runtime_args(monkeypatch):

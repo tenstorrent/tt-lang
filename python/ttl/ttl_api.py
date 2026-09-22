@@ -859,6 +859,7 @@ class CompiledTTNNKernel:
         kernel_fabric_routes=None,
         kernel_fabric_runtime_arg_base_common_indices=None,
         kernel_fabric_manager_intervals=None,
+        kernel_fabric_mux_capable=None,
         mesh_program_placements=None,
         device_domain=None,
         kernel_logical_selectors=None,
@@ -905,6 +906,8 @@ class CompiledTTNNKernel:
                 argument indices containing fabric unique-argument bases.
             kernel_fabric_manager_intervals: Per-kernel fabric manager
                 ownership intervals.
+            kernel_fabric_mux_capable: Per-kernel indication that the compiler
+                proved one single-execution fabric-manager lifetime.
             mesh_program_placements: Optional mesh device ranges. When present,
                 execution uses ttnn.MeshProgramDescriptor.
             device_domain: Logical device domain used for per-device dispatch.
@@ -959,6 +962,13 @@ class CompiledTTNNKernel:
         self.kernel_fabric_manager_intervals = kernel_fabric_manager_intervals or [
             () for _ in kernel_paths
         ]
+        self.kernel_fabric_mux_capable = kernel_fabric_mux_capable or [
+            False for _ in kernel_paths
+        ]
+        if len(self.kernel_fabric_mux_capable) != len(kernel_paths):
+            raise ValueError(
+                "kernel fabric-mux capability count must match kernel count"
+            )
         self.mesh_program_placements = mesh_program_placements
         self.device_domain = device_domain
         self.kernel_logical_selectors = (
@@ -1056,6 +1066,7 @@ class CompiledTTNNKernel:
                 fabric_manager_intervals=self.kernel_fabric_manager_intervals[
                     kernel_idx
                 ],
+                fabric_mux_capable=self.kernel_fabric_mux_capable[kernel_idx],
                 used_dfb_indices=self.kernel_used_dfb_indices[kernel_idx],
                 local_tensor_indices=self.kernel_local_tensor_indices[kernel_idx],
             )
@@ -1644,6 +1655,18 @@ def _get_kernel_fabric_manager_intervals(
     return tuple(intervals)
 
 
+def _get_kernel_fabric_mux_capable(
+    module, kernel_name: str, *, kernel_operation=None
+) -> bool:
+    """Return whether the kernel has one single-execution fabric lifetime."""
+    return (
+        _get_kernel_attributes(module, kernel_name, kernel_operation).get(
+            _ttl_ir.FABRIC_MUX_CAPABLE_ATTR, None
+        )
+        is not None
+    )
+
+
 @dataclass(frozen=True)
 class _KernelConfigurationMetadata:
     """Effective TT-Metal configuration for one generated kernel.
@@ -1713,6 +1736,7 @@ class _KernelDescriptorMetadata:
         fabric_runtime_arg_base_common_index: Common runtime-argument index for
             compiler-managed fabric arguments.
         fabric_manager_intervals: Fabric-manager ownership intervals.
+        fabric_mux_capable: Whether target binding may select mux transport.
         logical_selector: Source-level kernel used to resolve runtime resources.
         function_attributes: Function attributes other than the symbol name and
             launch coordinates. Any difference prevents descriptor sharing.
@@ -1727,6 +1751,7 @@ class _KernelDescriptorMetadata:
     fabric_routes: tuple
     fabric_runtime_arg_base_common_index: Optional[int]
     fabric_manager_intervals: tuple
+    fabric_mux_capable: bool
     logical_selector: Optional[KernelSelector]
     function_attributes: tuple[tuple[str, str], ...]
 
@@ -1841,6 +1866,9 @@ def _snapshot_kernel_descriptor_metadata(
             )
         ),
         fabric_manager_intervals=_get_kernel_fabric_manager_intervals(
+            module, kernel_name, kernel_operation=kernel_operation
+        ),
+        fabric_mux_capable=_get_kernel_fabric_mux_capable(
             module, kernel_name, kernel_operation=kernel_operation
         ),
         logical_selector=function.logical_selector,
@@ -2142,6 +2170,7 @@ def _compile_ttnn_kernel(
     kernel_fabric_routes = []
     kernel_fabric_runtime_arg_base_common_indices = []
     kernel_fabric_manager_intervals = []
+    kernel_fabric_mux_capable = []
     grouped_kernel_logical_selectors = []
     # Profiling reports use the representative source name for each RISC.
     thread_to_kernel = {}
@@ -2167,6 +2196,7 @@ def _compile_ttnn_kernel(
         kernel_fabric_manager_intervals.append(
             descriptor_metadata.fabric_manager_intervals
         )
+        kernel_fabric_mux_capable.append(descriptor_metadata.fabric_mux_capable)
         kernel_fabric_runtime_arg_base_common_indices.append(
             descriptor_metadata.fabric_runtime_arg_base_common_index
         )
@@ -2256,6 +2286,7 @@ def _compile_ttnn_kernel(
             kernel_fabric_runtime_arg_base_common_indices
         ),
         kernel_fabric_manager_intervals=kernel_fabric_manager_intervals,
+        kernel_fabric_mux_capable=kernel_fabric_mux_capable,
         mesh_program_placements=mesh_program_placements,
         device_domain=device_domain,
         kernel_logical_selectors=grouped_kernel_logical_selectors,
@@ -2289,6 +2320,7 @@ def _compile_ttnn_kernel(
                 ),
                 logical_kernel=grouped_kernel_logical_selectors[kernel_idx],
                 fabric_manager_intervals=kernel_fabric_manager_intervals[kernel_idx],
+                fabric_mux_capable=kernel_fabric_mux_capable[kernel_idx],
                 used_dfb_indices=kernel_used_dfb_indices[kernel_idx],
                 local_tensor_indices=kernel_local_tensor_indices[kernel_idx],
             )
@@ -3513,6 +3545,7 @@ def _lower_program_to_kernel(
         pipe_global_semaphores_only_flag = int(
             compiler_options.pipe_global_semaphores_only
         )
+        fabric_mux_flag = int(compiler_options.fabric_mux)
         pipeline_passes += [
             "ttl-lower-dprint-to-emitc",
             (
@@ -3520,6 +3553,7 @@ def _lower_program_to_kernel(
                 f"pipe-computed-addresses={pipe_computed_flag} "
                 f"pipe-capacity-sync={pipe_capacity_sync_flag} "
                 f"pipe-global-semaphores-only={pipe_global_semaphores_only_flag} "
+                f"fabric-mux={fabric_mux_flag} "
                 f"l1-budget-override={l1_budget_override}}}"
             ),
             "func.func(ttkernel-lower-scalar-fp-types)",

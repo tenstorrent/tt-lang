@@ -27,8 +27,8 @@ NODE_COUNT = NODE_GRID[0] * NODE_GRID[1]
 PEER_COUNT = NODE_COUNT - 1
 ALL_TO_ALL_EDGE_COUNT = NODE_COUNT * PEER_COUNT
 SINGLE_RECEIVER_COLLECTIVE_COUNT = 7
-MAX_LOCAL_PIPE_KERNEL_SOURCE_BYTES = 24 * 1024
-MAX_DEVICE_PIPE_KERNEL_SOURCE_BYTES = 32 * 1024
+MAX_LOCAL_PIPE_KERNEL_BODY_BYTES = 6 * 1024
+MAX_DEVICE_PIPE_KERNEL_BODY_BYTES = 8 * 1024
 
 
 class BFloat16Tensor:
@@ -144,7 +144,7 @@ def compile_device_all_to_all():
 
 
 def report_table_driven_kernel_size(output):
-    """Report the largest pipe kernel source section in compiler output."""
+    """Report the largest generated pipe kernel body in compiler output."""
     # Kernel logging appends one newline after the source text.
     pipe_kernel_sources = [
         match.group("source").removesuffix("\n")
@@ -161,21 +161,27 @@ def report_table_driven_kernel_size(output):
         and "routing_plane_scatter_write(" not in kernel_source
         for kernel_source in pipe_kernel_sources
     )
+    # Embedded helper libraries change as protocols are added; kernel_main is
+    # the generated code that would grow if record tables were unrolled.
+    kernel_bodies = [
+        kernel_source[kernel_source.index("void kernel_main()") :]
+        for kernel_source in pipe_kernel_sources
+    ]
     local_kernel_bytes = max(
-        len(kernel_source.encode()) for kernel_source in pipe_kernel_sources[:4]
+        len(kernel_body.encode()) for kernel_body in kernel_bodies[:4]
     )
     device_kernel_bytes = max(
-        len(kernel_source.encode()) for kernel_source in pipe_kernel_sources[4:]
+        len(kernel_body.encode()) for kernel_body in kernel_bodies[4:]
     )
-    assert local_kernel_bytes < MAX_LOCAL_PIPE_KERNEL_SOURCE_BYTES
-    assert device_kernel_bytes < MAX_DEVICE_PIPE_KERNEL_SOURCE_BYTES
+    assert local_kernel_bytes < MAX_LOCAL_PIPE_KERNEL_BODY_BYTES
+    assert device_kernel_bytes < MAX_DEVICE_PIPE_KERNEL_BODY_BYTES
     print(
-        "LOCAL-TABLE-DRIVEN-PIPE-KERNEL-SOURCE-BYTES: "
-        f"{local_kernel_bytes} / {MAX_LOCAL_PIPE_KERNEL_SOURCE_BYTES}"
+        "LOCAL-TABLE-DRIVEN-PIPE-KERNEL-BODY-BYTES: "
+        f"{local_kernel_bytes} / {MAX_LOCAL_PIPE_KERNEL_BODY_BYTES}"
     )
     print(
-        "DEVICE-TABLE-DRIVEN-PIPE-KERNEL-SOURCE-BYTES: "
-        f"{device_kernel_bytes} / {MAX_DEVICE_PIPE_KERNEL_SOURCE_BYTES}"
+        "DEVICE-TABLE-DRIVEN-PIPE-KERNEL-BODY-BYTES: "
+        f"{device_kernel_bytes} / {MAX_DEVICE_PIPE_KERNEL_BODY_BYTES}"
     )
 
 
@@ -232,8 +238,8 @@ if __name__ == "__main__":
 # CHECK-LOOPS-COUNT-8: for (
 # CHECK-LOOPS-NOT: for (
 
-# CHECK-SIZE: LOCAL-TABLE-DRIVEN-PIPE-KERNEL-SOURCE-BYTES: {{[0-9]+}} / 24576
-# CHECK-SIZE: DEVICE-TABLE-DRIVEN-PIPE-KERNEL-SOURCE-BYTES: {{[0-9]+}} / 32768
+# CHECK-SIZE: LOCAL-TABLE-DRIVEN-PIPE-KERNEL-BODY-BYTES: {{[0-9]+}} / 6144
+# CHECK-SIZE: DEVICE-TABLE-DRIVEN-PIPE-KERNEL-BODY-BYTES: {{[0-9]+}} / 8192
 
 # Pipe-record fields must remain compile-time tables; only mutable progress
 # state requires local arrays.
