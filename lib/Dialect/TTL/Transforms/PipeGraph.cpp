@@ -1213,7 +1213,7 @@ static Operation *
 getSelectedRecordLoop(const PipeReference &pipeRef,
                       const PipeGraphAnalysisState &analysisState);
 
-static Value getSelectedPipeQueryOperand(Value value) {
+static std::optional<Value> getSelectedPipeQueryOperand(Value value) {
   if (auto sourceDevice =
           value.getDefiningOp<SelectedPipeSourceDeviceIndexOp>()) {
     return sourceDevice.getPipe();
@@ -1230,7 +1230,7 @@ static Value getSelectedPipeQueryOperand(Value value) {
           value.getDefiningOp<SelectedPipeDestinationCoordinatesOp>()) {
     return destinationCoordinates.getPipe();
   }
-  return {};
+  return std::nullopt;
 }
 
 static LogicalResult
@@ -1238,16 +1238,14 @@ resolveTensorRegionStartIndices(ReceiverTensorRegionInfo &region,
                                 const LaunchExecutionLocation &receiverLocation,
                                 const PipeReference &pipeReference,
                                 std::optional<std::uint64_t> recordIndex,
+                                std::optional<PipeRecordAttr> selectedRecord,
                                 std::uint64_t expectedExecutionCount,
                                 const PipeGraphAnalysisState &analysisState) {
-  std::optional<PipeRecordAttr> selectedRecord;
   Value selectedRecordInductionVariable;
   std::uint64_t selectedRecordInductionValue = 0;
   if (pipeReference.isSelected()) {
-    assert(recordIndex &&
-           *recordIndex < pipeReference.getRecords().getPipes().size() &&
-           "selected tensor destination requires a valid record");
-    selectedRecord = pipeReference.getRecords().getPipes()[*recordIndex];
+    assert(recordIndex && selectedRecord &&
+           "selected tensor destination requires a concrete record");
     Operation *selectedRecordLoop =
         getSelectedRecordLoop(pipeReference, analysisState);
     selectedRecordInductionVariable =
@@ -1255,7 +1253,7 @@ resolveTensorRegionStartIndices(ReceiverTensorRegionInfo &region,
     std::optional<std::uint64_t> inductionValue =
         getPipeNetRecordLoopInductionValue(
             analysisState.pipeRecordLoops.at(selectedRecordLoop),
-            receiverLocation, *recordIndex);
+            receiverLocation, *recordIndex, *selectedRecord);
     assert(inductionValue &&
            "selected receiver record must execute at its launch location");
     selectedRecordInductionValue = *inductionValue;
@@ -1266,10 +1264,10 @@ resolveTensorRegionStartIndices(ReceiverTensorRegionInfo &region,
       return llvm::APInt(IndexType::kInternalStorageBitWidth,
                          selectedRecordInductionValue);
     }
-    Value queryPipe = getSelectedPipeQueryOperand(value);
+    std::optional<Value> queryPipe = getSelectedPipeQueryOperand(value);
     if (selectedRecord && queryPipe) {
       FailureOr<PipeReference> queryReference =
-          getPipeReference(value.getDefiningOp(), queryPipe);
+          getPipeReference(value.getDefiningOp(), *queryPipe);
       if (succeeded(queryReference) && queryReference->isSelected() &&
           getSelectedRecordLoop(*queryReference, analysisState) ==
               getSelectedRecordLoop(pipeReference, analysisState)) {
@@ -1368,10 +1366,10 @@ resolveTensorRegionStartIndices(ReceiverTensorRegionInfo &region,
           if (inductionIt != inductionValues.end()) {
             return inductionIt->second;
           }
-          Value queryPipe = getSelectedPipeQueryOperand(value);
+          std::optional<Value> queryPipe = getSelectedPipeQueryOperand(value);
           if (queryPipe) {
             FailureOr<PipeReference> queryReference =
-                getPipeReference(value.getDefiningOp(), queryPipe);
+                getPipeReference(value.getDefiningOp(), *queryPipe);
             if (succeeded(queryReference) && queryReference->isSelected()) {
               Operation *queryLoop =
                   getSelectedRecordLoop(*queryReference, analysisState);
@@ -1381,19 +1379,27 @@ resolveTensorRegionStartIndices(ReceiverTensorRegionInfo &region,
               if (queryInductionIt != inductionValues.end()) {
                 const PipeNetRecordLoop &queryLoopInfo =
                     analysisState.pipeRecordLoops.at(queryLoop);
-                ArrayRef<PipeRecordAttr> records =
-                    queryReference->getRecords().getPipes();
-                for (std::uint64_t queryRecordIndex = 0;
-                     queryRecordIndex < records.size(); ++queryRecordIndex) {
-                  std::optional<std::uint64_t> inductionValue =
-                      getPipeNetRecordLoopInductionValue(
-                          queryLoopInfo, receiverLocation, queryRecordIndex);
-                  if (inductionValue &&
-                      *inductionValue ==
-                          queryInductionIt->second.getZExtValue()) {
-                    return evaluateSelectedPipeRecordValue(
-                        value, records[queryRecordIndex]);
-                  }
+                std::optional<llvm::APInt> selectedValue;
+                forEachPipeRecord(
+                    queryReference->getRecords(),
+                    [&](std::uint64_t queryRecordIndex,
+                        PipeRecordAttr queryRecord) {
+                      if (selectedValue) {
+                        return;
+                      }
+                      std::optional<std::uint64_t> inductionValue =
+                          getPipeNetRecordLoopInductionValue(
+                              queryLoopInfo, receiverLocation, queryRecordIndex,
+                              queryRecord);
+                      if (inductionValue &&
+                          *inductionValue ==
+                              queryInductionIt->second.getZExtValue()) {
+                        selectedValue =
+                            evaluateSelectedPipeRecordValue(value, queryRecord);
+                      }
+                    });
+                if (selectedValue) {
+                  return selectedValue;
                 }
                 enumerationFailureReason =
                     "the selected PipeNet iteration does not identify a "
@@ -2745,7 +2751,7 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
                 candidates.sends.push_back(
                     {sendOp, selectedRecordIndex, record, maybeExecutionCount});
                 return success();
-      }))) {
+              }))) {
         return failure();
       }
       continue;
@@ -2811,7 +2817,8 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
                         selectedRecordIndex, analysisState, record);
                 if (!maybeExecutionCount || *maybeExecutionCount != 0) {
                   candidates.postsByReceiver[receiver].push_back(
-                      {postOp, selectedRecordIndex, record, maybeExecutionCount});
+                      {postOp, selectedRecordIndex, record,
+                       maybeExecutionCount});
                 }
               });
               if (failed(receiverResult)) {
@@ -2822,7 +2829,7 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
                 candidatesByPipe.erase({pipeKey, deviceTransfer});
               }
               return success();
-    }))) {
+            }))) {
       return failure();
     }
   }
@@ -3139,8 +3146,8 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
           if (failed(postPipeReference) || failed(maybeLocation) ||
               failed(resolveTensorRegionStartIndices(
                   *tensorRegion, *maybeLocation, *postPipeReference,
-                  postCandidate.recordIndex, *postCandidate.executionCount,
-                  analysisState))) {
+                  postCandidate.recordIndex, postCandidate.record,
+                  *postCandidate.executionCount, analysisState))) {
             return failure();
           }
         }
@@ -3174,8 +3181,7 @@ PipeGraph::rebuildEndpointGraph(const PipeTransferIndex &transferIndex,
         pipeReceiverEndpoints.push_back(PipeReceiverEndpoint{
             endpointId, transferNodeId, receiver, std::move(destination),
             postCandidate.recordIndex, postCandidate.record,
-            postCandidate.executionCount,
-            postOp.getOperation()});
+            postCandidate.executionCount, postOp.getOperation()});
         transferNode.receiverEndpoints.push_back(endpointId);
         PipeReceiverEndpoint &insertedEndpoint = pipeReceiverEndpoints.back();
         if (insertedEndpoint.hasDFBDestination()) {
