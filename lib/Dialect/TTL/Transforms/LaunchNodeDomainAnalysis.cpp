@@ -1536,6 +1536,10 @@ static BranchLaunchNodeDomains
 getBranchDomainsImpl(Value condition, const LaunchNodeDomain &current,
                      const LaunchNodeDomainState &state,
                      llvm::DenseMap<Value, bool> &coordCache) {
+  if (std::optional<llvm::APInt> constant = getIntegerConstant(condition)) {
+    return constant->isZero() ? BranchLaunchNodeDomains{{}, current}
+                              : BranchLaunchNodeDomains{current, {}};
+  }
   if (auto pred = condition.getDefiningOp<PipeNetPredicateOpInterface>()) {
     LaunchNodeDomain roleDomain =
         getPipeNetPredicateRoleLaunchNodeDomain(pred, state);

@@ -11,6 +11,16 @@
 // CHECK-NEXT: bounded_unknown = <unknown> within {(0,0), (0,1)}
 // CHECK-NEXT: full_bound_unknown = <unknown> within {(0,0), (0,1), (1,0), (1,1)}
 // CHECK-NEXT: undeclared_pipe = <unknown> within {(0,0), (0,1), (1,0), (1,1)}
+// CHECK-NEXT: constant_false_else = {(0,0), (0,1), (1,0), (1,1)}
+// CHECK-NEXT: constant_true_then = {(0,0), (0,1), (1,0), (1,1)}
+// CHECK-NEXT: false_or_coordinate_then = {(0,0), (0,1)}
+// CHECK-NEXT: false_or_coordinate_else = {(1,0), (1,1)}
+// CHECK-NEXT: true_and_coordinate_then = {(0,0), (0,1)}
+// CHECK-NEXT: true_and_coordinate_else = {(1,0), (1,1)}
+// CHECK-NEXT: coordinate_and_false_else = {(0,0), (0,1), (1,0), (1,1)}
+// CHECK-NEXT: coordinate_or_true_then = {(0,0), (0,1), (1,0), (1,1)}
+// CHECK-NEXT: runtime_or_false_then = {(0,0), (0,1), (1,0), (1,1)}
+// CHECK-NEXT: runtime_or_false_else = {(0,0), (0,1), (1,0), (1,1)}
 // CHECK-NEXT: destination_count_loop = {(1,0)}
 // CHECK-NEXT: graph_destination_count_loop = {(0,0), (0,1), (1,0), (1,1)}
 // CHECK-NEXT: kernel_argument_condition = equivalent
@@ -86,6 +96,51 @@ module attributes {
     %undeclared = ttl.is_src {pipe_net_id = 7 : i64}
     scf.if %undeclared {
       "test.observe"() {test.label = "undeclared_pipe"} : () -> ()
+    }
+
+    %false = arith.constant false
+    %true = arith.constant true
+    scf.if %false {
+    } else {
+      "test.observe"() {test.label = "constant_false_else"} : () -> ()
+    }
+    scf.if %true {
+      "test.observe"() {test.label = "constant_true_then"} : () -> ()
+    } else {
+    }
+
+    // Composed node-membership guards retain their constant initializer until
+    // after launch-domain verification.
+    %false_or_coordinate = arith.ori %false, %is_x_zero : i1
+    scf.if %false_or_coordinate {
+      "test.observe"() {test.label = "false_or_coordinate_then"} : () -> ()
+    } else {
+      "test.observe"() {test.label = "false_or_coordinate_else"} : () -> ()
+    }
+    %true_and_coordinate = arith.andi %true, %is_x_zero : i1
+    scf.if %true_and_coordinate {
+      "test.observe"() {test.label = "true_and_coordinate_then"} : () -> ()
+    } else {
+      "test.observe"() {test.label = "true_and_coordinate_else"} : () -> ()
+    }
+    %coordinate_and_false = arith.andi %is_x_zero, %false : i1
+    scf.if %coordinate_and_false {
+    } else {
+      "test.observe"() {test.label = "coordinate_and_false_else"} : () -> ()
+    }
+    %coordinate_or_true = arith.ori %is_x_zero, %true : i1
+    scf.if %coordinate_or_true {
+      "test.observe"() {test.label = "coordinate_or_true_then"} : () -> ()
+    } else {
+    }
+
+    // A runtime predicate can still select either branch on any launch node.
+    %runtime_condition = arith.cmpi eq, %runtime, %c0 : index
+    %runtime_or_false = arith.ori %runtime_condition, %false : i1
+    scf.if %runtime_or_false {
+      "test.observe"() {test.label = "runtime_or_false_then"} : () -> ()
+    } else {
+      "test.observe"() {test.label = "runtime_or_false_else"} : () -> ()
     }
 
     // A local count removes nodes with no matching destination record.
