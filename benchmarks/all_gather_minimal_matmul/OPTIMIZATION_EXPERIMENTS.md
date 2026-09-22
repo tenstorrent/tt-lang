@@ -323,6 +323,47 @@ strategy against 4.389 ms native (ratio 1.20): the N-round repetition costs
 less where the ring's hops are fast, and the DRAM strategy hangs at start-up on
 that host, an open defect.
 
+### Activation delivery is arrival latency, not local work
+
+Delivery is the whole remaining gap to native: on 8192/6144/36864 the compute
+time matches (about 3.5 ms each) while activation waiting is 3.2 ms for the
+DRAM-staged transport and 0.92 ms for native, about 8 to 10 us per half against
+a 9 us matmul. Four attempts to shorten it on the all-shape host all measured
+flat, and the first three emit byte-identical kernels:
+
+| Change | Result |
+| --- | ---: |
+| Receives posted without blocking, wait placed by the compiler | identical kernel, no change |
+| Two-block distribution buffers | identical kernel, no change |
+| Column receive posted before the other half is consumed | identical kernel, no change |
+| Column multicast landed straight in the matmul buffer on rows that neither multicast nor relay | 1.341 vs 1.337 ms |
+
+The first three are explained by the scheduler: it places receive posts by
+dependency, so reordering them in the source never reaches the device. The
+fourth removes a real 88 KiB L1-to-L1 copy per half and still changes nothing,
+which shows that copy was already overlapped with compute; the wait is time
+spent waiting for the half to arrive over the ring.
+
+Two further measurements bound the cause. Per-half wait does not scale with the
+number of rows a multicast serves (10.56, 10.48 and 9.74 us at nine, six and
+four rows), so the column credit barrier is not the cost. And fabric buffering
+is already at parity: at an 8192-byte payload, native's 24 buffers per client
+channel are 192 KiB against 168 KiB for TT-Lang's 21, both about two halves.
+
+What differs is staging. Native gathers into DRAM once and reads back, so
+compute consumption is decoupled from ring arrival; the L1 transport holds at
+most two 88 KiB halves per direction and consumes them in lock step with the
+ring. That is why the DRAM-staged transport, which has the same decoupling,
+takes the worst input from 9.03 to 6.48 ms, and why the remaining 1.4x over
+native is a question of how far ahead that transport reads rather than of
+multicast, buffer depth, or copy elimination.
+
+Note for anyone reproducing these: the receiver address rule for a collective
+multicast requires one destination SRAM address across receivers, which is what
+forces the separate distribution buffer. The compiler does accept multicasting
+directly into the matmul buffer when the rows involved neither multicast nor
+relay, so that constraint is removable when it becomes worth removing.
+
 ## Eight-device configuration search
 
 The native screen retained the published 12 x 9 transport configuration and
