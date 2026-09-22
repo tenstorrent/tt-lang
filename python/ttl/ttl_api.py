@@ -3568,6 +3568,8 @@ def _lower_program_to_kernel(
             "ttl-verify-pipenet",
             pipe_transport_pass,
             f"func.func({coalesce_dfb_acquires_pass})",
+            "func.func(ttl-lower-topk)",
+            "func.func(ttl-verify-topk-epoch)",
             "ttl-finalize-dfb-indices{"
             f"reuse-user-dfbs={reuse_user_dfbs_flag} "
             "unsafe-assume-allocation-groups="

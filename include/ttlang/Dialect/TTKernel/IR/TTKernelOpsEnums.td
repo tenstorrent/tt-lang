@@ -125,4 +125,19 @@ def TTKernel_InputClamping
   let cppNamespace = "::mlir::tt::ttkernel";
 }
 
+// Mirrors ckernel::TopkTieOrder. Integer values match the TTL enum.
+def TTKernel_TopkTieOrderUnset : I32EnumAttrCase<"Unset", 0, "unset">;
+def TTKernel_TopkTieOrderAscending
+    : I32EnumAttrCase<"Ascending", 1, "ascending">;
+def TTKernel_TopkTieOrderDescending
+    : I32EnumAttrCase<"Descending", 2, "descending">;
+
+def TTKernel_TopkTieOrder
+    : I32EnumAttr<"TopkTieOrder", "TTKernel TopK tie-break order",
+                  [TTKernel_TopkTieOrderUnset, TTKernel_TopkTieOrderAscending,
+                   TTKernel_TopkTieOrderDescending]> {
+  let genSpecializedAttr = 0;
+  let cppNamespace = "::mlir::tt::ttkernel";
+}
+
 #endif

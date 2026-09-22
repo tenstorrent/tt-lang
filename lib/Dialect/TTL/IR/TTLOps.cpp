@@ -20,6 +20,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h" // IWYU pragma: keep
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/Utils/OpaqueCallVerifyUtils.h"
+#include "ttlang/Dialect/Utils/TopkVerify.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -1552,7 +1553,7 @@ mlir::MutableOperandRange mlir::tt::ttl::ComputeOp::getDpsInitsMutable() {
 //===----------------------------------------------------------------------===//
 
 /// Convert the iterator_types attribute from string attrs ("parallel",
-/// "reduction") to the utils::IteratorType enum.
+/// "reduction") to the mlir::utils::IteratorType enum.
 mlir::SmallVector<mlir::utils::IteratorType>
 mlir::tt::ttl::ComputeOp::getIteratorTypesArray() {
   mlir::SmallVector<mlir::utils::IteratorType> result;
@@ -2808,6 +2809,10 @@ mlir::LogicalResult mlir::tt::ttl::TileStoreOp::verify() {
 // DFBInputOpInterface implementations
 //===----------------------------------------------------------------------===//
 
+llvm::SmallVector<unsigned> mlir::tt::ttl::TopkOp::getDFBInputOperandIndices() {
+  return {0, 1};
+}
+
 llvm::SmallVector<unsigned>
 mlir::tt::ttl::ReduceOp::getDFBInputOperandIndices() {
   return {0, 1}; // input and scaler
@@ -2832,8 +2837,8 @@ mlir::tt::ttl::TransposeOp::getDFBInputOperandIndices() {
 // downstream compute and so must be packed out to a DFB.
 static bool needsDFBMaterialization(mlir::Value operand) {
   mlir::Operation *defOp = operand.getDefiningOp();
-  return defOp &&
-         mlir::isa<mlir::tt::ttl::ReduceOp, mlir::tt::ttl::MatmulOp>(defOp);
+  return defOp && mlir::isa<mlir::tt::ttl::ReduceOp, mlir::tt::ttl::MatmulOp,
+                            mlir::tt::ttl::TopkOp>(defOp);
 }
 
 llvm::SmallVector<unsigned>
@@ -3867,4 +3872,148 @@ mlir::tt::ttl::OpaqueCallOp::getDFBNonTransactionalAccesses() {
 
 bool mlir::tt::ttl::OpaqueCallOp::hasUnknownDFBAccess() {
   return getUnknownDfbAccess();
+}
+
+mlir::LogicalResult mlir::tt::ttl::TileTopkLocalSortOp::verify() {
+  if (getStartStep() && !getEndStep()) {
+    return emitOpError("start_step requires end_step");
+  }
+  if (mlir::failed(
+          mlir::tt::utils::verifyTopkStep(*this, getEndStep(), "end_step")) ||
+      mlir::failed(mlir::tt::utils::verifyTopkStep(*this, getStartStep(),
+                                                   "start_step")) ||
+      mlir::failed(mlir::tt::utils::verifyTopkConstantInRange(
+          *this, getDirection(), "direction", 0, 1)) ||
+      mlir::failed(mlir::tt::utils::verifyTopkConstantInRange(
+          *this, getEndPhase(), "end_phase", 1, 5)) ||
+      mlir::failed(mlir::tt::utils::verifyTopkConstantInRange(
+          *this, getStartPhase(), "start_phase", 0, 5)) ||
+      mlir::failed(mlir::tt::utils::verifyTopkPhaseOrder(
+          *this, getStartPhase(), getEndPhase(), "start_phase", "end_phase"))) {
+    return mlir::failure();
+  }
+  return mlir::tt::utils::verifyTopkMode(
+      *this, getStableSort(), getFused(), getRankStamped(),
+      /*tieOrderUnset=*/false, getFp32DestAccEnAttr(), getTagBits());
+}
+
+mlir::LogicalResult mlir::tt::ttl::TileTopkMergeOp::verify() {
+  if (mlir::failed(mlir::tt::utils::verifyTopkConstantInRange(
+          *this, getMergeIteration(), "merge_iteration", 0, 9)) ||
+      mlir::failed(mlir::tt::utils::verifyTopkConstantK(*this, getK()))) {
+    return mlir::failure();
+  }
+  return mlir::tt::utils::verifyTopkMode(
+      *this, getStableSort(), getFused(), getRankStamped(),
+      /*tieOrderUnset=*/false, getFp32DestAccEnAttr(), getTagBits());
+}
+
+mlir::LogicalResult mlir::tt::ttl::TileTopkRebuildOp::verify() {
+  if (mlir::failed(mlir::tt::utils::verifyTopkConstantInRange(
+          *this, getDirection(), "direction", 0, 1)) ||
+      mlir::failed(mlir::tt::utils::verifyTopkConstantInRange(
+          *this, getMergeIteration(), "merge_iteration", 0, 9)) ||
+      mlir::failed(mlir::tt::utils::verifyTopkConstantK(*this, getK())) ||
+      mlir::failed(mlir::tt::utils::verifyTopkConstantInRange(*this, getLogk(),
+                                                              "logk", 2, 6)) ||
+      mlir::failed(mlir::tt::utils::verifyTopkConstantInRange(
+          *this, getSkipSecond(), "skip_second", 0, 1)) ||
+      mlir::failed(
+          mlir::tt::utils::verifyTopkLogkMatchesK(*this, getK(), getLogk()))) {
+    return mlir::failure();
+  }
+  return mlir::tt::utils::verifyTopkMode(
+      *this, getStableSort(), getFused(), getRankStamped(),
+      /*tieOrderUnset=*/false, getFp32DestAccEnAttr(), getTagBits());
+}
+
+mlir::LogicalResult mlir::tt::ttl::TileTopkDefuseOp::verify() {
+  return mlir::tt::utils::verifyTopkConstantInRange(*this, getNumTiles(),
+                                                    "num_tiles", 1, 2);
+}
+
+mlir::LogicalResult mlir::tt::ttl::TileTopkStampLocalPositionsOp::verify() {
+  return mlir::tt::utils::verifyTopkTagBits(*this, getTagBits());
+}
+
+mlir::LogicalResult mlir::tt::ttl::TileTopkStripRankTagsOp::verify() {
+  if (mlir::failed(mlir::tt::utils::verifyTopkTagBits(*this, getTagBits()))) {
+    return mlir::failure();
+  }
+  return mlir::tt::utils::verifyTopkStripFp32(*this, getFp32DestAccEnAttr());
+}
+
+mlir::LogicalResult
+mlir::tt::ttl::TileTopkUint16MoveDestTileToPackHalfOp::verify() {
+  if (getFp32DestAccEnAttr() && !getFp32DestAccEnAttr().getValue()) {
+    return emitOpError(
+        "uint16 index packing requires fp32 destination accumulation");
+  }
+  return mlir::success();
+}
+
+mlir::LogicalResult mlir::tt::ttl::TopkOp::verify() {
+  auto valuesType = mlir::dyn_cast<RankedTensorType>(getValues().getType());
+  auto indicesType = mlir::dyn_cast<RankedTensorType>(getIndices().getType());
+  if (!valuesType || !indicesType || valuesType.getRank() != 2 ||
+      indicesType.getRank() != 2 || !valuesType.hasStaticShape() ||
+      !indicesType.hasStaticShape()) {
+    return emitOpError("values and indices must be static rank-2 tensors");
+  }
+  if (valuesType.getShape() != indicesType.getShape()) {
+    return emitOpError("values and indices must have the same shape");
+  }
+  auto valuesTile =
+      mlir::dyn_cast<ttcore::TileType>(valuesType.getElementType());
+  auto indicesTile =
+      mlir::dyn_cast<ttcore::TileType>(indicesType.getElementType());
+  if (!valuesTile || !indicesTile) {
+    return emitOpError("values and indices must have tile element types");
+  }
+
+  int64_t dim = getDim();
+  if (dim < 0) {
+    dim += valuesType.getRank();
+  }
+  if (dim != valuesType.getRank() - 1) {
+    return emitOpError("dim must be -1 or the last dimension");
+  }
+
+  int64_t k = getK();
+  if (!llvm::is_contained(mlir::tt::utils::kTopkSupportedKValues, k)) {
+    return emitOpError("k must be one of {4, 8, 16, 32, 64}");
+  }
+  if (!getSorted()) {
+    return emitOpError("unsorted topk is not lowered");
+  }
+
+  int64_t height = valuesType.getShape()[0];
+  int64_t width = valuesType.getShape()[1];
+  if (height < 0) {
+    return emitOpError("height must be non-negative");
+  }
+  if (width < 2 || width > 64 || (width & (width - 1)) != 0) {
+    return emitOpError(
+        "width in tiles must be a power of two in the range [2, 64]");
+  }
+  if ((width * 32) % k != 0) {
+    return emitOpError("k must divide the row width in elements");
+  }
+
+  int64_t outputWidth = (k + 31) / 32;
+  SmallVector<int64_t, 2> resultShape = {height, outputWidth};
+  auto resultValues =
+      mlir::dyn_cast<RankedTensorType>(getResultValues().getType());
+  auto resultIndices =
+      mlir::dyn_cast<RankedTensorType>(getResultIndices().getType());
+  if (!resultValues || !resultIndices ||
+      resultValues.getShape() != ArrayRef<int64_t>(resultShape) ||
+      resultIndices.getShape() != ArrayRef<int64_t>(resultShape) ||
+      resultValues.getElementType() != valuesTile ||
+      resultIndices.getElementType() != indicesTile) {
+    return emitOpError(
+        "results must have shape [height, (k + 31) / 32] and the input "
+        "element types");
+  }
+  return mlir::success();
 }

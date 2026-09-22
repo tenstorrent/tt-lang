@@ -177,10 +177,11 @@ findUnavailableDataflowBufferOperand(Operation *operation,
 }
 
 /// Append the configuration requirements imposed by one execution option.
-LogicalResult
-appendExecutionRequirements(Operation *operation, const TileExecutionInfo &info,
-                            SmallVectorImpl<DFBInputUse> &dfbInputUses,
-                            SmallVectorImpl<DestinationUse> &destinationUses) {
+LogicalResult appendExecutionRequirements(
+    Operation *operation, const TileExecutionInfo &info,
+    SmallVectorImpl<DFBInputUse> &dfbInputUses,
+    SmallVectorImpl<DestinationUse> &destinationUses,
+    SmallVectorImpl<Operation *> &fp32DestinationAccumulationUses) {
   for (OpOperand &operand : operation->getOpOperands()) {
     TileOperandRoute route = info.operandRoutes[operand.getOperandNumber()];
     if (route == TileOperandRoute::None) {
@@ -210,6 +211,10 @@ appendExecutionRequirements(Operation *operation, const TileExecutionInfo &info,
     if (route == TileOperandRoute::Dst) {
       destinationUses.push_back({operation, info.primitive, *elementType, 1});
     }
+  }
+
+  if (info.requiresFp32DestinationAccumulation) {
+    fp32DestinationAccumulationUses.push_back(operation);
   }
 
   if (!info.resultInDst) {
@@ -279,9 +284,10 @@ getTileExecutionChoice(TileExecutionOpInterface executionOp) {
       continue;
     }
 
-    TileExecutionOption option{strategy, {}, {}};
+    TileExecutionOption option{strategy, {}, {}, {}};
     if (failed(appendExecutionRequirements(
-            operation, *info, option.dfbInputUses, option.destinationUses))) {
+            operation, *info, option.dfbInputUses, option.destinationUses,
+            option.fp32DestinationAccumulationUses))) {
       return failure();
     }
     options.push_back(std::move(option));
@@ -297,16 +303,29 @@ getTileExecutionChoice(TileExecutionOpInterface executionOp) {
 struct DestinationWidthEvidence {
   Operation *operation;
   std::optional<DestinationUse> use;
+  bool isExplicitPolicyConstraint = false;
 };
 
 /// Diagnose the two constraints that eliminated every destination width.
 void emitDestinationWidthConflict(
     func::FuncOp function, const DestinationWidthEvidence &requires32Bits,
     const DestinationWidthEvidence &requires16Bits) {
-  if (!requires16Bits.use) {
+  if (!requires32Bits.operation) {
+    function.emitOpError(
+        "kernel configuration has conflicting destination width requirements");
+    return;
+  }
+  if (requires16Bits.isExplicitPolicyConstraint) {
     requires32Bits.operation->emitOpError(
         "requires 32-bit destination elements, but fp32 destination "
         "accumulation is explicitly disabled");
+    return;
+  }
+
+  if (!requires16Bits.operation) {
+    requires32Bits.operation->emitOpError(
+        "requires 32-bit destination elements, but no kernel-wide "
+        "destination width supports all tile operations");
     return;
   }
 
@@ -379,8 +398,8 @@ struct ConfigConstraintState {
   }
 
   llvm::SmallVector<ConfigurationCandidate, 4> candidates;
-  DestinationWidthEvidence requires32Bits{nullptr, std::nullopt};
-  DestinationWidthEvidence requires16Bits{nullptr, std::nullopt};
+  DestinationWidthEvidence requires32Bits{nullptr, std::nullopt, false};
+  DestinationWidthEvidence requires16Bits{nullptr, std::nullopt, false};
 };
 
 using ConfigConstraintResult =
@@ -390,7 +409,22 @@ using ConfigConstraintResult =
 ConfigConstraintResult applyConfigConstraints(
     ConfigConstraintState state, const KernelTargetEnvironment &target,
     const KernelConfigPolicy &policy, ArrayRef<DFBInputUse> dfbInputUses,
-    ArrayRef<DestinationUse> destinationUses) {
+    ArrayRef<DestinationUse> destinationUses,
+    ArrayRef<Operation *> fp32DestinationAccumulationUses) {
+  for (Operation *operation : fp32DestinationAccumulationUses) {
+    if (!state.requires32Bits.operation) {
+      state.requires32Bits = {operation, std::nullopt};
+    }
+    llvm::erase_if(state.candidates,
+                   [&](const ConfigurationCandidate &candidate) {
+                     return candidate.destinationElementWidth ==
+                            DestinationElementWidth::Bits16;
+                   });
+    if (state.candidates.empty()) {
+      return ConfigConstraintConflict(
+          DestinationWidthConflict{state.requires32Bits, state.requires16Bits});
+    }
+  }
   for (const DestinationUse &use : destinationUses) {
     bool supportsBits16 = target.supportsDestinationElementWidth(
         use.primitive, use.elementType, DestinationElementWidth::Bits16);
@@ -637,9 +671,9 @@ resolveTileStrategies(ArrayRef<TileStrategyOptions> allOptions,
     size_t compatibleOptions = 0;
     std::optional<ConfigConstraintConflict> choiceConflict;
     for (const TileExecutionOption &option : options) {
-      ConfigConstraintResult result =
-          applyConfigConstraints(state.constraints, target, policy,
-                                 option.dfbInputUses, option.destinationUses);
+      ConfigConstraintResult result = applyConfigConstraints(
+          state.constraints, target, policy, option.dfbInputUses,
+          option.destinationUses, option.fp32DestinationAccumulationUses);
       if (std::holds_alternative<ConfigConstraintState>(result)) {
         ++compatibleOptions;
       } else if (!choiceConflict) {
@@ -665,9 +699,9 @@ resolveTileStrategies(ArrayRef<TileStrategyOptions> allOptions,
   std::optional<ConfigConstraintConflict> immediateConflict;
   std::optional<ConfigConstraintConflict> branchConflict;
   for (const TileExecutionOption &option : allOptions[*selectedChoice]) {
-    ConfigConstraintResult result =
-        applyConfigConstraints(state.constraints, target, policy,
-                               option.dfbInputUses, option.destinationUses);
+    ConfigConstraintResult result = applyConfigConstraints(
+        state.constraints, target, policy, option.dfbInputUses,
+        option.destinationUses, option.fp32DestinationAccumulationUses);
     if (std::holds_alternative<ConfigConstraintConflict>(result)) {
       if (!immediateConflict) {
         immediateConflict =
@@ -900,6 +934,7 @@ static FailureOr<KernelRequirements> collectKernelRequirementsImpl(
         for (TileExecutionOption &option : choice->options) {
           option.dfbInputUses.clear();
           option.destinationUses.clear();
+          option.fp32DestinationAccumulationUses.clear();
         }
       }
       requirements.tileStrategyChoices.push_back(std::move(*choice));
@@ -921,9 +956,10 @@ static FailureOr<KernelRequirements> collectKernelRequirementsImpl(
     if (!contributesConfiguration) {
       return WalkResult::advance();
     }
-    if (failed(appendExecutionRequirements(operation, *info,
-                                           requirements.dfbInputUses,
-                                           requirements.destinationUses))) {
+    if (failed(appendExecutionRequirements(
+            operation, *info, requirements.dfbInputUses,
+            requirements.destinationUses,
+            requirements.fp32DestinationAccumulationUses))) {
       return WalkResult::interrupt();
     }
     if (info->fullFp32Accumulation) {
@@ -1126,14 +1162,15 @@ FailureOr<KernelConfigPlan> resolveKernelConfig(
                      return candidate.destinationElementWidth ==
                             DestinationElementWidth::Bits16;
                    });
-    initialState.requires32Bits = {function.getOperation(), std::nullopt};
+    initialState.requires32Bits = {function.getOperation(), std::nullopt,
+                                   false};
   } else if (policy.fp32DestAccumulation == ConfigSelection::Disabled) {
     llvm::erase_if(initialState.candidates,
                    [](const ConfigurationCandidate &candidate) {
                      return candidate.destinationElementWidth ==
                             DestinationElementWidth::Bits32;
                    });
-    initialState.requires16Bits = {function.getOperation(), std::nullopt};
+    initialState.requires16Bits = {function.getOperation(), std::nullopt, true};
   }
   if (policy.dstSynchronization == ConfigSelection::Enabled) {
     llvm::erase_if(initialState.candidates,
@@ -1148,7 +1185,8 @@ FailureOr<KernelConfigPlan> resolveKernelConfig(
   }
   ConfigConstraintResult fixedResult = applyConfigConstraints(
       initialState, target, policy, requirements.dfbInputUses,
-      requirements.destinationUses);
+      requirements.destinationUses,
+      requirements.fp32DestinationAccumulationUses);
   if (std::holds_alternative<ConfigConstraintConflict>(fixedResult)) {
     emitConfigConstraintConflict(
         function, std::get<ConfigConstraintConflict>(std::move(fixedResult)));

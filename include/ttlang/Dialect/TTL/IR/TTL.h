@@ -227,6 +227,10 @@ constexpr llvm::StringLiteral
 constexpr llvm::StringLiteral
     kCompilerAllocatedAttrName("ttl.compiler_allocated");
 
+/// Discardable `ttl.topk_payload` on `ttl.bind_cb`. Names the representation
+/// stored in that dataflow buffer. Absent means plain value or index tiles.
+constexpr llvm::StringLiteral kTopkPayloadAttrName("ttl.topk_payload");
+
 /// Function attribute recording the first tensor-accessor argument index.
 /// CTA layout is [DFBs, compiler-defined arguments, tensor accessors].
 constexpr llvm::StringLiteral kBaseCTAIndexAttrName("ttl.base_cta_index");

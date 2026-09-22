@@ -17,6 +17,9 @@
 //      changes (unary SFPU, binary SFPU, minmax, FPU binary). The init
 //      key is (init op TypeID, operand values). An init is inserted only
 //      when the key changes. Tracking resets at sync boundaries.
+//      topk_tile_init is one of these inits. Fuse, defuse, stamp, strip,
+//      and canonicalize are not inserted here; ttl-lower-topk places them
+//      on the packed-key buffer lifetime.
 //
 // TODO(#329): Emit init_short variants for cheaper re-inits on type switches.
 //
@@ -68,6 +71,38 @@ static Value resolveOutputCB(Operation *computeOp, StringRef attrName) {
     return WalkResult::advance();
   });
   return result;
+}
+
+// Arguments of topk_tile_init. The compute stages carry the same values so
+// one init can be shared or replaced when the configuration changes.
+struct TopkInitConfig {
+  bool fused = false;
+  bool rankStamped = false;
+  int64_t tagBits = 16;
+};
+
+static TopkInitConfig getTopkInitConfig(Operation *op) {
+  if (isa<ttk::TopkFuseTileOp, ttk::TopkDefuseTileOp>(op)) {
+    return {true, false, 16};
+  }
+  if (auto stamp = dyn_cast<ttk::TopkStampLocalPositionsOp>(op)) {
+    return {false, true, stamp.getTagBits()};
+  }
+  if (auto strip = dyn_cast<ttk::TopkStripRankTagsOp>(op)) {
+    return {false, true, strip.getTagBits()};
+  }
+  if (isa<ttk::TopkCanonicalizeNegzeroValuesOp>(op)) {
+    return {};
+  }
+  if (auto localSort = dyn_cast<ttk::TopkLocalSortOp>(op)) {
+    return {localSort.getFused(), localSort.getRankStamped(),
+            localSort.getTagBits()};
+  }
+  if (auto merge = dyn_cast<ttk::TopkMergeOp>(op)) {
+    return {merge.getFused(), merge.getRankStamped(), merge.getTagBits()};
+  }
+  auto rebuild = cast<ttk::TopkRebuildOp>(op);
+  return {rebuild.getFused(), rebuild.getRankStamped(), rebuild.getTagBits()};
 }
 
 /// Information about how to create an init op for a given compute op.
@@ -200,6 +235,25 @@ static llvm::DenseMap<mlir::TypeID, InitOpInfo> buildComputeToInitMap() {
                                    expOp.getInputClampingAttr());
       }};
 
+  auto createTopkInit = [](OpBuilder &builder, Location location,
+                           Operation *computeOp) {
+    // fused, rank_stamped, and tag_bits select topk_tile_init. The other
+    // TopK template arguments are compute-only.
+    TopkInitConfig config = getTopkInitConfig(computeOp);
+    ttk::TopkTileInitOp::create(builder, location, config.fused,
+                                config.rankStamped,
+                                static_cast<uint32_t>(config.tagBits));
+  };
+  map[mlir::TypeID::get<ttk::TopkLocalSortOp>()] = {createTopkInit};
+  map[mlir::TypeID::get<ttk::TopkMergeOp>()] = {createTopkInit};
+  map[mlir::TypeID::get<ttk::TopkRebuildOp>()] = {createTopkInit};
+  map[mlir::TypeID::get<ttk::TopkFuseTileOp>()] = {createTopkInit};
+  map[mlir::TypeID::get<ttk::TopkDefuseTileOp>()] = {createTopkInit};
+  map[mlir::TypeID::get<ttk::TopkStampLocalPositionsOp>()] = {createTopkInit};
+  map[mlir::TypeID::get<ttk::TopkStripRankTagsOp>()] = {createTopkInit};
+  map[mlir::TypeID::get<ttk::TopkCanonicalizeNegzeroValuesOp>()] = {
+      createTopkInit};
+
   // Transpose: resolves output CB from annotated attribute.
   map[mlir::TypeID::get<ttk::TransposeTileOp>()] = {
       [](OpBuilder &b, Location l, Operation *computeOp) {
@@ -303,6 +357,19 @@ static InitKey computeInitKey(Operation *op) {
     return {typeId, {}, disc};
   }
 
+  if (isa<ttk::TopkLocalSortOp, ttk::TopkMergeOp, ttk::TopkRebuildOp,
+          ttk::TopkFuseTileOp, ttk::TopkDefuseTileOp,
+          ttk::TopkStampLocalPositionsOp, ttk::TopkStripRankTagsOp,
+          ttk::TopkCanonicalizeNegzeroValuesOp>(op)) {
+    // The three stages share one init. Only the init's template arguments
+    // distinguish configurations.
+    TopkInitConfig config = getTopkInitConfig(op);
+    int64_t discriminator = (config.tagBits << 2) |
+                            (static_cast<int64_t>(config.rankStamped) << 1) |
+                            static_cast<int64_t>(config.fused);
+    return {mlir::TypeID::get<ttk::TopkTileInitOp>(), {}, discriminator};
+  }
+
   // For all other ops (SFPU unary/binary, CopyDst): key is just the TypeID.
   return {typeId, {}};
 }
@@ -339,7 +406,6 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
   Block *block = acquireOp->getBlock();
   SyncRegionAnalysis result;
   bool foundRelease = false;
-  bool hadError = false;
 
   for (auto it = std::next(acquireOp->getIterator()); it != block->end();
        ++it) {
@@ -407,23 +473,11 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
           outputCB = normalization.getOutputCb();
         }
       }
-      // Collect output CB from pack ops (both single-tile and block variants).
-      auto collectOutputCB = [&](Value packCB, Operation *packOp) {
+      // The common init configures the first pack format. A later pack of a
+      // different element type is retargeted by pack_reconfig_data_format.
+      auto collectOutputCB = [&](Value packCB, Operation *) {
         if (!outputCB) {
           outputCB = packCB;
-        } else if (outputCB != packCB) {
-          // PACK initialization depends on the DFB element type; capacity does
-          // not affect the configured data format.
-          mlir::Type outputElementType =
-              mlir::cast<ttk::CBType>(outputCB.getType()).getElementType();
-          mlir::Type packElementType =
-              mlir::cast<ttk::CBType>(packCB.getType()).getElementType();
-          if (outputElementType != packElementType) {
-            packOp->emitOpError(
-                "sync region packs to output CBs with different data formats; "
-                "common init cannot configure multiple PACK formats");
-            hadError = true;
-          }
         }
       };
       if (auto pack = dyn_cast<ttk::PackTileOp>(inner)) {
@@ -439,9 +493,6 @@ analyzeSyncRegion(ttk::TileRegsAcquireOp acquireOp, Value &inputCB,
   if (!foundRelease) {
     acquireOp->emitOpError(
         "tile_regs_acquire without matching tile_regs_release");
-    return failure();
-  }
-  if (hadError) {
     return failure();
   }
   return result;
@@ -611,6 +662,52 @@ struct TTKernelInsertInitsPass
     });
 
     moduleOp->walk([&](Operation *op) { op->removeAttr(kInitInserted); });
+
+    // transpose_wh_init configures the packer for its output circular buffer.
+    // A later pack of a different element type, including the section's first
+    // pack, has to reconfigure. The common init's format is the starting
+    // point only until one of these inits runs.
+    moduleOp->walk([&](ttk::TileRegsAcquireOp acquireOp) {
+      Block *block = acquireOp->getBlock();
+      Value configured;
+      SmallVector<std::pair<Operation *, Value>> reconfigs;
+      for (auto it = std::next(acquireOp->getIterator()); it != block->end();
+           ++it) {
+        if (isa<ttk::TileRegsReleaseOp>(&*it)) {
+          break;
+        }
+        (&*it)->walk([&](Operation *inner) {
+          if (auto transpose = dyn_cast<ttk::TransposeInitOp>(inner)) {
+            configured = transpose.getCbOut();
+            return;
+          }
+          Value packCB;
+          if (auto pack = dyn_cast<ttk::PackTileOp>(inner)) {
+            packCB = pack.getOutCb();
+          } else if (auto pack = dyn_cast<ttk::PackWaitedTileOp>(inner)) {
+            packCB = pack.getOutCb();
+          } else if (auto pack = dyn_cast<ttk::PackTileBlockOp>(inner)) {
+            packCB = pack.getOutCb();
+          } else {
+            return;
+          }
+          if (configured) {
+            Type configuredType =
+                cast<ttk::CBType>(configured.getType()).getElementType();
+            Type packType =
+                cast<ttk::CBType>(packCB.getType()).getElementType();
+            if (configuredType != packType) {
+              reconfigs.push_back({inner, packCB});
+            }
+          }
+          configured = packCB;
+        });
+      }
+      for (auto [pack, packCB] : reconfigs) {
+        OpBuilder builder(pack);
+        ttk::PackReconfigDataFormatOp::create(builder, pack->getLoc(), packCB);
+      }
+    });
   }
 };
 

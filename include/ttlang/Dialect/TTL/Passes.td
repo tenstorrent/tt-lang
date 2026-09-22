@@ -905,6 +905,43 @@ def TTLScheduleOperations
   let dependentDialects = [];
 }
 
+def TTLLowerTopk : Pass<"ttl-lower-topk", "::mlir::func::FuncOp"> {
+  let summary = "Lower ttl.topk to the local bitonic TopK sequence";
+  let description = [{
+    Replaces `ttl.topk` with the single-core local bitonic sequence.
+    `stable` selects fused keys: `topk_fuse` runs in the section that first
+    packs those keys, later sections copy and pack the same keys, and
+    `topk_defuse` runs in the section that splits them back into values and
+    indices. The final extract transposes the column-layout result back to
+    row layout. Unstable mode keeps value and index tiles separate and does
+    not emit fuse or defuse.
+
+    Tile loops are unrolled. The row loop stays `scf.for`. Two scratch
+    dataflow buffers alternate so a stage never packs into the buffer it is
+    reading. The identity index tensor is an operand; this pass does not
+    build the reader that generates it.
+  }];
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect",
+    "::mlir::scf::SCFDialect",
+    "::mlir::tensor::TensorDialect"
+  ];
+}
+
+def TTLVerifyTopkEpoch : Pass<"ttl-verify-topk-epoch", "::mlir::func::FuncOp"> {
+  let summary = "Reject a TopK stage whose packed representation escapes";
+  let description = [{
+    Checks each destination-register section. A fused stage either shares
+    its section with `topk_fuse` or reads a fused-key dataflow buffer, and
+    any buffer it packs is fused-key. `topk_defuse` reads fused keys, packs
+    plain tiles, and does not share its section with a fused stage. Fuse and
+    defuse do not share a section. Rank-stamped stages follow the same
+    pattern with stamp and strip. A TopK stage or helper outside a
+    destination-register section is rejected.
+  }];
+  let dependentDialects = [];
+}
+
 def TTLAnnotateCBAssociations
     : Pass<"ttl-annotate-cb-associations", "::mlir::func::FuncOp"> {
   let summary = "Annotate ttl.compute block args with CB index associations";
@@ -1544,6 +1581,11 @@ def TTKernelInsertInits
     whenever the op type changes from the previous compute op in
     linear block order. Init tracking resets at sync boundaries
     (`tile_regs_acquire`/`commit`/`wait`/`release`).
+
+    `topk_tile_init` is inserted from the stage mode. The slab helpers are
+    not inserted here. `ttl-lower-topk` emits them on the packed-key buffer
+    lifetime, and `ttl-verify-topk-epoch` rejects a fused or rank-stamped
+    stage that does not stay on that lifetime.
 
     Example (consecutive same-type ops share one init):
     ```mlir

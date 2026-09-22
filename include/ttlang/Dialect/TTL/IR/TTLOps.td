@@ -1976,6 +1976,263 @@ def TTL_TileMatmulBlockOp : TTL_TileOp<"tile_matmul_block", "Matmul",
   let hasVerifier = 1;
 }
 
+//===----------------------------------------------------------------------===//
+// TopK Operations
+//===----------------------------------------------------------------------===//
+//
+// Template parameters of the metal TopK API are attributes. Omitted attributes
+// keep the metal defaults, and C++ emission prints template arguments only
+// through the last non-default parameter. `fp32_dest_acc_en` is optional:
+// when it is absent, a later template argument is filled with DST_ACCUM_MODE.
+// `tag_bits` selects the shared topk_tile_init instantiation. It is also a
+// topk_merge template parameter. Local sort and rebuild do not take it.
+//
+// `order` is the required global result order; `descending` keeps the
+// largest values. It is distinct from the per-call bitonic `direction`.
+// Lowering derives the metal `largest` helper parameter and, under
+// `stable_sort`, the `tie_order` template parameter from it.
+//
+// The slab helpers are TTL operations with no Python entry point.
+// `ttl-lower-topk` emits them on the edges of the packed-key dataflow-buffer
+// lifetime. `ttkernel-insert-inits` emits only `topk_tile_init`.
+
+defvar TTL_TopkModeAttrs = (ins
+    TTL_TopkOrderAttr:$order,
+    OptionalAttr<BoolAttr>:$fp32_dest_acc_en,
+    DefaultValuedAttr<BoolAttr, "false">:$stable_sort,
+    DefaultValuedAttr<BoolAttr, "false">:$fused,
+    DefaultValuedAttr<BoolAttr, "false">:$rank_stamped,
+    DefaultValuedAttr<I32Attr, "16">:$tag_bits);
+
+def TTL_TileTopkLocalSortOp :
+    TTL_TileOp<"tile_topk_local_sort", "ElementwiseUnary",
+               [MemoryEffects<[MemRead, MemWrite]>,
+                AttrSizedOperandSegments]> {
+  let summary = "Locally sort a two-tile TopK slab in DST";
+  let description = [{
+    Applies the local bitonic sorting stages to value tiles at `dst_index` and
+    `dst_index + 1` and their corresponding index tiles at `dst_index + 2` and
+    `dst_index + 3`. The four tiles must already be resident in DST.
+
+    Optional `end_step` and `start_step` operands select steps within one phase
+    when `end_phase` equals `start_phase`. They map to metal `i_end_step` and
+    `i_start_step` and default to 0 when omitted. `start_step` requires
+    `end_step`. A constant step, when present, is 0 or in the range [4, 6].
+
+    `order` is the global result order. `stable_sort`, `fp32_dest_acc_en`,
+    `fused`, and `rank_stamped` map to the `topk_local_sort` template
+    parameters. `fused`, `rank_stamped`, and `stable_sort` are mutually
+    exclusive, and `fused` or `rank_stamped` rejects an explicit
+    `fp32_dest_acc_en = false`. `tag_bits` configures `topk_tile_init` and is
+    16 unless `rank_stamped` is set, in which case it is in the range [6, 16].
+  }];
+  let arguments = !con((ins Index:$dst_index, I32:$direction,
+                            I32:$end_phase, I32:$start_phase,
+                            Optional<I32>:$end_step, Optional<I32>:$start_step),
+                       TTL_TopkModeAttrs);
+  let assemblyFormat = [{
+    `dst` `[` $dst_index `]` `direction` `=` $direction
+    `end_phase` `=` $end_phase `start_phase` `=` $start_phase
+    (`end_step` `=` $end_step^)? (`start_step` `=` $start_step^)?
+    attr-dict `:` functional-type(operands, results)
+  }];
+  let hasVerifier = 1;
+}
+
+def TTL_TileTopkMergeOp :
+    TTL_TileOp<"tile_topk_merge", "ElementwiseUnary",
+               [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Merge TopK subsequences in a four-tile DST slab";
+  let description = [{
+    Merges the TopK subsequences in the value and index tiles beginning at
+    `dst_index`. The four tiles must already be resident in DST.
+
+    `direction` maps to the `idir` template parameter. False sorts toward the
+    larger values. `stable_sort`, `fp32_dest_acc_en`, `fused`,
+    `rank_stamped`, and `tag_bits` map to the remaining `topk_merge` template
+    parameters. `tag_bits` also configures `topk_tile_init`. `order` and the
+    constraints match `ttl.tile_topk_local_sort`.
+  }];
+  let arguments = !con((ins Index:$dst_index, I32:$merge_iteration, I32:$k),
+                       !con(TTL_TopkModeAttrs,
+                            (ins
+                             DefaultValuedAttr<BoolAttr, "false">:$direction)));
+  let assemblyFormat = [{
+    `dst` `[` $dst_index `]` `iteration` `=` $merge_iteration `k` `=` $k
+    attr-dict `:` functional-type(operands, results)
+  }];
+  let hasVerifier = 1;
+}
+
+def TTL_TileTopkRebuildOp :
+    TTL_TileOp<"tile_topk_rebuild", "ElementwiseUnary",
+               [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Rebuild sorted TopK subsequences in DST";
+  let description = [{
+    Re-sorts the surviving TopK subsequences in the value and index tiles
+    beginning at `dst_index`. The four tiles must already be resident in DST.
+
+    `stable_sort`, `fp32_dest_acc_en`, `fused`, and `rank_stamped` map to the
+    `topk_rebuild` template parameters. `tag_bits` configures
+    `topk_tile_init` and is not a rebuild template parameter. `order` and the
+    constraints match `ttl.tile_topk_local_sort`.
+  }];
+  let arguments = !con((ins Index:$dst_index, I32:$direction,
+                            I32:$merge_iteration, I32:$k, I32:$logk,
+                            I32:$skip_second),
+                       TTL_TopkModeAttrs);
+  let assemblyFormat = [{
+    `dst` `[` $dst_index `]` `direction` `=` $direction
+    `iteration` `=` $merge_iteration `k` `=` $k `logk` `=` $logk
+    `skip_second` `=` $skip_second
+    attr-dict `:` functional-type(operands, results)
+  }];
+  let hasVerifier = 1;
+}
+
+// Internal slab helpers. No Python entry point. `order` selects the metal
+// `largest` argument. `ttl-lower-topk` places fuse at the start of the
+// packed-key lifetime and defuse at its end.
+
+def TTL_TileTopkFuseOp : TTL_Op<"tile_topk_fuse",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Pack a two-tile TopK slab into fused sort keys";
+  let description = [{
+    Packs the value and index tiles at `dst_index` into fused sort keys.
+    Requires 32-bit destination accumulation. `order` selects `largest`.
+  }];
+  let arguments = (ins Index:$dst_index, TTL_TopkOrderAttr:$order);
+  let assemblyFormat = [{
+    `dst` `[` $dst_index `]` attr-dict `:` type($dst_index)
+  }];
+}
+
+def TTL_TileTopkDefuseOp : TTL_Op<"tile_topk_defuse",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Unpack fused TopK keys into value and index tiles";
+  let description = [{
+    Splits packed TopK keys back into value and index tiles. `num_tiles` is
+    1 or 2. Requires 32-bit destination accumulation. `order` selects
+    `largest`.
+  }];
+  let arguments = (ins Index:$dst_index, I32:$num_tiles, TTL_TopkOrderAttr:$order);
+  let assemblyFormat = [{
+    `dst` `[` $dst_index `]` `num_tiles` `=` $num_tiles attr-dict `:`
+    functional-type(operands, results)
+  }];
+  let hasVerifier = 1;
+}
+
+def TTL_TileTopkStampLocalPositionsOp
+    : TTL_Op<"tile_topk_stamp_local_positions",
+             [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Stamp local rank tags onto a TopK value slab";
+  let description = [{
+    Writes local rank tags into the two-tile value slab at `dst_index`.
+    Requires 32-bit destination accumulation. `tag_bits` is in [6, 16].
+    `order` selects `largest`.
+  }];
+  let arguments = (ins Index:$dst_index, TTL_TopkOrderAttr:$order,
+                       DefaultValuedAttr<I32Attr, "16">:$tag_bits);
+  let assemblyFormat = [{
+    `dst` `[` $dst_index `]` attr-dict `:` type($dst_index)
+  }];
+  let hasVerifier = 1;
+}
+
+def TTL_TileTopkStripRankTagsOp : TTL_Op<"tile_topk_strip_rank_tags",
+    [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Clear rank tags from one TopK value tile";
+  let description = [{
+    Clears rank tags from one value tile. Requires 32-bit destination
+    accumulation. An explicit `fp32_dest_acc_en = false` is rejected.
+    `tag_bits` is in [6, 16].
+  }];
+  let arguments = (ins Index:$dst_index,
+                       OptionalAttr<BoolAttr>:$fp32_dest_acc_en,
+                       DefaultValuedAttr<I32Attr, "16">:$tag_bits);
+  let assemblyFormat = [{
+    `dst` `[` $dst_index `]` attr-dict `:` type($dst_index)
+  }];
+  let hasVerifier = 1;
+}
+
+def TTL_TileTopkCanonicalizeNegzeroValuesOp
+    : TTL_Op<"tile_topk_canonicalize_negzero_values",
+             [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Fold negative zero in a stable TopK value slab";
+  let description = [{
+    Folds -0.0 into +0.0 in a two-tile value slab before a stable local sort.
+    The call is a no-op unless values are an fp32 family in 32-bit destination
+    registers.
+  }];
+  let arguments = (ins Index:$dst_index,
+                       OptionalAttr<BoolAttr>:$fp32_dest_acc_en);
+  let assemblyFormat = [{
+    `dst` `[` $dst_index `]` attr-dict `:` type($dst_index)
+  }];
+}
+
+def TTL_TileTopkUint16MoveDestTileToPackHalfOp
+    : TTL_Op<"tile_topk_uint16_move_dest_tile_to_pack_half",
+             [MemoryEffects<[MemRead, MemWrite]>]> {
+  let summary = "Move a u16 TopK index tile into the packer-visible half";
+  let description = [{
+    Moves u16 index datums from the low half of each 32-bit destination word
+    into the packer-visible high half after a u16 transpose. Requires 32-bit
+    destination accumulation. An explicit `fp32_dest_acc_en = false` is
+    rejected.
+  }];
+  let arguments = (ins Index:$dst_index,
+                       OptionalAttr<BoolAttr>:$fp32_dest_acc_en);
+  let assemblyFormat = [{
+    `dst` `[` $dst_index `]` attr-dict `:` type($dst_index)
+  }];
+  let hasVerifier = 1;
+}
+
+def TTL_TopkOp : TTL_Op<"topk", [
+    MemoryEffects<[MemRead, MemWrite]>,
+    DeclareOpInterfaceMethods<TTL_DFBInputOpInterface>]> {
+  let summary = "Select the top k values along the last dimension";
+  let description = [{
+    Returns the `k` largest or smallest values in each row, together with
+    their indices. `values` and `indices` are rank-2 tensors of tiles with
+    the same static shape. Both operands are read from dataflow buffers. A
+    computed `values` tensor is materialized into a compiler buffer before
+    the sort, so the operation can follow other compute in the same kernel.
+    `indices` is the identity index tensor published by data movement; this
+    operation does not generate that tensor.
+
+    `dim` is -1 or the last dimension. `k` is one of {4, 8, 16, 32, 64}.
+    The row width in tiles is a power of two in [2, 64], and `k` divides the
+    row width in elements. `sorted` must be true.
+
+    `stable` selects fused-key sort keys. The comparator-stable network is
+    not used. Rank-stamped cascade, widths above 64 tiles, and multi-core
+    merge are not lowered.
+
+    Results have shape `[height, (k + 31) / 32]` and the input element types.
+    Each result is stored once into a reserved dataflow buffer of that shape.
+    A multiply of a result reads a compiler buffer filled by that store.
+  }];
+  let arguments = (ins
+    AnyRankedTensor:$values,
+    AnyRankedTensor:$indices,
+    I64Attr:$k,
+    I64Attr:$dim,
+    DefaultValuedAttr<BoolAttr, "true">:$largest,
+    DefaultValuedAttr<BoolAttr, "true">:$sorted,
+    DefaultValuedAttr<BoolAttr, "false">:$stable);
+  let results = (outs AnyRankedTensor:$result_values,
+                      AnyRankedTensor:$result_indices);
+  let assemblyFormat = [{
+    $values `,` $indices `k` `=` $k `dim` `=` $dim attr-dict `:`
+    functional-type(operands, results)
+  }];
+  let hasVerifier = 1;
+}
+
 // Circular buffer synchronization operations
 //===----------------------------------------------------------------------===//
 
