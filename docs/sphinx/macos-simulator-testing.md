@@ -6,19 +6,19 @@ tt-lang's runtime (`REQUIRES: tt-device`) tests against that simulator inside a
 Linux VM. Runtime tests need tt-metal, which is Linux-only, so they run in a
 Lima VM rather than on the macOS host.
 
-## Two different "simulators"
+## Three non-silicon execution paths
 
 Do not conflate them:
 
-| | Functional simulator | Hardware simulator |
-|---|---|---|
-| Name | `tt-lang-sim` | ttsim -- `libttsim.so` (public `tenstorrent/ttsim`; custom forks supported) |
-| What it is | tt-lang ops as pure Python (torch-backed) | Simulates the Tensix/RISC-V device; loaded by tt-metal via `TT_METAL_SIMULATOR` |
-| Needs tt-metal? | No | Yes |
-| Runs on macOS host? | Yes (native) | No -- needs Linux (Lima VM) |
-| Docs | [simulator.md](simulator.md) | this page |
+| | Functional simulator | Compiler-backed emulator | Hardware simulator |
+|---|---|---|---|
+| Name | `tt-lang-sim` | `tt-lang-sim --backend emule` | ttsim -- `libttsim.so` (public `tenstorrent/ttsim`; custom forks supported) |
+| What it is | TT-Lang operations as pure Python (torch-backed) | Real TT-Lang compiler and tt-metal dispatch, with kernels executed by tt-emule | Simulates the Tensix/RISC-V device; loaded by tt-metal via `TT_METAL_SIMULATOR` |
+| Needs tt-metal? | No | Yes | Yes |
+| macOS execution | Native | Linux amd64 container | Linux VM |
+| Docs | [simulator.md](simulator.md) | [simulator.md](simulator.md) | this page |
 
-This page is about the hardware simulator. For `tt-lang-sim`, see
+This page is about the hardware simulator. For both `tt-lang-sim` backends, see
 [simulator.md](simulator.md).
 
 ## macOS host toolchain build (LLVM/MLIR only)

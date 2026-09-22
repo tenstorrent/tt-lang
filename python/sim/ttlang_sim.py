@@ -250,9 +250,21 @@ def main() -> None:
         epilog="Examples:\n"
         "  tt-lang-sim examples/eltwise_add.py\n"
         "  tt-lang-sim examples/elementwise-tutorial/step_3_multinode.py --grid 4,4\n"
-        "  tt-lang-sim examples/eltwise_add.py --max-l1 1572864",
+        "  tt-lang-sim examples/eltwise_add.py --max-l1 1572864\n\n"
+        "Compiler-backed emulation (source checkout only):\n"
+        "  ./bin/tt-lang-sim program.py --backend emule",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         add_help=False,
+    )
+
+    parser.add_argument(
+        "--backend",
+        choices=["python", "emule"],
+        default="python",
+        help=(
+            "Execution backend. Compiler-backed emule is available only from "
+            "a source checkout through ./bin/tt-lang-sim."
+        ),
     )
 
     parser.add_argument(
@@ -373,6 +385,12 @@ def main() -> None:
     args, script_args = parser.parse_known_args(argv[1:])
     args.target = first
     args.script_args = script_args
+
+    if args.backend == "emule":
+        parser.error(
+            "the emule backend requires a TT-Lang source checkout; "
+            "run ./bin/tt-lang-sim SCRIPT.py --backend emule"
+        )
 
     # Set up simulator imports before running any code
     setup_simulator_imports()
