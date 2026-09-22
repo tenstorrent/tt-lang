@@ -68,12 +68,12 @@ def make_bidirectional_dram_all_gather_matmul_operation(
         for m_worker_index in range(m_worker_count)
     )
     activation_forward_net = ttl.PipeNet(
+        [ttl.Pipe(src=node, dst=node) for node in forward_client_nodes],
         graph=make_ring_graph(device_domain, config.mesh_shape),
-        local_nodes=forward_client_nodes,
     )
     activation_backward_net = ttl.PipeNet(
+        [ttl.Pipe(src=node, dst=node) for node in backward_client_nodes],
         graph=make_ring_graph(device_domain, config.mesh_shape, reverse=True),
-        local_nodes=backward_client_nodes,
     )
     forward_activation_to_assembly_net = ttl.PipeNet(
         [

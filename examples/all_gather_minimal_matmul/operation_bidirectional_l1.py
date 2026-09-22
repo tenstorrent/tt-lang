@@ -71,12 +71,12 @@ def make_bidirectional_l1_all_gather_matmul_operation(
         for m_worker_index in range(m_worker_count)
     )
     activation_forward_net = ttl.PipeNet(
+        forward_client_pipes,
         graph=make_ring_graph(device_domain, config.mesh_shape),
-        local_pipes=forward_client_pipes,
     )
     activation_backward_net = ttl.PipeNet(
+        backward_client_pipes,
         graph=make_ring_graph(device_domain, config.mesh_shape, reverse=True),
-        local_pipes=backward_client_pipes,
     )
     forward_activation_compute_net = ttl.PipeNet(
         [

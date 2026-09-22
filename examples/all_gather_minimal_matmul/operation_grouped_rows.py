@@ -59,8 +59,8 @@ def make_grouped_row_all_gather_matmul_operation(
         for communication_worker_index in range(communication_worker_count)
     )
     activation_all_gather_net = ttl.PipeNet(
+        [ttl.Pipe(src=node, dst=node) for node in communication_worker_nodes],
         graph=make_ring_graph(device_domain, config.mesh_shape),
-        local_nodes=communication_worker_nodes,
     )
     activation_entry_net = ttl.PipeNet(
         [
