@@ -13,7 +13,7 @@ import ttl
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
 
-from ttlang_test_utils import get_fabric_mesh_shape, open_fabric_mesh
+from ttlang_test_utils import get_fabric_mesh_shape, open_fabric_mesh, to_dram
 from utils.correctness import assert_allclose
 
 pytestmark = pytest.mark.multi_device
@@ -289,10 +289,10 @@ def _make_repeated_one_to_many_direct_dram_receive(mesh_shape, repeat_count):
 
 
 @pytest.mark.parametrize(
-    "torch_dtype,ttnn_dtype,rtol,atol",
+    "torch_dtype,rtol,atol",
     [
-        pytest.param(torch.bfloat16, ttnn.bfloat16, 0.05, 1.0, id="bf16"),
-        pytest.param(torch.float32, ttnn.float32, 1e-5, 1e-5, id="fp32"),
+        pytest.param(torch.bfloat16, 0.05, 1.0, id="bf16"),
+        pytest.param(torch.float32, 1e-5, 1e-5, id="fp32"),
     ],
 )
 @pytest.mark.parametrize(
@@ -305,7 +305,7 @@ def _make_repeated_one_to_many_direct_dram_receive(mesh_shape, repeat_count):
         "two-scatter-packets",
     ],
 )
-def test_pipe_receive_to_dram_region(torch_dtype, ttnn_dtype, rtol, atol, block_shape):
+def test_pipe_receive_to_dram_region(torch_dtype, rtol, atol, block_shape):
     mesh_shape = get_fabric_mesh_shape(fabric_config=ttnn.FabricConfig.FABRIC_2D)
     device_count = prod(mesh_shape)
     if device_count < 2:
@@ -322,28 +322,19 @@ def test_pipe_receive_to_dram_region(torch_dtype, ttnn_dtype, rtol, atol, block_
         fabric_config=ttnn.FabricConfig.FABRIC_2D,
     ) as mesh:
         mesh_mapper = ttnn.ShardTensorToMesh(mesh, dim=0)
-        inp = ttnn.from_torch(
+        inp = to_dram(
             inp_torch,
-            dtype=ttnn_dtype,
-            layout=ttnn.TILE_LAYOUT,
-            device=mesh,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh,
             mesh_mapper=mesh_mapper,
         )
-        out = ttnn.from_torch(
+        out = to_dram(
             out_torch,
-            dtype=ttnn_dtype,
-            layout=ttnn.TILE_LAYOUT,
-            device=mesh,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh,
             mesh_mapper=mesh_mapper,
         )
-        observed = ttnn.from_torch(
+        observed = to_dram(
             out_torch,
-            dtype=ttnn_dtype,
-            layout=ttnn.TILE_LAYOUT,
-            device=mesh,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh,
             mesh_mapper=mesh_mapper,
         )
 
@@ -365,10 +356,10 @@ def test_pipe_receive_to_dram_region(torch_dtype, ttnn_dtype, rtol, atol, block_
 
 
 @pytest.mark.parametrize(
-    "torch_dtype,ttnn_dtype,rtol,atol",
+    "torch_dtype,rtol,atol",
     [
-        pytest.param(torch.bfloat16, ttnn.bfloat16, 0.05, 1.0, id="bf16"),
-        pytest.param(torch.float32, ttnn.float32, 1e-5, 1e-5, id="fp32"),
+        pytest.param(torch.bfloat16, 0.05, 1.0, id="bf16"),
+        pytest.param(torch.float32, 1e-5, 1e-5, id="fp32"),
     ],
 )
 @pytest.mark.parametrize(
@@ -382,7 +373,7 @@ def test_pipe_receive_to_dram_region(torch_dtype, ttnn_dtype, rtol, atol, block_
     ids=["reused-destination", "disjoint-destinations"],
 )
 def test_repeated_pipe_receive_to_dram_region(
-    torch_dtype, ttnn_dtype, rtol, atol, block_shape, disjoint_destinations
+    torch_dtype, rtol, atol, block_shape, disjoint_destinations
 ):
     mesh_shape = get_fabric_mesh_shape(fabric_config=ttnn.FabricConfig.FABRIC_2D)
     device_count = prod(mesh_shape)
@@ -417,28 +408,19 @@ def test_repeated_pipe_receive_to_dram_region(
         fabric_config=ttnn.FabricConfig.FABRIC_2D,
     ) as mesh:
         mesh_mapper = ttnn.ShardTensorToMesh(mesh, dim=0)
-        inp = ttnn.from_torch(
+        inp = to_dram(
             inp_torch,
-            dtype=ttnn_dtype,
-            layout=ttnn.TILE_LAYOUT,
-            device=mesh,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh,
             mesh_mapper=mesh_mapper,
         )
-        staging = ttnn.from_torch(
+        staging = to_dram(
             staging_torch,
-            dtype=ttnn_dtype,
-            layout=ttnn.TILE_LAYOUT,
-            device=mesh,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh,
             mesh_mapper=mesh_mapper,
         )
-        observed = ttnn.from_torch(
+        observed = to_dram(
             observed_torch,
-            dtype=ttnn_dtype,
-            layout=ttnn.TILE_LAYOUT,
-            device=mesh,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh,
             mesh_mapper=mesh_mapper,
         )
 
@@ -454,7 +436,16 @@ def test_repeated_pipe_receive_to_dram_region(
     assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
 
 
-def test_concurrent_bidirectional_pipe_receive_to_disjoint_dram_regions():
+@pytest.mark.parametrize(
+    "torch_dtype,rtol,atol",
+    [
+        pytest.param(torch.bfloat16, 0.05, 1.0, id="bf16"),
+        pytest.param(torch.float32, 1e-5, 1e-5, id="fp32"),
+    ],
+)
+def test_concurrent_bidirectional_pipe_receive_to_disjoint_dram_regions(
+    torch_dtype, rtol, atol
+):
     mesh_shape = get_fabric_mesh_shape(fabric_config=ttnn.FabricConfig.FABRIC_2D)
     if mesh_shape[0] < 2:
         pytest.skip("requires a one-dimensional multi-device mesh")
@@ -462,7 +453,7 @@ def test_concurrent_bidirectional_pipe_receive_to_disjoint_dram_regions():
     shard_shape = (worker_count * TILE_SIZE, TILE_SIZE)
     logical_shape = (prod(mesh_shape) * shard_shape[0], shard_shape[1])
     input_device_shards = torch.empty(
-        (prod(mesh_shape), *shard_shape), dtype=torch.bfloat16
+        (prod(mesh_shape), *shard_shape), dtype=torch_dtype
     )
     for device_index in range(prod(mesh_shape)):
         for worker_index in range(worker_count):
@@ -471,7 +462,7 @@ def test_concurrent_bidirectional_pipe_receive_to_disjoint_dram_regions():
                 device_index * worker_count + worker_index + 1
             )
     inp_torch = input_device_shards.reshape(logical_shape)
-    zero_torch = torch.zeros(logical_shape, dtype=torch.bfloat16)
+    zero_torch = torch.zeros(logical_shape, dtype=torch_dtype)
     concurrent_direct_dram_receive = _make_concurrent_bidirectional_direct_dram_receive(
         mesh_shape, worker_count
     )
@@ -481,28 +472,19 @@ def test_concurrent_bidirectional_pipe_receive_to_disjoint_dram_regions():
         fabric_config=ttnn.FabricConfig.FABRIC_2D,
     ) as mesh:
         mesh_mapper = ttnn.ShardTensorToMesh(mesh, dim=0)
-        inp = ttnn.from_torch(
+        inp = to_dram(
             inp_torch,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=mesh,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh,
             mesh_mapper=mesh_mapper,
         )
-        staging = ttnn.from_torch(
+        staging = to_dram(
             zero_torch,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=mesh,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh,
             mesh_mapper=mesh_mapper,
         )
-        observed = ttnn.from_torch(
+        observed = to_dram(
             zero_torch,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=mesh,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh,
             mesh_mapper=mesh_mapper,
         )
 
@@ -523,10 +505,19 @@ def test_concurrent_bidirectional_pipe_receive_to_disjoint_dram_regions():
         input_worker_tiles[:, 1::2], shifts=-1, dims=0
     )
     expected = expected_worker_tiles.reshape(logical_shape)
-    assert_allclose(result.float(), expected.float(), rtol=0.05, atol=1.0)
+    assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
 
 
-def test_repeated_one_to_many_pipe_receive_uses_per_record_occurrence_counters():
+@pytest.mark.parametrize(
+    "torch_dtype,rtol,atol",
+    [
+        pytest.param(torch.bfloat16, 0.05, 1.0, id="bf16"),
+        pytest.param(torch.float32, 1e-5, 1e-5, id="fp32"),
+    ],
+)
+def test_repeated_one_to_many_pipe_receive_uses_per_record_occurrence_counters(
+    torch_dtype, rtol, atol
+):
     mesh_shape = get_fabric_mesh_shape(fabric_config=ttnn.FabricConfig.FABRIC_2D)
     device_count = prod(mesh_shape)
     if device_count < 3:
@@ -534,12 +525,10 @@ def test_repeated_one_to_many_pipe_receive_uses_per_record_occurrence_counters()
     repeat_count = 2
     shard_shape = (repeat_count * TILE_SIZE, TILE_SIZE)
     logical_shape = (device_count * shard_shape[0], shard_shape[1])
-    input_device_shards = torch.zeros(
-        (device_count, *shard_shape), dtype=torch.bfloat16
-    )
-    input_device_shards[0] = torch.randn(shard_shape, dtype=torch.bfloat16)
+    input_device_shards = torch.zeros((device_count, *shard_shape), dtype=torch_dtype)
+    input_device_shards[0] = torch.randn(shard_shape, dtype=torch_dtype)
     inp_torch = input_device_shards.reshape(logical_shape)
-    zero_torch = torch.zeros(logical_shape, dtype=torch.bfloat16)
+    zero_torch = torch.zeros(logical_shape, dtype=torch_dtype)
     repeated_receive = _make_repeated_one_to_many_direct_dram_receive(
         mesh_shape, repeat_count
     )
@@ -549,28 +538,19 @@ def test_repeated_one_to_many_pipe_receive_uses_per_record_occurrence_counters()
         fabric_config=ttnn.FabricConfig.FABRIC_2D,
     ) as mesh:
         mesh_mapper = ttnn.ShardTensorToMesh(mesh, dim=0)
-        inp = ttnn.from_torch(
+        inp = to_dram(
             inp_torch,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=mesh,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh,
             mesh_mapper=mesh_mapper,
         )
-        staging = ttnn.from_torch(
+        staging = to_dram(
             zero_torch,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=mesh,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh,
             mesh_mapper=mesh_mapper,
         )
-        observed = ttnn.from_torch(
+        observed = to_dram(
             zero_torch,
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-            device=mesh,
-            memory_config=ttnn.DRAM_MEMORY_CONFIG,
+            mesh,
             mesh_mapper=mesh_mapper,
         )
 
@@ -583,4 +563,4 @@ def test_repeated_one_to_many_pipe_receive_uses_per_record_occurrence_counters()
     expected_device_shards = torch.zeros_like(input_device_shards)
     expected_device_shards[1:3] = input_device_shards[0]
     expected = expected_device_shards.reshape(logical_shape)
-    assert_allclose(result.float(), expected.float(), rtol=0.05, atol=1.0)
+    assert_allclose(result.float(), expected.float(), rtol=rtol, atol=atol)
