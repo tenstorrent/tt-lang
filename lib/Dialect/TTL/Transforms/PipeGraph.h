@@ -342,6 +342,8 @@ struct PipeReceiverEndpoint {
   /// Selected callback identity; both fields are absent for a static post.
   std::optional<std::uint64_t> postRecordIndex;
   std::optional<PipeRecordAttr> postRecord;
+  /// Exact post count at the receiver location, absent when not provable.
+  std::optional<std::uint64_t> executionCount;
   Operation *postOp = nullptr;
 
   bool hasDFBDestination() const {
