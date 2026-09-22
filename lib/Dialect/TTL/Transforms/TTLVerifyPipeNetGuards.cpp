@@ -92,7 +92,10 @@ StringRef getPipeEventName(PipeEventKind kind) {
 /// One completion alternative of a receive wait-any event.
 struct PipeWaitAnyAlternative {
   PipeType pipeType;
+  DeviceTransferAttr deviceTransfer;
   Operation *receivePost = nullptr;
+  Operation *selectedForeachOp = nullptr;
+  int64_t selectedRecordIndex = -1;
 };
 
 /// One pipe synchronization event on the launch-node domain where it executes.
@@ -149,6 +152,62 @@ getPipeEventExecutionLocation(const PipeEvent &event, LaunchNodeCoord node) {
   PipeRole role = event.kind == PipeEventKind::Send ? PipeRole::Source
                                                     : PipeRole::Destination;
   return getPipeExecutionLocation(node, event.deviceTransfer, role);
+}
+
+// Select wait-any alternatives for the active callback records at `node` and
+// require graph alternatives to use one logical destination device.
+FailureOr<PipeEvent>
+resolvePipeWaitAnyEvent(const PipeEvent &event, LaunchNodeCoord node,
+                        ArrayRef<ActivePipeNetRecord> activeRecords) {
+  PipeEvent resolvedEvent = event;
+  SmallVector<PipeWaitAnyAlternative> activeAlternatives;
+  DeviceTransferAttr activeDeviceTransfer;
+  std::optional<LaunchExecutionLocation> activeDeviceLocation;
+  for (const PipeWaitAnyAlternative &alternative : event.waitAnyAlternatives) {
+    if (alternative.selectedForeachOp) {
+      std::optional<std::uint64_t> activeRecordIndex =
+          getActivePipeNetRecordIndex(activeRecords,
+                                      alternative.selectedForeachOp);
+      assert(activeRecordIndex &&
+             "selected wait-any candidate must be nested in its foreach "
+             "operation");
+      if (*activeRecordIndex !=
+          static_cast<std::uint64_t>(alternative.selectedRecordIndex)) {
+        continue;
+      }
+    }
+    activeAlternatives.push_back(alternative);
+    if (!alternative.deviceTransfer) {
+      continue;
+    }
+    FailureOr<LaunchExecutionLocation> alternativeLocation =
+        getPipeExecutionLocation(node, alternative.deviceTransfer,
+                                 PipeRole::Destination);
+    if (failed(alternativeLocation)) {
+      event.op->emitOpError(
+          "device-range fabric transfers require scatter target lowering");
+      return failure();
+    }
+    if (activeDeviceLocation &&
+        !(*activeDeviceLocation == *alternativeLocation)) {
+      event.op->emitOpError(
+          "wait-any candidates execute on different logical destination "
+          "devices");
+      return failure();
+    }
+    activeDeviceTransfer = alternative.deviceTransfer;
+    activeDeviceLocation = *alternativeLocation;
+  }
+  if (activeAlternatives.empty()) {
+    event.op->emitOpError(
+        "wait-any has no receive candidate in this PipeNet callback "
+        "iteration");
+    return failure();
+  }
+  resolvedEvent.pipeType = activeAlternatives.front().pipeType;
+  resolvedEvent.deviceTransfer = activeDeviceTransfer;
+  resolvedEvent.waitAnyAlternatives = std::move(activeAlternatives);
+  return resolvedEvent;
 }
 
 struct ModuleState;
@@ -228,7 +287,8 @@ struct ModuleState {
                                 SmallVectorImpl<PipeEvent> &events) {
     PipeRole role =
         kind == PipeEventKind::Send ? PipeRole::Source : PipeRole::Destination;
-    for (auto [recordIndex, record] : llvm::enumerate(records.getPipes())) {
+    forEachPipeRecord(records, [&](std::uint64_t recordIndex,
+                                   PipeRecordAttr record) {
       PipeType pipeType = getPipeTypeFromRecord(records.getContext(), record,
                                                 records.getPipeNetId());
       LaunchNodeDomain roleDomain =
@@ -237,7 +297,7 @@ struct ModuleState {
           makePipeEvent(op, pipe, pipeType, record.getDeviceTransfer(), kind,
                         domain, roleDomain, unanalyzableOp, receivePost,
                         foreachOp, static_cast<int64_t>(recordIndex)));
-    }
+    });
   }
 
   /// Return the direct or selected-record events represented by `copyOp`.
@@ -348,7 +408,8 @@ struct ModuleState {
       for (Operation *post : possiblePosts) {
         CopyOp copyOp = cast<CopyOp>(post);
         if (auto pipeType = dyn_cast<PipeType>(copyOp.getSrc().getType())) {
-          alternatives.push_back({pipeType, post});
+          alternatives.push_back(
+              {pipeType, DeviceTransferAttr(), post, nullptr, -1});
           allowedDomain =
               allowedDomain.intersectWith(getPipeDestinationLaunchNodeDomain(
                   pipeType, launchDomains.baseDomain));
@@ -363,12 +424,14 @@ struct ModuleState {
         allowedDomain =
             allowedDomain.intersectWith(getPipeRecordsRoleLaunchNodeDomain(
                 selected->records, PipeRole::Destination));
-        for (PipeRecordAttr record : selected->records.getPipes()) {
+        forEachPipeRecord(selected->records, [&](std::uint64_t recordIndex,
+                                                 PipeRecordAttr record) {
           alternatives.push_back(
               {getPipeTypeFromRecord(selected->records.getContext(), record,
                                      selected->records.getPipeNetId()),
-               post});
-        }
+               record.getDeviceTransfer(), post, selected->maybeForeachOp,
+               static_cast<int64_t>(recordIndex)});
+        });
       }
     }
     assert(!alternatives.empty() && "wait-any requires a candidate");
@@ -811,6 +874,7 @@ struct PipeCallSite {
 struct PipeScheduleNode {
   Operation *op;
   PipeType pipeType;
+  DeviceTransferAttr deviceTransfer;
   LaunchExecutionLocation location;
   PipeEventKind kind;
   /// Static receive post whose token is observed by this wait.
@@ -868,6 +932,7 @@ addPipeScheduleNode(SmallVectorImpl<PipeScheduleNode> &nodes,
   PipeScheduleNodeId nodeId = nodes.size();
   nodes.push_back({event.op,
                    event.pipeType,
+                   event.deviceTransfer,
                    location,
                    event.kind,
                    event.receivePost,
@@ -945,6 +1010,7 @@ findReceivePostNodeForWait(ArrayRef<PipeScheduleNode> nodes,
         const PipeScheduleNode &postNode = nodes[postId];
         return postNode.op == waitNode.receivePost &&
                postNode.location == waitNode.location &&
+               postNode.deviceTransfer == waitNode.deviceTransfer &&
                postNode.kernelFunction == waitNode.kernelFunction &&
                haveSamePipeCallSites(postNode.callSites, waitNode.callSites);
       });
@@ -964,6 +1030,7 @@ std::optional<PipeScheduleNodeId> findReceivePostNodeForWaitAnyAlternative(
         const PipeScheduleNode &postNode = nodes[postId];
         return postNode.op == alternative.receivePost &&
                postNode.location == waitNode.location &&
+               postNode.deviceTransfer == alternative.deviceTransfer &&
                postNode.kernelFunction == waitNode.kernelFunction &&
                haveSamePipeCallSites(postNode.callSites, waitNode.callSites) &&
                postNode.pipeType == alternative.pipeType;
@@ -1960,7 +2027,15 @@ WalkResult walkPipeEventsInProgramOrder(
           return FailureOr<SmallVector<Value>>(std::move(operands));
         };
         PipeEvent resolvedEvent = event;
-        if (event.selectedRecordIndex < 0) {
+        if (event.kind == PipeEventKind::ReceiveWaitAny) {
+          FailureOr<PipeEvent> maybeResolvedEvent =
+              resolvePipeWaitAnyEvent(event, coord, currentActiveRecords);
+          if (failed(maybeResolvedEvent)) {
+            state.sawError = true;
+            return WalkResult::interrupt();
+          }
+          resolvedEvent = std::move(*maybeResolvedEvent);
+        } else if (event.selectedRecordIndex < 0) {
           FailureOr<std::optional<DeviceTransferAttr>> maybeDeviceTransfer =
               findUniquePipeDeviceTransfer(state.valueOrigins, event.pipe,
                                            resolveActiveFunctionArgument);
@@ -2335,7 +2410,8 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
   }
   auto blockedWaitAny =
       llvm::find_if(allReceiveWaitAnyNodes, [&](PipeScheduleNodeId nodeId) {
-        return !executable[nodeId];
+        return !executable[nodeId] &&
+               !nodes[nodeId].waitAnyCompletingSends.empty();
       });
   if (blockedWaitAny != allReceiveWaitAnyNodes.end()) {
     const PipeScheduleNode &waitNode = nodes[*blockedWaitAny];
@@ -2441,7 +2517,7 @@ validatePipeEndpoints(ModuleOp module,
     if (!records || !validatedRecordTables.insert(records).second) {
       return;
     }
-    for (PipeRecordAttr record : records.getPipes()) {
+    forEachNodePipeRecord(records, [&](PipeRecordAttr record) {
       PipeType pipeType = PipeType::get(
           records.getContext(), record.getSrcX(), record.getSrcY(),
           record.getDstStartX(), record.getDstStartY(), record.getDstEndX(),
@@ -2450,7 +2526,7 @@ validatePipeEndpoints(ModuleOp module,
                                                launchDomains.baseDomain))) {
         result = failure();
       }
-    }
+    });
   });
   return result;
 }

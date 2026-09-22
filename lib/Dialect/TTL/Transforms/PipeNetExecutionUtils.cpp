@@ -14,9 +14,55 @@ namespace mlir::tt::ttl {
 std::optional<std::uint64_t>
 getPipeNetRecordLoopInductionValue(const PipeNetRecordLoop &recordLoop,
                                    const LaunchExecutionLocation &location,
-                                   std::uint64_t recordIndex) {
+                                   std::uint64_t recordIndex,
+                                   PipeRecordAttr selectedRecord) {
+  if (recordLoop.closedFormMapping) {
+    assert(selectedRecord &&
+           "closed-form graph induction requires one concrete graph record");
+    DeviceTransferAttr transfer = selectedRecord.getDeviceTransfer();
+    assert(transfer &&
+           "closed-form graph induction requires one concrete graph record");
+    PipeRole role = recordLoop.selection == PipeNetRecordSelection::Source
+                        ? PipeRole::Source
+                        : PipeRole::Destination;
+    bool selectsLocation = llvm::any_of(
+        getPipeRecordRoleFacts(selectedRecord, role),
+        [&](const PipeRecordRoleFacts &facts) {
+          assert(facts.device &&
+                 "closed-form graph records identify endpoint devices");
+          return facts.deviceDomain == location.deviceDomain &&
+                 facts.device == location.device &&
+                 facts.minX <= location.node.x &&
+                 location.node.x <= facts.maxX &&
+                 facts.minY <= location.node.y && location.node.y <= facts.maxY;
+        });
+    if (!selectsLocation) {
+      return std::nullopt;
+    }
+    std::unique_ptr<TransferGraph> graph =
+        createTransferGraph(recordLoop.closedFormMapping.getGraph());
+    std::uint64_t incidentEdgeOrdinal =
+        graph->getIncidentEdgeOrdinal(transfer.getEdge(), role);
+    std::uint64_t nodePipeCount =
+        recordLoop.closedFormMapping.getPipes().size();
+    assert(nodePipeCount != 0 && "verified graph mapping has a node pipe");
+    if (recordLoop.usesMatchingNodeCoordinates) {
+      return incidentEdgeOrdinal;
+    }
+    std::optional<std::uint64_t> localBase =
+        llvm::checkedMulUnsigned(incidentEdgeOrdinal, nodePipeCount);
+    std::optional<std::uint64_t> localIndex =
+        localBase
+            ? llvm::checkedAddUnsigned(*localBase, recordIndex % nodePipeCount)
+            : std::nullopt;
+    assert(localIndex &&
+           "verified graph record count keeps local indices representable");
+    return *localIndex;
+  }
   if (recordLoop.indirectInductionValues.empty()) {
-    return recordIndex;
+    assert(recordLoop.inductionValueStride != 0 &&
+           "a record loop must advance its induction value");
+    return recordIndex / recordLoop.inductionValueStride;
   }
   auto iteration =
       recordLoop.indirectInductionValues.find({location, recordIndex});
@@ -25,9 +71,9 @@ getPipeNetRecordLoopInductionValue(const PipeNetRecordLoop &recordLoop,
              : std::optional<std::uint64_t>(iteration->second);
 }
 
-std::optional<std::uint64_t>
-getActivePipeNetRecordIndex(ArrayRef<ActivePipeNetRecord> activeRecords,
-                            Operation *loopOp) {
+std::optional<ActivePipeNetRecord>
+getActivePipeNetRecord(ArrayRef<ActivePipeNetRecord> activeRecords,
+                       Operation *loopOp) {
   auto activeIt = llvm::find_if(llvm::reverse(activeRecords),
                                 [&](const ActivePipeNetRecord &active) {
                                   return active.loopOp == loopOp;
@@ -35,7 +81,16 @@ getActivePipeNetRecordIndex(ArrayRef<ActivePipeNetRecord> activeRecords,
   if (activeIt == activeRecords.rend()) {
     return std::nullopt;
   }
-  return activeIt->recordIndex;
+  return *activeIt;
+}
+
+std::optional<std::uint64_t>
+getActivePipeNetRecordIndex(ArrayRef<ActivePipeNetRecord> activeRecords,
+                            Operation *loopOp) {
+  std::optional<ActivePipeNetRecord> activeRecord =
+      getActivePipeNetRecord(activeRecords, loopOp);
+  return activeRecord ? std::optional<std::uint64_t>(activeRecord->recordIndex)
+                      : std::nullopt;
 }
 
 std::optional<llvm::APInt>
@@ -136,15 +191,12 @@ std::optional<llvm::APInt> evaluateActivePipeNetRecordValue(
   if (failed(maybeRecords) || !maybeRecords->maybeForeachOp) {
     return std::nullopt;
   }
-  std::optional<std::uint64_t> maybeRecordIndex =
-      getActivePipeNetRecordIndex(activeRecords, maybeRecords->maybeForeachOp);
-  if (!maybeRecordIndex) {
+  std::optional<ActivePipeNetRecord> activeRecord =
+      getActivePipeNetRecord(activeRecords, maybeRecords->maybeForeachOp);
+  if (!activeRecord) {
     return std::nullopt;
   }
-  ArrayRef<PipeRecordAttr> records = maybeRecords->records.getPipes();
-  assert(*maybeRecordIndex < records.size() &&
-         "active PipeNet record index must be in bounds");
-  return evaluateSelectedPipeRecordValue(value, records[*maybeRecordIndex]);
+  return evaluateSelectedPipeRecordValue(value, activeRecord->record);
 }
 
 namespace {
@@ -161,22 +213,26 @@ static std::optional<PipeNetRecordLoop> getHighLevelRecordLoop(Operation *op) {
   return std::nullopt;
 }
 
-static SmallVector<std::uint64_t>
-getMatchingRecordIndices(const PipeNetRecordLoop &recordLoop,
-                         LaunchNodeCoord coord) {
-  SmallVector<std::uint64_t> matchingRecordIndices;
-  for (auto [recordIndex, record] :
-       llvm::enumerate(recordLoop.records.getPipes())) {
+struct MatchingPipeNetRecord {
+  std::uint64_t index;
+  PipeRecordAttr record;
+};
+
+static SmallVector<MatchingPipeNetRecord>
+getMatchingRecords(const PipeNetRecordLoop &recordLoop, LaunchNodeCoord coord) {
+  SmallVector<MatchingPipeNetRecord> matchingRecords;
+  forEachPipeRecord(recordLoop.records, [&](std::uint64_t recordIndex,
+                                            PipeRecordAttr record) {
     PipeRole role = recordLoop.selection == PipeNetRecordSelection::Source
                         ? PipeRole::Source
                         : PipeRole::Destination;
     LaunchNodeDomain recordDomain =
         getPipeRecordRoleLaunchNodeDomain(record, role);
     if (knownLaunchNodeDomainContains(recordDomain, coord)) {
-      matchingRecordIndices.push_back(recordIndex);
+      matchingRecords.push_back({recordIndex, record});
     }
-  }
-  return matchingRecordIndices;
+  });
+  return matchingRecords;
 }
 
 static std::optional<std::uint64_t>
@@ -186,13 +242,19 @@ getMatchingRecordCount(const PipeNetRecordLoop &recordLoop,
                       ? PipeRole::Source
                       : PipeRole::Destination;
   std::uint64_t matchingRecordCount = 0;
-  for (PipeRecordAttr record : recordLoop.records.getPipes()) {
-    std::optional<bool> matches =
-        pipeRecordRoleMatchesAtLaunchLocation(record, role, location);
-    if (!matches) {
-      return std::nullopt;
-    }
-    matchingRecordCount += *matches;
+  bool hasUnknownMatch = false;
+  forEachPipeRecord(
+      recordLoop.records, [&](std::uint64_t, PipeRecordAttr record) {
+        std::optional<bool> matches =
+            pipeRecordRoleMatchesAtLaunchLocation(record, role, location);
+        if (!matches) {
+          hasUnknownMatch = true;
+          return;
+        }
+        matchingRecordCount += *matches;
+      });
+  if (hasUnknownMatch) {
+    return std::nullopt;
   }
   return matchingRecordCount;
 }
@@ -209,10 +271,11 @@ static WalkResult walkPipeNetOpsInProgramOrderImpl(
     maybeRecordLoop = resolveGeneratedRecordLoop(op);
   }
   if (maybeRecordLoop) {
-    SmallVector<std::uint64_t> matchingRecordIndices =
-        getMatchingRecordIndices(*maybeRecordLoop, coord);
-    for (std::uint64_t recordIndex : matchingRecordIndices) {
-      activeRecords.push_back({op, recordIndex});
+    SmallVector<MatchingPipeNetRecord> matchingRecords =
+        getMatchingRecords(*maybeRecordLoop, coord);
+    for (const MatchingPipeNetRecord &matchingRecord : matchingRecords) {
+      activeRecords.push_back(
+          {op, matchingRecord.index, matchingRecord.record});
       llvm::scope_exit restoreActiveRecords([&] { activeRecords.pop_back(); });
       for (Region &region : op->getRegions()) {
         for (Block &block : region) {
@@ -266,15 +329,12 @@ ActivePipeNetExecution evaluateActivePipeNetExecution(
       execution.countDivisor = std::nullopt;
       continue;
     }
-    assert(activeRecord.recordIndex < recordLoop->records.getPipes().size() &&
-           "active PipeNet record index must be in bounds");
     PipeRole role = recordLoop->selection == PipeNetRecordSelection::Source
                         ? PipeRole::Source
                         : PipeRole::Destination;
     std::optional<bool> selectedRecordMatches =
-        pipeRecordRoleMatchesAtLaunchLocation(
-            recordLoop->records.getPipes()[activeRecord.recordIndex], role,
-            location);
+        pipeRecordRoleMatchesAtLaunchLocation(activeRecord.record, role,
+                                              location);
     if (selectedRecordMatches && !*selectedRecordMatches) {
       execution.mayExecute = false;
       return execution;

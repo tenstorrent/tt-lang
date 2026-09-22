@@ -37,28 +37,49 @@ static FailureOr<int64_t> getRepresentableDeviceCount(DeviceDomainAttr domain) {
   return static_cast<int64_t>(deviceCount);
 }
 
-LogicalResult validateLocalPipeNetParticipantPlanInputs(
+LogicalResult validatePipeNetLaunchNodeRelation(
     PipeNetRecordsAttr records, PipeRole role, int64_t gridX, int64_t gridY,
     llvm::function_ref<InFlightDiagnostic()> emitError) {
   if (gridX <= 0 || gridY <= 0) {
     return failure();
   }
   std::optional<int64_t> maybeGridArea = llvm::checkedMul(gridX, gridY);
-  if (!maybeGridArea ||
-      records.getPipes().size() >
-          static_cast<std::size_t>(std::numeric_limits<int64_t>::max())) {
+  std::uint64_t nodePipeCount = 0;
+  bool nodePipeCountOverflow = false;
+  forEachNodePipeRecord(records, [&](PipeRecordAttr) {
+    if (nodePipeCount ==
+        static_cast<std::uint64_t>(std::numeric_limits<int64_t>::max())) {
+      nodePipeCountOverflow = true;
+      return;
+    }
+    ++nodePipeCount;
+  });
+  if (!maybeGridArea || nodePipeCountOverflow) {
     if (emitError) {
-      emitError() << "local PipeNet table for launch grid (" << gridX << ", "
-                  << gridY << ") and " << records.getPipes().size()
-                  << " records exceeds the signed 64-bit indexing limit; "
-                     "reduce the launch grid or split the PipeNet";
+      if (records.getMappings().empty()) {
+        emitError() << "local PipeNet table for launch grid (" << gridX << ", "
+                    << gridY << ") and " << nodePipeCount
+                    << " records exceeds the signed 64-bit indexing limit; "
+                       "reduce the launch grid or split the PipeNet";
+      } else {
+        emitError() << "graph PipeNet launch-node relation for grid (" << gridX
+                    << ", " << gridY << ") and " << nodePipeCount
+                    << " node-pipe records exceeds the signed 64-bit indexing "
+                       "limit; reduce the launch grid or split the PipeNet";
+      }
     }
     return failure();
   }
 
-  for (auto [recordIndex, record] : llvm::enumerate(records.getPipes())) {
+  int64_t recordIndex = 0;
+  LogicalResult result = success();
+  forEachNodePipeRecord(records, [&](PipeRecordAttr record) {
+    if (failed(result)) {
+      return;
+    }
     if (record.getDeviceTransfer()) {
-      return failure();
+      result = failure();
+      return;
     }
     for (const PipeRecordRoleFacts &facts :
          getPipeRecordRoleFacts(record, role)) {
@@ -74,18 +95,20 @@ LogicalResult validateLocalPipeNetParticipantPlanInputs(
                       << "); increase the launch grid or correct the PipeNet "
                          "endpoint coordinates";
         }
-        return failure();
+        result = failure();
+        return;
       }
     }
-  }
-  return success();
+    ++recordIndex;
+  });
+  return result;
 }
 
 FailureOr<LocalPipeNetParticipantPlan>
 buildLocalPipeNetParticipantPlan(PipeNetRecordsAttr records, PipeRole role,
                                  int64_t gridX, int64_t gridY) {
-  if (failed(validateLocalPipeNetParticipantPlanInputs(records, role, gridX,
-                                                       gridY))) {
+  if (!records.getMappings().empty() ||
+      failed(validatePipeNetLaunchNodeRelation(records, role, gridX, gridY))) {
     return failure();
   }
   SmallVector<SmallVector<int64_t>> recordsByNode(
