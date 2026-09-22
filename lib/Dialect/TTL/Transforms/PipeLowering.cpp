@@ -159,17 +159,20 @@ static PipeSourceKey getPipeSourceKey(PipeType pipeType) {
   return {pipeType.getSrcX(), pipeType.getSrcY()};
 }
 
+// Create the route entry required by the record's route table. Omit
+// `sourceNode` when the record executes no fabric protocol so runtime binding
+// does not open an unused connection.
 static std::size_t addFabricRoute(SmallVectorImpl<FabricRoute> &routes,
                                   DeviceRefAttr localDevice,
                                   DeviceRefAttr remoteDevice,
-                                  LaunchNodeCoord localNode) {
+                                  std::optional<LaunchNodeCoord> sourceNode) {
   auto route = llvm::find_if(routes, [&](const FabricRoute &existing) {
     return existing.localDevice == localDevice &&
            existing.remoteDevice == remoteDevice;
   });
   if (route != routes.end()) {
-    if (!llvm::is_contained(route->sourceNodes, localNode)) {
-      route->sourceNodes.push_back(localNode);
+    if (sourceNode && !llvm::is_contained(route->sourceNodes, *sourceNode)) {
+      route->sourceNodes.push_back(*sourceNode);
     }
     return route->routeIndex;
   }
@@ -178,8 +181,12 @@ static std::size_t addFabricRoute(SmallVectorImpl<FabricRoute> &routes,
       llvm::count_if(routes, [&](const FabricRoute &existing) {
         return existing.localDevice == localDevice;
       });
-  routes.push_back(
-      FabricRoute{localDevice, remoteDevice, {localNode}, routeIndex});
+  SmallVector<LaunchNodeCoord> sourceNodes;
+  if (sourceNode) {
+    sourceNodes.push_back(*sourceNode);
+  }
+  routes.push_back(FabricRoute{localDevice, remoteDevice,
+                               std::move(sourceNodes), routeIndex});
   return routeIndex;
 }
 
@@ -928,9 +935,12 @@ LogicalResult buildFabricRoutePlan(
         result = failure();
         continue;
       }
-      std::size_t reverseRouteIndex = addFabricRoute(
-          (*maybePostFunctionPlan)->routes, destination, source,
-          LaunchNodeCoord{endpoint.receiver.x, endpoint.receiver.y});
+      std::size_t reverseRouteIndex =
+          addFabricRoute((*maybePostFunctionPlan)->routes, destination, source,
+                         receiverRequiresManager
+                             ? std::optional(LaunchNodeCoord{
+                                   endpoint.receiver.x, endpoint.receiver.y})
+                             : std::nullopt);
       if (failed(recordRouteIndex(postOp, endpoint.postRecordIndex,
                                   reverseRouteIndex))) {
         result = failure();

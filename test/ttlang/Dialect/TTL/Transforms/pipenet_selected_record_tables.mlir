@@ -118,8 +118,14 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
 // MIXED: ttkernel.experimental.semaphore_wait_min
 // MIXED: ttkernel.routing_plane.fused_write_atomic_inc
 
-// The receiver sends a readiness message only for that same record.
+// The receiver owns a reverse connection only for the record that sends a
+// readiness message. The other route remains present for record-table lookup
+// but has no source node for runtime binding.
 // MIXED-LABEL: func.func @mixed_receiver()
+// MIXED-SAME: ttl.fabric_routes = [{local = #ttl.device_ref<coordinates = [1]>
+// MIXED-SAME: source_nodes = [array<i64: 0, 0>]}
+// MIXED-SAME: {local = #ttl.device_ref<coordinates = [2]>
+// MIXED-SAME: source_nodes = []}]
 // MIXED: scf.for %[[RECEIVER_RECORD:.*]] =
 // MIXED: %[[RECEIVER_USES_READINESS:.*]] = ttkernel.experimental.constant_table_lookup %[[RECEIVER_RECORD]], [1, 0] : index
 // MIXED-NEXT: %[[RECEIVER_REQUIRES_SIGNAL:.*]] = arith.cmpi ne, %[[RECEIVER_USES_READINESS]], {{.*}} : index

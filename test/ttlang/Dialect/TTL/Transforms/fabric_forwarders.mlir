@@ -172,8 +172,9 @@ module @disjoint_domains attributes {
          <srcX = 3, srcY = 0, dstStartX = 3, dstStartY = 0,
           dstEndX = 3, dstEndY = 0>]>>
 
-// Workers 1 and 2 execute both operations. The planner retains one direct
-// fabric connection per worker because operation-local counters would alias.
+// The sender retains one direct connection per worker because the two
+// operation-local counters would alias on workers 1 and 2. Only those
+// overlapping receiver workers require readiness connections.
 // CHECK-LABEL: module @overlapping_domains attributes
 // CHECK-NOT: ttl.pipe_sram_scratch_bytes
 // CHECK-LABEL: func.func @overlapping_sender
@@ -181,7 +182,7 @@ module @disjoint_domains attributes {
 // CHECK-SAME: source_nodes = [array<i64: 0, 0>, array<i64: 1, 0>, array<i64: 2, 0>, array<i64: 3, 0>]
 // CHECK-LABEL: func.func @overlapping_receiver
 // CHECK-SAME: ttl.fabric_routes = [{
-// CHECK-SAME: source_nodes = [array<i64: 0, 0>, array<i64: 1, 0>, array<i64: 2, 0>, array<i64: 3, 0>]
+// CHECK-SAME: source_nodes = [array<i64: 1, 0>, array<i64: 2, 0>]
 module @overlapping_domains attributes {
   ttl.launch_grid = [4, 1],
   ttl.target_arch = #ttcore.arch<blackhole>
@@ -300,8 +301,8 @@ module @overlapping_domains attributes {
           dstEndX = 3, dstEndY = 0>]>>
 
 // The outer callback executes twice on workers 0 and 2, but once on workers 1
-// and 3. Direct connections avoid sharing a counter between workers with
-// different execution counts.
+// and 3. Sender connections remain direct because their execution counts
+// differ; only the repeated receiver workers require readiness connections.
 // CHECK-LABEL: module @nonuniform_nested_callbacks attributes
 // CHECK-NOT: ttl.pipe_sram_scratch_bytes
 // CHECK-LABEL: func.func @nested_sender
@@ -309,7 +310,7 @@ module @overlapping_domains attributes {
 // CHECK-SAME: source_nodes = [array<i64: 0, 0>, array<i64: 1, 0>, array<i64: 2, 0>, array<i64: 3, 0>]
 // CHECK-LABEL: func.func @nested_receiver
 // CHECK-SAME: ttl.fabric_routes = [{
-// CHECK-SAME: source_nodes = [array<i64: 0, 0>, array<i64: 1, 0>, array<i64: 2, 0>, array<i64: 3, 0>]
+// CHECK-SAME: source_nodes = [array<i64: 0, 0>, array<i64: 2, 0>]
 module @nonuniform_nested_callbacks attributes {
   ttl.launch_grid = [4, 1],
   ttl.target_arch = #ttcore.arch<blackhole>
@@ -508,7 +509,7 @@ module @too_many_operations attributes {
 // CHECK-LABEL: func.func @shared_source_receiver
 // CHECK-NOT: ttl.fabric_manager_intervals
 // CHECK-SAME: ttl.fabric_routes = [{
-// CHECK-SAME: source_nodes = [array<i64: 0, 0>, array<i64: 1, 0>, array<i64: 2, 0>, array<i64: 3, 0>]
+// CHECK-SAME: source_nodes = []
 // CHECK-NOT: ttkernel.routing_plane.create_connection_manager
 module @repeated_local_record attributes {
   ttl.launch_grid = [4, 1],
@@ -571,8 +572,8 @@ module @repeated_local_record attributes {
           dstEndX = 3, dstEndY = 0>]>>
 
 // Every worker executes the transfer once, but a different loop iteration
-// selects each worker. Direct connections avoid adding a rendezvous between
-// executions that do not have matching iteration control.
+// selects each worker. Sender connections remain direct to avoid a rendezvous
+// across different iterations; one-shot receivers need no reverse connection.
 // CHECK-LABEL: module @staggered_iterations attributes
 // CHECK-NOT: ttl.pipe_sram_scratch_bytes
 // CHECK-LABEL: func.func @staggered_sender
@@ -580,7 +581,7 @@ module @repeated_local_record attributes {
 // CHECK-SAME: source_nodes = [array<i64: 0, 0>, array<i64: 1, 0>, array<i64: 2, 0>, array<i64: 3, 0>]
 // CHECK-LABEL: func.func @staggered_receiver
 // CHECK-SAME: ttl.fabric_routes = [{
-// CHECK-SAME: source_nodes = [array<i64: 0, 0>, array<i64: 1, 0>, array<i64: 2, 0>, array<i64: 3, 0>]
+// CHECK-SAME: source_nodes = []
 module @staggered_iterations attributes {
   ttl.launch_grid = [4, 1],
   ttl.target_arch = #ttcore.arch<blackhole>
