@@ -52,8 +52,10 @@ DEVICE_ALL_TO_ALL_NET = ttl.PipeNet(graph=ttl.TransferGraph.all_to_all(DEVICE_DO
 
 SINGLE_RECEIVER_COLLECTIVE_NET = ttl.PipeNet(
     [
-        ttl.Pipe(src=(node, 0), dst=(slice(node, node + 1), 1))
-        for node in range(SINGLE_RECEIVER_COLLECTIVE_COUNT)
+        ttl.Pipe(
+            src=(0, 0),
+            dst=(slice(0, SINGLE_RECEIVER_COLLECTIVE_COUNT), 1),
+        )
     ]
 )
 
@@ -227,7 +229,7 @@ if __name__ == "__main__":
 # CHECK-CPP: ALL-TO-ALL-EDGE-COUNT: 992
 # The generated kernels may compute record-table fields before their transport
 # operations; these checks require the independent code-generation features.
-# CHECK-CPP-DAG: {{noc[0-9]*\.async_write\(}}
+# CHECK-CPP-DAG: {{noc[0-9]*\.async_write(<[^>]*>)?\(}}
 # CHECK-CPP-DAG: {{noc[0-9]*\.async_write_multicast}}
 # CHECK-CPP-DAG: experimental::constant_table_lookup<
 # CHECK-CPP-DAG: tt::tt_fabric::RoutingPlaneConnectionManager
@@ -235,7 +237,7 @@ if __name__ == "__main__":
 # CHECK-CPP-DAG: send_payload_without_header_non_blocking_from_address
 # CHECK-CPP-DAG: experimental::routing_plane_atomic_inc
 
-# CHECK-LOOPS-COUNT-8: for (
+# CHECK-LOOPS-COUNT-6: for (
 # CHECK-LOOPS-NOT: for (
 
 # CHECK-SIZE: LOCAL-TABLE-DRIVEN-PIPE-KERNEL-BODY-BYTES: {{[0-9]+}} / 6144

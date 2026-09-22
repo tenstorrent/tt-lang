@@ -1043,7 +1043,6 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %recv_reserve = ttl.cb_reserve %recv_cb
           : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
           -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-      // expected-note @below {{matching receiver post occurrence is here}}
       %recv = ttl.copy %pipe, %recv_reserve
           : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
              tensor<1x1x!ttcore.tile<32x32, bf16>>)
@@ -1055,7 +1054,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     %step = arith.constant 1 : index
     scf.for %iteration = %lower to %upper step %step {
       ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
-        // expected-error @below {{cannot prove a one-to-one synchronization schedule on PipeNet net_0 for receiver core_x=1, core_y=0; receiver post and send occurrences do not have matching proven execution counts and conditions}}
+        // expected-error @below {{PipeNet net_0 requires one static receiver post definition for each static send definition at receiver core_x=1, core_y=0; found 1 static receiver post definition(s) and 2 static send definition(s)}}
+        // expected-note @below {{this send has no corresponding receiver post}}
         %send = ttl.copy %send_cb, %pipe
             : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
                !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
@@ -1293,7 +1293,6 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
       %is_first = arith.cmpi eq, %iteration, %c0 : index
       scf.if %is_first {
         ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
-          // expected-error @below {{cannot prove a one-to-one synchronization schedule on PipeNet net_0 for receiver core_x=1, core_y=0; receiver post and send occurrences do not have matching proven execution counts and conditions}}
           %send = ttl.copy %send_cb, %pipe
               : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
                  !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
@@ -1305,12 +1304,45 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
         %recv_reserve = ttl.cb_reserve %recv_cb
             : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
             -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-        // expected-note @below {{matching receiver post occurrence is here}}
+        // expected-error @below {{PipeNet net_0 requires one static receiver post definition for each static send definition at receiver core_x=1, core_y=0; found 2 static receiver post definition(s) and 1 static send definition(s)}}
+        // expected-note @below {{this receiver post has no corresponding send}}
         %recv = ttl.copy %pipe, %recv_reserve
             : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
                tensor<1x1x!ttcore.tile<32x32, bf16>>)
             -> !ttl.receive_request
         ttl.wait %recv : !ttl.receive_request
+      }
+    }
+    func.return
+  }
+}
+
+// -----
+
+// Iteration-dependent pipe control requires concrete schedule occurrences. A
+// loop that exceeds the bounded event graph must be rejected.
+
+module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
+  func.func @large_iteration_dependent_schedule()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4097 = arith.constant 4097 : index
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 0
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>
+    %send_dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{cannot expand the PipeNet schedule beyond 4096}}
+    scf.for %iteration = %c0 to %c4097 step %c1 {
+      %is_first = arith.cmpi eq, %iteration, %c0 : index
+      scf.if %is_first {
+        ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0> {
+          %send = ttl.copy %send_dfb, %pipe
+              : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+                 !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>)
+              -> !ttl.transfer_handle<write>
+          ttl.wait %send : !ttl.transfer_handle<write>
+        }
       }
     }
     func.return
@@ -1670,7 +1702,8 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
         %reserve = ttl.cb_reserve %recv_cb
             : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
             -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-        // expected-error @below {{cannot prove that each repeated receiver post is consumed before the next post on PipeNet net_0 at core_x=1, core_y=0}}
+        // expected-error @below {{receiver post may overwrite an outstanding posted address on PipeNet net_0 at core_x=1, core_y=0; receiver-published addressing supports one outstanding post per pipe}}
+        // expected-note @below {{the preceding receiver post is not proven consumed before this post}}
         %receive = ttl.copy %pipe, %reserve
             : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 0>,
                tensor<1x1x!ttcore.tile<32x32, bf16>>)

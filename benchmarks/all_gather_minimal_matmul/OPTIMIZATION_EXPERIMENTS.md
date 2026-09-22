@@ -1,0 +1,380 @@
+# All-gather matmul optimization experiments
+
+This file preserves the implementation-search results. The concise accepted
+comparison is in [Performance](PERFORMANCE.md).
+
+Unless stated otherwise, rows use four Blackhole P150b devices; global M/K/N =
+9472/5120/15360; BF16 input/output; FP32 destination accumulation; and device
+time from first kernel start through final kernel end. Accepted measurements
+use three warmups and ten samples. Screening rows state their smaller counts.
+Every timed row passed the correctness checks described in
+[Performance](PERFORMANCE.md).
+
+The [raw report archive](https://gist.github.com/brnorris03/fa7ab25c12872de92dc0727f28f16104)
+is the authoritative provenance record. Each report records the TT-Lang Git
+revision, modified-source SHA-256 values, compiler binary SHA-256, dependency
+pins, firmware, and timestamp. Modified operation content differs between
+experiments, so its SHA-256, not the Git revision alone, identifies the tested
+implementation. The selected 1.800 ms result has provenance
+[P4](PERFORMANCE.md#p4-four-device-column-parallel).
+
+## Results
+
+| Experiment | Device median ms (min-max) | Warmups/samples | Change | Result |
+| --- | ---: | ---: | ---: | --- |
+| 10 communication workers, row multicast | 3.577 (3.540-3.603) | 3/10 | control | Rejected; point-to-point was 4.5% faster. |
+| 10 communication workers, point-to-point row forwarding | 3.416 (3.312-3.435) | 3/10 | -4.5% | Accepted in place of multicast. |
+| Activation only: 10 communication workers, row multicast | 2.943 (2.834-2.993) | 3/10 | control | Local-distribution control. |
+| Activation only: 10 communication workers, point-to-point row forwarding | 2.847 (2.700-2.883) | 3/10 | -3.3% | Confirms the complete-operation result. |
+| Activation only: four communication workers, direct fabric-to-compute injection | 2.521 (2.511-2.575) | 1/3 | -11.5% vs 10 workers | Selected. |
+| Activation only: six communication workers | 2.731 (2.728-2.733) | 1/3 | -4.1% vs 10 workers | Rejected; relay workers add L1 transfers and synchronization. |
+| Activation only: eight communication workers | 2.516 (2.509-2.558) | 1/3 | -11.6% vs 10 workers | Equivalent to four workers in this screen. |
+| Complete operation: eight communication workers | 3.205 (3.196-3.239) | 1/3 | -6.2% vs 10 workers | Rejected; no benefit over four workers. |
+| Complete operation: four communication workers, direct injection | 3.200 (3.163-3.222) | 3/10 | -6.3% vs 10 workers | Accepted. |
+| Complete operation: 10-worker adjacent control | 3.393 (3.382-3.451) | 1/3 | control | Confirms a 5.7% four-worker reduction. |
+| Split M-worker rows between ring directions | 3.869 (3.852-3.908) | 3/10 | +8.2% | Rejected; each M group requires its own weight stream. |
+| Reduce compute K block from ten to five tiles | 4.547 (4.535-4.560) | 3/10 | +27.1% | Rejected; doubles DFB and matmul message granularity. |
+| Direct publication, one-block output DFB, four-tile M block | 3.189 (3.153-3.215) | 1/3 | control | Direct publication alone was equivalent to the prior result. |
+| Same DFB configuration, five-tile M block | 2.631 (2.593-2.688) | 3/10 | -17.5% | Accepted; M rounds fell from seven to five. |
+| Group three compute rows per fabric transfer | 2.306 (2.268-2.318) | 3/10 | -11.8% vs 2.613 ms control | Accepted; transfers/worker fell from 180 to 60. |
+| Submit intermediate packets without completion waits | 2.269 (2.232-2.320) | 3/10 | -1.6% | Accepted; the final write-and-atomic remains blocking. |
+| Bidirectional L1 transport, one mux buffer/client channel | 2.286 (2.267-2.338) | 3/10 | +1.1% vs adjacent controls | Rejected; one slot serializes 12 packets per activation half. |
+| Bidirectional L1 transport, 22 mux buffers/client channel | 2.243 (2.179-2.255) | 3/10 | +0.2% vs adjacent controls | Accepted; maximum uniform depth fitting mux L1. |
+| Defer output writes to the weight thread | 1.959 (1.945-1.983) | 3/10 | -11.0% vs adjacent controls | Accepted; paired native was 1.969 ms. |
+| Publish received weight halves directly into matmul DFB | 1.847 (1.802-1.879) | 3/10 | -6.2% vs 1.968 ms control | Accepted; paired native was 1.970 ms. |
+| Relay each activation half as it lands, two output blocks | 1.800 (1.776-1.820) | 3/10 | -2.5% vs 1.847 ms | Accepted; paired native was 1.980 ms. |
+| 11 x 10 compute grid, M/K/N blocks 9/8/12, one output block | 1.811 (1.780-1.835) | 3/10 | +0.6% vs 1.800 ms | Rejected; not faster than the default configuration with two output blocks. |
+| Reduce weight DFB from three half-blocks to two | 1.986 (1.980-1.993) | 1/3 | +7.6% | Rejected; three half-blocks are required to hide delivery. |
+| Push source weight DFB before row-multicast wait | 1.827 (1.825-1.832) | 1/3 | -1.1% | Rejected; generated C++ retained the prior ordering. |
+| 13 x 10 compute grid, M/K/N blocks 4/10/12 | not measured | full-size launch | n/a | Rejected; no nodes remain for eight mux workers. |
+| Alternate complete ten-tile K blocks between ring directions | not measured | full-size compile | n/a | Rejected; required L1 exceeded the budget by 13,184 bytes. |
+| Eight direct fabric managers | not measured | full-size launch | n/a | Rejected; four forwarding links could not bind eight interfering managers. |
+| Four bidirectional managers, two-block receive and relay DFBs | not measured | full-size launch | n/a | Rejected; finite-capacity protocol deadlock, issue 1037. |
+| Four bidirectional managers, one-row staging and six-block receive/relay DFBs | not measured | full-size compile | n/a | Rejected; communication DFB exceeded available L1. |
+| Per-entry-pipe full-block exchange, one receive and two relay blocks | not measured | full-size launch | n/a | Rejected; full workload exceeded 60 seconds. |
+| Direction-major per-entry-pipe consumption | not measured | small correctness | n/a | Rejected; small four-device case exceeded 180 seconds. |
+| Per-row bidirectional exchange | not measured | small correctness | n/a | Rejected; PCC 0.257 from repeated local activation pairing. |
+| Bidirectional exchange, five-tile K blocks | 7.002 (6.961-7.033) | 1/3 | +118.8% | Rejected; doubled matmul and DFB granularity. |
+| Bidirectional K halves assembled into ten-tile blocks | 4.349 (4.323-4.362) | 1/3 | +36.7% | Rejected; eight row-segment L1 copies/block. |
+| Unchanged four-worker control after K-half assembly | 3.182 (3.161-3.204) | 1/3 | control | Confirms the assembly regression. |
+| Receive K halves directly into matmul-block subviews | 10.963 (10.879-10.969) | 1/3 | +242.6% | Rejected; eight receive/forward transactions/block. |
+| Assemble K halves at compute-row head | 4.134 (4.127-4.143) | 1/3 | +29.7% | Rejected; synchronization cost remained dominant. |
+| Unchanged four-worker control after row-head assembly | 3.186 (3.177-3.213) | 1/3 | control | Confirms the row-head assembly regression. |
+
+## Selected changes
+
+| Change | Measured effect | Mechanism |
+| --- | ---: | --- |
+| Four direct communication workers | -6.3% vs 10 workers | Removed six relay workers and their L1 transfers. |
+| Five-tile M blocks | -17.5% | Reduced M rounds from seven to five and padded M tiles from 336 to 300. |
+| Three-row grouped transfers | -11.8% | Reduced fabric transfers/worker from 180 to 60 without changing payload bytes. |
+| Asynchronous intermediate packets | -1.6% | Removed intermediate remote-completion waits; retained final completion ordering. |
+| Deferred output writes | -11.0% | Overlapped preceding output writes with publication of the next inputs. |
+| Direct weight publication | -6.2% | Removed 2.359 GB/device of local staging traffic. |
+
+Direct weight publication reduced weight wait by 83.8 us and matmul/control by
+44.7 us; activation wait increased by 14.1 us. The selected implementation
+therefore reduced complete device time from 1.968 to 1.847 ms.
+
+Point-to-point row forwarding replaced multicast because it reduced
+activation-only time by 3.3% and complete-operation time by 4.5% with identical
+fabric and compute configurations.
+
+## Supporting measurements
+
+| Measurement | Result |
+| --- | --- |
+| Grouped-transfer adjacent control | 2.613 ms (2.605-2.616) |
+| Deferred-output adjacent controls | 2.212 and 2.193 ms |
+| Direct-weight activation-counter run | 1.842 ms |
+| Direct-weight weight-counter run | 1.820 ms |
+| Direct-weight local copies removed | 19.661 MB/worker; 2.359 GB/device |
+| Bidirectional half payload | 51,200 bytes in 12 packets; 4,352-byte maximum packet payload |
+| Direct-subview receive granularity | eight 10,240-byte receive/forward transactions per activation block |
+| Full-block exchange storage | four blocks/manager after reduction from thirteen |
+| Six-block receive/relay communication DFB | 491,520 bytes required; 313,600 bytes available |
+| Alternate ten-tile K blocks | 1,474,560 bytes required; 1,461,376-byte L1 budget |
+
+## All-shape configuration search
+
+The paired all-shape table in [Performance](PERFORMANCE.md) reports one
+confirmed configuration per implementation and semantic input. This section
+records how those configurations were selected. Screening used one warmup and
+three samples; confirmation reruns used three warmups and ten samples at one
+TT-Lang revision. Raw screen reports are archived outside Git.
+
+### Native
+
+The pinned manifest lists 155 AGMM/SAGMM rows covering 63 semantic inputs that
+the native operation supports; 46 of them (plain and QKV) are also comparable
+with TT-Lang. Several inputs appear in multiple rows that differ only in the
+upstream source grid.
+
+- Source-grid sweep: every legal source-grid row was measured with the upstream
+  blocking heuristic and `FABRIC_1D_RING`. 132 candidates completed: 107
+  passed and 25 failed. The rows cover 45 inputs; 41 had a passing candidate.
+  Failures were oversized or invalid alternate grids, validation results that
+  the dtype-aware BF16 tolerance later superseded, and process-contention
+  artifacts. Winners are selected per input, not per row.
+- Recovery screen: the four inputs without a passing row were rerun on the
+  `12x9` grid; all passed. A `13x9` grid is invalid because the device
+  exposes at most 12 compute columns.
+- Full-K 768 and 1536 screen: the upstream heuristic returns an eight-tile K
+  block for local K shards of 6 or 12 tiles, which the operation rejects. A
+  constrained screen ranked local-K divisors, upstream-style block candidates,
+  the `12x9` source grid, and configurations below a 1400 KiB L1 estimate,
+  then measured the three highest-ranked configurations for each of the 18
+  affected inputs: 54 candidates, 53 passed. `16384x768x4608` with
+  `M4/K6/N8` terminated its isolated worker with `SIGBUS` and is excluded;
+  the crash left the UMD system-memory mapping in place, and the next launch
+  failed before program creation until the mapping was released.
+- Confirmation: the fastest correct candidate per input across the three
+  screens was rerun with three warmups and ten samples.
+
+### TT-Lang
+
+The operation was not modified during this search. A roofline model
+enumerates compute grids whose worker count plus the eight fabric-mux workers
+fits the device's Tensix worker grid, even K-block divisors of the per-device
+K shard, N blocks that divide the per-device N shard across the grid rows,
+and modeled DFB allocations below 1,350,000 bytes. Candidates are ordered by
+the maximum of the compute, fabric, and DRAM lower bounds plus a
+per-matmul-call term. With the 130-worker grid of the accepted result's
+host, the model ranks the accepted `12x10`, `M5/K10/N12` configuration first
+for the 9472/5120/15360 input; that agreement is the control before applying
+the model to the remaining inputs.
+
+The P150b boards on the all-shape host expose a 12x10 worker grid (120
+workers), so the accepted 12x10 configuration cannot host its eight mux
+workers there, and the all-shape screen is limited to 112 compute workers.
+For 9472/5120/15360 the model then ranks `11x10`, `M9/K8/N12` first. The
+three highest-ranked configurations for each of the 46 comparable inputs
+were measured: 138 candidates, 138 passed. An earlier pass that admitted
+13-column grids failed 25 candidates before the device grid became an
+explicit model input; those grids are excluded, not re-ranked failures. The
+fastest correct candidate per input was confirmed with three warmups and ten
+samples.
+
+### Where TT-Lang loses on the all-shape inputs
+
+Measured on the 13x10 host with the same builds, three warmups and ten
+samples, using per-call signpost scopes on the compute thread's activation
+and weight waits, on its prologue, output reserve, and output store, and on
+the weight thread's previous-block output write; native used accumulated
+wait counters in its compute kernel. Times are on the operation-ending
+compute core.
+
+| Input (M, full K, full N) | TT-Lang ms | Native ms | TT-Lang activation wait | TT-Lang weight wait | TT-Lang output store | Native activation wait | Native weight wait |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 4096, 6144, 18432 (both 12x9 M11/K8/N8) | 1.381 | 1.143 | 187 us | 157 us | 142 us (2 blocks) | 200 us | 22 us |
+| 16384, 768, 18432 (12x9 M11/K6/N8; native M4/K6/N16) | 1.312 | 1.174 | 163 us | 4 us | 674 us (8 blocks) | 501 us | 197 us |
+| 16384, 6144, 9216 (12x9 M11/K8/N8; native M12/K6/N8) | 2.712 | 2.666 | >= 236 us | >= 157 us | 344 us (4 blocks) | 799 us | 102 us |
+
+The matmul itself is not the gap: per-call time is 8.9 us for an 11x4x8-tile
+half block and 6.7 us for 11x3x8, within 7% of the compute bound. Two
+structural costs remain.
+
+- Output write burst. The output store costs 30.8 us for the first block of
+  a core and 88 to 121 us for every later block. The extra time is the pack
+  thread's `reserve_back` on the one-block output DFB, which waits for the
+  weight thread to write the previous block to DRAM. That write takes 7 us
+  on the core nearest the NoC origin and 70 to 100 us at the far corner
+  because all 108 cores write a 176 KiB block at the same block boundary,
+  a 19 MB burst that DRAM absorbs at about 200 GB/s in NoC arbitration
+  order. Native writes output subblocks during the matmul and never forms
+  the burst. The cost scales with output blocks per core: eight for
+  16384/768/18432, four for 16384/6144/9216, two for 4096/6144/18432.
+- Source-last weight publish. The column-0 worker multicasts each weight
+  half along its row and publishes it to its own compute only after the
+  multicast completes, so weight wait is about 210 us on the two columns
+  nearest the source and about 2 us on the far column. Native's weight wait
+  on the ending core is 22 us for the same blocks.
+
+With a two-block output DFB the store becomes a constant 30.7 us and the
+reserve wait disappears, but device time improves only 1 to 4% (4096/6144/
+18432 1.358 ms; 16384/6144/9216 2.692 ms; 16384/768/18432 1.255 ms; accepted
+9472/5120/15360 1.821 ms versus 1.843 ms) because the slowest core moves from
+the far corner to the source-adjacent column, whose input waits are of the
+same size. The two-block DFB fits 41 of the 46 confirmed TT-Lang configurations
+within the 1,461,248-byte L1 budget (the 12x9 M11/K8/N8 rows keep 134,144
+bytes of margin) and is now the operation's default (`output_block_count`,
+with 1 available for the five 11x10 M9/K8/N12 and 11x9 M6/K8/N16 rows that
+exceed it); the all-shape table was measured with the one-block DFB. On the all-shape host the second
+block changes nothing for the worst rows (4768/5376/21504 QKV 3.785 to 3.773
+ms; 4096/6144/18432 2.462 to 2.468; 8192/6144/36864 9.835 to 9.853;
+8192/6144/18432 QKV 4.918 to 4.928; 8192/1536/36864 2.959 to 3.018), and the
+11x10 M9/K8/N12 configuration of the 9472/5120/15360 input cannot host it
+(1,548,288 bytes). The same decomposition on the all-shape host for 4096/6144/18432
+(TT-Lang 2.502 ms, native 1.402 ms) attributes the whole difference to
+activation delivery: on the critical compute core TT-Lang waits 1365 us for
+activation (187 us on the 13x10 host) and 88 us for weights, while native
+waits 466 us for activation (200 us on the 13x10 host) and 17 us for weights;
+matmul and control is 1011 us for TT-Lang and 868 us for native on both hosts.
+TT-Lang's per-half waits grow with the source distance (10, 26, and 57 us for
+one, two, and three hops at the far core) because its two distribution DFBs
+are one block deep and each hop relays a half only after both halves have been
+multicast and copied locally, so a slower link is paid three times per K block;
+native's transport has 24 channel buffers per client and DRAM staging, and
+absorbs the same slower hops. The hosts differ in Ethernet provisioning: the
+13x10 host's ring has four channels per edge, while the all-shape host is an
+eight-chip cube with two channels per edge whose participants 7, 3, 1, 5 form
+a face (direct neighbors, two channels per edge). TT-Lang plans four links
+per direction with 24 fabric clients per direction (12 senders and 12
+receivers that only return credits), so on the four-channel host every mux
+serves 6 clients with 21 buffers each, while on the two-channel host one
+direction is served by two muxes of 12 clients with 10 buffers and the other
+by a single mux of 24 clients with 5 buffers. Native uses two links per
+direction with 6 clients per link on both hosts. Reducing TT-Lang's client
+count per direction (header-only channels for credit-only receivers, or
+fewer endpoint rows when links are scarce) is therefore a host-independent
+improvement alongside the transport depth. Deepening the distribution DFBs to two blocks
+first produced incorrect output on every input tried (the smallest input gives
+PCC 0.63). The cause is in the compiler: the computed-address protocol advances
+the sender's slot counter once per receiver post, and the producer-stream proof
+accepted the assembly rows' distribution DFB although it is pushed four times
+per K block (one DRAM fill at source distance 0, three fabric receives) while
+the sender sends three times, so the receiver's write pointer drifted from the
+computed address. The proof now rejects a push that is not in the control
+context of its post unless the push spans the whole DFB, which turns the
+defect into a compile-time diagnostic; the one-block operation is unaffected.
+A two-block variant that compiles reserves the distribution DFB on the
+assembly rows only at source distance 1 to 3, loads the local half straight
+into the compute DFB at distance 0, and multicasts from the compute block at
+every distance. It is correct but no faster: 1.369 versus 1.357 ms for
+4096/6144/4608 and 1.821 versus 1.835 ms for the 12x10 control configuration
+on the 13x10 host, 2.465 versus 2.478 ms for 4096/6144/4608 and 4.905 versus
+4.908 ms for 16384/6144/2304 on the all-shape host (three warmups and ten
+samples each), and the 11x10 control configuration no longer fits in L1. The
+depth is therefore not adopted. Publishing the source column's weight half to
+its own compute before the row multicast was measured two ways on the 13x10
+host: staging the DRAM read in a separate DFB and copying it into the compute
+block before multicasting from the staging block is correct but adds a local
+copy per half (1.354 versus 1.357 ms for 4096/6144/4608, 1.908 versus 1.835 ms
+for the 12x10 control configuration), and a timing-only probe that publishes
+the compute block without filling it bounds the gain of a copy-free early
+publish at 1.348 versus 1.357 ms and 1.812 versus 1.835 ms. The generated code
+keeps the push after the multicast because `ttl-insert-cb-sync` places a
+producer release after the block's last use, and an explicit `push()` before
+the multicast is replaced; supporting a push before a trailing read of the
+block would buy at most about one percent, so the source-last publish stays.
+The fabric mux channel depth is not the all-shape host's multiplier either:
+capping the 13x10 host's 21 buffers per client channel to the 10 and 5 the
+all-shape host's muxes get gives 1.365 ms for 4096/6144/4608 in both cases,
+and 2 buffers 1.392 ms, against 1.357 ms uncapped, so header-only channels
+for the credit-only receivers (which would roughly double the all-shape
+host's depth) are not pursued.
+Relaying each half as soon as the sender row
+receives it, with the left relay issued after the right multicast receive is
+posted (the schedule verifier rejects the relay before that receive as a
+wait-for cycle), is correct and gives one to two percent on both hosts: 4096/6144/18432
+2.455 and 2.480 ms in two runs on the all-shape host (2.449 ms with the
+two-block output DFB) against 2.502 ms, and 1.357 ms on the 13x10 host
+(1.356 ms with two output blocks) against 1.381 ms. Removing the source-last
+publish is the next step on the 13x10 host; the earlier "push source
+weight DFB before row-multicast wait" experiment targeted it and was
+rejected only because the generated C++ kept the original ordering.
+16384/768/18432 is DRAM-bound for both implementations: its output rate
+during compute is about 350 GB/s.
+
+### Why the worst all-shape rows are more than twice native
+
+The TT-Lang/native ratio in the all-shape table follows the number of N
+rounds an input needs, not its size: on the all-shape host the geometric mean
+ratio is 1.09 over the 23 inputs with one N round, 1.25 over the 18 with two,
+2.16 for the one with three, and 2.05 over the four with four. M rounds do not
+have this effect (the two inputs with eleven M rounds sit at 1.15). The cause
+is structural: the bidirectional-L1 operation nests the activation ring (fabric
+gather and column multicast of every K half) inside the N-round loop, so it
+re-transports the activation once per N round, while native stages each M block
+of the gathered activation in DRAM once and reads it back for every N block.
+
+The per-phase decomposition of the worst plain input, 8192/6144/36864
+(TT-Lang 12x9 M11/K8/N8 with two output blocks, 9.75 ms; native 12x9 M8/K6/N12,
+4.58 ms; two M rounds and four N rounds), measured on the all-shape host with
+signposted variants of the adopted operation and the native wait counters, gives
+this anatomy of the critical compute core. Each of the eight rounds takes 1.12 to
+1.30 ms. Within a round, every half-block matmul takes 8.9 to 9.1 us (48 per
+round, about 0.43 ms), the activation waits sum to about 0.58 ms (the local
+half at distance 0 arrives in under 5 us, each of the three remote halves in 30
+to 70 us, and the right half of a pair arrives with the left), every K-block
+boundary adds a 22 to 67 us gap while the new K block's weights are read from
+DRAM by the source column and multicast (about 0.15 ms per round), and the
+output store takes 31 us. Over the operation that is about 4.6 ms of activation
+waiting against native's 0.92 ms, about 3.5 ms of matmul against native's
+3.5 ms, about 1.2 ms of K-boundary weight stalls against native's 0.16 ms of
+weight waiting, and 0.25 ms of output stores. The signpost zone buffer holds
+125 activation waits per core, so the per-round figures come from the first
+2.6 rounds; the per-round totals come from a zone that spans each round.
+
+The remedy already exists in the repository: `operation_bidirectional_dram.py`
+communicates only in the first N round and reads the staged activation from
+DRAM afterwards. On the all-shape host the worst input drops from 9.75 to
+6.46 ms with `--ttlang-activation-strategy bidirectional-dram` (ratio 1.41
+instead of 2.13). On a second host of the same type, in one session with
+participants 3, 2, 0, 1: 8192/6144/36864 L1 9.031 ms, DRAM 6.476 ms, native
+4.307 ms (ratio 2.10 to 1.50); 4096/6144/18432 with two N rounds L1 2.185 ms,
+DRAM 2.078 ms. The DRAM strategy was rejected earlier only on the accepted
+9472/5120/15360 control, which has one N round. Selecting the strategy per
+input (DRAM when the configuration needs more than one N round) is the next
+change for the all-shape table; the residual 1.5x on the worst input is the
+first-round ring plus the K-boundary weight stalls, which the DRAM strategy
+does not touch. On the 13x10 host the same input measures 5.282 ms with the L1
+strategy against 4.389 ms native (ratio 1.20): the N-round repetition costs
+less where the ring's hops are fast, and the DRAM strategy hangs at start-up on
+that host, an open defect.
+
+### Activation delivery is arrival latency, not local work
+
+Delivery is the whole remaining gap to native: on 8192/6144/36864 the compute
+time matches (about 3.5 ms each) while activation waiting is 3.2 ms for the
+DRAM-staged transport and 0.92 ms for native, about 8 to 10 us per half against
+a 9 us matmul. Four attempts to shorten it on the all-shape host all measured
+flat, and the first three emit byte-identical kernels:
+
+| Change | Result |
+| --- | ---: |
+| Receives posted without blocking, wait placed by the compiler | identical kernel, no change |
+| Two-block distribution buffers | identical kernel, no change |
+| Column receive posted before the other half is consumed | identical kernel, no change |
+| Column multicast landed straight in the matmul buffer on rows that neither multicast nor relay | 1.341 vs 1.337 ms |
+
+The first three are explained by the scheduler: it places receive posts by
+dependency, so reordering them in the source never reaches the device. The
+fourth removes a real 88 KiB L1-to-L1 copy per half and still changes nothing,
+which shows that copy was already overlapped with compute; the wait is time
+spent waiting for the half to arrive over the ring.
+
+Two further measurements bound the cause. Per-half wait does not scale with the
+number of rows a multicast serves (10.56, 10.48 and 9.74 us at nine, six and
+four rows), so the column credit barrier is not the cost. And fabric buffering
+is already at parity: at an 8192-byte payload, native's 24 buffers per client
+channel are 192 KiB against 168 KiB for TT-Lang's 21, both about two halves.
+
+What differs is staging. Native gathers into DRAM once and reads back, so
+compute consumption is decoupled from ring arrival; the L1 transport holds at
+most two 88 KiB halves per direction and consumes them in lock step with the
+ring. That is why the DRAM-staged transport, which has the same decoupling,
+takes the worst input from 9.03 to 6.48 ms, and why the remaining 1.4x over
+native is a question of how far ahead that transport reads rather than of
+multicast, buffer depth, or copy elimination.
+
+Note for anyone reproducing these: the receiver address rule for a collective
+multicast requires one destination SRAM address across receivers, which is what
+forces the separate distribution buffer. The compiler does accept multicasting
+directly into the matmul buffer when the rows involved neither multicast nor
+relay, so that constraint is removable when it becomes worth removing.
+
+## Eight-device configuration search
+
+The native screen retained the published 12 x 9 transport configuration and
+measured all eight M/K/N block combinations in {5, 7} x {5, 10} x {7, 8}.
+Every candidate passed correctness with one warmup and three samples.
+M7/K10/N8 had the lowest median at 1.705 ms and was confirmed with three
+warmups and ten samples at 1.709 ms (1.690-1.722). M7/K10/N7 measured
+1.721 ms; the 0.7% difference does not establish a decisive separation.
+
+TT-Lang screened M9/K10/N6 against an M3 control on an 11 x 10 grid. M9 was
+the best measured TT-Lang candidate and was confirmed at 1.798 ms
+(1.784-1.852). Neither implementation exhaustively varied every grid,
+communication-worker count, link count, channel depth, output chunk count, and
+legal block size.

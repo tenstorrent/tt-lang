@@ -803,9 +803,10 @@ def test_pipe_rejects_different_rendezvous_execution_contexts(device):
     with pytest.raises(
         Exception,
         match=(
-            "cannot prove a one-to-one synchronization schedule on PipeNet.*"
-            "receiver post and send occurrences do not have matching proven "
-            "execution counts and conditions"
+            "PipeNet net requires one static receiver post definition for each "
+            "static send definition at receiver core_x=1, core_y=0; found 1 "
+            "static receiver post definition[(]s[)] and 2 static send "
+            "definition[(]s[)]"
         ),
     ):
         mismatched_pipe_occurrences(to_dram(inp_torch, device), output)
@@ -836,9 +837,10 @@ def test_pipe_rejects_loop_conditional_rendezvous_count(device):
     with pytest.raises(
         Exception,
         match=(
-            "cannot prove a one-to-one synchronization schedule on PipeNet.*"
-            "receiver post and send occurrences do not have matching proven "
-            "execution counts and conditions"
+            "PipeNet net requires one static receiver post definition for each "
+            "static send definition at receiver core_x=1, core_y=0; found 2 "
+            "static receiver post definition[(]s[)] and 1 static send "
+            "definition[(]s[)]"
         ),
     ):
         loop_conditional_rendezvous_count(to_dram(inp_torch, device), output)
