@@ -949,6 +949,9 @@ def TTLVerifyPipeNetSchedule
     use their exact launch-node domain. Otherwise, the static PipeNet endpoint
     role provides a conservative domain that includes every possible event;
     execution-count analysis still removes coordinates proven not to execute.
+    Large static loops retain compact execution-count analysis when pipe-event
+    control is independent of the induction variable. Iteration-dependent
+    control is expanded to preserve concrete event order.
     Multi-block regions that contribute pipe events, recursive calls containing
     pipe events, and schedules with more than 4096 expanded event occurrences
     at one launch node are rejected because the verifier cannot construct a

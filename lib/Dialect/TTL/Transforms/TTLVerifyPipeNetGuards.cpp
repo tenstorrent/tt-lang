@@ -15,6 +15,7 @@
 #include "PipeGraph.h"
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
+#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
@@ -37,6 +38,7 @@
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/TypeSwitch.h"
 #include "llvm/Support/CheckedArithmetic.h"
@@ -2076,9 +2078,59 @@ materializeStaticPipeScheduleLoopBounds(scf::ForOp loop) {
   return tripCount;
 }
 
+/// Return whether pipe-event control inside `loop` depends on its induction
+/// variable. Such loops require concrete iterations to preserve event order.
+bool loopHasIterationDependentPipeControl(
+    scf::ForOp loop, const llvm::DenseSet<Operation *> &functionsWithPipeCopies,
+    SymbolTableCollection &symbolTables) {
+  llvm::DenseSet<Operation *> checkedControlOps;
+  BackwardSliceOptions sliceOptions;
+  sliceOptions.inclusive = true;
+  sliceOptions.omitBlockArguments = false;
+  sliceOptions.omitUsesFromAbove = false;
+  sliceOptions.filter = [loop](Operation *sliceOp) {
+    return loop->isProperAncestor(sliceOp);
+  };
+  bool dependsOnInduction = false;
+  loop.getRegion().walk([&](Operation *operation) {
+    if (dependsOnInduction ||
+        !contributesPipeCopy(operation, functionsWithPipeCopies,
+                             symbolTables)) {
+      return WalkResult::advance();
+    }
+    for (Operation *controlOp = operation->getParentOp();
+         controlOp && controlOp != loop; controlOp = controlOp->getParentOp()) {
+      if (controlOp->getNumRegions() == 0 ||
+          !checkedControlOps.insert(controlOp).second) {
+        continue;
+      }
+      for (Value operand : controlOp->getOperands()) {
+        if (operand == loop.getInductionVar()) {
+          dependsOnInduction = true;
+          return WalkResult::interrupt();
+        }
+        llvm::SetVector<Operation *> backwardSlice;
+        if (failed(getBackwardSlice(operand, &backwardSlice, sliceOptions))) {
+          dependsOnInduction = true;
+          return WalkResult::interrupt();
+        }
+        if (llvm::any_of(backwardSlice, [&](Operation *sliceOp) {
+              return llvm::is_contained(sliceOp->getOperands(),
+                                        loop.getInductionVar());
+            })) {
+          dependsOnInduction = true;
+          return WalkResult::interrupt();
+        }
+      }
+    }
+    return WalkResult::advance();
+  });
+  return dependsOnInduction;
+}
+
 /// Expand loop iterations only in the temporary schedule-analysis module.
-/// Expanding every static enclosing loop keeps corresponding functions at the
-/// same occurrence granularity when one loop predicates a pipelined transfer.
+/// Concrete iterations preserve occurrence order. Large loops retain compact
+/// count analysis when their pipe-event control is iteration-invariant.
 LogicalResult expandStaticPipeScheduleLoops(ModuleOp module) {
   SymbolTableCollection symbolTables;
   llvm::DenseSet<Operation *> functionsWithPipeCopies =
@@ -2117,11 +2169,18 @@ LogicalResult expandStaticPipeScheduleLoops(ModuleOp module) {
         currentContributors < kMaxPipeScheduleNodesPerLaunchNode
             ? kMaxPipeScheduleNodesPerLaunchNode - currentContributors
             : 0;
-    if (tripCountValue > kMaxPipeScheduleNodesPerLaunchNode ||
+    bool exceedsExpansionBound =
+        tripCountValue > kMaxPipeScheduleNodesPerLaunchNode ||
         currentContributors > kMaxPipeScheduleNodesPerLaunchNode ||
         (additionalIterations != 0 &&
          loopContributors >
-             remainingContributorCapacity / additionalIterations)) {
+             remainingContributorCapacity / additionalIterations);
+    if (exceedsExpansionBound &&
+        !loopHasIterationDependentPipeControl(loop, functionsWithPipeCopies,
+                                              symbolTables)) {
+      continue;
+    }
+    if (exceedsExpansionBound) {
       return loop.emitOpError() << "cannot expand the PipeNet schedule beyond "
                                 << kMaxPipeScheduleNodesPerLaunchNode;
     }
