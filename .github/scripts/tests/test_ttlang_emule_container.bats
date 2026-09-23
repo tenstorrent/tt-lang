@@ -113,7 +113,7 @@ case "${1:-}" in
         exit 0
         ;;
     run)
-        exit 0
+        exit "${MOCK_DOCKER_RUN_STATUS:-0}"
         ;;
     *)
         exit 99
@@ -130,6 +130,7 @@ setup() {
     make_mock_docker "$MOCK_DOCKER"
     unset TT_METAL_CACHE TT_EMULE_JIT_CACHE_DIR MESH_DEVICE EMULE_FABRIC8 \
         TT_METAL_ALLOCATOR_MODE_HYBRID TT_METAL_MOCK_CLUSTER_DESC_PATH
+    unset TTLANG_EMULE_INSTALL TTLANG_EMULE_SHELL
     # Keep the test manifest inside its own checkout, independent of CI depth.
     make_runner_fixture "$BATS_TEST_TMPDIR/checkout"
     TTLANG_REPO_ROOT="$(cd "$BATS_TEST_TMPDIR/checkout" && pwd -P)"
@@ -164,7 +165,10 @@ make_mock_entrypoint_commands() {
 for argument in "$@"; do
     printf 'cmake=%s\n' "$argument" >> "$MOCK_ENTRYPOINT_LOG"
 done
-exit 0
+if [ "${1:-}" = --build ]; then
+    exit "${MOCK_CMAKE_BUILD_STATUS:-0}"
+fi
+exit "${MOCK_CMAKE_CONFIGURE_STATUS:-0}"
 EOF
     cat > "$target_dir/nproc" <<'EOF'
 #!/usr/bin/env bash
@@ -360,6 +364,31 @@ EOF
 
     run -2 "$SHELL_LAUNCHER" unexpected
     assert_output --partial "Usage: scripts/shell-tt-lang-emule.sh"
+}
+
+@test "installer and shell helper propagate a container failure" {
+    cd "$TTLANG_REPO_ROOT"
+    local launcher
+    for launcher in "$INSTALLER" "$SHELL_LAUNCHER"; do
+        : > "$MOCK_DOCKER_LOG"
+        MOCK_DOCKER_RUN_STATUS=42 TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            run -42 "$launcher"
+        assert_log_line "run"
+        refute_log_line "build"
+    done
+}
+
+@test "installation and shell modes reject conflicting modes and extra arguments" {
+    local launcher
+    for launcher in "$RUNNER" "$ENTRYPOINT"; do
+        TTLANG_EMULE_INSTALL=1 TTLANG_EMULE_SHELL=1 run -2 "$launcher"
+        assert_output --partial "mutually exclusive"
+        TTLANG_EMULE_INSTALL=1 run -2 "$launcher" unexpected
+        assert_output --partial "do not accept script arguments"
+        TTLANG_EMULE_SHELL=1 run -2 "$launcher" unexpected
+        assert_output --partial "do not accept script arguments"
+    done
+    [ ! -e "$MOCK_DOCKER_LOG" ]
 }
 
 @test "workload edits and outputs preserve the installed compiler identity" {
@@ -824,6 +853,28 @@ PY
         "$build_dir/.ttlang-emule-source-fingerprint"
 }
 
+@test "entrypoint installation invalidates the old marker when configure or build fails" {
+    make_entrypoint_fixture
+    local failing_phase
+    for failing_phase in MOCK_CMAKE_CONFIGURE_STATUS MOCK_CMAKE_BUILD_STATUS; do
+        printf '%s\n' old-installation > "$build_dir/.ttlang-emule-source-fingerprint"
+        run -42 env "$failing_phase=42" \
+            PATH="$mock_bin:$PATH" \
+            TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
+            TTLANG_EMULE_EXPECTED_LLVM_SHA="$expected_llvm_sha" \
+            TTLANG_EMULE_INSTALL=1 \
+            TTLANG_EMULE_COMPILER_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+            TTLANG_EMULE_SOURCE_FINGERPRINT="$source_fingerprint" \
+            TTLANG_EMULE_BUILD_DIR="$build_dir" \
+            TTLANG_EMULE_SOURCE_DIR="$TTLANG_REPO_ROOT" \
+            /bin/bash "$test_entrypoint"
+
+        refute_output --partial "Installed compiler-backed emule environment"
+        [ ! -e "$build_dir/.ttlang-emule-source-fingerprint" ]
+        [ ! -e "$build_dir/.ttlang-emule-source-fingerprint.tmp" ]
+    done
+}
+
 @test "entrypoint runs from the installed environment without configuring" {
     make_entrypoint_fixture
     printf '#define LLVM_REVISION R"(%s)"\n' "$expected_llvm_sha" > "$llvm_revision_header"
@@ -887,6 +938,26 @@ EOF
     assert_line "mesh=P150"
     assert_line "sim_only="
     assert_line "compile_only="
+    [ ! -e "$MOCK_ENTRYPOINT_LOG" ]
+}
+
+@test "entrypoint shell rejects a stale compiler and preserves the shell exit status" {
+    make_entrypoint_fixture
+    TTLANG_EMULE_EXPECTED_LLVM_SHA="$expected_llvm_sha" \
+        TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
+        TTLANG_EMULE_SOURCE_FINGERPRINT=stale \
+        TTLANG_EMULE_BUILD_DIR="$build_dir" \
+        TTLANG_EMULE_SHELL=1 \
+        run -1 /bin/bash "$test_entrypoint" <<< 'echo shell-must-not-run'
+    assert_output --partial "installed compiler does not match this checkout"
+    refute_output --partial "shell-must-not-run"
+
+    TTLANG_EMULE_EXPECTED_LLVM_SHA="$expected_llvm_sha" \
+        TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
+        TTLANG_EMULE_SOURCE_FINGERPRINT="$source_fingerprint" \
+        TTLANG_EMULE_BUILD_DIR="$build_dir" \
+        TTLANG_EMULE_SHELL=1 \
+        run -42 /bin/bash "$test_entrypoint" <<< 'exit 42'
     [ ! -e "$MOCK_ENTRYPOINT_LOG" ]
 }
 
