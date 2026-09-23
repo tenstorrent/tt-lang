@@ -12,7 +12,7 @@ TT-Lang normally assigns each logical dataflow buffer (DFB) a TT-Metal DFB descr
 | Storage address | TT-Metal descriptor | Compiler arena or tensor base plus byte offset |
 | Capacity limit | SRAM capacity and 32 or 64 descriptor indices | SRAM capacity, control records, and alignment |
 | Payload reuse | Requires the Metal descriptor and backing-storage contracts | Requires noninterfering completed lifetimes or an explicit validated allocation group |
-| Producer/consumer state | TT-Metal DFB interface state | Two 32-bit SRAM sequence counters per storage owner; no DFB index or local semaphore id |
+| Producer/consumer state | TT-Metal DFB interface state | Two four-byte SRAM sequence slots per storage owner; no DFB index or local semaphore id |
 | Tensor-backed storage | Installed through a TT-Metal descriptor | Addressed directly through the tensor runtime argument |
 | Allocation groups | Reuse a physical descriptor and its storage contract | Share one validated storage owner and control record |
 | Reset and reconfiguration | Blackhole TT-Metal interface reset and runtime descriptor reconfiguration | Blackhole address-based state reset; page size, pages per block, block count, and storage capacity remain unchanged |
@@ -38,7 +38,19 @@ The arena has two sections:
 +----------------------+----------------------------------+
 ```
 
-Each storage owner has one 8-byte record. An ungrouped logical DFB is its own storage owner. A validated allocation group has one storage owner shared by its members. The first 32-bit word is the published-page sequence and the second is the consumed-page sequence. Allocation-group validation requires one element type and therefore one page size. Page units preserve one cursor interpretation when members use different pages-per-block and block-count values. Separate words allow the producer and consumer to update state without an atomic read-modify-write operation.
+Each storage owner has one 8-byte DFB control record. An ungrouped logical DFB is its own storage owner. A validated allocation group has one storage owner shared by its members. The first 32-bit slot is the published-page sequence and the second is the consumed-page sequence. A capacity of at most 32,768 pages permits native 16-bit loads and stores because the sequence modulus is twice the capacity; larger capacities use all 32 bits. Allocation-group validation requires one element type and therefore one page size. Page units preserve one cursor interpretation when members use different pages-per-block and block-count values. Separate slots allow the producer and consumer to update state without an atomic read-modify-write operation.
+
+#### DFB Sequence Protocol
+
+The following input-DFB example uses a six-page payload ring and transfers three pages per transaction. The declared `(1, 3)` block contains three pages, and `block_count=2` provides two blocks for producer-consumer overlap. A sequence counter records page progress modulo twice the DFB capacity. `published` records producer progress and advances after payload writes complete. `consumed` records consumer progress and advances after payload reads complete. Their difference gives the number of ready pages. `reserve_back` waits for free capacity and captures the published sequence that addresses the write window. `wait_front` waits for ready pages and captures the consumed sequence that addresses the read window.
+
+[Open the latest interactive diagram](https://gist.github.com/brnorris03/a24ddc3de1e4d675ff45965c5ca17cb7/raw/dfb-sequence-counters.svg?raw=1) to select stages by mouse or keyboard. The embedded view shows the static overview. The [Gist file view](https://gist.github.com/brnorris03/a24ddc3de1e4d675ff45965c5ca17cb7#file-dfb-sequence-counters-svg) always identifies the latest revision.
+
+![Compiler-managed SRAM DFB sequence protocol](https://gist.github.com/brnorris03/a24ddc3de1e4d675ff45965c5ca17cb7/raw/dfb-sequence-counters.svg?raw=1)
+
+The final diagram state shows a later transaction reusing pages 0 through 2 of the same DFB after pages 3 through 5 complete. This ring-slot reuse is distinct from allocator reuse. Allocator reuse assigns the same SRAM byte range to different storage owners only when completion analysis proves that their lifetimes cannot overlap.
+
+For capacity `N`, both sequences are in `[0, 2N)`. Occupancy is `(published - consumed) mod 2N` and remains in `[0, N]`. Payload addressing uses `sequence mod N`. With six payload pages, `published = 0, consumed = 0` is empty, while `published = 6, consumed = 0` is full. Both select payload page 0, but the twelve-value counter range keeps the states distinct. The extra counter states do not allocate more payload pages. The current single-producer/single-consumer contract makes each counter single-writer and avoids atomic read-modify-write operations.
 
 Payload storage can overlap when the compiler proves that the corresponding lifetimes cannot be active concurrently. Control records are independent except within an explicit allocation group whose validation proves state ownership transfer.
 
@@ -58,11 +70,15 @@ Packed-format metadata is included in `P`. An allocation group reserves the larg
 
 ### Implemented Contract
 
-Compiler-planned scratch storage is live for one completed `ttl.operation` launch. Persistent declarations remain live across prepared launches until their `SRAMStorage` owner closes. Joint placement assigns both to owned pools and reuses scratch offsets only between completion-ordered launches. Compiler-owned payload sizes are static; tensor-backed payloads retain their existing height-, width-, or block-sharded allocations. Uniform and per-core placement share the same ownership and completion rules.
+Each compiled `ttl.operation` has a scratch layout for one invocation. Persistent declarations retain stable storage across prepared operation launches until the owning `SRAMStorage` releases them. Joint placement reserves persistent payloads with the scratch arenas of all prepared operations and permits scratch overlap only between completion-ordered launches. Compiler-owned payload sizes are static; tensor-backed payloads retain their existing height-, width-, or block-sharded allocations. Uniform and per-core placement share the same ownership and completion rules.
 
 DFB transactions operate on one block, or publish/consume a tensor-backed DFB's complete capacity. Capacity is positive and below `2^31` pages. Consumer-owned replacement writes remain within the acquired read window and do not change occupancy or sequence counters. Compute formats and tile dimensions, reset synchronization, and external/transport bindings are specified in the backend subsections below.
 
-The 32-index Wormhole B0 and 64-index Blackhole limits apply only to TT-Metal DFB descriptors. A compiler-managed logical DFB does not allocate one of those descriptors. Its local producer/consumer protocol polls two 32-bit SRAM sequence counters and executes a processor-specific completion barrier before publishing or consuming pages. It does not allocate a local semaphore id. Logical DFB count is therefore limited by SRAM use, generated code and configuration size, runtime arguments, and Metal program capacity instead of the hardware descriptor count.
+`wait_front` and `reserve_back` capture the acquired sequence after their availability checks succeed. Every address-bearing operation in that transaction derives its payload address from the captured sequence, so later counter updates cannot move an active transaction to another payload window. Initialization and configuration use storage metadata without acquiring a window. A release completes outstanding payload access before updating its sequence counter. When the immediately preceding `ttl.wait` already proves completion of the exact transaction, the release reuses that directional NoC barrier instead of issuing a second full NoC barrier.
+
+The runtime clears every control record before dispatch. Within a generated kernel, one `Buffer` object retains the sequence advanced by its processor and reloads only the peer sequence needed to test availability. A function call, opaque DFB user, reset, reconfiguration, or external descriptor prevents this optimization because another object may advance the same interface. Peer loads retain the target memory fence.
+
+The 32-index Wormhole B0 and 64-index Blackhole limits apply only to TT-Metal DFB descriptors. A compiler-managed logical DFB does not allocate one of those descriptors. Its local producer/consumer protocol polls two SRAM sequence slots and does not allocate a local semaphore id. Logical DFB count is therefore limited by SRAM use, generated code and configuration size, runtime arguments, and Metal program capacity instead of the hardware descriptor count.
 
 PipeNet synchronization is a separate resource. TT-Lang currently has 16 local hardware semaphore ids. Generated PipeNet counters use available local ids and then use host-created `GlobalSemaphore` SRAM words; exhaustion of the 16 local ids does not restore a 16-DFB limit. Global counters add SRAM allocations and runtime arguments and remain subject to the combined SRAM and program-capacity checks.
 
@@ -104,6 +120,30 @@ DFB control and payload ranges are uses of a requirement, not additional owners.
 Persistent declarations use the same requirement type. They remain movable until `SRAMStorage.allocate()` jointly places them with the arenas of every prepared operation. Caller-supplied tensors retain their existing addresses and remain outside these owned pools. The storage owner enforces completion between prepared operations before allowing their scratch arenas to reuse bytes.
 
 ### Completion and Storage Conflicts
+
+Payload completion and storage lifetime are separate proofs. The release optimization applies only to one acquired transaction whose complete storage-use set contains one asynchronous copy and its direct wait. The transfer direction must match the release: a NoC read completes producer writes before `push_back`, and a NoC write completes consumer reads before `pop_front`. The acquire and release must cover the same tile count, and the wait must immediately precede the release. Multiple copies, indirect handles, additional storage users, ambiguous ownership, partial releases, and control-flow-mediated transfer handles retain the target completion barrier.
+
+```text
+reserve -> NoC read  -> read barrier  -> publish sequence
+wait    -> NoC write -> write barrier -> consume sequence
+                              |
+                              +-- exact transaction proof permits state update
+
+Without the proof:
+payload accesses -> target completion barrier -> sequence update
+```
+
+```text
+provePayloadComplete(release):
+    require exactly one structural acquire owner
+    require acquire and release tile counts to match
+    collect every storage use owned by the acquired transaction
+    require exactly one ttl.copy and one ttl.wait
+    require the wait to consume that copy's only transfer handle
+    require the copy direction and SRAM operand to match the transaction
+    require the wait to immediately precede the release
+    return true
+```
 
 Allocation consumes the existing logical-identity, allocation-group, and completion-aware lifetime analyses. The compiler validates every allocation group and builds the complete conflict relation before changing IR. Unknown launch domains, unproved completion, concurrent lifetimes, and incompatible storage ownership remain conflicts.
 
@@ -172,7 +212,7 @@ Control records remain at fixed offsets on every core, including cores without t
 
 ## Placement API and Algorithms
 
-Placement is a reusable C++ library with no dependency on MLIR operations or target identities. Compiler analyses construct immutable storage requirements; a selected strategy returns byte offsets without inspecting IR or changing scheduling. Architecture adapters supply alignment and per-location budgets through the common API.
+Placement is a reusable, compiler-internal C++ library and API with no dependency on MLIR operations or target identities. Compiler analyses construct immutable storage requirements; a selected strategy returns byte offsets without inspecting IR or changing scheduling. New strategies implement the common interface without changing analysis, target code generation, or result validation. Architecture adapters supply alignment and per-location budgets through the same API.
 
 The API supports two inputs. `SRAMAllocationProblem` places one list of regions in one address space and remains the interface for compiler operation arenas. `SRAMLocationAllocationProblem` places owner-location intervals across several independently bounded address spaces, enforces selected equal offsets, and records locations whose backing allocation uses one common capacity. The latter represents joint persistent and scratch placement without defining persistent, multicast, and ordinary scratch as separate arena types.
 
@@ -516,7 +556,7 @@ TT-Metal compute APIs normally read the data format and tile dimensions from a D
 
 Compute setup is shared by operands with equal formats, page sizes, tile dimensions, and direct-to-destination settings. Storage offsets and capacities remain properties of each DFB. Separating hardware properties from storage identity prevents repeated setup code from exhausting kernel instruction storage in large DFB compositions.
 
-A generated compute kernel can use different tile dimensions during one execution. `ComputeContext` records the currently programmed input formats, page sizes, and face dimensions, together with the output format and tile dimensions. The first operation configures UNPACK, MATH, and PACK. Later operations reconfigure only state that differs. A PACK tile-dimension change requires data-format reconfiguration followed by pack initialization that preserves the existing address modifiers. This sequence follows the TT-Metal LLK contract and avoids repeating hardware configuration.
+A generated compute kernel can use different tile dimensions during one execution. `ComputeContext` records the currently programmed input formats, page sizes, and face dimensions, together with the output format and tile dimensions. An exact packed identity makes the common unchanged-configuration check constant-sized. The first operation configures UNPACK, MATH, and PACK. Later operations reconfigure only state that differs. A PACK tile-dimension change requires data-format reconfiguration followed by pack initialization that preserves the existing address modifiers. This sequence follows the TT-Metal LLK contract and avoids repeating hardware configuration. Address-based copy helpers are inlined so the RISC compiler can retain loop-invariant addresses.
 
 ```text
 configureCompute(inputA, inputB, output):
@@ -623,7 +663,18 @@ The fixed state cost can dominate heavily reused payloads. For 96 ungrouped one-
 
 Domain placement addresses a different source of waste: reserving the busiest core's layout everywhere. In the two-core 16-tile/one-tile regression, uniform allocation reserves 65,664 bytes for BF16 and 131,200 for FP32. Per-core allocation reserves 34,944 and 69,760 respectively, including control prefixes. These are measured backing extents, not execution-speed results or a claim of globally optimal host placement.
 
-A matched Blackhole benchmark copies one 4x4-tile block 256 times per dispatch through read, compute, and write kernels. Across 200 measured dispatches per backend, compiler-managed storage takes 261.96 us versus 212.14 us for Metal DFBs with BF16, and 482.14 us versus 446.32 us with FP32. These 1.233x and 1.080x ratios include sequence-counter synchronization, explicit-address handling, and target barriers. Exact outputs pass before and after measurement; compilation and allocation are outside the measured interval.
+A matched Blackhole benchmark copies one 4x4-tile block 256 times per dispatch through read, compute, and write kernels. Each result below contains 200 measured dispatches per backend after 20 paired warmups; exact outputs pass before and after measurement. Compilation and allocation are outside the measured interval.
+
+| Type and run | Compiler-managed SRAM | Metal DFB | Compiler / Metal | Compiler-managed p95 |
+| --- | ---: | ---: | ---: | ---: |
+| BF16, first | 220.155 us | 220.558 us | 0.99817 | 220.834 us |
+| BF16, repeat | 220.179 us | 220.486 us | 0.99861 | 220.992 us |
+| FP32, first | 417.492 us | 443.448 us | 0.94147 | 418.543 us |
+| FP32, repeat | 417.514 us | 443.447 us | 0.94152 | 418.733 us |
+
+All four comparisons meet the benchmark's eligibility requirements and have no material order effect. One BF16 run reports serial dependence; its median and ratio agree with the independent repeat. This establishes parity for the measured block-copy workload: compiler-managed SRAM is 0.14% to 0.18% faster for BF16 and approximately 5.85% faster for FP32. It does not establish parity for every operation. The [performance plan](https://gist.github.com/brnorris03/51f10d0f049a4477166317b6cf15f1c9#file-sramperformanceplan-md) records the exact candidate, confidence intervals, retained mechanisms, and validation scope.
+
+The final Blackhole validation covers 180 direct-address compute cases, 220 sub-tile cases, 20 lifecycle cases, 8 external reconfiguration cases, 12 variants of a 70-logical-DFB composition, and 12 cases with 96 simultaneously live logical DFBs. The largest 70-DFB binary has 48,924 bytes of combined TRISC text. Wormhole compile-only validation covers BF16 and FP32 reader, writer, unpack, math, and pack processors.
 
 ### Validation Responsibilities
 
@@ -633,7 +684,7 @@ The tests separate placement optimality, lifetime-proof correctness, runtime add
 | --- | --- |
 | Legal and efficient placement | [Generated allocator tests](../../test/ttlang/Dialect/TTL/Transforms/compiler_l1_stress.py) check conflicts, alignment, budgets, determinism, reuse modes, both target alignments, and independent exact oracles. Larger graphs check that the default never exceeds successful first-fit placement; negative cases distinguish infeasibility from search-limit exhaustion. |
 | Domain-specific reuse | [Domain tests](../../test/python/sram_domains.py) cover uneven demand, per-core lifetime differences, multicast address equality, and reported reservation. Host tests cover distinct device addresses and malformed bindings. |
-| Data and lifecycle preservation | [Allocator](../../test/python/test_compiler_l1.py), [compute](../../test/python/test_compiler_l1_compute.py), [sub-tile](../../test/python/test_subtile_compute.py), and [lifecycle](../../test/python/test_compiler_l1_lifecycle.py) device tests cover BF16/FP32, DRAM/SRAM inputs, reuse, tensor backing, groups, reset/reconfiguration, repeated invocations, and logical DFB counts above Metal limits. |
+| Data and lifecycle preservation | [Allocator](../../test/python/test_compiler_l1.py), [compute](../../test/python/test_compiler_l1_compute.py), [transaction](../../test/python/test_sram_transaction_patterns.py), [sub-tile](../../test/python/test_subtile_compute.py), and [lifecycle](../../test/python/test_compiler_l1_lifecycle.py) device tests cover BF16/FP32, DRAM/SRAM inputs, repeated multi-page blocks, unequal DFB capacities, reuse, tensor backing, groups, reset/reconfiguration, repeated invocations, and logical DFB counts above Metal limits. |
 | External and transport integration | [External elementwise](../../test/python/test_external_dfb_reuse.py), [external matmul](../../test/python/test_external_matmul.py), [local PipeNet](../../test/python/pipe/test_compiler_l1_pipenet.py), and [runtime resource](../../test/python/test_operation_runtime_resources.py) tests exercise address-based descriptors and completion contracts. [Runtime tests](../../test/python/test_kernel_runner.py) check ownership, cache identity, mesh placement, and generated fabric binding. |
 
 Blackhole evidence includes device correctness. Wormhole evidence is compile-only for allocation, transfer, compute, typed external descriptors, and local PipeNet lowering; it includes rejection of reset/reconfiguration. Generated inter-device PipeNet evidence is compile-only plus runtime-unit binding checks. These checks do not establish multi-device execution performance.
@@ -693,3 +744,11 @@ The current model names lifetimes directly: persistent storage remains live unti
 Partial-block and general contiguous multi-block transactions require explicit stride, capacity, and wrap rules; row-major compute requires corresponding metadata. Wormhole reset and reconfiguration require a target synchronization protocol and device correctness testing. Additional external kernels reuse the typed descriptor interface, adding target primitives only where needed.
 
 Complete-layer benchmarks must measure device cycles, actual SRAM reservation, initialization cost, compile time, and generated code size against `metal-cb`. Allocation optimality alone does not establish runtime performance.
+
+### Non-SPSC Protocols
+
+The current control record requires one active writer for each sequence: the producer writes `published`, and the consumer writes `consumed`. Each aligned 32-bit slot is read and written indivisibly and made visible across processors. The two slots are not updated as one atomic 8-byte value, and the protocol does not use atomic read-modify-write operations.
+
+Multiple logical producers or consumers can retain this record only when the compiler proves a total ownership order and device completion before every ownership transfer. True concurrency requires a different protocol. Concurrent producers need an atomic reservation position plus ordered publication or per-slot readiness state. Work-sharing consumers need atomic claims plus completion tracking before reclamation. Broadcast consumers need progress state for each consumer or per-slot acknowledgements. An atomic increment alone is insufficient because claiming a slot does not prove that its payload access completed. Target-specific atomic operations belong behind the common target interface; these protocols can require more than eight control bytes.
+
+The sequence range does not increase payload allocation. A DFB with capacity `N` owns `N` payload pages, while each counter has `2N` values and addresses page `sequence modulo N`. The extra counter states distinguish full from empty after the payload address wraps. The compiler reserves the declared capacity of `pages per block * block count`; it does not infer a smaller maximum occupancy. A declaration whose execution never uses all blocks can therefore reserve unused pages. Reducing that capacity requires proof that the smaller ring preserves progress, including cyclic dataflow and external users, and should account for the performance benefit of producer-consumer overlap.

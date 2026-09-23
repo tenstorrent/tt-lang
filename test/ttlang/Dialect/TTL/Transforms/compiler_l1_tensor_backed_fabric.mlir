@@ -12,7 +12,7 @@
 // CHECK-SAME: ttl.fabric_routes = [
 // CHECK-SAME: ttl.fabric_runtime_arg_base_common_index = 4 : i64
 // CHECK-SAME: ttl.pipe_computed_address_dfb_indices = array<i32: 1>
-// CHECK: emitc.verbatim "ttlang::l1::Buffer<4096, 1, 1, 1, 0, 0> cb_ctarg_1({});"
+// CHECK: emitc.verbatim "ttlang::l1::Buffer<4096, 1, 1, 1, 0, 0, false> cb_ctarg_1({});"
 // CHECK: call_opaque "experimental::routing_plane_atomic_inc"
 // CHECK: call_opaque "experimental::routing_plane_fused_write_atomic_inc"
 // CHECK-NOT: call_opaque "noc_inline_dw_write"

@@ -416,6 +416,7 @@ LogicalResult lowerCBPop(CBPopOp op, Value cb,
                          const PipeTransportPlan &pipeTransportPlan,
                          const PipeTransportSlotCounterMap &slotCounters,
                          const PipeResourcePlan &pipeResourcePlan,
+                         bool payloadComplete,
                          ConversionPatternRewriter &rewriter);
 
 /// Lower the receiver-side pipe receive completion wait.

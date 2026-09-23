@@ -3218,12 +3218,16 @@ def TTKernel_InvokeSFPIOp : TTKernel_SFPUOp<"invoke_sfpi", [NoTerminator]> {
 //===----------------------------------------------------------------------===//
 
 def TTKernel_CBPushBackOp : TTKernel_Op<"cb_push_back"> {
-    let summary = "CBPushBack call.";
+    let summary = "Publish producer DFB pages.";
     let description = [{
-      CBPushBack operation
+      Publishes producer pages after their contents are complete. The optional
+      `payload_complete` attribute states that all asynchronous writes to the
+      released pages have already completed, so the target need not issue an
+      additional payload-completion barrier before publishing them.
     }];
 
-    let arguments = (ins TTKernel_CB:$cb, I32:$numPages);
+    let arguments = (ins TTKernel_CB:$cb, I32:$numPages,
+                         OptionalAttr<UnitAttr>:$payload_complete);
 
     let hasVerifier = 1;
 
@@ -3233,12 +3237,16 @@ def TTKernel_CBPushBackOp : TTKernel_Op<"cb_push_back"> {
 }
 
 def TTKernel_CBPopFrontOp : TTKernel_Op<"cb_pop_front"> {
-    let summary = "CBPopFront call.";
+    let summary = "Release consumer DFB pages.";
     let description = [{
-      CBPopFront operation
+      Releases consumer pages after their reads are complete. The optional
+      `payload_complete` attribute states that all asynchronous reads from the
+      released pages have already completed, so the target need not issue an
+      additional payload-completion barrier before releasing them.
     }];
 
-    let arguments = (ins TTKernel_CB:$cb, I32:$numPages);
+    let arguments = (ins TTKernel_CB:$cb, I32:$numPages,
+                         OptionalAttr<UnitAttr>:$payload_complete);
 
     let hasVerifier = 1;
 

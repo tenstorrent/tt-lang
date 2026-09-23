@@ -30,6 +30,7 @@
 #include "mlir/Target/Cpp/CppEmitter.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
@@ -397,9 +398,43 @@ struct TTKernelToEmitCConversionState {
   llvm::DenseMap<Block *, llvm::StringSet<>> cbDeclarations;
   llvm::DenseMap<Operation *, llvm::StringSet<>> functionScopedDeclarations;
   llvm::DenseMap<Operation *, std::array<bool, 2>> staticNocDeclarations;
+  llvm::DenseMap<Operation *, llvm::DenseSet<int32_t>>
+      ownedSequenceReloadIndices;
+  llvm::DenseSet<Operation *> reloadAllOwnedSequences;
   llvm::DenseMap<Operation *, uint64_t> resultVariableCounters;
 };
 } // namespace
+
+static bool
+requiresOwnedSequenceReload(Operation *operation, int32_t index,
+                            const TTKernelToEmitCConversionState &state) {
+  func::FuncOp function = operation->getParentOfType<func::FuncOp>();
+  if (!function || state.reloadAllOwnedSequences.contains(function)) {
+    return true;
+  }
+  auto indices = state.ownedSequenceReloadIndices.find(function);
+  return indices != state.ownedSequenceReloadIndices.end() &&
+         indices->second.contains(index);
+}
+
+static void planOwnedSequenceReloads(func::FuncOp function,
+                                     TTKernelToEmitCConversionState &state) {
+  // A call may advance an interface through a separately constructed object.
+  bool hasFunctionCall = false;
+  function.walk([&](func::CallOp) { hasFunctionCall = true; });
+  if (hasFunctionCall) {
+    state.reloadAllOwnedSequences.insert(function);
+  }
+
+  function.walk([&](ttkernel::OpaqueCallOp call) {
+    std::optional<ArrayRef<int32_t>> indices = call.getDfbResourceIndices();
+    if (!indices) {
+      return;
+    }
+    state.ownedSequenceReloadIndices[function].insert(indices->begin(),
+                                                      indices->end());
+  });
+}
 
 static void setInsertionPointAfterDefOrBlockStart(Value value,
                                                   OpBuilder &builder) {
@@ -411,8 +446,8 @@ static void setInsertionPointAfterDefOrBlockStart(Value value,
   builder.setInsertionPointToStart(value.getParentBlock());
 }
 
-// Lazily emit a CB declaration only when a CB method is actually invoked
-// (compute API only uses CB IDs).
+// One DFB object must retain the acquired sequence used by both synchronization
+// methods and address-bearing compute calls.
 static std::string ensureCBDeclaration(Value cb, Operation *useOp,
                                        ConversionPatternRewriter &rewriter,
                                        TTKernelToEmitCConversionState &state) {
@@ -444,7 +479,9 @@ static std::string ensureCBDeclaration(Value cb, Operation *useOp,
          Twine(allocation.pagesPerBlock) + ", " + Twine(allocation.blockCount) +
          ", " + Twine(allocation.storageCapacityPages) + ", " +
          Twine(allocation.payloadOffsetExpression) + ", " +
-         Twine(*tensorCommonArgIndex) + ">")
+         Twine(*tensorCommonArgIndex) + ", " +
+         (requiresOwnedSequenceReload(useOp, index.getInt(), state) ? "true>"
+                                                                    : "false>"))
             .str();
   }
   std::string cbDecl = bufferType + " " + cbName + "({});";
@@ -706,10 +743,9 @@ getCompilerL1GeometryTemplateArguments(const SRAMAllocation &allocation,
       .str();
 }
 
-static std::string
-getCompilerL1OperandTypeName(Operation *operation,
-                             const SRAMAllocation &allocation,
-                             ttcore::TileType tile, bool directToDestination) {
+static std::string getCompilerL1OperandTypeName(
+    Operation *operation, const SRAMAllocation &allocation,
+    ttcore::TileType tile, bool directToDestination, bool reloadOwnedSequence) {
   FailureOr<int64_t> tensorCommonArgIndex =
       getCompilerL1TensorCommonArgIndex(operation, allocation);
   assert(succeeded(tensorCommonArgIndex) &&
@@ -718,7 +754,8 @@ getCompilerL1OperandTypeName(Operation *operation,
           getCompilerL1GeometryTemplateArguments(allocation, tile) + ", " +
           Twine(allocation.payloadOffsetExpression) + ", " +
           Twine(*tensorCommonArgIndex) + ", " +
-          (directToDestination ? "true>" : "false>"))
+          (directToDestination ? "true, " : "false, ") +
+          (reloadOwnedSequence ? "true>" : "false>"))
       .str();
 }
 
@@ -1120,7 +1157,8 @@ static void emitCompilerL1ComputeCall(Operation *operation,
                                       TypeRange resultTypes,
                                       StringRef operationName,
                                       ArrayAttr templateArgs,
-                                      ConversionPatternRewriter &rewriter) {
+                                      ConversionPatternRewriter &rewriter,
+                                      TTKernelToEmitCConversionState *state) {
   SmallVector<Value> operands;
   for (auto [source, converted] :
        llvm::zip(operation->getOperands(), convertedOperands)) {
@@ -1139,8 +1177,20 @@ static void emitCompilerL1ComputeCall(Operation *operation,
     bool directToDestination =
         directOperands &&
         llvm::is_contained(directOperands.asArrayRef(), *identity);
+    bool reloadOwnedSequence =
+        !state || requiresOwnedSequenceReload(operation, *identity, *state);
     std::string operandType = getCompilerL1OperandTypeName(
-        operation, allocation, tile, directToDestination);
+        operation, allocation, tile, directToDestination, reloadOwnedSequence);
+    if (state) {
+      std::string cbName =
+          ensureCBDeclaration(converted, operation, rewriter, *state);
+      auto operand = emitc::LiteralOp::create(
+          rewriter, operation->getLoc(),
+          emitc::OpaqueType::get(operation->getContext(), operandType),
+          operandType + "(" + cbName + ")");
+      operands.push_back(operand.getResult());
+      continue;
+    }
     auto constructor = emitc::CallOpaqueOp::create(
         rewriter, operation->getLoc(),
         TypeRange{emitc::OpaqueType::get(operation->getContext(), operandType)},
@@ -1170,8 +1220,9 @@ static void emitCompilerL1ComputeCall(Operation *operation,
   } else if (isa<ttkernel::PackWaitedTileOp>(operation)) {
     callee = "ttlang::l1::target::pack_waited_tile";
   }
-  rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+  auto call = rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
       operation, resultTypes, callee, ArrayAttr(), templateArgs, operands);
+  call->setAttr("ttlang.requires_compiler_l1", rewriter.getUnitAttr());
 }
 
 // A missing or false `posted` attribute on `op` means non-posted writes.
@@ -1204,6 +1255,12 @@ public:
   TTKernelToEmitCOpaqueRewriter(TTKernelToEmitCTypeConverter &typeConverter,
                                 MLIRContext *ctx, std::string opName = "")
       : OpConversionPattern<SourceOp>(typeConverter, ctx), opName(opName) {}
+  TTKernelToEmitCOpaqueRewriter(TTKernelToEmitCTypeConverter &typeConverter,
+                                MLIRContext *ctx,
+                                TTKernelToEmitCConversionState *state,
+                                std::string opName = "")
+      : OpConversionPattern<SourceOp>(typeConverter, ctx), state(state),
+        opName(opName) {}
 
   std::string getOpName(SourceOp op) const {
     auto name =
@@ -1580,7 +1637,7 @@ public:
     if (usesCompilerL1(op) && isCompilerL1ComputeOperation(op)) {
       emitCompilerL1ComputeCall(op, adaptor.getOperands(), resultTypes,
                                 getOpName(op), getTemplateArgs(rewriter, op),
-                                rewriter);
+                                rewriter, state);
       return success();
     }
     rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
@@ -1591,6 +1648,7 @@ public:
   }
 
 private:
+  TTKernelToEmitCConversionState *state = nullptr;
   std::string opName;
 };
 
@@ -1757,7 +1815,7 @@ public:
       emitCompilerL1ComputeCall(
           op, adaptor.getOperands(), TypeRange{},
           getTTKernelCalleeName(op->getName().getStringRef()), ArrayAttr(),
-          rewriter);
+          rewriter, nullptr);
       return success();
     }
     ValueRange operands = adaptor.getOperands();
@@ -1963,10 +2021,15 @@ public:
     auto operands = adaptor.getOperands();
     TT_assert(operands.size() == 2u);
 
+    std::string templateArgs;
+    if (usesCompilerL1(op.getOperation()) &&
+        op->hasAttr(ttkernel::kPayloadCompleteAttrName)) {
+      templateArgs = "<true>";
+    }
     std::string callStr =
         ensureCBDeclaration(operands.front(), op.getOperation(), rewriter,
                             state) +
-        "." + methodName + "({});";
+        "." + methodName + templateArgs + "({});";
 
     rewriter.create<emitc::VerbatimOp>(op.getLoc(), callStr,
                                        operands.drop_front());
@@ -3780,6 +3843,11 @@ public:
       }
     }
     TTKernelToEmitCConversionState state;
+    for (func::FuncOp funcOp : module.getOps<func::FuncOp>()) {
+      if (usesCompilerL1(funcOp)) {
+        planOwnedSequenceReloads(funcOp, state);
+      }
+    }
     ConversionPlan config(module.getContext(), state);
     for (func::FuncOp funcOp : module.getOps<func::FuncOp>()) {
       if (!funcOp->hasAttr(ttkernel::ThreadTypeAttr::name)) {
@@ -3914,9 +3982,7 @@ public:
 
         // Datamovement
         TTKernelToEmitCOpaqueRewriter<ttkernel::CopyTileInitOp>,
-        TTKernelToEmitCOpaqueRewriter<ttkernel::CopyTileOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::CopyBlockMatmulPartialsOp>,
-        TTKernelToEmitCOpaqueRewriter<ttkernel::PackTileOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::PackTileBlockOp>,
         TTKernelToEmitCPackReconfigL1AccToEmitCRewriter,
         PackReconfigDataFormatOpConversion,
@@ -3925,24 +3991,16 @@ public:
         TTKernelToEmitCOpaqueRewriter<ttkernel::UnaryOpInitCommonOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::BinaryOpInitCommonOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::AddTilesInitOp>,
-        TTKernelToEmitCOpaqueRewriter<ttkernel::AddTilesOp>,
-        TTKernelToEmitCOpaqueRewriter<ttkernel::MatmulTilesOp>,
-        TTKernelToEmitCOpaqueRewriter<ttkernel::MatmulBlockOp>,
-        TTKernelToEmitCOpaqueRewriter<ttkernel::ExperimentalMatmulBlockOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::TopkTileInitOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::TopkLocalSortOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::TopkMergeOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::TopkRebuildOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::MulTilesInitOp>,
-        TTKernelToEmitCOpaqueRewriter<ttkernel::MulTilesOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::SubTilesInitOp>,
-        TTKernelToEmitCOpaqueRewriter<ttkernel::SubTilesOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::BinaryDestReuseTilesInitOp>,
-        TTKernelToEmitCOpaqueRewriter<ttkernel::BinaryDestReuseTilesOp>,
 
         // Transpose Ops
         TTKernelToEmitCOpaqueRewriter<ttkernel::TransposeInitOp>,
-        TTKernelToEmitCOpaqueRewriter<ttkernel::TransposeTileOp>,
 
         // SFPU Ops
         TTKernelToEmitCOpaqueRewriter<ttkernel::InitSFPUOp>,
@@ -4073,7 +4131,6 @@ public:
         TTKernelToEmitCOpaqueRewriter<ttkernel::RecipTileInitOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::RecipTileOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::ReduceInitOp>,
-        TTKernelToEmitCOpaqueRewriter<ttkernel::ReduceTileOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::ReduceUninitOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::SFPUReduceInitOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::SFPUReduceTileOp>,
@@ -4112,7 +4169,6 @@ public:
         TTKernelToEmitCOpaqueRewriter<ttkernel::ExperimentalWriteColMaskTileOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::ExperimentalFillArangeTileOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::UnaryBcastInitOp>,
-        TTKernelToEmitCOpaqueRewriter<ttkernel::UnaryBcastTileOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::WhereTileInitOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::WhereTileOp>,
         TTKernelToEmitCOpaqueRewriter<ttkernel::ClampScalarTileInitOp>,
@@ -4142,8 +4198,23 @@ public:
         TTKernelToEmitCOpaqueRewriter<ttkernel::LocalTensorAccessorOp>>(
         typeConverter, context);
 
+    patterns
+        .add<TTKernelToEmitCOpaqueRewriter<ttkernel::SubTilesOp>,
+             TTKernelToEmitCOpaqueRewriter<ttkernel::TransposeTileOp>,
+             TTKernelToEmitCOpaqueRewriter<ttkernel::BinaryDestReuseTilesOp>,
+             TTKernelToEmitCOpaqueRewriter<ttkernel::UnaryBcastTileOp>,
+             TTKernelToEmitCOpaqueRewriter<ttkernel::ReduceTileOp>,
+             TTKernelToEmitCOpaqueRewriter<ttkernel::MatmulTilesOp>,
+             TTKernelToEmitCOpaqueRewriter<ttkernel::MatmulBlockOp>,
+             TTKernelToEmitCOpaqueRewriter<ttkernel::ExperimentalMatmulBlockOp>,
+             TTKernelToEmitCOpaqueRewriter<ttkernel::CopyTileOp>,
+             TTKernelToEmitCOpaqueRewriter<ttkernel::AddTilesOp>,
+             TTKernelToEmitCOpaqueRewriter<ttkernel::MulTilesOp>,
+             TTKernelToEmitCOpaqueRewriter<ttkernel::PackTileOp>>(
+            typeConverter, context, &state);
+
     patterns.add<TTKernelToEmitCOpaqueRewriter<ttkernel::PackWaitedTileOp>>(
-        typeConverter, context, "pack_tile");
+        typeConverter, context, &state, "pack_tile");
 
     patterns.add<GetDfbIdOpRewriter>(typeConverter, context);
     patterns.add<TTKernelToEmitCCBVoidMethodRewriter<ttkernel::CBPushBackOp>>(

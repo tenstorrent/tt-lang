@@ -3553,6 +3553,7 @@ LogicalResult lowerCBPop(CBPopOp op, Value cb,
                          const PipeTransportPlan &pipeTransportPlan,
                          const PipeTransportSlotCounterMap &slotCounters,
                          const PipeResourcePlan &pipeResourcePlan,
+                         bool payloadComplete,
                          ConversionPatternRewriter &rewriter) {
   Location loc = op.getLoc();
   if (!pipeTransportPlan.ownsDFBLifecycle(op.getOperation())) {
@@ -3569,7 +3570,10 @@ LogicalResult lowerCBPop(CBPopOp op, Value cb,
     }
 
     Value numTiles = computeDFBPopNumTiles(op, *maybeDFBType, rewriter, loc);
-    ttk::CBPopFrontOp::create(rewriter, loc, *convertedCb, numTiles);
+    UnitAttr payloadCompleteAttr =
+        payloadComplete ? rewriter.getUnitAttr() : UnitAttr();
+    ttk::CBPopFrontOp::create(rewriter, loc, *convertedCb, numTiles,
+                              payloadCompleteAttr);
   }
 
   const PipeTransportStorageAccess *storageAccess =
