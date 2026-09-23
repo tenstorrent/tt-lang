@@ -143,6 +143,13 @@ class _TTLNamespace:
         )
 
     @staticmethod
+    def call_extern_func(*args: Any, **kwargs: Any) -> None:
+        raise NotImplementedError(
+            "ttl.call_extern_func is not supported by the Python simulator; "
+            "use tt-lang-sim --backend=emule to execute external C++ functions"
+        )
+
+    @staticmethod
     def signpost(*args: Any, **kwargs: Any) -> _SignpostContextManager:
         """Signpost stub for simulator. Returns a no-op context manager."""
         return _SignpostContextManager()
