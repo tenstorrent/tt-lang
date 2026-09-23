@@ -48,13 +48,6 @@ readonly _BASE_IMAGE="$_MANIFEST_BASE_IMAGE"
 readonly _REQUIRED_EMULE_FILE="$_MANIFEST_CLUSTER_DESCRIPTOR"
 readonly _PLATFORM="$_MANIFEST_PLATFORM"
 
-for _COMMIT in "$_TT_EMULE_COMMIT" "$_TT_METAL_COMMIT"; do
-    if [ "${#_COMMIT}" -ne 40 ] || [[ "$_COMMIT" == *[!0-9a-f]* ]]; then
-        echo "tt-lang-sim: emulator revisions must be full lowercase commit SHAs." >&2
-        exit 2
-    fi
-done
-
 _IMAGE_INPUT_ID="$(
     {
         cksum "$_STACK_MANIFEST" \
