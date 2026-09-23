@@ -152,52 +152,21 @@ unset TTLANG_COMPILE_ONLY TTLANG_SIM_ONLY
 
 ### Select tests
 
-The following commands run inside that container shell. A separate native
-Linux build uses its own build directory instead of `/ttlang-build`.
+Inside the activated container shell, use the commands in [Testing](testing.md)
+or the detailed
+[`test/TESTING.md` guide](https://github.com/tenstorrent/tt-lang/blob/main/test/TESTING.md#running-tests).
+Those references cover full suites, individual cases, pytest filtering, lit,
+and report locations. Apply the installed environment's paths:
 
-Run the complete compiler suite:
+- Use `/ttlang-build` wherever the testing instructions use `build`.
+- For direct pytest invocations, pass `-c /ttlang-build/test/pytest.ini` to load
+  the installed build's generated configuration.
+- Select Python lit cases under `/ttlang-build/test/python`, which contains
+  their configured test environment.
 
-```bash
-cmake --build /ttlang-build --target check-ttlang-all
-```
-
-Run the device-independent compiler suites:
-
-```bash
-cmake --build /ttlang-build --target check-ttlang
-```
-
-Run or select pytest tests directly, including ordinary pytest filtering and
-reporting options:
-
-```bash
-pytest -c /ttlang-build/test/pytest.ini -v test/python
-pytest -c /ttlang-build/test/pytest.ini -v test/me2e
-pytest -c /ttlang-build/test/pytest.ini -v test/python/test_elementwise_ops.py -k add
-```
-
-Run lit suites or individual cases directly:
-
-```bash
-cmake --build /ttlang-build --target check-ttlang-mlir
-llvm-lit -v /ttlang-build/test/python
-llvm-lit -v /ttlang-build/test/python/simple_add.py
-```
-
-These commands use the runtime configured for that compiler build. Compiler-only
+A separate native Linux build uses its own build directory. Compiler-only
 tests exercise compiler behavior; device execution tests exercise tt-emule in
-the installed Linux environment. See
-[`test/TESTING.md`](https://github.com/tenstorrent/tt-lang/blob/main/test/TESTING.md)
-for the suite boundaries, device requirements, pytest selection, lit paths, and
-output locations. See [Testing](testing.md) for the short command reference.
-
-Exit the container shell to run representative programs from the host through
-the normal interface:
-
-```bash
-./bin/tt-lang-sim --backend=emule examples/eltwise_add.py
-./bin/tt-lang-sim --backend=emule examples/single_node_matmul.py
-```
+the installed Linux environment.
 
 ## Validate and inspect the environment
 
