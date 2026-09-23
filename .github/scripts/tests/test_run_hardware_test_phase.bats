@@ -223,6 +223,6 @@ EOF
     run cat "$CALLS"
     assert_line --partial "python3 active:1 visible: args:-m pytest"
     assert_line --partial "test/python/fabric/test_ccl.py::test_compiler_l1_point_to_point"
-    assert_line --partial "hybrid:1 options:--ttl-sram-allocation-mode=per-core"
+    assert_line --partial "hybrid:1 options:--ttl-sram-allocation-mode=per-node"
     assert_line --partial "--junitxml=build/test/pytest-report-sram-fabric.xml"
 }

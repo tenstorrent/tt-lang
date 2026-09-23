@@ -41,7 +41,7 @@ struct SRAMStorage {
 };
 
 /// A worker node's payload layout; absent payloads retain no arena extent.
-struct SRAMCoreLayout {
+struct SRAMNodeLayout {
   LaunchNodeCoord node;
   llvm::SmallVector<std::optional<uint64_t>> payloadOffsets;
   uint64_t arenaBytes;
@@ -53,7 +53,7 @@ struct SRAMAllocationPlan {
   SmallVector<SRAMRegion> regions;
   SmallVector<SRAMStorage> storage;
   uint64_t arenaBytes;
-  llvm::SmallVector<SRAMCoreLayout> coreLayouts;
+  llvm::SmallVector<SRAMNodeLayout> nodeLayouts;
 };
 
 } // namespace mlir::tt::ttl

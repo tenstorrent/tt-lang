@@ -107,7 +107,7 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::init(true)};
   Option<std::string> sramAllocationMode{
       *this, "sram-allocation-mode",
-      llvm::cl::desc("SRAM allocation domains: uniform or per-core"),
+      llvm::cl::desc("SRAM allocation domains: uniform or per-node"),
       llvm::cl::init("uniform")};
   Option<bool> sramAllocationReport{
       *this, "sram-allocation-report",

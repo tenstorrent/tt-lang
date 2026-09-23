@@ -13,7 +13,7 @@ python my_kernel.py --no-ttl-maximize-dst
 | Flag | Default | Description |
 |---|---|---|
 | `--ttl-memory-model {metal-cb,compiler-l1}` | `metal-cb` | Select Metal DFB descriptors or experimental compiler-owned SRAM byte allocation. Unsupported operations in `compiler-l1` are errors. |
-| `--ttl-sram-allocation-mode` | `uniform` | Select one shared SRAM layout or `per-core` layouts for `compiler-l1`; multicast receivers retain a shared layout. Per-core allocation requires Metal hybrid allocation enabled before device initialization. |
+| `--ttl-sram-allocation-mode` | `uniform` | Select one shared SRAM layout or `per-node` layouts for `compiler-l1`; multicast receivers retain a shared layout. Per-node allocation requires Metal hybrid allocation enabled before device initialization. |
 | `--ttl-sram-allocation-report` / `--no-ttl-sram-allocation-report` | disabled | Emit versioned JSON SRAM allocation facts and runtime arena reservations to stderr for `compiler-l1`. |
 | `--ttl-l1-allocation-strategy {multi-order-decreasing,first-fit-decreasing,best-fit-decreasing,exact}` | `multi-order-decreasing` | Select the payload placement strategy for `compiler-l1`. `exact` proves the minimum arena size within its work limit. |
 | `--ttl-l1-exact-allocation-search-limit N` | `1000000` | Limit exact compiler-managed SRAM placement to `N` subset-sum candidates and partial placements per allocation domain. Reaching the limit reports an inconclusive result. |
@@ -31,7 +31,7 @@ python my_kernel.py --no-ttl-maximize-dst
 | `--ttl-pipe-capacity-sync` / `--no-ttl-pipe-capacity-sync` | enabled | Use capacity-counter synchronization when the receiver wait and pop execute on the receiver NOC thread and the computed-address transfer passes the DFB ownership and count proofs. When disabled, computed-address transfers use receiver-post synchronization. |
 | `--ttl-pipe-global-semaphores-only` / `--no-ttl-pipe-global-semaphores-only` | disabled | Allocate all compiler-managed PipeNet synchronization counters in GlobalSemaphore storage, leaving local hardware semaphore ids available to the application. |
 | `--ttl-pipe-batch-tiles N` | `0` (auto) | Limit the logical transfers in one PipeTransport group. `0` selects automatically and `1` disables grouping. |
-| `--ttl-l1-budget N` | target-dependent | Override the per-core L1 budget used for target-aligned DFB allocation, PipeNet resources, synchronized-reset state, reconfiguration state, and final combined validation. |
+| `--ttl-l1-budget N` | target-dependent | Override the per-node SRAM budget used for target-aligned DFB allocation, PipeNet resources, synchronized-reset state, reconfiguration state, and final combined validation. |
 | `--ttl-reuse-user-dfbs` / `--no-ttl-reuse-user-dfbs` | enabled | Reuse physical DFB indices and compiler-managed storage when concurrent-kernel liveness proves that compatible lifetimes do not overlap. Disabling compacts provisional user indices without introducing user-DFB sharing and assigns each physical descriptor separate storage. |
 | `--ttl-dfb-exact-coloring-search-limit N` | `1000000` | Examine at most `N` states during deterministic exact DFB allocation when order-dependent first-fit prevents acceptance or exceeds the provisional threshold after a conservative PipeNet reservation. This bounds compile time; reaching the limit reports an inconclusive result only when authoritative acceptance requires the search result. |
 | `--ttl-unsafe-assume-dfb-allocation-groups` / `--no-ttl-unsafe-assume-dfb-allocation-groups` | disabled | Trust explicit `allocation_group=` handoffs that the compiler cannot prove. Accepted groups emit warnings and `ttl.assumed_dfb_allocation_groups` metadata. Descriptor, storage, static configuration, capacity, and L1 checks remain enforced. |
@@ -153,9 +153,9 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | `pipe-capacity-sync` | bool | `true` | Use capacity-counter synchronization when the receiver wait and pop execute on the receiver NOC thread and the computed-address transfer passes the DFB ownership and count proofs. When disabled, computed-address transfers use receiver-post synchronization. |
 | `pipe-global-semaphores-only` | bool | `false` | Allocate all compiler-managed PipeNet synchronization counters in GlobalSemaphore storage, leaving local hardware semaphore ids available to the application. |
 | `pipe-batch-tiles` | int64_t | `0` (auto) | Limit logical transfers per PipeTransport group. `0` selects automatically and `1` disables grouping. |
-| `l1-budget-override` | uint32_t | `0` (target default) | Override the per-core L1 budget used for target-aligned DFB allocation, PipeNet resources, synchronized-reset state, reconfiguration state, and final combined validation. |
+| `l1-budget-override` | uint32_t | `0` (target default) | Override the per-node SRAM budget used for target-aligned DFB allocation, PipeNet resources, synchronized-reset state, reconfiguration state, and final combined validation. |
 | `memory-model` | string | `metal-cb` | Select `metal-cb` or experimental `compiler-l1` byte allocation. |
-| `sram-allocation-mode` | string | `uniform` | Use one shared layout or `per-core` layouts with shared multicast receiver domains. Requires `compiler-l1` for `per-core`. |
+| `sram-allocation-mode` | string | `uniform` | Use one shared layout or `per-node` layouts with shared multicast receiver domains. Requires `compiler-l1` for `per-node`. |
 | `sram-allocation-report` | bool | `false` | Emit versioned JSON ownership, reuse, conflict, and planned arena facts to stderr for `compiler-l1`. |
 | `l1-allocation-strategy` | string | `multi-order-decreasing` | Select `multi-order-decreasing` (stable plus degree-aware first-fit), `first-fit-decreasing`, `best-fit-decreasing`, or `exact` compiler-managed SRAM payload placement. |
 | `l1-exact-allocation-search-limit` | uint64 | `1000000` | Maximum work items examined per allocation domain by exact compiler-managed SRAM placement before reporting an inconclusive result. |
@@ -181,7 +181,7 @@ The pipeline runs these passes and subpasses in order:
 - `ttl-verify-pipenet-guards`, then `ttl-verify-pipenet-schedule` -- verify PipeNet launch domains and event ordering while logical DFB identities remain distinct and before physical DFB allocation
 - `ttl-form-pipe-transports` -- group eligible repeated PipeNet transfers and select bounded receiver storage while accounting for synchronized-reset and reconfiguration state
 - `ttl-coalesce-dfb-acquires` -- coalesce compatible DFB acquires
-- `ttl-finalize-dfb-indices` -- `memory-model=compiler-l1` assigns explicit SRAM payload and control offsets using completion-proven storage interference and the selected `l1-allocation-strategy`; `l1-exact-allocation-search-limit` bounds exact byte placement per allocation domain; `sram-allocation-mode=per-core` partitions worker cores into independently allocated domains while preserving multicast address equality; `sram-allocation-report` emits allocation facts without changing placement; the default assigns logical DFBs to physical indices, validates combined DFB and fixed-state capacity, and emits runtime metadata; `reuse-user-dfbs` controls automatic user-DFB reuse, `unsafe-assume-allocation-groups` trusts only explicit unproved group handoffs, `exact-coloring-search-limit` bounds exhaustive index and weighted-allocation queries, and `l1-budget-override` replaces the target SRAM budget
+- `ttl-finalize-dfb-indices` -- `memory-model=compiler-l1` assigns explicit SRAM payload and control offsets using completion-proven storage interference and the selected `l1-allocation-strategy`; `l1-exact-allocation-search-limit` bounds exact byte placement per allocation domain; `sram-allocation-mode=per-node` partitions worker nodes into independently allocated domains while preserving multicast address equality; `sram-allocation-report` emits allocation facts without changing placement; the default assigns logical DFBs to physical indices, validates combined DFB and fixed-state capacity, and emits runtime metadata; `reuse-user-dfbs` controls automatic user-DFB reuse, `unsafe-assume-allocation-groups` trusts only explicit unproved group handoffs, `exact-coloring-search-limit` bounds exhaustive index and weighted-allocation queries, and `l1-budget-override` replaces the target SRAM budget
 - `ttl-set-compute-kernel-config` -- select tile execution strategies and resolve kernel-wide DST and per-DFB unpack configuration
 - `ttl-assign-dst` -- DST register allocation (linear scan with copy insertion)
 - `ttl-subblock-compute-for-dst` -- tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*; optionally refine reserve/push to per-subblock granularity *(only if `subblock-sync=true`)*
@@ -190,8 +190,8 @@ The pipeline runs these passes and subpasses in order:
 - `ttl-annotate-cb-associations` -- annotate block args with DFB indices
 - `ttl-verify-dfb-spsc` -- verify per-node DFB producer/consumer uniqueness after finalization
 - `ttl-erase-pipenet-scopes` -- remove verified PipeNet structural markers
-- `ttl-validate-cb-budget` -- verify target-aligned finalized DFB storage, synchronized-reset scratch, and reconfiguration tensors fit the per-core L1 budget
-- `convert-ttl-to-ttkernel` -- lower TTL DMA, PipeNet, synchronized-reset, and DFB reconfiguration operations to TTKernel, select their runtime resources, and validate the exact combined per-core L1 allocation
+- `ttl-validate-cb-budget` -- verify target-aligned finalized DFB storage, synchronized-reset scratch, and reconfiguration tensors fit the per-node SRAM budget
+- `convert-ttl-to-ttkernel` -- lower TTL DMA, PipeNet, synchronized-reset, and DFB reconfiguration operations to TTKernel, select their runtime resources, and validate the exact combined per-node SRAM allocation
 - `ttkernel-insert-inits` -- insert hardware init ops before compute ops
 - `ttkernel-insert-l1-accumulation` -- insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
 - `ttkernel-combine-pack-tiles` -- combine consecutive `pack_tile` into `pack_tile_block` *(only if `combine-pack-tiles=true`)*
@@ -258,7 +258,7 @@ ttlang-opt input.mlir -p 'func.func(ttl-insert-intermediate-dfbs{enable=false})'
 
 #### `ttl-finalize-dfb-indices`
 
-`sram-allocation-mode=per-core` requires an exact launch grid. It automatically specializes kernels per core and emits destination-core identities for PipeNet receiver addresses. The runtime uses TT-Metal per-core allocation for singleton domains and lockstep allocation for multicast receiver groups. Set `TT_METAL_ALLOCATOR_MODE_HYBRID=1` before device initialization.
+`sram-allocation-mode=per-node` requires an exact launch grid. It automatically specializes kernels per launch node and emits destination-node identities for PipeNet receiver addresses. The runtime uses TT-Metal per-core allocation for singleton domains and lockstep allocation for multicast receiver groups. Set `TT_METAL_ALLOCATOR_MODE_HYBRID=1` before device initialization.
 
 `sram-allocation-report=true` emits a versioned JSON compiler allocation record to stderr. See [SRAM allocation reporting](../../development/SRAMAllocation.md#allocation-report) for metrics and runtime reservation reporting.
 
@@ -274,13 +274,13 @@ allocation table.
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `memory-model` | string | `metal-cb` | Select `metal-cb` or experimental `compiler-l1` byte allocation. |
-| `sram-allocation-mode` | string | `uniform` | Use one shared layout or `per-core` layouts with shared multicast receiver domains. Requires `compiler-l1` for `per-core`. |
+| `sram-allocation-mode` | string | `uniform` | Use one shared layout or `per-node` layouts with shared multicast receiver domains. Requires `compiler-l1` for `per-node`. |
 | `sram-allocation-report` | bool | `false` | Emit versioned JSON ownership, reuse, conflict, and planned arena facts to stderr for `compiler-l1`. |
 | `l1-allocation-strategy` | string | `multi-order-decreasing` | Select `multi-order-decreasing` (stable plus degree-aware first-fit), `first-fit-decreasing`, `best-fit-decreasing`, or `exact` compiler-managed SRAM payload placement. |
 | `l1-exact-allocation-search-limit` | uint64 | `1000000` | Maximum subset-sum candidates and partial placements examined per allocation domain by exact compiler-managed SRAM placement. Reaching the limit reports an inconclusive result. |
 | `reuse-user-dfbs` | bool | `true` | Reuse physical indices for compatible logical DFBs and storage allocations for physical descriptors when concurrent-kernel liveness proves that their lifetimes cannot overlap. When false, compact provisional user indices without introducing new user-DFB sharing, apply physical-index reuse only to compiler-created DFBs, and assign each physical descriptor separate storage. |
 | `exact-coloring-search-limit` | uint64 | `1000000` | Examine at most this many states during deterministic exact DFB allocation. Exhaustive search runs when order-dependent first-fit prevents acceptance by the index or weighted L1 limit, or exceeds the provisional threshold after a conservative PipeNet reservation. Reaching the limit fails with an inconclusive-search diagnostic only when acceptance requires the result; a reservation-only search may retain an authoritative-budget-valid assignment. |
-| `l1-budget-override` | uint32_t | `0` (target default) | Override the per-core L1 budget used by target-aligned DFB allocation, synchronized-reset and reconfiguration state, and the conservative PipeNet reservation. |
+| `l1-budget-override` | uint32_t | `0` (target default) | Override the per-node SRAM budget used by target-aligned DFB allocation, synchronized-reset and reconfiguration state, and the conservative PipeNet reservation. |
 | `unsafe-assume-allocation-groups` | bool | `false` | Trust explicit DFB allocation groups when launch-domain, access-completion, pointer-handoff, or lifetime-order proof is incomplete. Emit one warning per accepted group and record the assumptions in `ttl.assumed_dfb_allocation_groups`. Page-format, storage, static compute-configuration, per-member ring-envelope, target-capacity, and L1-budget errors remain fatal. |
 
 ```bash
@@ -297,7 +297,7 @@ allocations are added during `convert-ttl-to-ttkernel`.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `l1-budget-override` | uint32_t | `0` (target default) | Override the per-core L1 budget used for finalized DFB, synchronized-reset, and reconfiguration-state validation. |
+| `l1-budget-override` | uint32_t | `0` (target default) | Override the per-node SRAM budget used for finalized DFB, synchronized-reset, and reconfiguration-state validation. |
 
 ```bash
 ttlang-opt input.mlir -p 'builtin.module(ttl-validate-cb-budget{l1-budget-override=98304})'
@@ -364,7 +364,7 @@ planning in `convert-ttl-to-ttkernel`.
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `group-size` | int64_t | `0` (auto) | Limit logical transfers per group. `0` selects automatically and `1` disables grouping. |
-| `l1-budget-override` | uint32_t | `0` (target default) | Override the combined per-core L1 budget used during conservative grouping selection. |
+| `l1-budget-override` | uint32_t | `0` (target default) | Override the combined per-node SRAM budget used during conservative grouping selection. |
 
 ```bash
 ttlang-opt input.mlir --ttl-form-pipe-transports='group-size=8'
@@ -381,7 +381,7 @@ operations to TTKernel.
 | `pipe-computed-addresses` | bool | `true` | Use computed receiver DFB addresses for eligible PipeNet transfers. When false, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
 | `pipe-capacity-sync` | bool | `true` | Use capacity-counter synchronization when the receiver wait and pop execute on the receiver NOC thread and the computed-address transfer passes the DFB ownership and count proofs. When false, computed-address transfers use receiver-post synchronization. |
 | `pipe-global-semaphores-only` | bool | `false` | Allocate all compiler-managed PipeNet synchronization counters in GlobalSemaphore storage. |
-| `l1-budget-override` | uint32_t | `0` (target default) | Override the exact combined per-core budget for target-aligned finalized DFBs, synchronized-reset state, reconfiguration tensors, PipeNet scratch, and GlobalSemaphore allocations. |
+| `l1-budget-override` | uint32_t | `0` (target default) | Override the exact combined per-node SRAM budget for target-aligned finalized DFBs, synchronized-reset state, reconfiguration tensors, PipeNet scratch, and GlobalSemaphore allocations. |
 
 ```bash
 ttlang-opt input.mlir -p 'builtin.module(convert-ttl-to-ttkernel{pipe-computed-addresses=true pipe-capacity-sync=false pipe-global-semaphores-only=true l1-budget-override=98304})'

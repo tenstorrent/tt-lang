@@ -171,14 +171,14 @@ void printSRAMAllocationReport(
       {"reused_ranges", std::move(reusedRanges)},
       {"logical_conflicts", std::move(evidence)},
       {"lifetimes", std::move(lifetimes)}};
-  if (!plan.coreLayouts.empty()) {
-    report["allocation_mode"] = "per-core";
-    report["domain"] = plan.coreLayouts.front().domain;
-    llvm::json::Array cores;
-    for (const SRAMCoreLayout &layout : plan.coreLayouts) {
-      cores.push_back(llvm::json::Array{layout.node.x, layout.node.y});
+  if (!plan.nodeLayouts.empty()) {
+    report["allocation_mode"] = "per-node";
+    report["domain"] = plan.nodeLayouts.front().domain;
+    llvm::json::Array nodes;
+    for (const SRAMNodeLayout &layout : plan.nodeLayouts) {
+      nodes.push_back(llvm::json::Array{layout.node.x, layout.node.y});
     }
-    report["cores"] = std::move(cores);
+    report["nodes"] = std::move(nodes);
   }
   output << "ttlang-sram-report: ";
   llvm::json::OStream json(output);

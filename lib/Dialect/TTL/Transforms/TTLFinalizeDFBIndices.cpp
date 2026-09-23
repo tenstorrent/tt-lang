@@ -292,7 +292,7 @@ struct TTLFinalizeDFBIndicesPass
     if (sramAllocationMode != "uniform" &&
         memoryModel != kCompilerL1MemoryModel) {
       moduleOp.emitOpError(
-          "per-core SRAM allocation requires memory-model=compiler-l1");
+          "per-node SRAM allocation requires memory-model=compiler-l1");
       signalPassFailure();
       return;
     }

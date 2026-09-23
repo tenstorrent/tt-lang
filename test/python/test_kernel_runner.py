@@ -41,7 +41,7 @@ from ttl.dataflow_buffer import (
     DFBReconfigurationPlan,
     DFBStorageSegment,
     PhysicalDFBConfig,
-    SRAMCoreLayout,
+    SRAMNodeLayout,
     SRAMReceiverTarget,
 )
 from ttl.domains import DeviceDomain
@@ -6727,7 +6727,7 @@ def test_allocation_nodes_outside_program_grid_are_rejected(monkeypatch):
         )
 
 
-# Disjoint allocation domains consume independent per-core L1 budgets.
+# Disjoint allocation domains consume independent per-node SRAM budgets.
 def test_allocation_nodes_compute_dfb_budget_per_core(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 2048)
@@ -8943,8 +8943,8 @@ def test_sram_domain_report_uses_arena_geometry(monkeypatch, capsys):
     record = json.loads(capsys.readouterr().err.split("ttlang-sram-report: ", 1)[1])
     assert record["scope"] == "arena-domain-reference-device"
     assert record["accounting_source"] == "tensor-buffer-geometry"
-    assert record["reserved_bytes_per_core"] == 128
-    assert record["cores"] == [[0, 0], [1, 0], [2, 0]]
+    assert record["reserved_bytes_per_node"] == 128
+    assert record["nodes"] == [[0, 0], [1, 0], [2, 0]]
 
 
 class _IndependentSRAMArena(_FakeTensor):
@@ -8987,7 +8987,7 @@ def test_independent_sram_binds_each_device(monkeypatch, placement_mode):
     config = replace(
         _compiler_l1_config(),
         storage_index=0,
-        sram_core_layouts=(SRAMCoreLayout((0, 0), 64, True, 2112, 0),),
+        sram_node_layouts=(SRAMNodeLayout((0, 0), 64, True, 2112, 0),),
     )
     kwargs = {}
     if placement_mode == "device-domain":
@@ -9019,7 +9019,7 @@ def test_independent_sram_binds_each_device(monkeypatch, placement_mode):
     assert result["tensors"][0] is arena
 
 
-def test_per_core_sram_preserves_grouped_specialized_kernel(monkeypatch):
+def test_per_node_sram_preserves_grouped_specialized_kernel(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     mesh_device = _FakeMeshDevice()
@@ -9037,9 +9037,9 @@ def test_per_core_sram_preserves_grouped_specialized_kernel(monkeypatch):
     config = replace(
         _compiler_l1_config(),
         storage_index=0,
-        sram_core_layouts=(
-            SRAMCoreLayout((0, 0), 64, True, 2112, 0),
-            SRAMCoreLayout((1, 0), 64, True, 2112, 0),
+        sram_node_layouts=(
+            SRAMNodeLayout((0, 0), 64, True, 2112, 0),
+            SRAMNodeLayout((1, 0), 64, True, 2112, 0),
         ),
     )
     result = kernel_runner.run_kernel_on_device(
@@ -9058,16 +9058,16 @@ def test_per_core_sram_preserves_grouped_specialized_kernel(monkeypatch):
     assert allocations == [(2112, True, False)]
 
 
-def test_per_core_sram_splits_grouped_kernel_between_allocation_domains(monkeypatch):
+def test_per_node_sram_splits_grouped_kernel_between_allocation_domains(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     core_ranges = _FakeCoreRanges((((0, 0), (1, 0)),))
     config = replace(
         _compiler_l1_config(),
         storage_index=0,
-        sram_core_layouts=(
-            SRAMCoreLayout((0, 0), 64, True, 2112, 0),
-            SRAMCoreLayout((1, 0), 128, True, 2176, 1),
+        sram_node_layouts=(
+            SRAMNodeLayout((0, 0), 64, True, 2112, 0),
+            SRAMNodeLayout((1, 0), 128, True, 2176, 1),
         ),
     )
     arenas = {
@@ -9100,7 +9100,7 @@ def test_per_core_sram_splits_grouped_kernel_between_allocation_domains(monkeypa
         grid_rows=1,
         num_cbs=1,
         descriptor_resource_plans=resource_plan.kernel_descriptors,
-        sram_core_arenas=arenas,
+        sram_node_arenas=arenas,
         sram_configs=[config],
     )
 
@@ -9126,7 +9126,7 @@ def test_independent_sram_receiver_uses_destination_device_and_core():
     config = replace(
         _compiler_l1_config(),
         storage_index=0,
-        sram_core_layouts=(SRAMCoreLayout((1, 0), 64, True, 2112, 0),),
+        sram_node_layouts=(SRAMNodeLayout((1, 0), 64, True, 2112, 0),),
     )
     target = SRAMReceiverTarget(0, (1, 0), (0, 1))
     assert (
@@ -9146,9 +9146,9 @@ def test_independent_sram_rejects_kernel_outside_domains_before_allocation(monke
     config = replace(
         _compiler_l1_config(),
         storage_index=0,
-        sram_core_layouts=(
-            SRAMCoreLayout((0, 0), 64, True, 2112, 0),
-            SRAMCoreLayout((1, 0), 64, True, 2112, 1),
+        sram_node_layouts=(
+            SRAMNodeLayout((0, 0), 64, True, 2112, 0),
+            SRAMNodeLayout((1, 0), 64, True, 2112, 1),
         ),
     )
     outside_ranges = _FakeCoreRanges((((2, 0), (2, 0)),))
@@ -9169,7 +9169,7 @@ def test_emitted_runner_preserves_sram_domains_and_receiver_targets(monkeypatch)
     config = replace(
         _compiler_l1_config(),
         storage_index=0,
-        sram_core_layouts=(SRAMCoreLayout((0, 0), 64, True, 2112, 0),),
+        sram_node_layouts=(SRAMNodeLayout((0, 0), 64, True, 2112, 0),),
     )
     target = SRAMReceiverTarget(0, (0, 0), (0, 1))
     spec = replace(
@@ -9198,9 +9198,9 @@ def test_sram_arena_size_uses_finalized_domain_extents():
     config = replace(
         _compiler_l1_config(),
         storage_index=0,
-        sram_core_layouts=(
-            SRAMCoreLayout((0, 0), 64, True, 2112, 0),
-            SRAMCoreLayout((1, 0), 2112, True, 4160, 1),
+        sram_node_layouts=(
+            SRAMNodeLayout((0, 0), 64, True, 2112, 0),
+            SRAMNodeLayout((1, 0), 2112, True, 4160, 1),
         ),
     )
     assert kernel_runner._get_compiler_l1_arena_bytes([config]) == 4160

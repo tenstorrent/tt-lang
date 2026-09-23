@@ -23,7 +23,7 @@ Shared terminology is defined in the [TT-Lang specification glossary](../sphinx/
 
 ## Allocation Model
 
-One compiler-managed arena exists on each participating worker core for each invocation of a compiled Python `ttl.operation`. `--ttl-sram-allocation-mode=uniform` uses the same relative layout on every core. `per-core` allocates independent layouts, except that multicast receivers share one layout and base address. Kernels receive the core-local arena base as one common runtime argument, so the argument count does not depend on the number of logical DFBs.
+One compiler-managed arena exists on each participating worker node for each invocation of a compiled Python `ttl.operation`. `--ttl-sram-allocation-mode=uniform` uses the same relative layout on every node. `per-node` allocates independent layouts, except that multicast receivers share one layout and base address. Kernels receive the node-local arena base as one common runtime argument, so the argument count does not depend on the number of logical DFBs.
 
 The arena has two sections:
 
@@ -68,7 +68,7 @@ This design reuses one lifetime model for both memory backends. The allocator ca
 buildStorageConflicts(lifetimes, storageMode):
     conflicts = empty graph
     for each unordered pair (left, right):
-        for each worker core where both may be active:
+        for each worker node where both may be active:
             if the core association or completion order is unknown:
                 add conflict(left, right)
             else if neither lifetime completes before the other begins:
@@ -95,7 +95,7 @@ buildStorageOwners(regions, allocationGroups, conflicts):
     return owners and ownerConflict
 ```
 
-Possible launch domains use the same rules as exact domains and remain conservative. The compiler authorizes overlap only when every common worker core has a proven completion order.
+Possible launch domains use the same rules as exact domains and remain conservative. The compiler authorizes overlap only when every common worker node has a proven completion order.
 
 ## Placement Interface and Algorithms
 
@@ -179,7 +179,7 @@ createSRAMAllocator(llvm::StringRef name, const SRAMAllocatorOptions &options,
 
 `SRAMAllocator::allocate` is the public, nonvirtual entry point. It validates the problem, invokes the private strategy method, and validates the solution. This structure keeps strategy selection replaceable while enforcing one correctness contract. On success, `offsets` has one entry per allocator region and `arenaBytes` is the exact maximum payload end, or zero when no allocator regions exist. On failure, `failureReason` contains diagnostic text and `failureRegionIndex` identifies an allocator region only when the error applies to one region. The allocator layer does not emit diagnostics or modify IR.
 
-`allocateDomains` applies the same strategy and validation to independently addressable layouts. Domain order is stable; `storageIndices` maps each domain-local region to a caller-owned storage identity. Identities must be unique within a domain and may recur across domains. Each domain supplies its own conflicts, alignment, control prefix, and budget. Core membership and the proof that domain bindings are disjoint belong to the caller, not the placement strategy. The compiler supplies one domain in uniform mode and one domain per independent core or multicast receiver group in per-core mode.
+`allocateDomains` applies the same strategy and validation to independently addressable layouts. Domain order is stable; `storageIndices` maps each domain-local region to a caller-owned storage identity. Identities must be unique within a domain and may recur across domains. Each domain supplies its own conflicts, alignment, control prefix, and budget. Node membership and the proof that domain bindings are disjoint belong to the caller, not the placement strategy. The compiler supplies one domain in uniform mode and one domain per independent node or multicast receiver group in per-node mode.
 
 All domain inputs are validated before any strategy executes. Failure returns no partial placement; `failureDetail` identifies the domain and, when available, the storage owner. A control-only domain retains `payloadBaseOffset` as its arena size. Exact search has the configured work limit separately for each domain. Independent exact minima minimize total reservation for a fixed domain partition and positive replication counts; this does not optimize the partition itself or account for host allocation granularity.
 
@@ -308,11 +308,11 @@ The allocator interface contains no MLIR operations, DFB identities, architectur
 
 ## Allocation Domains
 
-Per-core mode starts with one domain per worker core in the exact launch grid. A multicast carries one destination address, so all receivers of each multicast belong to one domain. Overlapping receiver sets merge transitively using LLVM `EquivalenceClasses`. This constraint can produce larger domains than individual multicast rectangles; it preserves existing NOC transfers without changing LLKs.
+Per-node mode starts with one domain per worker node in the exact launch grid. A multicast carries one destination address, so all receivers of each multicast belong to one domain. Overlapping receiver sets merge transitively using LLVM `EquivalenceClasses`. This constraint can produce larger domains than individual multicast rectangles; it preserves existing NOC transfers without changing LLKs.
 
 ```text
 buildDomains(operation):
-    initialize one disjoint set per worker core
+    initialize one disjoint set per worker node
     for each multicast receiver set:
         union all receiver cores
     for each resulting domain, in stable core order:
@@ -322,9 +322,9 @@ buildDomains(operation):
     allocate and validate all domains before changing IR
 ```
 
-Unknown activity retains the payload. Conflict edges remain conservative across the operation: a conflict observed on another core is not currently removed. Control records remain at fixed offsets on every core, including cores without that owner's payload, so reset and allocation-group ownership retain their existing contracts. These choices bound the current savings; independent placement does not imply an optimal domain partition or minimum total device reservation.
+Unknown activity retains the payload. Conflict edges remain conservative across the operation: a conflict observed on another node is not currently removed. Control records remain at fixed offsets on every node, including nodes without that owner's payload, so reset and allocation-group ownership retain their existing contracts. These choices bound the current savings; independent placement does not imply an optimal domain partition or minimum total device reservation.
 
-The existing core-specialization pass creates one kernel instance per core. Finalized metadata supplies each instance's payload offsets and each computed PipeNet argument's destination DFB, core, and logical device. Transport finalization preserves those identities when it removes unused receiver arguments. The runtime validates domain membership, shared layouts, storage aliases, and receiver bindings before creating resources. Independently addressed tensor backing requires direct local access on every executing core; general tensor access and multicast require one common base address and are rejected.
+The existing core-specialization pass creates one kernel instance per launch node. Finalized metadata supplies each instance's payload offsets and each computed PipeNet argument's destination DFB, node, and logical device. Transport finalization preserves those identities when it removes unused receiver arguments. The runtime validates domain membership, shared layouts, storage aliases, and receiver bindings before creating resources. Independently addressed tensor backing requires direct local access on every executing node; general tensor access and multicast require one common base address and are rejected.
 
 ```text
 bindDomains(invocation):
@@ -338,15 +338,15 @@ bindDomains(invocation):
     retain arena tensors through operation completion
 ```
 
-Per-core host allocation requires `TT_METAL_ALLOCATOR_MODE_HYBRID=1` before opening devices.
+Per-node host allocation requires `TT_METAL_ALLOCATOR_MODE_HYBRID=1` before opening devices because TT-Lang realizes singleton domains through TT-Metal's per-core allocation API.
 
 ## Allocation Report
 
 `--ttl-sram-allocation-report` emits JSON records to stderr, each prefixed by `ttlang-sram-report: `. Reporting is disabled by default and inactive with `metal-cb`. The compiler record appears on compilation; the runtime record appears on each invocation that allocates an arena, including compiled-artifact cache hits. Reporting does not change placement or lifetime proofs.
 
-Per-core mode emits one compiler and runtime record per allocation domain. `cores` lists domain members; compiler records also include `domain` and `allocation_mode`. Each runtime record derives the per-core reservation from the allocated arena tensor's total page count and aligned page size, and verifies that pages divide uniformly across the domain. `accounting_source` identifies this as `tensor-buffer-geometry`. Tensor geometry avoids ambiguous address matching because disjoint domains may allocate different buffers at the same SRAM address. These counts describe backing extents, not free-space fragmentation or the largest remaining allocation.
+Per-node mode emits one compiler and runtime record per allocation domain. `nodes` lists domain members; compiler records also include `domain` and `allocation_mode`. Each runtime record derives the per-node reservation from the allocated arena tensor's total page count and aligned page size, and verifies that pages divide uniformly across the domain. `accounting_source` identifies this as `tensor-buffer-geometry`. Tensor geometry avoids ambiguous address matching because disjoint domains may allocate different buffers at the same SRAM address. These counts describe backing extents, not free-space fragmentation or the largest remaining allocation.
 
-The compiler record has `schema_version: 1` and `phase: "compiler"`. `owners` maps shared storage and control offsets to logical DFBs. `regions` includes declaration locations, core domains, and fixed tensor byte ranges. `logical_conflicts` reuses existing reason names and source evidence; these are analysis facts before allocation-group ownership is applied. `reuse_enabled: false` separately explains policy-disabled reuse. `reused_ranges` lists overlapping compiler-owned owner pairs; its byte counts are not additive when more than two owners reuse a range. `lifetimes` records known and possible core membership, completion proof status, entry locations, and entry/completion event IDs. Event IDs identify partial-order analysis events, not elapsed time or a total execution order.
+The compiler record has `schema_version: 1` and `phase: "compiler"`. `owners` maps shared storage and control offsets to logical DFBs. `regions` includes declaration locations, node domains, and fixed tensor byte ranges. `logical_conflicts` reuses existing reason names and source evidence; these are analysis facts before allocation-group ownership is applied. `reuse_enabled: false` separately explains policy-disabled reuse. `reused_ranges` lists overlapping compiler-owned owner pairs; its byte counts are not additive when more than two owners reuse a range. `lifetimes` records known and possible node membership, completion proof status, entry locations, and entry/completion event IDs. Event IDs identify partial-order analysis events, not elapsed time or a total execution order.
 
 | Compiler metric | Meaning |
 | --- | --- |
@@ -374,7 +374,7 @@ The initial scope is one compiled `ttl.operation`, including its tensor-backed a
 | Request | Implemented | Missing |
 | --- | --- | --- |
 | Late allocation and global minimum | One immutable problem per `ttl.operation`; optional exact minimum for each compiler-owned allocation domain. | Joint placement of tensor-backed and compiler-owned storage within that operation. Existing tensor addresses are already assigned. |
-| Full lockstep, ranged lockstep, and per-core allocation | Uniform mode uses one shared layout; per-core mode allocates independent domains, merging multicast receivers that require equal addresses. | Explicit user-selected partitions and core-specific conflict refinement. Multicast constraints can force larger shared domains. |
+| Full lockstep, ranged lockstep, and per-node allocation | Uniform mode uses one shared layout; per-node mode allocates independent domains, merging multicast receivers that require equal addresses. | Explicit user-selected partitions and node-specific conflict refinement. Multicast constraints can force larger shared domains. |
 | Unified tensor and DFB allocation | Shared ownership, lifetime, allocation-group, and alias validation; tensor-backed DFBs avoid duplicate payload storage. | Shared physical placement. TTNN owns existing tensor allocations; the compiler currently owns only its arena. |
 | Lifetime inspection and reuse hints | Automatic completion-aware reuse and the allocation report above. | A user-facing guidance contract that preserves asynchronous completion. |
 
@@ -383,7 +383,7 @@ The initial scope is one compiled `ttl.operation`, including its tensor-backed a
 1. Lifetime guidance. Build on the allocation report. Placement preferences may change ordering but cannot remove conflicts. Reuse existing ownership-transfer operations for semantic lifetime boundaries; validate producer publication and consumer completion, including remote and external users.
 2. Allocation-domain refinement. Accept explicit core partitions, validate multicast receiver address equality, and project completion conflicts onto each domain. Keep unknown completion conservative. Measure whether finer domains reduce actual reservation enough to justify additional host allocations and kernel specialization.
 3. Unified host placement. Describe tensor and DFB storage with common ownership, alias, lifetime, alignment, domain, and fixed/movable constraints. Preserve caller-owned addresses. Reserve the validated plan transactionally and construct tensor views over owned storage, retaining owners through completion. Reuse TTNN/TT-Metal host facilities where their contracts suffice; extend host APIs where required.
-4. Late joint placement within one operation. Extend the existing immutable allocation problem and its oracle to fixed tensor intervals and domain-specific movable storage. Assign offsets only after sizes, ownership, domains, and completion conflicts are known. Minimize uniform arena size or total domain reservation subject to each core's capacity. Optimality remains relative to the supplied requirements and fixed addresses.
+4. Late joint placement within one operation. Extend the existing immutable allocation problem and its oracle to fixed tensor intervals and domain-specific movable storage. Assign offsets only after sizes, ownership, domains, and completion conflicts are known. Minimize uniform arena size or total domain reservation subject to each node's capacity. Optimality remains relative to the supplied requirements and fixed addresses.
 
 Reporting supplies the measurements for later work. Domain representation precedes unified placement. Lifetime guidance can proceed alongside domain work. These host/compiler extensions preserve common validation and address-based LLK interfaces.
 
@@ -490,7 +490,7 @@ External calls can provide explicit `DFBEffect` entries for protocol operations.
 
 Intra-device and generated inter-device PipeNets retain the existing transfer plan and synchronization protocols. Compiler-managed allocation changes how a receiver address is obtained. A compiler-owned receiver uses the arena base plus its finalized payload offset. A tensor-backed receiver uses the tensor base plus its finalized byte offset. No TT-Metal DFB descriptor is created for either case.
 
-Generated inter-device transfers compute receiver addresses from the destination device and core. Uniform mode supplies a common lockstep arena base. Per-core mode binds the destination domain's actual allocation address and payload offset. Tensor-backed receivers retain their validated tensor byte ranges. Fabric binding independently resolves logical device coordinates to physical routing targets.
+Generated inter-device transfers compute receiver addresses from the destination device and node. Uniform mode supplies a common lockstep arena base. Per-node mode binds the destination domain's actual allocation address and payload offset. Tensor-backed receivers retain their validated tensor byte ranges. Fabric binding independently resolves logical device coordinates to physical routing targets.
 
 The Metal backend retains receiver publication when one physical DFB index can refer to different storage across reconfiguration epochs. Compiler-managed allocation assigns each finalized DFB index one arena or tensor base for the compiled operation, so that base remains valid for every transfer occurrence.
 
@@ -542,7 +542,7 @@ Common allocation and lowering contain no architecture branches. `compiler_l1_ta
 
 ## Runtime Arena
 
-The runtime represents each domain arena as a row-major, height-sharded TTNN SRAM tensor, with one row per member core. This directly represents equal-length storage within a domain. Uniform mode uses TT-Metal lockstep allocation across all selected cores and devices. Per-core mode uses independent allocation for singleton domains and lockstep allocation for multicast receiver domains; kernel descriptors bind the actual address on each selected device. Tensor-backed payloads retain their existing height-, width-, or block-sharded allocations.
+The runtime represents each domain arena as a row-major, height-sharded TTNN SRAM tensor, with one row per member node. This directly represents equal-length storage within a domain. Uniform mode uses TT-Metal lockstep allocation across all selected nodes and devices. Per-node mode uses TT-Metal per-core allocation for singleton domains and lockstep allocation for multicast receiver domains; kernel descriptors bind the actual address on each selected device. Tensor-backed payloads retain their existing height-, width-, or block-sharded allocations.
 
 The arena is passed as an auxiliary `generic_op` input so TTNN retains it through device execution while preserving the user output position. Arena and synchronization scratch are zero-initialized. Declarative runtime resources compose with the arena: semaphore descriptors, per-kernel runtime arguments, compile-time defines, external fabric bindings, and their lifetime owners retain their existing validation and program-hash contracts. Runtime resource caching includes the allocation metadata and reset count, so incompatible layouts do not share resources.
 
@@ -570,11 +570,11 @@ Regression tests compare exact placement with an independent exhaustive byte-off
 
 Compiler-level tests compare 616 lifetime-derived placements with a separate exhaustive oracle, retain a fixed BF16 fragmentation case, and verify deterministic metadata. In the fixed case, decreasing placement uses 45,056 payload bytes while exact placement uses 32,768 bytes: 72.73% efficiency and 12,288 excess bytes. Device tests verify that reuse and 96 simultaneously live DFBs preserve data while using no TT-Metal descriptors.
 
-The two-core uneven-demand regression assigns 16 tiles to one core and one tile to the other. Uniform allocation reserves 65,664 bytes for BF16 and 131,200 bytes for FP32; per-core allocation uses 34,944 and 69,760 bytes respectively, including the common 64-byte control prefix on each core. The test checks exact output equality with DRAM and SRAM tensors and verifies backing extents through runtime reports. This measures reduced reservation for that workload, not execution speed or a universal improvement over another allocator.
+The two-node uneven-demand regression assigns 16 tiles to one node and one tile to the other. Uniform allocation reserves 65,664 bytes for BF16 and 131,200 bytes for FP32; per-node allocation uses 34,944 and 69,760 bytes respectively, including the common 64-byte control prefix on each node. The test checks exact output equality with DRAM and SRAM tensors and verifies backing extents through runtime reports. This measures reduced reservation for that workload, not execution speed or a universal improvement over another allocator.
 
 ## Implemented Contract
 
-- Uniform arena allocation or independent per-core domains with shared multicast receiver layouts.
+- Uniform arena allocation or independent per-node domains with shared multicast receiver layouts.
 - Compiler-owned static payloads and existing height-, width-, or block-sharded tensor-backed payloads.
 - Validated allocation groups with one shared state record and the largest required compiler-owned payload envelope.
 - One-block transactions and complete-capacity tensor publication or consumption, with positive capacity below `2^31` pages.
@@ -594,7 +594,7 @@ The two-core uneven-demand regression assigns 16 tiles to one core and one tile 
 | --- | --- |
 | Sub-tile compute | 220 compiler-managed SRAM Blackhole device-correctness cases across BF16/FP32, DRAM/SRAM tensors, both decreasing strategies, supported tile dimensions, a tensor-backed multi-page expression, elementwise operations, broadcast, matmul, transpose, reductions, mixed dimensions in one compute kernel, equal-byte-size width transitions, and typed external descriptors; 192 Metal device-correctness cases preserve existing behavior |
 | Blackhole transfer and compute | Device correctness across BF16/FP32, DRAM/SRAM tensors, repeated executions, counter wraparound, 96 live DFBs, arithmetic with 66 allocated DFBs, matmul, reductions, residual, MLP, attention, and expert merge |
-| [Allocation domains](../../test/python/sram_domains.py) | Blackhole device correctness for per-core copies, mixed extents, compute, reset/reconfiguration, external calls and PipeNet receivers; host tests cover distinct mesh-device addresses, selected-device placement, shared-layout validation and generated-runner metadata. Wormhole domain allocation is compile-only. |
+| [Allocation domains](../../test/python/sram_domains.py) | Blackhole device correctness for per-node copies, mixed extents, compute, reset/reconfiguration, external calls and PipeNet receivers; host tests cover distinct mesh-device addresses, selected-device placement, shared-layout validation and generated-runner metadata. Wormhole domain allocation is compile-only. |
 | Tensor-backed storage | 46 Blackhole device-correctness cases across BF16/FP32, compiler-owned scratch and tensor-backed storage, height/width/block sharding, row/column shard orientation, nonzero byte offsets, complete-capacity publication, replacement, and repeated execution; compile-only metadata checks cover all three allocator strategies |
 | Allocation groups | Four compiler-managed SRAM Blackhole device-correctness cases across BF16/FP32 and DRAM/SRAM tensors for repeated shared-state handoff with different member capacities; compile-only checks cover all three allocator strategies, tensor-backed ownership, rejection with reuse disabled, and tensor byte-range alias diagnostics |
 | External calls and lifecycle boundaries | 20 Blackhole device cases across BF16/FP32 and DRAM/SRAM, including repeated selected reset, reset-all, reconfiguration, live state preservation, payload reuse, and reset of allocation index 65 |

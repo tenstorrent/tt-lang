@@ -144,7 +144,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
-  if (options.specializeCores || options.sramAllocationMode == "per-core") {
+  if (options.specializeCores || options.sramAllocationMode == "per-node") {
     buildTTKernelSpecializationPipeline(pm);
   } else {
     buildTTKernelRecordCleanupPipeline(pm);

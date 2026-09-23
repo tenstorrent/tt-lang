@@ -291,7 +291,7 @@ CircularBuffer = DataflowBuffer
 
 @dataclass(frozen=True)
 class SRAMReceiverTarget:
-    """A sender runtime argument's destination DFB, core, and logical device."""
+    """A sender runtime argument's destination DFB, node, and logical device."""
 
     dfb_index: int
     node: Tuple[int, int]
@@ -299,8 +299,8 @@ class SRAMReceiverTarget:
 
 
 @dataclass(frozen=True)
-class SRAMCoreLayout:
-    """One core's payload placement and total arena reservation requirement."""
+class SRAMNodeLayout:
+    """One node's payload placement and total arena reservation requirement."""
 
     node: Tuple[int, int]
     payload_offset: int
@@ -337,7 +337,7 @@ class PhysicalDFBConfig:
     l1_payload_offset: Optional[int] = None
     l1_allocation_bytes: Optional[int] = None
     storage_capacity_pages: Optional[int] = None
-    sram_core_layouts: Tuple[SRAMCoreLayout, ...] = ()
+    sram_node_layouts: Tuple[SRAMNodeLayout, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Validation and binding of compiler-finalized SRAM core layouts."""
+"""Validation and binding of compiler-finalized SRAM node layouts."""
 
 
-def validate_core_layouts(configs, coordinates):
-    if not any(config.sram_core_layouts for config in configs):
+def validate_node_layouts(configs, coordinates):
+    if not any(config.sram_node_layouts for config in configs):
         return {}
     coordinates = set(coordinates)
     sizes = {}
@@ -15,14 +15,14 @@ def validate_core_layouts(configs, coordinates):
         config.l1_offset is None or config.storage_index is None for config in configs
     ):
         raise ValueError(
-            "SRAM core layouts require finalized control and storage identities"
+            "SRAM node layouts require finalized control and storage identities"
         )
     control_end = max(config.l1_offset + 8 for config in configs)
     for config in configs:
-        layouts = {layout.node: layout for layout in config.sram_core_layouts}
-        if len(layouts) != len(config.sram_core_layouts) or set(layouts) != coordinates:
+        layouts = {layout.node: layout for layout in config.sram_node_layouts}
+        if len(layouts) != len(config.sram_node_layouts) or set(layouts) != coordinates:
             raise ValueError(
-                "SRAM core layouts must cover each participating core exactly once"
+                "SRAM node layouts must cover each participating node exactly once"
             )
         domain_layouts = {}
         for node, layout in layouts.items():
@@ -30,12 +30,12 @@ def validate_core_layouts(configs, coordinates):
                 type(value) is not int or value < 0 for value in node
             ):
                 raise ValueError(
-                    "SRAM core coordinates must contain two nonnegative integers"
+                    "SRAM node coordinates must contain two nonnegative integers"
                 )
             if type(layout.domain) is not int or layout.domain < 0:
                 raise ValueError("SRAM allocation domain must be a nonnegative integer")
             if node in domains and domains[node] != layout.domain:
-                raise ValueError("inconsistent SRAM allocation domains for one core")
+                raise ValueError("inconsistent SRAM allocation domains for one node")
             domains[node] = layout.domain
             placement = (
                 layout.payload_offset,
@@ -47,13 +47,13 @@ def validate_core_layouts(configs, coordinates):
                 and domain_layouts[layout.domain] != placement
             ):
                 raise ValueError(
-                    "SRAM cores in one allocation domain must share one layout"
+                    "SRAM nodes in one allocation domain must share one layout"
                 )
             domain_layouts[layout.domain] = placement
             if layout.arena_bytes < control_end:
-                raise ValueError("SRAM core arena does not cover its control records")
+                raise ValueError("SRAM node arena does not cover its control records")
             if node in sizes and sizes[node] != layout.arena_bytes:
-                raise ValueError("inconsistent SRAM arena sizes for one core")
+                raise ValueError("inconsistent SRAM arena sizes for one node")
             sizes[node] = layout.arena_bytes
             if layout.payload_present:
                 if config.l1_allocation_bytes is None:
@@ -65,7 +65,7 @@ def validate_core_layouts(configs, coordinates):
                     or layout.payload_offset + config.l1_allocation_bytes
                     > layout.arena_bytes
                 ):
-                    raise ValueError("SRAM payload is outside its core arena")
+                    raise ValueError("SRAM payload is outside its node arena")
             elif layout.payload_offset != config.l1_offset:
                 raise ValueError(
                     "inactive SRAM payload must retain its control-relative zero offset"
@@ -76,7 +76,7 @@ def validate_core_layouts(configs, coordinates):
             and owners[config.storage_index] != owner_layout
         ):
             raise ValueError(
-                "DFBs sharing one SRAM storage owner must share its core layouts"
+                "DFBs sharing one SRAM storage owner must share its node layouts"
             )
         owners[config.storage_index] = owner_layout
     return sizes
@@ -88,7 +88,7 @@ def payload_defines(configs, coordinate):
         if config.l1_payload_offset is None:
             continue
         layout = next(
-            layout for layout in config.sram_core_layouts if layout.node == coordinate
+            layout for layout in config.sram_node_layouts if layout.node == coordinate
         )
         result.append(
             (
@@ -99,9 +99,9 @@ def payload_defines(configs, coordinate):
     return result
 
 
-def core_domains(configs):
+def node_domains(configs):
     groups = {}
-    for layout in configs[0].sram_core_layouts:
+    for layout in configs[0].sram_node_layouts:
         groups.setdefault(layout.domain, []).append(layout.node)
     return [tuple(sorted(nodes)) for _, nodes in sorted(groups.items())]
 
@@ -112,7 +112,7 @@ def validate_receiver_targets(kernel_specs, configs):
             spec.pipe_computed_address_dfb_indices
         ):
             raise ValueError(
-                "per-core SRAM receiver arguments require complete destination identities"
+                "per-node SRAM receiver arguments require complete destination identities"
             )
         for target, index in zip(
             spec.sram_receiver_targets, spec.pipe_computed_address_dfb_indices
@@ -123,7 +123,7 @@ def validate_receiver_targets(kernel_specs, configs):
             layout = next(
                 (
                     layout
-                    for layout in config.sram_core_layouts
+                    for layout in config.sram_node_layouts
                     if layout.node == target.node
                 ),
                 None,
@@ -132,7 +132,7 @@ def validate_receiver_targets(kernel_specs, configs):
                 config.l1_payload_offset is not None and not layout.payload_present
             ):
                 raise ValueError(
-                    "SRAM receiver target has no payload on its destination core"
+                    "SRAM receiver target has no payload on its destination node"
                 )
 
 
@@ -165,7 +165,7 @@ def receiver_base(ttnn_api, target, configs, arenas, tensors, mesh_coordinate):
         tensor = arenas[target.node]
         offset = next(
             layout.payload_offset
-            for layout in config.sram_core_layouts
+            for layout in config.sram_node_layouts
             if layout.node == target.node
         )
     return tensor_base(ttnn_api, tensor, target.node, device_coordinate) + offset

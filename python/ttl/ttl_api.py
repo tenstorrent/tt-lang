@@ -91,7 +91,7 @@ from .dataflow_buffer import (
     DFBReconfigurationPlan,
     DFBStorageSegment,
     PhysicalDFBConfig,
-    SRAMCoreLayout,
+    SRAMNodeLayout,
     SRAMReceiverTarget,
     get_cb_count,
 )
@@ -897,7 +897,7 @@ class CompiledTTNNKernel:
             kernel_line_offsets: Dict mapping kernel name to line offset
             num_pipe_sync_semaphores: Number of pipe synchronization
                 semaphores used by this kernel
-            pipe_sram_scratch_bytes: Per-core SRAM scratch bytes used by
+            pipe_sram_scratch_bytes: Per-node SRAM scratch bytes used by
                 PipeNet metadata.
             num_pipe_global_semaphores: Number of GlobalSemaphore-backed
                 PipeNet counters used by this kernel.
@@ -2745,8 +2745,8 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
         l1_payload_offset=l1_payload_offset,
         l1_allocation_bytes=l1_allocation_bytes,
         storage_capacity_pages=storage_capacity_pages,
-        sram_core_layouts=tuple(
-            SRAMCoreLayout(
+        sram_node_layouts=tuple(
+            SRAMNodeLayout(
                 node=tuple(int(value) for value in layout["node"]),
                 payload_offset=int(layout["payload_offset"]),
                 payload_present=bool(layout["payload_present"].value),
@@ -2754,7 +2754,7 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
                 domain=int(layout["domain"]),
             )
             for layout in (
-                entry["sram_core_layouts"] if "sram_core_layouts" in entry else ()
+                entry["sram_node_layouts"] if "sram_node_layouts" in entry else ()
             )
         ),
     )
@@ -2906,7 +2906,7 @@ def _extract_dfb_reset_count(module) -> int:
 
 
 def _extract_pipe_sram_scratch_bytes(module) -> int:
-    """Read the per-core SRAM scratch bytes selected by pipe lowering."""
+    """Read the per-node SRAM scratch bytes selected by pipe lowering."""
     attr = module.operation.attributes.get(_ttl_ir.PIPE_SRAM_SCRATCH_BYTES_ATTR, None)
     if attr is None:
         return 0
@@ -3641,7 +3641,7 @@ def _lower_program_to_kernel(
         ]
         specialize_cores = (
             compiler_options.specialize_cores
-            or compiler_options.sram_allocation_mode == "per-core"
+            or compiler_options.sram_allocation_mode == "per-node"
         )
         if specialize_cores:
             pipeline_passes.append("ttkernel-specialize-and-annotate-dfb-use")
