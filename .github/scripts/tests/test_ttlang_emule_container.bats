@@ -788,6 +788,7 @@ PY
 @test "entrypoint runs from the installed environment without configuring" {
     make_entrypoint_fixture
     printf '#define LLVM_REVISION R"(%s)"\n' "$expected_llvm_sha" > "$llvm_revision_header"
+    printf 'export TTLANG_SIM_ONLY=1 TTLANG_COMPILE_ONLY=1\n' > "$build_dir/env/activate"
 
     PATH="$mock_bin:$PATH" \
         TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
