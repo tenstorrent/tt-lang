@@ -863,6 +863,7 @@ class CompiledTTNNKernel:
         device_domain=None,
         kernel_logical_selectors=None,
         operation_name="<anonymous>",
+        sram_allocation_report=False,
         runtime_resource_factory: Optional[
             Callable[..., ProgramRuntimeResources]
         ] = None,
@@ -990,6 +991,7 @@ class CompiledTTNNKernel:
             if kernel_used_dfb_indices is not None
             else [None for _ in kernel_paths]
         )
+        self.sram_allocation_report = sram_allocation_report
         self.operation_name = operation_name
         self.runtime_resource_factory = runtime_resource_factory
         owns_runtime_resource_cache = runtime_resource_cache is None
@@ -1079,6 +1081,7 @@ class CompiledTTNNKernel:
             fabric_route_cache=self._fabric_route_cache,
             runtime_resource_factory=self.runtime_resource_factory,
             operation_name=self.operation_name,
+            sram_allocation_report=self.sram_allocation_report,
             runtime_resource_cache=self._runtime_resource_cache,
             device=device,
         )
@@ -1956,6 +1959,7 @@ def _compile_ttnn_kernel(
     device_domain=None,
     target_arch: Optional[str] = None,
     operation_name: str = "<anonymous>",
+    sram_allocation_report: bool = False,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
 ):
@@ -2264,6 +2268,7 @@ def _compile_ttnn_kernel(
         device_domain=device_domain,
         kernel_logical_selectors=grouped_kernel_logical_selectors,
         operation_name=operation_name,
+        sram_allocation_report=sram_allocation_report,
         runtime_resource_factory=runtime_resource_factory,
         runtime_resource_cache=runtime_resource_cache,
         kernel_used_dfb_indices=kernel_used_dfb_indices,
@@ -3513,6 +3518,7 @@ def _lower_program_to_kernel(
             "func.func(ttl-coalesce-dfb-acquires)",
             "ttl-finalize-dfb-indices{"
             f"memory-model={compiler_options.memory_model} "
+            f"sram-allocation-report={str(compiler_options.sram_allocation_report).lower()} "
             "l1-allocation-strategy="
             f"{compiler_options.l1_allocation_strategy} "
             "l1-exact-allocation-search-limit="
@@ -3708,6 +3714,7 @@ def _lower_program_to_kernel(
             device_domain=device_domain,
             target_arch=target_arch,
             operation_name=operation_name,
+            sram_allocation_report=compiler_options.sram_allocation_report,
             runtime_resource_factory=runtime_resource_factory,
             runtime_resource_cache=runtime_resource_cache,
         )
