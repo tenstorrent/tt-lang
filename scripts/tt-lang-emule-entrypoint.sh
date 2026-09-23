@@ -10,9 +10,15 @@ readonly TTLANG_BUILD_DIR="${TTLANG_EMULE_BUILD_DIR:-/ttlang-build}"
 readonly TT_METAL_SOURCE_DIR="/opt/tt-emule-runtime/tt-metal"
 readonly TT_METAL_BUILD_DIR="${TT_METAL_SOURCE_DIR}/build_emule"
 
-if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ]; then
+if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ] && \
+   [ "${TTLANG_EMULE_SHELL:-0}" = "1" ]; then
+    echo "tt-lang emule container: installation and shell modes are mutually exclusive." >&2
+    exit 2
+fi
+if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ] || \
+   [ "${TTLANG_EMULE_SHELL:-0}" = "1" ]; then
     if [ "$#" -ne 0 ]; then
-        echo "tt-lang emule container: installation does not accept script arguments." >&2
+        echo "tt-lang emule container: installation and shell modes do not accept script arguments." >&2
         exit 2
     fi
 else
@@ -156,4 +162,7 @@ set -u
 
 unset TTLANG_COMPILE_ONLY TTLANG_SIM_ONLY
 
+if [ "${TTLANG_EMULE_SHELL:-0}" = "1" ]; then
+    exec /bin/bash --noprofile --norc
+fi
 exec python "$@"

@@ -124,41 +124,17 @@ from an activated compiler build environment.
 
 ### Enter the installed Docker environment
 
-The installed compiler build is available at `/ttlang-build` inside Docker.
-From the checkout root in a Bash shell, substitute the three names printed by
-the installer:
+Open a shell with the same installed compiler, runtime settings, mounts, and
+working directory used by the emulator launcher:
 
 ```bash
-runtime_image=IMAGE_NAME
-compiler_volume=BUILD_VOLUME_NAME
-runtime_cache_volume=CACHE_VOLUME_NAME
-source_dir="$(pwd -P)"
-git_dir="$(git rev-parse --path-format=absolute --git-common-dir)"
-
-docker run --rm -it --platform linux/amd64 \
-  --mount "type=bind,source=${source_dir},target=/workspace" \
-  --mount "type=bind,source=${git_dir},target=${git_dir},readonly" \
-  --mount "type=volume,source=${compiler_volume},target=/ttlang-build" \
-  --mount "type=volume,source=${runtime_cache_volume},target=/tt-metal-cache" \
-  --workdir /workspace \
-  --env TT_METAL_EMULE_MODE=1 \
-  --env TT_METAL_SLOW_DISPATCH_MODE=1 \
-  --env TT_METAL_MOCK_CLUSTER_DESC_PATH=/opt/tt-emule/cluster_descriptors/blackhole_P150_unharvested.yaml \
-  --env TT_METAL_ALLOCATOR_MODE_HYBRID=1 \
-  --env EMULE_FABRIC8=1 \
-  --env TT_METAL_CACHE=/tt-metal-cache \
-  --env TT_EMULE_JIT_CACHE_DIR=/tt-metal-cache/emule-jit \
-  --env MESH_DEVICE=P150 \
-  --entrypoint /bin/bash "$runtime_image" --noprofile --norc
+./scripts/shell-tt-lang-emule.sh
 ```
 
-The Git metadata mount also supports linked worktrees. Inside this container,
-activate the installed compiler before running any tests:
-
-```bash
-source /ttlang-build/env/activate
-unset TTLANG_COMPILE_ONLY TTLANG_SIM_ONLY
-```
+The helper verifies the installed compiler and activates its environment before
+starting Bash. The compiler build is available at `/ttlang-build`, and the source
+checkout at `/workspace`. Linked worktrees use the same Git metadata mount as
+program execution.
 
 ### Select tests
 

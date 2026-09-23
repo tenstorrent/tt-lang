@@ -29,6 +29,7 @@ make_runner_fixture() {
     cp "$SOURCE_REPO_ROOT/scripts/tt-lang-emule-entrypoint.sh" \
         "$SOURCE_REPO_ROOT/scripts/tt-lang-emule-container.sh" \
         "$SOURCE_REPO_ROOT/scripts/tt-lang-emule-stack.py" \
+        "$SOURCE_REPO_ROOT/scripts/shell-tt-lang-emule.sh" \
         "$SOURCE_REPO_ROOT/scripts/install-tt-lang-emule.sh" "$root/scripts/"
     cp "$SOURCE_REPO_ROOT/cmake/modules/TTLangUtils.cmake" "$root/cmake/modules/"
     touch "$root/examples/program.py"
@@ -135,6 +136,7 @@ setup() {
     RUNNER="$TTLANG_REPO_ROOT/scripts/tt-lang-emule-container.sh"
     ENTRYPOINT="$TTLANG_REPO_ROOT/scripts/tt-lang-emule-entrypoint.sh"
     INSTALLER="$TTLANG_REPO_ROOT/scripts/install-tt-lang-emule.sh"
+    SHELL_LAUNCHER="$TTLANG_REPO_ROOT/scripts/shell-tt-lang-emule.sh"
     DOCKERFILE="$TTLANG_REPO_ROOT/.github/containers/Dockerfile.emule"
 }
 
@@ -338,6 +340,26 @@ EOF
 
     run -2 "$INSTALLER" unexpected
     assert_output --partial "Usage: scripts/install-tt-lang-emule.sh"
+}
+
+@test "developer shell uses the same installed environment and working directory" {
+    cd "$TTLANG_REPO_ROOT/examples"
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$SHELL_LAUNCHER"
+
+    assert_log_line "TTLANG_EMULE_SHELL=1"
+    assert_log_line "--workdir"
+    assert_log_line "/workspace/examples"
+    assert_log_line "type=bind,src=${TTLANG_REPO_ROOT},dst=/workspace"
+    assert_log_contains "dst=/ttlang-build"
+    assert_log_contains "dst=/tt-metal-cache"
+    assert_log_line "MESH_DEVICE=P150"
+    assert_log_line "TT_METAL_ALLOCATOR_MODE_HYBRID=1"
+    assert_log_contains "TTLANG_EMULE_SOURCE_FINGERPRINT="
+    refute_log_line "TTLANG_EMULE_INSTALL=1"
+    refute_log_line "build"
+
+    run -2 "$SHELL_LAUNCHER" unexpected
+    assert_output --partial "Usage: scripts/shell-tt-lang-emule.sh"
 }
 
 @test "workload edits and outputs preserve the installed compiler identity" {
@@ -843,6 +865,28 @@ PY
         run -0 /bin/bash "$test_entrypoint" "$program"
 
     assert_line "emule_cache=$BATS_TEST_TMPDIR/jit-cache"
+    [ ! -e "$MOCK_ENTRYPOINT_LOG" ]
+}
+
+@test "entrypoint shell activates the installed environment without running Python" {
+    make_entrypoint_fixture
+    printf 'export TTLANG_SIM_ONLY=1 TTLANG_COMPILE_ONLY=1\n' > "$build_dir/env/activate"
+
+    PATH="$mock_bin:$PATH" \
+        TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
+        TTLANG_EMULE_EXPECTED_LLVM_SHA="$expected_llvm_sha" \
+        TTLANG_EMULE_SOURCE_FINGERPRINT="$source_fingerprint" \
+        TTLANG_EMULE_BUILD_DIR="$build_dir" \
+        TTLANG_EMULE_SHELL=1 \
+        run -0 /bin/bash "$test_entrypoint" <<'EOF'
+printf 'emule=%s\nmesh=%s\nsim_only=%s\ncompile_only=%s\n' \
+    "$TT_METAL_EMULE_MODE" "$MESH_DEVICE" "${TTLANG_SIM_ONLY:-}" "${TTLANG_COMPILE_ONLY:-}"
+EOF
+
+    assert_line "emule=1"
+    assert_line "mesh=P150"
+    assert_line "sim_only="
+    assert_line "compile_only="
     [ ! -e "$MOCK_ENTRYPOINT_LOG" ]
 }
 

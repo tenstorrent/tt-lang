@@ -140,9 +140,15 @@ linux/amd64 through the container runtime's x86 virtualization.
 EOF
 }
 
-if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ]; then
+if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ] && \
+   [ "${TTLANG_EMULE_SHELL:-0}" = "1" ]; then
+    echo "tt-lang-sim: installation and shell modes are mutually exclusive." >&2
+    exit 2
+fi
+if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ] || \
+   [ "${TTLANG_EMULE_SHELL:-0}" = "1" ]; then
     if [ "$#" -ne 0 ]; then
-        echo "tt-lang-sim: installation does not accept script arguments." >&2
+        echo "tt-lang-sim: installation and shell modes do not accept script arguments." >&2
         exit 2
     fi
 else
@@ -208,6 +214,8 @@ esac
 
 if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ]; then
     _RUN_ARGS+=(-e TTLANG_EMULE_INSTALL=1)
+elif [ "${TTLANG_EMULE_SHELL:-0}" = "1" ]; then
+    _RUN_ARGS+=(-e TTLANG_EMULE_SHELL=1)
 fi
 
 case "${_HOST_CWD}/" in
@@ -220,7 +228,8 @@ case "${_HOST_CWD}/" in
         ;;
 esac
 
-if [ "${TTLANG_EMULE_INSTALL:-0}" != "1" ]; then
+if [ "${TTLANG_EMULE_INSTALL:-0}" != "1" ] && \
+   [ "${TTLANG_EMULE_SHELL:-0}" != "1" ]; then
     _SCRIPT_ABSOLUTE="$(realpath "$_SCRIPT_ARGUMENT")"
     _SCRIPT_DIR_HOST="$(dirname "$_SCRIPT_ABSOLUTE")"
     _SCRIPT_BASENAME="$(basename "$_SCRIPT_ABSOLUTE")"
@@ -370,6 +379,9 @@ if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ]; then
     printf 'Runtime image: %s\n' "$_IMAGE"
     printf 'Compiler build volume: %s\n' "$_BUILD_VOLUME"
     printf 'Runtime cache volume: %s\n' "$_CACHE_VOLUME"
+fi
+if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ] || \
+   [ "${TTLANG_EMULE_SHELL:-0}" = "1" ]; then
     exec "$_DOCKER" "${_RUN_ARGS[@]}" "$_IMAGE"
 fi
 exec "$_DOCKER" "${_RUN_ARGS[@]}" "$_IMAGE" "$_CONTAINER_SCRIPT" "$@"
