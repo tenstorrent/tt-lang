@@ -138,13 +138,17 @@ EOF
 }
 
 setup() {
+    local setting
+    for setting in $(compgen -A variable TTLANG_EMULE_) \
+        $(compgen -A variable _TTLANG_EMULE_); do
+        unset "$setting"
+    done
     MOCK_DOCKER="$BATS_TEST_TMPDIR/docker"
     MOCK_DOCKER_LOG="$BATS_TEST_TMPDIR/docker.log"
     export MOCK_DOCKER_LOG
     make_mock_docker "$MOCK_DOCKER"
     unset TT_METAL_CACHE TT_EMULE_JIT_CACHE_DIR MESH_DEVICE EMULE_FABRIC8 \
         TT_METAL_ALLOCATOR_MODE_HYBRID TT_METAL_MOCK_CLUSTER_DESC_PATH
-    unset TTLANG_EMULE_INSTALL TTLANG_EMULE_SHELL
     # Keep the test manifest inside its own checkout, independent of CI depth.
     make_runner_fixture "$BATS_TEST_TMPDIR/checkout"
     TTLANG_REPO_ROOT="$(cd "$BATS_TEST_TMPDIR/checkout" && pwd -P)"
