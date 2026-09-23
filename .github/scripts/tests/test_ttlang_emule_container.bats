@@ -91,6 +91,20 @@ case "${1:-}" in
         fi
         exit "${MOCK_DOCKER_IMAGE_STATUS:-0}"
         ;;
+    images)
+        if [ -n "${MOCK_DOCKER_LIST_ERROR:-}" ]; then
+            printf '%s\n' "$MOCK_DOCKER_LIST_ERROR" >&2
+        fi
+        if [ -n "${MOCK_DOCKER_LIST_REFERENCE:-}" ] && \
+            [ "${4:-}" != "$MOCK_DOCKER_LIST_REFERENCE" ]; then
+            printf '%s\n' unexpected-reference >&2
+            exit 97
+        fi
+        if [ -n "${MOCK_DOCKER_LIST_OUTPUT:-}" ]; then
+            printf '%s\n' "$MOCK_DOCKER_LIST_OUTPUT"
+        fi
+        exit "${MOCK_DOCKER_LIST_STATUS:-0}"
+        ;;
     build)
         if [ "${MOCK_DOCKER_REQUIRE_SANITIZED_CONTEXT:-0}" = "1" ]; then
             source_context=""
@@ -674,16 +688,20 @@ PY
     for diagnostic in \
         "Error response from daemon: No such image: runtime" \
         'Error response from daemon: {"message":"No such image: runtime"}' \
-        '{"message":"No such image: runtime"}'; do
+        '{"message":"No such image: runtime"}' \
+        "image not found"; do
         : > "$MOCK_DOCKER_LOG"
         MOCK_DOCKER_IMAGE_STATUS=1 \
             MOCK_DOCKER_IMAGE_ERROR="$diagnostic" \
+            MOCK_DOCKER_LIST_REFERENCE=runtime:latest \
             TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
             TTLANG_EMULE_IMAGE=runtime \
             run -1 "$RUNNER" examples/eltwise_add.py
 
         assert_output --partial "environment is not installed"
         assert_output --partial "scripts/install-tt-lang-emule.sh"
+        assert_log_line "images"
+        assert_log_line "runtime:latest"
         refute_log_line "build"
         refute_log_line "run"
     done
@@ -720,11 +738,14 @@ PY
         : > "$MOCK_DOCKER_LOG"
         MOCK_DOCKER_IMAGE_STATUS=1 \
             MOCK_DOCKER_IMAGE_ERROR="$diagnostic" \
+            MOCK_DOCKER_LIST_STATUS=1 \
+            MOCK_DOCKER_LIST_ERROR="$diagnostic" \
             TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            TTLANG_EMULE_INSTALL=1 \
             TTLANG_EMULE_RUNTIME_SOURCE_DIR="$BATS_TEST_TMPDIR/never-read-source" \
-            run -1 "$RUNNER" examples/eltwise_add.py
+            run -1 "$RUNNER"
 
-        assert_output --partial "Docker could not inspect image"
+        assert_output --partial "Docker could not list image"
         assert_output --partial "$diagnostic"
         assert_output --partial "Check the Docker daemon and selected context"
         refute_output --partial "emulator source directory not found"
@@ -767,20 +788,91 @@ PY
     refute_log_line "run"
 }
 
-@test "image inspection stdout cannot substitute for a missing image diagnostic" {
+@test "a listed image with failed inspection never triggers a build" {
     cd "$TTLANG_REPO_ROOT"
     MOCK_DOCKER_IMAGE_STATUS=1 \
         MOCK_DOCKER_IMAGE_ERROR="" \
         MOCK_DOCKER_IMAGE_OUTPUT="Error response from daemon: No such image: runtime" \
+        MOCK_DOCKER_LIST_OUTPUT=aaaaaaaaaaaa \
         TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        TTLANG_EMULE_INSTALL=1 \
         TTLANG_EMULE_RUNTIME_SOURCE_DIR="$BATS_TEST_TMPDIR/never-read-source" \
-        run -1 "$RUNNER" examples/eltwise_add.py
+        run -1 "$RUNNER"
 
     assert_output --partial "Docker could not inspect image"
     refute_output --partial "No such image: runtime"
     refute_output --partial "emulator source directory not found"
     refute_log_line "build"
     refute_log_line "run"
+}
+
+@test "image listing normalizes exact tags rather than accepting other tags" {
+    local image
+    local expected_tag
+    cd "$TTLANG_REPO_ROOT"
+    for image in runtime runtime:missing localhost:5000/runtime \
+        docker.io/library/runtime index.docker.io/library/runtime; do
+        expected_tag=runtime:latest
+        case "$image" in
+            runtime:*) expected_tag="$image" ;;
+            localhost:*) expected_tag="$image:latest" ;;
+        esac
+        : > "$MOCK_DOCKER_LOG"
+        MOCK_DOCKER_IMAGE_STATUS=1 \
+            MOCK_DOCKER_LIST_REFERENCE="$expected_tag" \
+            TTLANG_EMULE_IMAGE="$image" \
+            TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            run -1 "$RUNNER" examples/eltwise_add.py
+        assert_output --partial "environment is not installed"
+        assert_log_line "$expected_tag"
+        refute_log_line "build"
+        refute_log_line "run"
+    done
+}
+
+@test "existing image IDs and digests preserve inspect semantics" {
+    local image
+    cd "$TTLANG_REPO_ROOT"
+    for image in sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+        aaaaaaaaaaaa runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; do
+        : > "$MOCK_DOCKER_LOG"
+        TTLANG_EMULE_IMAGE="$image" TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            run -0 "$RUNNER" examples/eltwise_add.py
+        assert_log_line "$image"
+        assert_log_line run
+        refute_log_line images
+        refute_log_line build
+    done
+}
+
+@test "failed image IDs digests and patterns never become build tags" {
+    local image
+    cd "$TTLANG_REPO_ROOT"
+    for image in sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+        aaaaaaaaaaaa runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+        'runtime:*' 'runtime:?' 'runtime:[a]'; do
+        : > "$MOCK_DOCKER_LOG"
+        MOCK_DOCKER_IMAGE_STATUS=1 \
+            TTLANG_EMULE_IMAGE="$image" TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            TTLANG_EMULE_INSTALL=1 \
+            TTLANG_EMULE_RUNTIME_SOURCE_DIR="$BATS_TEST_TMPDIR/never-read-source" \
+            run -1 "$RUNNER"
+        assert_output --partial "Docker could not inspect image"
+        refute_log_line images
+        refute_log_line build
+        refute_log_line run
+    done
+}
+
+@test "image listing exit status is preserved" {
+    cd "$TTLANG_REPO_ROOT"
+    MOCK_DOCKER_IMAGE_STATUS=1 MOCK_DOCKER_LIST_STATUS=125 \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" TTLANG_EMULE_INSTALL=1 \
+        run -125 "$RUNNER"
+    assert_output --partial "Docker could not list image"
+    assert_output --partial "exit 125"
+    refute_log_line build
+    refute_log_line run
 }
 
 @test "a missing script fails before any Docker call" {

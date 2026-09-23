@@ -273,19 +273,36 @@ if [ "${TTLANG_EMULE_REBUILD:-0}" = "1" ]; then
         exit 1
     fi
     _BUILD_IMAGE=1
-elif _IMAGE_INSPECT_ERROR="$("$_DOCKER" image inspect "$_IMAGE" 2>&1 >/dev/null)"; then
+elif _IMAGE_INSPECT_ERROR="$("$_DOCKER" image inspect -- "$_IMAGE" 2>&1 >/dev/null)"; then
     :
 else
     _IMAGE_INSPECT_STATUS=$?
     _IMAGE_IS_MISSING=0
-    if [ "$_IMAGE_INSPECT_STATUS" -eq 1 ]; then
-        case "$_IMAGE_INSPECT_ERROR" in
-            "Error response from daemon: No such image: ${_IMAGE}"*|\
-            "Error response from daemon: {\"message\":\"No such image: ${_IMAGE}\"}"|\
-            "{\"message\":\"No such image: ${_IMAGE}\"}")
-                _IMAGE_IS_MISSING=1
-                ;;
+    # Listing matches name patterns, not IDs or digests. Restrict the missing
+    # image check to literal repository tags.
+    if [ "$_IMAGE_INSPECT_STATUS" -eq 1 ] && \
+        [[ "$_IMAGE" != sha256:* && ! "$_IMAGE" =~ ^[0-9a-f]{1,64}$ && \
+            "$_IMAGE" =~ ^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$ ]]; then
+        _IMAGE_TAG="$_IMAGE"
+        case "$_IMAGE_TAG" in
+            docker.io/*|index.docker.io/*) _IMAGE_TAG="${_IMAGE_TAG#*/}" ;;
         esac
+        _IMAGE_TAG="${_IMAGE_TAG#library/}"
+        case "${_IMAGE_TAG##*/}" in
+            *:*) ;;
+            *) _IMAGE_TAG="${_IMAGE_TAG}:latest" ;;
+        esac
+        if _IMAGE_IDS="$("$_DOCKER" images -q -- "$_IMAGE_TAG")"; then
+            if [ -z "$_IMAGE_IDS" ]; then
+                _IMAGE_IS_MISSING=1
+            fi
+        else
+            _IMAGE_LIST_STATUS=$?
+            printf 'tt-lang-sim: Docker could not list image %s (exit %s).\n' \
+                "$_IMAGE" "$_IMAGE_LIST_STATUS" >&2
+            echo "Check the Docker daemon and selected context, then retry." >&2
+            exit "$_IMAGE_LIST_STATUS"
+        fi
     fi
     if [ "$_IMAGE_IS_MISSING" -eq 1 ]; then
         if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ]; then
