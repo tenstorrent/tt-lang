@@ -4939,7 +4939,7 @@ static int64_t getReceiverDFBStaticByteOffset(const ReceiverDFBInfo &info) {
 static std::optional<PipeComputedAddressInfo>
 getComputedAddressInfo(const PipeReceiverEndpoint &receiverEndpoint) {
   const ReceiverDFBInfo &receiverInfo = receiverEndpoint.receiverDFBInfo;
-  if (receiverInfo.isTensorBacked || !receiverInfo.hasStaticTileOffset) {
+  if (!receiverInfo.hasStaticTileOffset) {
     return std::nullopt;
   }
   if (!llvm::isa<ttcore::TileType>(receiverInfo.dfbType.getElementType())) {
@@ -4997,17 +4997,11 @@ struct ComputedAddressPlan {
 };
 
 static ComputedAddressPlan buildComputedAddressPlan(
-    ModuleOp module, MutableArrayRef<PipeTransferAllocationUnit> units,
+    MutableArrayRef<PipeTransferAllocationUnit> units,
     const PipeGraph &pipeGraph,
+    const FinalizedDFBStorageFootprint &storageFootprint,
     const llvm::DenseSet<int64_t> &sharedStorageDFBIndices) {
   ComputedAddressPlan plan;
-
-  llvm::SmallSetVector<int64_t, 4> tensorBackedDFBIndices;
-  module.walk([&](BindCBOp bind) {
-    if (bind.getTensorBackingAttr()) {
-      tensorBackedDFBIndices.insert(bind.getCbIndex().getSExtValue());
-    }
-  });
 
   /// One transfer whose recurrence can be materialized by its sender.
   struct Candidate {
@@ -5026,10 +5020,20 @@ static ComputedAddressPlan buildComputedAddressPlan(
       continue;
     }
     const ReceiverDFBInfo &receiverInfo = receiverEndpoint->receiverDFBInfo;
-    // One common runtime argument supplies the physical DFB base. Tensor-backed
-    // or shared storage does not provide one stable compiler-owned base.
-    if (tensorBackedDFBIndices.contains(receiverInfo.dfbIndex) ||
-        sharedStorageDFBIndices.contains(receiverInfo.dfbIndex)) {
+    bool usesTensorBacking =
+        storageFootprint.tensorBackedPhysicalIndices.contains(
+            receiverInfo.dfbIndex);
+    bool hasStableTensorStorage =
+        !storageFootprint.reconfiguredPhysicalIndices.contains(
+            receiverInfo.dfbIndex) &&
+        storageFootprint.singleTensorBasePhysicalIndices.contains(
+            receiverInfo.dfbIndex);
+    bool requiresReceiverPublishedAddress =
+        sharedStorageDFBIndices.contains(receiverInfo.dfbIndex) ||
+        (usesTensorBacking && !hasStableTensorStorage);
+    // Use receiver publication when the physical DFB index cannot identify one
+    // address base valid for every storage segment and configuration.
+    if (requiresReceiverPublishedAddress) {
       continue;
     }
     std::optional<PipeComputedAddressInfo> maybeComputedAddress =
@@ -5170,8 +5174,8 @@ LogicalResult buildPipeResourcePlan(
     } else {
       recordSharedStorage(storageFootprint->globalMembers);
     }
-    computedAddressPlan = buildComputedAddressPlan(mod, units, pipeGraph,
-                                                   sharedStorageDFBIndices);
+    computedAddressPlan = buildComputedAddressPlan(
+        units, pipeGraph, *storageFootprint, sharedStorageDFBIndices);
   }
   info.computedAddressCounterInitializations =
       computedAddressPlan.counterInitializations;
