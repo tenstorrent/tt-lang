@@ -130,6 +130,8 @@ setup() {
     unset TTLANG_EMULE_STACK_MANIFEST TTLANG_EMULE_RUNTIME_COMMIT \
         TTLANG_EMULE_RUNTIME_METAL_COMMIT TTLANG_EMULE_RUNTIME_METAL_SOURCE_URL \
         TTLANG_EMULE_RUNTIME_BASE_IMAGE TTLANG_EMULE_PLATFORM
+    unset TT_METAL_CACHE TT_EMULE_JIT_CACHE_DIR MESH_DEVICE EMULE_FABRIC8 \
+        TT_METAL_ALLOCATOR_MODE_HYBRID TT_METAL_MOCK_CLUSTER_DESC_PATH
     # Keep the test manifest inside its own checkout, independent of CI depth.
     make_runner_fixture "$BATS_TEST_TMPDIR/checkout"
     TTLANG_REPO_ROOT="$(cd "$BATS_TEST_TMPDIR/checkout" && pwd -P)"
@@ -846,6 +848,22 @@ PY
     assert_line "sim_only="
     assert_line "python=$program"
     assert_line "python=argument with spaces"
+    [ ! -e "$MOCK_ENTRYPOINT_LOG" ]
+}
+
+@test "entrypoint honors explicitly configured cache paths" {
+    make_entrypoint_fixture
+
+    PATH="$mock_bin:$PATH" \
+        TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
+        TT_METAL_CACHE="$BATS_TEST_TMPDIR/metal-cache" \
+        TT_EMULE_JIT_CACHE_DIR="$BATS_TEST_TMPDIR/jit-cache" \
+        TTLANG_EMULE_EXPECTED_LLVM_SHA="$expected_llvm_sha" \
+        TTLANG_EMULE_SOURCE_FINGERPRINT="$source_fingerprint" \
+        TTLANG_EMULE_BUILD_DIR="$build_dir" \
+        run -0 /bin/bash "$test_entrypoint" "$program"
+
+    assert_line "emule_cache=$BATS_TEST_TMPDIR/jit-cache"
     [ ! -e "$MOCK_ENTRYPOINT_LOG" ]
 }
 
