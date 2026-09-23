@@ -2025,13 +2025,13 @@ def _allocate_l1_sharded_storage_tensor(
 
 def _print_sram_runtime_report(arena, core_ranges, requested_bytes, operation_name):
     """Report the arena's reservation from its uniform sharded buffer."""
-    core_count = core_ranges.num_cores()
+    node_count = core_ranges.num_cores()
     page_count = int(arena.buffer_num_pages())
-    if core_count <= 0 or page_count < core_count or page_count % core_count != 0:
+    if node_count <= 0 or page_count < node_count or page_count % node_count != 0:
         raise RuntimeError(
-            "SRAM report requires uniform arena pages across participating cores"
+            "SRAM report requires uniform arena pages across participating nodes"
         )
-    reserved_bytes = page_count // core_count * int(arena.buffer_aligned_page_size())
+    reserved_bytes = page_count // node_count * int(arena.buffer_aligned_page_size())
     if reserved_bytes < requested_bytes:
         raise RuntimeError(
             "SRAM report reservation is smaller than its requested arena"
@@ -2041,11 +2041,11 @@ def _print_sram_runtime_report(arena, core_ranges, requested_bytes, operation_na
         "phase": "runtime",
         "operation": operation_name,
         "scope": "arena-reference-device",
-        "requested_bytes_per_core": requested_bytes,
-        "reserved_bytes_per_core": reserved_bytes,
-        "core_count": core_count,
-        "reserved_bytes_on_reference_device": reserved_bytes * core_count,
-        "reservation_padding_bytes_per_core": reserved_bytes - requested_bytes,
+        "requested_bytes_per_node": requested_bytes,
+        "reserved_bytes_per_node": reserved_bytes,
+        "node_count": node_count,
+        "reserved_bytes_on_reference_device": reserved_bytes * node_count,
+        "reservation_padding_bytes_per_node": reserved_bytes - requested_bytes,
     }
     print("ttlang-sram-report: " + json.dumps(report, sort_keys=True), file=sys.stderr)
 

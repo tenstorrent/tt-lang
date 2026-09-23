@@ -38,7 +38,7 @@ static llvm::json::Array nodeLifetimes(ArrayRef<DFBPerNodeLifetime> lifetimes) {
   llvm::json::Array result;
   for (const auto &lifetime : lifetimes) {
     result.push_back(llvm::json::Object{
-        {"core", llvm::json::Array{lifetime.node.x, lifetime.node.y}},
+        {"node", llvm::json::Array{lifetime.node.x, lifetime.node.y}},
         {"active", lifetime.mayBeActive},
         {"completion_proven", lifetime.completionProof.proven()},
         {"entry_events", eventIds(lifetime.earliestEntryEvents)},
@@ -92,11 +92,11 @@ void printSRAMAllocationReport(
         {"owner", region.storageIndex},
         {"declaration", sourceLocation(region.declarations.front())},
         {"domain_known", region.launchDomain.known}};
-    llvm::json::Array cores;
+    llvm::json::Array nodes;
     for (auto node : region.launchDomain.nodes) {
-      cores.push_back(llvm::json::Array{node.x, node.y});
+      nodes.push_back(llvm::json::Array{node.x, node.y});
     }
-    entry["cores"] = std::move(cores);
+    entry["nodes"] = std::move(nodes);
     if (region.tensorBacking) {
       entry["tensor"] = llvm::json::Object{
           {"index", region.tensorBacking.getTensorIndex()},
@@ -138,7 +138,7 @@ void printSRAMAllocationReport(
         {"left_location", sourceLocation(conflict.lhsOperation)},
         {"right_location", sourceLocation(conflict.rhsOperation)}};
     if (conflict.node) {
-      entry["core"] = llvm::json::Array{conflict.node->x, conflict.node->y};
+      entry["node"] = llvm::json::Array{conflict.node->x, conflict.node->y};
     }
     evidence.push_back(std::move(entry));
   }
@@ -146,8 +146,8 @@ void printSRAMAllocationReport(
   for (const auto &lifecycle : liveness.getLogicalDFBLifecycles()) {
     lifetimes.push_back(llvm::json::Object{
         {"logical_dfb", lifecycle.logicalId},
-        {"known_cores", nodeLifetimes(lifecycle.nodeLifetimes)},
-        {"possible_cores", nodeLifetimes(lifecycle.possibleNodeLifetimes)}});
+        {"known_nodes", nodeLifetimes(lifecycle.nodeLifetimes)},
+        {"possible_nodes", nodeLifetimes(lifecycle.possibleNodeLifetimes)}});
   }
   llvm::json::Object report{
       {"schema_version", 1},
@@ -155,8 +155,8 @@ void printSRAMAllocationReport(
       {"strategy", strategy},
       {"reuse_enabled", reuseEnabled},
       {"alignment_bytes", alignmentBytes},
-      {"budget_bytes_per_core", budgetBytes},
-      {"arena_bytes_per_core", plan.arenaBytes},
+      {"budget_bytes_per_node", budgetBytes},
+      {"arena_bytes_per_node", plan.arenaBytes},
       {"control_and_padding_bytes", controlBytes},
       {"control_record_bytes", plan.storage.size() * kSRAMControlRecordBytes},
       {"control_padding_bytes",

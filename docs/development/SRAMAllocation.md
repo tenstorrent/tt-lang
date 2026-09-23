@@ -274,14 +274,14 @@ The compiler record has `schema_version: 1` and `phase: "compiler"`. `owners` ma
 
 | Compiler metric | Meaning |
 | --- | --- |
-| `arena_bytes_per_core` | Planned control prefix plus payload high-water mark. |
+| `arena_bytes_per_node` | Planned control prefix plus payload high-water mark. |
 | `control_record_bytes`, `control_padding_bytes` | Control state and alignment padding, reported separately. |
 | `payload_extent_sum_bytes` | Sum of distinct compiler-owned storage-owner extents, after allocation-group consolidation. |
 | `payload_union_bytes` | Number of distinct payload addresses occupied by those extents. |
 | `payload_reuse_bytes` | Extent sum minus union; excludes sharing already represented by allocation groups. |
 | `payload_gap_bytes` | Payload high-water mark minus union; unused address gaps, not excess over an optimal allocation. |
 
-The runtime record has `phase: "runtime"` and `scope: "arena-reference-device"`. It derives `reserved_bytes_per_core` from the arena buffer's aligned page size and uniform page count, reports the participating `core_count`, their product as `reserved_bytes_on_reference_device`, and `reservation_padding_bytes_per_core` beyond `requested_bytes_per_core`. The requested extent is reconstructed from finalized DFB descriptors; a control-only arena can omit trailing compiler alignment padding from this request. It measures the arena reservation on the mesh reference device; it is not a mesh-wide total or total program SRAM use. Existing tensor payloads, PipeNet scratch, and external resources are outside this runtime total.
+The runtime record has `phase: "runtime"` and `scope: "arena-reference-device"`. It derives `reserved_bytes_per_node` from the arena buffer's aligned page size and uniform page count, reports the participating `node_count`, their product as `reserved_bytes_on_reference_device`, and `reservation_padding_bytes_per_node` beyond `requested_bytes_per_node`. The requested extent is reconstructed from finalized DFB descriptors; a control-only arena can omit trailing compiler alignment padding from this request. It measures the arena reservation on the mesh reference device; it is not a mesh-wide total or total program SRAM use. Existing tensor payloads, PipeNet scratch, and external resources are outside this runtime total.
 
 A compiler-only report can be obtained with:
 
@@ -486,7 +486,7 @@ The fixed control cost is `roundUp(8 * S, A)` for `S` storage owners. For 96 ung
 
 Monotonic allocation with explicit execution-phase overlays was considered. It cannot reuse an aligned gap between active allocations and requires explicit phase boundaries. TT-Lang instead uses its completion-aware conflict graph and searches reusable gaps, which permits overlap within a phase and across different extents. Best-fit reduces fragmentation at predictable compile time. Exact placement removes remaining fragmentation when its bounded exhaustive search completes.
 
-Allocation quality excludes the fixed control prefix. For a nonempty problem, payload high-water mark `H` is `arenaBytes - payloadBaseOffset`; `Hmin` is the proven minimum of the same quantity. Absolute fragmentation is `H - Hmin`, relative fragmentation is `(H - Hmin) / Hmin`, and packing efficiency is `Hmin / H`. Exact placement has efficiency 1 when it completes. Control overhead is measured separately as `payloadBaseOffset`, and total per-core SRAM use remains `arenaBytes`.
+Allocation quality excludes the fixed control prefix. For a nonempty problem, payload high-water mark `H` is `arenaBytes - payloadBaseOffset`; `Hmin` is the proven minimum of the same quantity. Absolute fragmentation is `H - Hmin`, relative fragmentation is `(H - Hmin) / Hmin`, and packing efficiency is `Hmin / H`. Exact placement has efficiency 1 when it completes. Control overhead is measured separately as `payloadBaseOffset`, and total per-node SRAM use remains `arenaBytes`.
 
 Regression tests compare exact placement with an independent exhaustive byte-offset oracle for all 5,184 combinations of four-region conflict graphs and three aligned extent sizes. The individual first-fit and best-fit strategies are optimal in 5,035 cases (97.13%). Across all cases, `sum(Hmin) / sum(H)` is 99.26%. Across the 149 suboptimal cases, the same payload-weighted efficiency is 78.74%, the worst-case efficiency is 66.66%, the average excess is 1.32 alignment units, and the maximum excess is three alignment units. The worst case is a four-region chain with equal extents: stable owner order uses three address levels, while alternating the chain endpoints uses two. Best-fit cannot improve this case because equal extents present the same gaps as first-fit. Exact placement finds the two-level result. The combined default reduces suboptimal cases to 68 and total excess from 196 to 80 alignment units, with approximately 99.70% aggregate efficiency and 71.43% worst-case efficiency. These synthetic cases provide a stable regression baseline rather than a workload distribution.
 

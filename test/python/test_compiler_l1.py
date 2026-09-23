@@ -434,17 +434,17 @@ def test_sram_allocation_report(device, dtype, allocator, enabled, capfd):
     for reservation in runtime:
         assert reservation["scope"] == "arena-reference-device"
         assert reservation["operation"] == "l1_copy"
-        assert reservation["core_count"] == 1
+        assert reservation["node_count"] == 1
         assert (
-            reservation["requested_bytes_per_core"] == placement["arena_bytes_per_core"]
+            reservation["requested_bytes_per_node"] == placement["arena_bytes_per_node"]
         )
         assert (
-            reservation["reserved_bytes_per_core"]
-            >= reservation["requested_bytes_per_core"]
+            reservation["reserved_bytes_per_node"]
+            >= reservation["requested_bytes_per_node"]
         )
-        assert reservation["reservation_padding_bytes_per_core"] == (
-            reservation["reserved_bytes_per_core"]
-            - reservation["requested_bytes_per_core"]
+        assert reservation["reservation_padding_bytes_per_node"] == (
+            reservation["reserved_bytes_per_node"]
+            - reservation["requested_bytes_per_node"]
         )
 
 
@@ -484,9 +484,9 @@ def test_sram_report_multicore_reuse(device, dtype, reuse, tmp_path, capfd):
     assert bool(placement["reused_ranges"]) == reuse
     assert bool(placement["payload_reuse_bytes"]) == reuse
     assert placement["logical_conflicts"]
-    assert reservation["core_count"] == 4
-    assert reservation["requested_bytes_per_core"] == placement["arena_bytes_per_core"]
+    assert reservation["node_count"] == 4
+    assert reservation["requested_bytes_per_node"] == placement["arena_bytes_per_node"]
     assert (
         reservation["reserved_bytes_on_reference_device"]
-        == 4 * reservation["reserved_bytes_per_core"]
+        == 4 * reservation["reserved_bytes_per_node"]
     )

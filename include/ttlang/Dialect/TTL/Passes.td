@@ -1092,7 +1092,7 @@ def TTLFinalizeDFBIndices
     aliasing in this mode. `sram-allocation-report` emits a schema-versioned JSON
     record to stderr after successful placement, before IR mutation. The record
     includes storage owners, tensor references, reused ranges, lifetime evidence,
-    logical conflict reasons, and planned per-core arena byte counts. It does
+    logical conflict reasons, and planned per-node arena byte counts. It does
     not change allocation or report hardware reservation sizes. The option is
     inactive for `metal-cb`.
 

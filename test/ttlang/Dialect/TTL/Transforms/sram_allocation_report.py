@@ -83,7 +83,7 @@ def verify(source, reuse=True, strategy="multi-order-decreasing"):
             used
         )
         assert (
-            record["arena_bytes_per_core"]
+            record["arena_bytes_per_node"]
             == record["payload_high_water_bytes"] + record["control_and_padding_bytes"]
         )
         for overlap in record["reused_ranges"]:
@@ -120,10 +120,10 @@ for architecture in ("blackhole", "wormhole_b0"):
     live = verify(stress.make_module((0, 2, 4, 6, 1, 3, 5, 7), architecture))[0]
     assert live["logical_conflicts"] and live["payload_reuse_bytes"] == 0
     assert all(conflict["reason"] for conflict in live["logical_conflicts"])
-    assert all(lifetime["known_cores"] for lifetime in live["lifetimes"])
+    assert all(lifetime["known_nodes"] for lifetime in live["lifetimes"])
 
 empty = verify("module {}", strategy="exact")[0]
-assert empty["arena_bytes_per_core"] == 0 and empty["owners"] == []
+assert empty["arena_bytes_per_node"] == 0 and empty["owners"] == []
 groups = verify((HERE / "compiler_l1_allocation_groups.mlir").read_text())
 assert any(
     len(owner["logical_dfbs"]) > 1 for record in groups for owner in record["owners"]

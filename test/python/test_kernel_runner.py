@@ -8795,16 +8795,16 @@ def test_sram_report_reservation_accounting(capsys, requested_bytes, reserved_by
     record = json.loads(capsys.readouterr().err.split("ttlang-sram-report: ", 1)[1])
     assert record["reserved_bytes_on_reference_device"] == reserved_bytes * 3
     assert (
-        record["reservation_padding_bytes_per_core"] == reserved_bytes - requested_bytes
+        record["reservation_padding_bytes_per_node"] == reserved_bytes - requested_bytes
     )
-    assert record["requested_bytes_per_core"] == requested_bytes
+    assert record["requested_bytes_per_node"] == requested_bytes
     assert record["operation"] == "test_operation"
 
 
 @pytest.mark.parametrize(
-    "core_count, page_count", [(0, 0), (3, 0), (3, 1), (3, 2), (3, 4)]
+    "node_count, page_count", [(0, 0), (3, 0), (3, 1), (3, 2), (3, 4)]
 )
-def test_sram_report_requires_uniform_pages(core_count, page_count):
+def test_sram_report_requires_uniform_pages(node_count, page_count):
     import ttl.kernel_runner as runner
 
     arena = SimpleNamespace(
@@ -8813,11 +8813,11 @@ def test_sram_report_requires_uniform_pages(core_count, page_count):
     )
     with pytest.raises(RuntimeError, match="uniform arena pages"):
         runner._print_sram_runtime_report(
-            arena, SimpleNamespace(num_cores=lambda: core_count), 64, "test"
+            arena, SimpleNamespace(num_cores=lambda: node_count), 64, "test"
         )
 
 
-def test_sram_report_accounts_for_multiple_pages_per_core(capsys):
+def test_sram_report_accounts_for_multiple_pages_per_node(capsys):
     import json
     import ttl.kernel_runner as runner
 
@@ -8829,4 +8829,4 @@ def test_sram_report_accounts_for_multiple_pages_per_core(capsys):
         arena, SimpleNamespace(num_cores=lambda: 3), 96, "test"
     )
     record = json.loads(capsys.readouterr().err.split("ttlang-sram-report: ", 1)[1])
-    assert record["reserved_bytes_per_core"] == 128
+    assert record["reserved_bytes_per_node"] == 128

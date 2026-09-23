@@ -38,7 +38,7 @@ struct SRAMStorage {
   SmallVector<unsigned> members;
 };
 
-/// Validated per-core placement, consumed before any IR mutation.
+/// Validated per-node placement, consumed before any IR mutation.
 struct SRAMAllocationPlan {
   SmallVector<SRAMRegion> regions;
   SmallVector<SRAMStorage> storage;

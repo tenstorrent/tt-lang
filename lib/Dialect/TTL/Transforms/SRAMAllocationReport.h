@@ -15,7 +15,7 @@ class DFBConcurrentKernelLivenessAnalysis;
 class DFBPhysicalConflictModel;
 
 /// Emits one versioned JSON record from a validated placement and its immutable
-/// analysis evidence. Byte counts describe the planned per-core arena.
+/// analysis evidence. Byte counts describe the planned per-node arena.
 void printSRAMAllocationReport(
     llvm::raw_ostream &output, const SRAMAllocationPlan &plan,
     const DFBConcurrentKernelLivenessAnalysis &liveness,
