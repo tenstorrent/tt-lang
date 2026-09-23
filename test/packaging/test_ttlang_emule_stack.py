@@ -77,10 +77,11 @@ def test_manifest_emits_exact_runtime_inputs():
         values["TTLANG_EMULE_STACK_MANIFEST_SHA256"]
         == hashlib.sha256(STACK_MANIFEST.read_bytes()).hexdigest()
     )
-    assert values["TTLANG_EMULE_REPOSITORY"] == ""
+    assert "TTLANG_EMULE_REPOSITORY" not in values
+    assert "TTLANG_EMULE_PLATFORM" not in values
+    assert "TTLANG_EMULE_ALLOCATOR_MODE" not in values
     assert len(values["TTLANG_EMULE_COMMIT"]) == 40
     assert len(values["TTLANG_METAL_COMMIT"]) == 40
-    assert values["TTLANG_EMULE_PLATFORM"] == "linux/amd64"
     assert values["TTLANG_EMULE_MESH_DEVICE"] == "P150"
     assert "@sha256:" in values["TTLANG_EMULE_BASE_IMAGE"]
 

@@ -63,8 +63,8 @@ export TTLANG_EMULE_RUNTIME_SOURCE_URL=REPOSITORY_URL
 ```
 
 The URL supplies the source for the manifest's pinned emulator commit. The
-installer uses the recorded emulator, tt-metal, base image, and platform
-together and verifies their source revisions before building.
+installer uses the recorded emulator, tt-metal, and base image together in a
+Linux/x86-64 environment and verifies their source revisions before building.
 
 Installation builds the pinned tt-emule/tt-metal Docker image and compiles this
 TT-Lang checkout into a persistent Docker volume. It can take substantial time,

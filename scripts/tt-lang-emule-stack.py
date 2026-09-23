@@ -75,36 +75,20 @@ def load_stack(path):
     base_image = require_string(runtime, "base_image", "runtime")
     if IMAGE_PATTERN.fullmatch(base_image) is None:
         raise StackError("runtime.base_image must use an exact sha256 digest")
-    if (
-        require_string(emulator, "repository_environment", "emulator")
-        != "TTLANG_EMULE_RUNTIME_SOURCE_URL"
-    ):
-        raise StackError(
-            "emulator.repository_environment must be " "TTLANG_EMULE_RUNTIME_SOURCE_URL"
-        )
     values = {
         "TTLANG_EMULE_STACK_MANIFEST_SHA256": hashlib.sha256(
             manifest_bytes
         ).hexdigest(),
         "TTLANG_COMPILER_REPOSITORY": require_repository(compiler, "compiler"),
         "TTLANG_COMPILER_BASE_COMMIT": require_sha(compiler, "base_commit", "compiler"),
-        "TTLANG_EMULE_REPOSITORY": "",
         "TTLANG_EMULE_COMMIT": require_sha(emulator, "commit", "emulator"),
         "TTLANG_METAL_REPOSITORY": require_repository(metal, "metal"),
         "TTLANG_METAL_COMMIT": require_sha(metal, "commit", "metal"),
         "TTLANG_EMULE_BASE_IMAGE": base_image,
-        "TTLANG_EMULE_PLATFORM": require_string(runtime, "platform", "runtime"),
         "TTLANG_EMULE_TARGET": require_string(target, "name", "target"),
         "TTLANG_EMULE_CLUSTER_DESCRIPTOR": descriptor,
         "TTLANG_EMULE_MESH_DEVICE": require_string(target, "mesh_device", "target"),
-        "TTLANG_EMULE_ALLOCATOR_MODE": require_string(
-            target, "allocator_mode", "target"
-        ),
     }
-    if values["TTLANG_EMULE_PLATFORM"] != "linux/amd64":
-        raise StackError("runtime.platform must be linux/amd64")
-    if values["TTLANG_EMULE_ALLOCATOR_MODE"] != "hybrid":
-        raise StackError("target.allocator_mode must be hybrid")
     return values
 
 
