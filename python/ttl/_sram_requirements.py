@@ -13,21 +13,34 @@ _DFB_CONTROL_BYTES = 8
 
 
 class SRAMOwnership(Enum):
-    """State whether placement is supplied or remains allocator-selectable."""
+    """State who selects an owner's physical placement.
+
+    FIXED preserves the supplied base at every location. MOVABLE permits the
+    allocator to select an offset subject to conflicts and address constraints.
+    """
 
     FIXED = auto()
     MOVABLE = auto()
 
 
 class SRAMAddressing(Enum):
-    """State whether participating locations share one base address."""
+    """Select the retained pool's physical allocation mode.
+
+    UNIFORM uses one physical base across participating locations. PER_CORE
+    permits independent bases. Equal-base groups carry semantic address
+    constraints in the common requirement model.
+    """
 
     UNIFORM = auto()
     PER_CORE = auto()
 
 
 class SRAMLifetime(Enum):
-    """State which owner controls the end of a requirement's lifetime."""
+    """State when an owner's storage may be released or reused.
+
+    INVOCATION lasts through one completed operation launch. EXTERNAL follows
+    the caller-owned tensor lifetime. PERSISTENT lasts until SRAMStorage closes.
+    """
 
     INVOCATION = auto()
     EXTERNAL = auto()
@@ -75,8 +88,8 @@ class SRAMLocation:
 
 
 @dataclass(frozen=True)
-class SRAMAddressDomain:
-    """Locations that require one equal physical base address."""
+class SRAMEqualBaseGroup:
+    """Locations of one owner that require one physical base address."""
 
     locations: Tuple[SRAMLocation, ...]
 
@@ -84,13 +97,42 @@ class SRAMAddressDomain:
         if not isinstance(self.locations, tuple) or any(
             not isinstance(location, SRAMLocation) for location in self.locations
         ):
-            raise TypeError("SRAM address-domain locations must be SRAMLocation values")
+            raise TypeError("SRAM equal-base locations must be SRAMLocation values")
         normalized = tuple(sorted(self.locations))
-        if not normalized:
-            raise ValueError("SRAM address domain must contain at least one location")
+        if len(normalized) < 2:
+            raise ValueError(
+                "SRAM equal-base group must contain at least two locations"
+            )
         if len(set(normalized)) != len(normalized):
-            raise ValueError("SRAM address domain contains duplicate locations")
+            raise ValueError("SRAM equal-base group contains duplicate locations")
         object.__setattr__(self, "locations", normalized)
+
+
+@dataclass(frozen=True)
+class SRAMLocationRequirement:
+    """Describe one owner's storage interval at one device and worker core."""
+
+    location: SRAMLocation
+    extent_bytes: int
+    payload_present: bool
+    fixed_base: Optional[int] = None
+
+    def __post_init__(self):
+        if not isinstance(self.location, SRAMLocation):
+            raise TypeError("SRAM location requirement needs an SRAMLocation")
+        if type(self.extent_bytes) is not int or self.extent_bytes <= 0:
+            raise ValueError("SRAM location extent must be a positive integer")
+        if type(self.payload_present) is not bool:
+            raise TypeError("SRAM payload presence must be a bool")
+        if self.fixed_base is not None and (
+            type(self.fixed_base) is not int or self.fixed_base < 0
+        ):
+            raise ValueError("fixed SRAM base must be a nonnegative integer")
+        if (
+            self.fixed_base is not None
+            and self.fixed_base > _SRAM_ADDRESS_LIMIT - self.extent_bytes
+        ):
+            raise ValueError("fixed SRAM interval exceeds the 32-bit address space")
 
 
 @dataclass(frozen=True)
@@ -109,36 +151,38 @@ class SRAMOwner:
 
 @dataclass(frozen=True)
 class SRAMStorageRequirement:
-    """Describe one physical allocation across its address-equality domains."""
+    """Describe one physical owner across location-specific intervals."""
 
     owner: SRAMOwner
-    extent_bytes: int
+    location_requirements: Tuple[SRAMLocationRequirement, ...]
     alignment_bytes: int
-    address_domains: Tuple[SRAMAddressDomain, ...]
+    equal_base_groups: Tuple[SRAMEqualBaseGroup, ...]
     ownership: SRAMOwnership
     lifetime: SRAMLifetime
-    fixed_bases: Tuple[int, ...] = ()
-    addressing: SRAMAddressing = SRAMAddressing.UNIFORM
 
     def __post_init__(self):
         if not isinstance(self.owner, SRAMOwner):
             raise TypeError("SRAM requirement owner must be an SRAMOwner")
-        if not isinstance(self.address_domains, tuple) or any(
-            not isinstance(domain, SRAMAddressDomain) for domain in self.address_domains
+        if not isinstance(self.location_requirements, tuple) or any(
+            not isinstance(requirement, SRAMLocationRequirement)
+            for requirement in self.location_requirements
         ):
             raise TypeError(
-                "SRAM requirement address domains must be SRAMAddressDomain values"
+                "SRAM location requirements must be SRAMLocationRequirement values"
             )
+        if not isinstance(self.equal_base_groups, tuple) or any(
+            not isinstance(group, SRAMEqualBaseGroup)
+            for group in self.equal_base_groups
+        ):
+            raise TypeError("SRAM equal-base groups must be SRAMEqualBaseGroup values")
+        normalized_groups = tuple(
+            sorted(self.equal_base_groups, key=lambda group: group.locations)
+        )
+        object.__setattr__(self, "equal_base_groups", normalized_groups)
         if not isinstance(self.ownership, SRAMOwnership):
             raise TypeError("SRAM requirement ownership must be an SRAMOwnership")
         if not isinstance(self.lifetime, SRAMLifetime):
             raise TypeError("SRAM requirement lifetime must be an SRAMLifetime")
-        if not isinstance(self.addressing, SRAMAddressing):
-            raise TypeError("SRAM requirement addressing must be an SRAMAddressing")
-        if not isinstance(self.fixed_bases, tuple):
-            raise TypeError("SRAM requirement fixed bases must be a tuple")
-        if type(self.extent_bytes) is not int or self.extent_bytes <= 0:
-            raise ValueError("SRAM requirement extent must be a positive integer")
         if (
             type(self.alignment_bytes) is not int
             or self.alignment_bytes <= 0
@@ -147,27 +191,59 @@ class SRAMStorageRequirement:
             raise ValueError(
                 "SRAM requirement alignment must be a positive power of two"
             )
-        if not self.address_domains:
-            raise ValueError("SRAM requirement must contain an address domain")
-        locations = [
-            location for domain in self.address_domains for location in domain.locations
-        ]
+        normalized = tuple(
+            sorted(self.location_requirements, key=lambda value: value.location)
+        )
+        if not normalized:
+            raise ValueError("SRAM requirement must contain a location")
+        locations = tuple(value.location for value in normalized)
         if len(set(locations)) != len(locations):
-            raise ValueError("SRAM requirement address domains must be disjoint")
-        if self.ownership is SRAMOwnership.FIXED:
-            if len(self.fixed_bases) != len(self.address_domains):
+            raise ValueError("SRAM requirement contains duplicate locations")
+        object.__setattr__(self, "location_requirements", normalized)
+        grouped_locations = []
+        location_set = set(locations)
+        for group in self.equal_base_groups:
+            if not set(group.locations).issubset(location_set):
                 raise ValueError(
-                    "fixed SRAM requirement needs one base per address domain"
+                    "SRAM equal-base group contains a location outside its owner"
                 )
-        elif self.fixed_bases:
+            grouped_locations.extend(group.locations)
+        if len(set(grouped_locations)) != len(grouped_locations):
+            raise ValueError("SRAM equal-base groups must be disjoint")
+        if self.ownership is SRAMOwnership.FIXED:
+            if any(value.fixed_base is None for value in normalized):
+                raise ValueError("fixed SRAM requirement needs one base per location")
+        elif any(value.fixed_base is not None for value in normalized):
             raise ValueError("movable SRAM requirement cannot contain fixed bases")
-        for base in self.fixed_bases:
-            if type(base) is not int or base < 0:
-                raise ValueError("fixed SRAM base must be a nonnegative integer")
-            if base % self.alignment_bytes:
+        for value in normalized:
+            if value.fixed_base is not None and value.fixed_base % self.alignment_bytes:
                 raise ValueError("fixed SRAM base does not satisfy its alignment")
-            if base > _SRAM_ADDRESS_LIMIT - self.extent_bytes:
-                raise ValueError("fixed SRAM interval exceeds the 32-bit address space")
+        requirements_by_location = {
+            value.location: value for value in self.location_requirements
+        }
+        for group in self.equal_base_groups:
+            fixed_bases = {
+                requirements_by_location[location].fixed_base
+                for location in group.locations
+            }
+            if len(fixed_bases) != 1:
+                raise ValueError(
+                    "fixed locations in one equal-base group need the same base"
+                )
+
+    @property
+    def locations(self) -> Tuple[SRAMLocation, ...]:
+        return tuple(value.location for value in self.location_requirements)
+
+    @property
+    def max_extent_bytes(self) -> int:
+        return max(value.extent_bytes for value in self.location_requirements)
+
+    def at(self, location: SRAMLocation) -> SRAMLocationRequirement:
+        for requirement in self.location_requirements:
+            if requirement.location == location:
+                return requirement
+        raise ValueError("SRAM location is outside its storage owner")
 
 
 @dataclass(frozen=True)
@@ -270,15 +346,9 @@ class PreparedSRAMOperation:
                 raise ValueError("compiler arena requirement has multiple bindings")
             arena_requirements.add(arena.requirement_index)
             expected_locations = {SRAMLocation((), core) for core in arena.cores}
-            actual_locations = {
-                location
-                for domain in requirement.address_domains
-                for location in domain.locations
-            }
+            actual_locations = set(requirement.locations)
             if actual_locations != expected_locations:
-                raise ValueError(
-                    "compiler arena cores do not match its address domains"
-                )
+                raise ValueError("compiler arena cores do not match its locations")
         required_arena_indices = {
             requirement_index
             for requirement_index, requirement in enumerate(self.requirements)
@@ -289,15 +359,18 @@ class PreparedSRAMOperation:
         self.arena_bytes_by_core()
         for use in self.uses:
             requirement = self._requirement(use.requirement_index)
-            if use.byte_offset > requirement.extent_bytes - use.byte_size:
-                raise ValueError("SRAM use byte range exceeds its requirement")
-            requirement_locations = {
-                location
-                for domain in requirement.address_domains
-                for location in domain.locations
-            }
-            if not set(use.locations).issubset(requirement_locations):
+            if not set(use.locations).issubset(requirement.locations):
                 raise ValueError("SRAM use location is outside its requirement")
+            if use.kind is SRAMUseKind.DFB_PAYLOAD and any(
+                not requirement.at(location).payload_present
+                for location in use.locations
+            ):
+                raise ValueError("SRAM payload use has no storage at its location")
+            if any(
+                use.byte_offset > requirement.at(location).extent_bytes - use.byte_size
+                for location in use.locations
+            ):
+                raise ValueError("SRAM use byte range exceeds its requirement")
 
     def _requirement(self, index: int) -> SRAMStorageRequirement:
         if type(index) is not int or not 0 <= index < len(self.requirements):
@@ -311,11 +384,11 @@ class PreparedSRAMOperation:
     def arena_bytes_by_core(self) -> dict[Tuple[int, int], int]:
         result = {}
         for arena in self.arenas:
-            extent = self.requirements[arena.requirement_index].extent_bytes
+            requirement = self.requirements[arena.requirement_index]
             for core in arena.cores:
                 if core in result:
                     raise ValueError("worker core belongs to multiple compiler arenas")
-                result[core] = extent
+                result[core] = requirement.at(SRAMLocation((), core)).extent_bytes
         return result
 
 
@@ -387,21 +460,28 @@ def prepare_persistent_storage(
     requirements = []
     for declaration_index, declaration in enumerate(declarations):
         locations = _locations(declaration.cores)
-        if declaration.addressing is SRAMAddressing.UNIFORM:
-            domains = (SRAMAddressDomain(locations),)
-        else:
-            domains = tuple(SRAMAddressDomain((location,)) for location in locations)
+        equal_base_groups = (
+            (SRAMEqualBaseGroup(locations),)
+            if declaration.addressing is SRAMAddressing.UNIFORM and len(locations) > 1
+            else ()
+        )
         requirements.append(
             SRAMStorageRequirement(
                 owner=SRAMOwner(
                     SRAMOwnerKind.PERSISTENT_DECLARATION, declaration_index
                 ),
-                extent_bytes=declaration.extent_bytes,
+                location_requirements=tuple(
+                    SRAMLocationRequirement(
+                        location,
+                        declaration.extent_bytes,
+                        payload_present=True,
+                    )
+                    for location in locations
+                ),
                 alignment_bytes=declaration.alignment_bytes,
-                address_domains=domains,
+                equal_base_groups=equal_base_groups,
                 ownership=SRAMOwnership.MOVABLE,
                 lifetime=SRAMLifetime.PERSISTENT,
-                addressing=declaration.addressing,
             )
         )
     return PreparedSRAMStorage(tuple(requirements))
@@ -492,32 +572,46 @@ def _tensor_requirement(
     if per_core and device_coordinates == ((),):
         raise ValueError("per-core SRAM tensor must expose logical device coordinates")
     if per_core:
-        domains = []
-        bases = []
+        location_requirements = []
         for device_coordinate in device_coordinates:
             for core in sorted(cores):
                 location = SRAMLocation(device_coordinate, core)
-                domains.append(SRAMAddressDomain((location,)))
-                bases.append(
-                    int(
-                        tensor.experimental_per_core_buffer_address(
-                            ttnn_api.MeshCoordinate(device_coordinate),
-                            ttnn_api.CoreCoord(*core),
-                        )
+                location_requirements.append(
+                    SRAMLocationRequirement(
+                        location,
+                        extent_bytes,
+                        payload_present=True,
+                        fixed_base=int(
+                            tensor.experimental_per_core_buffer_address(
+                                ttnn_api.MeshCoordinate(device_coordinate),
+                                ttnn_api.CoreCoord(*core),
+                            )
+                        ),
                     )
                 )
+        equal_base_groups = ()
     else:
-        domains = [SRAMAddressDomain(_locations(cores, device_coordinates))]
-        bases = [int(tensor.buffer_address())]
+        locations = _locations(cores, device_coordinates)
+        base = int(tensor.buffer_address())
+        location_requirements = [
+            SRAMLocationRequirement(
+                location,
+                extent_bytes,
+                payload_present=True,
+                fixed_base=base,
+            )
+            for location in locations
+        ]
+        equal_base_groups = (
+            (SRAMEqualBaseGroup(locations),) if len(locations) > 1 else ()
+        )
     return SRAMStorageRequirement(
         owner=SRAMOwner(SRAMOwnerKind.TENSOR_ARGUMENT, tensor_index),
-        extent_bytes=extent_bytes,
+        location_requirements=tuple(location_requirements),
         alignment_bytes=alignment_bytes,
-        address_domains=tuple(domains),
+        equal_base_groups=equal_base_groups,
         ownership=SRAMOwnership.FIXED,
         lifetime=SRAMLifetime.EXTERNAL,
-        addressing=(SRAMAddressing.PER_CORE if per_core else SRAMAddressing.UNIFORM),
-        fixed_bases=tuple(bases),
     )
 
 
@@ -573,19 +667,37 @@ def prepare_sram_operation(
         for arena_index, arena_cores in enumerate(core_domains(configs)):
             requirement_index = len(requirements)
             domain_locations = _locations(arena_cores)
+            location_requirements = []
+            for core, location in zip(arena_cores, domain_locations):
+                layouts = [
+                    next(
+                        layout
+                        for layout in config.sram_core_layouts
+                        if layout.node == core
+                    )
+                    for config in configs
+                ]
+                location_requirements.append(
+                    SRAMLocationRequirement(
+                        location,
+                        sizes[core],
+                        payload_present=any(
+                            layout.payload_present for layout in layouts
+                        ),
+                    )
+                )
             requirements.append(
                 SRAMStorageRequirement(
                     owner=SRAMOwner(SRAMOwnerKind.COMPILER_ARENA, arena_index),
-                    extent_bytes=sizes[arena_cores[0]],
+                    location_requirements=tuple(location_requirements),
                     alignment_bytes=get_alignment_bytes(),
-                    address_domains=(SRAMAddressDomain(domain_locations),),
+                    equal_base_groups=(
+                        (SRAMEqualBaseGroup(domain_locations),)
+                        if len(domain_locations) > 1
+                        else ()
+                    ),
                     ownership=SRAMOwnership.MOVABLE,
                     lifetime=SRAMLifetime.INVOCATION,
-                    addressing=(
-                        SRAMAddressing.PER_CORE
-                        if len(arena_cores) == 1
-                        else SRAMAddressing.UNIFORM
-                    ),
                 )
             )
             arenas.append(SRAMArenaBinding(requirement_index, arena_cores))
@@ -601,21 +713,24 @@ def prepare_sram_operation(
                         domain_locations,
                     )
                 )
-                layout = next(
-                    layout
-                    for layout in config.sram_core_layouts
-                    if layout.node == arena_cores[0]
-                )
-                if layout.payload_present:
+                payload_locations_by_offset = {}
+                for layout in config.sram_core_layouts:
+                    if layout.node in arena_cores and layout.payload_present:
+                        payload_locations_by_offset.setdefault(
+                            layout.payload_offset, []
+                        ).append(SRAMLocation((), layout.node))
+                for payload_offset, payload_locations in sorted(
+                    payload_locations_by_offset.items()
+                ):
                     uses.append(
                         SRAMUse(
                             SRAMUseKind.DFB_PAYLOAD,
                             config.dfb_index,
                             arena_index,
                             requirement_index,
-                            layout.payload_offset,
+                            payload_offset,
                             config.l1_allocation_bytes,
-                            domain_locations,
+                            tuple(payload_locations),
                         )
                     )
     elif arena_bytes is not None:
@@ -624,12 +739,24 @@ def prepare_sram_operation(
         requirements.append(
             SRAMStorageRequirement(
                 owner=SRAMOwner(SRAMOwnerKind.COMPILER_ARENA, 0),
-                extent_bytes=arena_bytes,
+                location_requirements=tuple(
+                    SRAMLocationRequirement(
+                        location,
+                        arena_bytes,
+                        payload_present=any(
+                            config.l1_payload_offset is not None for config in configs
+                        ),
+                    )
+                    for location in domain_locations
+                ),
                 alignment_bytes=get_alignment_bytes(),
-                address_domains=(SRAMAddressDomain(domain_locations),),
+                equal_base_groups=(
+                    (SRAMEqualBaseGroup(domain_locations),)
+                    if len(domain_locations) > 1
+                    else ()
+                ),
                 ownership=SRAMOwnership.MOVABLE,
                 lifetime=SRAMLifetime.INVOCATION,
-                addressing=SRAMAddressing.UNIFORM,
             )
         )
         arenas.append(SRAMArenaBinding(requirement_index, cores))

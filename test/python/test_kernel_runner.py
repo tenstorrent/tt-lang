@@ -9146,9 +9146,10 @@ def test_prepared_sram_resets_controls_only_before_dispatch(monkeypatch):
 def _prepared_tensor_operation(base, extent_bytes=2048, location=None, addressing=None):
     from ttl._sram_requirements import (
         PreparedSRAMOperation,
-        SRAMAddressDomain,
         SRAMAddressing,
+        SRAMEqualBaseGroup,
         SRAMLocation,
+        SRAMLocationRequirement,
         SRAMOwner,
         SRAMOwnerKind,
         SRAMOwnership,
@@ -9160,15 +9161,29 @@ def _prepared_tensor_operation(base, extent_bytes=2048, location=None, addressin
         location = SRAMLocation((0, 0), (0, 0))
     if addressing is None:
         addressing = SRAMAddressing.UNIFORM
+    other_location = SRAMLocation(
+        location.device, (location.core[0] + 1, location.core[1])
+    )
+    locations = (location, other_location)
     requirement = SRAMStorageRequirement(
         owner=SRAMOwner(SRAMOwnerKind.TENSOR_ARGUMENT, 0),
-        extent_bytes=extent_bytes,
+        location_requirements=tuple(
+            SRAMLocationRequirement(
+                current_location,
+                extent_bytes,
+                True,
+                fixed_base=base,
+            )
+            for current_location in locations
+        ),
         alignment_bytes=64,
-        address_domains=(SRAMAddressDomain((location,)),),
+        equal_base_groups=(
+            (SRAMEqualBaseGroup(locations),)
+            if addressing is SRAMAddressing.UNIFORM
+            else ()
+        ),
         ownership=SRAMOwnership.FIXED,
         lifetime=SRAMLifetime.EXTERNAL,
-        fixed_bases=(base,),
-        addressing=addressing,
     )
     return PreparedSRAMOperation("prepared", (requirement,), (), ())
 

@@ -54,25 +54,36 @@ An external launcher can borrow persistent tensors through `storage.submit(launc
 
 ### Requirements
 
+The allocator-specific properties are defined in the [shared runtime requirements](SRAMAllocation.md#shared-runtime-requirements).
+
 Each persistent declaration contributes one movable requirement with persistent lifetime. Each compiler-planned operation arena contributes one movable requirement with invocation lifetime. Tensor arguments supplied by the application contribute fixed external requirements; the allocator neither moves nor owns them. The live TT-Metal allocator state accounts for those existing allocations when the data budget is computed.
 
-Each requirement defines a per-location extent, alignment, addressing mode, and address-equality domains. Uniform requirements use one equal base across their participating cores. Per-core requirements allow independent physical bases. A pool never mixes the two addressing modes.
+Each requirement defines an alignment and one interval per participating device/core location. A location interval records its extent, payload presence, and optional fixed base. Selected equal-base groups require one owner to start at the same physical address on their member locations; member extents may differ. Ungrouped locations remain independently addressable. Persistence is a lifetime property and does not imply an equal base or participation on every core.
 
 ### Conflict Construction
 
 Persistent regions conflict with every region on an overlapping location because their contents remain live until close. Arenas within one operation conflict because they can be used concurrently during that launch. Arenas from different operations do not conflict because the storage owner establishes a device-completion dependency between launches.
 
-Requirements with overlapping locations form one pool component for an addressing mode. Disjoint components use independent reservations. A component uses the maximum required alignment and delegates byte placement to the existing C++ `SRAMAllocator` strategy interface.
+The C++ allocator API can place owner-location intervals directly. Equal-base groups become equal-offset placement variables, while ungrouped locations remain independent. Persistent intervals conflict with every overlapping-location interval; serialized scratch intervals can reuse offsets.
+
+The joint planner expands every movable requirement into owner-location intervals and calls this C++ entry point. Conflicts are emitted only for intervals at the same location. Equal-base requirements retain their selected equality constraints; unrelated local intervals do not acquire those constraints.
+
+The retained-view backend currently has two additional restrictions. It realizes an owned pool as either one common physical base or independent per-core bases, and each logical view uses one relative offset across its shards. The adapter therefore separates these two pool modes, adds the required relative-offset equality for each multi-location view, and records all pool locations as one equal-capacity group. Placement minimizes the resulting equal-sized physical reservation rather than only the sum of location high-water marks. Pool mode is supplied separately from the requirement because one location has no address-equality constraint but TTNN still distinguishes uniform and per-core ownership. Partial equal-base groups require a backend reservation interface that can preserve selected physical equality while leaving other locations independent. Caller-owned tensor intervals are validated but are not inserted into relative pool placement; Metal accounts for those allocations when it reserves each pool.
 
 ```text
 plan_joint_storage(persistent requirements, prepared operations):
-    validate ownership, lifetime, addressing, and fixed tensor contracts
+    validate ownership, lifetime, location intervals, equal-base groups,
+        and fixed tensor contracts
     collect persistent regions and compiler arena regions
-    partition regions by addressing mode and overlapping locations
+    partition regions by the address modes supported by retained views
     for each partition:
-        add conflicts for overlapping persistent regions
-        add conflicts for arenas from the same operation
-        place aligned regions with the selected SRAMAllocator strategy
+        expand requirements into owner-location intervals
+        add same-location conflicts from ownership and completion rules
+        add semantic equal-base and required view-relative equal-offset groups
+        add one equal-capacity group for the retained pool
+        place intervals with SRAMAllocator.allocateLocations
+    reserve each pool's largest location high-water mark
+    create retained views at their planned relative offsets
     reject any location whose combined reservations exceed its data budget
     return pool reservations, view offsets, and efficiency metrics
 ```
@@ -83,7 +94,7 @@ This partition can reserve more bytes than separate allocations. A pool spanning
 
 The placement offsets are relative to an owned pool. TTNN allocates each pool through the normal Metal allocator, and owner-retaining tensor views bind persistent declarations and operation arenas to their assigned offsets. A view can cover a subset of the pool's cores while retaining the complete pool allocation.
 
-Program preparation revalidates the requirement contract against the final views. Ownership, extent, alignment, addressing, domains, uses, and arena layout must match the provisional contract. A tensor argument may use another physical base on a later launch when every other requirement remains identical. This permits repeated use of one prepared specialization with compatible input and output allocations.
+Program preparation revalidates the requirement contract against the final views. Ownership, per-location extents, payload presence, alignment, equal-base groups, uses, and arena layout must match the provisional contract. A tensor argument may use another physical base on a later launch when every other requirement remains identical. This permits repeated use of one prepared specialization with compatible input and output allocations.
 
 Reservations remain provisional while every prepared operation is compiled and its Metal program layout is finalized. Persistent payload initialization occurs only after all program checks succeed. The owner then records and waits for initialization completion before publishing tensor references and operation bindings together. Any allocation, view construction, program preparation, initialization, or completion failure releases the provisional views and pools in reverse order.
 
@@ -131,7 +142,7 @@ The estimate does not establish that pooling saves memory. Device benchmarks com
 
 ## C++ Contracts
 
-The architecture-neutral placement API is declared in [`SRAMAllocator.h`](../../include/ttlang/Dialect/TTL/Transforms/SRAMAllocator.h). `SRAMAllocationProblem` contains region extents, the complete conflict graph, alignment, a reserved prefix, and a byte budget. `SRAMAllocator::allocate` validates this input, calls the selected strategy, validates the complete solution, and returns offsets plus the arena high-water mark without modifying compiler IR. `createSRAMAllocator` selects a registered strategy by its stable name. The exact and greedy implementations use the same contract.
+The architecture-neutral placement API is declared in [`SRAMAllocator.h`](../../include/ttlang/Dialect/TTL/Transforms/SRAMAllocator.h). `SRAMLocationAllocationProblem` contains physical locations and budgets, owner-location extents, the complete conflict graph, fixed offsets, equal-offset groups, equal-capacity reservation groups, and alignment. `SRAMAllocator::allocateLocations` validates this input, calls the selected strategy, validates the complete solution, and returns offsets plus one high-water mark per location without modifying compiler IR. `createSRAMAllocator` selects a registered strategy by its stable name. The exact and greedy implementations use the same contract.
 
 The runtime ownership interfaces are:
 
@@ -151,5 +162,9 @@ One joint storage owner supplies one completion domain. Selected device domains,
 Device close, reset, mesh topology changes, and sub-device-manager changes must not race storage use. A closed or replaced device does not transfer persistent contents to another device.
 
 ## Follow-On Work
+
+Migrate compiler DFB placement from complete multicast-domain arenas to the generalized owner-location API. The compiler must project lifetime conflicts per core, apply equal-base constraints only to the selected multicast owner locations, and derive each core's arena extent from its high-water mark. The joint planner can then consume those results without imposing one common layout on unrelated local storage.
+
+Extend the backend reservation interface to accept different extents per location and selected equal-address groups. The allocator already reports the required per-location high-water marks. Consuming them directly removes equal-sized pool replication, the restriction that an equal-base requirement cover all of its locations, and the required common relative offset for independently addressed shards.
 
 Joint placement can incorporate PipeNet, DFB reconfiguration, and selected device domains after their resources expose immutable requirements and completion contracts through the same preparation interface. Read-only effect proofs can permit concurrent borrowing by retaining conflicts between arenas whose executions may overlap. Conditional reservation against complete per-core free-interval snapshots can place pools into fragmented gaps without relying on a stale occupancy query.

@@ -21,6 +21,7 @@ from ._sram_requirements import (
     SRAMUseKind,
     prepare_persistent_storage,
 )
+from ._sram_placement import plan_joint_sram
 
 
 def _align_up(value, alignment):
@@ -520,7 +521,6 @@ class SRAMStorage:
             self._owner.allocate(build_resources)
 
     def _allocate_joint(self):
-        from ._sram_placement import plan_joint_sram
         from .kernel_runner import (
             PreparedSRAMResources,
             get_min_remaining_l1_for_device,
@@ -536,10 +536,25 @@ class SRAMStorage:
         budget_bytes = get_min_remaining_l1_for_device(
             self._backend.device, ttnn_api=self._api
         )
+
+        def pool_addressing(region):
+            if region.is_persistent:
+                return self._declarations[region.requirement_index].storage.addressing
+            if region.requirement.equal_base_groups:
+                return SRAMAddressing.UNIFORM
+            prepared = self._prepared_operations[region.operation_index]
+            if any(
+                config.sram_core_layouts
+                for config in prepared.compiled_kernel.cb_configs
+            ):
+                return SRAMAddressing.PER_CORE
+            return SRAMAddressing.UNIFORM
+
         plan = plan_joint_sram(
             self.requirements(),
             tuple(prepared.requirements for prepared in self._prepared_operations),
             budget_bytes=budget_bytes,
+            pool_addressing=pool_addressing,
         )
         operation_resources = [
             {"uniform": None, "cores": {}, "controls": []}
@@ -591,19 +606,13 @@ class SRAMStorage:
                     prepared = self._prepared_operations[region.operation_index]
                     requirement = region.requirement
                     arena_cores = tuple(
-                        sorted(
-                            {
-                                location.core
-                                for domain in requirement.address_domains
-                                for location in domain.locations
-                            }
-                        )
+                        sorted({location.core for location in requirement.locations})
                     )
                     arena_spec = _storage_spec(
                         self._api,
                         arena_cores,
-                        requirement.extent_bytes,
-                        requirement.addressing,
+                        requirement.max_extent_bytes,
+                        pool.addressing,
                     )
                     arena = create_view(pool_resource, arena_spec, placement.offset)
                     retain(arena, alias=True)
@@ -636,7 +645,7 @@ class SRAMStorage:
                             self._api,
                             arena_cores,
                             control_end,
-                            requirement.addressing,
+                            pool.addressing,
                         )
                         control_tensor = create_view(
                             pool_resource, control_spec, placement.offset

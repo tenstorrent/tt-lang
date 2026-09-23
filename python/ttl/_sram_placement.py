@@ -70,18 +70,59 @@ class JointSRAMPlan:
     metrics: JointSRAMMetrics
 
 
-Allocator = Callable[
-    [Sequence[int], Sequence[Tuple[int, int]], int, int, int, str, int],
-    Tuple[Sequence[int], int],
+LocationAllocator = Callable[
+    [
+        Sequence[Tuple[int, int]],
+        Sequence[int],
+        Sequence[int],
+        Sequence[int],
+        Sequence[Optional[int]],
+        Sequence[Tuple[int, int]],
+        Sequence[Sequence[int]],
+        Sequence[Sequence[int]],
+        int,
+        str,
+        int,
+    ],
+    Tuple[Sequence[int], Sequence[int]],
 ]
+PoolAddressing = Callable[[JointSRAMRegion], SRAMAddressing]
 
 
 def _locations(requirement: SRAMStorageRequirement) -> frozenset[SRAMLocation]:
-    return frozenset(
-        location
-        for domain in requirement.address_domains
-        for location in domain.locations
+    return frozenset(requirement.locations)
+
+
+def _default_pool_addressing(region: JointSRAMRegion) -> SRAMAddressing:
+    requirement = region.requirement
+    if not requirement.equal_base_groups:
+        return SRAMAddressing.PER_CORE
+    if (
+        len(requirement.equal_base_groups) == 1
+        and requirement.equal_base_groups[0].locations == requirement.locations
+    ):
+        return SRAMAddressing.UNIFORM
+    raise ValueError(
+        "current SRAM pool realization requires one all-location equal-base "
+        "group or independent locations"
     )
+
+
+def _validate_pool_addressing(
+    requirement: SRAMStorageRequirement, addressing: SRAMAddressing
+):
+    if not requirement.equal_base_groups:
+        return
+    if (
+        len(requirement.equal_base_groups) != 1
+        or requirement.equal_base_groups[0].locations != requirement.locations
+    ):
+        raise ValueError(
+            "current SRAM pool realization requires one all-location equal-base "
+            "group or independent locations"
+        )
+    if addressing is not SRAMAddressing.UNIFORM:
+        raise ValueError("equal-base storage requires a uniform owned pool")
 
 
 def _align_up(value: int, alignment: int) -> int:
@@ -122,30 +163,39 @@ def _connected_components(regions: Sequence[JointSRAMRegion]):
     return tuple(components)
 
 
-def _default_allocator(
+def _default_location_allocator(
+    locations,
+    owner_indices,
+    location_indices,
     region_bytes,
+    fixed_offsets,
     conflicts,
+    equal_offset_groups,
+    equal_capacity_groups,
     alignment_bytes,
-    payload_base_offset,
-    budget_bytes,
     strategy,
     exact_search_limit,
 ):
     from ttl._mlir_libs._ttlang import ttl_ir
 
-    return ttl_ir.allocate_sram_regions(
+    return ttl_ir.allocate_sram_location_regions(
+        list(locations),
+        list(owner_indices),
+        list(location_indices),
         list(region_bytes),
+        list(fixed_offsets),
         [tuple(edge) for edge in conflicts],
+        [list(group) for group in equal_offset_groups],
+        [list(group) for group in equal_capacity_groups],
         alignment_bytes,
-        payload_base_offset,
-        budget_bytes,
         strategy,
         exact_search_limit,
     )
 
 
 def _peak_bytes(
-    regions: Sequence[JointSRAMRegion], region_bytes: Callable[[JointSRAMRegion], int]
+    regions: Sequence[JointSRAMRegion],
+    region_bytes: Callable[[JointSRAMRegion, SRAMLocation], int],
 ) -> int:
     locations = sorted(
         {location for region in regions for location in _locations(region.requirement)}
@@ -160,14 +210,14 @@ def _peak_bytes(
     total = 0
     for location in locations:
         persistent_bytes = sum(
-            region_bytes(region)
+            region_bytes(region, location)
             for region in regions
             if region.is_persistent and location in _locations(region.requirement)
         )
         maximum_scratch_bytes = max(
             (
                 sum(
-                    region_bytes(region)
+                    region_bytes(region, location)
                     for region in regions
                     if region.operation_index == operation_index
                     and location in _locations(region.requirement)
@@ -187,7 +237,8 @@ def plan_joint_sram(
     budget_bytes: int,
     strategy: str = "multi-order-decreasing",
     exact_search_limit: int = 1_000_000,
-    allocator: Allocator = _default_allocator,
+    allocator: LocationAllocator = _default_location_allocator,
+    pool_addressing: PoolAddressing = _default_pool_addressing,
 ) -> JointSRAMPlan:
     """Place persistent declarations and serialized operation arenas.
 
@@ -249,39 +300,26 @@ def plan_joint_sram(
         if region.requirement.lifetime is not expected_lifetime:
             raise ValueError("joint SRAM requirement has an incompatible lifetime")
 
+    classified_regions = []
+    for region in regions:
+        addressing = pool_addressing(region)
+        if not isinstance(addressing, SRAMAddressing):
+            raise TypeError("pool addressing must be an SRAMAddressing value")
+        _validate_pool_addressing(region.requirement, addressing)
+        classified_regions.append((region, addressing))
+
     pools = []
     for addressing in SRAMAddressing:
         mode_regions = [
-            region for region in regions if region.requirement.addressing is addressing
+            region
+            for region, region_addressing in classified_regions
+            if region_addressing is addressing
         ]
         for component in _connected_components(mode_regions):
             component_regions = [mode_regions[index] for index in component]
             alignment_bytes = max(
                 region.requirement.alignment_bytes for region in component_regions
             )
-            region_bytes = [
-                _align_up(region.requirement.extent_bytes, alignment_bytes)
-                for region in component_regions
-            ]
-            conflicts = [
-                (left_index, right_index)
-                for left_index in range(len(component_regions))
-                for right_index in range(left_index + 1, len(component_regions))
-                if _regions_conflict(
-                    component_regions[left_index], component_regions[right_index]
-                )
-            ]
-            offsets, arena_bytes = allocator(
-                region_bytes,
-                conflicts,
-                alignment_bytes,
-                0,
-                budget_bytes,
-                strategy,
-                exact_search_limit,
-            )
-            if len(offsets) != len(component_regions):
-                raise RuntimeError("SRAM allocator returned the wrong placement count")
             locations = tuple(
                 sorted(
                     {
@@ -291,6 +329,88 @@ def plan_joint_sram(
                     }
                 )
             )
+            location_indices = {
+                location: index for index, location in enumerate(locations)
+            }
+            interval_regions = []
+            interval_locations = []
+            region_bytes = []
+            interval_by_region_location = {}
+            for region_index, region in enumerate(component_regions):
+                for location in region.requirement.locations:
+                    interval_index = len(region_bytes)
+                    interval_regions.append(region_index)
+                    interval_locations.append(location_indices[location])
+                    region_bytes.append(
+                        _align_up(
+                            region.requirement.at(location).extent_bytes,
+                            alignment_bytes,
+                        )
+                    )
+                    interval_by_region_location[(region_index, location)] = (
+                        interval_index
+                    )
+            conflicts = []
+            for left_index, left_region in enumerate(component_regions):
+                for right_index in range(left_index + 1, len(component_regions)):
+                    right_region = component_regions[right_index]
+                    if not _regions_conflict(left_region, right_region):
+                        continue
+                    for location in sorted(
+                        _locations(left_region.requirement).intersection(
+                            _locations(right_region.requirement)
+                        )
+                    ):
+                        conflicts.append(
+                            (
+                                interval_by_region_location[(left_index, location)],
+                                interval_by_region_location[(right_index, location)],
+                            )
+                        )
+            # A retained view has one offset for all of its shards. This is a
+            # backend constraint; semantic equal-base groups were validated
+            # before this realization is selected.
+            equal_offset_groups = [
+                [
+                    interval_by_region_location[(region_index, location)]
+                    for location in region.requirement.locations
+                ]
+                for region_index, region in enumerate(component_regions)
+                if len(region.requirement.locations) > 1
+            ]
+            interval_offsets, high_water_bytes = allocator(
+                [(0, budget_bytes) for _ in locations],
+                interval_regions,
+                interval_locations,
+                region_bytes,
+                [None] * len(region_bytes),
+                conflicts,
+                equal_offset_groups,
+                [list(range(len(locations)))] if len(locations) > 1 else [],
+                alignment_bytes,
+                strategy,
+                exact_search_limit,
+            )
+            if len(interval_offsets) != len(region_bytes) or len(
+                high_water_bytes
+            ) != len(locations):
+                raise RuntimeError("SRAM allocator returned the wrong placement count")
+            offsets = []
+            for region_index, region in enumerate(component_regions):
+                region_offsets = {
+                    int(
+                        interval_offsets[
+                            interval_by_region_location[(region_index, location)]
+                        ]
+                    )
+                    for location in region.requirement.locations
+                }
+                if len(region_offsets) != 1:
+                    raise RuntimeError(
+                        "current SRAM view realization requires one owner offset"
+                    )
+                offsets.append(region_offsets.pop())
+            arena_bytes = max((int(value) for value in high_water_bytes), default=0)
             pools.append(
                 JointSRAMPool(
                     addressing=addressing,
@@ -332,7 +452,8 @@ def plan_joint_sram(
             f"{budget_bytes}-byte budget"
         )
     required_peak_bytes = _peak_bytes(
-        regions, lambda region: region.requirement.extent_bytes
+        regions,
+        lambda region, location: region.requirement.at(location).extent_bytes,
     )
     fragmentation_bytes = reservation_bytes - required_peak_bytes
     if fragmentation_bytes < 0:
@@ -346,8 +467,8 @@ def plan_joint_sram(
         ),
         separate_planned_peak_bytes=_peak_bytes(
             regions,
-            lambda region: _align_up(
-                region.requirement.extent_bytes,
+            lambda region, location: _align_up(
+                region.requirement.at(location).extent_bytes,
                 region.requirement.alignment_bytes,
             ),
         ),

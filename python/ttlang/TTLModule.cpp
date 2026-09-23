@@ -115,6 +115,83 @@ void populateTTLModule(nb::module_ &m) {
       nb::arg("exact_search_limit") = 1000000,
       "Allocate aligned SRAM regions using a compiler allocation strategy.");
 
+  m.def(
+      "allocate_sram_location_regions",
+      [](const std::vector<std::array<uint64_t, 2>> &locations,
+         const std::vector<unsigned> &ownerIndices,
+         const std::vector<unsigned> &locationIndices,
+         const std::vector<uint64_t> &regionBytes,
+         const std::vector<std::optional<uint64_t>> &fixedOffsets,
+         const std::vector<std::array<unsigned, 2>> &conflicts,
+         const std::vector<std::vector<unsigned>> &equalOffsetGroups,
+         const std::vector<std::vector<unsigned>> &equalCapacityGroups,
+         uint64_t alignmentBytes, const std::string &strategy,
+         uint64_t exactSearchLimit) {
+        size_t regionCount = regionBytes.size();
+        if (ownerIndices.size() != regionCount ||
+            locationIndices.size() != regionCount ||
+            fixedOffsets.size() != regionCount) {
+          throw nb::value_error(
+              "SRAM location region fields must have equal lengths");
+        }
+        SRAMLocationAllocationProblem problem;
+        problem.alignmentBytes = alignmentBytes;
+        for (const auto &location : locations) {
+          problem.locations.push_back({location[0], location[1]});
+        }
+        for (size_t regionIndex = 0; regionIndex < regionCount; ++regionIndex) {
+          problem.regions.push_back(
+              {ownerIndices[regionIndex], locationIndices[regionIndex],
+               regionBytes[regionIndex], fixedOffsets[regionIndex]});
+        }
+        problem.conflicts = InterferenceGraph(regionCount);
+        for (const auto &conflict : conflicts) {
+          if (conflict[0] >= regionCount || conflict[1] >= regionCount ||
+              conflict[0] == conflict[1]) {
+            throw nb::value_error("invalid SRAM location conflict edge");
+          }
+          problem.conflicts.addInterference(conflict[0], conflict[1]);
+        }
+        for (const auto &regionIndices : equalOffsetGroups) {
+          problem.equalOffsetGroups.push_back({llvm::SmallVector<unsigned>(
+              regionIndices.begin(), regionIndices.end())});
+        }
+        for (const auto &locationIndices : equalCapacityGroups) {
+          problem.equalCapacityGroups.push_back({llvm::SmallVector<unsigned>(
+              locationIndices.begin(), locationIndices.end())});
+        }
+        std::string failureReason;
+        auto allocator =
+            createSRAMAllocator(strategy, {exactSearchLimit}, failureReason);
+        if (failed(allocator)) {
+          throw nb::value_error(failureReason.c_str());
+        }
+        std::optional<unsigned> failureRegion;
+        auto solution =
+            (*allocator)
+                ->allocateLocations(problem, failureRegion, failureReason);
+        if (failed(solution)) {
+          if (failureRegion) {
+            failureReason += " at region " + std::to_string(*failureRegion);
+          }
+          throw nb::value_error(failureReason.c_str());
+        }
+        return std::make_tuple(
+            std::vector<uint64_t>(solution->offsets.begin(),
+                                  solution->offsets.end()),
+            std::vector<uint64_t>(solution->highWaterBytes.begin(),
+                                  solution->highWaterBytes.end()));
+      },
+      nb::arg("locations"), nb::arg("owner_indices"),
+      nb::arg("location_indices"), nb::arg("region_bytes"),
+      nb::arg("fixed_offsets"), nb::arg("conflicts"),
+      nb::arg("equal_offset_groups"), nb::arg("equal_capacity_groups"),
+      nb::arg("alignment_bytes"),
+      nb::arg("strategy") = kMultiOrderDecreasingSRAMAllocator.str(),
+      nb::arg("exact_search_limit") = 1000000,
+      "Allocate SRAM owner-location intervals under address and capacity "
+      "constraints.");
+
   nb::enum_<LogicalKernelKind>(m, "LogicalKernelKind")
       .value("Compute", LogicalKernelKind::Compute)
       .value("DataMovement", LogicalKernelKind::DataMovement);

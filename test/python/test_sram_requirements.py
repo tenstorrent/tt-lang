@@ -12,10 +12,11 @@ from ttl._sram_requirements import (
     PersistentSRAMDeclaration,
     PreparedSRAMOperation,
     SRAMArenaBinding,
-    SRAMAddressDomain,
     SRAMAddressing,
+    SRAMEqualBaseGroup,
     SRAMLifetime,
     SRAMLocation,
+    SRAMLocationRequirement,
     SRAMOwner,
     SRAMOwnerKind,
     SRAMOwnership,
@@ -163,7 +164,7 @@ def test_uniform_arena_records_each_dfb_use_once():
     assert len(operation.requirements) == 1
     requirement = operation.requirements[0]
     assert requirement.owner == SRAMOwner(SRAMOwnerKind.COMPILER_ARENA, 0)
-    assert requirement.extent_bytes == 6208
+    assert requirement.max_extent_bytes == 6208
     assert requirement.ownership is SRAMOwnership.MOVABLE
     assert requirement.lifetime is SRAMLifetime.INVOCATION
     assert operation.arena_bytes_by_core() == {(0, 0): 6208, (1, 0): 6208}
@@ -192,8 +193,8 @@ def test_fixed_tensor_and_dfb_aliases_share_one_requirement():
     assert len(operation.requirements) == 1
     requirement = operation.requirements[0]
     assert requirement.owner == SRAMOwner(SRAMOwnerKind.TENSOR_ARGUMENT, 0)
-    assert requirement.extent_bytes == 4096
-    assert requirement.fixed_bases == (0x4000,)
+    assert requirement.max_extent_bytes == 4096
+    assert {value.fixed_base for value in requirement.location_requirements} == {0x4000}
     assert requirement.ownership is SRAMOwnership.FIXED
     assert len(operation.uses) == 2
     assert {use.requirement_index for use in operation.uses} == {0}
@@ -214,8 +215,8 @@ def test_fixed_tensor_requirement_covers_unreferenced_storage():
     )
 
     requirement = operation.requirements[0]
-    assert requirement.extent_bytes == 6144
-    assert len(requirement.address_domains[0].locations) == 3
+    assert requirement.max_extent_bytes == 6144
+    assert len(requirement.equal_base_groups[0].locations) == 3
     assert operation.uses[0].byte_size == 2048
 
 
@@ -246,11 +247,12 @@ def test_compiler_arena_and_fixed_tensor_have_distinct_owners():
         SRAMOwnerKind.COMPILER_ARENA,
         SRAMOwnerKind.TENSOR_ARGUMENT,
     ]
-    assert operation.requirements[0].extent_bytes == 8
-    assert operation.requirements[1].extent_bytes == 2048
+    assert operation.requirements[0].max_extent_bytes == 8
+    assert operation.requirements[1].max_extent_bytes == 2048
+    assert not operation.requirements[0].location_requirements[0].payload_present
 
 
-def test_per_core_tensor_has_one_fixed_domain_per_location():
+def test_per_core_tensor_has_one_fixed_interval_per_location():
     tensor = Tensor(0x1000, per_core=True, devices=((0, 0), (1, 0)))
     operation = prepare_sram_operation(
         name="per_core",
@@ -261,9 +263,13 @@ def test_per_core_tensor_has_one_fixed_domain_per_location():
     )
 
     requirement = operation.requirements[0]
-    assert len(requirement.address_domains) == 4
-    assert all(len(domain.locations) == 1 for domain in requirement.address_domains)
-    assert requirement.fixed_bases == (0x1000, 0x2000, 0x11000, 0x12000)
+    assert requirement.equal_base_groups == ()
+    assert tuple(value.fixed_base for value in requirement.location_requirements) == (
+        0x1000,
+        0x2000,
+        0x11000,
+        0x12000,
+    )
 
 
 def test_per_core_compiler_layout_preserves_independent_arena_extents():
@@ -284,7 +290,7 @@ def test_per_core_compiler_layout_preserves_independent_arena_extents():
     )
 
     assert operation.arena_bytes_by_core() == {(0, 0): 2112, (1, 0): 64}
-    assert [requirement.extent_bytes for requirement in operation.requirements] == [
+    assert [requirement.max_extent_bytes for requirement in operation.requirements] == [
         2112,
         64,
     ]
@@ -295,11 +301,42 @@ def test_per_core_compiler_layout_preserves_independent_arena_extents():
     ]
 
 
+def test_equal_base_group_preserves_location_extents_and_payload_presence():
+    config = replace(
+        compiler_config(0, 0, 64, 2048),
+        sram_core_layouts=(
+            SRAMCoreLayout((0, 0), 64, True, 2112, 0),
+            SRAMCoreLayout((1, 0), 0, False, 64, 0),
+        ),
+    )
+
+    operation = prepare_sram_operation(
+        name="variable_capacity",
+        tensors=(),
+        configs=(config,),
+        cores=((0, 0), (1, 0)),
+        ttnn_api=TTNN,
+    )
+
+    requirement = operation.requirements[0]
+    assert [
+        (value.extent_bytes, value.payload_present)
+        for value in requirement.location_requirements
+    ] == [(2112, True), (64, False)]
+    assert requirement.equal_base_groups == (SRAMEqualBaseGroup(requirement.locations),)
+    assert [use.locations for use in operation.uses] == [
+        requirement.locations,
+        (requirement.locations[0],),
+    ]
+
+
 @pytest.mark.parametrize(
-    ("addressing", "domain_count"),
-    [(SRAMAddressing.UNIFORM, 1), (SRAMAddressing.PER_CORE, 2)],
+    ("addressing", "equal_group_count"),
+    [(SRAMAddressing.UNIFORM, 1), (SRAMAddressing.PER_CORE, 0)],
 )
-def test_persistent_declaration_uses_common_requirement_model(addressing, domain_count):
+def test_persistent_declaration_uses_common_requirement_model(
+    addressing, equal_group_count
+):
     storage = prepare_persistent_storage(
         (
             PersistentSRAMDeclaration(
@@ -313,34 +350,37 @@ def test_persistent_declaration_uses_common_requirement_model(addressing, domain
 
     requirement = storage.requirements[0]
     assert requirement.owner == SRAMOwner(SRAMOwnerKind.PERSISTENT_DECLARATION, 0)
-    assert requirement.extent_bytes == 4096
+    assert requirement.max_extent_bytes == 4096
     assert requirement.ownership is SRAMOwnership.MOVABLE
     assert requirement.lifetime is SRAMLifetime.PERSISTENT
-    assert len(requirement.address_domains) == domain_count
+    assert len(requirement.equal_base_groups) == equal_group_count
 
 
-def test_requirement_rejects_overlapping_domains_and_misaligned_base():
+def test_requirement_rejects_overlapping_equal_groups_and_misaligned_base():
     location = SRAMLocation((), (0, 0))
-    domain = SRAMAddressDomain((location,))
+    other_location = SRAMLocation((), (1, 0))
+    locations = (
+        SRAMLocationRequirement(location, 32, True, 0x1000),
+        SRAMLocationRequirement(other_location, 32, True, 0x1000),
+    )
+    group = SRAMEqualBaseGroup((location, other_location))
     with pytest.raises(ValueError, match="must be disjoint"):
         SRAMStorageRequirement(
             SRAMOwner(SRAMOwnerKind.TENSOR_ARGUMENT, 0),
-            32,
+            locations,
             16,
-            (domain, domain),
+            (group, group),
             SRAMOwnership.FIXED,
             SRAMLifetime.EXTERNAL,
-            (0x1000, 0x2000),
         )
     with pytest.raises(ValueError, match="does not satisfy"):
         SRAMStorageRequirement(
             SRAMOwner(SRAMOwnerKind.TENSOR_ARGUMENT, 0),
-            32,
+            (SRAMLocationRequirement(location, 32, True, 0x1001),),
             16,
-            (domain,),
+            (),
             SRAMOwnership.FIXED,
             SRAMLifetime.EXTERNAL,
-            (0x1001,),
         )
 
 
@@ -350,9 +390,9 @@ def test_operation_rejects_unbound_and_overlapping_arenas():
     requirements = tuple(
         SRAMStorageRequirement(
             SRAMOwner(SRAMOwnerKind.COMPILER_ARENA, index),
-            64,
+            (SRAMLocationRequirement(location, 64, True),),
             16,
-            (SRAMAddressDomain((location,)),),
+            (),
             SRAMOwnership.MOVABLE,
             SRAMLifetime.INVOCATION,
         )
@@ -369,7 +409,7 @@ def test_operation_rejects_unbound_and_overlapping_arenas():
     overlapping = tuple(
         replace(
             requirement,
-            address_domains=(SRAMAddressDomain((first_location,)),),
+            location_requirements=(SRAMLocationRequirement(first_location, 64, True),),
         )
         for requirement in requirements
     )
@@ -390,12 +430,11 @@ def test_operation_rejects_use_outside_extent_and_domain():
     other_location = SRAMLocation((), (1, 0))
     requirement = SRAMStorageRequirement(
         SRAMOwner(SRAMOwnerKind.TENSOR_ARGUMENT, 0),
-        64,
+        (SRAMLocationRequirement(location, 64, True, 0x1000),),
         16,
-        (SRAMAddressDomain((location,)),),
+        (),
         SRAMOwnership.FIXED,
         SRAMLifetime.EXTERNAL,
-        (0x1000,),
     )
     outside_extent = SRAMUse(
         SRAMUseKind.DFB_PAYLOAD,
@@ -412,6 +451,30 @@ def test_operation_rejects_use_outside_extent_and_domain():
     outside_domain = replace(outside_extent, byte_offset=0, locations=(other_location,))
     with pytest.raises(ValueError, match="outside its requirement"):
         PreparedSRAMOperation("domain", (requirement,), (outside_domain,), ())
+
+
+def test_operation_rejects_payload_use_on_control_only_location():
+    location = SRAMLocation((), (0, 0))
+    requirement = SRAMStorageRequirement(
+        SRAMOwner(SRAMOwnerKind.TENSOR_ARGUMENT, 0),
+        (SRAMLocationRequirement(location, 64, False, 0x1000),),
+        16,
+        (),
+        SRAMOwnership.FIXED,
+        SRAMLifetime.EXTERNAL,
+    )
+    payload_use = SRAMUse(
+        SRAMUseKind.DFB_PAYLOAD,
+        0,
+        0,
+        0,
+        0,
+        32,
+        (location,),
+    )
+
+    with pytest.raises(ValueError, match="has no storage"):
+        PreparedSRAMOperation("control_only", (requirement,), (payload_use,), ())
 
 
 def test_per_core_tensor_requires_device_coordinates():

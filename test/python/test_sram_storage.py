@@ -17,9 +17,10 @@ from ttl.sram import SRAMStorage, _storage_spec
 from ttl._sram_requirements import (
     PreparedSRAMOperation,
     SRAMArenaBinding,
-    SRAMAddressDomain,
     SRAMAddressing,
+    SRAMEqualBaseGroup,
     SRAMLocation,
+    SRAMLocationRequirement,
     SRAMLifetime,
     SRAMOwner,
     SRAMOwnerKind,
@@ -28,7 +29,6 @@ from ttl._sram_requirements import (
 )
 from ttlang_test_utils import to_dram
 from utils.correctness import assert_allclose
-
 
 DEVICE_ADDRESSING_MODES = (
     "uniform",
@@ -244,12 +244,14 @@ def compiler_arena_requirements(name, extent_bytes=2048):
     )
     requirement = SRAMStorageRequirement(
         owner=SRAMOwner(SRAMOwnerKind.COMPILER_ARENA, 0),
-        extent_bytes=extent_bytes,
+        location_requirements=tuple(
+            SRAMLocationRequirement(location, extent_bytes, True)
+            for location in locations
+        ),
         alignment_bytes=16,
-        address_domains=(SRAMAddressDomain(locations),),
+        equal_base_groups=(SRAMEqualBaseGroup(locations),),
         ownership=SRAMOwnership.MOVABLE,
         lifetime=SRAMLifetime.INVOCATION,
-        addressing=SRAMAddressing.UNIFORM,
     )
     return PreparedSRAMOperation(
         name,
@@ -303,20 +305,16 @@ def measure_separate_reservation(device, declaration_options, prepared_operation
         for requirement in prepared.requirements.requirements:
             if requirement.owner.kind is not SRAMOwnerKind.COMPILER_ARENA:
                 continue
-            cores = tuple(
-                sorted(
-                    {
-                        location.core
-                        for domain in requirement.address_domains
-                        for location in domain.locations
-                    }
-                )
-            )
+            cores = tuple(sorted({location.core for location in requirement.locations}))
             spec = _storage_spec(
                 ttnn,
                 cores,
-                requirement.extent_bytes,
-                requirement.addressing,
+                requirement.max_extent_bytes,
+                (
+                    SRAMAddressing.UNIFORM
+                    if requirement.equal_base_groups
+                    else SRAMAddressing.PER_CORE
+                ),
             )
             arena = ttnn.empty(
                 spec.shape,
@@ -448,12 +446,13 @@ def test_joint_allocation_publishes_views_and_operation_binding(runtime):
     )
     requirement = SRAMStorageRequirement(
         owner=SRAMOwner(SRAMOwnerKind.COMPILER_ARENA, 0),
-        extent_bytes=2048,
+        location_requirements=tuple(
+            SRAMLocationRequirement(location, 2048, True) for location in locations
+        ),
         alignment_bytes=16,
-        address_domains=(SRAMAddressDomain(locations),),
+        equal_base_groups=(SRAMEqualBaseGroup(locations),),
         ownership=SRAMOwnership.MOVABLE,
         lifetime=SRAMLifetime.INVOCATION,
-        addressing=SRAMAddressing.UNIFORM,
     )
     operation_requirements = PreparedSRAMOperation(
         "prepared",
@@ -519,9 +518,11 @@ def test_joint_allocation_rolls_back_pool_and_views(runtime):
     )
     requirement = SRAMStorageRequirement(
         owner=SRAMOwner(SRAMOwnerKind.COMPILER_ARENA, 0),
-        extent_bytes=2048,
+        location_requirements=tuple(
+            SRAMLocationRequirement(location, 2048, True) for location in locations
+        ),
         alignment_bytes=16,
-        address_domains=(SRAMAddressDomain(locations),),
+        equal_base_groups=(SRAMEqualBaseGroup(locations),),
         ownership=SRAMOwnership.MOVABLE,
         lifetime=SRAMLifetime.INVOCATION,
     )
@@ -577,9 +578,11 @@ def test_joint_allocation_rolls_back_when_program_preparation_fails(runtime):
     )
     requirement = SRAMStorageRequirement(
         owner=SRAMOwner(SRAMOwnerKind.COMPILER_ARENA, 0),
-        extent_bytes=2048,
+        location_requirements=tuple(
+            SRAMLocationRequirement(location, 2048, True) for location in locations
+        ),
         alignment_bytes=16,
-        address_domains=(SRAMAddressDomain(locations),),
+        equal_base_groups=(SRAMEqualBaseGroup(locations),),
         ownership=SRAMOwnership.MOVABLE,
         lifetime=SRAMLifetime.INVOCATION,
     )
@@ -686,7 +689,9 @@ def test_joint_data_overflow_precedes_program_preparation(
     state = declare(storage)
     operation, _ = preparable_operation("overflow", 2048, prepare_program)
     storage.prepare_operation(operation, state)
-    with pytest.raises(ValueError, match="exceeds SRAM budget"):
+    with pytest.raises(
+        ValueError, match="no placement offset fits every participating location"
+    ):
         storage.allocate()
 
     assert program_calls == []
@@ -813,11 +818,11 @@ def test_persistent_declarations_export_movable_requirements(runtime, addressing
     prepared = storage.requirements()
     requirement = prepared.requirements[0]
     assert requirement.owner == SRAMOwner(SRAMOwnerKind.PERSISTENT_DECLARATION, 0)
-    assert requirement.extent_bytes == 4096
+    assert requirement.max_extent_bytes == 4096
     assert requirement.ownership is SRAMOwnership.MOVABLE
     assert requirement.lifetime is SRAMLifetime.PERSISTENT
-    expected_domain_count = 1 if addressing == "uniform" else 2
-    assert len(requirement.address_domains) == expected_domain_count
+    expected_group_count = 1 if addressing == "uniform" else 0
+    assert len(requirement.equal_base_groups) == expected_group_count
     storage.close()
 
 
