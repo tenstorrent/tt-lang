@@ -8770,3 +8770,63 @@ def test_emit_runner_source_preserves_fabric_binding_metadata(monkeypatch):
     assert "kernel_fabric_routes=KERNEL_FABRIC_ROUTES" in source
     assert "KERNEL_FABRIC_RUNTIME_ARG_BASE_COMMON_INDICES = [0]" in source
     compile(source, "<generated-runner>", "exec")
+
+
+@pytest.mark.parametrize(
+    "requested_bytes, reserved_bytes", [(64, 0), (64, 63), (64, 64), (64, 96), (8, 64)]
+)
+def test_sram_report_reservation_accounting(capsys, requested_bytes, reserved_bytes):
+    import json
+    import ttl.kernel_runner as runner
+
+    arena = SimpleNamespace(
+        buffer_aligned_page_size=lambda: reserved_bytes,
+        buffer_num_pages=lambda: 3,
+    )
+    cores = SimpleNamespace(num_cores=lambda: 3)
+    if reserved_bytes < requested_bytes:
+        with pytest.raises(RuntimeError, match="smaller than"):
+            runner._print_sram_runtime_report(
+                arena, cores, requested_bytes, "test_operation"
+            )
+        assert "ttlang-sram-report:" not in capsys.readouterr().err
+        return
+    runner._print_sram_runtime_report(arena, cores, requested_bytes, "test_operation")
+    record = json.loads(capsys.readouterr().err.split("ttlang-sram-report: ", 1)[1])
+    assert record["reserved_bytes_on_reference_device"] == reserved_bytes * 3
+    assert (
+        record["reservation_padding_bytes_per_node"] == reserved_bytes - requested_bytes
+    )
+    assert record["requested_bytes_per_node"] == requested_bytes
+    assert record["operation"] == "test_operation"
+
+
+@pytest.mark.parametrize(
+    "node_count, page_count", [(0, 0), (3, 0), (3, 1), (3, 2), (3, 4)]
+)
+def test_sram_report_requires_uniform_pages(node_count, page_count):
+    import ttl.kernel_runner as runner
+
+    arena = SimpleNamespace(
+        buffer_aligned_page_size=lambda: 64,
+        buffer_num_pages=lambda: page_count,
+    )
+    with pytest.raises(RuntimeError, match="uniform arena pages"):
+        runner._print_sram_runtime_report(
+            arena, SimpleNamespace(num_cores=lambda: node_count), 64, "test"
+        )
+
+
+def test_sram_report_accounts_for_multiple_pages_per_node(capsys):
+    import json
+    import ttl.kernel_runner as runner
+
+    arena = SimpleNamespace(
+        buffer_aligned_page_size=lambda: 64,
+        buffer_num_pages=lambda: 6,
+    )
+    runner._print_sram_runtime_report(
+        arena, SimpleNamespace(num_cores=lambda: 3), 96, "test"
+    )
+    record = json.loads(capsys.readouterr().err.split("ttlang-sram-report: ", 1)[1])
+    assert record["reserved_bytes_per_node"] == 128

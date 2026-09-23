@@ -25,7 +25,7 @@ LogicalResult allocateSRAM(
     ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     uint64_t budgetOverride, bool reuseStorage,
     llvm::StringRef allocationStrategy, uint64_t exactSearchLimit,
-    const DFBConcurrentKernelLivenessAnalysis &liveness,
+    bool reportAllocation, const DFBConcurrentKernelLivenessAnalysis &liveness,
     llvm::ArrayRef<DFBStaticConfigurationConflict> staticConfigurationConflicts,
     bool unsafeAssumeAllocationGroups,
     llvm::SmallVectorImpl<DFBAssumedAllocationGroup> &assumedAllocationGroups);

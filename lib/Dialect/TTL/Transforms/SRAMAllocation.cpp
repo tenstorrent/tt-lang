@@ -6,6 +6,8 @@
 #include "DFBAnalysisFailure.h"
 #include "DFBConcurrentKernelLivenessAnalysis.h"
 #include "DFBPhysicalAllocationPlan.h"
+#include "SRAMAllocationPlan.h"
+#include "SRAMAllocationReport.h"
 #include "SRAMAllocator.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/DFBLogicalIdentityAnalysis.h"
@@ -20,41 +22,12 @@
 
 namespace mlir::tt::ttl {
 namespace {
-constexpr uint64_t kControlWordCount = 2;
-constexpr uint64_t kControlRecordBytes = kControlWordCount * sizeof(uint32_t);
-
-struct SRAMRegion {
-  int64_t logicalId;
-  CircularBufferType type;
-  TensorBackingAttr tensorBacking;
-  DFBAllocationGroupAttr allocationGroup;
-  LaunchNodeDomain launchDomain;
-  uint64_t pages;
-  uint64_t pageBytes;
-  uint64_t capacityPages;
-  uint64_t allocationBytes;
-  unsigned storageIndex = 0;
-  SmallVector<BindCBOp> declarations;
-};
-
-struct SRAMStorage {
-  uint64_t capacityPages = 0;
-  uint64_t allocationBytes = 0;
-  uint64_t offset = 0;
-  uint64_t stateOffset = 0;
-  SmallVector<unsigned> members;
-};
-
-struct SRAMAllocationPlan {
-  SmallVector<SRAMRegion> regions;
-  SmallVector<SRAMStorage> storage;
-  uint64_t arenaBytes;
-};
 
 static FailureOr<SRAMAllocationPlan>
 planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
             uint64_t budget, bool reuseStorage,
             llvm::StringRef allocationStrategy, uint64_t exactSearchLimit,
+            bool reportAllocation,
             const DFBConcurrentKernelLivenessAnalysis &liveness) {
   std::string targetFailure;
   FailureOr<uint64_t> alignment =
@@ -204,7 +177,7 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
   }
   // Only a validated allocation group may transfer control-state ownership.
   std::optional<uint64_t> unalignedControlBytes = llvm::checkedMulUnsigned(
-      static_cast<uint64_t>(storage.size()), kControlRecordBytes);
+      static_cast<uint64_t>(storage.size()), kSRAMControlRecordBytes);
   FailureOr<uint64_t> controlBytes =
       unalignedControlBytes
           ? getL1AllocationSizeBytes(module, *unalignedControlBytes)
@@ -222,7 +195,7 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
   for (unsigned storageIndex = 0; storageIndex < storage.size();
        ++storageIndex) {
     SRAMStorage &allocation = storage[storageIndex];
-    allocation.stateOffset = storageIndex * kControlRecordBytes;
+    allocation.stateOffset = storageIndex * kSRAMControlRecordBytes;
     if (allocation.allocationBytes == 0) {
       continue;
     }
@@ -297,7 +270,13 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     storage[storageIndex].offset = solution->offsets[allocationRegionIndex];
   }
   uint64_t arenaBytes = std::max(*controlBytes, solution->arenaBytes);
-  return SRAMAllocationPlan{std::move(plan), std::move(storage), arenaBytes};
+  SRAMAllocationPlan result{std::move(plan), std::move(storage), arenaBytes};
+  if (reportAllocation) {
+    printSRAMAllocationReport(llvm::errs(), result, liveness, conflicts,
+                              allocationStrategy, reuseStorage, *alignment,
+                              *controlBytes, budget);
+  }
+  return result;
 }
 } // namespace
 
@@ -305,7 +284,7 @@ LogicalResult allocateSRAM(
     ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     uint64_t budgetOverride, bool reuseStorage,
     llvm::StringRef allocationStrategy, uint64_t exactSearchLimit,
-    const DFBConcurrentKernelLivenessAnalysis &liveness,
+    bool reportAllocation, const DFBConcurrentKernelLivenessAnalysis &liveness,
     ArrayRef<DFBStaticConfigurationConflict> staticConfigurationConflicts,
     bool unsafeAssumeAllocationGroups,
     SmallVectorImpl<DFBAssumedAllocationGroup> &assumedAllocationGroups) {
@@ -335,7 +314,7 @@ LogicalResult allocateSRAM(
       budgetOverride ? std::optional<uint64_t>(budgetOverride) : std::nullopt);
   FailureOr<SRAMAllocationPlan> maybePlan =
       planRegions(module, identities, budget, reuseStorage, allocationStrategy,
-                  exactSearchLimit, liveness);
+                  exactSearchLimit, reportAllocation, liveness);
   if (failed(maybePlan)) {
     return failure();
   }
