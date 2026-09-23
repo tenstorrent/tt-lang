@@ -75,9 +75,7 @@ def test_aliased_tensor_arguments_use_first_global_index(monkeypatch):
 
     tensor_indices = {
         tensor_index
-        for kernel_indices in _compiled_kernel(
-            copy_aliased_input
-        ).kernel_tensor_indices
+        for kernel_indices in _compiled_kernel(copy_aliased_input).kernel_tensor_indices
         for tensor_index in kernel_indices
     }
     assert 0 in tensor_indices

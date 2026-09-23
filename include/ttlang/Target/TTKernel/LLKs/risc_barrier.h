@@ -74,8 +74,7 @@ storeSynchronizationWord(volatile uint32_t tt_l1_ptr *synchronizationWord,
 
 FORCE_INLINE volatile uint32_t tt_l1_ptr *
 riscBarrierSynchronizationWord(uint32_t participant, uint32_t word0,
-                               uint32_t word1, uint32_t word2,
-                               uint32_t word3) {
+                               uint32_t word1, uint32_t word2, uint32_t word3) {
   uintptr_t address = word0;
   if (participant == 1) {
     address = word1;
@@ -87,13 +86,11 @@ riscBarrierSynchronizationWord(uint32_t participant, uint32_t word0,
   return reinterpret_cast<volatile uint32_t tt_l1_ptr *>(address);
 }
 
-FORCE_INLINE bool riscBarrierParticipantsHaveState(uint32_t state,
-                                                   uint32_t word0,
-                                                   uint32_t word1,
-                                                   uint32_t word2,
-                                                   uint32_t word3) {
-  for (uint32_t participant = 0;
-       participant < kRiscBarrierParticipantCount; ++participant) {
+FORCE_INLINE bool
+riscBarrierParticipantsHaveState(uint32_t state, uint32_t word0, uint32_t word1,
+                                 uint32_t word2, uint32_t word3) {
+  for (uint32_t participant = 0; participant < kRiscBarrierParticipantCount;
+       ++participant) {
     if (loadSynchronizationWord(riscBarrierSynchronizationWord(
             participant, word0, word1, word2, word3)) != state) {
       return false;
@@ -102,16 +99,14 @@ FORCE_INLINE bool riscBarrierParticipantsHaveState(uint32_t state,
   return true;
 }
 
-FORCE_INLINE void riscBarrierSetParticipantStates(uint32_t state,
-                                                  uint32_t word0,
-                                                  uint32_t word1,
-                                                  uint32_t word2,
-                                                  uint32_t word3) {
-  for (uint32_t participant = 0;
-       participant < kRiscBarrierParticipantCount; ++participant) {
-    storeSynchronizationWord(riscBarrierSynchronizationWord(
-                                 participant, word0, word1, word2, word3),
-                             state);
+FORCE_INLINE void
+riscBarrierSetParticipantStates(uint32_t state, uint32_t word0, uint32_t word1,
+                                uint32_t word2, uint32_t word3) {
+  for (uint32_t participant = 0; participant < kRiscBarrierParticipantCount;
+       ++participant) {
+    storeSynchronizationWord(
+        riscBarrierSynchronizationWord(participant, word0, word1, word2, word3),
+        state);
   }
 }
 
@@ -131,10 +126,8 @@ static constexpr uint32_t riscBarrierParticipantWord() {
 
 FORCE_INLINE void riscBarrierEnter(uint32_t word0, uint32_t word1,
                                    uint32_t word2, uint32_t word3) {
-#if defined(TTLANG_RISC_BARRIER_DM0) ||                                       \
-    defined(TTLANG_RISC_BARRIER_UNPACK) ||                                    \
-    defined(TTLANG_RISC_BARRIER_MATH) ||                                      \
-    defined(TTLANG_RISC_BARRIER_PACK)
+#if defined(TTLANG_RISC_BARRIER_DM0) || defined(TTLANG_RISC_BARRIER_UNPACK) || \
+    defined(TTLANG_RISC_BARRIER_MATH) || defined(TTLANG_RISC_BARRIER_PACK)
   constexpr uint32_t word = riscBarrierParticipantWord();
   auto *state =
       riscBarrierSynchronizationWord(word, word0, word1, word2, word3);
@@ -152,10 +145,8 @@ FORCE_INLINE void riscBarrierEnter(uint32_t word0, uint32_t word1,
 
 FORCE_INLINE void riscBarrierExit(uint32_t word0, uint32_t word1,
                                   uint32_t word2, uint32_t word3) {
-#if defined(TTLANG_RISC_BARRIER_DM0) ||                                       \
-    defined(TTLANG_RISC_BARRIER_UNPACK) ||                                    \
-    defined(TTLANG_RISC_BARRIER_MATH) ||                                      \
-    defined(TTLANG_RISC_BARRIER_PACK)
+#if defined(TTLANG_RISC_BARRIER_DM0) || defined(TTLANG_RISC_BARRIER_UNPACK) || \
+    defined(TTLANG_RISC_BARRIER_MATH) || defined(TTLANG_RISC_BARRIER_PACK)
   constexpr uint32_t word = riscBarrierParticipantWord();
   auto *state =
       riscBarrierSynchronizationWord(word, word0, word1, word2, word3);
@@ -166,8 +157,8 @@ FORCE_INLINE void riscBarrierExit(uint32_t word0, uint32_t word1,
   while (!riscBarrierParticipantsHaveState(kRiscBarrierExitArrived, word0,
                                            word1, word2, word3)) {
   }
-  riscBarrierSetParticipantStates(kRiscBarrierExitReleased, word0, word1,
-                                  word2, word3);
+  riscBarrierSetParticipantStates(kRiscBarrierExitReleased, word0, word1, word2,
+                                  word3);
 #endif
 }
 

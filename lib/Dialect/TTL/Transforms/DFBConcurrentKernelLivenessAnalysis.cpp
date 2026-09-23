@@ -4987,11 +4987,11 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
     const OrderedLifecycleBoundary *terminalBoundary =
         boundaryInterval < boundaries.size() ? &boundaries[boundaryInterval]
                                              : nullptr;
-    bool hasLaterAccesses = llvm::any_of(
-        ArrayRef(epochAccesses).drop_front(boundaryInterval + 1),
-        [](ArrayRef<const DFBAccessOccurrence *> accesses) {
-          return !accesses.empty();
-        });
+    bool hasLaterAccesses =
+        llvm::any_of(ArrayRef(epochAccesses).drop_front(boundaryInterval + 1),
+                     [](ArrayRef<const DFBAccessOccurrence *> accesses) {
+                       return !accesses.empty();
+                     });
     // A reconfiguration may discard state only after this DFB's final access.
     bool terminatesDFBState =
         terminalBoundary &&

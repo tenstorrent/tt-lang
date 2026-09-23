@@ -208,8 +208,6 @@ def test_captured_kernel_selectors_preserve_global_roles():
     assert canonical_spec.operation_identity != pipe_source_spec.operation_identity
 
 
-
-
 def test_module_global_kernel_kind_changes_operation_identity(monkeypatch):
     """Operation identity includes a referenced module-global selector."""
 
