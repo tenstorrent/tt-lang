@@ -54,7 +54,6 @@ def test_independent_core_layouts_and_inactive_payload():
             "outside",
         ),
         ({"payload_offset": 64}, "zero offset"),
-        ({"domain": 0}, "share one layout"),
         ({"domain": -1}, "nonnegative"),
     ],
 )

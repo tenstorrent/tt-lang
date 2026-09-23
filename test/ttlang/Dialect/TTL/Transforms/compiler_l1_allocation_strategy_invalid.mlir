@@ -1,7 +1,7 @@
 // Verifies that an unknown compiler-managed SRAM allocation strategy is rejected.
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=unknown})' --verify-diagnostics
 
-// expected-error @below {{unknown compiler-l1 allocation strategy 'unknown'; expected multi-order-decreasing, first-fit-decreasing, best-fit-decreasing, or exact}}
+// expected-error @below {{unknown SRAM allocation strategy 'unknown'; expected multi-order-decreasing, first-fit-decreasing, best-fit-decreasing, or exact}}
 module attributes {ttl.launch_grid = [1, 1]} {
   func.func @unknown_strategy()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,

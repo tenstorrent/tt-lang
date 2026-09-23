@@ -411,12 +411,23 @@ def _prepared_sram_requirements_match(expected, actual):
         if expected_requirement.owner != actual_requirement.owner:
             return False
         if expected_requirement.owner.kind is SRAMOwnerKind.TENSOR_ARGUMENT:
-            if len(expected_requirement.fixed_bases) != len(
-                actual_requirement.fixed_bases
-            ):
+            if expected_requirement.locations != actual_requirement.locations:
                 return False
+            actual_locations = {
+                location_requirement.location: location_requirement
+                for location_requirement in actual_requirement.location_requirements
+            }
             expected_requirement = replace(
-                expected_requirement, fixed_bases=actual_requirement.fixed_bases
+                expected_requirement,
+                location_requirements=tuple(
+                    replace(
+                        location_requirement,
+                        fixed_base=actual_locations[
+                            location_requirement.location
+                        ].fixed_base,
+                    )
+                    for location_requirement in expected_requirement.location_requirements
+                ),
             )
         normalized_requirements.append(expected_requirement)
     return replace(expected, requirements=tuple(normalized_requirements)) == actual
@@ -4651,7 +4662,7 @@ def _run_kernel_on_device_impl(
             coordinates = arena_binding.cores
             size = prepared_sram.requirements[
                 arena_binding.requirement_index
-            ].extent_bytes
+            ].max_extent_bytes
             domain_ranges = _make_singleton_core_ranges(coordinates)
             arena_device = device if device is not None else _first_device(tensors)
             arena = _allocate_l1_sharded_storage_tensor(
@@ -4676,7 +4687,7 @@ def _run_kernel_on_device_impl(
             raise RuntimeError("uniform compiler SRAM requires one arena")
         compiler_l1_arena_bytes = prepared_sram.requirements[
             prepared_sram.arenas[0].requirement_index
-        ].extent_bytes
+        ].max_extent_bytes
         compiler_l1_arena = _allocate_l1_sharded_storage_tensor(
             core_ranges,
             compiler_l1_arena_bytes,

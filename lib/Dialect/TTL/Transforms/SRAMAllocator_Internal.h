@@ -16,6 +16,15 @@ FailureOr<SRAMAllocationSolution>
 allocateGreedy(const SRAMAllocationProblem &problem,
                GreedyGapSelection selection, std::string &failureReason);
 
+FailureOr<SRAMLocationAllocationSolution>
+allocateLocationsGreedy(const SRAMLocationAllocationProblem &problem,
+                        GreedyGapSelection selection, bool degreeAware,
+                        std::string &failureReason);
+
+FailureOr<SRAMLocationAllocationSolution>
+allocateLocationsExactly(const SRAMLocationAllocationProblem &problem,
+                         uint64_t searchWorkLimit, std::string &failureReason);
+
 std::unique_ptr<SRAMAllocator> createFirstFitDecreasingSRAMAllocator();
 std::unique_ptr<SRAMAllocator> createBestFitDecreasingSRAMAllocator();
 std::unique_ptr<SRAMAllocator> createMultiOrderDecreasingSRAMAllocator();

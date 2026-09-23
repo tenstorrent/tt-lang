@@ -372,6 +372,13 @@ public:
     return allocateExactly(problem, searchWorkLimit, failureReason);
   }
 
+  FailureOr<SRAMLocationAllocationSolution>
+  allocateLocationsImpl(const SRAMLocationAllocationProblem &problem,
+                        std::string &failureReason) const override {
+    return detail::allocateLocationsExactly(problem, searchWorkLimit,
+                                            failureReason);
+  }
+
 private:
   uint64_t searchWorkLimit;
 };

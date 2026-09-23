@@ -27,7 +27,7 @@ The compiler separates lifetime and ownership proofs from byte placement. It col
 
 ### Storage Ownership and Arena Layout
 
-One compiler-managed arena exists on each participating worker core for each invocation of a compiled Python `ttl.operation`. `--ttl-sram-allocation-mode=uniform` uses the same relative layout on every core. `per-core` allocates independent layouts, except that multicast receivers share one layout and base address. Kernels receive the core-local arena base as one common runtime argument, so the argument count does not depend on the number of logical DFBs.
+Each compiled Python `ttl.operation` contributes compiler-planned scratch storage on its participating worker cores. That storage remains live through one completed invocation. `--ttl-sram-allocation-mode=uniform` uses the same relative layout on every core. `per-core` creates one layout for each multicast-derived core domain; disjoint domains have independent layouts. Kernels receive the core-local arena base as one common runtime argument, so the argument count does not depend on the number of logical DFBs.
 
 The arena has two sections:
 
@@ -68,9 +68,38 @@ PipeNet synchronization is a separate resource. TT-Lang currently has 16 local h
 
 ### Shared Runtime Requirements
 
-The compiler placement problem describes relative offsets inside compiler-owned arenas. The runtime also needs one representation that can describe those movable arenas together with fixed tensor storage. Before creating runtime resources, it prepares an immutable requirement for each physical owner. A requirement records its byte extent, alignment, lifetime, fixed or movable placement, and address-equality domains. The runtime obtains the target SRAM alignment from TTNN. An address-equality domain is a set of device/core locations that must use one base address. An empty device coordinate denotes the device domain selected when storage is bound. Uniform storage has one domain; independent storage has one singleton domain per location.
+The compiler placement problem describes relative offsets inside compiler-owned arenas. The runtime also needs one representation that can describe those movable arenas together with fixed tensor storage. Before creating runtime resources, it prepares an immutable requirement for each physical owner. The requirement records ownership, lifetime, alignment, one interval per device/core location, and selected equal-base groups. Each location interval records its extent, whether it contains payload storage, and an optional fixed base. An equal-base group requires its member intervals to start at one physical address; their extents may differ. Locations outside a group remain independently addressable. An empty device coordinate denotes the device domain selected when storage is bound.
 
-DFB control and payload ranges are uses of a requirement, not additional owners. Several tensor-backed DFBs that reference one tensor therefore produce one fixed requirement and several byte-range uses. The fixed requirement covers the tensor's complete logical shard extent and shard grid, including bytes and cores not referenced by those DFBs. Compiler control and payload ranges reference their arena requirement. The runtime derives the current arena allocation sizes and core groups from this prepared record, so allocation and descriptor binding use the same validated information.
+For example, suppose owners `A` and `B` overlap in lifetime. `A` requires the same base on two cores for remote access, but its capacity differs by core. `B` exists only on core `(0,0)` and has no address relationship with `A`:
+
+```text
+              0 KiB        2       3       4
+core (0,0):  [ A: 2 KiB ][B:1 KiB]
+core (1,0):  [ A: 4 KiB                 ]
+              ^ A starts at the same address on both cores
+```
+
+The model represents these as three owner-location intervals. One equal-base group connects only the two `A` intervals. The independent `B` interval conflicts with `A` on core `(0,0)` without constraining core `(1,0)`.
+
+The canonical property definitions are `SRAMStorageRequirement`, `SRAMLocationRequirement`, and `SRAMEqualBaseGroup` in [`_sram_requirements.py`](../../python/ttl/_sram_requirements.py). The C++ placement subset is declared in [`SRAMAllocator.h`](../../include/ttlang/Dialect/TTL/Transforms/SRAMAllocator.h).
+
+| Property | Values | Meaning |
+| --- | --- | --- |
+| Owner | Compiler arena, tensor argument, or persistent declaration | Identifies one physical storage allocation and its aliases. |
+| Placement ownership | Fixed or movable | Every location of fixed storage supplies an existing address that the allocator must preserve. Movable storage supplies no address; the allocator selects its offsets. |
+| Lifetime | External, persistent, or invocation | External storage follows caller ownership, persistent storage remains live until `SRAMStorage.close()`, and invocation storage remains live through one completed operation launch. |
+| Locations | One or more device/core pairs | States where this owner requires storage. It does not require those locations to use the same address. |
+| Location extent | Positive byte count | Gives this owner's required capacity at one location. Extents may differ by location. |
+| Payload presence | Present or absent | Distinguishes a payload-bearing location from a location that contains only the owner's control state. |
+| Address relation | Independent or member of an equal-base group | An equal-base group requires only its selected locations to use the same numeric address. |
+| Placement constraint | Optional fixed base | Supplies the immutable address of fixed storage. Movable storage has no fixed base. |
+| Alignment | Power-of-two byte count | Constrains every selected or supplied address for the owner. |
+
+Lifetime and address constraints are independent. A persistent owner may cover one core, selected cores, or all cores. Multicast adds an equal-base group only for the addressed owner and receiver locations. Invocation scratch remains invocation-scoped with or without an equal-base constraint. These facts do not require separate persistent, multicast, and general-purpose arenas. A placement strategy may combine storage when its conflicts and address constraints permit reuse.
+
+`SRAMAddressing` is selected when the runtime realizes requirements as TTNN reservations. Uniform addressing requests one physical base for every pool location; per-core addressing permits independent physical bases. It is not a requirement property because a single-location owner has no address-equality relation. Equal-capacity groups are also backend constraints: they tell the allocator that one retained pool reserves its largest location high-water mark at every member location.
+
+DFB control and payload ranges are uses of a requirement, not additional owners. Several tensor-backed DFBs that reference one tensor therefore produce one fixed requirement and several byte-range uses. The fixed requirement covers the tensor's complete logical shard extent and shard grid, including bytes and cores not referenced by those DFBs. Compiler control and payload ranges reference their arena requirement. Each use is validated against the extent at every participating location. The runtime derives arena sizes and core groups from this prepared record, so allocation and binding use the same validated information.
 
 Persistent declarations use the same requirement type. They remain movable until `SRAMStorage.allocate()` jointly places them with the arenas of every prepared operation. Caller-supplied tensors retain their existing addresses and remain outside these owned pools. The storage owner enforces completion between prepared operations before allowing their scratch arenas to reuse bytes.
 
@@ -143,7 +172,9 @@ Control records remain at fixed offsets on every core, including cores without t
 
 ## Placement API and Algorithms
 
-Placement is independent of MLIR and target-specific code. Storage-owner construction produces one allocator region for each owner with a compiler-owned payload. Tensor-backed owners consume control records but add no allocator regions. The immutable allocation problem contains each payload extent, a symmetric conflict matrix, target alignment, the payload base after all control records, and the SRAM budget. An allocator returns one byte offset per allocator region and the payload high-water mark.
+Placement is a reusable C++ library with no dependency on MLIR operations or target identities. Compiler analyses construct immutable storage requirements; a selected strategy returns byte offsets without inspecting IR or changing scheduling. Architecture adapters supply alignment and per-location budgets through the common API.
+
+The API supports two inputs. `SRAMAllocationProblem` places one list of regions in one address space and remains the interface for compiler operation arenas. `SRAMLocationAllocationProblem` places owner-location intervals across several independently bounded address spaces, enforces selected equal offsets, and records locations whose backing allocation uses one common capacity. The latter represents joint persistent and scratch placement without defining persistent, multicast, and ordinary scratch as separate arena types.
 
 Every allocator result passes the same validation before IR mutation. Validation requires the correct offset count, target alignment, offsets at or above the payload base, intervals within the SRAM budget, disjoint intervals for every conflict, and an exact payload high-water mark. Allocation policy cannot weaken these invariants. The domain allocation entry point maps offsets to storage owners and retains the control prefix when computing the arena size.
 
@@ -169,6 +200,40 @@ struct SRAMAllocatorOptions {
 struct SRAMAllocationSolution {
   llvm::SmallVector<uint64_t> offsets;
   uint64_t arenaBytes;
+};
+
+struct SRAMAllocationLocation {
+  uint64_t payloadBaseOffset;
+  uint64_t budgetBytes;
+};
+
+struct SRAMAllocationRegion {
+  unsigned ownerIndex;
+  unsigned locationIndex;
+  uint64_t bytes;
+  std::optional<uint64_t> fixedOffset;
+};
+
+struct SRAMEqualOffsetGroup {
+  llvm::SmallVector<unsigned> regionIndices;
+};
+
+struct SRAMEqualCapacityGroup {
+  llvm::SmallVector<unsigned> locationIndices;
+};
+
+struct SRAMLocationAllocationProblem {
+  llvm::SmallVector<SRAMAllocationLocation> locations;
+  llvm::SmallVector<SRAMAllocationRegion> regions;
+  InterferenceGraph conflicts{0};
+  llvm::SmallVector<SRAMEqualOffsetGroup> equalOffsetGroups;
+  uint64_t alignmentBytes;
+  llvm::SmallVector<SRAMEqualCapacityGroup> equalCapacityGroups;
+};
+
+struct SRAMLocationAllocationSolution {
+  llvm::SmallVector<uint64_t> offsets;
+  llvm::SmallVector<uint64_t> highWaterBytes;
 };
 
 struct SRAMAllocationDomainProblem {
@@ -206,10 +271,19 @@ public:
   allocateDomains(llvm::ArrayRef<SRAMAllocationDomainProblem> domains,
                   SRAMAllocationDomainFailure &failureDetail) const;
 
+  FailureOr<SRAMLocationAllocationSolution>
+  allocateLocations(const SRAMLocationAllocationProblem &problem,
+                    std::optional<unsigned> &failureRegionIndex,
+                    std::string &failureReason) const;
+
 private:
   virtual FailureOr<SRAMAllocationSolution>
   allocateImpl(const SRAMAllocationProblem &problem,
                std::string &failureReason) const = 0;
+
+  virtual FailureOr<SRAMLocationAllocationSolution>
+  allocateLocationsImpl(const SRAMLocationAllocationProblem &problem,
+                        std::string &failureReason) const = 0;
 };
 
 FailureOr<std::unique_ptr<SRAMAllocator>>
@@ -222,6 +296,37 @@ createSRAMAllocator(llvm::StringRef name, const SRAMAllocatorOptions &options,
 `regionBytes[i]` is the nonzero, aligned extent of allocator region `i`. The caller retains the mapping from allocator-region indices to compiler-owned storage-owner indices. `conflicts` is the shared undirected resource-interference graph. `payloadBaseOffset` is aligned and does not exceed `budgetBytes`. The problem is immutable after construction. Region order supplies the final deterministic tie-break.
 
 `SRAMAllocator::allocate` is the public, nonvirtual entry point. It validates the problem, invokes the private strategy method, and validates the solution. This structure keeps strategy selection replaceable while enforcing one correctness contract. On success, `offsets` has one entry per allocator region and `arenaBytes` is the exact maximum payload end, or zero when no allocator regions exist. On failure, `failureReason` contains diagnostic text and `failureRegionIndex` identifies an allocator region only when the error applies to one region. The allocator layer does not emit diagnostics or modify IR.
+
+`allocateLocations` applies the same validation structure to owner-location intervals. Each `(ownerIndex, locationIndex)` pair is unique. Conflicts can connect only intervals at the same location. An equal-offset group contains at most one interval per location and requires every member to start at one physical byte offset; members can have different extents. A fixed interval retains its supplied offset. An equal-capacity group states that its backing allocation reserves the largest member high-water mark at every member location. Locations outside these groups contribute their individual high-water marks. The result reports one offset per interval and the exact high-water mark at every location.
+
+```text
+relative offset       0       64      128      192      256
+core (0,0)            [persist][----- scratch -----]
+core (1,0)            [------ persistent ------][local]
+                       ^
+                       same base for this persistent owner
+
+The persistent intervals start together. Their ends differ. Local storage is
+constrained only by conflicts at its own core.
+```
+
+The allocator first combines each equal-offset group into one placement variable. A candidate offset must fit every member against that location's budget, fixed intervals, and conflicting placed intervals. Ungrouped intervals form one-member variables. Equal-capacity groups affect the physical-reservation objective and require their common capacity to fit every member budget; they do not change interval addresses. This representation keeps address equality and backing-allocation capacity as separate constraints.
+
+```text
+allocateLocations(problem):
+    validate locations, owner-location intervals, conflicts, fixed offsets,
+        equal-offset groups, and equal-capacity groups
+    variables = equal-offset groups plus every ungrouped interval
+    place fixed variables
+    for variable in strategy order:
+        candidates = strategy candidate offsets
+        retain candidates that fit every member location
+        select a candidate according to the strategy
+    compute the exact high-water mark at every location
+    compute physical reservation from independent and equal-capacity locations
+    validate all offsets, conflicts, equalities, fixed offsets, and budgets
+    return one offset per owner-location interval
+```
 
 ### Domain Allocation Contract
 
@@ -242,9 +347,9 @@ allocateDomains(domains):
 
 ### Adding a Strategy
 
-`SRAMAllocatorOptions` contains limits that affect strategy execution but do not change the allocation problem. `exactSearchLimit` bounds the exact strategy's combined subset-sum candidates and partial placements separately for each allocation domain. With `D` domains, total search work can reach `D` times the configured limit. `createSRAMAllocator` maps stable compiler-option names to implementations and supplies these options. `getName()` identifies the implementation in validation diagnostics. A new implementation derives from `SRAMAllocator`, implements `getName()` and `allocateImpl()`, and registers its name in the factory. It cannot change conflict construction or bypass common validation.
+`SRAMAllocatorOptions` contains limits that affect strategy execution but do not change the allocation problem. `exactSearchLimit` bounds exact search. With `D` calls, total search work can reach `D` times the configured limit. `createSRAMAllocator` maps stable compiler-option names to implementations and supplies these options. `getName()` identifies the implementation in validation diagnostics. A new implementation derives from `SRAMAllocator`, implements `getName()`, `allocateImpl()`, and `allocateLocationsImpl()`, and registers its name in the factory. It cannot change conflict construction or bypass common validation.
 
-The public interface and validation are in [SRAMAllocator.h](../../include/ttlang/Dialect/TTL/Transforms/SRAMAllocator.h) and [SRAMAllocator.cpp](../../lib/Dialect/TTL/Transforms/SRAMAllocator.cpp). [SRAMAllocator_Greedy.cpp](../../lib/Dialect/TTL/Transforms/SRAMAllocator_Greedy.cpp) shares ordering and gap placement across the three greedy strategies; [SRAMAllocator_Exact.cpp](../../lib/Dialect/TTL/Transforms/SRAMAllocator_Exact.cpp) contains exact search. Private declarations in [SRAMAllocator_Internal.h](../../lib/Dialect/TTL/Transforms/SRAMAllocator_Internal.h) connect the factory and allow exact search to reuse greedy upper bounds.
+The public interface and validation are in [SRAMAllocator.h](../../include/ttlang/Dialect/TTL/Transforms/SRAMAllocator.h) and [SRAMAllocator.cpp](../../lib/Dialect/TTL/Transforms/SRAMAllocator.cpp). [SRAMAllocator_Location.cpp](../../lib/Dialect/TTL/Transforms/SRAMAllocator_Location.cpp) implements placement-variable construction, fit checks, ordering, and objective calculation shared by the location strategies. [SRAMAllocator_Greedy.cpp](../../lib/Dialect/TTL/Transforms/SRAMAllocator_Greedy.cpp) and [SRAMAllocator_Location_Greedy.cpp](../../lib/Dialect/TTL/Transforms/SRAMAllocator_Location_Greedy.cpp) implement greedy placement. [SRAMAllocator_Exact.cpp](../../lib/Dialect/TTL/Transforms/SRAMAllocator_Exact.cpp) and [SRAMAllocator_Location_Exact.cpp](../../lib/Dialect/TTL/Transforms/SRAMAllocator_Location_Exact.cpp) implement exact search. Private headers connect the implementations without exposing strategy details through the public API.
 
 ### Greedy Placement
 
@@ -256,6 +361,8 @@ The public interface and validation are in [SRAMAllocator.h](../../include/ttlan
 | `exact` | Search aligned subset-sum offsets with branch-and-bound. | Proven minimum arena, or a precise inconclusive or infeasible diagnostic. |
 
 The decreasing strategies place larger regions first because large extents fit in fewer gaps. Storage-owner order resolves equal-size ties in the individual first-fit and best-fit strategies. They are greedy heuristics and can produce different arena sizes.
+
+For a location problem, first-fit selects the lowest location base or conflicting-interval end that fits every member of a placement variable. Best-fit minimizes the increase in physical reservation. Multi-order compares stable and conflict-degree-aware orders by the same measure. Exact search constructs the bounded closure of every location base, fixed boundary, and aligned interval extent, then searches those candidates to minimize physical reservation. An independent location contributes its high-water mark. An equal-capacity group contributes its member count multiplied by its largest high-water mark. The closure permits an earlier placement variable to start above a later variable; candidates derived only from already placed intervals would not prove a minimum.
 
 ```text
 allocateDecreasing(problem, gapSelection):
@@ -565,8 +672,8 @@ The current model names lifetimes directly: persistent storage remains live unti
 | Request | Implemented | Missing |
 | --- | --- | --- |
 | Late allocation and global minimum | Allocation is deferred until operation requirements are finalized. The optional exact strategy minimizes each conflict component. `SRAMStorage` jointly places persistent declarations and every prepared operation arena. | A device-wide optimum across unrelated storage owners and existing tensors. Existing tensor addresses remain fixed. |
-| Full lockstep, ranged lockstep, and per-core allocation | Address-equality domains represent cores that require one base. Uniform requirements share a base across their complete domain; independent requirements may use one base per core. Multicast receiver domains merge when equal addresses are required. | An explicit user API for selecting intermediate core partitions. Multicast equality can still enlarge a domain. |
-| Unified tensor and DFB allocation | One requirement model represents fixed tensors, movable persistent tensors, compiler arenas, aliases, lifetimes, and address-equality domains. Joint owned pools pack persistent tensor payloads with prepared operation arenas, including DFB control and payload ranges. | Relocation or packing of existing caller-owned tensors. Runtime-dependent extents also require a separate contract. |
+| Full lockstep, ranged lockstep, and per-core allocation | The requirement model and allocator API record independent per-location extents and selected equal-base groups. | Compiler DFB placement still produces one layout per multicast-derived domain. The owned-pool realization still accepts only one all-location group or fully independent locations. |
+| Unified tensor and DFB allocation | One requirement model represents fixed tensors, movable persistent tensors, compiler arenas, aliases, lifetimes, per-location extents, and equal-base groups. Joint owned pools pack persistent tensor payloads with prepared operation arenas, including DFB control and payload ranges. | Relocation or packing of existing caller-owned tensors. Runtime-dependent extents also require a separate contract. |
 | Lifetime inspection and reuse hints | Automatic completion-aware reuse and the allocation report above. | A user-facing guidance contract that preserves asynchronous completion. |
 | Persistent per-core SRAM across launches | `SRAMStorage` owns uniform or per-core BF16/FP32 tiled tensors, preserves their addresses until close, initializes them once, and places them with completion-ordered scratch arenas. External launchers participate through the same ownership protocol. | Concurrent borrowing, device reset or migration, and joint preparation of PipeNet storage, DFB reconfiguration, selected device domains, fabric routes, or opaque runtime-resource factories. |
 
@@ -575,7 +682,7 @@ The current model names lifetimes directly: persistent storage remains live unti
 ### Implementation Direction
 
 1. Lifetime guidance. Build on the allocation report. Placement preferences may change ordering but cannot remove conflicts. Reuse existing ownership-transfer operations for semantic lifetime boundaries; validate producer publication and consumer completion, including remote and external users.
-2. Allocation-domain refinement. Accept explicit core partitions, validate multicast receiver address equality, and reuse domain-specific conflict construction. Measure whether finer domains reduce actual reservation enough to justify additional host allocations and kernel specialization.
+2. Compiler owner-location placement. Replace complete multicast-domain allocation requests with one interval per storage owner and core. Project conflicts per core, apply equal-base constraints only to the selected multicast locations, and derive each core's arena extent from the resulting high-water mark.
 3. Existing-allocation integration. Obtain complete per-core free intervals from the host allocator and reserve selected intervals conditionally. Extend the immutable allocation problem and its oracle with fixed tensor intervals so owned pools can occupy fragmented gaps without relocating caller-owned tensors or relying on stale occupancy snapshots.
 4. Cross-owner optimization. Prepare requirements and completion relations from multiple storage owners before reservation. Optimize total physical reservation while preserving concurrency between owners, then commit every reservation through one rollback-capable transaction.
 

@@ -24,7 +24,6 @@ def validate_core_layouts(configs, coordinates):
             raise ValueError(
                 "SRAM core layouts must cover each participating core exactly once"
             )
-        domain_layouts = {}
         for node, layout in layouts.items():
             if len(node) != 2 or any(
                 type(value) is not int or value < 0 for value in node
@@ -37,24 +36,9 @@ def validate_core_layouts(configs, coordinates):
             if node in domains and domains[node] != layout.domain:
                 raise ValueError("inconsistent SRAM allocation domains for one core")
             domains[node] = layout.domain
-            placement = (
-                layout.payload_offset,
-                layout.payload_present,
-                layout.arena_bytes,
-            )
-            if (
-                layout.domain in domain_layouts
-                and domain_layouts[layout.domain] != placement
-            ):
-                raise ValueError(
-                    "SRAM cores in one allocation domain must share one layout"
-                )
-            domain_layouts[layout.domain] = placement
             if layout.arena_bytes < control_end:
                 raise ValueError("SRAM core arena does not cover its control records")
-            if node in sizes and sizes[node] != layout.arena_bytes:
-                raise ValueError("inconsistent SRAM arena sizes for one core")
-            sizes[node] = layout.arena_bytes
+            sizes[node] = max(sizes.get(node, 0), layout.arena_bytes)
             if layout.payload_present:
                 if config.l1_allocation_bytes is None:
                     raise ValueError(

@@ -51,6 +51,46 @@ struct SRAMAllocationSolution {
   uint64_t arenaBytes;
 };
 
+/// One independently bounded physical SRAM location.
+struct SRAMAllocationLocation {
+  uint64_t payloadBaseOffset;
+  uint64_t budgetBytes;
+};
+
+/// One storage owner's interval at one physical SRAM location.
+struct SRAMAllocationRegion {
+  unsigned ownerIndex;
+  unsigned locationIndex;
+  uint64_t bytes;
+  std::optional<uint64_t> fixedOffset;
+};
+
+/// Regions in a group start at the same physical byte offset.
+struct SRAMEqualOffsetGroup {
+  llvm::SmallVector<unsigned> regionIndices;
+};
+
+/// Locations whose backing reservations use one common capacity.
+struct SRAMEqualCapacityGroup {
+  llvm::SmallVector<unsigned> locationIndices;
+};
+
+/// Per-location placement input with address and backing-capacity constraints.
+struct SRAMLocationAllocationProblem {
+  llvm::SmallVector<SRAMAllocationLocation> locations;
+  llvm::SmallVector<SRAMAllocationRegion> regions;
+  InterferenceGraph conflicts{0};
+  llvm::SmallVector<SRAMEqualOffsetGroup> equalOffsetGroups;
+  uint64_t alignmentBytes;
+  llvm::SmallVector<SRAMEqualCapacityGroup> equalCapacityGroups;
+};
+
+/// Region offsets and the resulting high-water mark at every location.
+struct SRAMLocationAllocationSolution {
+  llvm::SmallVector<uint64_t> offsets;
+  llvm::SmallVector<uint64_t> highWaterBytes;
+};
+
 /// One independently placed layout. Region indices are local to allocation;
 /// storageIndices maps them to caller-owned storage identities.
 struct SRAMAllocationDomainProblem {
@@ -99,10 +139,20 @@ public:
   allocateDomains(llvm::ArrayRef<SRAMAllocationDomainProblem> domains,
                   SRAMAllocationDomainFailure &failureDetail) const;
 
+  /// Places per-location intervals under address and capacity constraints.
+  FailureOr<SRAMLocationAllocationSolution>
+  allocateLocations(const SRAMLocationAllocationProblem &problem,
+                    std::optional<unsigned> &failureRegionIndex,
+                    std::string &failureReason) const;
+
 private:
   virtual FailureOr<SRAMAllocationSolution>
   allocateImpl(const SRAMAllocationProblem &problem,
                std::string &failureReason) const = 0;
+
+  virtual FailureOr<SRAMLocationAllocationSolution>
+  allocateLocationsImpl(const SRAMLocationAllocationProblem &problem,
+                        std::string &failureReason) const = 0;
 };
 
 /// Creates a built-in allocator selected by its stable compiler option name.

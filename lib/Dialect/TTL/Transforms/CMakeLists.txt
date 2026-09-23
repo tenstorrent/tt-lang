@@ -7,6 +7,9 @@ add_mlir_dialect_library(TTLangTTLTransforms
   SRAMAllocator.cpp
   SRAMAllocator_Greedy.cpp
   SRAMAllocator_Exact.cpp
+  SRAMAllocator_Location.cpp
+  SRAMAllocator_Location_Exact.cpp
+  SRAMAllocator_Location_Greedy.cpp
   ComputeOpCreationPlanning.cpp
   ComputeTarget.cpp
   ComputeKernelConfigAnalysis.cpp

@@ -776,6 +776,69 @@ private:
     result.arenaBytes = problem.regionBytes.empty() ? 0 : nextOffset;
     return result;
   }
+
+  mlir::FailureOr<mlir::tt::ttl::SRAMLocationAllocationSolution>
+  allocateLocationsImpl(
+      const mlir::tt::ttl::SRAMLocationAllocationProblem &problem,
+      std::string &failureReason) const override {
+    failureReason = "location allocation is not used by this test allocator";
+    return mlir::failure();
+  }
+};
+
+enum class InvalidLocationSolution {
+  None,
+  WrongSize,
+  InvalidOffset,
+  FixedOffset,
+  UnequalOffsets,
+  Overlap,
+  WrongHighWater,
+};
+
+class LocationTestAllocator final : public SRAMAllocator {
+public:
+  InvalidLocationSolution invalidSolution = InvalidLocationSolution::None;
+  llvm::StringRef getName() const override { return "location-test"; }
+
+private:
+  mlir::FailureOr<SRAMAllocationSolution>
+  allocateImpl(const SRAMAllocationProblem &problem,
+               std::string &failureReason) const override {
+    failureReason = "scalar allocation is not used by this test allocator";
+    return mlir::failure();
+  }
+
+  mlir::FailureOr<mlir::tt::ttl::SRAMLocationAllocationSolution>
+  allocateLocationsImpl(
+      const mlir::tt::ttl::SRAMLocationAllocationProblem &problem,
+      std::string &failureReason) const override {
+    mlir::tt::ttl::SRAMLocationAllocationSolution solution{
+        {64, 64, 128, 192, 256}, {320, 256}};
+    switch (invalidSolution) {
+    case InvalidLocationSolution::None:
+      break;
+    case InvalidLocationSolution::WrongSize:
+      solution.offsets.pop_back();
+      break;
+    case InvalidLocationSolution::InvalidOffset:
+      solution.offsets[1] = 0;
+      break;
+    case InvalidLocationSolution::FixedOffset:
+      solution.offsets[4] = 192;
+      break;
+    case InvalidLocationSolution::UnequalOffsets:
+      solution.offsets[0] = 0;
+      break;
+    case InvalidLocationSolution::Overlap:
+      solution.offsets[2] = 64;
+      break;
+    case InvalidLocationSolution::WrongHighWater:
+      solution.highWaterBytes[0] = 319;
+      break;
+    }
+    return solution;
+  }
 };
 
 static bool verifySRAMAllocationDomains() {
@@ -872,6 +935,471 @@ static bool verifySRAMAllocationDomains() {
     return false;
   }
   llvm::outs() << "sram_domain_cases=" << cases + 2 << "\n";
+  return true;
+}
+
+static bool verifySRAMLocationAllocation() {
+  using mlir::tt::ttl::SRAMAllocationLocation;
+  using mlir::tt::ttl::SRAMAllocationRegion;
+  using mlir::tt::ttl::SRAMEqualOffsetGroup;
+  using mlir::tt::ttl::SRAMLocationAllocationProblem;
+
+  SRAMLocationAllocationProblem asymmetric{
+      {SRAMAllocationLocation{0, 256}, SRAMAllocationLocation{0, 256}},
+      {SRAMAllocationRegion{10, 0, 64, std::nullopt},
+       SRAMAllocationRegion{10, 1, 192, std::nullopt}},
+      InterferenceGraph(2),
+      {SRAMEqualOffsetGroup{{0, 1}}},
+      64,
+      {}};
+  SRAMLocationAllocationProblem mixed{
+      {SRAMAllocationLocation{0, 320}, SRAMAllocationLocation{64, 320}},
+      {SRAMAllocationRegion{10, 0, 64, std::nullopt},
+       SRAMAllocationRegion{10, 1, 128, std::nullopt},
+       SRAMAllocationRegion{11, 0, 128, std::nullopt},
+       SRAMAllocationRegion{12, 1, 64, std::nullopt},
+       SRAMAllocationRegion{13, 0, 64, 256}},
+      InterferenceGraph(5),
+      {SRAMEqualOffsetGroup{{0, 1}}},
+      64,
+      {}};
+  mixed.conflicts.addInterference(0, 2);
+  mixed.conflicts.addInterference(1, 3);
+  mixed.conflicts.addInterference(2, 4);
+
+  uint64_t cases = 0;
+  for (llvm::StringRef strategy :
+       {mlir::tt::ttl::kFirstFitDecreasingSRAMAllocator,
+        mlir::tt::ttl::kBestFitDecreasingSRAMAllocator,
+        mlir::tt::ttl::kMultiOrderDecreasingSRAMAllocator,
+        mlir::tt::ttl::kExactSRAMAllocator}) {
+    std::string reason;
+    auto allocator = mlir::tt::ttl::createSRAMAllocator(
+        strategy, {kUnlimitedSearchStates}, reason);
+    if (mlir::failed(allocator)) {
+      return false;
+    }
+    std::optional<unsigned> failedRegion;
+    auto asymmetricResult =
+        (*allocator)->allocateLocations(asymmetric, failedRegion, reason);
+    if (mlir::failed(asymmetricResult) ||
+        asymmetricResult->offsets != llvm::SmallVector<uint64_t>({0, 0}) ||
+        asymmetricResult->highWaterBytes !=
+            llvm::SmallVector<uint64_t>({64, 192})) {
+      llvm::errs() << "asymmetric equal-offset allocation mismatch: "
+                   << strategy << "\n";
+      return false;
+    }
+    auto mixedResult =
+        (*allocator)->allocateLocations(mixed, failedRegion, reason);
+    if (mlir::failed(mixedResult) ||
+        mixedResult->offsets[0] != mixedResult->offsets[1] ||
+        mixedResult->offsets[4] != 256 ||
+        mixedResult->highWaterBytes !=
+            llvm::SmallVector<uint64_t>({320, 256})) {
+      llvm::errs() << "mixed location allocation mismatch: " << strategy
+                   << "\n";
+      return false;
+    }
+    auto repeated =
+        (*allocator)->allocateLocations(mixed, failedRegion, reason);
+    if (mlir::failed(repeated) || repeated->offsets != mixedResult->offsets) {
+      llvm::errs() << "location allocation is not deterministic\n";
+      return false;
+    }
+    SRAMLocationAllocationProblem empty{
+        {SRAMAllocationLocation{64, 256}, SRAMAllocationLocation{128, 256}},
+        {},
+        InterferenceGraph(0),
+        {},
+        64,
+        {}};
+    auto emptyResult =
+        (*allocator)->allocateLocations(empty, failedRegion, reason);
+    if (mlir::failed(emptyResult) || !emptyResult->offsets.empty() ||
+        emptyResult->highWaterBytes != llvm::SmallVector<uint64_t>({64, 128})) {
+      llvm::errs() << "empty location allocation mismatch\n";
+      return false;
+    }
+    ++cases;
+  }
+
+  std::string reason;
+  auto allocator = mlir::tt::ttl::createSRAMAllocator(
+      mlir::tt::ttl::kMultiOrderDecreasingSRAMAllocator,
+      {kUnlimitedSearchStates}, reason);
+  if (mlir::failed(allocator)) {
+    return false;
+  }
+  std::optional<unsigned> failedRegion;
+  uint64_t validationCases = 0;
+  auto expectFailure = [&](const SRAMLocationAllocationProblem &problem,
+                           std::optional<unsigned> expectedRegion,
+                           llvm::StringRef expectedReason) {
+    reason.clear();
+    auto result =
+        (*allocator)->allocateLocations(problem, failedRegion, reason);
+    ++validationCases;
+    bool matched = mlir::failed(result) && failedRegion == expectedRegion &&
+                   llvm::StringRef(reason).contains(expectedReason);
+    if (!matched) {
+      llvm::errs() << "location validation mismatch: expected '"
+                   << expectedReason << "', received '" << reason << "'\n";
+    }
+    return matched;
+  };
+  auto invalid = mixed;
+  invalid.equalOffsetGroups = {SRAMEqualOffsetGroup{{0, 2}}};
+  if (!expectFailure(invalid, 2, "multiple regions at one location")) {
+    return false;
+  }
+  invalid = mixed;
+  invalid.regions[0].fixedOffset = 0;
+  invalid.regions[1].fixedOffset = 64;
+  if (!expectFailure(invalid, 1, "incompatible fixed offsets")) {
+    return false;
+  }
+  invalid = mixed;
+  invalid.conflicts.addInterference(0, 1);
+  if (!expectFailure(invalid, 1, "same location")) {
+    return false;
+  }
+  invalid = mixed;
+  invalid.regions[2].ownerIndex = 10;
+  if (!expectFailure(invalid, 2, "duplicate regions")) {
+    return false;
+  }
+  invalid = mixed;
+  invalid.regions[2].bytes = 0;
+  if (!expectFailure(invalid, 2, "region size")) {
+    return false;
+  }
+  invalid = mixed;
+  invalid.regions[2].locationIndex = 2;
+  if (!expectFailure(invalid, 2, "unknown SRAM location")) {
+    return false;
+  }
+  invalid = mixed;
+  invalid.regions[2].fixedOffset = 1;
+  if (!expectFailure(invalid, 2, "fixed region")) {
+    return false;
+  }
+  invalid = mixed;
+  invalid.equalOffsetGroups = {SRAMEqualOffsetGroup{{0}}};
+  if (!expectFailure(invalid, std::nullopt, "at least two regions")) {
+    return false;
+  }
+  invalid = mixed;
+  invalid.equalOffsetGroups = {SRAMEqualOffsetGroup{{0, 5}}};
+  if (!expectFailure(invalid, std::nullopt, "unknown region")) {
+    return false;
+  }
+  invalid = mixed;
+  invalid.equalOffsetGroups = {SRAMEqualOffsetGroup{{0, 1}},
+                               SRAMEqualOffsetGroup{{1, 2}}};
+  if (!expectFailure(invalid, 1, "multiple equal-offset groups")) {
+    return false;
+  }
+  invalid = mixed;
+  invalid.alignmentBytes = 3;
+  if (!expectFailure(invalid, std::nullopt, "power of two")) {
+    return false;
+  }
+  invalid = mixed;
+  invalid.locations[0].payloadBaseOffset = 1;
+  if (!expectFailure(invalid, std::nullopt, "payload base")) {
+    return false;
+  }
+  invalid = mixed;
+  invalid.locations[0].payloadBaseOffset = 384;
+  if (!expectFailure(invalid, std::nullopt, "exceeds its SRAM budget")) {
+    return false;
+  }
+  invalid = asymmetric;
+  invalid.locations[0].budgetBytes = std::numeric_limits<uint64_t>::max();
+  invalid.locations[1].budgetBytes = std::numeric_limits<uint64_t>::max();
+  if (!expectFailure(invalid, std::nullopt, "budgets overflow")) {
+    return false;
+  }
+  invalid = mixed;
+  invalid.equalCapacityGroups = {mlir::tt::ttl::SRAMEqualCapacityGroup{{0}}};
+  if (!expectFailure(invalid, std::nullopt, "at least two locations")) {
+    return false;
+  }
+  invalid = mixed;
+  invalid.equalCapacityGroups = {mlir::tt::ttl::SRAMEqualCapacityGroup{{0, 2}}};
+  if (!expectFailure(invalid, std::nullopt, "unknown SRAM location")) {
+    return false;
+  }
+  invalid = mixed;
+  invalid.equalCapacityGroups = {mlir::tt::ttl::SRAMEqualCapacityGroup{{0, 1}},
+                                 mlir::tt::ttl::SRAMEqualCapacityGroup{{1, 0}}};
+  if (!expectFailure(invalid, std::nullopt, "multiple equal-capacity groups")) {
+    return false;
+  }
+  invalid = asymmetric;
+  invalid.locations[0] = SRAMAllocationLocation{192, 256};
+  invalid.locations[1] = SRAMAllocationLocation{0, 128};
+  invalid.regions.clear();
+  invalid.conflicts = InterferenceGraph(0);
+  invalid.equalOffsetGroups.clear();
+  invalid.equalCapacityGroups = {mlir::tt::ttl::SRAMEqualCapacityGroup{{0, 1}}};
+  if (!expectFailure(invalid, std::nullopt, "payload base exceeds")) {
+    return false;
+  }
+  invalid = mixed;
+  invalid.conflicts = InterferenceGraph(4);
+  if (!expectFailure(invalid, std::nullopt, "conflict graph size")) {
+    return false;
+  }
+  invalid = mixed;
+  invalid.regions[2].bytes = 63;
+  if (!expectFailure(invalid, 2, "region size")) {
+    return false;
+  }
+  invalid = mixed;
+  invalid.regions[2].fixedOffset = 256;
+  if (!expectFailure(invalid, 2, "fixed region")) {
+    return false;
+  }
+  invalid = asymmetric;
+  invalid.locations[1].budgetBytes = 128;
+  if (!expectFailure(invalid, std::nullopt, "no placement offset")) {
+    return false;
+  }
+  auto fixedGroup = asymmetric;
+  fixedGroup.regions[0].fixedOffset = 64;
+  auto fixedGroupResult =
+      (*allocator)->allocateLocations(fixedGroup, failedRegion, reason);
+  if (mlir::failed(fixedGroupResult) ||
+      fixedGroupResult->offsets != llvm::SmallVector<uint64_t>({64, 64}) ||
+      fixedGroupResult->highWaterBytes !=
+          llvm::SmallVector<uint64_t>({128, 256})) {
+    llvm::errs() << "fixed equal-offset group allocation mismatch\n";
+    return false;
+  }
+  SRAMLocationAllocationProblem orderingRegression{
+      {SRAMAllocationLocation{0, 6}, SRAMAllocationLocation{0, 6}},
+      {SRAMAllocationRegion{0, 0, 1, std::nullopt},
+       SRAMAllocationRegion{0, 1, 1, std::nullopt},
+       SRAMAllocationRegion{1, 0, 1, std::nullopt},
+       SRAMAllocationRegion{2, 0, 1, std::nullopt},
+       SRAMAllocationRegion{3, 1, 1, std::nullopt},
+       SRAMAllocationRegion{4, 1, 3, std::nullopt}},
+      InterferenceGraph(6),
+      {SRAMEqualOffsetGroup{{0, 1}}},
+      1,
+      {}};
+  orderingRegression.conflicts.addInterference(1, 5);
+  auto exact = mlir::tt::ttl::createSRAMAllocator(
+      mlir::tt::ttl::kExactSRAMAllocator, {kUnlimitedSearchStates}, reason);
+  if (mlir::failed(exact)) {
+    return false;
+  }
+  auto orderingResult =
+      (*exact)->allocateLocations(orderingRegression, failedRegion, reason);
+  if (mlir::failed(orderingResult) ||
+      orderingResult->highWaterBytes != llvm::SmallVector<uint64_t>({1, 4})) {
+    llvm::errs() << "exact location ordering regression\n";
+    return false;
+  }
+  SRAMLocationAllocationProblem selectedGroups{
+      {SRAMAllocationLocation{0, 128}, SRAMAllocationLocation{0, 128},
+       SRAMAllocationLocation{0, 128}},
+      {SRAMAllocationRegion{0, 0, 32, std::nullopt},
+       SRAMAllocationRegion{0, 1, 64, std::nullopt},
+       SRAMAllocationRegion{1, 1, 32, std::nullopt},
+       SRAMAllocationRegion{1, 2, 48, std::nullopt}},
+      InterferenceGraph(4),
+      {SRAMEqualOffsetGroup{{0, 1}}, SRAMEqualOffsetGroup{{2, 3}}},
+      16,
+      {}};
+  selectedGroups.conflicts.addInterference(1, 2);
+  auto selectedGroupResult =
+      (*exact)->allocateLocations(selectedGroups, failedRegion, reason);
+  if (mlir::failed(selectedGroupResult) ||
+      selectedGroupResult->offsets !=
+          llvm::SmallVector<uint64_t>({32, 32, 0, 0}) ||
+      selectedGroupResult->highWaterBytes !=
+          llvm::SmallVector<uint64_t>({64, 96, 48})) {
+    llvm::errs() << "selected equal-offset group allocation mismatch\n";
+    return false;
+  }
+  SRAMLocationAllocationProblem capacityObjective{
+      {SRAMAllocationLocation{0, 8}, SRAMAllocationLocation{0, 8}},
+      {SRAMAllocationRegion{0, 0, 3, std::nullopt},
+       SRAMAllocationRegion{1, 0, 1, std::nullopt},
+       SRAMAllocationRegion{1, 1, 2, std::nullopt},
+       SRAMAllocationRegion{2, 0, 3, std::nullopt},
+       SRAMAllocationRegion{2, 1, 1, std::nullopt}},
+      InterferenceGraph(5),
+      {SRAMEqualOffsetGroup{{1, 2}}, SRAMEqualOffsetGroup{{3, 4}}},
+      1,
+      {mlir::tt::ttl::SRAMEqualCapacityGroup{{0, 1}}}};
+  capacityObjective.conflicts.addInterference(0, 1);
+  capacityObjective.conflicts.addInterference(0, 3);
+  capacityObjective.conflicts.addInterference(1, 3);
+  capacityObjective.conflicts.addInterference(2, 4);
+  auto capacityResult =
+      (*exact)->allocateLocations(capacityObjective, failedRegion, reason);
+  if (mlir::failed(capacityResult) ||
+      capacityResult->offsets != llvm::SmallVector<uint64_t>({4, 3, 3, 0, 0}) ||
+      capacityResult->highWaterBytes != llvm::SmallVector<uint64_t>({7, 5})) {
+    llvm::errs() << "equal-capacity reservation objective mismatch: " << reason;
+    if (mlir::succeeded(capacityResult)) {
+      llvm::errs() << " offsets=";
+      llvm::interleaveComma(capacityResult->offsets, llvm::errs());
+      llvm::errs() << " high-water=";
+      llvm::interleaveComma(capacityResult->highWaterBytes, llvm::errs());
+    }
+    llvm::errs() << "\n";
+    return false;
+  }
+  auto limitedExact = mlir::tt::ttl::createSRAMAllocator(
+      mlir::tt::ttl::kExactSRAMAllocator, {1}, reason);
+  if (mlir::failed(limitedExact)) {
+    return false;
+  }
+  auto limitedResult =
+      (*limitedExact)->allocateLocations(asymmetric, failedRegion, reason);
+  if (mlir::succeeded(limitedResult) ||
+      llvm::StringRef(reason).find("work items") == llvm::StringRef::npos) {
+    llvm::errs() << "exact location search limit was not enforced\n";
+    return false;
+  }
+
+  LocationTestAllocator testAllocator;
+  for (auto [invalidSolution, expectedRegion, expectedReason] :
+       {std::tuple{InvalidLocationSolution::WrongSize,
+                   std::optional<unsigned>{}, "incorrect location result size"},
+        std::tuple{InvalidLocationSolution::InvalidOffset,
+                   std::optional<unsigned>{1}, "invalid per-location offset"},
+        std::tuple{InvalidLocationSolution::FixedOffset,
+                   std::optional<unsigned>{4}, "invalid per-location offset"},
+        std::tuple{InvalidLocationSolution::UnequalOffsets,
+                   std::optional<unsigned>{1}, "equal-offset constraint"},
+        std::tuple{InvalidLocationSolution::Overlap, std::optional<unsigned>{2},
+                   "overlapped conflicting"},
+        std::tuple{InvalidLocationSolution::WrongHighWater,
+                   std::optional<unsigned>{}, "high-water marks"}}) {
+    testAllocator.invalidSolution = invalidSolution;
+    reason.clear();
+    auto invalidResult =
+        testAllocator.allocateLocations(mixed, failedRegion, reason);
+    if (mlir::succeeded(invalidResult) || failedRegion != expectedRegion ||
+        !llvm::StringRef(reason).contains(expectedReason)) {
+      llvm::errs() << "invalid location solution passed common validation\n";
+      return false;
+    }
+    ++validationCases;
+  }
+
+  auto capacityValidation = mixed;
+  capacityValidation.locations[1].budgetBytes = 256;
+  capacityValidation.equalCapacityGroups = {
+      mlir::tt::ttl::SRAMEqualCapacityGroup{{0, 1}}};
+  testAllocator.invalidSolution = InvalidLocationSolution::None;
+  reason.clear();
+  auto invalidCapacity =
+      testAllocator.allocateLocations(capacityValidation, failedRegion, reason);
+  if (mlir::succeeded(invalidCapacity) || failedRegion ||
+      !llvm::StringRef(reason).contains("equal capacity")) {
+    llvm::errs() << "invalid equal-capacity solution passed validation\n";
+    return false;
+  }
+  ++validationCases;
+
+  llvm::outs() << "sram_location_cases=" << cases + validationCases + 5 << "\n";
+  return true;
+}
+
+static bool compareExactSRAMLocationAllocationWithOracle() {
+  using mlir::tt::ttl::SRAMAllocationLocation;
+  using mlir::tt::ttl::SRAMAllocationRegion;
+  using mlir::tt::ttl::SRAMEqualOffsetGroup;
+  using mlir::tt::ttl::SRAMLocationAllocationProblem;
+
+  std::string reason;
+  auto allocator = mlir::tt::ttl::createSRAMAllocator(
+      mlir::tt::ttl::kExactSRAMAllocator, {kUnlimitedSearchStates}, reason);
+  if (mlir::failed(allocator)) {
+    return false;
+  }
+  uint64_t cases = 0;
+  for (uint64_t firstBytes = 1; firstBytes <= 3; ++firstBytes) {
+    for (uint64_t secondBytes = 1; secondBytes <= 3; ++secondBytes) {
+      for (uint64_t thirdBytes = 1; thirdBytes <= 3; ++thirdBytes) {
+        for (uint64_t fourthBytes = 1; fourthBytes <= 3; ++fourthBytes) {
+          for (unsigned conflictMask = 0; conflictMask < 4; ++conflictMask) {
+            SRAMLocationAllocationProblem problem{
+                {SRAMAllocationLocation{0, 6}, SRAMAllocationLocation{0, 6}},
+                {SRAMAllocationRegion{0, 0, firstBytes, std::nullopt},
+                 SRAMAllocationRegion{0, 1, secondBytes, std::nullopt},
+                 SRAMAllocationRegion{1, 0, thirdBytes, std::nullopt},
+                 SRAMAllocationRegion{2, 1, fourthBytes, std::nullopt}},
+                InterferenceGraph(4),
+                {SRAMEqualOffsetGroup{{0, 1}}},
+                1,
+                {}};
+            if (conflictMask & 1) {
+              problem.conflicts.addInterference(0, 2);
+            }
+            if (conflictMask & 2) {
+              problem.conflicts.addInterference(1, 3);
+            }
+
+            uint64_t oracleCost = std::numeric_limits<uint64_t>::max();
+            for (uint64_t sharedOffset = 0; sharedOffset < 6; ++sharedOffset) {
+              if (sharedOffset + firstBytes > 6 ||
+                  sharedOffset + secondBytes > 6) {
+                continue;
+              }
+              for (uint64_t thirdOffset = 0; thirdOffset + thirdBytes <= 6;
+                   ++thirdOffset) {
+                bool firstConflict = (conflictMask & 1) &&
+                                     sharedOffset < thirdOffset + thirdBytes &&
+                                     thirdOffset < sharedOffset + firstBytes;
+                if (firstConflict) {
+                  continue;
+                }
+                for (uint64_t fourthOffset = 0; fourthOffset + fourthBytes <= 6;
+                     ++fourthOffset) {
+                  bool secondConflict =
+                      (conflictMask & 2) &&
+                      sharedOffset < fourthOffset + fourthBytes &&
+                      fourthOffset < sharedOffset + secondBytes;
+                  if (secondConflict) {
+                    continue;
+                  }
+                  oracleCost = std::min(
+                      oracleCost, std::max(sharedOffset + firstBytes,
+                                           thirdOffset + thirdBytes) +
+                                      std::max(sharedOffset + secondBytes,
+                                               fourthOffset + fourthBytes));
+                }
+              }
+            }
+            std::optional<unsigned> failedRegion;
+            auto solution = allocator.value()->allocateLocations(
+                problem, failedRegion, reason);
+            if (mlir::failed(solution)) {
+              llvm::errs() << "exact location allocation unexpectedly failed\n";
+              return false;
+            }
+            uint64_t actualCost =
+                solution->highWaterBytes[0] + solution->highWaterBytes[1];
+            if (actualCost != oracleCost) {
+              llvm::errs() << "exact location oracle mismatch: " << actualCost
+                           << " != " << oracleCost << "\n";
+              return false;
+            }
+            ++cases;
+          }
+        }
+      }
+    }
+  }
+  llvm::outs() << "sram_location_oracle_cases=" << cases << "\n";
   return true;
 }
 
@@ -1105,6 +1633,8 @@ int main() {
                  compareWeightedSolverWithOracle() &&
                  compareSRAMPlacementWithOracle() &&
                  verifySRAMAllocationDomains() &&
+                 verifySRAMLocationAllocation() &&
+                 compareExactSRAMLocationAllocationWithOracle() &&
                  verifyTargetDFBIndexCapacities() &&
                  compareAssignmentContracts()
              ? 0
