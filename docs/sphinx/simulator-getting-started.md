@@ -31,13 +31,16 @@ docker info
 
 ## Obtain TT-Lang
 
-Start from a TT-Lang source checkout containing the compiler-backed backend
-and its submodules:
+Start from a TT-Lang source checkout containing the compiler-backed backend:
 
 ```bash
-git clone --recurse-submodules https://github.com/tenstorrent/tt-lang.git
+git clone https://github.com/tenstorrent/tt-lang.git
 cd tt-lang
 ```
+
+The installer uses the container's prebuilt LLVM toolchain and pinned tt-metal
+source, so the checkout's LLVM and tt-metal submodules can remain uninitialized.
+Keep the TT-Lang Git history available for the compiler baseline ancestry check.
 
 The installer validates that the checkout contains the compiler baseline
 recorded in the stack manifest. It also fetches the exact
