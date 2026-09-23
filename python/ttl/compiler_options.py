@@ -22,13 +22,22 @@ from typing import Optional, Sequence
 # TODO(#649): Add dfb-state after explicit DFB fallback becomes a selectable
 # accumulation strategy.
 _ACCUMULATION_STRATEGIES = frozenset({"auto", "dst", "l1-pack"})
-_L1_ALLOCATION_STRATEGIES = frozenset({"first-fit-decreasing", "best-fit-decreasing"})
+_SRAM_ALLOCATION_STRATEGIES = frozenset(
+    {"multi-order-decreasing", "first-fit-decreasing", "best-fit-decreasing", "exact"}
+)
 
 
 def _nonnegative_int(value: str) -> int:
     parsed_value = int(value)
     if parsed_value < 0:
         raise argparse.ArgumentTypeError("must be nonnegative")
+    return parsed_value
+
+
+def _positive_int(value: str) -> int:
+    parsed_value = int(value)
+    if parsed_value <= 0:
+        raise argparse.ArgumentTypeError("must be positive")
     return parsed_value
 
 
@@ -44,16 +53,24 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="memory_model",
         choices=("metal-cb", "compiler-l1"),
-        help="Select Metal DFB allocation or experimental compiler-owned L1 storage (default: metal-cb).",
+        help="Select Metal DFB allocation or experimental compiler-managed SRAM storage (default: metal-cb).",
     )
     p.add_argument(
         "--ttl-l1-allocation-strategy",
         default=None,
         dest="l1_allocation_strategy",
-        choices=sorted(_L1_ALLOCATION_STRATEGIES),
-        help="Select the compiler-owned L1 payload placement strategy: "
-        "first-fit-decreasing or best-fit-decreasing "
-        "(default: first-fit-decreasing).",
+        choices=sorted(_SRAM_ALLOCATION_STRATEGIES),
+        help="Select the compiler-managed SRAM payload placement strategy: "
+        "multi-order-decreasing, first-fit-decreasing, best-fit-decreasing, or exact "
+        "(default: multi-order-decreasing).",
+    )
+    p.add_argument(
+        "--ttl-l1-exact-allocation-search-limit",
+        default=None,
+        dest="l1_exact_allocation_search_limit",
+        type=_positive_int,
+        help="Limit exact compiler-managed SRAM placement to this many work "
+        "items (default: 1000000).",
     )
     p.add_argument(
         "--ttl-maximize-dst",
@@ -210,7 +227,7 @@ def _make_parser() -> argparse.ArgumentParser:
         default=None,
         dest="l1_budget",
         type=int,
-        help="Override the per-core L1 allocation budget in bytes used by DFB "
+        help="Override the per-core SRAM allocation budget in bytes used by DFB "
         "allocation, synchronized reset and reconfiguration state, PipeNet "
         "resources, and final combined validation (default: auto-detect from "
         "device, or "
@@ -272,7 +289,8 @@ class CompilerOptions:
     matmul_full_fp32: bool = True
     strict_f32_acc: bool = False
     memory_model: str = "metal-cb"
-    l1_allocation_strategy: str = "first-fit-decreasing"
+    l1_allocation_strategy: str = "multi-order-decreasing"
+    l1_exact_allocation_search_limit: int = 1_000_000
     compiler_dfbs: bool = True
     pipe_computed_addresses: bool = True
     pipe_capacity_sync: bool = True
@@ -295,12 +313,14 @@ class CompilerOptions:
         """Validate options that can be constructed without argparse."""
         if self.memory_model not in ("metal-cb", "compiler-l1"):
             raise ValueError(f"Invalid memory model {self.memory_model!r}")
-        if self.l1_allocation_strategy not in _L1_ALLOCATION_STRATEGIES:
+        if self.l1_allocation_strategy not in _SRAM_ALLOCATION_STRATEGIES:
             raise ValueError(
-                "Invalid L1 allocation strategy "
+                "Invalid SRAM allocation strategy "
                 f"{self.l1_allocation_strategy!r}; expected one of "
-                f"{sorted(_L1_ALLOCATION_STRATEGIES)}"
+                f"{sorted(_SRAM_ALLOCATION_STRATEGIES)}"
             )
+        if self.l1_exact_allocation_search_limit <= 0:
+            raise ValueError("SRAM exact allocation search limit must be positive")
         if self.accumulation_strategy not in _ACCUMULATION_STRATEGIES:
             raise ValueError(
                 "Invalid accumulation strategy "
