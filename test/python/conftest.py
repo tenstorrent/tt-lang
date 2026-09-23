@@ -85,6 +85,16 @@ def pytest_configure(config):
         "multi_device: needs a fabric mesh; excluded from the "
         "per-chip parallel run and executed serially",
     )
+    config.addinivalue_line(
+        "markers",
+        "hybrid_allocator: requires TT-Metal hybrid allocation for the test process",
+    )
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Enable hybrid allocation before any selected test opens a device."""
+    if any(item.get_closest_marker("hybrid_allocator") for item in items):
+        os.environ["TT_METAL_ALLOCATOR_MODE_HYBRID"] = "1"
 
 
 # =============================================================================
