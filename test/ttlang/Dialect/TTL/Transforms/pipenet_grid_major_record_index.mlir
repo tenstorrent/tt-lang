@@ -1,7 +1,8 @@
 // RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s
 
 // Summary: Verify dense edge-major, grid-major device records select only the
-// current device's edge blocks and current node's record.
+// current device's edge blocks and current node's record. Domain verification
+// proves the record-index arithmetic cannot wrap.
 
 // Each device is the source of one edge. The lowering indexes a compact
 // device-to-edge range, then combines the selected edge block with the
@@ -19,8 +20,8 @@
 // CHECK-NEXT: %[[UPPER:.*]] = ttkernel.experimental.constant_table_lookup %[[NEXT_DEVICE]], [0, 1, 2] : index
 // CHECK: scf.for %[[EDGE_POSITION:.*]] = %[[LOWER]] to %[[UPPER]] step
 // CHECK-NEXT: %[[EDGE_BLOCK:.*]] = ttkernel.experimental.constant_table_lookup %[[EDGE_POSITION]], [0, 1] : index
-// CHECK-NEXT: %[[EDGE_OFFSET:.*]] = arith.muli %[[EDGE_BLOCK]], %{{.*}} : index
-// CHECK-NEXT: %[[RECORD:.*]] = arith.addi %[[EDGE_OFFSET]], %[[NODE_INDEX]] : index
+// CHECK-NEXT: %[[EDGE_OFFSET:.*]] = arith.muli %[[EDGE_BLOCK]], %{{.*}} overflow<nuw> : index
+// CHECK-NEXT: %[[RECORD:.*]] = arith.addi %[[EDGE_OFFSET]], %[[NODE_INDEX]] overflow<nuw> : index
 // CHECK-NOT: arith.cmpi
 // CHECK: ttkernel.routing_plane.fused_write_atomic_inc
 // CHECK-NOT: ttl.pipenet_local_record_loop
@@ -39,8 +40,8 @@
 // CHECK-NEXT: %[[DST_UPPER:.*]] = ttkernel.experimental.constant_table_lookup %[[DST_NEXT_DEVICE]], [0, 1, 2] : index
 // CHECK: scf.for %[[DST_EDGE_POSITION:.*]] = %[[DST_LOWER]] to %[[DST_UPPER]] step
 // CHECK-NEXT: %[[DST_EDGE_BLOCK:.*]] = ttkernel.experimental.constant_table_lookup %[[DST_EDGE_POSITION]], [1, 0] : index
-// CHECK-NEXT: %[[DST_EDGE_OFFSET:.*]] = arith.muli %[[DST_EDGE_BLOCK]], %{{.*}} : index
-// CHECK-NEXT: %[[DST_RECORD:.*]] = arith.addi %[[DST_EDGE_OFFSET]], %[[DST_NODE_INDEX]] : index
+// CHECK-NEXT: %[[DST_EDGE_OFFSET:.*]] = arith.muli %[[DST_EDGE_BLOCK]], %{{.*}} overflow<nuw> : index
+// CHECK-NEXT: %[[DST_RECORD:.*]] = arith.addi %[[DST_EDGE_OFFSET]], %[[DST_NODE_INDEX]] overflow<nuw> : index
 // CHECK-NOT: arith.cmpi
 // CHECK: ttkernel.routing_plane.atomic_inc
 // CHECK-NOT: ttl.pipenet_local_record_loop

@@ -63,7 +63,7 @@ module attributes {ttl.launch_grid = array<i64: 4, 1>} {
                 destination = <coordinates = [1]>>>>
 ]>
 
-// Dense graph records lower to one logical-device-indexed count lookup.
+// Materialized device-transfer records lower to one device-indexed count lookup.
 module attributes {ttl.launch_grid = array<i64: 1, 1>} {
   func.func private @consume(index)
 
@@ -75,6 +75,53 @@ module attributes {ttl.launch_grid = array<i64: 1, 1>} {
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     %count = ttl.pipenet_destination_count {
         pipe_net_id = 1 : i64, records = #device_records} : index
+    func.call @consume(%count) : (index) -> ()
+    func.return
+  }
+}
+
+// -----
+
+#mixed_domain = #ttl.device_domain<
+    components = <name = "device", extent = [4]>>
+#mixed_records = #ttl.pipenet_records<net 3 name "all_to_all" mappings
+  <graph = <domain = #mixed_domain, kind = explicit, properties = {
+    edges = [
+      #ttl.transfer_edge<source = <coordinates = [0]>,
+                         destination = <coordinates = [0]>>,
+      #ttl.transfer_edge<source = <coordinates = [1]>,
+                         destination = <coordinates = [1]>>,
+      #ttl.transfer_edge<source = <coordinates = [2]>,
+                         destination = <coordinates = [2]>>,
+      #ttl.transfer_edge<source = <coordinates = [3]>,
+                         destination = <coordinates = [3]>>
+    ]}>,
+   pipes[<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
+          dstEndX = 0, dstEndY = 0>]>,
+  <graph = <domain = #mixed_domain, kind = all_to_all,
+    componentName = "device", properties = {}>,
+   pipes[<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
+          dstEndX = 0, dstEndY = 0>]>>
+
+// Local and remote relation groups contribute to one logical destination
+// count. Every device receives its own contribution plus three remote ones.
+module attributes {ttl.launch_grid = array<i64: 1, 1>} {
+  func.func private @consume(index)
+
+  // CHECK-LABEL: func.func @mixed_destination_count
+  // CHECK: %[[REMOTE_COUNT:.*]] = arith.constant 3 : index
+  // CHECK: %[[DEVICE_I32:.*]] = ttkernel.get_common_arg_val
+  // CHECK: %[[DEVICE:.*]] = arith.index_cast %[[DEVICE_I32]]
+  // CHECK: %[[LOCAL_COUNT:.*]] = scf.for %[[LOCAL_ORDINAL:.*]] = %{{.*}} iter_args
+  // CHECK: %[[LOCAL_ENDPOINT:.*]] = ttkernel.experimental.constant_table_lookup %[[LOCAL_ORDINAL]]
+  // CHECK-NEXT: %[[LOCAL_MATCH:.*]] = arith.cmpi eq, %[[DEVICE]], %[[LOCAL_ENDPOINT]]
+  // CHECK: arith.select %[[LOCAL_MATCH]]
+  // CHECK: %[[TOTAL_COUNT:.*]] = arith.addi %[[LOCAL_COUNT]], %[[REMOTE_COUNT]]
+  // CHECK: call @consume(%[[TOTAL_COUNT]])
+  func.func @mixed_destination_count()
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %count = ttl.pipenet_destination_count {
+        pipe_net_id = 3 : i64, records = #mixed_records} : index
     func.call @consume(%count) : (index) -> ()
     func.return
   }

@@ -11,7 +11,7 @@
 # RUN: %python %s --report-kernel-size < %t.output | FileCheck %s --check-prefix=CHECK-SIZE
 # RUN: FileCheck %s --check-prefix=CHECK-NO-DESCRIPTOR-ARRAYS < %t.output
 
-"""Compile-only coverage for large table-driven PipeNet callback lowering."""
+"""Compile-only coverage for scalable PipeNet callback lowering."""
 
 import re
 import sys
@@ -197,12 +197,16 @@ if __name__ == "__main__":
 # CHECK-INITIAL-NOT: ttl.create_pipe
 # CHECK-INITIAL: ttl.pipenet_foreach_src
 # CHECK-INITIAL-SAME: name "DEVICE_ALL_TO_ALL_NET"
-# CHECK-INITIAL-SAME: deviceTransfer
+# CHECK-INITIAL-SAME: kind = all_to_all
+# CHECK-INITIAL-SAME: pipes[<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0
+# CHECK-INITIAL-NOT: deviceTransfer
 # CHECK-INITIAL: ^bb0(%{{.*}}: !ttl.selected_pipe_src):
 # CHECK-INITIAL: ttl.copy
 # CHECK-INITIAL: ttl.pipenet_foreach_dst
 # CHECK-INITIAL-SAME: name "DEVICE_ALL_TO_ALL_NET"
-# CHECK-INITIAL-SAME: deviceTransfer
+# CHECK-INITIAL-SAME: kind = all_to_all
+# CHECK-INITIAL-SAME: pipes[<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0
+# CHECK-INITIAL-NOT: deviceTransfer
 # CHECK-INITIAL: ^bb0(%{{.*}}: !ttl.selected_pipe_dst):
 # CHECK-INITIAL: ttl.copy
 # CHECK-INITIAL-NOT: ttl.if_src

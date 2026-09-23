@@ -16,9 +16,12 @@
 // CHECK-NEXT: ttkernel.experimental.semaphore_wait_min
 // CHECK-NEXT: %[[MANAGER:.*]] = ttkernel.routing_plane.create_connection_manager
 // CHECK-NEXT: %[[CONNECTION_COUNT:.*]] = ttkernel.routing_plane.open_connections %[[MANAGER]],
-// CHECK-NEXT: ttkernel.routing_plane.atomic_inc(%[[MANAGER]], %[[CONNECTION_COUNT]],
+// CHECK: ttkernel.routing_plane.atomic_inc(%[[MANAGER]], %[[CONNECTION_COUNT]],
 // CHECK: ttkernel.routing_plane.close_connections(%[[MANAGER]],
 // CHECK-NEXT: ttkernel.noc_semaphore_set
+// CHECK-NEXT: %[[COMPLETION_ARG_INDEX:.*]] = ttkernel.experimental.constant_table_lookup
+// CHECK-NEXT: %[[COMPLETION_ADDRESS:.*]] = ttkernel.get_common_arg_val(%[[COMPLETION_ARG_INDEX]])
+// CHECK-NEXT: %[[COMPLETION_PTR:.*]] = ttkernel.reinterpret_cast(%[[COMPLETION_ADDRESS]])
 // CHECK-NEXT: ttkernel.experimental.semaphore_wait_min
 // CHECK-NEXT: ttkernel.cb_push_back
 // CHECK-NOT: ttkernel.cb_reserve_back
