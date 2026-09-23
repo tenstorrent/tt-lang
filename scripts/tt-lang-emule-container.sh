@@ -143,16 +143,22 @@ linux/amd64 through the container runtime's x86 virtualization.
 EOF
 }
 
-if [ "$#" -eq 0 ]; then
-    usage
-    exit 2
-fi
-
-_SCRIPT_ARGUMENT="$1"
-shift
-if [ ! -f "$_SCRIPT_ARGUMENT" ]; then
-    echo "tt-lang-sim: script not found: ${_SCRIPT_ARGUMENT}" >&2
-    exit 2
+if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ]; then
+    if [ "$#" -ne 0 ]; then
+        echo "tt-lang-sim: installation does not accept script arguments." >&2
+        exit 2
+    fi
+else
+    if [ "$#" -eq 0 ]; then
+        usage
+        exit 2
+    fi
+    _SCRIPT_ARGUMENT="$1"
+    shift
+    if [ ! -f "$_SCRIPT_ARGUMENT" ]; then
+        echo "tt-lang-sim: script not found: ${_SCRIPT_ARGUMENT}" >&2
+        exit 2
+    fi
 fi
 
 if ! command -v "$_DOCKER" >/dev/null 2>&1; then
@@ -168,9 +174,6 @@ if ! "$_DOCKER" info >/dev/null 2>&1; then
 fi
 
 _HOST_CWD="$(pwd -P)"
-_SCRIPT_ABSOLUTE="$(realpath "$_SCRIPT_ARGUMENT")"
-_SCRIPT_DIR_HOST="$(dirname "$_SCRIPT_ABSOLUTE")"
-_SCRIPT_BASENAME="$(basename "$_SCRIPT_ABSOLUTE")"
 
 _RUN_ARGS=(
     run
@@ -220,7 +223,11 @@ case "${_HOST_CWD}/" in
         ;;
 esac
 
-case "${_SCRIPT_ABSOLUTE}" in
+if [ "${TTLANG_EMULE_INSTALL:-0}" != "1" ]; then
+    _SCRIPT_ABSOLUTE="$(realpath "$_SCRIPT_ARGUMENT")"
+    _SCRIPT_DIR_HOST="$(dirname "$_SCRIPT_ABSOLUTE")"
+    _SCRIPT_BASENAME="$(basename "$_SCRIPT_ABSOLUTE")"
+    case "${_SCRIPT_ABSOLUTE}" in
     "${_REPO_ROOT}/"*)
         _CONTAINER_SCRIPT="/workspace${_SCRIPT_ABSOLUTE#"$_REPO_ROOT"}"
         ;;
@@ -231,7 +238,8 @@ case "${_SCRIPT_ABSOLUTE}" in
         _CONTAINER_SCRIPT="/ttlang-script/${_SCRIPT_BASENAME}"
         _RUN_ARGS+=(--mount "type=bind,src=${_SCRIPT_DIR_HOST},dst=/ttlang-script")
         ;;
-esac
+    esac
+fi
 
 _RUN_ARGS+=(--workdir "$_CONTAINER_CWD")
 
@@ -365,5 +373,6 @@ if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ]; then
     printf 'Runtime image: %s\n' "$_IMAGE"
     printf 'Compiler build volume: %s\n' "$_BUILD_VOLUME"
     printf 'Runtime cache volume: %s\n' "$_CACHE_VOLUME"
+    exec "$_DOCKER" "${_RUN_ARGS[@]}" "$_IMAGE"
 fi
 exec "$_DOCKER" "${_RUN_ARGS[@]}" "$_IMAGE" "$_CONTAINER_SCRIPT" "$@"

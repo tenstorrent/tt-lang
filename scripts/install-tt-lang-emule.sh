@@ -11,9 +11,7 @@ if [ "$#" -ne 0 ]; then
 fi
 
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-_REPO_ROOT="$(dirname "$_SCRIPT_DIR")"
-readonly _SCRIPT_DIR _REPO_ROOT
+readonly _SCRIPT_DIR
 
 export TTLANG_EMULE_INSTALL=1
-exec "${_SCRIPT_DIR}/tt-lang-emule-container.sh" \
-    "${_REPO_ROOT}/examples/compiler_only_external_call.py"
+exec "${_SCRIPT_DIR}/tt-lang-emule-container.sh"

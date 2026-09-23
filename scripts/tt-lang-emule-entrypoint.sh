@@ -10,13 +10,20 @@ readonly TTLANG_BUILD_DIR="${TTLANG_EMULE_BUILD_DIR:-/ttlang-build}"
 readonly TT_METAL_SOURCE_DIR="/opt/tt-emule-runtime/tt-metal"
 readonly TT_METAL_BUILD_DIR="${TT_METAL_SOURCE_DIR}/build_emule"
 
-if [ "$#" -eq 0 ]; then
-    echo "tt-lang emule container: no Python script was provided." >&2
-    exit 2
-fi
-if [ ! -f "$1" ]; then
-    echo "tt-lang emule container: script not found: $1" >&2
-    exit 2
+if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ]; then
+    if [ "$#" -ne 0 ]; then
+        echo "tt-lang emule container: installation does not accept script arguments." >&2
+        exit 2
+    fi
+else
+    if [ "$#" -eq 0 ]; then
+        echo "tt-lang emule container: no Python script was provided." >&2
+        exit 2
+    fi
+    if [ ! -f "$1" ]; then
+        echo "tt-lang emule container: script not found: $1" >&2
+        exit 2
+    fi
 fi
 
 for _TARGET_SETTING in TT_METAL_MOCK_CLUSTER_DESC_PATH \

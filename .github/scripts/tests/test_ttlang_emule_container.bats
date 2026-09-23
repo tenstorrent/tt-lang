@@ -327,13 +327,14 @@ EOF
 
 @test "installer is the only public path that enables installation" {
     cd "$TTLANG_REPO_ROOT"
+    rm examples/compiler_only_external_call.py
     TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$INSTALLER"
     assert_output --partial "Runtime image: tt-lang-emule:"
     assert_output --partial "Compiler build volume: tt-lang-emule-build-"
     assert_output --partial "Runtime cache volume: tt-lang-emule-cache-"
 
     assert_log_line "TTLANG_EMULE_INSTALL=1"
-    assert_log_line "/workspace/examples/compiler_only_external_call.py"
+    refute_log_contains "/workspace/examples/"
 
     run -2 "$INSTALLER" unexpected
     assert_output --partial "Usage: scripts/install-tt-lang-emule.sh"
@@ -535,7 +536,7 @@ PY
             TTLANG_EMULE_REBUILD="$rebuild" \
             TTLANG_EMULE_RUNTIME_SOURCE_DIR="$source_dir" \
             TTLANG_EMULE_RUNTIME_SOURCE_URL="$source_url" \
-            run -0 "$RUNNER" examples/eltwise_add.py
+            run -0 "$RUNNER"
 
         assert_log_line "build"
         assert_log_contains "Dockerfile.emule"
@@ -582,7 +583,7 @@ PY
         TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
         TTLANG_EMULE_INSTALL=1 \
         TTLANG_EMULE_RUNTIME_SOURCE_DIR="$TTLANG_REPO_ROOT" \
-        run -1 "$RUNNER" examples/eltwise_add.py
+        run -1 "$RUNNER"
 
     assert_output --partial "emulator target descriptor is missing"
     assert_output --partial "blackhole_P150_unharvested.yaml"
@@ -596,7 +597,7 @@ PY
         TTLANG_EMULE_INSTALL=1 \
         TTLANG_EMULE_RUNTIME_SOURCE_DIR="$TTLANG_REPO_ROOT" \
         TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
-        run -1 "$RUNNER" examples/eltwise_add.py
+        run -1 "$RUNNER"
 
     assert_output --partial "emulator source must be at"
     refute_log_line "build"
@@ -609,7 +610,7 @@ PY
         TTLANG_EMULE_INSTALL=1 \
         TTLANG_EMULE_RUNTIME_SOURCE_DIR="$BATS_TEST_TMPDIR/missing" \
         TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
-        run -1 "$RUNNER" examples/eltwise_add.py
+        run -1 "$RUNNER"
 
     assert_output --partial "source directory not found"
     refute_log_line "build"
@@ -786,7 +787,7 @@ PY
         TTLANG_EMULE_SOURCE_FINGERPRINT="$source_fingerprint" \
         TTLANG_EMULE_BUILD_DIR="$build_dir" \
         TTLANG_EMULE_SOURCE_DIR="$TTLANG_REPO_ROOT" \
-        run -0 /bin/bash "$test_entrypoint" "$program" "argument with spaces"
+        run -0 /bin/bash "$test_entrypoint"
 
     assert_output --partial \
         "Installed compiler-backed emule environment for bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb."
