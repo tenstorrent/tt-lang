@@ -222,14 +222,6 @@ def _make_parser() -> argparse.ArgumentParser:
         "while retaining their assigned processor (default: disabled).",
     )
     p.add_argument(
-        "--ttl-dynamic-noc",
-        default=None,
-        dest="dynamic_noc",
-        action=argparse.BooleanOptionalAction,
-        help="Allow data-movement kernels to select either NOC dynamically "
-        "while retaining their assigned processor (default: disabled).",
-    )
-    p.add_argument(
         "--ttl-l1-budget",
         default=None,
         dest="l1_budget",
