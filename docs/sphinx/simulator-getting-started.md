@@ -109,8 +109,11 @@ path. In this example, `program.py` is relative to the current directory:
 /path/to/tt-lang/bin/tt-lang-sim --backend=emule program.py
 ```
 
-Use the default Python backend to run programs directly in the host Python
-environment:
+To run programs directly on the host with the default Python backend, first
+install and activate the environment described in
+[Python backend setup](simulator.md#setup). The emule installer prepares the
+container environment; native Python simulation uses its own host dependencies.
+From the activated host environment:
 
 ```bash
 ./bin/tt-lang-sim program.py
