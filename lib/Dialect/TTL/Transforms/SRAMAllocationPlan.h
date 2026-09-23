@@ -7,6 +7,8 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/Transforms/DFBLogicalIdentityAnalysis.h"
 
+#include <optional>
+
 namespace mlir::tt::ttl {
 
 inline constexpr uint64_t kSRAMControlRecordBytes = 2 * sizeof(uint32_t);
@@ -38,11 +40,20 @@ struct SRAMStorage {
   SmallVector<unsigned> members;
 };
 
+/// A worker node's payload layout; absent payloads retain no arena extent.
+struct SRAMNodeLayout {
+  LaunchNodeCoord node;
+  llvm::SmallVector<std::optional<uint64_t>> payloadOffsets;
+  uint64_t arenaBytes;
+  unsigned domain;
+};
+
 /// Validated per-node placement, consumed before any IR mutation.
 struct SRAMAllocationPlan {
   SmallVector<SRAMRegion> regions;
   SmallVector<SRAMStorage> storage;
   uint64_t arenaBytes;
+  llvm::SmallVector<SRAMNodeLayout> nodeLayouts;
 };
 
 } // namespace mlir::tt::ttl
