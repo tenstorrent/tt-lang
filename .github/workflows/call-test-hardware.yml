@@ -22,6 +22,11 @@ on:
         description: 'Docker image tag for the ird container.'
         required: true
         type: string
+      defer_result_check:
+        description: 'Allow a caller to check the aggregate hardware result.'
+        required: false
+        type: boolean
+        default: false
   workflow_call:
     inputs:
       hardware:
