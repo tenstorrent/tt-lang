@@ -51,8 +51,7 @@ readonly _PLATFORM="$_MANIFEST_PLATFORM"
 _IMAGE_INPUT_ID="$(
     {
         cksum "$_STACK_MANIFEST" \
-            "${_REPO_ROOT}/.github/containers/Dockerfile.emule" \
-            "${_SCRIPT_DIR}/tt-lang-emule-entrypoint.sh" |
+            "${_REPO_ROOT}/.github/containers/Dockerfile.emule" |
             awk '{print $1, $2}'
         printf '%s\n' "$_BASE_IMAGE" "$_PLATFORM"
     } |

@@ -402,12 +402,27 @@ EOF
 
     : > "$MOCK_DOCKER_LOG"
     printf '\n# changed image input\n' >> \
-        "$synthetic_root/scripts/tt-lang-emule-entrypoint.sh"
+        "$synthetic_root/.github/containers/Dockerfile.emule"
     TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$synthetic_runner" \
         "$synthetic_root/examples/program.py"
     second_image="$(awk '/^tt-lang-emule:/{print; exit}' "$MOCK_DOCKER_LOG")"
 
     [ "$first_image" != "$second_image" ]
+}
+
+@test "entrypoint edits use the mounted script without changing the runtime image" {
+    cd "$TTLANG_REPO_ROOT"
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$RUNNER" examples/program.py
+    local first_image
+    first_image="$(awk '/^tt-lang-emule:/{print; exit}' "$MOCK_DOCKER_LOG")"
+
+    printf '\n# changed launcher input\n' >> "$ENTRYPOINT"
+    : > "$MOCK_DOCKER_LOG"
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$RUNNER" examples/program.py
+
+    assert_log_line "$first_image"
+    assert_log_line "/workspace/scripts/tt-lang-emule-entrypoint.sh"
+    run -1 grep -F -- 'COPY tt-lang-emule-entrypoint.sh' "$DOCKERFILE"
 }
 
 @test "shallow checkout accepts its pinned HEAD but rejects an unavailable baseline" {
