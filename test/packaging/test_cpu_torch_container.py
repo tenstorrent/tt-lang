@@ -118,6 +118,42 @@ def test_container_build_uses_and_checks_cpu_torch():
         assert f".github/containers/{helper}" in uplift_paths
 
 
+@pytest.mark.parametrize(
+    "document", [".github/containers/README.md", "docs/sphinx/build.md"]
+)
+@pytest.mark.parametrize("failure", [False, True])
+def test_documented_toolchain_preparation(tmp_path, document, failure):
+    blocks = (REPO_ROOT / document).read_text().split("```bash\n")[1:]
+    commands = [
+        block.split("```")[0]
+        for block in blocks
+        if "prepare-toolchain-venv.sh" in block.split("```")[0]
+    ]
+    assert len(commands) == 1
+    containers = tmp_path / ".github" / "containers"
+    containers.mkdir(parents=True)
+    (containers / "prepare-toolchain-venv.sh").write_text(
+        'echo "prepare $*"\n' + ("exit 23\n" if failure else "")
+    )
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    (scripts / "build-and-install.sh").write_text(
+        'echo "configure $TTLANG_TOOLCHAIN_DIR $*"\n'
+    )
+    result = subprocess.run(
+        ["bash", "-c", commands[0]],
+        cwd=tmp_path,
+        env={**os.environ, "TTLANG_TOOLCHAIN_DIR": "/unrelated-toolchain"},
+        text=True,
+        capture_output=True,
+    )
+    expected = ["prepare /opt/ttlang-toolchain"]
+    if not failure:
+        expected.append("configure /opt/ttlang-toolchain --configure-only")
+    assert result.stdout.splitlines() == expected
+    assert result.returncode == (23 if failure else 0), result.stderr
+
+
 @pytest.mark.parametrize("source", ["current", "historical", "broken"])
 def test_configure_preserves_historical_source_overrides(tmp_path, source):
     workflow = yaml.safe_load(

@@ -38,9 +38,24 @@ commands below assume you are in the repo root.
 ### Prerequisites
 
 - Docker installed
-- For ird/dist: a built toolchain directory (see [Build Integration](../../docs/sphinx/build.md)).
-  Build one with `cmake -G Ninja -B build -DTTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain .`
-  followed by `cmake --build build`.
+- For ird/dist: a built Linux toolchain with a CPU-only PyTorch venv
+  (see [Build Integration](../../docs/sphinx/build.md)).
+
+Before configuring the toolchain, prepare its venv inside the base image,
+with the repository as the working directory and a fresh, writable toolchain
+directory mounted at its final path:
+
+```bash
+export TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain
+bash .github/containers/prepare-toolchain-venv.sh "$TTLANG_TOOLCHAIN_DIR" &&
+    bash scripts/build-and-install.sh --configure-only
+```
+
+For dist, follow configuration with `bash scripts/build-and-install.sh --build-and-install`
+to build and install tt-lang into the same toolchain directory. The preparation
+step preserves existing packages and rejects GPU-enabled environments; a fresh
+packaging venv allows existing CUDA or Triton development environments to remain
+unchanged.
 
 ### Quick start: build all images
 
@@ -55,7 +70,7 @@ local-only (no `ghcr.io/` tags) so they don't shadow registry images.
 
 The `ird` and `dist` images require a pre-built toolchain directory passed
 via `DOCKER_BUILD_EXTRA_ARGS`. Replace `/opt/ttlang-toolchain` with your
-toolchain path (produced by `cmake -DTTLANG_TOOLCHAIN_DIR=...`):
+toolchain path prepared as described above:
 
 ```bash
 # IRD: toolchain only (for developers)
@@ -80,9 +95,9 @@ The `build-docker-images.sh` script:
 
 The toolchain (LLVM + tt-metal + Python venv) must be built separately
 before building `ird`/`dist` images. On CI this is done by
-`scripts/build-and-install.sh`; locally you build it with
-`cmake -DTTLANG_TOOLCHAIN_DIR=/path/to/prefix` and then pass the path
-via `DOCKER_BUILD_EXTRA_ARGS` as shown above.
+`scripts/build-and-install.sh`; local builds use the CPU-only preparation and
+configuration steps above, then pass the toolchain path via
+`DOCKER_BUILD_EXTRA_ARGS`.
 
 The Dockerfile declares placeholder stages (`FROM scratch AS ird-toolchain`)
 that are overridden at build time by `--build-context ird-toolchain=/path`.

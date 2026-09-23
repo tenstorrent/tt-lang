@@ -562,8 +562,9 @@ before configuring tt-lang. Local packaging uses the same preparation step
 inside the base image, with the toolchain directory mounted at its final path:
 
 ```bash
-bash .github/containers/prepare-toolchain-venv.sh /opt/ttlang-toolchain
-bash scripts/build-and-install.sh --configure-only
+export TTLANG_TOOLCHAIN_DIR=/opt/ttlang-toolchain
+bash .github/containers/prepare-toolchain-venv.sh "$TTLANG_TOOLCHAIN_DIR" &&
+    bash scripts/build-and-install.sh --configure-only
 ```
 
 Both final image stages verify that PyTorch is CPU-only and that the toolchain
