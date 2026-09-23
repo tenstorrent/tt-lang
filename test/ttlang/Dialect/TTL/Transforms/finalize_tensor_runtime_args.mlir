@@ -89,6 +89,7 @@ func.func @preserve_unresolved_index(%index: index)
 // External descriptors retain their tensor-backed storage argument.
 // CHECK-LABEL: func.func @retain_external_descriptor_tensor
 // CHECK-SAME: ttl.crta_indices = [7 : i32]
+// CHECK-SAME: ttl.local_tensor_indices = [7 : i32]
 module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [
   {storage_segments = [{tensor_backing = #ttl.tensor_backing<tensor_index = 7, byte_offset = 0, byte_size = 2048>}]}
 ]} {
@@ -96,6 +97,25 @@ module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [
       attributes {ttl.crta_indices = [4, 7, 9],
                   ttl.kernel_thread = #ttkernel.thread<compute>} {
     ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<0, 1, 1, 2048>] () {dfb_resource_indices = array<i32: 0>, header = "describe.hpp"} : () -> ()
+    return
+  }
+}
+
+// -----
+
+// A directly accessed DFB marks its tensor backing as local storage.
+// CHECK-LABEL: func.func @retain_local_dfb_tensor
+// CHECK-SAME: ttl.crta_indices = [7 : i32]
+// CHECK-SAME: ttl.local_tensor_indices = [7 : i32]
+module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [
+  {storage_segments = [{tensor_backing = #ttl.tensor_backing<tensor_index = 7, byte_offset = 0, byte_size = 2048>}]}
+]} {
+  func.func @retain_local_dfb_tensor()
+      attributes {ttl.crta_indices = [4, 7, 9],
+                  ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %dfb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<0, !ttcore.tile<32x32, bf16>>
+    %one = arith.constant 1 : i32
+    ttkernel.cb_wait_front(%dfb, %one) : (!ttkernel.cb<0, !ttcore.tile<32x32, bf16>>, i32) -> ()
     return
   }
 }

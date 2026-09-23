@@ -1081,7 +1081,14 @@ def TTLFinalizeDFBIndices
     records. The selected SRAM allocation strategy places payloads over the
     concurrent-kernel storage conflict graph; unknown completion prohibits reuse.
     The complete plan is validated before mutation. Runtime metadata supplies
-    state and payload offsets within one allocator-owned SRAM arena. The arena
+    state and payload offsets within allocator-owned SRAM arenas.
+    `sram-allocation-mode=uniform` uses one layout on all participating cores.
+    `per-core` requires an exact launch grid and omits payloads proven inactive
+    on each core. Multicast receiver groups share a layout to preserve equal
+    destination addresses; overlapping groups merge transitively. All domains
+    retain the same control-record offsets. Domain placement is validated
+    before any metadata changes. The runtime binds each core and device to its
+    arena address using TT-Metal's existing host allocation interfaces. The arena
     high-water mark includes alignment and state. The decreasing strategies
     produce feasible placements. The default compares stable and conflict-degree
     ordering among equal extents and retains the smaller arena, preserving stable
@@ -1270,6 +1277,8 @@ def TTLFinalizeDFBIndices
     Option<"reuseUserDFBs", "reuse-user-dfbs", "bool", "true",
            "Reuse physical DFB indices and compiler-managed storage for "
            "lifetimes proven not to overlap across concurrent kernels.">,
+    Option<"sramAllocationMode", "sram-allocation-mode", "std::string",
+           "\"uniform\"", "SRAM allocation domains: uniform or per-core">,
     Option<"sramAllocationReport", "sram-allocation-report", "bool", "false",
            "Emit a versioned JSON report of compiler-managed SRAM ownership, "
            "reuse, conflicts, and planned arena bytes.">,
@@ -1279,7 +1288,8 @@ def TTLFinalizeDFBIndices
            "compiler-l1 payload placement.">,
     Option<"l1ExactAllocationSearchLimit",
            "l1-exact-allocation-search-limit", "uint64_t", "1000000",
-           "Maximum work items examined by exact compiler-managed SRAM placement before "
+           "Maximum work items examined per allocation domain by exact "
+           "compiler-managed SRAM placement before "
            "reporting an inconclusive result.">,
     Option<"unsafeAssumeAllocationGroups", "unsafe-assume-allocation-groups",
            "bool", "false",
@@ -1520,6 +1530,11 @@ def TTKernelSpecializeCores
     can then resolve coordinate-dependent control flow. The runtime uses
     `ttl.core_coord` to dispatch each clone to its assigned core.
 
+    Compiler-managed per-core SRAM requires specialization of every kernel,
+    including kernels without coordinate-dependent control flow. This binds
+    each kernel to one finalized arena layout. Referenced kernels are rejected
+    before cloning in that mode.
+
     Functions with symbol uses remain unspecialized because replacing them
     would require rewriting their references. The pass emits a warning for
     each such function and continues specializing independent functions.
@@ -1652,9 +1667,11 @@ def TTKernelAnnotateDFBUse
     Runs after per-core specialization and canonicalization.
     For each `ttkernel.thread` function, records the
     sorted physical DFB indices reached through surviving
-    `ttkernel.get_compile_time_arg_val` operations below
-    `ttl.base_cta_index` and `dfb_resource_indices` metadata on surviving
-    `ttkernel.opaque_call` operations in `ttl.used_dfb_indices`. The metadata
+    `ttkernel.get_compile_time_arg_val` operations below the finalized
+    `ttl.dfb_allocations` count and `dfb_resource_indices` metadata on
+    surviving `ttkernel.opaque_call` operations in `ttl.used_dfb_indices`.
+    Without finalized allocation metadata, the pass uses
+    `ttl.base_cta_index`. The metadata
     preserves resource requirements after lowering replaces DFB operands with
     static values. Helpers stay in the call-graph analysis so their uses
     propagate to kernel entries.
@@ -1693,8 +1710,9 @@ def TTKernelFinalizeTensorRuntimeArgs
     `ttl.crta_indices` retains the corresponding global tensor indices.
 
     The pass also records the surviving tensors used to construct
-    `LocalTensorAccessor` values in `ttl.local_tensor_indices`. The runtime uses
-    this metadata to require local tensor shards on every executing core.
+    `LocalTensorAccessor` values or back locally accessed compiler-managed DFBs
+    in `ttl.local_tensor_indices`. The runtime uses this metadata to require
+    local tensor shards on every executing core.
 
     Dynamic common-argument indices represented by
     `ttkernel.experimental.constant_table_lookup` are rewritten with the same
