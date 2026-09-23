@@ -2,12 +2,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Add two tensors while calling user-provided C++ from a compiled kernel.
-
-The external marker is intentionally a no-op: the tensor golden checks the
-normal kernel path while the generated C++ proves that ``ttl.call_extern_func``
-was lowered. The Python simulator intentionally rejects that compiler-only API.
-"""
+"""Add two tensors in external C++ and check the result against PyTorch."""
 
 import os
 
@@ -16,7 +11,7 @@ import ttl
 import ttnn
 
 TILE_SIZE = 32
-EXTERNAL_HEADER = os.path.join(os.path.dirname(__file__), "compiler_only_marker.hpp")
+EXTERNAL_HEADER = os.path.join(os.path.dirname(__file__), "compiler_only_add.hpp")
 
 
 @ttl.operation(grid=(1, 1))
@@ -30,16 +25,18 @@ def compiler_only_external_call(a_in, b_in, out):
 
     @ttl.compute()
     def compute():
-        ttl.call_extern_func(EXTERNAL_HEADER, "compiler_only_marker")
-
         for row in range(row_tiles):
             for col in range(col_tiles):
                 with (
-                    a_dfb.wait() as a_block,
-                    b_dfb.wait() as b_block,
-                    out_dfb.reserve() as out_block,
+                    a_dfb.wait(),
+                    b_dfb.wait(),
+                    out_dfb.reserve(),
                 ):
-                    out_block.store(a_block + b_block)
+                    ttl.call_extern_func(
+                        EXTERNAL_HEADER,
+                        "ckernel::compiler_only_add",
+                        func_args=[a_dfb, b_dfb, out_dfb],
+                    )
 
     @ttl.datamovement()
     def read():
