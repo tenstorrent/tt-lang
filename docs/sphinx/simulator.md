@@ -72,69 +72,14 @@ installation. From an installed source checkout:
 ./bin/tt-lang-sim --backend=emule examples/eltwise_add.py
 ```
 
-Install the complete supported compiler, emulator, and tt-metal environment
-before running a program:
-
-```bash
-./scripts/install-tt-lang-emule.sh
-```
-
-Installation uses the exact runtime pins in `config/tt-lang-emule-stack.json`
-and builds the current compiler checkout, which must contain the manifest's
-compiler baseline. The installer prepares these components together as a
-reusable environment. Program runs use the installed compiler and runtime.
-
-Run and select compiler tests with CMake, pytest, and lit. See the
-getting-started guide and
-[`test/TESTING.md`](https://github.com/tenstorrent/tt-lang/blob/main/test/TESTING.md)
-for commands and suite boundaries.
-
 The script imports the real `ttl` and `ttnn` packages, TT-Lang compiles each
 operation, and tt-metal dispatches the generated kernels to tt-emule.
 
-The supported compiler baseline, emulator commit, tt-metal, container, and
-target inputs are recorded together in `config/tt-lang-emule-stack.json`. The
-installer validates that the current TT-Lang checkout contains the compiler
-baseline. It also verifies the emulator checkout commit, the P150 descriptor,
-and the emulator's exact tt-metal pin before building. Run the same checks
-directly with:
-
-```bash
-python3 scripts/tt-lang-emule-stack.py \
-  --manifest config/tt-lang-emule-stack.json \
-  validate --compiler-source . --emulator-source /path/to/emulator
-```
-
-Every built image records its resolved inputs as OCI labels and in
-`/opt/tt-emule-runtime/stack.json`. The original supported-stack manifest is
-stored beside it as `source-manifest.json`, and its SHA-256 is verified while
-the image is built. These records identify the supported manifest and exact
-runtime inputs used to build the image. Inspect an artifact without running a
-workload with:
-
-```bash
-docker image inspect tt-lang-emule:TAG \
-  --format '{{json .Config.Labels}}'
-docker run --rm --entrypoint cat tt-lang-emule:TAG \
-  /opt/tt-emule-runtime/stack.json
-```
-
-The backend requires a running Docker-compatible daemon with support for
-`linux/amd64` containers because tt-emule JITs x86-64 shared objects. See
-[host prerequisites](simulator-getting-started.md#host-prerequisites) for
-installation and Apple Silicon configuration references.
-
-The installer builds the pinned tt-emule/tt-metal image and TT-Lang compiler.
-The compiler build and the tt-metal and tt-emule JIT caches live in named Docker
-volumes. Execution requires the installed compiler source to match the current
-checkout; after changing commits or compiler/build inputs, run the installer
-again. Workload scripts can be edited and rerun using the installed compiler.
-
-The initial supported target is a single emulated Blackhole P150 device with
-the full, unharvested 13x10 compute grid. The launcher selects the emulator's
-P150 descriptor and configures tt-metal's hybrid allocator before the device
-is opened. The installer checks that the runtime supplies the required P150
-descriptor before starting the Docker build.
+The getting-started guide covers
+[environment installation](simulator-getting-started.md#install-the-environment),
+[compiler tests](simulator-getting-started.md#run-tests-with-the-existing-test-framework),
+[source validation and image provenance](simulator-getting-started.md#validate-and-inspect-the-environment),
+and [supported workloads](simulator-getting-started.md#known-limitations).
 
 Use the Python backend for simulator options such as `--grid`, `--trace`, and
 `--no-float32-promotion`. For the emule backend, the pinned environment supplies

@@ -16,7 +16,8 @@ compiler baseline.
 - A Docker-compatible daemon, running and accessible without `sudo`. The
   [Docker installation guide](https://docs.docker.com/get-started/get-docker/)
   covers Docker Desktop on macOS and Docker Engine on Linux.
-- Support for `linux/amd64` containers. On Apple Silicon, see Docker Desktop's
+- Support for `linux/amd64` containers: tt-emule JITs x86-64 shared objects.
+  On Apple Silicon, see Docker Desktop's
   [virtualization and Rosetta settings](https://docs.docker.com/desktop/settings-and-maintenance/settings/#general)
   for x86-64 emulation support and acceleration.
 - The approved tt-emule repository URL and Git access to that repository. The
@@ -73,7 +74,8 @@ Installation prepares the compiler before the first program run. Subsequent
 image and volume caches. Run the installer again after changing compiler
 commits or build inputs, or to restore a missing image or incomplete compiler
 environment. The launcher checks the installation before executing a program
-and reports when reinstallation is needed.
+and reports when reinstallation is needed. The compiler build and the tt-metal
+and tt-emule JIT caches live in named Docker volumes.
 
 ## Run a program
 
@@ -197,10 +199,39 @@ the normal interface:
 ./bin/tt-lang-sim --backend=emule examples/single_node_matmul.py
 ```
 
+## Validate and inspect the environment
+
+The installer validates the current TT-Lang checkout against the manifest's
+compiler baseline. It also verifies the emulator checkout commit, the P150
+descriptor, and the emulator's exact tt-metal pin before building. Run the same
+checks directly with:
+
+```bash
+python3 scripts/tt-lang-emule-stack.py \
+  --manifest config/tt-lang-emule-stack.json \
+  validate --compiler-source . --emulator-source /path/to/emulator
+```
+
+Every built image records its resolved inputs as OCI labels and in
+`/opt/tt-emule-runtime/stack.json`. The original supported-stack manifest is
+stored beside it as `source-manifest.json`, and its SHA-256 is verified while
+the image is built. These records identify the supported manifest and exact
+runtime inputs used to build the image. Inspect an artifact without running a
+workload with:
+
+```bash
+docker image inspect tt-lang-emule:TAG \
+  --format '{{json .Config.Labels}}'
+docker run --rm --entrypoint cat tt-lang-emule:TAG \
+  /opt/tt-emule-runtime/stack.json
+```
+
 ## Known limitations
 
-The supported target is a single emulated Blackhole P150 device. Complete models
-and multi-device workloads require further validation.
+The supported target is a single emulated Blackhole P150 device with the full,
+unharvested 13x10 compute grid. The launcher selects the emulator's P150
+descriptor and configures tt-metal's hybrid allocator before opening the
+device. Complete models and multi-device workloads require further validation.
 
 Known compiler-suite failures with the pinned runtime include RISC-V inline
 assembly rejected by the x86 JIT, a missing RMSNorm SFPU header, incorrect results
