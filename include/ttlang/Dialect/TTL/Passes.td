@@ -141,7 +141,7 @@ def TTLFormPipeTransports
     bound; the pass selects a smaller group when the loop trip count or L1
     capacity requires it. Ineligible loops retain scalar transfer IR. After
     PipeNet lowering chooses exact resources, `convert-ttl-to-ttkernel`
-    validates the authoritative combined per-core allocation.
+    validates the authoritative combined per-node allocation.
   }];
 
   let options = [
@@ -149,7 +149,7 @@ def TTLFormPipeTransports
            "Maximum logical transfers per group. 0 selects automatically; "
            "1 disables grouping.">,
     Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
-           "Override the combined per-core L1 budget in bytes for "
+           "Override the combined per-node SRAM budget in bytes for "
            "transport selection.">
   ];
 
@@ -352,13 +352,13 @@ def TTLConvertTTLToTTKernel
 
     The pass validates finalized DFB backing plus the exact PipeNet and
     synchronized-reset scratch and DFB reconfiguration state against the
-    selected per-core L1 budget before lowering the operations.
+    selected per-node SRAM budget before lowering the operations.
 
     PipeNet IR must first pass `ttl-verify-pipenet-guards` and
     `ttl-verify-pipenet-schedule`. Those passes establish endpoint containment,
     exact launch-node domains, and single-block event regions required by
     protocol planning. After planning, this pass validates the authoritative
-    per-core L1 footprint: target-aligned finalized DFB allocations,
+    per-node SRAM footprint: target-aligned finalized DFB allocations,
     synchronized-reset state, reconfiguration tensors, PipeNet scratch, and
     GlobalSemaphore allocations.
   }];
@@ -385,7 +385,7 @@ def TTLConvertTTLToTTKernel
            "in GlobalSemaphore storage, leaving local hardware semaphore ids "
            "available to the application.">,
     Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
-           "Override the per-core L1 budget used for finalized DFB and "
+           "Override the per-node SRAM budget used for finalized DFB and "
            "scratch validation. 0 selects the target budget.">
   ];
 
@@ -1266,7 +1266,7 @@ def TTLFinalizeDFBIndices
            "Reuse physical DFB indices and compiler-managed storage for "
            "lifetimes proven not to overlap across concurrent kernels.">,
     Option<"sramAllocationMode", "sram-allocation-mode", "std::string",
-           "\"uniform\"", "SRAM allocation domains: uniform or per-core">,
+           "\"uniform\"", "SRAM allocation domains: uniform or per-node">,
     Option<"sramAllocationReport", "sram-allocation-report", "bool", "false",
            "Emit a versioned JSON report of compiler-managed SRAM ownership, "
            "reuse, conflicts, and planned arena bytes.">,
@@ -1288,14 +1288,14 @@ def TTLFinalizeDFBIndices
            "Maximum states examined by exact DFB allocation before reporting "
            "an inconclusive result.">,
     Option<"l1BudgetOverride", "l1-budget-override", "uint32_t", "0",
-           "Override the per-core L1 budget used by DFB allocation and "
+           "Override the per-node L1 budget used by DFB allocation and "
            "conservative PipeNet reservation. 0 selects the target budget.">
   ];
 }
 
 def TTLValidateCBBudget
     : Pass<"ttl-validate-cb-budget", "::mlir::ModuleOp"> {
-  let summary = "Validate total DFB allocation fits within per-core L1 budget";
+  let summary = "Validate total DFB allocation fits within per-node SRAM budget";
   let description = [{
     Module-level pass that runs after `ttl-finalize-dfb-indices`, before
     `convert-ttl-to-ttkernel`. For `compiler-sram`, it validates the finalized
@@ -1305,7 +1305,7 @@ def TTLValidateCBBudget
     static backing-store size per compiler-selected DFB storage index on each
     launch node, allocator-rounded synchronized-reset state, and one
     target-aligned configuration tensor per synchronized reconfiguration
-    boundary, then compares the maximum node result against a per-core L1
+    boundary, then compares the maximum node result against a per-node SRAM
     budget. Tensor-backed DFB storage is excluded because the tensor allocator
     owns that allocation. Unknown allocation domains conservatively contribute
     to every launch node; missing residency metadata uses the global descriptor
@@ -1326,7 +1326,7 @@ def TTLValidateCBBudget
     L1 budget is taken from the module's TTCore system descriptor and
     default device when present (`ChipDescAttr::getUsableL1Size()` for the
     selected chip). When the module has no system descriptor, the pass uses
-    the same static per-core DFB region limit as Wormhole and Blackhole
+    the same static per-node DFB region limit as Wormhole and Blackhole
     (total L1 minus reserved kernel space).
 
     This is a static DFB and fixed-state check. After exact PipeNet planning,
@@ -1522,9 +1522,9 @@ def TTKernelSpecializeCores
     constant-table entries reachable on each core. The runtime uses
     `ttl.core_coord` to dispatch each clone to its assigned core.
 
-    Compiler-managed per-core SRAM requires specialization of every kernel,
+    Compiler-managed per-node SRAM requires specialization of every kernel,
     including kernels without coordinate-dependent control flow. This binds
-    each kernel to one finalized arena layout. Referenced kernels are rejected
+    each kernel to one finalized node arena layout. Referenced kernels are rejected
     before cloning in that mode.
 
     Functions with symbol uses remain unspecialized because replacing them

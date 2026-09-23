@@ -222,7 +222,7 @@ struct TTKernelSpecializeCoresPass
     auto allocationMode =
         module->getAttrOfType<StringAttr>("ttl.sram_allocation_mode");
     bool independentStorage =
-        allocationMode && allocationMode.getValue() == "per-core";
+        allocationMode && allocationMode.getValue() == "per-node";
     SmallVector<func::FuncOp> targets;
     for (auto func : module.getOps<func::FuncOp>()) {
       bool requiresStorageBinding =
@@ -234,7 +234,7 @@ struct TTKernelSpecializeCoresPass
           uses && !uses->empty()) {
         if (requiresStorageBinding) {
           func.emitOpError(
-              "per-core SRAM kernel cannot have symbol references");
+              "per-node SRAM kernel cannot have symbol references");
           signalPassFailure();
           return;
         }

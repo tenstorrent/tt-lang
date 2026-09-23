@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 # REQUIRES: ttnn, tt-device
-# RUN: env TT_METAL_ALLOCATOR_MODE_HYBRID=1 TTLANG_COMPILER_OPTIONS=--ttl-sram-allocation-mode=per-core %python %s
+# RUN: env TT_METAL_ALLOCATOR_MODE_HYBRID=1 TTLANG_COMPILER_OPTIONS=--ttl-sram-allocation-mode=per-node %python %s
 # Verify independent SRAM allocation in a process configured before device opening.
 
 import json
@@ -21,7 +21,7 @@ pytestmark = pytest.mark.requires_device
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "sram"])
-def test_per_core_copy(device, dtype, allocator):
+def test_per_node_copy(device, dtype, allocator):
     expected = torch.randn(32, 32, dtype=dtype)
     source = allocator(expected, device)
     destination = allocator(torch.zeros_like(expected), device)
@@ -29,7 +29,7 @@ def test_per_core_copy(device, dtype, allocator):
         l1_copy(
             source,
             destination,
-            options="--ttl-memory-model=compiler-l1 --ttl-sram-allocation-mode=per-core",
+            options="--ttl-memory-model=compiler-l1 --ttl-sram-allocation-mode=per-node",
         )
         assert_allclose(
             ttnn.to_torch(destination).float(), expected.float(), rtol=0, atol=0
@@ -37,7 +37,7 @@ def test_per_core_copy(device, dtype, allocator):
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
-def test_per_core_mixed_extents(device, dtype, tmp_path):
+def test_per_node_mixed_extents(device, dtype, tmp_path):
     operation, pages, capacities, conflicts = _make_allocation_stress(
         tmp_path, ALLOCATION_SCHEDULES[0], (2, 2)
     )
@@ -47,7 +47,7 @@ def test_per_core_mixed_extents(device, dtype, tmp_path):
     operation(
         source,
         destination,
-        options="--ttl-memory-model=compiler-l1 --ttl-sram-allocation-mode=per-core",
+        options="--ttl-memory-model=compiler-l1 --ttl-sram-allocation-mode=per-node",
     )
     assert_allclose(
         ttnn.to_torch(destination).float(), expected.float(), rtol=0, atol=0
@@ -84,7 +84,7 @@ def uneven_core_copy(source, destination):
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "sram"])
-def test_per_core_uneven_reservation(device, dtype, allocator, monkeypatch, capfd):
+def test_per_node_uneven_reservation(device, dtype, allocator, monkeypatch, capfd):
     import ttl.kernel_runner as runner
 
     expected = torch.randn(64, 32, dtype=dtype)
@@ -104,7 +104,7 @@ def test_per_core_uneven_reservation(device, dtype, allocator, monkeypatch, capf
     # Explicit options take precedence over the process-wide test mode.
     monkeypatch.delenv("TTLANG_COMPILER_OPTIONS", raising=False)
     totals = {}
-    for mode in ("uniform", "per-core"):
+    for mode in ("uniform", "per-node"):
         allocations.clear()
         destination = allocator(torch.zeros_like(expected), device)
         capfd.readouterr()
@@ -132,19 +132,19 @@ def test_per_core_uneven_reservation(device, dtype, allocator, monkeypatch, capf
             num_bytes * cores for arena, num_bytes, cores in allocations
         )
         assert len(compiler_reports) == len(runtime_reports) == len(allocations)
-        if mode == "per-core":
+        if mode == "per-node":
             assert len(allocations) == 2
             assert all(arena.is_per_core_allocated() for arena, _, _ in allocations)
             assert len({num_bytes for _, num_bytes, _ in allocations}) == 2
     # The second core requires one tile instead of the first core's 16 tiles.
     assert (
-        totals["uniform"] - totals["per-core"] == 15 * 32 * 32 * expected.element_size()
+        totals["uniform"] - totals["per-node"] == 15 * 32 * 32 * expected.element_size()
     )
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "sram"])
-def test_per_core_receiver_order_is_deterministic(
+def test_per_node_receiver_order_is_deterministic(
     device, dtype, allocator, monkeypatch, tmp_path
 ):
     from pipe.test_compiler_l1_pipenet import compiler_l1_pipe_matmul
@@ -163,7 +163,7 @@ def test_per_core_receiver_order_is_deterministic(
             lhs,
             rhs,
             output,
-            options="--ttl-memory-model=compiler-l1 --ttl-sram-allocation-mode=per-core",
+            options="--ttl-memory-model=compiler-l1 --ttl-sram-allocation-mode=per-node",
         )
         assert_pcc(
             lhs_host.float() @ rhs_host.float(),

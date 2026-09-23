@@ -25,7 +25,7 @@ Shared terminology is defined in the [TT-Lang specification glossary](../sphinx/
 
 ## Allocation Model
 
-An invocation of a compiled Python `ttl.operation` with a nonempty allocation plan owns compiler-managed SRAM on each participating worker node. The default uses one relative layout on every node; per-core allocation can use different layouts. Kernels receive their local arena base as one common runtime argument, so the argument count does not depend on the number of logical DFBs.
+An invocation of a compiled Python `ttl.operation` with a nonempty allocation plan owns compiler-managed SRAM on each participating worker node. The default uses one relative layout on every node; per-node allocation can use different layouts. Kernels receive their local arena base as one common runtime argument, so the argument count does not depend on the number of logical DFBs.
 
 The arena has two sections:
 
@@ -133,7 +133,7 @@ SRAMAllocator::allocateDomains(
 
 ### Per-Core Allocation Domains
 
-`--ttl-sram-allocation-mode=per-core` requires an exact launch grid. The compiler groups multicast receivers that must use the same destination address; groups that share a node become one domain. Other nodes can have separate payload layouts. Every domain retains the same control-record offsets, while payloads proven inactive on a domain are omitted. The compiler then calls `allocateDomains` once with the complete set of domain requests.
+`--ttl-sram-allocation-mode=per-node` requires an exact launch grid. The compiler groups multicast receivers that must use the same destination address; groups that share a node become one domain. Other nodes can have separate payload layouts. Every domain retains the same control-record offsets, while payloads proven inactive on a domain are omitted. The compiler then calls `allocateDomains` once with the complete set of domain requests.
 
 Tensor backing with independently addressed payloads requires local access on each executing node. Access that requires a common address across nodes retains uniform allocation.
 
@@ -281,7 +281,7 @@ bindLocalPipeReceivers(allocation, computedReceivers):
 
 The finalized `ttl.crta_indices` list determines the tensor-address prefix even when a tensor-backed DFB outlives its original function operand. Cache identity includes tensor-backed receiver addresses, while ownership accounting excludes caller-owned tensors. The 32- or 64-index TT-Metal DFB limit does not apply to these logical DFBs; PipeNet transport and semaphore limits are unchanged.
 
-Generated inter-device transfers use the same receiver address rule. In uniform mode, the arena has one common address on participating devices. In per-core mode, receiver metadata identifies the destination device and node; the runtime uses that node's arena or tensor base and payload offset. Generated fabric requires a computed receiver address and diagnoses other cases before transfer lowering. Local PipeNets can use receiver publication, including when Metal shared descriptors can change backing storage. Fabric routing resolves device targets independently of these storage decisions.
+Generated inter-device transfers use the same receiver address rule. In uniform mode, the arena has one common address on participating devices. In per-node mode, receiver metadata identifies the destination device and node; the runtime uses that node's arena or tensor base and payload offset. Generated fabric requires a computed receiver address and diagnoses other cases before transfer lowering. Local PipeNets can use receiver publication, including when Metal shared descriptors can change backing storage. Fabric routing resolves device targets independently of these storage decisions.
 
 ```text
 for each logicalDevice:
@@ -300,7 +300,7 @@ Common allocation and lowering contain no architecture branches. `compiler_l1_ta
 
 ## Runtime Arena
 
-The runtime allocates control records and compiler-owned payloads as row-major, height-sharded TTNN SRAM tensors. Uniform mode reserves one equal-length row per participating node. Per-core mode reserves each independent node separately and reserves a shared-address tensor for each multicast receiver domain. The runtime binds each node's actual base address, specializes descriptor defines for its payload offsets, and retains every arena through device completion. Tensor-backed payloads retain their existing height-, width-, or block-sharded allocations.
+The runtime allocates control records and compiler-owned payloads as row-major, height-sharded TTNN SRAM tensors. Uniform mode reserves one equal-length row per participating node. Per-node mode reserves each independent node separately and reserves a shared-address tensor for each multicast receiver domain. The runtime binds each node's actual base address, specializes descriptor defines for its payload offsets, and retains every arena through device completion. Tensor-backed payloads retain their existing height-, width-, or block-sharded allocations.
 
 Before reserving an arena, the runtime validates each tensor-backed segment against its actual tensor's type, tile, shard nodes, and byte range. Tensor-backed ring capacity must equal the declared DFB capacity so the runtime validates every address the ring can use. It also rejects undeclared overlap at the tensors' current addresses. Identical ranges are permitted for one storage owner or for reuse of the same declared tensor backing after compiler-proved lifetime separation.
 
@@ -327,7 +327,7 @@ The compiler record identifies storage `owners`, logical DFB `regions`, overlapp
 | `payload_reuse_bytes` | Extent sum minus union; excludes sharing within an allocation group. |
 | `payload_gap_bytes` | Payload high-water mark minus union; an unused address gap, not distance from optimal placement. |
 
-The runtime record has `phase: "runtime"` and reports requested and reserved arena bytes derived from each arena tensor's page geometry. Uniform mode uses `scope: "arena-reference-device"`; per-core mode emits one `arena-domain-reference-device` record per reservation, with its member nodes. These records cover only the reference device. Existing tensor payloads, PipeNet scratch, external resources, and program storage are outside this measurement.
+The runtime record has `phase: "runtime"` and reports requested and reserved arena bytes derived from each arena tensor's page geometry. Uniform mode uses `scope: "arena-reference-device"`; per-node mode emits one `arena-domain-reference-device` record per reservation, with its member nodes. These records cover only the reference device. Existing tensor payloads, PipeNet scratch, external resources, and program storage are outside this measurement.
 
 A compiler-only report can be inspected with:
 

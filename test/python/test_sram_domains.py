@@ -9,11 +9,11 @@ from types import SimpleNamespace
 import pytest
 
 from ttl._sram_domains import (
-    core_domains,
-    validate_core_layouts,
+    node_domains,
+    validate_node_layouts,
     validate_receiver_targets,
 )
-from ttl.dataflow_buffer import PhysicalDFBConfig, SRAMCoreLayout, SRAMReceiverTarget
+from ttl.dataflow_buffer import PhysicalDFBConfig, SRAMNodeLayout, SRAMReceiverTarget
 
 
 def make_config():
@@ -28,20 +28,20 @@ def make_config():
         l1_offset=0,
         l1_payload_offset=64,
         l1_allocation_bytes=2048,
-        sram_core_layouts=(
-            SRAMCoreLayout((0, 0), 64, True, 2112, 0),
-            SRAMCoreLayout((1, 0), 0, False, 64, 1),
+        sram_node_layouts=(
+            SRAMNodeLayout((0, 0), 64, True, 2112, 0),
+            SRAMNodeLayout((1, 0), 0, False, 64, 1),
         ),
     )
 
 
-def test_independent_core_layouts_and_inactive_payload():
+def test_independent_node_layouts_and_inactive_payload():
     config = make_config()
-    assert validate_core_layouts([config], [(0, 0), (1, 0)]) == {
+    assert validate_node_layouts([config], [(0, 0), (1, 0)]) == {
         (0, 0): 2112,
         (1, 0): 64,
     }
-    assert core_domains([config]) == [((0, 0),), ((1, 0),)]
+    assert node_domains([config]) == [((0, 0),), ((1, 0),)]
 
 
 @pytest.mark.parametrize(
@@ -58,33 +58,33 @@ def test_independent_core_layouts_and_inactive_payload():
         ({"domain": -1}, "nonnegative"),
     ],
 )
-def test_invalid_core_layout(change, message):
+def test_invalid_node_layout(change, message):
     config = make_config()
     invalid = replace(
         config,
-        sram_core_layouts=(
-            config.sram_core_layouts[0],
-            replace(config.sram_core_layouts[1], **change),
+        sram_node_layouts=(
+            config.sram_node_layouts[0],
+            replace(config.sram_node_layouts[1], **change),
         ),
     )
     with pytest.raises(ValueError, match=message):
-        validate_core_layouts([invalid], [(0, 0), (1, 0)])
+        validate_node_layouts([invalid], [(0, 0), (1, 0)])
 
 
 def test_multicast_domain_requires_equal_layouts():
     config = make_config()
     config = replace(
         config,
-        sram_core_layouts=(
-            config.sram_core_layouts[0],
-            replace(config.sram_core_layouts[0], node=(1, 0)),
+        sram_node_layouts=(
+            config.sram_node_layouts[0],
+            replace(config.sram_node_layouts[0], node=(1, 0)),
         ),
     )
-    assert validate_core_layouts([config], [(0, 0), (1, 0)]) == {
+    assert validate_node_layouts([config], [(0, 0), (1, 0)]) == {
         (0, 0): 2112,
         (1, 0): 2112,
     }
-    assert core_domains([config]) == [((0, 0), (1, 0))]
+    assert node_domains([config]) == [((0, 0), (1, 0))]
 
 
 def test_domain_membership_must_agree_between_dfbs():
@@ -93,13 +93,13 @@ def test_domain_membership_must_agree_between_dfbs():
         config,
         dfb_index=1,
         storage_index=1,
-        sram_core_layouts=(
-            replace(config.sram_core_layouts[0], domain=2),
-            config.sram_core_layouts[1],
+        sram_node_layouts=(
+            replace(config.sram_node_layouts[0], domain=2),
+            config.sram_node_layouts[1],
         ),
     )
     with pytest.raises(ValueError, match="inconsistent SRAM allocation domains"):
-        validate_core_layouts([config, other], [(0, 0), (1, 0)])
+        validate_node_layouts([config, other], [(0, 0), (1, 0)])
 
 
 def test_storage_aliases_must_agree_on_placement():
@@ -107,13 +107,13 @@ def test_storage_aliases_must_agree_on_placement():
     other = replace(
         config,
         dfb_index=1,
-        sram_core_layouts=(
-            replace(config.sram_core_layouts[0], payload_offset=32),
-            config.sram_core_layouts[1],
+        sram_node_layouts=(
+            replace(config.sram_node_layouts[0], payload_offset=32),
+            config.sram_node_layouts[1],
         ),
     )
-    with pytest.raises(ValueError, match="share its core layouts"):
-        validate_core_layouts([config, other], [(0, 0), (1, 0)])
+    with pytest.raises(ValueError, match="share its node layouts"):
+        validate_node_layouts([config, other], [(0, 0), (1, 0)])
 
 
 @pytest.mark.parametrize(

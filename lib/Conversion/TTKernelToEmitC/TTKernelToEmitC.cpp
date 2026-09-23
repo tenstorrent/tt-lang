@@ -279,7 +279,7 @@ parseCompilerL1Allocation(Attribute attribute) {
   std::string payloadOffsetExpression =
       std::to_string(tensorBacking ? tensorBacking.getByteOffset()
                                    : payloadAddressValue - stateOffsetValue);
-  if (payloadAddress && dictionary.getAs<ArrayAttr>("sram_core_layouts")) {
+  if (payloadAddress && dictionary.getAs<ArrayAttr>("sram_node_layouts")) {
     auto index = dictionary.getAs<IntegerAttr>("dfb_index");
     if (!index || index.getInt() < 0) {
       return failure();

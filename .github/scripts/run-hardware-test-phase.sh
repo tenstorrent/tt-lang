@@ -126,7 +126,7 @@ case "$PHASE" in
         activate_build
         unset TT_VISIBLE_DEVICES
         TT_METAL_ALLOCATOR_MODE_HYBRID=1 \
-            TTLANG_COMPILER_OPTIONS=--ttl-sram-allocation-mode=per-core \
+            TTLANG_COMPILER_OPTIONS=--ttl-sram-allocation-mode=per-node \
             timeout --signal=TERM --kill-after=15s 600 \
             python3 -m pytest \
                 -c build/test/pytest.ini \

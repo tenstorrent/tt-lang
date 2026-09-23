@@ -1,9 +1,9 @@
-// Per-core allocation omits inactive payloads; uniform allocation retains one layout.
+// Per-node allocation omits inactive payloads; uniform allocation retains one layout.
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 sram-allocation-mode=uniform})' | FileCheck %s --check-prefix=UNIFORM
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 sram-allocation-mode=per-core})' | FileCheck %s --check-prefix=INDEPENDENT
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 sram-allocation-mode=per-node})' | FileCheck %s --check-prefix=INDEPENDENT
 
 // UNIFORM: ttl.l1_arena_bytes = 32832 : i64
-// UNIFORM-NOT: sram_core_layouts
+// UNIFORM-NOT: sram_node_layouts
 // UNIFORM-NOT: ttl.sram_allocation_mode
 // UNIFORM-LABEL: func.func @uneven
 // UNIFORM-NEXT: %[[LARGE:.*]] = ttl.bind_cb
@@ -14,7 +14,7 @@
 // INDEPENDENT-SAME: arena_bytes = 2112 : i64, domain = 1 : i64, node = [1, 0], payload_offset = 0 : i64, payload_present = false
 // INDEPENDENT-SAME: arena_bytes = 32832 : i64, domain = 0 : i64, node = [0, 0], payload_offset = 8 : i64, payload_present = false
 // INDEPENDENT-SAME: arena_bytes = 2112 : i64, domain = 1 : i64, node = [1, 0], payload_offset = 64 : i64, payload_present = true
-// INDEPENDENT-SAME: ttl.sram_allocation_mode = "per-core"
+// INDEPENDENT-SAME: ttl.sram_allocation_mode = "per-node"
 // INDEPENDENT-LABEL: func.func @uneven
 // INDEPENDENT-NEXT: %[[LARGE:.*]] = ttl.bind_cb
 // INDEPENDENT-NEXT: %[[SMALL:.*]] = ttl.bind_cb

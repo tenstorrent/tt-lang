@@ -53,7 +53,7 @@ from .dataflow_buffer import (
     SRAMBackingHandoff,
     SRAMReconfigurationReset,
     _COMPILER_SRAM_CONTROL_RECORD_BYTES,
-    SRAMCoreLayout,
+    SRAMNodeLayout,
     SRAMReceiverTarget,
     _validate_tensor_backed_dfb_range,
     _validate_tensor_backed_dfb_tensor,
@@ -265,7 +265,7 @@ def _get_l1_remaining_bytes(
     cores: Iterable[Tuple[int, int]],
     excluded_l1_buffer_addresses: Sequence[int] = (),
 ) -> Tuple[int, Dict[Tuple[int, int], int]]:
-    """Return the global and requested per-core static DFB allocation bounds."""
+    """Return the global and requested per-node static DFB allocation bounds."""
     _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
@@ -1794,13 +1794,13 @@ def _partition_core_ranges_by_sram_domain(
     core_ranges: Any, configs: Sequence[PhysicalDFBConfig]
 ) -> List[Tuple[Any, Tuple[int, int]]]:
     """Partition a descriptor so each part uses one SRAM arena and layout."""
-    from ._sram_domains import core_domains
+    from ._sram_domains import node_domains
 
     remaining = _core_range_coordinates(
         core_ranges, label="kernel descriptor core ranges"
     )
     partitions = []
-    for domain in core_domains(configs):
+    for domain in node_domains(configs):
         coordinates = sorted(remaining.intersection(domain))
         if not coordinates:
             continue
@@ -1808,7 +1808,7 @@ def _partition_core_ranges_by_sram_domain(
         remaining.difference_update(coordinates)
     if remaining:
         raise ValueError(
-            "per-core SRAM kernel references a core outside the allocation domains"
+            "per-node SRAM kernel references a node outside the allocation domains"
         )
     return partitions
 
@@ -1950,7 +1950,7 @@ def build_kernel_descriptors(
     descriptor_resource_plans: Optional[Sequence[_KernelDescriptorResourcePlan]] = None,
     dfb_reconfiguration_runtime_args: Optional[Dict[Tuple[int, int], List[int]]] = None,
     compiler_l1_base_address: Optional[int] = None,
-    sram_core_arenas: Optional[Dict[Tuple[int, int], Any]] = None,
+    sram_node_arenas: Optional[Dict[Tuple[int, int], Any]] = None,
     sram_configs: Sequence[PhysicalDFBConfig] = (),
     sram_mesh_coordinate: Optional[Tuple[int, ...]] = None,
 ) -> List[Any]:
@@ -1979,10 +1979,10 @@ def build_kernel_descriptors(
             runtime arguments for device-domain dispatch.
         descriptor_resource_plans: Immutable caller resource plans aligned with
             kernel_specs.
-        dfb_reconfiguration_runtime_args: Per-core L1 configuration addresses
+        dfb_reconfiguration_runtime_args: Per-node SRAM configuration addresses
             in finalized boundary order.
-        compiler_l1_base_address: Common per-core base address for the
-            compiler-managed L1 arena.
+        compiler_l1_base_address: Common per-node base address for the
+            compiler-managed SRAM arena.
 
     Returns:
         List of ttnn.KernelDescriptor objects.
@@ -2028,7 +2028,7 @@ def build_kernel_descriptors(
         for target_index, dfb_index in enumerate(
             spec.pipe_computed_address_dfb_indices
         ):
-            if sram_core_arenas:
+            if sram_node_arenas:
                 from ._sram_domains import receiver_base
 
                 computed_address_base_args.append(
@@ -2036,7 +2036,7 @@ def build_kernel_descriptors(
                         ttnn,
                         spec.sram_receiver_targets[target_index],
                         sram_configs,
-                        sram_core_arenas,
+                        sram_node_arenas,
                         tensors,
                         sram_mesh_coordinate,
                     )
@@ -2067,7 +2067,7 @@ def build_kernel_descriptors(
         common_runtime_arg_suffix.extend(device_coordinates or [])
         common_runtime_arg_suffix.extend(spec.extra_common_runtime_args or [])
         storage_runtime_base = len(spec.tensor_indices) + len(common_runtime_arg_suffix)
-        if compiler_l1_base_address is not None or sram_core_arenas:
+        if compiler_l1_base_address is not None or sram_node_arenas:
             common_runtime_arg_suffix.append(compiler_l1_base_address or 0)
 
         runtime_args = []
@@ -2095,7 +2095,7 @@ def build_kernel_descriptors(
         if not reconfiguration_args:
             kernel_compile_time_args = (
                 [storage_runtime_base]
-                if compiler_l1_base_address is not None or sram_core_arenas
+                if compiler_l1_base_address is not None or sram_node_arenas
                 else list(cb_indices)
             )
             if spec.thread_type != "compute":
@@ -2119,7 +2119,7 @@ def build_kernel_descriptors(
 
         for descriptor_variant in descriptor_variants:
             descriptor_partitions = [(descriptor_variant.core_ranges, None)]
-            if sram_core_arenas:
+            if sram_node_arenas:
                 descriptor_partitions = _partition_core_ranges_by_sram_domain(
                     descriptor_variant.core_ranges, sram_configs
                 )
@@ -2209,7 +2209,7 @@ def build_kernel_descriptors(
                     if representative_coordinate is not None:
                         from ._sram_domains import payload_defines, tensor_base
 
-                        arena = sram_core_arenas[representative_coordinate]
+                        arena = sram_node_arenas[representative_coordinate]
                         address = tensor_base(
                             ttnn,
                             arena,
@@ -2296,10 +2296,10 @@ def _compiler_sram_backing_by_node(
     config: PhysicalDFBConfig,
 ) -> Optional[Dict[Tuple[int, int], Tuple[str, Optional[int], int]]]:
     if config.l1_payload_offset is not None:
-        if config.sram_core_layouts:
+        if config.sram_node_layouts:
             return {
                 layout.node: ("arena", None, layout.payload_offset)
-                for layout in config.sram_core_layouts
+                for layout in config.sram_node_layouts
                 if layout.payload_present
             }
         if config.allocation_nodes is None:
@@ -2344,7 +2344,7 @@ def _print_sram_runtime_report(
     if allocation_domain:
         report["accounting_source"] = "tensor-buffer-geometry"
         report["scope"] = "arena-domain-reference-device"
-        report["cores"] = [
+        report["nodes"] = [
             [int(core.x), int(core.y)]
             for core in ttnn.corerange_to_cores(core_ranges, row_wise=True)
         ]
@@ -2516,14 +2516,14 @@ def _get_compiler_l1_arena_bytes(
         has_allocation_bytes = config.l1_allocation_bytes is not None
         if has_payload_offset != has_allocation_bytes:
             raise ValueError("incomplete compiler-sram payload allocation metadata")
-        if config.sram_core_layouts:
-            arena_ends.extend(layout.arena_bytes for layout in config.sram_core_layouts)
+        if config.sram_node_layouts:
+            arena_ends.extend(layout.arena_bytes for layout in config.sram_node_layouts)
         if has_payload_offset:
             if config.storage_segments:
                 raise ValueError(
                     "compiler-sram arena payload cannot include storage segments"
                 )
-            if not config.sram_core_layouts and config.l1_payload_offset < control_end:
+            if not config.sram_node_layouts and config.l1_payload_offset < control_end:
                 raise ValueError(
                     "compiler-sram payload must follow all control records"
                 )
@@ -2534,7 +2534,7 @@ def _get_compiler_l1_arena_bytes(
             )
             if config.l1_allocation_bytes < required_pages * config.page_size:
                 raise ValueError("compiler-sram allocation does not cover its payload")
-            if not config.sram_core_layouts:
+            if not config.sram_node_layouts:
                 owner = _compiler_sram_storage_owner(config)
                 payload = (config.l1_payload_offset, config.l1_allocation_bytes)
                 previous_payload = payloads_by_owner.setdefault(owner, payload)
@@ -3731,7 +3731,7 @@ def _order_static_dfb_descriptor_plans(
     descriptor_plans: List[_DFBDescriptorPlan],
     remaining_bytes_by_core: Dict[Tuple[int, int], int],
 ) -> List[_DFBDescriptorPlan]:
-    """Order static descriptors to fit TT-Metal's per-core L1 allocators."""
+    """Order static descriptors to fit TT-Metal's per-node L1 allocators."""
     static_plan_indices = tuple(
         plan_index
         for plan_index, plan in enumerate(descriptor_plans)
@@ -4488,7 +4488,7 @@ def build_generic_op_io_tensors(
     dfb_reconfiguration_scratch_tensors: Optional[Dict[int, Any]] = None,
     dfb_reconfiguration_configuration_tensors: Optional[List[Any]] = None,
     compiler_l1_arena: Optional[Any] = None,
-    sram_core_arenas: Sequence[Any] = (),
+    sram_node_arenas: Sequence[Any] = (),
 ) -> List[Any]:
     """Return io_tensors with the user-visible output in the final position."""
     if not tensors:
@@ -4516,7 +4516,7 @@ def build_generic_op_io_tensors(
         + reconfiguration_scratch_tensors
         + list(dfb_reconfiguration_configuration_tensors or [])
         + ([compiler_l1_arena] if compiler_l1_arena is not None else [])
-        + list(sram_core_arenas)
+        + list(sram_node_arenas)
         + dispatch_tensors
     )
     if not io_tensors:
@@ -4691,7 +4691,7 @@ def _run_kernel_on_device_impl(
     compiler_l1_arena: Optional[Any],
     arena_completion_state: Optional[_ArenaCompletionState],
     pipe_computed_address_dfb_indices: Tuple[int, ...],
-    sram_core_arenas: Optional[Dict[Tuple[int, int], Any]] = None,
+    sram_node_arenas: Optional[Dict[Tuple[int, int], Any]] = None,
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
     sram_reconfiguration_resets: Sequence[SRAMReconfigurationReset] = (),
     program_hash: Optional[int] = None,
@@ -4762,7 +4762,7 @@ def _run_kernel_on_device_impl(
         )
 
     compiler_l1 = compiler_l1_arena_bytes is not None
-    sram_core_arenas = sram_core_arenas or {}
+    sram_node_arenas = sram_node_arenas or {}
 
     if runtime_resource_cache is not None:
         _release_portable_runtime_resources_impl(runtime_resource_cache)
@@ -4844,7 +4844,7 @@ def _run_kernel_on_device_impl(
     pipe_computed_address_base_addresses = dict(
         pipe_runtime_resources.computed_address_base_addresses
     )
-    if compiler_l1 and not sram_core_arenas:
+    if compiler_l1 and not sram_node_arenas:
         pipe_computed_address_base_addresses.update(
             _get_compiler_sram_computed_address_bases(
                 cb_configs,
@@ -4890,7 +4890,7 @@ def _run_kernel_on_device_impl(
             grid_rows=grid_rows,
             num_cbs=len(cb_configs),
             compiler_l1_base_address=compiler_l1_base_address,
-            sram_core_arenas=sram_core_arenas,
+            sram_node_arenas=sram_node_arenas,
             sram_configs=cb_configs,
             sram_mesh_coordinate=mesh_coordinate,
             pipe_computed_address_base_addresses=pipe_computed_address_base_addresses,
@@ -4974,9 +4974,9 @@ def _run_kernel_on_device_impl(
                 device_coordinates=mesh_coordinate,
             )
         program = build_device_mesh_program_descriptor(program_descriptors)
-    elif sram_core_arenas:
+    elif sram_node_arenas:
         if mesh_program_placements is None:
-            arena = next(iter(sram_core_arenas.values()))
+            arena = next(iter(sram_node_arenas.values()))
             mesh_coordinates = [
                 tuple(coordinate) for coordinate in arena.device_coords()
             ]
@@ -5021,8 +5021,8 @@ def _run_kernel_on_device_impl(
             reconfiguration_resources.configuration_tensors
         ),
         compiler_l1_arena=compiler_l1_arena,
-        sram_core_arenas=list(
-            {id(arena): arena for arena in sram_core_arenas.values()}.values()
+        sram_node_arenas=list(
+            {id(arena): arena for arena in sram_node_arenas.values()}.values()
         ),
     )
 
@@ -5044,7 +5044,7 @@ def _run_kernel_on_device_impl(
     uncached_portable_resource_lifetimes = (
         portable_resource_lifetimes if runtime_resource_cache is None else ()
     )
-    arenas = list(sram_core_arenas.values())
+    arenas = list(sram_node_arenas.values())
     if compiler_l1_arena is not None:
         arenas.append(compiler_l1_arena)
     arena_lifetimes = tuple({id(arena): arena for arena in arenas}.values())
@@ -5114,19 +5114,19 @@ def _run_kernel_on_device_impl(
     return result
 
 
-def _validate_sram_core_domain_requirements(
+def _validate_sram_node_domain_requirements(
     cb_configs: Sequence[PhysicalDFBConfig],
     kernel_specs: Sequence[KernelSpec],
     core_ranges: Any,
 ) -> Dict[Tuple[int, int], int]:
-    if not any(config.sram_core_layouts for config in cb_configs):
+    if not any(config.sram_node_layouts for config in cb_configs):
         return {}
     _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
-    from ._sram_domains import validate_core_layouts, validate_receiver_targets
+    from ._sram_domains import validate_node_layouts, validate_receiver_targets
 
-    sizes = validate_core_layouts(
+    sizes = validate_node_layouts(
         cb_configs,
         (
             (int(core.x), int(core.y))
@@ -5142,7 +5142,7 @@ def _validate_sram_core_domain_requirements(
         }
         if not kernel_nodes.issubset(sizes):
             raise ValueError(
-                "per-core SRAM kernel references a core outside the allocation domains"
+                "per-node SRAM kernel references a node outside the allocation domains"
             )
     return sizes
 
@@ -5201,7 +5201,7 @@ def run_kernel_on_device(
                 "compiler-sram cannot combine with Metal DFB reconfiguration"
             )
         _validate_tensor_backing_aliases(tensors, cb_configs, compiler_sram=True)
-    sram_core_sizes = _validate_sram_core_domain_requirements(
+    sram_node_sizes = _validate_sram_node_domain_requirements(
         cb_configs, kernel_specs, core_ranges
     )
     arguments = {
@@ -5213,7 +5213,7 @@ def run_kernel_on_device(
         "compiler_l1_arena": None,
         "arena_completion_state": None,
         "pipe_computed_address_dfb_indices": pipe_computed_address_dfb_indices,
-        "sram_core_arenas": None,
+        "sram_node_arenas": None,
         "dfb_reconfiguration_plan": dfb_reconfiguration_plan,
         "sram_reconfiguration_resets": sram_reconfiguration_resets,
         "program_hash": program_hash,
@@ -5243,13 +5243,13 @@ def run_kernel_on_device(
         arguments["arena_completion_state"] = arena_completion_state
         arenas = []
         try:
-            if sram_core_sizes:
-                from ._sram_domains import core_domains
+            if sram_node_sizes:
+                from ._sram_domains import node_domains
 
-                arenas_by_core = {}
-                for coordinates in core_domains(cb_configs):
+                arenas_by_node = {}
+                for coordinates in node_domains(cb_configs):
                     domain_ranges = _make_singleton_core_ranges(coordinates)
-                    requested_bytes = sram_core_sizes[coordinates[0]]
+                    requested_bytes = sram_node_sizes[coordinates[0]]
                     arena = _allocate_l1_sharded_storage_tensor(
                         domain_ranges,
                         requested_bytes,
@@ -5259,7 +5259,7 @@ def run_kernel_on_device(
                     )
                     arenas.append(arena)
                     for coordinate in coordinates:
-                        arenas_by_core[coordinate] = arena
+                        arenas_by_node[coordinate] = arena
                     if sram_allocation_report:
                         _print_sram_runtime_report(
                             arena,
@@ -5268,7 +5268,7 @@ def run_kernel_on_device(
                             operation_name,
                             allocation_domain=True,
                         )
-                arguments["sram_core_arenas"] = arenas_by_core
+                arguments["sram_node_arenas"] = arenas_by_node
             else:
                 arena = _allocate_l1_sharded_storage_tensor(
                     core_ranges,
@@ -5452,8 +5452,8 @@ def _append_physical_dfb_config_source(
     lines.append(f"{indent}    block_count={config.block_count},")
     lines.append(f"{indent}    page_size={config.page_size},")
     lines.append(f"{indent}    tile={config.tile!r},")
-    if config.sram_core_layouts:
-        lines.append(f"{indent}    sram_core_layouts={config.sram_core_layouts!r},")
+    if config.sram_node_layouts:
+        lines.append(f"{indent}    sram_node_layouts={config.sram_node_layouts!r},")
     if config.l1_offset is not None:
         lines.append(f"{indent}    l1_offset={config.l1_offset},")
         lines.append(f"{indent}    l1_payload_offset={config.l1_payload_offset},")
@@ -5577,7 +5577,7 @@ def emit_runner_source(
     lines.append("from ttl.dataflow_buffer import PhysicalDFBConfig")
     lines.append("from ttl.dataflow_buffer import SRAMBackingHandoff")
     lines.append("from ttl.dataflow_buffer import SRAMReconfigurationReset")
-    lines.append("from ttl.dataflow_buffer import SRAMCoreLayout")
+    lines.append("from ttl.dataflow_buffer import SRAMNodeLayout")
     lines.append("from ttl.dataflow_buffer import SRAMReceiverTarget")
     lines.append("from ttl.domains import DeviceDomain")
     lines.append("from ttl.kernel import Kernel, KernelKind")
