@@ -4,6 +4,9 @@ The `emule` backend compiles TT-Lang programs and executes their generated
 kernels through tt-metal and tt-emule inside Docker. Install the environment
 once, then run programs with `./bin/tt-lang-sim --backend=emule`.
 
+Relative command paths in this guide assume the TT-Lang checkout root as the
+working directory, except where a container shell is specified.
+
 The repository provides a pinned environment through
 `config/tt-lang-emule-stack.json`. This manifest records the required compiler
 baseline, tt-emule revision, tt-metal revision, base image, and P150 target.
@@ -98,6 +101,13 @@ Arguments belonging to the program follow `--`:
 The launcher mounts the checkout and the current working directory. Use relative
 paths for program inputs beneath the current working directory. Absolute paths
 are passed unchanged and must refer to locations visible inside the container.
+
+The launcher can also run from another working directory through its absolute
+path. In this example, `program.py` is relative to the current directory:
+
+```bash
+/path/to/tt-lang/bin/tt-lang-sim --backend=emule program.py
+```
 
 Use the default Python backend to run programs directly in the host Python
 environment:

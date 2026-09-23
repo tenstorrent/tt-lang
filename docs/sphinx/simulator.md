@@ -66,7 +66,7 @@ tt-lang-sim examples/eltwise_add.py
 
 The emule backend uses the same launcher interface as the Python backend.
 The [emule getting-started guide](simulator-getting-started.md) describes
-installation. From an installed source checkout:
+installation. From the root of an installed source checkout:
 
 ```bash
 ./bin/tt-lang-sim --backend=emule examples/eltwise_add.py

@@ -447,6 +447,7 @@ class TestScriptMustBeFirstArgument:
         )
         assert result.returncode == 2
         assert "emule backend requires a TT-Lang source checkout" in result.stderr
+        assert "from the checkout root, run ./bin/tt-lang-sim" in result.stderr
 
 
 class TestMaxDfbsCommandLineOption:

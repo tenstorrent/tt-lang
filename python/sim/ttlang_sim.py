@@ -391,7 +391,7 @@ def main() -> None:
     if args.backend == BACKEND_EMULE:
         parser.error(
             "the emule backend requires a TT-Lang source checkout; "
-            "run ./bin/tt-lang-sim SCRIPT.py --backend emule"
+            "from the checkout root, run ./bin/tt-lang-sim SCRIPT.py --backend emule"
         )
 
     # Set up simulator imports before running any code
