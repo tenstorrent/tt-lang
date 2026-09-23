@@ -64,26 +64,26 @@ FORCE_INLINE void drain() {
 #endif
 }
 
-__attribute__((noinline, noclone)) static void
-reconfigureInterface(uint32_t id, uint32_t totalBytes, uint32_t numPages,
-                     uint32_t pageBytes) {
+template <uint32_t Id, uint32_t TotalBytes, uint32_t NumPages,
+          uint32_t PageBytes>
+FORCE_INLINE void reconfigureInterface() {
 #if defined(TTLANG_DFB_DM0) || defined(TTLANG_DFB_DM1) ||                      \
     defined(TTLANG_DFB_UNPACK) || defined(TTLANG_DFB_PACK)
-  LocalCBInterface &iface = get_local_cb_interface(id);
+  LocalCBInterface &iface = get_local_cb_interface(Id);
   const uint32_t base = iface.fifo_limit - iface.fifo_size;
-  const uint32_t size = totalBytes >> cb_addr_shift;
-  const uint32_t pageSize = pageBytes >> cb_addr_shift;
+  const uint32_t size = TotalBytes >> cb_addr_shift;
+  const uint32_t pageSize = PageBytes >> cb_addr_shift;
 
 #if defined(TTLANG_DFB_DM0) || defined(TTLANG_DFB_DM1)
   iface.fifo_rd_ptr = base;
   iface.fifo_wr_ptr = base;
-  iface.fifo_num_pages = numPages;
+  iface.fifo_num_pages = NumPages;
 #elif defined(TTLANG_DFB_UNPACK)
   iface.fifo_rd_ptr = base;
 #elif defined(TTLANG_DFB_PACK)
   iface.fifo_wr_ptr = base;
   iface.fifo_wr_tile_ptr = 0;
-  iface.fifo_num_pages = numPages;
+  iface.fifo_num_pages = NumPages;
 #endif
   iface.fifo_size = size;
   iface.fifo_limit = base + size;
@@ -91,50 +91,50 @@ reconfigureInterface(uint32_t id, uint32_t totalBytes, uint32_t numPages,
   iface.tiles_acked_received_init = 0;
 
 #if defined(TTLANG_DFB_DM1)
-  *get_cb_tiles_received_ptr(id) = 0;
-  *get_cb_tiles_acked_ptr(id) = 0;
+  *get_cb_tiles_received_ptr(Id) = 0;
+  *get_cb_tiles_acked_ptr(Id) = 0;
 #endif
 #endif
 }
 
-__attribute__((noinline, noclone)) static void reconfigureFormat(
-    uint32_t id, uint32_t pageBytes, uint32_t l1Format,
-    uint32_t tileHeight, uint32_t tileWidth, uint32_t faceHeight,
-    uint32_t numFaces, uint32_t unpackDstFormat, uint32_t packSrcFormat) {
+template <uint32_t Id, uint32_t PageBytes, uint32_t L1Format,
+          uint32_t TileHeight, uint32_t TileWidth, uint32_t FaceHeight,
+          uint32_t NumFaces, uint32_t UnpackDstFormat, uint32_t PackSrcFormat>
+FORCE_INLINE void reconfigureFormat() {
 #if defined(TTLANG_RUNTIME_DFB_RECONFIGURATION)
 #if defined(TTLANG_DFB_DM0) || defined(TTLANG_DFB_DM1) ||                      \
     defined(TTLANG_DFB_UNPACK) || defined(TTLANG_DFB_MATH)
-  unpack_src_format[id] = l1Format;
-  unpack_dst_format[id] = unpackDstFormat;
-  unpack_tile_num_faces[id] = numFaces;
-  unpack_partial_face[id] = tileHeight < 32;
-  unpack_tile_face_r_dim[id] = faceHeight;
-  unpack_narrow_tile[id] = tileWidth < 32;
-  unpack_tile_r_dim[id] = tileHeight;
-  unpack_tile_c_dim[id] = tileWidth;
-  unpack_tile_size[id] = pageBytes;
-  unpack_num_faces_c_dim[id] =
-      numFaces < tileWidth / 16 ? numFaces : tileWidth / 16;
-  unpack_num_faces_r_dim[id] = numFaces / unpack_num_faces_c_dim[id];
+  unpack_src_format[Id] = L1Format;
+  unpack_dst_format[Id] = UnpackDstFormat;
+  unpack_tile_num_faces[Id] = NumFaces;
+  unpack_partial_face[Id] = TileHeight < 32;
+  unpack_tile_face_r_dim[Id] = FaceHeight;
+  unpack_narrow_tile[Id] = TileWidth < 32;
+  unpack_tile_r_dim[Id] = TileHeight;
+  unpack_tile_c_dim[Id] = TileWidth;
+  unpack_tile_size[Id] = PageBytes;
+  unpack_num_faces_c_dim[Id] =
+      NumFaces < TileWidth / 16 ? NumFaces : TileWidth / 16;
+  unpack_num_faces_r_dim[Id] = NumFaces / unpack_num_faces_c_dim[Id];
 #endif
 
 #if defined(TTLANG_DFB_DM0) || defined(TTLANG_DFB_DM1) ||                      \
     defined(TTLANG_DFB_PACK)
-  pack_src_format[id] = packSrcFormat;
-  pack_dst_format[id] = l1Format;
+  pack_src_format[Id] = PackSrcFormat;
+  pack_dst_format[Id] = L1Format;
 #if defined(TTLANG_DFB_PACK)
-  unpack_src_format[id] = l1Format;
+  unpack_src_format[Id] = L1Format;
 #endif
-  pack_tile_num_faces[id] = numFaces;
-  pack_partial_face[id] = tileHeight < 32;
-  pack_tile_face_r_dim[id] = faceHeight;
-  pack_narrow_tile[id] = tileWidth < 32;
-  pack_tile_r_dim[id] = tileHeight;
-  pack_tile_c_dim[id] = tileWidth;
-  pack_tile_size[id] = pageBytes;
-  pack_num_faces_c_dim[id] =
-      numFaces < tileWidth / 16 ? numFaces : tileWidth / 16;
-  pack_num_faces_r_dim[id] = numFaces / pack_num_faces_c_dim[id];
+  pack_tile_num_faces[Id] = NumFaces;
+  pack_partial_face[Id] = TileHeight < 32;
+  pack_tile_face_r_dim[Id] = FaceHeight;
+  pack_narrow_tile[Id] = TileWidth < 32;
+  pack_tile_r_dim[Id] = TileHeight;
+  pack_tile_c_dim[Id] = TileWidth;
+  pack_tile_size[Id] = PageBytes;
+  pack_num_faces_c_dim[Id] =
+      NumFaces < TileWidth / 16 ? NumFaces : TileWidth / 16;
+  pack_num_faces_r_dim[Id] = NumFaces / pack_num_faces_c_dim[Id];
 #endif
 #endif
 }
@@ -156,9 +156,9 @@ struct ApplyConfigurations<Id, TotalBytes, NumPages, PageBytes, L1Format,
                            TileHeight, TileWidth, FaceHeight, NumFaces,
                            UnpackDstFormat, PackSrcFormat, Remaining...> {
   static FORCE_INLINE void run() {
-    reconfigureInterface(Id, TotalBytes, NumPages, PageBytes);
-    reconfigureFormat(Id, PageBytes, L1Format, TileHeight, TileWidth, FaceHeight,
-                      NumFaces, UnpackDstFormat, PackSrcFormat);
+    reconfigureInterface<Id, TotalBytes, NumPages, PageBytes>();
+    reconfigureFormat<Id, PageBytes, L1Format, TileHeight, TileWidth,
+                      FaceHeight, NumFaces, UnpackDstFormat, PackSrcFormat>();
     ApplyConfigurations<Remaining...>::run();
   }
 };
