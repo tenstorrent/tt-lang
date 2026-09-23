@@ -263,23 +263,24 @@ def _get_l1_remaining_bytes(
     device,
     cores: Iterable[Tuple[int, int]],
     excluded_l1_buffer_addresses: Sequence[int] = (),
+    ttnn_api=None,
 ) -> Tuple[int, Dict[Tuple[int, int], int]]:
     """Return the global and requested per-core static DFB allocation bounds."""
-    _ensure_ttnn()
-    if ttnn is None:
-        raise RuntimeError("ttnn is not available")
+    if ttnn_api is None:
+        _ensure_ttnn()
+        if ttnn is None:
+            raise RuntimeError("ttnn is not available")
 
-    device_info = ttnn._ttnn.reports.get_device_info(device)
-    static_dfb_base_address = ttnn.get_allocator_base_address(
-        device, ttnn.BufferType.L1
-    )
+    api = ttnn if ttnn_api is None else ttnn_api
+    device_info = api._ttnn.reports.get_device_info(device)
+    static_dfb_base_address = api.get_allocator_base_address(device, api.BufferType.L1)
     remaining_bytes = {core: device_info.cb_limit for core in cores}
     minimum_remaining_bytes = device_info.cb_limit
     excluded_addresses = frozenset(
         int(address) for address in excluded_l1_buffer_addresses
     )
-    for page in ttnn._ttnn.reports.get_buffer_pages(device):
-        if page.buffer_type != ttnn.BufferType.L1:
+    for page in api._ttnn.reports.get_buffer_pages(device):
+        if page.buffer_type != api.BufferType.L1:
             continue
         buffer_address = getattr(page, "address", None)
         if buffer_address is not None and int(buffer_address) in excluded_addresses:
@@ -293,7 +294,7 @@ def _get_l1_remaining_bytes(
 
 
 def get_min_remaining_l1_for_device(
-    device, excluded_l1_buffer_addresses: Sequence[int] = ()
+    device, excluded_l1_buffer_addresses: Sequence[int] = (), ttnn_api=None
 ):
     """Return the minimum remaining L1 CB budget (bytes) across all cores.
 
@@ -312,7 +313,7 @@ def get_min_remaining_l1_for_device(
     without changing the contribution of unrelated allocations.
     """
     minimum_remaining_bytes, _ = _get_l1_remaining_bytes(
-        device, (), excluded_l1_buffer_addresses
+        device, (), excluded_l1_buffer_addresses, ttnn_api
     )
     return minimum_remaining_bytes
 
@@ -386,6 +387,39 @@ class KernelSpec:
     used_dfb_indices: Optional[List[int]] = None
     local_tensor_indices: List[int] = field(default_factory=list)
     sram_receiver_targets: List[SRAMReceiverTarget] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class PreparedSRAMResources:
+    """Bind a prepared requirement set to owner-retained runtime tensors."""
+
+    requirements: Any
+    uniform_arena: Optional[Any]
+    core_arenas: Tuple[Tuple[Tuple[int, int], Any], ...]
+    control_tensors: Tuple[Any, ...]
+
+
+def _prepared_sram_requirements_match(expected, actual):
+    from ._sram_requirements import SRAMOwnerKind
+
+    if len(expected.requirements) != len(actual.requirements):
+        return False
+    normalized_requirements = []
+    for expected_requirement, actual_requirement in zip(
+        expected.requirements, actual.requirements
+    ):
+        if expected_requirement.owner != actual_requirement.owner:
+            return False
+        if expected_requirement.owner.kind is SRAMOwnerKind.TENSOR_ARGUMENT:
+            if len(expected_requirement.fixed_bases) != len(
+                actual_requirement.fixed_bases
+            ):
+                return False
+            expected_requirement = replace(
+                expected_requirement, fixed_bases=actual_requirement.fixed_bases
+            )
+        normalized_requirements.append(expected_requirement)
+    return replace(expected, requirements=tuple(normalized_requirements)) == actual
 
 
 @dataclass(frozen=True)
@@ -4407,6 +4441,8 @@ def _run_kernel_on_device_impl(
     sram_allocation_report: bool = False,
     runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
     device: Optional[Any] = None,
+    prepared_sram_resources: Optional[PreparedSRAMResources] = None,
+    prepare_only: bool = False,
 ) -> Any:
     """
     Execute kernels on device using ttnn.generic_op.
@@ -4445,8 +4481,9 @@ def _run_kernel_on_device_impl(
         operation_name: User-facing operation name for callback diagnostics.
         runtime_resource_cache: Optional cache owning persistent PipeNet, DFB
             reconfiguration, and declarative runtime resources.
-        device: Optional explicit resource device. Defaults to the first input
-            tensor's device.
+        prepared_sram_resources: Owner-retaining arena views selected during
+            joint SRAM placement.
+        prepare_only: Compile and validate the program without dispatching it.
 
     Returns:
         Result from ttnn.generic_op (typically None or output tensor).
@@ -4468,6 +4505,13 @@ def _run_kernel_on_device_impl(
         cores=operation_cores,
         ttnn_api=ttnn,
     )
+    if prepared_sram_resources is not None and not _prepared_sram_requirements_match(
+        prepared_sram_resources.requirements,
+        prepared_sram,
+    ):
+        raise ValueError(
+            "prepared SRAM resources do not match the operation requirements"
+        )
     compiler_l1 = prepared_sram.uses_compiler_arena
     has_sram_core_layouts = any(config.sram_core_layouts for config in cb_configs)
     sram_core_sizes = prepared_sram.arena_bytes_by_core()
@@ -4573,7 +4617,36 @@ def _run_kernel_on_device_impl(
     compiler_l1_arena = None
     sram_core_arenas = {}
     compiler_l1_base_address = None
-    if has_sram_core_layouts:
+    if prepared_sram_resources is not None:
+        compiler_l1_arena = prepared_sram_resources.uniform_arena
+        sram_core_arenas = dict(prepared_sram_resources.core_arenas)
+        if has_sram_core_layouts:
+            if compiler_l1_arena is not None or set(sram_core_arenas) != set(
+                sram_core_sizes
+            ):
+                raise ValueError(
+                    "prepared per-core SRAM resources do not cover the operation cores"
+                )
+        elif compiler_l1:
+            if compiler_l1_arena is None or sram_core_arenas:
+                raise ValueError(
+                    "prepared uniform SRAM resources require one uniform arena"
+                )
+        elif compiler_l1_arena is not None or sram_core_arenas:
+            raise ValueError("operation has prepared SRAM resources without an arena")
+        if compiler_l1_arena is not None:
+            compiler_l1_base_address = int(compiler_l1_arena.buffer_address())
+        if not prepare_only:
+            for control_tensor in prepared_sram_resources.control_tensors:
+                ttnn.full(
+                    control_tensor.shape,
+                    0,
+                    dtype=control_tensor.dtype,
+                    layout=control_tensor.layout,
+                    device=control_tensor.device(),
+                    optional_tensor=control_tensor,
+                )
+    elif has_sram_core_layouts:
         for arena_binding in prepared_sram.arenas:
             coordinates = arena_binding.cores
             size = prepared_sram.requirements[
@@ -4842,7 +4915,10 @@ def _run_kernel_on_device_impl(
         if resource_device is None:
             resource_device = device if device is not None else _first_device(tensors)
     try:
-        result = ttnn.generic_op(io_tensors, program)
+        operation = (
+            ttnn.experimental.prepare_generic_op if prepare_only else ttnn.generic_op
+        )
+        result = operation(io_tensors, program)
     except BaseException as dispatch_error:
         if synchronize_after_dispatch_error:
             try:
@@ -4900,6 +4976,8 @@ def run_kernel_on_device(
     sram_allocation_report: bool = False,
     runtime_resource_cache: Optional[KernelRuntimeResourceCache] = None,
     device: Optional[Any] = None,
+    prepared_sram_resources: Optional[PreparedSRAMResources] = None,
+    prepare_only: bool = False,
 ) -> Any:
     """Execute a kernel, serializing use of persistent runtime resources."""
     if device_domain is not None and not isinstance(device_domain, DeviceDomain):
@@ -4932,6 +5010,8 @@ def run_kernel_on_device(
         "sram_allocation_report": sram_allocation_report,
         "runtime_resource_cache": runtime_resource_cache,
         "device": device,
+        "prepared_sram_resources": prepared_sram_resources,
+        "prepare_only": prepare_only,
     }
     if runtime_resource_cache is None:
         return _run_kernel_on_device_impl(**arguments)

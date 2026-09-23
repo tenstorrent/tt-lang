@@ -2,142 +2,154 @@
 
 ## Overview
 
-Some operation sequences repeatedly update the same state: an accumulator, a cache, or an intermediate consumed by a separately compiled operation. The state must retain its SRAM allocation and contents between launches. Reinitializing it on each launch loses the previous result; releasing it when host dispatch returns can invalidate accesses still executing on the device.
+Some applications update the same accumulator, cache, or intermediate tensor across separately compiled operation launches. The tensor must retain both its SRAM address and its contents until the application releases it. Host dispatch return is insufficient because device access may still be in progress.
 
-Caller-owned TTNN tensors already provide backing that can outlive one operation. `SRAMStorage` makes ownership, initialization, and completion-aware release explicit in TT-Lang. It also provides the ownership boundary needed to plan several persistent allocations together later.
+`SRAMStorage` owns these tensors, orders their uses by device completion, and releases them explicitly. Joint placement also reserves compiler-planned operation arenas within the same owned pools. Persistent payloads remain live for the storage lifetime; arenas from different prepared operations can reuse bytes because the owner serializes their device execution.
 
-The design and API are under development. Host ownership tests and 24 Blackhole device-correctness cases pass. External-system interoperability remains unvalidated.
+This design preserves the Python operation and DFB APIs. It changes host allocation and runtime binding. Existing tensor arguments keep their addresses, physical pool bases are runtime arguments, and the LLKs are unchanged.
 
-## Design
+## API
 
-### Storage-Owned Payloads
-
-An `SRAMStorage` object declares tensors, allocates their backing, initializes it once, and owns it until close. Operations borrow those tensors. Their addresses remain stable, including when different compiled operations access them. Aliases retain the same owner, so creating another reference does not create another allocation or another authority to release it.
-
-Declaration and allocation are separate because placement should consider the complete set of requirements before reserving storage. The initial implementation uses ordinary owned TTNN allocations. It does not yet jointly pack them with compiler scratch; [SRAM Allocation](SRAMAllocation.md) describes the existing placement machinery.
-
-`storage.requirements()` returns the immutable pre-allocation requirements while declarations remain open. Each physical tensor declaration appears once with its per-shard extent, alignment, persistent lifetime, movable placement, and address-equality domains. Uniform addressing produces one domain containing all participating cores; per-core addressing produces one singleton domain per core. `allocate()` validates the same requirements before reserving storage.
-
-`addressing="uniform"` requests one local address on every participating core. `addressing="per-core"` lets TTNN allocate each core independently and uses the Metal hybrid-allocation prerequisite defined in [SRAM Allocation](SRAMAllocation.md#runtime-allocation-and-binding). The tensor's required sharding mode defines how its logical dimensions map to those cores. Per-core storage supports direct local access only; general tensor access and multicast require one common base address and are rejected.
-
-### Example: Sharing State Between Operations
-
-`op1` and `op2` are different application-defined `@ttl.operation` functions. In this example, `op1` updates persistent state from an input tensor, and `op2` reads that state to produce an output tensor. Each function defines its own computation and DFB accesses. `batches` contains input/output tensor pairs.
+Declarations and operation preparation precede allocation so placement can consider the complete requirement set.
 
 ```python
 storage = ttl.SRAMStorage(device=mesh)
-try:
-    state = storage.tensor(
-        shape=(64, 32),
-        shard_shape=(32, 32),
-        cores=((0, 0), (1, 0)),
-        dtype=ttnn.float32,
-        layout=ttnn.TILE_LAYOUT,
-        sharding=ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
-        addressing="per-core",
-        initialize="zeros",
-    )
-    storage.allocate()
+state = storage.tensor(
+    shape=(64, 32),
+    shard_shape=(32, 32),
+    cores=((0, 0), (1, 0)),
+    dtype=ttnn.float32,
+    layout=ttnn.TILE_LAYOUT,
+    sharding=ttnn.TensorMemoryLayout.HEIGHT_SHARDED,
+    addressing="uniform",
+    initialize="zeros",
+)
 
-    for input_tensor, output_tensor in batches:
-        op1(input_tensor, state)
-        op2(state, output_tensor)
-finally:
-    storage.close()
+storage.prepare_operation(op1, input_tensor, state)
+storage.prepare_operation(op2, state, output_tensor)
+storage.allocate()
+
+for input_tensor, output_tensor in batches:
+    op1(input_tensor, state)
+    op2(state, output_tensor)
+
+storage.close()
 ```
 
-The allocation is initialized once before the loop. `op2` observes the state written by `op1`, and the next iteration retains that state. Passing `state` supplies the same tensor backing to both operations; their definitions determine how it is accessed.
+`op1` and `op2` are different `@ttl.operation` functions. `prepare_operation` compiles one specialization without execution and records its immutable SRAM requirements. `allocate` performs joint placement, validates device programs, initializes persistent payloads, and publishes all bindings atomically. `close` waits for outstanding device accesses before releasing reservations.
 
-`close()` waits for outstanding uses before releasing storage. The owner can instead be retained on a model or session object and closed later. A `with ttl.SRAMStorage(...)` block is optional convenience for calling `close()` on exit; lexical scoping is not required.
+A context manager is optional. Storage lifetime is controlled by the `SRAMStorage` object rather than Python lexical scope.
 
-### Relationship to DFB Protocols
+## Ownership and Completion
 
-Persistent storage preserves the tensor's bytes. Each operation establishes its own DFB producer/consumer protocol over those bytes.
+An `SRAMStorage` object has exclusive release authority for its pools and retained views. A `StorageReference` identifies one declared persistent tensor without exposing its provisional backing. Aliases preserve that identity and do not create another allocation owner.
 
-For a tensor-backed DFB, a launch binds the retained tensor, explicitly publishes its existing contents, and consumes them through the normal `wait`/`pop` protocol. An update writes back to the retained tensor before its access completes. The next launch starts with fresh DFB control state and publishes the updated contents again. A `pop` releases the acquired DFB block; it neither erases the tensor nor releases the persistent allocation.
+Every operation prepared for joint placement must borrow at least one reference from the storage owner. Invocation through that reference acquires the owner, inserts dependencies on the preceding completion records, submits the operation, and records completion on every declared queue and sub-device. This enforced ordering is the proof that arenas belonging to different prepared operations cannot execute concurrently.
 
-Two synchronization requirements therefore remain distinct: the DFB protocol orders accesses within an operation, while storage dependencies order accesses between operations. Persistent ownership does not replace DFB synchronization. Binding, publication, and update semantics are defined in [DFB Management](DFBManagement.md#tensor-backed-storage).
+Host exceptions do not prove that a submission failed before enqueue. When completion recording fails, the owner retains all reservations until backend recovery establishes completion. Cleanup releases only resources acquired by the transaction and remains retryable.
 
-### Completion Determines Release
+An external launcher can borrow persistent tensors through `storage.submit(launcher, ..., state, ...)`. The launcher must finish submitting its accesses before returning and must use the owner's declared queues and sub-devices. The joint operation arena is available only to its prepared TT-Lang operation.
 
-Host dispatch return does not establish device completion. `SRAMStorage` records completion after submission and retains the allocation until that completion is observed. Its uses are conservatively serialized; proving read-only access could permit additional concurrency later.
+## Joint Placement
 
-Submission and close must agree on which operations own an outstanding use. Closing rejects new uses and waits for previously submitted ones. When an operation borrows several storage owners, the runtime acquires their ownership protections in a common order to avoid deadlock.
+### Requirements
 
-A launch can fail after enqueueing work. Such failure must not release its arguments immediately. If a completion record cannot be established, storage remains retained until recovery proves that accesses have finished. Failed cleanup remains retryable and never releases another owner's allocation.
+Each persistent declaration contributes one movable requirement with persistent lifetime. Each compiler-planned operation arena contributes one movable requirement with invocation lifetime. Tensor arguments supplied by the application contribute fixed external requirements; the allocator neither moves nor owns them. The live TT-Metal allocator state accounts for those existing allocations when the data budget is computed.
 
-## Algorithms
+Each requirement defines a per-location extent, alignment, addressing mode, and address-equality domains. Uniform requirements use one equal base across their participating cores. Per-core requirements allow independent physical bases. A pool never mixes the two addressing modes.
 
-These algorithms state the ownership decisions; backend-specific address queries and event operations implement them.
+### Conflict Construction
+
+Persistent regions conflict with every region on an overlapping location because their contents remain live until close. Arenas within one operation conflict because they can be used concurrently during that launch. Arenas from different operations do not conflict because the storage owner establishes a device-completion dependency between launches.
+
+Requirements with overlapping locations form one pool component for an addressing mode. Disjoint components use independent reservations. A component uses the maximum required alignment and delegates byte placement to the existing C++ `SRAMAllocator` strategy interface.
 
 ```text
-allocate(storage):
-    validate all declarations and the device configuration
-    reserve owned backing for every declaration
-    initialize requested payloads and wait for initialization completion
-    publish backing for all references together
-    on failure: complete submitted initialization, then release new reservations
-
-submit(operation, storage owners):
-    validate and acquire permission to use every owner
-    order execution after preceding uses of those owners
-    bind their current tensor backing and submit the operation
-    record completion, including when submission throws
-    retain storage until completion is established
-
-close(storage):
-    reject new uses
-    wait for outstanding accesses, recovering completion if necessary
-    release only this owner's reservations
+plan_joint_storage(persistent requirements, prepared operations):
+    validate ownership, lifetime, addressing, and fixed tensor contracts
+    collect persistent regions and compiler arena regions
+    partition regions by addressing mode and overlapping locations
+    for each partition:
+        add conflicts for overlapping persistent regions
+        add conflicts for arenas from the same operation
+        place aligned regions with the selected SRAMAllocator strategy
+    reject any location whose combined reservations exceed its data budget
+    return pool reservations, view offsets, and efficiency metrics
 ```
 
-## Runtime Integration
+This partition can reserve more bytes than separate allocations. A pool spanning the union of uneven core sets reserves its full per-location extent on every member core. The runtime therefore reports the measured result and does not claim that pooling reduces SRAM use.
 
-### TTNN and External Launchers
+### Reservation and Publication
 
-The internal storage-backend interface defines validation, allocation identity, dependency insertion, completion recording, recovery, waiting, and release. `SRAMStorage` uses a TTNN implementation; ownership algorithms do not contain target-specific event or address handling. Two tensor objects have the same allocation identity only when their device addresses, logical and padded dimensions, dtype, layout, tile geometry, and sharding configuration match. This preserves ownership when an external launcher returns a new wrapper for unchanged backing without discarding a changed interpretation of those bytes.
+The placement offsets are relative to an owned pool. TTNN allocates each pool through the normal Metal allocator, and owner-retaining tensor views bind persistent declarations and operation arenas to their assigned offsets. A view can cover a subset of the pool's cores while retaining the complete pool allocation.
 
-The runtime reuses TTNN-owned tensors and command-queue events. Completion must cover every queue, sub-device, and remote user accessing the allocation. TTNN's default event selection follows the current sub-device stall group, which may exclude a service. The adapter therefore records an explicit selection instead of relying on that mutable default.
+Program preparation revalidates the requirement contract against the final views. Ownership, extent, alignment, addressing, domains, uses, and arena layout must match the provisional contract. A tensor argument may use another physical base on a later launch when every other requirement remains identical. This permits repeated use of one prepared specialization with compatible input and output allocations.
 
-The pinned TTNN interface does not expose mesh lifecycle queries. With that interface, the adapter restricts completion to queue 0 and uses `SubDeviceId(0)` unless the caller supplies another explicit sub-device list. The caller must keep the mesh and active sub-device manager unchanged until close. When lifecycle queries are available, the adapter also validates queue bounds, active sub-device membership, mesh liveness, and manager identity before allocation and submission.
+Reservations remain provisional while every prepared operation is compiled and its Metal program layout is finalized. Persistent payload initialization occurs only after all program checks succeed. The owner then records and waits for initialization completion before publishing tensor references and operation bindings together. Any allocation, view construction, program preparation, initialization, or completion failure releases the provisional views and pools in reverse order.
 
-An external launcher uses `storage.submit(launcher, ..., state, ...)` to borrow the same backing under the declared queue and sub-device contract. It must finish submitting its accesses before returning and must not retain or deallocate raw borrowed tensors. External sockets and services keep ownership of their own protocol state; a continuously running service needs its own access-completion mechanism before it can safely borrow persistent storage.
+```text
+allocate_joint_storage(plan):
+    reserve every pool and construct owner-retaining views
+    bind physical pool bases as runtime arguments
+    compile and finalize every prepared device program without dispatch
+    initialize persistent payloads once
+    record and wait for initialization completion
+    publish all references and operation bindings atomically
+    on failure: establish completion and release new views and pools
+```
 
-Device close, reset, mesh reshape, and manager changes must not race storage operations. Closing a device does not make a persistent tensor usable on a replacement device.
+## Program Capacity
 
-### Compilation and Caching
+Data capacity and program capacity are independent. Metal's allocatable SRAM interval already excludes firmware and reserved program memory. Joint placement compares data reservations with that interval and does not subtract compiled code a second time.
 
-Persistent references become ordinary tensor arguments before compilation and cache lookup. Existing tensor-backed DFB lowering supplies their device addresses. A cached operation receives the current backing on every invocation; it does not own the payload or repeat initialization. Closing one `SRAMStorage` object therefore does not transfer its state to another object that reuses the same compiled operation.
+`tt::tt_metal::experimental::program_preparation::prepare` compiles kernels and finalizes program offsets and runtime-argument configuration without dispatching the workload. Finalization rejects a program configuration that exceeds the architecture's kernel-configuration buffer. The result reports the maximum finalized configuration size and kernel-binary size. Kernel binaries larger than the prefetcher cache remain valid because Metal dispatches them without that cache. TTNN exposes preparation through `ttnn.experimental.prepare_generic_op`. Target memory maps and processor limits remain inside TT-Metal.
+
+Pool bases remain runtime arguments. Changing a physical reservation address therefore updates invocation arguments without creating a new kernel specialization.
+
+Data overflow is rejected before reservation. Program-configuration overflow after provisional reservation triggers transactional rollback before persistent initialization or publication. Tests distinguish exact-fit data and program-configuration cases, data overflow before program preparation, and program-configuration overflow after reservation.
+
+## Launch Behavior
+
+Persistent payloads are initialized once during allocation. Before each prepared operation launch, the runtime resets only that operation's DFB control-record views. The preceding owner completion dependency ensures that the reset cannot race an earlier operation using the shared arena. Scratch payload bytes are not cleared unless operation semantics require initialization.
+
+A tensor-backed DFB publishes the persistent tensor contents through its ordinary `wait` and `pop` protocol on every launch. `pop` releases a logical DFB block; it does not erase the tensor or release the persistent allocation. Cross-launch storage ordering and within-launch DFB synchronization remain separate requirements.
+
+## Metrics
+
+The plan and runtime report physical shard bytes, not only compiler offsets.
+
+- `required_peak_bytes`: for each location, persistent extents plus the largest prepared operation's simultaneous arena extent, summed across locations.
+- `planned_reservation_bytes`: pool extents after allocator alignment and location replication.
+- `actual_reservation_bytes`: allocator-reported pool shard bytes after TTNN allocation.
+- `fragmentation_bytes`: actual reservation minus required peak.
+- `efficiency`: required peak divided by actual reservation.
+- `separate_planned_peak_bytes`: the aligned fixed-layout estimate if each requirement uses its own reservation and operation scratch is released between launches.
+- `preparation_seconds` and `allocation_seconds`: host time spent preparing specializations and completing the allocation transaction.
+- Per-operation program measurements: maximum finalized configuration bytes and maximum kernel-binary bytes.
+
+The estimate does not establish that pooling saves memory. Device benchmarks compare `actual_reservation_bytes` with allocator-reported physical reservations from separate allocation and record both values with preparation time.
+
+## C++ Contracts
+
+The architecture-neutral placement API is declared in [`SRAMAllocator.h`](../../include/ttlang/Dialect/TTL/Transforms/SRAMAllocator.h). `SRAMAllocationProblem` contains region extents, the complete conflict graph, alignment, a reserved prefix, and a byte budget. `SRAMAllocator::allocate` validates this input, calls the selected strategy, validates the complete solution, and returns offsets plus the arena high-water mark without modifying compiler IR. `createSRAMAllocator` selects a registered strategy by its stable name. The exact and greedy implementations use the same contract.
+
+The runtime ownership interfaces are:
+
+- `tt::tt_metal::experimental::retained_buffer_view::create`: creates a bounded SRAM view, preserves uniform, range-lockstep, or per-core addressing, and retains its source allocation.
+- `ttnn::experimental::create_sharded_tensor_view`: applies a `TensorSpec` and tensor topology to that retained view.
+- `tt::tt_metal::experimental::program_preparation::prepare`: performs non-dispatch compilation and finalization and reports program-memory use.
+- `ttnn::experimental::prepare_generic_op`: exposes preparation for TT-Lang's generic operation descriptor.
+
+The TT-Lang runtime depends only on these common interfaces. Wormhole and Blackhole address rules and program limits remain behind TT-Metal APIs.
+
+## Assumptions and Constraints
+
+Persistent declarations support BF16 and FP32 tiled tensors with height, width, or block sharding. Uniform and per-core allocation are supported. Per-core persistent tensors permit direct local access; general tensor access and multicast still require a uniform base.
+
+One joint storage owner supplies one completion domain. Selected device domains, PipeNet-owned storage, Metal DFB reconfiguration, synchronized reset resources inside an invocation, fabric routes, and opaque runtime-resource factories are rejected during operation preparation because their storage and completion requirements are not represented in the joint plan. External launchers of persistent tensor accesses remain supported through `storage.submit`.
+
+Device close, reset, mesh topology changes, and sub-device-manager changes must not race storage use. A closed or replaced device does not transfer persistent contents to another device.
 
 ## Follow-On Work
 
-### Joint Placement
-
-The proposed extension packs persistent declarations and prepared operation arenas into owned SRAM reservations. Packing assigns aligned byte offsets before initialization; tensor formats and live persistent addresses remain unchanged. Persistent contents occupy their ranges until release. Arenas from different operations may overlap only when storage-owner completion dependencies serialize those operations.
-
-Initially, each operation keeps its compiler-planned internal arena layout. For allocations covering the same cores with a common alignment, 64 KiB of persistent state plus serialized 32 KiB and 48 KiB arenas needs 112 KiB. Separate allocations can already achieve that peak if scratch is released between operations; pooling provides reusable reservations, not an automatic reduction in peak memory. Fragmented free space can also favor separate reservations.
-
-TT-Metal chooses physical pool addresses using its allocator; typed views retain the pool owner. Existing application tensors remain fixed. Placement into separate free intervals requires complete occupancy information and conditional reservation that rejects stale snapshots. Each launch resets its DFB control records after preceding accesses complete; payload clearing occurs only where required by operation semantics.
-
-### Program Capacity
-
-Data placement and program loading have separate limits. Metal's [SRAM allocator](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/tt_metal/impl/allocator/allocator.cpp#L89) excludes the reserved firmware and program region. Its [program finalization](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/tt_metal/impl/program/program.cpp#L2771) validates compiled binaries and runtime configuration against target-specific limits. Code bytes must not be subtracted again from the already reduced data budget, and unused program capacity is not available for payload packing.
-
-Preparation must finalize relative layouts, device binaries, and runtime-argument counts before committing persistent reservations. A common runtime adapter obtains Metal's limits and validates every participating kernel group and processor; architecture-specific memory maps remain in Metal. A non-executing preparation interface is an integration requirement. Physical pool bases remain runtime arguments so changing a reservation address does not generate another kernel variant.
-
-```text
-prepare_joint_storage(declarations, operations):
-    collect requirements and validate ownership, domains, and completion order
-    place persistent regions and operation arenas; finalize relative offsets
-    compile device kernels and finalize Metal program layouts without execution
-    require each program fits its target's code and configuration limits
-    reserve data pools through Metal and construct owner-retaining views
-    initialize persistent payloads and publish all bindings together
-    on failure: complete submitted initialization and roll back new reservations
-```
-
-Validation covers exact capacity boundaries, data fitting while code overflows, code fitting while data allocation fails, and both overflowing. Reports separate data reservations and padding from compiled code, runtime configuration, and program headroom. Many-DFB and persistent-plus-scratch compositions track code size and preparation time alongside measured allocation efficiency.
-
-### Concurrent Borrowing
-
-Read/write effect information can permit concurrent read-only borrowing. These optimizations preserve the ownership and completion rules above.
+Joint placement can incorporate PipeNet, DFB reconfiguration, and selected device domains after their resources expose immutable requirements and completion contracts through the same preparation interface. Read-only effect proofs can permit concurrent borrowing by retaining conflicts between arenas whose executions may overlap. Conditional reservation against complete per-core free-interval snapshots can place pools into fragmented gaps without relying on a stale occupancy query.

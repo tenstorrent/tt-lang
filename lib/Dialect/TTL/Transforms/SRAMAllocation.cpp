@@ -8,9 +8,9 @@
 #include "DFBPhysicalAllocationPlan.h"
 #include "SRAMAllocationPlan.h"
 #include "SRAMAllocationReport.h"
-#include "SRAMAllocator.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Transforms/DFBLogicalIdentityAnalysis.h"
+#include "ttlang/Dialect/TTL/Transforms/SRAMAllocator.h"
 #include "ttlang/Target/TargetInfo.h"
 
 #include "mlir/IR/Builders.h"

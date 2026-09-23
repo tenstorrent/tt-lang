@@ -9076,6 +9076,131 @@ def test_per_core_sram_preserves_grouped_specialized_kernel(monkeypatch):
     assert allocations == [(2112, True, False)]
 
 
+def test_prepared_sram_resets_controls_only_before_dispatch(monkeypatch):
+    from ttl._sram_requirements import prepare_sram_operation
+
+    fake_ttnn = _FakeTTNN()
+    events = []
+    fake_ttnn.full = lambda *args, **kwargs: events.append(("reset", args, kwargs))
+    fake_ttnn.experimental = SimpleNamespace(
+        prepare_generic_op=lambda tensors, program: events.append(
+            ("prepare", tensors, program)
+        )
+    )
+    fake_ttnn.generic_op = lambda tensors, program: events.append(
+        ("dispatch", tensors, program)
+    )
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    mesh_device = _FakeMeshDevice()
+    input_tensor = _FakeTensor(mesh_device)
+    arena = _SharedSRAMArena(mesh_device, address=0x8000)
+    control_tensor = SimpleNamespace(
+        shape=(1, 2),
+        dtype="UINT32",
+        layout="ROW_MAJOR",
+        device=lambda: mesh_device,
+    )
+    config = _compiler_l1_config()
+    core_ranges = _FakeCoreRanges()
+    requirements = prepare_sram_operation(
+        name="prepared",
+        tensors=[input_tensor],
+        configs=[config],
+        cores=((0, 0),),
+        ttnn_api=fake_ttnn,
+    )
+    resources = kernel_runner.PreparedSRAMResources(
+        requirements=requirements,
+        uniform_arena=arena,
+        core_arenas=(),
+        control_tensors=(control_tensor,),
+    )
+    arguments = dict(
+        kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
+        tensors=[input_tensor],
+        cb_configs=[config],
+        core_ranges=core_ranges,
+        device=mesh_device,
+        operation_name="prepared",
+        prepared_sram_resources=resources,
+    )
+
+    kernel_runner.run_kernel_on_device(**arguments, prepare_only=True)
+    kernel_runner.run_kernel_on_device(**arguments)
+    kernel_runner.run_kernel_on_device(**arguments)
+
+    assert [event[0] for event in events] == [
+        "prepare",
+        "reset",
+        "dispatch",
+        "reset",
+        "dispatch",
+    ]
+    assert all(
+        event[2].kernels[0].common_runtime_args[-1] == 0x8000
+        for event in events
+        if event[0] in ("prepare", "dispatch")
+    )
+
+
+def _prepared_tensor_operation(base, extent_bytes=2048, location=None, addressing=None):
+    from ttl._sram_requirements import (
+        PreparedSRAMOperation,
+        SRAMAddressDomain,
+        SRAMAddressing,
+        SRAMLocation,
+        SRAMOwner,
+        SRAMOwnerKind,
+        SRAMOwnership,
+        SRAMStorageRequirement,
+        SRAMLifetime,
+    )
+
+    if location is None:
+        location = SRAMLocation((0, 0), (0, 0))
+    if addressing is None:
+        addressing = SRAMAddressing.UNIFORM
+    requirement = SRAMStorageRequirement(
+        owner=SRAMOwner(SRAMOwnerKind.TENSOR_ARGUMENT, 0),
+        extent_bytes=extent_bytes,
+        alignment_bytes=64,
+        address_domains=(SRAMAddressDomain((location,)),),
+        ownership=SRAMOwnership.FIXED,
+        lifetime=SRAMLifetime.EXTERNAL,
+        fixed_bases=(base,),
+        addressing=addressing,
+    )
+    return PreparedSRAMOperation("prepared", (requirement,), (), ())
+
+
+# Compatible tensors can change physical address between prepared launches.
+def test_prepared_sram_requirement_match_allows_tensor_base_rebinding():
+    expected = _prepared_tensor_operation(0)
+    actual = _prepared_tensor_operation(0x8000)
+
+    assert kernel_runner._prepared_sram_requirements_match(expected, actual)
+
+
+# Address rebinding does not permit changes to tensor storage requirements.
+def test_prepared_sram_requirement_match_rejects_geometry_change():
+    expected = _prepared_tensor_operation(0)
+    actual = _prepared_tensor_operation(0x8000, extent_bytes=4096)
+
+    assert not kernel_runner._prepared_sram_requirements_match(expected, actual)
+
+
+# Address rebinding cannot change the tensor's domain or addressing mode.
+def test_prepared_sram_requirement_match_rejects_location_change():
+    from ttl._sram_requirements import SRAMAddressing, SRAMLocation
+
+    expected = _prepared_tensor_operation(0)
+    moved = _prepared_tensor_operation(0x8000, location=SRAMLocation((0, 0), (1, 0)))
+    per_core = _prepared_tensor_operation(0x8000, addressing=SRAMAddressing.PER_CORE)
+
+    assert not kernel_runner._prepared_sram_requirements_match(expected, moved)
+    assert not kernel_runner._prepared_sram_requirements_match(expected, per_core)
+
+
 def test_per_core_sram_splits_grouped_kernel_between_allocation_domains(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)

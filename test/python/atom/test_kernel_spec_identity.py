@@ -11,8 +11,6 @@ mandatory empty ones the plan never assigned. Runtime resources select kernels b
 logical identity, so an empty kernel must still carry one.
 """
 
-import inspect
-
 import pytest
 
 ttnn = pytest.importorskip("ttnn", exc_type=ImportError)
@@ -24,12 +22,10 @@ from ttl.kernel_runner import FabricManagerIntervalKind, KernelSpec  # noqa: E40
 HEADER = "/dev/null/fake_shim.hpp"
 
 
-def _compiled_kernel(operation):
-    """Return the single artifact cached by the enclosed operation wrapper."""
-    operation_wrapper = inspect.getclosurevars(operation._wrapper).nonlocals["function"]
-    cache = inspect.getclosurevars(operation_wrapper).nonlocals["cache"]
-    assert len(cache) == 1
-    return next(iter(cache.values()))
+def _compiled_kernel(operation, *args):
+    """Prepare an operation and return its compiled artifact without dispatch."""
+    compiled_kernel, _ = operation._wrapper._ttlang_prepare_operation(*args)
+    return compiled_kernel
 
 
 def _kernel_specs(compiled):
@@ -56,15 +52,13 @@ def test_every_emitted_kernel_spec_has_a_logical_identity(monkeypatch):
     def single_selected_reader(inp):
         ttl.call_extern_func(HEADER, "reader_entry", kernel=reader)
 
-    single_selected_reader(
-        ttnn.from_torch(
-            torch.zeros((32, 32), dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-        )
+    inp = ttnn.from_torch(
+        torch.zeros((32, 32), dtype=torch.bfloat16),
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
     )
 
-    specs = _kernel_specs(_compiled_kernel(single_selected_reader))
+    specs = _kernel_specs(_compiled_kernel(single_selected_reader, inp))
 
     assert specs
     assert all(spec.logical_kernel is not None for spec in specs)
@@ -98,17 +92,15 @@ def test_external_fabric_manager_effects_reach_the_selected_kernel(monkeypatch):
             fabric_manager_effects=(manager.release(),),
         )
 
-    external_manager(
-        ttnn.from_torch(
-            torch.zeros((32, 32), dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-        )
+    inp = ttnn.from_torch(
+        torch.zeros((32, 32), dtype=torch.bfloat16),
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
     )
 
     selected_spec = next(
         spec
-        for spec in _kernel_specs(_compiled_kernel(external_manager))
+        for spec in _kernel_specs(_compiled_kernel(external_manager, inp))
         if spec.logical_kernel == reader
     )
     assert len(selected_spec.fabric_manager_intervals) == 1
@@ -131,17 +123,15 @@ def test_external_fabric_manager_can_select_pipe_source_kernel(monkeypatch):
             fabric_manager_effects=(manager.scoped(),),
         )
 
-    external_pipe_source_manager(
-        ttnn.from_torch(
-            torch.zeros((32, 32), dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-        )
+    inp = ttnn.from_torch(
+        torch.zeros((32, 32), dtype=torch.bfloat16),
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
     )
 
     selected_spec = next(
         spec
-        for spec in _kernel_specs(_compiled_kernel(external_pipe_source_manager))
+        for spec in _kernel_specs(_compiled_kernel(external_pipe_source_manager, inp))
         if spec.logical_kernel == ttl.PIPE_SOURCE_KERNEL
     )
     assert len(selected_spec.fabric_manager_intervals) == 1
@@ -175,17 +165,15 @@ def test_scoped_external_managers_retain_conditional_launch_domain(monkeypatch):
                 fabric_manager_effects=(post_manager.scoped(),),
             )
 
-    conditional_managers(
-        ttnn.from_torch(
-            torch.zeros((32, 32), dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-        )
+    inp = ttnn.from_torch(
+        torch.zeros((32, 32), dtype=torch.bfloat16),
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
     )
 
     selected_spec = next(
         spec
-        for spec in _kernel_specs(_compiled_kernel(conditional_managers))
+        for spec in _kernel_specs(_compiled_kernel(conditional_managers, inp))
         if spec.logical_kernel == ttl.PIPE_SOURCE_KERNEL
     )
     assert len(selected_spec.fabric_manager_intervals) == 2
@@ -216,17 +204,15 @@ def test_scoped_external_manager_retains_empty_launch_domain(monkeypatch):
                     fabric_manager_effects=(manager.scoped(),),
                 )
 
-    unreachable_manager(
-        ttnn.from_torch(
-            torch.zeros((32, 32), dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-        )
+    inp = ttnn.from_torch(
+        torch.zeros((32, 32), dtype=torch.bfloat16),
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
     )
 
     selected_spec = next(
         spec
-        for spec in _kernel_specs(_compiled_kernel(unreachable_manager))
+        for spec in _kernel_specs(_compiled_kernel(unreachable_manager, inp))
         if spec.logical_kernel == ttl.PIPE_SOURCE_KERNEL
     )
     assert len(selected_spec.fabric_manager_intervals) == 1
@@ -271,17 +257,15 @@ def test_composed_fabric_manager_lifetime_reaches_selected_kernel(monkeypatch):
         use_manager()
         close_manager()
 
-    composed_manager(
-        ttnn.from_torch(
-            torch.zeros((32, 32), dtype=torch.bfloat16),
-            dtype=ttnn.bfloat16,
-            layout=ttnn.TILE_LAYOUT,
-        )
+    inp = ttnn.from_torch(
+        torch.zeros((32, 32), dtype=torch.bfloat16),
+        dtype=ttnn.bfloat16,
+        layout=ttnn.TILE_LAYOUT,
     )
 
     selected_spec = next(
         spec
-        for spec in _kernel_specs(_compiled_kernel(composed_manager))
+        for spec in _kernel_specs(_compiled_kernel(composed_manager, inp))
         if spec.logical_kernel == ttl.PIPE_SOURCE_KERNEL
     )
     assert len(selected_spec.fabric_manager_intervals) == 1
