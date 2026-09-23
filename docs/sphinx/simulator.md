@@ -119,19 +119,10 @@ docker run --rm --entrypoint cat tt-lang-emule:TAG \
   /opt/tt-emule-runtime/stack.json
 ```
 
-The backend requires a working Docker-compatible daemon. Its image is Linux
-amd64 because tt-emule JITs x86-64 shared objects. On Apple Silicon, use Docker
-Desktop with x86 emulation enabled, or start an x86-64 Colima VM:
-
-```bash
-brew install colima docker
-softwareupdate --install-rosetta --agree-to-license
-colima start --vm-type vz --vz-rosetta --cpus 8 --memory 12
-```
-
-The Colima command uses Rosetta to run amd64 containers in an Apple
-Virtualization.framework VM. If Rosetta cannot be installed, an x86-64 QEMU VM
-also works but is substantially slower and requires `brew install qemu`.
+The backend requires a running Docker-compatible daemon with support for
+`linux/amd64` containers because tt-emule JITs x86-64 shared objects. See
+[host prerequisites](simulator-getting-started.md#host-prerequisites) for
+installation and Apple Silicon configuration references.
 
 The installer builds the pinned tt-emule/tt-metal image and TT-Lang compiler.
 The compiler build and the tt-metal and tt-emule JIT caches live in named Docker

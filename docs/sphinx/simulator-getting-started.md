@@ -13,11 +13,12 @@ compiler baseline.
 ## Host prerequisites
 
 - Git and Python 3.10 or newer on `PATH`.
-- Docker Desktop on macOS, or Docker Engine on Linux, with the daemon running
-  and accessible without `sudo`.
-- Support for `linux/amd64` containers. Apple Silicon uses Docker's x86-64
-  virtualization; enabling Rosetta support reduces translation overhead where
-  available.
+- A Docker-compatible daemon, running and accessible without `sudo`. The
+  [Docker installation guide](https://docs.docker.com/get-started/get-docker/)
+  covers Docker Desktop on macOS and Docker Engine on Linux.
+- Support for `linux/amd64` containers. On Apple Silicon, see Docker Desktop's
+  [virtualization and Rosetta settings](https://docs.docker.com/desktop/settings-and-maintenance/settings/#general)
+  for x86-64 emulation support and acceleration.
 - The approved tt-emule repository URL and Git access to that repository. The
   installer uses the host's existing Git credentials.
 
