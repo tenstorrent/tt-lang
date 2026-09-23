@@ -124,12 +124,22 @@ class _FakeTensor:
     def buffer_address(self):
         return self._address
 
+    def is_per_core_allocated(self):
+        return False
+
     def get_tile(self):
         return _FakeTTNN.Tile(self.tile_shape)
 
     def memory_config(self):
         class ShardSpec:
             shape = self.shard_shape
+            grid = _FakeTTNN.CoreRangeSet(
+                (
+                    _FakeTTNN.CoreRange(
+                        _FakeTTNN.CoreCoord(0, 0), _FakeTTNN.CoreCoord(7, 7)
+                    ),
+                )
+            )
 
         class MemoryConfig:
             buffer_type = "L1"
@@ -307,6 +317,10 @@ class _FakeTTNN:
         UINT16 = "UINT16"
         UINT8 = "UINT8"
 
+    @staticmethod
+    def get_l1_alignment():
+        return 16
+
     class TensorAccessorArgs:
         def __init__(self, tensor):
             self.tensor = tensor
@@ -426,6 +440,8 @@ class _FakeTTNN:
                 return scalar_count // 2 + exponent_bytes
             if dtype_name == "bfloat8_b":
                 return scalar_count + exponent_bytes
+            if dtype_name == "float32":
+                return scalar_count * 4
             return scalar_count * 2
 
     class TileDescriptor:
@@ -2237,7 +2253,7 @@ def test_compiler_l1_arena_size_uses_all_regions():
         ),
     ]
 
-    assert kernel_runner._get_compiler_l1_arena_bytes(configs) == 6208
+    assert kernel_runner._get_compiler_sram_arena_bytes(configs) == 6208
 
 
 def test_compiler_l1_arena_size_accepts_tensor_backing_without_payload():
@@ -2259,7 +2275,7 @@ def test_compiler_l1_arena_size_accepts_tensor_backing_without_payload():
         l1_offset=0,
     )
 
-    assert kernel_runner._get_compiler_l1_arena_bytes([config]) == 8
+    assert kernel_runner._get_compiler_sram_arena_bytes([config]) == 8
 
 
 def test_compiler_l1_arena_size_combines_tensor_and_static_storage():
@@ -2294,7 +2310,7 @@ def test_compiler_l1_arena_size_combines_tensor_and_static_storage():
         ),
     ]
 
-    assert kernel_runner._get_compiler_l1_arena_bytes(configs) == 2112
+    assert kernel_runner._get_compiler_sram_arena_bytes(configs) == 2112
 
 
 def test_compiler_l1_arena_size_rejects_storage_without_payload_or_tensor():
@@ -2309,7 +2325,7 @@ def test_compiler_l1_arena_size_rejects_storage_without_payload_or_tensor():
     )
 
     with pytest.raises(ValueError, match="requires tensor backing"):
-        kernel_runner._get_compiler_l1_arena_bytes([config])
+        kernel_runner._get_compiler_sram_arena_bytes([config])
 
 
 def test_compiler_l1_arena_size_rejects_partial_metadata():
@@ -2324,8 +2340,8 @@ def test_compiler_l1_arena_size_rejects_partial_metadata():
         l1_allocation_bytes=2048,
     )
 
-    with pytest.raises(ValueError, match="mixed compiler-l1 and Metal"):
-        kernel_runner._get_compiler_l1_arena_bytes([config])
+    with pytest.raises(ValueError, match="mixed compiler SRAM and Metal"):
+        kernel_runner._get_compiler_sram_arena_bytes([config])
 
 
 @pytest.mark.parametrize(
@@ -3820,7 +3836,9 @@ def test_compiler_l1_generated_fabric_route_uses_tensor_backed_receiver(monkeypa
     core_ranges, arena, allocation_calls = _install_compiler_l1_arena(
         monkeypatch, mesh_device
     )
-    receiver_storage = _FakeTensor(mesh_device, address=0x9000)
+    receiver_storage = _FakeTensor(
+        mesh_device, address=0x9000, dtype=_FakeTTNN.DataType.BFLOAT16
+    )
     receiver_config = PhysicalDFBConfig(
         0,
         1,
@@ -3832,7 +3850,7 @@ def test_compiler_l1_generated_fabric_route_uses_tensor_backed_receiver(monkeypa
             DFBStorageSegment(
                 nodes=((0, 0),),
                 tensor_index=0,
-                byte_offset=64,
+                byte_offset=2048,
                 byte_size=2048,
             ),
         ),
@@ -3868,7 +3886,7 @@ def test_compiler_l1_generated_fabric_route_uses_tensor_backed_receiver(monkeypa
         assert program.cbs == []
         common_runtime_args = program.kernels[0].common_runtime_args
         assert common_runtime_args[0] == 0x9000
-        assert common_runtime_args[1] == 0x9040
+        assert common_runtime_args[1] == 0x9800
         assert common_runtime_args[-1] == 0x8000
         assert program.kernels[0].compile_time_args == [5]
     assert len(fake_ttnn.fabric_setup_calls) == 1
@@ -9203,7 +9221,7 @@ def test_sram_arena_size_uses_finalized_domain_extents():
             SRAMCoreLayout((1, 0), 2112, True, 4160, 1),
         ),
     )
-    assert kernel_runner._get_compiler_l1_arena_bytes([config]) == 4160
+    assert kernel_runner._get_compiler_sram_arena_bytes([config]) == 4160
 
 
 def test_sram_metadata_preserves_kernel_spec_positional_arguments():
