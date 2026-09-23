@@ -127,9 +127,6 @@ setup() {
     MOCK_DOCKER_LOG="$BATS_TEST_TMPDIR/docker.log"
     export MOCK_DOCKER_LOG
     make_mock_docker "$MOCK_DOCKER"
-    unset TTLANG_EMULE_STACK_MANIFEST TTLANG_EMULE_RUNTIME_COMMIT \
-        TTLANG_EMULE_RUNTIME_METAL_COMMIT TTLANG_EMULE_RUNTIME_METAL_SOURCE_URL \
-        TTLANG_EMULE_RUNTIME_BASE_IMAGE TTLANG_EMULE_PLATFORM
     unset TT_METAL_CACHE TT_EMULE_JIT_CACHE_DIR MESH_DEVICE EMULE_FABRIC8 \
         TT_METAL_ALLOCATOR_MODE_HYBRID TT_METAL_MOCK_CLUSTER_DESC_PATH
     # Keep the test manifest inside its own checkout, independent of CI depth.
@@ -632,42 +629,6 @@ PY
 
     assert_output --partial "emulator.commit must be a full lowercase commit SHA"
     [ ! -e "$MOCK_DOCKER_LOG" ]
-}
-
-@test "independent runtime overrides are rejected before any Docker action" {
-    local setting
-    cd "$TTLANG_REPO_ROOT"
-    for setting in \
-        TTLANG_EMULE_STACK_MANIFEST \
-        TTLANG_EMULE_RUNTIME_COMMIT \
-        TTLANG_EMULE_RUNTIME_METAL_COMMIT \
-        TTLANG_EMULE_RUNTIME_METAL_SOURCE_URL \
-        TTLANG_EMULE_RUNTIME_BASE_IMAGE \
-        TTLANG_EMULE_PLATFORM; do
-        run -2 env "$setting=unsupported" \
-            TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
-            "$RUNNER" examples/eltwise_add.py
-
-        assert_output --partial "$setting is not supported"
-        assert_output --partial "repository's pinned stack manifest"
-        [ ! -e "$MOCK_DOCKER_LOG" ]
-    done
-}
-
-@test "empty retired runtime settings do not override the pinned manifest" {
-    cd "$TTLANG_REPO_ROOT"
-    TTLANG_EMULE_STACK_MANIFEST= \
-        TTLANG_EMULE_RUNTIME_COMMIT= \
-        TTLANG_EMULE_RUNTIME_METAL_COMMIT= \
-        TTLANG_EMULE_RUNTIME_METAL_SOURCE_URL= \
-        TTLANG_EMULE_RUNTIME_BASE_IMAGE= \
-        TTLANG_EMULE_PLATFORM= \
-        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
-        run -0 "$RUNNER" examples/eltwise_add.py
-
-    assert_log_line "run"
-    assert_log_line "linux/amd64"
-    refute_log_line "build"
 }
 
 @test "an unavailable daemon fails before inspecting or building the image" {

@@ -12,18 +12,6 @@ set -euo pipefail
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 _REPO_ROOT="$(dirname "$_SCRIPT_DIR")"
 readonly _SCRIPT_DIR _REPO_ROOT
-for _OVERRIDE in \
-    TTLANG_EMULE_STACK_MANIFEST \
-    TTLANG_EMULE_RUNTIME_COMMIT \
-    TTLANG_EMULE_RUNTIME_METAL_COMMIT \
-    TTLANG_EMULE_RUNTIME_METAL_SOURCE_URL \
-    TTLANG_EMULE_RUNTIME_BASE_IMAGE \
-    TTLANG_EMULE_PLATFORM; do
-    if [ -n "${!_OVERRIDE:-}" ]; then
-        echo "tt-lang-sim: ${_OVERRIDE} is not supported; use the repository's pinned stack manifest." >&2
-        exit 2
-    fi
-done
 readonly _STACK_MANIFEST="${_REPO_ROOT}/config/tt-lang-emule-stack.json"
 readonly _STACK_TOOL="${_SCRIPT_DIR}/tt-lang-emule-stack.py"
 readonly _PYTHON="${TTLANG_EMULE_HOST_PYTHON:-python3}"
