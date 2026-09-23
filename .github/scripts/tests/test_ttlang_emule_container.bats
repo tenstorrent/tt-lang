@@ -187,6 +187,7 @@ EOF
 }
 
 make_entrypoint_fixture() {
+    export TT_METAL_ALLOCATOR_MODE_HYBRID=1 MESH_DEVICE=P150
     MOCK_ENTRYPOINT_LOG="$BATS_TEST_TMPDIR/entrypoint.log"
     export MOCK_ENTRYPOINT_LOG
     mock_bin="$BATS_TEST_TMPDIR/entrypoint-bin"
@@ -908,12 +909,16 @@ PY
     [ ! -e "$MOCK_ENTRYPOINT_LOG" ]
 }
 
-@test "entrypoint defaults to the runtime's full P150 descriptor" {
-    run -0 grep -F -x -- \
-        'readonly CLUSTER_DESCRIPTORS="${TT_EMULE_SOURCE_DIR}/cluster_descriptors"' \
-        "$ENTRYPOINT"
-    run -0 grep -F -- \
-        'blackhole_P150_unharvested.yaml' "$ENTRYPOINT"
+@test "entrypoint requires every target setting from the launcher" {
+    make_entrypoint_fixture
+    local setting
+    for setting in TT_METAL_MOCK_CLUSTER_DESC_PATH \
+        TT_METAL_ALLOCATOR_MODE_HYBRID MESH_DEVICE; do
+        run -1 env -u "$setting" /bin/bash "$test_entrypoint" "$program"
+        assert_output --partial "required target setting ${setting} is missing"
+        [ ! -e "$MOCK_ENTRYPOINT_LOG" ]
+        export TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster"
+    done
 }
 
 @test "entrypoint rejects a missing script argument before configuring" {
@@ -931,6 +936,7 @@ PY
     local program="$BATS_TEST_TMPDIR/program.py"
     touch "$program"
     TT_METAL_MOCK_CLUSTER_DESC_PATH="$missing_cluster" \
+        TT_METAL_ALLOCATOR_MODE_HYBRID=1 MESH_DEVICE=P150 \
         run -1 "$ENTRYPOINT" "$program"
     assert_output --partial "cluster descriptor not found: $missing_cluster"
 }
