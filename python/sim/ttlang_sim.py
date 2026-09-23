@@ -26,6 +26,7 @@ from typing import Any, Optional
 from .operation import set_default_grid
 from .greenlet_scheduler import set_scheduler_algorithm
 from .context import set_dry_run
+from .constants import BACKEND_EMULE, BACKEND_PYTHON
 
 
 def setup_simulator_imports() -> None:
@@ -260,8 +261,8 @@ def main() -> None:
 
     parser.add_argument(
         "--backend",
-        choices=["python", "emule"],
-        default="python",
+        choices=[BACKEND_PYTHON, BACKEND_EMULE],
+        default=BACKEND_PYTHON,
         help=(
             "Execution backend. Compiler-backed emule is available only from "
             "a source checkout through ./bin/tt-lang-sim."
@@ -387,7 +388,7 @@ def main() -> None:
     args.target = first
     args.script_args = script_args
 
-    if args.backend == "emule":
+    if args.backend == BACKEND_EMULE:
         parser.error(
             "the emule backend requires a TT-Lang source checkout; "
             "run ./bin/tt-lang-sim SCRIPT.py --backend emule"

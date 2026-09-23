@@ -14,7 +14,7 @@ from typing import Any
 import types
 from . import ttnnsim as ttnn
 from .dfb import DFBStats
-from .constants import TILE_SHAPE
+from .constants import BACKEND_EMULE, TILE_SHAPE
 from .copy import (
     CopyTransaction,
     GroupTransfer,
@@ -146,7 +146,7 @@ class _TTLNamespace:
     def call_extern_func(*args: Any, **kwargs: Any) -> None:
         raise NotImplementedError(
             "ttl.call_extern_func is not supported by the Python simulator; "
-            "use tt-lang-sim --backend=emule to execute external C++ functions"
+            f"use tt-lang-sim --backend={BACKEND_EMULE} to execute external C++ functions"
         )
 
     @staticmethod
