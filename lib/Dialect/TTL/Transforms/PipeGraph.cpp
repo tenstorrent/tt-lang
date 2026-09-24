@@ -2095,12 +2095,25 @@ PipeGraph::proveReceiverProducerStreams(PipeGraphAnalysisState &analysisState) {
             std::optional<ReceiverControlContext> pushContext =
                 getReceiverControlContext(pushOp, *maybeLocation,
                                           analysisState);
-            // Both contexts must be known and equal. Two unknown contexts
-            // compare equal as optionals, so the known-ness is tested
-            // explicitly.
-            bool contextsKnownAndEqual =
-                postContext && pushContext && *postContext == *pushContext;
-            if (!contextsKnownAndEqual) {
+            std::optional<ReceiverControlContext> reserveContext =
+                getReceiverControlContext(reserveOp, *maybeLocation,
+                                          analysisState);
+            // Two unknown contexts compare equal as optionals, so known-ness
+            // is tested explicitly.
+            auto knownAndEqual =
+                [](const std::optional<ReceiverControlContext> &lhs,
+                   const std::optional<ReceiverControlContext> &rhs) {
+                  return lhs && rhs && *lhs == *rhs;
+                };
+            // A push may execute without its post only when it finalizes a
+            // reserve in its own context and advances one full DFB: the
+            // lifecycle stays balanced and the write pointer returns to the
+            // slot the sender computes.
+            bool fullPushOfOwnReserve =
+                knownAndEqual(reserveContext, pushContext) &&
+                *maybePushedBlocks == physicalBlockCount;
+            if (!knownAndEqual(postContext, pushContext) &&
+                !fullPushOfOwnReserve) {
               pushOutsidePostContext = true;
             }
             if (!hasMatchingReceiveWaitBeforePush(
@@ -2149,10 +2162,10 @@ PipeGraph::proveReceiverProducerStreams(PipeGraphAnalysisState &analysisState) {
         break;
       }
     }
-    // The sender advances its slot counter once per post, so a push that can
-    // execute without its post desynchronizes the counter from the receiver's
-    // write pointer. Checked last so a more specific ownership failure is
-    // reported first.
+    // The sender advances its slot counter once per post, so a partial push
+    // that can execute without its post desynchronizes the counter from the
+    // receiver's write pointer. Checked last so a more specific ownership
+    // failure is reported first.
     if (pushOutsidePostContext) {
       rejectBoth("push does not execute in the control context of its "
                  "receiver post");
