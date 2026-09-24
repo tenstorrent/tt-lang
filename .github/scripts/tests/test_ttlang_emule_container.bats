@@ -519,6 +519,21 @@ EOF
     [ "$first_image" != "$second_image" ]
 }
 
+@test "entrypoint edits use the mounted script without changing the runtime image" {
+    cd "$TTLANG_REPO_ROOT"
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$RUNNER" examples/program.py
+    local first_image
+    first_image="$(awk '/^tt-lang-emule:/{print; exit}' "$MOCK_DOCKER_LOG")"
+
+    printf '\n# changed launcher input\n' >> "$ENTRYPOINT"
+    : > "$MOCK_DOCKER_LOG"
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$RUNNER" examples/program.py
+
+    assert_log_line "$first_image"
+    assert_log_line "/workspace/scripts/tt-lang-emule-entrypoint.sh"
+    run -1 grep -F -- 'COPY tt-lang-emule-entrypoint.sh' "$DOCKERFILE"
+}
+
 @test "shallow checkout accepts its pinned HEAD but rejects an unavailable baseline" {
     local source_root="$BATS_TEST_TMPDIR/source"
     local shallow_root="$BATS_TEST_TMPDIR/shallow"
