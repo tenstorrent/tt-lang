@@ -58,15 +58,26 @@ Packed-format metadata is included in `P`. An allocation group reserves the larg
 
 ### Implemented Contract
 
-The allocation scope is one compiled `ttl.operation` invocation. Compiler-owned payload sizes are static; tensor-backed payloads retain their existing height-, width-, or block-sharded allocations. Uniform and per-node placement share the same ownership and completion rules.
+The compiler places scratch for one compiled `ttl.operation` invocation. Persistent tensor backing can span multiple invocations and is owned by `SRAMStorage`; its current runtime allocation is separate from each operation's scratch arena. Compiler-owned payload sizes are static; tensor-backed payloads retain their existing height-, width-, or block-sharded allocations. Uniform and per-node placement share the same ownership and completion rules.
 
 DFB transactions operate on one block, or publish/consume a tensor-backed DFB's complete capacity. Capacity is positive and below `2^31` pages. Consumer-owned replacement writes remain within the acquired read window and do not change occupancy or sequence counters. Compute formats and tile dimensions, reset synchronization, and external/transport bindings are specified in the backend subsections below.
 
 ### Shared Runtime Requirements
 
-The compiler placement problem describes relative offsets inside compiler-owned arenas. The runtime also needs one representation that can describe those movable arenas together with fixed tensor storage. Before creating runtime resources, it prepares an immutable requirement for each physical owner. A requirement records its byte extent, alignment, lifetime, fixed or movable placement, and address-equality domains. The runtime obtains the target SRAM alignment from TTNN. An address-equality domain is a set of device/core locations that must use one base address. An empty device coordinate denotes the device domain selected when storage is bound. Uniform storage has one domain; independent storage has one singleton domain per location.
+The compiler assigns relative offsets inside scratch arenas. Before creating runtime resources, the runtime records each arena, tensor argument, and persistent declaration as an immutable storage requirement. This common representation distinguishes storage ownership from placement:
 
-DFB control and payload ranges are uses of a requirement, not additional owners. Several tensor-backed DFBs that reference one tensor therefore produce one fixed requirement and several byte-range uses. The fixed requirement covers the tensor's complete logical shard extent and shard grid, including bytes and cores not referenced by those DFBs. Compiler control and payload ranges reference their arena requirement. The runtime derives the current arena allocation sizes and core groups from this prepared record, so allocation and descriptor binding use the same validated information.
+| Property | Meaning |
+| --- | --- |
+| Owner | The arena, tensor argument, or persistent declaration responsible for one physical allocation. |
+| Extent and alignment | Bytes reserved at each location and the required base-address alignment. One requirement currently has the same extent at every location. |
+| Lifetime | Invocation, external tensor ownership, or persistent storage ownership. |
+| Placement | Fixed when a tensor supplies its address; movable when the allocator selects the address. |
+| Address domains | Groups of device and worker-node locations that must share a base address. A uniform allocation has one domain; independent allocations have one domain per location. |
+| Fixed bases | One address per domain for fixed placement; absent for movable placement. |
+
+The runtime obtains target SRAM alignment from TTNN. An empty device coordinate denotes the device domain selected at binding.
+
+DFB control and payload ranges are uses of a requirement, not additional owners. Several tensor-backed DFBs that reference the same tensor argument therefore produce one fixed requirement and several byte-range uses. That requirement covers the tensor's complete logical shard extent and shard grid, including bytes and nodes not referenced by those DFBs. Compiler control and payload ranges reference their arena requirement. The runtime derives arena allocation sizes and node groups from this prepared record, so allocation and descriptor binding use the same validated information.
 
 Persistent declarations use the same requirement type. They remain movable until `SRAMStorage.allocate()` reserves TTNN tensors. The current runtime still allocates each persistent tensor and each operation arena separately; the prepared requirements do not claim joint physical placement. Joint reservation also requires an API that prepares all participating operations and enforces their launch dependencies.
 
@@ -139,7 +150,7 @@ Control records remain at fixed offsets on every node, including nodes without t
 
 ## Placement API and Algorithms
 
-Placement is independent of MLIR and target-specific code. Storage-owner construction produces one allocator region for each owner with a compiler-owned payload. Tensor-backed owners consume control records but add no allocator regions. The immutable allocation problem contains each payload extent, a symmetric conflict matrix, target alignment, the payload base after all control records, and the SRAM budget. An allocator returns one byte offset per allocator region and the payload high-water mark.
+The placement API is a reusable C++ library independent of MLIR and target-specific code. Storage-owner construction produces one allocator region for each owner with a compiler-owned payload. Tensor-backed owners consume control records but add no allocator regions. The immutable allocation problem contains each payload extent, a symmetric conflict matrix, target alignment, the payload base after all control records, and the SRAM budget. An allocator returns one byte offset per allocator region and the payload high-water mark.
 
 Every allocator result passes the same validation before IR mutation. Validation requires the correct offset count, target alignment, offsets at or above the payload base, intervals within the SRAM budget, disjoint intervals for every conflict, and an exact payload high-water mark. Allocation policy cannot weaken these invariants. The domain allocation entry point maps offsets to storage owners and retains the control prefix when computing the arena size.
 

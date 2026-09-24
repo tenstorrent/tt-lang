@@ -18,7 +18,7 @@ from ttl._sram_requirements import (
     SRAMLifetime,
     SRAMOwner,
     SRAMOwnerKind,
-    SRAMOwnership,
+    SRAMPlacement,
 )
 from ttlang_test_utils import to_dram
 from utils.correctness import assert_allclose
@@ -199,7 +199,7 @@ def declare(storage, **options):
     return storage.tensor(**arguments)
 
 
-@pytest.mark.parametrize("addressing", ["uniform", "per-core"])
+@pytest.mark.parametrize("addressing", ["uniform", "per-node"])
 def test_persistent_declarations_export_movable_requirements(runtime, addressing):
     storage = SRAMStorage(device=runtime.device)
     declare(storage, addressing=addressing)
@@ -208,7 +208,7 @@ def test_persistent_declarations_export_movable_requirements(runtime, addressing
     requirement = prepared.requirements[0]
     assert requirement.owner == SRAMOwner(SRAMOwnerKind.PERSISTENT_DECLARATION, 0)
     assert requirement.extent_bytes == 4096
-    assert requirement.ownership is SRAMOwnership.MOVABLE
+    assert requirement.placement is SRAMPlacement.MOVABLE
     assert requirement.lifetime is SRAMLifetime.PERSISTENT
     expected_domain_count = 1 if addressing == "uniform" else 2
     assert len(requirement.address_domains) == expected_domain_count

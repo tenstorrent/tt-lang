@@ -4465,12 +4465,12 @@ def _run_kernel_on_device_impl(
         name=operation_name,
         tensors=tensors,
         configs=cb_configs,
-        cores=operation_nodes,
+        nodes=operation_nodes,
         ttnn_api=ttnn,
     )
     compiler_l1 = prepared_sram.uses_compiler_arena
     has_sram_node_layouts = any(config.sram_node_layouts for config in cb_configs)
-    sram_node_sizes = prepared_sram.arena_bytes_by_core()
+    sram_node_sizes = prepared_sram.arena_bytes_by_node()
     if has_sram_node_layouts:
         from ._sram_domains import validate_receiver_targets
 
@@ -4575,7 +4575,7 @@ def _run_kernel_on_device_impl(
     compiler_l1_base_address = None
     if has_sram_node_layouts:
         for arena_binding in prepared_sram.arenas:
-            coordinates = arena_binding.cores
+            coordinates = arena_binding.nodes
             size = prepared_sram.requirements[
                 arena_binding.requirement_index
             ].extent_bytes

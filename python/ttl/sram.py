@@ -275,11 +275,11 @@ class SRAMStorage:
             storage = PersistentSRAMDeclaration(
                 extent_bytes=shard_shape[0] * shard_shape[1] * element_bytes,
                 alignment_bytes=api.get_l1_alignment(),
-                cores=cores,
+                nodes=nodes,
                 addressing=(
                     SRAMAddressing.UNIFORM
                     if addressing == "uniform"
-                    else SRAMAddressing.PER_CORE
+                    else SRAMAddressing.PER_NODE
                 ),
             )
             self._declarations.append(
