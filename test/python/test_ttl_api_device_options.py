@@ -80,3 +80,72 @@ class TestDeviceTargetArch:
             ttl_api._device_target_arch((_TensorWithDevice(_DeviceWithRaisingArch()),))
             is None
         )
+
+
+def _descriptor_candidate(
+    name,
+    coordinates,
+    *,
+    cpp_source="kernel body",
+    function_attributes=(("ttkernel.thread", "noc"),),
+):
+    metadata = ttl_api._KernelDescriptorMetadata(
+        thread_type="noc",
+        noc_role=0,
+        math_fidelity=None,
+        fp32_dest_acc_en=False,
+        dst_full_sync_en=False,
+        unpack_to_dest_fp32=(),
+        tensor_indices=(0,),
+        runtime_arg_signature=("tensor_address",),
+        function_attributes=function_attributes,
+        dynamic_noc=False,
+    )
+    return ttl_api._KernelDescriptorCandidate(
+        name=name,
+        core_coordinates=coordinates,
+        cpp_source=cpp_source,
+        metadata=metadata,
+        runtime_arg_spec=(),
+    )
+
+
+def test_equivalent_specialized_kernels_share_descriptor():
+    candidates = [
+        _descriptor_candidate("reader_c0_0", ((0, 0),)),
+        _descriptor_candidate("reader_c0_1", ((0, 1),)),
+    ]
+
+    groups = ttl_api._group_equivalent_specialized_kernels(candidates)
+
+    assert [[candidate.name for candidate in group] for group in groups] == [
+        ["reader_c0_0", "reader_c0_1"]
+    ]
+
+
+def test_descriptor_metadata_difference_prevents_sharing():
+    candidates = [
+        _descriptor_candidate("reader_c0_0", ((0, 0),)),
+        _descriptor_candidate(
+            "reader_c0_1",
+            ((0, 1),),
+            function_attributes=(("ttkernel.thread", "noc"), ("mode", "1")),
+        ),
+    ]
+
+    groups = ttl_api._group_equivalent_specialized_kernels(candidates)
+
+    assert [[candidate.name for candidate in group] for group in groups] == [
+        ["reader_c0_0"],
+        ["reader_c0_1"],
+    ]
+
+
+def test_conflicting_specialized_processor_assignment_is_rejected():
+    candidates = [
+        _descriptor_candidate("reader_a", ((0, 0),), cpp_source="body a"),
+        _descriptor_candidate("reader_b", ((0, 0),), cpp_source="body b"),
+    ]
+
+    with pytest.raises(ValueError, match="both assign processor"):
+        ttl_api._group_equivalent_specialized_kernels(candidates)
