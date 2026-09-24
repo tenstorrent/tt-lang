@@ -3,15 +3,16 @@
 
 """N-sharded matmul with bidirectional DRAM activation transport.
 
-    forward client row: receive and forward right K halves
-    backward client row: receive and forward left K halves
-    row 0: read completed DRAM blocks and distribute them to the compute rows
+    row 0: receive both fabric directions into DRAM, read each K half into
+        the matmul buffer and multicast it to the other compute rows
+    forward client row: forward right K halves to the next device
+    backward client row: forward left K halves to the previous device
     all compute workers: stream weights -> bias-initialized matmul -> output DRAM
 
-    communicate only in the first N round; later N rounds reuse staged DRAM
+    communicate only in the first N round; later N rounds reread staged DRAM
 
-    data-movement thread 0: activation transport, distribution, output write
-    data-movement thread 1: weights and bias
+    data-movement thread 0: activation transport and distribution
+    data-movement thread 1: bias/weight distribution and deferred output write
 
 Run from the repository root (four devices):
     python -m benchmarks.all_gather_minimal_matmul \
@@ -57,41 +58,29 @@ def make_bidirectional_dram_all_gather_matmul_operation(
     device_domain = ttl.DeviceDomain(config.mesh_shape)
     m_worker_count = config.m_workers
     n_worker_count = config.n_workers
+    output_block_count = config.output_block_count
     assembly_row = 0
     forward_client_row = n_worker_count - 2
     backward_client_row = n_worker_count - 1
-    forward_client_nodes = tuple(
-        (m_worker_index, forward_client_row) for m_worker_index in range(m_worker_count)
-    )
-    backward_client_nodes = tuple(
-        (m_worker_index, backward_client_row)
-        for m_worker_index in range(m_worker_count)
-    )
     activation_forward_net = ttl.PipeNet(
-        [ttl.Pipe(src=node, dst=node) for node in forward_client_nodes],
-        graph=make_ring_graph(device_domain, config.mesh_shape),
-    )
-    activation_backward_net = ttl.PipeNet(
-        [ttl.Pipe(src=node, dst=node) for node in backward_client_nodes],
-        graph=make_ring_graph(device_domain, config.mesh_shape, reverse=True),
-    )
-    forward_activation_to_assembly_net = ttl.PipeNet(
         [
             ttl.Pipe(
                 src=(m_worker_index, forward_client_row),
                 dst=(m_worker_index, assembly_row),
             )
             for m_worker_index in range(m_worker_count)
-        ]
+        ],
+        graph=make_ring_graph(device_domain, config.mesh_shape),
     )
-    backward_activation_to_assembly_net = ttl.PipeNet(
+    activation_backward_net = ttl.PipeNet(
         [
             ttl.Pipe(
                 src=(m_worker_index, backward_client_row),
                 dst=(m_worker_index, assembly_row),
             )
             for m_worker_index in range(m_worker_count)
-        ]
+        ],
+        graph=make_ring_graph(device_domain, config.mesh_shape, reverse=True),
     )
     activation_compute_net = ttl.PipeNet(
         [
@@ -144,56 +133,23 @@ def make_bidirectional_dram_all_gather_matmul_operation(
         if gathered_activation.shape[1] < device_count * k_tiles_per_device * 32:
             raise ValueError("activation staging must include the full K dimension")
 
-        received_activation_half_dfb = ttl.make_dataflow_buffer_like(
-            activation_shard,
-            shape=(m_block_tiles, half_k_tiles),
-            block_count=1,
-        )
-        fabric_client_input_dfb = ttl.make_dataflow_buffer_like(
-            activation_shard,
-            shape=(m_block_tiles, half_k_tiles),
-            block_count=1,
-        )
-        fabric_send_dfb = ttl.make_dataflow_buffer_like(
-            activation_shard,
-            shape=(m_block_tiles, half_k_tiles),
-            block_count=1,
-        )
-        left_distribution_dfb = ttl.make_dataflow_buffer_like(
-            activation_shard,
-            shape=(m_block_tiles, half_k_tiles),
-            block_count=1,
-        )
-        right_distribution_dfb = ttl.make_dataflow_buffer_like(
-            activation_shard,
-            shape=(m_block_tiles, half_k_tiles),
-            block_count=1,
-        )
         matmul_activation_dfb = ttl.make_dataflow_buffer_like(
             activation_shard,
             shape=(m_block_tiles, half_k_tiles),
             block_count=2,
         )
-        left_weight_distribution_dfb = ttl.make_dataflow_buffer_like(
-            weight_shard,
-            shape=(half_k_tiles, n_block_tiles),
-            block_count=1,
-        )
-        right_weight_distribution_dfb = ttl.make_dataflow_buffer_like(
-            weight_shard,
-            shape=(half_k_tiles, n_block_tiles),
-            block_count=1,
-        )
         matmul_weight_dfb = ttl.make_dataflow_buffer_like(
             weight_shard,
             shape=(half_k_tiles, n_block_tiles),
-            block_count=2,
+            block_count=3,
         )
         bias_dfb = ttl.make_dataflow_buffer_like(
             bias_shard, shape=(1, n_block_tiles), block_count=1
         )
         output_dfb = ttl.make_dataflow_buffer_like(
-            output_shard, shape=(m_block_tiles, n_block_tiles), block_count=1
+            output_shard,
+            shape=(m_block_tiles, n_block_tiles),
+            block_count=output_block_count,
         )
         accumulation_dtype = ttnn.float32 if fp32_dest_acc_en else output_shard.dtype
         matmul_accumulator_dfb = ttl.make_dfb(
@@ -202,19 +158,9 @@ def make_bidirectional_dram_all_gather_matmul_operation(
         accumulation_bias_dfb = ttl.make_dfb(
             accumulation_dtype, shape=(1, n_block_tiles), block_count=1
         )
-        activation_half_bytes = (
-            m_block_tiles
-            * half_k_tiles
-            * activation_shard.get_tile().get_tile_size(activation_shard.dtype)
-        )
-        weight_half_bytes = (
-            half_k_tiles
-            * n_block_tiles
-            * weight_shard.get_tile().get_tile_size(weight_shard.dtype)
-        )
 
         @ttl.datamovement()
-        def move_activations_and_write_output():
+        def move_activations():
             m_worker_index, n_worker_index = ttl.node(dims=2)
 
             for m_round in range(m_rounds):
@@ -227,76 +173,8 @@ def make_bidirectional_dram_all_gather_matmul_operation(
                                 source_distance * compute_k_blocks_per_device + k_block
                             ) * compute_k_tiles
 
-                            if n_round == 0 and source_distance > 0:
-                                if n_worker_index == forward_client_row:
-                                    forward_staging = gathered_activation[
-                                        m_begin : m_begin + m_block_tiles,
-                                        staging_k_begin
-                                        + half_k_tiles : staging_k_begin
-                                        + compute_k_tiles,
-                                    ]
-
-                                    def receive_forward_half(pipe):
-                                        ttl.copy(
-                                            pipe,
-                                            forward_staging,
-                                            shape=(m_block_tiles, half_k_tiles),
-                                        ).wait()
-
-                                    activation_forward_net.if_dst(receive_forward_half)
-                                    received_forward_half = (
-                                        received_activation_half_dfb.reserve()
-                                    )
-                                    ttl.copy(
-                                        forward_staging, received_forward_half
-                                    ).wait()
-                                    received_forward_half = (
-                                        received_activation_half_dfb.wait()
-                                    )
-
-                                    def forward_received_activation(pipe):
-                                        ttl.copy(received_forward_half, pipe).wait()
-
-                                    forward_activation_to_assembly_net.if_src(
-                                        forward_received_activation
-                                    )
-
-                                if n_worker_index == backward_client_row:
-                                    backward_staging = gathered_activation[
-                                        m_begin : m_begin + m_block_tiles,
-                                        staging_k_begin : staging_k_begin
-                                        + half_k_tiles,
-                                    ]
-
-                                    def receive_backward_half(pipe):
-                                        ttl.copy(
-                                            pipe,
-                                            backward_staging,
-                                            shape=(m_block_tiles, half_k_tiles),
-                                        ).wait()
-
-                                    activation_backward_net.if_dst(
-                                        receive_backward_half
-                                    )
-                                    received_backward_half = (
-                                        received_activation_half_dfb.reserve()
-                                    )
-                                    ttl.copy(
-                                        backward_staging, received_backward_half
-                                    ).wait()
-                                    received_backward_half = (
-                                        received_activation_half_dfb.wait()
-                                    )
-
-                                    def forward_received_backward_activation(pipe):
-                                        ttl.copy(received_backward_half, pipe).wait()
-
-                                    backward_activation_to_assembly_net.if_src(
-                                        forward_received_backward_activation
-                                    )
-
+                            left_activation = matmul_activation_dfb.reserve()
                             if n_worker_index == assembly_row:
-                                left_activation = left_distribution_dfb.reserve()
                                 if source_distance == 0:
                                     ttl.copy(
                                         activation_shard[
@@ -306,35 +184,49 @@ def make_bidirectional_dram_all_gather_matmul_operation(
                                         ],
                                         left_activation,
                                     ).wait()
-                                elif n_round == 0:
-
-                                    def receive_left_activation(pipe):
-                                        ttl.copy(pipe, left_activation).wait()
-
-                                    backward_activation_to_assembly_net.if_dst(
-                                        receive_left_activation
-                                    )
                                 else:
-                                    ttl.copy(
-                                        gathered_activation[
-                                            m_begin : m_begin + m_block_tiles,
-                                            staging_k_begin : staging_k_begin
-                                            + half_k_tiles,
-                                        ],
-                                        left_activation,
-                                    ).wait()
+                                    left_staging = gathered_activation[
+                                        m_begin : m_begin + m_block_tiles,
+                                        staging_k_begin : staging_k_begin
+                                        + half_k_tiles,
+                                    ]
+                                    if n_round == 0:
 
-                                left_activation = left_distribution_dfb.wait()
-                                compute_left_activation = (
-                                    matmul_activation_dfb.reserve()
-                                )
-                                ttl.copy(
-                                    left_activation,
-                                    compute_left_activation,
-                                    byte_count=activation_half_bytes,
-                                ).wait()
+                                        def receive_backward_half(pipe):
+                                            ttl.copy(
+                                                pipe,
+                                                left_staging,
+                                                shape=(m_block_tiles, half_k_tiles),
+                                            ).wait()
 
-                                right_activation = right_distribution_dfb.reserve()
+                                        activation_backward_net.if_dst(
+                                            receive_backward_half
+                                        )
+                                    ttl.copy(left_staging, left_activation).wait()
+
+                                def multicast_left_activation(pipe):
+                                    ttl.copy(left_activation, pipe).wait()
+
+                                activation_compute_net.if_src(multicast_left_activation)
+                            else:
+
+                                def receive_left_activation(pipe):
+                                    ttl.copy(pipe, left_activation).wait()
+
+                                activation_compute_net.if_dst(receive_left_activation)
+                                if (
+                                    n_round == 0
+                                    and source_distance < device_count - 1
+                                    and n_worker_index == backward_client_row
+                                ):
+
+                                    def send_backward_half(pipe):
+                                        ttl.copy(left_activation, pipe).wait()
+
+                                    activation_backward_net.if_src(send_backward_half)
+
+                            right_activation = matmul_activation_dfb.reserve()
+                            if n_worker_index == assembly_row:
                                 if source_distance == 0:
                                     ttl.copy(
                                         activation_shard[
@@ -345,39 +237,26 @@ def make_bidirectional_dram_all_gather_matmul_operation(
                                         ],
                                         right_activation,
                                     ).wait()
-                                elif n_round == 0:
-
-                                    def receive_right_activation(pipe):
-                                        ttl.copy(pipe, right_activation).wait()
-
-                                    forward_activation_to_assembly_net.if_dst(
-                                        receive_right_activation
-                                    )
                                 else:
-                                    ttl.copy(
-                                        gathered_activation[
-                                            m_begin : m_begin + m_block_tiles,
-                                            staging_k_begin
-                                            + half_k_tiles : staging_k_begin
-                                            + compute_k_tiles,
-                                        ],
-                                        right_activation,
-                                    ).wait()
+                                    right_staging = gathered_activation[
+                                        m_begin : m_begin + m_block_tiles,
+                                        staging_k_begin
+                                        + half_k_tiles : staging_k_begin
+                                        + compute_k_tiles,
+                                    ]
+                                    if n_round == 0:
 
-                                right_activation = right_distribution_dfb.wait()
-                                compute_right_activation = (
-                                    matmul_activation_dfb.reserve()
-                                )
-                                ttl.copy(
-                                    right_activation,
-                                    compute_right_activation,
-                                    byte_count=activation_half_bytes,
-                                ).wait()
+                                        def receive_forward_half(pipe):
+                                            ttl.copy(
+                                                pipe,
+                                                right_staging,
+                                                shape=(m_block_tiles, half_k_tiles),
+                                            ).wait()
 
-                                def multicast_left_activation(pipe):
-                                    ttl.copy(left_activation, pipe).wait()
-
-                                activation_compute_net.if_src(multicast_left_activation)
+                                        activation_forward_net.if_dst(
+                                            receive_forward_half
+                                        )
+                                    ttl.copy(right_staging, right_activation).wait()
 
                                 def multicast_right_activation(pipe):
                                     ttl.copy(right_activation, pipe).wait()
@@ -386,100 +265,27 @@ def make_bidirectional_dram_all_gather_matmul_operation(
                                     multicast_right_activation
                                 )
                             else:
-                                client_left_activation = (
-                                    fabric_client_input_dfb.reserve()
-                                )
 
-                                def receive_client_left_activation(pipe):
-                                    ttl.copy(pipe, client_left_activation).wait()
+                                def receive_right_activation(pipe):
+                                    ttl.copy(pipe, right_activation).wait()
 
-                                activation_compute_net.if_dst(
-                                    receive_client_left_activation
-                                )
-                                client_left_activation = fabric_client_input_dfb.wait()
-                                compute_left_activation = (
-                                    matmul_activation_dfb.reserve()
-                                )
-                                ttl.copy(
-                                    client_left_activation,
-                                    compute_left_activation,
-                                    byte_count=activation_half_bytes,
-                                ).wait()
-                                if (
-                                    n_round == 0
-                                    and source_distance < device_count - 1
-                                    and n_worker_index == backward_client_row
-                                ):
-                                    pending_backward_send = fabric_send_dfb.reserve()
-                                    ttl.copy(
-                                        client_left_activation,
-                                        pending_backward_send,
-                                        byte_count=activation_half_bytes,
-                                    ).wait()
-                                client_right_activation = (
-                                    fabric_client_input_dfb.reserve()
-                                )
-
-                                def receive_client_right_activation(pipe):
-                                    ttl.copy(pipe, client_right_activation).wait()
-
-                                activation_compute_net.if_dst(
-                                    receive_client_right_activation
-                                )
-                                client_right_activation = fabric_client_input_dfb.wait()
-                                compute_right_activation = (
-                                    matmul_activation_dfb.reserve()
-                                )
-                                ttl.copy(
-                                    client_right_activation,
-                                    compute_right_activation,
-                                    byte_count=activation_half_bytes,
-                                ).wait()
+                                activation_compute_net.if_dst(receive_right_activation)
                                 if (
                                     n_round == 0
                                     and source_distance < device_count - 1
                                     and n_worker_index == forward_client_row
                                 ):
-                                    pending_forward_send = fabric_send_dfb.reserve()
-                                    ttl.copy(
-                                        client_right_activation,
-                                        pending_forward_send,
-                                        byte_count=activation_half_bytes,
-                                    ).wait()
 
-                    n_begin = (
-                        n_round * n_worker_count + n_worker_index
-                    ) * n_block_tiles
-                    output_block = output_dfb.wait()
-                    if m_begin + m_block_tiles <= logical_m_tiles:
-                        ttl.copy(
-                            output_block,
-                            output_shard[
-                                m_begin : m_begin + m_block_tiles,
-                                n_begin : n_begin + n_block_tiles,
-                            ],
-                        ).wait()
-                    else:
-                        for output_row in range(m_block_tiles):
-                            if m_begin + output_row < logical_m_tiles:
-                                output_row_block = ttl.block.subview(
-                                    output_block,
-                                    offsets=(output_row, 0),
-                                    shape=(1, n_block_tiles),
-                                )
-                                ttl.copy(
-                                    output_row_block,
-                                    output_shard[
-                                        m_begin + output_row : m_begin + output_row + 1,
-                                        n_begin : n_begin + n_block_tiles,
-                                    ],
-                                ).wait()
+                                    def send_forward_half(pipe):
+                                        ttl.copy(right_activation, pipe).wait()
+
+                                    activation_forward_net.if_src(send_forward_half)
 
         @ttl.datamovement()
-        def read_bias_and_distribute_weights():
+        def move_weights_and_write_output():
             m_worker_index, n_worker_index = ttl.node(dims=2)
             local_device_index = device_domain.current_index()
-            for _m_round in range(m_rounds):
+            for m_round in range(m_rounds):
                 for n_round in range(n_rounds):
                     n_begin = (
                         n_round * n_worker_count + n_worker_index
@@ -493,30 +299,13 @@ def make_bidirectional_dram_all_gather_matmul_operation(
                     for k_block in range(compute_k_blocks_per_device):
                         local_k_begin = k_block * compute_k_tiles
                         for source_distance in range(device_count):
-                            if n_round == 0 and source_distance > 0:
-                                if n_worker_index == forward_client_row:
-                                    forward_fabric_send = fabric_send_dfb.wait()
-
-                                    def send_forward_half(pipe):
-                                        ttl.copy(forward_fabric_send, pipe).wait()
-
-                                    activation_forward_net.if_src(send_forward_half)
-
-                                if n_worker_index == backward_client_row:
-                                    backward_fabric_send = fabric_send_dfb.wait()
-
-                                    def send_backward_half(pipe):
-                                        ttl.copy(backward_fabric_send, pipe).wait()
-
-                                    activation_backward_net.if_src(send_backward_half)
-
                             source_forward = (
                                 local_device_index + device_count - source_distance
                             ) % device_count
                             source_backward = (
                                 local_device_index + source_distance
                             ) % device_count
-                            left_weight = left_weight_distribution_dfb.reserve()
+                            left_weight = matmul_weight_dfb.reserve()
                             if m_worker_index == 0:
                                 left_weight_begin = (
                                     source_backward * k_tiles_per_device + local_k_begin
@@ -541,15 +330,7 @@ def make_bidirectional_dram_all_gather_matmul_operation(
 
                                 weight_row_net.if_dst(receive_left_weight)
 
-                            left_weight = left_weight_distribution_dfb.wait()
-                            compute_left_weight = matmul_weight_dfb.reserve()
-                            ttl.copy(
-                                left_weight,
-                                compute_left_weight,
-                                byte_count=weight_half_bytes,
-                            ).wait()
-
-                            right_weight = right_weight_distribution_dfb.reserve()
+                            right_weight = matmul_weight_dfb.reserve()
                             if m_worker_index == 0:
                                 right_weight_begin = (
                                     source_forward * k_tiles_per_device
@@ -576,13 +357,82 @@ def make_bidirectional_dram_all_gather_matmul_operation(
 
                                 weight_row_net.if_dst(receive_right_weight)
 
-                            right_weight = right_weight_distribution_dfb.wait()
-                            compute_right_weight = matmul_weight_dfb.reserve()
+                    # Write the preceding result after publishing this block's
+                    # inputs so its DRAM transfer overlaps compute without
+                    # delaying activation delivery.
+                    output_index = m_round * n_rounds + n_round
+                    if output_index > 0:
+                        previous_output_index = output_index - 1
+                        previous_m_round = previous_output_index // n_rounds
+                        previous_n_round = previous_output_index % n_rounds
+                        previous_m_begin = (
+                            previous_m_round * m_worker_count + m_worker_index
+                        ) * m_block_tiles
+                        previous_n_begin = (
+                            previous_n_round * n_worker_count + n_worker_index
+                        ) * n_block_tiles
+                        previous_output_block = output_dfb.wait()
+                        if previous_m_begin + m_block_tiles <= logical_m_tiles:
                             ttl.copy(
-                                right_weight,
-                                compute_right_weight,
-                                byte_count=weight_half_bytes,
+                                previous_output_block,
+                                output_shard[
+                                    previous_m_begin : previous_m_begin + m_block_tiles,
+                                    previous_n_begin : previous_n_begin + n_block_tiles,
+                                ],
                             ).wait()
+                        else:
+                            for output_row in range(m_block_tiles):
+                                if previous_m_begin + output_row < logical_m_tiles:
+                                    previous_output_row = ttl.block.subview(
+                                        previous_output_block,
+                                        offsets=(output_row, 0),
+                                        shape=(1, n_block_tiles),
+                                    )
+                                    ttl.copy(
+                                        previous_output_row,
+                                        output_shard[
+                                            previous_m_begin
+                                            + output_row : previous_m_begin
+                                            + output_row
+                                            + 1,
+                                            previous_n_begin : previous_n_begin
+                                            + n_block_tiles,
+                                        ],
+                                    ).wait()
+
+            final_m_begin = (
+                (m_rounds - 1) * m_worker_count + m_worker_index
+            ) * m_block_tiles
+            final_n_begin = (
+                (n_rounds - 1) * n_worker_count + n_worker_index
+            ) * n_block_tiles
+            final_output_block = output_dfb.wait()
+            if final_m_begin + m_block_tiles <= logical_m_tiles:
+                ttl.copy(
+                    final_output_block,
+                    output_shard[
+                        final_m_begin : final_m_begin + m_block_tiles,
+                        final_n_begin : final_n_begin + n_block_tiles,
+                    ],
+                ).wait()
+            else:
+                for output_row in range(m_block_tiles):
+                    if final_m_begin + output_row < logical_m_tiles:
+                        final_output_row = ttl.block.subview(
+                            final_output_block,
+                            offsets=(output_row, 0),
+                            shape=(1, n_block_tiles),
+                        )
+                        ttl.copy(
+                            final_output_row,
+                            output_shard[
+                                final_m_begin
+                                + output_row : final_m_begin
+                                + output_row
+                                + 1,
+                                final_n_begin : final_n_begin + n_block_tiles,
+                            ],
+                        ).wait()
 
         @ttl.compute()
         def compute_matmul_and_bias():
