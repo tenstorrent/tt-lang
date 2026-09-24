@@ -24,7 +24,8 @@ class TestDefaults:
         assert opts.pipe_global_semaphores_only is False
         assert opts.pipe_capacity_sync is True
         assert opts.pipe_batch_tiles == 0
-        assert opts.l1_allocation_strategy == "first-fit-decreasing"
+        assert opts.l1_allocation_strategy == "multi-order-decreasing"
+        assert opts.sram_minimum_arena_search_limit == 1_000_000
         assert opts.reuse_user_dfbs is True
         assert opts.unsafe_assume_dfb_allocation_groups is False
         assert opts.dfb_exact_coloring_search_limit == 1_000_000
@@ -266,7 +267,13 @@ def test_memory_model_cache_identity():
 
 
 @pytest.mark.parametrize(
-    "allocation_strategy", ["first-fit-decreasing", "best-fit-decreasing"]
+    "allocation_strategy",
+    [
+        "multi-order-decreasing",
+        "first-fit-decreasing",
+        "best-fit-decreasing",
+        "minimum-arena",
+    ],
 )
 def test_l1_allocation_strategy(allocation_strategy):
     options = CompilerOptions.from_string(
@@ -283,5 +290,21 @@ def test_l1_allocation_strategy_cache_identity():
     assert CompilerOptions() != CompilerOptions(
         l1_allocation_strategy="best-fit-decreasing"
     )
-    with pytest.raises(ValueError, match="Invalid L1 allocation strategy"):
+    with pytest.raises(ValueError, match="Invalid SRAM allocation strategy"):
         CompilerOptions(l1_allocation_strategy="invalid")
+
+
+def test_sram_minimum_arena_search_limit():
+    options = CompilerOptions.from_string(
+        "--ttl-sram-minimum-arena-search-limit=250000"
+    )
+    assert options.sram_minimum_arena_search_limit == 250_000
+    assert "sram_minimum_arena_search_limit" in options._explicit
+    assert CompilerOptions() != options
+
+
+def test_nonpositive_sram_minimum_arena_search_limit_is_invalid():
+    with pytest.raises(SystemExit):
+        CompilerOptions.from_string("--ttl-sram-minimum-arena-search-limit=0")
+    with pytest.raises(ValueError, match="search limit must be positive"):
+        CompilerOptions(sram_minimum_arena_search_limit=0)
