@@ -18,14 +18,14 @@ from ttl._sram_requirements import (
     SRAMLocation,
     SRAMOwner,
     SRAMOwnerKind,
-    SRAMOwnership,
+    SRAMPlacement,
     SRAMStorageRequirement,
     SRAMUse,
     SRAMUseKind,
     prepare_persistent_storage,
     prepare_sram_operation,
 )
-from ttl.dataflow_buffer import DFBStorageSegment, PhysicalDFBConfig, SRAMCoreLayout
+from ttl.dataflow_buffer import DFBStorageSegment, PhysicalDFBConfig, SRAMNodeLayout
 
 
 class CoreCoord:
@@ -53,7 +53,7 @@ class TTNN:
     @staticmethod
     def corerange_to_cores(grid, row_wise=False):
         del row_wise
-        return tuple(CoreCoord(*core) for core in grid)
+        return tuple(CoreCoord(*node) for node in grid)
 
 
 class Tile:
@@ -71,13 +71,13 @@ class Tensor:
         *,
         per_core=False,
         devices=((0, 0),),
-        cores=((0, 0), (1, 0)),
+        nodes=((0, 0), (1, 0)),
         shard_shape=(32, 64),
     ):
         self.base = base
         self.per_core = per_core
         self.devices = devices
-        self.cores = cores
+        self.nodes = nodes
         self.shard_shape = shard_shape
         self.dtype = "bfloat16"
         self.layout = "TILE"
@@ -96,7 +96,7 @@ class Tensor:
 
     def memory_config(self):
         shard_spec = type(
-            "ShardSpec", (), {"grid": self.cores, "shape": self.shard_shape}
+            "ShardSpec", (), {"grid": self.nodes, "shape": self.shard_shape}
         )()
         return type(
             "MemoryConfig",
@@ -108,9 +108,9 @@ class Tensor:
             },
         )()
 
-    def experimental_per_core_buffer_address(self, device, core):
+    def experimental_per_core_buffer_address(self, device, node):
         device_offset = sum(device) * 0x10000
-        core_offset = (core.y * 8 + core.x) * 0x1000
+        core_offset = (node.y * 8 + node.x) * 0x1000
         return self.base + device_offset + core_offset
 
 
@@ -156,7 +156,7 @@ def test_uniform_arena_records_each_dfb_use_once():
             compiler_config(0, 0, 64, 2048),
             compiler_config(1, 8, 2112, 4096),
         ),
-        cores=((1, 0), (0, 0)),
+        nodes=((1, 0), (0, 0)),
         ttnn_api=TTNN,
     )
 
@@ -164,9 +164,9 @@ def test_uniform_arena_records_each_dfb_use_once():
     requirement = operation.requirements[0]
     assert requirement.owner == SRAMOwner(SRAMOwnerKind.COMPILER_ARENA, 0)
     assert requirement.extent_bytes == 6208
-    assert requirement.ownership is SRAMOwnership.MOVABLE
+    assert requirement.placement is SRAMPlacement.MOVABLE
     assert requirement.lifetime is SRAMLifetime.INVOCATION
-    assert operation.arena_bytes_by_core() == {(0, 0): 6208, (1, 0): 6208}
+    assert operation.arena_bytes_by_node() == {(0, 0): 6208, (1, 0): 6208}
     assert [use.kind for use in operation.uses] == [
         SRAMUseKind.DFB_CONTROL,
         SRAMUseKind.DFB_PAYLOAD,
@@ -185,7 +185,7 @@ def test_fixed_tensor_and_dfb_aliases_share_one_requirement():
             tensor_config(0, 0, ((0, 0), (1, 0)), byte_size=4096),
             tensor_config(1, 0, ((0, 0),), byte_offset=2048),
         ),
-        cores=((0, 0), (1, 0)),
+        nodes=((0, 0), (1, 0)),
         ttnn_api=TTNN,
     )
 
@@ -194,7 +194,7 @@ def test_fixed_tensor_and_dfb_aliases_share_one_requirement():
     assert requirement.owner == SRAMOwner(SRAMOwnerKind.TENSOR_ARGUMENT, 0)
     assert requirement.extent_bytes == 4096
     assert requirement.fixed_bases == (0x4000,)
-    assert requirement.ownership is SRAMOwnership.FIXED
+    assert requirement.placement is SRAMPlacement.FIXED
     assert len(operation.uses) == 2
     assert {use.requirement_index for use in operation.uses} == {0}
 
@@ -202,14 +202,14 @@ def test_fixed_tensor_and_dfb_aliases_share_one_requirement():
 def test_fixed_tensor_requirement_covers_unreferenced_storage():
     tensor = Tensor(
         0x4000,
-        cores=((0, 0), (1, 0), (2, 0)),
+        nodes=((0, 0), (1, 0), (2, 0)),
         shard_shape=(32, 96),
     )
     operation = prepare_sram_operation(
         name="fixed_extent",
         tensors=(tensor,),
         configs=(tensor_config(0, 0, ((0, 0),)),),
-        cores=((0, 0),),
+        nodes=((0, 0),),
         ttnn_api=TTNN,
     )
 
@@ -236,9 +236,9 @@ def test_compiler_arena_and_fixed_tensor_have_distinct_owners():
     )
     operation = prepare_sram_operation(
         name="mixed",
-        tensors=(Tensor(0x8000, cores=((0, 0),), shard_shape=(32, 32)),),
+        tensors=(Tensor(0x8000, nodes=((0, 0),), shard_shape=(32, 32)),),
         configs=(config,),
-        cores=((0, 0),),
+        nodes=((0, 0),),
         ttnn_api=TTNN,
     )
 
@@ -250,13 +250,13 @@ def test_compiler_arena_and_fixed_tensor_have_distinct_owners():
     assert operation.requirements[1].extent_bytes == 2048
 
 
-def test_per_core_tensor_has_one_fixed_domain_per_location():
+def test_per_node_tensor_has_one_fixed_domain_per_location():
     tensor = Tensor(0x1000, per_core=True, devices=((0, 0), (1, 0)))
     operation = prepare_sram_operation(
-        name="per_core",
+        name="per_node",
         tensors=(tensor,),
         configs=(tensor_config(0, 0, ((0, 0), (1, 0))),),
-        cores=((0, 0), (1, 0)),
+        nodes=((0, 0), (1, 0)),
         ttnn_api=TTNN,
     )
 
@@ -266,24 +266,24 @@ def test_per_core_tensor_has_one_fixed_domain_per_location():
     assert requirement.fixed_bases == (0x1000, 0x2000, 0x11000, 0x12000)
 
 
-def test_per_core_compiler_layout_preserves_independent_arena_extents():
+def test_per_node_compiler_layout_preserves_independent_arena_extents():
     config = compiler_config(0, 0, 64, 2048)
     config = replace(
         config,
-        sram_core_layouts=(
-            SRAMCoreLayout((0, 0), 64, True, 2112, 0),
-            SRAMCoreLayout((1, 0), 0, False, 64, 1),
+        sram_node_layouts=(
+            SRAMNodeLayout((0, 0), 64, True, 2112, 0),
+            SRAMNodeLayout((1, 0), 0, False, 64, 1),
         ),
     )
     operation = prepare_sram_operation(
         name="domains",
         tensors=(),
         configs=(config,),
-        cores=((0, 0), (1, 0)),
+        nodes=((0, 0), (1, 0)),
         ttnn_api=TTNN,
     )
 
-    assert operation.arena_bytes_by_core() == {(0, 0): 2112, (1, 0): 64}
+    assert operation.arena_bytes_by_node() == {(0, 0): 2112, (1, 0): 64}
     assert [requirement.extent_bytes for requirement in operation.requirements] == [
         2112,
         64,
@@ -297,7 +297,7 @@ def test_per_core_compiler_layout_preserves_independent_arena_extents():
 
 @pytest.mark.parametrize(
     ("addressing", "domain_count"),
-    [(SRAMAddressing.UNIFORM, 1), (SRAMAddressing.PER_CORE, 2)],
+    [(SRAMAddressing.UNIFORM, 1), (SRAMAddressing.PER_NODE, 2)],
 )
 def test_persistent_declaration_uses_common_requirement_model(addressing, domain_count):
     storage = prepare_persistent_storage(
@@ -305,7 +305,7 @@ def test_persistent_declaration_uses_common_requirement_model(addressing, domain
             PersistentSRAMDeclaration(
                 extent_bytes=4096,
                 alignment_bytes=16,
-                cores=((1, 0), (0, 0)),
+                nodes=((1, 0), (0, 0)),
                 addressing=addressing,
             ),
         )
@@ -314,7 +314,7 @@ def test_persistent_declaration_uses_common_requirement_model(addressing, domain
     requirement = storage.requirements[0]
     assert requirement.owner == SRAMOwner(SRAMOwnerKind.PERSISTENT_DECLARATION, 0)
     assert requirement.extent_bytes == 4096
-    assert requirement.ownership is SRAMOwnership.MOVABLE
+    assert requirement.placement is SRAMPlacement.MOVABLE
     assert requirement.lifetime is SRAMLifetime.PERSISTENT
     assert len(requirement.address_domains) == domain_count
 
@@ -328,7 +328,7 @@ def test_requirement_rejects_overlapping_domains_and_misaligned_base():
             32,
             16,
             (domain, domain),
-            SRAMOwnership.FIXED,
+            SRAMPlacement.FIXED,
             SRAMLifetime.EXTERNAL,
             (0x1000, 0x2000),
         )
@@ -338,7 +338,7 @@ def test_requirement_rejects_overlapping_domains_and_misaligned_base():
             32,
             16,
             (domain,),
-            SRAMOwnership.FIXED,
+            SRAMPlacement.FIXED,
             SRAMLifetime.EXTERNAL,
             (0x1001,),
         )
@@ -353,7 +353,7 @@ def test_operation_rejects_unbound_and_overlapping_arenas():
             64,
             16,
             (SRAMAddressDomain((location,)),),
-            SRAMOwnership.MOVABLE,
+            SRAMPlacement.MOVABLE,
             SRAMLifetime.INVOCATION,
         )
         for index, location in enumerate((first_location, second_location))
@@ -393,7 +393,7 @@ def test_operation_rejects_use_outside_extent_and_domain():
         64,
         16,
         (SRAMAddressDomain((location,)),),
-        SRAMOwnership.FIXED,
+        SRAMPlacement.FIXED,
         SRAMLifetime.EXTERNAL,
         (0x1000,),
     )
@@ -414,13 +414,13 @@ def test_operation_rejects_use_outside_extent_and_domain():
         PreparedSRAMOperation("domain", (requirement,), (outside_domain,), ())
 
 
-def test_per_core_tensor_requires_device_coordinates():
+def test_per_node_tensor_requires_device_coordinates():
     tensor = Tensor(0x1000, per_core=True, devices=())
     with pytest.raises(ValueError, match="logical device coordinates"):
         prepare_sram_operation(
             name="missing_device",
             tensors=(tensor,),
             configs=(tensor_config(0, 0, ((0, 0),)),),
-            cores=((0, 0),),
+            nodes=((0, 0),),
             ttnn_api=TTNN,
         )

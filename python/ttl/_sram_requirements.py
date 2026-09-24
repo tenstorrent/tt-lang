@@ -12,8 +12,8 @@ _SRAM_ADDRESS_LIMIT = 1 << 32
 _DFB_CONTROL_BYTES = 8
 
 
-class SRAMOwnership(Enum):
-    """State whether placement is supplied or remains allocator-selectable."""
+class SRAMPlacement(Enum):
+    """State whether bases are supplied or selected by the allocator."""
 
     FIXED = auto()
     MOVABLE = auto()
@@ -23,7 +23,7 @@ class SRAMAddressing(Enum):
     """State whether participating locations share one base address."""
 
     UNIFORM = auto()
-    PER_CORE = auto()
+    PER_NODE = auto()
 
 
 class SRAMLifetime(Enum):
@@ -51,26 +51,26 @@ class SRAMUseKind(Enum):
 
 @dataclass(frozen=True, order=True)
 class SRAMLocation:
-    """Identify one logical device and worker core.
+    """Identify one logical device and worker node.
 
     An empty device coordinate denotes the device domain selected at binding.
     """
 
     device: Tuple[int, ...]
-    core: Tuple[int, int]
+    node: Tuple[int, int]
 
     def __post_init__(self):
-        if not isinstance(self.device, tuple) or not isinstance(self.core, tuple):
+        if not isinstance(self.device, tuple) or not isinstance(self.node, tuple):
             raise TypeError("SRAM location coordinates must be tuples")
         if any(
             type(coordinate) is not int or coordinate < 0 for coordinate in self.device
         ):
             raise ValueError("SRAM device coordinates must be nonnegative integers")
-        if len(self.core) != 2 or any(
-            type(coordinate) is not int or coordinate < 0 for coordinate in self.core
+        if len(self.node) != 2 or any(
+            type(coordinate) is not int or coordinate < 0 for coordinate in self.node
         ):
             raise ValueError(
-                "SRAM core coordinates must contain two nonnegative integers"
+                "SRAM node coordinates must contain two nonnegative integers"
             )
 
 
@@ -115,7 +115,7 @@ class SRAMStorageRequirement:
     extent_bytes: int
     alignment_bytes: int
     address_domains: Tuple[SRAMAddressDomain, ...]
-    ownership: SRAMOwnership
+    placement: SRAMPlacement
     lifetime: SRAMLifetime
     fixed_bases: Tuple[int, ...] = ()
 
@@ -128,8 +128,8 @@ class SRAMStorageRequirement:
             raise TypeError(
                 "SRAM requirement address domains must be SRAMAddressDomain values"
             )
-        if not isinstance(self.ownership, SRAMOwnership):
-            raise TypeError("SRAM requirement ownership must be an SRAMOwnership")
+        if not isinstance(self.placement, SRAMPlacement):
+            raise TypeError("SRAM requirement placement must be an SRAMPlacement")
         if not isinstance(self.lifetime, SRAMLifetime):
             raise TypeError("SRAM requirement lifetime must be an SRAMLifetime")
         if not isinstance(self.fixed_bases, tuple):
@@ -151,7 +151,7 @@ class SRAMStorageRequirement:
         ]
         if len(set(locations)) != len(locations):
             raise ValueError("SRAM requirement address domains must be disjoint")
-        if self.ownership is SRAMOwnership.FIXED:
+        if self.placement is SRAMPlacement.FIXED:
             if len(self.fixed_bases) != len(self.address_domains):
                 raise ValueError(
                     "fixed SRAM requirement needs one base per address domain"
@@ -210,22 +210,22 @@ class SRAMUse:
 
 @dataclass(frozen=True)
 class SRAMArenaBinding:
-    """Bind one invocation arena requirement to its worker cores."""
+    """Bind one invocation arena requirement to its worker nodes."""
 
     requirement_index: int
-    cores: Tuple[Tuple[int, int], ...]
+    nodes: Tuple[Tuple[int, int], ...]
 
     def __post_init__(self):
-        if not isinstance(self.cores, tuple):
-            raise TypeError("SRAM arena cores must be a tuple")
+        if not isinstance(self.nodes, tuple):
+            raise TypeError("SRAM arena nodes must be a tuple")
         if type(self.requirement_index) is not int or self.requirement_index < 0:
             raise ValueError("SRAM arena requirement index must be nonnegative")
-        normalized = tuple(sorted(self.cores))
+        normalized = tuple(sorted(self.nodes))
         if not normalized or len(set(normalized)) != len(normalized):
-            raise ValueError("SRAM arena cores must be nonempty and distinct")
-        for core in normalized:
-            SRAMLocation((), core)
-        object.__setattr__(self, "cores", normalized)
+            raise ValueError("SRAM arena nodes must be nonempty and distinct")
+        for node in normalized:
+            SRAMLocation((), node)
+        object.__setattr__(self, "nodes", normalized)
 
 
 @dataclass(frozen=True)
@@ -266,7 +266,7 @@ class PreparedSRAMOperation:
             if arena.requirement_index in arena_requirements:
                 raise ValueError("compiler arena requirement has multiple bindings")
             arena_requirements.add(arena.requirement_index)
-            expected_locations = {SRAMLocation((), core) for core in arena.cores}
+            expected_locations = {SRAMLocation((), node) for node in arena.nodes}
             actual_locations = {
                 location
                 for domain in requirement.address_domains
@@ -274,7 +274,7 @@ class PreparedSRAMOperation:
             }
             if actual_locations != expected_locations:
                 raise ValueError(
-                    "compiler arena cores do not match its address domains"
+                    "compiler arena nodes do not match its address domains"
                 )
         required_arena_indices = {
             requirement_index
@@ -283,7 +283,7 @@ class PreparedSRAMOperation:
         }
         if arena_requirements != required_arena_indices:
             raise ValueError("compiler arena requirement has no arena binding")
-        self.arena_bytes_by_core()
+        self.arena_bytes_by_node()
         for use in self.uses:
             requirement = self._requirement(use.requirement_index)
             if use.byte_offset > requirement.extent_bytes - use.byte_size:
@@ -305,14 +305,14 @@ class PreparedSRAMOperation:
     def uses_compiler_arena(self) -> bool:
         return bool(self.arenas)
 
-    def arena_bytes_by_core(self) -> dict[Tuple[int, int], int]:
+    def arena_bytes_by_node(self) -> dict[Tuple[int, int], int]:
         result = {}
         for arena in self.arenas:
             extent = self.requirements[arena.requirement_index].extent_bytes
-            for core in arena.cores:
-                if core in result:
-                    raise ValueError("worker core belongs to multiple compiler arenas")
-                result[core] = extent
+            for node in arena.nodes:
+                if node in result:
+                    raise ValueError("worker node belongs to multiple compiler arenas")
+                result[node] = extent
         return result
 
 
@@ -322,14 +322,14 @@ class PersistentSRAMDeclaration:
 
     extent_bytes: int
     alignment_bytes: int
-    cores: Tuple[Tuple[int, int], ...]
+    nodes: Tuple[Tuple[int, int], ...]
     addressing: SRAMAddressing
 
     def __post_init__(self):
         if not isinstance(self.addressing, SRAMAddressing):
             raise TypeError("persistent SRAM addressing must be an SRAMAddressing")
-        if not isinstance(self.cores, tuple):
-            raise TypeError("persistent SRAM cores must be a tuple")
+        if not isinstance(self.nodes, tuple):
+            raise TypeError("persistent SRAM nodes must be a tuple")
         if type(self.extent_bytes) is not int or self.extent_bytes <= 0:
             raise ValueError("persistent SRAM extent must be a positive integer")
         if (
@@ -340,12 +340,12 @@ class PersistentSRAMDeclaration:
             raise ValueError(
                 "persistent SRAM alignment must be a positive power of two"
             )
-        normalized = tuple(sorted(self.cores))
+        normalized = tuple(sorted(self.nodes))
         if not normalized or len(set(normalized)) != len(normalized):
-            raise ValueError("persistent SRAM cores must be nonempty and distinct")
-        for core in normalized:
-            SRAMLocation((), core)
-        object.__setattr__(self, "cores", normalized)
+            raise ValueError("persistent SRAM nodes must be nonempty and distinct")
+        for node in normalized:
+            SRAMLocation((), node)
+        object.__setattr__(self, "nodes", normalized)
 
 
 @dataclass(frozen=True)
@@ -369,7 +369,7 @@ class PreparedSRAMStorage:
                     "persistent SRAM requirements must use dense declaration owners"
                 )
             if (
-                requirement.ownership is not SRAMOwnership.MOVABLE
+                requirement.placement is not SRAMPlacement.MOVABLE
                 or requirement.lifetime is not SRAMLifetime.PERSISTENT
             ):
                 raise ValueError(
@@ -383,7 +383,7 @@ def prepare_persistent_storage(
     """Convert persistent declarations to common movable requirements."""
     requirements = []
     for declaration_index, declaration in enumerate(declarations):
-        locations = _locations(declaration.cores)
+        locations = _locations(declaration.nodes)
         if declaration.addressing is SRAMAddressing.UNIFORM:
             domains = (SRAMAddressDomain(locations),)
         else:
@@ -396,7 +396,7 @@ def prepare_persistent_storage(
                 extent_bytes=declaration.extent_bytes,
                 alignment_bytes=declaration.alignment_bytes,
                 address_domains=domains,
-                ownership=SRAMOwnership.MOVABLE,
+                placement=SRAMPlacement.MOVABLE,
                 lifetime=SRAMLifetime.PERSISTENT,
             )
         )
@@ -404,13 +404,13 @@ def prepare_persistent_storage(
 
 
 def _locations(
-    cores: Sequence[Tuple[int, int]],
+    nodes: Sequence[Tuple[int, int]],
     device_coordinates: Sequence[Tuple[int, ...]] = ((),),
 ) -> Tuple[SRAMLocation, ...]:
     return tuple(
-        SRAMLocation(tuple(device), tuple(core))
+        SRAMLocation(tuple(device), tuple(node))
         for device in device_coordinates
-        for core in cores
+        for node in nodes
     )
 
 
@@ -441,10 +441,10 @@ def compiler_arena_bytes(configs) -> Optional[int]:
         has_allocation_bytes = config.l1_allocation_bytes is not None
         if has_payload_offset != has_allocation_bytes:
             raise ValueError("incomplete compiler SRAM payload allocation metadata")
-        if config.sram_core_layouts:
-            arena_ends.extend(layout.arena_bytes for layout in config.sram_core_layouts)
+        if config.sram_node_layouts:
+            arena_ends.extend(layout.arena_bytes for layout in config.sram_node_layouts)
         if has_payload_offset:
-            if not config.sram_core_layouts:
+            if not config.sram_node_layouts:
                 arena_ends.append(config.l1_payload_offset + config.l1_allocation_bytes)
             continue
         if not config.storage_segments or any(
@@ -471,7 +471,7 @@ def _tensor_requirement(
     ttnn_api: Any,
     tensor: Any,
     tensor_index: int,
-    cores: Sequence[Tuple[int, int]],
+    nodes: Sequence[Tuple[int, int]],
     extent_bytes: int,
     alignment_bytes: int,
 ) -> SRAMStorageRequirement:
@@ -480,56 +480,56 @@ def _tensor_requirement(
     if not callable(get_per_core_allocation):
         raise ValueError("SRAM tensor does not expose its address allocation mode")
     try:
-        per_core = bool(get_per_core_allocation())
+        per_node = bool(get_per_core_allocation())
     except (AttributeError, RuntimeError, TypeError, ValueError) as error:
         raise ValueError(
             "failed to query SRAM tensor address allocation mode"
         ) from error
-    if per_core and device_coordinates == ((),):
-        raise ValueError("per-core SRAM tensor must expose logical device coordinates")
-    if per_core:
+    if per_node and device_coordinates == ((),):
+        raise ValueError("per-node SRAM tensor must expose logical device coordinates")
+    if per_node:
         domains = []
         bases = []
         for device_coordinate in device_coordinates:
-            for core in sorted(cores):
-                location = SRAMLocation(device_coordinate, core)
+            for node in sorted(nodes):
+                location = SRAMLocation(device_coordinate, node)
                 domains.append(SRAMAddressDomain((location,)))
                 bases.append(
                     int(
                         tensor.experimental_per_core_buffer_address(
                             ttnn_api.MeshCoordinate(device_coordinate),
-                            ttnn_api.CoreCoord(*core),
+                            ttnn_api.CoreCoord(*node),
                         )
                     )
                 )
     else:
-        domains = [SRAMAddressDomain(_locations(cores, device_coordinates))]
+        domains = [SRAMAddressDomain(_locations(nodes, device_coordinates))]
         bases = [int(tensor.buffer_address())]
     return SRAMStorageRequirement(
         owner=SRAMOwner(SRAMOwnerKind.TENSOR_ARGUMENT, tensor_index),
         extent_bytes=extent_bytes,
         alignment_bytes=alignment_bytes,
         address_domains=tuple(domains),
-        ownership=SRAMOwnership.FIXED,
+        placement=SRAMPlacement.FIXED,
         lifetime=SRAMLifetime.EXTERNAL,
         fixed_bases=tuple(bases),
     )
 
 
-def _tensor_cores(ttnn_api: Any, tensor: Any) -> Tuple[Tuple[int, int], ...]:
+def _tensor_nodes(ttnn_api: Any, tensor: Any) -> Tuple[Tuple[int, int], ...]:
     try:
         grid = tensor.memory_config().shard_spec.grid
-        cores = tuple(
+        nodes = tuple(
             sorted(
-                (int(core.x), int(core.y))
-                for core in ttnn_api.corerange_to_cores(grid, row_wise=True)
+                (int(node.x), int(node.y))
+                for node in ttnn_api.corerange_to_cores(grid, row_wise=True)
             )
         )
     except (AttributeError, RuntimeError, TypeError, ValueError) as error:
         raise ValueError("SRAM tensor does not expose a valid shard grid") from error
-    if not cores or len(set(cores)) != len(cores):
-        raise ValueError("SRAM tensor shard grid must contain distinct worker cores")
-    return cores
+    if not nodes or len(set(nodes)) != len(nodes):
+        raise ValueError("SRAM tensor shard grid must contain distinct worker nodes")
+    return nodes
 
 
 def prepare_sram_operation(
@@ -537,15 +537,15 @@ def prepare_sram_operation(
     name: str,
     tensors: Sequence[Any],
     configs: Sequence[Any],
-    cores: Sequence[Tuple[int, int]],
+    nodes: Sequence[Tuple[int, int]],
     ttnn_api: Any,
 ) -> PreparedSRAMOperation:
     """Build and validate one operation's physical owners and logical uses."""
-    cores = tuple(sorted(tuple(core) for core in cores))
-    if not cores or len(set(cores)) != len(cores):
-        raise ValueError("prepared SRAM operation cores must be nonempty and distinct")
-    for core in cores:
-        SRAMLocation((), core)
+    nodes = tuple(sorted(tuple(node) for node in nodes))
+    if not nodes or len(set(nodes)) != len(nodes):
+        raise ValueError("prepared SRAM operation nodes must be nonempty and distinct")
+    for node in nodes:
+        SRAMLocation((), node)
 
     requirements = []
     uses = []
@@ -559,26 +559,26 @@ def prepare_sram_operation(
         return alignment_bytes
 
     arena_bytes = compiler_arena_bytes(configs)
-    per_core_layout = any(config.sram_core_layouts for config in configs)
+    per_node_layout = any(config.sram_node_layouts for config in configs)
 
-    if per_core_layout:
-        from ._sram_domains import core_domains, validate_core_layouts
+    if per_node_layout:
+        from ._sram_domains import node_domains, validate_node_layouts
 
-        sizes = validate_core_layouts(configs, cores)
-        for arena_index, arena_cores in enumerate(core_domains(configs)):
+        sizes = validate_node_layouts(configs, nodes)
+        for arena_index, arena_nodes in enumerate(node_domains(configs)):
             requirement_index = len(requirements)
-            domain_locations = _locations(arena_cores)
+            domain_locations = _locations(arena_nodes)
             requirements.append(
                 SRAMStorageRequirement(
                     owner=SRAMOwner(SRAMOwnerKind.COMPILER_ARENA, arena_index),
-                    extent_bytes=sizes[arena_cores[0]],
+                    extent_bytes=sizes[arena_nodes[0]],
                     alignment_bytes=get_alignment_bytes(),
                     address_domains=(SRAMAddressDomain(domain_locations),),
-                    ownership=SRAMOwnership.MOVABLE,
+                    placement=SRAMPlacement.MOVABLE,
                     lifetime=SRAMLifetime.INVOCATION,
                 )
             )
-            arenas.append(SRAMArenaBinding(requirement_index, arena_cores))
+            arenas.append(SRAMArenaBinding(requirement_index, arena_nodes))
             for config in configs:
                 uses.append(
                     SRAMUse(
@@ -593,8 +593,8 @@ def prepare_sram_operation(
                 )
                 layout = next(
                     layout
-                    for layout in config.sram_core_layouts
-                    if layout.node == arena_cores[0]
+                    for layout in config.sram_node_layouts
+                    if layout.node == arena_nodes[0]
                 )
                 if layout.payload_present:
                     uses.append(
@@ -610,18 +610,18 @@ def prepare_sram_operation(
                     )
     elif arena_bytes is not None:
         requirement_index = len(requirements)
-        domain_locations = _locations(cores)
+        domain_locations = _locations(nodes)
         requirements.append(
             SRAMStorageRequirement(
                 owner=SRAMOwner(SRAMOwnerKind.COMPILER_ARENA, 0),
                 extent_bytes=arena_bytes,
                 alignment_bytes=get_alignment_bytes(),
                 address_domains=(SRAMAddressDomain(domain_locations),),
-                ownership=SRAMOwnership.MOVABLE,
+                placement=SRAMPlacement.MOVABLE,
                 lifetime=SRAMLifetime.INVOCATION,
             )
         )
-        arenas.append(SRAMArenaBinding(requirement_index, cores))
+        arenas.append(SRAMArenaBinding(requirement_index, nodes))
         for config in configs:
             uses.append(
                 SRAMUse(
@@ -661,9 +661,9 @@ def prepare_sram_operation(
                 raise ValueError(
                     "tensor-backed DFB segment must have a positive byte size"
                 )
-            if not set(segment.nodes).issubset(cores):
+            if not set(segment.nodes).issubset(nodes):
                 raise ValueError(
-                    "tensor-backed DFB segment is outside the operation cores"
+                    "tensor-backed DFB segment is outside the operation nodes"
                 )
             tensor_segments.setdefault(segment.tensor_index, []).append(
                 (config.dfb_index, segment_index, segment)
@@ -687,13 +687,13 @@ def prepare_sram_operation(
                 byte_size=segment.byte_size,
                 context=f"DFB[{dfb_index}] storage segment {segment_index}",
             )
-        tensor_cores = _tensor_cores(ttnn_api, tensor)
+        tensor_nodes = _tensor_nodes(ttnn_api, tensor)
         requirements.append(
             _tensor_requirement(
                 ttnn_api,
                 tensor,
                 tensor_index,
-                tensor_cores,
+                tensor_nodes,
                 properties.logical_shard_size_bytes,
                 get_alignment_bytes(),
             )
