@@ -12,7 +12,7 @@ set -euo pipefail
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 _REPO_ROOT="$(dirname "$_SCRIPT_DIR")"
 readonly _SCRIPT_DIR _REPO_ROOT
-readonly _STACK_MANIFEST="${_REPO_ROOT}/config/tt-lang-emule-stack.json"
+readonly _STACK_MANIFEST="${TTLANG_EMULE_STACK_MANIFEST:-${_REPO_ROOT}/config/tt-lang-emule-stack.json}"
 readonly _STACK_TOOL="${_SCRIPT_DIR}/tt-lang-emule-stack.py"
 readonly _PYTHON="${TTLANG_EMULE_HOST_PYTHON:-python3}"
 
@@ -37,13 +37,20 @@ while IFS=$'\t' read -r _STACK_KEY _STACK_VALUE; do
     esac
 done <<< "$_STACK_OUTPUT"
 
-readonly _TT_EMULE_COMMIT="$_MANIFEST_EMULE_COMMIT"
-readonly _TT_METAL_COMMIT="$_MANIFEST_METAL_COMMIT"
+readonly _TT_EMULE_COMMIT="${TTLANG_EMULE_RUNTIME_COMMIT:-$_MANIFEST_EMULE_COMMIT}"
+readonly _TT_METAL_COMMIT="${TTLANG_EMULE_RUNTIME_METAL_COMMIT:-$_MANIFEST_METAL_COMMIT}"
 readonly _TT_EMULE_SOURCE_URL="${TTLANG_EMULE_RUNTIME_SOURCE_URL:-}"
-readonly _TT_METAL_SOURCE_URL="$_MANIFEST_METAL_REPOSITORY"
-readonly _BASE_IMAGE="$_MANIFEST_BASE_IMAGE"
+readonly _TT_METAL_SOURCE_URL="${TTLANG_EMULE_RUNTIME_METAL_SOURCE_URL:-$_MANIFEST_METAL_REPOSITORY}"
+readonly _BASE_IMAGE="${TTLANG_EMULE_RUNTIME_BASE_IMAGE:-$_MANIFEST_BASE_IMAGE}"
 readonly _REQUIRED_EMULE_FILE="$_MANIFEST_CLUSTER_DESCRIPTOR"
-readonly _PLATFORM="linux/amd64"
+readonly _PLATFORM="${TTLANG_EMULE_PLATFORM:-linux/amd64}"
+
+for _COMMIT in "$_TT_EMULE_COMMIT" "$_TT_METAL_COMMIT"; do
+    if [ "${#_COMMIT}" -ne 40 ] || [[ "$_COMMIT" == *[!0-9a-f]* ]]; then
+        echo "tt-lang-sim: emulator revisions must be full lowercase commit SHAs." >&2
+        exit 2
+    fi
+done
 
 _IMAGE_INPUT_ID="$(
     {
@@ -355,9 +362,12 @@ if [ "$_BUILD_IMAGE" -eq 1 ]; then
         echo "  found:  ${_EMULE_SOURCE_COMMIT:-not a Git checkout}" >&2
         exit 1
     fi
-    "$_PYTHON" "$_STACK_TOOL" --manifest "$_STACK_MANIFEST" validate \
-        --compiler-source "$_REPO_ROOT" --emulator-source "$_EMULE_SOURCE" \
-        --quiet
+    if [ "$_TT_EMULE_COMMIT" = "$_MANIFEST_EMULE_COMMIT" ] && \
+       [ "$_TT_METAL_COMMIT" = "$_MANIFEST_METAL_COMMIT" ]; then
+        "$_PYTHON" "$_STACK_TOOL" --manifest "$_STACK_MANIFEST" validate \
+            --compiler-source "$_REPO_ROOT" --emulator-source "$_EMULE_SOURCE" \
+            --quiet
+    fi
     _TEMP_EMULE_CONTEXT="$(mktemp -d "${TMPDIR:-/tmp}/tt-lang-emule-context.XXXXXX")"
     git -C "$_EMULE_SOURCE" archive --format=tar "$_TT_EMULE_COMMIT" |
         tar -xf - -C "$_TEMP_EMULE_CONTEXT"
@@ -365,6 +375,25 @@ if [ "$_BUILD_IMAGE" -eq 1 ]; then
         echo "tt-lang-sim: selected emulator does not provide the required P150 descriptor." >&2
         echo "  missing: ${_REQUIRED_EMULE_FILE}" >&2
         echo "  Update the supported stack manifest before installing another runtime." >&2
+        exit 1
+    fi
+    if ! _EMULE_METAL_PIN="$(
+            awk '
+                /^[[:space:]]*#/ { next }
+                /^[[:space:]]*$/ { next }
+                { gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print; exit }
+            ' "${_TEMP_EMULE_CONTEXT}/tt-metal-pin.txt" 2>/dev/null
+        )"; then
+        _EMULE_METAL_PIN=""
+    fi
+    if [ "${#_EMULE_METAL_PIN}" -ne 40 ] || \
+       [[ "$_EMULE_METAL_PIN" == *[!0-9a-f]* ]]; then
+        echo "tt-lang-sim: selected emulator has an invalid Metal pin." >&2
+        exit 1
+    fi
+    if [ "$_EMULE_METAL_PIN" != "$_TT_METAL_COMMIT" ]; then
+        echo "tt-lang-sim: selected emulator pins Metal ${_EMULE_METAL_PIN}." >&2
+        echo "  selected Metal: ${_TT_METAL_COMMIT}" >&2
         exit 1
     fi
     _TEMP_STACK_CONTEXT="$(mktemp -d "${TMPDIR:-/tmp}/tt-lang-stack-context.XXXXXX")"

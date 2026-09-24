@@ -64,6 +64,21 @@ manifest.write_text(json.dumps(stack, indent=2) + "\n")
 PY
 }
 
+make_emulator_fixture() {
+    local root="$1"
+    local metal_commit="$2"
+    mkdir -p "$root/cluster_descriptors"
+    touch "$root/tracked-source"
+    touch "$root/cluster_descriptors/blackhole_P150_unharvested.yaml"
+    printf '%s\n' "$metal_commit" > "$root/tt-metal-pin.txt"
+    git -C "$root" init -q
+    git -C "$root" add .
+    git -C "$root" \
+        -c user.name=test -c user.email=test@example.com \
+        commit -q -m "Pinned source"
+    touch "$root/untracked-secret"
+}
+
 make_mock_docker() {
     local target="$1"
     cat > "$target" <<'EOF'
@@ -123,6 +138,10 @@ case "${1:-}" in
             [ ! -e "$source_context/.git" ] || exit 98
             [ ! -e "$source_context/untracked-secret" ] || exit 99
             [ -f "$stack_context/tt-lang-emule-stack.json" ] || exit 96
+            if [ -n "${MOCK_EXPECTED_STACK_MANIFEST:-}" ]; then
+                cmp "$stack_context/tt-lang-emule-stack.json" \
+                    "$MOCK_EXPECTED_STACK_MANIFEST" || exit 95
+            fi
         fi
         exit 0
         ;;
@@ -480,6 +499,26 @@ EOF
     [ "$first_image" != "$second_image" ]
 }
 
+@test "runtime image identity includes an experimental base image override" {
+    local first_image
+    local second_image
+    cd "$TTLANG_REPO_ROOT"
+
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$RUNNER" \
+        examples/eltwise_add.py
+    first_image="$(awk '/^tt-lang-emule:/{print; exit}' "$MOCK_DOCKER_LOG")"
+
+    : > "$MOCK_DOCKER_LOG"
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        TTLANG_EMULE_RUNTIME_BASE_IMAGE="example.invalid/toolchain@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" \
+        run -0 "$RUNNER" examples/eltwise_add.py
+    second_image="$(awk '/^tt-lang-emule:/{print; exit}' "$MOCK_DOCKER_LOG")"
+
+    [ -n "$first_image" ]
+    [ -n "$second_image" ]
+    [ "$first_image" != "$second_image" ]
+}
+
 @test "entrypoint edits use the mounted script without changing the runtime image" {
     cd "$TTLANG_REPO_ROOT"
     TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$RUNNER" examples/program.py
@@ -563,22 +602,8 @@ PY
     local source_url
     local rebuild
     local inspect_status
-    mkdir -p "$emule_source"
     mkdir -p "$runtime_tmp"
-    git -C "$emule_source" init -q
-    mkdir -p "$emule_source/cluster_descriptors"
-    touch "$emule_source/tracked-source"
-    touch \
-        "$emule_source/cluster_descriptors/blackhole_P150_unharvested.yaml"
-    printf '%s\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb > \
-        "$emule_source/tt-metal-pin.txt"
-    git -C "$emule_source" add \
-        tracked-source cluster_descriptors/blackhole_P150_unharvested.yaml \
-        tt-metal-pin.txt
-    git -C "$emule_source" \
-        -c user.name=test -c user.email=test@example.com \
-        commit -q -m "Pinned source"
-    touch "$emule_source/untracked-secret"
+    make_emulator_fixture "$emule_source" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
     emule_commit="$(git -C "$emule_source" rev-parse HEAD)"
     emule_source="$(cd "$emule_source" && pwd -P)"
     pin_emulator_runtime "$emule_commit" bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
@@ -719,6 +744,152 @@ PY
 
     assert_output --partial "emulator.commit must be a full lowercase commit SHA"
     [ ! -e "$MOCK_DOCKER_LOG" ]
+}
+
+@test "experimental runtime overrides reach the image build and launch" {
+    local emule_source="$BATS_TEST_TMPDIR/experimental-emule"
+    local emule_commit
+    local metal_commit=cccccccccccccccccccccccccccccccccccccccc
+    local base_image="example.invalid/toolchain@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    make_emulator_fixture "$emule_source" "$metal_commit"
+    emule_commit="$(git -C "$emule_source" rev-parse HEAD)"
+    cd "$TTLANG_REPO_ROOT"
+
+    MOCK_DOCKER_IMAGE_STATUS=1 \
+        MOCK_DOCKER_REQUIRE_SANITIZED_CONTEXT=1 \
+        TTLANG_EMULE_INSTALL=1 \
+        TTLANG_EMULE_RUNTIME_SOURCE_DIR="$emule_source" \
+        TTLANG_EMULE_RUNTIME_COMMIT="$emule_commit" \
+        TTLANG_EMULE_RUNTIME_METAL_COMMIT="$metal_commit" \
+        TTLANG_EMULE_RUNTIME_METAL_SOURCE_URL=https://example.invalid/metal.git \
+        TTLANG_EMULE_RUNTIME_BASE_IMAGE="$base_image" \
+        TTLANG_EMULE_PLATFORM=linux/amd64/v2 \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -0 "$RUNNER"
+
+    TTLANG_EMULE_RUNTIME_COMMIT="$emule_commit" \
+        TTLANG_EMULE_RUNTIME_METAL_COMMIT="$metal_commit" \
+        TTLANG_EMULE_RUNTIME_METAL_SOURCE_URL=https://example.invalid/metal.git \
+        TTLANG_EMULE_RUNTIME_BASE_IMAGE="$base_image" \
+        TTLANG_EMULE_PLATFORM=linux/amd64/v2 \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -0 "$RUNNER" examples/eltwise_add.py
+
+    assert_log_line "TT_EMULE_COMMIT=$emule_commit"
+    assert_log_line "TT_METAL_COMMIT=$metal_commit"
+    assert_log_line "TT_METAL_SOURCE_URL=https://example.invalid/metal.git"
+    assert_log_line "BASE_IMAGE=$base_image"
+    assert_log_line "RUNTIME_PLATFORM=linux/amd64/v2"
+    assert_log_line "linux/amd64/v2"
+    assert_log_contains "tt-lang-emule:${emule_commit:0:8}-${metal_commit:0:8}-r"
+    assert_log_line "build"
+    assert_log_line "run"
+}
+
+@test "experimental Metal override must match the emulator pin" {
+    local emule_source="$BATS_TEST_TMPDIR/experimental-emule"
+    local emule_commit
+    local emulator_metal=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    local selected_metal=cccccccccccccccccccccccccccccccccccccccc
+    make_emulator_fixture "$emule_source" "$emulator_metal"
+    emule_commit="$(git -C "$emule_source" rev-parse HEAD)"
+    cd "$TTLANG_REPO_ROOT"
+
+    MOCK_DOCKER_IMAGE_STATUS=1 \
+        TTLANG_EMULE_INSTALL=1 \
+        TTLANG_EMULE_RUNTIME_SOURCE_DIR="$emule_source" \
+        TTLANG_EMULE_RUNTIME_COMMIT="$emule_commit" \
+        TTLANG_EMULE_RUNTIME_METAL_COMMIT="$selected_metal" \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -1 "$RUNNER"
+
+    assert_output --partial "selected emulator pins Metal $emulator_metal"
+    assert_output --partial "selected Metal: $selected_metal"
+    refute_log_line "build"
+    refute_log_line "run"
+}
+
+@test "an alternate candidate manifest supplies the runtime pins and build context" {
+    local emule_source="$BATS_TEST_TMPDIR/candidate-emule"
+    local candidate="$BATS_TEST_TMPDIR/candidate stack.json"
+    local emule_commit
+    local metal_commit=dddddddddddddddddddddddddddddddddddddddd
+    local base_image="example.invalid/candidate@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    local manifest_hash
+    make_emulator_fixture "$emule_source" "$metal_commit"
+    emule_commit="$(git -C "$emule_source" rev-parse HEAD)"
+    python3 - "$TTLANG_REPO_ROOT/config/tt-lang-emule-stack.json" \
+        "$candidate" "$emule_commit" "$metal_commit" "$base_image" <<'PY'
+import json
+import pathlib
+import sys
+
+stack = json.loads(pathlib.Path(sys.argv[1]).read_text())
+stack["emulator"]["commit"] = sys.argv[3]
+stack["metal"]["commit"] = sys.argv[4]
+stack["runtime"]["base_image"] = sys.argv[5]
+pathlib.Path(sys.argv[2]).write_text(json.dumps(stack, indent=2) + "\n")
+PY
+    manifest_hash="$(python3 -c \
+        'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())' \
+        "$candidate")"
+    cd "$TTLANG_REPO_ROOT"
+
+    MOCK_DOCKER_IMAGE_STATUS=1 \
+        MOCK_DOCKER_REQUIRE_SANITIZED_CONTEXT=1 \
+        MOCK_EXPECTED_STACK_MANIFEST="$candidate" \
+        TTLANG_EMULE_INSTALL=1 \
+        TTLANG_EMULE_STACK_MANIFEST="$candidate" \
+        TTLANG_EMULE_RUNTIME_SOURCE_DIR="$emule_source" \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -0 "$RUNNER"
+
+    TTLANG_EMULE_STACK_MANIFEST="$candidate" \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -0 "$RUNNER" examples/eltwise_add.py
+
+    assert_log_line "TT_EMULE_COMMIT=$emule_commit"
+    assert_log_line "TT_METAL_COMMIT=$metal_commit"
+    assert_log_line "BASE_IMAGE=$base_image"
+    assert_log_line "STACK_MANIFEST_SHA256=$manifest_hash"
+    assert_log_contains "tt-lang-emule:${emule_commit:0:8}-${metal_commit:0:8}-r"
+    assert_log_line "build"
+    assert_log_line "run"
+    git diff --exit-code -- config/tt-lang-emule-stack.json
+}
+
+@test "invalid independent runtime revisions are rejected before Docker" {
+    local setting
+    local revision
+    cd "$TTLANG_REPO_ROOT"
+    for setting in \
+        TTLANG_EMULE_RUNTIME_COMMIT \
+        TTLANG_EMULE_RUNTIME_METAL_COMMIT; do
+        for revision in main aaaaaaaa AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA; do
+            run -2 env "$setting=$revision" \
+                TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+                "$RUNNER" examples/eltwise_add.py
+
+            assert_output --partial "emulator revisions must be full lowercase commit SHAs"
+            [ ! -e "$MOCK_DOCKER_LOG" ]
+        done
+    done
+}
+
+@test "empty runtime overrides preserve the pinned manifest defaults" {
+    cd "$TTLANG_REPO_ROOT"
+    TTLANG_EMULE_STACK_MANIFEST= \
+        TTLANG_EMULE_RUNTIME_COMMIT= \
+        TTLANG_EMULE_RUNTIME_METAL_COMMIT= \
+        TTLANG_EMULE_RUNTIME_METAL_SOURCE_URL= \
+        TTLANG_EMULE_RUNTIME_BASE_IMAGE= \
+        TTLANG_EMULE_PLATFORM= \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -0 "$RUNNER" examples/eltwise_add.py
+
+    assert_log_line "run"
+    assert_log_line "linux/amd64"
+    refute_log_line "build"
 }
 
 @test "an unavailable daemon fails before inspecting or building the image" {

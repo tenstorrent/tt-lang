@@ -66,6 +66,10 @@ The URL supplies the source for the manifest's pinned emulator commit. The
 installer uses the recorded emulator, tt-metal, and base image together in a
 Linux/x86-64 environment and verifies their source revisions before building.
 
+Maintainers can evaluate other combinations with the candidate manifests and
+runtime overrides described in
+[Updating the supported stack](simulator.md#updating-the-supported-stack).
+
 Installation builds the pinned tt-emule/tt-metal Docker image and compiles this
 TT-Lang checkout into a persistent Docker volume. It can take substantial time,
 CPU, memory, and disk space on its first run. The installer prints the runtime
@@ -155,7 +159,13 @@ and report locations. Apply the installed environment's paths:
 
 A separate native Linux build uses its own build directory. Compiler-only
 tests exercise compiler behavior; device execution tests exercise tt-emule in
-the installed Linux environment.
+the installed Linux environment. See
+[`test/TESTING.md`](https://github.com/tenstorrent/tt-lang/blob/main/test/TESTING.md)
+for the suite boundaries, device requirements, pytest selection, lit paths, and
+output locations. See [Testing](testing.md) for the short command reference and
+[Compiler suite on tt-emule](compiler-emule-test-status.md) for a historical
+full-suite result and failure triage at the recorded revisions. Validate later
+revisions with a fresh test run.
 
 ## Validate and inspect the environment
 
