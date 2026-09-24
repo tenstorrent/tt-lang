@@ -1062,7 +1062,12 @@ def _compile_ttnn_kernel(
                 raise ValueError(
                     f"TTNN interop requires L1 or DRAM memory space, but tensor {i} is in {mem_space}."
                 )
-            if hasattr(arg, "layout") and "TILE" not in str(arg.layout):
+            layout = str(arg.layout) if hasattr(arg, "layout") else ""
+            dtype = str(arg.dtype) if hasattr(arg, "dtype") else ""
+            # Fused weight arenas expose pre-tilized bytes through an opaque
+            # uint32 buffer; kernels address those bytes without TTNN layout ops.
+            opaque_word_buffer = "ROW_MAJOR" in layout and "UINT32" in dtype
+            if "TILE" not in layout and not opaque_word_buffer:
                 raise ValueError(
                     f"TTNN interop requires tilized tensors, but tensor {i} has layout {arg.layout}. "
                     f"Use ttnn.to_layout(tensor, ttnn.TILE_LAYOUT) to convert."
@@ -1727,15 +1732,36 @@ def _dfb_index_map(module):
     return {int(entry["old_index"]): int(entry["new_index"]) for entry in attr}
 
 
+def _live_user_dfb_index_map(module):
+    """Return the compiler's complete logical-to-physical user DFB map.
+
+    Unlike ``ttl.dfb_index_map``, which contains only moved indices, the
+    logical configuration table names every DFB that survived optimization.
+    Captured Python DFBs absent from this table were eliminated and must not
+    leave holes in the runtime descriptor array.
+    """
+    attr = module.operation.attributes.get("ttl.logical_dfb_configs", None)
+    if attr is None:
+        return None
+    return {
+        int(entry["logical_index"]): int(entry["physical_index"])
+        for entry in attr
+        if str(entry["compiler_allocated"]) == "false"
+    }
+
+
 def _apply_dfb_index_map(cb_configs, module):
     """Apply post-inlining user-DFB reuse and size each slot to its maximum."""
-    moved = _dfb_index_map(module)
+    live = _live_user_dfb_index_map(module)
+    moved = live if live is not None else _dfb_index_map(module)
     if moved is None:
         return cb_configs
 
     by_index = {}
     for old_index, cb in enumerate(cb_configs):
         if cb is None:
+            continue
+        if live is not None and old_index not in live:
             continue
         new_index = moved.get(old_index, old_index)
         current = by_index.get(new_index)
