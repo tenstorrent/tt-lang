@@ -40,6 +40,9 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
       buffer.
     - `allocation_group`, when present, requests one compiler-verified physical
       allocation for all logical DFBs carrying the same group identity.
+    - `address_scope` is `local` when nodes may use different L1 addresses and
+      `remote_uniform` when every node that uses the DFB requires one address.
+      Omitting the attribute is equivalent to `local`.
     - `tensor_backing`, when present, binds the complete dataflow buffer
       capacity to the specified byte range of an operation tensor argument.
       The range is relative to the local shard on each launch node. Tensor
@@ -56,7 +59,8 @@ def TTL_BindCBOp : TTL_Op<"bind_cb", [Pure]> {
     DefaultValuedAttr<I64Attr, "2">:$block_count,
     OptionalAttr<IndexAttr>:$dfb_id,
     OptionalAttr<TTL_TensorBackingAttr>:$tensor_backing,
-    OptionalAttr<TTL_DFBAllocationGroupAttr>:$allocation_group
+    OptionalAttr<TTL_DFBAllocationGroupAttr>:$allocation_group,
+    OptionalAttr<StrAttr>:$address_scope
   );
   let results = (outs TTL_CircularBuffer:$result);
   let assemblyFormat = "`{` `cb_index` `=` $cb_index `,` `block_count` `=` $block_count `}` attr-dict `:` type($result)";
@@ -2328,11 +2332,17 @@ def TTL_ResetAllDFBsOp
   let description = [{
     `ttl.reset_all_dfbs` has the synchronization and state-reset semantics of
     `ttl.reset_dfbs`, applied to every worker-local DFB allocated by the
-    program. It does not take DFB operands because the complete allocation set
-    is resolved after physical DFB indices are finalized.
+    program except the DFBs listed in `preserved_dfbs`. Preserving one member
+    of a DFB allocation group preserves every member because the group shares
+    one L1 allocation. The complete reset set is resolved after physical DFB
+    indices are finalized.
   }];
-  let arguments = (ins TTL_SynchronizedDFBResetAttr:$reset);
-  let assemblyFormat = "$reset attr-dict";
+  let arguments = (ins
+    TTL_SynchronizedDFBResetAttr:$reset,
+    Variadic<TTL_CircularBuffer>:$preserved_dfbs
+  );
+  let assemblyFormat = "$reset (`preserve` $preserved_dfbs^ `:` type($preserved_dfbs))? attr-dict";
+  let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------------===//

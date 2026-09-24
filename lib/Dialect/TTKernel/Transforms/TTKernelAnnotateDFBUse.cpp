@@ -19,7 +19,6 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 
-#include <algorithm>
 #include <cstdint>
 
 namespace ttk = mlir::tt::ttkernel;
@@ -64,16 +63,9 @@ static void warnDroppedPrint(func::FuncOp func, int32_t dfbIndex) {
   InFlightDiagnostic diag = func.emitWarning()
                             << "eliminating debug print of unused DFB "
                             << dfbIndex;
-  if (auto coord = func->getAttr(kCoreCoordAttrName)) {
+  if (auto coord = func->getAttr("ttl.core_coord")) {
     diag << " on specialized core " << coord;
   }
-}
-
-static int64_t getFuncDFBCount(func::FuncOp func, int64_t maxDFBCount) {
-  if (auto attr = func->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttrName)) {
-    return attr.getInt();
-  }
-  return maxDFBCount;
 }
 
 // Erase dprint-only gets whose DFB index is absent from the function's
@@ -82,7 +74,7 @@ static int64_t getFuncDFBCount(func::FuncOp func, int64_t maxDFBCount) {
 static void
 dropUnusedPrintOnlyDFBGets(ModuleOp module,
                            const llvm::DenseMap<Operation *, DFBSet> &usedDFBs,
-                           int64_t maxDFBCount) {
+                           int64_t dfbCount) {
   SmallVector<ttk::GetCompileArgValOp> gets;
   module.walk([&](ttk::GetCompileArgValOp op) { gets.push_back(op); });
 
@@ -92,7 +84,6 @@ dropUnusedPrintOnlyDFBGets(ModuleOp module,
       continue;
     }
     int64_t index = static_cast<int64_t>(op.getArgIndex());
-    int64_t dfbCount = getFuncDFBCount(func, maxDFBCount);
     if (index < 0 || index >= dfbCount) {
       continue;
     }
@@ -131,8 +122,6 @@ static func::FuncOp getCallableFunc(CallGraphNode *node) {
   return dyn_cast<func::FuncOp>(node->getCallableRegion()->getParentOp());
 }
 
-// Collects descriptor requirements encoded directly in a function and rejects
-// physical indices outside its descriptor table.
 static LogicalResult collectDirectDFBUses(func::FuncOp func, int64_t dfbCount,
                                           DFBSet &used) {
   func.walk([&](ttk::GetCompileArgValOp op) {
@@ -145,10 +134,8 @@ static LogicalResult collectDirectDFBUses(func::FuncOp func, int64_t dfbCount,
     }
   });
 
-  // TTL lowering removes DFB operands, so each opaque call carries finalized
-  // physical DFB indices whose descriptors must survive core specialization.
-  // The op verifier checks index form; this pass checks each index against the
-  // enclosing function's DFB count.
+  // Lowering removes DFB operands, so external calls retain their descriptor
+  // requirements as finalized physical indices.
   WalkResult result = func.walk([&](ttk::OpaqueCallOp call) -> WalkResult {
     std::optional<ArrayRef<int32_t>> requiredPhysicalDFBIndices =
         call.getDfbResourceIndices();
@@ -169,9 +156,7 @@ static LogicalResult collectDirectDFBUses(func::FuncOp func, int64_t dfbCount,
   return result.wasInterrupted() ? failure() : success();
 }
 
-static void recordAllDFBs(func::FuncOp func, int64_t maxDFBCount,
-                          DFBSet &used) {
-  int64_t dfbCount = getFuncDFBCount(func, maxDFBCount);
+static void recordAllDFBs(int64_t dfbCount, DFBSet &used) {
   for (int64_t index = 0; index < dfbCount; ++index) {
     used.insert(static_cast<int32_t>(index));
   }
@@ -182,7 +167,7 @@ static void recordAllDFBs(func::FuncOp func, int64_t maxDFBCount,
 static void propagateSCC(ArrayRef<CallGraphNode *> scc,
                          llvm::DenseMap<Operation *, DFBSet> &usedDFBs,
                          llvm::SmallDenseSet<Operation *> &conservative,
-                         int64_t maxDFBCount) {
+                         int64_t dfbCount) {
   SmallVector<func::FuncOp> funcs;
   DFBSet sccUses;
   for (CallGraphNode *node : scc) {
@@ -229,7 +214,7 @@ static void propagateSCC(ArrayRef<CallGraphNode *> scc,
     Operation *key = func.getOperation();
     if (sccConservative) {
       conservative.insert(key);
-      recordAllDFBs(func, maxDFBCount, usedDFBs[key]);
+      recordAllDFBs(dfbCount, usedDFBs[key]);
     } else {
       usedDFBs[key] = sccUses;
     }
@@ -242,16 +227,18 @@ struct TTKernelAnnotateDFBUsePass
     ModuleOp module = getOperation();
     llvm::DenseMap<Operation *, DFBSet> usedDFBs;
     llvm::SmallDenseSet<Operation *> conservative;
-    int64_t maxDFBCount = 0;
-
-    for (func::FuncOp func : module.getOps<func::FuncOp>()) {
-      if (auto attr = func->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttrName)) {
-        maxDFBCount = std::max(maxDFBCount, attr.getInt());
-      }
+    auto allocations =
+        module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName);
+    if (!allocations) {
+      module.emitOpError()
+          << "`ttkernel-annotate-dfb-use` requires finalized DFB allocation "
+             "metadata; run `ttl-finalize-dfb-indices` first";
+      signalPassFailure();
+      return;
     }
+    int64_t dfbCount = allocations.size();
 
     for (func::FuncOp func : module.getOps<func::FuncOp>()) {
-      int64_t dfbCount = getFuncDFBCount(func, maxDFBCount);
       if (failed(collectDirectDFBUses(func, dfbCount,
                                       usedDFBs[func.getOperation()]))) {
         signalPassFailure();
@@ -262,10 +249,10 @@ struct TTKernelAnnotateDFBUsePass
     CallGraph callgraph(module);
     const CallGraph *graph = &callgraph;
     for (auto sccIt = llvm::scc_begin(graph); !sccIt.isAtEnd(); ++sccIt) {
-      propagateSCC(*sccIt, usedDFBs, conservative, maxDFBCount);
+      propagateSCC(*sccIt, usedDFBs, conservative, dfbCount);
     }
 
-    dropUnusedPrintOnlyDFBGets(module, usedDFBs, maxDFBCount);
+    dropUnusedPrintOnlyDFBGets(module, usedDFBs, dfbCount);
 
     for (func::FuncOp func : module.getOps<func::FuncOp>()) {
       if (!getKernelThreadType(func)) {

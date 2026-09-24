@@ -4,7 +4,7 @@
 
 """Registry for tensor global names, used to track tensor parameter names."""
 
-from typing import Dict, Optional, Tuple
+from typing import Dict, Iterable, Optional, Tuple
 
 # Registry mapping tensor id to global name (for tensors that don't support attribute assignment)
 _tensor_name_registry: Dict[int, str] = {}
@@ -19,6 +19,24 @@ def register_tensor_name(tensor, name: str, index: int = -1) -> None:
     _tensor_name_registry[id(tensor)] = name
     if index >= 0:
         _tensor_index_registry[id(tensor)] = index
+
+
+def register_tensor_arguments(
+    arguments: Iterable[Tuple[object, str, int]],
+) -> None:
+    """Register each distinct tensor under its first argument position.
+
+    Aliased arguments have the same runtime address, so one canonical global
+    index represents every use. The first position matches the alias partition
+    encoded in operation cache keys.
+    """
+    registered_tensor_ids = set()
+    for tensor, name, index in arguments:
+        tensor_id = id(tensor)
+        if tensor_id in registered_tensor_ids:
+            continue
+        registered_tensor_ids.add(tensor_id)
+        register_tensor_name(tensor, name, index=index)
 
 
 def get_tensor_global_index(tensor) -> int:

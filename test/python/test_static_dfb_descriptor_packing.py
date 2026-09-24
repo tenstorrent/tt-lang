@@ -26,9 +26,24 @@ def _make_static_dfb_packing_kernel(data_format):
 
     @ttl.operation(grid=(2, 1))
     def static_dfb_packing_kernel(input_tensor, output_tensor):
-        first_node_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
-        shared_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=4)
-        second_node_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=4)
+        first_node_dfb = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=1,
+            address_scope="local",
+        )
+        shared_dfb = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=4,
+            address_scope="remote_uniform",
+        )
+        second_node_dfb = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=4,
+            address_scope="local",
+        )
 
         @ttl.compute(kernel=compute_kernel)
         def compute():
@@ -123,14 +138,16 @@ def test_static_dfb_descriptor_packing_fits_budget(
     descriptor_orders = []
     original_ordering = kernel_runner._order_static_dfb_descriptor_plans
 
-    def record_descriptor_order(descriptor_plans, remaining_bytes_by_core):
+    def record_descriptor_order(descriptor_plans, remaining_bytes_by_core, **options):
         plans_by_physical_index = {
             plan.physical_index: plan for plan in descriptor_plans
         }
         over_budget_plans = [
             plans_by_physical_index[physical_index] for physical_index in (0, 2, 1)
         ]
-        ordered_plans = original_ordering(over_budget_plans, remaining_bytes_by_core)
+        ordered_plans = original_ordering(
+            over_budget_plans, remaining_bytes_by_core, **options
+        )
         descriptor_orders.append(
             tuple(
                 plan.physical_index for plan in ordered_plans if plan.has_static_storage
@@ -151,7 +168,9 @@ def test_static_dfb_descriptor_packing_fits_budget(
 
     operation(input_tensor, output_tensor, options="--no-ttl-specialize-cores")
 
-    assert descriptor_orders == [(0, 1, 2)]
+    # The remote-uniform DFB is placed first; the local DFBs follow in a
+    # fitting order.
+    assert descriptor_orders == [(1, 0, 2)]
     actual = ttnn.to_torch(output_tensor).float()
     expected = input_host.float()
     if dtype == torch.bfloat16:

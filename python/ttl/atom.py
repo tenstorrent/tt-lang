@@ -54,6 +54,7 @@ from ._src.atom_inline import (
     _INLINED_OPERATION_STATEMENT,
     _collect_local_names,
     inline_atom_calls,
+    specialize_static_boolean_branches,
 )
 from ._src.atom_rules import (
     defines_kernels_by_spelling,
@@ -65,7 +66,7 @@ from ._src.atom_rules import (
     validate_resource_declarations,
 )
 from ._src.atom_split import split_function_body
-from ._src.tensor_registry import register_tensor_name
+from ._src.tensor_registry import register_tensor_arguments
 from .compiler_options import CompilerOptions
 from .condition import (
     DispatchCondition,
@@ -108,6 +109,7 @@ from .kernel import (
     _selector_kind,
     _transitive_participant_kernels,
 )
+from .template_argument import UInt32TemplateArgument
 from .fabric import (
     FabricManagerClaim,
     _bind_fabric_manager_claims,
@@ -302,6 +304,7 @@ def _build_atom_spec(
         )
     fn_def: ast.FunctionDef = module.body[0]
     scope = function_scope(fn)
+    captured_values = _referenced_operation_values(fn)
 
     # Inline statement-level calls to other unified operations, then keep
     # the post-inline AST + source.
@@ -314,6 +317,7 @@ def _build_atom_spec(
         inlined_dfb_resets,
         inlined_dfb_reconfigurations,
     ) = inline_atom_calls(fn_def, scope, caller_name=name)
+    specialize_static_boolean_branches(fn_def, captured_values)
     _hoist_inlined_resource_declarations(fn_def, scope, name)
     validate_resource_declarations(fn_def, name)
 
@@ -321,8 +325,19 @@ def _build_atom_spec(
     for node in ast.walk(fn_def):
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
             loaded_names.add(node.id)
+    captured_values.update(
+        {
+            capture_name: scope[capture_name]
+            for capture_name in loaded_names & scope.keys()
+        }
+    )
 
-    captured_values = _referenced_operation_values(fn)
+    params = _classify_params(fn)
+    local_names = _collect_local_names(fn_def) | {param.name for param in params}
+    captured_values = {
+        capture_name: scope[capture_name]
+        for capture_name in (loaded_names - local_names) & scope.keys()
+    }
     external_pipenets = dict(inlined_pipenets)
     compile_time_captures: Dict[str, Any] = {}
     logical_kernels: Dict[str, Kernel] = dict(inlined_logical_kernels)
@@ -472,7 +487,6 @@ def _build_atom_spec(
     frozen_scope.update(dfb_reconfigurations)
     source = ast.unparse(fn_def)
 
-    params = _classify_params(fn)
     return _AtomSpec(
         name=name,
         operation_identity=operation_identity,
@@ -505,7 +519,10 @@ def _bind_logical_kernels(
 def _is_compile_time_literal(value: Any) -> bool:
     if value is ScalarType:
         return True
-    if value is None or isinstance(value, (bool, int, float, str, ScalarType)):
+    if value is None or isinstance(
+        value,
+        (bool, int, float, str, ScalarType, KernelKind, UInt32TemplateArgument),
+    ):
         return True
     if isinstance(value, (tuple, list)):
         return all(_is_compile_time_literal(element) for element in value)
@@ -728,6 +745,7 @@ def _compile_atom(
     memory_space: str,
     tiled: bool,
     program_hash: int,
+    program_l1_layout: str,
     fp32_dest_acc_en: Optional[bool],
     dst_full_sync_en: Optional[bool],
     math_fidelity: Optional[str],
@@ -757,9 +775,11 @@ def _compile_atom(
 
     # Register ttnn tensors so the per-thread compiler can resolve global
     # tensor indices for its tensor accessors.
-    for idx, (pname, val) in enumerate(bound_arguments.items()):
-        if is_ttnn_tensor(val):
-            register_tensor_name(val, pname, index=idx)
+    register_tensor_arguments(
+        (val, pname, idx)
+        for idx, (pname, val) in enumerate(bound_arguments.items())
+        if is_ttnn_tensor(val)
+    )
 
     _reset_cb_counter()
     _set_current_grid(grid)
@@ -866,6 +886,7 @@ def _compile_atom(
         math_fidelity=math_fidelity,
         compiler_options=compiler_options,
         program_hash=program_hash,
+        program_l1_layout=program_l1_layout,
         l1_budget_override=l1_budget_override,
         kernel_source_file=spec.source_file,
         kernel_line_offset=spec.line_offset,
@@ -899,6 +920,7 @@ def _compile_unified_operation(
         decorator_options["memory_space"],
         decorator_options["tiled"],
         program_hash,
+        decorator_options.get("program_l1_layout", "uniform"),
         fp32_dest_acc_en=decorator_options["fp32_dest_acc_en"],
         dst_full_sync_en=decorator_options["dst_full_sync_en"],
         math_fidelity=decorator_options["math_fidelity"],
@@ -939,6 +961,7 @@ class Atom:
             dst_full_sync_en=decorator_options["dst_full_sync_en"],
             math_fidelity=decorator_options["math_fidelity"],
             options=decorator_options["options"],
+            program_l1_layout=decorator_options["program_l1_layout"],
             prepare_call=prepare_call,
             factory_cache=decorator_options["factory_cache"],
             factory_cache_key=decorator_options["factory_cache_key"],
@@ -971,6 +994,7 @@ def _unified_operation(
     dst_full_sync_en: Optional[bool] = None,
     math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
+    program_l1_layout: str = "uniform",
     device_domain=None,
     mesh_program_placements=None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
@@ -983,7 +1007,9 @@ def _unified_operation(
     / dst-sync overrides, compiler options). A grid is required for a
     top-level operation; a composed operation used only for expansion needs none.
     """
-    _validate_operation_options(num_outs, memory_space, tiled, math_fidelity)
+    _validate_operation_options(
+        num_outs, memory_space, tiled, math_fidelity, program_l1_layout
+    )
 
     def _decorator(f):
         spec = _build_atom_spec(
@@ -1001,6 +1027,7 @@ def _unified_operation(
                 "dst_full_sync_en": dst_full_sync_en,
                 "math_fidelity": math_fidelity,
                 "options": options,
+                "program_l1_layout": program_l1_layout,
                 "device_domain": device_domain,
                 "mesh_program_placements": mesh_program_placements,
                 "runtime_resource_factory": runtime_resource_factory,
@@ -1023,6 +1050,7 @@ def operation(
     dst_full_sync_en: Optional[bool] = None,
     math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
+    program_l1_layout: str = "uniform",
     device_domain=None,
     mesh_program_placements=None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
@@ -1070,6 +1098,7 @@ def operation(
                 dst_full_sync_en=dst_full_sync_en,
                 math_fidelity=math_fidelity,
                 options=options,
+                program_l1_layout=program_l1_layout,
                 runtime_resource_factory=runtime_resource_factory,
                 factory_cache=factory_cache,
                 factory_cache_key=factory_cache_key,
@@ -1089,6 +1118,7 @@ def operation(
             dst_full_sync_en=dst_full_sync_en,
             math_fidelity=math_fidelity,
             options=options,
+            program_l1_layout=program_l1_layout,
             device_domain=device_domain,
             mesh_program_placements=mesh_program_placements,
             runtime_resource_factory=runtime_resource_factory,

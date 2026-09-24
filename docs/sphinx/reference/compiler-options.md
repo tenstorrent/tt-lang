@@ -21,6 +21,7 @@ python my_kernel.py --no-ttl-maximize-dst
 | `--ttl-reduce-full-fp32` / `--no-ttl-reduce-full-fp32` | enabled | Prefer full-fp32 accumulation for reduce operations when supported by the target and the complete kernel configuration. |
 | `--ttl-matmul-full-fp32` / `--no-ttl-matmul-full-fp32` | enabled | Prefer full-fp32 accumulation for matmul operations when supported by the target and the complete kernel configuration. |
 | `--ttl-strict-f32-acc` / `--no-ttl-strict-f32-acc` | disabled | Error at compile time if a `+=` accumulation loop's output block exceeds f32 DST capacity (4 tiles with double-buffering). When enabled, guarantees each accumulation step fits in a single DST section without subblocking. |
+| `--ttl-auto-sync-user-dfbs` / `--no-ttl-auto-sync-user-dfbs` | enabled | Infer missing push/pop operations and coalesce acquire/release groups for user-managed DFBs. Disable when the program supplies their complete queue protocol, including operations inside external C++. Compiler-created DFBs remain automatic; allocation, capacity, and SPSC checks remain enabled. |
 | `--ttl-compiler-dfbs` / `--no-ttl-compiler-dfbs` | enabled | Insert compiler-allocated intermediate DFBs when an operation requires DFB-attached inputs, fusion would read a source after its DFB is released, or a computed value is stored by operations in multiple MLIR basic blocks. When disabled, the compiler emits an error if materialization is required. |
 | `--ttl-pipe-computed-addresses` / `--no-ttl-pipe-computed-addresses` | enabled | Use computed receiver DFB addresses for eligible PipeNet transfers. When disabled, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
 | `--ttl-pipe-capacity-sync` / `--no-ttl-pipe-capacity-sync` | enabled | Use capacity-counter synchronization when the receiver wait and pop execute on the receiver NOC thread and the computed-address transfer passes the DFB ownership and count proofs. When disabled, computed-address transfers use receiver-post synchronization. |
@@ -30,7 +31,9 @@ python my_kernel.py --no-ttl-maximize-dst
 | `--ttl-reuse-user-dfbs` / `--no-ttl-reuse-user-dfbs` | enabled | Reuse physical DFB indices and compiler-managed storage when concurrent-kernel liveness proves that compatible lifetimes do not overlap. Disabling compacts provisional user indices without introducing user-DFB sharing and assigns each physical descriptor separate storage. |
 | `--ttl-dfb-exact-coloring-search-limit N` | `1000000` | Examine at most `N` states during deterministic exact DFB allocation when order-dependent first-fit prevents acceptance or exceeds the provisional threshold after a conservative PipeNet reservation. This bounds compile time; reaching the limit reports an inconclusive result only when authoritative acceptance requires the search result. |
 | `--ttl-unsafe-assume-dfb-allocation-groups` / `--no-ttl-unsafe-assume-dfb-allocation-groups` | disabled | Trust explicit `allocation_group=` handoffs that the compiler cannot prove. Accepted groups emit warnings and `ttl.assumed_dfb_allocation_groups` metadata. Descriptor, storage, static configuration, capacity, and L1 checks remain enforced. |
+| `--ttl-unsafe-split-static-dfb-descriptors` / `--no-ttl-unsafe-split-static-dfb-descriptors` | disabled | UNSAFE, TEMPORARY: removed once the compiler-managed SRAM allocator is merged. When no static DFB descriptor order fits a core's L1 budget, split every descriptor containing that core into per-core descriptors instead of failing. Split descriptors give one DFB different L1 addresses on different cores, so kernels that write a DFB on another core by its local address corrupt that core. Descriptors of `remote_uniform` DFBs are never split. Only for programs proven to have no other such remote writes. |
 | `--ttl-specialize-cores` / `--no-ttl-specialize-cores` | disabled | Create one TTKernel function per launch coordinate when its branches, loops, or compile-time table lookups depend on logical core coordinates. Each function receives constant coordinates, allowing later compiler passes to remove unreachable code and unused table entries. `ttl.core_coord` identifies the function's runtime dispatch coordinate. Specialized functions with identical generated C++ and runtime metadata share one runtime descriptor. Opt-in. |
+| `--ttl-dynamic-noc` / `--no-ttl-dynamic-noc` | disabled | Use dynamic-NoC TTNN descriptors for data-movement kernels. Each kernel retains its compiler-assigned RISC-V processor and default NoC while its C++ code may select either NoC. |
 
 **f32 accumulation precision:** `dst` keeps the accumulator in the DST register
 but feeds it back through SRCA on each step, which truncates to tf32 (10-bit
@@ -143,6 +146,7 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | `reduce-full-fp32` | bool | `true` | Prefer full-fp32 reduce accumulation when supported. |
 | `matmul-full-fp32` | bool | `true` | Prefer full-fp32 matmul accumulation when supported. |
 | `strict-f32-acc` | bool | `false` | Error if a `+=` accumulation loop's output block exceeds f32 DST capacity. |
+| `auto-sync-user-dfbs` | bool | `true` | Infer missing releases and coalesce acquire/release groups for user-managed DFBs. When false, their queue protocol is supplied by the program; compiler-created DFBs remain automatic. |
 | `compiler-dfbs` | bool | `true` | Insert compiler-allocated intermediate DFBs for DFB-only operands, source-lifetime preservation, and computed values stored by operations in multiple MLIR basic blocks. Error if disabled and any operation requires one. |
 | `pipe-computed-addresses` | bool | `true` | Use computed receiver DFB addresses for eligible PipeNet transfers. When disabled, transfers use receiver-published destination addresses; multicast still requires proven equal runtime receiver addresses. |
 | `pipe-capacity-sync` | bool | `true` | Use capacity-counter synchronization when the receiver wait and pop execute on the receiver NOC thread and the computed-address transfer passes the DFB ownership and count proofs. When disabled, computed-address transfers use receiver-post synchronization. |
@@ -161,16 +165,16 @@ The pipeline runs these passes and subpasses in order:
 - `ttl-lower-accumulation-scopes{strategy=<accumulation-strategy>}` -- lower tensor accumulation scopes
 - `ttl-materialize-loop-state` -- replace remaining ranked-tensor loop-carried values with compiler-created DFBs
 - `ttl-insert-copy-wait` -- complete copies on every continuation without moving request cleanup before `ttl.wait_any`
-- `ttl-auto-sync` -- run `ttl-insert-cb-sync` and `ttl-coalesce-dfb-acquires`
+- `ttl-insert-cb-sync`, `ttl-coalesce-dfb-acquires` -- infer releases and combine acquire/release groups; `auto-sync-user-dfbs=false` restricts these transformations to compiler-created DFBs
 - `ttl-insert-accumulation-scopes{kind=dfb}` -- form semantic accumulation scopes for user-written `+=` loops
 - `ttl-lower-accumulation-scopes{kind=dfb}` -- lower user-written `+=` scopes to L1 packer metadata
 - `ttl-create-producer-compute` -- create producer `ttl.compute` operations before intermediate materialization
 - `ttl-insert-intermediate-dfbs` -- materialize DFB-only operands, values that must be preserved before source release, and computed values stored by operations in multiple MLIR basic blocks; verify and error when `compiler-dfbs=false`
 - `convert-ttl-to-compute` -- lower TTL elementwise tensor ops to `ttl.compute` with tile ops
-- `ttl-insert-cb-sync` -- insert missing DFB synchronization
+- `ttl-insert-cb-sync` -- insert missing releases after compute lowering, with the same user-DFB setting
 - `ttl-verify-pipenet-guards`, then `ttl-verify-pipenet-schedule` -- verify PipeNet launch domains and event ordering while logical DFB identities remain distinct and before physical DFB allocation
 - `ttl-form-pipe-transports` -- group eligible repeated PipeNet transfers and select bounded receiver storage while accounting for synchronized-reset and reconfiguration state
-- `ttl-coalesce-dfb-acquires` -- coalesce compatible DFB acquires
+- `ttl-coalesce-dfb-acquires` -- coalesce compatible DFB acquires, with the same user-DFB setting
 - `ttl-finalize-dfb-indices` -- assign logical DFBs to physical indices, validate combined DFB and fixed-state capacity, and emit runtime metadata; `reuse-user-dfbs` controls automatic user-DFB reuse, `unsafe-assume-allocation-groups` trusts only explicit unproved group handoffs, `exact-coloring-search-limit` bounds exhaustive index and weighted-allocation queries, and `l1-budget-override` replaces the target L1 budget
 - `ttl-set-compute-kernel-config` -- select tile execution strategies and resolve kernel-wide DST and per-DFB unpack configuration
 - `ttl-assign-dst` -- DST register allocation (linear scan with copy insertion)
@@ -194,6 +198,16 @@ The pipeline runs these passes and subpasses in order:
 
 The following references describe configurable passes and selected passes that
 are useful to run independently for testing.
+
+#### `ttl-insert-cb-sync` and `ttl-coalesce-dfb-acquires`
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `sync-user-dfbs` | bool | `true` | Include user-managed DFBs in release inference or acquire coalescing. False restricts the pass to declarations marked `ttl.compiler_allocated`. |
+
+For an explicitly synchronized program, set both passes to false. The Python flag `--no-ttl-auto-sync-user-dfbs` and pipeline option `auto-sync-user-dfbs=false` configure both passes at every occurrence. The standalone `ttl-auto-sync` pipeline retains the automatic defaults.
+
+Disabling inference also skips its user-DFB access-order checks. The program must publish only completed writes, wait before reading, and pop only after all reads finish. This includes external C++ transactions that lack protocol metadata. Conditional PipeNet receive-completion checks and the other DFB verifiers remain enabled; the option does not grant physical-index or storage aliasing.
 
 #### `ttl-form-accumulation-scopes`
 

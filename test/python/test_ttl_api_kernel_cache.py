@@ -8,6 +8,7 @@ import functools
 import gc
 import itertools
 import threading
+from types import SimpleNamespace
 import weakref
 
 import pytest
@@ -21,6 +22,57 @@ import ttl.ttl_api as ttl_api
 def _configure_fake_kernel_dispatch(monkeypatch):
     monkeypatch.delenv("TTLANG_COMPILE_ONLY", raising=False)
     monkeypatch.setattr(ttl_api, "_should_execute", lambda: True)
+
+
+def test_data_movement_configs_are_opt_in_and_preserve_default_roles(monkeypatch):
+    class ReaderConfigDescriptor:
+        pass
+
+    class WriterConfigDescriptor:
+        pass
+
+    class DataMovementConfigDescriptor:
+        def __init__(self, processor, noc, noc_mode):
+            self.processor = processor
+            self.noc = noc
+            self.noc_mode = noc_mode
+
+    riscv_0 = object()
+    riscv_1 = object()
+    noc_0 = object()
+    noc_1 = object()
+    dynamic_noc = object()
+    fake_ttnn = SimpleNamespace(
+        ReaderConfigDescriptor=ReaderConfigDescriptor,
+        WriterConfigDescriptor=WriterConfigDescriptor,
+        DataMovementConfigDescriptor=DataMovementConfigDescriptor,
+        DataMovementProcessor=SimpleNamespace(RISCV_0=riscv_0, RISCV_1=riscv_1),
+        NOC=SimpleNamespace(RISCV_0_default=noc_0, RISCV_1_default=noc_1),
+        NOC_MODE=SimpleNamespace(DM_DYNAMIC_NOC=dynamic_noc),
+    )
+    monkeypatch.setattr(ttl_api, "ttnn", fake_ttnn)
+
+    assert isinstance(
+        ttl_api._make_data_movement_config(0, dynamic_noc=False),
+        ReaderConfigDescriptor,
+    )
+    assert isinstance(
+        ttl_api._make_data_movement_config(1, dynamic_noc=False),
+        WriterConfigDescriptor,
+    )
+
+    ncrisc = ttl_api._make_data_movement_config(0, dynamic_noc=True)
+    assert (ncrisc.processor, ncrisc.noc, ncrisc.noc_mode) == (
+        riscv_1,
+        noc_0,
+        dynamic_noc,
+    )
+    brisc = ttl_api._make_data_movement_config(1, dynamic_noc=True)
+    assert (brisc.processor, brisc.noc, brisc.noc_mode) == (
+        riscv_0,
+        noc_1,
+        dynamic_noc,
+    )
 
 
 class _FakeMemoryConfig:
@@ -360,6 +412,31 @@ def test_factory_cache_separates_operation_and_runtime_resource_contracts(
     assert len(compile_calls) == 3
 
 
+def test_factory_cache_separates_program_l1_layout_contracts(monkeypatch):
+    compile_calls = _install_recording_compile(monkeypatch)
+    factory_cache = {}
+
+    def make_copy_operation(program_l1_layout):
+        @ttl_api.operation(
+            grid=(1, 1),
+            program_l1_layout=program_l1_layout,
+            factory_cache=factory_cache,
+            factory_cache_key=("shared", 1),
+        )
+        def copy_kernel(input_tensor, output_tensor):
+            pass
+
+        return copy_kernel
+
+    uniform_operation = make_copy_operation("uniform")
+    per_core_operation = make_copy_operation("per_core")
+
+    uniform_operation(_FakeTensor(), _FakeTensor())
+    per_core_operation(_FakeTensor(), _FakeTensor())
+
+    assert len(compile_calls) == 2
+
+
 @pytest.mark.parametrize(
     ("factory_cache", "factory_cache_key"),
     (({}, None), (None, ("copy", 1))),
@@ -406,6 +483,18 @@ def test_operation_propagates_math_fidelity(monkeypatch):
     copy_kernel(_FakeTensor(), _FakeTensor())
 
     assert compile_calls[0]["compile_options"]["math_fidelity"] == "HiFi3"
+
+
+def test_operation_propagates_program_l1_layout(monkeypatch):
+    compile_calls = _install_recording_compile(monkeypatch)
+
+    @ttl_api.operation(grid=(1, 1), program_l1_layout="per_core")
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    copy_kernel(_FakeTensor(), _FakeTensor())
+
+    assert compile_calls[0]["compile_options"]["program_l1_layout"] == "per_core"
 
 
 def test_explicit_operation_propagates_runtime_resource_factory(monkeypatch):
@@ -497,9 +586,36 @@ def test_cache_key_separates_math_fidelity(monkeypatch):
     assert hifi2_key != hifi4_key
 
 
+def test_operation_cache_separates_dynamic_noc_option(monkeypatch):
+    compile_calls = _install_recording_compile(monkeypatch)
+
+    @ttl_api.operation(grid=(1, 1))
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    default_result = copy_kernel(_FakeTensor(), _FakeTensor())
+    dynamic_result = copy_kernel(
+        _FakeTensor(), _FakeTensor(), options="--ttl-dynamic-noc"
+    )
+    repeated_dynamic_result = copy_kernel(
+        _FakeTensor(), _FakeTensor(), options="--ttl-dynamic-noc"
+    )
+
+    assert len(compile_calls) == 2
+    assert default_result != dynamic_result
+    assert dynamic_result == repeated_dynamic_result
+    assert compile_calls[0]["compile_options"]["compiler_options"].dynamic_noc is False
+    assert compile_calls[1]["compile_options"]["compiler_options"].dynamic_noc is True
+
+
 def test_operation_rejects_invalid_math_fidelity():
     with pytest.raises(ValueError, match="math_fidelity must be one of"):
         ttl_api.operation(grid=(1, 1), math_fidelity="HiFi5")
+
+
+def test_operation_rejects_invalid_program_l1_layout():
+    with pytest.raises(ValueError, match="program_l1_layout"):
+        ttl_api.operation(grid=(1, 1), program_l1_layout="invalid")
 
 
 def test_operation_cache_reuses_kernel_across_allocation_capacities(monkeypatch):

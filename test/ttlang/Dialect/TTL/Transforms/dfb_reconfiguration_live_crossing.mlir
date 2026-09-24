@@ -6,9 +6,11 @@
 #compute = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "operation">
 #reader = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "operation">
 #writer = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "operation">
-#boundary0 = #ttl.dfb_reconfiguration<0, participants[#compute, #reader, #writer]>
+#boundary0 = #ttl.dfb_reconfiguration<0, participants[#compute, #reader, #writer], discard_dfb_state = true>
 #boundary1 = #ttl.dfb_reconfiguration<1, participants[#compute, #reader, #writer]>
 
+// The first reconfiguration permits state discard, but the live DFB has a
+// consumer afterward and must retain its unread page.
 // IR: ttl.dfb_reconfiguration_plan = {
 // IR-SAME: entry_reconfiguration = 0 : i64
 // IR-SAME: entry_reconfiguration = 1 : i64

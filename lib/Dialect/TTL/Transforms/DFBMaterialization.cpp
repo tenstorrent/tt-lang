@@ -63,7 +63,8 @@ BindCBOp createCompilerAllocatedDFB(RankedTensorType tensorType, Location loc,
   auto bindDFB = BindCBOp::create(builder, loc, dfbType, indexAttr,
                                   blockCountAttr, /*dfbId=*/nullptr,
                                   /*tensorBacking=*/nullptr,
-                                  /*allocationGroup=*/nullptr);
+                                  /*allocationGroup=*/nullptr,
+                                  /*addressScope=*/nullptr);
   bindDFB->setAttr(kCompilerAllocatedAttrName, builder.getUnitAttr());
   return bindDFB;
 }

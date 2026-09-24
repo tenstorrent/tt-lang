@@ -51,6 +51,7 @@ from ..kernel import (
     _selector_sort_key,
 )
 from ..scalar import ScalarType
+from ..template_argument import UInt32TemplateArgument
 from ..ttl_utils import get_thread_type_string
 from .auto_profile import (
     get_line_mapper,
@@ -1891,6 +1892,8 @@ class TTLGenericCompiler(TTCompilerBase):
             "block_count": cb.block_count,
             "dfb_id": cb._cb_index,
         }
+        if cb.address_scope is not None:
+            bind_attributes["address_scope"] = cb.address_scope.value
         if tensor_backing is not None:
             bind_attributes["tensor_backing"] = tensor_backing
         if cb.allocation_group is not None:
@@ -2498,6 +2501,7 @@ class TTLGenericCompiler(TTCompilerBase):
         - ``ttl.dfb_descriptor(dfb)`` -- typed allocation descriptor
         - ``ttl.get_dfb_id(dfb)`` -- compatibility integer index
         - ``int`` literals / module-level ints -- signed 32-bit payload
+        - ``ttl.uint32(value)`` -- unsigned 32-bit payload
         - ``bool`` literals / module-level bools -- boolean payload
         - ``float`` literals / module-level floats -- binary32 bit payload
         """
@@ -2565,6 +2569,12 @@ class TTLGenericCompiler(TTCompilerBase):
             return _dfb_reference(arg_kind.DFBIndex)
         if isinstance(node, ast.Call) and self._is_ttl_api_call(node, "dfb_descriptor"):
             return _dfb_reference(arg_kind.DFBDescriptor)
+        if isinstance(node, ast.Call) and self._is_ttl_api_call(node, "uint32"):
+            if len(node.args) != 1 or node.keywords:
+                self._raise_error(node, "ttl.uint32() requires exactly 1 argument")
+            return _unsigned_integer(
+                self._resolve_static_int(node.args[0], "ttl.uint32() argument")
+            )
 
         if isinstance(node, ast.Constant):
             # bool is a subclass of int; check explicitly first.
@@ -2590,6 +2600,8 @@ class TTLGenericCompiler(TTCompilerBase):
 
         if isinstance(node, ast.Name) and node.id in self.captures:
             val = self.captures[node.id]
+            if isinstance(val, UInt32TemplateArgument):
+                return _unsigned_integer(val.value)
             if type(val) is bool:
                 return _boolean(val)
             if type(val) is int:
@@ -2602,6 +2614,8 @@ class TTLGenericCompiler(TTCompilerBase):
 
         if isinstance(node, ast.Name) and node.id in self.fn_globals:
             val = self.fn_globals[node.id]
+            if isinstance(val, UInt32TemplateArgument):
+                return _unsigned_integer(val.value)
             if type(val) is bool:
                 return _boolean(val)
             if type(val) is int:
@@ -2959,12 +2973,33 @@ class TTLGenericCompiler(TTCompilerBase):
 
         keyword_values = {keyword.arg: keyword.value for keyword in node.keywords}
         if reset_all:
-            if keyword_values:
+            if not set(keyword_values).issubset({"preserve"}):
                 self._raise_error(
                     node,
-                    "ttl.reset_all_dfbs() does not accept keyword arguments",
+                    "ttl.reset_all_dfbs() accepts only the preserve keyword argument",
                 )
-            return ttl.reset_all_dfbs(reset=reset_attr)
+            preserve_node = keyword_values.get("preserve")
+            if preserve_node is None:
+                preserved_dfbs = []
+            elif not isinstance(preserve_node, ast.List):
+                self._raise_error(
+                    preserve_node,
+                    "ttl.reset_all_dfbs() preserve must be a list",
+                )
+            else:
+                preserved_dfbs = [
+                    self._resolve_dfb_value(element, "preserve", api_name)
+                    for element in preserve_node.elts
+                ]
+            if any(
+                dfb in preserved_dfbs[:dfb_index]
+                for dfb_index, dfb in enumerate(preserved_dfbs)
+            ):
+                self._raise_error(
+                    preserve_node,
+                    "ttl.reset_all_dfbs() preserve DFBs must be distinct",
+                )
+            return ttl.reset_all_dfbs(reset=reset_attr, preserved_dfbs=preserved_dfbs)
 
         if set(keyword_values) != {"dfbs"}:
             self._raise_error(
@@ -3284,7 +3319,33 @@ class TTLGenericCompiler(TTCompilerBase):
                     ta_node, "ttl.call_extern_func() template_args must be a list"
                 )
             for elt in ta_node.elts:
-                resolved_template_args.append(self._resolve_template_arg_value(elt))
+                if not isinstance(elt, ast.Starred):
+                    resolved_template_args.append(self._resolve_template_arg_value(elt))
+                    continue
+                expanded_nodes = None
+                if isinstance(elt.value, (ast.List, ast.Tuple)):
+                    expanded_nodes = elt.value.elts
+                elif isinstance(elt.value, ast.Name):
+                    sequence = None
+                    for namespace in (self.captures, self.fn_globals):
+                        if elt.value.id in namespace:
+                            sequence = namespace[elt.value.id]
+                            break
+                    if isinstance(sequence, (list, tuple)):
+                        expanded_nodes = [
+                            ast.copy_location(ast.Constant(value=value), elt)
+                            for value in sequence
+                        ]
+                if expanded_nodes is None:
+                    self._raise_error(
+                        elt,
+                        "ttl.call_extern_func() starred template arguments must "
+                        "reference a captured or module-level list or tuple",
+                    )
+                for value_node in expanded_nodes:
+                    resolved_template_args.append(
+                        self._resolve_template_arg_value(value_node)
+                    )
 
         func_args = []
         func_arg_nodes = []

@@ -222,7 +222,7 @@ class _KernelSelectorResolver:
         selector = _kernel_keyword(call)
         if selector is None:
             if len(inferred_kernels) == 1:
-                self._validate_fabric_manager_effects(call, inferred_kernels)
+                self._validate_external_metadata(call, inferred_kernels)
                 return inferred_kernels
             raise _split_error(
                 call,
@@ -238,8 +238,98 @@ class _KernelSelectorResolver:
                 f"({_format_kernels(selected)}) conflicts with inferred "
                 f"selection ({_format_kernels(inferred_kernels)})",
             )
-        self._validate_fabric_manager_effects(call, selected)
+        self._validate_external_metadata(call, selected)
         return selected
+
+    def _validate_external_metadata(
+        self, call: ast.Call, selected: FrozenSet[KernelSelector]
+    ) -> None:
+        self._validate_fabric_manager_effects(call, selected)
+        for keyword_name, allow_empty_lists in (
+            ("func_args", True),
+            ("dfb_effects", False),
+            ("dfb_accesses", False),
+        ):
+            self._validate_kernel_specific_list(
+                call, selected, keyword_name, allow_empty_lists
+            )
+
+    def _validate_kernel_specific_list(
+        self,
+        call: ast.Call,
+        selected: FrozenSet[KernelSelector],
+        keyword_name: str,
+        allow_empty_lists: bool,
+    ) -> None:
+        values_by_kernel = _keyword_value(call, keyword_name)
+        if not isinstance(values_by_kernel, ast.Dict):
+            return
+        if not values_by_kernel.keys:
+            raise _split_error(
+                values_by_kernel,
+                f"call_extern_func kernel-specific {keyword_name} must not be empty",
+            )
+        listed_kernels: Set[KernelSelector] = set()
+        for selector_node, values in zip(
+            values_by_kernel.keys, values_by_kernel.values
+        ):
+            if selector_node is None:
+                raise _split_error(
+                    values_by_kernel,
+                    f"call_extern_func kernel-specific {keyword_name} does not "
+                    "support dictionary expansion",
+                )
+            selector = self._resolve_selector(selector_node)
+            if selector not in selected:
+                raise _split_error(
+                    selector_node,
+                    f"call_extern_func {keyword_name} selects a kernel excluded "
+                    "by the call's kernel selection",
+                )
+            if selector in listed_kernels:
+                raise _split_error(
+                    selector_node,
+                    f"call_extern_func {keyword_name} contains a duplicate kernel "
+                    "selector",
+                )
+            if not isinstance(values, ast.List) or (
+                not allow_empty_lists and not values.elts
+            ):
+                list_requirement = "a list" if allow_empty_lists else "a nonempty list"
+                raise _split_error(
+                    values,
+                    f"each call_extern_func kernel-specific {keyword_name} value "
+                    f"must be {list_requirement}",
+                )
+            listed_kernels.add(selector)
+
+    def select_kernel_specific_external_lists(
+        self, call: ast.Call, kernel: KernelSelector
+    ) -> None:
+        for keyword_name in ("func_args", "dfb_effects", "dfb_accesses"):
+            values_by_kernel = _keyword_value(call, keyword_name)
+            if not isinstance(values_by_kernel, ast.Dict):
+                continue
+            selected_values = next(
+                (
+                    values
+                    for selector_node, values in zip(
+                        values_by_kernel.keys, values_by_kernel.values
+                    )
+                    if selector_node is not None
+                    and self._resolve_selector(selector_node) == kernel
+                ),
+                None,
+            )
+            if selected_values is None:
+                call.keywords = [
+                    keyword for keyword in call.keywords if keyword.arg != keyword_name
+                ]
+                continue
+            for keyword in call.keywords:
+                if keyword.arg == keyword_name:
+                    keyword.value = selected_values
+                    break
 
     def _validate_fabric_manager_effects(
         self, call: ast.Call, selected: FrozenSet[KernelSelector]
@@ -294,8 +384,12 @@ class _KernelSelectorResolver:
                 f"the enclosing operation{type_detail}",
             )
         for participant in participants:
-            if participant._implicit_role is None and not any(
-                participant is kernel for kernel in self.logical_kernels.values()
+            if (
+                isinstance(participant, Kernel)
+                and participant._implicit_role is None
+                and not any(
+                    participant is kernel for kernel in self.logical_kernels.values()
+                )
             ):
                 raise _split_error(
                     reset_node,
@@ -597,7 +691,7 @@ def split_function_body(
     )
 
     all_kernels = frozenset(ordered_kernels)
-    _ScalarLivenessPlanner(state, all_kernels).analyze(fn_def.body)
+    _ScalarLivenessPlanner(state, all_kernels, selector_resolver).analyze(fn_def.body)
     statements = tuple(
         StatementSelection(
             statement_id=id(statement),
@@ -627,7 +721,7 @@ def split_function_body(
         target_capacities=target_capacities,
     )
     bodies = {
-        kernel: _apply_split_plan(fn_def.body, kernel, plan)
+        kernel: _apply_split_plan(fn_def.body, kernel, plan, selector_resolver)
         for kernel in ordered_kernels
     }
     return SplitResult(
@@ -1209,9 +1303,11 @@ class _ScalarLivenessPlanner:
         self,
         state: _AnalysisState,
         all_kernels: FrozenSet[KernelSelector],
+        selector_resolver: _KernelSelectorResolver,
     ):
         self._state = state
         self._all_kernels = all_kernels
+        self._selector_resolver = selector_resolver
 
     def analyze(self, body: List[ast.stmt]) -> None:
         self._analyze_body(body, {}, self._all_kernels)
@@ -1361,7 +1457,16 @@ class _ScalarLivenessPlanner:
     ) -> Dict[str, Set[KernelSelector]]:
         statement_kernels = self._selection(statement, parent_kernels)
         anchored = id(statement) in self._state.anchor_selections
-        for name in _direct_bound_names(statement):
+        bound_names = _direct_bound_names(statement)
+        call_free = not any(
+            isinstance(node, ast.Call) for node in _iter_skip_nested_fns(statement)
+        )
+        if not anchored and bound_names and call_free:
+            required_kernels = self._required_output_kernels(bound_names, live)
+            if required_kernels:
+                self._state.select(statement, required_kernels)
+                statement_kernels = frozenset(required_kernels)
+        for name in bound_names:
             required = live.get(name, set())
             missing = required - set(statement_kernels)
             if missing and anchored:
@@ -1372,8 +1477,25 @@ class _ScalarLivenessPlanner:
                     f"excluded logical kernels ({_format_kernels(missing)})",
                 )
             required.difference_update(statement_kernels)
-        for name in _direct_loaded_names(statement):
-            live.setdefault(name, set()).update(statement_kernels)
+        has_kernel_specific_lists = any(
+            isinstance(_keyword_value(call, keyword_name), ast.Dict)
+            for call in _iter_skip_nested_fns(statement)
+            if isinstance(call, ast.Call) and _is_external_call(call)
+            for keyword_name in ("func_args", "dfb_effects", "dfb_accesses")
+        )
+        if has_kernel_specific_lists:
+            for kernel in statement_kernels:
+                selected_statement = copy.deepcopy(statement)
+                for call in _iter_skip_nested_fns(selected_statement):
+                    if isinstance(call, ast.Call) and _is_external_call(call):
+                        self._selector_resolver.select_kernel_specific_external_lists(
+                            call, kernel
+                        )
+                for name in _direct_loaded_names(selected_statement):
+                    live.setdefault(name, set()).add(kernel)
+        else:
+            for name in _direct_loaded_names(statement):
+                live.setdefault(name, set()).update(statement_kernels)
         return live
 
 
@@ -1381,8 +1503,15 @@ class _ScalarLivenessPlanner:
 
 
 class _KernelKeywordStripper(ast.NodeTransformer):
-    def __init__(self, block_names: Set[str]):
+    def __init__(
+        self,
+        block_names: Set[str],
+        kernel: KernelSelector,
+        selector_resolver: _KernelSelectorResolver,
+    ):
         self.block_names = block_names
+        self.kernel = kernel
+        self.selector_resolver = selector_resolver
 
     def visit_Call(self, node: ast.Call):
         node = self.generic_visit(node)
@@ -1392,6 +1521,10 @@ class _KernelKeywordStripper(ast.NodeTransformer):
             and node.func.value.id in self.block_names
             and node.func.attr in _DFB_RELEASE_METHODS
         )
+        if _is_external_call(node):
+            self.selector_resolver.select_kernel_specific_external_lists(
+                node, self.kernel
+            )
         if _is_external_call(node) or is_release:
             node.keywords = [
                 keyword for keyword in node.keywords if keyword.arg != _KERNEL_KEYWORD
@@ -1441,6 +1574,7 @@ def _apply_split_plan(
     body: List[ast.stmt],
     kernel: KernelSelector,
     plan: SplitPlan,
+    selector_resolver: _KernelSelectorResolver,
 ) -> List[ast.stmt]:
     memo: Dict[int, object] = {}
     copy.deepcopy(body, memo)
@@ -1449,7 +1583,9 @@ def _apply_split_plan(
     }
     cloned = _prune_statement_list(body, kernel, selections, memo, insert_pass=True)
     stripper = _KernelKeywordStripper(
-        {transaction.block_name for transaction in plan.transactions}
+        {transaction.block_name for transaction in plan.transactions},
+        kernel,
+        selector_resolver,
     )
     return [
         ast.fix_missing_locations(stripper.visit(statement)) for statement in cloned

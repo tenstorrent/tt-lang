@@ -971,9 +971,7 @@ def test_external_compute_tensor_accessor_emitted_runner(
             kernel_name = "compute"
             me2e_thread_type = ThreadType.COMPUTE
         else:
-            kernel_name = {0: "reader", 1: "writer"}[
-                runner_module.KERNEL_NOC_INDICES[kernel_index]
-            ]
+            kernel_name = runner_module.KERNEL_CONFIGS[kernel_index][0]
             me2e_thread_type = ThreadType.NOC
         copied_kernel_path = me2e_kernel_dir / f"{kernel_name}.cpp"
         shutil.copyfile(kernel_path, copied_kernel_path)

@@ -9,7 +9,7 @@ import pytest
 from ttl.dataflow_buffer import DFBStorageSegment, PhysicalDFBConfig
 from ttl.dialects import ttcore  # noqa: F401
 from ttl.ir import Context, Module
-from ttl.ttl_api import _resolve_dfb_configs
+from ttl.ttl_api import _extract_dfb_reconfiguration_plan, _resolve_dfb_configs
 
 
 def _entry(
@@ -20,14 +20,18 @@ def _entry(
     block_count=2,
     page_size=2048,
     storage_index=None,
+    address_scope=None,
 ):
     """Build one textual physical-allocation metadata entry."""
 
     storage_field = (
         "" if storage_index is None else f"storage_index = {storage_index} : i32, "
     )
+    address_scope_field = (
+        "" if address_scope is None else f'address_scope = "{address_scope}", '
+    )
     return (
-        f"{{dfb_index = {dfb_index} : i32, {storage_field}"
+        f"{{dfb_index = {dfb_index} : i32, {storage_field}{address_scope_field}"
         f"num_tiles = {num_tiles} : i32, "
         f"element_type = {element_type}, block_count = {block_count} : i32, "
         f"page_size = {page_size} : i32}}"
@@ -71,6 +75,63 @@ def test_storage_indices_are_preserved():
         assert _resolve_dfb_configs(module) == [
             PhysicalDFBConfig(0, 1, "bfloat16", 2, 2048, None, storage_index=3),
             PhysicalDFBConfig(1, 1, "bfloat16", 2, 2048, None, storage_index=3),
+        ]
+
+
+def test_reconfiguration_epochs_inherit_physical_storage_index():
+    with Context():
+        module = Module.parse(
+            """module attributes {
+              ttl.dfb_allocations = [{
+                block_count = 1 : i32,
+                dfb_index = 0 : i32,
+                element_type = bf16,
+                num_tiles = 1 : i32,
+                page_size = 2048 : i32,
+                storage_index = 3 : i32
+              }],
+              ttl.dfb_reconfiguration_plan = {
+                boundary_ordinals = array<i64: 7>,
+                dfbs = [{
+                  configurations = [{
+                    block_count = 1 : i32,
+                    element_type = bf16,
+                    num_tiles = 1 : i32,
+                    page_size = 2048 : i32
+                  }, {
+                    block_count = 1 : i32,
+                    element_type = f32,
+                    entry_reconfiguration = 7 : i64,
+                    num_tiles = 1 : i32,
+                    page_size = 4096 : i32
+                  }],
+                  dfb_index = 0 : i32
+                }]
+              }
+            } {}"""
+        )
+        physical_configs = _resolve_dfb_configs(module)
+        plan = _extract_dfb_reconfiguration_plan(module, physical_configs)
+
+        assert plan is not None
+        assert [epoch.config.storage_index for epoch in plan.dfb_epochs[0]] == [3, 3]
+
+
+@pytest.mark.parametrize("address_scope", ["local", "remote_uniform"])
+def test_address_scope_is_preserved(address_scope):
+    with Context():
+        module = _module([_entry(0, address_scope=address_scope)])
+
+        assert _resolve_dfb_configs(module) == [
+            PhysicalDFBConfig(
+                0,
+                1,
+                "bfloat16",
+                2,
+                2048,
+                None,
+                address_scope=address_scope,
+            )
         ]
 
 
@@ -214,6 +275,10 @@ def test_missing_complete_allocations_are_rejected():
         ([_entry(0, block_count=0)], "block_count must be positive"),
         ([_entry(0, page_size=0)], "page_size must be positive"),
         ([_entry(0, storage_index=-1)], "storage_index must be a nonnegative"),
+        (
+            [_entry(0, address_scope="operation_uniform")],
+            "address_scope must be 'local' or 'remote_uniform'",
+        ),
         ([_entry(0, element_type="i1")], "Unrecognized MLIR scalar element type"),
         ([_entry(0), _entry(0)], "duplicate dfb_index 0"),
         ([_entry(1)], "dense physical index range"),
