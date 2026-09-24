@@ -12,6 +12,12 @@ from ._persistent_storage import (
     StorageReference,
     with_persistent_storage,
 )
+from ._sram_requirements import (
+    PersistentSRAMDeclaration,
+    PreparedSRAMStorage,
+    SRAMAddressing,
+    prepare_persistent_storage,
+)
 
 
 class _TTNNStorageBackend:
@@ -165,6 +171,7 @@ class _TensorDeclaration:
     spec: object
     addressing: str
     initialize: str
+    storage: PersistentSRAMDeclaration
 
 
 class SRAMStorage:
@@ -264,8 +271,29 @@ class SRAMStorage:
             spec = api.TensorSpec(
                 api.Shape(shape), dtype, layout, sharding, shard_spec, api.BufferType.L1
             )
-            self._declarations.append(_TensorDeclaration(spec, addressing, initialize))
+            element_bytes = 2 if dtype == api.bfloat16 else 4
+            storage = PersistentSRAMDeclaration(
+                extent_bytes=shard_shape[0] * shard_shape[1] * element_bytes,
+                alignment_bytes=api.get_l1_alignment(),
+                nodes=nodes,
+                addressing=(
+                    SRAMAddressing.UNIFORM
+                    if addressing == "uniform"
+                    else SRAMAddressing.PER_NODE
+                ),
+            )
+            self._declarations.append(
+                _TensorDeclaration(spec, addressing, initialize, storage)
+            )
             return self._owner.declare_reference()
+
+    def requirements(self) -> PreparedSRAMStorage:
+        """Return immutable movable requirements before physical reservation."""
+        with self._lock:
+            self._owner.require_declared()
+            return prepare_persistent_storage(
+                tuple(declaration.storage for declaration in self._declarations)
+            )
 
     def allocate(self):
         """Allocate all declarations and initialize once before publishing bindings."""
@@ -274,6 +302,7 @@ class SRAMStorage:
                 raise ValueError("storage has no tensor declarations")
 
             def build_resources(retain):
+                self.requirements()
                 resources = []
                 for declaration in self._declarations:
                     spec = declaration.spec

@@ -14,6 +14,8 @@ An `SRAMStorage` object declares tensors, allocates their backing, initializes i
 
 Declaration and allocation are separate because placement should consider the complete set of requirements before reserving storage. The initial implementation uses ordinary owned TTNN allocations. It does not yet jointly pack them with compiler scratch; [SRAM Allocation](SRAMAllocation.md) describes the existing placement machinery.
 
+`storage.requirements()` returns immutable requirements while declarations remain open. Each tensor declaration appears once with its per-shard extent, alignment, persistent lifetime, allocator-selected placement, and groups of nodes that must use one base address. `allocate()` validates the same requirements before reserving storage.
+
 `addressing="uniform"` requests one local address on every participating worker node. `addressing="per-node"` lets TTNN allocate each node independently and uses the Metal hybrid-allocation prerequisite defined in [SRAM Allocation](SRAMAllocation.md#runtime-allocation-and-binding). The tensor's required sharding mode defines how its logical dimensions map to those nodes. Per-node storage supports direct local access only; general tensor access and multicast require one common base address and are rejected.
 
 ### Example: Sharing State Between Operations
@@ -107,6 +109,33 @@ Persistent references become ordinary tensor arguments before compilation and ca
 
 ## Follow-On Work
 
-Joint placement combines declared persistent tensors, fixed existing allocations, and known temporary-storage requirements. Persistent contents remain live between accesses, so idle time alone cannot justify reusing their bytes. Reusing temporary storage across launches additionally requires a declared and enforced execution order.
+### Joint Placement
+
+The proposed extension packs persistent declarations and prepared operation arenas into owned SRAM reservations. Packing assigns aligned byte offsets before initialization; tensor formats and live persistent addresses remain unchanged. Persistent contents occupy their ranges until release. Arenas from different operations may overlap only when storage-owner completion dependencies serialize those operations.
+
+Initially, each operation keeps its compiler-planned internal arena layout. For allocations covering the same cores with a common alignment, 64 KiB of persistent state plus serialized 32 KiB and 48 KiB arenas needs 112 KiB. Separate allocations can already achieve that peak if scratch is released between operations; pooling provides reusable reservations, not an automatic reduction in peak memory. Fragmented free space can also favor separate reservations.
+
+TT-Metal chooses physical pool addresses using its allocator; typed views retain the pool owner. Existing application tensors remain fixed. Placement into separate free intervals requires complete occupancy information and conditional reservation that rejects stale snapshots. Each launch resets its DFB control records after preceding accesses complete; payload clearing occurs only where required by operation semantics.
+
+### Program Capacity
+
+Data placement and program loading have separate limits. Metal's [SRAM allocator](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/tt_metal/impl/allocator/allocator.cpp#L89) excludes the reserved firmware and program region. Its [program finalization](https://github.com/tenstorrent/tt-metal/blob/ea042c4ad6237678103cd7cbceb346e060f0f9a3/tt_metal/impl/program/program.cpp#L2771) validates compiled binaries and runtime configuration against target-specific limits. Code bytes must not be subtracted again from the already reduced data budget, and unused program capacity is not available for payload packing.
+
+Preparation must finalize relative layouts, device binaries, and runtime-argument counts before committing persistent reservations. A common runtime adapter obtains Metal's limits and validates every participating kernel group and processor; architecture-specific memory maps remain in Metal. A non-executing preparation interface is an integration requirement. Physical pool bases remain runtime arguments so changing a reservation address does not generate another kernel variant.
+
+```text
+prepare_joint_storage(declarations, operations):
+    collect requirements and validate ownership, domains, and completion order
+    place persistent regions and operation arenas; finalize relative offsets
+    compile device kernels and finalize Metal program layouts without execution
+    require each program fits its target's code and configuration limits
+    reserve data pools through Metal and construct owner-retaining views
+    initialize persistent payloads and publish all bindings together
+    on failure: complete submitted initialization and roll back new reservations
+```
+
+Validation covers exact capacity boundaries, data fitting while code overflows, code fitting while data allocation fails, and both overflowing. Reports separate data reservations and padding from compiled code, runtime configuration, and program headroom. Many-DFB and persistent-plus-scratch compositions track code size and preparation time alongside measured allocation efficiency.
+
+### Concurrent Borrowing
 
 Read/write effect information can permit concurrent read-only borrowing. These optimizations preserve the ownership and completion rules above.
