@@ -50,7 +50,7 @@ def run_compiler(modules, reuse, allocation_strategy="first-fit-decreasing"):
         [
             "ttlang-opt",
             "--split-input-file",
-            f"-pass-pipeline=builtin.module(ttl-finalize-dfb-indices{{memory-model=compiler-l1 reuse-user-dfbs={str(reuse).lower()} l1-allocation-strategy={allocation_strategy}}})",
+            f"-pass-pipeline=builtin.module(ttl-finalize-dfb-indices{{memory-model=compiler-sram reuse-user-dfbs={str(reuse).lower()} sram-allocation-strategy={allocation_strategy}}})",
         ],
         input="\n// -----\n".join(modules),
         text=True,

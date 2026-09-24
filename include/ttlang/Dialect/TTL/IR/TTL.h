@@ -37,7 +37,7 @@ class TTLTileOpTrait
 /// Attribute names.
 constexpr llvm::StringLiteral kCBIndexAttrPrefix("ttl.cb_index.");
 constexpr llvm::StringLiteral kMemoryModelAttrName("ttl.memory_model");
-constexpr llvm::StringLiteral kCompilerL1MemoryModel("compiler-l1");
+constexpr llvm::StringLiteral kCompilerSRAMMemoryModel("compiler-sram");
 constexpr llvm::StringLiteral kL1ArenaBytesAttrName("ttl.l1_arena_bytes");
 
 /// Runtime configuration attributes.

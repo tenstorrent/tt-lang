@@ -39,22 +39,22 @@ def l1_copy(source, destination):
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "l1"])
 @pytest.mark.parametrize(
-    "memory_model,l1_allocation_strategy",
+    "memory_model,sram_allocation_strategy",
     [
         ("metal-cb", None),
-        ("compiler-l1", "first-fit-decreasing"),
-        ("compiler-l1", "best-fit-decreasing"),
+        ("compiler-sram", "first-fit-decreasing"),
+        ("compiler-sram", "best-fit-decreasing"),
     ],
-    ids=["metal", "compiler-l1-first-fit", "compiler-l1-best-fit"],
+    ids=["metal", "compiler-sram-first-fit", "compiler-sram-best-fit"],
 )
 def test_l1_copy(
-    device, dtype, memory_model, l1_allocation_strategy, allocator, monkeypatch
+    device, dtype, memory_model, sram_allocation_strategy, allocator, monkeypatch
 ):
     expected = torch.randn(32, 32, dtype=dtype)
     source = allocator(expected, device)
     destination = allocator(torch.zeros_like(expected), device)
     arenas = []
-    if memory_model == "compiler-l1":
+    if memory_model == "compiler-sram":
         import ttl.kernel_runner as runner
 
         allocate_storage = runner._allocate_l1_sharded_storage_tensor
@@ -67,19 +67,19 @@ def test_l1_copy(
         monkeypatch.setattr(runner, "_allocate_l1_sharded_storage_tensor", retain_arena)
 
         def reject_descriptors(*args, **kwargs):
-            pytest.fail("compiler-l1 constructed Metal DFB descriptors")
+            pytest.fail("compiler-sram constructed Metal DFB descriptors")
 
         monkeypatch.setattr(runner, "build_cb_descriptors", reject_descriptors)
     for invocation in range(3):
         options = f"--ttl-memory-model={memory_model}"
-        if l1_allocation_strategy is not None:
-            options += f" --ttl-l1-allocation-strategy={l1_allocation_strategy}"
+        if sram_allocation_strategy is not None:
+            options += f" --ttl-sram-allocation-strategy={sram_allocation_strategy}"
         result = l1_copy(source, destination, options=options)
         assert result.buffer_address() == destination.buffer_address()
         assert_allclose(
             ttnn.to_torch(destination).float(), expected.float(), rtol=0, atol=0
         )
-    if memory_model == "compiler-l1":
+    if memory_model == "compiler-sram":
         assert len({arena.buffer_address() for arena in arenas}) == 3
         for arena in arenas:
             words = ttnn.to_torch(arena).view(torch.int32).flatten()
@@ -147,7 +147,7 @@ def test_many_buffers(device, dtype, simultaneous, specialize, tmp_path, monkeyp
     final_ir = tmp_path / "final.mlir"
     monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_ir))
     for invocation in range(2):
-        options = "--ttl-memory-model=compiler-l1"
+        options = "--ttl-memory-model=compiler-sram"
         if specialize:
             options += " --ttl-specialize-cores"
         operation(source, destination, options=options)
@@ -212,7 +212,7 @@ def test_l1_cross_processor(device, dtype, block_count, pages_per_block):
     destination = to_dram(torch.zeros_like(expected), device)
     for invocation in range(3):
         l1_cross_processor(
-            source, destination, options="--ttl-memory-model=compiler-l1"
+            source, destination, options="--ttl-memory-model=compiler-sram"
         )
         assert_allclose(
             ttnn.to_torch(destination).float(), expected.float(), rtol=0, atol=0
@@ -238,7 +238,7 @@ def test_l1_sequence_wrap(device, monkeypatch, dtype, initial_sequence):
         return arena
 
     monkeypatch.setattr(ttnn, "zeros", initialize_near_wrap)
-    l1_copy(source, destination, options="--ttl-memory-model=compiler-l1")
+    l1_copy(source, destination, options="--ttl-memory-model=compiler-sram")
     assert len(arenas) == 1
     words = ttnn.to_torch(arenas[0]).view(torch.int32).flatten()
     assert words[:2].tolist() == [(initial_sequence + 7) % 6] * 2
@@ -333,7 +333,7 @@ def test_allocation_stress(device, dtype, schedule, grid, reuse, tmp_path, monke
     destination = to_dram(torch.zeros_like(expected), device)
     final_ir = tmp_path / "stress.mlir"
     monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_ir))
-    options = "--ttl-memory-model=compiler-l1"
+    options = "--ttl-memory-model=compiler-sram"
     if not reuse:
         options += " --no-ttl-reuse-user-dfbs"
     operation(source, destination, options=options)

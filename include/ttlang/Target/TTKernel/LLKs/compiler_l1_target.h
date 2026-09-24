@@ -6,7 +6,7 @@
 namespace ttlang::l1::target {
 #if !defined(ARCH_WORMHOLE) && !defined(ARCH_WORMHOLE_B0) &&                   \
     !defined(ARCH_BLACKHOLE)
-#error "compiler-l1 requires Wormhole or Blackhole"
+#error "compiler-sram requires Wormhole or Blackhole"
 #endif
 /// Returns the core-local base address supplied for the compiler-managed arena.
 inline uint32_t arenaBase() {

@@ -2,7 +2,7 @@
 // RUN: ttlang-opt %s --convert-ttkernel-to-emitc -o %t.emitc.mlir
 // RUN: FileCheck %s --input-file=%t.emitc.mlir
 // RUN: ttlang-translate --ttkernel-to-cpp %t.emitc.mlir | FileCheck %s --check-prefix=CPP
-module attributes {ttl.memory_model = "compiler-l1", ttl.dfb_allocations = [
+module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
   {cb_index = 0 : i64, page_size = 4096 : i64, num_tiles = 1 : i64, block_count = 3 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64},
   {cb_index = 1 : i64, page_size = 4096 : i64, num_tiles = 1 : i64, block_count = 3 : i64, l1_offset = 8 : i64, l1_payload_offset = 12352 : i64}
 ]} {

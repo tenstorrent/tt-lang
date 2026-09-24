@@ -826,7 +826,7 @@ LogicalResult validateCombinedDFBResourceL1Bytes(
       getGlobalSemaphoreL1Bytes(module, globalSemaphoreCount);
   auto memoryModel = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
   FailureOr<uint64_t> reconfigurationStateBytes =
-      memoryModel && memoryModel.getValue() == kCompilerL1MemoryModel
+      memoryModel && memoryModel.getValue() == kCompilerSRAMMemoryModel
           ? FailureOr<uint64_t>(0)
           : getDFBReconfigurationStateAllocationBytes(module);
   std::optional<uint64_t> requiredBytes =

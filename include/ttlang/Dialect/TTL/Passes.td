@@ -1076,12 +1076,12 @@ def TTLFinalizeDFBIndices
     `ttl-annotate-cb-associations`, which copy DFB indices into attributes and
     would otherwise capture provisional indices.
 
-    `memory-model=compiler-l1` assigns explicit byte ranges instead of Metal
+    `memory-model=compiler-sram` assigns explicit byte ranges instead of Metal
     descriptor slots. Logical identities retain independent 8-byte control
-    records. The selected L1 allocation strategy places payloads over the
+    records. The selected SRAM allocation strategy places payloads over the
     concurrent-kernel storage conflict graph; unknown completion prohibits reuse.
     The complete plan is validated before mutation. Runtime metadata supplies
-    state and payload offsets within one allocator-owned L1 arena. The arena
+    state and payload offsets within one allocator-owned SRAM arena. The arena
     high-water mark includes alignment and state. A greedy budget failure does
     not prove that a feasible placement is impossible. Unsupported storage forms
     and operations are diagnosed; this mode never falls back to Metal descriptors.
@@ -1257,13 +1257,13 @@ def TTLFinalizeDFBIndices
 
   let options = [
     Option<"memoryModel", "memory-model", "std::string", "\"metal-cb\"",
-           "Select metal-cb or experimental compiler-l1 storage.">,
+           "Select metal-cb or experimental compiler-sram storage.">,
     Option<"reuseUserDFBs", "reuse-user-dfbs", "bool", "true",
            "Reuse physical DFB indices and compiler-managed storage for "
            "lifetimes proven not to overlap across concurrent kernels.">,
-    Option<"l1AllocationStrategy", "l1-allocation-strategy", "std::string",
+    Option<"sramAllocationStrategy", "sram-allocation-strategy", "std::string",
            "\"first-fit-decreasing\"",
-           "Select first-fit-decreasing or best-fit-decreasing compiler-l1 "
+           "Select first-fit-decreasing or best-fit-decreasing compiler-sram "
            "payload placement.">,
     Option<"unsafeAssumeAllocationGroups", "unsafe-assume-allocation-groups",
            "bool", "false",

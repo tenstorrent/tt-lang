@@ -18,12 +18,15 @@ pytestmark = pytest.mark.requires_device
 
 @pytest.fixture(autouse=True)
 def forbid_metal_descriptors(request, monkeypatch):
-    if request.node.callspec.params.get("memory_model", "compiler-l1") != "compiler-l1":
+    if (
+        request.node.callspec.params.get("memory_model", "compiler-sram")
+        != "compiler-sram"
+    ):
         return
     import ttl.kernel_runner as runner
 
     def reject_descriptors(*args, **kwargs):
-        pytest.fail("compiler-l1 constructed Metal DFB descriptors")
+        pytest.fail("compiler-sram constructed Metal DFB descriptors")
 
     monkeypatch.setattr(runner, "build_cb_descriptors", reject_descriptors)
 
@@ -77,7 +80,7 @@ def _make_binary(*, multiply=False, subtract=False):
 @pytest.mark.parametrize("operation_name", ["add", "subtract", "multiply"])
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "l1"])
-@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-l1"])
+@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-sram"])
 def test_l1_binary(device, dtype, allocator, memory_model, operation_name, fpu):
     operation = _make_binary(
         multiply=operation_name == "multiply",
@@ -165,7 +168,7 @@ def test_l1_compute_above_descriptor_limit(device, dtype, tmp_path, monkeypatch)
     operation = _make_above_descriptor_limit_add(tmp_path, input_count)
     final_ir = tmp_path / "final.mlir"
     monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_ir))
-    options = "--ttl-memory-model=compiler-l1"
+    options = "--ttl-memory-model=compiler-sram"
     for invocation in range(2):
         reference = torch.randint(-64, 65, (input_count, 32, 32)).to(dtype) / 32
         expected = torch.cat((reference[0:1] + reference[1:2], reference[2:]))
@@ -224,7 +227,7 @@ def _make_matmul(rows, inner, columns):
     "dimensions", [(1, 1, 1), (2, 2, 2), (1, 3, 2), (1, 1, 5), (3, 2, 3)]
 )
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
-@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-l1"])
+@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-sram"])
 @pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "l1"])
 def test_l1_matmul(device, dimensions, dtype, memory_model, allocator):
 
@@ -284,7 +287,7 @@ def l1_residual_chain(lhs, rhs, output):
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
-@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-l1"])
+@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-sram"])
 @pytest.mark.parametrize("reuse", [False, True], ids=["distinct", "reuse"])
 @pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "l1"])
 def test_l1_residual_chain(device, dtype, memory_model, reuse, allocator):
@@ -336,7 +339,7 @@ def reduction(source, output):
 @pytest.mark.parametrize("tiles", [1, 3], ids=["one_tile", "three_tiles"])
 @pytest.mark.parametrize("maximum", [False, True], ids=["sum", "max"])
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
-@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-l1"])
+@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-sram"])
 @pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "l1"])
 def test_l1_reduce(
     device, dimensions, tiles, maximum, dtype, memory_model, tmp_path, allocator
@@ -397,7 +400,7 @@ def unary(source, output):
 )
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "l1"])
-@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-l1"])
+@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-sram"])
 def test_l1_broadcast(device, axes, dtype, allocator, memory_model, tmp_path):
     operation = _make_unary(
         tmp_path, f"ttl.block.broadcast(input_block, dims={list(axes)}, shape=(1, 1))"
@@ -422,7 +425,7 @@ def test_l1_broadcast(device, axes, dtype, allocator, memory_model, tmp_path):
 @pytest.mark.parametrize("activation", ["rsqrt", "sigmoid", "tanh"])
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "l1"])
-@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-l1"])
+@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-sram"])
 def test_l1_activation(device, activation, dtype, allocator, memory_model, tmp_path):
     operation = _make_unary(tmp_path, f"ttl.math.{activation}(input_block)")
     for invocation in range(3):
@@ -440,7 +443,7 @@ def test_l1_activation(device, activation, dtype, allocator, memory_model, tmp_p
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
-@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-l1"])
+@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-sram"])
 @pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "l1"])
 def test_l1_rms_normalization(device, dtype, memory_model, tmp_path, allocator):
     operation = _make_unary(
@@ -464,7 +467,7 @@ def test_l1_rms_normalization(device, dtype, memory_model, tmp_path, allocator):
 @pytest.mark.parametrize("multiply", [False, True], ids=["add", "multiply"])
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "l1"])
-@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-l1"])
+@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-sram"])
 def test_l1_sfpu_precision(device, multiply, dtype, allocator, memory_model):
     # Full-precision inputs expose accidental TF32 conversion during direct unpack.
     operation = _make_binary(multiply=multiply)
@@ -599,7 +602,7 @@ def _make_gated_mlp_residual(normalize):
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "l1"])
 @pytest.mark.parametrize("reuse", [False, True], ids=["distinct", "reuse"])
-@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-l1"])
+@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-sram"])
 @pytest.mark.parametrize(
     "normalize", [False, True], ids=["projection", "normalized_projection"]
 )
@@ -697,7 +700,7 @@ def _make_dependent_state(tmp_path, steps):
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "l1"])
 @pytest.mark.parametrize("reuse", [False, True], ids=["distinct", "reuse"])
-@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-l1"])
+@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-sram"])
 def test_l1_dependent_state(device, dtype, allocator, reuse, memory_model, tmp_path):
     steps = 5
     operation = _make_dependent_state(tmp_path, steps)
@@ -724,7 +727,7 @@ def test_l1_dependent_state(device, dtype, allocator, reuse, memory_model, tmp_p
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "l1"])
-@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-l1"])
+@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-sram"])
 def test_l1_transpose(device, dtype, allocator, memory_model, tmp_path):
     operation = _make_unary(tmp_path, "ttl.math.transpose(input_block)")
     for invocation in range(3):
@@ -824,7 +827,7 @@ def l1_attention(query, key, value, output):
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "l1"])
 @pytest.mark.parametrize("reuse", [False, True], ids=["distinct", "reuse"])
-@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-l1"])
+@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-sram"])
 def test_l1_attention(device, dtype, allocator, reuse, memory_model):
     options = f"--ttl-memory-model={memory_model}"
     if not reuse:
@@ -912,7 +915,7 @@ def l1_expert_merge(partials, routing, residual, output):
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "l1"])
 @pytest.mark.parametrize("reuse", [False, True], ids=["distinct", "reuse"])
-@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-l1"])
+@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-sram"])
 def test_l1_expert_merge(device, dtype, allocator, reuse, memory_model):
     options = f"--ttl-memory-model={memory_model}"
     if not reuse:

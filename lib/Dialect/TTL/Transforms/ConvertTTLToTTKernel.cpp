@@ -74,7 +74,7 @@ constexpr llvm::StringLiteral kExpandLinearizeIndexAttr =
 
 static bool usesCompilerL1(ModuleOp module) {
   auto memoryModel = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
-  return memoryModel && memoryModel.getValue() == kCompilerL1MemoryModel;
+  return memoryModel && memoryModel.getValue() == kCompilerSRAMMemoryModel;
 }
 
 class TTLToTTKernelTypeConverter : public TypeConverter {
@@ -437,13 +437,13 @@ static FailureOr<int32_t> getValidatedDFBIndex(Value dfb, Operation *op) {
   }
   auto module = op->getParentOfType<ModuleOp>();
   auto memoryModel = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
-  if (memoryModel && memoryModel.getValue() == kCompilerL1MemoryModel) {
+  if (memoryModel && memoryModel.getValue() == kCompilerSRAMMemoryModel) {
     auto allocations =
         module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName);
     if (!allocations || *dfbIndex < 0 ||
         static_cast<uint64_t>(*dfbIndex) >= allocations.size()) {
       return op->emitError(
-          "storage identity is outside the compiler-l1 allocation plan");
+          "storage identity is outside the compiler-sram allocation plan");
     }
     return static_cast<int32_t>(*dfbIndex);
   }
@@ -1700,23 +1700,23 @@ buildDFBSynchronizationLoweringPlan(ModuleOp module) {
             entry ? entry.getAs<DenseI32ArrayAttr>("dfb_indices") : nullptr;
         if (!ordinal || !indices ||
             !plan.stateOffsetByReconfiguration.contains(ordinal.getInt())) {
-          module.emitOpError(
-              "contains malformed compiler-l1 reconfiguration reset metadata");
+          module.emitOpError("contains malformed compiler-sram reconfiguration "
+                             "reset metadata");
           return failure();
         }
         auto [resetEntry, inserted] =
             plan.resetDFBsByReconfiguration.try_emplace(ordinal.getInt(),
                                                         indices.asArrayRef());
         if (!inserted) {
-          module.emitOpError(
-              "contains duplicate compiler-l1 reconfiguration reset metadata");
+          module.emitOpError("contains duplicate compiler-sram reconfiguration "
+                             "reset metadata");
           return failure();
         }
         if (!llvm::is_sorted(resetEntry->second) ||
             std::adjacent_find(resetEntry->second.begin(),
                                resetEntry->second.end()) !=
                 resetEntry->second.end()) {
-          module.emitOpError("contains noncanonical compiler-l1 "
+          module.emitOpError("contains noncanonical compiler-sram "
                              "reconfiguration reset indices");
           return failure();
         }
@@ -1744,7 +1744,7 @@ buildDFBSynchronizationLoweringPlan(ModuleOp module) {
         plan.dfbTypesByIndex.try_emplace(index, ttkernelType);
     if (plan.compilerL1 && !inserted && typeEntry->second != ttkernelType) {
       bind.emitOpError(
-          "compiler-l1 allocation index has inconsistent DFB types");
+          "compiler-sram allocation index has inconsistent DFB types");
       return WalkResult::interrupt();
     }
     if (inserted) {
@@ -1782,7 +1782,7 @@ buildDFBSynchronizationLoweringPlan(ModuleOp module) {
   for (const auto &[ordinal, indices] : plan.resetDFBsByReconfiguration) {
     for (int32_t index : indices) {
       if (!plan.dfbTypesByIndex.contains(index)) {
-        module.emitOpError("compiler-l1 reconfiguration ordinal ")
+        module.emitOpError("compiler-sram reconfiguration ordinal ")
             << ordinal << " references unknown DFB index " << index;
         return failure();
       }
@@ -1831,7 +1831,7 @@ lowerCompilerL1Synchronization(Operation *operation, int64_t stateOffset,
   for (int32_t index : resetDFBIndices) {
     auto typeIt = plan.dfbTypesByIndex.find(index);
     assert(typeIt != plan.dfbTypesByIndex.end() &&
-           "planned compiler-l1 synchronization must reference known DFBs");
+           "planned compiler-sram synchronization must reference known DFBs");
     Value stateAddress = ttk::GetCompileArgValOp::create(
         rewriter, operation->getLoc(), typeIt->second, index);
     ttk::OpaqueCallOp::create(
@@ -2036,7 +2036,7 @@ static LogicalResult validateCompilerL1ExternalCalls(ModuleOp module) {
   WalkResult validation = module.walk([](OpaqueCallOp call) -> WalkResult {
     if (call.hasUnknownDFBAccess()) {
       call.emitOpError(
-          "compiler-l1 requires typed DFB effects for external calls");
+          "compiler-sram requires typed DFB effects for external calls");
       return WalkResult::interrupt();
     }
     if (std::optional<ArrayAttr> templateArgs = call.getTemplateArgs()) {
@@ -2044,7 +2044,7 @@ static LogicalResult validateCompilerL1ExternalCalls(ModuleOp module) {
         auto templateArg = cast<ExternalTemplateArgAttr>(attribute);
         if (templateArg.getKind() == ExternalTemplateArgKind::DFBIndex) {
           call.emitOpError(
-              "compiler-l1 external calls cannot use Metal DFB indices; use "
+              "compiler-sram external calls cannot use Metal DFB indices; use "
               "ttl.dfb_descriptor()");
           return WalkResult::interrupt();
         }
@@ -2069,7 +2069,7 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
     bool compilerL1 = usesCompilerL1(module);
 
     assert((!compilerL1 || !op.hasUnknownDFBAccess()) &&
-           "compiler-l1 external calls must be validated before conversion");
+           "compiler-sram external calls must be validated before conversion");
 
     // Dependency operands name every descriptor required by a typed external
     // call, including operands that are absent from the emitted C++ call.
@@ -2249,7 +2249,7 @@ private:
     }
     if (kind == ExternalTemplateArgKind::DFBIndex) {
       assert(!usesCompilerL1(op->getParentOfType<ModuleOp>()) &&
-             "compiler-l1 template arguments must be validated before "
+             "compiler-sram template arguments must be validated before "
              "conversion");
       return rewriter.getUI32IntegerAttr(static_cast<uint32_t>(*dfbIndex));
     }
@@ -2830,10 +2830,10 @@ static LogicalResult lowerTTLOpsToTTKernel(
     return failure();
   }
   if (auto model = mod->getAttrOfType<StringAttr>(kMemoryModelAttrName);
-      model && model.getValue() == kCompilerL1MemoryModel) {
+      model && model.getValue() == kCompilerSRAMMemoryModel) {
     auto arenaBytes = mod->getAttrOfType<IntegerAttr>(kL1ArenaBytesAttrName);
     if (!arenaBytes || arenaBytes.getInt() < 0) {
-      mod.emitOpError("missing validated compiler-l1 arena size");
+      mod.emitOpError("missing validated compiler-sram arena size");
       return failure();
     }
     allocationBytes = static_cast<uint64_t>(arenaBytes.getInt());
@@ -3287,9 +3287,8 @@ struct TTLConvertTTLToTTKernelPass
     if (failed(lowerTTLOpsToTTKernel(
             mod, ctx, typeConverter, getName(), pipeComputedAddresses,
             pipeCapacitySync, pipeGlobalSemaphoresOnly, *graphForeachPlans,
-            l1BudgetOverride == 0
-                ? std::nullopt
-                : std::optional<uint64_t>(l1BudgetOverride),
+            l1BudgetOverride == 0 ? std::nullopt
+                                  : std::optional<uint64_t>(l1BudgetOverride),
             *synchronizationLoweringPlan))) {
       signalPassFailure();
       return;

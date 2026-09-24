@@ -1,5 +1,5 @@
 // Verifies compiler-managed storage reuse across reconfiguration and reset boundaries.
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1})' | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-sram})' | FileCheck %s
 
 // Completed lifecycles reuse payload storage across reconfiguration while retaining distinct state records.
 #compute = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "operation">

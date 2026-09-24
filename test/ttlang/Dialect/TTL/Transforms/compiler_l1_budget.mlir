@@ -1,5 +1,5 @@
 // A 2048-byte payload plus the 64-byte control prefix fits exactly in 2112 bytes.
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-budget-override=2112},ttl-validate-cb-budget{l1-budget-override=2112})' | FileCheck %s
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-sram l1-budget-override=2112},ttl-validate-cb-budget{l1-budget-override=2112})' | FileCheck %s
 // CHECK: ttl.l1_arena_bytes = 2112 : i64
 // CHECK-LABEL: func.func @boundary
 // CHECK-NEXT: %{{.*}} = ttl.bind_cb

@@ -1,16 +1,16 @@
-# Compiler-Managed L1 Allocation
+# Compiler-Managed SRAM Allocation
 
 ## Purpose
 
-TT-Lang normally assigns each logical dataflow buffer (DFB) a TT-Metal DFB descriptor. Wormhole B0 provides 32 descriptor indices and Blackhole provides 64. A program can therefore exhaust descriptor indices while sufficient L1 storage remains.
+TT-Lang normally assigns each logical dataflow buffer (DFB) a TT-Metal DFB descriptor. Wormhole B0 provides 32 descriptor indices and Blackhole provides 64. A program can therefore exhaust descriptor indices while sufficient SRAM remains.
 
-`--ttl-memory-model=compiler-l1` replaces descriptor-indexed storage with compiler-assigned L1 byte ranges. The Python DFB API and its producer/consumer semantics remain unchanged. `metal-cb` remains the default.
+`--ttl-memory-model=compiler-sram` replaces descriptor-indexed storage with compiler-assigned SRAM byte ranges. The Python DFB API and its producer/consumer semantics remain unchanged. `metal-cb` remains the default.
 
-| Property | `metal-cb` | `compiler-l1` |
+| Property | `metal-cb` | `compiler-sram` |
 | --- | --- | --- |
 | Allocated identity | TT-Metal DFB index | Compiler allocation index used only in compiler metadata |
 | Storage address | TT-Metal descriptor | Arena base plus compiler-assigned byte offset |
-| Capacity limit | L1 capacity and 32 or 64 descriptor indices | L1 capacity, control records, and alignment |
+| Capacity limit | SRAM capacity and 32 or 64 descriptor indices | SRAM capacity, control records, and alignment |
 | Payload reuse | Requires the Metal descriptor and backing-storage contracts | Requires noninterfering completed lifetimes |
 | Producer/consumer state | TT-Metal DFB interface state | Two 32-bit sequence counters per logical DFB |
 | Reset and reconfiguration in this PR | Blackhole TT-Metal interface reset and runtime descriptor reconfiguration | Blackhole address-based state reset with fixed geometry |
@@ -77,9 +77,9 @@ Possible launch domains use the same rules as exact domains and remain conservat
 
 ## Placement Interface and Algorithms
 
-Placement is independent of MLIR and target-specific code. Conflict analysis produces an immutable allocation problem containing each payload extent, a symmetric conflict matrix, target alignment, the payload base after control records, and the L1 budget. An allocator returns one byte offset per payload and the arena high-water mark.
+Placement is a reusable C++ library independent of MLIR and target-specific code. Conflict analysis produces an immutable allocation problem containing each payload extent, a symmetric conflict matrix, target alignment, the payload base after control records, and the SRAM budget. An allocator returns one byte offset per payload and the arena high-water mark.
 
-Every allocator result passes the same validation before IR mutation. Validation requires the correct offset count, target alignment, offsets at or above the payload base, intervals within the L1 budget, disjoint intervals for every conflict, and an exact arena high-water mark. Allocation policy cannot weaken these invariants.
+Every allocator result passes the same validation before IR mutation. Validation requires the correct offset count, target alignment, offsets at or above the payload base, intervals within the SRAM budget, disjoint intervals for every conflict, and an exact arena high-water mark. Allocation policy cannot weaken these invariants.
 
 ### C++ Allocator Contract
 
@@ -226,11 +226,11 @@ External calls that access DFBs must provide explicit `DFBEffect` entries. These
 
 ## Target Interfaces
 
-Common allocation and lowering contain no architecture branches. `compiler_l1_target.h` provides arena-base access, L1 loads and stores, producer/consumer completion, and processor ownership. `compiler_l1_compute_target.h` provides LLK address conversion, format configuration, and address-based compute operations. Wormhole and Blackhole differences remain inside these target interfaces.
+Common allocation and lowering contain no architecture branches. `compiler_l1_target.h` provides arena-base access, SRAM loads and stores, producer/consumer completion, and processor ownership. `compiler_l1_compute_target.h` provides LLK address conversion, format configuration, and address-based compute operations. Wormhole and Blackhole differences remain inside these target interfaces.
 
 ## Runtime Arena
 
-The runtime allocates the arena as a row-major, height-sharded TTNN L1 tensor with one equal-length row per participating worker core. Height sharding directly represents one arena row per core. Width sharding provides no capacity benefit, and block sharding introduces an unused partition dimension.
+The runtime allocates the arena as a row-major, height-sharded TTNN L1 tensor with one equal-length row per participating worker node. Height sharding directly represents one arena row per node. Width sharding provides no capacity benefit, and block sharding introduces an unused partition dimension.
 
 The arena is passed as an auxiliary `generic_op` input so TTNN retains it through device execution while preserving the user output position. Arena and synchronization scratch are zero-initialized. Runtime resource caching includes the allocation metadata and reset count, so incompatible layouts do not share resources.
 
@@ -266,8 +266,8 @@ PipeNet transfers, computed-address DFBs, device-domain placement, multi-device 
 
 | Scenario | Evidence |
 | --- | --- |
-| Blackhole transfer and compute | Device correctness across BF16/FP32, DRAM/L1 tensors, repeated executions, counter wraparound, 96 live DFBs, arithmetic with 66 allocated DFBs, matmul, reductions, residual, MLP, attention, and expert merge |
-| External calls and lifecycle boundaries | 20 Blackhole device cases across BF16/FP32 and DRAM/L1, including repeated selected reset, reset-all, reconfiguration, live state preservation, payload reuse, and reset of allocation index 65 |
+| Blackhole transfer and compute | Device correctness across BF16/FP32, DRAM/TTNN L1 tensors, repeated executions, counter wraparound, 96 live DFBs, arithmetic with 66 allocated DFBs, matmul, reductions, residual, MLP, attention, and expert merge |
+| External calls and lifecycle boundaries | 20 Blackhole device cases across BF16/FP32 and DRAM/TTNN L1, including repeated selected reset, reset-all, reconfiguration, live state preservation, payload reuse, and reset of allocation index 65 |
 | Allocation | 20,888 compile-only generated placements covering both strategies, conflicts, alignment, reuse enabled and disabled, determinism, and exact budget boundaries; a focused fragmented graph verifies distinct strategy results |
 | Wormhole | Compile-only allocation, typed external descriptor, and UNPACK/MATH/PACK target compilation; negative reset and reconfiguration diagnostics |
 | Invalid contracts | Compiler diagnostics for malformed metadata, unsupported transactions and tile forms, unknown external effects, numeric external DFB indices, storage ownership, and budget overflow |

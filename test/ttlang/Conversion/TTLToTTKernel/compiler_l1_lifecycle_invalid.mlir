@@ -7,8 +7,8 @@
 #boundary = #ttl.dfb_reconfiguration<0, participants[#compute, #reader, #writer]>
 
 // Duplicate entries make the terminal-state reset plan ambiguous.
-// expected-error @below {{'builtin.module' op contains duplicate compiler-l1 reconfiguration reset metadata}}
-module attributes {ttl.compiler_l1_reconfiguration_resets = [{dfb_indices = array<i32: 0>, ordinal = 0 : i64}, {dfb_indices = array<i32: 0>, ordinal = 0 : i64}], ttl.dfb_allocations = [{block_count = 1 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i32, page_size = 2048 : i32, storage_index = 0 : i32}], ttl.l1_arena_bytes = 2112 : i64, ttl.launch_grid = [1, 1], ttl.memory_model = "compiler-l1", ttl.target_arch = #ttcore.arch<blackhole>} {
+// expected-error @below {{'builtin.module' op contains duplicate compiler-sram reconfiguration reset metadata}}
+module attributes {ttl.compiler_l1_reconfiguration_resets = [{dfb_indices = array<i32: 0>, ordinal = 0 : i64}, {dfb_indices = array<i32: 0>, ordinal = 0 : i64}], ttl.dfb_allocations = [{block_count = 1 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i32, page_size = 2048 : i32, storage_index = 0 : i32}], ttl.l1_arena_bytes = 2112 : i64, ttl.launch_grid = [1, 1], ttl.memory_model = "compiler-sram", ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @compute() attributes {ttl.base_cta_index = 1 : i32, ttl.kernel_thread = #ttkernel.thread<compute>, ttl.logical_kernel = #compute} {
     %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     ttl.dfb_reconfiguration #boundary
@@ -24,8 +24,8 @@ module attributes {ttl.compiler_l1_reconfiguration_resets = [{dfb_indices = arra
 #boundary = #ttl.dfb_reconfiguration<0, participants[#compute, #reader, #writer]>
 
 // Every reset index must identify a finalized allocation.
-// expected-error @below {{'builtin.module' op compiler-l1 reconfiguration ordinal 0 references unknown DFB index 1}}
-module attributes {ttl.compiler_l1_reconfiguration_resets = [{dfb_indices = array<i32: 1>, ordinal = 0 : i64}], ttl.dfb_allocations = [{block_count = 1 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i32, page_size = 2048 : i32, storage_index = 0 : i32}], ttl.l1_arena_bytes = 2112 : i64, ttl.launch_grid = [1, 1], ttl.memory_model = "compiler-l1", ttl.target_arch = #ttcore.arch<blackhole>} {
+// expected-error @below {{'builtin.module' op compiler-sram reconfiguration ordinal 0 references unknown DFB index 1}}
+module attributes {ttl.compiler_l1_reconfiguration_resets = [{dfb_indices = array<i32: 1>, ordinal = 0 : i64}], ttl.dfb_allocations = [{block_count = 1 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i32, page_size = 2048 : i32, storage_index = 0 : i32}], ttl.l1_arena_bytes = 2112 : i64, ttl.launch_grid = [1, 1], ttl.memory_model = "compiler-sram", ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @compute() attributes {ttl.base_cta_index = 1 : i32, ttl.kernel_thread = #ttkernel.thread<compute>, ttl.logical_kernel = #compute} {
     %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     ttl.dfb_reconfiguration #boundary
@@ -41,8 +41,8 @@ module attributes {ttl.compiler_l1_reconfiguration_resets = [{dfb_indices = arra
 #boundary = #ttl.dfb_reconfiguration<0, participants[#compute, #reader, #writer]>
 
 // Sorted unique indices make reset emission deterministic.
-// expected-error @below {{'builtin.module' op contains noncanonical compiler-l1 reconfiguration reset indices}}
-module attributes {ttl.compiler_l1_reconfiguration_resets = [{dfb_indices = array<i32: 0, 0>, ordinal = 0 : i64}], ttl.dfb_allocations = [{block_count = 1 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i32, page_size = 2048 : i32, storage_index = 0 : i32}], ttl.l1_arena_bytes = 2112 : i64, ttl.launch_grid = [1, 1], ttl.memory_model = "compiler-l1", ttl.target_arch = #ttcore.arch<blackhole>} {
+// expected-error @below {{'builtin.module' op contains noncanonical compiler-sram reconfiguration reset indices}}
+module attributes {ttl.compiler_l1_reconfiguration_resets = [{dfb_indices = array<i32: 0, 0>, ordinal = 0 : i64}], ttl.dfb_allocations = [{block_count = 1 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i32, page_size = 2048 : i32, storage_index = 0 : i32}], ttl.l1_arena_bytes = 2112 : i64, ttl.launch_grid = [1, 1], ttl.memory_model = "compiler-sram", ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @compute() attributes {ttl.base_cta_index = 1 : i32, ttl.kernel_thread = #ttkernel.thread<compute>, ttl.logical_kernel = #compute} {
     %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
     ttl.dfb_reconfiguration #boundary

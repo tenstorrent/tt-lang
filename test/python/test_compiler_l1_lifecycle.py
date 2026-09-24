@@ -294,7 +294,7 @@ def test_compiler_l1_scalar_external_compute(device, dtype, to_device):
     _make_scalar_external_compute(_data_format(dtype))(
         input_tensor,
         output_tensor,
-        options="--ttl-memory-model=compiler-l1",
+        options="--ttl-memory-model=compiler-sram",
     )
 
     _assert_exact(ttnn.to_torch(output_tensor), expected)
@@ -314,7 +314,7 @@ def test_compiler_l1_external_selected_reset(device, dtype, to_device):
         operation(
             input_tensor,
             output_tensor,
-            options="--ttl-memory-model=compiler-l1",
+            options="--ttl-memory-model=compiler-sram",
         )
         _assert_exact(ttnn.to_torch(output_tensor), input_host[:, TILE:])
 
@@ -333,7 +333,7 @@ def test_compiler_l1_reset_all(device, dtype, to_device):
         operation(
             input_tensor,
             output_tensor,
-            options="--ttl-memory-model=compiler-l1",
+            options="--ttl-memory-model=compiler-sram",
         )
         _assert_exact(ttnn.to_torch(output_tensor), input_host[:, TILE:])
 
@@ -368,7 +368,7 @@ def test_compiler_l1_reconfiguration(device, dtype, to_device, monkeypatch, tmp_
             outputs[1],
             inputs[2],
             outputs[2],
-            options="--ttl-memory-model=compiler-l1",
+            options="--ttl-memory-model=compiler-sram",
         )
         for actual, expected in zip(outputs, [before_host, preserved_host, after_host]):
             _assert_exact(ttnn.to_torch(actual), expected)
@@ -401,7 +401,7 @@ def test_compiler_l1_reset_above_metal_index_limit(
         operation(
             input_tensor,
             output_tensor,
-            options="--ttl-memory-model=compiler-l1",
+            options="--ttl-memory-model=compiler-sram",
         )
         _assert_exact(ttnn.to_torch(output_tensor), input_host[:, TILE:])
 

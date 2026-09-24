@@ -1,5 +1,5 @@
 // Verifies that Wormhole retains compiler-managed L1 support while rejecting Blackhole-only lifecycle boundaries.
-// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1})'
+// RUN: ttlang-opt %s --split-input-file --verify-diagnostics -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-sram})'
 
 module attributes {ttl.target_arch = #ttcore.arch<wormhole_b0>} {
   func.func @unsupported_reset_target() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {

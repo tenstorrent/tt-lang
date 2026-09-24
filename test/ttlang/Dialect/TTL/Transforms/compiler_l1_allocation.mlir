@@ -1,6 +1,6 @@
 // Verifies byte reuse across formats, distinct control records, and both memory models.
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1})' | FileCheck %s --check-prefix=L1
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 reuse-user-dfbs=false})' | FileCheck %s --check-prefix=DISTINCT
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-sram})' | FileCheck %s --check-prefix=L1
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-sram reuse-user-dfbs=false})' | FileCheck %s --check-prefix=DISTINCT
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=metal-cb})' | FileCheck %s --check-prefix=METAL
 
 // A completed BF16 acquisition can share FP32 payload bytes but retains its own state.
@@ -8,7 +8,7 @@
 // L1-SAME: l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64
 // L1-SAME: l1_allocation_bytes = 4096 : i64, l1_offset = 8 : i64, l1_payload_offset = 64 : i64
 // L1-SAME: ttl.l1_arena_bytes = 4160 : i64
-// L1-SAME: ttl.memory_model = "compiler-l1"
+// L1-SAME: ttl.memory_model = "compiler-sram"
 // L1-LABEL: func.func @ordered_mixed_formats
 // L1-SAME: ttl.base_cta_index = 1 : i32
 // L1-NEXT: %[[FIRST:.*]] = ttl.bind_cb

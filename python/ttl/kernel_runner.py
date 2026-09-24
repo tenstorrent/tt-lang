@@ -2022,7 +2022,7 @@ def _get_compiler_l1_arena_bytes(
     if not any(any(fields) for fields in field_presence):
         return None
     if not all(all(fields) for fields in field_presence):
-        raise ValueError("mixed compiler-l1 and Metal storage metadata")
+        raise ValueError("mixed compiler-sram and Metal storage metadata")
     return max(
         config.l1_payload_offset + config.l1_allocation_bytes for config in cb_configs
     )
@@ -4213,7 +4213,7 @@ def _run_kernel_on_device_impl(
             or resource_plan is not None
         ):
             raise ValueError(
-                "compiler-l1 requires one device and no external runtime resources"
+                "compiler-sram requires one device and no external runtime resources"
             )
         if (
             dfb_reconfiguration_plan
@@ -4222,7 +4222,7 @@ def _run_kernel_on_device_impl(
             or num_pipe_global_semaphores
         ):
             raise ValueError(
-                "compiler-l1 cannot combine PipeNet or Metal DFB reconfiguration resources"
+                "compiler-sram cannot combine PipeNet or Metal DFB reconfiguration resources"
             )
         compiler_l1_arena = _allocate_l1_sharded_storage_tensor(
             core_ranges,

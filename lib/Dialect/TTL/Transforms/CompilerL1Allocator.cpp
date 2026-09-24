@@ -199,7 +199,7 @@ createCompilerL1Allocator(llvm::StringRef name, std::string &failureReason) {
     return FailureOr<std::unique_ptr<CompilerL1Allocator>>(
         std::move(allocator));
   }
-  failureReason = "unknown compiler-l1 allocation strategy '" + name.str() +
+  failureReason = "unknown compiler-sram allocation strategy '" + name.str() +
                   "'; expected first-fit-decreasing or best-fit-decreasing";
   return failure();
 }

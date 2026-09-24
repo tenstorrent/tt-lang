@@ -294,7 +294,7 @@ struct TTLFinalizeDFBIndicesPass
       signalPassFailure();
       return;
     }
-    if (memoryModel == kCompilerL1MemoryModel) {
+    if (memoryModel == kCompilerSRAMMemoryModel) {
       PipeTransferCreateOp pipeTransfer;
       moduleOp.walk([&](PipeTransferCreateOp operation) {
         pipeTransfer = operation;
@@ -302,7 +302,7 @@ struct TTLFinalizeDFBIndicesPass
       });
       if (pipeTransfer) {
         pipeTransfer.emitOpError(
-            "compiler-l1 does not support PipeNet transfers");
+            "compiler-sram does not support PipeNet transfers");
         signalPassFailure();
         return;
       }
@@ -319,7 +319,7 @@ struct TTLFinalizeDFBIndicesPass
       signalPassFailure();
       return;
     }
-    if (memoryModel == kCompilerL1MemoryModel) {
+    if (memoryModel == kCompilerSRAMMemoryModel) {
       const auto &liveness = getAnalysis<DFBConcurrentKernelLivenessAnalysis>();
       if (!liveness.succeeded()) {
         moduleOp.emitOpError() << liveness.getErrorMessage();
@@ -328,7 +328,7 @@ struct TTLFinalizeDFBIndicesPass
       }
       if (failed(allocateCompilerL1(moduleOp, logicalIdentityAnalysis,
                                     l1BudgetOverride, reuseUserDFBs,
-                                    l1AllocationStrategy, liveness))) {
+                                    sramAllocationStrategy, liveness))) {
         signalPassFailure();
       }
       return;

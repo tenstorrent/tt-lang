@@ -1,7 +1,7 @@
 // Verifies deterministic strategy selection on a fragmented conflict graph.
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=first-fit-decreasing})' | FileCheck %s --check-prefix=FIRST
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=best-fit-decreasing l1-budget-override=75000})' | FileCheck %s --check-prefix=BEST
-// RUN: not ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=first-fit-decreasing l1-budget-override=75000})' 2>&1 | FileCheck %s --check-prefix=FIRST-BUDGET
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-sram sram-allocation-strategy=first-fit-decreasing})' | FileCheck %s --check-prefix=FIRST
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-sram sram-allocation-strategy=best-fit-decreasing l1-budget-override=75000})' | FileCheck %s --check-prefix=BEST
+// RUN: not ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-sram sram-allocation-strategy=first-fit-decreasing l1-budget-override=75000})' 2>&1 | FileCheck %s --check-prefix=FIRST-BUDGET
 
 // Best-fit uses a finite gap for DFB 1 and reduces the arena by five tiles.
 // FIRST: module attributes {ttl.dfb_allocations = [
@@ -13,7 +13,7 @@
 // FIRST-SAME: l1_payload_offset = 64 : i64
 // FIRST-SAME: ttl.l1_arena_bytes = 81984 : i64
 // FIRST-LABEL: func.func @fragmented_schedule
-// FIRST-BUDGET: error: 'ttl.bind_cb' op compiler-l1 placement exceeds L1 budget 75000 bytes
+// FIRST-BUDGET: error: 'ttl.bind_cb' op compiler-sram placement exceeds L1 budget 75000 bytes
 // FIRST-BUDGET-SAME: first-fit-decreasing placement does not prove infeasibility
 
 // BEST: module attributes {ttl.dfb_allocations = [

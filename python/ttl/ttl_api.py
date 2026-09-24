@@ -2661,7 +2661,7 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
     )
     present_l1_fields = [field in entry for field in l1_field_names]
     if any(present_l1_fields) and not all(present_l1_fields):
-        raise ValueError(f"{context} must contain all compiler-l1 allocation fields")
+        raise ValueError(f"{context} must contain all compiler-sram allocation fields")
     l1_offset = None
     l1_payload_offset = None
     l1_allocation_bytes = None
@@ -2672,10 +2672,10 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
             l1_allocation_bytes = int(entry["l1_allocation_bytes"])
         except (TypeError, ValueError) as error:
             raise ValueError(
-                f"Invalid {context} compiler-l1 metadata: {error}"
+                f"Invalid {context} compiler-sram metadata: {error}"
             ) from None
         if l1_offset < 0 or l1_payload_offset < 0:
-            raise ValueError(f"{context} compiler-l1 offsets must be nonnegative")
+            raise ValueError(f"{context} compiler-sram offsets must be nonnegative")
         if l1_allocation_bytes <= 0:
             raise ValueError(
                 f"{context}.l1_allocation_bytes must be positive, "
@@ -3495,8 +3495,8 @@ def _lower_program_to_kernel(
             "func.func(ttl-coalesce-dfb-acquires)",
             "ttl-finalize-dfb-indices{"
             f"memory-model={compiler_options.memory_model} "
-            "l1-allocation-strategy="
-            f"{compiler_options.l1_allocation_strategy} "
+            "sram-allocation-strategy="
+            f"{compiler_options.sram_allocation_strategy} "
             f"reuse-user-dfbs={reuse_user_dfbs_flag} "
             "unsafe-assume-allocation-groups="
             f"{unsafe_assume_allocation_groups_flag} "

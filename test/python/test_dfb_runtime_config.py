@@ -256,7 +256,7 @@ def test_missing_complete_allocations_are_rejected():
         ([_entry(0, element_type="i1")], "Unrecognized MLIR scalar element type"),
         (
             [_entry(0, l1_offset=0)],
-            "must contain all compiler-l1 allocation fields",
+            "must contain all compiler-sram allocation fields",
         ),
         (
             [
@@ -267,7 +267,7 @@ def test_missing_complete_allocations_are_rejected():
                     l1_allocation_bytes=4096,
                 )
             ],
-            "compiler-l1 offsets must be nonnegative",
+            "compiler-sram offsets must be nonnegative",
         ),
         (
             [

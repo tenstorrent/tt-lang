@@ -2215,7 +2215,7 @@ def test_compiler_l1_arena_size_rejects_partial_metadata():
         l1_allocation_bytes=2048,
     )
 
-    with pytest.raises(ValueError, match="mixed compiler-l1 and Metal"):
+    with pytest.raises(ValueError, match="mixed compiler-sram and Metal"):
         kernel_runner._get_compiler_l1_arena_bytes([config])
 
 

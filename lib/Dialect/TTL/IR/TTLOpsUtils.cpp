@@ -16,14 +16,14 @@ namespace mlir::tt::ttl {
 FailureOr<DFBIdentityRange> getDFBIdentityRange(Operation *operation) {
   auto module = operation->getParentOfType<ModuleOp>();
   auto model = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
-  if (model && model.getValue() == kCompilerL1MemoryModel) {
+  if (model && model.getValue() == kCompilerSRAMMemoryModel) {
     auto allocations =
         module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName);
     if (!allocations) {
       return failure();
     }
     return DFBIdentityRange{static_cast<int64_t>(allocations.size()),
-                            "the compiler-l1 allocation plan"};
+                            "the compiler-sram allocation plan"};
   }
   return DFBIdentityRange{getTargetMaxDFBIndices(operation),
                           getTargetDFBIndexCapacityDescription(operation)};

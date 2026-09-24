@@ -70,11 +70,11 @@ struct TTLValidateCBBudgetPass
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
     if (auto model = moduleOp->getAttrOfType<StringAttr>(kMemoryModelAttrName);
-        model && model.getValue() == kCompilerL1MemoryModel) {
+        model && model.getValue() == kCompilerSRAMMemoryModel) {
       auto arenaBytes =
           moduleOp->getAttrOfType<IntegerAttr>(kL1ArenaBytesAttrName);
       if (!arenaBytes || arenaBytes.getInt() < 0) {
-        moduleOp.emitOpError("requires a validated compiler-l1 arena size");
+        moduleOp.emitOpError("requires a validated compiler-sram arena size");
         signalPassFailure();
         return;
       }

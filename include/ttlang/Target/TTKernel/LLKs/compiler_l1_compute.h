@@ -421,7 +421,7 @@ __attribute__((noinline)) inline void packAtAddress(uint32_t destination,
 template <bool OutOfOrder, typename Output>
 inline void pack_tile(uint32_t destination, Output output, uint32_t tile) {
   static_assert(OutOfOrder,
-                "compiler-l1 packing requires an explicit tile index");
+                "compiler-sram packing requires an explicit tile index");
   PACK((packAtAddress(destination, output.writeTile(tile))));
 }
 } // namespace target

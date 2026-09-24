@@ -22,7 +22,7 @@ from typing import Optional, Sequence
 # TODO(#649): Add dfb-state after explicit DFB fallback becomes a selectable
 # accumulation strategy.
 _ACCUMULATION_STRATEGIES = frozenset({"auto", "dst", "l1-pack"})
-_L1_ALLOCATION_STRATEGIES = frozenset({"first-fit-decreasing", "best-fit-decreasing"})
+_SRAM_ALLOCATION_STRATEGIES = frozenset({"first-fit-decreasing", "best-fit-decreasing"})
 
 
 def _nonnegative_int(value: str) -> int:
@@ -43,15 +43,15 @@ def _make_parser() -> argparse.ArgumentParser:
         "--ttl-memory-model",
         default=None,
         dest="memory_model",
-        choices=("metal-cb", "compiler-l1"),
-        help="Select Metal DFB allocation or experimental compiler-owned L1 storage (default: metal-cb).",
+        choices=("metal-cb", "compiler-sram"),
+        help="Select Metal DFB allocation or experimental compiler-owned SRAM storage (default: metal-cb).",
     )
     p.add_argument(
-        "--ttl-l1-allocation-strategy",
+        "--ttl-sram-allocation-strategy",
         default=None,
-        dest="l1_allocation_strategy",
-        choices=sorted(_L1_ALLOCATION_STRATEGIES),
-        help="Select the compiler-owned L1 payload placement strategy: "
+        dest="sram_allocation_strategy",
+        choices=sorted(_SRAM_ALLOCATION_STRATEGIES),
+        help="Select the compiler-owned SRAM payload placement strategy: "
         "first-fit-decreasing or best-fit-decreasing "
         "(default: first-fit-decreasing).",
     )
@@ -272,7 +272,7 @@ class CompilerOptions:
     matmul_full_fp32: bool = True
     strict_f32_acc: bool = False
     memory_model: str = "metal-cb"
-    l1_allocation_strategy: str = "first-fit-decreasing"
+    sram_allocation_strategy: str = "first-fit-decreasing"
     compiler_dfbs: bool = True
     pipe_computed_addresses: bool = True
     pipe_capacity_sync: bool = True
@@ -293,13 +293,13 @@ class CompilerOptions:
 
     def __post_init__(self):
         """Validate options that can be constructed without argparse."""
-        if self.memory_model not in ("metal-cb", "compiler-l1"):
+        if self.memory_model not in ("metal-cb", "compiler-sram"):
             raise ValueError(f"Invalid memory model {self.memory_model!r}")
-        if self.l1_allocation_strategy not in _L1_ALLOCATION_STRATEGIES:
+        if self.sram_allocation_strategy not in _SRAM_ALLOCATION_STRATEGIES:
             raise ValueError(
-                "Invalid L1 allocation strategy "
-                f"{self.l1_allocation_strategy!r}; expected one of "
-                f"{sorted(_L1_ALLOCATION_STRATEGIES)}"
+                "Invalid SRAM allocation strategy "
+                f"{self.sram_allocation_strategy!r}; expected one of "
+                f"{sorted(_SRAM_ALLOCATION_STRATEGIES)}"
             )
         if self.accumulation_strategy not in _ACCUMULATION_STRATEGIES:
             raise ValueError(

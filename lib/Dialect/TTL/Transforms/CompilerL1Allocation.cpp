@@ -54,7 +54,7 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     BindCBOp declaration = assignment.declaration;
     auto type = cast<CircularBufferType>(declaration.getResult().getType());
     if (declaration.getTensorBackingAttr() || assignment.allocationGroup) {
-      declaration.emitOpError("compiler-l1 requires independently owned "
+      declaration.emitOpError("compiler-sram requires independently owned "
                               "storage without tensor backing or allocation "
                               "groups");
       return failure();
@@ -76,7 +76,8 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
         *pageBytes > std::numeric_limits<int32_t>::max() ||
         type.getBlockCount() > std::numeric_limits<int32_t>::max() ||
         *pages > std::numeric_limits<int32_t>::max()) {
-      declaration.emitOpError("compiler-l1 storage size is not representable");
+      declaration.emitOpError(
+          "compiler-sram storage size is not representable");
       return failure();
     }
     FailureOr<uint64_t> allocationBytes =
@@ -113,7 +114,7 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
           : FailureOr<uint64_t>(failure());
   if (failed(controlBytes) || *controlBytes > budget) {
     module.emitOpError(
-        "compiler-l1 control records exceed the available L1 budget");
+        "compiler-sram control records exceed the available L1 budget");
     return failure();
   }
   CompilerL1AllocationProblem problem;
@@ -154,7 +155,7 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
         failureRegionIndex
             ? plan[*failureRegionIndex].declarations.front().emitOpError()
             : module.emitOpError();
-    diagnostic << "compiler-l1 " << allocationFailure;
+    diagnostic << "compiler-sram " << allocationFailure;
     if (llvm::StringRef(allocationFailure)
             .starts_with("placement exceeds L1 budget")) {
       diagnostic << " (payload, control records, and alignment included); "
@@ -219,7 +220,7 @@ allocateCompilerL1(ModuleOp module,
        liveness.getLogicalDFBLifecycles()) {
     auto allocationIt = allocationIndexByLogicalId.find(lifecycle.logicalId);
     assert(allocationIt != allocationIndexByLogicalId.end() &&
-           "every logical DFB must have a compiler-l1 allocation");
+           "every logical DFB must have a compiler-sram allocation");
     auto collectTerminalReconfigurations = [&](const DFBPerNodeLifetime &node) {
       for (const DFBLifecycleEpoch &epoch : node.epochs) {
         if (epoch.terminalReconfigurationOrdinal) {
@@ -262,7 +263,7 @@ allocateCompilerL1(ModuleOp module,
                   builder.getI64IntegerAttr(plan.solution.arenaBytes));
   module->setAttr(kDFBAllocationsAttrName, builder.getArrayAttr(allocations));
   module->setAttr(kMemoryModelAttrName,
-                  builder.getStringAttr(kCompilerL1MemoryModel));
+                  builder.getStringAttr(kCompilerSRAMMemoryModel));
   int32_t baseCTAIndex = plan.regions.empty() ? 0 : 1;
   for (func::FuncOp kernel : module.getOps<func::FuncOp>()) {
     if (kernel->hasAttr(kBaseCTAIndexAttrName)) {

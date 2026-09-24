@@ -1,7 +1,7 @@
 // Compiler-owned packing retains explicit tile indices; Metal packing combines them.
 // RUN: ttlang-opt %s --pass-pipeline='builtin.module(func.func(ttkernel-combine-pack-tiles))' --split-input-file | FileCheck %s
 
-module attributes {ttl.memory_model = "compiler-l1"} {
+module attributes {ttl.memory_model = "compiler-sram"} {
   // The block operation cannot preserve explicit output tile indices.
   // CHECK-LABEL: func.func @compiler_owned
   // CHECK: %[[STORAGE:.*]] = ttkernel.get_compile_time_arg_val
