@@ -1,8 +1,8 @@
-// Verifies exact compiler-managed SRAM placement reports bounded and proven failures precisely.
-// RUN: ttlang-opt %s --verify-diagnostics --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=exact l1-exact-allocation-search-limit=1})'
+// Verifies minimum-arena SRAM placement reports bounded and proven failures precisely.
+// RUN: ttlang-opt %s --verify-diagnostics --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=minimum-arena sram-minimum-arena-search-limit=1})'
 
 // A bounded search reports its feasible incumbent without claiming optimality.
-// expected-error @below {{'builtin.module' op compiler-l1 exact allocation examined 1 work items and reached the 1-item limit after finding a feasible 22592-byte arena without proving it is minimal}}
+// expected-error @below {{'builtin.module' op compiler-l1 minimum-arena search examined 1 work items and reached the 1-item limit after finding a feasible 22592-byte arena without proving it is minimal}}
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @search_limit()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,

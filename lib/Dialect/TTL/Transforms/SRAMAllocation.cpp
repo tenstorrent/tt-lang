@@ -54,7 +54,8 @@ struct SRAMAllocationPlan {
 static FailureOr<SRAMAllocationPlan>
 planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
             uint64_t budget, bool reuseStorage,
-            llvm::StringRef allocationStrategy, uint64_t exactSearchLimit,
+            llvm::StringRef allocationStrategy,
+            uint64_t minimumArenaSearchLimit,
             const DFBConcurrentKernelLivenessAnalysis &liveness) {
   std::string targetFailure;
   FailureOr<uint64_t> alignment =
@@ -265,7 +266,7 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     }
   }
   std::string allocationFailure;
-  SRAMAllocatorOptions allocatorOptions{exactSearchLimit};
+  SRAMAllocatorOptions allocatorOptions{minimumArenaSearchLimit};
   FailureOr<std::unique_ptr<SRAMAllocator>> allocator = createSRAMAllocator(
       allocationStrategy, allocatorOptions, allocationFailure);
   if (failed(allocator)) {
@@ -304,7 +305,7 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
 LogicalResult allocateSRAM(
     ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     uint64_t budgetOverride, bool reuseStorage,
-    llvm::StringRef allocationStrategy, uint64_t exactSearchLimit,
+    llvm::StringRef allocationStrategy, uint64_t minimumArenaSearchLimit,
     const DFBConcurrentKernelLivenessAnalysis &liveness,
     ArrayRef<DFBStaticConfigurationConflict> staticConfigurationConflicts,
     bool unsafeAssumeAllocationGroups,
@@ -335,7 +336,7 @@ LogicalResult allocateSRAM(
       budgetOverride ? std::optional<uint64_t>(budgetOverride) : std::nullopt);
   FailureOr<SRAMAllocationPlan> maybePlan =
       planRegions(module, identities, budget, reuseStorage, allocationStrategy,
-                  exactSearchLimit, liveness);
+                  minimumArenaSearchLimit, liveness);
   if (failed(maybePlan)) {
     return failure();
   }

@@ -109,11 +109,11 @@ struct TTLToTTKernelPipelineOptions
       *this, "l1-allocation-strategy",
       llvm::cl::desc("Select multi-order-decreasing, first-fit-decreasing, "
                      "best-fit-decreasing, or "
-                     "exact compiler-l1 payload placement."),
+                     "minimum-arena compiler-managed SRAM payload placement."),
       llvm::cl::init("multi-order-decreasing")};
-  Option<std::uint64_t> l1ExactAllocationSearchLimit{
-      *this, "l1-exact-allocation-search-limit",
-      llvm::cl::desc("Maximum work items examined by exact compiler-l1 "
+  Option<std::uint64_t> sramMinimumArenaSearchLimit{
+      *this, "sram-minimum-arena-search-limit",
+      llvm::cl::desc("Maximum work items examined by minimum-arena SRAM "
                      "placement "
                      "before reporting an inconclusive result."),
       llvm::cl::init(1000000)};

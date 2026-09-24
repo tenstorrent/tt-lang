@@ -1,5 +1,5 @@
-// Verifies exact placement accepts an allocation problem without payload regions.
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=exact})' | FileCheck %s
+// Verifies minimum-arena placement accepts an allocation problem without payload regions.
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=minimum-arena})' | FileCheck %s
 
 // CHECK: module attributes {
 // CHECK-SAME: ttl.dfb_allocations = []

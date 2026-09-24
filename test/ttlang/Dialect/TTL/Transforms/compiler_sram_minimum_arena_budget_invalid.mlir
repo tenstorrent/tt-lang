@@ -1,8 +1,8 @@
-// Verifies exact placement proves that two overlapping regions exceed the SRAM budget.
-// RUN: ttlang-opt %s --verify-diagnostics --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=exact l1-budget-override=12352})'
+// Verifies minimum-arena placement proves that two overlapping regions exceed the SRAM budget.
+// RUN: ttlang-opt %s --verify-diagnostics --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=minimum-arena l1-budget-override=12352})'
 
 // The 64-byte control prefix leaves six tiles for two regions requiring seven.
-// expected-error @below {{'builtin.module' op compiler-l1 exact placement proves that no allocation fits SRAM budget 12352 bytes}}
+// expected-error @below {{'builtin.module' op compiler-l1 minimum-arena search proves that no allocation fits SRAM budget 12352 bytes}}
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @insufficient_budget()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,

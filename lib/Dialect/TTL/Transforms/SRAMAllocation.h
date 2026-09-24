@@ -24,7 +24,7 @@ struct DFBStaticConfigurationConflict;
 LogicalResult allocateSRAM(
     ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     uint64_t budgetOverride, bool reuseStorage,
-    llvm::StringRef allocationStrategy, uint64_t exactSearchLimit,
+    llvm::StringRef allocationStrategy, uint64_t minimumArenaSearchLimit,
     const DFBConcurrentKernelLivenessAnalysis &liveness,
     llvm::ArrayRef<DFBStaticConfigurationConflict> staticConfigurationConflicts,
     bool unsafeAssumeAllocationGroups,

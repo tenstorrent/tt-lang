@@ -133,13 +133,13 @@ createSRAMAllocator(llvm::StringRef name, const SRAMAllocatorOptions &options,
   if (name == kBestFitDecreasingSRAMAllocator) {
     return detail::createBestFitDecreasingSRAMAllocator();
   }
-  if (name == kExactSRAMAllocator) {
-    return detail::createExactSRAMAllocator(options.exactSearchLimit);
+  if (name == kMinimumArenaSRAMAllocator) {
+    return detail::createMinimumArenaSRAMAllocator(
+        options.minimumArenaSearchLimit);
   }
   failureReason = "unknown compiler-l1 allocation strategy '" + name.str() +
                   "'; expected multi-order-decreasing, first-fit-decreasing, "
-                  "best-fit-decreasing, or "
-                  "exact";
+                  "best-fit-decreasing, or minimum-arena";
   return failure();
 }
 

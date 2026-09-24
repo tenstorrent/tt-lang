@@ -46,7 +46,7 @@ def l1_copy(source, destination):
         ("compiler-l1", "multi-order-decreasing"),
         ("compiler-l1", "first-fit-decreasing"),
         ("compiler-l1", "best-fit-decreasing"),
-        ("compiler-l1", "exact"),
+        ("compiler-l1", "minimum-arena"),
     ],
     ids=[
         "metal",
@@ -54,7 +54,7 @@ def l1_copy(source, destination):
         "compiler-l1-multi-order",
         "compiler-l1-first-fit",
         "compiler-l1-best-fit",
-        "compiler-l1-exact",
+        "compiler-l1-minimum-arena",
     ],
 )
 def test_l1_copy(
@@ -150,8 +150,8 @@ def _make_many_buffers(tmp_path, count, simultaneous):
 @pytest.mark.parametrize("specialize", [False, True], ids=["generic", "specialized"])
 @pytest.mark.parametrize(
     "l1_allocation_strategy",
-    ["first-fit-decreasing", "multi-order-decreasing", "exact"],
-    ids=["first-fit", "multi-order", "exact"],
+    ["first-fit-decreasing", "multi-order-decreasing", "minimum-arena"],
+    ids=["first-fit", "multi-order", "minimum-arena"],
 )
 def test_many_buffers(
     device,

@@ -765,8 +765,8 @@ static bool compareSRAMPlacementWithOracle() {
   SRAMAllocatorOptions options{kUnlimitedSearchStates};
   std::string failureReason;
   mlir::FailureOr<std::unique_ptr<SRAMAllocator>> exactAllocator =
-      mlir::tt::ttl::createSRAMAllocator(mlir::tt::ttl::kExactSRAMAllocator,
-                                         options, failureReason);
+      mlir::tt::ttl::createSRAMAllocator(
+          mlir::tt::ttl::kMinimumArenaSRAMAllocator, options, failureReason);
   mlir::FailureOr<std::unique_ptr<SRAMAllocator>> firstFitAllocator =
       mlir::tt::ttl::createSRAMAllocator(
           mlir::tt::ttl::kFirstFitDecreasingSRAMAllocator, options,

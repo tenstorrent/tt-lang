@@ -23,7 +23,12 @@ from typing import Optional, Sequence
 # accumulation strategy.
 _ACCUMULATION_STRATEGIES = frozenset({"auto", "dst", "l1-pack"})
 _SRAM_ALLOCATION_STRATEGIES = frozenset(
-    {"multi-order-decreasing", "first-fit-decreasing", "best-fit-decreasing", "exact"}
+    {
+        "multi-order-decreasing",
+        "first-fit-decreasing",
+        "best-fit-decreasing",
+        "minimum-arena",
+    }
 )
 
 
@@ -61,15 +66,15 @@ def _make_parser() -> argparse.ArgumentParser:
         dest="l1_allocation_strategy",
         choices=sorted(_SRAM_ALLOCATION_STRATEGIES),
         help="Select the compiler-managed SRAM payload placement strategy: "
-        "multi-order-decreasing, first-fit-decreasing, best-fit-decreasing, or exact "
+        "multi-order-decreasing, first-fit-decreasing, best-fit-decreasing, or minimum-arena "
         "(default: multi-order-decreasing).",
     )
     p.add_argument(
-        "--ttl-l1-exact-allocation-search-limit",
+        "--ttl-sram-minimum-arena-search-limit",
         default=None,
-        dest="l1_exact_allocation_search_limit",
+        dest="sram_minimum_arena_search_limit",
         type=_positive_int,
-        help="Limit exact compiler-managed SRAM placement to this many work "
+        help="Limit minimum-arena SRAM placement to this many work "
         "items (default: 1000000).",
     )
     p.add_argument(
@@ -290,7 +295,7 @@ class CompilerOptions:
     strict_f32_acc: bool = False
     memory_model: str = "metal-cb"
     l1_allocation_strategy: str = "multi-order-decreasing"
-    l1_exact_allocation_search_limit: int = 1_000_000
+    sram_minimum_arena_search_limit: int = 1_000_000
     compiler_dfbs: bool = True
     pipe_computed_addresses: bool = True
     pipe_capacity_sync: bool = True
@@ -319,8 +324,8 @@ class CompilerOptions:
                 f"{self.l1_allocation_strategy!r}; expected one of "
                 f"{sorted(_SRAM_ALLOCATION_STRATEGIES)}"
             )
-        if self.l1_exact_allocation_search_limit <= 0:
-            raise ValueError("SRAM exact allocation search limit must be positive")
+        if self.sram_minimum_arena_search_limit <= 0:
+            raise ValueError("SRAM minimum-arena search limit must be positive")
         if self.accumulation_strategy not in _ACCUMULATION_STRATEGIES:
             raise ValueError(
                 "Invalid accumulation strategy "

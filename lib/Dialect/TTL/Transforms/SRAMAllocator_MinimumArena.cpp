@@ -231,10 +231,10 @@ private:
 };
 
 static FailureOr<SRAMAllocationSolution>
-allocateExactly(const SRAMAllocationProblem &problem, uint64_t searchWorkLimit,
-                std::string &failureReason) {
+allocateMinimumArena(const SRAMAllocationProblem &problem,
+                     uint64_t searchWorkLimit, std::string &failureReason) {
   if (searchWorkLimit == 0) {
-    failureReason = "exact allocation search limit must be positive";
+    failureReason = "minimum-arena search limit must be positive";
     return failure();
   }
   if (problem.regionBytes.empty()) {
@@ -273,9 +273,10 @@ allocateExactly(const SRAMAllocationProblem &problem, uint64_t searchWorkLimit,
     std::optional<uint64_t> lowerBoundUnits = getComponentLowerBound(
         component, regionSizeUnits, problem, capacityUnits);
     if (!lowerBoundUnits || *lowerBoundUnits > capacityUnits) {
-      failureReason = "exact placement proves that no allocation fits SRAM "
-                      "budget " +
-                      std::to_string(problem.budgetBytes) + " bytes";
+      failureReason =
+          "minimum-arena search proves that no allocation fits SRAM "
+          "budget " +
+          std::to_string(problem.budgetBytes) + " bytes";
       return failure();
     }
 
@@ -323,9 +324,10 @@ allocateExactly(const SRAMAllocationProblem &problem, uint64_t searchWorkLimit,
       if (searchBudget.limitReached) {
         break;
       }
-      failureReason = "exact placement proves that no allocation fits SRAM "
-                      "budget " +
-                      std::to_string(problem.budgetBytes) + " bytes";
+      failureReason =
+          "minimum-arena search proves that no allocation fits SRAM "
+          "budget " +
+          std::to_string(problem.budgetBytes) + " bytes";
       return failure();
     }
     for (auto [componentPosition, regionIndex] : llvm::enumerate(component)) {
@@ -337,7 +339,7 @@ allocateExactly(const SRAMAllocationProblem &problem, uint64_t searchWorkLimit,
   }
 
   if (searchBudget.limitReached) {
-    failureReason = "exact allocation examined " +
+    failureReason = "minimum-arena search examined " +
                     std::to_string(searchBudget.consumedWork) +
                     " work items and reached the " +
                     std::to_string(searchWorkLimit) + "-item limit";
@@ -359,17 +361,19 @@ allocateExactly(const SRAMAllocationProblem &problem, uint64_t searchWorkLimit,
   return SRAMAllocationSolution{std::move(exactOffsets), arenaBytes};
 }
 
-class ExactAllocator final : public SRAMAllocator {
+class MinimumArenaAllocator final : public SRAMAllocator {
 public:
-  explicit ExactAllocator(uint64_t searchWorkLimit)
+  explicit MinimumArenaAllocator(uint64_t searchWorkLimit)
       : searchWorkLimit(searchWorkLimit) {}
 
-  llvm::StringRef getName() const override { return kExactSRAMAllocator; }
+  llvm::StringRef getName() const override {
+    return kMinimumArenaSRAMAllocator;
+  }
 
   FailureOr<SRAMAllocationSolution>
   allocateImpl(const SRAMAllocationProblem &problem,
                std::string &failureReason) const override {
-    return allocateExactly(problem, searchWorkLimit, failureReason);
+    return allocateMinimumArena(problem, searchWorkLimit, failureReason);
   }
 
 private:
@@ -379,8 +383,8 @@ private:
 } // namespace
 
 std::unique_ptr<SRAMAllocator>
-detail::createExactSRAMAllocator(uint64_t searchWorkLimit) {
-  return std::make_unique<ExactAllocator>(searchWorkLimit);
+detail::createMinimumArenaSRAMAllocator(uint64_t searchWorkLimit) {
+  return std::make_unique<MinimumArenaAllocator>(searchWorkLimit);
 }
 
 } // namespace mlir::tt::ttl

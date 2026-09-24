@@ -1,7 +1,7 @@
-// Verifies exact placement rejects a zero work limit before allocation.
-// RUN: ttlang-opt %s --verify-diagnostics --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=exact l1-exact-allocation-search-limit=0})'
+// Verifies minimum-arena placement rejects a zero work limit before allocation.
+// RUN: ttlang-opt %s --verify-diagnostics --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=minimum-arena sram-minimum-arena-search-limit=0})'
 
-// expected-error @below {{'builtin.module' op compiler-l1 exact allocation search limit must be positive}}
+// expected-error @below {{'builtin.module' op compiler-sram minimum-arena search limit must be positive}}
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @zero_limit()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,

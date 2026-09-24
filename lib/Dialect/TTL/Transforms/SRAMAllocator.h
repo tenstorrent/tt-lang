@@ -28,12 +28,13 @@ inline constexpr llvm::StringLiteral kFirstFitDecreasingSRAMAllocator =
     "first-fit-decreasing";
 inline constexpr llvm::StringLiteral kBestFitDecreasingSRAMAllocator =
     "best-fit-decreasing";
-inline constexpr llvm::StringLiteral kExactSRAMAllocator = "exact";
+inline constexpr llvm::StringLiteral kMinimumArenaSRAMAllocator =
+    "minimum-arena";
 
 /// Strategy-specific limits supplied independently of the allocation problem.
 struct SRAMAllocatorOptions {
   /// Maximum generated candidate offsets and visited partial placements.
-  uint64_t exactSearchLimit;
+  uint64_t minimumArenaSearchLimit;
 };
 
 /// Byte-placement input independent of MLIR and architecture identities.

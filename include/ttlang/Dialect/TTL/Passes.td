@@ -1267,11 +1267,11 @@ def TTLFinalizeDFBIndices
            "lifetimes proven not to overlap across concurrent kernels.">,
     Option<"l1AllocationStrategy", "l1-allocation-strategy", "std::string",
            "\"multi-order-decreasing\"",
-           "Select multi-order-decreasing, first-fit-decreasing, best-fit-decreasing, or exact "
+           "Select multi-order-decreasing, first-fit-decreasing, best-fit-decreasing, or minimum-arena "
            "compiler-l1 payload placement.">,
-    Option<"l1ExactAllocationSearchLimit",
-           "l1-exact-allocation-search-limit", "uint64_t", "1000000",
-           "Maximum work items examined by exact compiler-managed SRAM placement before "
+    Option<"sramMinimumArenaSearchLimit",
+           "sram-minimum-arena-search-limit", "uint64_t", "1000000",
+           "Maximum work items examined by minimum-arena SRAM placement before "
            "reporting an inconclusive result.">,
     Option<"unsafeAssumeAllocationGroups", "unsafe-assume-allocation-groups",
            "bool", "false",

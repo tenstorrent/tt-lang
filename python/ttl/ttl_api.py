@@ -3488,8 +3488,8 @@ def _lower_program_to_kernel(
         exact_coloring_search_limit = (
             compiler_options.dfb_exact_coloring_search_limit
         )
-        l1_exact_allocation_search_limit = (
-            compiler_options.l1_exact_allocation_search_limit
+        sram_minimum_arena_search_limit = (
+            compiler_options.sram_minimum_arena_search_limit
         )
         tensor_recurrence_pipeline = (
             "ttl-form-accumulation-scopes{"
@@ -3515,8 +3515,8 @@ def _lower_program_to_kernel(
             f"memory-model={compiler_options.memory_model} "
             "l1-allocation-strategy="
             f"{compiler_options.l1_allocation_strategy} "
-            "l1-exact-allocation-search-limit="
-            f"{l1_exact_allocation_search_limit} "
+            "sram-minimum-arena-search-limit="
+            f"{sram_minimum_arena_search_limit} "
             f"reuse-user-dfbs={reuse_user_dfbs_flag} "
             "unsafe-assume-allocation-groups="
             f"{unsafe_assume_allocation_groups_flag} "

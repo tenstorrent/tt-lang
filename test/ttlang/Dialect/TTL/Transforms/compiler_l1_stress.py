@@ -197,7 +197,7 @@ def validate(output, events, architecture, reuse, unknown, allocation_strategy):
         assert arena_bytes < control_bytes + sum(sizes)
     if not reuse:
         assert arena_bytes == control_bytes + sum(sizes)
-    if allocation_strategy == "exact":
+    if allocation_strategy == "minimum-arena":
         assert arena_bytes == control_bytes + minimum_payload_bytes(sizes, conflicts)
 
 
@@ -249,7 +249,7 @@ def main():
         ("first-fit-decreasing", cases),
         ("best-fit-decreasing", cases),
         ("multi-order-decreasing", cases),
-        ("exact", exact_cases),
+        ("minimum-arena", exact_cases),
     )
     placement_count = 0
     stable_results = {}

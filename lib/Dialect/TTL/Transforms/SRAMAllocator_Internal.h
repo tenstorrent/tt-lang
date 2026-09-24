@@ -20,7 +20,7 @@ std::unique_ptr<SRAMAllocator> createFirstFitDecreasingSRAMAllocator();
 std::unique_ptr<SRAMAllocator> createBestFitDecreasingSRAMAllocator();
 std::unique_ptr<SRAMAllocator> createMultiOrderDecreasingSRAMAllocator();
 std::unique_ptr<SRAMAllocator>
-createExactSRAMAllocator(uint64_t searchWorkLimit);
+createMinimumArenaSRAMAllocator(uint64_t searchWorkLimit);
 
 } // namespace mlir::tt::ttl::detail
 

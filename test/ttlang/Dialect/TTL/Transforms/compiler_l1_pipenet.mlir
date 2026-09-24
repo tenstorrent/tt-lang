@@ -1,7 +1,7 @@
 // Summary: Verifies that PipeNet transfers coexist with compiler-managed DFB allocation.
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=first-fit-decreasing})' | FileCheck %s --check-prefix=SRAM
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=best-fit-decreasing})' | FileCheck %s --check-prefix=SRAM
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=exact})' | FileCheck %s --check-prefix=SRAM
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=minimum-arena})' | FileCheck %s --check-prefix=SRAM
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=multi-order-decreasing})' | FileCheck %s --check-prefix=SRAM
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=metal-cb})' | FileCheck %s --check-prefix=METAL
 // RUN: ttlang-opt %s --ttl-to-ttkernel-pipeline='memory-model=compiler-l1 l1-allocation-strategy=first-fit-decreasing' --convert-ttkernel-to-emitc -o /dev/null

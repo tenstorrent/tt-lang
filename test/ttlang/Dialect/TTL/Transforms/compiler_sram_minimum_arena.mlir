@@ -1,27 +1,27 @@
-// Verifies exact placement improves both decreasing-size heuristics and fits a lower SRAM budget.
+// Verifies minimum-arena placement improves both decreasing-size heuristics and fits a lower SRAM budget.
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=first-fit-decreasing})' | FileCheck %s --check-prefix=GREEDY
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=best-fit-decreasing})' | FileCheck %s --check-prefix=GREEDY
-// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=exact l1-budget-override=40000})' | FileCheck %s --check-prefix=EXACT
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-l1 l1-allocation-strategy=minimum-arena l1-budget-override=40000})' | FileCheck %s --check-prefix=MINIMUM
 
-// Both heuristics use 22 tiles. Exact placement proves that 16 tiles suffice.
+// Both heuristics use 22 tiles. Minimum-arena placement proves that 16 tiles suffice.
 // GREEDY: module attributes {ttl.dfb_allocations = [
 // GREEDY-SAME: ttl.l1_arena_bytes = 45120 : i64
 // GREEDY-LABEL: func.func @fragmented_schedule
-// EXACT: module attributes {ttl.dfb_allocations = [
-// EXACT-SAME: dfb_index = 0
-// EXACT-SAME: l1_payload_offset = 10304 : i64
-// EXACT-SAME: dfb_index = 1
-// EXACT-SAME: l1_payload_offset = 64 : i64
-// EXACT-SAME: dfb_index = 2
-// EXACT-SAME: l1_payload_offset = 18496 : i64
-// EXACT-SAME: dfb_index = 3
-// EXACT-SAME: l1_payload_offset = 64 : i64
-// EXACT-SAME: dfb_index = 4
-// EXACT-SAME: l1_payload_offset = 16448 : i64
-// EXACT-SAME: dfb_index = 5
-// EXACT-SAME: l1_payload_offset = 24640 : i64
-// EXACT-SAME: ttl.l1_arena_bytes = 32832 : i64
-// EXACT-LABEL: func.func @fragmented_schedule
+// MINIMUM: module attributes {ttl.dfb_allocations = [
+// MINIMUM-SAME: dfb_index = 0
+// MINIMUM-SAME: l1_payload_offset = 10304 : i64
+// MINIMUM-SAME: dfb_index = 1
+// MINIMUM-SAME: l1_payload_offset = 64 : i64
+// MINIMUM-SAME: dfb_index = 2
+// MINIMUM-SAME: l1_payload_offset = 18496 : i64
+// MINIMUM-SAME: dfb_index = 3
+// MINIMUM-SAME: l1_payload_offset = 64 : i64
+// MINIMUM-SAME: dfb_index = 4
+// MINIMUM-SAME: l1_payload_offset = 16448 : i64
+// MINIMUM-SAME: dfb_index = 5
+// MINIMUM-SAME: l1_payload_offset = 24640 : i64
+// MINIMUM-SAME: ttl.l1_arena_bytes = 32832 : i64
+// MINIMUM-LABEL: func.func @fragmented_schedule
 
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @fragmented_schedule()

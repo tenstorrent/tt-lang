@@ -310,9 +310,9 @@ struct TTLFinalizeDFBIndicesPass
       return;
     }
     if (memoryModel == kCompilerL1MemoryModel) {
-      if (l1ExactAllocationSearchLimit == 0) {
+      if (sramMinimumArenaSearchLimit == 0) {
         moduleOp.emitOpError(
-            "compiler-l1 exact allocation search limit must be positive");
+            "compiler-sram minimum-arena search limit must be positive");
         signalPassFailure();
         return;
       }
@@ -343,7 +343,7 @@ struct TTLFinalizeDFBIndicesPass
       SmallVector<DFBAssumedAllocationGroup> assumedAllocationGroups;
       if (failed(allocateSRAM(
               moduleOp, logicalIdentityAnalysis, l1BudgetOverride,
-              reuseUserDFBs, l1AllocationStrategy, l1ExactAllocationSearchLimit,
+              reuseUserDFBs, l1AllocationStrategy, sramMinimumArenaSearchLimit,
               liveness, staticConfigurationConflicts,
               unsafeAssumeAllocationGroups, assumedAllocationGroups))) {
         signalPassFailure();
