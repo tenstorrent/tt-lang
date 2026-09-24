@@ -721,21 +721,22 @@ static void planFabricManagerOwnership(
   coalesceUnserializedFabricRuntimeIntervals(plan);
 }
 
-/// A statically enumerated sequence of disjoint DRAM regions cannot overwrite
-/// unconsumed receiver storage, so it needs completion notification but no
-/// receiver-to-sender readiness signal.
 static bool
 canOmitFabricReceiverRendezvous(const PipeTransferNode &transferNode,
                                 const PipeGraph &pipeGraph) {
-  if (!transferNode.deviceTransfer ||
-      transferNode.transferContract != PipeTransferContract::PointToPoint ||
-      transferNode.receiverEndpoints.size() != 1) {
-    return false;
+  bool hasSingleReceiver = transferNode.receiverEndpoints.size() == 1;
+  bool hasDisjointTensorRegionDestination = false;
+  if (hasSingleReceiver) {
+    const PipeReceiverEndpoint &endpoint = pipeGraph.getPipeReceiverEndpoint(
+        transferNode.receiverEndpoints.front());
+    hasDisjointTensorRegionDestination =
+        endpoint.hasTensorRegionDestination() && endpoint.executionCount &&
+        endpoint.getTensorRegionDestination().hasDisjointOccurrences;
   }
-  const PipeReceiverEndpoint &endpoint =
-      pipeGraph.getPipeReceiverEndpoint(transferNode.receiverEndpoints.front());
-  return endpoint.hasTensorRegionDestination() && endpoint.executionCount &&
-         endpoint.getTensorRegionDestination().hasDisjointOccurrences;
+  return canOmitFabricReceiverRendezvous(
+      static_cast<bool>(transferNode.deviceTransfer),
+      transferNode.transferContract == PipeTransferContract::PointToPoint,
+      hasSingleReceiver, hasDisjointTensorRegionDestination);
 }
 
 LogicalResult buildFabricRoutePlan(

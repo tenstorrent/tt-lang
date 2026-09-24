@@ -13,6 +13,8 @@
 
 #include "DFBVerification.h"
 #include "PipeGraph.h"
+#include "PipeTensorRegions.h"
+#include "PipeTransferExpansion.h"
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/Analysis/SliceAnalysis.h"
@@ -1813,18 +1815,14 @@ void emitPipeOccurrenceCountError(ArrayRef<PipeScheduleNode> nodes,
   state.sawError = true;
 }
 
-/// Pair predecessor and successor operations at the same traversal position.
-/// Repeated pairs must have equal execution counts under equivalent control
-/// conditions.
-LogicalResult addPipeOccurrenceEdges(SmallVectorImpl<PipeScheduleNode> &nodes,
-                                     ArrayRef<PipeScheduleNodeId> predecessors,
-                                     ArrayRef<PipeScheduleNodeId> successors,
-                                     PipeScheduleEdgeKind kind,
-                                     StringRef predecessorName,
-                                     StringRef successorName,
-                                     LaunchNodeCoord receiverCoord,
-                                     ModuleState &state,
-                                     bool requireEqualOccurrences = true) {
+/// Verify that predecessor and successor operations at the same traversal
+/// position pair one-to-one: repeated pairs must have equal execution counts
+/// under equivalent control conditions.
+LogicalResult verifyPipeOccurrencePairs(
+    ArrayRef<PipeScheduleNode> nodes, ArrayRef<PipeScheduleNodeId> predecessors,
+    ArrayRef<PipeScheduleNodeId> successors, StringRef predecessorName,
+    StringRef successorName, LaunchNodeCoord receiverCoord, ModuleState &state,
+    bool requireEqualOccurrences = true) {
   assert(!haveInvalidPipeOccurrenceCount(predecessors, successors,
                                          requireEqualOccurrences) &&
          "static occurrence counts must be validated before pairing");
@@ -1846,7 +1844,6 @@ LogicalResult addPipeOccurrenceEdges(SmallVectorImpl<PipeScheduleNode> &nodes,
       state.sawError = true;
       return failure();
     }
-    addPipeScheduleEdge(nodes, predecessor, successor, kind);
   }
   return success();
 }
@@ -2440,6 +2437,193 @@ FailureOr<DeviceDomainAttr> getScheduleDeviceDomain(ModuleOp module,
   return deviceDomain;
 }
 
+/// Return the transfer contract of the pipe written by a send node.
+FailureOr<PipeTransferContract>
+getSendTransferContract(const PipeScheduleNode &sendNode, ModuleState &state) {
+  Value pipe = cast<CopyOp>(sendNode.op).getDst();
+  if (isa<PipeType>(pipe.getType())) {
+    return getPipeTransferContractForPipeValue(state.valueOrigins, pipe);
+  }
+  FailureOr<SelectedPipeRecords> selected = getSelectedPipeRecords(pipe);
+  if (failed(selected)) {
+    return failure();
+  }
+  return getPipeTransferContractForRecords(selected->records);
+}
+
+/// Tensor-region destination of one receiver post node with the slice start of
+/// each post execution.
+struct PipeScheduleTensorDestination {
+  PipeScheduleNodeId postNode;
+  int64_t globalTensorIndex;
+  DeviceRefAttr device;
+  ArrayRef<int64_t> tensorGridShape;
+  ArrayRef<int64_t> sliceShape;
+  SmallVector<SmallVector<int64_t>> startIndices;
+
+  TensorRegionOccurrences getOccurrences() const {
+    return {globalTensorIndex, device, tensorGridShape, sliceShape,
+            startIndices};
+  }
+};
+
+/// Enumerate the destination of a receiver post whose count and slice starts
+/// are static at its execution location. Fails without a diagnostic otherwise.
+FailureOr<PipeScheduleTensorDestination> enumeratePipeScheduleTensorDestination(
+    PipeScheduleNodeId postNodeId, const PipeScheduleNode &postNode,
+    TensorSliceOp slice, DeviceRefAttr device, ModuleState &state) {
+  std::optional<int64_t> globalTensorIndex = getTensorSliceGlobalIndex(slice);
+  std::optional<PipeExecutionCountExpression> count =
+      getPipeExecutionCountExpression(postNode, state);
+  if (!globalTensorIndex || !count || !count->unresolvedFactors.empty() ||
+      count->constantFactor == 0) {
+    return failure();
+  }
+  auto resolveActiveFunctionArgument = [&](BlockArgument argument) {
+    return resolveFunctionArgument(argument, postNode.callSites);
+  };
+  auto evaluateRecordValue = [&](Value value,
+                                 const llvm::DenseMap<Value, llvm::APInt> &,
+                                 std::string &) -> std::optional<llvm::APInt> {
+    return evaluateActivePipeNetRecordValue(value, postNode.activeRecords,
+                                            resolveActiveFunctionArgument);
+  };
+  FailureOr<SmallVector<SmallVector<int64_t>>> startIndices =
+      enumerateTensorSliceOccurrences(
+          slice, postNode.location, state.launchDomains, count->constantFactor,
+          evaluateRecordValue, /*emitError=*/{});
+  if (failed(startIndices)) {
+    return failure();
+  }
+  return PipeScheduleTensorDestination{
+      postNodeId,
+      *globalTensorIndex,
+      device,
+      cast<RankedTensorType>(slice.getTensor().getType()).getShape(),
+      cast<RankedTensorType>(slice.getType()).getShape(),
+      std::move(*startIndices)};
+}
+
+/// Return the receiver posts whose tensor-region destinations are disjoint
+/// under the rule pipe lowering applies. A destination that cannot be
+/// enumerated may alias every destination on its device.
+llvm::DenseSet<PipeScheduleNodeId>
+findDisjointTensorDestinationPosts(ArrayRef<PipeScheduleNode> nodes,
+                                   ModuleState &state) {
+  SmallVector<PipeScheduleTensorDestination> destinations;
+  SmallVector<DeviceRefAttr> unenumeratedDevices;
+  for (auto [nodeId, node] : llvm::enumerate(nodes)) {
+    if (node.kind != PipeEventKind::ReceivePost) {
+      continue;
+    }
+    auto slice = cast<CopyOp>(node.op).getDst().getDefiningOp<TensorSliceOp>();
+    if (!slice) {
+      continue;
+    }
+    DeviceRefAttr device = node.deviceTransfer
+                               ? node.deviceTransfer.getEdge().getDestination()
+                               : DeviceRefAttr();
+    FailureOr<PipeScheduleTensorDestination> destination =
+        enumeratePipeScheduleTensorDestination(nodeId, node, slice, device,
+                                               state);
+    if (failed(destination)) {
+      unenumeratedDevices.push_back(device);
+      continue;
+    }
+    destinations.push_back(std::move(*destination));
+  }
+
+  SmallVector<TensorRegionOccurrences> occurrences = llvm::map_to_vector(
+      destinations, [](const PipeScheduleTensorDestination &destination) {
+        return destination.getOccurrences();
+      });
+  SmallVector<bool> disjoint =
+      computeDisjointTensorRegionDestinations(occurrences);
+  llvm::DenseSet<PipeScheduleNodeId> disjointPosts;
+  for (auto [index, destination] : llvm::enumerate(destinations)) {
+    DeviceRefAttr destinationDevice = destination.device;
+    bool mayShareDeviceWithUnenumerated =
+        llvm::any_of(unenumeratedDevices, [&](DeviceRefAttr device) {
+          return !device || !destinationDevice || device == destinationDevice;
+        });
+    if (disjoint[index] && !mayShareDeviceWithUnenumerated) {
+      disjointPosts.insert(destination.postNode);
+    }
+  }
+  return disjointPosts;
+}
+
+/// Return the send operations that pipe lowering emits without waiting for
+/// receiver posts. Lowering selects one protocol per send operation, so an
+/// operation qualifies only when every pipe it sends on qualifies.
+llvm::DenseSet<Operation *> findNoRendezvousSendOps(
+    ArrayRef<PipeScheduleNode> nodes,
+    const llvm::MapVector<PipeIdentity, PipeOccurrences> &pipeOccurrences,
+    const llvm::MapVector<PipeCoordIdentity, SmallVector<PipeScheduleNodeId>>
+        &receivePostNodes,
+    ModuleState &state) {
+  llvm::DenseSet<Operation *> noRendezvousSendOps;
+  if (llvm::none_of(pipeOccurrences, [](const auto &entry) {
+        return entry.second.deviceTransfer && !entry.second.sends.empty();
+      })) {
+    return noRendezvousSendOps;
+  }
+  llvm::DenseSet<PipeScheduleNodeId> disjointPosts =
+      findDisjointTensorDestinationPosts(nodes, state);
+
+  llvm::DenseSet<Operation *> rendezvousSendOps;
+  for (const PipeOccurrences &occurrences :
+       llvm::make_second_range(pipeOccurrences)) {
+    std::optional<PipeTransferContract> contract;
+    bool hasCommonContract = true;
+    for (PipeScheduleNodeId sendNodeId : occurrences.sends) {
+      FailureOr<PipeTransferContract> sendContract =
+          getSendTransferContract(nodes[sendNodeId], state);
+      if (failed(sendContract) || (contract && *contract != *sendContract)) {
+        hasCommonContract = false;
+        break;
+      }
+      contract = *sendContract;
+    }
+    LaunchNodeDomain destinations = getPipeDestinationLaunchNodeDomain(
+        occurrences.pipeType, state.launchDomains.baseDomain);
+    bool hasSingleReceiver = destinations.nodes.size() == 1;
+    bool hasDisjointTensorRegionDestination = false;
+    if (hasSingleReceiver) {
+      LaunchNodeCoord receiver = *destinations.nodes.begin();
+      LaunchExecutionLocation receiverLocation =
+          occurrences.localDevice
+              ? LaunchExecutionLocation(receiver, occurrences.localDeviceDomain,
+                                        occurrences.localDevice)
+              : LaunchExecutionLocation(receiver);
+      auto postsIt = receivePostNodes.find(getPipeCoordIdentity(
+          occurrences.pipeType, occurrences.deviceTransfer, receiverLocation));
+      hasDisjointTensorRegionDestination =
+          postsIt != receivePostNodes.end() && !postsIt->second.empty() &&
+          llvm::all_of(postsIt->second, [&](PipeScheduleNodeId postNodeId) {
+            return disjointPosts.contains(postNodeId);
+          });
+    }
+    bool omitsRendezvous = canOmitFabricReceiverRendezvous(
+        static_cast<bool>(occurrences.deviceTransfer),
+        hasCommonContract && contract &&
+            *contract == PipeTransferContract::PointToPoint,
+        hasSingleReceiver, hasDisjointTensorRegionDestination);
+    for (PipeScheduleNodeId sendNodeId : occurrences.sends) {
+      Operation *sendOp = nodes[sendNodeId].op;
+      if (omitsRendezvous) {
+        noRendezvousSendOps.insert(sendOp);
+      } else {
+        rendezvousSendOps.insert(sendOp);
+      }
+    }
+  }
+  for (Operation *sendOp : rendezvousSendOps) {
+    noRendezvousSendOps.erase(sendOp);
+  }
+  return noRendezvousSendOps;
+}
+
 // Verify synchronization dependencies implied by pipe operations. Receive-side
 // ttl.copy makes a reserved DFB slot available to the sender, while ttl.wait on
 // its handle waits for payload arrival. Modeling availability and completion as
@@ -2606,6 +2790,8 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
     }
   }
 
+  llvm::DenseSet<Operation *> noRendezvousSendOps =
+      findNoRendezvousSendOps(nodes, pipeOccurrences, receivePostNodes, state);
   llvm::DenseMap<PipeScheduleNodeId, PipeScheduleNodeId> completingSendByPost;
   llvm::DenseSet<PipeScheduleNodeId> postsWithInvalidCorrespondence;
   llvm::DenseMap<PipeScheduleNodeId, SmallVector<PipeScheduleNodeId>>
@@ -2669,14 +2855,17 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
       if (!occurrences.sends.empty()) {
         ArrayRef<PipeScheduleNodeId> posts =
             getReceiverNodes(receivePostNodes, identity);
-        if (failed(addPipeOccurrenceEdges(
-                nodes, posts, occurrences.sends,
-                PipeScheduleEdgeKind::ReceivePostEnablesSend, "receiver post",
-                "send", coord, state))) {
+        if (failed(verifyPipeOccurrencePairs(nodes, posts, occurrences.sends,
+                                             "receiver post", "send", coord,
+                                             state))) {
           postsWithInvalidCorrespondence.insert(posts.begin(), posts.end());
           break;
         }
         for (auto [post, send] : llvm::zip(posts, occurrences.sends)) {
+          if (!noRendezvousSendOps.contains(nodes[send].op)) {
+            addPipeScheduleEdge(nodes, post, send,
+                                PipeScheduleEdgeKind::ReceivePostEnablesSend);
+          }
           completingSendByPost[post] = send;
         }
       }

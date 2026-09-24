@@ -6,6 +6,7 @@
 #define TTLANG_DIALECT_TTL_TRANSFORMS_PIPEGRAPH_H
 
 #include "DFBAcquireReleaseAnalysis.h"
+#include "PipeTensorRegions.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/Operation.h"
@@ -260,6 +261,12 @@ struct ReceiverTensorRegionInfo {
   int64_t pageSizeBytes = 0;
   std::optional<int64_t> senderTensorArgumentIndex;
   Location loc;
+
+  /// Return the occurrences written on `device`, which is null when unknown.
+  TensorRegionOccurrences getOccurrences(DeviceRefAttr device) const {
+    return {globalTensorIndex, device, tensorGridShape, sliceType.getShape(),
+            occurrenceStartIndices};
+  }
 };
 
 using PipeTransferNodeId = std::size_t;

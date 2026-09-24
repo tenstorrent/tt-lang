@@ -2736,6 +2736,18 @@ manager only when a point-to-point transfer writes statically disjoint DRAM
 regions throughout the invocation. The receiver declaration still creates the
 completion tokens consumed by `wait`.
 
+`ttl-verify-pipenet-schedule` and pipe lowering select `CDA/NR` with one
+shared rule: the same tensor-region occurrence enumeration, the same overlap
+test against other receive destinations of the tensor on the receiver device,
+and the same point-to-point, single-receiver condition. The schedule verifier
+models a `CDA/NR` send as not waiting for its receiver post, so no
+post-to-send wait-for edge exists for it. The post and send still pair
+one-to-one. Lowering selects one protocol per send operation, so a send
+operation that also sends on a transfer requiring readiness keeps its
+post-to-send edges. A destination that the verifier cannot enumerate, for
+example one reached through a helper call, is treated as overlapping every
+destination on its device, which keeps the readiness edges.
+
 This mechanism must remain within the existing proof sequence. Planning must
 prove:
 
