@@ -7,28 +7,45 @@ set -euo pipefail
 
 readonly TTLANG_SOURCE_DIR="${TTLANG_EMULE_SOURCE_DIR:-/workspace}"
 readonly TTLANG_BUILD_DIR="${TTLANG_EMULE_BUILD_DIR:-/ttlang-build}"
-readonly TT_EMULE_SOURCE_DIR="/opt/tt-emule"
 readonly TT_METAL_SOURCE_DIR="/opt/tt-emule-runtime/tt-metal"
 readonly TT_METAL_BUILD_DIR="${TT_METAL_SOURCE_DIR}/build_emule"
-readonly CLUSTER_DESCRIPTORS="${TT_EMULE_SOURCE_DIR}/cluster_descriptors"
 
-if [ "$#" -eq 0 ]; then
-    echo "tt-lang emule container: no Python script was provided." >&2
+if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ] && \
+   [ "${TTLANG_EMULE_SHELL:-0}" = "1" ]; then
+    echo "tt-lang emule container: installation and shell modes are mutually exclusive." >&2
     exit 2
 fi
-if [ ! -f "$1" ]; then
-    echo "tt-lang emule container: script not found: $1" >&2
-    exit 2
+if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ] || \
+   [ "${TTLANG_EMULE_SHELL:-0}" = "1" ]; then
+    if [ "$#" -ne 0 ]; then
+        echo "tt-lang emule container: installation and shell modes do not accept script arguments." >&2
+        exit 2
+    fi
+else
+    if [ "$#" -eq 0 ]; then
+        echo "tt-lang emule container: no Python script was provided." >&2
+        exit 2
+    fi
+    if [ ! -f "$1" ]; then
+        echo "tt-lang emule container: script not found: $1" >&2
+        exit 2
+    fi
 fi
+
+for _TARGET_SETTING in TT_METAL_MOCK_CLUSTER_DESC_PATH \
+    TT_METAL_ALLOCATOR_MODE_HYBRID MESH_DEVICE; do
+    if [ -z "${!_TARGET_SETTING:-}" ]; then
+        echo "tt-lang emule container: required target setting ${_TARGET_SETTING} is missing; use the host launcher or installer." >&2
+        exit 1
+    fi
+done
 
 export TT_METAL_EMULE_MODE=1
 export TT_METAL_SLOW_DISPATCH_MODE=1
-export TT_METAL_MOCK_CLUSTER_DESC_PATH="${TT_METAL_MOCK_CLUSTER_DESC_PATH:-${CLUSTER_DESCRIPTORS}/blackhole_P150_unharvested.yaml}"
-export TT_METAL_ALLOCATOR_MODE_HYBRID="${TT_METAL_ALLOCATOR_MODE_HYBRID:-1}"
+export TT_METAL_MOCK_CLUSTER_DESC_PATH TT_METAL_ALLOCATOR_MODE_HYBRID MESH_DEVICE
 export EMULE_FABRIC8="${EMULE_FABRIC8:-1}"
 export TT_METAL_CACHE="${TT_METAL_CACHE:-/tt-metal-cache}"
 export TT_EMULE_JIT_CACHE_DIR="${TT_EMULE_JIT_CACHE_DIR:-${TT_METAL_CACHE}/emule-jit}"
-export MESH_DEVICE="${MESH_DEVICE:-P150}"
 unset TTLANG_COMPILE_ONLY TTLANG_SIM_ONLY
 
 if [ ! -f "${TT_METAL_MOCK_CLUSTER_DESC_PATH}" ]; then
@@ -143,14 +160,9 @@ set +u
 source "${TTLANG_BUILD_DIR}/env/activate"
 set -u
 
-export TT_METAL_EMULE_MODE=1
-export TT_METAL_SLOW_DISPATCH_MODE=1
-export TT_METAL_MOCK_CLUSTER_DESC_PATH
-export TT_METAL_ALLOCATOR_MODE_HYBRID
-export EMULE_FABRIC8
-export TT_METAL_CACHE
-export TT_EMULE_JIT_CACHE_DIR
-export MESH_DEVICE
 unset TTLANG_COMPILE_ONLY TTLANG_SIM_ONLY
 
+if [ "${TTLANG_EMULE_SHELL:-0}" = "1" ]; then
+    exec /bin/bash --noprofile --norc
+fi
 exec python "$@"

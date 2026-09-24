@@ -122,9 +122,7 @@ RUN cmake -S "$TT_METAL_SOURCE_DIR" -B "$TT_METAL_BUILD_DIR" -G Ninja \
        PYTHONPATH="$TT_METAL_SOURCE_DIR/ttnn:$TT_METAL_SOURCE_DIR/tools" \
        /opt/ttlang-toolchain/venv/bin/python -c 'import ttnn'
 
-COPY tt-lang-emule-entrypoint.sh /usr/local/bin/tt-lang-emule-entrypoint
-RUN chmod +x /usr/local/bin/tt-lang-emule-entrypoint \
-    && mkdir -p /ttlang-build /tt-metal-cache
+RUN mkdir -p /ttlang-build /tt-metal-cache
 
 WORKDIR /workspace
-ENTRYPOINT ["/usr/local/bin/tt-lang-emule-entrypoint"]
+ENTRYPOINT ["/workspace/scripts/tt-lang-emule-entrypoint.sh"]

@@ -43,6 +43,7 @@ make_layout() {
 }
 
 setup() {
+    unset TTLANG_SIM_BACKEND TTLANG_EMULE_RUNNER
     ROOT="$BATS_TEST_TMPDIR/root"
     mkdir -p "$ROOT"
     MOCK_PY="$ROOT/mock_python"

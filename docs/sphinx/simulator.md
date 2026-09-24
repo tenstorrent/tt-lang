@@ -11,8 +11,8 @@ The `tt-lang-sim` console command installed by either PyPI package provides the
 `python` backend. For compiler-backed emulation, use
 `./bin/tt-lang-sim --backend=emule` from a TT-Lang source checkout.
 
-For the Docker backend, start with
-[Getting started with Docker simulation](simulator-getting-started.md), which
+For the emule backend, start with
+[Getting started with compiler-backed emulation](simulator-getting-started.md), which
 covers host prerequisites, environment installation, program execution, and
 the repository's existing test framework.
 
@@ -64,30 +64,13 @@ tt-lang-sim examples/eltwise_add.py
 
 ### Compiler-backed emulation
 
-The Docker backend uses the same launcher interface as the Python backend.
-The [Docker getting-started guide](simulator-getting-started.md) describes
-installation. From an installed source checkout:
+The emule backend uses the same launcher interface as the Python backend.
+The [emule getting-started guide](simulator-getting-started.md) describes
+installation. From the root of an installed source checkout:
 
 ```bash
 ./bin/tt-lang-sim --backend=emule examples/eltwise_add.py
 ```
-
-Install the complete supported compiler, emulator, and tt-metal environment
-before running a program:
-
-```bash
-./scripts/install-tt-lang-emule.sh
-```
-
-Installation uses the exact runtime pins in `config/tt-lang-emule-stack.json`
-and builds the current compiler checkout, which must contain the manifest's
-compiler baseline. The installer prepares these components together as a
-reusable environment. Program runs use the installed compiler and runtime.
-
-Run and select compiler tests with CMake, pytest, and lit. See the
-getting-started guide and
-[`test/TESTING.md`](https://github.com/tenstorrent/tt-lang/blob/main/test/TESTING.md)
-for commands and suite boundaries.
 
 The script imports the real `ttl` and `ttnn` packages, TT-Lang compiles each
 operation, and tt-metal dispatches the generated kernels to tt-emule.

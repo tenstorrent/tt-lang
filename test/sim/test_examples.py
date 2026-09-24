@@ -204,10 +204,11 @@ def test_compiler_only_external_call_requires_compiler_backend(
         "compiler_only_external_call.py unexpectedly ran on the Python "
         f"simulator. Output:\n{out}"
     )
-    assert "no attribute 'call_extern_func'" in out, (
+    assert "ttl.call_extern_func is not supported by the Python simulator" in out, (
         "The compiler-only example failed somewhere other than "
         f"ttl.call_extern_func(). Output:\n{out}"
     )
+    assert "use tt-lang-sim --backend=emule" in out
 
 
 @pytest.mark.parametrize(

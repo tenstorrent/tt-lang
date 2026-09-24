@@ -31,9 +31,14 @@ def _has_tenstorrent_device_node() -> bool:
     return bool(glob.glob("/dev/tenstorrent/*") or glob.glob("/dev/tenstorrent[0-9]*"))
 
 
-if os.environ.get("TT_METAL_EMULE_MODE"):
-    _hardware_available = True
-elif os.environ.get("TT_METAL_SIMULATOR"):
+def is_simulated_device() -> bool:
+    """Check whether Metal uses a simulator or emulator instead of hardware."""
+    return bool(
+        os.environ.get("TT_METAL_EMULE_MODE") or os.environ.get("TT_METAL_SIMULATOR")
+    )
+
+
+if is_simulated_device():
     _hardware_available = True
 elif os.environ.get("TTLANG_HAS_DEVICE") == "1":
     _hardware_available = True

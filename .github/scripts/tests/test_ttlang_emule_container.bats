@@ -29,6 +29,7 @@ make_runner_fixture() {
     cp "$SOURCE_REPO_ROOT/scripts/tt-lang-emule-entrypoint.sh" \
         "$SOURCE_REPO_ROOT/scripts/tt-lang-emule-container.sh" \
         "$SOURCE_REPO_ROOT/scripts/tt-lang-emule-stack.py" \
+        "$SOURCE_REPO_ROOT/scripts/shell-tt-lang-emule.sh" \
         "$SOURCE_REPO_ROOT/scripts/install-tt-lang-emule.sh" "$root/scripts/"
     cp "$SOURCE_REPO_ROOT/cmake/modules/TTLangUtils.cmake" "$root/cmake/modules/"
     touch "$root/examples/program.py"
@@ -105,6 +106,20 @@ case "${1:-}" in
         fi
         exit "${MOCK_DOCKER_IMAGE_STATUS:-0}"
         ;;
+    images)
+        if [ -n "${MOCK_DOCKER_LIST_ERROR:-}" ]; then
+            printf '%s\n' "$MOCK_DOCKER_LIST_ERROR" >&2
+        fi
+        if [ -n "${MOCK_DOCKER_LIST_REFERENCE:-}" ] && \
+            [ "${4:-}" != "$MOCK_DOCKER_LIST_REFERENCE" ]; then
+            printf '%s\n' unexpected-reference >&2
+            exit 97
+        fi
+        if [ -n "${MOCK_DOCKER_LIST_OUTPUT:-}" ]; then
+            printf '%s\n' "$MOCK_DOCKER_LIST_OUTPUT"
+        fi
+        exit "${MOCK_DOCKER_LIST_STATUS:-0}"
+        ;;
     build)
         if [ "${MOCK_DOCKER_REQUIRE_SANITIZED_CONTEXT:-0}" = "1" ]; then
             source_context=""
@@ -131,7 +146,7 @@ case "${1:-}" in
         exit 0
         ;;
     run)
-        exit 0
+        exit "${MOCK_DOCKER_RUN_STATUS:-0}"
         ;;
     *)
         exit 99
@@ -142,19 +157,24 @@ EOF
 }
 
 setup() {
+    local setting
+    for setting in $(compgen -A variable TTLANG_EMULE_) \
+        $(compgen -A variable _TTLANG_EMULE_); do
+        unset "$setting"
+    done
     MOCK_DOCKER="$BATS_TEST_TMPDIR/docker"
     MOCK_DOCKER_LOG="$BATS_TEST_TMPDIR/docker.log"
     export MOCK_DOCKER_LOG
     make_mock_docker "$MOCK_DOCKER"
-    unset TTLANG_EMULE_STACK_MANIFEST TTLANG_EMULE_RUNTIME_COMMIT \
-        TTLANG_EMULE_RUNTIME_METAL_COMMIT TTLANG_EMULE_RUNTIME_METAL_SOURCE_URL \
-        TTLANG_EMULE_RUNTIME_BASE_IMAGE TTLANG_EMULE_PLATFORM
+    unset TT_METAL_CACHE TT_EMULE_JIT_CACHE_DIR MESH_DEVICE EMULE_FABRIC8 \
+        TT_METAL_ALLOCATOR_MODE_HYBRID TT_METAL_MOCK_CLUSTER_DESC_PATH
     # Keep the test manifest inside its own checkout, independent of CI depth.
     make_runner_fixture "$BATS_TEST_TMPDIR/checkout"
     TTLANG_REPO_ROOT="$(cd "$BATS_TEST_TMPDIR/checkout" && pwd -P)"
     RUNNER="$TTLANG_REPO_ROOT/scripts/tt-lang-emule-container.sh"
     ENTRYPOINT="$TTLANG_REPO_ROOT/scripts/tt-lang-emule-entrypoint.sh"
     INSTALLER="$TTLANG_REPO_ROOT/scripts/install-tt-lang-emule.sh"
+    SHELL_LAUNCHER="$TTLANG_REPO_ROOT/scripts/shell-tt-lang-emule.sh"
     DOCKERFILE="$TTLANG_REPO_ROOT/.github/containers/Dockerfile.emule"
 }
 
@@ -182,7 +202,10 @@ make_mock_entrypoint_commands() {
 for argument in "$@"; do
     printf 'cmake=%s\n' "$argument" >> "$MOCK_ENTRYPOINT_LOG"
 done
-exit 0
+if [ "${1:-}" = --build ]; then
+    exit "${MOCK_CMAKE_BUILD_STATUS:-0}"
+fi
+exit "${MOCK_CMAKE_CONFIGURE_STATUS:-0}"
 EOF
     cat > "$target_dir/nproc" <<'EOF'
 #!/usr/bin/env bash
@@ -207,6 +230,7 @@ EOF
 }
 
 make_entrypoint_fixture() {
+    export TT_METAL_ALLOCATOR_MODE_HYBRID=1 MESH_DEVICE=P150
     MOCK_ENTRYPOINT_LOG="$BATS_TEST_TMPDIR/entrypoint.log"
     export MOCK_ENTRYPOINT_LOG
     mock_bin="$BATS_TEST_TMPDIR/entrypoint-bin"
@@ -346,16 +370,62 @@ EOF
 
 @test "installer is the only public path that enables installation" {
     cd "$TTLANG_REPO_ROOT"
+    rm examples/compiler_only_external_call.py
     TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$INSTALLER"
     assert_output --partial "Runtime image: tt-lang-emule:"
     assert_output --partial "Compiler build volume: tt-lang-emule-build-"
     assert_output --partial "Runtime cache volume: tt-lang-emule-cache-"
 
     assert_log_line "TTLANG_EMULE_INSTALL=1"
-    assert_log_line "/workspace/examples/compiler_only_external_call.py"
+    refute_log_contains "/workspace/examples/"
 
     run -2 "$INSTALLER" unexpected
     assert_output --partial "Usage: scripts/install-tt-lang-emule.sh"
+}
+
+@test "developer shell uses the same installed environment and working directory" {
+    cd "$TTLANG_REPO_ROOT/examples"
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$SHELL_LAUNCHER"
+
+    assert_log_line "TTLANG_EMULE_SHELL=1"
+    assert_log_line "--workdir"
+    assert_log_line "/workspace/examples"
+    assert_log_line "type=bind,src=${TTLANG_REPO_ROOT},dst=/workspace"
+    assert_log_contains "dst=/ttlang-build"
+    assert_log_contains "dst=/tt-metal-cache"
+    assert_log_line "MESH_DEVICE=P150"
+    assert_log_line "TT_METAL_ALLOCATOR_MODE_HYBRID=1"
+    assert_log_contains "TTLANG_EMULE_SOURCE_FINGERPRINT="
+    refute_log_line "TTLANG_EMULE_INSTALL=1"
+    refute_log_line "build"
+
+    run -2 "$SHELL_LAUNCHER" unexpected
+    assert_output --partial "Usage: scripts/shell-tt-lang-emule.sh"
+}
+
+@test "installer and shell helper propagate a container failure" {
+    cd "$TTLANG_REPO_ROOT"
+    local launcher
+    for launcher in "$INSTALLER" "$SHELL_LAUNCHER"; do
+        : > "$MOCK_DOCKER_LOG"
+        MOCK_DOCKER_RUN_STATUS=42 TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            run -42 "$launcher"
+        assert_log_line "run"
+        refute_log_line "build"
+    done
+}
+
+@test "installation and shell modes reject conflicting modes and extra arguments" {
+    local launcher
+    for launcher in "$RUNNER" "$ENTRYPOINT"; do
+        TTLANG_EMULE_INSTALL=1 TTLANG_EMULE_SHELL=1 run -2 "$launcher"
+        assert_output --partial "mutually exclusive"
+        TTLANG_EMULE_INSTALL=1 run -2 "$launcher" unexpected
+        assert_output --partial "do not accept script arguments"
+        TTLANG_EMULE_SHELL=1 run -2 "$launcher" unexpected
+        assert_output --partial "do not accept script arguments"
+    done
+    [ ! -e "$MOCK_DOCKER_LOG" ]
 }
 
 @test "workload edits and outputs preserve the installed compiler identity" {
@@ -421,7 +491,7 @@ EOF
 
     : > "$MOCK_DOCKER_LOG"
     printf '\n# changed image input\n' >> \
-        "$synthetic_root/scripts/tt-lang-emule-entrypoint.sh"
+        "$synthetic_root/.github/containers/Dockerfile.emule"
     TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$synthetic_runner" \
         "$synthetic_root/examples/program.py"
     second_image="$(awk '/^tt-lang-emule:/{print; exit}' "$MOCK_DOCKER_LOG")"
@@ -545,7 +615,7 @@ PY
             TTLANG_EMULE_REBUILD="$rebuild" \
             TTLANG_EMULE_RUNTIME_SOURCE_DIR="$source_dir" \
             TTLANG_EMULE_RUNTIME_SOURCE_URL="$source_url" \
-            run -0 "$RUNNER" examples/eltwise_add.py
+            run -0 "$RUNNER"
 
         assert_log_line "build"
         assert_log_contains "Dockerfile.emule"
@@ -592,7 +662,7 @@ PY
         TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
         TTLANG_EMULE_INSTALL=1 \
         TTLANG_EMULE_RUNTIME_SOURCE_DIR="$TTLANG_REPO_ROOT" \
-        run -1 "$RUNNER" examples/eltwise_add.py
+        run -1 "$RUNNER"
 
     assert_output --partial "emulator target descriptor is missing"
     assert_output --partial "blackhole_P150_unharvested.yaml"
@@ -606,7 +676,7 @@ PY
         TTLANG_EMULE_INSTALL=1 \
         TTLANG_EMULE_RUNTIME_SOURCE_DIR="$TTLANG_REPO_ROOT" \
         TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
-        run -1 "$RUNNER" examples/eltwise_add.py
+        run -1 "$RUNNER"
 
     assert_output --partial "emulator source must be at"
     refute_log_line "build"
@@ -619,7 +689,7 @@ PY
         TTLANG_EMULE_INSTALL=1 \
         TTLANG_EMULE_RUNTIME_SOURCE_DIR="$BATS_TEST_TMPDIR/missing" \
         TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
-        run -1 "$RUNNER" examples/eltwise_add.py
+        run -1 "$RUNNER"
 
     assert_output --partial "source directory not found"
     refute_log_line "build"
@@ -632,16 +702,20 @@ PY
     for diagnostic in \
         "Error response from daemon: No such image: runtime" \
         'Error response from daemon: {"message":"No such image: runtime"}' \
-        '{"message":"No such image: runtime"}'; do
+        '{"message":"No such image: runtime"}' \
+        "image not found"; do
         : > "$MOCK_DOCKER_LOG"
         MOCK_DOCKER_IMAGE_STATUS=1 \
             MOCK_DOCKER_IMAGE_ERROR="$diagnostic" \
+            MOCK_DOCKER_LIST_REFERENCE=runtime:latest \
             TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
             TTLANG_EMULE_IMAGE=runtime \
             run -1 "$RUNNER" examples/eltwise_add.py
 
         assert_output --partial "environment is not installed"
         assert_output --partial "scripts/install-tt-lang-emule.sh"
+        assert_log_line "images"
+        assert_log_line "runtime:latest"
         refute_log_line "build"
         refute_log_line "run"
     done
@@ -812,11 +886,14 @@ PY
         : > "$MOCK_DOCKER_LOG"
         MOCK_DOCKER_IMAGE_STATUS=1 \
             MOCK_DOCKER_IMAGE_ERROR="$diagnostic" \
+            MOCK_DOCKER_LIST_STATUS=1 \
+            MOCK_DOCKER_LIST_ERROR="$diagnostic" \
             TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            TTLANG_EMULE_INSTALL=1 \
             TTLANG_EMULE_RUNTIME_SOURCE_DIR="$BATS_TEST_TMPDIR/never-read-source" \
-            run -1 "$RUNNER" examples/eltwise_add.py
+            run -1 "$RUNNER"
 
-        assert_output --partial "Docker could not inspect image"
+        assert_output --partial "Docker could not list image"
         assert_output --partial "$diagnostic"
         assert_output --partial "Check the Docker daemon and selected context"
         refute_output --partial "emulator source directory not found"
@@ -859,20 +936,91 @@ PY
     refute_log_line "run"
 }
 
-@test "image inspection stdout cannot substitute for a missing image diagnostic" {
+@test "a listed image with failed inspection never triggers a build" {
     cd "$TTLANG_REPO_ROOT"
     MOCK_DOCKER_IMAGE_STATUS=1 \
         MOCK_DOCKER_IMAGE_ERROR="" \
         MOCK_DOCKER_IMAGE_OUTPUT="Error response from daemon: No such image: runtime" \
+        MOCK_DOCKER_LIST_OUTPUT=aaaaaaaaaaaa \
         TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        TTLANG_EMULE_INSTALL=1 \
         TTLANG_EMULE_RUNTIME_SOURCE_DIR="$BATS_TEST_TMPDIR/never-read-source" \
-        run -1 "$RUNNER" examples/eltwise_add.py
+        run -1 "$RUNNER"
 
     assert_output --partial "Docker could not inspect image"
     refute_output --partial "No such image: runtime"
     refute_output --partial "emulator source directory not found"
     refute_log_line "build"
     refute_log_line "run"
+}
+
+@test "image listing normalizes exact tags rather than accepting other tags" {
+    local image
+    local expected_tag
+    cd "$TTLANG_REPO_ROOT"
+    for image in runtime runtime:missing localhost:5000/runtime \
+        docker.io/library/runtime index.docker.io/library/runtime; do
+        expected_tag=runtime:latest
+        case "$image" in
+            runtime:*) expected_tag="$image" ;;
+            localhost:*) expected_tag="$image:latest" ;;
+        esac
+        : > "$MOCK_DOCKER_LOG"
+        MOCK_DOCKER_IMAGE_STATUS=1 \
+            MOCK_DOCKER_LIST_REFERENCE="$expected_tag" \
+            TTLANG_EMULE_IMAGE="$image" \
+            TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            run -1 "$RUNNER" examples/eltwise_add.py
+        assert_output --partial "environment is not installed"
+        assert_log_line "$expected_tag"
+        refute_log_line "build"
+        refute_log_line "run"
+    done
+}
+
+@test "existing image IDs and digests preserve inspect semantics" {
+    local image
+    cd "$TTLANG_REPO_ROOT"
+    for image in sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+        aaaaaaaaaaaa runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa; do
+        : > "$MOCK_DOCKER_LOG"
+        TTLANG_EMULE_IMAGE="$image" TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            run -0 "$RUNNER" examples/eltwise_add.py
+        assert_log_line "$image"
+        assert_log_line run
+        refute_log_line images
+        refute_log_line build
+    done
+}
+
+@test "failed image IDs digests and patterns never become build tags" {
+    local image
+    cd "$TTLANG_REPO_ROOT"
+    for image in sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+        aaaaaaaaaaaa runtime@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+        'runtime:*' 'runtime:?' 'runtime:[a]'; do
+        : > "$MOCK_DOCKER_LOG"
+        MOCK_DOCKER_IMAGE_STATUS=1 \
+            TTLANG_EMULE_IMAGE="$image" TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            TTLANG_EMULE_INSTALL=1 \
+            TTLANG_EMULE_RUNTIME_SOURCE_DIR="$BATS_TEST_TMPDIR/never-read-source" \
+            run -1 "$RUNNER"
+        assert_output --partial "Docker could not inspect image"
+        refute_log_line images
+        refute_log_line build
+        refute_log_line run
+    done
+}
+
+@test "image listing exit status is preserved" {
+    cd "$TTLANG_REPO_ROOT"
+    MOCK_DOCKER_IMAGE_STATUS=1 MOCK_DOCKER_LIST_STATUS=125 \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" TTLANG_EMULE_INSTALL=1 \
+        run -125 "$RUNNER"
+    assert_output --partial "Docker could not list image"
+    assert_output --partial "exit 125"
+    refute_log_line build
+    refute_log_line run
 }
 
 @test "a missing script fails before any Docker call" {
@@ -930,7 +1078,7 @@ PY
         TTLANG_EMULE_SOURCE_FINGERPRINT="$source_fingerprint" \
         TTLANG_EMULE_BUILD_DIR="$build_dir" \
         TTLANG_EMULE_SOURCE_DIR="$TTLANG_REPO_ROOT" \
-        run -0 /bin/bash "$test_entrypoint" "$program" "argument with spaces"
+        run -0 /bin/bash "$test_entrypoint"
 
     assert_output --partial \
         "Installed compiler-backed emule environment for bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb."
@@ -945,9 +1093,32 @@ PY
         "$build_dir/.ttlang-emule-source-fingerprint"
 }
 
+@test "entrypoint installation invalidates the old marker when configure or build fails" {
+    make_entrypoint_fixture
+    local failing_phase
+    for failing_phase in MOCK_CMAKE_CONFIGURE_STATUS MOCK_CMAKE_BUILD_STATUS; do
+        printf '%s\n' old-installation > "$build_dir/.ttlang-emule-source-fingerprint"
+        run -42 env "$failing_phase=42" \
+            PATH="$mock_bin:$PATH" \
+            TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
+            TTLANG_EMULE_EXPECTED_LLVM_SHA="$expected_llvm_sha" \
+            TTLANG_EMULE_INSTALL=1 \
+            TTLANG_EMULE_COMPILER_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb \
+            TTLANG_EMULE_SOURCE_FINGERPRINT="$source_fingerprint" \
+            TTLANG_EMULE_BUILD_DIR="$build_dir" \
+            TTLANG_EMULE_SOURCE_DIR="$TTLANG_REPO_ROOT" \
+            /bin/bash "$test_entrypoint"
+
+        refute_output --partial "Installed compiler-backed emule environment"
+        [ ! -e "$build_dir/.ttlang-emule-source-fingerprint" ]
+        [ ! -e "$build_dir/.ttlang-emule-source-fingerprint.tmp" ]
+    done
+}
+
 @test "entrypoint runs from the installed environment without configuring" {
     make_entrypoint_fixture
     printf '#define LLVM_REVISION R"(%s)"\n' "$expected_llvm_sha" > "$llvm_revision_header"
+    printf 'export TTLANG_SIM_ONLY=1 TTLANG_COMPILE_ONLY=1\n' > "$build_dir/env/activate"
 
     PATH="$mock_bin:$PATH" \
         TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
@@ -969,6 +1140,64 @@ PY
     assert_line "sim_only="
     assert_line "python=$program"
     assert_line "python=argument with spaces"
+    [ ! -e "$MOCK_ENTRYPOINT_LOG" ]
+}
+
+@test "entrypoint honors explicitly configured cache paths" {
+    make_entrypoint_fixture
+
+    PATH="$mock_bin:$PATH" \
+        TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
+        TT_METAL_CACHE="$BATS_TEST_TMPDIR/metal-cache" \
+        TT_EMULE_JIT_CACHE_DIR="$BATS_TEST_TMPDIR/jit-cache" \
+        TTLANG_EMULE_EXPECTED_LLVM_SHA="$expected_llvm_sha" \
+        TTLANG_EMULE_SOURCE_FINGERPRINT="$source_fingerprint" \
+        TTLANG_EMULE_BUILD_DIR="$build_dir" \
+        run -0 /bin/bash "$test_entrypoint" "$program"
+
+    assert_line "emule_cache=$BATS_TEST_TMPDIR/jit-cache"
+    [ ! -e "$MOCK_ENTRYPOINT_LOG" ]
+}
+
+@test "entrypoint shell activates the installed environment without running Python" {
+    make_entrypoint_fixture
+    printf 'export TTLANG_SIM_ONLY=1 TTLANG_COMPILE_ONLY=1\n' > "$build_dir/env/activate"
+
+    PATH="$mock_bin:$PATH" \
+        TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
+        TTLANG_EMULE_EXPECTED_LLVM_SHA="$expected_llvm_sha" \
+        TTLANG_EMULE_SOURCE_FINGERPRINT="$source_fingerprint" \
+        TTLANG_EMULE_BUILD_DIR="$build_dir" \
+        TTLANG_EMULE_SHELL=1 \
+        run -0 /bin/bash "$test_entrypoint" <<'EOF'
+printf 'emule=%s\nmesh=%s\nsim_only=%s\ncompile_only=%s\n' \
+    "$TT_METAL_EMULE_MODE" "$MESH_DEVICE" "${TTLANG_SIM_ONLY:-}" "${TTLANG_COMPILE_ONLY:-}"
+EOF
+
+    assert_line "emule=1"
+    assert_line "mesh=P150"
+    assert_line "sim_only="
+    assert_line "compile_only="
+    [ ! -e "$MOCK_ENTRYPOINT_LOG" ]
+}
+
+@test "entrypoint shell rejects a stale compiler and preserves the shell exit status" {
+    make_entrypoint_fixture
+    TTLANG_EMULE_EXPECTED_LLVM_SHA="$expected_llvm_sha" \
+        TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
+        TTLANG_EMULE_SOURCE_FINGERPRINT=stale \
+        TTLANG_EMULE_BUILD_DIR="$build_dir" \
+        TTLANG_EMULE_SHELL=1 \
+        run -1 /bin/bash "$test_entrypoint" <<< 'echo shell-must-not-run'
+    assert_output --partial "installed compiler does not match this checkout"
+    refute_output --partial "shell-must-not-run"
+
+    TTLANG_EMULE_EXPECTED_LLVM_SHA="$expected_llvm_sha" \
+        TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster" \
+        TTLANG_EMULE_SOURCE_FINGERPRINT="$source_fingerprint" \
+        TTLANG_EMULE_BUILD_DIR="$build_dir" \
+        TTLANG_EMULE_SHELL=1 \
+        run -42 /bin/bash "$test_entrypoint" <<< 'exit 42'
     [ ! -e "$MOCK_ENTRYPOINT_LOG" ]
 }
 
@@ -1051,12 +1280,16 @@ PY
     [ ! -e "$MOCK_ENTRYPOINT_LOG" ]
 }
 
-@test "entrypoint defaults to the runtime's full P150 descriptor" {
-    run -0 grep -F -x -- \
-        'readonly CLUSTER_DESCRIPTORS="${TT_EMULE_SOURCE_DIR}/cluster_descriptors"' \
-        "$ENTRYPOINT"
-    run -0 grep -F -- \
-        'blackhole_P150_unharvested.yaml' "$ENTRYPOINT"
+@test "entrypoint requires every target setting from the launcher" {
+    make_entrypoint_fixture
+    local setting
+    for setting in TT_METAL_MOCK_CLUSTER_DESC_PATH \
+        TT_METAL_ALLOCATOR_MODE_HYBRID MESH_DEVICE; do
+        run -1 env -u "$setting" /bin/bash "$test_entrypoint" "$program"
+        assert_output --partial "required target setting ${setting} is missing"
+        [ ! -e "$MOCK_ENTRYPOINT_LOG" ]
+        export TT_METAL_MOCK_CLUSTER_DESC_PATH="$cluster"
+    done
 }
 
 @test "entrypoint rejects a missing script argument before configuring" {
@@ -1074,6 +1307,7 @@ PY
     local program="$BATS_TEST_TMPDIR/program.py"
     touch "$program"
     TT_METAL_MOCK_CLUSTER_DESC_PATH="$missing_cluster" \
+        TT_METAL_ALLOCATOR_MODE_HYBRID=1 MESH_DEVICE=P150 \
         run -1 "$ENTRYPOINT" "$program"
     assert_output --partial "cluster descriptor not found: $missing_cluster"
 }

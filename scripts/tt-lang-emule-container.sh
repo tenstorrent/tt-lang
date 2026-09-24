@@ -27,16 +27,13 @@ while IFS=$'\t' read -r _STACK_KEY _STACK_VALUE; do
         TTLANG_EMULE_STACK_MANIFEST_SHA256) _MANIFEST_SHA256="$_STACK_VALUE" ;;
         TTLANG_COMPILER_REPOSITORY) _MANIFEST_COMPILER_REPOSITORY="$_STACK_VALUE" ;;
         TTLANG_COMPILER_BASE_COMMIT) _MANIFEST_COMPILER_BASE_COMMIT="$_STACK_VALUE" ;;
-        TTLANG_EMULE_REPOSITORY) _MANIFEST_EMULE_REPOSITORY="$_STACK_VALUE" ;;
         TTLANG_EMULE_COMMIT) _MANIFEST_EMULE_COMMIT="$_STACK_VALUE" ;;
         TTLANG_METAL_REPOSITORY) _MANIFEST_METAL_REPOSITORY="$_STACK_VALUE" ;;
         TTLANG_METAL_COMMIT) _MANIFEST_METAL_COMMIT="$_STACK_VALUE" ;;
         TTLANG_EMULE_BASE_IMAGE) _MANIFEST_BASE_IMAGE="$_STACK_VALUE" ;;
-        TTLANG_EMULE_PLATFORM) _MANIFEST_PLATFORM="$_STACK_VALUE" ;;
         TTLANG_EMULE_TARGET) _MANIFEST_TARGET="$_STACK_VALUE" ;;
         TTLANG_EMULE_CLUSTER_DESCRIPTOR) _MANIFEST_CLUSTER_DESCRIPTOR="$_STACK_VALUE" ;;
         TTLANG_EMULE_MESH_DEVICE) _MANIFEST_MESH_DEVICE="$_STACK_VALUE" ;;
-        TTLANG_EMULE_ALLOCATOR_MODE) _MANIFEST_ALLOCATOR_MODE="$_STACK_VALUE" ;;
     esac
 done <<< "$_STACK_OUTPUT"
 
@@ -58,8 +55,7 @@ done
 _IMAGE_INPUT_ID="$(
     {
         cksum "$_STACK_MANIFEST" \
-            "${_REPO_ROOT}/.github/containers/Dockerfile.emule" \
-            "${_SCRIPT_DIR}/tt-lang-emule-entrypoint.sh" |
+            "${_REPO_ROOT}/.github/containers/Dockerfile.emule" |
             awk '{print $1, $2}'
         printf '%s\n' "$_BASE_IMAGE" "$_PLATFORM"
     } |
@@ -151,16 +147,28 @@ linux/amd64 through the container runtime's x86 virtualization.
 EOF
 }
 
-if [ "$#" -eq 0 ]; then
-    usage
+if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ] && \
+   [ "${TTLANG_EMULE_SHELL:-0}" = "1" ]; then
+    echo "tt-lang-sim: installation and shell modes are mutually exclusive." >&2
     exit 2
 fi
-
-_SCRIPT_ARGUMENT="$1"
-shift
-if [ ! -f "$_SCRIPT_ARGUMENT" ]; then
-    echo "tt-lang-sim: script not found: ${_SCRIPT_ARGUMENT}" >&2
-    exit 2
+if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ] || \
+   [ "${TTLANG_EMULE_SHELL:-0}" = "1" ]; then
+    if [ "$#" -ne 0 ]; then
+        echo "tt-lang-sim: installation and shell modes do not accept script arguments." >&2
+        exit 2
+    fi
+else
+    if [ "$#" -eq 0 ]; then
+        usage
+        exit 2
+    fi
+    _SCRIPT_ARGUMENT="$1"
+    shift
+    if [ ! -f "$_SCRIPT_ARGUMENT" ]; then
+        echo "tt-lang-sim: script not found: ${_SCRIPT_ARGUMENT}" >&2
+        exit 2
+    fi
 fi
 
 if ! command -v "$_DOCKER" >/dev/null 2>&1; then
@@ -176,9 +184,6 @@ if ! "$_DOCKER" info >/dev/null 2>&1; then
 fi
 
 _HOST_CWD="$(pwd -P)"
-_SCRIPT_ABSOLUTE="$(realpath "$_SCRIPT_ARGUMENT")"
-_SCRIPT_DIR_HOST="$(dirname "$_SCRIPT_ABSOLUTE")"
-_SCRIPT_BASENAME="$(basename "$_SCRIPT_ABSOLUTE")"
 
 _RUN_ARGS=(
     run
@@ -216,6 +221,8 @@ esac
 
 if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ]; then
     _RUN_ARGS+=(-e TTLANG_EMULE_INSTALL=1)
+elif [ "${TTLANG_EMULE_SHELL:-0}" = "1" ]; then
+    _RUN_ARGS+=(-e TTLANG_EMULE_SHELL=1)
 fi
 
 case "${_HOST_CWD}/" in
@@ -228,7 +235,12 @@ case "${_HOST_CWD}/" in
         ;;
 esac
 
-case "${_SCRIPT_ABSOLUTE}" in
+if [ "${TTLANG_EMULE_INSTALL:-0}" != "1" ] && \
+   [ "${TTLANG_EMULE_SHELL:-0}" != "1" ]; then
+    _SCRIPT_ABSOLUTE="$(realpath "$_SCRIPT_ARGUMENT")"
+    _SCRIPT_DIR_HOST="$(dirname "$_SCRIPT_ABSOLUTE")"
+    _SCRIPT_BASENAME="$(basename "$_SCRIPT_ABSOLUTE")"
+    case "${_SCRIPT_ABSOLUTE}" in
     "${_REPO_ROOT}/"*)
         _CONTAINER_SCRIPT="/workspace${_SCRIPT_ABSOLUTE#"$_REPO_ROOT"}"
         ;;
@@ -239,7 +251,8 @@ case "${_SCRIPT_ABSOLUTE}" in
         _CONTAINER_SCRIPT="/ttlang-script/${_SCRIPT_BASENAME}"
         _RUN_ARGS+=(--mount "type=bind,src=${_SCRIPT_DIR_HOST},dst=/ttlang-script")
         ;;
-esac
+    esac
+fi
 
 _RUN_ARGS+=(--workdir "$_CONTAINER_CWD")
 
@@ -267,19 +280,36 @@ if [ "${TTLANG_EMULE_REBUILD:-0}" = "1" ]; then
         exit 1
     fi
     _BUILD_IMAGE=1
-elif _IMAGE_INSPECT_ERROR="$("$_DOCKER" image inspect "$_IMAGE" 2>&1 >/dev/null)"; then
+elif _IMAGE_INSPECT_ERROR="$("$_DOCKER" image inspect -- "$_IMAGE" 2>&1 >/dev/null)"; then
     :
 else
     _IMAGE_INSPECT_STATUS=$?
     _IMAGE_IS_MISSING=0
-    if [ "$_IMAGE_INSPECT_STATUS" -eq 1 ]; then
-        case "$_IMAGE_INSPECT_ERROR" in
-            "Error response from daemon: No such image: ${_IMAGE}"*|\
-            "Error response from daemon: {\"message\":\"No such image: ${_IMAGE}\"}"|\
-            "{\"message\":\"No such image: ${_IMAGE}\"}")
-                _IMAGE_IS_MISSING=1
-                ;;
+    # Listing matches name patterns, not IDs or digests. Restrict the missing
+    # image check to literal repository tags.
+    if [ "$_IMAGE_INSPECT_STATUS" -eq 1 ] && \
+        [[ "$_IMAGE" != sha256:* && ! "$_IMAGE" =~ ^[0-9a-f]{1,64}$ && \
+            "$_IMAGE" =~ ^[a-zA-Z0-9][a-zA-Z0-9._:/-]*$ ]]; then
+        _IMAGE_TAG="$_IMAGE"
+        case "$_IMAGE_TAG" in
+            docker.io/*|index.docker.io/*) _IMAGE_TAG="${_IMAGE_TAG#*/}" ;;
         esac
+        _IMAGE_TAG="${_IMAGE_TAG#library/}"
+        case "${_IMAGE_TAG##*/}" in
+            *:*) ;;
+            *) _IMAGE_TAG="${_IMAGE_TAG}:latest" ;;
+        esac
+        if _IMAGE_IDS="$("$_DOCKER" images -q -- "$_IMAGE_TAG")"; then
+            if [ -z "$_IMAGE_IDS" ]; then
+                _IMAGE_IS_MISSING=1
+            fi
+        else
+            _IMAGE_LIST_STATUS=$?
+            printf 'tt-lang-sim: Docker could not list image %s (exit %s).\n' \
+                "$_IMAGE" "$_IMAGE_LIST_STATUS" >&2
+            echo "Check the Docker daemon and selected context, then retry." >&2
+            exit "$_IMAGE_LIST_STATUS"
+        fi
     fi
     if [ "$_IMAGE_IS_MISSING" -eq 1 ]; then
         if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ]; then
@@ -395,5 +425,9 @@ if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ]; then
     printf 'Runtime image: %s\n' "$_IMAGE"
     printf 'Compiler build volume: %s\n' "$_BUILD_VOLUME"
     printf 'Runtime cache volume: %s\n' "$_CACHE_VOLUME"
+fi
+if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ] || \
+   [ "${TTLANG_EMULE_SHELL:-0}" = "1" ]; then
+    exec "$_DOCKER" "${_RUN_ARGS[@]}" "$_IMAGE"
 fi
 exec "$_DOCKER" "${_RUN_ARGS[@]}" "$_IMAGE" "$_CONTAINER_SCRIPT" "$@"
