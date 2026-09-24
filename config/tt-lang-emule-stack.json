@@ -2,14 +2,14 @@
   "schema_version": 1,
   "compiler": {
     "repository": "https://github.com/tenstorrent/tt-lang.git",
-    "base_commit": "88cb759d416e7df617ee043c6cd7e139701163bc"
+    "base_commit": "71074fde5db2ec0b9954e8e990cd785fc95d322b"
   },
   "emulator": {
-    "commit": "7292395ce55a208a8ede0a4635a9f2167c8c4939"
+    "commit": "4560a710e8c67b5c7996257a18e6a687284d35de"
   },
   "metal": {
     "repository": "https://github.com/tenstorrent/tt-metal.git",
-    "commit": "b6c508c4790fac0a11597e43a5421624cb461553"
+    "commit": "246453ea430899f436134bf65c5a2c89a85d40a2"
   },
   "runtime": {
     "base_image": "ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04@sha256:c64126d459afd77bf1b8c5cf68c5941c1561515d28b1b125d33fc57f950e09c7"
