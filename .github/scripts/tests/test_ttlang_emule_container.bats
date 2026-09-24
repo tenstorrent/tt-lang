@@ -765,6 +765,14 @@ PY
         TTLANG_EMULE_RUNTIME_BASE_IMAGE="$base_image" \
         TTLANG_EMULE_PLATFORM=linux/amd64/v2 \
         TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -0 "$RUNNER"
+
+    TTLANG_EMULE_RUNTIME_COMMIT="$emule_commit" \
+        TTLANG_EMULE_RUNTIME_METAL_COMMIT="$metal_commit" \
+        TTLANG_EMULE_RUNTIME_METAL_SOURCE_URL=https://example.invalid/metal.git \
+        TTLANG_EMULE_RUNTIME_BASE_IMAGE="$base_image" \
+        TTLANG_EMULE_PLATFORM=linux/amd64/v2 \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
         run -0 "$RUNNER" examples/eltwise_add.py
 
     assert_log_line "TT_EMULE_COMMIT=$emule_commit"
@@ -793,7 +801,7 @@ PY
         TTLANG_EMULE_RUNTIME_COMMIT="$emule_commit" \
         TTLANG_EMULE_RUNTIME_METAL_COMMIT="$selected_metal" \
         TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
-        run -1 "$RUNNER" examples/eltwise_add.py
+        run -1 "$RUNNER"
 
     assert_output --partial "selected emulator pins Metal $emulator_metal"
     assert_output --partial "selected Metal: $selected_metal"
@@ -833,6 +841,10 @@ PY
         TTLANG_EMULE_INSTALL=1 \
         TTLANG_EMULE_STACK_MANIFEST="$candidate" \
         TTLANG_EMULE_RUNTIME_SOURCE_DIR="$emule_source" \
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -0 "$RUNNER"
+
+    TTLANG_EMULE_STACK_MANIFEST="$candidate" \
         TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
         run -0 "$RUNNER" examples/eltwise_add.py
 
