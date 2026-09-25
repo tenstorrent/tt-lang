@@ -204,23 +204,24 @@ allocateCompilerL1(ModuleOp module,
       declaration.setCbIndexAttr(builder.getIndexAttr(regionIndex));
     }
     allocations.push_back(builder.getDictionaryAttr({
-        builder.getNamedAttr("dfb_index",
+        builder.getNamedAttr(kDFBAllocationIndexField,
                              builder.getI32IntegerAttr(regionIndex)),
-        builder.getNamedAttr("storage_index",
+        builder.getNamedAttr(kDFBAllocationStorageIndexField,
                              builder.getI32IntegerAttr(regionIndex)),
-        builder.getNamedAttr("num_tiles",
+        builder.getNamedAttr(kDFBAllocationNumTilesField,
                              builder.getI32IntegerAttr(region.pages)),
-        builder.getNamedAttr("page_size",
+        builder.getNamedAttr(kDFBAllocationPageSizeField,
                              builder.getI32IntegerAttr(region.pageBytes)),
-        builder.getNamedAttr("block_count", builder.getI32IntegerAttr(
-                                                region.type.getBlockCount())),
-        builder.getNamedAttr("element_type",
+        builder.getNamedAttr(
+            kDFBAllocationBlockCountField,
+            builder.getI32IntegerAttr(region.type.getBlockCount())),
+        builder.getNamedAttr(kDFBAllocationElementTypeField,
                              TypeAttr::get(region.type.getElementType())),
-        builder.getNamedAttr("l1_offset",
+        builder.getNamedAttr(kDFBAllocationStateOffsetField,
                              builder.getI64IntegerAttr(region.stateOffset)),
-        builder.getNamedAttr("l1_payload_offset",
+        builder.getNamedAttr(kDFBAllocationPayloadOffsetField,
                              builder.getI64IntegerAttr(payloadOffset)),
-        builder.getNamedAttr("l1_allocation_bytes",
+        builder.getNamedAttr(kDFBAllocationBytesField,
                              builder.getI64IntegerAttr(region.allocationBytes)),
     }));
   }

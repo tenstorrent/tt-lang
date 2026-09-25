@@ -121,16 +121,25 @@ static FailureOr<CompilerL1Allocation>
 parseCompilerL1Allocation(Attribute attribute) {
   auto dictionary = dyn_cast<DictionaryAttr>(attribute);
   auto pageSize =
-      dictionary ? dictionary.getAs<IntegerAttr>("page_size") : IntegerAttr();
+      dictionary
+          ? dictionary.getAs<IntegerAttr>(ttl::kDFBAllocationPageSizeField)
+          : IntegerAttr();
   auto pagesPerBlock =
-      dictionary ? dictionary.getAs<IntegerAttr>("num_tiles") : IntegerAttr();
+      dictionary
+          ? dictionary.getAs<IntegerAttr>(ttl::kDFBAllocationNumTilesField)
+          : IntegerAttr();
   auto blockCount =
-      dictionary ? dictionary.getAs<IntegerAttr>("block_count") : IntegerAttr();
+      dictionary
+          ? dictionary.getAs<IntegerAttr>(ttl::kDFBAllocationBlockCountField)
+          : IntegerAttr();
   auto stateOffset =
-      dictionary ? dictionary.getAs<IntegerAttr>("l1_offset") : IntegerAttr();
-  auto payloadAddress = dictionary
-                            ? dictionary.getAs<IntegerAttr>("l1_payload_offset")
-                            : IntegerAttr();
+      dictionary
+          ? dictionary.getAs<IntegerAttr>(ttl::kDFBAllocationStateOffsetField)
+          : IntegerAttr();
+  auto payloadAddress =
+      dictionary
+          ? dictionary.getAs<IntegerAttr>(ttl::kDFBAllocationPayloadOffsetField)
+          : IntegerAttr();
   if (!pageSize || !pagesPerBlock || !blockCount || !stateOffset ||
       !payloadAddress) {
     return failure();
@@ -151,7 +160,8 @@ parseCompilerL1Allocation(Attribute attribute) {
     return failure();
   }
 
-  auto elementType = dictionary.getAs<TypeAttr>("element_type");
+  auto elementType =
+      dictionary.getAs<TypeAttr>(ttl::kDFBAllocationElementTypeField);
   return CompilerL1Allocation{pageSize.getInt(),
                               pagesPerBlock.getInt(),
                               blockCount.getInt(),

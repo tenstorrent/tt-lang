@@ -142,17 +142,22 @@ applyPhysicalAllocationPlan(ModuleOp moduleOp, OpBuilder &builder,
        allocationPlan.getDescriptors()) {
     SmallVector<NamedAttribute> entryAttributes;
     entryAttributes.push_back(builder.getNamedAttr(
-        "dfb_index", builder.getI32IntegerAttr(descriptor.physicalIndex)));
+        kDFBAllocationIndexField,
+        builder.getI32IntegerAttr(descriptor.physicalIndex)));
     entryAttributes.push_back(builder.getNamedAttr(
-        "storage_index", builder.getI32IntegerAttr(descriptor.storageIndex)));
+        kDFBAllocationStorageIndexField,
+        builder.getI32IntegerAttr(descriptor.storageIndex)));
+    entryAttributes.push_back(
+        builder.getNamedAttr(kDFBAllocationNumTilesField,
+                             builder.getI32IntegerAttr(descriptor.numTiles)));
     entryAttributes.push_back(builder.getNamedAttr(
-        "num_tiles", builder.getI32IntegerAttr(descriptor.numTiles)));
-    entryAttributes.push_back(builder.getNamedAttr(
-        "element_type", TypeAttr::get(descriptor.elementType)));
-    entryAttributes.push_back(builder.getNamedAttr(
-        "page_size", builder.getI32IntegerAttr(descriptor.pageSize)));
-    entryAttributes.push_back(builder.getNamedAttr(
-        "block_count", builder.getI32IntegerAttr(descriptor.blockCount)));
+        kDFBAllocationElementTypeField, TypeAttr::get(descriptor.elementType)));
+    entryAttributes.push_back(
+        builder.getNamedAttr(kDFBAllocationPageSizeField,
+                             builder.getI32IntegerAttr(descriptor.pageSize)));
+    entryAttributes.push_back(
+        builder.getNamedAttr(kDFBAllocationBlockCountField,
+                             builder.getI32IntegerAttr(descriptor.blockCount)));
     if (descriptor.allocationDomain.known) {
       entryAttributes.push_back(builder.getNamedAttr(
           "allocation_nodes",

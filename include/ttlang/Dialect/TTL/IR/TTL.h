@@ -206,6 +206,18 @@ constexpr llvm::StringLiteral kPlaceholderCopyAttrName("ttl.placeholder_copy");
 
 /// Module attribute containing one runtime descriptor per physical DFB index.
 constexpr llvm::StringLiteral kDFBAllocationsAttrName("ttl.dfb_allocations");
+/// Field names shared by Metal and compiler-managed DFB allocation entries.
+constexpr llvm::StringLiteral kDFBAllocationIndexField("dfb_index");
+constexpr llvm::StringLiteral kDFBAllocationStorageIndexField("storage_index");
+constexpr llvm::StringLiteral kDFBAllocationNumTilesField("num_tiles");
+constexpr llvm::StringLiteral kDFBAllocationPageSizeField("page_size");
+constexpr llvm::StringLiteral kDFBAllocationBlockCountField("block_count");
+constexpr llvm::StringLiteral kDFBAllocationElementTypeField("element_type");
+/// Fields present only in compiler-managed SRAM allocation entries.
+constexpr llvm::StringLiteral kDFBAllocationStateOffsetField("l1_offset");
+constexpr llvm::StringLiteral
+    kDFBAllocationPayloadOffsetField("l1_payload_offset");
+constexpr llvm::StringLiteral kDFBAllocationBytesField("l1_allocation_bytes");
 /// Allocation indices whose state ends at each DFB reconfiguration ordinal.
 constexpr llvm::StringLiteral kCompilerL1ReconfigurationResetsAttrName(
     "ttl.compiler_l1_reconfiguration_resets");
