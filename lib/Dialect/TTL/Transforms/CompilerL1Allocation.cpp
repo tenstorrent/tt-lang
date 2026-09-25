@@ -18,6 +18,24 @@
 #include <limits>
 
 namespace mlir::tt::ttl {
+
+LogicalResult validateCompilerSRAMLifecycle(ModuleOp module) {
+  Operation *firstBoundary = nullptr;
+  module.walk([&](Operation *operation) -> WalkResult {
+    if (!isa<ResetDFBsOp, ResetAllDFBsOp, DFBReconfigurationOp>(operation)) {
+      return WalkResult::advance();
+    }
+    firstBoundary = operation;
+    return WalkResult::interrupt();
+  });
+  if (!firstBoundary) {
+    return success();
+  }
+  firstBoundary->emitOpError("compiler-sram does not support synchronized DFB "
+                             "reset or reconfiguration");
+  return failure();
+}
+
 namespace {
 constexpr uint64_t kControlWordCount = 2;
 constexpr uint64_t kControlRecordBytes = kControlWordCount * sizeof(uint32_t);
@@ -114,8 +132,7 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
   for (auto &entry : regions) {
     plan.push_back(std::move(entry.second));
   }
-  const auto conflicts = DFBPhysicalConflictModel::buildStorage(
-      liveness, DFBStorageConflictMode::CompilerManaged);
+  const auto conflicts = DFBPhysicalConflictModel::buildStorage(liveness);
   DenseMap<int64_t, unsigned> lifecycleIndices;
   for (auto [lifecycleIndex, lifecycle] :
        llvm::enumerate(liveness.getLogicalDFBLifecycles())) {

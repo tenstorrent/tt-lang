@@ -53,12 +53,12 @@ Packed-format metadata is included in `P`. The complete arena size is the maximu
 
 Allocation consumes the existing logical-identity and completion-aware lifetime analyses. The compiler builds the complete conflict relation before changing IR. Unknown launch domains, unproved completion, concurrent lifetimes, and incompatible storage ownership remain conflicts.
 
-The shared storage conflict analysis accepts an explicit storage mode. Metal storage includes conflicts caused by runtime descriptor installation and Metal-managed backing changes. Compiler-managed storage excludes those conflicts because each logical DFB retains an independent control record and its page size, pages per block, block count, and storage capacity remain unchanged during execution.
+The shared storage conflict analysis includes writes from Metal descriptor installation and incompatible backing ownership. Compiler-managed reset and reconfiguration are rejected before allocation, so an accepted compiler-managed program has no such installation writes.
 
 This design reuses one lifetime model for both memory backends. The allocator cannot serialize operations or remove a conflict to make a program fit.
 
 ```text
-buildStorageConflicts(lifetimes, storageMode):
+buildStorageConflicts(lifetimes):
     conflicts = empty graph
     for each unordered pair (left, right):
         for each worker node where both may be active:
@@ -66,7 +66,7 @@ buildStorageConflicts(lifetimes, storageMode):
                 add conflict(left, right)
             else if neither lifetime completes before the other begins:
                 add conflict(left, right)
-            if storageMode is metal-cb and descriptor installation or backing-storage ownership can overlap on this node:
+            if descriptor installation can overwrite live state or backing-storage ownership is incompatible on this node:
                 add conflict(left, right)
 
     return conflicts

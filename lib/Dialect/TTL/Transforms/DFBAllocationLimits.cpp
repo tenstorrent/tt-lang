@@ -173,23 +173,6 @@ LogicalResult validateDFBReconfigurationTarget(ModuleOp module) {
                                         "DFB reconfiguration");
 }
 
-LogicalResult validateCompilerSRAMLifecycle(ModuleOp module) {
-  Operation *firstBoundary = nullptr;
-  module.walk([&](Operation *operation) -> WalkResult {
-    if (!isa<ResetDFBsOp, ResetAllDFBsOp, DFBReconfigurationOp>(operation)) {
-      return WalkResult::advance();
-    }
-    firstBoundary = operation;
-    return WalkResult::interrupt();
-  });
-  if (!firstBoundary) {
-    return success();
-  }
-  firstBoundary->emitOpError("compiler-sram does not support synchronized DFB "
-                             "reset or reconfiguration");
-  return failure();
-}
-
 FailureOr<uint64_t> getDFBReconfigurationStateBytes(ModuleOp module) {
   llvm::DenseSet<int64_t> boundaryOrdinals;
   module.walk([&](DFBReconfigurationOp reconfiguration) {

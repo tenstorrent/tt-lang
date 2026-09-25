@@ -1285,8 +1285,8 @@ def TTLValidateCBBudget
   let description = [{
     Module-level pass that runs after `ttl-finalize-dfb-indices`, before
     `convert-ttl-to-ttkernel`. For `compiler-sram`, it validates the finalized
-    arena size; conversion validates arena plus reset and reconfiguration
-    scratch before creating runtime resources. For `metal-cb`, it sums one
+    arena size after synchronized DFB reset and reconfiguration have been
+    rejected during finalization. For `metal-cb`, it sums one
     target-allocation-aligned maximum
     static backing-store size per compiler-selected DFB storage index on each
     launch node, allocator-rounded synchronized-reset state, and one

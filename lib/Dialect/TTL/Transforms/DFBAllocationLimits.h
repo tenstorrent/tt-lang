@@ -66,9 +66,6 @@ FailureOr<uint64_t> getDFBReconfigurationStateAllocationBytes(ModuleOp module);
 /// Verifies that the selected target implements DFB reconfiguration.
 LogicalResult validateDFBReconfigurationTarget(ModuleOp module);
 
-/// Verifies the compiler-managed storage lifecycle contract.
-LogicalResult validateCompilerSRAMLifecycle(ModuleOp module);
-
 /// Static storage capacity and page alignment shared by one or more DFBs.
 struct DFBStorageLayout {
   uint64_t capacityBytes = 0;

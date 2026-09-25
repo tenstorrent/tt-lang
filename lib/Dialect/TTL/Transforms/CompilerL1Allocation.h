@@ -16,6 +16,9 @@ class DFBConcurrentKernelLivenessAnalysis;
 class DFBLogicalIdentityAnalysis;
 class CompilerL1Allocator;
 
+/// Rejects lifecycle operations unsupported by compiler-managed SRAM.
+LogicalResult validateCompilerSRAMLifecycle(ModuleOp module);
+
 /// Plans and materializes compiler-managed L1 offsets. Failure leaves IR
 /// unchanged.
 LogicalResult

@@ -26,12 +26,6 @@ namespace mlir::tt::ttl {
 class DFBPhysicalConflictModelBuilder;
 class DFBConcurrentKernelLivenessAnalysis;
 
-/// Storage ownership semantics used when constructing the conflict relation.
-enum class DFBStorageConflictMode {
-  MetalRuntimeDescriptor,
-  CompilerManaged,
-};
-
 /// Physical index selected for one logical DFB.
 struct DFBPhysicalIndexAssignment {
   int64_t logicalId = 0;
@@ -156,10 +150,9 @@ struct DFBConflictEvidence {
 /// Immutable complete conflict relation used by every allocation policy.
 class DFBPhysicalConflictModel {
 public:
-  /// Builds byte-storage conflicts for the selected ownership semantics.
+  /// Builds byte-storage conflicts for analyzed DFB lifetimes.
   static DFBPhysicalConflictModel
-  buildStorage(const DFBConcurrentKernelLivenessAnalysis &liveness,
-               DFBStorageConflictMode mode);
+  buildStorage(const DFBConcurrentKernelLivenessAnalysis &liveness);
   bool conflicts(unsigned lhsLogicalIndex, unsigned rhsLogicalIndex) const {
     assert(lhsLogicalIndex < adjacency.size() &&
            rhsLogicalIndex < adjacency.size());

@@ -404,7 +404,6 @@ struct DFBPairConflictRequirements {
   bool useAllocationGroupEpochs = false;
   bool allowCapacityEnvelope = false;
   bool allowEpochSeparatedScratchStorage = true;
-  bool considerDescriptorInstallationWrites = true;
 };
 
 class DFBPhysicalConflictModelBuilder {
@@ -481,8 +480,7 @@ public:
   }
 
   static DFBPhysicalConflictModel
-  buildStorage(const DFBConcurrentKernelLivenessAnalysis &liveness,
-               DFBStorageConflictMode mode) {
+  buildStorage(const DFBConcurrentKernelLivenessAnalysis &liveness) {
     ArrayRef<DFBLogicalLifecycle> logicalDFBs =
         liveness.getLogicalDFBLifecycles();
     DFBPhysicalConflictModel model;
@@ -496,10 +494,7 @@ public:
         requirements.requireMatchingElementType = false;
         requirements.requireMatchingTransactions = false;
         requirements.requireMatchingPointerOwners = false;
-        requirements.allowEpochSeparatedScratchStorage =
-            mode == DFBStorageConflictMode::CompilerManaged;
-        requirements.considerDescriptorInstallationWrites =
-            mode == DFBStorageConflictMode::MetalRuntimeDescriptor;
+        requirements.allowEpochSeparatedScratchStorage = false;
         addPairConflicts(model, liveness, lhsIndex, rhsIndex, requirements);
       }
     }
@@ -640,11 +635,8 @@ private:
                     getLifetimeEvidence(rhsLifetime, rhs));
         continue;
       }
-      if (requirements.considerDescriptorInstallationWrites &&
-          (descriptorInstallationOverlapsLiveState(*lhsLifetime,
-                                                   *rhsLifetime) ||
-           descriptorInstallationOverlapsLiveState(*rhsLifetime,
-                                                   *lhsLifetime))) {
+      if (descriptorInstallationOverlapsLiveState(*lhsLifetime, *rhsLifetime) ||
+          descriptorInstallationOverlapsLiveState(*rhsLifetime, *lhsLifetime)) {
         addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
                     DFBConflictReason::ReconfigurationInterfaceWrite, node,
                     lhs.declarations.front(), rhs.declarations.front());
@@ -802,9 +794,8 @@ private:
 };
 
 DFBPhysicalConflictModel DFBPhysicalConflictModel::buildStorage(
-    const DFBConcurrentKernelLivenessAnalysis &liveness,
-    DFBStorageConflictMode mode) {
-  return DFBPhysicalConflictModelBuilder::buildStorage(liveness, mode);
+    const DFBConcurrentKernelLivenessAnalysis &liveness) {
+  return DFBPhysicalConflictModelBuilder::buildStorage(liveness);
 }
 
 namespace {
@@ -2843,8 +2834,7 @@ DFBPhysicalAllocationPlanner::DFBPhysicalAllocationPlanner(
   plan.conflictModel = DFBPhysicalConflictModelBuilder::build(
       liveness, staticConfigurationConflicts);
   DFBPhysicalConflictModel storageConflictModel =
-      DFBPhysicalConflictModel::buildStorage(
-          liveness, DFBStorageConflictMode::MetalRuntimeDescriptor);
+      DFBPhysicalConflictModel::buildStorage(liveness);
   LLVM_DEBUG({
     printDFBAllocationDebugReport(llvm::dbgs(), liveness, plan.conflictModel);
     printDFBStorageConflictDebugReport(llvm::dbgs(), storageConflictModel);

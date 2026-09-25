@@ -5,6 +5,7 @@
 #include "ttlang/Dialect/TTL/Passes.h" // IWYU pragma: keep
 
 #include "CommonRuntimeArgLayout.h"
+#include "CompilerL1Allocation.h"
 #include "DFBAllocationLimits.h"
 #include "FabricManagerLifetimeAnalysis.h"
 #include "PipeGraph.h"
