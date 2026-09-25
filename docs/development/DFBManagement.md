@@ -1317,10 +1317,10 @@ copy: a DFB-to-tensor source must come from `wait()` and a tensor-to-DFB
 destination from `reserve()`. Lowering selects the pointer from the copy
 direction (`get_read_ptr` for DFB-to-tensor, `get_write_ptr` for
 tensor-to-DFB), so the opposite acquisition would address the wrong slot.
-This validation is frontend-only: lowering replaces attached blocks with
-direct DFB operands, so directly written tensor-to-DFB or DFB-to-tensor
-`ttl.copy` IR does not retain acquisition information, and the supported
-pipeline produces these forms only through the Python frontend. Pipe receives
+This validation is frontend-only: the frontend builds a tensor copy on the
+DFB value itself rather than on the attached block, so tensor-to-DFB and
+DFB-to-tensor `ttl.copy` IR carries no acquisition information, and the
+supported pipeline produces these forms only through the Python frontend. Pipe receives
 into a `wait()` block are rejected by `CopyOp::verify`, which sees the
 attached block. A program that needs a produced block both in a tensor and in
 a consumer publishes the block and lets a second dataflow buffer's consumer
