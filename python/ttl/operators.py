@@ -392,7 +392,7 @@ class TensorBlock:
             raise ValueError(
                 "store() must be called on a block acquired from reserve() or wait()"
             )
-        acquired_view = _get_acquired_view_from_block(ast_self)
+        acquired_view, _ = _get_block_acquisition(ast_self)
         _require_matching_tile_shapes(
             rhs.type.element_type,
             acquired_view.type.element_type,
@@ -669,10 +669,11 @@ _ACQUIRE_OP_ACQUISITIONS = {
 def _get_view_acquisition(value):
     while True:
         owner = getattr(value, "owner", None)
-        acquisition = _ACQUIRE_OP_ACQUISITIONS.get(getattr(owner, "name", None))
+        owner_name = getattr(owner, "name", None)
+        acquisition = _ACQUIRE_OP_ACQUISITIONS.get(owner_name)
         if acquisition is not None:
             return acquisition
-        if getattr(owner, "name", None) == "ttl.attach_cb":
+        if owner_name == "ttl.attach_cb":
             value = owner.operands[0]
             continue
         guarded_value = _get_then_yielded_guarded_dfb_value(value)
@@ -696,10 +697,6 @@ def _get_block_acquisition(block):
             "ttl.attach_cb tensor must come from ttl.cb_reserve or ttl.cb_wait"
         )
     return acquired_view, acquisition
-
-
-def _get_acquired_view_from_block(block):
-    return _get_block_acquisition(block)[0]
 
 
 def _require_copy_block_acquisition(block, expected, transfer_description):
