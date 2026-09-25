@@ -14,6 +14,7 @@ namespace mlir::tt::ttl {
 
 class DFBConcurrentKernelLivenessAnalysis;
 class DFBLogicalIdentityAnalysis;
+class CompilerL1Allocator;
 
 /// Plans and materializes compiler-managed L1 offsets. Failure leaves IR
 /// unchanged.
@@ -21,7 +22,7 @@ LogicalResult
 allocateCompilerL1(ModuleOp module,
                    const DFBLogicalIdentityAnalysis &identities,
                    uint64_t budgetOverride, bool reuseStorage,
-                   llvm::StringRef allocationStrategy,
+                   const CompilerL1Allocator &allocator,
                    const DFBConcurrentKernelLivenessAnalysis &liveness);
 
 } // namespace mlir::tt::ttl

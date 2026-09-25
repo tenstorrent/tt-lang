@@ -1,5 +1,6 @@
 // Verifies that an unknown compiler-managed L1 allocation strategy is rejected.
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-sram sram-allocation-strategy=unknown})' --verify-diagnostics
+// RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=metal-cb sram-allocation-strategy=unknown})' --verify-diagnostics
 
 // expected-error @below {{unknown compiler-sram allocation strategy 'unknown'; expected first-fit-decreasing or best-fit-decreasing}}
 module attributes {ttl.launch_grid = [1, 1]} {

@@ -40,7 +40,7 @@ struct L1AllocationPlan {
 static FailureOr<L1AllocationPlan>
 planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
             uint64_t budget, bool reuseStorage,
-            llvm::StringRef allocationStrategy,
+            const CompilerL1Allocator &allocator,
             const DFBConcurrentKernelLivenessAnalysis &liveness) {
   std::string targetFailure;
   FailureOr<std::optional<ttcore::Arch>> targetArch =
@@ -156,26 +156,19 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
       problem.conflicts[previousIndex].set(regionIndex);
     }
   }
-  std::string allocationFailure;
-  FailureOr<std::unique_ptr<CompilerL1Allocator>> allocator =
-      createCompilerL1Allocator(allocationStrategy, allocationFailure);
-  if (failed(allocator)) {
-    module.emitOpError() << allocationFailure;
-    return failure();
-  }
-  std::optional<unsigned> failureRegionIndex;
-  FailureOr<CompilerL1AllocationSolution> solution = solveCompilerL1Allocation(
-      **allocator, problem, failureRegionIndex, allocationFailure);
+  SRAMPlacementFailure placementFailure;
+  FailureOr<CompilerL1AllocationSolution> solution =
+      solveCompilerL1Allocation(allocator, problem, placementFailure);
   if (failed(solution)) {
-    auto diagnostic =
-        failureRegionIndex
-            ? plan[*failureRegionIndex].declarations.front().emitOpError()
-            : module.emitOpError();
-    diagnostic << "compiler-sram " << allocationFailure;
-    if (llvm::StringRef(allocationFailure)
-            .starts_with("placement exceeds L1 budget")) {
+    auto diagnostic = placementFailure.regionIndex
+                          ? plan[*placementFailure.regionIndex]
+                                .declarations.front()
+                                .emitOpError()
+                          : module.emitOpError();
+    diagnostic << "compiler-sram " << placementFailure.reason;
+    if (placementFailure.kind == SRAMPlacementFailureKind::BudgetExceeded) {
       diagnostic << " (payload, control records, and alignment included); "
-                 << (*allocator)->getName()
+                 << allocator.getName()
                  << " placement does not prove infeasibility";
     }
     return failure();
@@ -188,13 +181,13 @@ LogicalResult
 allocateCompilerL1(ModuleOp module,
                    const DFBLogicalIdentityAnalysis &identities,
                    uint64_t budgetOverride, bool reuseStorage,
-                   llvm::StringRef allocationStrategy,
+                   const CompilerL1Allocator &allocator,
                    const DFBConcurrentKernelLivenessAnalysis &liveness) {
   auto budget = getUsableDFBL1Bytes(
       module,
       budgetOverride ? std::optional<uint64_t>(budgetOverride) : std::nullopt);
   FailureOr<L1AllocationPlan> maybePlan = planRegions(
-      module, identities, budget, reuseStorage, allocationStrategy, liveness);
+      module, identities, budget, reuseStorage, allocator, liveness);
   if (failed(maybePlan)) {
     return failure();
   }

@@ -27,6 +27,8 @@ inline constexpr llvm::StringLiteral kBestFitDecreasingL1Allocator =
     "best-fit-decreasing";
 
 /// Byte-placement input without compiler IR or architecture identities.
+/// Extents are nonzero and aligned. The conflict matrix is square, symmetric,
+/// and has a clear diagonal. The aligned payload base does not exceed budget.
 struct CompilerL1AllocationProblem {
   llvm::SmallVector<uint64_t> regionBytes;
   llvm::SmallVector<llvm::BitVector> conflicts;
@@ -41,6 +43,20 @@ struct CompilerL1AllocationSolution {
   uint64_t arenaBytes;
 };
 
+enum class SRAMPlacementFailureKind {
+  InvalidProblem,
+  StrategyFailure,
+  InvalidSolution,
+  BudgetExceeded,
+};
+
+/// Identifies the failed region only when the error applies to one region.
+struct SRAMPlacementFailure {
+  SRAMPlacementFailureKind kind = SRAMPlacementFailureKind::InvalidProblem;
+  std::optional<unsigned> regionIndex;
+  std::string reason;
+};
+
 /// Selects payload offsets without inspecting or modifying compiler IR.
 class CompilerL1Allocator {
 public:
@@ -52,9 +68,9 @@ private:
   friend FailureOr<CompilerL1AllocationSolution>
   solveCompilerL1Allocation(const CompilerL1Allocator &allocator,
                             const CompilerL1AllocationProblem &problem,
-                            std::optional<unsigned> &failureRegionIndex,
-                            std::string &failureReason);
+                            SRAMPlacementFailure &failureDetail);
 
+  /// A failed strategy must provide a nonempty reason.
   virtual FailureOr<CompilerL1AllocationSolution>
   allocate(const CompilerL1AllocationProblem &problem,
            std::string &failureReason) const = 0;
@@ -64,12 +80,12 @@ private:
 FailureOr<std::unique_ptr<CompilerL1Allocator>>
 createCompilerL1Allocator(llvm::StringRef name, std::string &failureReason);
 
-/// Runs a strategy between common input and output validation.
+/// Runs a strategy between common input and output validation. Failure details
+/// identify the cause without requiring callers to parse diagnostic text.
 FailureOr<CompilerL1AllocationSolution>
 solveCompilerL1Allocation(const CompilerL1Allocator &allocator,
                           const CompilerL1AllocationProblem &problem,
-                          std::optional<unsigned> &failureRegionIndex,
-                          std::string &failureReason);
+                          SRAMPlacementFailure &failureDetail);
 
 } // namespace mlir::tt::ttl
 

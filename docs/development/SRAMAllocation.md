@@ -100,6 +100,16 @@ struct CompilerL1AllocationSolution {
   uint64_t arenaBytes;
 };
 
+enum class SRAMPlacementFailureKind {
+  InvalidProblem, StrategyFailure, InvalidSolution, BudgetExceeded
+};
+
+struct SRAMPlacementFailure {
+  SRAMPlacementFailureKind kind = SRAMPlacementFailureKind::InvalidProblem;
+  std::optional<unsigned> regionIndex;
+  std::string reason;
+};
+
 class CompilerL1Allocator {
 public:
   virtual ~CompilerL1Allocator() = default;
@@ -109,8 +119,7 @@ private:
   friend FailureOr<CompilerL1AllocationSolution>
   solveCompilerL1Allocation(const CompilerL1Allocator &allocator,
                             const CompilerL1AllocationProblem &problem,
-                            std::optional<unsigned> &failureRegionIndex,
-                            std::string &failureReason);
+                            SRAMPlacementFailure &failureDetail);
 
   virtual FailureOr<CompilerL1AllocationSolution>
   allocate(const CompilerL1AllocationProblem &problem,
@@ -123,15 +132,14 @@ createCompilerL1Allocator(llvm::StringRef name, std::string &failureReason);
 FailureOr<CompilerL1AllocationSolution> solveCompilerL1Allocation(
     const CompilerL1Allocator &allocator,
     const CompilerL1AllocationProblem &problem,
-    std::optional<unsigned> &failureRegionIndex,
-    std::string &failureReason);
+    SRAMPlacementFailure &failureDetail);
 
 } // namespace mlir::tt::ttl
 ```
 
 Region vector order defines region indices and deterministic equal-size ordering. Every extent is nonzero and aligned. `conflicts` is a square, symmetric bit matrix with a clear diagonal. `payloadBaseOffset` is aligned and does not exceed `budgetBytes`. The problem is passed as `const` after construction.
 
-`solveCompilerL1Allocation` is the only caller of the private strategy method. It validates the problem, invokes the selected strategy, and validates the solution. On success, `offsets` has one entry per region and `arenaBytes` is the exact maximum payload end, or zero when no regions exist. On failure, `failureReason` contains the diagnostic text and `failureRegionIndex` identifies a region only when the error applies to one region. The allocator layer does not emit diagnostics or modify IR.
+`solveCompilerL1Allocation` is the only caller of the private strategy method. It validates the problem, invokes the selected strategy, and validates the solution. On success, `offsets` has one entry per region and `arenaBytes` is the exact maximum payload end, or zero when no regions exist. On failure, `reason` contains diagnostic text; `regionIndex` identifies a region only when the error applies to one region, and `kind` distinguishes budget exhaustion from invalid input, strategy failure, and invalid output. The allocator layer does not emit diagnostics or modify IR.
 
 `createCompilerL1Allocator` maps stable compiler-option names to implementations. A new implementation derives from `CompilerL1Allocator`, implements `getName()` and `allocate()`, and registers its name in the factory. It cannot change conflict construction or bypass common validation.
 

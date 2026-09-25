@@ -8,6 +8,7 @@
 #include "llvm/Support/MathExtras.h"
 
 #include <algorithm>
+#include <cassert>
 #include <limits>
 #include <optional>
 #include <tuple>
@@ -32,8 +33,7 @@ static LogicalResult validateProblem(const CompilerL1AllocationProblem &problem,
 static LogicalResult
 validateSolution(const CompilerL1AllocationProblem &problem,
                  const CompilerL1AllocationSolution &solution,
-                 std::optional<unsigned> &failureRegionIndex,
-                 std::string &failureReason);
+                 SRAMPlacementFailure &failureDetail);
 
 static FailureOr<uint64_t> alignOffset(uint64_t offset, uint64_t alignment,
                                        std::string &failureReason) {
@@ -253,10 +253,9 @@ LogicalResult validateProblem(const CompilerL1AllocationProblem &problem,
 
 LogicalResult validateSolution(const CompilerL1AllocationProblem &problem,
                                const CompilerL1AllocationSolution &solution,
-                               std::optional<unsigned> &failureRegionIndex,
-                               std::string &failureReason) {
+                               SRAMPlacementFailure &failureDetail) {
   if (solution.offsets.size() != problem.regionBytes.size()) {
-    failureReason = "allocator returned the wrong number of offsets";
+    failureDetail.reason = "allocator returned the wrong number of offsets";
     return failure();
   }
   uint64_t expectedArenaBytes =
@@ -267,21 +266,22 @@ LogicalResult validateSolution(const CompilerL1AllocationProblem &problem,
     uint64_t offset = solution.offsets[regionIndex];
     if (offset < problem.payloadBaseOffset ||
         offset % problem.alignmentBytes != 0) {
-      failureRegionIndex = regionIndex;
-      failureReason = "allocator returned a misaligned payload offset";
+      failureDetail.regionIndex = regionIndex;
+      failureDetail.reason = "allocator returned a misaligned payload offset";
       return failure();
     }
     std::optional<uint64_t> end =
         llvm::checkedAddUnsigned(offset, problem.regionBytes[regionIndex]);
     if (!end) {
-      failureRegionIndex = regionIndex;
-      failureReason = "placed interval overflowed the address range";
+      failureDetail.regionIndex = regionIndex;
+      failureDetail.reason = "placed interval overflowed the address range";
       return failure();
     }
     if (*end > problem.budgetBytes) {
-      failureRegionIndex = regionIndex;
-      failureReason = "placement exceeds L1 budget " +
-                      std::to_string(problem.budgetBytes) + " bytes";
+      failureDetail.kind = SRAMPlacementFailureKind::BudgetExceeded;
+      failureDetail.regionIndex = regionIndex;
+      failureDetail.reason = "placement exceeds L1 budget " +
+                             std::to_string(problem.budgetBytes) + " bytes";
       return failure();
     }
     ends[regionIndex] = *end;
@@ -296,14 +296,16 @@ LogicalResult validateSolution(const CompilerL1AllocationProblem &problem,
       }
       if (ends[leftIndex] > solution.offsets[rightIndex] &&
           ends[rightIndex] > solution.offsets[leftIndex]) {
-        failureRegionIndex = rightIndex;
-        failureReason = "allocator overlapped conflicting payload regions";
+        failureDetail.regionIndex = rightIndex;
+        failureDetail.reason =
+            "allocator overlapped conflicting payload regions";
         return failure();
       }
     }
   }
   if (solution.arenaBytes != expectedArenaBytes) {
-    failureReason = "allocator returned an incorrect arena high-water mark";
+    failureDetail.reason =
+        "allocator returned an incorrect arena high-water mark";
     return failure();
   }
   return success();
@@ -314,17 +316,21 @@ LogicalResult validateSolution(const CompilerL1AllocationProblem &problem,
 FailureOr<CompilerL1AllocationSolution>
 solveCompilerL1Allocation(const CompilerL1Allocator &allocator,
                           const CompilerL1AllocationProblem &problem,
-                          std::optional<unsigned> &failureRegionIndex,
-                          std::string &failureReason) {
-  failureRegionIndex = std::nullopt;
-  if (failed(validateProblem(problem, failureReason))) {
+                          SRAMPlacementFailure &failureDetail) {
+  failureDetail = {};
+  if (failed(validateProblem(problem, failureDetail.reason))) {
     return failure();
   }
+  failureDetail.kind = SRAMPlacementFailureKind::StrategyFailure;
   FailureOr<CompilerL1AllocationSolution> solution =
-      allocator.allocate(problem, failureReason);
-  if (failed(solution) ||
-      failed(validateSolution(problem, *solution, failureRegionIndex,
-                              failureReason))) {
+      allocator.allocate(problem, failureDetail.reason);
+  if (failed(solution)) {
+    assert(!failureDetail.reason.empty() &&
+           "failed SRAM strategy must explain its failure");
+    return failure();
+  }
+  failureDetail.kind = SRAMPlacementFailureKind::InvalidSolution;
+  if (failed(validateSolution(problem, *solution, failureDetail))) {
     return failure();
   }
   return solution;

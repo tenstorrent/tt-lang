@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "CompilerL1Allocation.h"
+#include "CompilerL1Allocator.h"
 #include "DFBAllocationLimits.h"
 #include "DFBConcurrentKernelLivenessAnalysis.h"
 #include "DFBPhysicalAllocationPlan.h"
@@ -293,6 +294,14 @@ struct TTLFinalizeDFBIndicesPass
       signalPassFailure();
       return;
     }
+    std::string strategyFailure;
+    FailureOr<std::unique_ptr<CompilerL1Allocator>> sramAllocator =
+        createCompilerL1Allocator(sramAllocationStrategy, strategyFailure);
+    if (failed(sramAllocator)) {
+      moduleOp.emitOpError() << strategyFailure;
+      signalPassFailure();
+      return;
+    }
     if (failed(validateSynchronizedDFBResetTarget(moduleOp))) {
       signalPassFailure();
       return;
@@ -335,7 +344,7 @@ struct TTLFinalizeDFBIndicesPass
       }
       if (failed(allocateCompilerL1(moduleOp, logicalIdentityAnalysis,
                                     l1BudgetOverride, reuseUserDFBs,
-                                    sramAllocationStrategy, liveness))) {
+                                    **sramAllocator, liveness))) {
         signalPassFailure();
       }
       return;
