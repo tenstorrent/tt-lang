@@ -84,7 +84,7 @@
 // FPU-NEXT:   return;
 
 // =============================================================================
-// FPU path: compute kernel -- binary_op_init_common, add_tiles, exp
+// FPU path: compute kernel -- binary region reconfiguration, add_tiles, exp
 // =============================================================================
 // FPU-LABEL: void kernel_main() {
 // FPU-DAG:   int32_t [[TILES:v[0-9]+]] = 4
@@ -93,13 +93,14 @@
 // FPU-DAG:   size_t [[CZERO:v[0-9]+]] = 0
 
 // CB wrappers declared at top of kernel
-// FPU:       CircularBuffer [[FPU_C_CB0:.*]](get_compile_time_arg_val(0));
-// FPU:       CircularBuffer [[FPU_C_CB1:.*]](get_compile_time_arg_val(1));
-// FPU:       CircularBuffer [[FPU_C_CB2:.*]](get_compile_time_arg_val(2));
+// FPU-DAG:       CircularBuffer [[FPU_C_CB0:.*]](get_compile_time_arg_val(0));
+// FPU-DAG:       CircularBuffer [[FPU_C_CB1:.*]](get_compile_time_arg_val(1));
+// FPU-DAG:       CircularBuffer [[FPU_C_CB2:.*]](get_compile_time_arg_val(2));
 // FPU:       [[FPU_C_CB0]].wait_front([[TILES]]);
 // FPU-NEXT:  [[FPU_C_CB1]].wait_front([[TILES]]);
 // FPU-NEXT:  [[FPU_C_CB2]].reserve_back([[TILES]]);
-// FPU-NEXT:  binary_op_init_common(get_compile_time_arg_val(0), get_compile_time_arg_val(1), get_compile_time_arg_val(2));
+// FPU-NEXT:  reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(0), get_compile_time_arg_val(1));
+// FPU-NEXT:  pack_reconfig_data_format<true>(get_compile_time_arg_val(2));
 
 // FPU:       for (size_t [[CI:.*]] = [[CZERO]]; [[CI]] < [[CBOUND]]; [[CI]] += [[STEP]]) {
 // FPU-NEXT:    for (size_t [[CJ:.*]] = [[CZERO]]; [[CJ]] < [[CBOUND]]; [[CJ]] += [[STEP]]) {
@@ -225,7 +226,7 @@
 // SFPU-NEXT:   return;
 
 // =============================================================================
-// SFPU path: compute kernel -- init_sfpu, copy_tile, add_binary_tile, exp
+// SFPU path: compute kernel -- unary region reconfiguration, copy_tile, add_binary_tile, exp
 // =============================================================================
 // SFPU-LABEL: void kernel_main() {
 // SFPU-DAG:   int32_t [[TILES:v[0-9]+]] = 4
@@ -234,13 +235,14 @@
 // SFPU-DAG:   size_t [[CZERO:v[0-9]+]] = 0
 
 // CB wrappers declared at top of kernel
-// SFPU:       CircularBuffer [[SFPU_C_CB0:.*]](get_compile_time_arg_val(0));
-// SFPU:       CircularBuffer [[SFPU_C_CB1:.*]](get_compile_time_arg_val(1));
-// SFPU:       CircularBuffer [[SFPU_C_CB2:.*]](get_compile_time_arg_val(2));
+// SFPU-DAG:       CircularBuffer [[SFPU_C_CB0:.*]](get_compile_time_arg_val(0));
+// SFPU-DAG:       CircularBuffer [[SFPU_C_CB1:.*]](get_compile_time_arg_val(1));
+// SFPU-DAG:       CircularBuffer [[SFPU_C_CB2:.*]](get_compile_time_arg_val(2));
 // SFPU:       [[SFPU_C_CB0]].wait_front([[TILES]]);
 // SFPU-NEXT:  [[SFPU_C_CB1]].wait_front([[TILES]]);
 // SFPU-NEXT:  [[SFPU_C_CB2]].reserve_back([[TILES]]);
-// SFPU-NEXT:  init_sfpu(get_compile_time_arg_val(0), get_compile_time_arg_val(2));
+// SFPU-NEXT:  reconfig_data_format<SrcOrder::Regular, true>(get_compile_time_arg_val(0), get_compile_time_arg_val(0));
+// SFPU-NEXT:  pack_reconfig_data_format<true>(get_compile_time_arg_val(2));
 
 // SFPU:       for (size_t [[CI:.*]] = [[CZERO]]; [[CI]] < [[CBOUND]]; [[CI]] += [[STEP]]) {
 // SFPU-NEXT:    for (size_t [[CJ:.*]] = [[CZERO]]; [[CJ]] < [[CBOUND]]; [[CJ]] += [[STEP]]) {
@@ -248,9 +250,17 @@
 // Linearized index for copy_tile CB index (from affine.linearize_index, lowered)
 // SFPU:           size_t [[CTILE_Y:v[0-9]+]] = [[CI]] * {{.*}};
 // SFPU-NEXT:      size_t [[CTILE_IDX:v[0-9]+]] = [[CTILE_Y]] + [[CJ]];
+// SFPU-NEXT: reconfig_data_format<SrcOrder::Regular, true>(
 // SFPU-NEXT:      copy_tile_init(get_compile_time_arg_val(0));
+// SFPU-NEXT: #ifndef ARCH_QUASAR
+// SFPU-NEXT: MATH((ckernel::math::_configure_unary_preserve_zero_flag_state_()));
+// SFPU-NEXT: #endif
 // SFPU-NEXT:      copy_tile(get_compile_time_arg_val(0), [[CTILE_IDX]], [[CZERO]]);
+// SFPU-NEXT: reconfig_data_format<SrcOrder::Regular, true>(
 // SFPU-NEXT:      copy_tile_init(get_compile_time_arg_val(1));
+// SFPU-NEXT: #ifndef ARCH_QUASAR
+// SFPU-NEXT: MATH((ckernel::math::_configure_unary_preserve_zero_flag_state_()));
+// SFPU-NEXT: #endif
 // SFPU-NEXT:      copy_tile(get_compile_time_arg_val(1), [[CTILE_IDX]], [[STEP]]);
 // SFPU-NEXT:      add_binary_tile_init();
 // SFPU-NEXT:      add_binary_tile([[CZERO]], [[STEP]], [[CZERO]]);

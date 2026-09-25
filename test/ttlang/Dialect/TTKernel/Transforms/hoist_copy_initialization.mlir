@@ -178,3 +178,239 @@ func.func @copy_before_init(%source: !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>,
   }
   return
 }
+
+// -----
+
+// Matching source setup moves together before the loop.
+// CHECK-LABEL: func.func @reconfigured_copy
+// CHECK: ttkernel.reconfig_data_format(%[[SOURCE:.*]], %[[SOURCE]])
+// CHECK-NEXT: ttkernel.copy_tile_init(%[[SOURCE]])
+// CHECK-NEXT: scf.for
+// CHECK-NOT: ttkernel.reconfig_data_format
+// CHECK-NOT: ttkernel.copy_tile_init
+// CHECK: return
+func.func @reconfigured_copy(%source: !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, %other: !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, %limit: index) {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %four = arith.constant 4 : index
+  %enabled = arith.constant 1 : i32
+  scf.for %iteration = %zero to %four step %one {
+    ttkernel.reconfig_data_format(%source, %source) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>) -> ()
+    ttkernel.copy_tile_init(%source) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>) -> ()
+    ttkernel.copy_tile(%source, %zero, %zero) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  }
+  return
+}
+
+// -----
+
+// Repeated matching setup pairs share one source configuration and init.
+// CHECK-LABEL: func.func @repeated_reconfigured_copy
+// CHECK: ttkernel.reconfig_data_format(%[[SOURCE:.*]], %[[SOURCE]])
+// CHECK-NEXT: ttkernel.copy_tile_init(%[[SOURCE]])
+// CHECK-NEXT: scf.for
+// CHECK-NOT: ttkernel.reconfig_data_format
+// CHECK-NOT: ttkernel.copy_tile_init
+// CHECK: return
+func.func @repeated_reconfigured_copy(%source: !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, %other: !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, %limit: index) {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %four = arith.constant 4 : index
+  %enabled = arith.constant 1 : i32
+  scf.for %iteration = %zero to %four step %one {
+    ttkernel.reconfig_data_format(%source, %source) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>) -> ()
+    ttkernel.copy_tile_init(%source) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>) -> ()
+    ttkernel.copy_tile(%source, %zero, %zero) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+    ttkernel.reconfig_data_format(%source, %source) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>) -> ()
+    ttkernel.copy_tile_init(%source) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>) -> ()
+    ttkernel.copy_tile(%source, %zero, %zero) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  }
+  return
+}
+
+// -----
+
+// Packer accumulation leaves the unpack/math copy configuration intact.
+// CHECK-LABEL: func.func @l1_pack_preserves_copy
+// CHECK: ttkernel.reconfig_data_format(%[[SOURCE:.*]], %[[SOURCE]])
+// CHECK-NEXT: ttkernel.copy_tile_init(%[[SOURCE]])
+// CHECK-NEXT: scf.for
+// CHECK-NOT: ttkernel.reconfig_data_format
+// CHECK-NOT: ttkernel.copy_tile_init
+// CHECK: return
+func.func @l1_pack_preserves_copy(%source: !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, %other: !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, %limit: index) {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %four = arith.constant 4 : index
+  %enabled = arith.constant 1 : i32
+  scf.for %iteration = %zero to %four step %one {
+    ttkernel.reconfig_data_format(%source, %source) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>) -> ()
+    ttkernel.copy_tile_init(%source) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>) -> ()
+    ttkernel.copy_tile(%source, %zero, %zero) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+    ttkernel.pack_reconfig_l1_acc(%enabled) : (i32) -> ()
+  }
+  return
+}
+
+// -----
+
+// An empty loop does not execute source reconfiguration early.
+// CHECK-LABEL: func.func @reconfigured_empty_loop
+// CHECK-NOT: ttkernel.reconfig_data_format
+// CHECK-NOT: ttkernel.copy_tile_init
+// CHECK: scf.for
+// CHECK: ttkernel.reconfig_data_format
+// CHECK: return
+func.func @reconfigured_empty_loop(%source: !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, %other: !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, %limit: index) {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %four = arith.constant 4 : index
+  %enabled = arith.constant 1 : i32
+  scf.for %iteration = %zero to %zero step %one {
+    ttkernel.reconfig_data_format(%source, %source) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>) -> ()
+    ttkernel.copy_tile_init(%source) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>) -> ()
+    ttkernel.copy_tile(%source, %zero, %zero) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  }
+  return
+}
+
+// -----
+
+// Unknown trip counts retain the complete setup pair inside the loop.
+// CHECK-LABEL: func.func @reconfigured_dynamic_loop
+// CHECK-NOT: ttkernel.reconfig_data_format
+// CHECK-NOT: ttkernel.copy_tile_init
+// CHECK: scf.for
+// CHECK: ttkernel.reconfig_data_format
+// CHECK: return
+func.func @reconfigured_dynamic_loop(%source: !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, %other: !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, %limit: index) {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %four = arith.constant 4 : index
+  %enabled = arith.constant 1 : i32
+  scf.for %iteration = %zero to %limit step %one {
+    ttkernel.reconfig_data_format(%source, %source) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>) -> ()
+    ttkernel.copy_tile_init(%source) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>) -> ()
+    ttkernel.copy_tile(%source, %zero, %zero) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  }
+  return
+}
+
+// -----
+
+// Both physical sources must match the copy source.
+// CHECK-LABEL: func.func @mismatched_source_pair
+// CHECK-NOT: ttkernel.reconfig_data_format
+// CHECK-NOT: ttkernel.copy_tile_init
+// CHECK: scf.for
+// CHECK: ttkernel.reconfig_data_format
+// CHECK: return
+func.func @mismatched_source_pair(%source: !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, %other: !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, %limit: index) {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %four = arith.constant 4 : index
+  %enabled = arith.constant 1 : i32
+  scf.for %iteration = %zero to %four step %one {
+    ttkernel.reconfig_data_format(%source, %other) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>) -> ()
+    ttkernel.copy_tile_init(%source) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>) -> ()
+    ttkernel.copy_tile(%source, %zero, %zero) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  }
+  return
+}
+
+// -----
+
+// A trailing source reconfiguration may reset signed-zero state.
+// CHECK-LABEL: func.func @standalone_reconfiguration
+// CHECK-NOT: ttkernel.reconfig_data_format
+// CHECK-NOT: ttkernel.copy_tile_init
+// CHECK: scf.for
+// CHECK: ttkernel.reconfig_data_format
+// CHECK: return
+func.func @standalone_reconfiguration(%source: !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, %other: !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, %limit: index) {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %four = arith.constant 4 : index
+  %enabled = arith.constant 1 : i32
+  scf.for %iteration = %zero to %four step %one {
+    ttkernel.reconfig_data_format(%source, %source) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>) -> ()
+    ttkernel.copy_tile_init(%source) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>) -> ()
+    ttkernel.copy_tile(%source, %zero, %zero) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+    ttkernel.reconfig_data_format(%source, %source) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>) -> ()
+  }
+  return
+}
+
+// -----
+
+// Later format setup must not change formats used by an earlier copy.
+// CHECK-LABEL: func.func @late_reconfiguration
+// CHECK-NOT: ttkernel.reconfig_data_format
+// CHECK-NOT: ttkernel.copy_tile_init
+// CHECK: scf.for
+// CHECK: ttkernel.reconfig_data_format
+// CHECK: return
+func.func @late_reconfiguration(%source: !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, %other: !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, %limit: index) {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %four = arith.constant 4 : index
+  %enabled = arith.constant 1 : i32
+  scf.for %iteration = %zero to %four step %one {
+    ttkernel.copy_tile_init(%source) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>) -> ()
+    ttkernel.copy_tile(%source, %zero, %zero) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+    ttkernel.reconfig_data_format(%source, %source) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>) -> ()
+    ttkernel.copy_tile_init(%source) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>) -> ()
+    ttkernel.copy_tile(%source, %zero, %zero) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  }
+  return
+}
+
+// -----
+
+// An unknown call may clobber the hoisted source configuration.
+// CHECK-LABEL: func.func @reconfigured_unknown_call
+// CHECK-NOT: ttkernel.reconfig_data_format
+// CHECK-NOT: ttkernel.copy_tile_init
+// CHECK: scf.for
+// CHECK: ttkernel.reconfig_data_format
+// CHECK: return
+func.func private @unknown()
+func.func @reconfigured_unknown_call(%source: !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, %other: !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, %limit: index) {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %four = arith.constant 4 : index
+  %enabled = arith.constant 1 : i32
+  scf.for %iteration = %zero to %four step %one {
+    ttkernel.reconfig_data_format(%source, %source) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>) -> ()
+    ttkernel.copy_tile_init(%source) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>) -> ()
+    ttkernel.copy_tile(%source, %zero, %zero) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+    func.call @unknown() : () -> ()
+  }
+  return
+}
+
+// -----
+
+// A second setup pair for a different source prevents hoisting.
+// CHECK-LABEL: func.func @reconfigured_different_source
+// CHECK-NOT: ttkernel.reconfig_data_format
+// CHECK-NOT: ttkernel.copy_tile_init
+// CHECK: scf.for
+// CHECK: ttkernel.reconfig_data_format
+// CHECK: ttkernel.copy_tile_init
+// CHECK: return
+func.func @reconfigured_different_source(%source: !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, %other: !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, %limit: index) {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %four = arith.constant 4 : index
+  %enabled = arith.constant 1 : i32
+  scf.for %iteration = %zero to %four step %one {
+    ttkernel.reconfig_data_format(%source, %source) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>) -> ()
+    ttkernel.copy_tile_init(%source) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>) -> ()
+    ttkernel.copy_tile(%source, %zero, %zero) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+    ttkernel.reconfig_data_format(%other, %other) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>) -> ()
+    ttkernel.copy_tile_init(%other) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>) -> ()
+    ttkernel.copy_tile(%other, %zero, %zero) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, index, index) -> ()
+  }
+  return
+}

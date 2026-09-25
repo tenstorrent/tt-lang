@@ -78,7 +78,7 @@ def transpose_kernel(inp, out):
 
 # CHECK-CPP: tile_regs_acquire();
 
-# CHECK-CPP: transpose_wh_init(
+# CHECK-CPP: transpose_init(
 # CHECK-CPP: transpose_wh_tile(
 
 # CHECK-CPP: tile_regs_commit();
