@@ -14,4 +14,5 @@ _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly _SCRIPT_DIR
 
 export TTLANG_EMULE_INSTALL=1
+unset TTLANG_EMULE_TARGET
 exec "${_SCRIPT_DIR}/tt-lang-emule-container.sh"

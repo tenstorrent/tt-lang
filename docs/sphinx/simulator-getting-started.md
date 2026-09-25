@@ -9,7 +9,7 @@ working directory, except where a container shell is specified.
 
 The repository provides a pinned environment through
 `config/tt-lang-emule-stack.json`. This manifest records the required compiler
-baseline, tt-emule revision, tt-metal revision, base image, and P150 target.
+baseline, tt-emule revision, tt-metal revision, base image, and hardware profiles.
 Installation builds the current TT-Lang checkout, which must contain that
 compiler baseline.
 
@@ -72,7 +72,9 @@ CPU, memory, and disk space on its first run. The installer prints the runtime
 image, compiler build volume, and runtime cache volume names. On success it also
 prints the compiler commit for which the environment was installed.
 
-Installation prepares the compiler before the first program run. Subsequent
+Installation prepares the compiler for both supported targets before the first
+program run. Selecting another target reuses the runtime image and compiler
+build. Default runtime cache volumes are separate for each target. Subsequent
 `tt-lang-sim` runs reuse the installed environment, which Docker retains in its
 image and volume caches. Run the installer again after changing compiler
 commits or build inputs, or to restore a missing image or incomplete compiler
@@ -90,7 +92,28 @@ After installation:
 
 The program imports the real `ttl` and `ttnn` packages from the installed
 environment. The compiler generates kernels and tt-emule executes them on the
-recorded emulated P150 target.
+default emulated P150 target.
+
+### Select emulated hardware
+
+The emule backend accepts `--target=NAME` or `--target NAME` before the program
+argument separator (`--`). Available profiles are recorded in the stack manifest:
+
+| Target | Emulated hardware | Compute grid |
+| --- | --- | --- |
+| `p150` (default) | One unharvested Blackhole P150 | 13 x 10 |
+| `p100` | One Blackhole P100 with the descriptor's harvested resources | 11 x 10 |
+
+For example, run the same program on P100:
+
+```bash
+./bin/tt-lang-sim --backend=emule --target=p100 examples/eltwise_add.py
+```
+
+Target selection configures the cluster descriptor and mesh-device setting
+together. Compiler, tt-metal, and tt-emule revisions remain pinned. Programs
+must fit the selected device's resources. This option selects hardware for the
+emule backend; Python simulation uses its existing grid and memory options.
 
 Arguments belonging to the program follow `--`:
 
@@ -134,6 +157,9 @@ working directory used by the emulator launcher:
 ./scripts/shell-tt-lang-emule.sh
 ```
 
+Pass `--target=p100` to this helper to test in the P100 environment. Omitting
+the option selects P150, matching the simulator launcher.
+
 The helper verifies the installed compiler and activates its environment before
 starting Bash. The compiler build is available at `/ttlang-build`, and the source
 checkout at `/workspace`. Linked worktrees use the same Git metadata mount as
@@ -160,7 +186,7 @@ the installed Linux environment.
 ## Validate and inspect the environment
 
 The installer validates the current TT-Lang checkout against the manifest's
-compiler baseline. It also verifies the emulator checkout commit, the P150
+compiler baseline. It also verifies the emulator checkout commit, the default
 descriptor, and the emulator's exact tt-metal pin before building. Run the same
 checks directly with:
 
@@ -170,7 +196,9 @@ python3 scripts/tt-lang-emule-stack.py \
   validate --compiler-source . --emulator-source /path/to/emulator
 ```
 
-Every built image records its resolved inputs as OCI labels and in
+Place `--target=p100` before `validate` to validate the P100 descriptor instead.
+
+Every built image records its resolved inputs and default target as OCI labels and in
 `/opt/tt-emule-runtime/stack.json`. The original supported-stack manifest is
 stored beside it as `source-manifest.json`, and its SHA-256 is verified while
 the image is built. These records identify the supported manifest and exact
@@ -186,10 +214,10 @@ docker run --rm --entrypoint cat tt-lang-emule:TAG \
 
 ## Known limitations
 
-The supported target is a single emulated Blackhole P150 device with the full,
-unharvested 13x10 compute grid. The launcher selects the emulator's P150
-descriptor and configures tt-metal's hybrid allocator before opening the
-device. Complete models and multi-device workloads require further validation.
+The supported profiles represent a single emulated Blackhole P150 or P100. The
+launcher selects the profile's descriptor and configures tt-metal's hybrid
+allocator before opening the device. Complete models and multi-device workloads
+require further validation.
 
 Known compiler-suite failures with the pinned runtime include RISC-V inline
 assembly rejected by the x86 JIT, a missing RMSNorm SFPU header, incorrect results

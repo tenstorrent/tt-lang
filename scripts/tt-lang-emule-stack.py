@@ -11,7 +11,6 @@ import subprocess
 import sys
 from pathlib import Path, PurePosixPath
 
-
 SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 IMAGE_PATTERN = re.compile(r"[^@\s]+@sha256:[0-9a-f]{64}")
 
@@ -49,7 +48,7 @@ def require_repository(mapping, name):
     return value
 
 
-def load_stack(path):
+def load_stack(path, target_id=None):
     try:
         manifest_bytes = path.read_bytes()
         stack = json.loads(manifest_bytes)
@@ -58,19 +57,36 @@ def load_stack(path):
 
     if not isinstance(stack, dict):
         raise StackError("stack manifest must be an object")
-    if stack.get("schema_version") != 1:
-        raise StackError("schema_version must be 1")
+    if stack.get("schema_version") != 2:
+        raise StackError("schema_version must be 2")
 
     compiler = require_mapping(stack.get("compiler"), "compiler")
     emulator = require_mapping(stack.get("emulator"), "emulator")
     metal = require_mapping(stack.get("metal"), "metal")
     runtime = require_mapping(stack.get("runtime"), "runtime")
-    target = require_mapping(stack.get("target"), "target")
-
-    descriptor = require_string(target, "cluster_descriptor", "target")
-    descriptor_path = PurePosixPath(descriptor)
-    if descriptor_path.is_absolute() or ".." in descriptor_path.parts:
-        raise StackError("target.cluster_descriptor must be a safe relative path")
+    targets = require_mapping(stack.get("targets"), "targets")
+    default_target = require_string(stack, "default_target", "stack")
+    for name, profile in targets.items():
+        if re.fullmatch(r"[a-z0-9][a-z0-9-]*", name) is None:
+            raise StackError(
+                "target identifiers must use lowercase letters, digits or hyphens"
+            )
+        profile = require_mapping(profile, f"targets.{name}")
+        descriptor = require_string(profile, "cluster_descriptor", f"targets.{name}")
+        descriptor_path = PurePosixPath(descriptor)
+        if descriptor_path.is_absolute() or ".." in descriptor_path.parts:
+            raise StackError(
+                f"targets.{name}.cluster_descriptor must be a safe relative path"
+            )
+        require_string(profile, "name", f"targets.{name}")
+        require_string(profile, "mesh_device", f"targets.{name}")
+    if default_target not in targets:
+        raise StackError("default_target must name a target in targets")
+    if target_id is None:
+        target_id = default_target
+    if target_id not in targets:
+        raise StackError(f"unknown target '{target_id}'; choose {', '.join(targets)}")
+    target = targets[target_id]
 
     base_image = require_string(runtime, "base_image", "runtime")
     if IMAGE_PATTERN.fullmatch(base_image) is None:
@@ -85,9 +101,10 @@ def load_stack(path):
         "TTLANG_METAL_REPOSITORY": require_repository(metal, "metal"),
         "TTLANG_METAL_COMMIT": require_sha(metal, "commit", "metal"),
         "TTLANG_EMULE_BASE_IMAGE": base_image,
-        "TTLANG_EMULE_TARGET": require_string(target, "name", "target"),
-        "TTLANG_EMULE_CLUSTER_DESCRIPTOR": descriptor,
-        "TTLANG_EMULE_MESH_DEVICE": require_string(target, "mesh_device", "target"),
+        "TTLANG_EMULE_TARGET_ID": target_id,
+        "TTLANG_EMULE_TARGET": target["name"],
+        "TTLANG_EMULE_CLUSTER_DESCRIPTOR": target["cluster_descriptor"],
+        "TTLANG_EMULE_MESH_DEVICE": target["mesh_device"],
     }
     return values
 
@@ -163,6 +180,9 @@ def parse_args():
     parser.add_argument(
         "--manifest", type=Path, required=True, help="stack manifest to inspect"
     )
+    parser.add_argument(
+        "--target", help="emulated hardware profile (default: manifest default)"
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
     subparsers.add_parser("emit", help="emit tab-separated values for the launcher")
     validate = subparsers.add_parser("validate", help="validate source checkouts")
@@ -175,7 +195,7 @@ def parse_args():
 def main():
     arguments = parse_args()
     try:
-        values = load_stack(arguments.manifest)
+        values = load_stack(arguments.manifest, arguments.target)
         if arguments.command == "emit":
             for key, value in values.items():
                 print(f"{key}\t{value}")
