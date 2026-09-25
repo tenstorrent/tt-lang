@@ -16,6 +16,7 @@
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "ttlang/Analysis/ExecutionCountAnalysis.h"
@@ -217,6 +218,14 @@ void checkKnownSubset(Operation *op, const LaunchNodeDomain &current,
                       ArrayRef<std::pair<int64_t, PipeRole>> roles,
                       ModuleState &state);
 
+struct UnknownGuardDiagnostic {
+  const void *guardLocation;
+  StringRef operationName;
+  SmallVector<std::pair<int64_t, PipeRole>> roles;
+  // Pipes in one PipeNet can have different source or destination domains.
+  LaunchNodeDomain allowedDomain;
+};
+
 /// Mutable facts recorded during one verifier pass.
 struct ModuleState {
   /// Constructs state for schedule verification.
@@ -240,10 +249,45 @@ struct ModuleState {
   /// Logical identities required by guard verification.
   const DFBLogicalIdentityAnalysis *dfbIdentities = nullptr;
   bool sawError = false;
+  llvm::DenseMap<const void *, SmallVector<UnknownGuardDiagnostic>>
+      emittedUnknownGuardDiagnostics;
   llvm::DenseMap<int64_t, LaunchNodeDomain> dfbProducerDomains;
   SmallVector<WaitUse> waitUses;
   SmallVector<PipeEvent> pipeEvents;
   llvm::DenseMap<Operation *, SmallVector<std::size_t>> pipeEventIndices;
+
+  bool
+  recordUnknownGuardDiagnostic(Operation *op, Operation *unanalyzableOp,
+                               ArrayRef<std::pair<int64_t, PipeRole>> roles,
+                               const LaunchNodeDomain &allowedDomain) {
+    auto sourceLoc = mlir::dyn_cast<FileLineColLoc>(op->getLoc());
+    auto guardLoc =
+        unanalyzableOp
+            ? mlir::dyn_cast<FileLineColLoc>(unanalyzableOp->getLoc())
+            : FileLineColLoc();
+    if (!sourceLoc || !guardLoc) {
+      return true;
+    }
+
+    SmallVector<std::pair<int64_t, PipeRole>> sortedRoles(roles);
+    llvm::sort(sortedRoles);
+    auto &diagnostics =
+        emittedUnknownGuardDiagnostics[sourceLoc.getAsOpaquePointer()];
+    const void *guardLocation = guardLoc.getAsOpaquePointer();
+    StringRef operationName = op->getName().getStringRef();
+    if (llvm::any_of(diagnostics,
+                     [&](const UnknownGuardDiagnostic &diagnostic) {
+                       return diagnostic.guardLocation == guardLocation &&
+                              diagnostic.operationName == operationName &&
+                              llvm::equal(diagnostic.roles, sortedRoles) &&
+                              diagnostic.allowedDomain == allowedDomain;
+                     })) {
+      return false;
+    }
+    diagnostics.push_back(
+        {guardLocation, operationName, std::move(sortedRoles), allowedDomain});
+    return true;
+  }
 
   /// Diagnose malformed selected-pipe IR when this pass runs directly.
   void reportInvalidSelectedPipeDefinition(CopyOp copyOp) {
@@ -625,6 +669,11 @@ void checkKnownSubset(Operation *op, const LaunchNodeDomain &current,
     return;
   }
   if (!current.known) {
+    state.sawError = true;
+    if (!state.recordUnknownGuardDiagnostic(op, unanalyzableOp, roles,
+                                            allowed)) {
+      return;
+    }
     auto diag = op->emitOpError()
                 << "could not statically analyze the PipeNet guard "
                    "around this op; rewrite using `net.is_src()` / "
@@ -635,7 +684,6 @@ void checkKnownSubset(Operation *op, const LaunchNodeDomain &current,
       diag.attachNote(unanalyzableOp->getLoc())
           << "this expression is not statically analyzable";
     }
-    state.sawError = true;
     return;
   }
   LaunchNodeDomain extra = current.subtract(allowed);
