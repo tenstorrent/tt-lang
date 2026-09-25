@@ -75,58 +75,11 @@ installation. From the root of an installed source checkout:
 The script imports the real `ttl` and `ttnn` packages, TT-Lang compiles each
 operation, and tt-metal dispatches the generated kernels to tt-emule.
 
-The supported compiler baseline, emulator commit, tt-metal, container, and
-target inputs are recorded together in `config/tt-lang-emule-stack.json`. The
-installer validates that the current TT-Lang checkout contains the compiler
-baseline. It also verifies the emulator checkout commit, the P150 descriptor,
-and the emulator's exact tt-metal pin before building. Run the same checks
-directly with:
-
-```bash
-python3 scripts/tt-lang-emule-stack.py \
-  --manifest config/tt-lang-emule-stack.json \
-  validate --compiler-source . --emulator-source /path/to/emulator
-```
-
-Every built image records its resolved inputs as OCI labels and in
-`/opt/tt-emule-runtime/stack.json`. The source manifest is stored beside it as
-`source-manifest.json`, and its SHA-256 is verified while the image is built.
-These records identify both the starting manifest and the exact runtime inputs,
-including any maintainer overrides. Use these records to identify an artifact
-and workload tests to evaluate its compatibility. Inspect an artifact with:
-
-```bash
-docker image inspect tt-lang-emule:TAG \
-  --format '{{json .Config.Labels}}'
-docker run --rm --entrypoint cat tt-lang-emule:TAG \
-  /opt/tt-emule-runtime/stack.json
-```
-
-The backend requires a working Docker-compatible daemon. Its image is Linux
-amd64 because tt-emule JITs x86-64 shared objects. On Apple Silicon, use Docker
-Desktop with x86 emulation enabled, or start an x86-64 Colima VM:
-
-```bash
-brew install colima docker
-softwareupdate --install-rosetta --agree-to-license
-colima start --vm-type vz --vz-rosetta --cpus 8 --memory 12
-```
-
-The Colima command uses Rosetta to run amd64 containers in an Apple
-Virtualization.framework VM. If Rosetta cannot be installed, an x86-64 QEMU VM
-also works but is substantially slower and requires `brew install qemu`.
-
-The installer builds the pinned tt-emule/tt-metal image and TT-Lang compiler.
-The compiler build and the tt-metal and tt-emule JIT caches live in named Docker
-volumes. Execution requires the installed compiler source to match the current
-checkout; after changing commits or compiler/build inputs, run the installer
-again. Workload scripts can be edited and rerun using the installed compiler.
-
-The initial supported target is a single emulated Blackhole P150 device with
-the full, unharvested 13x10 compute grid. The launcher selects the emulator's
-P150 descriptor and configures tt-metal's hybrid allocator before the device
-is opened. The installer checks that the runtime supplies the required P150
-descriptor before starting the Docker build.
+The getting-started guide covers
+[environment installation](simulator-getting-started.md#install-the-environment),
+[compiler tests](simulator-getting-started.md#run-tests-with-the-existing-test-framework),
+[source validation and image provenance](simulator-getting-started.md#validate-and-inspect-the-environment),
+and [supported workloads](simulator-getting-started.md#known-limitations).
 
 Use the Python backend for simulator options such as `--grid`, `--trace`, and
 `--no-float32-promotion`. For the emule backend, the pinned environment supplies

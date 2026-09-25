@@ -159,13 +159,9 @@ and report locations. Apply the installed environment's paths:
 
 A separate native Linux build uses its own build directory. Compiler-only
 tests exercise compiler behavior; device execution tests exercise tt-emule in
-the installed Linux environment. See
-[`test/TESTING.md`](https://github.com/tenstorrent/tt-lang/blob/main/test/TESTING.md)
-for the suite boundaries, device requirements, pytest selection, lit paths, and
-output locations. See [Testing](testing.md) for the short command reference and
-[Compiler suite on tt-emule](compiler-emule-test-status.md) for a historical
-full-suite result and failure triage at the recorded revisions. Validate later
-revisions with a fresh test run.
+the installed Linux environment. [Compiler suite on tt-emule](compiler-emule-test-status.md)
+records a historical full-suite result and failure triage at the recorded
+revisions. Validate later revisions with a fresh test run.
 
 ## Validate and inspect the environment
 
