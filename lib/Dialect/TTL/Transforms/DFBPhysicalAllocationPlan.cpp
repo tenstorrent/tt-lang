@@ -403,7 +403,7 @@ struct DFBPairConflictRequirements {
   bool requireMatchingPointerOwners = true;
   bool useAllocationGroupEpochs = false;
   bool allowCapacityEnvelope = false;
-  bool allowEpochSeparatedScratchStorage = true;
+  bool requireStaticStorageOwnership = false;
 };
 
 class DFBPhysicalConflictModelBuilder {
@@ -494,7 +494,7 @@ public:
         requirements.requireMatchingElementType = false;
         requirements.requireMatchingTransactions = false;
         requirements.requireMatchingPointerOwners = false;
-        requirements.allowEpochSeparatedScratchStorage = false;
+        requirements.requireStaticStorageOwnership = true;
         addPairConflicts(model, liveness, lhsIndex, rhsIndex, requirements);
       }
     }
@@ -603,7 +603,7 @@ private:
     if (sharedNodes.empty()) {
       return;
     }
-    if (!requirements.allowEpochSeparatedScratchStorage &&
+    if (requirements.requireStaticStorageOwnership &&
         (requiresReconfigurationStorage(lhs) ||
          requiresReconfigurationStorage(rhs))) {
       addEvidence(model, lhs, rhs, lhsIndex, rhsIndex,
