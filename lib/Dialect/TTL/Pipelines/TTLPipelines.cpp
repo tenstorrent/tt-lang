@@ -125,6 +125,7 @@ void createTTLToTTKernelPipeline(OpPassManager &pm,
   }
   pm.addNestedPass<func::FuncOp>(createTTLAnnotateCBAssociations());
   pm.addPass(createTTLVerifyDFBSPSC());
+  pm.addPass(createTTLVerifyDFBLifecycle());
   pm.addPass(createTTLErasePipeNetScopes());
   {
     TTLValidateCBBudgetOptions budgetOpts;

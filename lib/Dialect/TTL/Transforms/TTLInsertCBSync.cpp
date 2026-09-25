@@ -25,6 +25,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Dominance.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -121,16 +122,382 @@ static bool hasAcquireKind(Operation *operation, DFBAcquireReleaseKind kind) {
   llvm_unreachable("unknown DFB acquire/release kind");
 }
 
+static bool isSameKindAcquisition(Operation *operation,
+                                  DFBAcquireInterval interval) {
+  return hasAcquireKind(operation, interval.kind) &&
+         getDFBAcquireDFB(operation) == interval.dfb;
+}
+
 static Operation *findLocalKindBoundary(DFBAcquireInterval interval) {
   for (Operation &operation :
        llvm::make_range(std::next(interval.acquire->getIterator()),
                         interval.acquire->getBlock()->end())) {
-    if (hasAcquireKind(&operation, interval.kind) &&
-        getDFBAcquireDFB(&operation) == interval.dfb) {
+    if (isSameKindAcquisition(&operation, interval)) {
       return &operation;
     }
   }
   return nullptr;
+}
+
+// The next same-kind acquisition of an interval's DFB lies inside `boundary`,
+// a region operation of the ordering block; `firstAcquire` is the first such
+// acquisition inside it in program order.
+struct NestedAcquisitionBoundary {
+  Operation *boundary = nullptr;
+  Operation *firstAcquire = nullptr;
+};
+
+template <typename Root>
+static Operation *findFirstSameKindAcquisition(Root &root,
+                                               DFBAcquireInterval interval) {
+  Operation *found = nullptr;
+  root.walk([&](Operation *operation) {
+    if (!isSameKindAcquisition(operation, interval)) {
+      return WalkResult::advance();
+    }
+    found = operation;
+    return WalkResult::interrupt();
+  });
+  return found;
+}
+
+static std::optional<NestedAcquisitionBoundary>
+getNestedAcquisitionBoundary(DFBAcquireInterval interval) {
+  Operation *boundary = interval.kindBoundary;
+  if (!boundary || isDFBAcquireOp(boundary)) {
+    return std::nullopt;
+  }
+  Operation *firstAcquire = findFirstSameKindAcquisition(*boundary, interval);
+  assert(firstAcquire && "nested boundary must contain an acquisition");
+  return NestedAcquisitionBoundary{boundary, firstAcquire};
+}
+
+// Whether every execution of `op` enters one of its regions.
+static bool coversEveryPath(Operation *op) {
+  if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
+    return !ifOp.getElseRegion().empty();
+  }
+  if (auto ifOp = dyn_cast<affine::AffineIfOp>(op)) {
+    return ifOp.hasElse();
+  }
+  return isa<scf::IndexSwitchOp, scf::ExecuteRegionOp>(op);
+}
+
+static DFBProtocolEffectKind getAcquireEffectKind(DFBAcquireInterval interval) {
+  return interval.kind == DFBAcquireReleaseKind::Producer
+             ? DFBProtocolEffectKind::Reserve
+             : DFBProtocolEffectKind::Wait;
+}
+
+// Whether `region` contains an acquisition or release of one kind on `dfb`.
+static bool regionHasProtocolActionOfKind(Region &region, Value dfb,
+                                          DFBProtocolEffectKind acquireKind,
+                                          DFBProtocolEffectKind releaseKind) {
+  return region
+      .walk([&](Operation *operation) {
+        return hasProtocolEffect(operation, dfb, acquireKind) ||
+                       hasProtocolEffect(operation, dfb, releaseKind)
+                   ? WalkResult::interrupt()
+                   : WalkResult::advance();
+      })
+      .wasInterrupted();
+}
+
+// Protocol actions of one kind on the DFB along one path through a region of
+// a nested-acquisition boundary: the region's top-level operations and, when
+// the path leads to a same-kind acquisition in further nested regions, the
+// operations on the way to it.
+struct BoundaryPathOutline {
+  // First same-kind acquisition on the path, or null.
+  Operation *firstAcquire = nullptr;
+
+  // Releases that no acquisition on the path precedes, in program order.
+  SmallVector<Operation *> unownedReleases;
+
+  // A protocol action whose execution on the path is not decided by entering
+  // the region: inside a nested region off the path before the first
+  // acquisition, inside a loop, or an unowned release after the first
+  // acquisition at the path's level.
+  Operation *indefiniteAction = nullptr;
+};
+
+class BoundaryPathOutliner {
+public:
+  BoundaryPathOutliner(Value dfb, DFBProtocolEffectKind acquireKind,
+                       DFBProtocolEffectKind releaseKind)
+      : dfb(dfb), acquireKind(acquireKind), releaseKind(releaseKind) {}
+
+  // `target` is the first same-kind acquisition inside `region`, or null.
+  BoundaryPathOutline outline(Region &region, Operation *target) {
+    BoundaryPathOutline result;
+    if (region.empty()) {
+      return result;
+    }
+    if (!region.hasOneBlock()) {
+      result.indefiniteAction = region.getParentOp();
+      return result;
+    }
+    int64_t open = 0;
+    visitBlock(region.front(), target, /*repeated=*/false, open, result);
+    return result;
+  }
+
+private:
+  void visitBlock(Block &block, Operation *target, bool repeated, int64_t &open,
+                  BoundaryPathOutline &result) {
+    Operation *targetAncestor =
+        target ? block.findAncestorOpInBlock(*target) : nullptr;
+    for (Operation &operation : block) {
+      if (result.indefiniteAction) {
+        return;
+      }
+      if (&operation == targetAncestor && &operation != target) {
+        Region *next = target->getParentRegion();
+        while (next->getParentOp() != &operation) {
+          next = next->getParentOp()->getParentRegion();
+        }
+        for (Region &other : operation.getRegions()) {
+          if (&other != next && regionHasProtocolActionOfKind(
+                                    other, dfb, acquireKind, releaseKind)) {
+            result.indefiniteAction = &operation;
+            return;
+          }
+        }
+        if (!next->hasOneBlock()) {
+          result.indefiniteAction = &operation;
+          return;
+        }
+        visitBlock(next->front(), target,
+                   repeated || !executesRegionsAtMostOnce(&operation), open,
+                   result);
+        continue;
+      }
+      if (operation.getNumRegions() != 0) {
+        // Actions after the path's first acquisition matter only when they
+        // release the held block; a nested region there is left to its own
+        // acquisitions.
+        if (result.firstAcquire) {
+          continue;
+        }
+        for (Region &region : operation.getRegions()) {
+          if (regionHasProtocolActionOfKind(region, dfb, acquireKind,
+                                            releaseKind)) {
+            result.indefiniteAction = &operation;
+            return;
+          }
+        }
+        continue;
+      }
+      auto access = dyn_cast<DFBAccessOpInterface>(&operation);
+      if (!access) {
+        continue;
+      }
+      for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
+        if (effect.dfb != dfb) {
+          continue;
+        }
+        if (effect.kind == acquireKind) {
+          if (!result.firstAcquire) {
+            result.firstAcquire = &operation;
+          }
+          ++open;
+          continue;
+        }
+        if (effect.kind != releaseKind) {
+          continue;
+        }
+        if (open > 0) {
+          --open;
+          continue;
+        }
+        if (repeated || result.firstAcquire) {
+          result.indefiniteAction = &operation;
+          return;
+        }
+        result.unownedReleases.push_back(&operation);
+      }
+    }
+  }
+
+  Value dfb;
+  DFBProtocolEffectKind acquireKind;
+  DFBProtocolEffectKind releaseKind;
+};
+
+// The first release from `begin` to the end of its block that no acquisition
+// in that range precedes, or null.
+static Operation *findUnownedReleaseFrom(Value dfb, Block::iterator begin,
+                                         Block *block,
+                                         DFBProtocolEffectKind acquireKind,
+                                         DFBProtocolEffectKind releaseKind) {
+  int64_t open = 0;
+  Operation *unowned = nullptr;
+  for (Operation &operation : llvm::make_range(begin, block->end())) {
+    operation.walk<WalkOrder::PreOrder>([&](Operation *nested) {
+      auto access = dyn_cast<DFBAccessOpInterface>(nested);
+      if (!access) {
+        return WalkResult::advance();
+      }
+      for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
+        if (effect.dfb != dfb) {
+          continue;
+        }
+        if (effect.kind == acquireKind) {
+          ++open;
+        } else if (effect.kind == releaseKind) {
+          if (open == 0) {
+            unowned = nested;
+            return WalkResult::interrupt();
+          }
+          --open;
+        }
+      }
+      return WalkResult::advance();
+    });
+    if (unowned) {
+      return unowned;
+    }
+  }
+  return nullptr;
+}
+
+enum class NestedAcquisitionResolution {
+  // No release of the held block exists inside the boundary; the normal
+  // placement inserts one after the last owned use, before the boundary.
+  InsertBeforeBoundary,
+  // Every path through the boundary releases the held block before acquiring
+  // the DFB again; the releases stay where they are.
+  KeepReleases,
+  // Some paths release the held block inside the boundary and others do not;
+  // those releases move before the boundary.
+  HoistReleases,
+};
+
+struct NestedAcquisitionPlan {
+  NestedAcquisitionResolution resolution =
+      NestedAcquisitionResolution::InsertBeforeBoundary;
+  SmallVector<Operation *> releases;
+};
+
+// Decide how a block held at a nested-acquisition boundary is released. The
+// block is released on a path through the boundary when that path performs
+// exactly one release of its kind on the DFB that no acquisition on the path
+// precedes, at the top level of the region or on the way to the path's first
+// acquisition through at-most-once regions. Anything else that releases the
+// DFB inside the boundary, and any release after the boundary that no later
+// acquisition owns, marks the program invalid.
+static PlanningResult<NestedAcquisitionPlan> planNestedAcquisitionBoundary(
+    DFBAcquireInterval interval, const NestedAcquisitionBoundary &nested,
+    Operation *lastOwnedUse, DFBProtocolEffectKind releaseEffectKind,
+    StringRef effectName) {
+  using Result = PlanningResult<NestedAcquisitionPlan>;
+  Block *orderingBlock = nested.boundary->getBlock();
+  Operation *start = orderingBlock->findAncestorOpInBlock(*interval.acquire);
+  assert(start && "acquisition must project into the ordering block");
+  bool guarded = start != interval.acquire;
+  DFBProtocolEffectKind acquireKind = getAcquireEffectKind(interval);
+
+  std::string beforeRegionAdvice =
+      ("release it before that region (" + effectName +
+       " it) or acquire the block inside the region")
+          .str();
+  std::string everyPathAdvice =
+      ("release it before that region (" + effectName +
+       " it) or on every path through the region")
+          .str();
+  auto invalid = [&](const std::string &advice) {
+    return Result::invalidIR(
+        interval.acquire,
+        "dataflow buffer block is still acquired when a nested region "
+        "acquires the same buffer again; " +
+            advice,
+        nested.firstAcquire, "the buffer is acquired again here");
+  };
+
+  BoundaryPathOutliner outliner(interval.dfb, acquireKind, releaseEffectKind);
+  NestedAcquisitionPlan plan;
+  bool everyPathReleased = coversEveryPath(nested.boundary);
+  for (Region &region : nested.boundary->getRegions()) {
+    BoundaryPathOutline outline = outliner.outline(
+        region, findFirstSameKindAcquisition(region, interval));
+    if (outline.indefiniteAction || outline.unownedReleases.size() > 1) {
+      return invalid(beforeRegionAdvice);
+    }
+    if (outline.unownedReleases.empty()) {
+      everyPathReleased = false;
+      continue;
+    }
+    plan.releases.push_back(outline.unownedReleases.front());
+  }
+  if (findUnownedReleaseFrom(interval.dfb,
+                             std::next(nested.boundary->getIterator()),
+                             orderingBlock, acquireKind, releaseEffectKind)) {
+    return invalid(beforeRegionAdvice);
+  }
+  if (everyPathReleased) {
+    plan.resolution = NestedAcquisitionResolution::KeepReleases;
+    return Result::planned(std::move(plan));
+  }
+
+  Operation *projectedLast =
+      lastOwnedUse ? orderingBlock->findAncestorOpInBlock(*lastOwnedUse)
+                   : nullptr;
+  bool usedInOrAfterBoundary =
+      lastOwnedUse && lastOwnedUse != start &&
+      (!projectedLast || !projectedLast->isBeforeInBlock(nested.boundary));
+  if (usedInOrAfterBoundary) {
+    return invalid(plan.releases.empty() ? beforeRegionAdvice
+                                         : everyPathAdvice);
+  }
+  if (plan.releases.empty()) {
+    return Result::planned(std::move(plan));
+  }
+  // A guarded acquisition places its release under the acquiring condition;
+  // moving a release out of the boundary into that placement is not modeled.
+  if (guarded) {
+    return invalid(everyPathAdvice);
+  }
+  plan.resolution = NestedAcquisitionResolution::HoistReleases;
+  return Result::planned(std::move(plan));
+}
+
+// Whether a release the search attributes to the acquisition projects before
+// `boundary` in the ordering block. Guarded local releases lie inside the
+// guard, which precedes the boundary.
+static bool hasOwnedReleaseBeforeBoundary(const DFBReleaseSearch &search,
+                                          Operation *boundary) {
+  if (!search.guardedLocalReleases.empty()) {
+    return true;
+  }
+  Block *orderingBlock = boundary->getBlock();
+  auto precedesBoundary = [&](Operation *release) {
+    Operation *projected = orderingBlock->findAncestorOpInBlock(*release);
+    return projected && projected->isBeforeInBlock(boundary);
+  };
+  return llvm::any_of(search.sameLevelReleases, precedesBoundary) ||
+         llvm::any_of(search.releasesBeforeOwnedUses, precedesBoundary);
+}
+
+// Whether a release of `releaseKind` on the interval's DFB, direct or nested,
+// lies strictly between the acquisition and `boundary` in their block.
+static bool hasReleaseBefore(DFBAcquireInterval interval, Operation *boundary,
+                             DFBProtocolEffectKind releaseKind) {
+  for (Operation &operation :
+       llvm::make_range(std::next(interval.acquire->getIterator()),
+                        boundary->getIterator())) {
+    bool found =
+        operation
+            .walk([&](Operation *nested) {
+              return hasProtocolEffect(nested, interval.dfb, releaseKind)
+                         ? WalkResult::interrupt()
+                         : WalkResult::advance();
+            })
+            .wasInterrupted();
+    if (found) {
+      return true;
+    }
+  }
+  return false;
 }
 
 static bool isBeforeLocalKindBoundary(Operation *operation,
@@ -528,6 +895,82 @@ static PlanningResult<SmallVector<MissingReleasePlan>> planMissingReleases(
     DFBReleaseSearch releaseSearch =
         findOwnedDFBReleases(interval, last, releases);
 
+    // A data-movement kernel addresses a DFB through one read or write
+    // pointer, so a same-kind acquisition while an earlier block is still
+    // acquired returns that block again and the copies meant for either
+    // address one slot. Compute kernels may hold several blocks because
+    // consecutive acquisitions are coalesced into one multi-block acquisition
+    // with offset views.
+    if (Operation *localBoundary = findLocalKindBoundary(interval);
+        localBoundary &&
+        getKernelThreadType(acquire->getParentOfType<func::FuncOp>()) !=
+            ttkernel::ThreadType::Compute &&
+        !hasReleaseBefore(interval, localBoundary, releaseEffectKind)) {
+      // Direct uses after the next acquisition in the acquiring block belong
+      // to that acquisition, also for a guarded acquisition whose ordering
+      // block is the guard's.
+      DFBAcquireInterval localInterval = interval;
+      localInterval.kindBoundary = localBoundary;
+      Operation *localLast = acquire->getBlock()->findAncestorOpInBlock(
+          *findLastDFBAcquireOwnedUse(localInterval));
+      if (!localLast || localLast == acquire) {
+        return PlanningResult<SmallVector<MissingReleasePlan>>::invalidIR(
+            localBoundary,
+            ("a data-movement kernel cannot hold two acquired blocks of one "
+             "dataflow buffer; the earlier block has no use before this "
+             "acquisition, so use and " +
+             effectName + " it before this acquisition or drop it")
+                .str());
+      }
+      // Tensor views may extend the earlier block past the boundary; a
+      // block whose uses all precede it receives its release there, so a
+      // later release that no later acquisition owns is the misplaced
+      // release of the earlier block.
+      if (localLast->isBeforeInBlock(localBoundary) &&
+          findUnownedReleaseFrom(
+              interval.dfb, localBoundary->getIterator(), acquire->getBlock(),
+              getAcquireEffectKind(interval), releaseEffectKind)) {
+        return PlanningResult<SmallVector<MissingReleasePlan>>::invalidIR(
+            localBoundary,
+            ("a data-movement kernel cannot hold two acquired blocks of one "
+             "dataflow buffer; the earlier block is released after this "
+             "acquisition, so " +
+             effectName + " it before this acquisition")
+                .str());
+      }
+    }
+
+    // A block still acquired when a nested region acquires the same DFB with
+    // the same kind would alias that acquisition, because cb_wait_front and
+    // cb_reserve_back address the front or write slot regardless of an
+    // earlier open acquisition. A release before the region settles it;
+    // otherwise the releases inside the region decide (see
+    // planNestedAcquisitionBoundary).
+    if (std::optional<NestedAcquisitionBoundary> nested =
+            getNestedAcquisitionBoundary(interval)) {
+      if (!hasOwnedReleaseBeforeBoundary(releaseSearch, nested->boundary)) {
+        PlanningResult<NestedAcquisitionPlan> nestedPlan =
+            planNestedAcquisitionBoundary(interval, *nested, last,
+                                          releaseEffectKind, effectName);
+        if (nestedPlan.isInvalidIR()) {
+          const PlanningDiagnostic &diagnostic = nestedPlan.getInvalidIR();
+          return PlanningResult<SmallVector<MissingReleasePlan>>::invalidIR(
+              diagnostic.operation, diagnostic.message,
+              diagnostic.noteOperation, diagnostic.note);
+        }
+        switch (nestedPlan.getPlan().resolution) {
+        case NestedAcquisitionResolution::KeepReleases:
+          continue;
+        case NestedAcquisitionResolution::HoistReleases:
+          llvm::append_range(releaseSearch.nestedReleases,
+                             nestedPlan.getPlan().releases);
+          break;
+        case NestedAcquisitionResolution::InsertBeforeBoundary:
+          break;
+        }
+      }
+    }
+
     if (scf::IfOp guard = getGuardedAcquireIf(acquire)) {
       Operation *externalKindBoundary =
           findGuardedExternalKindBoundary(interval, guard, acquires);
@@ -831,7 +1274,7 @@ struct TTLInsertCBSyncPass
           DFBAcquireReleaseIndex::create(func);
       if (lifecycleResult.isInvalidIR()) {
         const PlanningDiagnostic &diagnostic = lifecycleResult.getInvalidIR();
-        diagnostic.operation->emitError(diagnostic.message);
+        emitPlanningDiagnostic(diagnostic);
         signalPassFailure();
         return;
       }
@@ -856,7 +1299,7 @@ struct TTLInsertCBSyncPass
         dominanceInfo, syncUserDFBs);
     if (producerPlan.isInvalidIR()) {
       const PlanningDiagnostic &diagnostic = producerPlan.getInvalidIR();
-      diagnostic.operation->emitError(diagnostic.message);
+      emitPlanningDiagnostic(diagnostic);
       signalPassFailure();
       return;
     }
@@ -866,7 +1309,7 @@ struct TTLInsertCBSyncPass
         dominanceInfo, syncUserDFBs);
     if (consumerPlan.isInvalidIR()) {
       const PlanningDiagnostic &diagnostic = consumerPlan.getInvalidIR();
-      diagnostic.operation->emitError(diagnostic.message);
+      emitPlanningDiagnostic(diagnostic);
       signalPassFailure();
       return;
     }

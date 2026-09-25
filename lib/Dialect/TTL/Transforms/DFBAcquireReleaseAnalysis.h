@@ -167,6 +167,13 @@ bool isGuardedDFBAcquire(Operation *op);
 bool operationMayDirectlyUseAcquiredDFBSlot(DFBAcquireInterval interval,
                                             Operation *operation);
 
+/// Returns the number of whole DFB blocks transferred by one protocol effect.
+///
+/// Returns `std::nullopt` when the tile count is not a positive multiple of
+/// the DFB block size.
+std::optional<int64_t>
+getDFBProtocolEffectBlockCount(const DFBProtocolEffect &effect);
+
 /// Returns the number of whole DFB blocks acquired or released by `op`.
 ///
 /// Returns `std::nullopt` when the transaction size is not a positive multiple

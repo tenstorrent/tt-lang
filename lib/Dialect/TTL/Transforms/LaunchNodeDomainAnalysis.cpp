@@ -617,6 +617,37 @@ evaluatePipeNetRoleRecordCountAtLaunchLocation(
   return unknown ? std::nullopt : std::optional<std::uint64_t>(count);
 }
 
+static IntegerExpressionEvaluator
+createLaunchLocationIntegerEvaluator(const LaunchExecutionLocation &location,
+                                     const LaunchNodeDomainState *state);
+
+static std::optional<llvm::APInt>
+evaluateSCFIfResultAtLaunchLocation(OpResult result,
+                                    const LaunchExecutionLocation &location,
+                                    const LaunchNodeDomainState *state) {
+  auto ifOp = dyn_cast<scf::IfOp>(result.getOwner());
+  if (!ifOp) {
+    return std::nullopt;
+  }
+  IntegerExpressionEvaluator evaluator =
+      createLaunchLocationIntegerEvaluator(location, state);
+  std::optional<llvm::APInt> condition =
+      evaluator.evaluate(ifOp.getCondition());
+  if (!condition || condition->getBitWidth() != 1) {
+    return std::nullopt;
+  }
+  Region &selectedRegion =
+      condition->getBoolValue() ? ifOp.getThenRegion() : ifOp.getElseRegion();
+  if (!llvm::hasSingleElement(selectedRegion)) {
+    return std::nullopt;
+  }
+  auto yieldOp = dyn_cast<scf::YieldOp>(selectedRegion.front().getTerminator());
+  if (!yieldOp || result.getResultNumber() >= yieldOp->getNumOperands()) {
+    return std::nullopt;
+  }
+  return evaluator.evaluate(yieldOp->getOperand(result.getResultNumber()));
+}
+
 static std::optional<llvm::APInt>
 evaluateLaunchLocationContextValue(Value value,
                                    const LaunchExecutionLocation &location,
@@ -666,6 +697,9 @@ evaluateLaunchLocationContextValue(Value value,
     return llvm::APInt(
         IndexType::kInternalStorageBitWidth,
         getLogicalDeviceIndex(currentDeviceOp.getDomain(), location.device));
+  }
+  if (auto result = dyn_cast<OpResult>(value)) {
+    return evaluateSCFIfResultAtLaunchLocation(result, location, state);
   }
   return std::nullopt;
 }
