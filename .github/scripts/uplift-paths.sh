@@ -33,7 +33,9 @@ UPLIFT_PATHS=(
     .github/containers/Dockerfile
     .github/containers/Dockerfile.base
     .github/containers/cleanup-toolchain.sh
+    .github/containers/check-cpu-torch.py
     .github/containers/install-exabox-worker.sh
+    .github/containers/prepare-toolchain-venv.sh
     .github/scripts/normalize-toolchain-install.sh
     bin/tt-triage
     dev-requirements.txt
