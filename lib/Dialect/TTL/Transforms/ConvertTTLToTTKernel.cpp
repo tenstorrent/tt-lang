@@ -1613,10 +1613,15 @@ struct RawAddrLowering : OpConversionPattern<RawAddrOp> {
 struct DFBSynchronizationLoweringPlan {
   DenseMap<SynchronizedDFBResetAttr, int64_t> stateOffsetByReset;
   DenseMap<Operation *, SmallVector<int32_t>> resetDFBsByOperation;
+  DenseMap<int64_t, int64_t> stateOffsetByReconfiguration;
+  DenseMap<int64_t, SmallVector<int32_t>> resetDFBsByReconfiguration;
+  DenseMap<int32_t, Type> dfbTypesByIndex;
+  SmallVector<int32_t> allDFBIndices;
   int64_t scratchBaseOffset = 0;
   int64_t scratchBytes = 0;
   int64_t synchronizedResetCount = 0;
   uint64_t allDFBMask = 0;
+  bool compilerL1 = false;
 };
 
 static FailureOr<DFBSynchronizationLoweringPlan>
@@ -1637,14 +1642,81 @@ buildDFBSynchronizationLoweringPlan(ModuleOp module) {
   }
 
   DFBSynchronizationLoweringPlan plan;
+  plan.compilerL1 = usesCompilerSRAM(module);
   plan.synchronizedResetCount = static_cast<int64_t>(orderedResets.size());
   for (auto [resetIndex, reset] : llvm::enumerate(orderedResets)) {
     plan.stateOffsetByReset.try_emplace(
         reset, static_cast<int64_t>(resetIndex) * kDFBResetStateBytes);
   }
   plan.scratchBytes = static_cast<int64_t>(*scratchBytes);
-  if (usesCompilerSRAM(module)) {
-    return plan;
+
+  if (plan.compilerL1) {
+    llvm::MapVector<int64_t, DFBReconfigurationAttr> reconfigurations;
+    Operation *invalidReconfiguration = nullptr;
+    module.walk([&](DFBReconfigurationOp reconfiguration) -> WalkResult {
+      DFBReconfigurationAttr boundary = reconfiguration.getBoundary();
+      auto [entry, inserted] =
+          reconfigurations.try_emplace(boundary.getOrdinal(), boundary);
+      if (!inserted && entry->second != boundary) {
+        invalidReconfiguration = reconfiguration;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+    if (invalidReconfiguration) {
+      invalidReconfiguration->emitOpError(
+          "reconfiguration ordinal identifies inconsistent boundaries");
+      return failure();
+    }
+    if (reconfigurations.size() >
+        static_cast<uint64_t>(
+            (std::numeric_limits<int64_t>::max() - plan.scratchBytes) /
+            kDFBResetStateBytes)) {
+      module.emitOpError(
+          "DFB reconfiguration synchronization state is not representable");
+      return failure();
+    }
+    for (auto [reconfigurationIndex, entry] :
+         llvm::enumerate(reconfigurations)) {
+      int64_t offset =
+          plan.scratchBytes +
+          static_cast<int64_t>(reconfigurationIndex) * kDFBResetStateBytes;
+      plan.stateOffsetByReconfiguration.try_emplace(entry.first, offset);
+    }
+    plan.scratchBytes +=
+        static_cast<int64_t>(reconfigurations.size()) * kDFBResetStateBytes;
+
+    if (auto entries = module->getAttrOfType<ArrayAttr>(
+            kCompilerL1ReconfigurationResetsAttrName)) {
+      for (Attribute entryAttribute : entries) {
+        auto entry = dyn_cast<DictionaryAttr>(entryAttribute);
+        auto ordinal = entry ? entry.getAs<IntegerAttr>("ordinal") : nullptr;
+        auto indices =
+            entry ? entry.getAs<DenseI32ArrayAttr>("dfb_indices") : nullptr;
+        if (!ordinal || !indices ||
+            !plan.stateOffsetByReconfiguration.contains(ordinal.getInt())) {
+          module.emitOpError("contains malformed compiler-sram reconfiguration "
+                             "reset metadata");
+          return failure();
+        }
+        auto [resetEntry, inserted] =
+            plan.resetDFBsByReconfiguration.try_emplace(ordinal.getInt(),
+                                                        indices.asArrayRef());
+        if (!inserted) {
+          module.emitOpError("contains duplicate compiler-sram reconfiguration "
+                             "reset metadata");
+          return failure();
+        }
+        if (!llvm::is_sorted(resetEntry->second) ||
+            std::adjacent_find(resetEntry->second.begin(),
+                               resetEntry->second.end()) !=
+                resetEntry->second.end()) {
+          module.emitOpError("contains noncanonical compiler-sram "
+                             "reconfiguration reset indices");
+          return failure();
+        }
+      }
+    }
   }
 
   WalkResult allocationResult = module.walk([&](BindCBOp bind) -> WalkResult {
@@ -1659,14 +1731,30 @@ buildDFBSynchronizationLoweringPlan(ModuleOp module) {
       return WalkResult::interrupt();
     }
     int32_t index = static_cast<int32_t>(*dfbIndex);
-    int32_t targetMaxDFBIndices = getTargetMaxDFBIndices(bind);
-    if (index >= targetMaxDFBIndices) {
-      bind.emitOpError("finalized DFB index ")
-          << index << " is outside [0, " << targetMaxDFBIndices - 1 << "] for "
-          << getTargetDFBIndexCapacityDescription(bind);
+    auto ttlType = cast<CircularBufferType>(bind.getResult().getType());
+    Type ttkernelType =
+        ttk::CBType::get(ttlType.getContext(), ttlType.getTotalElements(),
+                         ttlType.getElementType());
+    auto [typeEntry, inserted] =
+        plan.dfbTypesByIndex.try_emplace(index, ttkernelType);
+    if (plan.compilerL1 && !inserted && typeEntry->second != ttkernelType) {
+      bind.emitOpError(
+          "compiler-sram allocation index has inconsistent DFB types");
       return WalkResult::interrupt();
     }
-    plan.allDFBMask |= uint64_t{1} << static_cast<unsigned>(index);
+    if (inserted) {
+      plan.allDFBIndices.push_back(index);
+    }
+    if (!plan.compilerL1) {
+      int32_t targetMaxDFBIndices = getTargetMaxDFBIndices(bind);
+      if (index >= targetMaxDFBIndices) {
+        bind.emitOpError("finalized DFB index ")
+            << index << " is outside [0, " << targetMaxDFBIndices - 1
+            << "] for " << getTargetDFBIndexCapacityDescription(bind);
+        return WalkResult::interrupt();
+      }
+      plan.allDFBMask |= uint64_t{1} << static_cast<unsigned>(index);
+    }
     return WalkResult::advance();
   });
   if (allocationResult.wasInterrupted()) {
@@ -1685,6 +1773,18 @@ buildDFBSynchronizationLoweringPlan(ModuleOp module) {
   if (resetResult.wasInterrupted()) {
     return failure();
   }
+
+  for (const auto &[ordinal, indices] : plan.resetDFBsByReconfiguration) {
+    for (int32_t index : indices) {
+      if (!plan.dfbTypesByIndex.contains(index)) {
+        module.emitOpError("compiler-sram reconfiguration ordinal ")
+            << ordinal << " references unknown DFB index " << index;
+        return failure();
+      }
+    }
+  }
+
+  llvm::sort(plan.allDFBIndices);
   return plan;
 }
 
@@ -1699,14 +1799,64 @@ static void applyDFBSynchronizationLoweringPlanAttributes(
                   builder.getI64IntegerAttr(plan.synchronizedResetCount));
 }
 
+static void emitDFBSynchronizationBarrier(Operation *operation,
+                                          Value synchronizationAddress,
+                                          ArrayRef<int32_t> requiredDFBIndices,
+                                          ConversionPatternRewriter &rewriter) {
+  Location location = operation->getLoc();
+  Value zero = arith::ConstantIntOp::create(rewriter, location, 0, 32);
+  ttk::OpaqueCallOp::create(
+      rewriter, location, TypeRange{},
+      rewriter.getStringAttr("experimental::reset_dfb_interfaces"),
+      rewriter.getStringAttr("<cstdint>"),
+      ValueRange{synchronizationAddress, zero, zero}, ArrayAttr(),
+      rewriter.getDenseI32ArrayAttr({0, 1, 2}),
+      getRequiredDFBIndicesAttr(requiredDFBIndices, rewriter));
+}
+
+static LogicalResult
+lowerCompilerL1Synchronization(Operation *operation, int64_t stateOffset,
+                               ArrayRef<int32_t> resetDFBIndices,
+                               const DFBSynchronizationLoweringPlan &plan,
+                               ConversionPatternRewriter &rewriter) {
+  Value synchronizationAddress = buildPipeSramScratchAddress(
+      operation, plan.scratchBaseOffset + stateOffset, rewriter);
+  emitDFBSynchronizationBarrier(operation, synchronizationAddress,
+                                resetDFBIndices, rewriter);
+  for (int32_t index : resetDFBIndices) {
+    auto typeIt = plan.dfbTypesByIndex.find(index);
+    assert(typeIt != plan.dfbTypesByIndex.end() &&
+           "planned compiler-sram synchronization must reference known DFBs");
+    Value stateAddress = ttk::GetCompileArgValOp::create(
+        rewriter, operation->getLoc(), typeIt->second, index);
+    ttk::OpaqueCallOp::create(
+        rewriter, operation->getLoc(), TypeRange{},
+        rewriter.getStringAttr("ttlang::l1::resetState"),
+        rewriter.getStringAttr("<cstdint>"), ValueRange{stateAddress},
+        ArrayAttr(), DenseI32ArrayAttr(),
+        getRequiredDFBIndicesAttr(ArrayRef<int32_t>{index}, rewriter));
+  }
+  if (!resetDFBIndices.empty()) {
+    emitDFBSynchronizationBarrier(operation, synchronizationAddress,
+                                  resetDFBIndices, rewriter);
+  }
+  rewriter.eraseOp(operation);
+  return success();
+}
+
 static LogicalResult lowerDFBReset(Operation *operation,
                                    SynchronizedDFBResetAttr reset,
                                    uint64_t dfbMask,
+                                   ArrayRef<int32_t> dfbIndices,
                                    const DFBSynchronizationLoweringPlan &plan,
                                    ConversionPatternRewriter &rewriter) {
   auto stateOffsetIt = plan.stateOffsetByReset.find(reset);
   assert(stateOffsetIt != plan.stateOffsetByReset.end() &&
          "reset must be present in the immutable lowering plan");
+  if (plan.compilerL1) {
+    return lowerCompilerL1Synchronization(operation, stateOffsetIt->second,
+                                          dfbIndices, plan, rewriter);
+  }
   Location location = operation->getLoc();
   Value synchronizationAddress = buildPipeSramScratchAddress(
       operation, plan.scratchBaseOffset + stateOffsetIt->second, rewriter);
@@ -1746,10 +1896,13 @@ struct ResetDFBsLowering : OpConversionPattern<ResetDFBsOp> {
            "reset operands must be present in the immutable lowering plan");
     ArrayRef<int32_t> dfbIndices = indicesIt->second;
     uint64_t dfbMask = 0;
-    for (int32_t dfbIndex : dfbIndices) {
-      dfbMask |= uint64_t{1} << static_cast<unsigned>(dfbIndex);
+    if (!plan.compilerL1) {
+      for (int32_t dfbIndex : dfbIndices) {
+        dfbMask |= uint64_t{1} << static_cast<unsigned>(dfbIndex);
+      }
     }
-    return lowerDFBReset(op, op.getReset(), dfbMask, plan, rewriter);
+    return lowerDFBReset(op, op.getReset(), dfbMask, dfbIndices, plan,
+                         rewriter);
   }
 
 private:
@@ -1764,7 +1917,8 @@ struct ResetAllDFBsLowering : OpConversionPattern<ResetAllDFBsOp> {
   LogicalResult
   matchAndRewrite(ResetAllDFBsOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    return lowerDFBReset(op, op.getReset(), plan.allDFBMask, plan, rewriter);
+    return lowerDFBReset(op, op.getReset(), plan.allDFBMask, plan.allDFBIndices,
+                         plan, rewriter);
   }
 
 private:
@@ -1776,7 +1930,9 @@ private:
 //===----------------------------------------------------------------------===//
 
 struct DFBReconfigurationLowering : OpConversionPattern<DFBReconfigurationOp> {
-  using OpConversionPattern<DFBReconfigurationOp>::OpConversionPattern;
+  DFBReconfigurationLowering(TypeConverter &typeConverter, MLIRContext *context,
+                             const DFBSynchronizationLoweringPlan &plan)
+      : OpConversionPattern(typeConverter, context), plan(plan) {}
 
   LogicalResult
   matchAndRewrite(DFBReconfigurationOp op, OpAdaptor,
@@ -1787,6 +1943,18 @@ struct DFBReconfigurationLowering : OpConversionPattern<DFBReconfigurationOp> {
       return op.emitError("must be nested in a module kernel function");
     }
     int64_t ordinal = op.getBoundary().getOrdinal();
+    if (plan.compilerL1) {
+      auto stateOffsetIt = plan.stateOffsetByReconfiguration.find(ordinal);
+      assert(stateOffsetIt != plan.stateOffsetByReconfiguration.end() &&
+             "reconfiguration must be present in the immutable lowering plan");
+      auto resetIt = plan.resetDFBsByReconfiguration.find(ordinal);
+      ArrayRef<int32_t> resetDFBs =
+          resetIt == plan.resetDFBsByReconfiguration.end()
+              ? ArrayRef<int32_t>()
+              : ArrayRef<int32_t>(resetIt->second);
+      return lowerCompilerL1Synchronization(op, stateOffsetIt->second,
+                                            resetDFBs, plan, rewriter);
+    }
     auto plan =
         module->getAttrOfType<DictionaryAttr>(kDFBReconfigurationPlanAttrName);
     auto boundaryOrdinals =
@@ -1829,6 +1997,9 @@ struct DFBReconfigurationLowering : OpConversionPattern<DFBReconfigurationOp> {
     rewriter.eraseOp(op);
     return success();
   }
+
+private:
+  const DFBSynchronizationLoweringPlan &plan;
 };
 
 //===----------------------------------------------------------------------===//
@@ -2733,7 +2904,8 @@ static LogicalResult lowerTTLOpsToTTKernel(
       typeConverter, &ctx, pipeTransportPlan);
   patterns.add<ResetDFBsLowering, ResetAllDFBsLowering>(
       typeConverter, &ctx, synchronizationLoweringPlan);
-  patterns.add<DFBReconfigurationLowering>(typeConverter, &ctx);
+  patterns.add<DFBReconfigurationLowering>(typeConverter, &ctx,
+                                           synchronizationLoweringPlan);
   patterns
       .add<BindCBLowering, TensorSliceLowering, TileStoreLowering,
            StoreLowering, CoreXLowering, CoreYLowering, RawElementReadLowering,
@@ -3063,10 +3235,6 @@ struct TTLConvertTTLToTTKernelPass
       return;
     }
     if (failed(validateDFBReconfigurationTarget(mod))) {
-      signalPassFailure();
-      return;
-    }
-    if (usesCompilerSRAM(mod) && failed(validateCompilerSRAMLifecycle(mod))) {
       signalPassFailure();
       return;
     }
