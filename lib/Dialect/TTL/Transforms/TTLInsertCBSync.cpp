@@ -146,6 +146,11 @@ static bool isBeforeLocalKindBoundary(Operation *operation,
   return projected && projected->isBeforeInBlock(localKindBoundary);
 }
 
+static bool mayPropagateAcquiredDFBSlot(Operation *operation) {
+  // A scalar read copies its value out of the DFB without retaining the slot.
+  return !isa<ReadIndexOp>(operation);
+}
+
 static bool updateLocalSlotValuesAndTestUse(
     DFBAcquireInterval interval, Operation *operation,
     DenseSet<Value> &slotValues, Operation *localKindBoundary,
@@ -158,9 +163,7 @@ static bool updateLocalSlotValuesAndTestUse(
     }
   }
   if (usesSlot) {
-    // Scalar reads copy the value out of the DFB; their results do not retain
-    // access to the acquired slot.
-    if (!isa<ReadIndexOp>(operation)) {
+    if (mayPropagateAcquiredDFBSlot(operation)) {
       for (Value result : operation->getResults()) {
         slotValues.insert(result);
       }
@@ -218,7 +221,7 @@ static bool operationMayUseLocalSlot(DFBAcquireInterval interval,
   if (updateLocalSlotValuesAndTestUse(interval, operation, slotValues,
                                       localKindBoundary, acquires,
                                       dominanceInfo)) {
-    if (!isa<ReadIndexOp>(operation)) {
+    if (mayPropagateAcquiredDFBSlot(operation)) {
       for (Value result : operation->getResults()) {
         slotValues.insert(result);
       }
@@ -405,8 +408,10 @@ analyzeGuardedAcquireUses(DFBAcquireInterval interval, scf::IfOp guard,
         if (std::optional<PlanningDiagnostic> diagnostic = classifyUse(user)) {
           return diagnostic;
         }
-        for (Value result : user->getResults()) {
-          worklist.push_back(result);
+        if (mayPropagateAcquiredDFBSlot(user)) {
+          for (Value result : user->getResults()) {
+            worklist.push_back(result);
+          }
         }
       }
     }
