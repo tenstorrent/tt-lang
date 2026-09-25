@@ -2148,6 +2148,35 @@ def test_build_kernel_descriptors_materializes_planned_resources(monkeypatch):
     assert descriptors[0].runtime_args[1][0] == [4, 5]
 
 
+def test_build_kernel_descriptors_appends_compiler_header_path(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(
+        kernel_runner,
+        "kernel_include_paths",
+        lambda paths: [*paths, "/package/ttl/include"],
+    )
+    core_ranges = _FakeCoreRanges((((0, 0), (1, 0)),))
+    spec = _kernel_spec(KernelKind.COMPUTE)
+    spec.compiler_include_paths = ["/emulator/overrides", "/user/headers"]
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[],
+        tensor_accessor_args=[],
+        core_ranges=core_ranges,
+        grid_cols=2,
+        grid_rows=1,
+        num_cbs=0,
+    )
+
+    assert descriptors[0].compiler_include_paths == [
+        "/emulator/overrides",
+        "/user/headers",
+        "/package/ttl/include",
+    ]
+    assert spec.compiler_include_paths == ["/emulator/overrides", "/user/headers"]
+
+
 def _local_tensor_test_environment():
     fake_ttnn = _FakeTTNN()
     fake_ttnn.TensorMemoryLayout = SimpleNamespace(

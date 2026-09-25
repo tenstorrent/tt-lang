@@ -136,6 +136,7 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     dfb_reconfiguration.py
     diagnostics.py
     kernel.py
+    _kernel_headers.py
     kernel_runner.py
     pipe.py
     domains.py
@@ -151,6 +152,14 @@ declare_mlir_python_sources(TTLangPythonCommon.Main
     layouts.py
     operators.py
     version.py
+)
+
+declare_mlir_python_sources(TTLangPythonCommon.KernelHeaders
+  ROOT_DIR "${PROJECT_SOURCE_DIR}"
+  ADD_TO_PARENT TTLangPythonCommon
+  SOURCES
+    include/ttlang/Target/TTKernel/LLKs/experimental_dfb_reset.h
+    include/ttlang/Target/TTKernel/LLKs/experimental_dfb_reconfiguration.h
 )
 
 # Add generated elementwise ops file and config file
