@@ -1693,7 +1693,7 @@ static LogicalResult lowerDFBReset(Operation *operation,
   }
   ttk::OpaqueCallOp::create(
       rewriter, location, TypeRange{},
-      rewriter.getStringAttr("experimental::reset_dfb_interfaces"),
+      rewriter.getStringAttr("::experimental::reset_dfb_interfaces"),
       rewriter.getStringAttr("<cstdint>"),
       ValueRange{synchronizationAddress, lowMask, highMask}, ArrayAttr(),
       rewriter.getDenseI32ArrayAttr({0, 1, 2}),

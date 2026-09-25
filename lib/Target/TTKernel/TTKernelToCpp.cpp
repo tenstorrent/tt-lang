@@ -152,7 +152,8 @@ public:
         headers.insert("tt_metal/fabric/fabric_edm_packet_header.hpp");
         headers.insert("tt_metal/fabric/hw/inc/fabric_config.h");
       }
-      if (callee == "experimental::reset_dfb_interfaces") {
+      if (callee == "::experimental::reset_dfb_interfaces" ||
+          callee == "experimental::reset_dfb_interfaces") {
         emitLlk(experimental_dfb_reset_generated,
                 experimental_dfb_reset_generated_len);
       }

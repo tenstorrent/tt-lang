@@ -69,7 +69,7 @@ synchronized_reset_operation = make_reset_operation()
 
 # The built-in lowering supplies the shared state address and physical-index
 # masks; no user reset helper is required.
-# CPP-COUNT-6: experimental::reset_dfb_interfaces(
+# CPP-COUNT-6: {{^ *}}::experimental::reset_dfb_interfaces(
 
 
 if __name__ == "__main__":

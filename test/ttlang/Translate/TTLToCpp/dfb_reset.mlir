@@ -28,12 +28,12 @@
 // CHECK: dfb_reset_detail::applyMask(lowMask, 0);
 // CHECK: dfb_reset_detail::applyMask(highMask, 32);
 // CHECK-LABEL: void kernel_main()
-// CHECK: experimental::reset_dfb_interfaces({{.*}}, {{.*}}, {{.*}});
+// CHECK: {{^ *}}::experimental::reset_dfb_interfaces({{.*}}, {{.*}}, {{.*}});
 
 func.func @kernel_main() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
   %synchronization_address = arith.constant 4096 : i32
   %low_mask = arith.constant 1 : i32
   %high_mask = arith.constant 2 : i32
-  ttkernel.opaque_call "experimental::reset_dfb_interfaces"(%synchronization_address, %low_mask, %high_mask) {header = "<cstdint>", unsigned_arg_indices = array<i32: 0, 1, 2>} : (i32, i32, i32) -> ()
+  ttkernel.opaque_call "::experimental::reset_dfb_interfaces"(%synchronization_address, %low_mask, %high_mask) {header = "<cstdint>", unsigned_arg_indices = array<i32: 0, 1, 2>} : (i32, i32, i32) -> ()
   return
 }

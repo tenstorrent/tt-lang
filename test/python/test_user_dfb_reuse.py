@@ -2252,7 +2252,7 @@ def test_synchronized_reset_executes_above_physical_index_31(
     assert "dfb_index = 33 : i32" in final_mlir
     assert "get_compile_time_arg_val(33)" in final_mlir
     assert "value = 2 : i32" in final_mlir
-    assert "experimental::reset_dfb_interfaces" in final_mlir
+    assert '"::experimental::reset_dfb_interfaces"' in final_mlir
 
 
 @pytest.mark.parametrize(
