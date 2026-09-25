@@ -123,14 +123,16 @@ def test_static_dfb_descriptor_packing_fits_budget(
     descriptor_orders = []
     original_ordering = kernel_runner._order_static_dfb_descriptor_plans
 
-    def record_descriptor_order(descriptor_plans, remaining_bytes_by_core):
+    def record_descriptor_order(descriptor_plans, remaining_bytes_by_core, **options):
         plans_by_physical_index = {
             plan.physical_index: plan for plan in descriptor_plans
         }
         over_budget_plans = [
             plans_by_physical_index[physical_index] for physical_index in (0, 2, 1)
         ]
-        ordered_plans = original_ordering(over_budget_plans, remaining_bytes_by_core)
+        ordered_plans = original_ordering(
+            over_budget_plans, remaining_bytes_by_core, **options
+        )
         descriptor_orders.append(
             tuple(
                 plan.physical_index for plan in ordered_plans if plan.has_static_storage

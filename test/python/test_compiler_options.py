@@ -26,6 +26,7 @@ class TestDefaults:
         assert opts.pipe_batch_tiles == 0
         assert opts.reuse_user_dfbs is True
         assert opts.unsafe_assume_dfb_allocation_groups is False
+        assert opts.unsafe_split_static_dfb_descriptors is False
         assert opts.dfb_exact_coloring_search_limit == 1_000_000
         assert opts.specialize_cores is False
         assert opts._explicit == frozenset()
@@ -121,6 +122,18 @@ class TestFromString:
         )
         assert opts.unsafe_assume_dfb_allocation_groups is False
         assert "unsafe_assume_dfb_allocation_groups" in opts._explicit
+
+    def test_enable_unsafe_static_dfb_descriptor_splitting(self):
+        opts = CompilerOptions.from_string("--ttl-unsafe-split-static-dfb-descriptors")
+        assert opts.unsafe_split_static_dfb_descriptors is True
+        assert "unsafe_split_static_dfb_descriptors" in opts._explicit
+
+    def test_disable_unsafe_static_dfb_descriptor_splitting(self):
+        opts = CompilerOptions.from_string(
+            "--no-ttl-unsafe-split-static-dfb-descriptors"
+        )
+        assert opts.unsafe_split_static_dfb_descriptors is False
+        assert "unsafe_split_static_dfb_descriptors" in opts._explicit
 
     def test_exact_coloring_search_limit(self):
         opts = CompilerOptions.from_string(

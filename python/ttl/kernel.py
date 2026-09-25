@@ -307,6 +307,8 @@ def _encode_identity_literal(value) -> Optional[bytes]:
         return f"str:{len(encoded)}:".encode("ascii") + encoded
     if isinstance(value, ScalarType):
         return f"scalar:{value.name}".encode("ascii")
+    if isinstance(value, KernelKind):
+        return f"kernel-kind:{value.value}".encode("utf-8")
     if isinstance(value, (tuple, list)):
         elements = []
         for element in value:
@@ -486,6 +488,9 @@ def _operation_identity_impl(function: Callable, active_functions: set[int]) -> 
                 ordinal = reset_ordinals.setdefault(reset_identity, len(reset_ordinals))
                 participant_tokens = []
                 for participant in value.participants:
+                    if isinstance(participant, KernelKind):
+                        participant_tokens.append(f"kind:{participant.name}")
+                        continue
                     if participant._implicit_role is not None:
                         participant_tokens.append(
                             "role:"
@@ -566,6 +571,11 @@ def _bind_kernel_declarations(
     logical_kernels: Mapping[str, Kernel], operation_identity: str
 ) -> None:
     """Bind uniquely named declarations during operation registration."""
+    logical_kernels = {
+        name: kernel
+        for name, kernel in logical_kernels.items()
+        if _selector_implicit_role(kernel) is None
+    }
     source_names = {}
     for name, kernel in logical_kernels.items():
         previous_name = source_names.get(id(kernel))
