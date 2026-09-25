@@ -14,20 +14,25 @@ import ttl
 from utils.correctness import assert_allclose
 
 
-@ttl.operation(grid=(1, 1))
-def copy_waited_dfb_source(input_tensor, output_tensor):
-    scratch_dfb = ttl.make_dataflow_buffer_like(
-        input_tensor, shape=(1, 1), block_count=1
-    )
-    for tile_index in range(2):
-        with scratch_dfb.reserve() as destination_block:
-            ttl.copy(
-                input_tensor[0:1, tile_index : tile_index + 1], destination_block
-            ).wait()
-        with scratch_dfb.wait() as source_block:
-            ttl.copy(
-                source_block, output_tensor[0:1, tile_index : tile_index + 1]
-            ).wait()
+def _make_copy_waited_dfb_source(block_count):
+    # With two blocks the read and write pointers address different slots, so
+    # a source read through the wrong pointer would return the wrong tile.
+    @ttl.operation(grid=(1, 1))
+    def copy_waited_dfb_source(input_tensor, output_tensor):
+        scratch_dfb = ttl.make_dataflow_buffer_like(
+            input_tensor, shape=(1, 1), block_count=block_count
+        )
+        for tile_index in range(2):
+            with scratch_dfb.reserve() as destination_block:
+                ttl.copy(
+                    input_tensor[0:1, tile_index : tile_index + 1], destination_block
+                ).wait()
+            with scratch_dfb.wait() as source_block:
+                ttl.copy(
+                    source_block, output_tensor[0:1, tile_index : tile_index + 1]
+                ).wait()
+
+    return copy_waited_dfb_source
 
 
 DTYPES = [
@@ -73,8 +78,11 @@ def _to_device(host_tensor, device, dtype, memory_config):
 
 @pytest.mark.parametrize(("ttnn_dtype", "torch_dtype"), DTYPES)
 @pytest.mark.parametrize("memory_config", ["dram", "l1", "height", "width", "block"])
+@pytest.mark.parametrize("block_count", [1, 2], ids=["bc1", "bc2"])
 @pytest.mark.requires_device
-def test_copy_waited_dfb_source(device, ttnn_dtype, torch_dtype, memory_config):
+def test_copy_waited_dfb_source(
+    device, ttnn_dtype, torch_dtype, memory_config, block_count
+):
     values = torch.arange(32 * 64, dtype=torch.int32).reshape(32, 64).remainder(97)
     input_host = values.to(torch_dtype)
     input_tensor = _to_device(input_host, device, ttnn_dtype, memory_config)
@@ -82,14 +90,10 @@ def test_copy_waited_dfb_source(device, ttnn_dtype, torch_dtype, memory_config):
         torch.zeros_like(input_host), device, ttnn_dtype, memory_config
     )
 
-    copy_waited_dfb_source(input_tensor, output_tensor)
+    _make_copy_waited_dfb_source(block_count)(input_tensor, output_tensor)
     ttnn.synchronize_device(device)
 
+    # A copy moves bytes, so every dtype round-trips exactly.
     expected = ttnn.to_torch(input_tensor).float()
     actual = ttnn.to_torch(output_tensor).float()
-    if ttnn_dtype == ttnn.bfloat16:
-        assert_allclose(actual, expected, rtol=0.05, atol=1.0)
-    elif ttnn_dtype == ttnn.float32:
-        assert_allclose(actual, expected, rtol=1e-5, atol=1e-5)
-    else:
-        assert_allclose(actual, expected, rtol=0.0, atol=0.0)
+    assert_allclose(actual, expected, rtol=0.0, atol=0.0)

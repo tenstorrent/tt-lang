@@ -1274,6 +1274,21 @@ The criteria are disjoint. DM-thread `ttl.copy` does not flow through
 `attach_cb` (it takes the DFB directly). Compute-kernel uses always go through
 `attach_cb` and never reference the DFB as a direct operand of a tile op.
 
+The Python frontend validates block acquisition before lowering a tensor
+copy: a DFB-to-tensor source must come from `wait()` and a tensor-to-DFB
+destination from `reserve()`. Lowering selects the pointer from the copy
+direction (`get_read_ptr` for DFB-to-tensor, `get_write_ptr` for
+tensor-to-DFB), so the opposite acquisition would address the wrong slot.
+This validation is frontend-only: lowering replaces attached blocks with
+direct DFB operands, so directly written tensor-to-DFB or DFB-to-tensor
+`ttl.copy` IR does not retain acquisition information, and the supported
+pipeline produces these forms only through the Python frontend. Pipe receives
+into a `wait()` block are rejected by `CopyOp::verify`, which sees the
+attached block. A program that needs a produced block both in a tensor and in
+a consumer publishes the block and lets a second dataflow buffer's consumer
+perform the tensor copy from a `wait()` block, since a reserved block cannot
+be a tensor copy source and one DFB admits one consumer per node.
+
 #### Why two criteria
 
 Compute threads work through SSA tile handles
