@@ -24,6 +24,8 @@ import warnings
 import weakref
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from ._kernel_headers import kernel_include_paths
+
 ttnn = None  # Lazy-loaded via _ensure_ttnn()
 
 _STATIC_DFB_PACKING_SEARCH_STATE_LIMIT = 1_000_000
@@ -1931,7 +1933,9 @@ def build_kernel_descriptors(
                 defines=defines,
                 common_runtime_args=common_runtime_args,
                 config=spec.config,
-                compiler_include_paths=spec.compiler_include_paths,
+                compiler_include_paths=kernel_include_paths(
+                    spec.compiler_include_paths
+                ),
             )
             if descriptor_variant.runtime_args:
                 kernel_descriptor_args["runtime_args"] = descriptor_variant.runtime_args

@@ -32,6 +32,12 @@ inline const llvm::StringMap<HeaderRequirement> &getCalleeToHeadersMap() {
         // The TTKernelToEmitC pass inserts this as a LiteralOp, so the TTKernelToCpp pass won't hit this entry.
         {"get_compile_time_arg_val",                       {"api/compile_time_args.h", "api/compile_time_args.h"}},
 
+        // DFB helpers shared by compute and data-movement kernels.
+        {"experimental::reset_dfb_interfaces",             {"ttlang/Target/TTKernel/LLKs/experimental_dfb_reset.h",
+                                                             "ttlang/Target/TTKernel/LLKs/experimental_dfb_reset.h"}},
+        {"experimental::reconfigure_dfb_interfaces",       {"ttlang/Target/TTKernel/LLKs/experimental_dfb_reconfiguration.h",
+                                                             "ttlang/Target/TTKernel/LLKs/experimental_dfb_reconfiguration.h"}},
+
         // NoC.
         {"get_dataformat",                                 {"", "api/dataflow/dataflow_api.h"}},
         {"get_noc_addr",                                   {"", "api/dataflow/dataflow_api.h"}},
