@@ -30,6 +30,24 @@ def TTLInsertCBSync
     destination reservation is not published automatically because only the
     selected request is known to be complete. Publication must be explicit and
     conditioned on the corresponding selection, or follow an exact wait.
+
+    Two acquisition shapes are rejected rather than completed. A block that
+    is still acquired when a nested region acquires the same dataflow buffer
+    with the same kind would alias that acquisition: `cb_wait_front` and
+    `cb_reserve_back` address the front or write slot regardless of an
+    earlier open acquisition. A path through the region releases the block
+    when it performs exactly one release of its kind that no acquisition on
+    the path precedes, at the top level of the region or on the way to the
+    path's first acquisition through at-most-once regions. When every path
+    releases the block, the releases stay in place. When only some paths do
+    and the block has no use in or after the region, those releases move
+    before the region. A release anywhere else inside the region, a release
+    after the region that no later acquisition owns, or a use of the block
+    in or after the region without a release on every path marks the
+    program invalid. In a data-movement kernel, a block still acquired at
+    the next same-kind acquisition of its buffer is rejected when it has no
+    use before that acquisition or when its release follows it, because the
+    copies that follow would address the next block.
   }];
 
   let options = [
@@ -1038,6 +1056,77 @@ def TTLVerifyDFBSPSC
     verification is the default. When relaxation is enabled, the compiler
     emits a warning and records
     `ttl.relaxed_dfb_protocol_domain_verification` on the module.
+  }];
+
+  let dependentDialects = [];
+}
+
+def TTLVerifyDFBLifecycle
+    : Pass<"ttl-verify-dfb-lifecycle", "::mlir::ModuleOp"> {
+  let summary = "Verify visible DFB transaction order and capacity";
+  let description = [{
+    Checks the DFB protocol effects exposed through `DFBAccessOpInterface`
+    (concrete reserve, push, wait, and pop operations and opaque-call effect
+    summaries) on each active launch node after DFB index finalization.
+
+    Within one kernel, the effects on a DFB are summarized in program order as
+    the net change and cumulative extrema of four block counters: open
+    reserves, open waits, published blocks, and occupied capacity. A push may
+    not exceed preceding reserves, a pop may not exceed preceding waits, both
+    pairs must return to zero at kernel completion, and open acquisitions may
+    not exceed DFB capacity. A data-movement kernel that performs both roles
+    runs them on one RISC, so it must also wait only for blocks it published
+    earlier and keep occupied capacity, claimed by reserve and released by
+    pop, within the DFB. A compute kernel runs producer effects on PACK and
+    consumer effects on UNPACK, so each role is checked as its own endpoint.
+    Across distinct producer and consumer kernels, the blocks the consumer
+    pops may not exceed the blocks the producer pushes, and pushed blocks
+    left unpopped at launch completion must fit capacity.
+
+    Opaque-call effect summaries state Metal-level actions whose reserve and
+    wait amounts are readiness thresholds rather than paired acquisitions,
+    so only their pushes and pops count, each as a transfer that acquires
+    and releases its blocks. A synchronized reset or a state-discarding
+    reconfiguration restores the empty state: the launch splits into
+    intervals at each one, every interval is checked on its own, only the
+    last must close, and the cross-kernel totals are compared per interval
+    because the participants execute the same resets.
+
+    The pass builds on three existing analyses. `LaunchNodeDomainAnalysis`
+    supplies the launch nodes where each effect and each opaque call may
+    execute. The launch-location execution counts derived from
+    `ExecutionCountAnalysis` decide whether a nested region executes on a node
+    and how often, including static loops, coordinate- and PipeNet-dependent
+    branches, and `scf.if` results used as loop bounds; a loop body is
+    composed once per proven trip count. The acquire/release classification
+    supplies block counts per effect. Only proven violations are rejected: an
+    effect sequence these analyses cannot resolve is accepted, as the
+    liveness analysis accepts an unproven lifecycle by forgoing storage reuse.
+    The concurrent-kernel liveness analysis is not reused directly because it
+    runs inside DFB index finalization on earlier IR and exposes normalized
+    transaction runs rather than the ordered counter summary this pass needs.
+
+    Nodes where an opaque call may perform protocol actions on a DFB that the
+    IR does not represent (a dependency without an effect or access contract,
+    or `unknown_dfb_access`) are not checked for that DFB. The excluded nodes
+    are the upper bound of the call's launch domain; a call whose domain has
+    no upper bound excludes every node. An `inspect` contract has no protocol
+    effect and does not exclude the node.
+
+    The `TTL_RELAX_DFB_SPSC` environment variable does not change this pass.
+    An exact per-node release count proves that the kernel acts on that
+    node, so the totals of every counted kernel are compared whether or not
+    ownership was proven.
+
+    A compute kernel's UNPACK-side wait is not checked against the PACK-side
+    publications that precede it in program order, because PACK may publish a
+    block whose contents do not depend on the wait. A wait whose only possible
+    publication depends on it deadlocks without a diagnostic from this pass;
+    the simulator reports that deadlock at run time.
+
+    The module must contain finalized DFB allocation metadata and resolved
+    logical DFB identities. DFB protocol effects require a valid
+    `ttl.launch_grid`.
   }];
 
   let dependentDialects = [];

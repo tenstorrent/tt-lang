@@ -237,9 +237,15 @@ static bool projectToIntervalOrderingBlock(DFBAcquireInterval interval,
   } else if (!isBefore(ordering.start, projected)) {
     return false;
   }
-  if (!ignoreBoundary && interval.kindBoundary &&
-      !isBefore(projected, interval.kindBoundary)) {
-    return false;
+  // The boundary lies in the ordering block or, for a guarded acquisition,
+  // in the acquiring block; the operation is compared through its ancestor in
+  // the boundary's block.
+  if (!ignoreBoundary && interval.kindBoundary) {
+    Operation *reference =
+        interval.kindBoundary->getBlock()->findAncestorOpInBlock(*op);
+    if (!reference || !isBefore(reference, interval.kindBoundary)) {
+      return false;
+    }
   }
   return true;
 }
@@ -436,20 +442,27 @@ int64_t getDFBLifecycleTileCount(Operation *operation) {
   return effects.front().numTiles;
 }
 
-std::optional<int64_t> getDFBTransactionBlockCount(Operation *operation) {
-  assert((isDFBAcquireOp(operation) || isDFBReleaseOp(operation)) &&
-         "DFB transaction block count requires a lifecycle operation");
-  Value dfb = isDFBAcquireOp(operation) ? getDFBAcquireDFB(operation)
-                                        : getDFBReleaseDFB(operation);
-  auto dfbType = dyn_cast<CircularBufferType>(dfb.getType());
+std::optional<int64_t>
+getDFBProtocolEffectBlockCount(const DFBProtocolEffect &effect) {
+  auto dfbType = dyn_cast<CircularBufferType>(effect.dfb.getType());
   if (!dfbType || dfbType.getElementsPerBlock() <= 0) {
     return std::nullopt;
   }
-  int64_t numTiles = getDFBLifecycleTileCount(operation);
-  if (numTiles <= 0 || numTiles % dfbType.getElementsPerBlock() != 0) {
+  if (effect.numTiles <= 0 ||
+      effect.numTiles % dfbType.getElementsPerBlock() != 0) {
     return std::nullopt;
   }
-  return numTiles / dfbType.getElementsPerBlock();
+  return effect.numTiles / dfbType.getElementsPerBlock();
+}
+
+std::optional<int64_t> getDFBTransactionBlockCount(Operation *operation) {
+  assert((isDFBAcquireOp(operation) || isDFBReleaseOp(operation)) &&
+         "DFB transaction block count requires a lifecycle operation");
+  SmallVector<DFBProtocolEffect> effects =
+      cast<DFBAccessOpInterface>(operation).getDFBProtocolEffects();
+  assert(effects.size() == 1 &&
+         "concrete DFB lifecycle ops have exactly one protocol effect");
+  return getDFBProtocolEffectBlockCount(effects.front());
 }
 
 struct OutstandingDFBAcquisition {
@@ -642,9 +655,14 @@ static void walkDFBAcquireOwnedUses(
     if (countsAsUse) {
       recordUse(user, projected);
     }
+    // Tensor views, transfer handles, and receive requests keep naming the
+    // acquired slot; a scalar read from the block does not.
     if (propagateResults) {
       for (Value result : user->getResults()) {
-        worklist.push_back(result);
+        if (isa<RankedTensorType, TransferHandleType, ReceiveRequestType,
+                ReadyReceiveType>(result.getType())) {
+          worklist.push_back(result);
+        }
       }
     }
     return true;
@@ -779,9 +797,7 @@ DFBReleaseSearch findOwnedDFBReleases(DFBAcquireInterval interval,
   DFBAcquireOrdering ordering = getDFBAcquireOrdering(interval.acquire);
   Block *block = ordering.block;
   DFBProtocolEffectKind releaseEffectKind =
-      interval.kind == DFBAcquireReleaseKind::Producer
-          ? DFBProtocolEffectKind::Push
-          : DFBProtocolEffectKind::Pop;
+      getDFBReleaseEffectKind(interval.kind);
 
   bool useExtendsPastBoundary =
       lastOwnedUse && lastOwnedUse != interval.acquire &&

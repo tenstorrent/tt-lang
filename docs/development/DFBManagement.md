@@ -129,7 +129,8 @@ ttl-finalize-dfb-indices           (Module) Finalize identities and allocations
 ttl-set-compute-kernel-config      (Module) Resolve per-kernel configuration
   ... DST assignment, loop lowering, scheduling ...
 ttl-annotate-cb-associations       (FuncOp) Copy DFB indices to tile ops
-ttl-verify-dfb-spsc                (Module) Verify producer/consumer uniqueness
+ttl-verify-dfb-spsc                (Module) Verify DFB producer/consumer domains
+ttl-verify-dfb-lifecycle           (Module) Verify transaction order and capacity
 ttl-erase-pipenet-scopes           (Module) Remove verified PipeNet markers
 ttl-validate-cb-budget             (Module) Validate DFB/reset/reconfig L1 use
 convert-ttl-to-ttkernel            (Module) Lower to TTKernel dialect
@@ -254,11 +255,11 @@ The correctness invariant is that every surviving DFB access has one compatible
 descriptor on its launch core; conservative metadata preserves the
 whole-program descriptor behavior when this cannot be proved.
 
-`ttl-verify-dfb-spsc` must run after `ttl-finalize-dfb-indices` so every
-`bind_cb` carries its final `cb_index` and module-wide logical `dfb_id`. The
-pass requires the `ttl.dfb_allocations` module attribute emitted by successful
-finalization, then verifies that every declaration and lifecycle operand has a
-resolved logical ID.
+`ttl-verify-dfb-spsc` and `ttl-verify-dfb-lifecycle` run after
+`ttl-finalize-dfb-indices` so every `bind_cb` carries its final `cb_index` and
+module-wide logical `dfb_id`. Both require the `ttl.dfb_allocations` module
+attribute emitted by successful finalization, then verify that every
+declaration and lifecycle operand has a resolved logical ID.
 
 ## Synchronized reset epochs
 
@@ -745,24 +746,98 @@ insufficient: `ttl.cb_wait` observes pages published by a push. This structural
 check does not depend on launch-domain analysis and remains enabled when
 `TTL_RELAX_DFB_SPSC` is set.
 
-Setting `TTL_RELAX_DFB_SPSC` skips only per-launch-node ownership and
-producer-correspondence checks that require synchronization absent from IR. It
-skips overlapping producer/consumer domain checks here and same-node producer
-correspondence for DFB waits in `ttl-verify-pipenet-guards`. A waited DFB still
-requires either a compiler-visible push or uncontracted external access that
-may contain one. Finalized DFB identity, physical-index, and launch-grid
+The separate `ttl-verify-dfb-lifecycle` pass checks the protocol effects
+exposed through `DFBAccessOpInterface` on each active launch node. Within one
+kernel it summarizes the effects on a DFB in program order as the net change
+and cumulative extrema of four block counters: open reserves, open waits,
+published blocks, and occupied capacity. A push cannot exceed preceding
+reserves, a pop cannot exceed preceding waits, both pairs must return to zero
+at kernel completion, and open acquisitions cannot exceed DFB capacity. A
+data-movement kernel that performs both roles runs them on one RISC, so it
+must also wait only for blocks it published earlier and keep occupied capacity
+within the DFB: a second reserve before the first pop requires a second slot. A
+compute kernel runs producer effects on PACK and consumer effects on UNPACK
+(`circular_buffer.h` wraps `reserve_back`/`push_back` in `PACK(...)` and
+`wait_front`/`pop_front` in `UNPACK(...)`), so each role is checked as its own
+endpoint and `wait cur; reserve next; pop cur; push next` fits one slot. The
+UNPACK-side wait is not checked against the PACK-side publications that
+precede it in program order, because PACK may publish a block whose contents
+do not depend on the wait; a wait whose only possible publication depends on
+it deadlocks without a diagnostic from this pass, and the simulator reports
+that deadlock at run time. Across distinct producer and consumer kernels, the
+blocks the consumer pops cannot exceed the blocks the producer pushes, and
+pushed blocks left unpopped at launch completion must fit capacity.
+Opaque-call effect summaries state
+Metal-level actions whose reserve and wait amounts are readiness thresholds,
+so only their pushes and pops count, each as a transfer that acquires and
+releases its blocks. A synchronized reset or a state-discarding
+reconfiguration restores the empty state: the launch splits into intervals at
+each one, every interval is checked on its own, only the last must close, and
+the totals are compared per interval because the participants execute the same
+resets. The pass rejects a capacity-one producer that reserves two blocks
+before either push, even when its consumer eventually pops both blocks.
+
+The pass reuses the existing analyses rather than interpreting control flow
+itself. `LaunchNodeDomainAnalysis` supplies the nodes where each effect and
+each opaque call may execute. The launch-location execution counts built on
+`ExecutionCountAnalysis` decide whether a nested region executes on a node and
+how often: TTL control operations (`ttl.pipenet_scope`, `ttl.if_src`,
+`ttl.if_dst`, the PipeNet `foreach` operations) state their invocation count
+directly, an at-most-once region such as `scf.if` or `ttl.dst_section` is
+active when its exact count equals the parent's, and a loop body is composed
+once per proven trip count. The acquire/release analysis supplies block counts
+per effect. Only proven violations are rejected: a sequence these analyses
+cannot resolve, such as a loop whose trip count depends on the device or a
+region selected by a runtime value, is accepted, as the liveness analysis
+accepts an unproven lifecycle by forgoing storage reuse. (`ttl-verify-dfb-spsc`
+differs: it rejects an unproven participant set.) The liveness analysis is not
+reused directly because it runs inside DFB index finalization on earlier IR
+and exposes normalized transaction runs rather than the ordered counter
+summary the verifier needs. A Pipe send from a reserved DFB block does not
+publish it or release capacity. Nodes where an opaque call may perform
+protocol actions on a DFB that the IR does not represent, through a dependency
+without an effect or access contract or through `unknown_dfb_access`, are not
+checked for that DFB. The excluded nodes are the upper bound of the call's
+launch domain, so a call under a node predicate and a runtime condition
+excludes only the nodes the predicate admits; a call with no upper bound
+excludes every node. An `inspect` contract has no protocol effect and does not
+exclude the node, and declared `dfb_effects` are counted like concrete
+lifecycle operations.
+
+The two finalized-DFB verifiers share their inputs through
+`DFBProtocolDomainAnalysis`: the launch-node domain of every protocol action
+and opaque call, the declaration of every logical DFB with its finalized
+`cb_index`, and the opaque calls whose protocol actions on a DFB the IR does
+not represent.
+
+Setting `TTL_RELAX_DFB_SPSC` skips per-launch-node ownership checks. It skips
+overlapping producer/consumer domain checks here and same-node producer
+correspondence for DFB waits in `ttl-verify-pipenet-guards`. The lifecycle pass
+is unaffected: an exact per-node release count proves that the kernel acts on
+that node, so the totals of every counted kernel are compared whether or not
+ownership was proven, and two consumers that each pop once against one push
+are rejected. A waited DFB still requires either a compiler-visible push or
+uncontracted external access that may contain one. Finalized DFB identity,
+physical-index, and launch-grid
 preconditions remain mandatory. PipeNet endpoint guards, transfer
 correspondence, and synchronization schedules also remain mandatory. The
-program must ensure that at most one producer and at most one consumer controls
-the DFB on each active launch node. Every wait must still have a producer that
-publishes the required pages. The variable is unset by default, so all checks
-run unless the user sets it. When set, the compiler emits a warning and records
+program must ensure that at most one producer and at most one consumer acts on
+the DFB at any one time on each active launch node; kernels that share a role
+synchronize their protocol actions themselves. Every wait must still have a
+producer that publishes the required pages. The variable is unset by default,
+so all
+ownership checks run unless the user sets it. When set, the compiler emits a
+warning and records
 `ttl.relaxed_dfb_protocol_domain_verification` on the module.
 
 See `test/ttlang/Dialect/TTL/Transforms/verify_dfb_spsc_invalid.mlir` and
 `verify_dfb_spsc_missing_producer_invalid.mlir` and
 `verify_dfb_spsc_unknown_access_invalid.mlir` for rejected programs, and
-`verify_dfb_spsc.mlir` for accepted programs.
+`verify_dfb_spsc.mlir` and `verify_dfb_lifecycle.mlir` for accepted programs.
+`verify_dfb_lifecycle_invalid.mlir` covers transaction order and capacity.
+`verify_dfb_lifecycle_relaxed.mlir` and
+`verify_dfb_lifecycle_relaxed_invalid.mlir` cover lifecycle verification with
+SPSC ownership relaxation enabled.
 
 The compiler does not currently split DFBs with multiple pop owners; users must
 duplicate them explicitly with `make_dataflow_buffer_like`. Tracked in
@@ -1338,6 +1413,45 @@ ownership uses the operation interval and its boundary to disambiguate
 consecutive direct uses on the same DFB. Unifying would require changing every
 direct storage-accessing operation to take the attached tensor instead of the
 DFB.
+
+### Rejected acquisition shapes
+
+Two shapes are rejected instead of completed with a release.
+
+A block still acquired when a nested region acquires the same DFB with the
+same kind would alias that acquisition: `cb_wait_front` and `cb_reserve_back`
+address the front or write slot regardless of an earlier open acquisition.
+Let `B` be the region operation in the acquisition's block that contains the
+next same-kind acquisition. A release of the block's kind on the DFB before
+`B`, at the same level or inside the acquiring branch of a guarded
+acquisition, frees the block and nothing more is checked. Otherwise each
+region of `B` is outlined along the path to its first same-kind acquisition:
+the region's top-level operations and, when that acquisition sits in further
+nested regions, the operations on the way to it. The path releases the block
+when it performs exactly one release that no acquisition on the path
+precedes, and every region operation on the way executes its regions at most
+once (`scf.if`, `affine.if`, `scf.index_switch`, `scf.execute_region`,
+`ttl.if_src`, `ttl.if_dst`). When every path releases the block, including an
+`else` branch or `default` case that covers the remaining executions, the
+releases stay in place. When only some paths release it and the block's last
+owned use precedes `B`, those releases are erased and one release is placed
+after the last use, before `B`, as for any release nested in the acquisition
+interval. The program is invalid when a release of the block's kind lies
+anywhere else inside `B` (in a nested region off the path, inside a loop, or
+after the path's first acquisition), when a release after `B` belongs to no
+later acquisition (the frontend's with-exit release), or when the block is
+used in or after `B` without a release on every path.
+
+A data-movement kernel addresses a DFB through one read or write pointer, so
+a block acquired there is used before the next same-kind acquisition or not
+at all: later tensor copies belong to the next acquisition. Without a release
+between the two acquisitions, the earlier one is rejected at the next
+acquisition when it has no use, because the pass would otherwise release it
+unused and every copy meant for it would address the next block, and when a
+release that no later acquisition owns follows the next acquisition, because
+that release was meant for the earlier block. Compute kernels may hold
+several blocks because `TTLCoalesceDFBAcquires` turns consecutive
+acquisitions into one multi-block acquisition with offset views.
 
 ### Invariants on the inserted release
 
