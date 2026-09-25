@@ -745,6 +745,7 @@ def _compile_atom(
     memory_space: str,
     tiled: bool,
     program_hash: int,
+    program_l1_layout: str,
     fp32_dest_acc_en: Optional[bool],
     dst_full_sync_en: Optional[bool],
     math_fidelity: Optional[str],
@@ -885,6 +886,7 @@ def _compile_atom(
         math_fidelity=math_fidelity,
         compiler_options=compiler_options,
         program_hash=program_hash,
+        program_l1_layout=program_l1_layout,
         l1_budget_override=l1_budget_override,
         kernel_source_file=spec.source_file,
         kernel_line_offset=spec.line_offset,
@@ -918,6 +920,7 @@ def _compile_unified_operation(
         decorator_options["memory_space"],
         decorator_options["tiled"],
         program_hash,
+        decorator_options.get("program_l1_layout", "uniform"),
         fp32_dest_acc_en=decorator_options["fp32_dest_acc_en"],
         dst_full_sync_en=decorator_options["dst_full_sync_en"],
         math_fidelity=decorator_options["math_fidelity"],
@@ -958,6 +961,7 @@ class Atom:
             dst_full_sync_en=decorator_options["dst_full_sync_en"],
             math_fidelity=decorator_options["math_fidelity"],
             options=decorator_options["options"],
+            program_l1_layout=decorator_options["program_l1_layout"],
             prepare_call=prepare_call,
             factory_cache=decorator_options["factory_cache"],
             factory_cache_key=decorator_options["factory_cache_key"],
@@ -990,6 +994,7 @@ def _unified_operation(
     dst_full_sync_en: Optional[bool] = None,
     math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
+    program_l1_layout: str = "uniform",
     device_domain=None,
     mesh_program_placements=None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
@@ -1002,7 +1007,9 @@ def _unified_operation(
     / dst-sync overrides, compiler options). A grid is required for a
     top-level operation; a composed operation used only for expansion needs none.
     """
-    _validate_operation_options(num_outs, memory_space, tiled, math_fidelity)
+    _validate_operation_options(
+        num_outs, memory_space, tiled, math_fidelity, program_l1_layout
+    )
 
     def _decorator(f):
         spec = _build_atom_spec(
@@ -1020,6 +1027,7 @@ def _unified_operation(
                 "dst_full_sync_en": dst_full_sync_en,
                 "math_fidelity": math_fidelity,
                 "options": options,
+                "program_l1_layout": program_l1_layout,
                 "device_domain": device_domain,
                 "mesh_program_placements": mesh_program_placements,
                 "runtime_resource_factory": runtime_resource_factory,
@@ -1042,6 +1050,7 @@ def operation(
     dst_full_sync_en: Optional[bool] = None,
     math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
+    program_l1_layout: str = "uniform",
     device_domain=None,
     mesh_program_placements=None,
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
@@ -1089,6 +1098,7 @@ def operation(
                 dst_full_sync_en=dst_full_sync_en,
                 math_fidelity=math_fidelity,
                 options=options,
+                program_l1_layout=program_l1_layout,
                 runtime_resource_factory=runtime_resource_factory,
                 factory_cache=factory_cache,
                 factory_cache_key=factory_cache_key,
@@ -1108,6 +1118,7 @@ def operation(
             dst_full_sync_en=dst_full_sync_en,
             math_fidelity=math_fidelity,
             options=options,
+            program_l1_layout=program_l1_layout,
             device_domain=device_domain,
             mesh_program_placements=mesh_program_placements,
             runtime_resource_factory=runtime_resource_factory,

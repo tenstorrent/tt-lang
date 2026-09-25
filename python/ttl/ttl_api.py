@@ -185,6 +185,7 @@ class _FactoryCacheEntryKey:
     factory_key: Hashable
     compilation_key: tuple
     requires_runtime_resources: bool
+    program_l1_layout: str
 
 
 @dataclass(frozen=True)
@@ -847,6 +848,7 @@ class CompiledTTNNKernel:
         cb_configs=None,
         dfb_reconfiguration_plan=None,
         program_hash=None,
+        program_l1_layout="uniform",
         source_lines=None,
         all_source_lines=None,
         thread_to_kernel=None,
@@ -889,6 +891,8 @@ class CompiledTTNNKernel:
             cb_configs: Final physical DFB configurations indexed by cb_index
             dfb_reconfiguration_plan: Final boundary order and epoch configs.
             program_hash: Hash for tt-metal program cache
+            program_l1_layout: Static program-image layout contract, either
+                ``"uniform"`` or ``"per_core"``.
             source_lines: Source code lines for auto-profiling reports (deprecated)
             all_source_lines: Dict mapping kernel name to source lines
             thread_to_kernel: Dict mapping RISC thread name to kernel name
@@ -944,6 +948,7 @@ class CompiledTTNNKernel:
         self.cb_configs = cb_configs or []
         self.dfb_reconfiguration_plan = dfb_reconfiguration_plan
         self.program_hash = program_hash
+        self.program_l1_layout = program_l1_layout
         self.source_lines = source_lines
         self.all_source_lines = all_source_lines or {}
         self.thread_to_kernel = thread_to_kernel or {}
@@ -1074,6 +1079,7 @@ class CompiledTTNNKernel:
             dfb_reconfiguration_plan=self.dfb_reconfiguration_plan,
             core_ranges=self.core_ranges,
             program_hash=self.program_hash,
+            program_l1_layout=self.program_l1_layout,
             num_pipe_sync_semaphores=self.num_pipe_sync_semaphores,
             num_dfb_resets=self.num_dfb_resets,
             unsafe_split_static_dfb_descriptors=self.unsafe_split_static_dfb_descriptors,
@@ -1969,6 +1975,7 @@ def _compile_ttnn_kernel(
     cb_configs=None,
     dfb_reconfiguration_plan=None,
     program_hash=None,
+    program_l1_layout: str = "uniform",
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
     math_fidelity: Optional[str] = None,
@@ -1999,6 +2006,8 @@ def _compile_ttnn_kernel(
         module: MLIR module after TTL pipeline (with EmitC kernels)
         args: Input/output tensors (used for shape/dtype info)
         grid: Grid dimensions tuple
+        program_l1_layout: Static program-image layout contract, either
+            ``"uniform"`` or ``"per_core"``.
         num_outs: Number of output tensors
         program_hash: Hash for tt-metal program cache
         verbose: Print compilation info
@@ -2271,6 +2280,7 @@ def _compile_ttnn_kernel(
         cb_configs=cb_configs,
         dfb_reconfiguration_plan=dfb_reconfiguration_plan,
         program_hash=program_hash,
+        program_l1_layout=program_l1_layout,
         source_lines=source_lines,
         all_source_lines=all_source_lines,
         thread_to_kernel=thread_to_kernel,
@@ -2339,6 +2349,7 @@ def _compile_ttnn_kernel(
             num_tensors=len(args),
             output_path=runner_path,
             program_hash=program_hash,
+            program_l1_layout=program_l1_layout,
             tensor_configurations=tuple(get_tensor_configuration(arg) for arg in args),
             kernel_name=operation_name,
             num_pipe_sync_semaphores=num_pipe_sync_semaphores,
@@ -3127,6 +3138,7 @@ def _compile_kernel(
     memory_space: str,
     tiled: bool,
     program_hash: int,
+    program_l1_layout: str = "uniform",
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
     math_fidelity: Optional[str] = None,
@@ -3261,6 +3273,7 @@ def _compile_kernel(
         math_fidelity=math_fidelity,
         compiler_options=compiler_options,
         program_hash=program_hash,
+        program_l1_layout=program_l1_layout,
         l1_budget_override=l1_budget_override,
         kernel_source_file=kernel_source_file,
         kernel_line_offset=kernel_line_offset,
@@ -3285,6 +3298,7 @@ def _lower_program_to_kernel(
     math_fidelity,
     compiler_options,
     program_hash,
+    program_l1_layout,
     l1_budget_override,
     kernel_source_file,
     kernel_line_offset,
@@ -3695,6 +3709,7 @@ def _lower_program_to_kernel(
             cb_configs,
             dfb_reconfiguration_plan=dfb_reconfiguration_plan,
             program_hash=program_hash,
+            program_l1_layout=program_l1_layout,
             fp32_dest_acc_en=fp32_dest_acc_en,
             dst_full_sync_en=dst_full_sync_en,
             math_fidelity=math_fidelity,
@@ -3774,6 +3789,7 @@ def _make_operation_wrapper(
     dst_full_sync_en: Optional[bool],
     math_fidelity: Optional[str],
     options: Optional[str],
+    program_l1_layout: str = "uniform",
     prepare_call: Optional[Callable] = None,
     factory_cache: Optional[MutableMapping] = None,
     factory_cache_key: Optional[Hashable] = None,
@@ -3854,6 +3870,7 @@ def _make_operation_wrapper(
                         factory_cache_key,
                         cache_key,
                         runtime_resource_factory is not None,
+                        program_l1_layout,
                     )
                     slot = _get_factory_cache_slot(factory_cache, entry_key)
                     with slot.lock:
@@ -3932,7 +3949,11 @@ def _make_operation_wrapper(
 
 
 def _validate_operation_options(
-    num_outs, memory_space, tiled, math_fidelity: Optional[str]
+    num_outs,
+    memory_space,
+    tiled,
+    math_fidelity: Optional[str],
+    program_l1_layout="uniform",
 ) -> None:
     if num_outs != 1:
         raise ValueError(f"num_outs must be 1, got {num_outs}")
@@ -3944,6 +3965,11 @@ def _validate_operation_options(
     if not isinstance(tiled, bool):
         raise TypeError(f"tiled must be a boolean, got {type(tiled).__name__}")
     validate_math_fidelity(math_fidelity)
+    if program_l1_layout not in {"uniform", "per_core"}:
+        raise ValueError(
+            "program_l1_layout must be 'uniform' or 'per_core', "
+            f"got {program_l1_layout!r}"
+        )
 
 
 def pykernel_gen(
@@ -3957,6 +3983,7 @@ def pykernel_gen(
     dst_full_sync_en: Optional[bool] = None,
     math_fidelity: Optional[str] = None,
     options: Optional[str] = None,
+    program_l1_layout: str = "uniform",
     runtime_resource_factory: Optional[Callable[..., ProgramRuntimeResources]] = None,
     factory_cache: Optional[MutableMapping] = None,
     factory_cache_key: Optional[Hashable] = None,
@@ -3982,6 +4009,8 @@ def pykernel_gen(
         dst_full_sync_en: Optional override for dst_full_sync_en
         math_fidelity: Optional TTNN compute math fidelity
         options: Compiler option string (e.g., "--no-ttl-maximize-dst")
+        program_l1_layout: Static program-image layout contract, either
+            ``"uniform"`` or ``"per_core"``.
         device_domain: Optional logical device domain for mesh execution.
         mesh_program_placements: Optional logical device coordinate tuples or
             inclusive ``ttl.MeshProgramPlacement`` ranges that receive program
@@ -4002,7 +4031,9 @@ def pykernel_gen(
     """
     if grid is None:
         raise ValueError("grid parameter is required")
-    _validate_operation_options(num_outs, memory_space, tiled, math_fidelity)
+    _validate_operation_options(
+        num_outs, memory_space, tiled, math_fidelity, program_l1_layout
+    )
     if iterator_types is not None and indexing_maps is None:
         raise ValueError("indexing_maps must be set when iterator_types is set")
 
@@ -4055,6 +4086,7 @@ def pykernel_gen(
                 memory_space,
                 tiled,
                 program_hash,
+                program_l1_layout=program_l1_layout,
                 fp32_dest_acc_en=fp32_dest_acc_en,
                 dst_full_sync_en=dst_full_sync_en,
                 math_fidelity=math_fidelity,
@@ -4075,6 +4107,7 @@ def pykernel_gen(
             dst_full_sync_en=dst_full_sync_en,
             math_fidelity=math_fidelity,
             options=options,
+            program_l1_layout=program_l1_layout,
             prepare_call=_prepare_call,
             factory_cache=factory_cache,
             factory_cache_key=factory_cache_key,

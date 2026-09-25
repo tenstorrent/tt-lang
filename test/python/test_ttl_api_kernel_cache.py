@@ -412,6 +412,31 @@ def test_factory_cache_separates_operation_and_runtime_resource_contracts(
     assert len(compile_calls) == 3
 
 
+def test_factory_cache_separates_program_l1_layout_contracts(monkeypatch):
+    compile_calls = _install_recording_compile(monkeypatch)
+    factory_cache = {}
+
+    def make_copy_operation(program_l1_layout):
+        @ttl_api.operation(
+            grid=(1, 1),
+            program_l1_layout=program_l1_layout,
+            factory_cache=factory_cache,
+            factory_cache_key=("shared", 1),
+        )
+        def copy_kernel(input_tensor, output_tensor):
+            pass
+
+        return copy_kernel
+
+    uniform_operation = make_copy_operation("uniform")
+    per_core_operation = make_copy_operation("per_core")
+
+    uniform_operation(_FakeTensor(), _FakeTensor())
+    per_core_operation(_FakeTensor(), _FakeTensor())
+
+    assert len(compile_calls) == 2
+
+
 @pytest.mark.parametrize(
     ("factory_cache", "factory_cache_key"),
     (({}, None), (None, ("copy", 1))),
@@ -458,6 +483,18 @@ def test_operation_propagates_math_fidelity(monkeypatch):
     copy_kernel(_FakeTensor(), _FakeTensor())
 
     assert compile_calls[0]["compile_options"]["math_fidelity"] == "HiFi3"
+
+
+def test_operation_propagates_program_l1_layout(monkeypatch):
+    compile_calls = _install_recording_compile(monkeypatch)
+
+    @ttl_api.operation(grid=(1, 1), program_l1_layout="per_core")
+    def copy_kernel(input_tensor, output_tensor):
+        pass
+
+    copy_kernel(_FakeTensor(), _FakeTensor())
+
+    assert compile_calls[0]["compile_options"]["program_l1_layout"] == "per_core"
 
 
 def test_explicit_operation_propagates_runtime_resource_factory(monkeypatch):
@@ -574,6 +611,11 @@ def test_operation_cache_separates_dynamic_noc_option(monkeypatch):
 def test_operation_rejects_invalid_math_fidelity():
     with pytest.raises(ValueError, match="math_fidelity must be one of"):
         ttl_api.operation(grid=(1, 1), math_fidelity="HiFi5")
+
+
+def test_operation_rejects_invalid_program_l1_layout():
+    with pytest.raises(ValueError, match="program_l1_layout"):
+        ttl_api.operation(grid=(1, 1), program_l1_layout="invalid")
 
 
 def test_operation_cache_reuses_kernel_across_allocation_capacities(monkeypatch):
