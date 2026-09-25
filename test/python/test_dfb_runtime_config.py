@@ -273,6 +273,17 @@ def test_missing_complete_allocations_are_rejected():
             [
                 _entry(
                     0,
+                    l1_offset=64,
+                    l1_payload_offset=32,
+                    l1_allocation_bytes=4096,
+                )
+            ],
+            "l1_payload_offset must not precede l1_offset",
+        ),
+        (
+            [
+                _entry(
+                    0,
                     l1_offset=0,
                     l1_payload_offset=64,
                     l1_allocation_bytes=1024,

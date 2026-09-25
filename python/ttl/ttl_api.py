@@ -2676,6 +2676,8 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
             ) from None
         if l1_offset < 0 or l1_payload_offset < 0:
             raise ValueError(f"{context} compiler-sram offsets must be nonnegative")
+        if l1_payload_offset < l1_offset:
+            raise ValueError(f"{context}.l1_payload_offset must not precede l1_offset")
         if l1_allocation_bytes <= 0:
             raise ValueError(
                 f"{context}.l1_allocation_bytes must be positive, "

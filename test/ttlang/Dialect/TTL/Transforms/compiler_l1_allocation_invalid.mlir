@@ -13,6 +13,18 @@ module attributes {ttl.launch_grid = [1, 1]} {
 
 // -----
 
+// Reject an architecture without a compiler-managed SRAM device interface.
+// expected-error @below {{compiler-sram supports only Wormhole B0 and Blackhole; selected target is #ttcore.arch<quasar>}}
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<quasar>} {
+  func.func @unsupported_target() attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>, ttl.noc_index = 0 : i32} {
+    %storage = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
+      : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    return
+  }
+}
+
+// -----
+
 // Tensor-backed storage has external ownership and cannot use arena offsets.
 module attributes {ttl.launch_grid = [1, 1]} {
   func.func @unsupported_tensor_backing() attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>, ttl.noc_index = 0 : i32} {

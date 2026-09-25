@@ -43,12 +43,22 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
             llvm::StringRef allocationStrategy,
             const DFBConcurrentKernelLivenessAnalysis &liveness) {
   std::string targetFailure;
-  FailureOr<uint64_t> alignment =
-      resolveTargetL1AllocationQuantumBytes(module, targetFailure);
-  if (failed(alignment)) {
+  FailureOr<std::optional<ttcore::Arch>> targetArch =
+      resolveTargetArch(module, targetFailure);
+  if (failed(targetArch)) {
     module.emitOpError() << targetFailure;
     return failure();
   }
+  if (*targetArch && !supportsCompilerSRAM(**targetArch)) {
+    module.emitOpError()
+        << "compiler-sram supports only Wormhole B0 and Blackhole; selected "
+           "target is "
+        << ttcore::ArchAttr::get(module.getContext(), **targetArch);
+    return failure();
+  }
+  uint64_t alignment = *targetArch
+                           ? getTargetL1AllocationQuantumBytes(**targetArch)
+                           : getConservativeL1AllocationQuantumBytes();
   llvm::MapVector<int64_t, L1Region> regions;
   for (const auto &assignment : identities.getAssignments()) {
     BindCBOp declaration = assignment.declaration;
@@ -118,7 +128,7 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     return failure();
   }
   CompilerL1AllocationProblem problem;
-  problem.alignmentBytes = *alignment;
+  problem.alignmentBytes = alignment;
   problem.payloadBaseOffset = *controlBytes;
   problem.budgetBytes = budget;
   problem.conflicts.assign(plan.size(), llvm::BitVector(plan.size()));

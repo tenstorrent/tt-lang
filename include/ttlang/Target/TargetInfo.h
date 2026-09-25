@@ -69,6 +69,13 @@ inline uint64_t getTargetL1AllocationQuantumBytes(ttcore::Arch targetArch) {
 /// Preserve safety when compilation has no target metadata.
 inline uint64_t getConservativeL1AllocationQuantumBytes() { return 64; }
 
+/// Return whether the compiler-managed SRAM device interface supports the
+/// target.
+inline bool supportsCompilerSRAM(ttcore::Arch targetArch) {
+  return targetArch == ttcore::Arch::WormholeB0 ||
+         targetArch == ttcore::Arch::Blackhole;
+}
+
 namespace target_info_detail {
 
 inline FailureOr<std::optional<ttcore::Arch>>
