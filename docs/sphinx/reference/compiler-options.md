@@ -19,7 +19,7 @@ python my_kernel.py --no-ttl-maximize-dst
 | `--ttl-fpu-binary-ops` / `--no-ttl-fpu-binary-ops` | enabled | Allow FPU strategy selection for binary add, subtract, and multiply when their operands permit it. Disabling selects SFPU. |
 | `--ttl-block-matmul` / `--no-ttl-block-matmul` | enabled | Emit `matmul_block` (processes the full tile block atomically) instead of per-tile matmul loops. Disabling this option is not yet supported. |
 | `--ttl-subblock-sync` / `--no-ttl-subblock-sync` | disabled | Refine DFB reserve/push to per-subblock granularity, enabling `pack_tile_block` for contiguous subblocks. When disabled, user-placed reserve/push is preserved as written. |
-| `--ttl-combine-pack-tiles` / `--no-ttl-combine-pack-tiles` | enabled | Combine consecutive `pack_tile` ops on the same DFB with contiguous DST and DFB indices into a single `pack_tile_block` call. |
+| `--ttl-combine-pack-tiles` / `--no-ttl-combine-pack-tiles` | enabled | Combine consecutive Metal `pack_tile` ops on the same DFB with contiguous DST and DFB indices into a single `pack_tile_block` call. Compiler-managed SRAM retains explicit tile indices. |
 | `--ttl-reduce-full-fp32` / `--no-ttl-reduce-full-fp32` | enabled | Prefer full-fp32 accumulation for reduce operations when supported by the target and the complete kernel configuration. |
 | `--ttl-matmul-full-fp32` / `--no-ttl-matmul-full-fp32` | enabled | Prefer full-fp32 accumulation for matmul operations when supported by the target and the complete kernel configuration. |
 | `--ttl-strict-f32-acc` / `--no-ttl-strict-f32-acc` | disabled | Error at compile time if a `+=` accumulation loop's output block exceeds f32 DST capacity (4 tiles with double-buffering). When enabled, guarantees each accumulation step fits in a single DST section without subblocking. |
@@ -30,7 +30,7 @@ python my_kernel.py --no-ttl-maximize-dst
 | `--ttl-pipe-batch-tiles N` | `0` (auto) | Limit the logical transfers in one PipeTransport group. `0` selects automatically and `1` disables grouping. |
 | `--ttl-l1-budget N` | target-dependent | Override the per-core L1 budget used for target-aligned DFB allocation, PipeNet resources, synchronized-reset state, reconfiguration state, and final combined validation. |
 | `--ttl-reuse-user-dfbs` / `--no-ttl-reuse-user-dfbs` | enabled | Reuse physical DFB indices and compiler-managed storage when concurrent-kernel liveness proves that compatible lifetimes do not overlap. Disabling compacts provisional user indices without introducing user-DFB sharing and assigns each physical descriptor separate storage. |
-| `--ttl-dfb-exact-coloring-search-limit N` | `1000000` | Examine at most `N` states during deterministic exact DFB allocation when order-dependent first-fit prevents acceptance or exceeds the provisional threshold after a conservative PipeNet reservation. This bounds compile time; reaching the limit reports an inconclusive result only when authoritative acceptance requires the search result. |
+| `--ttl-dfb-exact-coloring-search-limit N` | `1000000` | Limit deterministic exact Metal DFB index allocation search. Compiler-managed SRAM does not use this option. |
 | `--ttl-unsafe-assume-dfb-allocation-groups` / `--no-ttl-unsafe-assume-dfb-allocation-groups` | disabled | Trust explicit `allocation_group=` handoffs that the compiler cannot prove. Accepted groups emit warnings and `ttl.assumed_dfb_allocation_groups` metadata. Descriptor, storage, static configuration, capacity, and L1 checks remain enforced. |
 | `--ttl-specialize-cores` / `--no-ttl-specialize-cores` | disabled | Create one TTKernel function per launch coordinate when its branches, loops, or compile-time table lookups depend on logical core coordinates. Each function receives constant coordinates, allowing later compiler passes to remove unreachable code and unused table entries. `ttl.core_coord` identifies the function's runtime dispatch coordinate. Specialized functions with identical generated C++ and runtime metadata share one runtime descriptor. Opt-in. |
 
@@ -165,7 +165,7 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | `enable-fpu-binary-ops` | bool | `true` | Allow FPU strategy selection for binary add/sub/mul. |
 | `use-block-matmul` | bool | `true` | Lower matmul to block-level hardware calls (`matmul_block`). |
 | `subblock-sync` | bool | `false` | Refine DFB reserve/push to per-subblock granularity. |
-| `combine-pack-tiles` | bool | `true` | Combine consecutive `pack_tile` ops into `pack_tile_block`. |
+| `combine-pack-tiles` | bool | `true` | Combine consecutive Metal `pack_tile` ops into `pack_tile_block`; compiler-managed SRAM retains explicit tile indices. |
 | `reduce-full-fp32` | bool | `true` | Prefer full-fp32 reduce accumulation when supported. |
 | `matmul-full-fp32` | bool | `true` | Prefer full-fp32 matmul accumulation when supported. |
 | `strict-f32-acc` | bool | `false` | Error if a `+=` accumulation loop's output block exceeds f32 DST capacity. |
@@ -178,8 +178,8 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | `memory-model` | string | `metal-cb` | Select `metal-cb` or experimental `compiler-sram` byte allocation. |
 | `sram-allocation-strategy` | string | `first-fit-decreasing` | Select `first-fit-decreasing` or `best-fit-decreasing` compiler-managed SRAM payload placement. |
 | `reuse-user-dfbs` | bool | `true` | Reuse physical DFB indices and compiler-managed storage for compatible lifetimes proven not to overlap. |
-| `unsafe-assume-allocation-groups` | bool | `false` | Trust explicit DFB allocation-group handoffs that lack a complete compiler proof. Automatic reuse remains proof-based. |
-| `exact-coloring-search-limit` | uint64 | `1000000` | Maximum states examined during deterministic exact DFB allocation before reporting an inconclusive result. |
+| `unsafe-assume-allocation-groups` | bool | `false` | Trust explicit Metal DFB allocation-group handoffs that lack a complete compiler proof. Compiler-managed SRAM rejects allocation groups. |
+| `exact-coloring-search-limit` | uint64 | `1000000` | Limit deterministic exact Metal DFB index allocation search; unused by compiler-managed SRAM. |
 | `specialize-cores` | bool | `false` | Run the `ttkernel-specialize-and-annotate-dfb-use` sub-pipeline. Maps from `--ttl-specialize-cores`. |
 | `lower-to-emitc` | bool | `false` | Run the TTKernel-to-EmitC backend (produces C++ source). |
 
@@ -276,23 +276,22 @@ ttlang-opt input.mlir -p 'func.func(ttl-insert-intermediate-dfbs{enable=false})'
 
 #### `ttl-finalize-dfb-indices`
 
-`memory-model=compiler-sram` uses the selected deterministic decreasing-size byte-placement strategy and independent synchronization records. It removes the Metal DFB index limit for supported transfer and compute operations. Unknown access completion prevents reuse.
+`memory-model=compiler-sram` uses the selected deterministic decreasing-size byte-placement strategy and independent DFB control records. It removes the Metal DFB index limit for supported transfer and compute operations. Unknown access completion prevents reuse.
 `reuse-user-dfbs=false` gives every payload separate storage. The arena allocation
 includes control and alignment bytes. Greedy placement failure does not establish
-infeasibility. The [backend contract](../../development/SRAMAllocation.md#implemented-contract)
+infeasibility. The [backend contract](https://github.com/tenstorrent/tt-lang/blob/bnorris/compiler-l1-poc/docs/development/SRAMAllocation.md#implemented-contract)
 defines supported execution and storage forms.
 
-Assign physical indices to logical DFBs and emit the complete runtime
-allocation table.
+Assign DFB storage identities and emit the runtime allocation table.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `memory-model` | string | `metal-cb` | Select `metal-cb` or experimental `compiler-sram` byte allocation. |
 | `sram-allocation-strategy` | string | `first-fit-decreasing` | Select `first-fit-decreasing` or `best-fit-decreasing` compiler-managed SRAM payload placement. |
 | `reuse-user-dfbs` | bool | `true` | Reuse physical indices for compatible logical DFBs and storage allocations for physical descriptors when concurrent-kernel liveness proves that their lifetimes cannot overlap. When false, compact provisional user indices without introducing new user-DFB sharing, apply physical-index reuse only to compiler-created DFBs, and assign each physical descriptor separate storage. |
-| `exact-coloring-search-limit` | uint64 | `1000000` | Examine at most this many states during deterministic exact DFB allocation. Exhaustive search runs when order-dependent first-fit prevents acceptance by the index or weighted L1 limit, or exceeds the provisional threshold after a conservative PipeNet reservation. Reaching the limit fails with an inconclusive-search diagnostic only when acceptance requires the result; a reservation-only search may retain an authoritative-budget-valid assignment. |
+| `exact-coloring-search-limit` | uint64 | `1000000` | Limit deterministic exact Metal DFB index allocation; unused by compiler-managed SRAM. |
 | `l1-budget-override` | uint32_t | `0` (target default) | Override the per-core L1 budget used by target-aligned DFB allocation, synchronized-reset and reconfiguration state, and the conservative PipeNet reservation. |
-| `unsafe-assume-allocation-groups` | bool | `false` | Trust explicit DFB allocation groups when launch-domain, access-completion, pointer-handoff, or lifetime-order proof is incomplete. Emit one warning per accepted group and record the assumptions in `ttl.assumed_dfb_allocation_groups`. Page-format, storage, static compute-configuration, per-member ring-envelope, target-capacity, and L1-budget errors remain fatal. |
+| `unsafe-assume-allocation-groups` | bool | `false` | Trust explicit Metal DFB allocation groups when ownership proof is incomplete. Compiler-managed SRAM rejects allocation groups. |
 
 ```bash
 ttlang-opt input.mlir -p 'builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-sram sram-allocation-strategy=best-fit-decreasing reuse-user-dfbs=true l1-budget-override=0})'

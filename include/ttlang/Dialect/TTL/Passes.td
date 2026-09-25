@@ -1069,7 +1069,7 @@ def TTLLowerSignpostToEmitC
 
 def TTLFinalizeDFBIndices
     : Pass<"ttl-finalize-dfb-indices", "::mlir::ModuleOp"> {
-  let summary = "Assign physical DFB indices and emit allocation metadata";
+  let summary = "Assign DFB storage identities and emit allocation metadata";
   let description = [{
     Module-level pass that runs after all DFB-creating and synchronization
     passes. Must precede `ttl-set-compute-kernel-config` and
@@ -1084,7 +1084,7 @@ def TTLFinalizeDFBIndices
     state and payload offsets within one allocator-owned SRAM arena. The arena
     high-water mark includes alignment and state. A greedy budget failure does
     not prove that a feasible placement is impossible. Unsupported storage forms
-    and operations are diagnosed; this mode never falls back to Metal descriptors.
+    and PipeNet transfers are diagnosed; this mode never falls back to Metal descriptors.
     `reuse-user-dfbs=false` disables payload aliasing in this mode.
 
     User-declared DFBs enter this pass with module-wide logical `dfb_id`
@@ -1635,11 +1635,11 @@ def TTKernelUnrollStaticPipeNetRecordLoops
 
 def TTKernelAnnotateDFBUse
     : Pass<"ttkernel-annotate-dfb-use", "::mlir::ModuleOp"> {
-  let summary = "Record physical DFB indices used by each TTKernel function";
+  let summary = "Record DFB allocation indices used by each TTKernel function";
   let description = [{
     Runs after per-core specialization and canonicalization.
     For each `ttkernel.thread` function, records the
-    sorted physical DFB indices reached through surviving
+    sorted DFB allocation indices reached through surviving
     `ttkernel.get_compile_time_arg_val` operations below
     `ttl.base_cta_index` and `dfb_resource_indices` metadata on surviving
     `ttkernel.opaque_call` operations in `ttl.used_dfb_indices`. The metadata
@@ -1648,7 +1648,8 @@ def TTKernelAnnotateDFBUse
     propagate to kernel entries.
     Declarations are not annotated. The compile-time ABI places
     every DFB before tensor-accessor arguments, including DFB ids passed to
-    opaque externs as scalar values.
+    opaque externs as scalar values. In compiler-managed SRAM mode, these are
+    compiler allocation indices; in Metal mode, they are physical indices.
 
     Resource indices must be within the enclosing function's DFB compile-time
     argument range.

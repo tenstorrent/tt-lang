@@ -204,7 +204,7 @@ constexpr llvm::StringLiteral
 /// Placeholder marker on copy_tile (replaced during DST assignment).
 constexpr llvm::StringLiteral kPlaceholderCopyAttrName("ttl.placeholder_copy");
 
-/// Module attribute containing one runtime descriptor per physical DFB index.
+/// Runtime allocation metadata indexed by finalized DFB identity.
 constexpr llvm::StringLiteral kDFBAllocationsAttrName("ttl.dfb_allocations");
 /// Field names shared by Metal and compiler-managed DFB allocation entries.
 constexpr llvm::StringLiteral kDFBAllocationIndexField("dfb_index");
