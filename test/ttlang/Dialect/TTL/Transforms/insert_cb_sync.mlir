@@ -1547,3 +1547,28 @@ func.func @nested_later_acquire_owns_direct_access(
   }
   func.return
 }
+
+// -----
+
+// A scalar read copies its value out of the acquired DFB slot.
+
+// CHECK-LABEL: func.func @read_index_scalar_survives_guarded_pop
+// CHECK: %[[DFB:.*]] = ttl.bind_cb
+// CHECK: scf.if
+// CHECK: %[[BLOCK:.*]] = ttl.cb_wait %[[DFB]]
+// CHECK: %[[INDEX:.*]] = ttl.read_index %[[BLOCK]]
+// CHECK-NEXT: ttl.cb_pop %[[DFB]]
+// CHECK: arith.addi %[[INDEX]]
+func.func @read_index_scalar_survives_guarded_pop()
+    attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %condition = arith.constant true
+  %zero = arith.constant 0 : index
+  %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  scf.if %condition {
+    %block = ttl.cb_wait %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %index = ttl.read_index %block[%zero, %zero] : tensor<1x1x!ttcore.tile<32x32, bf16>> -> index
+    ttl.cb_pop %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %next = arith.addi %index, %zero : index
+  }
+  func.return
+}
