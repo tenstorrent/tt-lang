@@ -178,7 +178,7 @@ remapCommonArgIndex(int64_t originalIndex,
 static FailureOr<int64_t> getCompilerL1TensorIndex(ModuleOp module,
                                                    int64_t dfbIndex) {
   auto memoryModel = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
-  if (!memoryModel || memoryModel.getValue() != kCompilerL1MemoryModel) {
+  if (!memoryModel || memoryModel.getValue() != kCompilerSRAMMemoryModel) {
     return int64_t{-1};
   }
   auto allocations = module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName);

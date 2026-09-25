@@ -278,7 +278,7 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 
 ## Implemented Contract
 
-- One uniform worker-core arena layout at a lockstep address across the selected devices.
+- One uniform worker-node arena layout at a lockstep address across the selected devices.
 - Compiler-owned static payloads and existing height-, width-, or block-sharded tensor-backed payloads.
 - Validated allocation groups with one shared state record and the largest required compiler-owned payload envelope.
 - One-block transactions and complete-capacity tensor publication or consumption, with positive capacity below `2^31` pages.

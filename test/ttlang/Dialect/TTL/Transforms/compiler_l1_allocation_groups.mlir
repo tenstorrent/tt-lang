@@ -1,6 +1,6 @@
-// Verifies compiler-L1 storage ownership for validated allocation groups.
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-sram l1-allocation-strategy=first-fit-decreasing reuse-user-dfbs=true})' | FileCheck %s
-// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-sram l1-allocation-strategy=best-fit-decreasing reuse-user-dfbs=true})' | FileCheck %s
+// Verifies SRAM storage ownership for validated allocation groups.
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-sram sram-allocation-strategy=first-fit-decreasing reuse-user-dfbs=true})' | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-sram sram-allocation-strategy=best-fit-decreasing reuse-user-dfbs=true})' | FileCheck %s
 
 // Sequential scratch members share one control record and the largest payload
 // envelope while retaining their logical descriptor geometry.

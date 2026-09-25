@@ -152,6 +152,7 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
   }
   SmallVector<L1Storage> storage;
   DenseMap<int64_t, unsigned> storageByAllocationGroup;
+  // Only a validated allocation group may transfer control-state ownership.
   for (auto [regionIndex, region] : llvm::enumerate(plan)) {
     unsigned storageIndex = storage.size();
     bool createStorage = true;
@@ -217,7 +218,6 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
       }
     }
   }
-  // Only a validated allocation group may transfer control-state ownership.
   std::optional<uint64_t> unalignedControlBytes = llvm::checkedMulUnsigned(
       static_cast<uint64_t>(storage.size()), kCompilerSRAMControlRecordBytes);
   FailureOr<uint64_t> controlBytes =

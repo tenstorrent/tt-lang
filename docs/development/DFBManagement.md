@@ -2724,9 +2724,11 @@ bf16.
 
 ## Compiler-Managed Storage Protocol
 
-[Compiler-managed allocation](SRAMAllocation.md) uses two 32-bit sequence numbers
-per storage owner: one published-page sequence written by the producer, and one
-consumed-page sequence written by the consumer. Both start at zero. For `C`
+[Compiler-managed allocation](SRAMAllocation.md) reserves an 8-byte SRAM control
+record per storage owner. Device code updates its two 32-bit sequence numbers:
+the producer writes the published-page sequence, and the consumer writes the
+consumed-page sequence. The runtime initializes both words to zero before the
+first dispatch; compiler metadata records their SRAM offsets. For `C`
 pages of physical capacity, sequences wrap explicitly modulo `2C`.
 
 This representation encodes both position and occupancy:

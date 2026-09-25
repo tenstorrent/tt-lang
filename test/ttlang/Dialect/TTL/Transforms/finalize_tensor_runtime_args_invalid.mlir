@@ -72,7 +72,7 @@ func.func @negative_tensor_accessor_runtime_index()
 
 // -----
 
-// Compiler-L1 DFB indices must reference finalized allocation metadata.
+// Compiler-managed DFB indices must reference finalized allocation metadata.
 module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = []} {
   func.func @missing_compiler_l1_allocation()
       attributes {ttl.crta_indices = [0],
