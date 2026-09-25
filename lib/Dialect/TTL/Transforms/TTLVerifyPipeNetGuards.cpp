@@ -222,6 +222,8 @@ struct UnknownGuardDiagnostic {
   const void *guardLocation;
   StringRef operationName;
   SmallVector<std::pair<int64_t, PipeRole>> roles;
+  // Pipes in one PipeNet can have different source or destination domains.
+  LaunchNodeDomain allowedDomain;
 };
 
 /// Mutable facts recorded during one verifier pass.
@@ -256,7 +258,8 @@ struct ModuleState {
 
   bool
   recordUnknownGuardDiagnostic(Operation *op, Operation *unanalyzableOp,
-                               ArrayRef<std::pair<int64_t, PipeRole>> roles) {
+                               ArrayRef<std::pair<int64_t, PipeRole>> roles,
+                               const LaunchNodeDomain &allowedDomain) {
     auto sourceLoc = mlir::dyn_cast<FileLineColLoc>(op->getLoc());
     auto guardLoc =
         unanalyzableOp
@@ -276,12 +279,13 @@ struct ModuleState {
                      [&](const UnknownGuardDiagnostic &diagnostic) {
                        return diagnostic.guardLocation == guardLocation &&
                               diagnostic.operationName == operationName &&
-                              llvm::equal(diagnostic.roles, sortedRoles);
+                              llvm::equal(diagnostic.roles, sortedRoles) &&
+                              diagnostic.allowedDomain == allowedDomain;
                      })) {
       return false;
     }
     diagnostics.push_back(
-        {guardLocation, operationName, std::move(sortedRoles)});
+        {guardLocation, operationName, std::move(sortedRoles), allowedDomain});
     return true;
   }
 
@@ -666,7 +670,8 @@ void checkKnownSubset(Operation *op, const LaunchNodeDomain &current,
   }
   if (!current.known) {
     state.sawError = true;
-    if (!state.recordUnknownGuardDiagnostic(op, unanalyzableOp, roles)) {
+    if (!state.recordUnknownGuardDiagnostic(op, unanalyzableOp, roles,
+                                            allowed)) {
       return;
     }
     auto diag = op->emitOpError()
