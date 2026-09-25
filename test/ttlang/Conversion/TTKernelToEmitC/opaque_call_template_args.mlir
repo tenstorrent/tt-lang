@@ -25,6 +25,8 @@ func.func @typed_literals_to_emitc() attributes {ttkernel.thread = #ttkernel.thr
 
 // The emitted definition precedes the user header that names it.
 // CPP-LABEL: #include <cstdint>
+// CPP: #include "api/dataflow/dataflow_api.h"
+// CPP: #include "api/dataflow/circular_buffer.h"
 // CPP: namespace ttlang {
 // CPP: struct DFBDescriptor {
 // CPP: } // namespace ttlang

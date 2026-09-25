@@ -280,10 +280,18 @@ public:
           loc, "#define REDUCE_DIM ReduceDim::REDUCE_COL");
     }
 
-    // The descriptor definition must precede user headers because those
-    // headers may name it in their function declarations.
     emitc::IncludeOp::create(*builder, loc, "cstdint", /*isStandard=*/true);
     if (requiresDFBDescriptor) {
+      if (threadType == ThreadType::Noc) {
+        // The Metal handle type must precede the descriptor, which user
+        // headers may name in their function declarations.
+        emitc::IncludeOp::create(*builder, loc, "api/dataflow/dataflow_api.h",
+                                 false);
+        emitc::IncludeOp::create(*builder, loc,
+                                 "api/dataflow/circular_buffer.h", false);
+        headers.erase("api/dataflow/dataflow_api.h");
+        headers.erase("api/dataflow/circular_buffer.h");
+      }
       emitc::VerbatimOp::create(
           *builder, loc,
           llvm::StringRef(dfb_descriptor_prelude_generated,
