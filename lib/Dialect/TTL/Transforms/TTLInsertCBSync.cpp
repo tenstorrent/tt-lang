@@ -158,8 +158,12 @@ static bool updateLocalSlotValuesAndTestUse(
     }
   }
   if (usesSlot) {
-    for (Value result : operation->getResults()) {
-      slotValues.insert(result);
+    // Scalar reads copy the value out of the DFB; their results do not retain
+    // access to the acquired slot.
+    if (!isa<ReadIndexOp>(operation)) {
+      for (Value result : operation->getResults()) {
+        slotValues.insert(result);
+      }
     }
     return !isa<AttachCBOp, UnrealizedConversionCastOp, scf::YieldOp>(
                operation) &&
@@ -214,8 +218,10 @@ static bool operationMayUseLocalSlot(DFBAcquireInterval interval,
   if (updateLocalSlotValuesAndTestUse(interval, operation, slotValues,
                                       localKindBoundary, acquires,
                                       dominanceInfo)) {
-    for (Value result : operation->getResults()) {
-      slotValues.insert(result);
+    if (!isa<ReadIndexOp>(operation)) {
+      for (Value result : operation->getResults()) {
+        slotValues.insert(result);
+      }
     }
     return true;
   }

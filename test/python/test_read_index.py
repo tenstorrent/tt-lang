@@ -37,8 +37,11 @@ def _make_gather_slot(index_bias):
             with index_dfb.reserve() as index_block:
                 ttl.copy(index_tensor[0, 0], index_block).wait()
 
-            with index_dfb.wait() as index_block:
-                raw_index = ttl.read_index(index_block, 0, 0)
+            core_x, core_y = ttl.node(dims=2)
+            if core_x == 0 and core_y == 0:
+                with index_dfb.wait() as index_block:
+                    raw_index = ttl.read_index(index_block, 0, 0)
+                # The copied index remains valid after its source DFB is released.
                 slot = raw_index - index_bias
                 with weights_dfb.reserve() as weights_block:
                     ttl.copy(
