@@ -697,6 +697,20 @@ def _get_acquired_view_from_block(block):
     return acquired_view
 
 
+def _require_copy_block_acquisition(block, expected_op_name, transfer_description):
+    assert expected_op_name in ("ttl.cb_reserve", "ttl.cb_wait")
+    acquired_view = _get_acquired_view_from_block(block)
+    actual_op_name = _get_acquire_op_name_from_view(acquired_view)
+    assert actual_op_name is not None
+    if actual_op_name != expected_op_name:
+        expected_name = expected_op_name.removeprefix("ttl.cb_")
+        actual_name = actual_op_name.removeprefix("ttl.cb_")
+        raise ValueError(
+            f"copy() {transfer_description} requires a block acquired from "
+            f"{expected_name}(), not {actual_name}()"
+        )
+
+
 def _get_reserve_backed_view(block, method_name: str):
     if not _is_block(block):
         raise ValueError(
@@ -909,6 +923,10 @@ def copy(src, dst, *, byte_count=None) -> Union[CopyTransferHandler, ReceiveRequ
     For pipe transfers:
         ttl.copy(block, pipe) - send from DFB block to pipe
         ttl.copy(pipe, block) - receive from pipe to DFB block
+
+    Tensor-to-DFB and Pipe-to-DFB copies require a reserve-acquired destination.
+    DFB-to-tensor copies require a wait-acquired source. Pipe sends may read
+    either acquisition when the DFB publication has a matching consumer.
     """
     # Check for pipe operands first
     src_is_pipe = _is_pipe(src)
@@ -938,9 +956,10 @@ def copy(src, dst, *, byte_count=None) -> Union[CopyTransferHandler, ReceiveRequ
         else:
             # Pipe -> DFB receive. The sender writes into the receiver-owned block.
             if not _is_block(dst):
-                raise ValueError(
-                    "copy() from pipe requires block dst (from cb.reserve() or cb.wait())"
-                )
+                raise ValueError("copy() from pipe requires a DFB block destination")
+            _require_copy_block_acquisition(
+                dst, "ttl.cb_reserve", "from a Pipe to a DFB block"
+            )
             pipe_val = _get_pipe_mlir_value(src)
             ctx = dst.type.context
             xf_type = ttl.ReceiveRequestType.get(ctx)
@@ -981,10 +1000,16 @@ def copy(src, dst, *, byte_count=None) -> Union[CopyTransferHandler, ReceiveRequ
     if dst_is_subscript:
         if not _is_block(src):
             raise ValueError("copy() with tensor subscript dst requires block src")
+        _require_copy_block_acquisition(
+            src, "ttl.cb_wait", "from a DFB block to a tensor"
+        )
         cb_shape = _get_cb_shape(_get_cb_from_block(src))
     elif src_is_subscript:
         if not _is_block(dst):
             raise ValueError("copy() with tensor subscript src requires block dst")
+        _require_copy_block_acquisition(
+            dst, "ttl.cb_reserve", "from a tensor to a DFB block"
+        )
         cb_shape = _get_cb_shape(_get_cb_from_block(dst))
     else:
         raise ValueError(

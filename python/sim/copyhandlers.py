@@ -324,6 +324,20 @@ def register_copy_handler(src_type: CopyEndpointType, dst_type: CopyEndpointType
     return decorator
 
 
+def _require_block_acquisition(
+    block: Block,
+    expected_acquisition: BlockAcquisition,
+    transfer_description: str,
+) -> None:
+    if block.acquisition != expected_acquisition:
+        expected_name = expected_acquisition.name.lower()
+        actual_name = block.acquisition.name.lower()
+        raise ValueError(
+            f"copy() {transfer_description} requires a block acquired from "
+            f"{expected_name}(), not {actual_name}()"
+        )
+
+
 @register_copy_handler(Block, Pipe)
 class BlockToPipeHandler:
     """Handler for Block → Pipe (pipe send)."""
@@ -414,6 +428,9 @@ class TensorToBlockHandler:
     def validate(
         self, src: Tensor, dst: Block, byte_count: Optional[int] = None
     ) -> None:
+        _require_block_acquisition(
+            dst, BlockAcquisition.RESERVE, "from a tensor to a DFB block"
+        )
         if byte_count is not None:
             raise ValueError("Tensor-to-block copy does not accept byte_count")
         _validate_tensor_to_block_shapes(
@@ -443,6 +460,9 @@ class BlockToTensorHandler:
     def validate(
         self, src: Block, dst: Tensor, byte_count: Optional[int] = None
     ) -> None:
+        _require_block_acquisition(
+            src, BlockAcquisition.WAIT, "from a DFB block to a tensor"
+        )
         if byte_count is not None:
             raise ValueError("Block-to-tensor copy does not accept byte_count")
         _validate_block_to_tensor_shapes(
@@ -513,6 +533,9 @@ class PipeToBlockHandler:
     ) -> None:
         """Validate the receiver's declared payload capacity."""
         del src
+        _require_block_acquisition(
+            dst, BlockAcquisition.RESERVE, "from a Pipe to a DFB block"
+        )
         if byte_count is not None:
             _validate_byte_count_for_block(dst, byte_count, "destination")
 
