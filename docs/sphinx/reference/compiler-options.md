@@ -207,7 +207,7 @@ The pipeline runs these passes and subpasses in order:
 - `ttl-annotate-cb-associations` -- annotate block args with DFB indices
 - `ttl-verify-dfb-spsc` -- verify per-node DFB producer/consumer uniqueness after finalization
 - `ttl-erase-pipenet-scopes` -- remove verified PipeNet structural markers
-- `ttl-validate-cb-budget` -- verify finalized DFB storage and, for `metal-cb`, synchronized-reset and reconfiguration state against the per-core L1 budget; `compiler-sram` checks its arena here after reset and reconfiguration have been rejected during finalization
+- `ttl-validate-cb-budget` -- verify finalized DFB storage and, for `metal-cb`, synchronized-reset and reconfiguration state against the per-core L1 budget; `compiler-sram` checks its arena here and combined lifecycle scratch during `convert-ttl-to-ttkernel`
 - `convert-ttl-to-ttkernel` -- lower TTL DMA, PipeNet, synchronized-reset, and DFB reconfiguration operations to TTKernel, select their runtime resources, and validate the exact combined per-core L1 allocation
 - `ttkernel-insert-inits` -- insert hardware init ops before compute ops
 - `ttkernel-insert-l1-accumulation` -- insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
@@ -302,9 +302,9 @@ For `metal-cb`, validate target-aligned storage for finalized physical DFBs,
 allocator-rounded synchronized-reset state, and one configuration tensor per
 synchronized reconfiguration boundary. Tensor-backed DFB storage is excluded
 because the tensor allocator owns it. For `compiler-sram`, validate the arena
-size after synchronized DFB reset and reconfiguration have been rejected during
-finalization. For `metal-cb`, conversion also accounts for exact PipeNet scratch
-and GlobalSemaphore allocations.
+size. Conversion additionally accounts for compiler-managed synchronized-reset
+and reconfiguration scratch, exact PipeNet scratch where supported, and
+GlobalSemaphore allocations before creating runtime resources.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
