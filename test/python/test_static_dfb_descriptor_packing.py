@@ -26,9 +26,24 @@ def _make_static_dfb_packing_kernel(data_format):
 
     @ttl.operation(grid=(2, 1))
     def static_dfb_packing_kernel(input_tensor, output_tensor):
-        first_node_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=1)
-        shared_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=4)
-        second_node_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=4)
+        first_node_dfb = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=1,
+            address_scope="local",
+        )
+        shared_dfb = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=4,
+            address_scope="remote_uniform",
+        )
+        second_node_dfb = ttl.make_dfb(
+            data_format,
+            shape=(1, 1),
+            block_count=4,
+            address_scope="local",
+        )
 
         @ttl.compute(kernel=compute_kernel)
         def compute():
@@ -124,18 +139,30 @@ def test_static_dfb_descriptor_packing_fits_budget(
     original_ordering = kernel_runner._order_static_dfb_descriptor_plans
 
     def record_descriptor_order(descriptor_plans, remaining_bytes_by_core, **options):
-        plans_by_physical_index = {
-            plan.physical_index: plan for plan in descriptor_plans
-        }
-        over_budget_plans = [
-            plans_by_physical_index[physical_index] for physical_index in (0, 2, 1)
-        ]
+        uniform_indices = options["uniform_physical_indices"]
+        # Present the remote-uniform plan last so the ordering has to move it
+        # ahead of the local plans.
+        presented_plans = sorted(
+            descriptor_plans,
+            key=lambda plan: plan.physical_index in uniform_indices,
+        )
         ordered_plans = original_ordering(
-            over_budget_plans, remaining_bytes_by_core, **options
+            presented_plans, remaining_bytes_by_core, **options
         )
         descriptor_orders.append(
-            tuple(
-                plan.physical_index for plan in ordered_plans if plan.has_static_storage
+            (
+                uniform_indices,
+                tuple(
+                    plan.physical_index
+                    for plan in presented_plans
+                    if plan.has_static_storage
+                    and plan.physical_index not in uniform_indices
+                ),
+                tuple(
+                    plan.physical_index
+                    for plan in ordered_plans
+                    if plan.has_static_storage
+                ),
             )
         )
         return ordered_plans
@@ -153,7 +180,12 @@ def test_static_dfb_descriptor_packing_fits_budget(
 
     operation(input_tensor, output_tensor, options="--no-ttl-specialize-cores")
 
-    assert descriptor_orders == [(0, 1, 2)]
+    # The remote-uniform DFB is placed first; the local DFBs follow in a
+    # fitting order. Physical indices come from compiler allocation, so the
+    # expectation uses the reported remote-uniform index.
+    [(uniform_indices, local_order, static_order)] = descriptor_orders
+    [uniform_index] = uniform_indices
+    assert static_order == (uniform_index, *local_order)
     actual = ttnn.to_torch(output_tensor).float()
     expected = input_host.float()
     if dtype == torch.bfloat16:

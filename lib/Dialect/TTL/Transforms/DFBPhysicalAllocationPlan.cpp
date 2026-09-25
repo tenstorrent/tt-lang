@@ -38,6 +38,16 @@
 
 namespace mlir::tt::ttl {
 
+StringRef getDFBAddressScopeName(DFBAddressScope scope) {
+  switch (scope) {
+  case DFBAddressScope::Local:
+    return "local";
+  case DFBAddressScope::RemoteUniform:
+    return "remote_uniform";
+  }
+  llvm_unreachable("unknown DFB address scope");
+}
+
 StringRef getDFBConflictReasonName(DFBConflictReason reason) {
   switch (reason) {
   case DFBConflictReason::DescriptorMismatch:
@@ -84,6 +94,27 @@ StringRef getDFBAllocationGroupAssumptionReasonName(
 }
 
 namespace {
+
+static DFBAddressScope
+getDFBAddressScope(const DFBLogicalLifecycle &logicalDFB) {
+  BindCBOp declaration = logicalDFB.declarations.front();
+  StringAttr addressScope = declaration.getAddressScopeAttr();
+  if (!addressScope) {
+    return DFBAddressScope::Local;
+  }
+  return addressScope.getValue() == "remote_uniform"
+             ? DFBAddressScope::RemoteUniform
+             : DFBAddressScope::Local;
+}
+
+static DFBAddressScope joinDFBAddressScopes(DFBAddressScope lhs,
+                                            DFBAddressScope rhs) {
+  if (lhs == DFBAddressScope::RemoteUniform ||
+      rhs == DFBAddressScope::RemoteUniform) {
+    return DFBAddressScope::RemoteUniform;
+  }
+  return DFBAddressScope::Local;
+}
 
 // Preserves failed-proof evidence before using the caller-selected fallback.
 static Operation *getLifetimeEvidence(const DFBPerNodeLifetime *lifetime,
@@ -1799,7 +1830,8 @@ static FailureOr<PhysicalAllocationCandidate> computeDistinctUserAllocation(
     allocation.assignments.push_back(
         {logicalDFB.logicalId, physicalIndex, physicalIndex, logicalDFB.type,
          logicalDFB.tensorBacking, logicalDFB.allocationGroup,
-         logicalDFB.launchDomain, logicalDFB.declarations,
+         getDFBAddressScope(logicalDFB), logicalDFB.launchDomain,
+         logicalDFB.declarations,
          logicalDFB.bounded || logicalDFB.conditionallyBounded});
     allocation.physicalDFBCount =
         std::max(allocation.physicalDFBCount, physicalIndex + 1);
@@ -1898,7 +1930,8 @@ computeReuseAllocation(ModuleOp moduleOp,
     allocation.assignments.push_back(
         {logicalDFB.logicalId, physicalIndex, physicalIndex, logicalDFB.type,
          logicalDFB.tensorBacking, logicalDFB.allocationGroup,
-         logicalDFB.launchDomain, logicalDFB.declarations,
+         getDFBAddressScope(logicalDFB), logicalDFB.launchDomain,
+         logicalDFB.declarations,
          logicalDFB.bounded || logicalDFB.conditionallyBounded});
   }
 
@@ -1998,6 +2031,8 @@ static LogicalResult assignPhysicalStorageIndices(
   SmallVector<uint64_t> pageSizeByPhysicalIndex(allocation.physicalDFBCount, 1);
   SmallVector<LaunchNodeDomain> domainByPhysicalIndex(
       allocation.physicalDFBCount);
+  SmallVector<DFBAddressScope> addressScopeByPhysicalIndex(
+      allocation.physicalDFBCount, DFBAddressScope::Local);
   llvm::BitVector tensorBacked(allocation.physicalDFBCount);
   for (auto indexedAssignment : llvm::enumerate(allocation.assignments)) {
     const DFBPhysicalIndexAssignment &assignment = indexedAssignment.value();
@@ -2006,6 +2041,10 @@ static LogicalResult assignPhysicalStorageIndices(
     domainByPhysicalIndex[assignment.physicalIndex] =
         domainByPhysicalIndex[assignment.physicalIndex].unionWith(
             assignment.launchDomain);
+    addressScopeByPhysicalIndex[assignment.physicalIndex] =
+        joinDFBAddressScopes(
+            addressScopeByPhysicalIndex[assignment.physicalIndex],
+            assignment.addressScope);
     if (assignment.tensorBacking) {
       tensorBacked.set(assignment.physicalIndex);
       continue;
@@ -2068,7 +2107,11 @@ static LogicalResult assignPhysicalStorageIndices(
     for (int32_t rhsPhysicalIndex = lhsPhysicalIndex + 1;
          rhsPhysicalIndex < allocation.physicalDFBCount; ++rhsPhysicalIndex) {
       bool conflicts = tensorBacked.test(lhsPhysicalIndex) ||
-                       tensorBacked.test(rhsPhysicalIndex);
+                       tensorBacked.test(rhsPhysicalIndex) ||
+                       addressScopeByPhysicalIndex[lhsPhysicalIndex] !=
+                           DFBAddressScope::Local ||
+                       addressScopeByPhysicalIndex[rhsPhysicalIndex] !=
+                           DFBAddressScope::Local;
       for (unsigned lhsLogicalIndex :
            logicalIndicesByPhysicalIndex[lhsPhysicalIndex]) {
         for (unsigned rhsLogicalIndex :
@@ -2396,6 +2439,7 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
   }
   llvm::DenseMap<int32_t, const DFBPhysicalIndexAssignment *> uniqueByIndex;
   llvm::DenseMap<int32_t, LaunchNodeDomain> allocationDomainByIndex;
+  llvm::DenseMap<int32_t, DFBAddressScope> addressScopeByIndex;
   llvm::DenseMap<int32_t, SmallVector<const DFBPhysicalIndexAssignment *, 0>>
       assignmentsByIndex;
   auto getRuntimeAllocationDomain = [&](const LaunchNodeDomain &domain) {
@@ -2407,6 +2451,13 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
         allocationDomainByIndex[assignment.physicalIndex];
     allocationDomain = allocationDomain.unionWith(
         getRuntimeAllocationDomain(assignment.launchDomain));
+    auto [addressScopeIt, insertedAddressScope] =
+        addressScopeByIndex.try_emplace(assignment.physicalIndex,
+                                        assignment.addressScope);
+    if (!insertedAddressScope) {
+      addressScopeIt->second =
+          joinDFBAddressScopes(addressScopeIt->second, assignment.addressScope);
+    }
     auto [existingIt, inserted] =
         uniqueByIndex.try_emplace(assignment.physicalIndex, &assignment);
     if (inserted || existingIt->second->type == assignment.type) {
@@ -2475,6 +2526,7 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
     DFBPhysicalAllocationDescriptor descriptor;
     descriptor.physicalIndex = physicalIndex;
     descriptor.storageIndex = assignment->storageIndex;
+    descriptor.addressScope = addressScopeByIndex.lookup(physicalIndex);
     descriptor.allocationDomain = allocationDomainByIndex.lookup(physicalIndex);
     SmallVector<const DFBPhysicalIndexAssignment *>
         configurationRepresentatives;

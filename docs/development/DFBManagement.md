@@ -43,6 +43,14 @@ lifecycle is complete or ends at a synchronized boundary that is explicitly
 allowed to discard its state. [DFB lifecycle](#dfb-lifecycle) and
 [Index reuse](#index-reuse) define these rules in detail.
 
+## User-managed synchronization
+
+By default, release inference inserts missing push/pop operations and acquire coalescing combines compatible queue-operation groups. These transformations also inspect explicit releases to determine which accesses belong to each acquired slot.
+
+An external C++ consumer can wait and pop internally without exposing those actions as protocol metadata. For example, a program may reserve a DFB, fill it through external C++, push it, then call an external consumer in the same conditional region. Release inference can mistake that consumer for a write-side use that must precede the push.
+
+`--no-ttl-auto-sync-user-dfbs` disables release inference, its access-order checks, and acquire coalescing for user-managed DFBs. The program supplies their complete reserve/push/wait/pop sequence and synchronization, including operations inside external C++. Compiler-created DFBs retain automatic synchronization, identified with the existing `ttl.compiler_allocated` marker. Conditional receive-completion, SPSC, allocation, and capacity checks remain enabled. Storage reuse still requires the existing lifetime and allocation-group contracts.
+
 ## Tensor-backed storage
 
 `ttl.make_tensor_backed_dfb` binds a DFB's complete capacity to a byte range
@@ -206,6 +214,19 @@ source and restricts it to the exact launch nodes using that source. Sparse
 domains allocate one tensor shard per selected core rather than the area of
 their bounding rectangle.
 
+Each DFB declares the address requirement imposed by its users through
+`address_scope`, a `ttl.DFBAddressScope` (its string values are accepted). The
+default `LOCAL` scope permits different L1 addresses on different nodes. Use
+`REMOTE_UNIFORM` when code reads a DFB's local address and uses it as a remote
+NoC address: the runtime then creates one descriptor at the same L1 address on
+every allocated node, allocates it before every local-scope descriptor so it
+costs no padding, and never splits it per core; a program whose remote-uniform
+and local storage do not fit fails at descriptor construction. This scope changes backing-storage placement only. It
+does not change the DFB protocol, physical-index reuse, capacity, or
+synchronization. A `remote_uniform` DFB cannot share backing storage with a
+different physical DFB index because that sharing would make its address depend
+on the other index's node domain.
+
 TT-Metal allocates static descriptor storage in descriptor order. It maintains
 one allocation frontier per core, and a descriptor shared by several cores
 starts at the greatest frontier among those cores. The runtime simulates these
@@ -223,9 +244,9 @@ and ends at the lowest live L1 tensor page. Subtracting only allocated page
 sizes would ignore allocator gaps and could overestimate the available range.
 Tensor-backed and already allocated computed-address storage do not advance the
 static frontiers. For a multi-device mesh, tensor and runtime-resource
-allocations use common L1 addresses, while harvested worker mappings can
-differ. The runtime therefore applies the reference allocator's global minimum
-remaining interval to every logical core.
+allocations can constrain the usable interval differently on each logical
+core. The runtime applies the reference allocator's global minimum remaining
+interval to every logical core when a descriptor requires a common address.
 The correctness invariant is that every surviving DFB access has one compatible
 descriptor on its launch core; conservative metadata preserves the
 whole-program descriptor behavior when this cannot be proved.
@@ -429,7 +450,9 @@ preceding lifecycle with residual queue or per-RISC wait state. A producer may
 leave published pages available when their maximum occupancy does not exceed the
 DFB capacity. A reader may wait without popping when preceding publication is
 sufficient for the wait to complete. A named opaque external access may also end
-at the call when its last possible execution is proven to occur earlier.
+at the call when its last possible execution is proven to occur earlier. This
+remains valid when node-dependent control prevents an exact launch-node domain:
+every possible access must precede the state-discarding reconfiguration.
 `unknown_dfb_access` remains unbounded because it does not identify the affected
 DFBs. Reconfiguration does not clear payload bytes. Reassigning the physical
 index resets its occupancy, ring pointers, and interface initialization before
@@ -443,15 +466,17 @@ overwrite data still in use. Once both readers reach `ttl.reconfigure_dfbs(...)`
 its synchronization establishes that the reads are complete and its state reset
 makes a separate synchronized pop unnecessary.
 
-For a repeated state-discarding reconfiguration sequence, structured static
-loop bounds may locate a conditional external call between the same two
+For a repeated reconfiguration sequence, structured static loop bounds may
+locate a conditional external call between the same two
 reconfiguration calls in every iteration. The bounds contribute access ordering
 and maximum execution counts; the normal capacity, wait-progress, pointer
-ownership, and operation-order checks still apply. Every reconfiguration in the
-repeated sequence must permit state discard. A lifecycle that begins after a
-conditional non-repeated reconfiguration call must use the same condition so it
-cannot access a descriptor that was not configured. Accesses ended by a
-conditional state-discarding call must use that condition as well.
+ownership, and operation-order checks still apply. The reconfiguration that
+terminates each bounded external lifecycle must permit state discard and follow
+every possible access in that lifecycle. Other reconfigurations need not permit
+state discard. A lifecycle that begins after a conditional non-repeated
+reconfiguration call must use the same condition so it cannot access a
+descriptor that was not configured. Accesses ended by a conditional
+state-discarding call must use that condition as well.
 
 The allocation conflict graph permits two lifecycle epochs to share a physical
 index only when their per-node active epochs are disjoint and their static
@@ -493,6 +518,11 @@ GlobalSemaphore objects remain owned by the operation's serialized
 runtime-resource cache. Compatible calls reuse one generation. Incompatible
 replacement and owner destruction synchronize the device before releasing it;
 failed synchronization retains ownership.
+
+When `TT_METAL_ALLOCATOR_MODE_HYBRID=1` is set before device initialization,
+reconfiguration scratch uses independent per-core L1 addresses to avoid
+cross-core free-space fragmentation. The default Metal allocator mode retains
+lockstep scratch allocation for compatibility.
 
 Per-core L1 accounting uses target allocation quanta rather than logical byte
 counts. On each launch node it includes one aligned maximum allocation per
@@ -1600,8 +1630,10 @@ allocation group may combine scratch DFBs with different block shapes or block
 counts when their element types and page formats are identical. The physical
 descriptor then uses the largest total capacity. Synchronized reconfiguration
 may instead replace geometry, block count, and storage between disjoint epochs,
-but the element type and page format must remain identical. Every reuse
-mechanism requires each lifecycle to complete. Ordinary reuse also requires
+but the element type and page format must remain identical. The runtime
+reconfigures the DFB address, capacity, page geometry, and queue state; it does
+not rewrite the unpacker or packer format tables. Every reuse mechanism
+requires each lifecycle to complete. Ordinary reuse also requires
 matching write- and read-pointer runs unless a synchronized reset or
 state-discarding reconfiguration establishes empty state with the pointers at
 the descriptor base. The matched sequences must remain boundary-safe when
