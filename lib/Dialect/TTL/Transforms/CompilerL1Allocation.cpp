@@ -81,7 +81,11 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     std::string failureReason;
     FailureOr<uint64_t> payloadBytes =
         getDFBAllocationSizeBytes(type, failureReason);
-    if (failed(pages) || failed(pageBytes) || failed(payloadBytes) ||
+    if (failed(payloadBytes)) {
+      declaration.emitOpError() << "compiler-sram " << failureReason;
+      return failure();
+    }
+    if (failed(pages) || failed(pageBytes) ||
         *payloadBytes > std::numeric_limits<uint32_t>::max() ||
         *pageBytes > std::numeric_limits<int32_t>::max() ||
         type.getBlockCount() > std::numeric_limits<int32_t>::max() ||
@@ -93,6 +97,8 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
     FailureOr<uint64_t> allocationBytes =
         getL1AllocationSizeBytes(module, *payloadBytes);
     if (failed(allocationBytes)) {
+      declaration.emitOpError(
+          "compiler-sram target-aligned storage size is not representable");
       return failure();
     }
     regions.insert({assignment.logicalId,

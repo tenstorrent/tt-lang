@@ -255,7 +255,8 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 - Compiler-owned static storage. Tensor-backed DFBs and allocation groups are rejected.
 - Full-block transactions with positive capacity below `2^31` pages.
 - Full 32x32 BF16 and FP32 tiles for address-based compute.
-- Address-based tensor transfer, elementwise compute, matmul, reductions, broadcast, and transpose. SFPU and initializer operations without DFB operands or results use their existing lowering.
+- Address-based tensor transfer, elementwise compute, matmul, reductions, broadcast, transpose, and loop-carried L1 packer accumulation. SFPU and initializer operations without DFB operands or results use their existing lowering.
+- Scalar device printing. Destination-register printing changes pack state on Blackhole; DFB, tile, and tensor printing require physical DFB descriptors. These modes are rejected before lowering.
 - Typed external C++ calls with explicit DFB effects.
 - Blackhole selected reset, reset-all, and reconfiguration.
 - Wormhole allocation, transfer, compute, and external descriptors without reset or reconfiguration.
@@ -269,10 +270,10 @@ PipeNet transfers, computed-address DFBs, device-domain placement, multi-device 
 | Blackhole transfer and compute | Device correctness across BF16/FP32, DRAM/TTNN L1 tensors, repeated executions, counter wraparound, 96 live DFBs, arithmetic with 66 allocated DFBs, matmul, reductions, residual, MLP, attention, and expert merge |
 | External calls and lifecycle boundaries | 20 Blackhole device cases across BF16/FP32 and DRAM/TTNN L1, including repeated selected reset, reset-all, reconfiguration, live state preservation, payload reuse, and reset of allocation index 65 |
 | Allocation | 20,888 compile-only generated placements covering both strategies, conflicts, alignment, reuse enabled and disabled, determinism, and exact budget boundaries; a focused fragmented graph verifies distinct strategy results |
-| Wormhole | Compile-only allocation, typed external descriptor, and UNPACK/MATH/PACK target compilation; negative reset and reconfiguration diagnostics |
+| Wormhole | N150 device correctness for allocation, transfer, BF16/FP32 compute, and typed external descriptors; negative reset and reconfiguration diagnostics |
 | Invalid contracts | Compiler diagnostics for malformed metadata, unsupported transactions and tile forms, unknown external effects, numeric external DFB indices, storage ownership, and budget overflow |
 
-Relevant tests are [transfer and allocator device tests](../../test/python/test_compiler_l1.py), [compute device tests](../../test/python/test_compiler_l1_compute.py), [lifecycle and external-call device tests](../../test/python/test_compiler_l1_lifecycle.py), and [generated allocator stress tests](../../test/ttlang/Dialect/TTL/Transforms/compiler_l1_stress.py).
+Relevant tests are [transfer and allocator device tests](../../test/python/test_compiler_l1.py), [compute device tests](../../test/python/test_compiler_l1_compute.py), [accumulation device tests](../../test/python/test_accumulation_strategies.py), [lifecycle and external-call device tests](../../test/python/test_compiler_l1_lifecycle.py), and [generated allocator stress tests](../../test/ttlang/Dialect/TTL/Transforms/compiler_l1_stress.py).
 
 ## Follow-on PRs
 

@@ -49,6 +49,18 @@ module attributes {ttl.launch_grid = [1, 1]} {
 
 // -----
 
+// Overflow in DFB dimensions reports the allocation failure at the declaration.
+module attributes {ttl.launch_grid = [1, 1]} {
+  func.func @overflowed_dfb_dimensions() attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>, ttl.noc_index = 0 : i32} {
+    // expected-error @below {{compiler-sram DFB dimensions are not representable}}
+    %storage = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index}
+      : !ttl.cb<[4294967296, 4294967296], !ttcore.tile<32x32, bf16>, 1>
+    return
+  }
+}
+
+// -----
+
 // Explicit allocation groups cannot establish control-record handoff in this backend.
 module attributes {ttl.launch_grid = [1, 1]} {
   func.func @unsupported_group() attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>, ttl.noc_index = 0 : i32} {

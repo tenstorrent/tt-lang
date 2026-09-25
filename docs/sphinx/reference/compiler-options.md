@@ -34,6 +34,30 @@ python my_kernel.py --no-ttl-maximize-dst
 | `--ttl-unsafe-assume-dfb-allocation-groups` / `--no-ttl-unsafe-assume-dfb-allocation-groups` | disabled | Trust explicit `allocation_group=` handoffs that the compiler cannot prove. Accepted groups emit warnings and `ttl.assumed_dfb_allocation_groups` metadata. Descriptor, storage, static configuration, capacity, and L1 checks remain enforced. |
 | `--ttl-specialize-cores` / `--no-ttl-specialize-cores` | disabled | Create one TTKernel function per launch coordinate when its branches, loops, or compile-time table lookups depend on logical core coordinates. Each function receives constant coordinates, allowing later compiler passes to remove unreachable code and unused table entries. `ttl.core_coord` identifies the function's runtime dispatch coordinate. Specialized functions with identical generated C++ and runtime metadata share one runtime descriptor. Opt-in. |
 
+### Compiler-managed SRAM
+
+Set `options="--ttl-memory-model=compiler-sram"` on a `ttl.operation` call to
+allocate its DFB payloads and control records without TT-Metal DFB descriptors.
+This is useful when simultaneously live logical DFBs exceed the 32 Wormhole B0
+or 64 Blackhole descriptor indices. The backend currently supports one device,
+compiler-owned DFB storage, full-block transactions, and 32x32 BF16/FP32
+transfer, elementwise, matmul, reduction, broadcast, transpose, and L1 packer
+accumulation operations. It also supports typed external calls with declared
+DFB effects and scalar device printing. Blackhole
+supports DFB reset and reconfiguration. The arena is allocated and cleared for
+each operation invocation.
+
+The compiler rejects tensor-backed DFBs, allocation groups, PipeNet transfers,
+raw NoC and semaphore operations, multicast, numeric DFB ids, non-scalar
+device printing, and unsupported tile operations before device execution.
+Wormhole rejects reset and
+reconfiguration. An error naming an unsupported operation requires `metal-cb`
+or a supported address-based operation; a storage ownership error requires a
+compiler-owned DFB. A capacity error reports the required bytes and target
+budget, so the operation must reduce simultaneous storage demand or use a
+placement strategy that fits. External runtime-resource conflicts are rejected
+at launch before resources are created.
+
 **f32 accumulation precision:** `dst` keeps the accumulator in the DST register
 but feeds it back through SRCA on each step, which truncates to tf32 (10-bit
 mantissa); deep f32 recurrences therefore do not retain full f32 precision.
@@ -184,7 +208,7 @@ The pipeline runs these passes and subpasses in order:
 - `ttl-annotate-cb-associations` -- annotate block args with DFB indices
 - `ttl-verify-dfb-spsc` -- verify per-node DFB producer/consumer uniqueness after finalization
 - `ttl-erase-pipenet-scopes` -- remove verified PipeNet structural markers
-- `ttl-validate-cb-budget` -- verify target-aligned finalized DFB storage, synchronized-reset scratch, and reconfiguration tensors fit the per-core L1 budget
+- `ttl-validate-cb-budget` -- verify finalized DFB storage and, for `metal-cb`, synchronized-reset and reconfiguration state against the per-core L1 budget; `compiler-sram` checks its arena here and combined scratch during `convert-ttl-to-ttkernel`
 - `convert-ttl-to-ttkernel` -- lower TTL DMA, PipeNet, synchronized-reset, and DFB reconfiguration operations to TTKernel, select their runtime resources, and validate the exact combined per-core L1 allocation
 - `ttkernel-insert-inits` -- insert hardware init ops before compute ops
 - `ttkernel-insert-l1-accumulation` -- insert `pack_reconfig_l1_acc` guards for `+=` and reduction loops
@@ -276,11 +300,13 @@ ttlang-opt input.mlir -p 'builtin.module(ttl-finalize-dfb-indices{memory-model=c
 
 #### `ttl-validate-cb-budget`
 
-Validate the target-aligned allocation for finalized physical DFBs,
+For `metal-cb`, validate target-aligned storage for finalized physical DFBs,
 allocator-rounded synchronized-reset state, and one configuration tensor per
 synchronized reconfiguration boundary. Tensor-backed DFB storage is excluded
-because the tensor allocator owns it. Exact PipeNet scratch and GlobalSemaphore
-allocations are added during `convert-ttl-to-ttkernel`.
+because the tensor allocator owns it. For `compiler-sram`, validate the arena
+size; `convert-ttl-to-ttkernel` validates the arena together with reset and
+reconfiguration scratch before creating runtime resources. Exact PipeNet scratch
+and GlobalSemaphore allocations are also added during conversion.
 
 | Option | Type | Default | Description |
 |---|---|---|---|

@@ -14,6 +14,30 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{c
 
 // -----
 
+// Storage metadata queries require a tile element type before conversion.
+module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{cb_index = 0 : i64, page_size = 4 : i64, num_tiles = 1 : i64, block_count = 1 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64}]} {
+  func.func @scalar_tile_size() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+    %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, f32>
+    // expected-error @below {{'ttkernel.get_tile_size' op compiler-sram requires tiled storage metadata}}
+    %size = ttkernel.get_tile_size(%storage) : (!ttkernel.cb<1, f32>) -> i32
+    return
+  }
+}
+
+// -----
+
+// Data-format queries use the same tile metadata contract.
+module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{cb_index = 0 : i64, page_size = 4 : i64, num_tiles = 1 : i64, block_count = 1 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64}]} {
+  func.func @scalar_data_format() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+    %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, f32>
+    // expected-error @below {{'ttkernel.get_dataformat' op compiler-sram requires tiled storage metadata}}
+    %format = ttkernel.get_dataformat(%storage) : (!ttkernel.cb<1, f32>) -> !ttkernel.DataFormat
+    return
+  }
+}
+
+// -----
+
 // Every allocation entry must contain the geometry and ordered offsets used by generated address types.
 // expected-error @below {{'builtin.module' op compiler-sram allocation entry 0 must define positive uint32 page_size, num_tiles, and block_count values and representable ordered L1 offsets}}
 module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{block_count = 1 : i64, l1_offset = 64 : i64, l1_payload_offset = 32 : i64, num_tiles = 1 : i64, page_size = 2048 : i64}]} {

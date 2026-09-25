@@ -1456,11 +1456,7 @@ public:
       if (usesCompilerL1(op)) {
         auto elementType =
             cast<ttkernel::CBType>(op.getCb().getType()).getElementType();
-        auto tile = dyn_cast<ttcore::TileType>(elementType);
-        if (!tile) {
-          return rewriter.notifyMatchFailure(
-              op, "compiler-sram requires tiled storage metadata");
-        }
+        auto tile = cast<ttcore::TileType>(elementType);
         std::string value;
         if constexpr (std::is_same_v<SourceOp, ttkernel::GetTileSizeOp>) {
           value = std::to_string(tile.getSizeBytes());
@@ -3481,9 +3477,12 @@ public:
       }
       WalkResult validation = module.walk([&](Operation *operation) {
         if (operation->getName().getDialectNamespace() == "emitc") {
-          operation->emitOpError(
-              "compiler-sram cannot validate pre-lowered C++ effects");
-          return WalkResult::interrupt();
+          if (!operation->hasAttr(ttl::kDPrintGeneratedAttrName)) {
+            operation->emitOpError(
+                "compiler-sram cannot validate pre-lowered C++ effects");
+            return WalkResult::interrupt();
+          }
+          return WalkResult::advance();
         }
         if (operation->getName().getDialectNamespace() != "ttkernel") {
           return WalkResult::advance();
@@ -3515,6 +3514,15 @@ public:
                 "compiler-sram DFB operand has no finalized allocation");
             return WalkResult::interrupt();
           }
+        }
+        if (isa<ttkernel::GetTileSizeOp, ttkernel::GetDataFormatOp>(
+                operation) &&
+            !isa<ttcore::TileType>(
+                cast<ttkernel::CBType>(operation->getOperand(0).getType())
+                    .getElementType())) {
+          operation->emitOpError(
+              "compiler-sram requires tiled storage metadata");
+          return WalkResult::interrupt();
         }
         if (auto opaqueCall = dyn_cast<ttkernel::OpaqueCallOp>(operation)) {
           auto threadType = operation->getParentOfType<func::FuncOp>()
@@ -3574,8 +3582,8 @@ public:
                 ttkernel::TensorAccessorArgsOp, ttkernel::GetTileSizeOp,
                 ttkernel::GetDataFormatOp, ttkernel::TileRegsAcquireOp,
                 ttkernel::TileRegsCommitOp, ttkernel::TileRegsWaitOp,
-                ttkernel::TileRegsReleaseOp, ttkernel::OpaqueCallOp>(
-                operation) ||
+                ttkernel::TileRegsReleaseOp, ttkernel::PackReconfigL1AccOp,
+                ttkernel::OpaqueCallOp>(operation) ||
             isCompilerL1ComputeOperation(operation) ||
             isDescriptorIndependentComputeOperation(operation);
         if (isCompilerL1ComputeOperation(operation)) {

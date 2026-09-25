@@ -31,7 +31,7 @@ def forbid_metal_descriptors(request, monkeypatch):
     monkeypatch.setattr(runner, "build_cb_descriptors", reject_descriptors)
 
 
-def _make_binary(*, multiply=False, subtract=False):
+def _make_binary(*, multiply=False, subtract=False, print_scalar=False):
     assert not (multiply and subtract)
 
     @ttl.operation(grid=(1, 1))
@@ -44,6 +44,8 @@ def _make_binary(*, multiply=False, subtract=False):
 
         @ttl.compute()
         def compute():
+            if print_scalar:
+                print("compiler SRAM scalar:", 7)
             for iteration in range(7):
                 with (
                     lhs_storage.wait() as lhs_block,
@@ -74,6 +76,25 @@ def _make_binary(*, multiply=False, subtract=False):
                     ).wait()
 
     return binary
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "l1"])
+def test_l1_scalar_print(device, dtype, allocator):
+    """Scalar device print preserves descriptor-free compute results."""
+    lhs_reference = torch.full((224, 32), 2.0, dtype=dtype)
+    rhs_reference = torch.full((224, 32), 3.0, dtype=dtype)
+    lhs = allocator(lhs_reference, device)
+    rhs = allocator(rhs_reference, device)
+    output = allocator(torch.zeros_like(lhs_reference), device)
+    operation = _make_binary(print_scalar=True)
+    operation(lhs, rhs, output, options="--ttl-memory-model=compiler-sram")
+    assert_allclose(
+        ttnn.to_torch(output).float(),
+        (lhs_reference + rhs_reference).float(),
+        rtol=0,
+        atol=0,
+    )
 
 
 @pytest.mark.parametrize("fpu", [True, False], ids=["fpu", "sfpu"])

@@ -276,8 +276,9 @@ inline void binary_dest_reuse_tiles_init(Source) {
   UNPACK((_llk_unpack_A_init_<ckernel::BroadcastType::NONE, true, Reuse>(
       0, 0, ckernel::DEFAULT_TENSOR_SHAPE, Source::format,
       Source::unpackFormat)));
-  MATH((_llk_math_eltwise_binary_init_<Operation, ckernel::BroadcastType::NONE,
-                                       MATH_FIDELITY, Reuse>(
+  MATH((_llk_math_eltwise_binary_init_<
+        Operation, ckernel::BroadcastType::NONE,
+        get_effective_math_fidelity<Operation, MATH_FIDELITY>(), Reuse>(
       ckernel::DEFAULT_TENSOR_SHAPE, false)));
 }
 template <ckernel::EltwiseBinaryType Operation,
@@ -286,8 +287,9 @@ inline void binary_dest_reuse_tiles(Source source, uint32_t tile,
                                     uint32_t destination) {
   UNPACK((_llk_unpack_A_<ckernel::BroadcastType::NONE, true, Reuse>(
       source.readTile(tile), Source::format, Source::unpackFormat)));
-  MATH((llk_math_eltwise_binary<Operation, ckernel::BroadcastType::NONE,
-                                DST_ACCUM_MODE, MATH_FIDELITY, Reuse>(
+  MATH((llk_math_eltwise_binary<
+        Operation, ckernel::BroadcastType::NONE, DST_ACCUM_MODE,
+        get_effective_math_fidelity<Operation, MATH_FIDELITY>(), Reuse>(
       destination, true)));
 }
 template <ckernel::EltwiseBinaryType Operation>

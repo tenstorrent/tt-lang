@@ -1284,7 +1284,10 @@ def TTLValidateCBBudget
   let summary = "Validate total DFB allocation fits within per-core L1 budget";
   let description = [{
     Module-level pass that runs after `ttl-finalize-dfb-indices`, before
-    `convert-ttl-to-ttkernel`. It sums one target-allocation-aligned maximum
+    `convert-ttl-to-ttkernel`. For `compiler-sram`, it validates the finalized
+    arena size; conversion validates arena plus reset and reconfiguration
+    scratch before creating runtime resources. For `metal-cb`, it sums one
+    target-allocation-aligned maximum
     static backing-store size per compiler-selected DFB storage index on each
     launch node, allocator-rounded synchronized-reset state, and one
     target-aligned configuration tensor per synchronized reconfiguration
