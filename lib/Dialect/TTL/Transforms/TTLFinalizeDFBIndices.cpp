@@ -316,6 +316,10 @@ struct TTLFinalizeDFBIndicesPass
       return;
     }
     if (*selectedModel == DFBMemoryModel::CompilerSRAM) {
+      if (failed(validateCompilerSRAMLifecycle(moduleOp))) {
+        signalPassFailure();
+        return;
+      }
       PipeTransferCreateOp pipeTransfer;
       moduleOp.walk([&](PipeTransferCreateOp operation) {
         pipeTransfer = operation;

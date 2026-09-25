@@ -2473,13 +2473,7 @@ def _get_cached_runtime_resources_impl(
         num_pipe_global_semaphores=num_pipe_global_semaphores,
         pipe_computed_address_dfb_indices=list(pipe_computed_address_dfb_indices),
         device=resource_device,
-        initialize_sram_scratch=(
-            num_dfb_resets > 0
-            or (
-                pipe_sram_scratch_bytes > 0
-                and _get_compiler_l1_arena_bytes(cb_configs) is not None
-            )
-        ),
+        initialize_sram_scratch=num_dfb_resets > 0,
         kernel_specs=kernel_specs,
         dfb_reconfiguration_plan=dfb_reconfiguration_plan,
     )

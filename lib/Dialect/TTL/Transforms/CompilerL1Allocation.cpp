@@ -194,11 +194,8 @@ allocateCompilerL1(ModuleOp module,
   const L1AllocationPlan &plan = *maybePlan;
   OpBuilder builder(module.getContext());
   SmallVector<Attribute> allocations;
-  DenseMap<int64_t, int32_t> allocationIndexByLogicalId;
   for (auto [regionIndex, region] : llvm::enumerate(plan.regions)) {
     uint64_t payloadOffset = plan.solution.offsets[regionIndex];
-    allocationIndexByLogicalId.try_emplace(region.logicalId,
-                                           static_cast<int32_t>(regionIndex));
     for (BindCBOp declaration : region.declarations) {
       declaration.setDfbIdAttr(builder.getIndexAttr(region.logicalId));
       declaration.setCbIndexAttr(builder.getIndexAttr(regionIndex));
@@ -224,50 +221,6 @@ allocateCompilerL1(ModuleOp module,
         builder.getNamedAttr(kDFBAllocationBytesField,
                              builder.getI64IntegerAttr(region.allocationBytes)),
     }));
-  }
-  DenseMap<int64_t, SmallVector<int32_t>> resetsByReconfiguration;
-  for (const DFBLogicalLifecycle &lifecycle :
-       liveness.getLogicalDFBLifecycles()) {
-    auto allocationIt = allocationIndexByLogicalId.find(lifecycle.logicalId);
-    assert(allocationIt != allocationIndexByLogicalId.end() &&
-           "every logical DFB must have a compiler-sram allocation");
-    auto collectTerminalReconfigurations = [&](const DFBPerNodeLifetime &node) {
-      for (const DFBLifecycleEpoch &epoch : node.epochs) {
-        if (epoch.terminalReconfigurationOrdinal) {
-          resetsByReconfiguration[*epoch.terminalReconfigurationOrdinal]
-              .push_back(allocationIt->second);
-        }
-      }
-    };
-    for (const DFBPerNodeLifetime &node : lifecycle.nodeLifetimes) {
-      collectTerminalReconfigurations(node);
-    }
-    for (const DFBPerNodeLifetime &node : lifecycle.possibleNodeLifetimes) {
-      collectTerminalReconfigurations(node);
-    }
-  }
-  SmallVector<Attribute> reconfigurationResets;
-  for (int64_t ordinal : liveness.getReconfigurationBoundaryOrdinals()) {
-    auto resetIt = resetsByReconfiguration.find(ordinal);
-    if (resetIt == resetsByReconfiguration.end()) {
-      continue;
-    }
-    SmallVector<int32_t> &indices = resetIt->second;
-    llvm::sort(indices);
-    indices.erase(llvm::unique(indices), indices.end());
-    reconfigurationResets.push_back(builder.getDictionaryAttr({
-        builder.getNamedAttr("ordinal", builder.getI64IntegerAttr(ordinal)),
-        builder.getNamedAttr("dfb_indices",
-                             builder.getDenseI32ArrayAttr(indices)),
-    }));
-  }
-  assert(reconfigurationResets.size() == resetsByReconfiguration.size() &&
-         "every terminal epoch must reference a known reconfiguration");
-  if (reconfigurationResets.empty()) {
-    module->removeAttr(kCompilerL1ReconfigurationResetsAttrName);
-  } else {
-    module->setAttr(kCompilerL1ReconfigurationResetsAttrName,
-                    builder.getArrayAttr(reconfigurationResets));
   }
   module->setAttr(kL1ArenaBytesAttrName,
                   builder.getI64IntegerAttr(plan.solution.arenaBytes));

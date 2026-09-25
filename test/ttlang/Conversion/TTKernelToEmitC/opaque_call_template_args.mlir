@@ -45,8 +45,6 @@ func.func @dfb_descriptor_template_to_emitc() attributes {ttkernel.thread = #ttk
 // EMITC: emitc.call_opaque "describe"
 // EMITC-SAME: template_args = [#emitc.opaque<"ttlang::l1::DFBDescriptor<2048, 1, 2, 8, 12344>">]
 // CPP: #ifndef TTLANG_COMPILER_L1_TARGET_H
-// CPP: inline void resetState(uint32_t state) {
-// CPP-NEXT: if constexpr (!target::ownsDFBInterface) {
 // CPP: describe<ttlang::l1::DFBDescriptor<2048, 1, 2, 0, 64>>();
 // CPP: describe<ttlang::l1::DFBDescriptor<2048, 1, 2, 8, 12344>>();
 module attributes {ttl.memory_model = "compiler-sram", ttl.target_arch = #ttcore.arch<wormhole_b0>, ttl.dfb_allocations = [
