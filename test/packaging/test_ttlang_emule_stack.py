@@ -7,6 +7,7 @@ import json
 import subprocess
 from pathlib import Path
 
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 STACK_TOOL = REPO_ROOT / "scripts" / "tt-lang-emule-stack.py"
@@ -31,9 +32,10 @@ def run_stack(*arguments, manifest=STACK_MANIFEST):
 def write_emulator_stack(tmp_path):
     manifest = json.loads(STACK_MANIFEST.read_text(encoding="utf-8"))
     emulator = tmp_path / "emulator"
-    descriptor = emulator / manifest["target"]["cluster_descriptor"]
-    descriptor.parent.mkdir(parents=True)
-    descriptor.touch()
+    for target in manifest["targets"].values():
+        descriptor = emulator / target["cluster_descriptor"]
+        descriptor.parent.mkdir(parents=True, exist_ok=True)
+        descriptor.touch()
     (emulator / "tt-metal-pin.txt").write_text(
         f"# Tested Metal revision.\n{manifest['metal']['commit']}\n",
         encoding="utf-8",
@@ -82,8 +84,123 @@ def test_manifest_emits_exact_runtime_inputs():
     assert "TTLANG_EMULE_ALLOCATOR_MODE" not in values
     assert len(values["TTLANG_EMULE_COMMIT"]) == 40
     assert len(values["TTLANG_METAL_COMMIT"]) == 40
+    assert values["TTLANG_EMULE_TARGET_ID"] == "p150"
+    assert values["TTLANG_EMULE_TARGET"] == "blackhole-p150"
     assert values["TTLANG_EMULE_MESH_DEVICE"] == "P150"
     assert "@sha256:" in values["TTLANG_EMULE_BASE_IMAGE"]
+
+
+@pytest.mark.parametrize(
+    "target, descriptor, mesh",
+    [
+        ("p150", "cluster_descriptors/blackhole_P150_unharvested.yaml", "P150"),
+        ("p100", "cluster_descriptors/blackhole_P100.yaml", "P100"),
+    ],
+)
+def test_manifest_emits_selected_target(target, descriptor, mesh):
+    result = run_stack("--target", target, "emit")
+
+    assert result.returncode == 0, result.stderr
+    values = dict(line.split("\t", 1) for line in result.stdout.splitlines())
+    assert values["TTLANG_EMULE_TARGET_ID"] == target
+    assert values["TTLANG_EMULE_TARGET"] == f"blackhole-{target}"
+    assert values["TTLANG_EMULE_CLUSTER_DESCRIPTOR"] == descriptor
+    assert values["TTLANG_EMULE_MESH_DEVICE"] == mesh
+    default_result = run_stack("emit")
+    assert default_result.returncode == 0, default_result.stderr
+    defaults = dict(line.split("\t", 1) for line in default_result.stdout.splitlines())
+    target_keys = {
+        "TTLANG_EMULE_TARGET_ID",
+        "TTLANG_EMULE_TARGET",
+        "TTLANG_EMULE_CLUSTER_DESCRIPTOR",
+        "TTLANG_EMULE_MESH_DEVICE",
+    }
+    assert {key: value for key, value in values.items() if key not in target_keys} == {
+        key: value for key, value in defaults.items() if key not in target_keys
+    }
+
+
+@pytest.mark.parametrize("target", ["unknown", ""])
+@pytest.mark.parametrize("command", ["emit", "validate"])
+def test_manifest_rejects_unknown_and_empty_selected_targets(target, command):
+    result = run_stack("--target", target, command)
+
+    assert result.returncode == 1
+    assert "unknown target" in result.stderr
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize("default_target", ["unknown", ""])
+def test_manifest_rejects_invalid_default_target(tmp_path, default_target):
+    manifest = json.loads(STACK_MANIFEST.read_text(encoding="utf-8"))
+    manifest["default_target"] = default_target
+    invalid_manifest = tmp_path / "invalid-stack.json"
+    invalid_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = run_stack("emit", manifest=invalid_manifest)
+
+    assert result.returncode == 1
+    assert "default_target" in result.stderr
+
+
+@pytest.mark.parametrize("profile", [{}, None])
+def test_manifest_rejects_empty_target_profiles(tmp_path, profile):
+    manifest = json.loads(STACK_MANIFEST.read_text(encoding="utf-8"))
+    manifest["targets"]["p100"] = profile
+    invalid_manifest = tmp_path / "invalid-stack.json"
+    invalid_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = run_stack("emit", manifest=invalid_manifest)
+
+    assert result.returncode == 1
+    assert "targets.p100" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "descriptor", ["/tmp/cluster.yaml", "../cluster.yaml", "a/../b"]
+)
+def test_manifest_rejects_unsafe_descriptor_paths_in_any_profile(tmp_path, descriptor):
+    manifest = json.loads(STACK_MANIFEST.read_text(encoding="utf-8"))
+    manifest["targets"]["p100"]["cluster_descriptor"] = descriptor
+    invalid_manifest = tmp_path / "invalid-stack.json"
+    invalid_manifest.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = run_stack("emit", manifest=invalid_manifest)
+
+    assert result.returncode == 1
+    assert (
+        "targets.p100.cluster_descriptor must be a safe relative path" in result.stderr
+    )
+
+
+def test_manifest_validates_the_selected_emulator_descriptor(tmp_path):
+    emulator, test_manifest = write_emulator_stack(tmp_path)
+    result = run_stack(
+        "--target",
+        "p100",
+        "validate",
+        "--emulator-source",
+        str(emulator),
+        manifest=test_manifest,
+    )
+    assert result.returncode == 0, result.stderr
+
+    (emulator / "cluster_descriptors/blackhole_P100.yaml").unlink()
+    default_result = run_stack(
+        "validate", "--emulator-source", str(emulator), manifest=test_manifest
+    )
+    assert default_result.returncode == 0, default_result.stderr
+    result = run_stack(
+        "--target",
+        "p100",
+        "validate",
+        "--emulator-source",
+        str(emulator),
+        manifest=test_manifest,
+    )
+    assert result.returncode == 1
+    assert "emulator target descriptor is missing" in result.stderr
+    assert "blackhole_P100.yaml" in result.stderr
 
 
 def test_manifest_accepts_a_compiler_descendant_of_its_baseline(tmp_path):

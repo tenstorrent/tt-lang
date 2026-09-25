@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "compiler": {
     "repository": "https://github.com/tenstorrent/tt-lang.git",
     "base_commit": "88cb759d416e7df617ee043c6cd7e139701163bc"
@@ -14,9 +14,17 @@
   "runtime": {
     "base_image": "ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04@sha256:c64126d459afd77bf1b8c5cf68c5941c1561515d28b1b125d33fc57f950e09c7"
   },
-  "target": {
-    "name": "blackhole-p150",
-    "cluster_descriptor": "cluster_descriptors/blackhole_P150_unharvested.yaml",
-    "mesh_device": "P150"
+  "default_target": "p150",
+  "targets": {
+    "p150": {
+      "name": "blackhole-p150",
+      "cluster_descriptor": "cluster_descriptors/blackhole_P150_unharvested.yaml",
+      "mesh_device": "P150"
+    },
+    "p100": {
+      "name": "blackhole-p100",
+      "cluster_descriptor": "cluster_descriptors/blackhole_P100.yaml",
+      "mesh_device": "P100"
+    }
   }
 }

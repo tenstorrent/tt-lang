@@ -5,7 +5,7 @@
 # TT-Lang Simulator launcher (tt-lang-sim)
 #
 # Runs tt-lang kernels on a simulator backend without code changes.
-# Usage: tt-lang-sim <file.py|module> [args...] [--backend python|emule]
+# Usage: tt-lang-sim <file.py|module> [args...] [--backend python|emule] [--target NAME]
 
 PYTHON="${PYTHON:-python}"
 
@@ -13,10 +13,11 @@ PYTHON="${PYTHON:-python}"
 # when invoked as ./bin/tt-lang-sim or from an arbitrary working directory.
 _SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _REPO_ROOT="$(dirname "$_SCRIPT_DIR")"
-# Extract the launcher-owned option before forwarding the remaining arguments.
+# Extract launcher-owned options before forwarding the remaining arguments.
 # The simulator CLI already uses `--` to separate its options from script
 # arguments, so stop scanning there as well.
 _BACKEND="${TTLANG_SIM_BACKEND:-python}"
+_TARGET=""
 _FORWARD_ARGS=()
 _SEPARATOR_INDEX=""
 while [ "$#" -gt 0 ]; do
@@ -33,6 +34,22 @@ while [ "$#" -gt 0 ]; do
             _BACKEND="${1#--backend=}"
             shift
             ;;
+        --target)
+            if [ "$#" -lt 2 ] || [ -z "$2" ] || [[ "$2" == -* ]]; then
+                echo "tt-lang-sim: --target requires a hardware profile." >&2
+                exit 2
+            fi
+            _TARGET="$2"
+            shift 2
+            ;;
+        --target=*)
+            _TARGET="${1#--target=}"
+            if [ -z "$_TARGET" ]; then
+                echo "tt-lang-sim: --target requires a hardware profile." >&2
+                exit 2
+            fi
+            shift
+            ;;
         --)
             _SEPARATOR_INDEX="${#_FORWARD_ARGS[@]}"
             _FORWARD_ARGS+=("$@")
@@ -46,12 +63,21 @@ while [ "$#" -gt 0 ]; do
 done
 set -- "${_FORWARD_ARGS[@]}"
 
+if [ -n "$_TARGET" ] && [ "$_BACKEND" != "emule" ]; then
+    echo "tt-lang-sim: --target requires --backend=emule." >&2
+    exit 2
+fi
+
 if [ "$_BACKEND" = "emule" ]; then
+    unset TTLANG_EMULE_TARGET
+    if [ -n "$_TARGET" ]; then
+        export TTLANG_EMULE_TARGET="$_TARGET"
+    fi
     # Docker-only installations need no host Python simulator dependencies.
     case "${1:-}" in
         ""|-h|--help)
             cat <<'EOF'
-Usage: tt-lang-sim --backend=emule SCRIPT.py [-- SCRIPT_ARGS ...]
+Usage: tt-lang-sim --backend=emule SCRIPT.py [--target TARGET] [-- SCRIPT_ARGS ...]
 
 Compile a TT-Lang program and execute it through tt-metal and tt-emule.
 A source checkout and a running Docker daemon are required.
@@ -62,6 +88,7 @@ Install the pinned environment first:
 Run a program:
   ./bin/tt-lang-sim --backend=emule examples/eltwise_add.py
 
+Select emulated hardware with --target=p150 (default) or --target=p100.
 Pass program arguments after --. Use --backend=python for Python simulation.
 EOF
             if [ "$#" -eq 0 ]; then

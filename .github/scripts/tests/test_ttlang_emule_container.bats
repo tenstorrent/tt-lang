@@ -316,8 +316,59 @@ EOF
     assert_log_line \
         "type=volume,src=tt-lang-emule-build-${runtime_id}-${source_id},dst=/ttlang-build"
     assert_log_line \
-        "type=volume,src=tt-lang-emule-cache-${runtime_id},dst=/tt-metal-cache"
+        "type=volume,src=tt-lang-emule-cache-${runtime_id}-p150,dst=/tt-metal-cache"
+    assert_log_line "MESH_DEVICE=P150"
+    assert_log_line \
+        "TT_METAL_MOCK_CLUSTER_DESC_PATH=/opt/tt-emule/cluster_descriptors/blackhole_P150_unharvested.yaml"
     refute_log_line "build"
+}
+
+@test "target selection shares the runtime and compiler but isolates runtime caches" {
+    cd "$TTLANG_REPO_ROOT"
+    local target
+    local image
+    local build_volume
+    local fingerprint
+    local default_cache
+    local selected_cache
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$RUNNER" examples/program.py
+    image="$(awk '/^tt-lang-emule:/{print; exit}' "$MOCK_DOCKER_LOG")"
+    build_volume="$(grep '^type=volume,.*dst=/ttlang-build$' "$MOCK_DOCKER_LOG")"
+    fingerprint="$(grep '^TTLANG_EMULE_SOURCE_FINGERPRINT=' "$MOCK_DOCKER_LOG")"
+    default_cache="$(grep '^type=volume,.*dst=/tt-metal-cache$' "$MOCK_DOCKER_LOG")"
+    for target in p150 p100; do
+        : > "$MOCK_DOCKER_LOG"
+        TTLANG_EMULE_TARGET="$target" TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            run -0 "$RUNNER" examples/program.py
+        assert_log_line "$image"
+        assert_log_line "$build_volume"
+        assert_log_line "$fingerprint"
+        assert_log_line "TTLANG_EMULE_TARGET_NAME=blackhole-$target"
+        assert_log_line "MESH_DEVICE=$(printf '%s' "$target" | tr '[:lower:]' '[:upper:]')"
+        selected_cache="$(grep '^type=volume,.*dst=/tt-metal-cache$' "$MOCK_DOCKER_LOG")"
+        if [ "$target" = p150 ]; then
+            [ "$selected_cache" = "$default_cache" ]
+            assert_log_line \
+                "TT_METAL_MOCK_CLUSTER_DESC_PATH=/opt/tt-emule/cluster_descriptors/blackhole_P150_unharvested.yaml"
+        else
+            [ "$selected_cache" != "$default_cache" ]
+            [[ "$selected_cache" == *-p100,dst=/tt-metal-cache ]]
+            assert_log_line \
+                "TT_METAL_MOCK_CLUSTER_DESC_PATH=/opt/tt-emule/cluster_descriptors/blackhole_P100.yaml"
+        fi
+        refute_log_line "build"
+    done
+}
+
+@test "unknown and empty target profiles fail before Docker" {
+    cd "$TTLANG_REPO_ROOT"
+    local target
+    for target in unknown ""; do
+        TTLANG_EMULE_TARGET="$target" TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+            run -1 "$RUNNER" examples/program.py
+        assert_output --partial "unknown target"
+        [ ! -e "$MOCK_DOCKER_LOG" ]
+    done
 }
 
 @test "linked worktree mounts its external Git metadata read-only" {
@@ -362,6 +413,8 @@ EOF
 
     run -2 "$INSTALLER" unexpected
     assert_output --partial "Usage: scripts/install-tt-lang-emule.sh"
+    run -2 "$INSTALLER" --target=p100
+    assert_output --partial "Usage: scripts/install-tt-lang-emule.sh"
 }
 
 @test "developer shell uses the same installed environment and working directory" {
@@ -382,6 +435,41 @@ EOF
 
     run -2 "$SHELL_LAUNCHER" unexpected
     assert_output --partial "Usage: scripts/shell-tt-lang-emule.sh"
+}
+
+@test "developer shell accepts both target syntaxes" {
+    cd "$TTLANG_REPO_ROOT"
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -0 "$SHELL_LAUNCHER" --target=p100
+    assert_log_line "TTLANG_EMULE_SHELL=1"
+    assert_log_line "MESH_DEVICE=P100"
+    assert_log_line \
+        "TT_METAL_MOCK_CLUSTER_DESC_PATH=/opt/tt-emule/cluster_descriptors/blackhole_P100.yaml"
+
+    : > "$MOCK_DOCKER_LOG"
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -0 "$SHELL_LAUNCHER" --target p100
+    assert_log_line "TTLANG_EMULE_SHELL=1"
+    assert_log_line "MESH_DEVICE=P100"
+    refute_log_line "build"
+}
+
+@test "developer shell rejects missing empty unknown and extra target arguments" {
+    local option
+    for option in --target --target=; do
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -2 "$SHELL_LAUNCHER" "$option"
+        assert_output --partial "--target"
+    done
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -2 "$SHELL_LAUNCHER" --target ""
+    assert_output --partial "--target"
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -1 "$SHELL_LAUNCHER" --target unknown
+    assert_output --partial "unknown target"
+    TTLANG_EMULE_DOCKER="$MOCK_DOCKER" \
+        run -2 "$SHELL_LAUNCHER" --target p100 unexpected
+    assert_output --partial "Usage: scripts/shell-tt-lang-emule.sh"
+    [ ! -e "$MOCK_DOCKER_LOG" ]
 }
 
 @test "installer and shell helper propagate a container failure" {
@@ -569,11 +657,13 @@ PY
     mkdir -p "$emule_source/cluster_descriptors"
     touch "$emule_source/tracked-source"
     touch \
-        "$emule_source/cluster_descriptors/blackhole_P150_unharvested.yaml"
+        "$emule_source/cluster_descriptors/blackhole_P150_unharvested.yaml" \
+        "$emule_source/cluster_descriptors/blackhole_P100.yaml"
     printf '%s\n' bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb > \
         "$emule_source/tt-metal-pin.txt"
     git -C "$emule_source" add \
         tracked-source cluster_descriptors/blackhole_P150_unharvested.yaml \
+        cluster_descriptors/blackhole_P100.yaml \
         tt-metal-pin.txt
     git -C "$emule_source" \
         -c user.name=test -c user.email=test@example.com \
