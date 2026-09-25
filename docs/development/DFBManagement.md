@@ -2723,10 +2723,13 @@ bf16.
 
 ## Compiler-Managed Storage Protocol
 
-[Compiler-managed allocation](SRAMAllocation.md) uses two 32-bit sequence numbers
-per logical DFB: one published-block sequence written by the producer, and one
-consumed-block sequence written by the consumer. Both start at zero. For `B`
-blocks of capacity, sequences wrap explicitly modulo `2B`.
+Each [compiler-managed DFB](SRAMAllocation.md) has an 8-byte control record in
+the worker node's SRAM arena during an operation invocation. Generated device
+code uses its two 32-bit words at runtime: the producer writes the
+published-block sequence, and the consumer writes the consumed-block sequence.
+The runtime initializes both words to zero before dispatch; the compiler records
+their arena offsets, not their changing values. For `B` blocks of capacity,
+sequences wrap explicitly modulo `2B`.
 
 This representation encodes both position and occupancy:
 
