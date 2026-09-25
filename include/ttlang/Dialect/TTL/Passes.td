@@ -35,16 +35,19 @@ def TTLInsertCBSync
     is still acquired when a nested region acquires the same dataflow buffer
     with the same kind would alias that acquisition: `cb_wait_front` and
     `cb_reserve_back` address the front or write slot regardless of an
-    earlier open acquisition. A path through the region releases the block
-    when it performs exactly one release of its kind that no acquisition on
-    the path precedes, at the top level of the region or on the way to the
-    path's first acquisition through at-most-once regions. When every path
-    releases the block, the releases stay in place. When only some paths do
-    and the block has no use in or after the region, those releases move
-    before the region. A release anywhere else inside the region, a release
-    after the region that no later acquisition owns, or a use of the block
-    in or after the region without a release on every path marks the
-    program invalid. In a data-movement kernel, a block still acquired at
+    earlier open acquisition. The execution paths through the region are
+    enumerated (at-most-once operations fork them, loop bodies repeat every
+    action, at most 64 paths). A path releases the held block when the
+    releases of its kind that no acquisition on the path precedes total the
+    block's tiles; a direct data-movement use of the buffer before them is a
+    use of the held block. When every path releases the block, the releases
+    stay in place. When only some paths do and the block has no use in or
+    after the region, those releases move before the region, except for a
+    guarded acquisition or a wait-any reservation. Anything else that
+    releases the buffer inside the region, a release after the region that
+    no later acquisition owns, or a use of the block in or after the region
+    without a release on every path marks the program invalid. In a
+    data-movement kernel, a block still acquired at
     the next same-kind acquisition of its buffer is rejected when it has no
     use before that acquisition or when its release follows it, because the
     copies that follow would address the next block.
@@ -1085,12 +1088,16 @@ def TTLVerifyDFBLifecycle
 
     Opaque-call effect summaries state Metal-level actions whose reserve and
     wait amounts are readiness thresholds rather than paired acquisitions,
-    so only their pushes and pops count, each as a transfer that acquires
-    and releases its blocks. A synchronized reset or a state-discarding
-    reconfiguration restores the empty state: the launch splits into
-    intervals at each one, every interval is checked on its own, only the
-    last must close, and the cross-kernel totals are compared per interval
-    because the participants execute the same resets.
+    so only their pushes and pops count; a push or pop closes a user
+    acquisition of its kind that is still open in the enclosing block, and
+    otherwise is a transfer that acquires and releases its blocks. A
+    synchronized reset or a state-discarding reconfiguration restores the
+    empty state: the launch splits into intervals at each one, every
+    interval is checked on its own, only the last must close, and the
+    cross-kernel totals are compared per interval because the participants
+    execute the same resets. A reset under a runtime condition leaves its
+    DFBs unknown in that kernel, and open acquisitions in an interval before
+    a reset are not bounded by that interval.
 
     The pass builds on three existing analyses. `LaunchNodeDomainAnalysis`
     supplies the launch nodes where each effect and each opaque call may

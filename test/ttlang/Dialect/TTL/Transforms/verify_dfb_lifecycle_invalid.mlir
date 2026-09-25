@@ -571,16 +571,16 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttco
 // -----
 
 // An opaque summary on the same DFB does not hide the kernel's own held
-// waits.
+// waits; the totals balance (four pushes, three user pops and one opaque pop).
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
-  func.func @three_pushes() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+  func.func @four_pushes() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
     // expected-note @+1 {{dataflow buffer declared here}}
     %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 55 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     %zero = arith.constant 0 : index
     %one = arith.constant 1 : index
-    %three = arith.constant 3 : index
-    scf.for %iteration = %zero to %three step %one {
+    %four = arith.constant 4 : index
+    scf.for %iteration = %zero to %four step %one {
       %slot = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
     }

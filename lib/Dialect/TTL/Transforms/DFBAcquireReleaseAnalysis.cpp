@@ -1039,4 +1039,9 @@ DFBAcquireReleaseIndex::getReleases(DFBAcquireReleaseKind kind) const {
   return releases;
 }
 
+bool hasDFBProtocolEffect(Operation *operation, Value dfb,
+                          DFBProtocolEffectKind kind) {
+  return hasProtocolEffect(operation, dfb, kind);
+}
+
 } // namespace mlir::tt::ttl

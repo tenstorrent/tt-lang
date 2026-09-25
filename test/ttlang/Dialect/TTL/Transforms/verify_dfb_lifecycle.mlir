@@ -472,3 +472,70 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttco
     return
   }
 }
+
+// -----
+
+// An opaque push or pop closes a user acquisition of its kind that is still
+// open, as automatic synchronization pairs them.
+// CHECK-LABEL: func.func @user_reserve_opaque_push
+// CHECK-LABEL: func.func @user_wait_opaque_pop
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @user_reserve_opaque_push() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 57 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %reserved = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.opaque_call "publish"
+        dfb_dependencies(%cb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        dfb_effects [#ttl.dfb_protocol_effect<push, 0, 1>]
+        () {header = "effects.hpp"} : () -> ()
+    func.return
+  }
+
+  func.func @user_wait_opaque_pop() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 57 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %waited = ttl.cb_wait %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.opaque_call "release"
+        dfb_dependencies(%cb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        dfb_effects [#ttl.dfb_protocol_effect<pop, 0, 1>]
+        () {header = "effects.hpp"} : () -> ()
+    func.return
+  }
+}
+
+// -----
+
+// When the pops are conditional, the consumer's exact wait count stands in for
+// them, but an opaque wait is a threshold and is not counted.
+// CHECK-LABEL: func.func @two_push_producer
+// CHECK-LABEL: func.func @threshold_wait_then_user_wait
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @two_push_producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 58 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %zero = arith.constant 0 : index
+    %one = arith.constant 1 : index
+    %two = arith.constant 2 : index
+    scf.for %iteration = %zero to %two step %one {
+      %slot = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+    func.return
+  }
+
+  func.func @threshold_wait_then_user_wait(%condition: i1) attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 58 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    ttl.opaque_call "consume_one_of_two"
+        dfb_dependencies(%cb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 2>, #ttl.dfb_protocol_effect<pop, 0, 1>]
+        () {header = "effects.hpp"} : () -> ()
+    %waited = ttl.cb_wait %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    scf.if %condition {
+      ttl.cb_pop %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    } else {
+      ttl.cb_pop %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+    func.return
+  }
+}

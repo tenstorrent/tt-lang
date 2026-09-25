@@ -766,16 +766,21 @@ do not depend on the wait; a wait whose only possible publication depends on
 it deadlocks without a diagnostic from this pass, and the simulator reports
 that deadlock at run time. Across distinct producer and consumer kernels, the
 blocks the consumer pops cannot exceed the blocks the producer pushes, and
-pushed blocks left unpopped at launch completion must fit capacity.
-Opaque-call effect summaries state
-Metal-level actions whose reserve and wait amounts are readiness thresholds,
-so only their pushes and pops count, each as a transfer that acquires and
-releases its blocks. A synchronized reset or a state-discarding
-reconfiguration restores the empty state: the launch splits into intervals at
-each one, every interval is checked on its own, only the last must close, and
-the totals are compared per interval because the participants execute the same
-resets. The pass rejects a capacity-one producer that reserves two blocks
-before either push, even when its consumer eventually pops both blocks.
+pushed blocks left unpopped at launch completion must fit capacity; when the
+pops are conditional, the consumer's exact wait count stands in for them.
+Opaque-call effect summaries state Metal-level actions whose reserve and wait
+amounts are readiness thresholds, so only their pushes and pops count; a push
+or pop closes a user acquisition of its kind that is still open in the
+enclosing block, as automatic synchronization pairs them, and otherwise is a
+transfer that acquires and releases its blocks. A synchronized reset or a
+state-discarding reconfiguration restores the empty state: the launch splits
+into intervals at each one, every interval is checked on its own, only the
+last must close, and the totals are compared per interval because the
+participants execute the same resets. Two limitations remain: a reset under a
+runtime condition leaves its DFBs unknown in that kernel, and open
+acquisitions in an interval before a reset are not bounded by that interval.
+The pass rejects a capacity-one producer that reserves two blocks before
+either push, even when its consumer eventually pops both blocks.
 
 The pass reuses the existing analyses rather than interpreting control flow
 itself. `LaunchNodeDomainAnalysis` supplies the nodes where each effect and
@@ -818,16 +823,14 @@ that node, so the totals of every counted kernel are compared whether or not
 ownership was proven, and two consumers that each pop once against one push
 are rejected. A waited DFB still requires either a compiler-visible push or
 uncontracted external access that may contain one. Finalized DFB identity,
-physical-index, and launch-grid
-preconditions remain mandatory. PipeNet endpoint guards, transfer
-correspondence, and synchronization schedules also remain mandatory. The
-program must ensure that at most one producer and at most one consumer acts on
-the DFB at any one time on each active launch node; kernels that share a role
-synchronize their protocol actions themselves. Every wait must still have a
-producer that publishes the required pages. The variable is unset by default,
-so all
-ownership checks run unless the user sets it. When set, the compiler emits a
-warning and records
+physical-index, and launch-grid preconditions remain mandatory. PipeNet
+endpoint guards, transfer correspondence, and synchronization schedules also
+remain mandatory. The program must ensure that at most one producer and at
+most one consumer acts on the DFB at any one time on each active launch node;
+kernels that share a role synchronize their protocol actions themselves. Every
+wait must still have a producer that publishes the required pages. The
+variable is unset by default, so all ownership checks run unless the user sets
+it. When set, the compiler emits a warning and records
 `ttl.relaxed_dfb_protocol_domain_verification` on the module.
 
 See `test/ttlang/Dialect/TTL/Transforms/verify_dfb_spsc_invalid.mlir` and
@@ -1424,23 +1427,29 @@ address the front or write slot regardless of an earlier open acquisition.
 Let `B` be the region operation in the acquisition's block that contains the
 next same-kind acquisition. A release of the block's kind on the DFB before
 `B`, at the same level or inside the acquiring branch of a guarded
-acquisition, frees the block and nothing more is checked. Otherwise each
-region of `B` is outlined along the path to its first same-kind acquisition:
-the region's top-level operations and, when that acquisition sits in further
-nested regions, the operations on the way to it. The path releases the block
-when it performs exactly one release that no acquisition on the path
-precedes, and every region operation on the way executes its regions at most
-once (`scf.if`, `affine.if`, `scf.index_switch`, `scf.execute_region`,
-`ttl.if_src`, `ttl.if_dst`). When every path releases the block, including an
-`else` branch or `default` case that covers the remaining executions, the
-releases stay in place. When only some paths release it and the block's last
-owned use precedes `B`, those releases are erased and one release is placed
-after the last use, before `B`, as for any release nested in the acquisition
-interval. The program is invalid when a release of the block's kind lies
-anywhere else inside `B` (in a nested region off the path, inside a loop, or
-after the path's first acquisition), when a release after `B` belongs to no
-later acquisition (the frontend's with-exit release), or when the block is
-used in or after `B` without a release on every path.
+acquisition, frees the block and nothing more is checked. Otherwise the
+execution paths through `B` are enumerated: an operation that executes its
+regions at most once (`scf.if`, `affine.if`, `scf.index_switch`,
+`scf.execute_region`, `ttl.if_src`, `ttl.if_dst`) forks the paths, one per
+region plus the skipped path when no region covers the remaining executions;
+a loop or PipeNet `foreach` body is traversed once with every action marked
+repeated; operations that never mention the DFB and paths in the same state
+are merged; more than 64 paths are rejected with their own message. Along a
+path, acquisitions of the interval's kind add their tiles to the open count
+and releases subtract them; a release larger than the open count is unowned.
+A path releases the held block when its unowned releases total exactly the
+block's tiles and all precede the path's first acquisition. A direct
+data-movement use of the DFB before those releases is a use of the held block.
+When every path releases the block, the releases stay in place, and a use
+after `B` is rejected. When only some paths release it and the block is not
+used inside or after `B`, those releases are erased and one release is placed
+after the last owned use, before `B`, as for any release nested in the
+acquisition interval; a guarded acquisition or a wait-any reservation is
+rejected instead. The program is invalid when a path has a repeated, partial,
+or excess release or an unowned release after its first acquisition, when a
+release after `B` belongs to no later acquisition (the frontend's with-exit
+release), or when the block is used in or after `B` without a release on
+every path.
 
 A data-movement kernel addresses a DFB through one read or write pointer, so
 a block acquired there is used before the next same-kind acquisition or not

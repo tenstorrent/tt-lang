@@ -91,20 +91,6 @@ static scf::IfOp getGuardedAcquireIf(Operation *acquire) {
   return ifOp;
 }
 
-static bool hasProtocolEffect(Operation *operation, Value dfb,
-                              DFBProtocolEffectKind kind) {
-  auto access = dyn_cast<DFBAccessOpInterface>(operation);
-  if (!access) {
-    return false;
-  }
-  for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
-    if (effect.dfb == dfb && effect.kind == kind) {
-      return true;
-    }
-  }
-  return false;
-}
-
 static IntegerAttr getAcquireNumTilesAttr(Operation *acquire) {
   if (auto reserve = dyn_cast<CBReserveOp>(acquire)) {
     return reserve.getNumTilesAttr();
@@ -183,12 +169,12 @@ static bool coversEveryPath(Operation *op) {
   return isa<scf::IndexSwitchOp, scf::ExecuteRegionOp>(op);
 }
 
-// Calls `action(op, isAcquisition)` for every acquisition or release of the
-// interval's kind on its DFB within `root` (regions included) in program
-// order, until `action` returns false. Returns false when stopped.
-static bool
-forEachProtocolActionOfKind(Operation *root, DFBAcquireInterval interval,
-                            function_ref<bool(Operation *, bool)> action) {
+// Calls `action(op, isAcquisition, tiles)` for every acquisition or release
+// of the interval's kind on its DFB within `root` (regions included) in
+// program order, until `action` returns false. Returns false when stopped.
+static bool forEachProtocolActionOfKind(
+    Operation *root, DFBAcquireInterval interval,
+    function_ref<bool(Operation *, bool, int64_t)> action) {
   DFBProtocolEffectKind acquireKind = getDFBAcquireEffectKind(interval.kind);
   DFBProtocolEffectKind releaseKind = getDFBReleaseEffectKind(interval.kind);
   return !root->walk<WalkOrder::PreOrder>([&](Operation *operation) {
@@ -205,7 +191,7 @@ forEachProtocolActionOfKind(Operation *root, DFBAcquireInterval interval,
                   if (!acquisition && effect.kind != releaseKind) {
                     continue;
                   }
-                  if (!action(operation, acquisition)) {
+                  if (!action(operation, acquisition, effect.numTiles)) {
                     return WalkResult::interrupt();
                   }
                 }
@@ -214,27 +200,50 @@ forEachProtocolActionOfKind(Operation *root, DFBAcquireInterval interval,
               .wasInterrupted();
 }
 
+// Whether any operation nested in `op` takes the interval's DFB as an operand.
+static bool mentionsDFB(Operation *op, Value dfb) {
+  return op
+      ->walk([&](Operation *nested) {
+        return llvm::is_contained(nested->getOperands(), dfb)
+                   ? WalkResult::interrupt()
+                   : WalkResult::advance();
+      })
+      .wasInterrupted();
+}
+
 // One execution path through a nested-acquisition boundary: its first
 // same-kind acquisition, the releases before it that no acquisition on the
-// path precedes, and a protocol action whose effect on the held block the
-// path does not decide (repeated by a loop, an unowned release after the
-// first acquisition, or beyond the path budget).
+// path precedes (with their tile total), a direct use of the held block
+// before those releases, and a protocol action whose effect on the held
+// block the path does not decide (repeated by a loop, an unowned release
+// after the first acquisition, or a release larger than the open tiles).
 struct BoundaryPath {
   Operation *firstAcquire = nullptr;
   SmallVector<Operation *, 2> unownedReleases;
+  int64_t unownedTiles = 0;
+  Operation *heldBlockUse = nullptr;
   Operation *indefiniteAction = nullptr;
-  int64_t open = 0;
+  int64_t openTiles = 0;
+
+  bool operator==(const BoundaryPath &other) const {
+    return firstAcquire == other.firstAcquire &&
+           unownedReleases == other.unownedReleases &&
+           heldBlockUse == other.heldBlockUse &&
+           indefiniteAction == other.indefiniteAction &&
+           openTiles == other.openTiles;
+  }
 };
 
 // Enumerates the execution paths through the regions of a boundary. Regions
 // of at-most-once operations fork the paths; loop bodies are traversed once
-// with every action marked repeated.
+// with every action marked repeated. Operations that never mention the DFB
+// and paths in the same state are merged.
 class BoundaryPathEnumerator {
 public:
   static constexpr std::size_t kMaxPaths = 64;
 
   explicit BoundaryPathEnumerator(DFBAcquireInterval interval)
-      : dfb(interval.dfb), acquireKind(getDFBAcquireEffectKind(interval.kind)),
+      : interval(interval), acquireKind(getDFBAcquireEffectKind(interval.kind)),
         releaseKind(getDFBReleaseEffectKind(interval.kind)) {}
 
   // Extends `paths` through every execution of `op`'s regions. Returns false
@@ -250,15 +259,20 @@ public:
       return true;
     }
     SmallVector<BoundaryPath> forked;
+    bool skipped = !coversEveryPath(op);
     for (Region &region : op->getRegions()) {
+      if (region.empty()) {
+        skipped = true;
+        continue;
+      }
       SmallVector<BoundaryPath> branch(paths.begin(), paths.end());
       if (!visitRegion(region, repeated, branch)) {
         return false;
       }
-      forked.append(branch.begin(), branch.end());
+      merge(forked, branch);
     }
-    if (!coversEveryPath(op)) {
-      forked.append(paths.begin(), paths.end());
+    if (skipped) {
+      merge(forked, paths);
     }
     if (forked.size() > kMaxPaths) {
       return false;
@@ -268,11 +282,17 @@ public:
   }
 
 private:
+  static void merge(SmallVectorImpl<BoundaryPath> &into,
+                    ArrayRef<BoundaryPath> paths) {
+    for (const BoundaryPath &path : paths) {
+      if (!llvm::is_contained(into, path)) {
+        into.push_back(path);
+      }
+    }
+  }
+
   bool visitRegion(Region &region, bool repeated,
                    SmallVectorImpl<BoundaryPath> &paths) {
-    if (region.empty()) {
-      return true;
-    }
     if (!region.hasOneBlock()) {
       for (BoundaryPath &path : paths) {
         path.indefiniteAction = region.getParentOp();
@@ -281,17 +301,26 @@ private:
     }
     for (Operation &operation : region.front()) {
       if (operation.getNumRegions() != 0) {
-        if (!visitRegionOp(&operation, repeated, paths)) {
+        if (mentionsDFB(&operation, interval.dfb) &&
+            !visitRegionOp(&operation, repeated, paths)) {
           return false;
         }
         continue;
+      }
+      if (operationMayDirectlyUseAcquiredDFBSlot(interval, &operation)) {
+        for (BoundaryPath &path : paths) {
+          if (!path.firstAcquire && path.unownedTiles == 0 &&
+              !path.heldBlockUse) {
+            path.heldBlockUse = &operation;
+          }
+        }
       }
       auto access = dyn_cast<DFBAccessOpInterface>(&operation);
       if (!access) {
         continue;
       }
       for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
-        if (effect.dfb != dfb) {
+        if (effect.dfb != interval.dfb) {
           continue;
         }
         if (effect.kind == acquireKind) {
@@ -299,16 +328,17 @@ private:
             if (!path.firstAcquire) {
               path.firstAcquire = &operation;
             }
-            ++path.open;
+            path.openTiles += effect.numTiles;
           }
         } else if (effect.kind == releaseKind) {
           for (BoundaryPath &path : paths) {
-            if (path.open > 0) {
-              --path.open;
+            if (path.openTiles >= effect.numTiles) {
+              path.openTiles -= effect.numTiles;
             } else if (repeated || path.firstAcquire) {
               path.indefiniteAction = &operation;
             } else {
               path.unownedReleases.push_back(&operation);
+              path.unownedTiles += effect.numTiles;
             }
           }
         }
@@ -317,30 +347,31 @@ private:
     return true;
   }
 
-  Value dfb;
+  DFBAcquireInterval interval;
   DFBProtocolEffectKind acquireKind;
   DFBProtocolEffectKind releaseKind;
 };
 
-// The first release from `begin` to the end of its block that no acquisition
-// in that range precedes, or null.
+// The first release from `begin` to the end of its block whose tiles exceed
+// the tiles acquired in that range before it, or null.
 static Operation *findUnownedReleaseFrom(DFBAcquireInterval interval,
                                          Block::iterator begin, Block *block) {
-  int64_t open = 0;
+  int64_t openTiles = 0;
   Operation *unowned = nullptr;
   for (Operation &operation : llvm::make_range(begin, block->end())) {
-    forEachProtocolActionOfKind(&operation, interval,
-                                [&](Operation *action, bool acquisition) {
-                                  if (acquisition) {
-                                    ++open;
-                                  } else if (open > 0) {
-                                    --open;
-                                  } else {
-                                    unowned = action;
-                                    return false;
-                                  }
-                                  return true;
-                                });
+    forEachProtocolActionOfKind(
+        &operation, interval,
+        [&](Operation *action, bool acquisition, int64_t tiles) {
+          if (acquisition) {
+            openTiles += tiles;
+          } else if (openTiles >= tiles) {
+            openTiles -= tiles;
+          } else {
+            unowned = action;
+            return false;
+          }
+          return true;
+        });
     if (unowned) {
       return unowned;
     }
@@ -367,11 +398,11 @@ struct NestedAcquisitionPlan {
 };
 
 // Decide how a block held at a nested-acquisition boundary is released. A
-// path through the boundary releases the block when it performs exactly one
-// release of the block's kind that no acquisition on the path precedes.
-// Anything else that releases the DFB inside the boundary, and any release
-// after the boundary that no later acquisition owns, marks the program
-// invalid.
+// path through the boundary releases the block when the releases of the
+// block's kind that no acquisition on the path precedes total exactly the
+// block's tiles. Anything else that releases the DFB inside the boundary,
+// and any release after the boundary that no later acquisition owns, marks
+// the program invalid.
 static PlanningResult<NestedAcquisitionPlan> planNestedAcquisitionBoundary(
     DFBAcquireInterval interval, const NestedAcquisitionBoundary &nested,
     Operation *lastOwnedUse, bool requiresExplicitRelease,
@@ -381,6 +412,7 @@ static PlanningResult<NestedAcquisitionPlan> planNestedAcquisitionBoundary(
   Operation *start = orderingBlock->findAncestorOpInBlock(*interval.acquire);
   assert(start && "acquisition must project into the ordering block");
   bool guarded = start != interval.acquire;
+  int64_t heldTiles = getDFBLifecycleTileCount(interval.acquire);
 
   std::string beforeRegionAdvice =
       ("release it before that region (" + effectName +
@@ -402,19 +434,24 @@ static PlanningResult<NestedAcquisitionPlan> planNestedAcquisitionBoundary(
   SmallVector<BoundaryPath> paths(1);
   BoundaryPathEnumerator enumerator(interval);
   if (!enumerator.visitRegionOp(nested.boundary, /*repeated=*/false, paths)) {
-    return invalid(beforeRegionAdvice);
+    return invalid("the region has more execution paths than the analysis "
+                   "follows; " +
+                   beforeRegionAdvice);
   }
   llvm::SetVector<Operation *> releases;
   bool everyPathReleased = true;
+  bool heldBlockUsed = false;
   for (const BoundaryPath &path : paths) {
-    if (path.indefiniteAction || path.unownedReleases.size() > 1) {
+    if (path.indefiniteAction ||
+        (path.unownedTiles != 0 && path.unownedTiles != heldTiles)) {
       return invalid(beforeRegionAdvice);
     }
-    if (path.unownedReleases.empty()) {
+    heldBlockUsed |= path.heldBlockUse != nullptr;
+    if (path.unownedTiles == 0) {
       everyPathReleased = false;
       continue;
     }
-    releases.insert(path.unownedReleases.front());
+    releases.insert(path.unownedReleases.begin(), path.unownedReleases.end());
   }
   if (findUnownedReleaseFrom(
           interval, std::next(nested.boundary->getIterator()), orderingBlock)) {
@@ -428,8 +465,9 @@ static PlanningResult<NestedAcquisitionPlan> planNestedAcquisitionBoundary(
   bool usedAfterBoundary =
       used && projectedLast && nested.boundary->isBeforeInBlock(projectedLast);
   bool usedInOrAfterBoundary =
-      used &&
-      (!projectedLast || !projectedLast->isBeforeInBlock(nested.boundary));
+      heldBlockUsed ||
+      (used &&
+       (!projectedLast || !projectedLast->isBeforeInBlock(nested.boundary)));
 
   NestedAcquisitionPlan plan;
   plan.releases.assign(releases.begin(), releases.end());
@@ -482,7 +520,7 @@ static bool hasReleaseBefore(DFBAcquireInterval interval, Operation *boundary) {
                         boundary->getIterator())) {
     bool released = !forEachProtocolActionOfKind(
         &operation, interval,
-        [](Operation *, bool acquisition) { return acquisition; });
+        [](Operation *, bool acquisition, int64_t) { return acquisition; });
     if (released) {
       return true;
     }
@@ -660,7 +698,7 @@ static std::optional<PlanningDiagnostic> validateGuardedExternalReleases(
   Operation *projectedLast =
       lastOwnedUse ? projectToGuardBlock(lastOwnedUse, guard) : nullptr;
   for (Operation *release : releases) {
-    if (!hasProtocolEffect(release, interval.dfb, releaseEffectKind) ||
+    if (!hasDFBProtocolEffect(release, interval.dfb, releaseEffectKind) ||
         isNestedUnder(release, guard.getOperation())) {
       continue;
     }
@@ -698,7 +736,7 @@ static bool hasGuardedExternalRelease(DFBAcquireInterval interval,
   Operation *projectedLast =
       lastOwnedUse ? projectToGuardBlock(lastOwnedUse, guard) : nullptr;
   for (Operation *release : releases) {
-    if (!hasProtocolEffect(release, interval.dfb, releaseEffectKind) ||
+    if (!hasDFBProtocolEffect(release, interval.dfb, releaseEffectKind) ||
         isNestedUnder(release, guard.getOperation()) ||
         !isOperationInThenRegionGuardedBy(release, guard.getCondition())) {
       continue;
@@ -817,7 +855,7 @@ static PlanningResult<GuardedLocalReleaseInfo> analyzeGuardedLocalReleases(
   Operation *localKindBoundary = findLocalKindBoundary(interval);
   DenseSet<Operation *> candidateReleases;
   for (Operation *release : releases) {
-    if (!hasProtocolEffect(release, interval.dfb, releaseEffectKind) ||
+    if (!hasDFBProtocolEffect(release, interval.dfb, releaseEffectKind) ||
         release->getBlock() != interval.acquire->getBlock() ||
         !interval.acquire->isBeforeInBlock(release)) {
       continue;

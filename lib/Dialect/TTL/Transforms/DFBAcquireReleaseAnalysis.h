@@ -89,6 +89,10 @@ getDFBReleaseEffectKind(DFBAcquireReleaseKind kind) {
                                                  : DFBProtocolEffectKind::Pop;
 }
 
+/// Whether `operation` declares a protocol effect of `kind` on `dfb`.
+bool hasDFBProtocolEffect(mlir::Operation *operation, mlir::Value dfb,
+                          DFBProtocolEffectKind kind);
+
 /// Push or pop actions that close one acquire interval.
 struct DFBReleaseSearch {
   /// Releases in the acquire block or projected into that block.

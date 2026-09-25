@@ -2126,3 +2126,86 @@ func.func @guarded_dm_reserve_then_sibling_reserve(
   }
   func.return
 }
+
+// -----
+
+// Nested regions that never mention the buffer do not multiply the execution
+// paths; four unrelated branches before the nested wait are fine.
+
+// CHECK-LABEL: func.func @unrelated_branches_before_nested_wait
+// CHECK: %[[IN:.+]] = ttl.bind_cb{cb_index = 0
+// CHECK: ttl.cb_wait %[[IN]]
+// CHECK: ttl.store
+// CHECK-NEXT: ttl.cb_pop %[[IN]]
+// CHECK-NEXT: scf.if
+// CHECK: ttl.cb_wait %[[IN]]
+// CHECK: ttl.cb_pop %[[IN]]
+// CHECK-NOT: ttl.cb_pop
+// CHECK: return
+func.func @unrelated_branches_before_nested_wait(%condition: i1, %inner: i1)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %in = ttl.bind_cb{cb_index = 0, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>
+  %out = ttl.bind_cb{cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %w0 = ttl.cb_wait %in : <[1, 1], !ttcore.tile<32x32, bf16>, 4> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %b0 = ttl.attach_cb %w0, %in : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  %reserve = ttl.cb_reserve %out : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  ttl.store %b0, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+  scf.if %condition {
+    scf.if %inner {
+      %k0 = arith.constant 0 : index
+    }
+    scf.if %inner {
+      %k1 = arith.constant 1 : index
+    }
+    scf.if %inner {
+      %k2 = arith.constant 2 : index
+    }
+    scf.if %inner {
+      %k3 = arith.constant 3 : index
+    }
+    %w = ttl.cb_wait %in : <[1, 1], !ttcore.tile<32x32, bf16>, 4> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %b = ttl.attach_cb %w, %in : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %b, %reserve {accumulate} : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %in : <[1, 1], !ttcore.tile<32x32, bf16>, 4>
+  }
+  ttl.cb_push %out : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  func.return
+}
+
+// -----
+
+// A two-tile block released by two one-tile pops on every path is released
+// in full before the nested wait; the pops stay.
+
+// CHECK-LABEL: func.func @multi_tile_release_in_every_branch
+// CHECK: %[[IN:.+]] = ttl.bind_cb{cb_index = 0
+// CHECK: ttl.cb_wait %[[IN]] {num_tiles = 2 : i64}
+// CHECK: scf.if
+// CHECK-NEXT: ttl.cb_pop %[[IN]]
+// CHECK-NEXT: ttl.cb_pop %[[IN]]
+// CHECK-NEXT: ttl.cb_wait %[[IN]]
+// CHECK: ttl.cb_pop %[[IN]]
+// CHECK-NEXT: } else {
+// CHECK-NEXT: ttl.cb_pop %[[IN]] {num_tiles = 2 : i64}
+// CHECK-NEXT: }
+// CHECK-NOT: ttl.cb_pop
+// CHECK: return
+func.func @multi_tile_release_in_every_branch(%condition: i1)
+    attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+  %in = ttl.bind_cb{cb_index = 0, block_count = 4} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>
+  %out = ttl.bind_cb{cb_index = 1, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  %w0 = ttl.cb_wait %in {num_tiles = 2 : i64} : <[1, 1], !ttcore.tile<32x32, bf16>, 4> -> tensor<2x1x!ttcore.tile<32x32, bf16>>
+  %reserve = ttl.cb_reserve %out : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+  scf.if %condition {
+    ttl.cb_pop %in : <[1, 1], !ttcore.tile<32x32, bf16>, 4>
+    ttl.cb_pop %in : <[1, 1], !ttcore.tile<32x32, bf16>, 4>
+    %w = ttl.cb_wait %in : <[1, 1], !ttcore.tile<32x32, bf16>, 4> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %b = ttl.attach_cb %w, %in : (tensor<1x1x!ttcore.tile<32x32, bf16>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>) -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.store %b, %reserve : tensor<1x1x!ttcore.tile<32x32, bf16>>, tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %in : <[1, 1], !ttcore.tile<32x32, bf16>, 4>
+  } else {
+    ttl.cb_pop %in {num_tiles = 2 : i64} : <[1, 1], !ttcore.tile<32x32, bf16>, 4>
+  }
+  ttl.cb_push %out : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+  func.return
+}

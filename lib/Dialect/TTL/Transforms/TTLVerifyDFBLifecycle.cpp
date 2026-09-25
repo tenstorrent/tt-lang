@@ -86,6 +86,11 @@ getExactTransactionCount(ArrayRef<DFBTransaction> transactions,
         !transactionMayExecuteAt(transaction, coord)) {
       continue;
     }
+    // An opaque call's reserve or wait is a readiness threshold, not an
+    // acquisition that transfers blocks.
+    if (acquisitions && isa<OpaqueCallOp>(transaction.op)) {
+      continue;
+    }
     if (thread && getEnclosingKernelThread(transaction.op) != thread) {
       continue;
     }
@@ -449,7 +454,7 @@ private:
     TransactionSequenceResult result;
     for (Operation &op : block) {
       if (protocolOps.contains(&op)) {
-        result.append(summarizeProtocolOp(&op));
+        result.append(summarizeProtocolOp(&op, result));
       } else if (discardTargetIds.contains(&op)) {
         result.append(summarizeStateDiscard(&op));
       } else if (nestedDFBIds.contains(&op)) {
@@ -477,6 +482,9 @@ private:
       const SmallVector<int64_t> &targets = discardTargetIds.lookup(op);
       logicalIds.insert(targets.begin(), targets.end());
     }
+    // Two segments: the empty tail of the interval before the reset, which
+    // `append` joins to the preceding summary, and the empty start of the
+    // interval after it.
     for (int64_t logicalId : logicalIds) {
       result.startSegment(logicalId);
       result.startSegment(logicalId);
@@ -510,11 +518,31 @@ private:
     return event;
   }
 
+  /// Open acquisitions of `counter` on `logicalId` in the block summarized
+  /// so far, from `sofar` (the block before this operation) and `partial`
+  /// (this operation's earlier effects).
+  static std::int64_t
+  getOpenBlocks(const TransactionSequenceResult &sofar,
+                const TransactionSequenceResult &partial, int64_t logicalId,
+                TransactionSequenceSummary::Counter counter) {
+    std::int64_t open = 0;
+    for (const TransactionSequenceResult *result : {&sofar, &partial}) {
+      auto segmentsIt = result->segments.find(logicalId);
+      if (segmentsIt != result->segments.end()) {
+        open += segmentsIt->second.back().net[counter];
+      }
+    }
+    return open;
+  }
+
   /// Opaque-call summaries state Metal-level actions: a declared reserve or
   /// wait is a readiness threshold rather than an acquisition that a later
-  /// release closes, so only the declared pushes and pops count, each as a
-  /// transfer that acquires and releases its blocks.
-  TransactionSequenceResult summarizeProtocolOp(Operation *op) {
+  /// release closes, so only the declared pushes and pops count. A push or
+  /// pop closes a user acquisition of its kind that is still open in the
+  /// enclosing block, as automatic synchronization pairs them; otherwise it
+  /// is a transfer that acquires and releases its blocks.
+  TransactionSequenceResult
+  summarizeProtocolOp(Operation *op, const TransactionSequenceResult &sofar) {
     bool opaque = isa<OpaqueCallOp>(op);
     TransactionSequenceResult result;
     for (const DFBProtocolEffect &effect :
@@ -530,9 +558,17 @@ private:
       if (!opaque) {
         kinds.push_back(effect.kind);
       } else if (effect.kind == DFBProtocolEffectKind::Push) {
-        kinds = {DFBProtocolEffectKind::Reserve, DFBProtocolEffectKind::Push};
+        if (getOpenBlocks(sofar, result, *logicalId,
+                          TransactionSequenceSummary::ProducerOpen) < *blocks) {
+          kinds.push_back(DFBProtocolEffectKind::Reserve);
+        }
+        kinds.push_back(DFBProtocolEffectKind::Push);
       } else if (effect.kind == DFBProtocolEffectKind::Pop) {
-        kinds = {DFBProtocolEffectKind::Wait, DFBProtocolEffectKind::Pop};
+        if (getOpenBlocks(sofar, result, *logicalId,
+                          TransactionSequenceSummary::ConsumerOpen) < *blocks) {
+          kinds.push_back(DFBProtocolEffectKind::Wait);
+        }
+        kinds.push_back(DFBProtocolEffectKind::Pop);
       }
       for (DFBProtocolEffectKind kind : kinds) {
         TransactionSequenceResult single;
@@ -968,6 +1004,8 @@ bool verifyCrossKernelTransactionCounts(
     intervals = std::max(intervals, segments->size());
     perThread.push_back(std::move(*segments));
   }
+  // Every participant executes the same resets; a kernel that touches the
+  // DFB without resetting it keeps one segment and is left out.
   for (const TransactionSegments &segments : perThread) {
     if (segments.size() != 1 && segments.size() != intervals) {
       return false;
