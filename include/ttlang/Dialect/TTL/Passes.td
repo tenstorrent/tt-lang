@@ -1398,6 +1398,16 @@ def TTKernelInsertInits
     linear block order. Init tracking resets at sync boundaries
     (`tile_regs_acquire`/`commit`/`wait`/`release`).
 
+    The TopK slab helpers are inserted the same way. `fused` selects
+    `topk_fuse_tile` before the first stage of a sync region and
+    `topk_defuse_tile` after the last, `rank_stamped` selects
+    `topk_stamp_local_positions` and `topk_strip_rank_tags`, and
+    `stable_sort` selects `topk_canonicalize_negzero_values`. Because the
+    slab is unpacked before the region ends, a packed slab never reaches a
+    dataflow buffer. All TopK stages in one sync region must therefore agree
+    on `fused`, `rank_stamped`, `stable_sort`, `largest`, `tag_bits`, and
+    `fp32_dest_acc_en`.
+
     Example (consecutive same-type ops share one init):
     ```mlir
     // Before:
@@ -1441,6 +1451,7 @@ def TTKernelInsertInits
   }];
 
   let dependentDialects = [
+    "::mlir::arith::ArithDialect",
     "::mlir::tt::ttkernel::TTKernelDialect"
   ];
 }

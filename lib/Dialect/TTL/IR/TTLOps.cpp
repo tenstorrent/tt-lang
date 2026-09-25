@@ -20,6 +20,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOpsEnums.h" // IWYU pragma: keep
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/Utils/OpaqueCallVerifyUtils.h"
+#include "ttlang/Dialect/Utils/TopkVerify.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
@@ -1427,7 +1428,7 @@ mlir::MutableOperandRange mlir::tt::ttl::ComputeOp::getDpsInitsMutable() {
 //===----------------------------------------------------------------------===//
 
 /// Convert the iterator_types attribute from string attrs ("parallel",
-/// "reduction") to the utils::IteratorType enum.
+/// "reduction") to the mlir::utils::IteratorType enum.
 mlir::SmallVector<mlir::utils::IteratorType>
 mlir::tt::ttl::ComputeOp::getIteratorTypesArray() {
   mlir::SmallVector<mlir::utils::IteratorType> result;
@@ -3728,4 +3729,60 @@ mlir::tt::ttl::OpaqueCallOp::getDFBNonTransactionalAccesses() {
 
 bool mlir::tt::ttl::OpaqueCallOp::hasUnknownDFBAccess() {
   return getUnknownDfbAccess();
+}
+
+mlir::LogicalResult mlir::tt::ttl::TileTopkLocalSortOp::verify() {
+  if (getStartStep() && !getEndStep()) {
+    return emitOpError("start_step requires end_step");
+  }
+  if (mlir::failed(
+          mlir::tt::utils::verifyTopkStep(*this, getEndStep(), "end_step")) ||
+      mlir::failed(mlir::tt::utils::verifyTopkStep(*this, getStartStep(),
+                                                   "start_step")) ||
+      mlir::failed(mlir::tt::utils::verifyTopkConstantInRange(
+          *this, getDirection(), "direction", 0, 1)) ||
+      mlir::failed(mlir::tt::utils::verifyTopkConstantInRange(
+          *this, getEndPhase(), "end_phase", 1, 5)) ||
+      mlir::failed(mlir::tt::utils::verifyTopkConstantInRange(
+          *this, getStartPhase(), "start_phase", 0, 5)) ||
+      mlir::failed(mlir::tt::utils::verifyTopkPhaseOrder(
+          *this, getStartPhase(), getEndPhase(), "start_phase", "end_phase"))) {
+    return mlir::failure();
+  }
+  return mlir::tt::utils::verifyTopkMode(*this, getStableSort(), getFused(),
+                                         getRankStamped(),
+                                         getTieOrder() == TopkTieOrder::Unset,
+                                         getFp32DestAccEnAttr(), getTagBits());
+}
+
+mlir::LogicalResult mlir::tt::ttl::TileTopkMergeOp::verify() {
+  if (mlir::failed(mlir::tt::utils::verifyTopkConstantInRange(
+          *this, getMergeIteration(), "merge_iteration", 0, 9)) ||
+      mlir::failed(mlir::tt::utils::verifyTopkConstantK(*this, getK()))) {
+    return mlir::failure();
+  }
+  return mlir::tt::utils::verifyTopkMode(*this, getStableSort(), getFused(),
+                                         getRankStamped(),
+                                         getTieOrder() == TopkTieOrder::Unset,
+                                         getFp32DestAccEnAttr(), getTagBits());
+}
+
+mlir::LogicalResult mlir::tt::ttl::TileTopkRebuildOp::verify() {
+  if (mlir::failed(mlir::tt::utils::verifyTopkConstantInRange(
+          *this, getDirection(), "direction", 0, 1)) ||
+      mlir::failed(mlir::tt::utils::verifyTopkConstantInRange(
+          *this, getMergeIteration(), "merge_iteration", 0, 9)) ||
+      mlir::failed(mlir::tt::utils::verifyTopkConstantK(*this, getK())) ||
+      mlir::failed(mlir::tt::utils::verifyTopkConstantInRange(*this, getLogk(),
+                                                              "logk", 2, 6)) ||
+      mlir::failed(mlir::tt::utils::verifyTopkConstantInRange(
+          *this, getSkipSecond(), "skip_second", 0, 1)) ||
+      mlir::failed(
+          mlir::tt::utils::verifyTopkLogkMatchesK(*this, getK(), getLogk()))) {
+    return mlir::failure();
+  }
+  return mlir::tt::utils::verifyTopkMode(*this, getStableSort(), getFused(),
+                                         getRankStamped(),
+                                         getTieOrder() == TopkTieOrder::Unset,
+                                         getFp32DestAccEnAttr(), getTagBits());
 }

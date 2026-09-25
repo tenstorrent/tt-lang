@@ -1221,6 +1221,52 @@ struct TTLTileMulUnaryConstToTTKernel
   }
 };
 
+static ttk::TopkTieOrder toTTKernelTopkTieOrder(TopkTieOrder tieOrder) {
+  return static_cast<ttk::TopkTieOrder>(static_cast<uint32_t>(tieOrder));
+}
+
+template <typename SourceOp, typename TargetOp>
+struct TTLTileTopkToTTKernel : OpConversionPattern<SourceOp> {
+  using OpConversionPattern<SourceOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    ttk::TopkTieOrder tieOrder = toTTKernelTopkTieOrder(op.getTieOrder());
+    uint32_t tagBits = op.getTagBits();
+    bool largest = op.getLargest();
+    BoolAttr fp32DestAccEn = op.getFp32DestAccEnAttr();
+    if constexpr (std::is_same_v<SourceOp, TileTopkLocalSortOp>) {
+      TargetOp::create(
+          rewriter, op.getLoc(), adaptor.getDstIndex(), adaptor.getDirection(),
+          adaptor.getEndPhase(), adaptor.getStartPhase(), adaptor.getEndStep(),
+          adaptor.getStartStep(), fp32DestAccEn, op.getStableSort(),
+          op.getFused(), op.getRankStamped(), tieOrder, tagBits, largest);
+    } else if constexpr (std::is_same_v<SourceOp, TileTopkMergeOp>) {
+      TargetOp::create(rewriter, op.getLoc(), adaptor.getDstIndex(),
+                       adaptor.getMergeIteration(), adaptor.getK(),
+                       fp32DestAccEn, op.getStableSort(), op.getFused(),
+                       op.getRankStamped(), tieOrder, tagBits, largest,
+                       op.getDirection());
+    } else {
+      TargetOp::create(
+          rewriter, op.getLoc(), adaptor.getDstIndex(), adaptor.getDirection(),
+          adaptor.getMergeIteration(), adaptor.getK(), adaptor.getLogk(),
+          adaptor.getSkipSecond(), fp32DestAccEn, op.getStableSort(),
+          op.getFused(), op.getRankStamped(), tieOrder, tagBits, largest);
+    }
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+using TTLTileTopkLocalSortToTTKernel =
+    TTLTileTopkToTTKernel<TileTopkLocalSortOp, ttk::TopkLocalSortOp>;
+using TTLTileTopkMergeToTTKernel =
+    TTLTileTopkToTTKernel<TileTopkMergeOp, ttk::TopkMergeOp>;
+using TTLTileTopkRebuildToTTKernel =
+    TTLTileTopkToTTKernel<TileTopkRebuildOp, ttk::TopkRebuildOp>;
+
 } // namespace
 
 //===----------------------------------------------------------------------===//
@@ -1262,6 +1308,8 @@ void populateTTLTileOpsToTTKernelPatterns(TypeConverter *typeConverter,
   patterns.add<TTLTileTypecastToTTKernel>(ctx);
   patterns.add<TTLTileExpToTTKernel>(ctx);
   patterns.add<TTLTileAccumulateToTTKernel>(*typeConverter, ctx);
+  patterns.add<TTLTileTopkLocalSortToTTKernel, TTLTileTopkMergeToTTKernel,
+               TTLTileTopkRebuildToTTKernel>(ctx);
 
   // Copy ops need the type converter.
   patterns.add<TTLTileCopyToTTKernel>(*typeConverter, ctx);

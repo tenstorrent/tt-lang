@@ -39,3 +39,21 @@ func.func @multiple_output_cbs_different_formats() {
   ttkernel.tile_regs_release() : () -> ()
   func.return
 }
+
+// -----
+
+// Test: the slab helpers are chosen once per sync region, so the TopK stages
+// of a region cannot disagree about the mode that selects them.
+func.func @topk_conflicting_slab_modes() {
+  %c0 = arith.constant 0 : index
+  %c0_i32 = arith.constant 0 : i32
+  %c4_i32 = arith.constant 4 : i32
+  %c32_i32 = arith.constant 32 : i32
+  ttkernel.tile_regs_acquire() : () -> ()
+  // expected-note @below {{slab mode established by this stage}}
+  ttkernel.topk_local_sort(%c0, %c0_i32, %c4_i32, %c0_i32) {fused = true} : (index, i32, i32, i32) -> ()
+  // expected-error @below {{'ttkernel.topk_merge' op TopK stages in one sync region must share one slab mode}}
+  ttkernel.topk_merge(%c0, %c0_i32, %c32_i32) : (index, i32, i32) -> ()
+  ttkernel.tile_regs_release() : () -> ()
+  func.return
+}
