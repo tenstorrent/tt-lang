@@ -18,6 +18,7 @@ public:
   using Buffer<PageBytes, PagesPerBlock, BlockCount, PayloadOffset>::Buffer;
   static constexpr uint32_t format = Format;
   static constexpr bool directToDestination = DirectToDestination;
+  // FP32 L1 data uses TF32 source-register format unless unpacked to DST.
   static constexpr uint32_t unpackFormat =
       Format == static_cast<uint32_t>(DataFormat::Float32) &&
               !DirectToDestination
@@ -174,6 +175,7 @@ public:
   template <typename Lhs, typename Rhs, typename Output>
   void matmulBlockInit(Lhs lhs, Rhs rhs, Output output, uint32_t transpose,
                        uint32_t columns, uint32_t rows, uint32_t inner) {
+    // The matmul LLK configures the right operand as source A.
     configure(rhs, lhs, output);
     matmulInitShape(transpose, columns, rows, inner);
   }
@@ -193,6 +195,7 @@ public:
   void reduceInit(Input input, Scaler scaler, Output output) {
     if constexpr (Dimension == ckernel::ReduceDim::REDUCE_ROW &&
                   Pool != ckernel::PoolType::MAX) {
+      // Row sum and average use the scaler as source A for MVMUL.
       configure(scaler, input, output);
     } else {
       configure(input, scaler, output);

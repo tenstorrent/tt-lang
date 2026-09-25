@@ -24,6 +24,7 @@ class TestDefaults:
         assert opts.pipe_global_semaphores_only is False
         assert opts.pipe_capacity_sync is True
         assert opts.pipe_batch_tiles == 0
+        assert opts.memory_model == "metal-cb"
         assert opts.sram_allocation_strategy == "first-fit-decreasing"
         assert opts.reuse_user_dfbs is True
         assert opts.unsafe_assume_dfb_allocation_groups is False

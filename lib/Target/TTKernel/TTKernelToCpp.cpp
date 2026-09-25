@@ -98,6 +98,7 @@ public:
     bool hasDevicePrint = false;
     bool requiresDFBDescriptor = false;
     bool requiresCompilerL1 = false;
+    bool requiresCompilerL1Compute = false;
     region->walk([&](emitc::CallOpaqueOp callOp) {
       llvm::StringRef callee = callOp.getCallee();
 
@@ -117,6 +118,8 @@ public:
       requiresDFBDescriptor |=
           callOp->hasAttr("ttlang.requires_dfb_descriptor");
       requiresCompilerL1 |= callOp->hasAttr("ttlang.requires_compiler_l1");
+      requiresCompilerL1Compute |=
+          callOp->hasAttr("ttlang.requires_compiler_l1_compute");
 
       // Our experimental kernel code snippets.
       if (callee == "experimental::unpack_stall_on_pack") {
@@ -209,32 +212,11 @@ public:
       emitDebugPrint(threadType);
     }
 
-    if (requiresCompilerL1) {
-      emitLlk(compiler_l1_target_generated, compiler_l1_target_generated_len);
-      emitLlk(compiler_l1_generated, compiler_l1_generated_len);
-      if (threadType == ThreadType::Compute) {
-        emitLlk(compiler_l1_compute_target_generated,
-                compiler_l1_compute_target_generated_len);
-        emitLlk(compiler_l1_compute_generated,
-                compiler_l1_compute_generated_len);
-      }
-    }
-
     region->walk([&](emitc::VerbatimOp verbatimOp) {
       llvm::StringRef value = verbatimOp.getValue();
-
-      if (value.starts_with("ttlang::l1::target::ComputeContext")) {
-        emitLlk(compiler_l1_target_generated, compiler_l1_target_generated_len);
-        emitLlk(compiler_l1_generated, compiler_l1_generated_len);
-        emitLlk(compiler_l1_compute_target_generated,
-                compiler_l1_compute_target_generated_len);
-        emitLlk(compiler_l1_compute_generated,
-                compiler_l1_compute_generated_len);
-      }
-      if (value.starts_with("ttlang::l1::Buffer<")) {
-        emitLlk(compiler_l1_target_generated, compiler_l1_target_generated_len);
-        emitLlk(compiler_l1_generated, compiler_l1_generated_len);
-      }
+      requiresCompilerL1 |= verbatimOp->hasAttr("ttlang.requires_compiler_l1");
+      requiresCompilerL1Compute |=
+          verbatimOp->hasAttr("ttlang.requires_compiler_l1_compute");
       if (value.starts_with("CircularBuffer")) {
         headers.insert("api/dataflow/circular_buffer.h");
       }
@@ -261,6 +243,16 @@ public:
                 experimental_invoke_sfpi_llks_generated_len);
       }
     });
+
+    if (requiresCompilerL1 || requiresCompilerL1Compute) {
+      emitLlk(compiler_l1_target_generated, compiler_l1_target_generated_len);
+      emitLlk(compiler_l1_generated, compiler_l1_generated_len);
+    }
+    if (requiresCompilerL1Compute) {
+      emitLlk(compiler_l1_compute_target_generated,
+              compiler_l1_compute_target_generated_len);
+      emitLlk(compiler_l1_compute_generated, compiler_l1_compute_generated_len);
+    }
 
     region->walk([&](emitc::LiteralOp literalOp) {
       llvm::StringRef value = literalOp.getValue();

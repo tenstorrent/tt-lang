@@ -365,7 +365,11 @@ static std::string ensureCBDeclaration(Value cb, Operation *useOp,
             .str();
   }
   std::string cbDecl = bufferType + " " + cbName + "({});";
-  rewriter.create<emitc::VerbatimOp>(useOp->getLoc(), cbDecl, ValueRange{cb});
+  auto declaration = emitc::VerbatimOp::create(rewriter, useOp->getLoc(),
+                                               cbDecl, ValueRange{cb});
+  if (ttl::usesCompilerSRAM(useOp)) {
+    declaration->setAttr("ttlang.requires_compiler_l1", rewriter.getUnitAttr());
+  }
   declarations.insert(cbName);
   return cbName;
 }
@@ -1070,8 +1074,9 @@ static void emitCompilerL1ComputeCall(Operation *operation,
   } else if (isa<ttkernel::ExperimentalMatmulBlockOp>(operation)) {
     callee = "ttlang::l1::target::matmul_block_strided";
   }
-  rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
+  auto call = rewriter.replaceOpWithNewOp<emitc::CallOpaqueOp>(
       operation, resultTypes, callee, ArrayAttr(), templateArgs, operands);
+  call->setAttr("ttlang.requires_compiler_l1_compute", rewriter.getUnitAttr());
 }
 
 // A missing or false `posted` attribute on `op` means non-posted writes.
@@ -1799,9 +1804,8 @@ public:
           isa<ttkernel::CBType>(op.getResult().getType())) {
         CompilerL1Allocation allocation =
             getCompilerL1Allocation(op, op.getArgIndex());
-        expression =
-            "get_common_arg_val<uint32_t>(get_compile_time_arg_val(0)) + " +
-            std::to_string(allocation.stateOffset);
+        expression = "ttlang::l1::target::arenaBase() + " +
+                     std::to_string(allocation.stateOffset);
       }
       auto literal = emitc::LiteralOp::create(rewriter, op.getLoc(), resultType,
                                               expression);
@@ -2693,6 +2697,14 @@ public:
         compilerL1 && op.getCallee().starts_with("ttlang::l1::");
     if (requiresCompilerL1) {
       callOp->setAttr("ttlang.requires_compiler_l1", rewriter.getUnitAttr());
+      auto function = op->getParentOfType<func::FuncOp>();
+      auto threadType = function->getAttrOfType<ttkernel::ThreadTypeAttr>(
+          ttkernel::ThreadTypeAttr::name);
+      if (threadType &&
+          threadType.getValue() == ttkernel::ThreadType::Compute) {
+        callOp->setAttr("ttlang.requires_compiler_l1_compute",
+                        rewriter.getUnitAttr());
+      }
     }
     return success();
   }
@@ -3443,6 +3455,198 @@ public:
 } // namespace
 
 namespace {
+static bool isSupportedCompilerSRAMComputeTile(Type elementType) {
+  auto tile = dyn_cast_if_present<ttcore::TileType>(elementType);
+  return tile && tile.getHeight() == 32 && tile.getWidth() == 32 &&
+         (tile.getDataType() == ttcore::DataType::Float32 ||
+          tile.getDataType() == ttcore::DataType::BFloat16);
+}
+
+static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
+  if (!ttl::usesCompilerSRAM(module)) {
+    return success();
+  }
+  WalkResult sourceOperations = module.walk([](Operation *operation) {
+    return operation->getName().getDialectNamespace() == "ttkernel"
+               ? WalkResult::interrupt()
+               : WalkResult::advance();
+  });
+  if (sourceOperations.wasInterrupted()) {
+    auto allocations =
+        module->getAttrOfType<ArrayAttr>(ttl::kDFBAllocationsAttrName);
+    if (!allocations) {
+      module.emitOpError(
+          "compiler-sram requires finalized allocation metadata");
+      return failure();
+    }
+    for (auto [index, attribute] : llvm::enumerate(allocations)) {
+      if (failed(parseCompilerL1Allocation(attribute))) {
+        module.emitOpError("compiler-sram allocation entry ")
+            << index
+            << " must define positive uint32 page_size, num_tiles, and "
+               "block_count values and representable ordered L1 offsets";
+        return failure();
+      }
+    }
+    WalkResult validation = module.walk([&](Operation *operation) {
+      if (operation->getName().getDialectNamespace() == "emitc") {
+        if (!operation->hasAttr(ttl::kDPrintGeneratedAttrName)) {
+          operation->emitOpError(
+              "compiler-sram cannot validate pre-lowered C++ effects");
+          return WalkResult::interrupt();
+        }
+        return WalkResult::advance();
+      }
+      if (operation->getName().getDialectNamespace() != "ttkernel") {
+        return WalkResult::advance();
+      }
+      if (auto getCompileArg =
+              dyn_cast<ttkernel::GetCompileArgValOp>(operation);
+          getCompileArg && isa<ttkernel::CBType>(getCompileArg.getType()) &&
+          static_cast<uint64_t>(getCompileArg.getArgIndex()) >=
+              allocations.size()) {
+        operation->emitOpError(
+            "compiler-sram storage index is absent from allocation metadata");
+        return WalkResult::interrupt();
+      }
+      if ((isa<ttkernel::GetArgValOp, ttkernel::GetCommonArgValOp>(
+              operation)) &&
+          isa<ttkernel::CBType>(operation->getResult(0).getType())) {
+        operation->emitOpError(
+            "compiler-sram requires statically bound DFB storage");
+        return WalkResult::interrupt();
+      }
+      for (Value operand : operation->getOperands()) {
+        if (!isa<ttkernel::CBType>(operand.getType())) {
+          continue;
+        }
+        std::optional<int> index = resolveDfbIndex(operand);
+        if (!index || *index < 0 ||
+            static_cast<uint64_t>(*index) >= allocations.size()) {
+          operation->emitOpError(
+              "compiler-sram DFB operand has no finalized allocation");
+          return WalkResult::interrupt();
+        }
+      }
+      if (isa<ttkernel::GetTileSizeOp, ttkernel::GetDataFormatOp>(operation) &&
+          !isa<ttcore::TileType>(
+              cast<ttkernel::CBType>(operation->getOperand(0).getType())
+                  .getElementType())) {
+        operation->emitOpError("compiler-sram requires tiled storage metadata");
+        return WalkResult::interrupt();
+      }
+      if (auto opaqueCall = dyn_cast<ttkernel::OpaqueCallOp>(operation)) {
+        auto threadType = operation->getParentOfType<func::FuncOp>()
+                              ->getAttrOfType<ttkernel::ThreadTypeAttr>(
+                                  ttkernel::ThreadTypeAttr::name);
+        std::optional<ArrayAttr> templateArguments =
+            opaqueCall.getTemplateArgs();
+        ArrayAttr templateArgumentsAttr = templateArguments.value_or(
+            ArrayAttr::get(operation->getContext(), {}));
+        for (Attribute templateArgument : templateArgumentsAttr) {
+          auto descriptor =
+              dyn_cast<ttkernel::DFBDescriptorAttr>(templateArgument);
+          if (!descriptor) {
+            continue;
+          }
+          int64_t index = descriptor.getIndex();
+          if (index < 0 || static_cast<uint64_t>(index) >= allocations.size()) {
+            operation->emitOpError(
+                "compiler-sram descriptor index is absent from allocation "
+                "metadata");
+            return WalkResult::interrupt();
+          }
+          CompilerL1Allocation allocation =
+              getCompilerL1Allocation(operation, index);
+          if (descriptor.getPageSizeBytes() != allocation.pageSizeBytes ||
+              descriptor.getPagesPerBlock() != allocation.pagesPerBlock ||
+              descriptor.getBlockCount() != allocation.blockCount) {
+            operation->emitOpError(
+                "compiler-sram descriptor geometry differs from its "
+                "allocation metadata");
+            return WalkResult::interrupt();
+          }
+          if (threadType &&
+              threadType.getValue() == ttkernel::ThreadType::Compute &&
+              !isSupportedCompilerSRAMComputeTile(allocation.elementType)) {
+            operation->emitOpError("compiler-sram compute descriptors "
+                                   "require 32x32 BF16 or FP32 tiles");
+            return WalkResult::interrupt();
+          }
+        }
+      }
+      bool supported =
+          isa<ttkernel::GetCompileArgValOp, ttkernel::GetArgValOp,
+              ttkernel::GetCommonArgValOp, ttkernel::MyLogicalXOp,
+              ttkernel::MyLogicalYOp, ttkernel::CBReserveBackOp,
+              ttkernel::CBWaitFrontOp, ttkernel::CBPushBackOp,
+              ttkernel::CBPopFrontOp, ttkernel::GetReadPtrOp,
+              ttkernel::GetWritePtrOp, ttkernel::NocAsyncReadTileOp,
+              ttkernel::NocAsyncWriteTileOp, ttkernel::NocAsyncReadBarrierOp,
+              ttkernel::NocAsyncWriteBarrierOp, ttkernel::TensorAccessorOp,
+              ttkernel::TensorAccessorArgsOp, ttkernel::GetTileSizeOp,
+              ttkernel::GetDataFormatOp, ttkernel::TileRegsAcquireOp,
+              ttkernel::TileRegsCommitOp, ttkernel::TileRegsWaitOp,
+              ttkernel::TileRegsReleaseOp, ttkernel::PackReconfigL1AccOp,
+              ttkernel::OpaqueCallOp>(operation) ||
+          isCompilerL1ComputeOperation(operation) ||
+          isDescriptorIndependentComputeOperation(operation);
+      if (isCompilerL1ComputeOperation(operation)) {
+        for (Value operand : operation->getOperands()) {
+          auto buffer = dyn_cast<ttkernel::CBType>(operand.getType());
+          if (!buffer) {
+            continue;
+          }
+          if (!isSupportedCompilerSRAMComputeTile(buffer.getElementType())) {
+            operation->emitOpError(
+                "compiler-sram compute requires 32x32 BF16 or FP32 tiles");
+            return WalkResult::interrupt();
+          }
+        }
+        if (auto pack = dyn_cast<ttkernel::PackTileOp>(operation);
+            pack && !pack.getOutOfOrder()) {
+          operation->emitOpError(
+              "compiler-sram packing requires an explicit tile index");
+          return WalkResult::interrupt();
+        }
+      }
+      if (!supported) {
+        operation->emitOpError()
+            << "has no compiler-sram lowering for " << operation->getName()
+            << "; Metal DFB fallback is disabled";
+        return WalkResult::interrupt();
+      }
+      if (isa<ttkernel::CBReserveBackOp, ttkernel::CBWaitFrontOp,
+              ttkernel::CBPushBackOp, ttkernel::CBPopFrontOp>(operation)) {
+        auto identity = resolveDfbIndex(operation->getOperand(0));
+        assert(identity && *identity >= 0 &&
+               static_cast<size_t>(*identity) < allocations.size() &&
+               "DFB identity was validated before transaction geometry");
+        llvm::APInt pageCount;
+        if (!matchPattern(operation->getOperand(1),
+                          m_ConstantInt(&pageCount))) {
+          operation->emitOpError("compiler-sram requires a static storage "
+                                 "identity and page count");
+          return WalkResult::interrupt();
+        }
+        CompilerL1Allocation allocation =
+            getCompilerL1Allocation(operation, *identity);
+        if (pageCount.getSExtValue() != allocation.pagesPerBlock) {
+          operation->emitOpError(
+              "compiler-sram requires full-block synchronization to "
+              "preserve contiguous acquisitions");
+          return WalkResult::interrupt();
+        }
+      }
+      return WalkResult::advance();
+    });
+    if (validation.wasInterrupted()) {
+      return failure();
+    }
+  }
+  return success();
+}
+
 class ConvertTTKernelToEmitCPass
     : public ttkernel::impl::ConvertTTKernelToEmitCBase<
           ConvertTTKernelToEmitCPass> {
@@ -3452,198 +3656,9 @@ public:
 
   void runOnOperation() final {
     ModuleOp module = getOperation();
-    WalkResult sourceOperations = module.walk([](Operation *operation) {
-      return operation->getName().getDialectNamespace() == "ttkernel"
-                 ? WalkResult::interrupt()
-                 : WalkResult::advance();
-    });
-    if (ttl::usesCompilerSRAM(module) && sourceOperations.wasInterrupted()) {
-      auto allocations =
-          module->getAttrOfType<ArrayAttr>(ttl::kDFBAllocationsAttrName);
-      if (!allocations) {
-        module.emitOpError(
-            "compiler-sram requires finalized allocation metadata");
-        signalPassFailure();
-        return;
-      }
-      for (auto [index, attribute] : llvm::enumerate(allocations)) {
-        if (failed(parseCompilerL1Allocation(attribute))) {
-          module.emitOpError("compiler-sram allocation entry ")
-              << index
-              << " must define positive uint32 page_size, num_tiles, and "
-                 "block_count values and representable ordered L1 offsets";
-          signalPassFailure();
-          return;
-        }
-      }
-      WalkResult validation = module.walk([&](Operation *operation) {
-        if (operation->getName().getDialectNamespace() == "emitc") {
-          if (!operation->hasAttr(ttl::kDPrintGeneratedAttrName)) {
-            operation->emitOpError(
-                "compiler-sram cannot validate pre-lowered C++ effects");
-            return WalkResult::interrupt();
-          }
-          return WalkResult::advance();
-        }
-        if (operation->getName().getDialectNamespace() != "ttkernel") {
-          return WalkResult::advance();
-        }
-        if (auto getCompileArg =
-                dyn_cast<ttkernel::GetCompileArgValOp>(operation);
-            getCompileArg && isa<ttkernel::CBType>(getCompileArg.getType()) &&
-            static_cast<uint64_t>(getCompileArg.getArgIndex()) >=
-                allocations.size()) {
-          operation->emitOpError(
-              "compiler-sram storage index is absent from allocation metadata");
-          return WalkResult::interrupt();
-        }
-        if ((isa<ttkernel::GetArgValOp, ttkernel::GetCommonArgValOp>(
-                operation)) &&
-            isa<ttkernel::CBType>(operation->getResult(0).getType())) {
-          operation->emitOpError(
-              "compiler-sram requires statically bound DFB storage");
-          return WalkResult::interrupt();
-        }
-        for (Value operand : operation->getOperands()) {
-          if (!isa<ttkernel::CBType>(operand.getType())) {
-            continue;
-          }
-          std::optional<int> index = resolveDfbIndex(operand);
-          if (!index || *index < 0 ||
-              static_cast<uint64_t>(*index) >= allocations.size()) {
-            operation->emitOpError(
-                "compiler-sram DFB operand has no finalized allocation");
-            return WalkResult::interrupt();
-          }
-        }
-        if (isa<ttkernel::GetTileSizeOp, ttkernel::GetDataFormatOp>(
-                operation) &&
-            !isa<ttcore::TileType>(
-                cast<ttkernel::CBType>(operation->getOperand(0).getType())
-                    .getElementType())) {
-          operation->emitOpError(
-              "compiler-sram requires tiled storage metadata");
-          return WalkResult::interrupt();
-        }
-        if (auto opaqueCall = dyn_cast<ttkernel::OpaqueCallOp>(operation)) {
-          auto threadType = operation->getParentOfType<func::FuncOp>()
-                                ->getAttrOfType<ttkernel::ThreadTypeAttr>(
-                                    ttkernel::ThreadTypeAttr::name);
-          std::optional<ArrayAttr> templateArguments =
-              opaqueCall.getTemplateArgs();
-          ArrayAttr templateArgumentsAttr = templateArguments.value_or(
-              ArrayAttr::get(operation->getContext(), {}));
-          for (Attribute templateArgument : templateArgumentsAttr) {
-            auto descriptor =
-                dyn_cast<ttkernel::DFBDescriptorAttr>(templateArgument);
-            if (!descriptor) {
-              continue;
-            }
-            int64_t index = descriptor.getIndex();
-            if (index < 0 ||
-                static_cast<uint64_t>(index) >= allocations.size()) {
-              operation->emitOpError(
-                  "compiler-sram descriptor index is absent from allocation "
-                  "metadata");
-              return WalkResult::interrupt();
-            }
-            CompilerL1Allocation allocation =
-                getCompilerL1Allocation(operation, index);
-            if (descriptor.getPageSizeBytes() != allocation.pageSizeBytes ||
-                descriptor.getPagesPerBlock() != allocation.pagesPerBlock ||
-                descriptor.getBlockCount() != allocation.blockCount) {
-              operation->emitOpError(
-                  "compiler-sram descriptor geometry differs from its "
-                  "allocation metadata");
-              return WalkResult::interrupt();
-            }
-            if (threadType &&
-                threadType.getValue() == ttkernel::ThreadType::Compute) {
-              auto tile =
-                  dyn_cast_if_present<ttcore::TileType>(allocation.elementType);
-              if (!tile || tile.getHeight() != 32 || tile.getWidth() != 32 ||
-                  (tile.getDataType() != ttcore::DataType::Float32 &&
-                   tile.getDataType() != ttcore::DataType::BFloat16)) {
-                operation->emitOpError("compiler-sram compute descriptors "
-                                       "require 32x32 BF16 or FP32 tiles");
-                return WalkResult::interrupt();
-              }
-            }
-          }
-        }
-        bool supported =
-            isa<ttkernel::GetCompileArgValOp, ttkernel::GetArgValOp,
-                ttkernel::GetCommonArgValOp, ttkernel::MyLogicalXOp,
-                ttkernel::MyLogicalYOp, ttkernel::CBReserveBackOp,
-                ttkernel::CBWaitFrontOp, ttkernel::CBPushBackOp,
-                ttkernel::CBPopFrontOp, ttkernel::GetReadPtrOp,
-                ttkernel::GetWritePtrOp, ttkernel::NocAsyncReadTileOp,
-                ttkernel::NocAsyncWriteTileOp, ttkernel::NocAsyncReadBarrierOp,
-                ttkernel::NocAsyncWriteBarrierOp, ttkernel::TensorAccessorOp,
-                ttkernel::TensorAccessorArgsOp, ttkernel::GetTileSizeOp,
-                ttkernel::GetDataFormatOp, ttkernel::TileRegsAcquireOp,
-                ttkernel::TileRegsCommitOp, ttkernel::TileRegsWaitOp,
-                ttkernel::TileRegsReleaseOp, ttkernel::PackReconfigL1AccOp,
-                ttkernel::OpaqueCallOp>(operation) ||
-            isCompilerL1ComputeOperation(operation) ||
-            isDescriptorIndependentComputeOperation(operation);
-        if (isCompilerL1ComputeOperation(operation)) {
-          for (Value operand : operation->getOperands()) {
-            auto buffer = dyn_cast<ttkernel::CBType>(operand.getType());
-            if (!buffer) {
-              continue;
-            }
-            auto tile = dyn_cast<ttcore::TileType>(buffer.getElementType());
-            if (!tile || tile.getHeight() != 32 || tile.getWidth() != 32 ||
-                (tile.getDataType() != ttcore::DataType::Float32 &&
-                 tile.getDataType() != ttcore::DataType::BFloat16)) {
-              operation->emitOpError(
-                  "compiler-sram compute requires 32x32 BF16 or FP32 tiles");
-              return WalkResult::interrupt();
-            }
-          }
-          if (auto pack = dyn_cast<ttkernel::PackTileOp>(operation);
-              pack && !pack.getOutOfOrder()) {
-            operation->emitOpError(
-                "compiler-sram packing requires an explicit tile index");
-            return WalkResult::interrupt();
-          }
-        }
-        if (!supported) {
-          operation->emitOpError()
-              << "has no compiler-sram lowering for " << operation->getName()
-              << "; Metal DFB fallback is disabled";
-          return WalkResult::interrupt();
-        }
-        if (isa<ttkernel::CBReserveBackOp, ttkernel::CBWaitFrontOp,
-                ttkernel::CBPushBackOp, ttkernel::CBPopFrontOp>(operation)) {
-          auto identity = resolveDfbIndex(operation->getOperand(0));
-          auto allocations =
-              module->getAttrOfType<ArrayAttr>(ttl::kDFBAllocationsAttrName);
-          llvm::APInt pageCount;
-          if (!identity || !allocations || *identity < 0 ||
-              static_cast<size_t>(*identity) >= allocations.size() ||
-              !matchPattern(operation->getOperand(1),
-                            m_ConstantInt(&pageCount))) {
-            operation->emitOpError("compiler-sram requires a static storage "
-                                   "identity and page count");
-            return WalkResult::interrupt();
-          }
-          CompilerL1Allocation allocation =
-              getCompilerL1Allocation(operation, *identity);
-          if (pageCount.getSExtValue() != allocation.pagesPerBlock) {
-            operation->emitOpError(
-                "compiler-sram requires full-block synchronization to "
-                "preserve contiguous acquisitions");
-            return WalkResult::interrupt();
-          }
-        }
-        return WalkResult::advance();
-      });
-      if (validation.wasInterrupted()) {
-        signalPassFailure();
-        return;
-      }
+    if (failed(validateCompilerSRAMModule(module))) {
+      signalPassFailure();
+      return;
     }
     TTKernelToEmitCConversionState state;
     ConversionPlan config(module.getContext(), state);
@@ -3668,10 +3683,12 @@ public:
               .wasInterrupted()) {
         OpBuilder builder(&funcOp.getBody().front(),
                           funcOp.getBody().front().begin());
-        emitc::VerbatimOp::create(
+        auto context = emitc::VerbatimOp::create(
             builder, funcOp.getLoc(),
             "ttlang::l1::target::ComputeContext l1_compute_context;",
             ValueRange{});
+        context->setAttr("ttlang.requires_compiler_l1_compute",
+                         builder.getUnitAttr());
       }
       if (mayHaveRuntimeCBArgs(funcOp)) {
         assignRuntimeCBArgIndices(funcOp);

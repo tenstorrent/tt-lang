@@ -71,12 +71,12 @@ FailureOr<uint64_t> getL1AllocationSizeBytes(ModuleOp module,
   if (failed(allocationQuantum) || *allocationQuantum == 0) {
     return failure();
   }
-  std::optional<uint64_t> roundedNumerator =
-      llvm::checkedAddUnsigned(payloadBytes, *allocationQuantum - 1);
-  if (!roundedNumerator) {
+  std::optional<uint64_t> allocationBytes = llvm::checkedMulUnsigned(
+      llvm::divideCeil(payloadBytes, *allocationQuantum), *allocationQuantum);
+  if (!allocationBytes) {
     return failure();
   }
-  return (*roundedNumerator / *allocationQuantum) * *allocationQuantum;
+  return *allocationBytes;
 }
 
 LogicalResult collectSynchronizedDFBResets(

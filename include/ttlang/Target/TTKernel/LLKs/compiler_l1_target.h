@@ -13,6 +13,7 @@ inline uint32_t arenaBase() {
   return get_common_arg_val<uint32_t>(get_compile_time_arg_val(0));
 }
 inline uint32_t load(uint32_t address) {
+  // Blackhole RISC caches are not coherent across processors on a node.
   asm volatile("fence" ::: "memory");
   uint32_t value;
   asm volatile("lw %[value], (%[address])\n\tand x0, x0, %[value]"
@@ -22,6 +23,7 @@ inline uint32_t load(uint32_t address) {
   return value;
 }
 inline void store(uint32_t address, uint32_t value) {
+  // The dependent load waits until the store is visible to other RISCs.
   asm volatile("sw %[value], (%[address])\n\tlw %[value], (%[address])\n\tand "
                "x0, x0, %[value]"
                : [value] "+r"(value)

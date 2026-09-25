@@ -9,7 +9,6 @@
 
 #include <algorithm>
 #include <cassert>
-#include <limits>
 #include <optional>
 #include <tuple>
 #include <utility>
@@ -37,11 +36,13 @@ validateSolution(const CompilerL1AllocationProblem &problem,
 
 static FailureOr<uint64_t> alignOffset(uint64_t offset, uint64_t alignment,
                                        std::string &failureReason) {
-  if (offset > std::numeric_limits<uint64_t>::max() - (alignment - 1)) {
+  std::optional<uint64_t> aligned =
+      llvm::checkedMulUnsigned(llvm::divideCeil(offset, alignment), alignment);
+  if (!aligned) {
     failureReason = "placement offset overflowed during alignment";
     return failure();
   }
-  return llvm::alignTo(offset, alignment);
+  return *aligned;
 }
 
 static FailureOr<SmallVector<BlockingInterval>>

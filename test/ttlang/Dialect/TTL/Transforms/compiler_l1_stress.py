@@ -12,10 +12,10 @@ import subprocess
 
 
 FORMATS = [
-    ("1x16", "bfp_bf4", 24, 1),
-    ("2x16", "bfp_bf8", 48, 3),
-    ("32x32", "f32", 4096, 1),
-    ("32x32", "bf16", 2048, 2),
+    ("1x16", "bfp_bf4", 24, 1, 1),
+    ("2x16", "bfp_bf8", 48, 3, 2),
+    ("32x32", "f32", 4096, 1, 1),
+    ("32x32", "bf16", 2048, 2, 1),
 ]
 
 
@@ -25,17 +25,17 @@ def make_module(events, architecture, unknown=False):
         f"module attributes {{ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<{architecture}>}} {{",
         "func.func @schedule() attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>, ttl.noc_index = 0 : i32} {",
     ]
-    for region, (tile, dtype, _, capacity) in enumerate(FORMATS[:count]):
+    for region, (tile, dtype, _, capacity, pages) in enumerate(FORMATS[:count]):
         lines.append(
-            f"%storage_{region} = ttl.bind_cb {{cb_index = {region}, block_count = {capacity}}} {{dfb_id = {region} : index}} : !ttl.cb<[1, 1], !ttcore.tile<{tile}, {dtype}>, {capacity}>"
+            f"%storage_{region} = ttl.bind_cb {{cb_index = {region}, block_count = {capacity}}} {{dfb_id = {region} : index}} : !ttl.cb<[{pages}, 1], !ttcore.tile<{tile}, {dtype}>, {capacity}>"
         )
     for event_index, event in enumerate(events):
         region, action = divmod(event, 2)
-        tile, dtype, _, capacity = FORMATS[region]
-        signature = f"<[1, 1], !ttcore.tile<{tile}, {dtype}>, {capacity}>"
+        tile, dtype, _, capacity, pages = FORMATS[region]
+        signature = f"<[{pages}, 1], !ttcore.tile<{tile}, {dtype}>, {capacity}>"
         acquire, release = ("reserve", "push") if action == 0 else ("wait", "pop")
         lines += [
-            f"%view_{event_index} = ttl.cb_{acquire} %storage_{region} : {signature} -> tensor<1x1x!ttcore.tile<{tile}, {dtype}>>",
+            f"%view_{event_index} = ttl.cb_{acquire} %storage_{region} : {signature} -> tensor<{pages}x1x!ttcore.tile<{tile}, {dtype}>>",
             f"ttl.cb_{release} %storage_{region} : {signature}",
         ]
         if unknown and event_index == 1:
@@ -119,8 +119,8 @@ def validate(output, events, architecture, reuse, unknown):
     quantum = 32 if architecture == "wormhole_b0" else 64
     control_bytes = (count * 8 + quantum - 1) // quantum * quantum
     sizes = [
-        ((page_bytes * capacity + quantum - 1) // quantum) * quantum
-        for _, _, page_bytes, capacity in FORMATS[:count]
+        ((page_bytes * pages * capacity + quantum - 1) // quantum) * quantum
+        for _, _, page_bytes, capacity, pages in FORMATS[:count]
     ]
     actual_sizes = [
         int(value) for value in re.findall(r"l1_allocation_bytes = (\d+)", output)

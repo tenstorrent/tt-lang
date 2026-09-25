@@ -9,8 +9,8 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
   // SFPU copies preserve the finalized direct-unpack choice in operand metadata.
   // CHECK-LABEL: func.func @compute
   // CHECK: ttlang::l1::target::ComputeContext l1_compute_context;
-  // CHECK: get_common_arg_val<uint32_t>(get_compile_time_arg_val(0)) + 0
-  // CHECK: get_common_arg_val<uint32_t>(get_compile_time_arg_val(0)) + 8
+  // CHECK: ttlang::l1::target::arenaBase() + 0
+  // CHECK: ttlang::l1::target::arenaBase() + 8
   // CHECK: ttlang::l1::Operand<static_cast<uint32_t>(DataFormat::Float32), 4096, 1, 3, 64, true>
   // CHECK: l1_compute_context.configure
   // CHECK: ttlang::l1::target::copy_tile
@@ -30,8 +30,8 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
   // CPP-NOT: cb_pop_front
   // CPP: #ifndef TTLANG_COMPILER_L1_COMPUTE_TARGET_H
   // CPP: ttlang::l1::target::ComputeContext l1_compute_context;
-  // CPP: ttlang::l1::Buffer<4096, 1, 3, 64> cb_ctarg_0(get_common_arg_val<uint32_t>(get_compile_time_arg_val(0)) + 0);
-  // CPP-NEXT: ttlang::l1::Buffer<4096, 1, 3, 12344> cb_ctarg_1(get_common_arg_val<uint32_t>(get_compile_time_arg_val(0)) + 8);
+  // CPP: ttlang::l1::Buffer<4096, 1, 3, 64> cb_ctarg_0(ttlang::l1::target::arenaBase() + 0);
+  // CPP-NEXT: ttlang::l1::Buffer<4096, 1, 3, 12344> cb_ctarg_1(ttlang::l1::target::arenaBase() + 8);
   // CPP: ttlang::l1::Operand<static_cast<uint32_t>(DataFormat::Float32), 4096, 1, 3, 64, true>
   // CPP: ttlang::l1::target::copy_tile
   // CPP: abs_tile_init();

@@ -8,6 +8,7 @@ namespace ttlang::l1 {
 template <uint32_t PageBytes, uint32_t PagesPerBlock, uint32_t BlockCount,
           uint32_t PayloadOffset>
 class Buffer {
+  // PayloadOffset is relative to the control record at state.
   static_assert(PageBytes > 0 && PagesPerBlock > 0 && BlockCount > 0 &&
                 uint64_t{PagesPerBlock} * BlockCount < (uint64_t{1} << 31));
   static constexpr uint32_t sequenceModulus = 2 * BlockCount;

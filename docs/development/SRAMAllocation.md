@@ -6,6 +6,8 @@ TT-Lang normally assigns concurrently live dataflow buffers (DFBs) to TT-Metal d
 
 `--ttl-memory-model=compiler-sram` replaces descriptor-indexed storage with compiler-assigned SRAM byte ranges. The Python DFB API and its producer/consumer semantics remain unchanged. `metal-cb` remains the default.
 
+An *arena* is the node-local SRAM reservation for one operation execution. A *control record* holds one logical DFB's producer and consumer counters. Two payloads have *noninterfering lifetimes* when enforced completion order prevents simultaneous use. An *address-bearing descriptor* supplies a buffer address and geometry to generated device code without a physical DFB index. "SRAM" names the backend; "L1" names the device memory and its capacity budget.
+
 | Property | `metal-cb` | `compiler-sram` |
 | --- | --- | --- |
 | Allocated identity | TT-Metal DFB index | Compiler allocation index used only in compiler metadata |
@@ -51,7 +53,7 @@ Packed-format metadata is included in `P`. The complete arena size is the maximu
 
 ## Conflict Analysis
 
-Allocation consumes the existing logical-identity and completion-aware lifetime analyses. The compiler builds the complete conflict relation before changing IR. Unknown launch domains, unproved completion, concurrent lifetimes, and incompatible storage ownership remain conflicts.
+Allocation consumes the existing logical-identity and completion-aware lifetime analyses. The compiler builds the complete conflict relation before changing IR. Unknown worker nodes on which a kernel may execute, unproved completion, concurrent lifetimes, and incompatible storage ownership remain conflicts.
 
 The shared storage conflict analysis includes writes from Metal descriptor installation and incompatible backing ownership. Compiler-managed reset and reconfiguration are rejected before allocation, so an accepted compiler-managed program has no such installation writes.
 
@@ -72,7 +74,7 @@ buildStorageConflicts(lifetimes):
     return conflicts
 ```
 
-Possible launch domains use the same rules as exact domains and remain conservative. The compiler authorizes overlap only when every common worker node has a proven completion order.
+When the compiler knows only a set of possible worker nodes, it applies the same rule to every member. It authorizes overlap only when every common worker node has a proven completion order.
 
 ## Placement Interface and Algorithms
 
@@ -82,33 +84,18 @@ Every allocator result passes the same validation before IR mutation. Validation
 
 ### C++ Allocator Contract
 
-The compiler-internal interface is:
+The interface is declared in [CompilerL1Allocator.h](../../lib/Dialect/TTL/Transforms/CompilerL1Allocator.h). Its input, output, and failure fields are:
+
+| Type | Fields and meaning |
+| --- | --- |
+| `CompilerL1AllocationProblem` | `regionBytes`: aligned, nonzero payload extents; `conflicts`: symmetric matrix of pairs that must not overlap; `alignmentBytes`: target alignment; `payloadBaseOffset`: first usable payload byte after control records; `budgetBytes`: usable L1 capacity. |
+| `CompilerL1AllocationSolution` | `offsets`: one arena-relative byte offset per input region; `arenaBytes`: exact maximum payload end, or zero for empty input. |
+| `SRAMPlacementFailure` | `kind`: invalid problem, strategy failure, invalid solution, or exhausted budget; `regionIndex`: optional failing region; `reason`: diagnostic text. |
+
+Strategies implement the following C++ contract:
 
 ```cpp
 namespace mlir::tt::ttl {
-
-struct CompilerL1AllocationProblem {
-  llvm::SmallVector<uint64_t> regionBytes;
-  llvm::SmallVector<llvm::BitVector> conflicts;
-  uint64_t alignmentBytes;
-  uint64_t payloadBaseOffset;
-  uint64_t budgetBytes;
-};
-
-struct CompilerL1AllocationSolution {
-  llvm::SmallVector<uint64_t> offsets;
-  uint64_t arenaBytes;
-};
-
-enum class SRAMPlacementFailureKind {
-  InvalidProblem, StrategyFailure, InvalidSolution, BudgetExceeded
-};
-
-struct SRAMPlacementFailure {
-  SRAMPlacementFailureKind kind = SRAMPlacementFailureKind::InvalidProblem;
-  std::optional<unsigned> regionIndex;
-  std::string reason;
-};
 
 class CompilerL1Allocator {
 public:
@@ -116,11 +103,6 @@ public:
   virtual llvm::StringRef getName() const = 0;
 
 private:
-  friend FailureOr<CompilerL1AllocationSolution>
-  solveCompilerL1Allocation(const CompilerL1Allocator &allocator,
-                            const CompilerL1AllocationProblem &problem,
-                            SRAMPlacementFailure &failureDetail);
-
   virtual FailureOr<CompilerL1AllocationSolution>
   allocate(const CompilerL1AllocationProblem &problem,
            std::string &failureReason) const = 0;
@@ -137,7 +119,7 @@ FailureOr<CompilerL1AllocationSolution> solveCompilerL1Allocation(
 } // namespace mlir::tt::ttl
 ```
 
-Region vector order defines region indices and deterministic equal-size ordering. Every extent is nonzero and aligned. `conflicts` is a square, symmetric bit matrix with a clear diagonal. `payloadBaseOffset` is aligned and does not exceed `budgetBytes`. The problem is passed as `const` after construction.
+Region vector order defines region indices and deterministic equal-size ordering. The conflict matrix has a clear diagonal; `payloadBaseOffset` is aligned and does not exceed `budgetBytes`. The problem is passed as `const` after construction.
 
 `solveCompilerL1Allocation` is the only caller of the private strategy method. It validates the problem, invokes the selected strategy, and validates the solution. On success, `offsets` has one entry per region and `arenaBytes` is the exact maximum payload end, or zero when no regions exist. On failure, `reason` contains diagnostic text; `regionIndex` identifies a region only when the error applies to one region, and `kind` distinguishes budget exhaustion from invalid input, strategy failure, and invalid output. The allocator layer does not emit diagnostics or modify IR.
 

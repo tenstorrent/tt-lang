@@ -2145,6 +2145,9 @@ def _compile_ttnn_kernel(
     grouped_kernel_logical_selectors = []
     # Profiling reports use the representative source name for each RISC.
     thread_to_kernel = {}
+    compiler_l1 = any(
+        storage_config.l1_offset is not None for storage_config in (cb_configs or [])
+    )
 
     for kernel_group in kernel_groups:
         representative = kernel_group[0]
@@ -2186,10 +2189,6 @@ def _compile_ttnn_kernel(
             if configuration.dst_full_sync_en:
                 config.dst_full_sync_en = True
             unpack_fp32_cbs = configuration.unpack_to_dest_fp32
-            compiler_l1 = any(
-                storage_config.l1_offset is not None
-                for storage_config in (cb_configs or [])
-            )
             if unpack_fp32_cbs and not compiler_l1:
                 _set_unpack_to_dest_fp32(config, ttnn, unpack_fp32_cbs)
             thread_to_kernel["TRISC_0"] = name

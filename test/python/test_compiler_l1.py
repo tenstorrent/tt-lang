@@ -347,7 +347,10 @@ def test_allocation_stress(device, dtype, schedule, grid, reuse, tmp_path, monke
     arena_bytes = int(re.search(r"ttl.l1_arena_bytes = (\d+)", ir).group(1))
     assert len(offsets) == len(pages)
     assert states == list(range(0, len(pages) * 8, 8))
-    assert all(offset % 32 == 0 and offset >= len(pages) * 8 for offset in offsets)
+    alignment_bytes = 64 if ttnn.device.is_blackhole(device) else 32
+    assert all(
+        offset % alignment_bytes == 0 and offset >= len(pages) * 8 for offset in offsets
+    )
     assert sizes == [
         page_count * capacity * 1024 * expected.element_size()
         for page_count, capacity in zip(pages, capacities)
