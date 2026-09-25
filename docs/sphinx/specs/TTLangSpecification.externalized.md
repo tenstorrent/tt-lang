@@ -320,7 +320,7 @@ A *tensor slice* is a view into a TT-NN tensor defined in terms of a dimension s
 
 The `ttl.copy` function expresses a variety of data movements that always have two arguments: source and destination. `ttl.copy` returns a *transfer handle* object. A transfer handle has a `wait` function that serves as a barrier. When the `wait` returns the transfer is complete and data in the destination is safe to use.  The `ttl.copy` is executed on a data movement thread.
 
-A tensor-to-dataflow-buffer copy or Pipe receive writes a block acquired from `reserve()`. A dataflow-buffer-to-tensor copy reads a block acquired from `wait()`. A Pipe send may read a reserve-acquired block when another kernel consumes that block's publication.
+A tensor-to-dataflow-buffer copy or Pipe receive writes a block acquired from `reserve()`. A dataflow-buffer-to-tensor copy reads a block acquired from `wait()`. A Pipe send may read either kind of block; a reserve-acquired send must still be consumed by another kernel through `wait()`, and the spec examples send from `wait()` blocks. To keep a produced block in a tensor as well, publish it and copy it to the tensor from a `wait()`-acquired block of a second dataflow buffer.
 
 
 ### Group transfer
