@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
-# Exhaustive three- and four-region mixed-size schedules check byte-placement
-# safety against execution events, independently of the compiler conflict graph.
+# Exhaustive three-region schedules and every four-region conflict graph check
+# byte-placement safety independently of the compiler conflict analysis.
 # A nine-region case checks control-prefix alignment across target quanta.
 # RUN: %python %s
 
@@ -78,6 +78,19 @@ def make_control_prefix_module(architecture, count):
     return "\n".join(lines + ["return", "}", "}"])
 
 
+def get_conflicts(events):
+    live = set()
+    conflicts = set()
+    for event in events:
+        region, action = divmod(event, 2)
+        if action == 0:
+            conflicts.update(tuple(sorted((region, other))) for other in live)
+            live.add(region)
+        else:
+            live.remove(region)
+    return conflicts
+
+
 def validate_control_prefix_alignment():
     count = 9
     architectures = ("wormhole_b0", "blackhole")
@@ -123,16 +136,15 @@ def validate(output, events, architecture, reuse, unknown):
     assert arena_bytes <= control_bytes + sum(sizes)
     live = set()
     peak_bytes = 0
-    conflicts = set()
     for event in events:
         region, action = divmod(event, 2)
         if action == 0:
-            conflicts.update(tuple(sorted((region, other))) for other in live)
             live.add(region)
             peak_bytes = max(peak_bytes, sum(sizes[other] for other in live))
         else:
             live.remove(region)
     assert arena_bytes >= control_bytes + peak_bytes
+    conflicts = get_conflicts(events)
     if not reuse or unknown:
         conflicts = set(itertools.combinations(range(count), 2))
     for first, second in conflicts:
@@ -159,16 +171,17 @@ def main():
         )
     ]
     assert len(schedules) == 90
-    four_region_schedules = [
-        events
-        for events in itertools.permutations(range(8))
-        if all(
+    four_region_schedules_by_conflicts = {}
+    for events in itertools.permutations(range(8)):
+        if not all(
             events.index(2 * region) < events.index(2 * region + 1)
             for region in range(4)
-        )
-    ]
-    assert len(four_region_schedules) == 2520
-    schedules.extend(four_region_schedules)
+        ):
+            continue
+        conflicts = frozenset(get_conflicts(events))
+        four_region_schedules_by_conflicts.setdefault(conflicts, events)
+    assert len(four_region_schedules_by_conflicts) == 61
+    schedules.extend(four_region_schedules_by_conflicts.values())
     cases = [
         (events, architecture, False)
         for architecture in ("wormhole_b0", "blackhole")

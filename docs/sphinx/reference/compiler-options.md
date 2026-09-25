@@ -279,7 +279,7 @@ ttlang-opt input.mlir -p 'func.func(ttl-insert-intermediate-dfbs{enable=false})'
 `memory-model=compiler-sram` uses the selected deterministic decreasing-size byte-placement strategy and independent DFB control records. It removes the Metal DFB index limit for supported transfer and compute operations. Unknown access completion prevents reuse.
 `reuse-user-dfbs=false` gives every payload separate storage. The arena allocation
 includes control and alignment bytes. Greedy placement failure does not establish
-infeasibility. The [backend contract](https://github.com/tenstorrent/tt-lang/blob/bnorris/compiler-l1-poc/docs/development/SRAMAllocation.md#implemented-contract)
+infeasibility. The [backend contract](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/SRAMAllocation.md#implemented-contract)
 defines supported execution and storage forms.
 
 Assign DFB storage identities and emit the runtime allocation table.

@@ -4052,6 +4052,8 @@ def _run_kernel_on_device_impl(
     tensors: List[Any],
     cb_configs: List[PhysicalDFBConfig],
     core_ranges: Any,
+    compiler_l1_arena_bytes: Optional[int],
+    pipe_computed_address_dfb_indices: Tuple[int, ...],
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
     program_hash: Optional[int] = None,
     num_pipe_sync_semaphores: int = 0,
@@ -4080,12 +4082,14 @@ def _run_kernel_on_device_impl(
             in each KernelSpec.
         cb_configs: Finalized physical DFB configurations, in physical-index
             order.
+        compiler_l1_arena_bytes: Validated compiler-managed SRAM arena size, if used.
+        pipe_computed_address_dfb_indices: DFBs with PipeNet-computed addresses.
         dfb_reconfiguration_plan: Optional finalized configuration epochs.
         core_ranges: ttnn.CoreRangeSet for kernel execution.
         program_hash: Hash for tt-metal program cache.
         num_pipe_sync_semaphores: Number of pipe synchronization semaphores
             allocated by the compiler.
-        pipe_sram_scratch_bytes: Per-core SRAM scratch bytes required by
+        pipe_sram_scratch_bytes: Per-node SRAM scratch bytes required by
             PipeNet metadata.
         num_pipe_global_semaphores: Number of GlobalSemaphore-backed PipeNet
             counters allocated by the compiler.
@@ -4117,6 +4121,8 @@ def _run_kernel_on_device_impl(
         _validate_device_domain_mesh_compatibility(
             device_domain, mesh_program_placements, mesh_device
         )
+
+    compiler_l1 = compiler_l1_arena_bytes is not None
 
     if runtime_resource_cache is not None:
         _release_portable_runtime_resources_impl(runtime_resource_cache)
@@ -4173,15 +4179,6 @@ def _run_kernel_on_device_impl(
     grid_cols = grid_size.x
     grid_rows = grid_size.y
 
-    pipe_computed_address_dfb_indices = tuple(
-        sorted(
-            {
-                dfb_index
-                for spec in kernel_specs
-                for dfb_index in spec.pipe_computed_address_dfb_indices
-            }
-        )
-    )
     pipe_runtime_resources, reconfiguration_resources = get_cached_runtime_resources(
         runtime_resource_cache,
         tensors=tensors,
@@ -4198,26 +4195,7 @@ def _run_kernel_on_device_impl(
 
     compiler_l1_arena = None
     compiler_l1_base_address = None
-    compiler_l1_arena_bytes = _get_compiler_l1_arena_bytes(cb_configs)
-    compiler_l1 = compiler_l1_arena_bytes is not None
     if compiler_l1:
-        if (
-            device_domain is not None
-            or mesh_program_placements is not None
-            or resource_plan is not None
-        ):
-            raise ValueError(
-                "compiler-sram requires one device and no external runtime resources"
-            )
-        if (
-            dfb_reconfiguration_plan
-            or pipe_computed_address_dfb_indices
-            or num_pipe_sync_semaphores
-            or num_pipe_global_semaphores
-        ):
-            raise ValueError(
-                "compiler-sram cannot combine PipeNet or Metal DFB reconfiguration resources"
-            )
         compiler_l1_arena = _allocate_l1_sharded_storage_tensor(
             core_ranges,
             compiler_l1_arena_bytes,
@@ -4481,11 +4459,43 @@ def run_kernel_on_device(
         extent=(None if device_domain is None else device_domain.flattened_extent),
         extent_name="device domain",
     )
+    compiler_l1_arena_bytes = _get_compiler_l1_arena_bytes(cb_configs)
+    pipe_computed_address_dfb_indices = tuple(
+        sorted(
+            {
+                dfb_index
+                for spec in kernel_specs
+                for dfb_index in spec.pipe_computed_address_dfb_indices
+            }
+        )
+    )
+    if compiler_l1_arena_bytes is not None:
+        if (
+            device_domain is not None
+            or mesh_program_placements is not None
+            or runtime_resource_factory is not None
+        ):
+            raise ValueError(
+                "compiler-sram requires one device and no external runtime resources"
+            )
+        if (
+            dfb_reconfiguration_plan
+            or pipe_computed_address_dfb_indices
+            or num_pipe_sync_semaphores
+            or num_pipe_global_semaphores
+            or any(kernel_fabric_routes or ())
+        ):
+            raise ValueError(
+                "compiler-sram cannot combine with PipeNet or Metal DFB "
+                "reconfiguration resources"
+            )
     arguments = {
         "kernel_specs": kernel_specs,
         "tensors": tensors,
         "cb_configs": cb_configs,
         "core_ranges": core_ranges,
+        "compiler_l1_arena_bytes": compiler_l1_arena_bytes,
+        "pipe_computed_address_dfb_indices": pipe_computed_address_dfb_indices,
         "dfb_reconfiguration_plan": dfb_reconfiguration_plan,
         "program_hash": program_hash,
         "num_pipe_sync_semaphores": num_pipe_sync_semaphores,

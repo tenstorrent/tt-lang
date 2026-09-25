@@ -235,8 +235,9 @@ using `Descriptor::bind()` and uses its `reserve_back`, `wait_front`,
 `get_write_ptr`, `get_read_ptr`, `push_back`, and `pop_front` methods. The
 data-movement descriptor parameters are `page_size`, `pages_per_block`,
 `block_count`, `state_offset`, and `payload_offset`. The compute descriptor
-adds `format` first and `direct_to_destination` last. Offsets are bytes within
-the operation's SRAM arena. The implementation is defined in
+adds `format` first and `direct_to_destination` last. `state_offset` is relative
+to the operation's SRAM arena base; `payload_offset` is relative to that DFB's
+control record. The implementation is defined in
 [`compiler_l1.h`](https://github.com/tenstorrent/tt-lang/blob/main/include/ttlang/Target/TTKernel/LLKs/compiler_l1.h)
 and [`compiler_l1_compute.h`](https://github.com/tenstorrent/tt-lang/blob/main/include/ttlang/Target/TTKernel/LLKs/compiler_l1_compute.h).
 See [SRAM Allocation](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/SRAMAllocation.md)

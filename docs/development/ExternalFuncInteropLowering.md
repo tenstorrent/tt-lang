@@ -422,7 +422,7 @@ instead encode page size, block geometry, and control/payload byte offsets in
 the operation's SRAM arena. An external function calls `Source::bind()` and
 `Destination::bind()` to obtain objects with `reserve_back`, `wait_front`,
 `get_write_ptr`, `get_read_ptr`, `push_back`, and `pop_front` methods. The
-[tested external copy](../../test/python/include/compiler_l1_external.hpp)
+[tested external copy](https://github.com/tenstorrent/tt-lang/blob/main/test/python/include/compiler_l1_external.hpp)
 shows this interface. Compute descriptors additionally encode data format and
 direct-to-destination unpack selection. The full parameter contract is in the
 [external functions reference](../sphinx/reference/external-functions.md).

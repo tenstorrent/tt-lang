@@ -2219,6 +2219,49 @@ def test_compiler_l1_arena_size_rejects_partial_metadata():
         kernel_runner._get_compiler_l1_arena_bytes([config])
 
 
+# Unsupported resources must be rejected before a cached owner is released.
+def test_compiler_l1_resource_rejection_preserves_cache(monkeypatch):
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        l1_offset=0,
+        l1_payload_offset=64,
+        l1_allocation_bytes=2048,
+    )
+    cache = kernel_runner.KernelRuntimeResourceCache()
+    release_calls = []
+    monkeypatch.setattr(
+        kernel_runner,
+        "_release_cached_runtime_resources_impl",
+        lambda *_args: release_calls.append("cached"),
+    )
+    monkeypatch.setattr(
+        kernel_runner,
+        "_release_portable_runtime_resources_impl",
+        lambda *_args: release_calls.append("portable"),
+    )
+
+    for resources, message in (
+        ({"num_pipe_sync_semaphores": 1}, "cannot combine with PipeNet"),
+        ({"dfb_reconfiguration_plan": object()}, "cannot combine with PipeNet"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            kernel_runner.run_kernel_on_device(
+                kernel_specs=[],
+                tensors=[],
+                cb_configs=[config],
+                core_ranges=_FakeCoreRanges(),
+                runtime_resource_cache=cache,
+                **resources,
+            )
+
+    assert release_calls == []
+
+
 def _local_tensor_test_environment():
     fake_ttnn = _FakeTTNN()
     fake_ttnn.TensorMemoryLayout = SimpleNamespace(

@@ -1067,7 +1067,8 @@ def test_compiler_l1_scalar_external_compute(device, dtype, to_device):
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
-def test_compiler_l1_external_copy(device, dtype, to_device):
+@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-sram"])
+def test_external_dfb_descriptor_copy(device, dtype, to_device, memory_model):
     expected = torch.randn(32, 32, dtype=dtype)
     input_tensor = to_device(expected, device)
     output_tensor = to_device(torch.zeros_like(expected), device)
@@ -1075,7 +1076,7 @@ def test_compiler_l1_external_copy(device, dtype, to_device):
     _make_external_copy(_data_format(dtype))(
         input_tensor,
         output_tensor,
-        options="--ttl-memory-model=compiler-sram",
+        options=f"--ttl-memory-model={memory_model}",
     )
 
     _assert_exact(ttnn.to_torch(output_tensor), expected)
