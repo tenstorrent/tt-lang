@@ -4398,9 +4398,12 @@ def TTKernel_StoreToL1Op : TTKernel_Op<"store_to_l1"> {
 }
 
 def TTKernel_LoadFromL1Op : TTKernel_Op<"load_from_l1"> {
-    let summary = "LoadFromL1";
+    let summary = "Load a value from local L1";
     let description = [{
-      Load value from L1.
+      Reads the element at index `$offset` from `$l1_ptr` and returns it as an
+      integer of the pointer's element width. The read observes data delivered
+      by the NoC: it invalidates the local L1 cache and is not reordered before
+      preceding synchronization.
     }];
 
     let arguments = (ins TTKernel_L1AddrPtr:$l1_ptr, I32:$offset);
