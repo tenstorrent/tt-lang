@@ -10,8 +10,8 @@ template <typename Source, typename Destination>
 static inline void compiler_l1_copy_dfb() {
   static_assert(Source::pages_per_block == Destination::pages_per_block);
   static_assert(Source::page_size_bytes == Destination::page_size_bytes);
-  Source source = Source::bind();
-  Destination destination = Destination::bind();
+  auto source = Source::bind();
+  auto destination = Destination::bind();
   destination.reserve_back(Destination::pages_per_block);
   source.wait_front(Source::pages_per_block);
   auto *sourceWords = reinterpret_cast<volatile std::uint32_t tt_l1_ptr *>(
