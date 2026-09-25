@@ -1,4 +1,4 @@
-// RUN: ttlang-opt %s --split-input-file -ttl-verify-pipenet-guards | FileCheck %s
+// RUN: ttlang-opt %s --split-input-file -ttl-verify-pipenet-schedule | FileCheck %s
 
 // Verify valid loopback schedules in mutually exclusive scf.if branches.
 
@@ -135,6 +135,55 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
         ttl.wait %recv : !ttl.receive_request
       }
     }
+    func.return
+  }
+}
+
+// -----
+
+// Branches that call the same helper are separate dynamic occurrences. A
+// receiver post in one branch cannot overwrite the post in the other branch.
+// CHECK-LABEL: func.func @exclusive_helper_calls
+// CHECK: func.call @roundtrip()
+// CHECK: } else {
+// CHECK: func.call @roundtrip()
+
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @exclusive_helper_calls(%runtime_flag: i1)
+      attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    scf.if %runtime_flag {
+      func.call @roundtrip() : () -> ()
+    } else {
+      func.call @roundtrip() : () -> ()
+    }
+    func.return
+  }
+
+  func.func private @roundtrip() {
+    %pipe = ttl.create_pipe src(0, 0) dst(0, 0) to(0, 0) net 0
+        {pipeNetName = "net"}
+        : !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>
+    %send_cb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %recv_cb = ttl.bind_cb {cb_index = 1, block_count = 2} {dfb_id = 1 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %recv_reserve = ttl.cb_reserve %recv_cb
+        : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %recv_view = ttl.attach_cb %recv_reserve, %recv_cb
+        : (tensor<1x1x!ttcore.tile<32x32, bf16>>,
+           !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>)
+        -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    %recv = ttl.copy %pipe, %recv_view
+        : (!ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>,
+           tensor<1x1x!ttcore.tile<32x32, bf16>>)
+        -> !ttl.receive_request
+    %send = ttl.copy %send_cb, %pipe
+        : (!ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>,
+           !ttl.pipe<src(0, 0) dst(0, 0) to(0, 0) net 0>)
+        -> !ttl.transfer_handle<write>
+    ttl.wait %send : !ttl.transfer_handle<write>
+    ttl.wait %recv : !ttl.receive_request
     func.return
   }
 }

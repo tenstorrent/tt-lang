@@ -1770,6 +1770,8 @@ private:
                                     PipeScheduleNodeId nextPostId) const {
     auto sendIt = completingSendByPost.find(previousPostId);
     if (sendIt == completingSendByPost.end() ||
+        !canExecuteTogether(nodes[previousPostId].conditionalBranches,
+                            nodes[nextPostId].conditionalBranches) ||
         mlir::insideMutuallyExclusiveRegions(nodes[previousPostId].op,
                                              nodes[nextPostId].op) ||
         pipeScheduleNodeReaches(nodes, sendIt->second, nextPostId)) {
