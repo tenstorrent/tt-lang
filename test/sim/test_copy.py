@@ -19,7 +19,7 @@ from test_utils import (
     tensors_equal,
 )
 
-from sim.blockstate import BlockAcquisition
+from sim.blockstate import BlockAcquisition, ExpectedOp
 from sim.context import set_current_kernel_type
 from sim.dfb import Block, DataflowBuffer
 from sim.ttnnsim import ROW_MAJOR_LAYOUT, Tensor
@@ -388,8 +388,10 @@ class TestMultipleCopyOperations:
         ):
             copy(tensor2, block)
 
-        # Clean up
+        # After the read completes the block offers only another read or its
+        # release; the state model has no copy-destination transition.
         tx1.wait()
+        assert block.expected_ops == {ExpectedOp.COPY_SRC, ExpectedOp.POP}
 
     # Removed: test_can_read_source_multiple_times - tests multiple copies which is not allowed per state machine
 

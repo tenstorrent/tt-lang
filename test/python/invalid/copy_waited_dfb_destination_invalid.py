@@ -23,6 +23,8 @@ def copy_waited_dfb_destination(input_tensor):
         shape=(1, 1),
         block_count=1,
     )
+    with scratch_dfb.reserve() as produced_block:
+        ttl.copy(input_tensor[0, 0], produced_block).wait()
     with scratch_dfb.wait() as scratch_block:
         # CHECK: error: copy() from a tensor to a DFB block requires a block acquired from reserve(), not wait()
         # CHECK: copy_waited_dfb_destination_invalid.py:[[#@LINE+1]]:9

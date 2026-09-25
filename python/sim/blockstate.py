@@ -124,9 +124,6 @@ def _validate_mismatch_hint(
         AccessState.MR,
         AccessState.RW,
     ):
-        if kernel == KernelKind.DATA_MOVEMENT:
-            if attempted == ExpectedOp.COPY_DST and ExpectedOp.COPY_SRC in expected_ops:
-                return "After wait(), data is already in the block: copy *from* it, not into it."
         if kernel == KernelKind.COMPUTE:
             if attempted == ExpectedOp.STORE and ExpectedOp.STORE_SRC in expected_ops:
                 return (
