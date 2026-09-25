@@ -851,30 +851,34 @@ net = ttl.PipeNet(
 
 @ttl.datamovement()
 def dm():
-    with dfb.reserve() as blk:
+    def pipe_src(pipe):
+        with send_dfb.reserve() as producer_block:
 
-        def pipe_src(pipe):
-
-            # write data into blk
+            # write data into producer_block
             # ...
 
-            # then copy blk to pipe:
+        with send_dfb.wait() as send_block:
 
-            xf = ttl.copy(blk, pipe)
+            # then copy send_block to pipe:
+
+            xf = ttl.copy(send_block, pipe)
             xf.wait()
 
-        def pipe_dst(pipe):
+    def pipe_dst(pipe):
+        with recv_dfb.reserve() as receive_block:
 
-            # copy blk from pipe:
+            # copy receive_block from pipe:
 
-            xf = ttl.copy(pipe, blk)
+            xf = ttl.copy(pipe, receive_block)
             xf.wait()
 
-            # then read data from blk
+        with recv_dfb.wait() as received_block:
+
+            # then read data from received_block
             # ...
 
-        net.if_src(pipe_src)
-        net.if_dst(pipe_dst)
+    net.if_src(pipe_src)
+    net.if_dst(pipe_dst)
 
 ```
 
@@ -896,30 +900,34 @@ net = ttl.PipeNet(
 
 @ttl.datamovement()
 def dm():
-    with dfb.reserve() as blk:
+    def pipe_src(pipe):
+        with send_dfb.reserve() as producer_block:
 
-        def pipe_src(pipe):
-
-            # write data into blk
+            # write data into producer_block
             # ...
 
-            # then copy blk to pipe:
+        with send_dfb.wait() as send_block:
 
-            xf = ttl.copy(blk, pipe)
+            # then copy send_block to pipe:
+
+            xf = ttl.copy(send_block, pipe)
             xf.wait()
 
-        def pipe_dst(pipe):
+    def pipe_dst(pipe):
+        with recv_dfb.reserve() as receive_block:
 
-            # copy blk from pipe:
+            # copy receive_block from pipe:
 
-            xf = ttl.copy(pipe, blk)
+            xf = ttl.copy(pipe, receive_block)
             xf.wait()
 
-            # then read data from blk
+        with recv_dfb.wait() as received_block:
+
+            # then read data from received_block
             # ...
 
-        net.if_src(pipe_src)
-        net.if_dst(pipe_dst)
+    net.if_src(pipe_src)
+    net.if_dst(pipe_dst)
 
 ```
 
@@ -949,30 +957,34 @@ net = ttl.PipeNet(
 
 @ttl.datamovement()
 def dm():
-    with dfb.reserve() as blk:
+    def pipe_src(pipe):
+        with send_dfb.reserve() as producer_block:
 
-        def pipe_src(pipe):
-
-            # write data into blk
+            # write data into producer_block
             # ...
 
-            # then copy blk to pipe:
+        with send_dfb.wait() as send_block:
 
-            xf = ttl.copy(blk, pipe)
+            # then copy send_block to pipe:
+
+            xf = ttl.copy(send_block, pipe)
             xf.wait()
 
-        def pipe_dst(pipe):
+    def pipe_dst(pipe):
+        with recv_dfb.reserve() as receive_block:
 
-            # copy blk from pipe:
+            # copy receive_block from pipe:
 
-            xf = ttl.copy(pipe, blk)
+            xf = ttl.copy(pipe, receive_block)
             xf.wait()
 
-            # then read data from blk
+        with recv_dfb.wait() as received_block:
+
+            # then read data from received_block
             # ...
 
-        net.if_src(pipe_src)
-        net.if_dst(pipe_dst)
+    net.if_src(pipe_src)
+    net.if_dst(pipe_dst)
 
 ```
 
@@ -1005,34 +1017,34 @@ net = ttl.PipeNet(
 
 @ttl.datamovement()
 def dm():
+    def pipe_src(pipe):
+        with dfb_to_send.reserve() as producer_block:
 
-    with (
-        dfb_to_send.reserve() as blk_to_send,
-        dfb_received.reserve() as blk_received,
-    ):
-
-        def pipe_src(pipe):
-
-            # write data into blk_to_send
+            # write data into producer_block
             # ...
 
-            # then copy blk_to_send to pipe:
+        with dfb_to_send.wait() as send_block:
 
-            xf = ttl.copy(blk_to_send, pipe)
+            # then copy send_block to pipe:
+
+            xf = ttl.copy(send_block, pipe)
             xf.wait()
 
-        def pipe_dst(pipe):
+    def pipe_dst(pipe):
+        with dfb_received.reserve() as receive_block:
 
-            # copy blk_received from pipe:
+            # copy receive_block from pipe:
 
-            xf = ttl.copy(pipe, blk_received)
+            xf = ttl.copy(pipe, receive_block)
             xf.wait()
 
-            # then read data from blk_received
+        with dfb_received.wait() as received_block:
+
+            # then read data from received_block
             # ...
 
-        net.if_src(pipe_src)
-        net.if_dst(pipe_dst)
+    net.if_src(pipe_src)
+    net.if_dst(pipe_dst)
 
 ```
 
