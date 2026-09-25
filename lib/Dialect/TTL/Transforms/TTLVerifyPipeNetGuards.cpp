@@ -16,6 +16,7 @@
 #include "mlir/Analysis/DataFlow/Utils.h"
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "ttlang/Analysis/ExecutionCountAnalysis.h"
@@ -870,6 +871,13 @@ struct PipeCallSite {
   func::FuncOp callee;
 };
 
+/// One branch of a conditional at one direct-call occurrence.
+struct PipeConditionalBranch {
+  Operation *conditional;
+  Region *region;
+  SmallVector<Operation *> callSites;
+};
+
 /// Pipe synchronization event specialized to one hardware execution location.
 struct PipeScheduleNode {
   Operation *op;
@@ -881,6 +889,7 @@ struct PipeScheduleNode {
   Operation *receivePost;
   func::FuncOp kernelFunction;
   SmallVector<PipeCallSite> callSites;
+  SmallVector<PipeConditionalBranch> conditionalBranches;
   SmallVector<ActivePipeNetRecord> activeRecords;
   std::optional<std::uint64_t> executionCountDivisor;
   SmallVector<PipeScheduleEdge> successors;
@@ -921,6 +930,48 @@ PipeCoordIdentity getPipeCoordIdentity(PipeType pipeType,
           dstStartY, dstEndY, transfer, coord.x,   coord.y};
 }
 
+/// Record branches only when their enclosing regions execute at most once.
+/// A conditional inside a loop can execute both branches in different
+/// iterations, so its static branches do not exclude one another.
+void appendPipeConditionalBranches(
+    Operation *op, ArrayRef<Operation *> callSites, bool &mayRepeat,
+    SmallVectorImpl<PipeConditionalBranch> &branches) {
+  SmallVector<std::pair<Operation *, Region *>> ancestors;
+  for (Region *region = op->getParentRegion(); region;) {
+    Operation *parent = region->getParentOp();
+    if (isa<func::FuncOp>(parent)) {
+      break;
+    }
+    ancestors.push_back({parent, region});
+    region = parent->getParentRegion();
+  }
+  for (auto [parent, region] : llvm::reverse(ancestors)) {
+    if (isa<scf::IfOp>(parent)) {
+      if (!mayRepeat) {
+        branches.push_back(
+            {parent, region, SmallVector<Operation *>(callSites)});
+      }
+    } else if (!isa<scf::ExecuteRegionOp, IfSrcOp, IfDstOp, PipeNetScopeOp>(
+                   parent)) {
+      mayRepeat = true;
+    }
+  }
+}
+
+SmallVector<PipeConditionalBranch>
+getPipeConditionalBranches(Operation *op, ArrayRef<PipeCallSite> callSites) {
+  SmallVector<PipeConditionalBranch> branches;
+  SmallVector<Operation *> callStack;
+  bool mayRepeat = false;
+  for (PipeCallSite callSite : callSites) {
+    appendPipeConditionalBranches(callSite.call.getOperation(), callStack,
+                                  mayRepeat, branches);
+    callStack.push_back(callSite.call.getOperation());
+  }
+  appendPipeConditionalBranches(op, callStack, mayRepeat, branches);
+  return branches;
+}
+
 /// Add one graph node for a synchronization event at one call-site occurrence.
 PipeScheduleNodeId
 addPipeScheduleNode(SmallVectorImpl<PipeScheduleNode> &nodes,
@@ -938,6 +989,7 @@ addPipeScheduleNode(SmallVectorImpl<PipeScheduleNode> &nodes,
                    event.receivePost,
                    kernelFunction,
                    SmallVector<PipeCallSite>(callSites),
+                   getPipeConditionalBranches(event.op, callSites),
                    SmallVector<ActivePipeNetRecord>(activeRecords),
                    executionCountDivisor,
                    {},
@@ -984,6 +1036,32 @@ void addPipeScheduleEdge(SmallVectorImpl<PipeScheduleNode> &nodes,
       })) {
     successors.push_back({successor, kind});
   }
+}
+
+bool isSameConditionalOccurrence(const PipeConditionalBranch &lhs,
+                                 const PipeConditionalBranch &rhs) {
+  return lhs.conditional == rhs.conditional &&
+         llvm::equal(lhs.callSites, rhs.callSites);
+}
+
+bool canExecuteTogether(ArrayRef<PipeConditionalBranch> lhs,
+                        ArrayRef<PipeConditionalBranch> rhs) {
+  return llvm::none_of(lhs, [&](const PipeConditionalBranch &branch) {
+    return llvm::any_of(rhs, [&](const PipeConditionalBranch &other) {
+      return isSameConditionalOccurrence(branch, other) &&
+             branch.region != other.region;
+    });
+  });
+}
+
+bool conditionsInclude(ArrayRef<PipeConditionalBranch> branches,
+                       ArrayRef<PipeConditionalBranch> required) {
+  return llvm::all_of(required, [&](const PipeConditionalBranch &condition) {
+    return llvm::any_of(branches, [&](const PipeConditionalBranch &branch) {
+      return isSameConditionalOccurrence(branch, condition) &&
+             branch.region == condition.region;
+    });
+  });
 }
 
 /// Return true when two nodes were expanded through the same direct calls.
@@ -1692,6 +1770,8 @@ private:
                                     PipeScheduleNodeId nextPostId) const {
     auto sendIt = completingSendByPost.find(previousPostId);
     if (sendIt == completingSendByPost.end() ||
+        !canExecuteTogether(nodes[previousPostId].conditionalBranches,
+                            nodes[nextPostId].conditionalBranches) ||
         mlir::insideMutuallyExclusiveRegions(nodes[previousPostId].op,
                                              nodes[nextPostId].op) ||
         pipeScheduleNodeReaches(nodes, sendIt->second, nextPostId)) {
@@ -2169,7 +2249,8 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
       SmallVector<func::FuncOp> activeFunctions{function};
       SmallVector<PipeCallSite> callSites;
       SmallVector<ActivePipeNetRecord> activeRecords;
-      std::map<LaunchExecutionLocation, PipeScheduleNodeId> lastNodeByLocation;
+      std::map<LaunchExecutionLocation, SmallVector<PipeScheduleNodeId>>
+          frontierByLocation;
       for (Block &block : function.getBody()) {
         for (Operation &op : block) {
           WalkResult walkResult = walkPipeEventsInProgramOrder(
@@ -2230,12 +2311,25 @@ void verifyPipeScheduleCycles(ModuleOp module, ModuleState &state) {
                 } else if (event.kind == PipeEventKind::ReceiveWaitAny) {
                   allReceiveWaitAnyNodes.push_back(nodeId);
                 }
-                auto lastNode = lastNodeByLocation.find(location);
-                if (lastNode != lastNodeByLocation.end()) {
-                  addPipeScheduleEdge(nodes, lastNode->second, nodeId,
+                SmallVector<PipeScheduleNodeId> &frontier =
+                    frontierByLocation[location];
+                SmallVector<PipeScheduleNodeId> retained;
+                for (PipeScheduleNodeId predecessor : frontier) {
+                  if (!canExecuteTogether(
+                          nodes[predecessor].conditionalBranches,
+                          nodes[nodeId].conditionalBranches)) {
+                    retained.push_back(predecessor);
+                    continue;
+                  }
+                  addPipeScheduleEdge(nodes, predecessor, nodeId,
                                       PipeScheduleEdgeKind::ProgramOrder);
+                  if (!conditionsInclude(nodes[predecessor].conditionalBranches,
+                                         nodes[nodeId].conditionalBranches)) {
+                    retained.push_back(predecessor);
+                  }
                 }
-                lastNodeByLocation[location] = nodeId;
+                retained.push_back(nodeId);
+                frontier = std::move(retained);
                 return WalkResult::advance();
               });
           if (walkResult.wasInterrupted()) {
