@@ -134,12 +134,23 @@ static Value lookupCBByIndex(Value src, Operation *funcOp) {
 /// the result is an arith expression.
 ///
 /// Precondition: the operand must trace back to a tensor.extract. This holds
-/// for all CB-input tile ops after loop lowering, since generateTileProcessing
+/// for all DFB-input tile ops after loop lowering, since generateTileProcessing
 /// always creates tensor.extract ops for each input. The extract survives
 /// unrolling (clone preserves it) and cannot fold away (the source tensor is
 /// from attach_cb, which is opaque to canonicalization).
-///
-/// Returns failure if the precondition is violated.
+static Value computeCBTileIndexFromExtract(tensor::ExtractOp extractOp,
+                                           RankedTensorType tensorTy,
+                                           OpBuilder &builder, Location loc) {
+  // Linearize the extract indices within the immediate tensor's shape.
+  Value localIndex = affine::AffineLinearizeIndexOp::create(
+      builder, loc, extractOp.getIndices(), tensorTy.getShape());
+
+  // If the tensor comes from an extract_slice (subblocking), convert
+  // the local index to a global CB index by adding the slice offset.
+  return utils::addSliceOffset(extractOp.getTensor(), localIndex, builder, loc);
+}
+
+/// Return failure before mutation if the operand lacks a ranked tensor.extract.
 static FailureOr<Value> computeCBTileIndex(Value operand, OpBuilder &builder,
                                            Location loc) {
   auto extractOp = operand.getDefiningOp<tensor::ExtractOp>();
@@ -153,13 +164,7 @@ static FailureOr<Value> computeCBTileIndex(Value operand, OpBuilder &builder,
     return failure();
   }
 
-  // Linearize the extract indices within the immediate tensor's shape.
-  Value localIndex = affine::AffineLinearizeIndexOp::create(
-      builder, loc, extractOp.getIndices(), tensorTy.getShape());
-
-  // If the tensor comes from an extract_slice (subblocking), convert
-  // the local index to a global CB index by adding the slice offset.
-  return utils::addSliceOffset(extractOp.getTensor(), localIndex, builder, loc);
+  return computeCBTileIndexFromExtract(extractOp, tensorTy, builder, loc);
 }
 
 /// Look up and convert a CB for an operand.
@@ -610,16 +615,15 @@ struct TTLTileBinaryFPUToTTKernel : OpConversionPattern<SourceOp> {
               llvm::Twine(rhsTensorTy.getNumElements()));
     }
 
-    // FPU strategy selection proves that both extracts use the same tile
-    // coordinates before DST assignment can change operand provenance.
-    auto cbIdx = computeCBTileIndex(op.getLhs(), rewriter, loc);
-    if (failed(cbIdx)) {
-      return rewriter.notifyMatchFailure(
-          op, "cannot compute CB tile index from tensor.extract");
-    }
+    // Each operand can have a different source slice offset even when its
+    // local tile coordinates match the other operand's.
+    Value lhsCBIdx =
+        computeCBTileIndexFromExtract(lhsExtract, lhsTensorTy, rewriter, loc);
+    Value rhsCBIdx =
+        computeCBTileIndexFromExtract(rhsExtract, rhsTensorTy, rewriter, loc);
 
     // Emit compute op (init inserted by ttkernel-insert-inits pass).
-    TTKernelComputeOp::create(rewriter, loc, *lhsCB, *rhsCB, *cbIdx, *cbIdx,
+    TTKernelComputeOp::create(rewriter, loc, *lhsCB, *rhsCB, lhsCBIdx, rhsCBIdx,
                               dstIdx);
 
     rewriter.replaceOp(op, adaptor.getLhs());
