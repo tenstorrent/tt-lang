@@ -137,8 +137,8 @@ void buildTTLAutoSyncPipeline(mlir::OpPassManager &pm,
 void buildTTLVerifyPipeNetPipeline(mlir::OpPassManager &pm);
 
 /// Clone kernels per launch coordinate, apply shared record cleanup and runtime
-/// argument finalization, then record surviving DFB compile-time argument
-/// indices.
+/// argument finalization, specialize DFB reconfiguration calls, then record
+/// surviving DFB compile-time argument indices.
 void buildTTKernelSpecializationPipeline(mlir::OpPassManager &pm);
 
 void registerTTLPipelines();
