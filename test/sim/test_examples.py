@@ -299,17 +299,17 @@ def test_copy_source_lock_error_fails_with_expected_error(scheduler: str) -> Non
         and "in-flight" in out.lower()
     ), f"Expected ROR copy-source lock message in output:\n{out}"
     assert (
-        "examples/errors/copy_source_lock_error.py:87" in out
+        "examples/errors/copy_source_lock_error.py:89" in out
     ), f"Expected diagnostic line for bad store in output:\n{out}"
     assert (
         "Where: copy from this block was requested at" in out
-        and "copy_source_lock_error.py:85" in out
-    ), f"Expected pending-copy callsite (ttl.copy from block, line 85) in output:\n{out}"
+        and "copy_source_lock_error.py:87" in out
+    ), f"Expected pending-copy callsite (ttl.copy from block, line 87) in output:\n{out}"
 
     source_file = ERRORS_DIR / "copy_source_lock_error.py"
     lines = source_file.read_text().splitlines()
-    assert "tx_src = ttl.copy(a_block, out[row_slice, col_slice])" in lines[84].strip()
-    assert "a_block.store(a_block)" in lines[86].strip()
+    assert "tx_src = ttl.copy(a_block, out[row_slice, col_slice])" in lines[86].strip()
+    assert "a_block.store(a_block)" in lines[88].strip()
 
 
 @pytest.mark.parametrize("scheduler", ["greedy", "fair"])

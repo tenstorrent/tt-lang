@@ -156,9 +156,10 @@ def loopback_collective_published_address(inp, out):
                 ttl.copy(send_block, pipe).wait()
 
         receive.wait()
-        if node_x == 0:
-            ttl.copy(recv_block, out[0, 0]).wait()
         recv_block.push()
+        with recv_dfb.wait() as received_block:
+            if node_x == 0:
+                ttl.copy(received_block, out[0, 0]).wait()
 
     @ttl.datamovement()
     def dm_brisc():
@@ -213,18 +214,21 @@ def transfer_specific_completion(inp, out):
             )
 
             multicast_receive.wait()
-            ttl.copy(multicast_block, out[0, 0]).wait()
             multicast_block.push()
+            with multicast_recv_dfb.wait() as received_block:
+                ttl.copy(received_block, out[0, 0]).wait()
 
             single_receiver_receive.wait()
-            ttl.copy(single_receiver_block, out[0, 1]).wait()
             single_receiver_block.push()
+            with single_receiver_dfb.wait() as received_block:
+                ttl.copy(received_block, out[0, 1]).wait()
         elif node_x == 2:
             multicast_block = multicast_recv_dfb.reserve()
             multicast_receive = ttl.copy(multicast_pipe, multicast_block)
             multicast_receive.wait()
-            ttl.copy(multicast_block, out[0, 2]).wait()
             multicast_block.push()
+            with multicast_recv_dfb.wait() as received_block:
+                ttl.copy(received_block, out[0, 2]).wait()
 
     @ttl.datamovement()
     def dm_brisc():

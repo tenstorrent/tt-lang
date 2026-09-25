@@ -595,61 +595,6 @@ def test_print_dm_reserve_block_naw_state_warns(capsys):
         ttnn.close_device(device)
 
 
-def test_print_dm_wait_block_naw_state_warns(capsys):
-    """Test that printing a DM wait block in NAW state issues a warning."""
-
-    @ttl.operation(grid=(1, 1))
-    def test_kernel(a: torch.Tensor, b: torch.Tensor, out: torch.Tensor):
-        a_dfb = ttl.make_dataflow_buffer_like(a, shape=(1, 1), block_count=2)
-        out_dfb = ttl.make_dataflow_buffer_like(out, shape=(1, 1), block_count=2)
-
-        @ttl.compute()
-        def compute():
-            with a_dfb.wait() as a_blk, out_dfb.reserve() as out_blk:
-                out_blk.store(a_blk)
-
-        @ttl.datamovement()
-        def dm_read():
-            with a_dfb.reserve() as a_blk:
-                tx = ttl.copy(a[0, 0], a_blk)
-                tx.wait()
-
-        @ttl.datamovement()
-        def dm_write():
-            # First: copy out to make wait block transition MR -> ROR -> RW
-            with out_dfb.wait() as out_blk:
-                tx1 = ttl.copy(out_blk, out[0, 0])
-                tx1.wait()
-                # Now block is in RW state (can be read or written)
-                # Copy TO the block to put it in NAW state
-                tx2 = ttl.copy(b[0, 0], out_blk)
-                # Block is now in NAW state (no-access-while-writing)
-                # Printing should warn
-                print("Wait block in NAW state: ", out_blk)
-                tx2.wait()
-                # Use block as source to satisfy state machine
-                tx3 = ttl.copy(out_blk, out[0, 0])
-                tx3.wait()
-
-    device = ttnn.open_device(device_id=0)
-    try:
-        a = make_tensor_with_value(32, 32, 1.0, device)
-        b = make_tensor_with_value(32, 32, 2.0, device)
-        out = make_tensor_with_value(32, 32, 0.0, device)
-
-        test_kernel(a, b, out)
-
-        captured = capsys.readouterr()
-        # Verify warning was issued
-        assert "warning" in captured.out.lower()
-        assert "NAW state cannot be read" in captured.out
-        # Verify the warning message appears in output
-        assert "Wait block in NAW state:" in captured.out
-        assert "[WARNING: Cannot read - in NAW state]" in captured.out
-    finally:
-        ttnn.close_device(device)
-
-
 def test_print_compute_kernel_blocks_succeeds():
     """Test that compute kernel blocks can be printed in various states."""
 
