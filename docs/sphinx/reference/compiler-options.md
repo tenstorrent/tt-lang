@@ -16,7 +16,7 @@ python my_kernel.py --no-ttl-maximize-dst
 | `--ttl-accumulation-strategy {auto,dst,l1-pack}` | `auto` | Select tensor recurrence accumulation storage. `auto` compares legal DST and L1 packer candidates with the accumulation cost model. |
 | `--ttl-fpu-binary-ops` / `--no-ttl-fpu-binary-ops` | enabled | Allow FPU strategy selection for binary add, subtract, and multiply when their operands permit it. Disabling selects SFPU. |
 | `--ttl-block-matmul` / `--no-ttl-block-matmul` | enabled | Emit `matmul_block` (processes the full tile block atomically) instead of per-tile matmul loops. Disabling this option is not yet supported. |
-| `--ttl-subblock-sync` / `--no-ttl-subblock-sync` | disabled | Refine DFB reserve/push to per-subblock granularity, enabling `pack_tile_block` for contiguous subblocks. When disabled, user-placed reserve/push is preserved as written. |
+| `--ttl-subblock-sync` / `--no-ttl-subblock-sync` | disabled | Refine DFB reserve/push to per-subblock granularity, enabling `pack_tile_block` for contiguous subblocks. When disabled, user-placed reserve/push is preserved as written. Peeled computes preserve their original reserve/push granularity. |
 | `--ttl-combine-pack-tiles` / `--no-ttl-combine-pack-tiles` | enabled | Combine consecutive `pack_tile` ops on the same DFB with contiguous DST and DFB indices into a single `pack_tile_block` call. |
 | `--ttl-reduce-full-fp32` / `--no-ttl-reduce-full-fp32` | enabled | Prefer full-fp32 accumulation for reduce operations when supported by the target and the complete kernel configuration. |
 | `--ttl-matmul-full-fp32` / `--no-ttl-matmul-full-fp32` | enabled | Prefer full-fp32 accumulation for matmul operations when supported by the target and the complete kernel configuration. |
@@ -138,7 +138,7 @@ ttlang-opt input.mlir -p 'ttl-to-ttkernel-pipeline{maximize-dst=true lower-to-em
 | `accumulation-strategy` | string | `auto` | Tensor recurrence accumulation strategy: `auto`, `dst`, or `l1-pack`. |
 | `enable-fpu-binary-ops` | bool | `true` | Allow FPU strategy selection for binary add/sub/mul. |
 | `use-block-matmul` | bool | `true` | Lower matmul to block-level hardware calls (`matmul_block`). |
-| `subblock-sync` | bool | `false` | Refine DFB reserve/push to per-subblock granularity. |
+| `subblock-sync` | bool | `false` | Refine DFB reserve/push to per-subblock granularity. Peeled computes preserve their original reserve/push granularity. |
 | `combine-pack-tiles` | bool | `true` | Combine consecutive `pack_tile` ops into `pack_tile_block`. |
 | `reduce-full-fp32` | bool | `true` | Prefer full-fp32 reduce accumulation when supported. |
 | `matmul-full-fp32` | bool | `true` | Prefer full-fp32 matmul accumulation when supported. |
@@ -174,7 +174,7 @@ The pipeline runs these passes and subpasses in order:
 - `ttl-finalize-dfb-indices` -- assign logical DFBs to physical indices, validate combined DFB and fixed-state capacity, and emit runtime metadata; `reuse-user-dfbs` controls automatic user-DFB reuse, `unsafe-assume-allocation-groups` trusts only explicit unproved group handoffs, `exact-coloring-search-limit` bounds exhaustive index and weighted-allocation queries, and `l1-budget-override` replaces the target L1 budget
 - `ttl-set-compute-kernel-config` -- select tile execution strategies and resolve kernel-wide DST and per-DFB unpack configuration
 - `ttl-assign-dst` -- DST register allocation (linear scan with copy insertion)
-- `ttl-subblock-compute-for-dst` -- tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*; optionally refine reserve/push to per-subblock granularity *(only if `subblock-sync=true`)*
+- `ttl-subblock-compute-for-dst` -- tile `ttl.compute` into DST-sized subblocks *(only if `maximize-dst=true`)*; optionally refine reserve/push to per-subblock granularity *(only if `subblock-sync=true`)*. Peeled computes preserve their original reserve/push granularity.
 - `ttl-lower-to-loops` -- lower `ttl.compute` to `scf.for` loops; matmul computes are expanded inline via `generateMatmulCompute`
 - `ttl-schedule-operations` -- reorder tile ops by dependency depth and kind *(only if `maximize-dst=true`)*
 - `ttl-annotate-cb-associations` -- annotate block args with DFB indices
@@ -316,7 +316,7 @@ Partition `ttl.compute` into DST-sized subblocks.
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `subblock-sync` | bool | `false` | Refine DFB reserve/push to per-subblock granularity, enabling `pack_tile_block` for contiguous subblocks. When disabled, user-placed reserve/push is preserved. |
+| `subblock-sync` | bool | `false` | Refine DFB reserve/push to per-subblock granularity, enabling `pack_tile_block` for contiguous subblocks. When disabled, user-placed reserve/push is preserved. Peeled computes preserve their original reserve/push granularity. |
 | `strict-f32-acc` | bool | `false` | Error if a `+=` accumulation loop with non-f32 output requires subblocking. Subblocking reduces accumulation precision because bf16 L1 intermediates truncate f32 DST values. |
 
 ```bash

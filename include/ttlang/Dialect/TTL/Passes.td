@@ -713,13 +713,41 @@ def TTLSubblockComputeForDST
       } -> tensor<2x4x!ttcore.tile<32x32, f32>>
     }
     ```
+
+    When no parallel dimension has a divisor greater than one within the
+    available budget, the divisor search yields a single tile. One dimension
+    is then raised to the budget and the iteration space is peeled instead of
+    tiled uniformly. That dimension splits
+    into a main region, emitted as a step loop when it spans more than one
+    subblock, and a loop-free remainder region holding the trailing
+    `dim % subblock` tiles. Both regions carry
+    `ttl.full_linearization_strides`, so each tile computes its own buffer
+    offset and the regions may be emitted in any order.
+
+    Example (11x1 block, DST budget 8, rescued subblock 8x1):
+    ```mlir
+    // Main region: tiles [0, 8).
+    %s_in = tensor.extract_slice %a[0, 0] [8, 1] [1, 1]
+    ttl.compute ins(%s_in) outs(%s_out) { ... }
+        -> tensor<8x1x!ttcore.tile<32x32, bf16>>
+    // Remainder region: tiles [8, 11).
+    %r_in = tensor.extract_slice %a[8, 0] [3, 1] [1, 1]
+    ttl.compute ins(%r_in) outs(%r_out) { ... }
+        -> tensor<3x1x!ttcore.tile<32x32, bf16>>
+    ```
+
+    Peeling applies only to non-matmul computes. Matmul subblocking interacts
+    with in-DST K accumulation and the L1-accumulation guards, so matmul blocks
+    keep the uniform tiling.
   }];
 
   let options = [
     Option<"subblockSync", "subblock-sync", "bool", "false",
            "Refine DFB reserve/push to per-subblock granularity, enabling "
            "pack_tile_block for contiguous subblocks. When disabled (default), "
-           "user-placed reserve/push is preserved.">,
+           "user-placed reserve/push is preserved. Has no effect on peeled "
+           "computes, whose regions differ in extent and so cannot share a "
+           "single per-subblock reserve/push size.">,
     Option<"strictF32Acc", "strict-f32-acc", "bool", "false",
            "Error if a user-written accumulation loop (+=) with non-f32 "
            "output requires subblocking. Subblocking reduces accumulation "
@@ -1394,9 +1422,10 @@ def TTKernelInsertInits
 
     Per-op inits (`exp_tile_init`, `add_tiles_init`, etc.) configure the
     MATH pipeline for a specific operation type. An init is emitted
-    whenever the op type changes from the previous compute op in
-    linear block order. Init tracking resets at sync boundaries
-    (`tile_regs_acquire`/`commit`/`wait`/`release`).
+    whenever the op type changes from the previous compute op in execution
+    order. Operations nested beneath one sync region are initialized within
+    their blocks so each loop iteration and control-flow region observes the
+    required hardware mode. Init tracking resets at sync and region boundaries.
 
     Example (consecutive same-type ops share one init):
     ```mlir
