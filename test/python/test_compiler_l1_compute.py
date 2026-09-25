@@ -422,7 +422,7 @@ def test_l1_broadcast(device, axes, dtype, allocator, memory_model, tmp_path):
         assert_allclose(ttnn.to_torch(output).float(), expected.float(), rtol=0, atol=0)
 
 
-@pytest.mark.parametrize("activation", ["rsqrt", "sigmoid", "tanh"])
+@pytest.mark.parametrize("activation", ["rsqrt", "sigmoid", "tanh", "abs"])
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("allocator", [to_dram, to_l1], ids=["dram", "l1"])
 @pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-sram"])

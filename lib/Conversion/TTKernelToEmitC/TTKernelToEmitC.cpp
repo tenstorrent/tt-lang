@@ -199,6 +199,22 @@ static bool isCompilerL1ComputeOperation(Operation *operation) {
       ttkernel::PackTileOp>(operation);
 }
 
+// FPU, SFPU, and init calls without DFB operands use no descriptor state.
+static bool isDescriptorIndependentComputeOperation(Operation *operation) {
+  if (!operation->hasTrait<ttkernel::TTKernelFPUOpTrait>() &&
+      !operation->hasTrait<ttkernel::TTKernelSFPUOpTrait>() &&
+      !operation->hasTrait<ttkernel::TTKernelInitOpTrait>()) {
+    return false;
+  }
+  return llvm::none_of(operation->getOperands(),
+                       [](Value operand) {
+                         return isa<ttkernel::CBType>(operand.getType());
+                       }) &&
+         llvm::none_of(operation->getResultTypes(), [](Type resultType) {
+           return isa<ttkernel::CBType>(resultType);
+         });
+}
+
 static std::string getTTKernelCalleeName(llvm::StringRef opName) {
   opName.consume_front("ttkernel.");
   if (opName.consume_front("experimental.")) {
@@ -3558,20 +3574,10 @@ public:
                 ttkernel::TensorAccessorArgsOp, ttkernel::GetTileSizeOp,
                 ttkernel::GetDataFormatOp, ttkernel::TileRegsAcquireOp,
                 ttkernel::TileRegsCommitOp, ttkernel::TileRegsWaitOp,
-                ttkernel::TileRegsReleaseOp, ttkernel::AddBinaryTilesInitOp,
-                ttkernel::AddBinaryTilesOp, ttkernel::MulBinaryTilesInitOp,
-                ttkernel::MulBinaryTilesOp, ttkernel::FillTileOp,
-                ttkernel::FillTileInitOp, ttkernel::BinopWithScalarTileInitOp,
-                ttkernel::MulUnaryTileOp, ttkernel::AddUnaryTileOp,
-                ttkernel::CopyDestValuesInitOp, ttkernel::CopyDestValuesOp,
-                ttkernel::ExpTileInitOp, ttkernel::ExpTileOp,
-                ttkernel::RecipTileInitOp, ttkernel::RecipTileOp,
-                ttkernel::SubBinaryTilesInitOp, ttkernel::SubBinaryTilesOp,
-                ttkernel::RsqrtTileInitOp, ttkernel::RsqrtTileOp,
-                ttkernel::SigmoidTileInitOp, ttkernel::SigmoidTileOp,
-                ttkernel::TanhTileInitOp, ttkernel::TanhTileOp,
-                ttkernel::OpaqueCallOp>(operation) ||
-            isCompilerL1ComputeOperation(operation);
+                ttkernel::TileRegsReleaseOp, ttkernel::OpaqueCallOp>(
+                operation) ||
+            isCompilerL1ComputeOperation(operation) ||
+            isDescriptorIndependentComputeOperation(operation);
         if (isCompilerL1ComputeOperation(operation)) {
           for (Value operand : operation->getOperands()) {
             auto buffer = dyn_cast<ttkernel::CBType>(operand.getType());

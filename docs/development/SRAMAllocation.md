@@ -255,7 +255,7 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 - Compiler-owned static storage. Tensor-backed DFBs and allocation groups are rejected.
 - Full-block transactions with positive capacity below `2^31` pages.
 - Full 32x32 BF16 and FP32 tiles for address-based compute.
-- Address-based tensor transfer, elementwise compute, matmul, reductions, broadcast, transpose, and selected activation operations covered by the implementation tests.
+- Address-based tensor transfer, elementwise compute, matmul, reductions, broadcast, and transpose. SFPU and initializer operations without DFB operands or results use their existing lowering.
 - Typed external C++ calls with explicit DFB effects.
 - Blackhole selected reset, reset-all, and reconfiguration.
 - Wormhole allocation, transfer, compute, and external descriptors without reset or reconfiguration.

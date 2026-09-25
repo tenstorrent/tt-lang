@@ -14,6 +14,8 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
   // CHECK: ttlang::l1::Operand<static_cast<uint32_t>(DataFormat::Float32), 4096, 1, 3, 64, true>
   // CHECK: l1_compute_context.configure
   // CHECK: ttlang::l1::target::copy_tile
+  // CHECK: abs_tile_init
+  // CHECK: abs_tile
   // CHECK: ttlang::l1::target::pack_tile
   // CHECK-NOT: ttkernel.
   // CHECK-NOT: CircularBuffer
@@ -32,6 +34,8 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
   // CPP-NEXT: ttlang::l1::Buffer<4096, 1, 3, 12344> cb_ctarg_1(get_common_arg_val<uint32_t>(get_compile_time_arg_val(0)) + 8);
   // CPP: ttlang::l1::Operand<static_cast<uint32_t>(DataFormat::Float32), 4096, 1, 3, 64, true>
   // CPP: ttlang::l1::target::copy_tile
+  // CPP: abs_tile_init();
+  // CPP-NEXT: abs_tile(v1);
   // CPP: ttlang::l1::target::pack_tile
   // CPP-NOT: CircularBuffer
   // CPP-NOT: cb_wait_front
@@ -49,6 +53,8 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
     ttkernel.tile_regs_acquire() : () -> ()
     ttkernel.copy_tile_init(%input) : (!ttkernel.cb<3, !ttcore.tile<32x32, f32>>) -> ()
     ttkernel.copy_tile(%input, %zero, %zero) : (!ttkernel.cb<3, !ttcore.tile<32x32, f32>>, index, index) -> ()
+    ttkernel.abs_tile_init() : () -> ()
+    ttkernel.abs_tile(%zero) : (index) -> ()
     ttkernel.tile_regs_commit() : () -> ()
     ttkernel.tile_regs_wait() : () -> ()
     ttkernel.pack_tile(%zero, %output, %zero, true) : (index, !ttkernel.cb<3, !ttcore.tile<32x32, f32>>, index) -> ()
