@@ -71,8 +71,7 @@ static void warnDroppedPrint(func::FuncOp func, int32_t dfbIndex) {
 
 static int64_t getFuncDFBCount(func::FuncOp func, int64_t maxDFBCount) {
   auto module = func->getParentOfType<ModuleOp>();
-  if (auto model = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
-      model && model.getValue() == kCompilerSRAMMemoryModel) {
+  if (usesCompilerSRAM(module)) {
     return module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName).size();
   }
   if (auto attr = func->getAttrOfType<IntegerAttr>(kBaseCTAIndexAttrName)) {
@@ -245,8 +244,7 @@ struct TTKernelAnnotateDFBUsePass
     : impl::TTKernelAnnotateDFBUseBase<TTKernelAnnotateDFBUsePass> {
   void runOnOperation() override {
     ModuleOp module = getOperation();
-    if (auto model = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
-        model && model.getValue() == kCompilerSRAMMemoryModel &&
+    if (usesCompilerSRAM(module) &&
         !module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName)) {
       module.emitOpError(
           "compiler-sram requires finalized allocation metadata");

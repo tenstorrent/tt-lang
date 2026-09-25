@@ -72,11 +72,6 @@ constexpr llvm::StringLiteral kExpandLinearizeIndexAttr =
     "ttlang.expand_linearize_index";
 // PipeGraph is defined in PipeGraph.h.
 
-static bool usesCompilerL1(ModuleOp module) {
-  auto memoryModel = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
-  return memoryModel && memoryModel.getValue() == kCompilerSRAMMemoryModel;
-}
-
 class TTLToTTKernelTypeConverter : public TypeConverter {
 public:
   TTLToTTKernelTypeConverter() {
@@ -436,8 +431,7 @@ static FailureOr<int32_t> getValidatedDFBIndex(Value dfb, Operation *op) {
     return op->emitError("cannot resolve finalized DFB index");
   }
   auto module = op->getParentOfType<ModuleOp>();
-  auto memoryModel = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
-  if (memoryModel && memoryModel.getValue() == kCompilerSRAMMemoryModel) {
+  if (usesCompilerSRAM(module)) {
     auto allocations =
         module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName);
     if (!allocations || *dfbIndex < 0 ||
@@ -1647,7 +1641,7 @@ buildDFBSynchronizationLoweringPlan(ModuleOp module) {
   }
 
   DFBSynchronizationLoweringPlan plan;
-  plan.compilerL1 = usesCompilerL1(module);
+  plan.compilerL1 = usesCompilerSRAM(module);
   plan.synchronizedResetCount = static_cast<int64_t>(orderedResets.size());
   for (auto [resetIndex, reset] : llvm::enumerate(orderedResets)) {
     plan.stateOffsetByReset.try_emplace(
@@ -2030,7 +2024,7 @@ using OpaqueArgumentPlan =
     std::variant<OpaqueScalarArgument, OpaqueDFBArgument, OpaqueTensorArgument>;
 
 static LogicalResult validateCompilerL1ExternalCalls(ModuleOp module) {
-  if (!usesCompilerL1(module)) {
+  if (!usesCompilerSRAM(module)) {
     return success();
   }
   WalkResult validation = module.walk([](OpaqueCallOp call) -> WalkResult {
@@ -2066,7 +2060,7 @@ struct OpaqueCallLowering : OpConversionPattern<OpaqueCallOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location location = op.getLoc();
     ModuleOp module = op->getParentOfType<ModuleOp>();
-    bool compilerL1 = usesCompilerL1(module);
+    bool compilerL1 = usesCompilerSRAM(module);
 
     assert((!compilerL1 || !op.hasUnknownDFBAccess()) &&
            "compiler-sram external calls must be validated before conversion");
@@ -2248,7 +2242,7 @@ private:
       return failure();
     }
     if (kind == ExternalTemplateArgKind::DFBIndex) {
-      assert(!usesCompilerL1(op->getParentOfType<ModuleOp>()) &&
+      assert(!usesCompilerSRAM(op->getParentOfType<ModuleOp>()) &&
              "compiler-sram template arguments must be validated before "
              "conversion");
       return rewriter.getUI32IntegerAttr(static_cast<uint32_t>(*dfbIndex));
@@ -2829,8 +2823,7 @@ static LogicalResult lowerTTLOpsToTTKernel(
     mod.emitOpError("failed to compute finalized DFB allocation sizes");
     return failure();
   }
-  if (auto model = mod->getAttrOfType<StringAttr>(kMemoryModelAttrName);
-      model && model.getValue() == kCompilerSRAMMemoryModel) {
+  if (usesCompilerSRAM(mod)) {
     auto arenaBytes = mod->getAttrOfType<IntegerAttr>(kL1ArenaBytesAttrName);
     if (!arenaBytes || arenaBytes.getInt() < 0) {
       mod.emitOpError("missing validated compiler-sram arena size");

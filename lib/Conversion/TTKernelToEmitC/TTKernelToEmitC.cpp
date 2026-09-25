@@ -108,12 +108,6 @@ static std::string datatypeToDataformatStr(ttcore::DataType dtype) {
   return expression;
 }
 
-static bool usesCompilerL1(Operation *operation) {
-  auto module = operation->getParentOfType<ModuleOp>();
-  auto model = module->getAttrOfType<StringAttr>(ttl::kMemoryModelAttrName);
-  return model && model.getValue() == ttl::kCompilerSRAMMemoryModel;
-}
-
 struct CompilerL1Allocation {
   int64_t pageSizeBytes;
   int64_t pagesPerBlock;
@@ -348,7 +342,7 @@ static std::string ensureCBDeclaration(Value cb, Operation *useOp,
   setInsertionPointAfterDefOrBlockStart(cb, rewriter);
 
   std::string bufferType = "CircularBuffer";
-  if (usesCompilerL1(useOp)) {
+  if (ttl::usesCompilerSRAM(useOp)) {
     auto index =
         cb.getDefiningOp()->getAttrOfType<IntegerAttr>("ttkernel.cb_ctarg_idx");
     assert(index && "compiler-sram requires statically bound storage");
@@ -1453,7 +1447,7 @@ public:
 
     if constexpr (std::is_same_v<SourceOp, ttkernel::GetTileSizeOp> ||
                   std::is_same_v<SourceOp, ttkernel::GetDataFormatOp>) {
-      if (usesCompilerL1(op)) {
+      if (ttl::usesCompilerSRAM(op)) {
         auto elementType =
             cast<ttkernel::CBType>(op.getCb().getType()).getElementType();
         auto tile = cast<ttcore::TileType>(elementType);
@@ -1469,7 +1463,7 @@ public:
         return success();
       }
     }
-    if (usesCompilerL1(op) && isCompilerL1ComputeOperation(op)) {
+    if (ttl::usesCompilerSRAM(op) && isCompilerL1ComputeOperation(op)) {
       emitCompilerL1ComputeCall(op, adaptor.getOperands(), resultTypes,
                                 getOpName(op), getTemplateArgs(rewriter, op),
                                 rewriter);
@@ -1645,7 +1639,7 @@ public:
   LogicalResult
   matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
-    if (usesCompilerL1(op)) {
+    if (ttl::usesCompilerSRAM(op)) {
       emitCompilerL1ComputeCall(
           op, adaptor.getOperands(), TypeRange{},
           getTTKernelCalleeName(op->getName().getStringRef()), ArrayAttr(),
@@ -1791,7 +1785,7 @@ public:
       std::string expression =
           (Twine("get_compile_time_arg_val(") + Twine(op.getArgIndex()) + ")")
               .str();
-      if (usesCompilerL1(op) &&
+      if (ttl::usesCompilerSRAM(op) &&
           isa<ttkernel::CBType>(op.getResult().getType())) {
         CompilerL1Allocation allocation =
             getCompilerL1Allocation(op, op.getArgIndex());
@@ -2604,7 +2598,7 @@ public:
   LogicalResult
   matchAndRewrite(ttkernel::OpaqueCallOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
-    bool compilerL1 = usesCompilerL1(op);
+    bool compilerL1 = ttl::usesCompilerSRAM(op);
     SmallVector<Type> resultTypes;
     for (Type resTy : op.getResultTypes()) {
       Type converted = getTypeConverter()->convertType(resTy);
@@ -3453,10 +3447,7 @@ public:
                  ? WalkResult::interrupt()
                  : WalkResult::advance();
     });
-    if (auto model =
-            module->getAttrOfType<StringAttr>(ttl::kMemoryModelAttrName);
-        model && model.getValue() == ttl::kCompilerSRAMMemoryModel &&
-        sourceOperations.wasInterrupted()) {
+    if (ttl::usesCompilerSRAM(module) && sourceOperations.wasInterrupted()) {
       auto allocations =
           module->getAttrOfType<ArrayAttr>(ttl::kDFBAllocationsAttrName);
       if (!allocations) {
@@ -3650,7 +3641,7 @@ public:
       if (!funcOp->hasAttr(ttkernel::ThreadTypeAttr::name)) {
         continue;
       }
-      if (usesCompilerL1(funcOp) &&
+      if (ttl::usesCompilerSRAM(funcOp) &&
           funcOp
               .walk([](Operation *operation) {
                 return isa<ttkernel::BinaryOpInitCommonOp,

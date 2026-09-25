@@ -286,6 +286,13 @@ struct TTLFinalizeDFBIndicesPass
 
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
+    std::optional<DFBMemoryModel> selectedModel =
+        parseDFBMemoryModel(memoryModel);
+    if (!selectedModel) {
+      moduleOp.emitOpError("unknown memory model: ") << memoryModel;
+      signalPassFailure();
+      return;
+    }
     if (failed(validateSynchronizedDFBResetTarget(moduleOp))) {
       signalPassFailure();
       return;
@@ -294,7 +301,7 @@ struct TTLFinalizeDFBIndicesPass
       signalPassFailure();
       return;
     }
-    if (memoryModel == kCompilerSRAMMemoryModel) {
+    if (*selectedModel == DFBMemoryModel::CompilerSRAM) {
       PipeTransferCreateOp pipeTransfer;
       moduleOp.walk([&](PipeTransferCreateOp operation) {
         pipeTransfer = operation;
@@ -319,7 +326,7 @@ struct TTLFinalizeDFBIndicesPass
       signalPassFailure();
       return;
     }
-    if (memoryModel == kCompilerSRAMMemoryModel) {
+    if (*selectedModel == DFBMemoryModel::CompilerSRAM) {
       const auto &liveness = getAnalysis<DFBConcurrentKernelLivenessAnalysis>();
       if (!liveness.succeeded()) {
         moduleOp.emitOpError() << liveness.getErrorMessage();
@@ -331,11 +338,6 @@ struct TTLFinalizeDFBIndicesPass
                                     sramAllocationStrategy, liveness))) {
         signalPassFailure();
       }
-      return;
-    }
-    if (memoryModel != "metal-cb") {
-      moduleOp.emitOpError("unknown memory model: ") << memoryModel;
-      signalPassFailure();
       return;
     }
     FailureOr<SmallVector<DFBStaticConfigurationConflict>>

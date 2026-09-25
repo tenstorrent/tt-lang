@@ -1,6 +1,6 @@
 # Dataflow Buffer Management
 
-This document describes DFB ownership, lifecycle analysis, and synchronization.
+This document describes dataflow buffer (DFB) ownership, lifecycle analysis, and synchronization.
 The index-allocation sections describe the default Metal backend.
 [Compiler-managed SRAM allocation](SRAMAllocation.md) assigns byte-addressed storage;
 its protocol is specified [below](#compiler-managed-storage-protocol).
@@ -2744,10 +2744,10 @@ Producer and consumer acquisitions may overlap. The `with` syntax pairs acquisit
 and release but does not reject nested acquisitions of the same DFB. Alternation
 is a caller precondition; SPSC verification checks ownership only.
 
-The converter requires full-block page counts and positive total capacity below
-`2^31` pages. Runtime assertions check page counts only with watcher or
-lightweight assertions enabled; ordinary builds rely on the converter's static
-checks.
+The compiler requires full-block page counts. The device `Buffer` template
+statically requires positive total capacity below `2^31` pages. Runtime
+assertions check page counts only with watcher or lightweight assertions
+enabled.
 
 ```text
 reserve():

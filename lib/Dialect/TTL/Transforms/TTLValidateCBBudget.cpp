@@ -69,8 +69,7 @@ struct TTLValidateCBBudgetPass
 
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
-    if (auto model = moduleOp->getAttrOfType<StringAttr>(kMemoryModelAttrName);
-        model && model.getValue() == kCompilerSRAMMemoryModel) {
+    if (usesCompilerSRAM(moduleOp)) {
       auto arenaBytes =
           moduleOp->getAttrOfType<IntegerAttr>(kL1ArenaBytesAttrName);
       if (!arenaBytes || arenaBytes.getInt() < 0) {

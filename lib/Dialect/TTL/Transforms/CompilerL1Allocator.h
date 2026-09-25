@@ -26,7 +26,7 @@ inline constexpr llvm::StringLiteral kFirstFitDecreasingL1Allocator =
 inline constexpr llvm::StringLiteral kBestFitDecreasingL1Allocator =
     "best-fit-decreasing";
 
-/// Byte-placement input independent of MLIR and architecture identities.
+/// Byte-placement input without compiler IR or architecture identities.
 struct CompilerL1AllocationProblem {
   llvm::SmallVector<uint64_t> regionBytes;
   llvm::SmallVector<llvm::BitVector> conflicts;

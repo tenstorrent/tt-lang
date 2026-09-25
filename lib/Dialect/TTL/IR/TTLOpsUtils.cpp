@@ -15,8 +15,7 @@ namespace mlir::tt::ttl {
 
 FailureOr<DFBIdentityRange> getDFBIdentityRange(Operation *operation) {
   auto module = operation->getParentOfType<ModuleOp>();
-  auto model = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
-  if (model && model.getValue() == kCompilerSRAMMemoryModel) {
+  if (usesCompilerSRAM(module)) {
     auto allocations =
         module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName);
     if (!allocations) {

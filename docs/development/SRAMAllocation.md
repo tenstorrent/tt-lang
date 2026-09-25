@@ -2,7 +2,7 @@
 
 ## Purpose
 
-TT-Lang normally assigns each logical dataflow buffer (DFB) a TT-Metal DFB descriptor. Wormhole B0 provides 32 descriptor indices and Blackhole provides 64. A program can therefore exhaust descriptor indices while sufficient SRAM remains.
+TT-Lang normally assigns concurrently live dataflow buffers (DFBs) to TT-Metal descriptor indices; DFBs with disjoint lifetimes can reuse an index. Wormhole B0 provides 32 indices and Blackhole provides 64. An operation can therefore exhaust indices while sufficient SRAM remains.
 
 `--ttl-memory-model=compiler-sram` replaces descriptor-indexed storage with compiler-assigned SRAM byte ranges. The Python DFB API and its producer/consumer semantics remain unchanged. `metal-cb` remains the default.
 
@@ -13,14 +13,14 @@ TT-Lang normally assigns each logical dataflow buffer (DFB) a TT-Metal DFB descr
 | Capacity limit | SRAM capacity and 32 or 64 descriptor indices | SRAM capacity, control records, and alignment |
 | Payload reuse | Requires the Metal descriptor and backing-storage contracts | Requires noninterfering completed lifetimes |
 | Producer/consumer state | TT-Metal DFB interface state | Two 32-bit sequence counters per logical DFB |
-| Reset and reconfiguration in this PR | Blackhole TT-Metal interface reset and runtime descriptor reconfiguration | Blackhole address-based state reset with fixed geometry |
+| Reset and reconfiguration | Blackhole TT-Metal interface reset and runtime descriptor reconfiguration | Blackhole address-based state reset with unchanged page size, pages per block, block count, and storage capacity |
 | External C++ DFB access | Numeric index or descriptor metadata | Typed address-bearing descriptor |
 
 Shared terminology is defined in the [TT-Lang specification glossary](../sphinx/specs/TTLangSpecification.md#appendix-a-glossary). The DFB protocol and lifecycle rules are defined in [DFB Management](DFBManagement.md).
 
 ## Allocation Model
 
-One compiler-managed arena exists on each participating worker core for each execution of a compiled Python `ttl.operation`. Every arena uses the same relative layout. Kernels receive the core-local arena base as one common runtime argument, so the argument count does not depend on the number of logical DFBs.
+One compiler-managed arena exists on each participating worker node for each invocation of a compiled Python `ttl.operation`. Every arena uses the same relative layout. Kernels receive the node-local arena base as one common runtime argument, so the argument count does not depend on the number of logical DFBs.
 
 The arena has two sections:
 
@@ -41,7 +41,7 @@ For `N` logical DFBs and target alignment `A`, the payload section begins at:
 controlEnd = roundUp(8 * N, A)
 ```
 
-For a DFB with page size `P`, pages per block `T`, and block count `B`, its payload extent is:
+For a tiled DFB with page size `P`, pages per block `T`, and block count `B`, its payload extent is:
 
 ```text
 extent = roundUp(P * T * B, A)
@@ -53,7 +53,7 @@ Packed-format metadata is included in `P`. The complete arena size is the maximu
 
 Allocation consumes the existing logical-identity and completion-aware lifetime analyses. The compiler builds the complete conflict relation before changing IR. Unknown launch domains, unproved completion, concurrent lifetimes, and incompatible storage ownership remain conflicts.
 
-The shared storage conflict analysis accepts an explicit storage mode. Metal storage includes conflicts caused by runtime descriptor installation and Metal-managed backing changes. Compiler-managed storage excludes those conflicts because every logical DFB retains fixed compile-time geometry and an independent control record. This distinction permits byte reuse across a reconfiguration boundary after the prior lifecycle ends while preserving DFBs that remain live across the boundary.
+The shared storage conflict analysis accepts an explicit storage mode. Metal storage includes conflicts caused by runtime descriptor installation and Metal-managed backing changes. Compiler-managed storage excludes those conflicts because each logical DFB retains an independent control record and its page size, pages per block, block count, and storage capacity remain unchanged during execution. This permits byte reuse across a reconfiguration boundary after the prior lifecycle ends while preserving DFBs that remain live across the boundary.
 
 This design reuses one lifetime model for both memory backends. The allocator cannot serialize operations or remove a conflict to make a program fit.
 
@@ -61,23 +61,22 @@ This design reuses one lifetime model for both memory backends. The allocator ca
 buildStorageConflicts(lifetimes, storageMode):
     conflicts = empty graph
     for each unordered pair (left, right):
-        for each worker core where both may be active:
-            if the core association or completion order is unknown:
+        for each worker node where both may be active:
+            if the node association or completion order is unknown:
                 add conflict(left, right)
             else if neither lifetime completes before the other begins:
                 add conflict(left, right)
-
-        if storageMode is metal-cb and either descriptor installation or backing-storage ownership can overlap:
-            add conflict(left, right)
+            if storageMode is metal-cb and descriptor installation or backing-storage ownership can overlap on this node:
+                add conflict(left, right)
 
     return conflicts
 ```
 
-Possible launch domains use the same rules as exact domains and remain conservative. The compiler authorizes overlap only when every common worker core has a proven completion order.
+Possible launch domains use the same rules as exact domains and remain conservative. The compiler authorizes overlap only when every common worker node has a proven completion order.
 
 ## Placement Interface and Algorithms
 
-Placement is a reusable C++ library independent of MLIR and target-specific code. Conflict analysis produces an immutable allocation problem containing each payload extent, a symmetric conflict matrix, target alignment, the payload base after control records, and the SRAM budget. An allocator returns one byte offset per payload and the arena high-water mark.
+Placement is a reusable C++ library that does not inspect compiler IR or target-specific code. Conflict analysis produces an immutable allocation problem containing each payload extent, a symmetric conflict matrix, target alignment, the payload base after control records, and the SRAM budget. An allocator returns one byte offset per payload and the arena high-water mark.
 
 Every allocator result passes the same validation before IR mutation. Validation requires the correct offset count, target alignment, offsets at or above the payload base, intervals within the SRAM budget, disjoint intervals for every conflict, and an exact arena high-water mark. Allocation policy cannot weaken these invariants.
 
@@ -226,15 +225,17 @@ External calls that access DFBs must provide explicit `DFBEffect` entries. These
 
 ## Target Interfaces
 
-Common allocation and lowering contain no architecture branches. `compiler_l1_target.h` provides arena-base access, SRAM loads and stores, producer/consumer completion, and processor ownership. `compiler_l1_compute_target.h` provides LLK address conversion, format configuration, and address-based compute operations. Wormhole and Blackhole differences remain inside these target interfaces.
+Common allocation and lowering contain no architecture branches. `compiler_l1_target.h` provides arena-base access, SRAM loads and stores, producer/consumer completion, and processor ownership. `compiler_l1_compute.h` implements address-based compute operations; `compiler_l1_compute_target.h` adapts their LLK calls to Wormhole and Blackhole signatures.
 
 ## Runtime Arena
 
-The runtime allocates the arena as a row-major, height-sharded TTNN L1 tensor with one equal-length row per participating worker node. Height sharding directly represents one arena row per node. Width sharding provides no capacity benefit, and block sharding introduces an unused partition dimension.
+The runtime allocates and clears the arena for each invocation as a row-major, height-sharded TTNN L1 tensor with one equal-length row per participating worker node. Height sharding directly represents one arena row per node. Width sharding provides no capacity benefit, and block sharding introduces an unused partition dimension.
 
 The arena is passed as an auxiliary `generic_op` input so TTNN retains it through device execution while preserving the user output position. Arena and synchronization scratch are zero-initialized. Runtime resource caching includes the allocation metadata and reset count, so incompatible layouts do not share resources.
 
-Uniform allocation reserves the largest required arena on every participating core. This can waste capacity when activity is sparse. Per-core layouts require target-independent per-node allocation metadata and are follow-on work.
+Finalization records `ttl.memory_model`, `ttl.l1_arena_bytes`, and one entry per logical DFB in `ttl.dfb_allocations`. Each entry gives the arena-relative control-record offset (`l1_offset`), arena-relative payload offset (`l1_payload_offset`), and aligned payload extent (`l1_allocation_bytes`). A generated kernel's compile-time argument 0 identifies the common runtime argument containing its local arena base; subsequent DFB compile-time arguments identify allocation entries. The C++ `PayloadOffset` template parameter is relative to the control record: `l1_payload_offset - l1_offset`. `ttl.compiler_l1_reconfiguration_resets` records which control records are cleared at each reconfiguration boundary.
+
+Uniform allocation reserves the largest required arena on every participating node. This can waste capacity when activity is sparse. Per-node layouts require node-specific allocation metadata and are an extension of this design.
 
 ## Memory Utilization
 
@@ -245,13 +246,13 @@ Storage efficiency comes from four decisions:
 3. Payloads are ordered by decreasing size to reduce fragmentation from early small placements.
 4. The arena uses one runtime argument, and each logical DFB adds only its fixed control record rather than a Metal descriptor.
 
-The fixed control cost is `roundUp(8 * N, A)`. For 96 one-page BF16 DFBs, simultaneous lifetimes require 196,608 payload bytes and 768 control bytes before final arena alignment. If all 96 lifetimes are sequential, they reuse one 2,048-byte payload range and retain 768 control bytes. The control records are then 27% of the 2,816 bytes before final alignment. Reducing that cost would require shared state ownership transitions or packed atomic updates, both of which add synchronization and target requirements.
+The fixed control cost is `roundUp(8 * N, A)`. For 96 BF16 DFBs with one page per block and one block each, simultaneous lifetimes require 196,608 payload bytes and 768 control bytes before final arena alignment. If all 96 lifetimes are sequential, they reuse one 2,048-byte payload range and retain 768 control bytes. The control records are then 27% of the 2,816 bytes before final alignment. Reducing that cost would require shared state ownership transitions or packed atomic updates, both of which add synchronization and target requirements.
 
 Monotonic allocation with explicit execution-phase overlays was considered. It cannot reuse an aligned gap between active allocations and requires explicit phase boundaries. TT-Lang instead uses its completion-aware conflict graph and searches reusable gaps, which permits overlap within a phase and across different extents. Best-fit addresses fragmentation without exponential search. An exact or bounded-search strategy can use the same allocator interface if measurements justify its compile-time cost.
 
 ## Implemented Contract
 
-- One device and one uniform worker-core arena.
+- One device and one uniform worker-node arena.
 - Compiler-owned static storage. Tensor-backed DFBs and allocation groups are rejected.
 - Full-block transactions with positive capacity below `2^31` pages.
 - Full 32x32 BF16 and FP32 tiles for address-based compute.
@@ -265,26 +266,14 @@ PipeNet transfers, computed-address DFBs, device-domain placement, multi-device 
 
 ## Validation
 
-| Scenario | Evidence |
-| --- | --- |
-| Blackhole transfer and compute | Device correctness across BF16/FP32, DRAM/TTNN L1 tensors, repeated executions, counter wraparound, 96 live DFBs, arithmetic with 66 allocated DFBs, matmul, reductions, residual, MLP, attention, and expert merge |
-| External calls and lifecycle boundaries | 20 Blackhole device cases across BF16/FP32 and DRAM/TTNN L1, including repeated selected reset, reset-all, reconfiguration, live state preservation, payload reuse, and reset of allocation index 65 |
-| Allocation | 20,888 compile-only generated placements covering both strategies, conflicts, alignment, reuse enabled and disabled, determinism, and exact budget boundaries; a focused fragmented graph verifies distinct strategy results |
-| Wormhole | N150 device correctness for allocation, transfer, BF16/FP32 compute, and typed external descriptors; negative reset and reconfiguration diagnostics |
-| Invalid contracts | Compiler diagnostics for malformed metadata, unsupported transactions and tile forms, unknown external effects, numeric external DFB indices, storage ownership, and budget overflow |
+[Device tests](../../test/python/test_compiler_l1.py) cover transfer, allocation, reuse, and descriptor-count stress. [Compute tests](../../test/python/test_compiler_l1_compute.py) and [accumulation tests](../../test/python/test_accumulation_strategies.py) cover BF16/FP32 and DRAM/SRAM inputs. [Lifecycle tests](../../test/python/test_compiler_l1_lifecycle.py) cover reset, reconfiguration, and typed external calls. [Generated placement tests](../../test/ttlang/Dialect/TTL/Transforms/compiler_l1_stress.py) check alignment, conflicts, budgets, deterministic strategies, and reuse against independent expected placements. Negative compiler tests check unsupported contracts before device execution.
 
-Relevant tests are [transfer and allocator device tests](../../test/python/test_compiler_l1.py), [compute device tests](../../test/python/test_compiler_l1_compute.py), [accumulation device tests](../../test/python/test_accumulation_strategies.py), [lifecycle and external-call device tests](../../test/python/test_compiler_l1_lifecycle.py), and [generated allocator stress tests](../../test/ttlang/Dialect/TTL/Transforms/compiler_l1_stress.py).
+## Extensions
 
-## Follow-on PRs
+- Per-node and multi-device placement require node-specific layout metadata and ownership for each arena. Multicast receivers additionally require a shared payload address.
+- Tensor-backed DFBs and allocation groups require fixed external byte ranges and explicit alias/ownership constraints in the allocation problem.
+- PipeNet transfers require completion evidence through destination consumption before scratch ranges can be reused.
+- Sub-tile and row-major operations require matching geometry, stride, and capacity rules in the address-based compute interface.
+- Wormhole reset and reconfiguration require a target synchronization protocol validated on device.
 
-The intended dependency order after this POC is:
-
-1. Add multi-device arena ownership, device-domain placement, mesh program placement, and external runtime-resource composition. Preserve one validated arena layout per participating device and core.
-2. Add tensor-backed DFB and allocation-group ownership. Represent external byte ranges, aliasing, and synchronized ownership transitions in the immutable allocation plan.
-3. Add PipeNet and computed-address transfers. Extend lifetime completion through remote transfer and destination consumption before permitting payload reuse.
-4. Qualify representative external C++ kernels against the typed descriptor interface and add common adapters for required address, geometry, and completion operations.
-5. Add sub-tile and row-major metadata, partial-block transactions, and the corresponding address and capacity rules.
-6. Add Wormhole reset and reconfiguration after defining and device-qualifying a Wormhole synchronization protocol behind the existing target interface.
-7. Qualify complete model layers, then measure device cycles, arena high-water usage, initialization cost, compile time, and generated code size against `metal-cb`.
-
-Each extension must preserve the fail-before-mutation rule, architecture isolation, explicit ownership, and compiler-managed descriptor independence.
+These extensions preserve complete pre-mutation validation, explicit ownership, and descriptor-independent allocation.

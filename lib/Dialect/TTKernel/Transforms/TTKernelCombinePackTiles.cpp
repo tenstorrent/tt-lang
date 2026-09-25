@@ -65,8 +65,7 @@ struct TTKernelCombinePackTilesPass
 
   void runOnOperation() override {
     auto module = getOperation()->getParentOfType<ModuleOp>();
-    if (auto model = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
-        model && model.getValue() == kCompilerSRAMMemoryModel) {
+    if (usesCompilerSRAM(module)) {
       // PackTileBlockOp cannot preserve the tile index used to address the
       // compiler-assigned output payload.
       return;

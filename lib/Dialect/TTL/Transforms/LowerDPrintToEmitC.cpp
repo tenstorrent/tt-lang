@@ -603,8 +603,7 @@ struct TTLLowerDPrintToEmitCPass
   void runOnOperation() override {
     MLIRContext &ctx = getContext();
     ModuleOp mod = getOperation();
-    auto model = mod->getAttrOfType<StringAttr>(kMemoryModelAttrName);
-    bool compilerSRAM = model && model.getValue() == kCompilerSRAMMemoryModel;
+    bool compilerSRAM = usesCompilerSRAM(mod);
     WalkResult validation = mod.walk([&](DPrintOp printOp) {
       StringRef mode = printOp.getMode();
       if (compilerSRAM && mode != "scalar") {
