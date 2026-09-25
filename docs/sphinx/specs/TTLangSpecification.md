@@ -1083,6 +1083,8 @@ def dm():
 
 The `ttl.copy` function expresses a variety of data movements that always have two arguments: source and destination. `ttl.copy` returns a *transfer handle* object. A transfer handle has a `wait` function that serves as a barrier. When the `wait` returns the transfer is complete and data in the destination is safe to use.  The `ttl.copy` is executed on a data movement thread.
 
+A tensor-to-dataflow-buffer copy or Pipe receive writes a block acquired from `reserve()`. A dataflow-buffer-to-tensor copy reads a block acquired from `wait()`. A Pipe send may read a reserve-acquired block when another kernel consumes that block's publication.
+
 
 ### Group transfer
 
