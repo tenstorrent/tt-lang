@@ -981,7 +981,7 @@ def TTLVerifyTransferProvenance
 
 def TTLVerifyDFBSPSC
     : Pass<"ttl-verify-dfb-spsc", "::mlir::ModuleOp"> {
-  let summary = "Verify DFB producers and consumers across launch domains";
+  let summary = "Verify DFB producer and consumer domains";
   let description = [{
     Walks DFB protocol actions exposed through `DFBAccessOpInterface`, groups
     them by module-wide logical `dfb_id` and enclosing
