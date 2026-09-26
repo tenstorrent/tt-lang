@@ -146,8 +146,12 @@ parseCompilerL1Allocation(Attribute attribute) {
   auto allocationBytes =
       dictionary ? dictionary.getAs<IntegerAttr>(ttl::kDFBAllocationBytesField)
                  : IntegerAttr();
+  auto elementType =
+      dictionary
+          ? dictionary.getAs<TypeAttr>(ttl::kDFBAllocationElementTypeField)
+          : TypeAttr();
   if (!pageSize || !pagesPerBlock || !blockCount || !stateOffset ||
-      !payloadAddress || !allocationBytes) {
+      !payloadAddress || !allocationBytes || !elementType) {
     return failure();
   }
 
@@ -167,15 +171,13 @@ parseCompilerL1Allocation(Attribute attribute) {
     return failure();
   }
 
-  auto elementType =
-      dictionary.getAs<TypeAttr>(ttl::kDFBAllocationElementTypeField);
   return CompilerL1Allocation{pageSize.getInt(),
                               pagesPerBlock.getInt(),
                               blockCount.getInt(),
                               stateOffsetValue,
                               payloadAddressValue - stateOffsetValue,
                               allocationBytes.getInt(),
-                              elementType ? elementType.getValue() : Type()};
+                              elementType.getValue()};
 }
 
 static CompilerL1Allocation getCompilerL1Allocation(Operation *operation,
@@ -3470,16 +3472,33 @@ static bool isSupportedCompilerSRAMComputeTile(Type elementType) {
           tile.getDataType() == ttcore::DataType::BFloat16);
 }
 
+static LogicalResult
+validateCompilerSRAMDFBType(Operation *operation, ttkernel::CBType buffer,
+                            const CompilerL1Allocation &allocation) {
+  Type elementType = buffer.getElementType();
+  if (allocation.elementType != elementType) {
+    operation->emitOpError(
+        "compiler-sram DFB element type differs from allocation metadata");
+    return failure();
+  }
+  // TTKernel CBType retains total pages; transaction counts validate pages
+  // per block, which also determines the block count.
+  uint64_t totalPages = static_cast<uint64_t>(allocation.pagesPerBlock) *
+                        static_cast<uint64_t>(allocation.blockCount);
+  if (buffer.getNumElements() <= 0 ||
+      static_cast<uint64_t>(buffer.getNumElements()) != totalPages) {
+    operation->emitOpError(
+        "compiler-sram DFB geometry differs from allocation metadata");
+    return failure();
+  }
+  return success();
+}
+
 static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
   if (!ttl::usesCompilerSRAM(module)) {
     return success();
   }
-  WalkResult sourceOperations = module.walk([](Operation *operation) {
-    return operation->getName().getDialectNamespace() == "ttkernel"
-               ? WalkResult::interrupt()
-               : WalkResult::advance();
-  });
-  if (sourceOperations.wasInterrupted()) {
+  {
     auto allocations =
         module->getAttrOfType<ArrayAttr>(ttl::kDFBAllocationsAttrName);
     if (!allocations) {
@@ -3511,9 +3530,24 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
       if (failed(allocation)) {
         module.emitOpError("compiler-sram allocation entry ")
             << index
-            << " must define positive uint32 page_size, num_tiles, "
-               "block_count, and l1_allocation_bytes values with "
+            << " must define element_type, positive uint32 page_size, "
+               "num_tiles, block_count, and l1_allocation_bytes values with "
                "representable ordered SRAM offsets";
+        return failure();
+      }
+      Type elementType = allocation->elementType;
+      if (!isa<ttcore::TileType>(elementType) &&
+          (!elementType.isIntOrFloat() ||
+           elementType.getIntOrFloatBitWidth() == 0 ||
+           elementType.getIntOrFloatBitWidth() % 8 != 0)) {
+        module.emitOpError("compiler-sram allocation entry ")
+            << index << " has an unsupported element type";
+        return failure();
+      }
+      uint64_t pageBytes = ttcore::getElementSizeBytes(elementType);
+      if (static_cast<uint64_t>(allocation->pageSizeBytes) != pageBytes) {
+        module.emitOpError("compiler-sram allocation entry ")
+            << index << " page size differs from its element type";
         return failure();
       }
       if (allocation->stateOffset % sizeof(uint32_t) != 0) {
@@ -3557,8 +3591,12 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
               ? llvm::checkedMulUnsigned(
                     *blockBytes, static_cast<uint64_t>(allocation.blockCount))
               : std::nullopt;
-      if (!payloadBytes ||
-          *payloadBytes > static_cast<uint64_t>(allocation.allocationBytes) ||
+      if (!payloadBytes) {
+        module.emitOpError("compiler-sram allocation entry ")
+            << index << " payload size overflows 64-bit arithmetic";
+        return failure();
+      }
+      if (*payloadBytes > static_cast<uint64_t>(allocation.allocationBytes) ||
           payloadAddress > static_cast<uint64_t>(arenaBytes.getInt()) ||
           static_cast<uint64_t>(allocation.allocationBytes) >
               static_cast<uint64_t>(arenaBytes.getInt()) - payloadAddress) {
@@ -3566,6 +3604,14 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
             << index << " payload extent exceeds its allocation or arena";
         return failure();
       }
+    }
+    WalkResult sourceOperations = module.walk([](Operation *operation) {
+      return operation->getName().getDialectNamespace() == "ttkernel"
+                 ? WalkResult::interrupt()
+                 : WalkResult::advance();
+    });
+    if (!sourceOperations.wasInterrupted()) {
+      return success();
     }
     WalkResult validation = module.walk([&](Operation *operation) {
       if (operation->getName().getDialectNamespace() == "emitc") {
@@ -3581,12 +3627,18 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
       }
       if (auto getCompileArg =
               dyn_cast<ttkernel::GetCompileArgValOp>(operation);
-          getCompileArg && isa<ttkernel::CBType>(getCompileArg.getType()) &&
-          static_cast<uint64_t>(getCompileArg.getArgIndex()) >=
-              allocations.size()) {
-        operation->emitOpError(
-            "compiler-sram storage index is absent from allocation metadata");
-        return WalkResult::interrupt();
+          getCompileArg && isa<ttkernel::CBType>(getCompileArg.getType())) {
+        uint64_t index = getCompileArg.getArgIndex();
+        if (index >= parsedAllocations.size()) {
+          operation->emitOpError(
+              "compiler-sram storage index is absent from allocation metadata");
+          return WalkResult::interrupt();
+        }
+        if (failed(validateCompilerSRAMDFBType(
+                operation, cast<ttkernel::CBType>(getCompileArg.getType()),
+                parsedAllocations[index]))) {
+          return WalkResult::interrupt();
+        }
       }
       if ((isa<ttkernel::GetArgValOp, ttkernel::GetCommonArgValOp>(
               operation)) &&
@@ -3604,6 +3656,11 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
             static_cast<uint64_t>(*index) >= allocations.size()) {
           operation->emitOpError(
               "compiler-sram DFB operand has no finalized allocation");
+          return WalkResult::interrupt();
+        }
+        if (failed(validateCompilerSRAMDFBType(
+                operation, cast<ttkernel::CBType>(operand.getType()),
+                parsedAllocations[*index]))) {
           return WalkResult::interrupt();
         }
       }

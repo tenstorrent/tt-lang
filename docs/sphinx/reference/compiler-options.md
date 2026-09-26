@@ -43,8 +43,8 @@ or 64 Blackhole descriptor indices. The backend currently supports one device,
 compiler-owned DFB storage, full-block transactions, and 32x32 BF16/FP32
 transfer, elementwise, matmul, reduction, broadcast, transpose, and L1 packer
 accumulation operations. It also supports typed external calls with declared
-DFB effects and scalar device printing. The arena is allocated and cleared for
-each operation invocation.
+DFB effects and scalar device printing. Each invocation with a nonempty
+allocation plan allocates and clears an arena.
 
 The compiler rejects tensor-backed DFBs, allocation groups, PipeNet transfers,
 raw NoC and semaphore operations, multicast, numeric DFB ids, non-scalar

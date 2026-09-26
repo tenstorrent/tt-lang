@@ -400,7 +400,12 @@ def test_missing_complete_allocations_are_rejected():
 )
 def test_invalid_complete_physical_allocations_are_rejected(allocations, message):
     with Context():
-        module = _module(allocations)
+        memory_model = (
+            "compiler-sram"
+            if any("l1_offset" in entry for entry in allocations)
+            else None
+        )
+        module = _module(allocations, memory_model=memory_model)
 
         with pytest.raises(ValueError, match=message):
             _resolve_dfb_configs(module)

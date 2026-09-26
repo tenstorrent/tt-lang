@@ -11,12 +11,13 @@ import os
 import re
 import tempfile
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ["TTLANG_COMPILE_ONLY"] = "1"
 
 import torch
 import ttnn
-
+import ttl.ttl_api as ttl_api
 
 CAPACITIES = [10, 5, 8, 10, 7, 7]
 # The lifetime order leaves a five-tile gap that best-fit uses while first-fit
@@ -81,17 +82,32 @@ if __name__ == "__main__":
         final_ir = directory / "final.mlir"
         os.environ["TTLANG_FINAL_MLIR"] = str(final_ir)
         arena_sizes = {}
-        for strategy in ("first-fit-decreasing", "best-fit-decreasing"):
-            operation(
-                host_tensor,
-                options=(
-                    "--ttl-memory-model=compiler-sram "
-                    f"--ttl-sram-allocation-strategy={strategy}"
-                ),
-            )
-            arena_sizes[strategy] = int(
-                re.search(r"ttl.l1_arena_bytes = (\d+)", final_ir.read_text()).group(1)
-            )
+        compiled_kernels = []
+        compile_kernel = ttl_api._compile_ttnn_kernel
+
+        def record_compiled_kernel(*args, **kwargs):
+            compiled_kernel = compile_kernel(*args, **kwargs)
+            compiled_kernels.append(compiled_kernel)
+            return compiled_kernel
+
+        runner_file = directory / "runner.py"
+        with patch.object(ttl_api, "_compile_ttnn_kernel", record_compiled_kernel):
+            with patch.dict(os.environ, {"TTLANG_EMIT_RUNNER": str(runner_file)}):
+                for strategy in ("first-fit-decreasing", "best-fit-decreasing"):
+                    operation(
+                        host_tensor,
+                        options=(
+                            "--ttl-memory-model=compiler-sram "
+                            f"--ttl-sram-allocation-strategy={strategy}"
+                        ),
+                    )
+                    arena_sizes[strategy] = int(
+                        re.search(
+                            r"ttl.l1_arena_bytes = (\d+)", final_ir.read_text()
+                        ).group(1)
+                    )
+                    assert compiled_kernels[-1].memory_model == "compiler-sram"
+                    assert "MEMORY_MODEL = 'compiler-sram'" in runner_file.read_text()
 
         assert arena_sizes == {
             "first-fit-decreasing": 81984,

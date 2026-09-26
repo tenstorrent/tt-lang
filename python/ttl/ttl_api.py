@@ -2742,7 +2742,6 @@ def _extract_dfb_allocations(module):
             f"{attribute_name} must contain a dense physical index range "
             f"{expected_indices}, got {indices}"
         )
-    _get_compiler_l1_arena_bytes(configs)
     return configs
 
 

@@ -22,7 +22,7 @@ Shared terminology is defined in the [TT-Lang specification glossary](../sphinx/
 
 ## Allocation Model
 
-One compiler-managed arena exists on each participating worker node for each invocation of a compiled Python `ttl.operation`. Every arena uses the same relative layout. Kernels receive the node-local arena base as one common runtime argument, so the argument count does not depend on the number of logical DFBs.
+For a nonempty allocation plan, each invocation of a compiled Python `ttl.operation` owns one arena on each participating worker node. Every arena uses the same relative layout. Kernels receive the node-local arena base as one common runtime argument, so the argument count does not depend on the number of logical DFBs.
 
 The arena has two sections:
 
@@ -186,7 +186,7 @@ The allocator interface contains no MLIR operations, DFB identities, architectur
 
 ## External C++ Interface
 
-`ttl.dfb_descriptor(dfb)` lowers to a C++ template type containing page size, pages per block, block count, state offset, and the payload offset relative to the state record. Its `bind()` method obtains the arena base through the target interface and constructs the address-based buffer. External functions therefore require no Metal DFB index and no additional runtime argument per DFB.
+`ttl.dfb_descriptor(dfb)` lowers to a C++ template type containing page size, pages per block, block count, state offset, and the payload offset relative to the state record. Its `bind()` method obtains the arena base through the target interface and constructs the address-based buffer. Generated descriptor definitions precede external C++ headers that use them. External functions require no Metal DFB index or additional runtime argument per DFB.
 
 ```text
 bind(descriptor):
@@ -202,11 +202,11 @@ Common allocation and lowering contain no architecture branches. `compiler_l1_ta
 
 ## Runtime Arena
 
-The runtime allocates and clears the arena for each invocation as a row-major, height-sharded TTNN L1 tensor with one equal-length row per participating worker node. Height sharding directly represents one arena row per node. Width sharding provides no capacity benefit, and block sharding introduces an unused partition dimension.
+For each invocation with a nonempty allocation plan, the runtime allocates a zero-initialized arena as a row-major, height-sharded TTNN L1 tensor with one equal-length row per participating worker node. Height sharding directly represents one arena row per node. Width sharding provides no capacity benefit, and block sharding introduces an unused partition dimension.
 
-The runtime zero-initializes the arena and passes it as an auxiliary `generic_op` input without changing the user output position. It retains the owning tensor until device synchronization succeeds, including when descriptor preparation or dispatch fails. If synchronization fails, it retains the tensor for later cleanup. A nonempty allocation plan uses a fresh arena for each invocation.
+The runtime passes the arena as an auxiliary `generic_op` input without changing the user output position. Each invocation waits for device completion before releasing its arena, including after descriptor preparation or dispatch fails. A synchronization failure retains the arena for the process lifetime because completion is unknown. This wait adds host latency to each invocation with a nonempty allocation plan.
 
-Finalization records `ttl.memory_model`, `ttl.l1_arena_bytes`, and one entry per logical DFB in `ttl.dfb_allocations`. Each entry gives the arena-relative control-record offset (`l1_offset`), arena-relative payload offset (`l1_payload_offset`), and aligned payload extent (`l1_allocation_bytes`). A generated kernel's compile-time argument 0 identifies the common runtime argument containing its local arena base; subsequent DFB compile-time arguments identify allocation entries. The C++ `PayloadOffset` template parameter is relative to the control record: `l1_payload_offset - l1_offset`.
+Finalization records `ttl.memory_model`, `ttl.l1_arena_bytes`, and one entry per logical DFB in `ttl.dfb_allocations`. Each entry gives the arena-relative control-record offset (`l1_offset`), arena-relative payload offset (`l1_payload_offset`), and aligned payload extent (`l1_allocation_bytes`). Before code generation, EmitC checks bounds, target alignment, and agreement between each DFB type and its allocation's element type, page size, and total page count. A generated kernel's compile-time argument 0 identifies the common runtime argument containing its local arena base; subsequent DFB compile-time arguments identify allocation entries. The C++ `PayloadOffset` template parameter is relative to the control record: `l1_payload_offset - l1_offset`.
 
 Uniform allocation reserves the largest required arena on every participating node. This can waste capacity when activity is sparse. Per-node layouts require node-specific allocation metadata and are an extension of this design.
 

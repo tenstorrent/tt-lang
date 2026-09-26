@@ -4,8 +4,8 @@
 // RUN: ttlang-translate --ttkernel-to-cpp %t.emitc.mlir | FileCheck %s --check-prefix=CPP
 // The arena ends exactly at the second allocation's payload end.
 module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 24640 : i64, ttl.dfb_allocations = [
-  {cb_index = 0 : i64, page_size = 4096 : i64, num_tiles = 1 : i64, block_count = 3 : i64, l1_allocation_bytes = 12288 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64},
-  {cb_index = 1 : i64, page_size = 4096 : i64, num_tiles = 1 : i64, block_count = 3 : i64, l1_allocation_bytes = 12288 : i64, l1_offset = 8 : i64, l1_payload_offset = 12352 : i64}
+  {cb_index = 0 : i64, element_type = !ttcore.tile<32x32, f32>, page_size = 4096 : i64, num_tiles = 1 : i64, block_count = 3 : i64, l1_allocation_bytes = 12288 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64},
+  {cb_index = 1 : i64, element_type = !ttcore.tile<32x32, f32>, page_size = 4096 : i64, num_tiles = 1 : i64, block_count = 3 : i64, l1_allocation_bytes = 12288 : i64, l1_offset = 8 : i64, l1_payload_offset = 12352 : i64}
 ]} {
   // SFPU copies preserve the finalized direct-unpack choice in operand metadata.
   // CHECK-LABEL: func.func @compute

@@ -60,6 +60,7 @@ public:
   ScopedModuleHelper(OpBuilder *builder, Location loc, Region *region,
                      ThreadType threadType) {
     std::set<llvm::StringRef> headers;
+    std::set<llvm::StringRef> opaqueHeaders;
 
     // Baseline, always required.
     switch (threadType) {
@@ -113,7 +114,7 @@ public:
 
       if (auto headerAttr =
               callOp->getAttrOfType<StringAttr>("ttlang.opaque_header")) {
-        headers.insert(headerAttr.getValue());
+        opaqueHeaders.insert(headerAttr.getValue());
       }
       requiresDFBDescriptor |=
           callOp->hasAttr("ttlang.requires_dfb_descriptor");
@@ -244,14 +245,8 @@ public:
       }
     });
 
-    if (requiresCompilerL1 || requiresCompilerL1Compute) {
-      emitLlk(compiler_l1_target_generated, compiler_l1_target_generated_len);
-      emitLlk(compiler_l1_generated, compiler_l1_generated_len);
-    }
-    if (requiresCompilerL1Compute) {
-      emitLlk(compiler_l1_compute_target_generated,
-              compiler_l1_compute_target_generated_len);
-      emitLlk(compiler_l1_compute_generated, compiler_l1_compute_generated_len);
+    if (!requiresCompilerL1 && !requiresCompilerL1Compute) {
+      headers.insert(opaqueHeaders.begin(), opaqueHeaders.end());
     }
 
     region->walk([&](emitc::LiteralOp literalOp) {
@@ -290,13 +285,43 @@ public:
                           dfb_descriptor_prelude_generated_len));
     }
 
-    for (llvm::StringRef header : headers) {
+    auto emitHeader = [&](llvm::StringRef header) {
       bool isStandard = false;
       if (header.starts_with("<") && header.ends_with(">")) {
         isStandard = true;
         header = header.drop_front(1).drop_back(1);
       }
       builder->create<emitc::IncludeOp>(loc, header, isStandard);
+    };
+    for (llvm::StringRef header : headers) {
+      emitHeader(header);
+    }
+
+    if (requiresCompilerL1 || requiresCompilerL1Compute) {
+      emitc::VerbatimOp::create(
+          *builder, loc,
+          llvm::StringRef(compiler_l1_target_generated,
+                          compiler_l1_target_generated_len));
+      emitc::VerbatimOp::create(
+          *builder, loc,
+          llvm::StringRef(compiler_l1_generated, compiler_l1_generated_len));
+    }
+    if (requiresCompilerL1Compute) {
+      emitc::VerbatimOp::create(
+          *builder, loc,
+          llvm::StringRef(compiler_l1_compute_target_generated,
+                          compiler_l1_compute_target_generated_len));
+      emitc::VerbatimOp::create(
+          *builder, loc,
+          llvm::StringRef(compiler_l1_compute_generated,
+                          compiler_l1_compute_generated_len));
+    }
+    if (requiresCompilerL1 || requiresCompilerL1Compute) {
+      for (llvm::StringRef header : opaqueHeaders) {
+        if (!headers.count(header)) {
+          emitHeader(header);
+        }
+      }
     }
 
     if (threadType == ThreadType::Compute) {

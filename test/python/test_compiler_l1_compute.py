@@ -25,6 +25,9 @@ SCALAR_RESULT_HEADER = os.path.join(
 SRAM_EXTERNAL_HEADER = os.path.join(
     os.path.dirname(__file__), "include", "compiler_l1_external.hpp"
 )
+SRAM_TYPED_EXTERNAL_HEADER = os.path.join(
+    os.path.dirname(__file__), "include", "compiler_sram_descriptor_external.hpp"
+)
 
 
 def _data_format(dtype):
@@ -87,6 +90,43 @@ def _make_external_copy(data_format):
             ttl.call_extern_func(
                 SRAM_EXTERNAL_HEADER,
                 "compiler_l1_copy_dfb",
+                template_args=[
+                    ttl.dfb_descriptor(input_dfb),
+                    ttl.dfb_descriptor(output_dfb),
+                ],
+                dfb_effects=[
+                    ttl.DFBEffect.reserve(output_dfb, tiles=1),
+                    ttl.DFBEffect.wait(input_dfb, tiles=1),
+                    ttl.DFBEffect.push(output_dfb, tiles=1),
+                    ttl.DFBEffect.pop(input_dfb, tiles=1),
+                ],
+            )
+            with output_dfb.wait() as output_block:
+                ttl.copy(output_block, output_tensor[0, 0]).wait()
+
+    return external_copy
+
+
+def _make_typed_external_copy(data_format):
+    @ttl.operation(grid=(1, 1))
+    def external_copy(input_tensor, output_tensor):
+        input_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+        output_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
+
+        @ttl.compute()
+        def compute():
+            pass
+
+        @ttl.datamovement()
+        def read():
+            with input_dfb.reserve() as input_block:
+                ttl.copy(input_tensor[0, 0], input_block).wait()
+
+        @ttl.datamovement()
+        def write():
+            ttl.call_extern_func(
+                SRAM_TYPED_EXTERNAL_HEADER,
+                "compiler_sram_test::copy_typed_dfb",
                 template_args=[
                     ttl.dfb_descriptor(input_dfb),
                     ttl.dfb_descriptor(output_dfb),
@@ -1077,6 +1117,22 @@ def test_external_dfb_descriptor_copy(device, dtype, to_device, memory_model):
         input_tensor,
         output_tensor,
         options=f"--ttl-memory-model={memory_model}",
+    )
+
+    _assert_exact(ttnn.to_torch(output_tensor), expected)
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
+def test_external_header_uses_compiler_sram_descriptor(device, dtype, to_device):
+    expected = torch.randn(32, 32, dtype=dtype)
+    input_tensor = to_device(expected, device)
+    output_tensor = to_device(torch.zeros_like(expected), device)
+
+    _make_typed_external_copy(_data_format(dtype))(
+        input_tensor,
+        output_tensor,
+        options="--ttl-memory-model=compiler-sram",
     )
 
     _assert_exact(ttnn.to_torch(output_tensor), expected)
