@@ -336,3 +336,20 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 4160
     return
   }
 }
+
+// -----
+
+// Shared storage cannot reinterpret pages with another element type.
+// expected-error @below {{'builtin.module' op compiler-sram storage owner 0 has inconsistent allocation metadata}}
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 4160 : i64, ttl.dfb_allocations = [
+  {dfb_index = 0 : i64, storage_index = 0 : i64, element_type = !ttcore.tile<32x32, bf16>, page_size = 2048 : i64, num_tiles = 1 : i64, block_count = 1 : i64, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, storage_capacity_pages = 1 : i64},
+  {dfb_index = 1 : i64, storage_index = 0 : i64, element_type = !ttcore.tile<32x32, u16>, page_size = 2048 : i64, num_tiles = 1 : i64, block_count = 1 : i64, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, storage_capacity_pages = 1 : i64}
+]} {}
+
+// -----
+
+// Tensor-backed ring capacity must fit the declared tensor byte range.
+// expected-error @below {{'builtin.module' op compiler-sram allocation entry 0 tensor-backed storage capacity differs from its DFB capacity}}
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 8 : i64, ttl.dfb_allocations = [
+  {dfb_index = 0 : i64, element_type = !ttcore.tile<32x32, bf16>, page_size = 2048 : i64, num_tiles = 1 : i64, block_count = 1 : i64, storage_capacity_pages = 2 : i64, l1_offset = 0 : i64, storage_segments = [{nodes = [[0, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 2048>}]}
+]} {}

@@ -3698,6 +3698,7 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
           if (allocation->stateOffset != first.stateOffset ||
               allocation->storageCapacityPages != first.storageCapacityPages ||
               allocation->pageSizeBytes != first.pageSizeBytes ||
+              allocation->elementType != first.elementType ||
               (allocation->tensorIndex < 0 && first.tensorIndex < 0 &&
                (allocation->payloadOffset != first.payloadOffset ||
                 allocation->allocationBytes != first.allocationBytes))) {
@@ -3741,6 +3742,15 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
         return failure();
       }
       if (allocation.tensorIndex >= 0) {
+        if (static_cast<uint64_t>(allocation.storageCapacityPages) !=
+            static_cast<uint64_t>(allocation.pagesPerBlock) *
+                static_cast<uint64_t>(allocation.blockCount)) {
+          module.emitOpError("compiler-sram allocation entry ")
+              << index
+              << " tensor-backed storage capacity differs from its "
+                 "DFB capacity";
+          return failure();
+        }
         auto dictionary = cast<DictionaryAttr>(allocations[index]);
         auto segments = dictionary.getAs<ArrayAttr>("storage_segments");
         auto segment = cast<DictionaryAttr>(segments[0]);

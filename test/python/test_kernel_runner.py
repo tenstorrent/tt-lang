@@ -2233,11 +2233,39 @@ def test_compiler_l1_arena_size_shares_storage_owner_record_and_payload():
 
 
 @pytest.mark.parametrize(
+    ("second_format", "second_tile"),
+    [("uint16", (32, 32)), ("bfloat16", (16, 64))],
+    ids=["element-format", "tile-geometry"],
+)
+def test_compiler_l1_arena_size_rejects_shared_owner_page_format(
+    second_format, second_tile
+):
+    first = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        storage_index=3,
+        storage_capacity_pages=1,
+        l1_offset=0,
+        l1_payload_offset=64,
+        l1_allocation_bytes=2048,
+    )
+    second = replace(first, dfb_index=1, data_format=second_format, tile=second_tile)
+
+    with pytest.raises(ValueError, match="inconsistent page formats"):
+        kernel_runner._get_compiler_l1_arena_bytes([first, second])
+
+
+@pytest.mark.parametrize(
     ("second_state", "second_payload", "second_capacity", "message"),
     [
         (8, 64, 2, "inconsistent control records"),
         (0, 128, 2, "inconsistent payloads"),
         (0, 64, 3, "inconsistent capacity"),
+        (0, 64, None, "inconsistent capacity"),
     ],
 )
 def test_compiler_l1_arena_size_rejects_inconsistent_shared_storage(
@@ -2335,6 +2363,31 @@ def test_compiler_l1_arena_size_accepts_tensor_backing_without_payload():
     )
 
     assert kernel_runner._get_compiler_l1_arena_bytes([config]) == 8
+
+
+def test_compiler_l1_arena_size_rejects_mixed_payload_sources():
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        storage_segments=(
+            DFBStorageSegment(
+                nodes=((0, 0),),
+                tensor_index=0,
+                byte_offset=0,
+                byte_size=2048,
+            ),
+        ),
+        l1_offset=0,
+        l1_payload_offset=64,
+        l1_allocation_bytes=2048,
+    )
+
+    with pytest.raises(ValueError, match="arena payload cannot include"):
+        kernel_runner._get_compiler_l1_arena_bytes([config])
 
 
 def test_compiler_l1_arena_size_combines_tensor_and_static_storage():
@@ -8006,6 +8059,7 @@ def _tensor_backing_config(
         ("tile", "tensor backing tile shape"),
         ("page_size", "tensor backing page size"),
         ("range", "exceeds logical per-shard size"),
+        ("capacity", "tensor-backed storage capacity must equal"),
     ],
 )
 def test_compiler_sram_rejects_invalid_tensor_binding_before_allocation(
@@ -8049,6 +8103,8 @@ def test_compiler_sram_rejects_invalid_tensor_binding_before_allocation(
             config,
             storage_segments=(replace(config.storage_segments[0], byte_offset=2048),),
         )
+    elif invalid_binding == "capacity":
+        config = replace(config, storage_capacity_pages=2)
 
     with pytest.raises(ValueError, match=message):
         kernel_runner.run_kernel_on_device(

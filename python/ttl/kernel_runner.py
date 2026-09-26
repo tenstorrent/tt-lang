@@ -2051,6 +2051,7 @@ def _get_compiler_l1_arena_bytes(
 
     control_offsets_by_owner = {}
     capacities_by_owner = {}
+    formats_by_owner = {}
     payloads_by_owner = {}
     for config in cb_configs:
         owner = _compiler_sram_storage_owner(config)
@@ -2059,14 +2060,30 @@ def _get_compiler_l1_arena_bytes(
             raise ValueError(
                 "compiler-sram storage owner has inconsistent control records"
             )
-        if config.storage_capacity_pages is not None:
-            previous_capacity = capacities_by_owner.setdefault(
-                owner, config.storage_capacity_pages
+        format_identity = (config.data_format, config.tile, config.page_size)
+        previous_format = formats_by_owner.setdefault(owner, format_identity)
+        if previous_format != format_identity:
+            raise ValueError(
+                "compiler-sram storage owner has inconsistent page formats"
             )
-            if previous_capacity != config.storage_capacity_pages:
+        if any(segment.is_tensor_backed for segment in config.storage_segments):
+            logical_capacity_pages = config.num_tiles * config.block_count
+            if (
+                config.storage_capacity_pages is not None
+                and config.storage_capacity_pages != logical_capacity_pages
+            ):
                 raise ValueError(
-                    "compiler-sram storage owner has inconsistent capacity"
+                    f"DFB[{config.dfb_index}] tensor-backed storage capacity "
+                    "must equal its DFB capacity"
                 )
+        capacity_pages = (
+            config.storage_capacity_pages
+            if config.storage_capacity_pages is not None
+            else config.num_tiles * config.block_count
+        )
+        previous_capacity = capacities_by_owner.setdefault(owner, capacity_pages)
+        if previous_capacity != capacity_pages:
+            raise ValueError("compiler-sram storage owner has inconsistent capacity")
     control_starts = sorted(control_offsets_by_owner.values())
     if any(start < 0 or start % 4 for start in control_starts):
         raise ValueError("compiler-sram has an unaligned control record")
@@ -2083,6 +2100,10 @@ def _get_compiler_l1_arena_bytes(
         if has_payload_offset != has_allocation_bytes:
             raise ValueError("incomplete compiler-sram payload allocation metadata")
         if has_payload_offset:
+            if config.storage_segments:
+                raise ValueError(
+                    "compiler-sram arena payload cannot include storage segments"
+                )
             if config.l1_payload_offset < control_end:
                 raise ValueError(
                     "compiler-sram payload must follow all control records"
