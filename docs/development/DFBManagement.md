@@ -231,6 +231,13 @@ synchronization. A `remote_uniform` DFB cannot share backing storage with a
 different physical DFB index because that sharing would make its address depend
 on the other index's node domain.
 
+Operation tensors allocated per core bind each executing core's own shard
+address in its kernel descriptor. A core outside the shard grid addresses such
+a tensor remotely and receives the one address every owner core holds, as a
+lockstep allocation would provide; descriptor construction fails when the
+owner addresses differ. Local access to a per-core tensor still requires a
+shard on every executing core.
+
 TT-Metal allocates static descriptor storage in descriptor order. It maintains
 one allocation frontier per core, and a descriptor shared by several cores
 starts at the greatest frontier among those cores. The runtime simulates these

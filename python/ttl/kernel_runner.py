@@ -1972,6 +1972,15 @@ def _partition_descriptor_by_tensor_addresses(
             )
         ]
 
+    # A core outside a tensor's shard grid addresses it remotely, which needs
+    # the one address every owner holds, as a lockstep allocation provides.
+    # Local access is validated separately by _validate_local_tensor_access.
+    uniform_owner_addresses = {}
+    for _argument_index, tensor_index in per_core_argument_indices:
+        owner_addresses = set(per_core_addresses[tensor_index].values())
+        if len(owner_addresses) == 1:
+            uniform_owner_addresses[tensor_index] = owner_addresses.pop()
+
     coordinates_by_addresses = {}
     for core_coordinate in _core_range_coordinates(
         core_ranges, label="kernel descriptor core ranges"
@@ -1979,14 +1988,16 @@ def _partition_descriptor_by_tensor_addresses(
         argument_addresses = []
         for argument_index, tensor_index in per_core_argument_indices:
             tensor_addresses = per_core_addresses[tensor_index]
-            if core_coordinate not in tensor_addresses:
+            address = tensor_addresses.get(core_coordinate)
+            if address is None:
+                address = uniform_owner_addresses.get(tensor_index)
+            if address is None:
                 raise ValueError(
                     f"per-core tensor {tensor_index} has no shard on executing "
-                    f"core {core_coordinate}"
+                    f"core {core_coordinate}, and its owner addresses differ: "
+                    f"{sorted(set(tensor_addresses.values()))}"
                 )
-            argument_addresses.append(
-                (argument_index, tensor_addresses[core_coordinate])
-            )
+            argument_addresses.append((argument_index, address))
         argument_addresses = tuple(argument_addresses)
         coordinates_by_addresses.setdefault(argument_addresses, set()).add(
             core_coordinate

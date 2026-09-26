@@ -2322,12 +2322,57 @@ def test_build_kernel_descriptors_binds_per_core_tensor_addresses(
     assert descriptors[1].runtime_args[1][0] == [0x2000]
 
 
-def test_build_kernel_descriptors_reports_missing_per_core_tensor_shard(monkeypatch):
+class _UniformPerCoreTensorTestDouble(_PerCoreLocalTensorTestDouble):
+    @staticmethod
+    def experimental_per_core_buffer_address(device_coordinate, core):
+        return 0x2000 + 0x100 * device_coordinate.coords[1]
+
+
+# A core outside a per-core tensor's shard grid addresses it remotely, which
+# takes the one address every owner holds, as a lockstep tensor provides.
+def test_build_kernel_descriptors_resolves_uniform_per_core_tensor_remotely(
+    monkeypatch,
+):
     fake_ttnn = _local_tensor_test_environment()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
-    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    full_grid = _FakeExplicitCoreRanges((0, 0), (2, 0))
+    tensor = _UniformPerCoreTensorTestDouble(
+        "l1-small", "block", _FakeExplicitCoreRanges((0, 0), (1, 0))
+    )
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[0],
+        local_tensor_indices=[],
+        config=object(),
+    )
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        tensor_accessor_args=[],
+        core_ranges=full_grid,
+        grid_cols=3,
+        grid_rows=1,
+        num_cbs=0,
+        device_coordinates=[0, 3],
+    )
+
+    assert [descriptor.common_runtime_args for descriptor in descriptors] == [
+        [0x2300, 0, 3]
+    ]
+    assert _descriptor_cores(descriptors[0]) == {(0, 0), (1, 0), (2, 0)}
+
+
+# Remote addressing needs one owner address; differing owners stay an error.
+def test_build_kernel_descriptors_rejects_non_uniform_per_core_tensor_remotely(
+    monkeypatch,
+):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (2, 0))
     tensor = _PerCoreLocalTensorTestDouble(
-        "l1-small", "block", _FakeExplicitCoreRanges((0, 0), (0, 0))
+        "l1-small", "block", _FakeExplicitCoreRanges((0, 0), (1, 0))
     )
     spec = kernel_runner.KernelSpec(
         path="/tmp/kernel.cpp",
@@ -2339,14 +2384,17 @@ def test_build_kernel_descriptors_reports_missing_per_core_tensor_shard(monkeypa
 
     with pytest.raises(
         ValueError,
-        match=r"per-core tensor 0 has no shard on executing core \(1, 0\)",
+        match=(
+            r"per-core tensor 0 has no shard on executing core \(2, 0\), and "
+            r"its owner addresses differ"
+        ),
     ):
         kernel_runner.build_kernel_descriptors(
             kernel_specs=[spec],
             tensors=[tensor],
             tensor_accessor_args=[],
             core_ranges=full_grid,
-            grid_cols=2,
+            grid_cols=3,
             grid_rows=1,
             num_cbs=0,
             device_coordinates=[0, 3],
