@@ -13,9 +13,11 @@ struct IsCompilerSRAMDescriptor {
 };
 
 template <uint32_t PageBytes, uint32_t PagesPerBlock, uint32_t BlockCount,
-          uint32_t StateOffset, uint32_t PayloadOffset>
+          uint32_t StorageCapacityPages, uint32_t StateOffset,
+          uint32_t PayloadOffset, int32_t PayloadCommonArgIndex>
 struct IsCompilerSRAMDescriptor<ttlang::l1::DFBDescriptor<
-    PageBytes, PagesPerBlock, BlockCount, StateOffset, PayloadOffset>> {
+    PageBytes, PagesPerBlock, BlockCount, StorageCapacityPages, StateOffset,
+    PayloadOffset, PayloadCommonArgIndex>> {
   static constexpr bool value = true;
 };
 

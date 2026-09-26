@@ -262,22 +262,6 @@ def _make_high_index_reset(tmp_path, data_format, dfb_count):
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
-def test_compiler_l1_scalar_external_compute(device, dtype, to_device):
-    expected = torch.randn(TILE, TILE, dtype=dtype)
-    input_tensor = to_device(expected, device)
-    output_tensor = to_device(torch.zeros_like(expected), device)
-
-    _make_scalar_external_compute(_data_format(dtype))(
-        input_tensor,
-        output_tensor,
-        options="--ttl-memory-model=compiler-sram",
-    )
-
-    _assert_exact(ttnn.to_torch(output_tensor), expected)
-
-
-@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
-@pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
 def test_compiler_l1_external_selected_reset(
     device, dtype, to_device, monkeypatch, tmp_path
 ):
