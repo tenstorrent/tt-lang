@@ -176,8 +176,8 @@ remapCommonArgIndex(int64_t originalIndex,
   return *tensorSlotMap[originalIndex];
 }
 
-static FailureOr<int64_t> getCompilerL1TensorIndex(ModuleOp module,
-                                                   int64_t dfbIndex) {
+static FailureOr<int64_t> getCompilerSRAMTensorIndex(ModuleOp module,
+                                                     int64_t dfbIndex) {
   auto memoryModel = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
   if (!memoryModel || memoryModel.getValue() != kCompilerSRAMMemoryModel) {
     return int64_t{-1};
@@ -203,6 +203,29 @@ static FailureOr<int64_t> getCompilerL1TensorIndex(ModuleOp module,
                  : FailureOr<int64_t>(failure());
 }
 
+static LogicalResult
+markCompilerSRAMTensorSlot(Operation *use, ModuleOp module, int64_t dfbIndex,
+                           ArrayRef<int64_t> globalTensorIndices,
+                           BitVector &liveTensorSlots) {
+  FailureOr<int64_t> tensorIndex = getCompilerSRAMTensorIndex(module, dfbIndex);
+  if (failed(tensorIndex)) {
+    use->emitOpError("has invalid compiler-sram tensor-backing metadata");
+    return failure();
+  }
+  if (*tensorIndex < 0) {
+    return success();
+  }
+  auto slot = llvm::find(globalTensorIndices, *tensorIndex);
+  if (slot == globalTensorIndices.end()) {
+    use->emitOpError("compiler-sram tensor backing references tensor ")
+        << *tensorIndex
+        << " which is absent from the kernel's common tensor arguments";
+    return failure();
+  }
+  liveTensorSlots.set(std::distance(globalTensorIndices.begin(), slot));
+  return success();
+}
+
 static LogicalResult finalizeFunction(func::FuncOp function) {
   auto crtaIndices = function->getAttrOfType<ArrayAttr>(kCRTAIndicesAttrName);
   if (!crtaIndices) {
@@ -225,26 +248,29 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
         if (!isa<ttk::CBType>(get.getType())) {
           return WalkResult::advance();
         }
-        FailureOr<int64_t> tensorIndex =
-            getCompilerL1TensorIndex(module, get.getArgIndex());
-        if (failed(tensorIndex)) {
-          get.emitOpError("has invalid compiler-sram tensor-backing metadata");
-          return WalkResult::interrupt();
-        }
-        if (*tensorIndex < 0) {
-          return WalkResult::advance();
-        }
-        auto slot = llvm::find(globalTensorIndices, *tensorIndex);
-        if (slot == globalTensorIndices.end()) {
-          get.emitOpError("compiler-sram tensor backing references tensor ")
-              << *tensorIndex
-              << " which is absent from the kernel's common tensor arguments";
-          return WalkResult::interrupt();
-        }
-        liveTensorSlots.set(std::distance(globalTensorIndices.begin(), slot));
-        return WalkResult::advance();
+        return failed(markCompilerSRAMTensorSlot(get, module, get.getArgIndex(),
+                                                 globalTensorIndices,
+                                                 liveTensorSlots))
+                   ? WalkResult::interrupt()
+                   : WalkResult::advance();
       });
   if (compilerL1Walk.wasInterrupted()) {
+    return failure();
+  }
+  WalkResult opaqueCallWalk = function.walk([&](ttk::OpaqueCallOp call) {
+    auto resourceIndices = call.getDfbResourceIndices();
+    if (!resourceIndices) {
+      return WalkResult::advance();
+    }
+    for (int32_t dfbIndex : *resourceIndices) {
+      if (failed(markCompilerSRAMTensorSlot(
+              call, module, dfbIndex, globalTensorIndices, liveTensorSlots))) {
+        return WalkResult::interrupt();
+      }
+    }
+    return WalkResult::advance();
+  });
+  if (opaqueCallWalk.wasInterrupted()) {
     return failure();
   }
   if (failed(classifyCommonArgIndices(function, tensorCount, liveTensorSlots,

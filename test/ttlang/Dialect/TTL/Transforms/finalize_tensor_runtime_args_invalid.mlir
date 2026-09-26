@@ -107,3 +107,31 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
     return
   }
 }
+
+// -----
+
+// A typed external call requires finalized allocation metadata for its DFB.
+module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = []} {
+  func.func @opaque_call_missing_allocation()
+      attributes {ttl.crta_indices = [7],
+                  ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{'ttkernel.opaque_call' op has invalid compiler-sram tensor-backing metadata}}
+    ttkernel.opaque_call "consume" template_args [#ttkernel.dfb_descriptor<0, 1, 1, 2048>] () {dfb_resource_indices = array<i32: 0>, header = "consume.hpp"} : () -> ()
+    return
+  }
+}
+
+// -----
+
+// A typed external call requires its tensor backing in the common arguments.
+module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
+  {storage_segments = [{tensor_backing = #ttl.tensor_backing<tensor_index = 7, byte_offset = 0, byte_size = 2048>}]}
+]} {
+  func.func @opaque_call_missing_tensor()
+      attributes {ttl.crta_indices = [0],
+                  ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{'ttkernel.opaque_call' op compiler-sram tensor backing references tensor 7 which is absent from the kernel's common tensor arguments}}
+    ttkernel.opaque_call "consume" template_args [#ttkernel.dfb_descriptor<0, 1, 1, 2048>] () {dfb_resource_indices = array<i32: 0>, header = "consume.hpp"} : () -> ()
+    return
+  }
+}

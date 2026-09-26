@@ -2053,10 +2053,7 @@ def _get_compiler_l1_arena_bytes(
     capacities_by_owner = {}
     payloads_by_owner = {}
     for config in cb_configs:
-        owner = (
-            "storage" if config.storage_index is not None else "dfb",
-            _physical_dfb_storage_index(config),
-        )
+        owner = _compiler_sram_storage_owner(config)
         previous_offset = control_offsets_by_owner.setdefault(owner, config.l1_offset)
         if previous_offset != config.l1_offset:
             raise ValueError(
@@ -2097,10 +2094,7 @@ def _get_compiler_l1_arena_bytes(
             )
             if config.l1_allocation_bytes < required_pages * config.page_size:
                 raise ValueError("compiler-sram allocation does not cover its payload")
-            owner = (
-                "storage" if config.storage_index is not None else "dfb",
-                _physical_dfb_storage_index(config),
-            )
+            owner = _compiler_sram_storage_owner(config)
             payload = (config.l1_payload_offset, config.l1_allocation_bytes)
             previous_payload = payloads_by_owner.setdefault(owner, payload)
             if previous_payload != payload:
@@ -3069,9 +3063,12 @@ def _validate_tensor_backed_dfb_binding(
 
 
 def _validate_tensor_backing_aliases(
-    tensors: List[Any], cb_configs: Iterable[PhysicalDFBConfig]
+    tensors: List[Any],
+    cb_configs: Iterable[PhysicalDFBConfig],
+    *,
+    compiler_sram: bool = False,
 ) -> None:
-    """Reject overlapping tensor storage not represented by one physical DFB."""
+    """Reject tensor aliases outside the selected storage ownership contract."""
     bindings = []
     for config in cb_configs:
         for segment in config.storage_segments:
@@ -3092,6 +3089,8 @@ def _validate_tensor_backing_aliases(
             nodes = frozenset(segment.nodes)
             for (
                 previous_index,
+                previous_owner,
+                previous_tensor_index,
                 previous_nodes,
                 previous_start,
                 previous_end,
@@ -3107,12 +3106,32 @@ def _validate_tensor_backing_aliases(
                         "tensor-backed DFB byte ranges partially overlap on a "
                         "shared launch node"
                     )
+                if compiler_sram:
+                    if (
+                        _compiler_sram_storage_owner(config) == previous_owner
+                        or segment.tensor_index == previous_tensor_index
+                    ):
+                        continue
+                    raise ValueError(
+                        "identical tensor-backed DFB ranges require one "
+                        "compiler-sram storage owner or the same declared "
+                        "tensor backing"
+                    )
                 if config.dfb_index != previous_index:
                     raise ValueError(
                         "identical tensor-backed DFB ranges require one physical "
                         "DFB index on a shared launch node"
                     )
-            bindings.append((config.dfb_index, nodes, absolute_start, absolute_end))
+            bindings.append(
+                (
+                    config.dfb_index,
+                    _compiler_sram_storage_owner(config),
+                    segment.tensor_index,
+                    nodes,
+                    absolute_start,
+                    absolute_end,
+                )
+            )
 
 
 def _resolve_dfb_placements(
@@ -3535,6 +3554,12 @@ def _order_static_dfb_descriptor_plans(
 
 def _physical_dfb_storage_index(config: PhysicalDFBConfig) -> int:
     return config.dfb_index if config.storage_index is None else config.storage_index
+
+
+def _compiler_sram_storage_owner(config: PhysicalDFBConfig) -> Tuple[str, int]:
+    if config.storage_index is not None:
+        return ("storage", config.storage_index)
+    return ("dfb", config.dfb_index)
 
 
 def _shared_static_storage_size(
@@ -4591,6 +4616,9 @@ def run_kernel_on_device(
                 "compiler-sram cannot combine with PipeNet or Metal DFB "
                 "reconfiguration resources"
             )
+        for physical_index, config in enumerate(cb_configs):
+            _validate_physical_dfb_config(config, physical_index)
+        _validate_tensor_backing_aliases(tensors, cb_configs, compiler_sram=True)
     arguments = {
         "kernel_specs": kernel_specs,
         "tensors": tensors,
