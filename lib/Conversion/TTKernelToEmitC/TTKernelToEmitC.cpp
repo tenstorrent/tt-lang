@@ -121,6 +121,7 @@ struct CompilerL1Allocation {
   int64_t payloadOffset;
   int64_t allocationBytes;
   int64_t tensorIndex;
+  ArrayAttr launchNodes;
   Type elementType;
 };
 
@@ -153,6 +154,24 @@ static bool hasValidLaunchNodes(ArrayAttr nodes) {
     }
   }
   return true;
+}
+
+static bool launchNodesOverlap(ArrayAttr firstNodes, ArrayAttr secondNodes) {
+  llvm::SmallDenseSet<std::pair<int64_t, int64_t>, 8> firstCoordinates;
+  for (Attribute node : firstNodes) {
+    auto coordinates = cast<ArrayAttr>(node);
+    firstCoordinates.insert({cast<IntegerAttr>(coordinates[0]).getInt(),
+                             cast<IntegerAttr>(coordinates[1]).getInt()});
+  }
+  for (Attribute node : secondNodes) {
+    auto coordinates = cast<ArrayAttr>(node);
+    if (firstCoordinates.contains(
+            {cast<IntegerAttr>(coordinates[0]).getInt(),
+             cast<IntegerAttr>(coordinates[1]).getInt()})) {
+      return true;
+    }
+  }
+  return false;
 }
 
 static FailureOr<CompilerL1Allocation>
@@ -206,6 +225,7 @@ parseCompilerL1Allocation(Attribute attribute) {
     return failure();
   }
   ttl::TensorBackingAttr tensorBacking;
+  ArrayAttr launchNodes;
   if (hasArenaPayload) {
     if (!isRepresentableMetadataInteger(payloadAddress) ||
         !isRepresentableMetadataInteger(allocationBytes)) {
@@ -219,9 +239,8 @@ parseCompilerL1Allocation(Attribute attribute) {
     tensorBacking =
         segment ? segment.getAs<ttl::TensorBackingAttr>("tensor_backing")
                 : ttl::TensorBackingAttr();
-    auto segmentNodes =
-        segment ? segment.getAs<ArrayAttr>("nodes") : ArrayAttr();
-    if (!tensorBacking || !hasValidLaunchNodes(segmentNodes)) {
+    launchNodes = segment ? segment.getAs<ArrayAttr>("nodes") : ArrayAttr();
+    if (!tensorBacking || !hasValidLaunchNodes(launchNodes)) {
       return failure();
     }
   }
@@ -267,6 +286,7 @@ parseCompilerL1Allocation(Attribute attribute) {
                     : payloadAddressValue - stateOffsetValue,
       hasArenaPayload ? allocationBytes.getInt() : 0,
       tensorBacking ? tensorBacking.getTensorIndex() : -1,
+      launchNodes,
       elementType.getValue()};
 }
 
@@ -3646,6 +3666,31 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
           "compiler-sram requires finalized allocation metadata");
       return failure();
     }
+    llvm::SmallDenseSet<unsigned, 8> reconfiguredDFBs;
+    if (auto resetEntries = module->getAttrOfType<ArrayAttr>(
+            ttl::kCompilerSRAMReconfigurationResetsAttrName)) {
+      for (Attribute resetAttribute : resetEntries) {
+        auto reset = dyn_cast<DictionaryAttr>(resetAttribute);
+        auto ordinal =
+            reset ? reset.getAs<IntegerAttr>("ordinal") : IntegerAttr();
+        auto indices = reset ? reset.getAs<DenseI32ArrayAttr>("dfb_indices")
+                             : DenseI32ArrayAttr();
+        if (!isRepresentableMetadataInteger(ordinal) || ordinal.getInt() < 0 ||
+            !indices) {
+          module.emitOpError("contains malformed compiler-sram reconfiguration "
+                             "reset metadata");
+          return failure();
+        }
+        for (int32_t index : indices.asArrayRef()) {
+          if (index < 0 || static_cast<uint64_t>(index) >= allocations.size()) {
+            module.emitOpError(
+                "contains invalid compiler-sram reconfiguration reset index");
+            return failure();
+          }
+          reconfiguredDFBs.insert(index);
+        }
+      }
+    }
     auto arenaBytes =
         module->getAttrOfType<IntegerAttr>(ttl::kL1ArenaBytesAttrName);
     if (!isRepresentableMetadataInteger(arenaBytes) ||
@@ -3664,7 +3709,7 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
     }
     SmallVector<CompilerL1Allocation> parsedAllocations;
     SmallVector<uint64_t> controlStarts;
-    llvm::DenseMap<int64_t, unsigned> firstAllocationByStorageIndex;
+    llvm::DenseMap<int64_t, SmallVector<unsigned>> allocationsByStorageIndex;
     uint64_t controlEnd = 0;
     for (auto [index, attribute] : llvm::enumerate(allocations)) {
       FailureOr<CompilerL1Allocation> allocation =
@@ -3716,15 +3761,31 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
         return failure();
       }
       if (storageIndex) {
-        auto [firstEntry, inserted] = firstAllocationByStorageIndex.try_emplace(
-            storageIndex.getInt(), index);
-        if (inserted) {
+        SmallVector<unsigned> &ownerAllocations =
+            allocationsByStorageIndex[storageIndex.getInt()];
+        for (unsigned previousIndex : ownerAllocations) {
+          const CompilerL1Allocation &previous =
+              parsedAllocations[previousIndex];
+          // On one node, a changed backing requires a finalized terminal reset.
+          if (allocation->tensorIndex >= 0 && previous.tensorIndex >= 0 &&
+              (allocation->tensorIndex != previous.tensorIndex ||
+               allocation->payloadOffset != previous.payloadOffset) &&
+              launchNodesOverlap(allocation->launchNodes,
+                                 previous.launchNodes) &&
+              !reconfiguredDFBs.contains(index) &&
+              !reconfiguredDFBs.contains(previousIndex)) {
+            module.emitOpError("compiler-sram storage owner ")
+                << storageIndex.getInt()
+                << " has different tensor backing on a shared launch node "
+                   "without a reconfiguration reset";
+            return failure();
+          }
+        }
+        if (ownerAllocations.empty()) {
           controlStarts.push_back(allocation->stateOffset);
         } else {
           const CompilerL1Allocation &first =
-              parsedAllocations[firstEntry->second];
-          // One storage index uses a node-local record; disjoint nodes can
-          // bind that index to different tensors.
+              parsedAllocations[ownerAllocations.front()];
           if (allocation->stateOffset != first.stateOffset ||
               allocation->storageCapacityPages != first.storageCapacityPages ||
               allocation->pageSizeBytes != first.pageSizeBytes ||
@@ -3738,6 +3799,7 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
             return failure();
           }
         }
+        ownerAllocations.push_back(index);
       } else {
         controlStarts.push_back(allocation->stateOffset);
       }
