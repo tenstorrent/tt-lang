@@ -4463,12 +4463,17 @@ def _run_kernel_on_device_impl(
     if synchronize_after_success:
         if arena_completion_state is not None:
             arena_completion_state.synchronization_attempted = True
-        _synchronize_or_retain_runtime_resources(
-            resource_device,
-            pipe_runtime_resources,
-            reconfiguration_resources,
-            completion_lifetimes,
-        )
+        try:
+            _synchronize_or_retain_runtime_resources(
+                resource_device,
+                pipe_runtime_resources if runtime_resource_cache is None else None,
+                (reconfiguration_resources if runtime_resource_cache is None else None),
+                completion_lifetimes,
+            )
+        except BaseException:
+            if runtime_resource_cache is not None:
+                _detach_cached_runtime_resources(runtime_resource_cache)
+            raise
     return result
 
 

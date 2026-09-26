@@ -2789,6 +2789,84 @@ def test_compiler_sram_external_owner_retained_when_completion_unknown(monkeypat
     assert retained[0].portable_resource_lifetimes == (external_owner, arena)
 
 
+@pytest.mark.parametrize("scratch_bytes", [0, 16], ids=["external", "lifecycle"])
+def test_compiler_sram_failed_completion_detaches_cached_owners(
+    monkeypatch, scratch_bytes
+):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    retained = []
+    monkeypatch.setattr(kernel_runner, "_RETAINED_RUNTIME_RESOURCE_CACHES", retained)
+    device = object()
+    allocations = {}
+    next_address = 0x8000
+
+    def allocate_storage(_ranges, num_bytes, allocation_device, *, zero_initialize):
+        nonlocal next_address
+        assert allocation_device is device
+        assert zero_initialize
+        tensor = _FakeTensor(device, address=next_address)
+        next_address += 0x1000
+        allocations.setdefault(num_bytes, []).append(tensor)
+        return tensor
+
+    monkeypatch.setattr(
+        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_storage
+    )
+    owners = (object(), object())
+    owner_iter = iter(owners)
+
+    def make_resources(**_kwargs):
+        return ProgramRuntimeResources(lifetimes=(next(owner_iter),))
+
+    synchronization_attempts = 0
+
+    def synchronize(completion_device):
+        nonlocal synchronization_attempts
+        assert completion_device is device
+        synchronization_attempts += 1
+        if synchronization_attempts == 1:
+            raise RuntimeError("completion unknown")
+
+    fake_ttnn.synchronize_device = synchronize
+    cache = kernel_runner.KernelRuntimeResourceCache()
+    arguments = {
+        "kernel_specs": [_kernel_spec(KernelKind.COMPUTE)],
+        "tensors": [_FakeTensorWithoutDevice()],
+        "cb_configs": [_compiler_l1_config()],
+        "core_ranges": _FakeCoreRanges(),
+        "pipe_sram_scratch_bytes": scratch_bytes,
+        "num_dfb_resets": int(bool(scratch_bytes)),
+        "runtime_resource_factory": make_resources,
+        "runtime_resource_cache": cache,
+        "device": device,
+    }
+    arena_bytes = kernel_runner._get_compiler_l1_arena_bytes(arguments["cb_configs"])
+    assert arena_bytes is not None
+
+    with pytest.raises(RuntimeError, match="completion unknown"):
+        kernel_runner.run_kernel_on_device(**arguments)
+
+    assert cache.compatibility_key is None
+    assert cache.pipe_resources is None
+    assert cache.portable_resource_lifetimes == ()
+    assert len(retained) == 2
+    assert retained[0].portable_resource_lifetimes == (allocations[arena_bytes][0],)
+    assert retained[1].portable_resource_lifetimes == (owners[0],)
+    if scratch_bytes:
+        assert retained[1].pipe_resources.scratch_tensors == [
+            allocations[scratch_bytes][0]
+        ]
+
+    kernel_runner.run_kernel_on_device(**arguments)
+
+    assert synchronization_attempts == 2
+    assert cache.portable_resource_lifetimes == (owners[1],)
+    assert cache.pipe_resources is not retained[1].pipe_resources
+    if scratch_bytes:
+        assert cache.pipe_resources.scratch_tensors == allocations[scratch_bytes][1:]
+
+
 # Compiler-managed reset and reconfiguration state uses compiler scratch.
 @pytest.mark.parametrize("reset_count", [0, 1])
 def test_compiler_l1_composes_with_lifecycle_scratch(monkeypatch, reset_count):
