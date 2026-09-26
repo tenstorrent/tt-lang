@@ -1,12 +1,15 @@
 // RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s
 // RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s --check-prefix=COUNT
+// RUN: ttlang-opt %s -convert-ttl-to-ttkernel | FileCheck %s --check-prefix=NO-RECEIVER-MANAGER
 
 // Summary: Verify that PipeGraph preserves distinct logical-device transfers
 // that share one node-level PipeKey.
 
 // Receiver declarations intentionally reverse the send order. Each edge must
 // retain its route, predicate, payload send, completion wait, and receiver DFB.
-// Disjoint device predicates share one function-scoped fabric manager.
+// Disjoint sender predicates share one function-scoped fabric manager.
+// One-shot transfers use their computed receiver addresses without readiness
+// messages or receiver-side fabric managers.
 
 // COUNT-LABEL: func.func @senders
 // COUNT: ttkernel.routing_plane.create_connection_manager
@@ -19,18 +22,13 @@
 // COUNT-NOT: ttkernel.routing_plane.open_connections
 // COUNT-NOT: ttkernel.routing_plane.close_connections
 // COUNT-LABEL: func.func @receivers
-// COUNT: ttkernel.routing_plane.create_connection_manager
-// COUNT-NOT: ttkernel.routing_plane.create_connection_manager
-// COUNT: ttkernel.routing_plane.open_connections
-// COUNT-NOT: ttkernel.routing_plane.create_connection_manager
-// COUNT-NOT: ttkernel.routing_plane.open_connections
-// COUNT: ttkernel.routing_plane.close_connections
 // COUNT-NOT: ttkernel.routing_plane.create_connection_manager
 // COUNT-NOT: ttkernel.routing_plane.open_connections
 // COUNT-NOT: ttkernel.routing_plane.close_connections
+// COUNT: return
 
 // CHECK-LABEL: module attributes
-// CHECK-SAME: ttl.pipe_global_semaphore_count = 2 : i64
+// CHECK-SAME: ttl.pipe_global_semaphore_count = 1 : i64
 // CHECK-SAME: ttl.pipe_sync_semaphore_count = 0 : i64
 // CHECK-LABEL: func.func @senders
 // CHECK-SAME: ttl.fabric_routes = [
@@ -54,12 +52,14 @@
 // CHECK-NEXT: %[[RUNTIME_ARG_BASE:.*]] = arith.addi %[[FABRIC_BASE_INDEX_0]],
 // CHECK-NEXT: %[[ROUTE_ID:.*]] = ttkernel.routing_plane.open_connections %[[CONNECTION_MANAGER]], %[[CONNECTIONS_0]] runtime_arg_base = %[[RUNTIME_ARG_BASE]]
 // CHECK: scf.if %[[IS_DEVICE_0]] {
+// CHECK-NOT: ttkernel.experimental.semaphore_wait
 // CHECK: %[[PAYLOAD_0:.*]] = ttkernel.get_write_ptr
 // CHECK: ttkernel.routing_plane.fused_write_atomic_inc(%[[CONNECTION_MANAGER]], %[[ROUTE_ID]], {{.*}}, {{.*}}, {{.*}}, %[[PAYLOAD_0]],
 // CHECK-NEXT: }
 // CHECK: %[[DEVICE_2:.*]] = ttkernel.get_common_arg_val
 // CHECK-NEXT: %[[IS_DEVICE_2:.*]] = arith.cmpi eq, %[[DEVICE_2]], %{{.*}} : i32
 // CHECK: scf.if %[[IS_DEVICE_2]] {
+// CHECK-NOT: ttkernel.experimental.semaphore_wait
 // CHECK: %[[PAYLOAD_1:.*]] = ttkernel.get_write_ptr
 // CHECK: ttkernel.routing_plane.fused_write_atomic_inc(%[[CONNECTION_MANAGER]], %[[ROUTE_ID]], {{.*}}, {{.*}}, {{.*}}, %[[PAYLOAD_1]],
 // CHECK-NEXT: }
@@ -72,15 +72,9 @@
 // CHECK-NEXT: %[[RECEIVER_DFB_1:.*]] = ttkernel.get_compile_time_arg_val(2)
 // CHECK: %[[DEVICE_3:.*]] = ttkernel.get_common_arg_val
 // CHECK-NEXT: %[[IS_DEVICE_3:.*]] = arith.cmpi eq, %[[DEVICE_3]], %{{.*}} : i32
-// CHECK: %[[RECEIVER_FABRIC_BASE_3:.*]] = ttkernel.get_common_arg_val
-// CHECK-NEXT: %[[RECEIVER_FABRIC_BASE_INDEX_3:.*]] = arith.index_cast %[[RECEIVER_FABRIC_BASE_3]] : i32 to index
-// CHECK-NEXT: %[[RECEIVER_CONNECTIONS_3:.*]] = ttkernel.get_arg_val(%[[RECEIVER_FABRIC_BASE_INDEX_3]])
-// CHECK-NEXT: %[[RECEIVER_CONNECTION_MANAGER:.*]] = ttkernel.routing_plane.create_connection_manager
-// CHECK-NEXT: %[[RECEIVER_RUNTIME_ARG_BASE:.*]] = arith.addi %[[RECEIVER_FABRIC_BASE_INDEX_3]],
-// CHECK-NEXT: %[[RECEIVER_ROUTE_ID:.*]] = ttkernel.routing_plane.open_connections %[[RECEIVER_CONNECTION_MANAGER]], %[[RECEIVER_CONNECTIONS_3]] runtime_arg_base = %[[RECEIVER_RUNTIME_ARG_BASE]]
 // CHECK: scf.if %[[IS_DEVICE_3]] {
 // CHECK-NEXT: ttkernel.cb_reserve_back(%[[RECEIVER_DFB_1]],
-// CHECK-NEXT: ttkernel.routing_plane.atomic_inc(%[[RECEIVER_CONNECTION_MANAGER]], %[[RECEIVER_ROUTE_ID]],
+// CHECK-NOT: ttkernel.routing_plane.atomic_inc
 // CHECK: ttkernel.experimental.semaphore_wait_min
 // CHECK-NEXT: ttkernel.cb_push_back(%[[RECEIVER_DFB_1]],
 // CHECK-NEXT: }
@@ -88,15 +82,18 @@
 // CHECK-NEXT: %[[IS_DEVICE_1:.*]] = arith.cmpi eq, %[[DEVICE_1]], %{{.*}} : i32
 // CHECK: scf.if %[[IS_DEVICE_1]] {
 // CHECK-NEXT: ttkernel.cb_reserve_back(%[[RECEIVER_DFB_0]],
-// CHECK-NEXT: ttkernel.routing_plane.atomic_inc(%[[RECEIVER_CONNECTION_MANAGER]], %[[RECEIVER_ROUTE_ID]],
+// CHECK-NOT: ttkernel.routing_plane.atomic_inc
 // CHECK: ttkernel.experimental.semaphore_wait_min
 // CHECK-NEXT: ttkernel.cb_push_back(%[[RECEIVER_DFB_0]],
 // CHECK-NEXT: }
-// CHECK-NEXT: ttkernel.routing_plane.close_connections(%[[RECEIVER_CONNECTION_MANAGER]], %[[RECEIVER_CONNECTIONS_3]])
-// CHECK-NOT: ttkernel.routing_plane.create_connection_manager
-// CHECK-NOT: ttkernel.routing_plane.open_connections
 // CHECK-NOT: ttkernel.experimental.semaphore_wait_min
 // CHECK-NEXT: return
+
+// NO-RECEIVER-MANAGER-LABEL: func.func @receivers
+// NO-RECEIVER-MANAGER-NOT: ttkernel.routing_plane.create_connection_manager
+// NO-RECEIVER-MANAGER-NOT: ttkernel.routing_plane.open_connections
+// NO-RECEIVER-MANAGER-NOT: ttkernel.routing_plane.close_connections
+// NO-RECEIVER-MANAGER: return
 
 #domain = #ttl.device_domain<components = <name = "device", extent = [4]>>
 #transfer_0 = #ttl.device_transfer<

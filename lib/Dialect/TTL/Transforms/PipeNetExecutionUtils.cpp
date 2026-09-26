@@ -71,6 +71,30 @@ getPipeNetRecordLoopInductionValue(const PipeNetRecordLoop &recordLoop,
              : std::optional<std::uint64_t>(iteration->second);
 }
 
+std::optional<std::uint64_t>
+getMatchingPipeNetRecordCount(const PipeNetRecordLoop &recordLoop,
+                              const LaunchExecutionLocation &location) {
+  PipeRole role = recordLoop.selection == PipeNetRecordSelection::Source
+                      ? PipeRole::Source
+                      : PipeRole::Destination;
+  std::uint64_t matchingRecordCount = 0;
+  bool hasUnknownMatch = false;
+  forEachPipeRecord(
+      recordLoop.records, [&](std::uint64_t, PipeRecordAttr record) {
+        std::optional<bool> matches =
+            pipeRecordRoleMatchesAtLaunchLocation(record, role, location);
+        if (!matches) {
+          hasUnknownMatch = true;
+          return;
+        }
+        matchingRecordCount += *matches;
+      });
+  if (hasUnknownMatch) {
+    return std::nullopt;
+  }
+  return matchingRecordCount;
+}
+
 std::optional<ActivePipeNetRecord>
 getActivePipeNetRecord(ArrayRef<ActivePipeNetRecord> activeRecords,
                        Operation *loopOp) {
@@ -235,30 +259,6 @@ getMatchingRecords(const PipeNetRecordLoop &recordLoop, LaunchNodeCoord coord) {
   return matchingRecords;
 }
 
-static std::optional<std::uint64_t>
-getMatchingRecordCount(const PipeNetRecordLoop &recordLoop,
-                       const LaunchExecutionLocation &location) {
-  PipeRole role = recordLoop.selection == PipeNetRecordSelection::Source
-                      ? PipeRole::Source
-                      : PipeRole::Destination;
-  std::uint64_t matchingRecordCount = 0;
-  bool hasUnknownMatch = false;
-  forEachPipeRecord(
-      recordLoop.records, [&](std::uint64_t, PipeRecordAttr record) {
-        std::optional<bool> matches =
-            pipeRecordRoleMatchesAtLaunchLocation(record, role, location);
-        if (!matches) {
-          hasUnknownMatch = true;
-          return;
-        }
-        matchingRecordCount += *matches;
-      });
-  if (hasUnknownMatch) {
-    return std::nullopt;
-  }
-  return matchingRecordCount;
-}
-
 static WalkResult walkPipeNetOpsInProgramOrderImpl(
     Operation *op, LaunchNodeCoord coord,
     llvm::function_ref<std::optional<PipeNetRecordLoop>(Operation *)>
@@ -343,7 +343,7 @@ ActivePipeNetExecution evaluateActivePipeNetExecution(
       execution.countDivisor = std::nullopt;
     }
     std::optional<std::uint64_t> matchingRecordCount =
-        getMatchingRecordCount(*recordLoop, location);
+        getMatchingPipeNetRecordCount(*recordLoop, location);
     if (!matchingRecordCount) {
       execution.countDivisor = std::nullopt;
       continue;

@@ -6,8 +6,10 @@
 
 #include "CommonRuntimeArgLayout.h"
 #include "DFBAllocationLimits.h"
+#include "FabricForwarderPlan.h"
 #include "FabricManagerLifetimeAnalysis.h"
 #include "PipePlanning.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
@@ -51,6 +53,7 @@
 #include <memory>
 #include <numeric>
 #include <optional>
+#include <set>
 #include <tuple>
 #include <utility>
 
@@ -156,17 +159,20 @@ static PipeSourceKey getPipeSourceKey(PipeType pipeType) {
   return {pipeType.getSrcX(), pipeType.getSrcY()};
 }
 
+// Create the route entry required by the record's route table. Omit
+// `sourceNode` when the record executes no fabric protocol so runtime binding
+// does not open an unused connection.
 static std::size_t addFabricRoute(SmallVectorImpl<FabricRoute> &routes,
                                   DeviceRefAttr localDevice,
                                   DeviceRefAttr remoteDevice,
-                                  LaunchNodeCoord localNode) {
+                                  std::optional<LaunchNodeCoord> sourceNode) {
   auto route = llvm::find_if(routes, [&](const FabricRoute &existing) {
     return existing.localDevice == localDevice &&
            existing.remoteDevice == remoteDevice;
   });
   if (route != routes.end()) {
-    if (!llvm::is_contained(route->sourceNodes, localNode)) {
-      route->sourceNodes.push_back(localNode);
+    if (sourceNode && !llvm::is_contained(route->sourceNodes, *sourceNode)) {
+      route->sourceNodes.push_back(*sourceNode);
     }
     return route->routeIndex;
   }
@@ -175,8 +181,12 @@ static std::size_t addFabricRoute(SmallVectorImpl<FabricRoute> &routes,
       llvm::count_if(routes, [&](const FabricRoute &existing) {
         return existing.localDevice == localDevice;
       });
-  routes.push_back(
-      FabricRoute{localDevice, remoteDevice, {localNode}, routeIndex});
+  SmallVector<LaunchNodeCoord> sourceNodes;
+  if (sourceNode) {
+    sourceNodes.push_back(*sourceNode);
+  }
+  routes.push_back(FabricRoute{localDevice, remoteDevice,
+                               std::move(sourceNodes), routeIndex});
   return routeIndex;
 }
 
@@ -238,18 +248,18 @@ getIntervalTransferNodes(ArrayRef<Operation *> operations,
   return sortedTransferNodes;
 }
 
-static bool sourceNodesEqual(ArrayRef<LaunchNodeCoord> lhs,
-                             ArrayRef<LaunchNodeCoord> rhs) {
-  return lhs.size() == rhs.size() &&
-         llvm::all_of(lhs, [&](LaunchNodeCoord lhsNode) {
-           return llvm::is_contained(rhs, lhsNode);
-         });
+bool launchNodeSetsEqual(ArrayRef<LaunchNodeCoord> lhs,
+                         ArrayRef<LaunchNodeCoord> rhs) {
+  std::set<LaunchNodeCoord> lhsNodes(lhs.begin(), lhs.end());
+  std::set<LaunchNodeCoord> rhsNodes(rhs.begin(), rhs.end());
+  return lhsNodes.size() == lhs.size() && rhsNodes.size() == rhs.size() &&
+         lhsNodes == rhsNodes;
 }
 
 static bool fabricRoutesEqual(const FabricRoute &lhs, const FabricRoute &rhs) {
   return lhs.localDevice == rhs.localDevice &&
          lhs.remoteDevice == rhs.remoteDevice &&
-         sourceNodesEqual(lhs.sourceNodes, rhs.sourceNodes);
+         launchNodeSetsEqual(lhs.sourceNodes, rhs.sourceNodes);
 }
 
 struct FabricManagerExecutionLocation {
@@ -450,6 +460,53 @@ static Operation *getFunctionLevelBoundary(Operation *operation,
   return operation;
 }
 
+// Return true only for operations whose regions cannot repeat during one
+// execution of the operation.
+static bool executesEachRegionAtMostOnce(Operation *operation) {
+  return isa<affine::AffineIfOp, scf::IfOp, scf::IndexSwitchOp,
+             scf::ExecuteRegionOp, IfSrcOp, IfDstOp>(operation);
+}
+
+static bool isNestedInBlock(Operation *operation, Block *block) {
+  return operation->getBlock() == block ||
+         block->findAncestorOpInBlock(*operation);
+}
+
+// Return the deepest block containing every boundary that executes at most
+// once per function invocation.
+static Block *getCommonSingleInvocationBlock(ArrayRef<Operation *> boundaries,
+                                             Block *functionLevelBlock) {
+  assert(!boundaries.empty() && "fabric interval group must not be empty");
+  Block *commonBlock = boundaries.front()->getBlock();
+  while (!llvm::all_of(boundaries, [&](Operation *boundary) {
+    return isNestedInBlock(boundary, commonBlock);
+  })) {
+    Operation *parent = commonBlock->getParentOp();
+    assert(parent && commonBlock != functionLevelBlock &&
+           "fabric boundaries must share their function-level block");
+    commonBlock = parent->getBlock();
+  }
+
+  Block *singleInvocationBlock = commonBlock;
+  for (Block *block = commonBlock; block != functionLevelBlock;) {
+    Operation *parent = block->getParentOp();
+    assert(parent && "nested fabric boundary must have a parent operation");
+    if (!executesEachRegionAtMostOnce(parent)) {
+      singleInvocationBlock = parent->getBlock();
+    }
+    block = parent->getBlock();
+  }
+  return singleInvocationBlock;
+}
+
+static Operation *projectBoundaryToBlock(Operation *boundary, Block *block) {
+  Operation *projected = boundary->getBlock() == block
+                             ? boundary
+                             : block->findAncestorOpInBlock(*boundary);
+  assert(projected && "fabric boundary must be nested in its common block");
+  return projected;
+}
+
 struct FabricRuntimeCoalescingCandidate {
   std::size_t intervalIndex;
   Operation *acquireBoundary;
@@ -486,9 +543,9 @@ static void coalesceFabricRuntimeCandidates(
 
 static void coalesceUnserializedFabricRuntimeIntervals(FabricRoutePlan &plan) {
   // Each function has one host-specialized connection record set. Unserialized
-  // intervals in one block must share a manager or they reopen that set.
-  llvm::MapVector<Block *, SmallVector<FabricRuntimeCoalescingCandidate>>
-      candidatesByBlock;
+  // intervals in one function-level block share a manager so that they do not
+  // repeatedly reopen that set.
+  llvm::MapVector<Block *, SmallVector<std::size_t>> intervalIndicesByBlock;
   for (auto [intervalIndex, interval] :
        llvm::enumerate(plan.runtimeIntervals)) {
     if (interval.ownershipSemaphoreIndex) {
@@ -505,16 +562,37 @@ static void coalesceUnserializedFabricRuntimeIntervals(FabricRoutePlan &plan) {
     if (acquireBoundary->getBlock() != releaseBoundary->getBlock()) {
       continue;
     }
-    candidatesByBlock[acquireBoundary->getBlock()].push_back(
-        {intervalIndex, acquireBoundary, releaseBoundary});
+    intervalIndicesByBlock[acquireBoundary->getBlock()].push_back(
+        intervalIndex);
   }
 
   SmallVector<bool> removed(plan.runtimeIntervals.size());
-  for (const auto &entry : candidatesByBlock) {
-    ArrayRef<FabricRuntimeCoalescingCandidate> candidates = entry.second;
-    if (candidates.size() > 1) {
-      coalesceFabricRuntimeCandidates(candidates, plan, removed);
+  for (const auto &[functionLevelBlock, intervalIndices] :
+       intervalIndicesByBlock) {
+    if (intervalIndices.size() < 2) {
+      continue;
     }
+    SmallVector<Operation *> boundaries;
+    boundaries.reserve(2 * intervalIndices.size());
+    for (std::size_t intervalIndex : intervalIndices) {
+      const FabricRuntimeIntervalPlan &interval =
+          plan.runtimeIntervals[intervalIndex];
+      boundaries.push_back(interval.acquireBoundary);
+      boundaries.push_back(interval.releaseBoundary);
+    }
+    Block *commonBlock =
+        getCommonSingleInvocationBlock(boundaries, functionLevelBlock);
+    SmallVector<FabricRuntimeCoalescingCandidate> candidates;
+    candidates.reserve(intervalIndices.size());
+    for (std::size_t intervalIndex : intervalIndices) {
+      const FabricRuntimeIntervalPlan &interval =
+          plan.runtimeIntervals[intervalIndex];
+      candidates.push_back(
+          {intervalIndex,
+           projectBoundaryToBlock(interval.acquireBoundary, commonBlock),
+           projectBoundaryToBlock(interval.releaseBoundary, commonBlock)});
+    }
+    coalesceFabricRuntimeCandidates(candidates, plan, removed);
   }
 
   SmallVector<FabricRuntimeIntervalPlan> coalescedIntervals;
@@ -698,13 +776,75 @@ static void planFabricManagerOwnership(
   coalesceUnserializedFabricRuntimeIntervals(plan);
 }
 
+// Return whether the endpoint writes its destination blocks once and no other
+// executing pipe endpoint writes any of those blocks.
+static bool
+hasOneShotNonOverlappingReceiverBlocks(const PipeReceiverEndpoint &endpoint,
+                                       const PipeGraph &pipeGraph) {
+  if (endpoint.addressSequence.executionCount != 1 ||
+      !endpoint.addressSequence.recurrence) {
+    return false;
+  }
+  const PipeReceiverDFBNode &receiverDFB =
+      pipeGraph.getReceiverDFBNode(endpoint.receiverDFBNode);
+  if (!receiverDFB.hasProvenPipeOnlyProducerStream) {
+    return false;
+  }
+
+  int64_t targetBegin = endpoint.addressSequence.recurrence->initialSlot;
+  int64_t targetEnd =
+      targetBegin + endpoint.receiverDFBInfo.receiverSlotSpanBlocks;
+  for (PipeReceiverEndpointId writerId : receiverDFB.writerEndpoints) {
+    if (writerId == endpoint.id) {
+      continue;
+    }
+    const PipeReceiverEndpoint &writer =
+        pipeGraph.getPipeReceiverEndpoint(writerId);
+    if (writer.addressSequence.executionCount == 0) {
+      continue;
+    }
+    if (writer.addressSequence.executionCount != 1 ||
+        !writer.addressSequence.recurrence) {
+      return false;
+    }
+    int64_t writerBegin = writer.addressSequence.recurrence->initialSlot;
+    int64_t writerEnd =
+        writerBegin + writer.receiverDFBInfo.receiverSlotSpanBlocks;
+    if (targetBegin < writerEnd && writerBegin < targetEnd) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Receiver readiness can be omitted when computed destination addresses are
+// fixed before dispatch and no other producer can occupy those blocks.
+static bool canElideFabricReceiverReadiness(
+    const PipeTransferNode &transferNode, const PipeGraph &pipeGraph,
+    const PipeTransferNodeSet &computedAddressTransfers) {
+  if (!computedAddressTransfers.contains(transferNode.id)) {
+    return false;
+  }
+  return llvm::all_of(
+      transferNode.receiverEndpoints, [&](PipeReceiverEndpointId endpointId) {
+        return hasOneShotNonOverlappingReceiverBlocks(
+            pipeGraph.getPipeReceiverEndpoint(endpointId), pipeGraph);
+      });
+}
+
 LogicalResult buildFabricRoutePlan(
     ModuleOp module, const PipeTransferIndex &transferIndex,
     const PipeGraph &pipeGraph, const PipeForeachLoweringInfo &foreachInfo,
     ArrayRef<ExternalFabricManagerInterval> externalManagerIntervals,
-    bool enableLocalManagerOwnership, FabricRoutePlan &plan) {
+    const PipeTransferNodeSet &computedAddressTransfers,
+    FabricRoutePlan &plan) {
   LogicalResult result = success();
   RecordAlignedTableBuilder<std::size_t> routeIndices;
+  struct ReceiverReadinessSummary {
+    std::size_t recordCount = 0;
+    std::size_t recordsUsingReadiness = 0;
+  };
+  llvm::DenseMap<Operation *, ReceiverReadinessSummary> receiverReadiness;
 
   auto recordRouteIndex = [&](Operation *operation,
                               std::optional<std::uint64_t> recordIndex,
@@ -776,10 +916,17 @@ LogicalResult buildFabricRoutePlan(
       continue;
     }
 
+    bool receiverRequiresManager = !canElideFabricReceiverReadiness(
+        transferNode, pipeGraph, computedAddressTransfers);
     for (PipeReceiverEndpointId endpointId : transferNode.receiverEndpoints) {
       const PipeReceiverEndpoint &endpoint =
           pipeGraph.getPipeReceiverEndpoint(endpointId);
       Operation *postOp = endpoint.postOp;
+      ReceiverReadinessSummary &readiness = receiverReadiness[postOp];
+      ++readiness.recordCount;
+      if (receiverRequiresManager) {
+        ++readiness.recordsUsingReadiness;
+      }
       FuncOp postFunc = postOp->getParentOfType<FuncOp>();
       FailureOr<FunctionFabricRoutePlan *> maybePostFunctionPlan =
           getFunctionFabricRoutePlan(postFunc, transfer.getDomain(), postOp,
@@ -788,9 +935,12 @@ LogicalResult buildFabricRoutePlan(
         result = failure();
         continue;
       }
-      std::size_t reverseRouteIndex = addFabricRoute(
-          (*maybePostFunctionPlan)->routes, destination, source,
-          LaunchNodeCoord{endpoint.receiver.x, endpoint.receiver.y});
+      std::size_t reverseRouteIndex =
+          addFabricRoute((*maybePostFunctionPlan)->routes, destination, source,
+                         receiverRequiresManager
+                             ? std::optional(LaunchNodeCoord{
+                                   endpoint.receiver.x, endpoint.receiver.y})
+                             : std::nullopt);
       if (failed(recordRouteIndex(postOp, endpoint.postRecordIndex,
                                   reverseRouteIndex))) {
         result = failure();
@@ -800,12 +950,25 @@ LogicalResult buildFabricRoutePlan(
   }
 
   plan.routeIndices = std::move(routeIndices).finalize();
+  llvm::SmallPtrSet<Operation *, 16> receiverManagerOperations;
+  for (const auto &[operation, readiness] : receiverReadiness) {
+    if (readiness.recordsUsingReadiness != 0) {
+      receiverManagerOperations.insert(operation);
+    }
+    if (readiness.recordsUsingReadiness == readiness.recordCount) {
+      plan.receiversWithReadinessForEveryRecord.insert(operation);
+    }
+  }
 
   llvm::SmallPtrSet<Operation *, 16> generatedControlOps(
       foreachInfo.controlOps.begin(), foreachInfo.controlOps.end());
   llvm::MapVector<Operation *, SmallVector<Operation *>> operationsByInterval;
   for (const auto &[operation, indices] : plan.routeIndices) {
     if (indices.empty()) {
+      continue;
+    }
+    if (isa<PipeTransferPostOp>(operation) &&
+        !receiverManagerOperations.contains(operation)) {
       continue;
     }
 
@@ -886,9 +1049,16 @@ LogicalResult buildFabricRoutePlan(
                                   std::move(launchNodes)});
   }
 
+  return result;
+}
+
+void finalizeFabricRoutePlan(FabricRoutePlan &plan, const PipeGraph &pipeGraph,
+                             const PipeForeachLoweringInfo &foreachInfo,
+                             bool enableLocalManagerOwnership) {
+  llvm::SmallPtrSet<Operation *, 16> generatedControlOps(
+      foreachInfo.controlOps.begin(), foreachInfo.controlOps.end());
   planFabricManagerOwnership(plan, pipeGraph, generatedControlOps,
                              enableLocalManagerOwnership);
-  return result;
 }
 
 void applyFabricRoutePlan(ModuleOp mod, const FabricRoutePlan &plan) {
@@ -1167,6 +1337,22 @@ static Value loadIndexTableEntry(Location loc, ArrayRef<int64_t> values,
   return buildConstantIndexTableLookup(builder, loc, values, recordIndex);
 }
 
+// Return `valuesByRecord` reordered by the forwarder group-and-slot table.
+template <typename Element>
+static SmallVector<Element> projectFabricForwarderRecordValues(
+    ArrayRef<Element> valuesByRecord,
+    ArrayRef<int64_t> recordIndicesByGroupAndSlot) {
+  SmallVector<Element> valuesByGroupAndSlot;
+  valuesByGroupAndSlot.reserve(recordIndicesByGroupAndSlot.size());
+  for (int64_t recordIndex : recordIndicesByGroupAndSlot) {
+    assert(recordIndex >= 0 &&
+           static_cast<std::size_t>(recordIndex) < valuesByRecord.size() &&
+           "forwarder group references an unknown PipeNet record");
+    valuesByGroupAndSlot.push_back(valuesByRecord[recordIndex]);
+  }
+  return valuesByGroupAndSlot;
+}
+
 static Value buildSelectedRouteIndex(Location loc,
                                      ArrayRef<std::size_t> routeIndices,
                                      Value recordIndex,
@@ -1256,32 +1442,95 @@ static Value buildSelectedPipeCounterAddress(
                                  typedLocalAddress);
 }
 
+// Selected tables require a valid counter in every row. Rows that omit
+// readiness use this counter only as inert data behind the generated guard.
+static PipeCounterInfo
+getFallbackSenderReadyCounter(ArrayRef<PipeResourceInfo> resources) {
+  auto fallbackResource =
+      llvm::find_if(resources, [](const PipeResourceInfo &resource) {
+        return resource.readyCounter.has_value();
+      });
+  assert(fallbackResource != resources.end() &&
+         "selected pipe has no sender-ready record");
+  return *fallbackResource->readyCounter;
+}
+
 static Value buildSelectedReadyCounterAddress(
     Operation *op, Location loc, ArrayRef<PipeResourceInfo> resources,
     Value recordIndex, const PipeResourcePlan &pipeResourcePlan,
     ConversionPatternRewriter &rewriter) {
+  PipeCounterInfo fallbackCounter = getFallbackSenderReadyCounter(resources);
   SmallVector<PipeCounterInfo> counters;
   counters.reserve(resources.size());
   for (const PipeResourceInfo &resource : resources) {
-    assert(resource.readyCounter &&
-           "selected pipe missing sender-ready counter");
-    counters.push_back(*resource.readyCounter);
+    counters.push_back(resource.readyCounter.value_or(fallbackCounter));
   }
   return buildSelectedPipeCounterAddress(op, loc, counters, recordIndex,
                                          pipeResourcePlan, rewriter);
 }
 
+static bool
+anySelectedRecordUsesSenderReadiness(ArrayRef<PipeResourceInfo> resources) {
+  return llvm::any_of(resources, [](const PipeResourceInfo &resource) {
+    return resource.readyCounter.has_value();
+  });
+}
+
+static bool
+allSelectedRecordsUseSenderReadiness(ArrayRef<PipeResourceInfo> resources) {
+  return llvm::all_of(resources, [](const PipeResourceInfo &resource) {
+    return resource.readyCounter.has_value();
+  });
+}
+
+static Value buildSelectedRecordUsesSenderReadiness(
+    Location loc, ArrayRef<PipeResourceInfo> resources, Value recordIndex,
+    ConversionPatternRewriter &rewriter) {
+  SmallVector<int64_t> readinessByRecord =
+      llvm::map_to_vector(resources, [](const PipeResourceInfo &resource) {
+        return static_cast<int64_t>(resource.readyCounter.has_value());
+      });
+  Value selectedReadiness =
+      loadIndexTableEntry(loc, readinessByRecord, recordIndex, rewriter);
+  Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  return arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ne,
+                               selectedReadiness, zero);
+}
+
+static void emitIfSelectedRecordUsesSenderReadiness(
+    Location loc, ArrayRef<PipeResourceInfo> resources, Value recordIndex,
+    ConversionPatternRewriter &rewriter, llvm::function_ref<void()> emit) {
+  if (!anySelectedRecordUsesSenderReadiness(resources)) {
+    return;
+  }
+  if (allSelectedRecordsUseSenderReadiness(resources)) {
+    emit();
+    return;
+  }
+
+  Value selectedRecordUsesReadiness = buildSelectedRecordUsesSenderReadiness(
+      loc, resources, recordIndex, rewriter);
+  auto conditional = scf::IfOp::create(
+      rewriter, loc, selectedRecordUsesReadiness, /*withElseRegion=*/false);
+  {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToStart(&conditional.getThenRegion().front());
+    emit();
+  }
+  rewriter.setInsertionPointAfter(conditional);
+}
+
 /// Add a static byte offset to an L1 address without changing the address
 /// representation.
 static Value addByteOffset(Location loc, Value baseAddress, int64_t byteOffset,
-                           ConversionPatternRewriter &rewriter) {
+                           OpBuilder &builder) {
   if (byteOffset == 0) {
     return baseAddress;
   }
   auto offsetValue =
-      arith::ConstantOp::create(rewriter, loc, rewriter.getI32Type(),
-                                rewriter.getI32IntegerAttr(byteOffset));
-  return arith::AddIOp::create(rewriter, loc, baseAddress, offsetValue)
+      arith::ConstantOp::create(builder, loc, builder.getI32Type(),
+                                builder.getI32IntegerAttr(byteOffset));
+  return arith::AddIOp::create(builder, loc, baseAddress, offsetValue)
       .getResult();
 }
 
@@ -1293,20 +1542,54 @@ static Value addByteOffset(Location loc, Value baseAddress, Value byteOffset,
       .getResult();
 }
 
+static Value buildPipeSramScratchAddress(FuncOp function, Location loc,
+                                         int64_t byteOffset,
+                                         OpBuilder &builder) {
+  int64_t scratchArgIndex = getPipeRuntimeCommonArgIndex(function, 0);
+  Value scratchBase = buildPipeRuntimeCommonArg(loc, builder, scratchArgIndex);
+  return addByteOffset(loc, scratchBase, byteOffset, builder);
+}
+
 Value buildPipeSramScratchAddress(Operation *operation, int64_t byteOffset,
                                   OpBuilder &builder) {
-  int64_t scratchArgIndex = getPipeRuntimeCommonArgIndex(operation, 0);
-  Value scratchBase =
-      buildPipeRuntimeCommonArg(operation->getLoc(), builder, scratchArgIndex);
-  if (byteOffset == 0) {
-    return scratchBase;
+  FuncOp function = operation->getParentOfType<FuncOp>();
+  assert(function && "pipe op is not inside a function");
+  return buildPipeSramScratchAddress(function, operation->getLoc(), byteOffset,
+                                     builder);
+}
+
+void initializeFabricForwarderCounterExpectations(
+    const FabricForwarderPlan &plan,
+    FabricForwarderCounterExpectationMap &forwarderCounterExpectations) {
+  llvm::MapVector<FuncOp, SmallVector<Operation *>> operationsByFunction;
+  for (const auto &[operation, operationPlan] : plan.getOperations()) {
+    (void)operationPlan;
+    FuncOp function = operation->getParentOfType<FuncOp>();
+    assert(function && "fabric forwarder operation must be inside a function");
+    operationsByFunction[function].push_back(operation);
   }
-  auto offsetValue = arith::ConstantOp::create(
-      builder, operation->getLoc(), builder.getI32Type(),
-      builder.getI32IntegerAttr(byteOffset));
-  return arith::AddIOp::create(builder, operation->getLoc(), scratchBase,
-                               offsetValue)
-      .getResult();
+
+  for (auto &[function, operations] : operationsByFunction) {
+    OpBuilder builder(function.getContext());
+    builder.setInsertionPointToStart(&function.getBody().front());
+    Location loc = function.getLoc();
+    Value zero = arith::ConstantIntOp::create(builder, loc, 0, 32);
+    Value zeroIndex = arith::ConstantIndexOp::create(builder, loc, 0);
+    auto counterStorageType = MemRefType::get({1}, builder.getI32Type());
+    for (Operation *operation : operations) {
+      Value arrivalCountStorage =
+          memref::AllocaOp::create(builder, loc, counterStorageType);
+      Value completionCountStorage =
+          memref::AllocaOp::create(builder, loc, counterStorageType);
+      memref::StoreOp::create(builder, loc, zero, arrivalCountStorage,
+                              ValueRange{zeroIndex});
+      memref::StoreOp::create(builder, loc, zero, completionCountStorage,
+                              ValueRange{zeroIndex});
+      forwarderCounterExpectations[operation] =
+          FabricForwarderCounterExpectations{arrivalCountStorage,
+                                             completionCountStorage};
+    }
+  }
 }
 
 /// Source-node address-table entry selected for one transfer allocation unit.
@@ -1714,8 +1997,7 @@ public:
   virtual LogicalResult emitReceiverAddressPublish(Value senderTableAddress,
                                                    Value publishedAddress) = 0;
   virtual void emitAddressPublishBarrier() = 0;
-  virtual LogicalResult
-  emitSenderReadyIncrement(Value senderReadyCounterAddr) = 0;
+  virtual void emitSenderReadyIncrement(Value senderReadyCounterAddr) = 0;
 };
 
 class NocPipeTransportEmitterBase : public PipeSendTransportEmitter,
@@ -1798,8 +2080,7 @@ public:
     ttk::NocAsyncWriteBarrierOp::create(rewriter, loc, nocVal);
   }
 
-  LogicalResult
-  emitSenderReadyIncrement(Value senderReadyCounterAddr) override {
+  void emitSenderReadyIncrement(Value senderReadyCounterAddr) override {
     TranslatedCore sourceCore = getSourceCore();
     auto senderReadyCounterNocAddr =
         ttk::GetNocAddrOp::create(rewriter, loc, sourceCore.x, sourceCore.y,
@@ -1809,7 +2090,6 @@ public:
     ttk::NocSemaphoreIncOp::create(
         rewriter, loc, senderReadyCounterNocAddr.getResult(),
         readyCounterIncrement, nocVal, /*posted=*/BoolAttr());
-    return success();
   }
 
   void emitPayloadWriteBarrier() override {
@@ -2299,6 +2579,20 @@ private:
   std::optional<DestinationRange> destinationRange;
 };
 
+// Translate one logical node and combine it with an L1 address for `noc`.
+static Value buildLogicalNodeNocAddress(Location loc, Value logicalX,
+                                        Value logicalY, Value l1Address,
+                                        Value noc,
+                                        ConversionPatternRewriter &rewriter) {
+  Value translatedX = ttk::ConvertLogicalXToTranslatedOp::create(
+      rewriter, loc, rewriter.getIndexType(), logicalX);
+  Value translatedY = ttk::ConvertLogicalYToTranslatedOp::create(
+      rewriter, loc, rewriter.getIndexType(), logicalY);
+  return ttk::GetNocAddrOp::create(rewriter, loc, translatedX, translatedY,
+                                   l1Address, noc)
+      .getResult();
+}
+
 class FabricRouteEmitter {
 public:
   FabricRouteEmitter(Operation *op, Value routeIndex,
@@ -2315,7 +2609,9 @@ public:
         rewriter, loc, runtime.manager, runtime.routeId, buildConnectionIndex(),
         target.destinationDeviceId, target.destinationMeshId,
         target.destinationHopCount,
-        buildRemoteNocAddress(remoteX, remoteY, semaphoreAddress), increment);
+        buildLogicalNodeNocAddress(loc, remoteX, remoteY, semaphoreAddress,
+                                   nocVal, rewriter),
+        increment);
   }
 
   void emitFusedWriteAtomicIncrement(Value remoteX, Value remoteY,
@@ -2327,8 +2623,11 @@ public:
         rewriter, loc, runtime.manager, runtime.routeId, buildConnectionIndex(),
         target.destinationDeviceId, target.destinationMeshId,
         target.destinationHopCount, sourceAddress, sizeBytes,
-        buildRemoteNocAddress(remoteX, remoteY, destinationAddress),
-        buildRemoteNocAddress(remoteX, remoteY, semaphoreAddress), increment);
+        buildLogicalNodeNocAddress(loc, remoteX, remoteY, destinationAddress,
+                                   nocVal, rewriter),
+        buildLogicalNodeNocAddress(loc, remoteX, remoteY, semaphoreAddress,
+                                   nocVal, rewriter),
+        increment);
   }
 
 private:
@@ -2337,27 +2636,6 @@ private:
     Value destinationMeshId;
     Value destinationHopCount;
   };
-
-  struct TranslatedNode {
-    Value x;
-    Value y;
-  };
-
-  TranslatedNode buildTranslatedNode(Value logicalX, Value logicalY) {
-    return {
-        ttk::ConvertLogicalXToTranslatedOp::create(
-            rewriter, loc, rewriter.getIndexType(), logicalX),
-        ttk::ConvertLogicalYToTranslatedOp::create(
-            rewriter, loc, rewriter.getIndexType(), logicalY),
-    };
-  }
-
-  Value buildRemoteNocAddress(Value logicalX, Value logicalY, Value l1Address) {
-    TranslatedNode node = buildTranslatedNode(logicalX, logicalY);
-    return ttk::GetNocAddrOp::create(rewriter, loc, node.x, node.y, l1Address,
-                                     nocVal)
-        .getResult();
-  }
 
   Value buildConnectionIndex() {
     Value firstConnectionIndex =
@@ -2623,8 +2901,10 @@ void initializeFabricReadyCounters(const PipeModulePlan &pipeModulePlan,
                        PipeSynchronizationProtocol::Fabric) {
       return;
     }
-    assert(resource.readyCounter &&
-           resource.readyCounter->getStorage() ==
+    if (!resource.readyCounter) {
+      return;
+    }
+    assert(resource.readyCounter->getStorage() ==
                PipeCounterStorage::GlobalSemaphore &&
            "fabric readiness requires a global counter");
     FuncOp func = sendOp->getParentOfType<FuncOp>();
@@ -2814,12 +3094,349 @@ static bool hasOneShotRemoteFixedReceiver(const PipeResourceInfo &resource) {
          !computedAddress->usesDynamicSlotCounter();
 }
 
+// Logical coordinates represented as SSA values for generated NoC operations.
+struct LogicalPipeNode {
+  Value logicalX;
+  Value logicalY;
+};
+
+// Load the logical node stored at `groupTableIndex` in paired coordinate
+// tables.
+static LogicalPipeNode
+loadFabricForwarderGroupNode(Location loc, ArrayRef<int64_t> xCoordinates,
+                             ArrayRef<int64_t> yCoordinates,
+                             Value groupTableIndex,
+                             ConversionPatternRewriter &rewriter) {
+  return {loadIndexTableEntry(loc, xCoordinates, groupTableIndex, rewriter),
+          loadIndexTableEntry(loc, yCoordinates, groupTableIndex, rewriter)};
+}
+
+// Runtime-selected group index and the worker that owns its fabric connection.
+struct SelectedFabricForwarderGroup {
+  Value index;
+  LogicalPipeNode forwarder;
+};
+
+static SelectedFabricForwarderGroup loadSelectedFabricForwarderGroup(
+    Location loc, const FabricForwarderOperationPlan &forwarderPlan,
+    Value recordIndex, ConversionPatternRewriter &rewriter) {
+  Value groupIndex = loadIndexTableEntry(
+      loc, forwarderPlan.getGroupIndexByRecord(), recordIndex, rewriter);
+  return {groupIndex,
+          {loadIndexTableEntry(loc, forwarderPlan.getForwarderXByGroup(),
+                               groupIndex, rewriter),
+           loadIndexTableEntry(loc, forwarderPlan.getForwarderYByGroup(),
+                               groupIndex, rewriter)}};
+}
+
+// Add an operation-relative offset to the forwarder plan's scratch segment.
+static Value buildFabricForwarderScratchAddress(
+    Operation *operation, const FabricForwarderPlan &forwarderPlan,
+    int64_t operationByteOffset, ConversionPatternRewriter &rewriter) {
+  std::optional<int64_t> byteOffset = llvm::checkedAdd(
+      forwarderPlan.getSramScratchBaseOffset(), operationByteOffset);
+  assert(byteOffset && "planned fabric forwarder scratch offset overflowed");
+  return buildPipeSramScratchAddress(operation, *byteOffset, rewriter);
+}
+
+// Increment `counterAddress` in the scratch shard owned by `node`.
+static void
+emitFabricForwarderCounterIncrement(Operation *operation, LogicalPipeNode node,
+                                    Value counterAddress, Value noc,
+                                    ConversionPatternRewriter &rewriter) {
+  Value remoteCounter =
+      buildLogicalNodeNocAddress(operation->getLoc(), node.logicalX,
+                                 node.logicalY, counterAddress, noc, rewriter);
+  Value one = arith::ConstantIndexOp::create(rewriter, operation->getLoc(), 1);
+  ttk::NocSemaphoreIncOp::create(rewriter, operation->getLoc(), remoteCounter,
+                                 one, noc, /*posted=*/BoolAttr());
+}
+
+// Advance and return the cumulative counter value required by the next wait.
+static Value
+advanceFabricForwarderCounterExpectation(Location loc, Value expectationStorage,
+                                         Value increment,
+                                         ConversionPatternRewriter &rewriter) {
+  Value zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+  Value previous = memref::LoadOp::create(rewriter, loc, expectationStorage,
+                                          ValueRange{zeroIndex});
+  Value expected = arith::AddIOp::create(rewriter, loc, previous, increment);
+  memref::StoreOp::create(rewriter, loc, expected, expectationStorage,
+                          ValueRange{zeroIndex});
+  return expected;
+}
+
+// Wait until a cumulative scratch counter includes the next `increment` events.
+static void waitForFabricForwarderCounter(Location loc, Value counterAddress,
+                                          Value expectationStorage,
+                                          Value increment,
+                                          ConversionPatternRewriter &rewriter) {
+  Value expected = advanceFabricForwarderCounterExpectation(
+      loc, expectationStorage, increment, rewriter);
+  auto l1PointerType = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
+  Value counterPointer =
+      ttk::CastToL1PtrOp::create(rewriter, loc, l1PointerType, counterAddress);
+  ttk::SemaphoreWaitMinOp::create(rewriter, loc, counterPointer, expected);
+}
+
+// Wait for the selected receiver-ready counter. Fabric counters accumulate
+// across loop executions; local NoC counters reset after each wait.
+static void waitForSelectedSenderReadiness(
+    PipeTransferSendOp op, const SelectedPipeFields &fields,
+    ArrayRef<PipeResourceInfo> resources,
+    PipeSynchronizationProtocol synchronizationProtocol,
+    const PipeResourcePlan &pipeResourcePlan,
+    const PipeCounterTableMap &fabricReadyCounters,
+    ConversionPatternRewriter &rewriter) {
+  if (!anySelectedRecordUsesSenderReadiness(resources)) {
+    return;
+  }
+
+  const PipeCounterTable *readyTable = nullptr;
+  if (synchronizationProtocol == PipeSynchronizationProtocol::Fabric) {
+    FuncOp function = op->getParentOfType<FuncOp>();
+    auto readyTableIt = fabricReadyCounters.find(function);
+    assert(readyTableIt != fabricReadyCounters.end() &&
+           "selected fabric sender is missing its readiness table");
+    readyTable = &readyTableIt->second;
+  }
+
+  Location loc = op.getLoc();
+  auto emitReadinessWait = [&]() {
+    Value senderSemaphoreAddress = buildSelectedReadyCounterAddress(
+        op, loc, resources, fields.recordIndex, pipeResourcePlan, rewriter);
+    Value expectedSignals =
+        fields.isCollective
+            ? arith::IndexCastOp::create(rewriter, loc, rewriter.getI32Type(),
+                                         fields.numDests)
+                  .getResult()
+            : arith::ConstantIntOp::create(rewriter, loc, 1, 32).getResult();
+    auto l1PointerType = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
+    Value senderSemaphorePointer = ttk::CastToL1PtrOp::create(
+        rewriter, loc, l1PointerType, senderSemaphoreAddress);
+    if (synchronizationProtocol == PipeSynchronizationProtocol::Fabric) {
+      PipeCounterInfo fallbackCounter =
+          getFallbackSenderReadyCounter(resources);
+      SmallVector<PipeCounterInfo> readyCounters =
+          llvm::map_to_vector(resources, [&](const PipeResourceInfo &resource) {
+            assert((!resource.readyCounter ||
+                    resource.readyCounter->getStorage() ==
+                        PipeCounterStorage::GlobalSemaphore) &&
+                   "selected fabric readiness requires global counters");
+            return resource.readyCounter.value_or(fallbackCounter);
+          });
+      Value readyIndex = buildSelectedCounterTableIndex(
+          loc, readyCounters, *readyTable, fields.recordIndex, rewriter);
+      Value previousReady = memref::LoadOp::create(
+          rewriter, loc, readyTable->values, ValueRange{readyIndex});
+      Value expectedReady =
+          arith::AddIOp::create(rewriter, loc, previousReady, expectedSignals);
+      memref::StoreOp::create(rewriter, loc, expectedReady, readyTable->values,
+                              ValueRange{readyIndex});
+      ttk::SemaphoreWaitMinOp::create(rewriter, loc, senderSemaphorePointer,
+                                      expectedReady);
+      return;
+    }
+
+    ttk::SemaphoreWaitOp::create(rewriter, loc, senderSemaphorePointer,
+                                 expectedSignals);
+    Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    ttk::NocSemaphoreSetOp::create(rewriter, loc, senderSemaphorePointer, zero);
+  };
+
+  emitIfSelectedRecordUsesSenderReadiness(loc, resources, fields.recordIndex,
+                                          rewriter, emitReadinessWait);
+}
+
+// Return the DFB pointer selected by the transfer plan's ownership state.
+static Value
+buildSelectedSourceDFBAddress(PipeTransferSendOp op, Value sourceDFB,
+                              const PipeSendPlan &sendPlan,
+                              ConversionPatternRewriter &rewriter) {
+  Location loc = op.getLoc();
+  FailureOr<Value> convertedDFB =
+      utils::convertTTLCBToTTKernel(sourceDFB, rewriter, loc);
+  assert(succeeded(convertedDFB) && "preflight checked source DFB type");
+  Value pointer =
+      sendPlan.usesReadPointer
+          ? ttk::GetReadPtrOp::create(rewriter, loc, *convertedDFB).getResult()
+          : ttk::GetWritePtrOp::create(rewriter, loc, *convertedDFB)
+                .getResult();
+  Value pointerIndex = arith::IndexCastOp::create(
+      rewriter, loc, rewriter.getIndexType(), pointer);
+  return arith::IndexCastOp::create(rewriter, loc, rewriter.getI32Type(),
+                                    pointerIndex);
+}
+
+// Synchronize `selectedGroup`, run `emitTransfer` once per member on its
+// forwarder, then notify every member before returning.
+static void lowerFabricForwarderGroup(
+    Operation *operation, SelectedFabricForwarderGroup selectedGroup,
+    const FabricForwarderOperationPlan &operationPlan,
+    const FabricForwarderPlan &forwarderPlan,
+    const FabricForwarderCounterExpectations &counterExpectations, Value noc,
+    llvm::function_ref<void(Value, Value, LogicalPipeNode)> emitTransfer,
+    ConversionPatternRewriter &rewriter) {
+  Location loc = operation->getLoc();
+  LogicalPipeNode forwarder = selectedGroup.forwarder;
+  Value arrivalCounterAddress = buildFabricForwarderScratchAddress(
+      operation, forwarderPlan, operationPlan.getArrivalCounterByteOffset(),
+      rewriter);
+  Value completionCounterAddress = buildFabricForwarderScratchAddress(
+      operation, forwarderPlan, operationPlan.getCompletionCounterByteOffset(),
+      rewriter);
+  emitFabricForwarderCounterIncrement(operation, forwarder,
+                                      arrivalCounterAddress, noc, rewriter);
+
+  Value currentX =
+      ttk::MyLogicalXOp::create(rewriter, loc, rewriter.getIndexType());
+  Value currentY =
+      ttk::MyLogicalYOp::create(rewriter, loc, rewriter.getIndexType());
+  Value xMatches = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::eq, currentX, forwarder.logicalX);
+  Value yMatches = arith::CmpIOp::create(
+      rewriter, loc, arith::CmpIPredicate::eq, currentY, forwarder.logicalY);
+  Value isForwarder = arith::AndIOp::create(rewriter, loc, xMatches, yMatches);
+  auto forwardTransfers =
+      scf::IfOp::create(rewriter, loc, isForwarder, /*withElseRegion=*/false);
+  {
+    OpBuilder::InsertionGuard insertionGuard(rewriter);
+    rewriter.setInsertionPointToStart(
+        &forwardTransfers.getThenRegion().front());
+    Value groupSize =
+        loadIndexTableEntry(loc, operationPlan.getGroupSizeByGroup(),
+                            selectedGroup.index, rewriter);
+    Value groupSizeI32 = arith::IndexCastOp::create(
+        rewriter, loc, rewriter.getI32Type(), groupSize);
+    waitForFabricForwarderCounter(loc, arrivalCounterAddress,
+                                  counterExpectations.arrivalCountStorage,
+                                  groupSizeI32, rewriter);
+
+    Value lowerBound = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    Value step = arith::ConstantIndexOp::create(rewriter, loc, 1);
+    auto memberLoop =
+        scf::ForOp::create(rewriter, loc, lowerBound, groupSize, step);
+    rewriter.setInsertionPointToStart(memberLoop.getBody());
+    Value maximumGroupSize = arith::ConstantIndexOp::create(
+        rewriter, loc, operationPlan.getMaximumGroupSize());
+    Value groupTableBase = arith::MulIOp::create(
+        rewriter, loc, selectedGroup.index, maximumGroupSize);
+    Value groupTableIndex = arith::AddIOp::create(rewriter, loc, groupTableBase,
+                                                  memberLoop.getInductionVar());
+    LogicalPipeNode worker = loadFabricForwarderGroupNode(
+        loc, operationPlan.getWorkerXByGroupAndSlot(),
+        operationPlan.getWorkerYByGroupAndSlot(), groupTableIndex, rewriter);
+    LogicalPipeNode peer = loadFabricForwarderGroupNode(
+        loc, operationPlan.getPeerXByGroupAndSlot(),
+        operationPlan.getPeerYByGroupAndSlot(), groupTableIndex, rewriter);
+    emitTransfer(groupTableIndex, memberLoop.getInductionVar(), peer);
+    emitFabricForwarderCounterIncrement(
+        operation, worker, completionCounterAddress, noc, rewriter);
+  }
+  rewriter.setInsertionPointAfter(forwardTransfers);
+
+  Value one = arith::ConstantIntOp::create(rewriter, loc, 1, 32);
+  waitForFabricForwarderCounter(loc, completionCounterAddress,
+                                counterExpectations.completionCountStorage, one,
+                                rewriter);
+}
+
+// Stage one selected payload on its group forwarder, which emits the fabric
+// transfers and notifies each local worker after consuming its payload slot.
+static void lowerAggregatedSelectedPipeTransferSend(
+    PipeTransferSendOp op, Value sourceAddress,
+    const SelectedPipeFields &fields, ArrayRef<PipeResourceInfo> resources,
+    const PipeSendPlan &sendPlan,
+    const PipeComputedAddressCounterMap &computedAddressCounters,
+    const PipeResourcePlan &pipeResourcePlan,
+    const FabricRuntimeInfo &fabricRuntime,
+    const FabricForwarderOperationPlan &operationPlan,
+    const FabricForwarderPlan &forwarderPlan,
+    const FabricForwarderCounterExpectationMap &forwarderCounterExpectations,
+    ConversionPatternRewriter &rewriter) {
+  Location loc = op.getLoc();
+  assert(op->getParentOfType<FuncOp>() &&
+         "fabric sender must be inside a function");
+  auto expectationIt = forwarderCounterExpectations.find(op);
+  assert(expectationIt != forwarderCounterExpectations.end() &&
+         "aggregated fabric sender is missing initialized scratch state");
+  assert(operationPlan.getPayloadSizeBytes() == sendPlan.payloadSizeBytes &&
+         "forwarder and pipe payload plans disagree");
+
+  Value noc =
+      arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
+                                rewriter.getI8IntegerAttr(getNocIndex(op)));
+  SelectedFabricForwarderGroup selectedGroup = loadSelectedFabricForwarderGroup(
+      loc, operationPlan, fields.recordIndex, rewriter);
+  LogicalPipeNode forwarder = selectedGroup.forwarder;
+  Value payloadScratchBase = buildFabricForwarderScratchAddress(
+      op, forwarderPlan, operationPlan.getScratchByteOffset(), rewriter);
+  Value slot = loadIndexTableEntry(loc, operationPlan.getSlotByRecord(),
+                                   fields.recordIndex, rewriter);
+  Value payloadStride = arith::ConstantIndexOp::create(
+      rewriter, loc, operationPlan.getPayloadStrideBytes());
+  Value slotByteOffset =
+      arith::MulIOp::create(rewriter, loc, slot, payloadStride);
+  Value slotAddress =
+      addByteOffset(loc, payloadScratchBase, slotByteOffset, rewriter);
+  Value translatedForwarderX = ttk::ConvertLogicalXToTranslatedOp::create(
+      rewriter, loc, rewriter.getIndexType(), forwarder.logicalX);
+  Value translatedForwarderY = ttk::ConvertLogicalYToTranslatedOp::create(
+      rewriter, loc, rewriter.getIndexType(), forwarder.logicalY);
+  Value payloadSize = arith::ConstantIntOp::create(
+      rewriter, loc, operationPlan.getPayloadSizeBytes(), 32);
+  ttk::NocAsyncWriteOp::create(
+      rewriter, loc, sourceAddress,
+      ValueRange{translatedForwarderX, translatedForwarderY}, ValueRange{},
+      slotAddress, payloadSize, noc, /*posted=*/BoolAttr());
+  // The arrival increment must not become visible before the staged payload.
+  ttk::NocAsyncWriteBarrierOp::create(rewriter, loc, noc);
+
+  SmallVector<PipeResourceInfo> groupResources =
+      projectFabricForwarderRecordValues(
+          resources, operationPlan.getGroupRecordsByGroupAndSlot());
+  SmallVector<std::size_t> groupRouteIndices =
+      projectFabricForwarderRecordValues(
+          ArrayRef<std::size_t>(sendPlan.fabricRouteIndices),
+          operationPlan.getGroupRecordsByGroupAndSlot());
+  SmallVector<PipeCounterInfo> groupCompletionCounters =
+      llvm::map_to_vector(groupResources, [](const PipeResourceInfo &resource) {
+        return resource.completion.counter;
+      });
+  auto emitTransfer = [&](Value groupTableIndex, Value memberSlot,
+                          LogicalPipeNode destination) {
+    Value routeIndex = buildSelectedRouteIndex(loc, groupRouteIndices,
+                                               groupTableIndex, rewriter);
+    Value destinationAddress =
+        buildSelectedComputedReceiverDFBDestinationAddress(
+            op, loc, groupResources, groupTableIndex, computedAddressCounters,
+            rewriter);
+    Value completionCounterAddress = buildSelectedPipeCounterAddress(
+        op, loc, groupCompletionCounters, groupTableIndex, pipeResourcePlan,
+        rewriter);
+    Value memberByteOffset =
+        arith::MulIOp::create(rewriter, loc, memberSlot, payloadStride);
+    Value memberSourceAddress =
+        addByteOffset(loc, payloadScratchBase, memberByteOffset, rewriter);
+    FabricRouteEmitter routeEmitter(op, routeIndex, fabricRuntime, rewriter);
+    routeEmitter.emitFusedWriteAtomicIncrement(
+        destination.logicalX, destination.logicalY, memberSourceAddress,
+        destinationAddress, payloadSize, completionCounterAddress,
+        arith::ConstantIntOp::create(rewriter, loc, 1, 32));
+  };
+  lowerFabricForwarderGroup(op, selectedGroup, operationPlan, forwarderPlan,
+                            expectationIt->second, noc, emitTransfer, rewriter);
+  rewriter.replaceOp(op, makeZeroI32(loc, rewriter));
+}
+
 static LogicalResult lowerSelectedPipeTransferSend(
     PipeTransferSendOp op, Value srcCB, const PipeTransferPlan &transferPlan,
     const PipeResourcePlan &pipeResourcePlan,
     const PipeCounterTableMap &fabricReadyCounters,
     const PipeComputedAddressCounterMap &computedAddressCounters,
     const FabricRuntimeMap &fabricRuntime,
+    const FabricForwarderPlan &fabricForwarderPlan,
+    const FabricForwarderCounterExpectationMap &forwarderCounterExpectations,
     ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   const PipeResourceAccessPlan &resourceAccessPlan =
@@ -2847,8 +3464,7 @@ static LogicalResult lowerSelectedPipeTransferSend(
       sendPlan.payloadSizeBytes <= getTargetNocMaxBurstBytes(op) &&
       llvm::all_of(resources, hasOneShotRemoteFixedReceiver);
 
-  auto l1PtrTy = ttk::L1AddrPtrType::get(rewriter.getContext(), 32);
-  std::unique_ptr<PipeSendTransportEmitter> transport;
+  const FabricRuntimeInfo *fabricRuntimeInfo = nullptr;
   if (usesFabric) {
     auto runtimeIt = fabricRuntime.find(op.getOperation());
     if (runtimeIt == fabricRuntime.end()) {
@@ -2863,74 +3479,36 @@ static LogicalResult lowerSelectedPipeTransferSend(
                    "routing-plane targets");
       return failure();
     }
+    fabricRuntimeInfo = &runtimeIt->second;
+  }
+
+  waitForSelectedSenderReadiness(
+      op, fields, resources, transferPlan.getSynchronizationProtocol(),
+      pipeResourcePlan, fabricReadyCounters, rewriter);
+
+  Value srcAddr = buildSelectedSourceDFBAddress(op, srcCB, sendPlan, rewriter);
+  if (const FabricForwarderOperationPlan *forwarderOperationPlan =
+          fabricForwarderPlan.lookup(op)) {
+    assert(usesFabric && fabricRuntimeInfo &&
+           "only a fabric transfer can use a fabric forwarder");
+    lowerAggregatedSelectedPipeTransferSend(
+        op, srcAddr, fields, resources, sendPlan, computedAddressCounters,
+        pipeResourcePlan, *fabricRuntimeInfo, *forwarderOperationPlan,
+        fabricForwarderPlan, forwarderCounterExpectations, rewriter);
+    return success();
+  }
+
+  std::unique_ptr<PipeSendTransportEmitter> transport;
+  if (usesFabric) {
     Value routeIndex = buildSelectedRouteIndex(loc, sendPlan.fabricRouteIndices,
                                                fields.recordIndex, rewriter);
     transport = std::make_unique<FabricPipeTransportEmitter>(
-        op, fields.dstStartX, fields.dstStartY, routeIndex, runtimeIt->second,
+        op, fields.dstStartX, fields.dstStartY, routeIndex, *fabricRuntimeInfo,
         rewriter);
   } else {
     transport = std::make_unique<SelectedNocPipeTransportEmitter>(
         op, fields, useOrderedPostedProtocol, rewriter);
   }
-
-  Value senderSemAddr = buildSelectedReadyCounterAddress(
-      op, loc, resources, fields.recordIndex, pipeResourcePlan, rewriter);
-  Value expectedSignals;
-  if (fields.isCollective) {
-    expectedSignals = arith::IndexCastOp::create(
-        rewriter, loc, rewriter.getI32Type(), fields.numDests);
-  } else {
-    expectedSignals = arith::ConstantIntOp::create(rewriter, loc, 1, 32);
-  }
-  if (usesFabric) {
-    FuncOp func = op->getParentOfType<FuncOp>();
-    auto readyTableIt = fabricReadyCounters.find(func);
-    assert(readyTableIt != fabricReadyCounters.end() &&
-           "selected fabric sender is missing its readiness table");
-    SmallVector<PipeCounterInfo> readyCounters;
-    readyCounters.reserve(resources.size());
-    for (const PipeResourceInfo &resource : resources) {
-      assert(resource.readyCounter &&
-             resource.readyCounter->getStorage() ==
-                 PipeCounterStorage::GlobalSemaphore &&
-             "selected fabric readiness requires global counters");
-      readyCounters.push_back(*resource.readyCounter);
-    }
-    Value readyIndex = buildSelectedCounterTableIndex(
-        loc, readyCounters, readyTableIt->second, fields.recordIndex, rewriter);
-    Value previousReady = memref::LoadOp::create(
-        rewriter, loc, readyTableIt->second.values, ValueRange{readyIndex});
-    Value expectedReady =
-        arith::AddIOp::create(rewriter, loc, previousReady, expectedSignals);
-    memref::StoreOp::create(rewriter, loc, expectedReady,
-                            readyTableIt->second.values,
-                            ValueRange{readyIndex});
-    auto senderSemPtr =
-        ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, senderSemAddr);
-    ttk::SemaphoreWaitMinOp::create(rewriter, loc, senderSemPtr, expectedReady);
-  } else {
-    auto senderSemPtr =
-        ttk::CastToL1PtrOp::create(rewriter, loc, l1PtrTy, senderSemAddr);
-    ttk::SemaphoreWaitOp::create(rewriter, loc, senderSemPtr, expectedSignals);
-    auto zeroIndex = arith::ConstantIndexOp::create(rewriter, loc, 0);
-    ttk::NocSemaphoreSetOp::create(rewriter, loc, senderSemPtr, zeroIndex);
-  }
-
-  auto cbConverted = utils::convertTTLCBToTTKernel(srcCB, rewriter, loc);
-  assert(succeeded(cbConverted) && "preflight checked source DFB type");
-  Value srcPtrIdx;
-  if (sendPlan.usesReadPointer) {
-    auto cbReadPtr = ttk::GetReadPtrOp::create(rewriter, loc, *cbConverted);
-    srcPtrIdx = arith::IndexCastOp::create(rewriter, loc,
-                                           rewriter.getIndexType(), cbReadPtr);
-  } else {
-    auto srcWritePtr = ttk::GetWritePtrOp::create(rewriter, loc, *cbConverted);
-    srcPtrIdx = arith::IndexCastOp::create(
-        rewriter, loc, rewriter.getIndexType(), srcWritePtr);
-  }
-
-  Value srcAddr = arith::IndexCastOp::create(rewriter, loc,
-                                             rewriter.getI32Type(), srcPtrIdx);
   auto totalSizeVal = arith::ConstantOp::create(
       rewriter, loc, rewriter.getI32Type(),
       rewriter.getI32IntegerAttr(sendPlan.payloadSizeBytes));
@@ -3033,6 +3611,8 @@ LogicalResult lowerPipeTransferSend(
     const PipeCounterTableMap &fabricReadyCounters,
     const PipeComputedAddressCounterMap &computedAddressCounters,
     const FabricRuntimeMap &fabricRuntime,
+    const FabricForwarderPlan &fabricForwarderPlan,
+    const FabricForwarderCounterExpectationMap &forwarderCounterExpectations,
     ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   assert(!pipeResourcePlan.staticallyInactiveOps.contains(op.getOperation()) &&
@@ -3044,7 +3624,8 @@ LogicalResult lowerPipeTransferSend(
   if (pipeRef.isSelected()) {
     return lowerSelectedPipeTransferSend(
         op, srcCB, transferPlan, pipeResourcePlan, fabricReadyCounters,
-        computedAddressCounters, fabricRuntime, rewriter);
+        computedAddressCounters, fabricRuntime, fabricForwarderPlan,
+        forwarderCounterExpectations, rewriter);
   }
   const PipeTransportStream &transportStream =
       pipeTransportPlan.getStreamForOperation(op);
@@ -3160,32 +3741,31 @@ LogicalResult lowerPipeTransferSend(
                                       nextAcquired);
     }
   } else if (usesFabric) {
-    assert(pipeResource.readyCounter &&
-           "fabric sender is missing its readiness counter");
-    FailureOr<PipeCounterTableEntry> maybeReadyProgress =
-        lookupPipeCounterTableEntry(fabricReadyCounters, senderFunc,
-                                    *pipeResource.readyCounter);
-    if (failed(maybeReadyProgress)) {
-      op.emitError("fabric pipe send has no cumulative readiness counter");
-      return failure();
+    if (pipeResource.readyCounter) {
+      FailureOr<PipeCounterTableEntry> maybeReadyProgress =
+          lookupPipeCounterTableEntry(fabricReadyCounters, senderFunc,
+                                      *pipeResource.readyCounter);
+      assert(succeeded(maybeReadyProgress) &&
+             "fabric pipe send is missing its planned readiness counter");
+      int64_t expectedReceiverPosts =
+          isCollectiveTransfer(pipeResource.transferContract) ? numDests : 1;
+      Value readyIndex = arith::ConstantIndexOp::create(
+          rewriter, loc, maybeReadyProgress->index);
+      Value previousReady = memref::LoadOp::create(
+          rewriter, loc, maybeReadyProgress->values, ValueRange{readyIndex});
+      Value readyIncrement = arith::ConstantIntOp::create(
+          rewriter, loc, expectedReceiverPosts, 32);
+      Value expectedReady =
+          arith::AddIOp::create(rewriter, loc, previousReady, readyIncrement);
+      memref::StoreOp::create(rewriter, loc, expectedReady,
+                              maybeReadyProgress->values,
+                              ValueRange{readyIndex});
+      Value readyCounterPtr =
+          buildPipeCounterPtr(loc, senderFunc, *pipeResource.readyCounter,
+                              pipeResourcePlan, rewriter);
+      ttk::SemaphoreWaitMinOp::create(rewriter, loc, readyCounterPtr,
+                                      expectedReady);
     }
-    int64_t expectedReceiverPosts =
-        isCollectiveTransfer(pipeResource.transferContract) ? numDests : 1;
-    Value readyIndex = arith::ConstantIndexOp::create(
-        rewriter, loc, maybeReadyProgress->index);
-    Value previousReady = memref::LoadOp::create(
-        rewriter, loc, maybeReadyProgress->values, ValueRange{readyIndex});
-    Value readyIncrement =
-        arith::ConstantIntOp::create(rewriter, loc, expectedReceiverPosts, 32);
-    Value expectedReady =
-        arith::AddIOp::create(rewriter, loc, previousReady, readyIncrement);
-    memref::StoreOp::create(rewriter, loc, expectedReady,
-                            maybeReadyProgress->values, ValueRange{readyIndex});
-    Value readyCounterPtr =
-        buildPipeCounterPtr(loc, senderFunc, *pipeResource.readyCounter,
-                            pipeResourcePlan, rewriter);
-    ttk::SemaphoreWaitMinOp::create(rewriter, loc, readyCounterPtr,
-                                    expectedReady);
   } else {
     assert(pipeResource.readyCounter &&
            "sender-ready protocol selected without a sender-ready counter");
@@ -3289,13 +3869,69 @@ void lowerInactivePipeTransferPost(PipeTransferPostOp op,
   rewriter.replaceOp(op, token.getResult(0));
 }
 
-static LogicalResult
-lowerSelectedPipeTransferPost(PipeTransferPostOp op, Value dst,
-                              const PipeTransferPlan &transferPlan,
-                              const PipeCounterTableMap &postSequenceCounters,
-                              const PipeResourcePlan &pipeResourcePlan,
-                              const FabricRuntimeMap &fabricRuntime,
-                              ConversionPatternRewriter &rewriter) {
+// Aggregate selected receiver posts so each group forwarder sends the remote
+// readiness increments before releasing the local receivers.
+static void lowerAggregatedSelectedPipeTransferPost(
+    PipeTransferPostOp op, const SelectedPipeFields &fields,
+    ArrayRef<PipeResourceInfo> resources, const PipePostPlan &postPlan,
+    const PipeResourcePlan &pipeResourcePlan,
+    const FabricRuntimeInfo &fabricRuntime,
+    const FabricForwarderOperationPlan &operationPlan,
+    const FabricForwarderPlan &forwarderPlan,
+    const FabricForwarderCounterExpectationMap &forwarderCounterExpectations,
+    ConversionPatternRewriter &rewriter) {
+  Location loc = op.getLoc();
+  assert(op->getParentOfType<FuncOp>() &&
+         "fabric receiver must be inside a function");
+  auto expectationIt = forwarderCounterExpectations.find(op);
+  assert(expectationIt != forwarderCounterExpectations.end() &&
+         "aggregated fabric receiver is missing initialized scratch state");
+
+  Value noc =
+      arith::ConstantOp::create(rewriter, loc, rewriter.getI8Type(),
+                                rewriter.getI8IntegerAttr(getNocIndex(op)));
+  SmallVector<PipeResourceInfo> groupResources =
+      projectFabricForwarderRecordValues(
+          resources, operationPlan.getGroupRecordsByGroupAndSlot());
+  SmallVector<std::size_t> groupRouteIndices =
+      projectFabricForwarderRecordValues(
+          ArrayRef<std::size_t>(postPlan.fabricRouteIndices),
+          operationPlan.getGroupRecordsByGroupAndSlot());
+  SmallVector<PipeCounterInfo> groupReadyCounters;
+  groupReadyCounters.reserve(groupResources.size());
+  for (const PipeResourceInfo &resource : groupResources) {
+    assert(resource.readyCounter &&
+           resource.readyCounter->getStorage() ==
+               PipeCounterStorage::GlobalSemaphore &&
+           "selected fabric readiness requires global counters");
+    groupReadyCounters.push_back(*resource.readyCounter);
+  }
+  SelectedFabricForwarderGroup selectedGroup = loadSelectedFabricForwarderGroup(
+      loc, operationPlan, fields.recordIndex, rewriter);
+  auto emitTransfer = [&](Value groupTableIndex, Value,
+                          LogicalPipeNode source) {
+    Value routeIndex = buildSelectedRouteIndex(loc, groupRouteIndices,
+                                               groupTableIndex, rewriter);
+    Value senderReadyCounterAddress = buildSelectedPipeCounterAddress(
+        op, loc, groupReadyCounters, groupTableIndex, pipeResourcePlan,
+        rewriter);
+    FabricRouteEmitter routeEmitter(op, routeIndex, fabricRuntime, rewriter);
+    routeEmitter.emitAtomicIncrement(
+        source.logicalX, source.logicalY, senderReadyCounterAddress,
+        arith::ConstantIntOp::create(rewriter, loc, 1, 32));
+  };
+  lowerFabricForwarderGroup(op, selectedGroup, operationPlan, forwarderPlan,
+                            expectationIt->second, noc, emitTransfer, rewriter);
+}
+
+static LogicalResult lowerSelectedPipeTransferPost(
+    PipeTransferPostOp op, Value dst, const PipeTransferPlan &transferPlan,
+    const PipeCounterTableMap &postSequenceCounters,
+    const PipeResourcePlan &pipeResourcePlan,
+    const FabricRuntimeMap &fabricRuntime,
+    const FabricForwarderPlan &fabricForwarderPlan,
+    const FabricForwarderCounterExpectationMap &forwarderCounterExpectations,
+    ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   const PipeResourceAccessPlan &resourceAccessPlan =
       transferPlan.getResourceAccessPlan();
@@ -3341,8 +3977,10 @@ lowerSelectedPipeTransferPost(PipeTransferPostOp op, Value dst,
     return failure();
   }
 
+  bool anyUseSenderReadiness = anySelectedRecordUsesSenderReadiness(resources);
+  bool allUseSenderReadiness = allSelectedRecordsUseSenderReadiness(resources);
   const FabricRuntimeInfo *fabricRuntimeInfo = nullptr;
-  if (usesFabric) {
+  if (usesFabric && anyUseSenderReadiness) {
     auto runtimeIt = fabricRuntime.find(op.getOperation());
     if (runtimeIt == fabricRuntime.end()) {
       op.emitError("fabric pipe receiver has no initialized routing-plane "
@@ -3359,17 +3997,31 @@ lowerSelectedPipeTransferPost(PipeTransferPostOp op, Value dst,
     fabricRuntimeInfo = &runtimeIt->second;
   }
 
-  Value senderSemAddr = buildSelectedReadyCounterAddress(
-      op, loc, resources, fields.recordIndex, pipeResourcePlan, rewriter);
-  if (usesFabric) {
-    Value routeIndex = buildSelectedRouteIndex(loc, postPlan.fabricRouteIndices,
-                                               fields.recordIndex, rewriter);
-    FabricRouteEmitter routeEmitter(op, routeIndex, *fabricRuntimeInfo,
-                                    rewriter);
-    routeEmitter.emitAtomicIncrement(
-        fields.srcX, fields.srcY, senderSemAddr,
-        arith::ConstantIntOp::create(rewriter, loc, 1, 32));
-  } else {
+  if (usesFabric && anyUseSenderReadiness) {
+    if (const FabricForwarderOperationPlan *forwarderOperationPlan =
+            fabricForwarderPlan.lookup(op)) {
+      assert(allUseSenderReadiness &&
+             "forwarded receiver readiness must cover every record");
+      lowerAggregatedSelectedPipeTransferPost(
+          op, fields, resources, postPlan, pipeResourcePlan, *fabricRuntimeInfo,
+          *forwarderOperationPlan, fabricForwarderPlan,
+          forwarderCounterExpectations, rewriter);
+    } else {
+      auto emitReadinessIncrement = [&]() {
+        Value senderSemaphoreAddress = buildSelectedReadyCounterAddress(
+            op, loc, resources, fields.recordIndex, pipeResourcePlan, rewriter);
+        Value routeIndex = buildSelectedRouteIndex(
+            loc, postPlan.fabricRouteIndices, fields.recordIndex, rewriter);
+        FabricRouteEmitter routeEmitter(op, routeIndex, *fabricRuntimeInfo,
+                                        rewriter);
+        routeEmitter.emitAtomicIncrement(
+            fields.srcX, fields.srcY, senderSemaphoreAddress,
+            arith::ConstantIntOp::create(rewriter, loc, 1, 32));
+      };
+      emitIfSelectedRecordUsesSenderReadiness(
+          loc, resources, fields.recordIndex, rewriter, emitReadinessIncrement);
+    }
+  } else if (!usesFabric) {
     SelectedNocPipeTransportEmitter transport(
         op, fields, /*useOrderedPostedProtocol=*/false, rewriter);
     if (anyUsePublishedAddress) {
@@ -3410,8 +4062,14 @@ lowerSelectedPipeTransferPost(PipeTransferPostOp op, Value dst,
         rewriter.setInsertionPointAfter(publishAddress);
       }
     }
-    if (failed(transport.emitSenderReadyIncrement(senderSemAddr))) {
-      return failure();
+    if (anyUseSenderReadiness) {
+      auto emitReadinessIncrement = [&]() {
+        Value senderSemaphoreAddress = buildSelectedReadyCounterAddress(
+            op, loc, resources, fields.recordIndex, pipeResourcePlan, rewriter);
+        transport.emitSenderReadyIncrement(senderSemaphoreAddress);
+      };
+      emitIfSelectedRecordUsesSenderReadiness(
+          loc, resources, fields.recordIndex, rewriter, emitReadinessIncrement);
     }
   }
 
@@ -3424,13 +4082,14 @@ lowerSelectedPipeTransferPost(PipeTransferPostOp op, Value dst,
   return success();
 }
 
-LogicalResult
-lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
-                      const PipeTransferPlan &transferPlan,
-                      const PipeCounterTableMap &postSequenceCounters,
-                      const PipeResourcePlan &pipeResourcePlan,
-                      const FabricRuntimeMap &fabricRuntime,
-                      ConversionPatternRewriter &rewriter) {
+LogicalResult lowerPipeTransferPost(
+    PipeTransferPostOp op, Value dst, const PipeTransferPlan &transferPlan,
+    const PipeCounterTableMap &postSequenceCounters,
+    const PipeResourcePlan &pipeResourcePlan,
+    const FabricRuntimeMap &fabricRuntime,
+    const FabricForwarderPlan &fabricForwarderPlan,
+    const FabricForwarderCounterExpectationMap &forwarderCounterExpectations,
+    ConversionPatternRewriter &rewriter) {
   auto loc = op.getLoc();
   assert(!pipeResourcePlan.staticallyInactiveOps.contains(op.getOperation()) &&
          "inactive receiver post must not use an active transfer plan");
@@ -3439,9 +4098,10 @@ lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
       transferPlan.getResourceAccessPlan();
   const PipeReference &pipeRef = resourceAccessPlan.getPipeReference();
   if (pipeRef.isSelected()) {
-    return lowerSelectedPipeTransferPost(op, dst, transferPlan,
-                                         postSequenceCounters, pipeResourcePlan,
-                                         fabricRuntime, rewriter);
+    return lowerSelectedPipeTransferPost(
+        op, dst, transferPlan, postSequenceCounters, pipeResourcePlan,
+        fabricRuntime, fabricForwarderPlan, forwarderCounterExpectations,
+        rewriter);
   }
   PipeType pipeType = pipeRef.getStaticPipeType();
   const PipeResourceInfo &pipeResource = resourceAccessPlan.getResources();
@@ -3472,9 +4132,8 @@ lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
     return failure();
   }
 
-  if (usesFabric) {
-    assert(pipeResource.readyCounter &&
-           pipeResource.readyCounter->getStorage() ==
+  if (usesFabric && pipeResource.readyCounter) {
+    assert(pipeResource.readyCounter->getStorage() ==
                PipeCounterStorage::GlobalSemaphore &&
            "fabric receiver post requires a global readiness counter");
     auto runtimeIt = fabricRuntime.find(op.getOperation());
@@ -3502,7 +4161,7 @@ lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
     routeEmitter.emitAtomicIncrement(
         sourceX, sourceY, senderReadyCounterAddress,
         arith::ConstantIntOp::create(rewriter, loc, 1, 32));
-  } else {
+  } else if (!usesFabric) {
     NocPipeTransportEmitter transport(op, pipeType,
                                       /*useOrderedPostedProtocol=*/false,
                                       rewriter);
@@ -3525,9 +4184,7 @@ lowerPipeTransferPost(PipeTransferPostOp op, Value dst,
              "sender-ready protocol selected without a sender-ready counter");
       Value senderReadyCounterAddr = buildPipeCounterAddress(
           loc, func, *pipeResource.readyCounter, pipeResourcePlan, rewriter);
-      if (failed(transport.emitSenderReadyIncrement(senderReadyCounterAddr))) {
-        return failure();
-      }
+      transport.emitSenderReadyIncrement(senderReadyCounterAddr);
     }
   }
 
@@ -4848,9 +5505,12 @@ buildWaitAnyCompletionGroups(ModuleOp module,
 
 static bool usesSenderReadyCounter(
     const PipeTransferAllocationUnit &unit,
-    const PipeSynchronizationSelection *synchronizationSelection) {
-  // Selected transfers use record-indexed receiver-post synchronization, so
-  // the sender must wait for the matching receiver reservation.
+    const PipeSynchronizationSelection *synchronizationSelection,
+    bool canElideFabricReadiness) {
+  if (usesFabricProtocol(unit, synchronizationSelection) &&
+      canElideFabricReadiness) {
+    return false;
+  }
   if (!synchronizationSelection || isSelectedTransferUnit(unit)) {
     return true;
   }
@@ -4987,6 +5647,68 @@ getComputedAddressInfo(const PipeReceiverEndpoint &receiverEndpoint) {
                                  std::nullopt};
 }
 
+FailureOr<PipeTransferNodeSet>
+analyzeComputedAddressEligibility(ModuleOp module, const PipeGraph &pipeGraph,
+                                  bool enableComputedAddresses) {
+  PipeTransferNodeSet eligibleTransfers;
+  if (!enableComputedAddresses) {
+    return eligibleTransfers;
+  }
+
+  FailureOr<FinalizedDFBStorageFootprint> storageFootprint =
+      getFinalizedDFBStorageFootprint(module);
+  if (failed(storageFootprint)) {
+    return failure();
+  }
+  llvm::DenseSet<int64_t> sharedStorageDFBIndices;
+  using MembersByStorageIndex =
+      FinalizedDFBStorageFootprint::MembersByStorageIndex;
+  auto recordSharedStorage =
+      [&](const MembersByStorageIndex &membersByStorage) {
+        for (const auto &physicalIndices :
+             llvm::make_second_range(membersByStorage)) {
+          if (physicalIndices.size() > 1) {
+            sharedStorageDFBIndices.insert(physicalIndices.begin(),
+                                           physicalIndices.end());
+          }
+        }
+      };
+  if (storageFootprint->usesPerNodeAccounting) {
+    for (const auto &membersByStorage : storageFootprint->membersByNode) {
+      recordSharedStorage(membersByStorage);
+    }
+  } else {
+    recordSharedStorage(storageFootprint->globalMembers);
+  }
+
+  for (const PipeTransferNode &transferNode :
+       pipeGraph.getPipeTransferNodes()) {
+    const PipeReceiverEndpoint *receiverEndpoint =
+        pipeGraph.getProvenReceiverAddressEndpoint(transferNode.id);
+    if (!receiverEndpoint || !getComputedAddressInfo(*receiverEndpoint)) {
+      continue;
+    }
+    const ReceiverDFBInfo &receiverInfo = receiverEndpoint->receiverDFBInfo;
+    bool usesTensorBacking =
+        storageFootprint->tensorBackedPhysicalIndices.contains(
+            receiverInfo.dfbIndex);
+    bool hasStableTensorStorage =
+        !storageFootprint->reconfiguredPhysicalIndices.contains(
+            receiverInfo.dfbIndex) &&
+        storageFootprint->singleTensorBasePhysicalIndices.contains(
+            receiverInfo.dfbIndex);
+    if (sharedStorageDFBIndices.contains(receiverInfo.dfbIndex) ||
+        (usesTensorBacking && !hasStableTensorStorage)) {
+      continue;
+    }
+    if (!transferNode.sendOp->getParentOfType<FuncOp>()) {
+      continue;
+    }
+    eligibleTransfers.insert(transferNode.id);
+  }
+  return eligibleTransfers;
+}
+
 /// Computed-address facts indexed by transfer allocation unit before resource
 /// coloring builds the final plan.
 struct ComputedAddressPlan {
@@ -4996,14 +5718,13 @@ struct ComputedAddressPlan {
   llvm::MapVector<FuncOp, SmallVector<int32_t>> dfbIndices;
 };
 
-static ComputedAddressPlan buildComputedAddressPlan(
-    MutableArrayRef<PipeTransferAllocationUnit> units,
-    const PipeGraph &pipeGraph,
-    const FinalizedDFBStorageFootprint &storageFootprint,
-    const llvm::DenseSet<int64_t> &sharedStorageDFBIndices) {
+static ComputedAddressPlan
+buildComputedAddressPlan(MutableArrayRef<PipeTransferAllocationUnit> units,
+                         const PipeGraph &pipeGraph,
+                         const PipeTransferNodeSet &computedAddressTransfers) {
   ComputedAddressPlan plan;
 
-  /// One transfer whose recurrence can be materialized by its sender.
+  // One transfer whose recurrence can be materialized by its sender.
   struct Candidate {
     std::size_t unitIndex = 0;
     FuncOp senderFunc;
@@ -5014,33 +5735,17 @@ static ComputedAddressPlan buildComputedAddressPlan(
 
   for (auto indexedUnit : llvm::enumerate(units)) {
     PipeTransferAllocationUnit &unit = indexedUnit.value();
+    if (!computedAddressTransfers.contains(unit.transferNodeId)) {
+      continue;
+    }
     const PipeReceiverEndpoint *receiverEndpoint =
         pipeGraph.getProvenReceiverAddressEndpoint(unit.transferNodeId);
-    if (!receiverEndpoint) {
-      continue;
-    }
+    assert(receiverEndpoint && "eligible transfer has no address proof");
     const ReceiverDFBInfo &receiverInfo = receiverEndpoint->receiverDFBInfo;
-    bool usesTensorBacking =
-        storageFootprint.tensorBackedPhysicalIndices.contains(
-            receiverInfo.dfbIndex);
-    bool hasStableTensorStorage =
-        !storageFootprint.reconfiguredPhysicalIndices.contains(
-            receiverInfo.dfbIndex) &&
-        storageFootprint.singleTensorBasePhysicalIndices.contains(
-            receiverInfo.dfbIndex);
-    bool requiresReceiverPublishedAddress =
-        sharedStorageDFBIndices.contains(receiverInfo.dfbIndex) ||
-        (usesTensorBacking && !hasStableTensorStorage);
-    // Use receiver publication when the physical DFB index cannot identify one
-    // address base valid for every storage segment and configuration.
-    if (requiresReceiverPublishedAddress) {
-      continue;
-    }
     std::optional<PipeComputedAddressInfo> maybeComputedAddress =
         getComputedAddressInfo(*receiverEndpoint);
-    if (!maybeComputedAddress) {
-      continue;
-    }
+    assert(maybeComputedAddress &&
+           "eligible transfer has no computable receiver address");
     std::optional<FuncOp> maybeSenderFunc = getSingleSenderFunc(unit);
     if (!maybeSenderFunc) {
       continue;
@@ -5133,7 +5838,8 @@ compactColors(const SourceColorMap &colorUsersBySource,
 LogicalResult buildPipeResourcePlan(
     ModuleOp mod, const PipeTransferIndex &transferIndex,
     const PipeGraph &pipeGraph, PipeResourcePlan &info,
-    bool enableComputedAddresses, PipeCounterAllocationPolicy counterPolicy,
+    const PipeTransferNodeSet &computedAddressTransfers,
+    PipeCounterAllocationPolicy counterPolicy,
     const PipeSynchronizationSelection *synchronizationSelection) {
   DominanceInfo dominanceInfo(mod);
   PostDominanceInfo postDominanceInfo(mod);
@@ -5147,36 +5853,8 @@ LogicalResult buildPipeResourcePlan(
   SmallVector<PipeTransferAllocationUnit, 0> &units = *maybeUnits;
   SourceColorMap colorUsersBySource =
       assignLiveIntervalColors(units, dominanceInfo);
-  ComputedAddressPlan computedAddressPlan;
-  if (enableComputedAddresses) {
-    FailureOr<FinalizedDFBStorageFootprint> storageFootprint =
-        getFinalizedDFBStorageFootprint(mod);
-    if (failed(storageFootprint)) {
-      return failure();
-    }
-    llvm::DenseSet<int64_t> sharedStorageDFBIndices;
-    using MembersByStorageIndex =
-        FinalizedDFBStorageFootprint::MembersByStorageIndex;
-    auto recordSharedStorage =
-        [&](const MembersByStorageIndex &membersByStorage) {
-          for (const auto &physicalIndices :
-               llvm::make_second_range(membersByStorage)) {
-            if (physicalIndices.size() > 1) {
-              sharedStorageDFBIndices.insert(physicalIndices.begin(),
-                                             physicalIndices.end());
-            }
-          }
-        };
-    if (storageFootprint->usesPerNodeAccounting) {
-      for (const auto &membersByStorage : storageFootprint->membersByNode) {
-        recordSharedStorage(membersByStorage);
-      }
-    } else {
-      recordSharedStorage(storageFootprint->globalMembers);
-    }
-    computedAddressPlan = buildComputedAddressPlan(
-        units, pipeGraph, *storageFootprint, sharedStorageDFBIndices);
-  }
+  ComputedAddressPlan computedAddressPlan =
+      buildComputedAddressPlan(units, pipeGraph, computedAddressTransfers);
   info.computedAddressCounterInitializations =
       computedAddressPlan.counterInitializations;
   info.computedAddressDFBIndices = computedAddressPlan.dfbIndices;
@@ -5261,19 +5939,30 @@ LogicalResult buildPipeResourcePlan(
     fabricCompletionCounters.push_back(counterAllocator.allocateGlobal());
   }
 
+  SmallVector<bool> senderReadyCounterByUnit;
+  senderReadyCounterByUnit.reserve(units.size());
+  for (auto indexedUnit : llvm::enumerate(units)) {
+    const PipeTransferAllocationUnit &unit = indexedUnit.value();
+    const PipeTransferNode &transferNode =
+        pipeGraph.getPipeTransferNode(unit.transferNodeId);
+    senderReadyCounterByUnit.push_back(usesSenderReadyCounter(
+        unit, synchronizationSelection,
+        canElideFabricReceiverReadiness(transferNode, pipeGraph,
+                                        computedAddressTransfers)));
+  }
   auto [readyColorBySourceColor, maxReadyCountersPerSource] =
       compactColors(colorUsersBySource, [&](std::size_t unitIndex) {
-        return usesSenderReadyCounter(units[unitIndex],
-                                      synchronizationSelection);
+        return senderReadyCounterByUnit[unitIndex];
       });
 
   // The same ready color is reused on different source nodes, so every source
   // must interpret that color as the same storage kind.
   PipeCounterAllocationCounts counterCounts = counterAllocator.getCounts();
   bool hasFabricReadyCounter =
-      llvm::any_of(units, [&](const PipeTransferAllocationUnit &unit) {
-        return usesSenderReadyCounter(unit, synchronizationSelection) &&
-               usesFabricProtocol(unit, synchronizationSelection);
+      llvm::any_of(llvm::enumerate(units), [&](auto indexedUnit) {
+        return senderReadyCounterByUnit[indexedUnit.index()] &&
+               usesFabricProtocol(indexedUnit.value(),
+                                  synchronizationSelection);
       });
   bool useGlobalReadyCounters =
       hasFabricReadyCounter ||
@@ -5312,7 +6001,7 @@ LogicalResult buildPipeResourcePlan(
     assert(completionColor < static_cast<int64_t>(completionCounters.size()));
     PipeSourceKey sourceKey = getPipeSourceKey(unit.pipeType);
     std::optional<PipeCounterInfo> maybeReadyCounter;
-    if (usesSenderReadyCounter(unit, synchronizationSelection)) {
+    if (senderReadyCounterByUnit[indexedUnit.index()]) {
       auto sourceIt = readyColorBySourceColor.find(sourceKey);
       assert(sourceIt != readyColorBySourceColor.end());
       auto colorIt = sourceIt->second.find(unit.resourceColor);

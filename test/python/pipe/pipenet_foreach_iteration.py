@@ -6,7 +6,8 @@
 # UNSUPPORTED: system-darwin
 # RUN: env TTLANG_COMPILE_ONLY=1 TTLANG_INITIAL_MLIR=%t.initial.mlir %python %s > %t.output 2>&1
 # RUN: FileCheck %s --check-prefix=CHECK-INITIAL < %t.initial.mlir
-# RUN: FileCheck %s --check-prefix=CHECK-CPP < %t.output
+# RUN: FileCheck %s --check-prefix=CHECK-CPP \
+# RUN:   --implicit-check-not=experimental::routing_plane_atomic_inc < %t.output
 # RUN: FileCheck %s --check-prefix=CHECK-LOOPS < %t.output
 # RUN: %python %s --report-kernel-size < %t.output | FileCheck %s --check-prefix=CHECK-SIZE
 # RUN: FileCheck %s --check-prefix=CHECK-NO-DESCRIPTOR-ARRAYS < %t.output
@@ -213,6 +214,8 @@ if __name__ == "__main__":
 # CHECK-INITIAL-NOT: ttl.if_dst
 # CHECK-INITIAL-NOT: ttl.create_pipe
 
+# One-shot transfers with exclusive computed destinations do not publish
+# receiver readiness.
 # CHECK-CPP: ALL-TO-ALL-EDGE-COUNT: 992
 # The generated kernels may compute record-table fields before their transport
 # operations; these checks require the independent code-generation features.
@@ -222,7 +225,6 @@ if __name__ == "__main__":
 # CHECK-CPP-DAG: tt::tt_fabric::RoutingPlaneConnectionManager
 # CHECK-CPP-DAG: to_noc_fused_unicast_write_atomic_inc
 # CHECK-CPP-DAG: send_payload_without_header_non_blocking_from_address
-# CHECK-CPP-DAG: experimental::routing_plane_atomic_inc
 
 # CHECK-LOOPS-COUNT-8: for (
 # CHECK-LOOPS-NOT: for (

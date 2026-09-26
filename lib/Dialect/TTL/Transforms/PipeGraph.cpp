@@ -72,6 +72,13 @@ struct PipeGraphAnalysisState : LaunchNodeDomainState {
 
 namespace {
 
+// Retain launch-context facts without cached analyses that reference `state`.
+static LaunchNodeDomainState
+extractLaunchNodeEvaluationState(PipeGraphAnalysisState &state) {
+  state.executionCountAnalysesByFunction.clear();
+  return std::move(static_cast<LaunchNodeDomainState &>(state));
+}
+
 static LogicalResult collectLaunchNodeDomains(ModuleOp mod,
                                               PipeGraphAnalysisState &state) {
   state.initialize(mod);
@@ -1443,6 +1450,24 @@ LaunchNodeDomain PipeGraph::getOperationLaunchDomain(Operation *op) const {
   return it->second;
 }
 
+std::optional<std::uint64_t> PipeGraph::getExactExecutionCountAtLaunchLocation(
+    Operation *operation, const LaunchExecutionLocation &location) const {
+  if (!hasAnalyzedLaunchGrid) {
+    return std::nullopt;
+  }
+  return mlir::tt::ttl::getExactExecutionCountAtLaunchLocation(
+      operation, location, launchNodeDomainState);
+}
+
+std::optional<bool> PipeGraph::evaluatePredicateAtLaunchLocation(
+    Value predicate, const LaunchExecutionLocation &location) const {
+  if (!hasAnalyzedLaunchGrid) {
+    return std::nullopt;
+  }
+  return mlir::tt::ttl::evaluatePredicateAtLaunchLocation(
+      predicate, location, launchNodeDomainState);
+}
+
 const DFBAcquireReleaseIndex &
 PipeGraph::getDFBAcquireReleaseIndex(Operation *operation) const {
   func::FuncOp function = operation->getParentOfType<func::FuncOp>();
@@ -2462,6 +2487,8 @@ PipeGraph::build(ModuleOp mod, const PipeTransferIndex &transferIndex,
     graph.hasAnalyzedLaunchGrid = analysisState.hasLaunchGrid;
     graph.operationLaunchDomains =
         std::move(analysisState.operationLaunchDomains);
+    graph.launchNodeDomainState =
+        extractLaunchNodeEvaluationState(analysisState);
     return std::move(graph);
   }
   analysisState.dfbLogicalIdentities =
@@ -2514,6 +2541,7 @@ PipeGraph::build(ModuleOp mod, const PipeTransferIndex &transferIndex,
       std::move(analysisState.operationLaunchDomains);
   graph.dfbLifecycles = std::move(analysisState.dfbLifecycles);
   graph.receiverPopsByStream = std::move(analysisState.popsByStream);
+  graph.launchNodeDomainState = extractLaunchNodeEvaluationState(analysisState);
   return std::move(graph);
 }
 

@@ -351,8 +351,9 @@ should describe communication semantics without adding target topology fields.
 Local and fabric transfers use the same logical protocol:
 
 - the receiver owns and reserves the destination DFB block;
-- the receiver publishes readiness or participates in a proven capacity
-  protocol;
+- the receiver publishes readiness, participates in a proven capacity
+  protocol, or uses a fixed one-shot destination block that no other endpoint
+  writes;
 - the sender writes into the receiver-owned block;
 - the receiver waits for a completion signal before consuming the block;
 - source and destination roles are restricted by PipeNet guards;
@@ -410,6 +411,70 @@ cache the selected plan for the mesh and fabric configuration. A target that
 cannot encode a legal route in one packet may materialize explicit forwarding
 after logical transfer analysis; that is not required by the current
 destination-routed TT-Metal transport.
+
+### Worker aggregation
+
+A graph PipeNet creates one logical transfer for each participating worker. If
+every worker opens its own fabric connection, a four-worker transfer requires
+four concurrent connection owners even when all transfers use the same device
+route. TT-Metal can bind up to two Blackhole forwarding links for one route
+direction, so the compiler assigns the workers to at most two local forwarders
+before host runtime route binding. Runtime binding rejects hardware that does
+not provide every link required by the plan.
+
+For four workers, the sender protocol is:
+
+```text
+worker 0 --payload slot 0--\
+worker 1 --payload slot 1---+--> forwarder 0 --fabric--> remote workers 0, 1
+
+worker 2 --payload slot 0--\
+worker 3 --payload slot 1---+--> forwarder 2 --fabric--> remote workers 2, 3
+```
+
+Each source worker writes its payload into a distinct SRAM scratch slot on its
+forwarder. A NoC write barrier completes that write before the worker increments
+the forwarder's arrival counter. The forwarder waits for every group member,
+calls `experimental::routing_plane_fused_write_atomic_inc` once per member,
+and then increments each member's local completion counter. The fabric helper
+uses a blocking payload flush. The local completion wait prevents a worker
+from overwriting its scratch slot before that flush consumes the payload.
+
+Readiness follows the reverse sequence. Each receiver reserves its destination
+DFB and increments its receiver-side forwarder's arrival counter. After the
+whole group arrives, the forwarder calls
+`experimental::routing_plane_atomic_inc` once per source worker and increments
+each receiver's local completion counter. The receiver then waits for the
+normal fabric payload-completion signal before consuming the DFB.
+
+Arrival and completion counters increase across static loop iterations. Each
+kernel stores its expected counter values in local variables and uses
+`experimental::semaphore_wait_min` against the counters in SRAM scratch. The
+runtime allocates zero-initialized scratch for every dispatch. Each protocol
+operation receives separate counter state because its counts accumulate
+independently. This also prevents concurrent kernel functions from sharing
+counters.
+
+The compiler applies this transformation only on Blackhole when it proves all
+of the following:
+
+- every selected record crosses devices, names one destination worker, and the
+  operation has an exact worker domain;
+- every participating worker selects exactly one record;
+- every participating device and worker reaches corresponding executions
+  through the same positive static loop counts, PipeNet callback counts, and
+  selected conditional regions;
+- the operation belongs to a single-block data-movement kernel rather than a
+  helper function;
+- operations sharing one physical route partition its direct worker set and do
+  not require more than two independent forwarders;
+- cumulative arrival and completion counts fit in 32 bits.
+
+An operation that does not satisfy these conditions retains its direct worker
+connections. After planning, resource validation rejects a module when its
+combined DFB and compiler scratch allocation exceeds L1. The transformation
+does not change the PipeNet records, DFB ownership, or payload-completion
+protocol.
 
 ### Collective communication
 
@@ -578,6 +643,13 @@ Each dictionary entry contains `local` and `remote` `DeviceRefAttr` values,
 `MeshCoordinate` nor queries topology. Python artifact extraction later
 flattens the two device references into `FabricRouteSpec` tuples; physical
 resolution still waits until host execution setup.
+
+Separate send and receiver-post transport interfaces keep PipeNet protocol
+planning independent of transport emission. The NoC implementations emit
+same-device transfers and receiver address publication. The fabric
+implementations emit receiver-readiness atomics when required, sender atomics,
+and fused payload-write-plus-completion operations through the routing-plane
+manager.
 
 Before record-loop materialization, lowering builds immutable plans for every
 graph callback. It then materializes those loops and expands high-level copies

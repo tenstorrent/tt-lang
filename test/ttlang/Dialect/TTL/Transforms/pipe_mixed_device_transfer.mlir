@@ -20,7 +20,13 @@
    pipes[<srcX = 0, srcY = 0, dstStartX = 0, dstStartY = 0,
           dstEndX = 0, dstEndY = 0>]>>
 
-module attributes {ttl.launch_grid = array<i64: 1, 1>} {
+// The Blackhole forwarder planner retains the mixed-protocol operation's
+// direct lowering because its same-device records have no fabric route.
+// CHECK-NOT: ttl.pipe_sram_scratch_bytes
+module attributes {
+  ttl.launch_grid = array<i64: 1, 1>,
+  ttl.target_arch = #ttcore.arch<blackhole>
+} {
   // CHECK-LABEL: func.func @sender
   // CHECK-SAME: ttl.fabric_routes = [
   // CHECK-SAME: local = #ttl.device_ref<coordinates = [0]>

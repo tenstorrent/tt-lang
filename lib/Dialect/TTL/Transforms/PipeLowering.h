@@ -15,6 +15,7 @@
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsAttrs.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -29,6 +30,9 @@ class ValueOriginAnalysis;
 namespace mlir::tt::ttl {
 
 class PipeTransferIndex;
+class FabricForwarderPlan;
+
+using PipeTransferNodeSet = llvm::DenseSet<PipeTransferNodeId>;
 
 /// One logical device route used by `sourceNodes` in a kernel function.
 /// `routeIndex` selects this route's target metadata; host binding separately
@@ -39,6 +43,10 @@ struct FabricRoute {
   SmallVector<LaunchNodeCoord> sourceNodes;
   std::size_t routeIndex;
 };
+
+/// Return whether both arrays contain the same unique launch nodes.
+bool launchNodeSetsEqual(ArrayRef<LaunchNodeCoord> lhs,
+                         ArrayRef<LaunchNodeCoord> rhs);
 
 /// Fabric routes and their logical device domain for one kernel function.
 struct FunctionFabricRoutePlan {
@@ -89,6 +97,8 @@ struct FabricRoutePlan {
   SmallVector<FabricRuntimeIntervalPlan> runtimeIntervals;
   /// Generated and external manager intervals used by target binding.
   SmallVector<FabricManagerIntervalPlan, 0> managerIntervals;
+  /// Receivers eligible for one aggregated readiness-forwarding transaction.
+  llvm::SmallPtrSet<Operation *, 16> receiversWithReadinessForEveryRecord;
   /// Number of local semaphores required by generated ownership sequences.
   int64_t ownershipSemaphoreCount = 0;
 
@@ -111,6 +121,18 @@ struct FabricRuntimeInfo {
 
 /// Routing-plane state indexed by each fabric protocol operation.
 using FabricRuntimeMap = llvm::DenseMap<Operation *, FabricRuntimeInfo>;
+
+/// Kernel-local expected values for cumulative scratch-backed counters.
+struct FabricForwarderCounterExpectations {
+  /// One-element i32 memref holding the expected arrival count.
+  Value arrivalCountStorage;
+  /// One-element i32 memref holding the expected completion count.
+  Value completionCountStorage;
+};
+
+/// Counter expectations indexed by their fabric protocol operation.
+using FabricForwarderCounterExpectationMap =
+    llvm::MapVector<Operation *, FabricForwarderCounterExpectations>;
 
 struct PipeInfo {
   PipeType pipeType;
@@ -305,13 +327,24 @@ getPipeResourceRequirements(const PipeResourcePlan &info,
 /// predicates. Duplicate records contribute one entry per transfer contract.
 LogicalResult buildPipeNetIndex(ModuleOp mod, PipeNetIndex &index);
 
-/// Build per-kernel routing-plane records from transfers validated by
-/// PipeGraph.
+/// Build per-kernel routes and unfinalized manager intervals from transfers
+/// validated by PipeGraph.
 LogicalResult buildFabricRoutePlan(
     ModuleOp module, const PipeTransferIndex &transferIndex,
     const PipeGraph &pipeGraph, const PipeForeachLoweringInfo &foreachInfo,
     ArrayRef<ExternalFabricManagerInterval> externalManagerIntervals,
-    bool enableLocalManagerOwnership, FabricRoutePlan &plan);
+    const PipeTransferNodeSet &computedAddressTransfers, FabricRoutePlan &plan);
+
+/// Return transfers whose destination addresses can be computed from finalized
+/// DFB storage and the receiver schedule.
+FailureOr<PipeTransferNodeSet>
+analyzeComputedAddressEligibility(ModuleOp module, const PipeGraph &pipeGraph,
+                                  bool enableComputedAddresses);
+
+/// Plan manager ownership after all route-owner substitutions are complete.
+void finalizeFabricRoutePlan(FabricRoutePlan &plan, const PipeGraph &pipeGraph,
+                             const PipeForeachLoweringInfo &foreachInfo,
+                             bool enableLocalManagerOwnership);
 
 /// Materialize the function attributes recorded by `plan`.
 void applyFabricRoutePlan(ModuleOp module, const FabricRoutePlan &plan);
@@ -320,13 +353,19 @@ void applyFabricRoutePlan(ModuleOp module, const FabricRoutePlan &plan);
 void initializeFabricRuntime(const FabricRoutePlan &plan,
                              FabricRuntimeMap &runtime);
 
+/// Allocate independent cumulative arrival and completion expectations for
+/// each aggregated operation.
+void initializeFabricForwarderCounterExpectations(
+    const FabricForwarderPlan &plan,
+    FabricForwarderCounterExpectationMap &forwarderCounterExpectations);
+
 /// Build the pipe resource plan used by pipe lowering. Transfer intervals that
 /// cannot be bounded by dominance are conservatively treated as conflicting
 /// with every other transfer interval from the same source core.
 LogicalResult buildPipeResourcePlan(
     ModuleOp mod, const PipeTransferIndex &transferIndex,
     const PipeGraph &pipeGraph, PipeResourcePlan &info,
-    bool enableComputedAddresses = true,
+    const PipeTransferNodeSet &computedAddressTransfers,
     PipeCounterAllocationPolicy counterPolicy =
         PipeCounterAllocationPolicy::LocalThenGlobal,
     const PipeSynchronizationSelection *synchronizationSelection = nullptr);
@@ -398,17 +437,24 @@ LogicalResult lowerPipeTransferSend(
     const PipeCounterProgressMap &senderCapacityCounters,
     const PipeCounterTableMap &fabricReadyCounters,
     const PipeComputedAddressCounterMap &computedAddressCounters,
-    const FabricRuntimeMap &fabricRuntime, ConversionPatternRewriter &rewriter);
+    const FabricRuntimeMap &fabricRuntime,
+    const FabricForwarderPlan &fabricForwarderPlan,
+    const FabricForwarderCounterExpectationMap &forwarderCounterExpectations,
+    ConversionPatternRewriter &rewriter);
 
 /// Remove a receiver post proven unreachable at its pipe endpoint.
 void lowerInactivePipeTransferPost(PipeTransferPostOp op,
                                    ConversionPatternRewriter &rewriter);
 
+/// Lower the receiver post and signal sender readiness.
 LogicalResult lowerPipeTransferPost(
     PipeTransferPostOp op, Value dst, const PipeTransferPlan &transferPlan,
     const PipeCounterTableMap &postSequenceCounters,
     const PipeResourcePlan &pipeResourcePlan,
-    const FabricRuntimeMap &fabricRuntime, ConversionPatternRewriter &rewriter);
+    const FabricRuntimeMap &fabricRuntime,
+    const FabricForwarderPlan &fabricForwarderPlan,
+    const FabricForwarderCounterExpectationMap &forwarderCounterExpectations,
+    ConversionPatternRewriter &rewriter);
 
 /// Lower a dataflow buffer pop and emit any proven pipe capacity releases.
 LogicalResult lowerCBPop(CBPopOp op, Value cb,
