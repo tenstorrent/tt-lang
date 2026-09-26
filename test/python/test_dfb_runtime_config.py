@@ -245,7 +245,7 @@ def test_tensor_backing_segments_preserve_nodes_and_tensor_range():
 def test_compiler_l1_tensor_backing_preserves_state_and_omits_arena_payload():
     with Context():
         module = Module.parse(
-            """module attributes {ttl.dfb_allocations = [{
+            """module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 32 : i64, ttl.dfb_allocations = [{
               block_count = 1 : i32,
               dfb_index = 0 : i32,
               element_type = !ttcore.tile<32x32, bf16>,
@@ -253,6 +253,7 @@ def test_compiler_l1_tensor_backing_preserves_state_and_omits_arena_payload():
               num_tiles = 1 : i32,
               page_size = 2048 : i32,
               storage_index = 0 : i32,
+              storage_capacity_pages = 1 : i32,
               storage_segments = [{
                 tensor_backing = #ttl.tensor_backing<
                   tensor_index = 2, byte_offset = 2048, byte_size = 2048>,
@@ -279,6 +280,7 @@ def test_compiler_l1_tensor_backing_preserves_state_and_omits_arena_payload():
                 ),
                 storage_index=0,
                 l1_offset=0,
+                storage_capacity_pages=1,
             )
         ]
 

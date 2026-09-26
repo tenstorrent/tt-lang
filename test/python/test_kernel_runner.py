@@ -2206,6 +2206,110 @@ def test_compiler_l1_arena_size_uses_all_regions():
     assert kernel_runner._get_compiler_l1_arena_bytes(configs) == 6208
 
 
+def test_compiler_l1_arena_size_shares_storage_owner_record_and_payload():
+    configs = [
+        PhysicalDFBConfig(
+            dfb_index,
+            1,
+            "bfloat16",
+            logical_pages,
+            2048,
+            None,
+            storage_index=3,
+            storage_capacity_pages=2,
+            l1_offset=0,
+            l1_payload_offset=64,
+            l1_allocation_bytes=4096,
+        )
+        for dfb_index, logical_pages in enumerate((1, 2))
+    ]
+
+    assert kernel_runner._get_compiler_l1_arena_bytes(configs) == 4160
+
+
+@pytest.mark.parametrize(
+    ("second_state", "second_payload", "second_capacity", "message"),
+    [
+        (8, 64, 2, "inconsistent control records"),
+        (0, 128, 2, "inconsistent payloads"),
+        (0, 64, 3, "inconsistent capacity"),
+    ],
+)
+def test_compiler_l1_arena_size_rejects_inconsistent_shared_storage(
+    second_state, second_payload, second_capacity, message
+):
+    first = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        storage_index=3,
+        storage_capacity_pages=2,
+        l1_offset=0,
+        l1_payload_offset=64,
+        l1_allocation_bytes=4096,
+    )
+    second = PhysicalDFBConfig(
+        1,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        storage_index=3,
+        storage_capacity_pages=second_capacity,
+        l1_offset=second_state,
+        l1_payload_offset=second_payload,
+        l1_allocation_bytes=4096,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        kernel_runner._get_compiler_l1_arena_bytes([first, second])
+
+
+def test_compiler_l1_arena_size_rejects_distinct_overlapping_records():
+    configs = [
+        PhysicalDFBConfig(
+            dfb_index,
+            1,
+            "bfloat16",
+            1,
+            2048,
+            None,
+            storage_index=dfb_index,
+            storage_capacity_pages=1,
+            l1_offset=state_offset,
+            l1_payload_offset=64,
+            l1_allocation_bytes=2048,
+        )
+        for dfb_index, state_offset in enumerate((0, 4))
+    ]
+
+    with pytest.raises(ValueError, match="control records overlap"):
+        kernel_runner._get_compiler_l1_arena_bytes(configs)
+
+
+def test_compiler_l1_arena_size_requires_shared_capacity_extent():
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        storage_index=0,
+        storage_capacity_pages=2,
+        l1_offset=0,
+        l1_payload_offset=64,
+        l1_allocation_bytes=2048,
+    )
+
+    with pytest.raises(ValueError, match="allocation does not cover its payload"):
+        kernel_runner._get_compiler_l1_arena_bytes([config])
+
+
 def test_compiler_l1_arena_size_accepts_tensor_backing_without_payload():
     config = PhysicalDFBConfig(
         0,
@@ -2943,9 +3047,7 @@ def test_compiler_sram_failed_completion_detaches_cached_owners(
 
 
 # Compiler-managed reset and reconfiguration state uses compiler scratch.
-@pytest.mark.parametrize(
-    ("scratch_bytes", "reset_count"), [(16, 0), (16, 1), (32, 1)]
-)
+@pytest.mark.parametrize(("scratch_bytes", "reset_count"), [(16, 0), (16, 1), (32, 1)])
 def test_compiler_l1_composes_with_lifecycle_scratch(
     monkeypatch, scratch_bytes, reset_count
 ):

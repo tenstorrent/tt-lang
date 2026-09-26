@@ -1,7 +1,7 @@
 // Address-based compute uses compile-time formats and one invocation context.
 // RUN: ttlang-opt %s --convert-ttkernel-to-emitc -o %t.emitc.mlir
 // RUN: FileCheck %s --input-file=%t.emitc.mlir
-// RUN: ttlang-translate --ttkernel-to-cpp %t.emitc.mlir | FileCheck %s --check-prefix=CPP
+// RUN: ttlang-translate --allow-unregistered-dialect --ttkernel-to-cpp %t.emitc.mlir | FileCheck %s --check-prefix=CPP
 // The arena ends exactly at the second allocation's payload end.
 module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 24640 : i64, ttl.dfb_allocations = [
   {dfb_index = 0 : i64, element_type = !ttcore.tile<32x32, f32>, page_size = 4096 : i64, num_tiles = 1 : i64, block_count = 3 : i64, storage_capacity_pages = 3 : i64, l1_allocation_bytes = 12288 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64},

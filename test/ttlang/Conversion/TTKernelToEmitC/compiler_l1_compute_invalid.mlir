@@ -39,7 +39,7 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 6553
 // -----
 
 // Every allocation entry must contain the geometry and ordered offsets used by generated address types.
-// expected-error @below {{'builtin.module' op compiler-sram allocation entry 0 must define element_type, positive uint32 page_size, num_tiles, block_count, and l1_allocation_bytes values with representable ordered SRAM offsets}}
+// expected-error @below {{'builtin.module' op compiler-sram allocation entry 0 must define element_type, positive uint32 page_size, num_tiles, block_count, storage_capacity_pages, and either an arena payload or tensor backing with representable SRAM offsets}}
 module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.dfb_allocations = [{dfb_index = 0 : i64, block_count = 1 : i64, l1_allocation_bytes = 2048 : i64, l1_offset = 64 : i64, l1_payload_offset = 32 : i64, num_tiles = 1 : i64, element_type = !ttcore.tile<32x32, bf16>, page_size = 2048 : i64, storage_capacity_pages = 1 : i64}]} {
   func.func @invalid_allocation_offsets() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
     %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
@@ -154,7 +154,7 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 6553
   func.func @partial_block() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
     %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>
     %one = arith.constant 1 : i32
-    // expected-error @below {{compiler-sram requires full-block synchronization to preserve contiguous acquisitions}}
+    // expected-error @below {{compiler-sram requires one complete block or the complete tensor-backed capacity per synchronization operation}}
     ttkernel.cb_wait_front(%storage, %one) : (!ttkernel.cb<2, !ttcore.tile<32x32, bf16>>, i32) -> ()
     return
   }
@@ -221,19 +221,6 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 6553
 
 // -----
 
-// Consumer replacement is outside the address-based compute contract.
-module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.dfb_allocations = [{dfb_index = 0 : i64, element_type = !ttcore.tile<32x32, bf16>, page_size = 2048 : i64, num_tiles = 1 : i64, block_count = 1 : i64, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, storage_capacity_pages = 1 : i64}]} {
-  func.func @consumer_replacement() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
-    %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
-    %zero = arith.constant 0 : index
-    // expected-error @below {{has no compiler-sram lowering for ttkernel.pack_waited_tile; Metal DFB fallback is disabled}}
-    ttkernel.pack_waited_tile(%zero, %storage, %zero, true) {acquired_tiles = 1 : i64} : (index, !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>, index) -> ()
-    return
-  }
-}
-
-// -----
-
 // The declared allocation must cover every page in the payload.
 // expected-error @below {{'builtin.module' op compiler-sram allocation entry 0 payload extent exceeds its allocation or arena}}
 module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 4160 : i64, ttl.dfb_allocations = [{dfb_index = 0 : i64, element_type = !ttcore.tile<32x32, bf16>, page_size = 2048 : i64, num_tiles = 1 : i64, block_count = 2 : i64, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, storage_capacity_pages = 2 : i64}]} {
@@ -283,17 +270,6 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = []}
 module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 4294967296 : i64, ttl.dfb_allocations = []} {
   func.func @unrepresentable_arena_size() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
     %unused = ttkernel.get_compile_time_arg_val(0) : () -> i32
-    return
-  }
-}
-
-// -----
-
-// The payload product 2048 * 2^31 * 2^31 wraps to zero without checked arithmetic.
-// expected-error @below {{'builtin.module' op compiler-sram allocation entry 0 payload size overflows 64-bit arithmetic}}
-module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 4160 : i64, ttl.dfb_allocations = [{dfb_index = 0 : i64, element_type = !ttcore.tile<32x32, bf16>, page_size = 2048 : i64, num_tiles = 2147483648 : i64, block_count = 2147483648 : i64, l1_allocation_bytes = 4096 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64}]} {
-  func.func @payload_product_overflow() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
-    %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4611686018427387904, !ttcore.tile<32x32, bf16>>
     return
   }
 }

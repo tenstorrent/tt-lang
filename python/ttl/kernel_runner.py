@@ -2050,17 +2050,26 @@ def _get_compiler_l1_arena_bytes(
         raise ValueError("mixed compiler-sram and Metal storage metadata")
 
     control_offsets_by_owner = {}
+    capacities_by_owner = {}
     payloads_by_owner = {}
     for config in cb_configs:
         owner = (
             "storage" if config.storage_index is not None else "dfb",
-            config.storage_index
-            if config.storage_index is not None
-            else config.dfb_index,
+            _physical_dfb_storage_index(config),
         )
         previous_offset = control_offsets_by_owner.setdefault(owner, config.l1_offset)
         if previous_offset != config.l1_offset:
-            raise ValueError("compiler-sram storage owner has inconsistent control records")
+            raise ValueError(
+                "compiler-sram storage owner has inconsistent control records"
+            )
+        if config.storage_capacity_pages is not None:
+            previous_capacity = capacities_by_owner.setdefault(
+                owner, config.storage_capacity_pages
+            )
+            if previous_capacity != config.storage_capacity_pages:
+                raise ValueError(
+                    "compiler-sram storage owner has inconsistent capacity"
+                )
     control_starts = sorted(control_offsets_by_owner.values())
     if any(start < 0 or start % 4 for start in control_starts):
         raise ValueError("compiler-sram has an unaligned control record")
@@ -2078,21 +2087,26 @@ def _get_compiler_l1_arena_bytes(
             raise ValueError("incomplete compiler-sram payload allocation metadata")
         if has_payload_offset:
             if config.l1_payload_offset < control_end:
-                raise ValueError("compiler-sram payload must follow all control records")
-            if config.l1_allocation_bytes < (
-                config.num_tiles * config.block_count * config.page_size
-            ):
+                raise ValueError(
+                    "compiler-sram payload must follow all control records"
+                )
+            required_pages = (
+                config.storage_capacity_pages
+                if config.storage_capacity_pages is not None
+                else config.num_tiles * config.block_count
+            )
+            if config.l1_allocation_bytes < required_pages * config.page_size:
                 raise ValueError("compiler-sram allocation does not cover its payload")
             owner = (
                 "storage" if config.storage_index is not None else "dfb",
-                config.storage_index
-                if config.storage_index is not None
-                else config.dfb_index,
+                _physical_dfb_storage_index(config),
             )
             payload = (config.l1_payload_offset, config.l1_allocation_bytes)
             previous_payload = payloads_by_owner.setdefault(owner, payload)
             if previous_payload != payload:
-                raise ValueError("compiler-sram storage owner has inconsistent payloads")
+                raise ValueError(
+                    "compiler-sram storage owner has inconsistent payloads"
+                )
             arena_ends.append(config.l1_payload_offset + config.l1_allocation_bytes)
             continue
         if not config.storage_segments or any(
