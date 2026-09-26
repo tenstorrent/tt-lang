@@ -178,6 +178,7 @@ void buildTTKernelSpecializationPipeline(OpPassManager &pm) {
   pm.addPass(createCanonicalizerPass());
   pm.addPass(createCSEPass());
   buildTTKernelRecordCleanupPipeline(pm);
+  pm.addPass(createTTKernelSpecializeDFBReconfiguration());
   pm.addPass(createTTKernelAnnotateDFBUse());
 }
 
@@ -202,8 +203,9 @@ void registerTTLPipelines() {
   PassPipelineRegistration<>(
       "ttkernel-specialize-and-annotate-dfb-use",
       "Specialize kernels per launch coordinate, fold coordinate-dependent "
-      "control flow, compact tensor runtime arguments, and record surviving "
-      "DFB compile-time argument indices.",
+      "control flow, compact tensor runtime arguments, specialize DFB "
+      "reconfiguration calls, and record surviving DFB compile-time argument "
+      "indices.",
       buildTTKernelSpecializationPipeline);
 }
 
