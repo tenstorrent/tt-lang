@@ -59,7 +59,7 @@ module attributes {ttl.dfb_allocations = [{block_count = 1 : i32, dfb_index = 0 
 #boundary = #ttl.dfb_reconfiguration<0, participants[#reconfig_compute, #reconfig_reader, #reconfig_writer]>
 
 // CHECK-LABEL: module attributes {
-// CHECK-NOT: ttl.dfb_reset_count
+// CHECK-SAME: ttl.dfb_reset_count = 1 : i64
 // CHECK-SAME: ttl.pipe_sram_scratch_bytes = 32 : i64
 // CHECK-LABEL: func.func @compute
 // CHECK: %[[RECONFIG_ZERO:.*]] = arith.constant 0 : i32

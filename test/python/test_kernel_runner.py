@@ -5,7 +5,7 @@
 """Python-only tests for ttl.kernel_runner resource allocation helpers."""
 
 from collections import defaultdict
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 import gc
 import os
 from pathlib import Path
@@ -45,8 +45,11 @@ from ttl.domains import DeviceDomain
 from ttl.ttl import ProgramRuntimeResources as TTLProgramRuntimeResources
 
 
-def _extract_unsigned_constant(source, name):
-    match = re.search(rf"constexpr uint(?:32|64)_t {name} = (?P<value>[0-9]+);", source)
+def _extract_integer_constant(source, name):
+    match = re.search(
+        rf"(?:inline )?constexpr (?:u?int(?:32|64)_t) {name} = (?P<value>[0-9]+);",
+        source,
+    )
     assert match is not None
     return int(match.group("value"))
 
@@ -62,10 +65,10 @@ def test_dfb_reconfiguration_abi_constants_match_sources():
         repository_root / "lib/Dialect/TTL/Transforms/DFBAllocationLimits.cpp"
     ).read_text()
 
-    low_mask_word = _extract_unsigned_constant(llk_source, "lowMaskWord")
-    high_mask_word = _extract_unsigned_constant(llk_source, "highMaskWord")
-    synchronization_word = _extract_unsigned_constant(llk_source, "synchronizationWord")
-    compiler_words_per_core = _extract_unsigned_constant(
+    low_mask_word = _extract_integer_constant(llk_source, "lowMaskWord")
+    high_mask_word = _extract_integer_constant(llk_source, "highMaskWord")
+    synchronization_word = _extract_integer_constant(llk_source, "synchronizationWord")
+    compiler_words_per_core = _extract_integer_constant(
         allocation_source, "kDFBReconfigurationWordsPerCore"
     )
 
@@ -85,6 +88,7 @@ class _FakeTensor:
         dtype=None,
         tile_shape=(32, 32),
         shard_shape=(32, 64),
+        memory_layout="HEIGHT_SHARDED",
     ):
         self._device = device
         self._address = address
@@ -92,6 +96,7 @@ class _FakeTensor:
         self.layout = "TILE"
         self.tile_shape = tile_shape
         self.shard_shape = shard_shape
+        self.memory_layout = memory_layout
 
     def device(self):
         return self._device
@@ -108,10 +113,11 @@ class _FakeTensor:
 
         class MemoryConfig:
             buffer_type = "L1"
-            memory_layout = "HEIGHT_SHARDED"
             shard_spec = ShardSpec()
 
-        return MemoryConfig()
+        memory_config = MemoryConfig()
+        memory_config.memory_layout = self.memory_layout
+        return memory_config
 
 
 class _FakeTensorWithoutDevice:
@@ -389,6 +395,8 @@ class _FakeTTNN:
                 return scalar_count // 2 + exponent_bytes
             if dtype_name == "bfloat8_b":
                 return scalar_count + exponent_bytes
+            if dtype_name == "float32":
+                return scalar_count * 4
             return scalar_count * 2
 
     class TileDescriptor:
@@ -2203,6 +2211,235 @@ def test_compiler_l1_arena_size_uses_all_regions():
     assert kernel_runner._get_compiler_l1_arena_bytes(configs) == 6208
 
 
+def test_compiler_l1_arena_size_shares_storage_owner_record_and_payload():
+    configs = [
+        PhysicalDFBConfig(
+            dfb_index,
+            1,
+            "bfloat16",
+            logical_pages,
+            2048,
+            None,
+            storage_index=3,
+            storage_capacity_pages=2,
+            l1_offset=0,
+            l1_payload_offset=64,
+            l1_allocation_bytes=4096,
+        )
+        for dfb_index, logical_pages in enumerate((1, 2))
+    ]
+
+    assert kernel_runner._get_compiler_l1_arena_bytes(configs) == 4160
+
+
+@pytest.mark.parametrize(
+    ("second_format", "second_tile"),
+    [("uint16", (32, 32)), ("bfloat16", (16, 64))],
+    ids=["element-format", "tile-geometry"],
+)
+def test_compiler_l1_arena_size_rejects_shared_owner_page_format(
+    second_format, second_tile
+):
+    first = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        storage_index=3,
+        storage_capacity_pages=1,
+        l1_offset=0,
+        l1_payload_offset=64,
+        l1_allocation_bytes=2048,
+    )
+    second = replace(first, dfb_index=1, data_format=second_format, tile=second_tile)
+
+    with pytest.raises(ValueError, match="inconsistent page formats"):
+        kernel_runner._get_compiler_l1_arena_bytes([first, second])
+
+
+@pytest.mark.parametrize(
+    ("second_state", "second_payload", "second_capacity", "message"),
+    [
+        (8, 64, 2, "inconsistent control records"),
+        (0, 128, 2, "inconsistent payloads"),
+        (0, 64, 3, "inconsistent capacity"),
+        (0, 64, None, "inconsistent capacity"),
+    ],
+)
+def test_compiler_l1_arena_size_rejects_inconsistent_shared_storage(
+    second_state, second_payload, second_capacity, message
+):
+    first = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        storage_index=3,
+        storage_capacity_pages=2,
+        l1_offset=0,
+        l1_payload_offset=64,
+        l1_allocation_bytes=4096,
+    )
+    second = PhysicalDFBConfig(
+        1,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        storage_index=3,
+        storage_capacity_pages=second_capacity,
+        l1_offset=second_state,
+        l1_payload_offset=second_payload,
+        l1_allocation_bytes=4096,
+    )
+
+    with pytest.raises(ValueError, match=message):
+        kernel_runner._get_compiler_l1_arena_bytes([first, second])
+
+
+def test_compiler_l1_arena_size_rejects_distinct_overlapping_records():
+    configs = [
+        PhysicalDFBConfig(
+            dfb_index,
+            1,
+            "bfloat16",
+            1,
+            2048,
+            None,
+            storage_index=dfb_index,
+            storage_capacity_pages=1,
+            l1_offset=state_offset,
+            l1_payload_offset=64,
+            l1_allocation_bytes=2048,
+        )
+        for dfb_index, state_offset in enumerate((0, 4))
+    ]
+
+    with pytest.raises(ValueError, match="control records overlap"):
+        kernel_runner._get_compiler_l1_arena_bytes(configs)
+
+
+def test_compiler_l1_arena_size_requires_shared_capacity_extent():
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        storage_index=0,
+        storage_capacity_pages=2,
+        l1_offset=0,
+        l1_payload_offset=64,
+        l1_allocation_bytes=2048,
+    )
+
+    with pytest.raises(ValueError, match="allocation does not cover its payload"):
+        kernel_runner._get_compiler_l1_arena_bytes([config])
+
+
+def test_compiler_l1_arena_size_accepts_tensor_backing_without_payload():
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        storage_segments=(
+            DFBStorageSegment(
+                nodes=((0, 0),),
+                tensor_index=0,
+                byte_offset=2048,
+                byte_size=2048,
+            ),
+        ),
+        l1_offset=0,
+    )
+
+    assert kernel_runner._get_compiler_l1_arena_bytes([config]) == 8
+
+
+def test_compiler_l1_arena_size_rejects_mixed_payload_sources():
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        storage_segments=(
+            DFBStorageSegment(
+                nodes=((0, 0),),
+                tensor_index=0,
+                byte_offset=0,
+                byte_size=2048,
+            ),
+        ),
+        l1_offset=0,
+        l1_payload_offset=64,
+        l1_allocation_bytes=2048,
+    )
+
+    with pytest.raises(ValueError, match="arena payload cannot include"):
+        kernel_runner._get_compiler_l1_arena_bytes([config])
+
+
+def test_compiler_l1_arena_size_combines_tensor_and_static_storage():
+    configs = [
+        PhysicalDFBConfig(
+            0,
+            1,
+            "bfloat16",
+            1,
+            2048,
+            None,
+            storage_segments=(
+                DFBStorageSegment(
+                    nodes=((0, 0),),
+                    tensor_index=0,
+                    byte_offset=0,
+                    byte_size=2048,
+                ),
+            ),
+            l1_offset=0,
+        ),
+        PhysicalDFBConfig(
+            1,
+            1,
+            "bfloat16",
+            1,
+            2048,
+            None,
+            l1_offset=8,
+            l1_payload_offset=64,
+            l1_allocation_bytes=2048,
+        ),
+    ]
+
+    assert kernel_runner._get_compiler_l1_arena_bytes(configs) == 2112
+
+
+def test_compiler_l1_arena_size_rejects_storage_without_payload_or_tensor():
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        l1_offset=0,
+    )
+
+    with pytest.raises(ValueError, match="requires tensor backing"):
+        kernel_runner._get_compiler_l1_arena_bytes([config])
+
+
 def test_compiler_l1_arena_size_rejects_partial_metadata():
     config = PhysicalDFBConfig(
         0,
@@ -2868,8 +3105,10 @@ def test_compiler_sram_failed_completion_detaches_cached_owners(
 
 
 # Compiler-managed reset and reconfiguration state uses compiler scratch.
-@pytest.mark.parametrize("reset_count", [0, 1])
-def test_compiler_l1_composes_with_lifecycle_scratch(monkeypatch, reset_count):
+@pytest.mark.parametrize(("scratch_bytes", "reset_count"), [(16, 0), (16, 1), (32, 1)])
+def test_compiler_l1_composes_with_lifecycle_scratch(
+    monkeypatch, scratch_bytes, reset_count
+):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     device = object()
@@ -2881,7 +3120,7 @@ def test_compiler_l1_composes_with_lifecycle_scratch(monkeypatch, reset_count):
 
     def allocate_storage(ranges, num_bytes, allocation_device, *, zero_initialize):
         allocation_calls.append((ranges, num_bytes, allocation_device, zero_initialize))
-        return scratch if num_bytes == 16 else arena
+        return scratch if num_bytes == scratch_bytes else arena
 
     monkeypatch.setattr(
         kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_storage
@@ -2891,14 +3130,14 @@ def test_compiler_l1_composes_with_lifecycle_scratch(monkeypatch, reset_count):
         tensors=[tensor],
         cb_configs=[_compiler_l1_config()],
         core_ranges=core_ranges,
-        pipe_sram_scratch_bytes=16,
+        pipe_sram_scratch_bytes=scratch_bytes,
         num_dfb_resets=reset_count,
         device=device,
     )
 
     assert allocation_calls == [
         (core_ranges, 2112, device, True),
-        (core_ranges, 16, device, True),
+        (core_ranges, scratch_bytes, device, True),
     ]
     assert result["tensors"] == [scratch, arena, tensor]
     assert fake_ttnn.synchronize_calls == [device]
@@ -7810,6 +8049,178 @@ def _tensor_backing_config(
     )
 
 
+# Compiler-managed SRAM must validate tensor storage before reserving an arena.
+@pytest.mark.parametrize(
+    ("invalid_binding", "message"),
+    [
+        ("tensor_index", "tensor backing index 1 is outside"),
+        ("missing_shard", "no shard data on launch nodes"),
+        ("dtype", "tensor backing dtype"),
+        ("tile", "tensor backing tile shape"),
+        ("page_size", "tensor backing page size"),
+        ("range", "exceeds logical per-shard size"),
+        ("capacity", "tensor-backed storage capacity must equal"),
+    ],
+)
+def test_compiler_sram_rejects_invalid_tensor_binding_before_allocation(
+    monkeypatch, invalid_binding, message
+):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    allocation_calls = []
+    monkeypatch.setattr(
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        lambda *_args, **_kwargs: allocation_calls.append("allocated"),
+    )
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    tensor = _FakeTensor(object(), dtype=expected_dtype)
+    config = replace(_tensor_backing_config(0, nodes=((0, 0),)), l1_offset=0)
+    if invalid_binding == "tensor_index":
+        config = replace(
+            config,
+            storage_segments=(replace(config.storage_segments[0], tensor_index=1),),
+        )
+    elif invalid_binding == "missing_shard":
+        config = replace(
+            config,
+            storage_segments=(replace(config.storage_segments[0], nodes=((1, 0),)),),
+        )
+        monkeypatch.setattr(
+            fake_ttnn,
+            "get_optimal_worker_cores_for_sharded_tensor",
+            lambda _tensor: [_FakeTTNN.CoreCoord(0, 0)],
+        )
+    elif invalid_binding == "dtype":
+        tensor.dtype = fake_ttnn.DataType.FLOAT32
+    elif invalid_binding == "tile":
+        tensor.tile_shape = (16, 32)
+    elif invalid_binding == "page_size":
+        config = replace(config, page_size=4096)
+    elif invalid_binding == "range":
+        tensor.shard_shape = (32, 32)
+        config = replace(
+            config,
+            storage_segments=(replace(config.storage_segments[0], byte_offset=2048),),
+        )
+    elif invalid_binding == "capacity":
+        config = replace(config, storage_capacity_pages=2)
+
+    with pytest.raises(ValueError, match=message):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[tensor],
+            cb_configs=[config],
+            core_ranges=_FakeCoreRanges(),
+            memory_model="compiler-sram",
+        )
+    assert allocation_calls == []
+
+
+@pytest.mark.parametrize(
+    ("second_offset", "second_storage_index", "message"),
+    [
+        (0, None, "identical tensor-backed DFB ranges require"),
+        (0, 0, "identical tensor-backed DFB ranges require"),
+        (2048, None, "tensor-backed DFB byte ranges partially overlap"),
+    ],
+    ids=["different-index", "same-number-different-owner", "partial-overlap"],
+)
+def test_compiler_sram_rejects_undeclared_tensor_alias_before_allocation(
+    monkeypatch, second_offset, second_storage_index, message
+):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    allocation_calls = []
+    monkeypatch.setattr(
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        lambda *_args, **_kwargs: allocation_calls.append("allocated"),
+    )
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    tensors = [
+        _FakeTensor(object(), address=0x4000, dtype=expected_dtype),
+        _FakeTensor(object(), address=0x4000, dtype=expected_dtype),
+    ]
+    first = replace(
+        _tensor_backing_config(0, nodes=((0, 0),), block_count=2, byte_size=4096),
+        l1_offset=0,
+    )
+    second = replace(
+        _tensor_backing_config(
+            1,
+            nodes=((0, 0),),
+            byte_offset=second_offset,
+            byte_size=2048,
+        ),
+        l1_offset=8,
+        storage_index=second_storage_index,
+    )
+    if second_offset == 0:
+        first = replace(
+            first,
+            block_count=1,
+            storage_segments=(replace(first.storage_segments[0], byte_size=2048),),
+        )
+
+    with pytest.raises(ValueError, match=message):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=tensors,
+            cb_configs=[first, second],
+            core_ranges=_FakeCoreRanges(),
+            memory_model="compiler-sram",
+        )
+    assert allocation_calls == []
+
+
+# Declared shared storage and reuse of one tensor preserve compiler-proved aliases.
+@pytest.mark.parametrize(
+    ("data_format", "page_size"),
+    [
+        ("bfloat16", 2048),
+        ("float32", 4096),
+        ("bfloat4_b", 576),
+        ("bfloat8_b", 1088),
+    ],
+    ids=["bf16", "fp32", "bfp4", "bfp8"],
+)
+@pytest.mark.parametrize(
+    "memory_layout",
+    ["HEIGHT_SHARDED", "WIDTH_SHARDED", "BLOCK_SHARDED"],
+    ids=["height", "width", "block"],
+)
+@pytest.mark.parametrize("shared_storage", [False, True], ids=["reuse", "owner"])
+def test_compiler_sram_accepts_declared_tensor_alias(
+    monkeypatch, data_format, page_size, memory_layout, shared_storage
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    expected_dtype = kernel_runner.format_name_to_ttnn_dtype(data_format)
+    tensor = _FakeTensor(object(), dtype=expected_dtype, memory_layout=memory_layout)
+    configs = [
+        replace(
+            _tensor_backing_config(
+                dfb_index,
+                nodes=((0, 0),),
+                data_format=data_format,
+                page_size=page_size,
+                byte_size=page_size,
+            ),
+            l1_offset=0 if shared_storage else dfb_index * 8,
+            storage_index=0 if shared_storage else None,
+        )
+        for dfb_index in range(2)
+    ]
+    configs[1] = replace(
+        configs[1],
+        storage_segments=(replace(configs[1].storage_segments[0], tensor_index=0),),
+    )
+
+    kernel_runner._validate_tensor_backing_aliases(
+        [tensor], configs, compiler_sram=True
+    )
+
+
 def test_pipe_runtime_resources_use_tensor_backed_computed_address_base(
     monkeypatch,
 ):
@@ -8730,6 +9141,7 @@ def test_emit_runner_source_accepts_physical_dfb_configs(monkeypatch):
                 page_size=32,
                 tile=(1, 16),
                 allocation_nodes=((0, 0),),
+                storage_capacity_pages=8,
             )
         ],
         grid_cols=1,
@@ -8746,6 +9158,7 @@ def test_emit_runner_source_accepts_physical_dfb_configs(monkeypatch):
     assert "tile=(1, 16)" in source
     assert "cb_configs=CB_CONFIGS" in source
     assert "allocation_nodes=((0, 0),)" in source
+    assert "storage_capacity_pages=8" in source
     assert "for i, (num_tiles, block_count" not in source
 
 

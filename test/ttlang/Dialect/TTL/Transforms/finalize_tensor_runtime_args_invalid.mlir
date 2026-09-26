@@ -38,9 +38,19 @@ func.func @local_accessor_index_out_of_range()
 // -----
 
 // Tensor metadata contains global tensor indices only.
-// expected-error @below {{'func.func' op ttl.crta_indices must contain non-negative integer values}}
+// expected-error @below {{'func.func' op ttl.crta_indices must contain non-negative 64-bit integers}}
 func.func @negative_global_tensor_index()
     attributes {ttl.crta_indices = [-1],
+                ttl.kernel_thread = #ttkernel.thread<noc>} {
+  return
+}
+
+// -----
+
+// Oversized serialized tensor indices must not reach integer conversion.
+// expected-error @below {{'func.func' op ttl.crta_indices must contain non-negative 64-bit integers}}
+func.func @oversized_global_tensor_index()
+    attributes {ttl.crta_indices = [18446744073709551616 : i128],
                 ttl.kernel_thread = #ttkernel.thread<noc>} {
   return
 }
@@ -68,4 +78,60 @@ func.func @negative_tensor_accessor_runtime_index()
   // expected-error @below {{'ttkernel.TensorAccessorArgs' op common runtime argument index must be non-negative}}
   %args = ttkernel.TensorAccessorArgs(%cta, %crta)
   return
+}
+
+// -----
+
+// Compiler-managed DFB indices must reference finalized allocation metadata.
+module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = []} {
+  func.func @missing_compiler_l1_allocation()
+      attributes {ttl.crta_indices = [0],
+                  ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{'ttkernel.get_compile_time_arg_val' op has invalid compiler-sram tensor-backing metadata}}
+    %dfb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
+    return
+  }
+}
+
+// -----
+
+// A tensor-backed DFB requires the referenced tensor in the common arguments.
+module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
+  {storage_segments = [{tensor_backing = #ttl.tensor_backing<tensor_index = 7, byte_offset = 0, byte_size = 2048>}]}
+]} {
+  func.func @missing_compiler_l1_tensor()
+      attributes {ttl.crta_indices = [0],
+                  ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{'ttkernel.get_compile_time_arg_val' op compiler-sram tensor backing references tensor 7 which is absent from the kernel's common tensor arguments}}
+    %dfb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
+    return
+  }
+}
+
+// -----
+
+// A typed external call requires finalized allocation metadata for its DFB.
+module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = []} {
+  func.func @opaque_call_missing_allocation()
+      attributes {ttl.crta_indices = [7],
+                  ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{'ttkernel.opaque_call' op has invalid compiler-sram tensor-backing metadata}}
+    ttkernel.opaque_call "consume" template_args [#ttkernel.dfb_descriptor<0, 1, 1, 2048>] () {dfb_resource_indices = array<i32: 0>, header = "consume.hpp"} : () -> ()
+    return
+  }
+}
+
+// -----
+
+// A typed external call requires its tensor backing in the common arguments.
+module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
+  {storage_segments = [{tensor_backing = #ttl.tensor_backing<tensor_index = 7, byte_offset = 0, byte_size = 2048>}]}
+]} {
+  func.func @opaque_call_missing_tensor()
+      attributes {ttl.crta_indices = [0],
+                  ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{'ttkernel.opaque_call' op compiler-sram tensor backing references tensor 7 which is absent from the kernel's common tensor arguments}}
+    ttkernel.opaque_call "consume" template_args [#ttkernel.dfb_descriptor<0, 1, 1, 2048>] () {dfb_resource_indices = array<i32: 0>, header = "consume.hpp"} : () -> ()
+    return
+  }
 }

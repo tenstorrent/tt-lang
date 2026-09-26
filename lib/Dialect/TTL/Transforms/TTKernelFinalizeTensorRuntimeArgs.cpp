@@ -57,9 +57,10 @@ readGlobalTensorIndices(func::FuncOp function, ArrayAttr indicesAttr,
                         SmallVectorImpl<int64_t> &indices) {
   for (Attribute attribute : indicesAttr) {
     auto integer = dyn_cast<IntegerAttr>(attribute);
-    if (!integer || integer.getInt() < 0) {
+    if (!integer || !integer.getValue().isSignedIntN(64) ||
+        integer.getInt() < 0) {
       function.emitOpError() << kCRTAIndicesAttrName
-                             << " must contain non-negative integer values";
+                             << " must contain non-negative 64-bit integers";
       return failure();
     }
     indices.push_back(integer.getInt());
@@ -175,6 +176,56 @@ remapCommonArgIndex(int64_t originalIndex,
   return *tensorSlotMap[originalIndex];
 }
 
+static FailureOr<int64_t> getCompilerSRAMTensorIndex(ModuleOp module,
+                                                     int64_t dfbIndex) {
+  auto memoryModel = module->getAttrOfType<StringAttr>(kMemoryModelAttrName);
+  if (!memoryModel || memoryModel.getValue() != kCompilerSRAMMemoryModel) {
+    return int64_t{-1};
+  }
+  auto allocations = module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName);
+  if (!allocations || dfbIndex < 0 ||
+      static_cast<uint64_t>(dfbIndex) >= allocations.size()) {
+    return failure();
+  }
+  auto allocation = dyn_cast<DictionaryAttr>(allocations[dfbIndex]);
+  auto segments = allocation ? allocation.getAs<ArrayAttr>("storage_segments")
+                             : ArrayAttr();
+  if (!segments) {
+    return int64_t{-1};
+  }
+  if (segments.size() != 1) {
+    return failure();
+  }
+  auto segment = dyn_cast<DictionaryAttr>(segments[0]);
+  auto backing = segment ? segment.getAs<TensorBackingAttr>("tensor_backing")
+                         : TensorBackingAttr();
+  return backing ? FailureOr<int64_t>(backing.getTensorIndex())
+                 : FailureOr<int64_t>(failure());
+}
+
+static LogicalResult
+markCompilerSRAMTensorSlot(Operation *use, ModuleOp module, int64_t dfbIndex,
+                           ArrayRef<int64_t> globalTensorIndices,
+                           BitVector &liveTensorSlots) {
+  FailureOr<int64_t> tensorIndex = getCompilerSRAMTensorIndex(module, dfbIndex);
+  if (failed(tensorIndex)) {
+    use->emitOpError("has invalid compiler-sram tensor-backing metadata");
+    return failure();
+  }
+  if (*tensorIndex < 0) {
+    return success();
+  }
+  auto slot = llvm::find(globalTensorIndices, *tensorIndex);
+  if (slot == globalTensorIndices.end()) {
+    use->emitOpError("compiler-sram tensor backing references tensor ")
+        << *tensorIndex
+        << " which is absent from the kernel's common tensor arguments";
+    return failure();
+  }
+  liveTensorSlots.set(std::distance(globalTensorIndices.begin(), slot));
+  return success();
+}
+
 static LogicalResult finalizeFunction(func::FuncOp function) {
   auto crtaIndices = function->getAttrOfType<ArrayAttr>(kCRTAIndicesAttrName);
   if (!crtaIndices) {
@@ -191,6 +242,37 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
   SmallVector<CommonArgIndexUse> commonArgUses;
   SmallVector<TensorAccessorArgsIndexUse> tensorAccessorArgsUses;
   bool hasUnresolvedIndex = false;
+  ModuleOp module = function->getParentOfType<ModuleOp>();
+  WalkResult compilerL1Walk =
+      function.walk([&](ttk::GetCompileArgValOp get) -> WalkResult {
+        if (!isa<ttk::CBType>(get.getType())) {
+          return WalkResult::advance();
+        }
+        return failed(markCompilerSRAMTensorSlot(get, module, get.getArgIndex(),
+                                                 globalTensorIndices,
+                                                 liveTensorSlots))
+                   ? WalkResult::interrupt()
+                   : WalkResult::advance();
+      });
+  if (compilerL1Walk.wasInterrupted()) {
+    return failure();
+  }
+  WalkResult opaqueCallWalk = function.walk([&](ttk::OpaqueCallOp call) {
+    auto resourceIndices = call.getDfbResourceIndices();
+    if (!resourceIndices) {
+      return WalkResult::advance();
+    }
+    for (int32_t dfbIndex : *resourceIndices) {
+      if (failed(markCompilerSRAMTensorSlot(
+              call, module, dfbIndex, globalTensorIndices, liveTensorSlots))) {
+        return WalkResult::interrupt();
+      }
+    }
+    return WalkResult::advance();
+  });
+  if (opaqueCallWalk.wasInterrupted()) {
+    return failure();
+  }
   if (failed(classifyCommonArgIndices(function, tensorCount, liveTensorSlots,
                                       commonArgUses, hasUnresolvedIndex))) {
     return failure();
