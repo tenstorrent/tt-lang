@@ -29,8 +29,9 @@ GRID_COLS, GRID_ROWS = 3, 2
 
 @ttl.operation(grid=(GRID_COLS, GRID_ROWS))
 def gather(inp: ttnn.Tensor, out: ttnn.Tensor) -> None:
-    # One tile per node, shared by the node's send and receive.
-    dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    # Separate storage prevents a receiving node from consuming a send entry.
+    send_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+    recv_dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
     # spec:begin
     # Grid:
     #
@@ -72,43 +73,47 @@ def gather(inp: ttnn.Tensor, out: ttnn.Tensor) -> None:
 
     @ttl.datamovement()
     def dm():
-        with dfb.reserve() as blk:
+        def pipe_src(pipe):
+            with send_dfb.reserve() as producer_block:
 
-            def pipe_src(pipe):
-
-                # write data into blk
+                # write data into producer_block
                 # ...
                 # spec:end
                 # Source node (nx, ny) loads its payload tile before sending it
                 # to the row's gather node (0, ny).
                 nx, ny = ttl.node(dims=2)
-                ttl.copy(inp[nx : nx + 1, ny : ny + 1], blk).wait()
+                ttl.copy(inp[nx : nx + 1, ny : ny + 1], producer_block).wait()
                 # spec:begin
 
-                # then copy blk to pipe:
+            with send_dfb.wait() as send_block:
 
-                xf = ttl.copy(blk, pipe)
+                # then copy send_block to pipe:
+
+                xf = ttl.copy(send_block, pipe)
                 xf.wait()
 
-            def pipe_dst(pipe):
+        def pipe_dst(pipe):
+            with recv_dfb.reserve() as receive_block:
 
-                # copy blk from pipe:
+                # copy receive_block from pipe:
 
-                xf = ttl.copy(pipe, blk)
+                xf = ttl.copy(pipe, receive_block)
                 xf.wait()
 
-                # then read data from blk
+            with recv_dfb.wait() as received_block:
+
+                # then read data from received_block
                 # ...
                 # spec:end
                 # Gather node (0, ny) stores each tile it receives. Every source
                 # in row ny carries that row's value, so the result is
                 # well-defined regardless of arrival order.
                 nx, ny = ttl.node(dims=2)
-                ttl.copy(blk, out[nx : nx + 1, ny : ny + 1]).wait()
+                ttl.copy(received_block, out[nx : nx + 1, ny : ny + 1]).wait()
                 # spec:begin
 
-            net.if_src(pipe_src)
-            net.if_dst(pipe_dst)
+        net.if_src(pipe_src)
+        net.if_dst(pipe_dst)
 
     # spec:end
 
