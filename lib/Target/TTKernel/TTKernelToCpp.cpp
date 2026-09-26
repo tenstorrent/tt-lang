@@ -291,7 +291,7 @@ public:
         isStandard = true;
         header = header.drop_front(1).drop_back(1);
       }
-      builder->create<emitc::IncludeOp>(loc, header, isStandard);
+      emitc::IncludeOp::create(*builder, loc, header, isStandard);
     };
     for (llvm::StringRef header : headers) {
       emitHeader(header);

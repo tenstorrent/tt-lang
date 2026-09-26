@@ -120,6 +120,12 @@ struct CompilerL1Allocation {
   Type elementType;
 };
 
+static bool isRepresentableMetadataInteger(IntegerAttr value) {
+  return value &&
+         (value.getType().isIndex() || value.getType().isSignlessInteger()) &&
+         value.getValue().isSignedIntN(64);
+}
+
 static FailureOr<CompilerL1Allocation>
 parseCompilerL1Allocation(Attribute attribute) {
   auto dictionary = dyn_cast<DictionaryAttr>(attribute);
@@ -150,8 +156,12 @@ parseCompilerL1Allocation(Attribute attribute) {
       dictionary
           ? dictionary.getAs<TypeAttr>(ttl::kDFBAllocationElementTypeField)
           : TypeAttr();
-  if (!pageSize || !pagesPerBlock || !blockCount || !stateOffset ||
-      !payloadAddress || !allocationBytes || !elementType) {
+  if (!isRepresentableMetadataInteger(pageSize) ||
+      !isRepresentableMetadataInteger(pagesPerBlock) ||
+      !isRepresentableMetadataInteger(blockCount) ||
+      !isRepresentableMetadataInteger(stateOffset) ||
+      !isRepresentableMetadataInteger(payloadAddress) ||
+      !isRepresentableMetadataInteger(allocationBytes) || !elementType) {
     return failure();
   }
 
@@ -3508,7 +3518,8 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
     }
     auto arenaBytes =
         module->getAttrOfType<IntegerAttr>(ttl::kL1ArenaBytesAttrName);
-    if (!arenaBytes || arenaBytes.getInt() < 0 ||
+    if (!isRepresentableMetadataInteger(arenaBytes) ||
+        arenaBytes.getInt() < 0 ||
         static_cast<uint64_t>(arenaBytes.getInt()) >
             std::numeric_limits<uint32_t>::max()) {
       module.emitOpError("compiler-sram requires a representable arena size");
@@ -3533,6 +3544,14 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
             << " must define element_type, positive uint32 page_size, "
                "num_tiles, block_count, and l1_allocation_bytes values with "
                "representable ordered SRAM offsets";
+        return failure();
+      }
+      auto identity = cast<DictionaryAttr>(attribute).getAs<IntegerAttr>(
+          ttl::kDFBAllocationIndexField);
+      if (!isRepresentableMetadataInteger(identity) || identity.getInt() < 0 ||
+          static_cast<uint64_t>(identity.getInt()) != index) {
+        module.emitOpError("compiler-sram allocation entry ")
+            << index << " requires a matching dfb_index";
         return failure();
       }
       Type elementType = allocation->elementType;
