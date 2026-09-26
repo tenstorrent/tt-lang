@@ -3244,6 +3244,13 @@ static LogicalResult addCompilerL1TensorRuntimeArgs(ModuleOp module) {
     if (backingTensorIndices.empty()) {
       continue;
     }
+    for (int64_t tensorIndex : backingTensorIndices) {
+      if (tensorIndex > std::numeric_limits<int32_t>::max()) {
+        function.emitOpError(
+            "tensor backing index exceeds 32-bit runtime metadata");
+        return failure();
+      }
+    }
     auto currentIndices =
         function->getAttrOfType<ArrayAttr>(kCRTAIndicesAttrName);
     if (!currentIndices) {
@@ -3253,9 +3260,11 @@ static LogicalResult addCompilerL1TensorRuntimeArgs(ModuleOp module) {
     SmallVector<int64_t> indices;
     for (Attribute attribute : currentIndices) {
       auto index = dyn_cast<IntegerAttr>(attribute);
-      if (!index || index.getInt() < 0) {
-        function.emitOpError()
-            << kCRTAIndicesAttrName << " must contain non-negative integers";
+      if (!index ||
+          !(index.getType().isIndex() || index.getType().isSignlessInteger()) ||
+          !index.getValue().isSignedIntN(32) || index.getInt() < 0) {
+        function.emitOpError() << kCRTAIndicesAttrName
+                               << " must contain non-negative 32-bit integers";
         return failure();
       }
       indices.push_back(index.getInt());
@@ -3326,14 +3335,13 @@ struct TTLConvertTTLToTTKernelPass
       signalPassFailure();
       return;
     }
-    if (failed(addCompilerL1TensorRuntimeArgs(mod))) {
-      signalPassFailure();
-      return;
-    }
-
     FailureOr<GraphPipeNetForeachPlans> graphForeachPlans =
         buildGraphPipeNetForeachPlans(mod);
     if (failed(graphForeachPlans)) {
+      signalPassFailure();
+      return;
+    }
+    if (failed(addCompilerL1TensorRuntimeArgs(mod))) {
       signalPassFailure();
       return;
     }
