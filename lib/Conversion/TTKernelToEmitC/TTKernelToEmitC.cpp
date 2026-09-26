@@ -34,6 +34,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/bit.h"
+#include "llvm/Support/CheckedArithmetic.h"
 #include "llvm/Support/xxhash.h"
 
 #include <algorithm>
@@ -115,6 +116,7 @@ struct CompilerL1Allocation {
   int64_t blockCount;
   int64_t stateOffset;
   int64_t payloadOffset;
+  int64_t allocationBytes;
   Type elementType;
 };
 
@@ -141,8 +143,11 @@ parseCompilerL1Allocation(Attribute attribute) {
       dictionary
           ? dictionary.getAs<IntegerAttr>(ttl::kDFBAllocationPayloadOffsetField)
           : IntegerAttr();
+  auto allocationBytes =
+      dictionary ? dictionary.getAs<IntegerAttr>(ttl::kDFBAllocationBytesField)
+                 : IntegerAttr();
   if (!pageSize || !pagesPerBlock || !blockCount || !stateOffset ||
-      !payloadAddress) {
+      !payloadAddress || !allocationBytes) {
     return failure();
   }
 
@@ -151,13 +156,14 @@ parseCompilerL1Allocation(Attribute attribute) {
   int64_t payloadAddressValue = payloadAddress.getInt();
   if (pageSize.getInt() <= 0 || pagesPerBlock.getInt() <= 0 ||
       blockCount.getInt() <= 0 || stateOffsetValue < 0 ||
-      payloadAddressValue < stateOffsetValue ||
+      allocationBytes.getInt() <= 0 || payloadAddressValue < stateOffsetValue ||
       static_cast<uint64_t>(pageSize.getInt()) > maxAddress ||
       static_cast<uint64_t>(pagesPerBlock.getInt()) > maxAddress ||
       static_cast<uint64_t>(blockCount.getInt()) > maxAddress ||
       static_cast<uint64_t>(stateOffsetValue) >
           maxAddress - ttl::kCompilerSRAMControlRecordBytes + 1 ||
-      static_cast<uint64_t>(payloadAddressValue) > maxAddress) {
+      static_cast<uint64_t>(payloadAddressValue) > maxAddress ||
+      static_cast<uint64_t>(allocationBytes.getInt()) > maxAddress) {
     return failure();
   }
 
@@ -168,6 +174,7 @@ parseCompilerL1Allocation(Attribute attribute) {
                               blockCount.getInt(),
                               stateOffsetValue,
                               payloadAddressValue - stateOffsetValue,
+                              allocationBytes.getInt(),
                               elementType ? elementType.getValue() : Type()};
 }
 
@@ -3480,6 +3487,14 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
           "compiler-sram requires finalized allocation metadata");
       return failure();
     }
+    auto arenaBytes =
+        module->getAttrOfType<IntegerAttr>(ttl::kL1ArenaBytesAttrName);
+    if (!arenaBytes || arenaBytes.getInt() < 0 ||
+        static_cast<uint64_t>(arenaBytes.getInt()) >
+            std::numeric_limits<uint32_t>::max()) {
+      module.emitOpError("compiler-sram requires a representable arena size");
+      return failure();
+    }
     std::string targetFailure;
     FailureOr<uint64_t> payloadAlignment =
         resolveTargetL1AllocationQuantumBytes(module, targetFailure);
@@ -3496,8 +3511,9 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
       if (failed(allocation)) {
         module.emitOpError("compiler-sram allocation entry ")
             << index
-            << " must define positive uint32 page_size, num_tiles, and "
-               "block_count values and representable ordered L1 offsets";
+            << " must define positive uint32 page_size, num_tiles, "
+               "block_count, and l1_allocation_bytes values with "
+               "representable ordered SRAM offsets";
         return failure();
       }
       if (allocation->stateOffset % sizeof(uint32_t) != 0) {
@@ -3512,6 +3528,10 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
       parsedAllocations.push_back(*allocation);
     }
     llvm::sort(controlStarts);
+    if (controlEnd > static_cast<uint64_t>(arenaBytes.getInt())) {
+      module.emitOpError("compiler-sram control records exceed the arena");
+      return failure();
+    }
     for (size_t index = 1; index < controlStarts.size(); ++index) {
       if (controlStarts[index] <
           controlStarts[index - 1] + ttl::kCompilerSRAMControlRecordBytes) {
@@ -3527,6 +3547,23 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
         module.emitOpError("compiler-sram allocation entry ")
             << index << " payload must follow all control records at a "
             << *payloadAlignment << "-byte-aligned offset";
+        return failure();
+      }
+      std::optional<uint64_t> blockBytes = llvm::checkedMulUnsigned(
+          static_cast<uint64_t>(allocation.pageSizeBytes),
+          static_cast<uint64_t>(allocation.pagesPerBlock));
+      std::optional<uint64_t> payloadBytes =
+          blockBytes
+              ? llvm::checkedMulUnsigned(
+                    *blockBytes, static_cast<uint64_t>(allocation.blockCount))
+              : std::nullopt;
+      if (!payloadBytes ||
+          *payloadBytes > static_cast<uint64_t>(allocation.allocationBytes) ||
+          payloadAddress > static_cast<uint64_t>(arenaBytes.getInt()) ||
+          static_cast<uint64_t>(allocation.allocationBytes) >
+              static_cast<uint64_t>(arenaBytes.getInt()) - payloadAddress) {
+        module.emitOpError("compiler-sram allocation entry ")
+            << index << " payload extent exceeds its allocation or arena";
         return failure();
       }
     }

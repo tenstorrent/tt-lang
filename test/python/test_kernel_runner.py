@@ -2219,6 +2219,14 @@ def test_compiler_l1_arena_size_rejects_partial_metadata():
         kernel_runner._get_compiler_l1_arena_bytes([config])
 
 
+def test_compiler_sram_mode_rejects_legacy_metadata_and_accepts_empty_plan():
+    legacy = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, None)
+
+    with pytest.raises(ValueError, match="requires complete allocation metadata"):
+        kernel_runner._get_compiler_l1_arena_bytes([legacy], "compiler-sram")
+    assert kernel_runner._get_compiler_l1_arena_bytes([], "compiler-sram") == 0
+
+
 # Unsupported resources must be rejected before a cached owner is released.
 def test_compiler_l1_resource_rejection_preserves_cache(monkeypatch):
     config = PhysicalDFBConfig(
@@ -2247,6 +2255,8 @@ def test_compiler_l1_resource_rejection_preserves_cache(monkeypatch):
 
     for resources, message in (
         ({"num_pipe_sync_semaphores": 1}, "cannot combine with PipeNet"),
+        ({"pipe_sram_scratch_bytes": 32}, "cannot combine with PipeNet"),
+        ({"num_dfb_resets": 1}, "cannot combine with PipeNet"),
         ({"dfb_reconfiguration_plan": object()}, "cannot combine with PipeNet"),
     ):
         with pytest.raises(ValueError, match=message):
@@ -2260,6 +2270,170 @@ def test_compiler_l1_resource_rejection_preserves_cache(monkeypatch):
             )
 
     assert release_calls == []
+
+
+@pytest.mark.parametrize("dispatch_fails", [False, True], ids=["success", "error"])
+def test_compiler_sram_arena_survives_until_device_completion(
+    monkeypatch, dispatch_fails
+):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    device = object()
+    arena_references = []
+    events = []
+
+    class Arena:
+        def buffer_address(self):
+            return 0x4000
+
+    def allocate_arena(*_args, **_kwargs):
+        arena = Arena()
+        arena_references.append(weakref.ref(arena))
+        return arena
+
+    def dispatch(io_tensors, _program):
+        assert arena_references[0]() is io_tensors[0]
+        events.append("dispatch")
+        if dispatch_fails:
+            raise RuntimeError("dispatch failed")
+        return "completed"
+
+    def synchronize(_device):
+        assert arena_references[0]() is not None
+        events.append("synchronize")
+
+    monkeypatch.setattr(
+        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_arena
+    )
+    fake_ttnn.generic_op = dispatch
+    fake_ttnn.synchronize_device = synchronize
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        l1_offset=0,
+        l1_payload_offset=64,
+        l1_allocation_bytes=2048,
+    )
+    arguments = dict(
+        kernel_specs=[],
+        tensors=[_FakeTensor(device)],
+        cb_configs=[config],
+        core_ranges=_FakeCoreRanges(),
+        memory_model="compiler-sram",
+        device=device,
+    )
+    if dispatch_fails:
+        with pytest.raises(RuntimeError, match="dispatch failed"):
+            kernel_runner.run_kernel_on_device(**arguments)
+    else:
+        assert kernel_runner.run_kernel_on_device(**arguments) == "completed"
+    assert events == ["dispatch", "synchronize"]
+
+
+def test_compiler_sram_arena_is_retained_when_completion_is_unknown(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    retained = []
+    monkeypatch.setattr(kernel_runner, "_RETAINED_RUNTIME_RESOURCE_CACHES", retained)
+
+    class Arena:
+        def buffer_address(self):
+            return 0x4000
+
+    arena = Arena()
+    monkeypatch.setattr(
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        lambda *_args, **_kwargs: arena,
+    )
+    fake_ttnn.generic_op = lambda _tensors, _program: "dispatched"
+
+    def fail_synchronization(_device):
+        raise RuntimeError("completion unknown")
+
+    fake_ttnn.synchronize_device = fail_synchronization
+    device = object()
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        l1_offset=0,
+        l1_payload_offset=64,
+        l1_allocation_bytes=2048,
+    )
+    with pytest.raises(RuntimeError, match="completion unknown"):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[_FakeTensor(device)],
+            cb_configs=[config],
+            core_ranges=_FakeCoreRanges(),
+            memory_model="compiler-sram",
+            device=device,
+        )
+    assert len(retained) == 1
+    assert retained[0].portable_resource_lifetimes == (arena,)
+
+
+@pytest.mark.parametrize("synchronization_fails", [False, True])
+def test_compiler_sram_preparation_error_retains_arena_until_completion(
+    monkeypatch, synchronization_fails
+):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    retained = []
+    monkeypatch.setattr(kernel_runner, "_RETAINED_RUNTIME_RESOURCE_CACHES", retained)
+    device = object()
+    arena = _FakeTensor(device)
+    arena.buffer_address = lambda: 0x4000
+    monkeypatch.setattr(
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        lambda *_args, **_kwargs: arena,
+    )
+    synchronization_calls = []
+
+    def fail_preparation(**_kwargs):
+        raise RuntimeError("descriptor construction failed")
+
+    def synchronize(_device):
+        synchronization_calls.append(_device)
+        if synchronization_fails:
+            raise RuntimeError("completion unknown")
+
+    monkeypatch.setattr(kernel_runner, "build_kernel_descriptors", fail_preparation)
+    fake_ttnn.synchronize_device = synchronize
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        l1_offset=0,
+        l1_payload_offset=64,
+        l1_allocation_bytes=2048,
+    )
+    with pytest.raises(RuntimeError, match="descriptor construction failed") as error:
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[_FakeTensor(device)],
+            cb_configs=[config],
+            core_ranges=_FakeCoreRanges(),
+            memory_model="compiler-sram",
+            device=device,
+        )
+    assert synchronization_calls == [device]
+    assert len(retained) == int(synchronization_fails)
+    if synchronization_fails:
+        assert retained[0].portable_resource_lifetimes == (arena,)
+        assert "completion unknown" in str(error.value.__notes__)
 
 
 def _local_tensor_test_environment():
@@ -7615,6 +7789,35 @@ def test_emit_runner_source_preserves_subtile_geometry(monkeypatch):
     assert "tile=(16, 16)" in source
 
 
+def test_emitted_runner_preserves_compiler_sram_mode(monkeypatch):
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        l1_offset=0,
+        l1_payload_offset=64,
+        l1_allocation_bytes=2048,
+    )
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[],
+        cb_configs=[config],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+    )
+    calls = []
+    runner = _load_emitted_runner(
+        monkeypatch, source, lambda **kwargs: calls.append(kwargs)
+    )
+
+    runner["run"]([object()], device=object())
+
+    assert calls[0]["memory_model"] == "compiler-sram"
+
+
 def test_emit_runner_source_preserves_tensor_backing_segments(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     config = _tensor_backing_config(
@@ -7969,6 +8172,21 @@ def test_emitted_runner_synchronizes_before_owner_destruction(monkeypatch):
         ("release", 0),
     ]
     assert semaphore_reference() is None
+
+
+def test_emit_runner_source_preserves_empty_compiler_sram_mode(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[],
+        cb_configs=[],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+        memory_model="compiler-sram",
+    )
+
+    assert "MEMORY_MODEL = 'compiler-sram'" in source
+    assert "memory_model=MEMORY_MODEL" in source
 
 
 def test_emit_runner_source_accepts_physical_dfb_configs(monkeypatch):

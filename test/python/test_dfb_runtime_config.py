@@ -45,13 +45,18 @@ def _entry(
     )
 
 
-def _module(allocations=None):
+def _module(allocations=None, *, memory_model=None, arena_bytes=None):
     """Parse a module with optional physical-allocation metadata."""
 
     if allocations is None:
         return Module.parse("module {}")
     entries = ", ".join(allocations)
-    return Module.parse(f"module attributes {{ttl.dfb_allocations = [{entries}]}} {{}}")
+    attributes = [f"ttl.dfb_allocations = [{entries}]"]
+    if memory_model is not None:
+        attributes.append(f'ttl.memory_model = "{memory_model}"')
+    if arena_bytes is not None:
+        attributes.append(f"ttl.l1_arena_bytes = {arena_bytes} : i64")
+    return Module.parse(f"module attributes {{{', '.join(attributes)}}} {{}}")
 
 
 def test_complete_physical_allocations_are_sorted():
@@ -95,7 +100,9 @@ def test_compiler_l1_offsets_are_preserved():
                     l1_payload_offset=64,
                     l1_allocation_bytes=4096,
                 )
-            ]
+            ],
+            memory_model="compiler-sram",
+            arena_bytes=4160,
         )
 
         assert _resolve_dfb_configs(module) == [
@@ -129,11 +136,51 @@ def test_compiler_sram_payload_at_control_boundary_is_accepted():
                     l1_payload_offset=64,
                     l1_allocation_bytes=4096,
                 ),
-            ]
+            ],
+            memory_model="compiler-sram",
+            arena_bytes=4160,
         )
 
         configs = _resolve_dfb_configs(module)
         assert [config.l1_payload_offset for config in configs] == [64, 64]
+
+
+def test_compiler_sram_module_rejects_legacy_allocation_metadata():
+    with Context():
+        module = _module([_entry(0)], memory_model="compiler-sram", arena_bytes=4160)
+
+        with pytest.raises(ValueError, match="requires complete allocation metadata"):
+            _resolve_dfb_configs(module)
+
+
+def test_metal_module_rejects_compiler_sram_allocation_metadata():
+    with Context():
+        module = _module(
+            [_entry(0, l1_offset=0, l1_payload_offset=64, l1_allocation_bytes=4096)],
+            memory_model="metal-cb",
+        )
+
+        with pytest.raises(ValueError, match="metal-cb cannot use compiler-sram"):
+            _resolve_dfb_configs(module)
+
+
+def test_compiler_sram_module_accepts_empty_allocation_plan():
+    with Context():
+        module = _module([], memory_model="compiler-sram", arena_bytes=0)
+
+        assert _resolve_dfb_configs(module) == []
+
+
+def test_compiler_sram_module_rejects_payload_past_arena():
+    with Context():
+        module = _module(
+            [_entry(0, l1_offset=0, l1_payload_offset=64, l1_allocation_bytes=4096)],
+            memory_model="compiler-sram",
+            arena_bytes=128,
+        )
+
+        with pytest.raises(ValueError, match="exceeds ttl.l1_arena_bytes"):
+            _resolve_dfb_configs(module)
 
 
 def test_tensor_backing_segments_preserve_nodes_and_tensor_range():
