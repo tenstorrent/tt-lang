@@ -94,7 +94,7 @@ They are independent of the code generation flags above.
 | `TTLANG_DEBUG_LOCATIONS` | `0`/`1` | `0` | Include source locations in printed MLIR (locations are always tracked internally for error messages). |
 | `TTLANG_VERBOSE_ERRORS` | `0`/`1` | `0` | Include raw MLIR diagnostics in error output. |
 | `TTLANG_SIM_ONLY` | `0`/`1` | `0` | Force `import ttl` to skip loading the compiled MLIR extension. Used when running the simulator from a source tree without an installed `tt-lang-sim` wheel (which ships the same signal as a marker module). |
-| `TTL_RELAX_DFB_SPSC` | any value | (unset) | Skip per-launch-node verification that DFB producers, consumers, and waits execute on corresponding dynamically active nodes. The program must enforce those ownership and synchronization contracts. A waited DFB must still have a compiler-visible push or uncontracted external access that may contain one. Finalized DFB preconditions, PipeNet endpoint guards, transfer correspondence, and synchronization schedules remain enabled. The compiler emits a warning and records `ttl.relaxed_dfb_protocol_domain_verification` on the module. |
+| `TTL_RELAX_DFB_SPSC` | any value | (unset) | Skip per-launch-node verification that DFB producers, consumers, and waits execute on corresponding dynamically active nodes. The program must enforce those ownership and synchronization contracts. The visible transaction order, capacity, and cross-kernel count checks of `ttl-verify-dfb-lifecycle` remain enabled. A waited DFB must still have a compiler-visible push or uncontracted external access that may contain one. Finalized DFB preconditions, PipeNet endpoint guards, transfer correspondence, and synchronization schedules remain enabled. The compiler emits a warning and records `ttl.relaxed_dfb_protocol_domain_verification` on the module. |
 
 Profiling-related environment variables (`TTLANG_AUTO_PROFILE`,
 `TTLANG_PERF_DUMP`, `TTLANG_PERF_SERV`, `TTLANG_SIGNPOST_PROFILE`,
@@ -179,6 +179,7 @@ The pipeline runs these passes and subpasses in order:
 - `ttl-schedule-operations` -- reorder tile ops by dependency depth and kind *(only if `maximize-dst=true`)*
 - `ttl-annotate-cb-associations` -- annotate block args with DFB indices
 - `ttl-verify-dfb-spsc` -- verify per-node DFB producer/consumer uniqueness after finalization
+- `ttl-verify-dfb-lifecycle` -- verify visible per-node DFB transaction order and capacity after finalization
 - `ttl-erase-pipenet-scopes` -- remove verified PipeNet structural markers
 - `ttl-validate-cb-budget` -- verify target-aligned finalized DFB storage, synchronized-reset scratch, and reconfiguration tensors fit the per-core L1 budget
 - `convert-ttl-to-ttkernel` -- lower TTL DMA, PipeNet, synchronized-reset, and DFB reconfiguration operations to TTKernel, select their runtime resources, and validate the exact combined per-core L1 allocation

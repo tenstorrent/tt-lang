@@ -4,6 +4,7 @@
 
 #include "ttlang/Analysis/IntegerExpressionEvaluator.h"
 
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Operation.h"
@@ -22,7 +23,14 @@ namespace mlir::tt {
 namespace {
 
 /// Action performed when the evaluator pops a worklist task.
-enum class EvaluationTaskKind { Discover, Fold, ResolveReplacement };
+enum class EvaluationTaskKind {
+  Discover,
+  Fold,
+  ResolveReplacement,
+  /// Resolve an `scf.if` result to the yield operand of the region its
+  /// evaluated condition selects; `replacement` is the condition.
+  SelectIfResult,
+};
 
 /// Deferred work needed to evaluate one SSA value without recursion.
 struct EvaluationTask {
@@ -96,6 +104,17 @@ IntegerExpressionEvaluator::evaluate(Value requestedValue) {
 
       auto result = dyn_cast<OpResult>(task.value);
       Operation *operation = task.value.getDefiningOp();
+      if (auto ifOp = dyn_cast_or_null<scf::IfOp>(operation)) {
+        if (!activeValues.insert(task.value).second) {
+          cache.try_emplace(task.value, std::nullopt);
+          continue;
+        }
+        worklist.push_back({task.value, EvaluationTaskKind::SelectIfResult,
+                            ifOp.getCondition()});
+        worklist.push_back(
+            {ifOp.getCondition(), EvaluationTaskKind::Discover, Value()});
+        continue;
+      }
       if (!result || !operation || operation->getNumRegions() != 0 ||
           operation->getNumSuccessors() != 0) {
         cache.try_emplace(task.value, std::nullopt);
@@ -121,6 +140,35 @@ IntegerExpressionEvaluator::evaluate(Value requestedValue) {
       cache.try_emplace(task.value, replacement != cache.end()
                                         ? replacement->second
                                         : std::nullopt);
+      continue;
+    }
+
+    if (task.kind == EvaluationTaskKind::SelectIfResult) {
+      auto ifOp = cast<scf::IfOp>(task.value.getDefiningOp());
+      auto condition = cache.find(task.replacement);
+      Value selected;
+      if (condition != cache.end() && condition->second &&
+          condition->second->getBitWidth() == 1) {
+        Region &region = condition->second->getBoolValue()
+                             ? ifOp.getThenRegion()
+                             : ifOp.getElseRegion();
+        if (llvm::hasSingleElement(region)) {
+          auto yield = dyn_cast<scf::YieldOp>(region.front().getTerminator());
+          std::size_t resultNumber =
+              cast<OpResult>(task.value).getResultNumber();
+          if (yield && resultNumber < yield->getNumOperands()) {
+            selected = yield->getOperand(resultNumber);
+          }
+        }
+      }
+      if (!selected) {
+        activeValues.erase(task.value);
+        cache.try_emplace(task.value, std::nullopt);
+        continue;
+      }
+      worklist.push_back(
+          {task.value, EvaluationTaskKind::ResolveReplacement, selected});
+      worklist.push_back({selected, EvaluationTaskKind::Discover, Value()});
       continue;
     }
 

@@ -1140,3 +1140,56 @@ func.func @two_induction_variables() {
   return
 }
 // CHECK-LABEL: two_induction_variables = 3
+
+// An `scf.if` result whose condition is a context value selects the loop
+// bound.
+func.func @if_result_bound(%selector: index {test.value = 1 : i64}) {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %three = arith.constant 3 : index
+  %seven = arith.constant 7 : index
+  %is_one = arith.cmpi eq, %selector, %one : index
+  %bound = scf.if %is_one -> index {
+    scf.yield %three : index
+  } else {
+    scf.yield %seven : index
+  }
+  scf.for %iteration = %zero to %bound step %one {
+    %target = arith.addi %iteration, %iteration {
+      test.expected_count = 3 : i64,
+      test.label = "if_result_bound"
+    } : index
+  }
+  return
+}
+// CHECK-LABEL: if_result_bound = 3
+
+// An `scf.if` result that depends on another `scf.if` result, with the
+// selected yield computed inside the region.
+func.func @chained_if_result_bound(%selector: index {test.value = 0 : i64}) {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %two = arith.constant 2 : index
+  %is_zero = arith.cmpi eq, %selector, %zero : index
+  %first = scf.if %is_zero -> index {
+    scf.yield %two : index
+  } else {
+    scf.yield %one : index
+  }
+  %is_two = arith.cmpi eq, %first, %two : index
+  %bound = scf.if %is_two -> index {
+    %tripled = arith.muli %first, %two : index
+    %plus = arith.addi %tripled, %two : index
+    scf.yield %plus : index
+  } else {
+    scf.yield %first : index
+  }
+  scf.for %iteration = %zero to %bound step %one {
+    %target = arith.addi %iteration, %iteration {
+      test.expected_count = 6 : i64,
+      test.label = "chained_if_result_bound"
+    } : index
+  }
+  return
+}
+// CHECK-LABEL: chained_if_result_bound = 6

@@ -74,6 +74,25 @@ struct DFBAcquireInterval {
   Operation *kindBoundary = nullptr;
 };
 
+/// The protocol effect that opens an interval of `kind`.
+inline DFBProtocolEffectKind
+getDFBAcquireEffectKind(DFBAcquireReleaseKind kind) {
+  return kind == DFBAcquireReleaseKind::Producer
+             ? DFBProtocolEffectKind::Reserve
+             : DFBProtocolEffectKind::Wait;
+}
+
+/// The protocol effect that closes an interval of `kind`.
+inline DFBProtocolEffectKind
+getDFBReleaseEffectKind(DFBAcquireReleaseKind kind) {
+  return kind == DFBAcquireReleaseKind::Producer ? DFBProtocolEffectKind::Push
+                                                 : DFBProtocolEffectKind::Pop;
+}
+
+/// Whether `operation` declares a protocol effect of `kind` on `dfb`.
+bool hasDFBProtocolEffectOn(mlir::Operation *operation, mlir::Value dfb,
+                            DFBProtocolEffectKind kind);
+
 /// Push or pop actions that close one acquire interval.
 struct DFBReleaseSearch {
   /// Releases in the acquire block or projected into that block.
@@ -166,6 +185,22 @@ bool isGuardedDFBAcquire(Operation *op);
 /// acquired slot are modeled by walking from the acquire result instead.
 bool operationMayDirectlyUseAcquiredDFBSlot(DFBAcquireInterval interval,
                                             Operation *operation);
+
+/// Returns the number of whole DFB blocks transferred by one protocol effect.
+///
+/// The run of same-kind acquisitions of one DFB that
+/// `ttl-coalesce-dfb-acquires` merges into one multi-block acquisition: `start`
+/// and the acquisitions that follow it in its block with no operation between
+/// them that uses the DFB or a run member's result (`ttl.attach_cb` excepted)
+/// and no region-bearing operation. An acquisition that already carries
+/// `num_tiles` ends the run. The members of a run receive distinct slots of the
+/// coalesced acquisition.
+SmallVector<Operation *> collectCoalescableAcquireRun(Operation *start);
+
+/// Returns `std::nullopt` when the tile count is not a positive multiple of
+/// the DFB block size.
+std::optional<int64_t>
+getDFBProtocolEffectBlockCount(const DFBProtocolEffect &effect);
 
 /// Returns the number of whole DFB blocks acquired or released by `op`.
 ///

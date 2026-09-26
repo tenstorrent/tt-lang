@@ -30,6 +30,7 @@
 // See `docs/development/DFBManagement.md`.
 //===----------------------------------------------------------------------===//
 
+#include "DFBAcquireReleaseAnalysis.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
@@ -46,48 +47,6 @@ namespace mlir::tt::ttl {
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
 namespace {
-
-// Return true if `op` (sitting between two same-DFB acquires on `cb`) might
-// directly or transitively cause a release on `cb` before our coalesced
-// release executes -- i.e., it must terminate the candidate group. See
-// "DFB Acquire Coalescing" in `docs/development/DFBManagement.md` for the
-// correctness argument. Two locally-checkable conditions cover the cases
-// that matter:
-//
-//   1. The op operates on `cb` itself (uses `cb` as an operand) -- includes
-//      same-DFB releases (cb_pop / cb_push) and any other op that touches
-//      `cb` directly.
-//   2. The op consumes the SSA result of an in-progress group member,
-//      since that consume can flow into a release on `cb` somewhere
-//      downstream.
-//
-// Region-bearing ops are treated as opaque (terminate the group) because
-// their bodies might contain a release on `cb`.
-//
-// `ttl.attach_cb` is an SSA-only identity (lowering erases it) that always
-// references the group's results and `cb`; allow it explicitly.
-static bool mayReleaseDFB(Operation *op, Value cb,
-                          ArrayRef<Operation *> group) {
-  if (isa<AttachCBOp>(op)) {
-    return false;
-  }
-  if (op->getNumRegions() > 0) {
-    return true;
-  }
-  for (Value operand : op->getOperands()) {
-    if (operand == cb) {
-      return true;
-    }
-    for (Operation *member : group) {
-      assert(member->getNumResults() == 1 &&
-             "DFB acquire ops produce exactly one tensor result");
-      if (operand == member->getResult(0)) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
 
 static RankedTensorType buildCoalescedType(RankedTensorType unitTy,
                                            int64_t totalTiles) {
@@ -113,31 +72,14 @@ createPerBlockSlice(OpBuilder &builder, Location loc, Value coalescedResult,
                                         offsets, sizes, strides);
 }
 
-// Maximal run of coalescable same-DFB acquires anchored at `start`,
-// in op order within the enclosing block. Already-coalesced acquires
-// (those with a `num_tiles` attribute) are not group members.
+// The coalescable run anchored at `start`; see
+// `collectCoalescableAcquireRun` and "DFB Acquire Coalescing" in
+// `docs/development/DFBManagement.md` for the correctness argument.
 template <typename AcquireOp>
 static SmallVector<AcquireOp> detectGroup(AcquireOp start) {
   SmallVector<AcquireOp> group;
-  group.push_back(start);
-  Value cb = start.getCb();
-  SmallVector<Operation *> groupOps = {start.getOperation()};
-  for (Operation *cur = start->getNextNode(); cur; cur = cur->getNextNode()) {
-    if (auto next = dyn_cast<AcquireOp>(cur)) {
-      if (next.getCb() == cb) {
-        if (next.getNumTiles().has_value()) {
-          break;
-        }
-        group.push_back(next);
-        groupOps.push_back(cur);
-        continue;
-      }
-      // Different-CB acquire of the same kind -- doesn't touch our cb or
-      // our group's results; skip past.
-    }
-    if (mayReleaseDFB(cur, cb, groupOps)) {
-      break;
-    }
+  for (Operation *member : collectCoalescableAcquireRun(start.getOperation())) {
+    group.push_back(cast<AcquireOp>(member));
   }
   return group;
 }

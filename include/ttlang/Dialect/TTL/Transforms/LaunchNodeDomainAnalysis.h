@@ -27,8 +27,10 @@
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
@@ -38,6 +40,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <tuple>
 #include <utility>
 
 namespace mlir::tt::ttl {
@@ -322,6 +325,78 @@ bool proveEqualUnresolvedExecutionCountWithinScopesAtLaunchLocations(
 bool proveEquivalentConditionalExecutionAtLaunchNodes(
     Operation *lhs, LaunchNodeCoord lhsCoord, Operation *rhs,
     LaunchNodeCoord rhsCoord, const LaunchNodeDomainState &state);
+
+/// Boolean formulas over typed dispatch-condition results, as reduced ordered
+/// binary decision diagrams. A formula is built from integer constants,
+/// comparisons with zero, dispatch-condition results, and `i1` and/or/xor;
+/// any other value is an opaque variable equal only to itself. Equal formulas
+/// have equal ids, so equivalence is identity and satisfiability is a
+/// comparison with `kFalse`.
+class DispatchConditionFormulas {
+public:
+  using FormulaId = unsigned;
+  static constexpr FormulaId kFalse = 0;
+  static constexpr FormulaId kTrue = 1;
+
+  /// A formula together with the value it is required to take.
+  struct Literal {
+    FormulaId formula = kFalse;
+    bool value = false;
+  };
+
+  DispatchConditionFormulas();
+
+  /// The formula of `condition`, read as true when nonzero.
+  FormulaId get(Value condition);
+  FormulaId negate(FormulaId formula);
+  FormulaId conjoin(FormulaId lhs, FormulaId rhs) {
+    return apply(Connective::And, lhs, rhs);
+  }
+  FormulaId disjoin(FormulaId lhs, FormulaId rhs) {
+    return apply(Connective::Or, lhs, rhs);
+  }
+  static bool satisfiable(FormulaId formula) { return formula != kFalse; }
+  static bool equivalent(FormulaId lhs, FormulaId rhs) { return lhs == rhs; }
+  /// Whether `formula` depends on a value that is not a dispatch-condition
+  /// expression.
+  bool hasOpaqueLeaf(FormulaId formula) const;
+
+private:
+  enum class Connective { And, Or, Xor };
+  /// A decision node; the two terminals carry `kNoVariable`.
+  struct Node {
+    unsigned variable = 0;
+    FormulaId low = kFalse;
+    FormulaId high = kFalse;
+  };
+  struct Variable {
+    Attribute condition;
+    Value opaque;
+  };
+  static constexpr unsigned kNoVariable = ~0u;
+
+  unsigned getVariable(Attribute condition, Value opaque);
+  FormulaId makeNode(unsigned variable, FormulaId low, FormulaId high);
+  FormulaId apply(Connective connective, FormulaId lhs, FormulaId rhs);
+
+  SmallVector<Node> nodes;
+  SmallVector<Variable> variables;
+  llvm::DenseMap<std::tuple<unsigned, FormulaId, FormulaId>, FormulaId>
+      uniqueNodes;
+  llvm::DenseMap<std::tuple<int, FormulaId, FormulaId>, FormulaId> applyCache;
+  llvm::DenseMap<FormulaId, FormulaId> negations;
+  llvm::DenseMap<Attribute, unsigned> conditionVariables;
+  llvm::DenseMap<Value, unsigned> opaqueVariables;
+  llvm::DenseMap<Value, FormulaId> valueFormulas;
+};
+
+/// Prove that two expressions over typed dispatch conditions are equivalent,
+/// each read as true when nonzero (`*NonzeroIsTrue`) or when zero. An
+/// expression with an opaque leaf is never proven.
+bool proveEquivalentDispatchConditionExpressions(Value lhs,
+                                                 bool lhsNonzeroIsTrue,
+                                                 Value rhs,
+                                                 bool rhsNonzeroIsTrue);
 
 /// Prove that two operations execute equally often at their launch nodes.
 /// Exact counts prove equality directly. Otherwise, the operations must share

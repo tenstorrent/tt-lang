@@ -25,6 +25,7 @@
 // CHECK-NEXT: graph_destination_count_loop = {(0,0), (0,1), (1,0), (1,1)}
 // CHECK-NEXT: kernel_argument_condition = equivalent
 // CHECK-NEXT: helper_argument_condition = not-equivalent
+// CHECK-NEXT: commuted_conjunction = equivalent
 // CHECK-NOT:  =
 
 #destination_records = #ttl.pipenet_records<
@@ -185,6 +186,28 @@ module attributes {
     }
     scf.if %condition {
       "test.observe"() {test.conditional_pair = "helper_argument_condition"}
+          : () -> ()
+    }
+    func.return
+  }
+
+  // Conjunctions of dispatch conditions with operands in either order name
+  // one condition.
+  func.func @commuted_conjunction()
+      attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    %zero = arith.constant 0 : i32
+    %first = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
+    %second = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<1, i32>, header = "predicate.hpp"} : () -> i32
+    %first_set = arith.cmpi ne, %first, %zero : i32
+    %second_set = arith.cmpi ne, %second, %zero : i32
+    %both = arith.andi %first_set, %second_set : i1
+    %both_again = arith.andi %second_set, %first_set : i1
+    scf.if %both {
+      "test.observe"() {test.conditional_pair = "commuted_conjunction"}
+          : () -> ()
+    }
+    scf.if %both_again {
+      "test.observe"() {test.conditional_pair = "commuted_conjunction"}
           : () -> ()
     }
     func.return
