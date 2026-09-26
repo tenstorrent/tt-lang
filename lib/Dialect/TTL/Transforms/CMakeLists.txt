@@ -55,6 +55,7 @@ add_mlir_dialect_library(TTLangTTLTransforms
   TTLMaterializeLoopState.cpp
   TTLPrintDFBValueLifetimes.cpp
   TTLPrintComputeOpCreationPlans.cpp
+  DFBProtocolDomainAnalysis.cpp
   TTLVerifyDFBSPSC.cpp
   TTLVerifyPipeNetGuards.cpp
   TTLErasePipeNetScopes.cpp

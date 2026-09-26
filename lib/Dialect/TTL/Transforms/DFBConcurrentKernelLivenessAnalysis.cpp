@@ -521,13 +521,6 @@ struct AccessRunUpperBound {
   StaticIterationDomain iterationDomain;
 };
 
-// The listed operations execute each nested region at most once per
-// invocation, so only enclosing loops can repeat an access.
-static bool executesRegionsAtMostOnce(Operation *operation) {
-  return isa<affine::AffineIfOp, scf::IfOp, scf::IndexSwitchOp,
-             scf::ExecuteRegionOp, IfSrcOp, IfDstOp>(operation);
-}
-
 static AccessDomain refineUnknownAccessDomainFromExecutionCounts(
     Operation *operation, AccessDomain accessDomain,
     const LaunchNodeDomainState &domainState) {
