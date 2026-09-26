@@ -1053,6 +1053,38 @@ def TTLVerifyDFBSPSC
   let dependentDialects = [];
 }
 
+def TTLVerifyDFBLifecycle
+    : Pass<"ttl-verify-dfb-lifecycle", "::mlir::ModuleOp"> {
+  let summary = "Verify DFB acquire/release order and capacity per launch node";
+  let description = [{
+    Checks, per launch node and DFB, that the `ttl.cb_reserve`/`ttl.cb_push`
+    and `ttl.cb_wait`/`ttl.cb_pop` sequences of all kernels are well formed:
+    a release never exceeds the preceding acquisitions of its kind, open
+    acquisitions never exceed the DFB capacity, no acquisition is open when
+    the kernel returns, and across kernels the blocks popped never exceed the
+    blocks pushed while the unpopped blocks fit the capacity. Synchronized
+    resets and state-discarding reconfigurations discard the open state, so
+    the sequence between two of them is checked on its own.
+
+    ```mlir
+    // Rejected: four blocks are pushed into a capacity-1 DFB that no
+    // kernel pops.
+    %cb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : ...
+    scf.for %i = %c0 to %c4 step %c1 {
+      %slot = ttl.cb_reserve %cb : ...
+      ttl.cb_push %cb : ...
+    }
+    ```
+
+    Region execution per node comes from the launch-node domain and
+    execution-count analyses; sequences they cannot resolve are accepted.
+    Requires the `ttl.dfb_allocations` metadata emitted by
+    `ttl-finalize-dfb-indices` and a valid `ttl.launch_grid`.
+  }];
+
+  let dependentDialects = [];
+}
+
 def TTLErasePipeNetScopes
     : Pass<"ttl-erase-pipenet-scopes", "::mlir::ModuleOp"> {
   let summary = "Inline and erase `ttl.pipenet_scope` regions";

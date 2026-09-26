@@ -49,8 +49,11 @@ def overlapping_dfb_consumers(input_tensor, output_tensor):
 
     @ttl.datamovement()
     def data_movement_producer():
-        with shared_cb.reserve() as shared_blk:
-            ttl.copy(input_tensor[0, 0], shared_blk).wait()
+        # One block per consumer: the lifecycle verifier compares totals even
+        # when ownership verification is relaxed.
+        for _ in range(2):
+            with shared_cb.reserve() as shared_blk:
+                ttl.copy(input_tensor[0, 0], shared_blk).wait()
 
     @ttl.datamovement()
     def data_movement_consumer():
