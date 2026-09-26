@@ -728,11 +728,14 @@ def _resolve_l1_budget(
         return 0
     try:
         device = _require_device(args)
+        per_core_l1_tensors = [arg for arg in args if is_ttnn_tensor(arg)]
         if runtime_resource_cache is not None:
             return get_min_remaining_l1_excluding_cached_resources(
-                runtime_resource_cache, device
+                runtime_resource_cache, device, per_core_l1_tensors
             )
-        return get_min_remaining_l1_for_device(device)
+        return get_min_remaining_l1_for_device(
+            device, per_core_l1_tensors=per_core_l1_tensors
+        )
     except ValueError:
         return 0
 

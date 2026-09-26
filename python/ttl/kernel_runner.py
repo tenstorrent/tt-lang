@@ -263,12 +263,121 @@ def _get_l1_allocation_quantum_bytes(device) -> int:
     return 64
 
 
+def _is_per_core_allocated(tensor: Any) -> bool:
+    probe = getattr(tensor, "is_per_core_allocated", None)
+    if probe is None:
+        return False
+    try:
+        return bool(probe())
+    except Exception as error:
+        raise ValueError("failed to query tensor per-core allocation") from error
+
+
+def _per_core_shard_addresses(
+    tensor: Any, label: str, mesh_coordinate: Optional[Tuple[int, ...]]
+) -> Dict[Tuple[int, int], List[int]]:
+    """Return each device shard's L1 base on every core of a per-core tensor.
+
+    With ``mesh_coordinate`` each core maps to that device's single address;
+    otherwise each core maps to one address per device shard, in shard order.
+    """
+    try:
+        shard_grid = tensor.memory_config().shard_spec.grid
+    except Exception as error:
+        raise ValueError(f"{label} must expose a shard grid") from error
+    core_coordinates = _core_range_coordinates(shard_grid, label=f"{label} shard grid")
+
+    if mesh_coordinate is not None:
+        device_coordinate = _build_mesh_coordinate(mesh_coordinate)
+        addresses_by_core = {}
+        for core_coordinate in core_coordinates:
+            try:
+                addresses_by_core[core_coordinate] = [
+                    int(
+                        tensor.experimental_per_core_buffer_address(
+                            device_coordinate, ttnn.CoreCoord(*core_coordinate)
+                        )
+                    )
+                ]
+            except Exception as error:
+                raise ValueError(
+                    f"failed to resolve {label} on device {mesh_coordinate}, "
+                    f"core {core_coordinate}"
+                ) from error
+        return addresses_by_core
+
+    try:
+        device_tensors = list(ttnn.get_device_tensors(tensor))
+    except Exception as error:
+        raise ValueError(f"failed to enumerate device shards for {label}") from error
+    if not device_tensors:
+        raise ValueError(f"{label} has no device shards")
+    addresses_by_core = {core_coordinate: [] for core_coordinate in core_coordinates}
+    for device_index, device_tensor in enumerate(device_tensors):
+        if not _is_per_core_allocated(device_tensor):
+            raise ValueError(
+                f"{label} device shard {device_index} is not per-core allocated"
+            )
+        for core_coordinate in core_coordinates:
+            try:
+                (device_coordinate,) = device_tensor.device_coords()
+                addresses_by_core[core_coordinate].append(
+                    int(
+                        device_tensor.experimental_per_core_buffer_address(
+                            device_coordinate, ttnn.CoreCoord(*core_coordinate)
+                        )
+                    )
+                )
+            except Exception as error:
+                raise ValueError(
+                    f"failed to resolve {label} on device shard {device_index}, "
+                    f"core {core_coordinate}"
+                ) from error
+    return addresses_by_core
+
+
+def _per_core_l1_lowest_addresses(
+    tensors: Sequence[Any],
+) -> Dict[Tuple[int, int], int]:
+    """Return the lowest L1 base of the per-core allocated tensors on each core.
+
+    Only per-core allocated tensors contribute. Each core takes the minimum
+    across device shards, as TT-Metal's circular-buffer validation does across
+    physical allocators.
+
+    TODO(bnorris, https://github.com/tenstorrent/tt-lang/issues/1106): Temporary
+    stand-in for a TT-Metal capability. TT-Metal's hybrid allocator tracks the
+    lowest occupied L1 address of every core
+    (``AllocatorImpl::get_lowest_occupied_l1_address``) but exposes neither it
+    nor per-core buffers to Python, so the runtime reconstructs the frontier
+    from the tensors it is given. Per-core buffers it is not given remain
+    visible only to TT-Metal's dispatch-time validation. Replace this with the
+    TT-Metal query once it is bound.
+    """
+    lowest_addresses = {}
+    for tensor in tensors:
+        if not _is_per_core_allocated(tensor):
+            continue
+        for core, addresses in _per_core_shard_addresses(
+            tensor, "per-core L1 tensor", None
+        ).items():
+            address = min(addresses)
+            lowest_addresses[core] = min(lowest_addresses.get(core, address), address)
+    return lowest_addresses
+
+
 def _get_l1_remaining_bytes(
     device,
     cores: Iterable[Tuple[int, int]],
     excluded_l1_buffer_addresses: Sequence[int] = (),
+    per_core_l1_tensors: Sequence[Any] = (),
 ) -> Tuple[int, Dict[Tuple[int, int], int]]:
-    """Return the global and requested per-core static DFB allocation bounds."""
+    """Return the global and requested per-core static DFB allocation bounds.
+
+    ``get_buffer_pages`` reports only the reference (lockstep) allocator, so
+    the per-core allocated tensors in ``per_core_l1_tensors`` bound the usable
+    interval of their shard cores as well; other tensors in it are ignored.
+    """
     _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
@@ -282,22 +391,29 @@ def _get_l1_remaining_bytes(
     excluded_addresses = frozenset(
         int(address) for address in excluded_l1_buffer_addresses
     )
+    lowest_page_addresses = []
     for page in ttnn._ttnn.reports.get_buffer_pages(device):
         if page.buffer_type != ttnn.BufferType.L1:
             continue
         buffer_address = getattr(page, "address", None)
         if buffer_address is not None and int(buffer_address) in excluded_addresses:
             continue
-        page_remaining_bytes = max(0, page.page_address - static_dfb_base_address)
+        lowest_page_addresses.append(((page.core_x, page.core_y), page.page_address))
+    lowest_page_addresses.extend(
+        _per_core_l1_lowest_addresses(per_core_l1_tensors).items()
+    )
+    for core, page_address in lowest_page_addresses:
+        page_remaining_bytes = max(0, page_address - static_dfb_base_address)
         minimum_remaining_bytes = min(minimum_remaining_bytes, page_remaining_bytes)
-        core = (page.core_x, page.core_y)
         if core in remaining_bytes:
             remaining_bytes[core] = min(remaining_bytes[core], page_remaining_bytes)
     return minimum_remaining_bytes, remaining_bytes
 
 
 def get_min_remaining_l1_for_device(
-    device, excluded_l1_buffer_addresses: Sequence[int] = ()
+    device,
+    excluded_l1_buffer_addresses: Sequence[int] = (),
+    per_core_l1_tensors: Sequence[Any] = (),
 ):
     """Return the minimum remaining L1 CB budget (bytes) across all cores.
 
@@ -314,18 +430,25 @@ def get_min_remaining_l1_for_device(
     ``excluded_l1_buffer_addresses`` omits retained compiler-owned buffers when
     finding the lowest live page. This reconstructs the compilation budget
     without changing the contribution of unrelated allocations.
+
+    ``per_core_l1_tensors`` supplies the tensors whose per-core allocations
+    the reference allocator does not report; see ``_get_l1_remaining_bytes``.
     """
     minimum_remaining_bytes, _ = _get_l1_remaining_bytes(
-        device, (), excluded_l1_buffer_addresses
+        device, (), excluded_l1_buffer_addresses, per_core_l1_tensors
     )
     return minimum_remaining_bytes
 
 
 def _get_remaining_l1_by_core_for_device(
-    device, cores: set[tuple[int, int]]
+    device,
+    cores: set[tuple[int, int]],
+    per_core_l1_tensors: Sequence[Any] = (),
 ) -> dict[tuple[int, int], int]:
     """Return the lowest reported L1 limit for each logical worker core."""
-    _, remaining_bytes = _get_l1_remaining_bytes(device, cores)
+    _, remaining_bytes = _get_l1_remaining_bytes(
+        device, cores, per_core_l1_tensors=per_core_l1_tensors
+    )
     return remaining_bytes
 
 
@@ -1803,16 +1926,6 @@ def _validate_local_tensor_access(
             )
 
 
-def _is_per_core_allocated(tensor: Any) -> bool:
-    probe = getattr(tensor, "is_per_core_allocated", None)
-    if probe is None:
-        return False
-    try:
-        return bool(probe())
-    except Exception as error:
-        raise ValueError("failed to query tensor per-core allocation") from error
-
-
 def _resolve_per_core_tensor_addresses(
     tensors: List[Any],
     tensor_indices: Iterable[int],
@@ -1823,70 +1936,16 @@ def _resolve_per_core_tensor_addresses(
         tensor = tensors[tensor_index]
         if not _is_per_core_allocated(tensor):
             continue
-        try:
-            shard_grid = tensor.memory_config().shard_spec.grid
-        except Exception as error:
-            raise ValueError(
-                f"per-core tensor {tensor_index} must expose a shard grid"
-            ) from error
-        core_coordinates = _core_range_coordinates(
-            shard_grid, label=f"per-core tensor {tensor_index} shard grid"
-        )
-
         core_addresses = {}
-        if mesh_coordinate is not None:
-            device_coordinate = _build_mesh_coordinate(mesh_coordinate)
-            for core_coordinate in core_coordinates:
-                try:
-                    core_addresses[core_coordinate] = int(
-                        tensor.experimental_per_core_buffer_address(
-                            device_coordinate, ttnn.CoreCoord(*core_coordinate)
-                        )
-                    )
-                except Exception as error:
-                    raise ValueError(
-                        f"failed to resolve per-core tensor {tensor_index} on "
-                        f"device {mesh_coordinate}, core {core_coordinate}"
-                    ) from error
-        else:
-            try:
-                device_tensors = list(ttnn.get_device_tensors(tensor))
-            except Exception as error:
+        for core_coordinate, addresses in _per_core_shard_addresses(
+            tensor, f"per-core tensor {tensor_index}", mesh_coordinate
+        ).items():
+            if len(set(addresses)) != 1:
                 raise ValueError(
-                    f"failed to enumerate device shards for per-core tensor "
-                    f"{tensor_index}"
-                ) from error
-            if not device_tensors:
-                raise ValueError(f"per-core tensor {tensor_index} has no device shards")
-            for core_coordinate in core_coordinates:
-                addresses = []
-                for device_index, device_tensor in enumerate(device_tensors):
-                    if not _is_per_core_allocated(device_tensor):
-                        raise ValueError(
-                            f"per-core tensor {tensor_index} device shard "
-                            f"{device_index} is not per-core allocated"
-                        )
-                    try:
-                        (device_coordinate,) = device_tensor.device_coords()
-                        addresses.append(
-                            int(
-                                device_tensor.experimental_per_core_buffer_address(
-                                    device_coordinate,
-                                    ttnn.CoreCoord(*core_coordinate),
-                                )
-                            )
-                        )
-                    except Exception as error:
-                        raise ValueError(
-                            f"failed to resolve per-core tensor {tensor_index} on "
-                            f"device shard {device_index}, core {core_coordinate}"
-                        ) from error
-                if len(set(addresses)) != 1:
-                    raise ValueError(
-                        f"per-core tensor {tensor_index} has different addresses "
-                        f"across devices on core {core_coordinate}: {addresses}"
-                    )
-                core_addresses[core_coordinate] = addresses[0]
+                    f"per-core tensor {tensor_index} has different addresses "
+                    f"across devices on core {core_coordinate}: {addresses}"
+                )
+            core_addresses[core_coordinate] = addresses[0]
         addresses_by_tensor[tensor_index] = core_addresses
     return addresses_by_tensor
 
@@ -2179,6 +2238,20 @@ def _device_identity(device: Any) -> Any:
 
 def _same_device(lhs: Any, rhs: Any) -> bool:
     return _device_identity(lhs) == _device_identity(rhs)
+
+
+def _per_core_l1_allocation_enabled() -> bool:
+    """Return whether runtime L1 resources use independent per-core addresses.
+
+    TT-Metal selects the hybrid allocator from this environment variable before
+    device initialization, so the runtime follows the same setting.
+
+    TODO(bnorris, https://github.com/tenstorrent/tt-lang/issues/1106): Temporary
+    stand-in for a TT-Metal capability. TT-Metal does not expose the active
+    allocator mode to Python; replace this probe with a device query once it
+    does.
+    """
+    return os.environ.get("TT_METAL_ALLOCATOR_MODE_HYBRID", "0") == "1"
 
 
 def _allocate_l1_sharded_storage_tensor(
@@ -2689,7 +2762,9 @@ def _get_cached_runtime_resources_impl(
 
 
 def get_min_remaining_l1_excluding_cached_resources(
-    cache: KernelRuntimeResourceCache, device: Any
+    cache: KernelRuntimeResourceCache,
+    device: Any,
+    per_core_l1_tensors: Sequence[Any] = (),
 ) -> int:
     """Return the current L1 budget with this cache's buffers excluded."""
     with cache.lock:
@@ -2698,7 +2773,22 @@ def get_min_remaining_l1_excluding_cached_resources(
             if _same_device(cache.device, device)
             else ()
         )
-        return get_min_remaining_l1_for_device(device, excluded_addresses)
+        return get_min_remaining_l1_for_device(
+            device, excluded_addresses, per_core_l1_tensors
+        )
+
+
+def _runtime_resource_l1_tensors(
+    pipe_resources: PipeRuntimeResources,
+    reconfiguration_resources: DFBReconfigurationRuntimeResources,
+) -> Tuple[Any, ...]:
+    """Return every L1 tensor one runtime-resource generation holds."""
+    return (
+        *pipe_resources.scratch_tensors,
+        *pipe_resources.computed_address_dfb_tensors.values(),
+        *reconfiguration_resources.scratch_tensors,
+        *reconfiguration_resources.configuration_tensors,
+    )
 
 
 def get_cached_runtime_resources(
@@ -2917,7 +3007,7 @@ def build_dfb_reconfiguration_runtime_resources(
     # Independent per-core addresses avoid cross-core free-space fragmentation
     # under the hybrid allocator, but remote-uniform storage must keep one
     # address on every core because remote writers address it locally.
-    per_core_allocation = os.environ.get("TT_METAL_ALLOCATOR_MODE_HYBRID", "0") == "1"
+    per_core_allocation = _per_core_l1_allocation_enabled()
     scratch_tensors = []
     owned_l1_buffer_addresses = set()
     for storage_index, required_bytes, cores in pending_allocations:
@@ -3114,6 +3204,11 @@ def build_dfb_reconfiguration_runtime_resources(
             ttnn.BufferType.L1,
             shard_spec,
         )
+        # Each core reads only its own configuration record, so the tensor
+        # follows the scratch allocation mode; a lockstep allocation would need
+        # one address free on every core and could fragment per-core L1.
+        if per_core_allocation:
+            memory_config.experimental_set_per_core_allocation(True)
         configuration_tensor = ttnn.from_torch(
             host_configuration,
             dtype=ttnn.uint32,
@@ -4320,6 +4415,7 @@ def build_cb_descriptors(
     ] = None,
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
     unsafe_split_static_dfb_descriptors: bool = False,
+    runtime_l1_tensors: Sequence[Any] = (),
 ) -> List[Any]:
     """
     Build circular buffer descriptors for ttnn.generic_op.
@@ -4341,6 +4437,10 @@ def build_cb_descriptors(
             the compiler-managed SRAM allocator is merged). Split static
             descriptors per core when no order fits a core's L1 budget; see
             ``_order_static_dfb_descriptor_plans``.
+        runtime_l1_tensors: Runtime-resource L1 tensors that stay live during
+            the launch, such as reconfiguration scratch and configuration
+            tensors. Their per-core allocations and those of ``tensors`` bound
+            each core's static DFB budget.
 
     Returns:
         List of ttnn.CBDescriptor objects. A configuration with storage
@@ -4426,6 +4526,7 @@ def build_cb_descriptors(
         for index in separately_allocated_static_indices
     )
 
+    l1_tensors = (*tensors, *runtime_l1_tensors)
     placements = _resolve_dfb_placements(
         cb_configs,
         core_ranges,
@@ -4443,7 +4544,9 @@ def build_cb_descriptors(
             for storage_kind, _segment_index in placement.values()
         )
         remaining_bytes_by_core = (
-            _get_remaining_l1_by_core_for_device(device, placement_cores)
+            _get_remaining_l1_by_core_for_device(
+                device, placement_cores, per_core_l1_tensors=l1_tensors
+            )
             if device is not None and has_static_placement
             else {core: DEFAULT_L1_CB_BUDGET_BYTES for core in placement_cores}
         )
@@ -4460,7 +4563,7 @@ def build_cb_descriptors(
         )
 
     remaining_bytes = (
-        get_min_remaining_l1_for_device(device)
+        get_min_remaining_l1_for_device(device, per_core_l1_tensors=l1_tensors)
         if device is not None
         else DEFAULT_L1_CB_BUDGET_BYTES
     )
@@ -4899,6 +5002,9 @@ def _run_kernel_on_device_impl(
         ),
         dfb_reconfiguration_plan=dfb_reconfiguration_plan,
         unsafe_split_static_dfb_descriptors=unsafe_split_static_dfb_descriptors,
+        runtime_l1_tensors=_runtime_resource_l1_tensors(
+            pipe_runtime_resources, reconfiguration_resources
+        ),
     )
 
     if resource_plan is not None:
