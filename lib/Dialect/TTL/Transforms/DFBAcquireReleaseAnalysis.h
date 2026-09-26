@@ -74,6 +74,13 @@ struct DFBAcquireInterval {
   Operation *kindBoundary = nullptr;
 };
 
+/// The protocol effect that closes an interval of `kind`.
+inline DFBProtocolEffectKind
+getDFBReleaseEffectKind(DFBAcquireReleaseKind kind) {
+  return kind == DFBAcquireReleaseKind::Producer ? DFBProtocolEffectKind::Push
+                                                 : DFBProtocolEffectKind::Pop;
+}
+
 /// Push or pop actions that close one acquire interval.
 struct DFBReleaseSearch {
   /// Releases in the acquire block or projected into that block.
@@ -166,6 +173,32 @@ bool isGuardedDFBAcquire(Operation *op);
 /// acquired slot are modeled by walking from the acquire result instead.
 bool operationMayDirectlyUseAcquiredDFBSlot(DFBAcquireInterval interval,
                                             Operation *operation);
+
+/// Consecutive same-kind acquisitions of one DFB that
+/// `ttl-coalesce-dfb-acquires` merges into one multi-block acquisition, and the
+/// releases that the merged release replaces. Member `i` becomes the slice at
+/// block offset `i` of the merged acquisition.
+struct CoalescedAcquireGroup {
+  SmallVector<Operation *> acquires;
+  SmallVector<Operation *> releases;
+};
+
+/// The groups `ttl-coalesce-dfb-acquires` merges among the `kind`
+/// acquisitions of `block`, in block order. The pass applies exactly this
+/// plan, so a client that asks before the pass runs sees the pass's decision.
+SmallVector<CoalescedAcquireGroup>
+planCoalescedAcquireGroups(Block &block, DFBAcquireReleaseKind kind);
+
+/// The merged group containing `acquire`, if any.
+std::optional<CoalescedAcquireGroup>
+findCoalescedAcquireGroup(Operation *acquire);
+
+/// Returns the number of whole DFB blocks transferred by one protocol effect.
+///
+/// Returns `std::nullopt` when the tile count is not a positive multiple of
+/// the DFB block size.
+std::optional<int64_t>
+getDFBProtocolEffectBlockCount(const DFBProtocolEffect &effect);
 
 /// Returns the number of whole DFB blocks acquired or released by `op`.
 ///
