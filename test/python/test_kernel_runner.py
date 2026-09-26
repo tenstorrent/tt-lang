@@ -6011,6 +6011,80 @@ def test_compiler_l1_synchronization_scratch_is_zero_initialized(monkeypatch):
     assert initialization == [True]
 
 
+def test_empty_compiler_sram_plan_zero_initializes_reconfiguration_scratch(
+    monkeypatch,
+):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    device = object()
+    core_ranges = _FakeCoreRanges()
+    scratch = _FakeTensor(device, address=0x9000)
+    allocation_calls = []
+
+    def allocate_storage(ranges, num_bytes, allocation_device, *, zero_initialize):
+        allocation_calls.append((ranges, num_bytes, allocation_device, zero_initialize))
+        return scratch
+
+    monkeypatch.setattr(
+        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_storage
+    )
+    output = _FakeTensorWithoutDevice()
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
+        tensors=[output],
+        cb_configs=[],
+        core_ranges=core_ranges,
+        pipe_sram_scratch_bytes=16,
+        num_dfb_resets=0,
+        memory_model="compiler-sram",
+        device=device,
+    )
+
+    assert allocation_calls == [(core_ranges, 16, device, True)]
+    assert result["tensors"] == [scratch, output]
+    assert fake_ttnn.synchronize_calls == [device]
+
+
+def test_empty_sram_plan_does_not_reuse_uninitialized_metal_scratch(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    initialization = []
+
+    def build_resources(**kwargs):
+        initialization.append(kwargs["initialize_sram_scratch"])
+        return kernel_runner.PipeRuntimeResources(
+            scratch_tensors=[object()],
+            global_semaphores=[],
+            computed_address_dfb_tensors={},
+            computed_address_dfb_allocation_bytes={},
+            computed_address_base_addresses={},
+            extra_common_runtime_args=[0x1000],
+            expected_extra_common_runtime_args=1,
+        )
+
+    monkeypatch.setattr(kernel_runner, "build_pipe_runtime_resources", build_resources)
+    cache = kernel_runner.KernelRuntimeResourceCache()
+    arguments = {
+        "tensors": [],
+        "cb_configs": [],
+        "core_ranges": _FakeCoreRanges(),
+        "pipe_sram_scratch_bytes": 16,
+        "num_pipe_global_semaphores": 0,
+        "pipe_computed_address_dfb_indices": (),
+        "num_dfb_resets": 0,
+        "device": object(),
+    }
+
+    kernel_runner.get_cached_runtime_resources(
+        cache, memory_model="metal-cb", **arguments
+    )
+    kernel_runner.get_cached_runtime_resources(
+        cache, memory_model="compiler-sram", **arguments
+    )
+
+    assert initialization == [False, True]
+
+
 def test_run_kernel_reuses_reconfiguration_resource_generation(monkeypatch):
     fake_ttnn = _FakeTTNN()
     fake_ttnn.uint32 = "uint32"

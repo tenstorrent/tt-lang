@@ -2409,6 +2409,7 @@ def _runtime_resource_compatibility_key(
     num_dfb_resets: int,
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan],
     device: Optional[Any],
+    compiler_sram: bool,
 ) -> Tuple[Tuple[Any, ...], Optional[Any]]:
     requires_device = (
         pipe_sram_scratch_bytes > 0
@@ -2447,6 +2448,7 @@ def _runtime_resource_compatibility_key(
         _device_identity(resource_device),
         core_key,
         tuple(cb_configs),
+        compiler_sram,
         pipe_sram_scratch_bytes,
         num_pipe_global_semaphores,
         pipe_computed_address_dfb_indices,
@@ -2470,8 +2472,10 @@ def _get_cached_runtime_resources_impl(
     device: Optional[Any],
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
     kernel_specs: Optional[List[KernelSpec]] = None,
+    memory_model: Optional[str] = None,
 ) -> Tuple[PipeRuntimeResources, DFBReconfigurationRuntimeResources]:
     pipe_computed_address_dfb_indices = tuple(pipe_computed_address_dfb_indices)
+    compiler_sram = _get_compiler_l1_arena_bytes(cb_configs, memory_model) is not None
     compatibility_key, resource_device = _runtime_resource_compatibility_key(
         tensors,
         cb_configs,
@@ -2482,6 +2486,7 @@ def _get_cached_runtime_resources_impl(
         num_dfb_resets,
         dfb_reconfiguration_plan,
         device,
+        compiler_sram,
     )
     if (
         cache is not None
@@ -2505,11 +2510,7 @@ def _get_cached_runtime_resources_impl(
         pipe_computed_address_dfb_indices=list(pipe_computed_address_dfb_indices),
         device=resource_device,
         initialize_sram_scratch=(
-            num_dfb_resets > 0
-            or (
-                pipe_sram_scratch_bytes > 0
-                and _get_compiler_l1_arena_bytes(cb_configs) is not None
-            )
+            num_dfb_resets > 0 or (pipe_sram_scratch_bytes > 0 and compiler_sram)
         ),
         kernel_specs=kernel_specs,
         dfb_reconfiguration_plan=dfb_reconfiguration_plan,
@@ -2562,6 +2563,7 @@ def get_cached_runtime_resources(
     device: Optional[Any],
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
     kernel_specs: Optional[List[KernelSpec]] = None,
+    memory_model: Optional[str] = None,
 ) -> Tuple[PipeRuntimeResources, DFBReconfigurationRuntimeResources]:
     """Return one compatible resource generation from a synchronized cache."""
     arguments = {
@@ -2575,6 +2577,7 @@ def get_cached_runtime_resources(
         "dfb_reconfiguration_plan": dfb_reconfiguration_plan,
         "device": device,
         "kernel_specs": kernel_specs,
+        "memory_model": memory_model,
     }
     if cache is None:
         return _get_cached_runtime_resources_impl(None, **arguments)
@@ -4230,6 +4233,7 @@ def _run_kernel_on_device_impl(
         device=device,
         kernel_specs=kernel_specs,
         dfb_reconfiguration_plan=dfb_reconfiguration_plan,
+        memory_model="compiler-sram" if compiler_l1 else "metal-cb",
     )
 
     compiler_l1_base_address = (
