@@ -1692,14 +1692,21 @@ buildDFBSynchronizationLoweringPlan(ModuleOp module) {
         auto ordinal = entry ? entry.getAs<IntegerAttr>("ordinal") : nullptr;
         auto indices =
             entry ? entry.getAs<DenseI32ArrayAttr>("dfb_indices") : nullptr;
-        if (!ordinal || !indices ||
-            !plan.stateOffsetByReconfiguration.contains(ordinal.getInt())) {
+        std::optional<int64_t> ordinalValue;
+        if (ordinal &&
+            (ordinal.getType().isIndex() ||
+             ordinal.getType().isSignlessInteger()) &&
+            ordinal.getValue().isSignedIntN(64)) {
+          ordinalValue = ordinal.getInt();
+        }
+        if (!indices || !ordinalValue || *ordinalValue < 0 ||
+            !plan.stateOffsetByReconfiguration.contains(*ordinalValue)) {
           module.emitOpError("contains malformed compiler-sram reconfiguration "
                              "reset metadata");
           return failure();
         }
         auto [resetEntry, inserted] =
-            plan.resetDFBsByReconfiguration.try_emplace(ordinal.getInt(),
+            plan.resetDFBsByReconfiguration.try_emplace(*ordinalValue,
                                                         indices.asArrayRef());
         if (!inserted) {
           module.emitOpError("contains duplicate compiler-sram reconfiguration "
