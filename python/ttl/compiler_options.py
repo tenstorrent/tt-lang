@@ -104,6 +104,17 @@ def _make_parser() -> argparse.ArgumentParser:
         help="Error if accumulation (+=) output block exceeds f32 DST capacity (default: disabled).",
     )
     p.add_argument(
+        "--ttl-auto-sync-user-dfbs",
+        default=None,
+        dest="auto_sync_user_dfbs",
+        action=argparse.BooleanOptionalAction,
+        help=(
+            "Infer releases and coalesce acquires for user-managed DFBs "
+            "(default: enabled). When disabled, the program supplies their "
+            "queue operations; compiler-created DFBs remain automatic."
+        ),
+    )
+    p.add_argument(
         "--ttl-compiler-dfbs",
         default=None,
         dest="compiler_dfbs",
@@ -203,6 +214,14 @@ def _make_parser() -> argparse.ArgumentParser:
         "remove unreachable code and unused table entries (default: disabled).",
     )
     p.add_argument(
+        "--ttl-dynamic-noc",
+        default=None,
+        dest="dynamic_noc",
+        action=argparse.BooleanOptionalAction,
+        help="Allow data-movement kernels to select either NOC dynamically "
+        "while retaining their assigned processor (default: disabled).",
+    )
+    p.add_argument(
         "--ttl-l1-budget",
         default=None,
         dest="l1_budget",
@@ -268,6 +287,7 @@ class CompilerOptions:
     reduce_full_fp32: bool = True
     matmul_full_fp32: bool = True
     strict_f32_acc: bool = False
+    auto_sync_user_dfbs: bool = True
     compiler_dfbs: bool = True
     pipe_computed_addresses: bool = True
     pipe_capacity_sync: bool = True
@@ -278,6 +298,7 @@ class CompilerOptions:
     unsafe_split_static_dfb_descriptors: bool = False
     dfb_exact_coloring_search_limit: int = 1_000_000
     specialize_cores: bool = False
+    dynamic_noc: bool = False
     l1_budget: int = dataclasses.field(default=0, compare=False, hash=False)
 
     # Fields that were explicitly provided (not defaulted). Excluded from

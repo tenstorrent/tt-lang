@@ -19,6 +19,7 @@ from ttl.dfb_reconfiguration import DFBReconfiguration
 from ttl.fabric import FabricManagerClaim
 from ttl.kernel import Kernel, KernelKind, _selector_implicit_role
 from ttl.scalar import ScalarType
+from ttl.template_argument import UInt32TemplateArgument
 
 _INLINED_OPERATION_STATEMENT = "_ttl_inlined_operation_statement"
 _DFB_SOURCE_OCCURRENCE = "_ttl_dfb_source_occurrence"
@@ -904,9 +905,15 @@ def _literal_node(
     suffix: str,
     name_hint: str,
 ) -> ast.expr:
-    if value is ScalarType or isinstance(value, (ScalarType, KernelKind)):
-        type_name = "class" if value is ScalarType else value.name.lower()
-        category = "kernel_kind" if isinstance(value, KernelKind) else "scalar_type"
+    if value is ScalarType or isinstance(
+        value, (ScalarType, KernelKind, UInt32TemplateArgument)
+    ):
+        if isinstance(value, UInt32TemplateArgument):
+            category = "uint32_template_argument"
+            type_name = str(value.value)
+        else:
+            type_name = "class" if value is ScalarType else value.name.lower()
+            category = "kernel_kind" if isinstance(value, KernelKind) else "scalar_type"
         fresh_name = _fresh_name(
             f"{name_hint}__{category}_{type_name}", suffix, reserved_names
         )

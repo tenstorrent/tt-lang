@@ -40,6 +40,7 @@ from .dfb_allocation_group import DFBAllocationGroup, make_dfb_allocation_group
 from .dfb_reconfiguration import DFBReconfiguration
 from .scalar import ScalarType
 from .dataflow_buffer import (
+    DFBAddressScope,
     make_dataflow_buffer_like,
     make_dfb,
     make_tensor_backed_dfb,
@@ -60,6 +61,7 @@ from .operators import (
     reconfigure_dfbs,
     wait_any,
 )
+from .template_argument import uint32
 
 # Math operations namespace
 from . import ttl_math as math
@@ -83,6 +85,7 @@ __all__ = [
     "MeshProgramPlacement",
     "DispatchCondition",
     "DFBReset",
+    "DFBAddressScope",
     "DFBAllocationGroup",
     "DFBReconfiguration",
     "ScalarType",
@@ -105,6 +108,7 @@ __all__ = [
     "reset_dfbs",
     "reset_all_dfbs",
     "reconfigure_dfbs",
+    "uint32",
     "wait_any",
     "math",
     "block",

@@ -502,9 +502,12 @@ static PlanningResult<SmallVector<MissingReleasePlan>> planMissingReleases(
     ArrayRef<Operation *> acquires, ArrayRef<Operation *> releases,
     DFBProtocolEffectKind releaseEffectKind, StringRef effectName,
     const DenseSet<Operation *> &acquisitionsRequiringExplicitRelease,
-    const DominanceInfo &dominanceInfo) {
+    const DominanceInfo &dominanceInfo, bool syncUserDFBs) {
   SmallVector<MissingReleasePlan> plans;
   for (Operation *acquire : acquires) {
+    if (!syncUserDFBs && isUserManagedDFB(getDFBAcquireDFB(acquire))) {
+      continue;
+    }
     DFBAcquireInterval interval = makeDFBAcquireInterval(acquire, acquires);
 
     // Tensor SSA uses can keep this acquired slot live past the next same-DFB
@@ -798,6 +801,8 @@ validateConditionalReceiveReleases(ArrayRef<Operation *> pushes,
 
 struct TTLInsertCBSyncPass
     : public impl::TTLInsertCBSyncBase<TTLInsertCBSyncPass> {
+  using impl::TTLInsertCBSyncBase<TTLInsertCBSyncPass>::TTLInsertCBSyncBase;
+
   void runOnOperation() override {
     func::FuncOp func = getOperation();
 
@@ -837,7 +842,7 @@ struct TTLInsertCBSyncPass
     auto producerPlan = planMissingReleases<CBPushOp>(
         operations.reserves, operations.producerProtocolReleases,
         DFBProtocolEffectKind::Push, "push", conditionalReleasePlan->reserves,
-        dominanceInfo);
+        dominanceInfo, syncUserDFBs);
     if (producerPlan.isInvalidIR()) {
       const PlanningDiagnostic &diagnostic = producerPlan.getInvalidIR();
       diagnostic.operation->emitError(diagnostic.message);
@@ -847,7 +852,7 @@ struct TTLInsertCBSyncPass
     auto consumerPlan = planMissingReleases<CBPopOp>(
         operations.waits, operations.consumerProtocolReleases,
         DFBProtocolEffectKind::Pop, "pop", noExplicitReleaseAcquisitions,
-        dominanceInfo);
+        dominanceInfo, syncUserDFBs);
     if (consumerPlan.isInvalidIR()) {
       const PlanningDiagnostic &diagnostic = consumerPlan.getInvalidIR();
       diagnostic.operation->emitError(diagnostic.message);

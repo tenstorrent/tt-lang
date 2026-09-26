@@ -6,6 +6,7 @@
 
 from collections import defaultdict
 from dataclasses import FrozenInstanceError, replace
+from enum import Enum
 import gc
 import os
 from pathlib import Path
@@ -36,6 +37,7 @@ from ttl import (
     kernel_runner,
 )
 from ttl.dataflow_buffer import (
+    DFBAddressScope,
     DFBConfigurationEpoch,
     DFBReconfigurationPlan,
     DFBStorageSegment,
@@ -266,6 +268,24 @@ class _FakeTTNN:
 
     class WriterConfigDescriptor:
         pass
+
+    class DataMovementProcessor(Enum):
+        RISCV_0 = 0
+        RISCV_1 = 1
+
+    class NOC(Enum):
+        RISCV_0_default = 0
+        RISCV_1_default = 1
+
+    class NOC_MODE(Enum):
+        DM_DEDICATED_NOC = 0
+        DM_DYNAMIC_NOC = 1
+
+    class DataMovementConfigDescriptor:
+        def __init__(self, processor, noc, noc_mode):
+            self.processor = processor
+            self.noc = noc
+            self.noc_mode = noc_mode
 
     class FabricConfig:
         FABRIC_1D = "linear"
@@ -2177,8 +2197,26 @@ class _LocalTensorTestDouble:
         return self._memory_config
 
     @staticmethod
+    def is_per_core_allocated():
+        return False
+
+    @staticmethod
     def buffer_address():
         return 0x2000
+
+
+class _PerCoreLocalTensorTestDouble(_LocalTensorTestDouble):
+    @staticmethod
+    def is_per_core_allocated():
+        return True
+
+    @staticmethod
+    def buffer_address():
+        pytest.fail("per-core local tensors have no common buffer address")
+
+    @staticmethod
+    def experimental_per_core_buffer_address(device_coordinate, core):
+        return 0x2000 + 0x100 * device_coordinate.coords[1] + 0x10 * core.x
 
 
 def test_build_kernel_descriptors_accepts_complete_local_tensor_shards(monkeypatch):
@@ -2205,6 +2243,87 @@ def test_build_kernel_descriptors_accepts_complete_local_tensor_shards(monkeypat
     )
 
     assert descriptors[0].common_runtime_args == [0x2000]
+
+
+@pytest.mark.parametrize(
+    ("thread_type", "local_tensor_indices"),
+    [("compute", [0]), ("noc", [])],
+    ids=["compute-local-accessor", "data-movement-tensor-accessor"],
+)
+def test_build_kernel_descriptors_binds_per_core_tensor_addresses(
+    monkeypatch, thread_type, local_tensor_indices
+):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    tensor = _PerCoreLocalTensorTestDouble("l1-small", "block", full_grid)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type=thread_type,
+        tensor_indices=[0],
+        local_tensor_indices=local_tensor_indices,
+        config=object(),
+    )
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        tensor_accessor_args=[],
+        core_ranges=full_grid,
+        grid_cols=2,
+        grid_rows=1,
+        num_cbs=0,
+        device_coordinates=[0, 3],
+        dfb_reconfiguration_runtime_args={
+            (0, 0): [0x1000],
+            (1, 0): [0x2000],
+        },
+    )
+
+    assert [descriptor.common_runtime_args for descriptor in descriptors] == [
+        [0x2300, 0, 3],
+        [0x2310, 0, 3],
+    ]
+    assert [
+        [
+            (core_range.start.x, core_range.start.y)
+            for core_range in descriptor.core_ranges.ranges()
+        ]
+        for descriptor in descriptors
+    ] == [[(0, 0)], [(1, 0)]]
+    assert descriptors[0].runtime_args[0][0] == [0x1000]
+    assert descriptors[1].runtime_args[1][0] == [0x2000]
+
+
+def test_build_kernel_descriptors_reports_missing_per_core_tensor_shard(monkeypatch):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    tensor = _PerCoreLocalTensorTestDouble(
+        "l1-small", "block", _FakeExplicitCoreRanges((0, 0), (0, 0))
+    )
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[0],
+        local_tensor_indices=[],
+        config=object(),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"per-core tensor 0 has no shard on executing core \(1, 0\)",
+    ):
+        kernel_runner.build_kernel_descriptors(
+            kernel_specs=[spec],
+            tensors=[tensor],
+            tensor_accessor_args=[],
+            core_ranges=full_grid,
+            grid_cols=2,
+            grid_rows=1,
+            num_cbs=0,
+            device_coordinates=[0, 3],
+        )
 
 
 def test_local_tensor_access_requires_runtime_address_metadata(monkeypatch):
@@ -3129,6 +3248,52 @@ def test_reconfiguration_static_storage_uses_per_core_epoch_capacity(monkeypatch
     ) == [(2048, {(0, 0), (2, 0)}), (4096, {(1, 0)})]
 
 
+def test_remote_uniform_reconfiguration_uses_maximum_epoch_capacity(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    initial = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (DFBStorageSegment(nodes=((0, 0),)),),
+        storage_index=4,
+        address_scope="remote_uniform",
+    )
+    larger = replace(
+        initial,
+        data_format="float32",
+        page_size=4096,
+        storage_segments=(DFBStorageSegment(nodes=((1, 0),)),),
+    )
+    physical_config = replace(
+        initial,
+        storage_segments=(),
+        allocation_nodes=((0, 0), (1, 0), (2, 0)),
+    )
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (
+                DFBConfigurationEpoch(None, initial),
+                DFBConfigurationEpoch(7, larger),
+            ),
+        ),
+    )
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[],
+        cb_configs=[physical_config],
+        core_ranges=_FakeExplicitCoreRanges((0, 0), (2, 0)),
+        dfb_reconfiguration_plan=plan,
+    )
+
+    assert len(descriptors) == 1
+    assert descriptors[0].total_size == 4096
+    assert _descriptor_cores(descriptors[0]) == {(0, 0), (1, 0), (2, 0)}
+
+
 def test_reconfiguration_shared_storage_uses_available_epoch_capacity(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     initial = PhysicalDFBConfig(
@@ -3400,7 +3565,7 @@ def test_build_kernel_descriptors_checks_pipe_runtime_arg_count(monkeypatch):
         kernel_specs=[spec],
         tensors=[tensor],
         tensor_accessor_args=[],
-        core_ranges=object(),
+        core_ranges=_FakeCoreRanges(),
         grid_cols=1,
         grid_rows=1,
         num_cbs=0,
@@ -3469,7 +3634,7 @@ def test_build_kernel_descriptors_passes_computed_addresses_as_runtime_args(
         kernel_specs=[spec],
         tensors=[tensor],
         tensor_accessor_args=[0x44, 0x55],
-        core_ranges=object(),
+        core_ranges=_FakeCoreRanges(),
         grid_cols=1,
         grid_rows=1,
         num_cbs=2,
@@ -3513,7 +3678,7 @@ def test_build_kernel_descriptors_appends_per_kernel_runtime_args(monkeypatch):
         kernel_specs=specs,
         tensors=[tensor],
         tensor_accessor_args=[],
-        core_ranges=object(),
+        core_ranges=_FakeCoreRanges(),
         grid_cols=1,
         grid_rows=1,
         num_cbs=0,
@@ -3542,7 +3707,7 @@ def test_build_kernel_descriptors_reserves_fabric_runtime_arg_base(monkeypatch):
         kernel_specs=[spec],
         tensors=[tensor],
         tensor_accessor_args=[],
-        core_ranges=object(),
+        core_ranges=_FakeCoreRanges(),
         grid_cols=1,
         grid_rows=1,
         num_cbs=0,
@@ -3583,7 +3748,7 @@ def test_run_kernel_without_pipe_resources_does_not_require_device(monkeypatch):
 def test_device_domain_builds_per_device_runtime_coordinates(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device, **_kwargs: 0
     )
     tensor = _FakeTensor(object(), address=0x2000)
     spec = kernel_runner.KernelSpec(
@@ -3624,7 +3789,7 @@ def test_device_domain_builds_only_explicit_mesh_program_placements(
 ):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device, **_kwargs: 0
     )
     tensor = _FakeTensor(object(), address=0x2000)
     spec = kernel_runner.KernelSpec(
@@ -3664,7 +3829,7 @@ def test_device_domain_rejects_invalid_mesh_program_placement(
 ):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device, **_kwargs: 0
     )
 
     with pytest.raises(ValueError, match=message):
@@ -3713,7 +3878,7 @@ def test_device_domain_rejects_incompatible_active_mesh(
 def test_device_domain_explicit_placement_may_select_active_mesh_subset(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device, **_kwargs: 0
     )
 
     result = kernel_runner.run_kernel_on_device(
@@ -5046,7 +5211,7 @@ def test_device_domain_plans_all_fabric_bindings_before_setup(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device, **_kwargs: 0
     )
     claim = _bound_fabric_claim()
     interval = _fabric_manager_interval(
@@ -5317,7 +5482,7 @@ def test_run_kernel_combines_program_hash_with_empty_resource_contract(monkeypat
 def test_device_domain_program_hash_includes_runtime_resource_structure(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device, **_kwargs: 0
     )
     tensor = _FakeTensor(object())
     kernel_spec = _kernel_spec(KernelKind.COMPUTE)
@@ -5459,7 +5624,7 @@ def test_run_kernel_replaces_global_semaphores_between_invocations(monkeypatch):
     fake_ttnn = _LifetimeTrackingTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device, **_kwargs: 0
     )
     tensor = _FakeTensor(object())
     core_ranges = _FakeCoreRanges()
@@ -5635,7 +5800,7 @@ def test_cached_dispatch_failure_discards_reset_state(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device, **_kwargs: 0
     )
     build_initialization = []
     scratch_generations = []
@@ -5695,7 +5860,7 @@ def test_cached_dispatch_failure_retains_state_when_sync_fails(monkeypatch):
         kernel_runner, "_RETAINED_RUNTIME_RESOURCE_CACHES", retained_caches
     )
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device, **_kwargs: 0
     )
     device = object()
 
@@ -5807,7 +5972,9 @@ def test_run_kernel_reuses_reconfiguration_resource_generation(monkeypatch):
         lambda tensor, _device: {(0, 0): tensor.buffer_address()},
     )
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+        kernel_runner,
+        "get_min_remaining_l1_for_device",
+        lambda _device, **_kwargs: 4096,
     )
 
     initial_config = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32))
@@ -5847,7 +6014,7 @@ def test_run_kernel_synchronizes_uncached_runtime_resources(monkeypatch):
     fake_ttnn = _LifetimeTrackingTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device, **_kwargs: 0
     )
     device = object()
 
@@ -5875,7 +6042,7 @@ def test_run_kernel_retains_uncached_resources_when_cleanup_cannot_synchronize(
         kernel_runner, "_RETAINED_RUNTIME_RESOURCE_CACHES", retained_caches
     )
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device, **_kwargs: 0
     )
     device = object()
 
@@ -5926,7 +6093,7 @@ def test_run_kernel_retains_uncached_resources_after_synchronization_error(
         kernel_runner, "_RETAINED_RUNTIME_RESOURCE_CACHES", retained_caches
     )
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device, **_kwargs: 0
     )
     device = object()
 
@@ -5968,7 +6135,7 @@ def test_run_kernel_synchronizes_before_replacing_resource_variants(monkeypatch)
     fake_ttnn = _LifetimeTrackingTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device, **_kwargs: 0
     )
     first_device = object()
     second_device = object()
@@ -6066,7 +6233,9 @@ def test_build_cb_descriptors_excludes_computed_address_backing_tensors(
 ):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 1024
+        kernel_runner,
+        "get_min_remaining_l1_for_device",
+        lambda _device, **_kwargs: 1024,
     )
 
     cb_configs = [
@@ -6106,7 +6275,7 @@ def test_build_cb_descriptors_aligns_blackhole_subtile_allocations(monkeypatch):
 
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 100
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device, **_kwargs: 100
     )
 
     with pytest.raises(
@@ -6126,7 +6295,9 @@ def test_build_cb_descriptors_aligns_blackhole_subtile_allocations(monkeypatch):
 def test_build_cb_descriptors_preserves_subtile_geometry(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+        kernel_runner,
+        "get_min_remaining_l1_for_device",
+        lambda _device, **_kwargs: 4096,
     )
 
     descriptors = kernel_runner.build_cb_descriptors(
@@ -6277,7 +6448,7 @@ def test_allocation_nodes_scope_unspecialized_dfb_descriptor(monkeypatch):
     assert _descriptor_cores(descriptors[0]) == {(1, 0)}
 
 
-def test_physical_dfb_uses_one_descriptor_across_residency_signatures(monkeypatch):
+def test_remote_uniform_dfb_uses_one_descriptor_across_nodes(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
     configs = [
@@ -6298,6 +6469,7 @@ def test_physical_dfb_uses_one_descriptor_across_residency_signatures(monkeypatc
             2048,
             (32, 32),
             allocation_nodes=((0, 0), (1, 0)),
+            address_scope="remote_uniform",
         ),
     ]
 
@@ -6315,6 +6487,45 @@ def test_physical_dfb_uses_one_descriptor_across_residency_signatures(monkeypatc
     }
     assert _descriptor_cores(descriptors_by_index[0]) == {(0, 0)}
     assert _descriptor_cores(descriptors_by_index[1]) == {(0, 0), (1, 0)}
+
+
+def test_remote_uniform_dfb_rejects_partitioned_storage_group(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    configs = [
+        PhysicalDFBConfig(
+            0,
+            1,
+            "bfloat16",
+            1,
+            2048,
+            (32, 32),
+            allocation_nodes=((0, 0),),
+            storage_index=0,
+        ),
+        PhysicalDFBConfig(
+            1,
+            1,
+            "bfloat16",
+            1,
+            2048,
+            (32, 32),
+            allocation_nodes=((0, 0), (1, 0)),
+            storage_index=0,
+            address_scope="remote_uniform",
+        ),
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match="requires one descriptor over every allocated node",
+    ):
+        kernel_runner.build_cb_descriptors(
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=configs,
+            core_ranges=full_grid,
+            kernel_specs=[_specialized_spec(full_grid, None)],
+        )
 
 
 def test_storage_group_uses_one_lcm_aligned_descriptor(monkeypatch):
@@ -6597,7 +6808,7 @@ def test_specialized_dfb_budget_omits_final_alignment_padding(monkeypatch):
     monkeypatch.setattr(
         kernel_runner,
         "_get_remaining_l1_by_core_for_device",
-        lambda _device, _cores: {(0, 0): 100},
+        lambda _device, _cores, **_kwargs: {(0, 0): 100},
     )
     grid = _FakeExplicitCoreRanges((0, 0), (0, 0))
 
@@ -6797,6 +7008,77 @@ def test_static_dfb_descriptors_split_over_budget_core_when_enabled(monkeypatch)
     }
 
 
+def _remote_uniform_config(physical_index, num_tiles, allocation_nodes):
+    return PhysicalDFBConfig(
+        physical_index,
+        num_tiles,
+        "bfloat16",
+        1,
+        64,
+        (1, 32),
+        allocation_nodes=allocation_nodes,
+        address_scope=DFBAddressScope.REMOTE_UNIFORM,
+    )
+
+
+# A remote-uniform descriptor is placed before every local descriptor, so it
+# costs no padding, and it is never split even when splitting is enabled.
+def test_remote_uniform_static_dfb_is_placed_first_and_never_split(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 12288)
+    monkeypatch.setattr(kernel_runner, "_STATIC_DFB_PACKING_EXACT_PLAN_LIMIT", 2)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (2, 0))
+    all_nodes = ((0, 0), (1, 0), (2, 0))
+    configs = _coupled_static_dfb_configs() + [_remote_uniform_config(3, 32, all_nodes)]
+
+    descriptors = kernel_runner.build_cb_descriptors(
+        tensors=[_FakeTensorWithoutDevice()],
+        cb_configs=configs,
+        core_ranges=full_grid,
+        kernel_specs=[_specialized_spec(full_grid, None)],
+        unsafe_split_static_dfb_descriptors=True,
+    )
+
+    assert descriptors[0].format_descriptors[0].buffer_index == 3
+    assert _descriptor_cores(descriptors[0]) == set(all_nodes)
+    assert len(descriptors) == 6
+    uniform_descriptors = [
+        descriptor
+        for descriptor in descriptors
+        if descriptor.format_descriptors[0].buffer_index == 3
+    ]
+    assert len(uniform_descriptors) == 1
+
+
+# A core whose remote-uniform and local storage exceed its budget fails instead
+# of trading the uniform address for a per-core split.
+def test_remote_uniform_static_dfb_overflow_raises_instead_of_splitting(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 10240)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    configs = [
+        _remote_uniform_config(0, 128, ((0, 0), (1, 0))),
+        PhysicalDFBConfig(
+            1,
+            64,
+            "bfloat16",
+            1,
+            64,
+            (1, 32),
+            allocation_nodes=((0, 0),),
+        ),
+    ]
+
+    with pytest.raises(ValueError, match="No static DFB descriptor order fits"):
+        kernel_runner.build_cb_descriptors(
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=configs,
+            core_ranges=full_grid,
+            kernel_specs=[_specialized_spec(full_grid, None)],
+            unsafe_split_static_dfb_descriptors=True,
+        )
+
+
 # Splitting cannot satisfy a core whose own DFB storage exceeds its budget.
 def test_static_dfb_descriptor_order_reports_local_capacity_excess(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
@@ -6938,13 +7220,298 @@ def test_remaining_l1_preserves_reference_allocator_per_core(monkeypatch, device
     }
 
 
+class _PerCoreBudgetShardTestDouble:
+    """One device shard of a per-core tensor with its own core addresses."""
+
+    def __init__(self, device_index, addresses_by_core):
+        self._coordinate = SimpleNamespace(coords=(0, device_index))
+        self._addresses_by_core = addresses_by_core
+
+    @staticmethod
+    def is_per_core_allocated():
+        return True
+
+    def device_coords(self):
+        return (self._coordinate,)
+
+    def experimental_per_core_buffer_address(self, device_coordinate, core):
+        assert device_coordinate is self._coordinate
+        return self._addresses_by_core[(core.x, core.y)]
+
+
+class _PerCoreBudgetTensorTestDouble:
+    """Per-core L1 tensor whose device shards report distinct core addresses."""
+
+    def __init__(self, shard_grid, addresses_by_device):
+        self._memory_config = SimpleNamespace(
+            shard_spec=SimpleNamespace(grid=shard_grid)
+        )
+        self.device_tensors = [
+            _PerCoreBudgetShardTestDouble(device_index, addresses_by_core)
+            for device_index, addresses_by_core in enumerate(addresses_by_device)
+        ]
+
+    def memory_config(self):
+        return self._memory_config
+
+    @staticmethod
+    def is_per_core_allocated():
+        return True
+
+
+def _per_core_budget_ttnn(buffer_pages, l1_buffer_type):
+    reports = SimpleNamespace(
+        get_device_info=lambda _device: SimpleNamespace(cb_limit=0x1000),
+        get_buffer_pages=lambda _device: buffer_pages,
+    )
+    return SimpleNamespace(
+        BufferType=SimpleNamespace(L1=l1_buffer_type),
+        CoreCoord=_FakeTTNN.CoreCoord,
+        corerange_to_cores=_FakeTTNN.corerange_to_cores,
+        get_allocator_base_address=lambda _device, _buffer_type: 0x2000,
+        get_device_tensors=lambda tensor: tensor.device_tensors,
+        _ttnn=SimpleNamespace(reports=reports),
+    )
+
+
+# Per-core allocations are absent from the reference allocator's pages, so a
+# per-core tensor lowers only its shard cores, by its lowest device address.
+def test_remaining_l1_lowers_per_core_tensor_shard_cores(monkeypatch):
+    l1_buffer_type = object()
+    buffer_pages = [
+        SimpleNamespace(
+            buffer_type=l1_buffer_type, core_x=0, core_y=0, page_address=0x2C00
+        ),
+    ]
+    monkeypatch.setattr(
+        kernel_runner, "ttnn", _per_core_budget_ttnn(buffer_pages, l1_buffer_type)
+    )
+    per_core_tensor = _PerCoreBudgetTensorTestDouble(
+        _FakeExplicitCoreRanges((0, 0), (1, 0)),
+        addresses_by_device=(
+            {(0, 0): 0x2900, (1, 0): 0x2A00},
+            {(0, 0): 0x2B00, (1, 0): 0x2800},
+        ),
+    )
+    lockstep_tensor = _FakeTensor(object(), address=0x2100)
+    device = SimpleNamespace(get_num_devices=lambda: 2)
+
+    remaining_by_core = kernel_runner._get_remaining_l1_by_core_for_device(
+        device,
+        {(0, 0), (1, 0), (2, 0)},
+        per_core_l1_tensors=[None, lockstep_tensor, per_core_tensor],
+    )
+
+    assert remaining_by_core == {(0, 0): 0x900, (1, 0): 0x800, (2, 0): 0x1000}
+    assert (
+        kernel_runner.get_min_remaining_l1_for_device(
+            device, per_core_l1_tensors=[per_core_tensor]
+        )
+        == 0x800
+    )
+
+
+# Descriptor budgets account for per-core operation and runtime-resource tensors.
+def test_build_cb_descriptors_forwards_l1_tensors_to_budgets(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    budget_calls = []
+
+    def remaining_by_core(_device, cores, per_core_l1_tensors=()):
+        budget_calls.append(("per-core", list(per_core_l1_tensors)))
+        return {core: 4096 for core in cores}
+
+    def minimum_remaining(_device, per_core_l1_tensors=()):
+        budget_calls.append(("global", list(per_core_l1_tensors)))
+        return 4096
+
+    monkeypatch.setattr(
+        kernel_runner, "_get_remaining_l1_by_core_for_device", remaining_by_core
+    )
+    monkeypatch.setattr(
+        kernel_runner, "get_min_remaining_l1_for_device", minimum_remaining
+    )
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    operation_tensor = _FakeTensor(object())
+    runtime_tensor = object()
+    cb_configs = [PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32))]
+
+    kernel_runner.build_cb_descriptors(
+        tensors=[operation_tensor],
+        cb_configs=cb_configs,
+        core_ranges=full_grid,
+        kernel_specs=[_specialized_spec(_FakeExplicitCoreRanges((0, 0), (0, 0)), [0])],
+        runtime_l1_tensors=[runtime_tensor],
+    )
+    kernel_runner.build_cb_descriptors(
+        tensors=[operation_tensor],
+        cb_configs=cb_configs,
+        core_ranges=full_grid,
+        runtime_l1_tensors=[runtime_tensor],
+    )
+
+    assert budget_calls == [
+        ("per-core", [operation_tensor, runtime_tensor]),
+        ("global", [operation_tensor, runtime_tensor]),
+    ]
+
+
+# The run path forwards cached runtime-resource tensors to the descriptor budget.
+def test_run_kernel_forwards_runtime_l1_tensors_to_budget(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.uint32 = "uint32"
+    fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
+    fake_ttnn.ShardOrientation = type("ShardOrientation", (), {"ROW_MAJOR": 0})
+    fake_ttnn.TensorMemoryLayout = type("TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0})
+    fake_ttnn.BufferType = type("BufferType", (), {"L1": 0})
+    fake_ttnn.ShardSpec = lambda *args: args
+    fake_ttnn.MemoryConfig = lambda *args: args
+    device = object()
+    configuration_allocations = []
+
+    def allocate_configuration(*_args, **_kwargs):
+        tensor = _FakeTensor(device, address=0x9000)
+        configuration_allocations.append(tensor)
+        return tensor
+
+    fake_ttnn.from_torch = allocate_configuration
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        lambda *_args, **_kwargs: pytest.fail("unexpected scratch allocation"),
+    )
+    monkeypatch.setattr(
+        kernel_runner,
+        "_l1_buffer_addresses_by_core",
+        lambda tensor, _device: {(0, 0): tensor.buffer_address()},
+    )
+    monkeypatch.setattr(
+        kernel_runner,
+        "get_min_remaining_l1_for_device",
+        lambda _device, **_kwargs: 4096,
+    )
+    forwarded_runtime_tensors = []
+    original_build_cb_descriptors = kernel_runner.build_cb_descriptors
+
+    def capture_build_cb_descriptors(*args, **kwargs):
+        forwarded_runtime_tensors.append(list(kwargs.get("runtime_l1_tensors", ())))
+        return original_build_cb_descriptors(*args, **kwargs)
+
+    monkeypatch.setattr(
+        kernel_runner, "build_cb_descriptors", capture_build_cb_descriptors
+    )
+
+    initial_config = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32))
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (
+                DFBConfigurationEpoch(None, initial_config),
+                DFBConfigurationEpoch(7, initial_config),
+            ),
+        ),
+    )
+    cache = kernel_runner.KernelRuntimeResourceCache()
+
+    kernel_runner.run_kernel_on_device(
+        kernel_specs=[],
+        tensors=[_FakeTensor(device)],
+        cb_configs=[initial_config],
+        core_ranges=_FakeCoreRanges(),
+        dfb_reconfiguration_plan=plan,
+        runtime_resource_cache=cache,
+    )
+
+    assert forwarded_runtime_tensors == [[configuration_allocations[0]]]
+
+
+# Configuration tensors follow the reconfiguration scratch allocation mode.
+@pytest.mark.parametrize("hybrid", [True, False], ids=["hybrid", "lockstep"])
+def test_reconfiguration_configuration_tensor_follows_allocator_mode(
+    monkeypatch, hybrid
+):
+    if hybrid:
+        monkeypatch.setenv("TT_METAL_ALLOCATOR_MODE_HYBRID", "1")
+    else:
+        monkeypatch.delenv("TT_METAL_ALLOCATOR_MODE_HYBRID", raising=False)
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.uint32 = "uint32"
+    fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
+    fake_ttnn.ShardOrientation = type("ShardOrientation", (), {"ROW_MAJOR": 0})
+    fake_ttnn.TensorMemoryLayout = type("TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0})
+    fake_ttnn.BufferType = type("BufferType", (), {"L1": 0})
+    fake_ttnn.ShardSpec = lambda *args: args
+    memory_configs = []
+
+    class _MemoryConfig:
+        def __init__(self, *args):
+            self.args = args
+            self.per_core = False
+
+        def experimental_set_per_core_allocation(self, enable):
+            self.per_core = enable
+
+    def make_memory_config(*args):
+        memory_configs.append(_MemoryConfig(*args))
+        return memory_configs[-1]
+
+    fake_ttnn.MemoryConfig = make_memory_config
+    device = object()
+    from_torch_calls = []
+
+    def allocate_configuration(*_args, **kwargs):
+        from_torch_calls.append(kwargs)
+        return _FakeTensor(device, address=0x9000)
+
+    fake_ttnn.from_torch = allocate_configuration
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        lambda *_args, **_kwargs: pytest.fail("unexpected scratch allocation"),
+    )
+    monkeypatch.setattr(
+        kernel_runner,
+        "_l1_buffer_addresses_by_core",
+        lambda _tensor, _device: {(0, 0): 0x9000, (1, 0): 0xA000},
+    )
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (DFBStorageSegment(nodes=((1, 0),)),),
+    )
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (
+                DFBConfigurationEpoch(None, config),
+                DFBConfigurationEpoch(7, config),
+            ),
+        ),
+    )
+
+    kernel_runner.build_dfb_reconfiguration_runtime_resources(
+        tensors=[],
+        core_ranges=_FakeExplicitCoreRanges((0, 0), (1, 0)),
+        plan=plan,
+        device=device,
+    )
+
+    assert [memory_config.per_core for memory_config in memory_configs] == [hybrid]
+    assert from_torch_calls[0]["memory_config"] is memory_configs[0]
+
+
 # Exact packing reports the allocation deficit on the constrained core.
 def test_specialized_dfb_budget_uses_each_cores_remaining_l1(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
         kernel_runner,
         "_get_remaining_l1_by_core_for_device",
-        lambda _device, _cores: {(0, 0): 2048, (1, 0): 1024},
+        lambda _device, _cores, **_kwargs: {(0, 0): 2048, (1, 0): 1024},
     )
     full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
     core_0 = _FakeExplicitCoreRanges((0, 0), (0, 0))
@@ -7105,6 +7672,57 @@ def test_l1_sharded_storage_counts_sparse_cores(monkeypatch):
     assert empty_calls[0][0] == (2, 512)
 
 
+def test_l1_sharded_storage_enables_per_core_allocation(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.ShardSpec = lambda *args: args
+    memory_config = SimpleNamespace(per_core=False)
+
+    def enable_per_core(enable):
+        memory_config.per_core = enable
+
+    memory_config.experimental_set_per_core_allocation = enable_per_core
+    fake_ttnn.MemoryConfig = lambda *args: memory_config
+    fake_ttnn.ShardOrientation = SimpleNamespace(ROW_MAJOR=object())
+    fake_ttnn.TensorMemoryLayout = SimpleNamespace(HEIGHT_SHARDED=object())
+    fake_ttnn.BufferType = SimpleNamespace(L1=object())
+    fake_ttnn.float32 = object()
+    fake_ttnn.ROW_MAJOR_LAYOUT = object()
+    empty_calls = []
+    fake_ttnn.empty = (
+        lambda shape, **kwargs: empty_calls.append((shape, kwargs)) or object()
+    )
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+
+    kernel_runner._allocate_l1_sharded_storage_tensor(
+        _FakeExplicitCoreRanges((0, 0), (1, 0)),
+        num_bytes=2048,
+        device=object(),
+        per_core=True,
+    )
+
+    assert memory_config.per_core
+    assert empty_calls[0][1]["memory_config"] is memory_config
+
+
+def test_l1_buffer_addresses_uses_per_core_tensor_addresses(monkeypatch):
+    tensor = SimpleNamespace(is_per_core_allocated=lambda: True)
+    expected_addresses = {(0, 0): 0x2000, (1, 0): 0x3000}
+    resolve_calls = []
+
+    def resolve_per_core(tensors, tensor_indices, mesh_coordinate):
+        resolve_calls.append((tensors, tensor_indices, mesh_coordinate))
+        return {0: expected_addresses}
+
+    monkeypatch.setattr(
+        kernel_runner, "_resolve_per_core_tensor_addresses", resolve_per_core
+    )
+
+    assert kernel_runner._l1_buffer_addresses_by_core(tensor, object()) == (
+        expected_addresses
+    )
+    assert resolve_calls == [([tensor], (0,), None)]
+
+
 def test_specialized_dfb_use_intersects_storage_segments(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
@@ -7191,7 +7809,9 @@ def test_build_cb_descriptors_binds_tensor_on_exact_nodes(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+        kernel_runner,
+        "get_min_remaining_l1_for_device",
+        lambda _device, **_kwargs: 4096,
     )
     expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
     tensor = _FakeTensor(object(), dtype=expected_dtype)
@@ -7233,7 +7853,9 @@ def test_build_cb_descriptors_binds_tensor_on_exact_nodes(monkeypatch):
 def test_build_cb_descriptors_rejects_range_past_shard_boundary(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+        kernel_runner,
+        "get_min_remaining_l1_for_device",
+        lambda _device, **_kwargs: 4096,
     )
     expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
     tensor = _FakeTensor(object(), dtype=expected_dtype, shard_shape=(32, 32))
@@ -7262,7 +7884,9 @@ def test_build_cb_descriptors_rejects_node_without_tensor_shard(monkeypatch):
         lambda _tensor: [_FakeTTNN.CoreCoord(0, 0)],
     )
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+        kernel_runner,
+        "get_min_remaining_l1_for_device",
+        lambda _device, **_kwargs: 4096,
     )
     expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
     tensor = _FakeTensor(object(), dtype=expected_dtype)
@@ -7278,7 +7902,9 @@ def test_build_cb_descriptors_rejects_node_without_tensor_shard(monkeypatch):
 def test_build_cb_descriptors_rejects_equal_size_different_tile_shape(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+        kernel_runner,
+        "get_min_remaining_l1_for_device",
+        lambda _device, **_kwargs: 4096,
     )
     expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
     tensor = _FakeTensor(object(), dtype=expected_dtype, tile_shape=(16, 32))
@@ -7317,7 +7943,9 @@ def test_build_cb_descriptors_accepts_block_float_tensor_backing_format(
 ):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+        kernel_runner,
+        "get_min_remaining_l1_for_device",
+        lambda _device, **_kwargs: 4096,
     )
     expected_dtype = kernel_runner.format_name_to_ttnn_dtype(data_format)
     tensor = _FakeTensor(object(), dtype=expected_dtype, shard_shape=(32, 32))
@@ -7342,7 +7970,9 @@ def test_build_cb_descriptors_accepts_block_float_tensor_backing_format(
 def test_build_cb_descriptors_reports_unsupported_tensor_backing_format(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+        kernel_runner,
+        "get_min_remaining_l1_for_device",
+        lambda _device, **_kwargs: 4096,
     )
     tensor = _FakeTensor(object(), dtype=object())
     config = PhysicalDFBConfig(
@@ -7376,7 +8006,9 @@ def test_build_cb_descriptors_reports_unsupported_tensor_backing_format(monkeypa
 def test_build_cb_descriptors_uses_current_tensor_allocation(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+        kernel_runner,
+        "get_min_remaining_l1_for_device",
+        lambda _device, **_kwargs: 4096,
     )
     expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
     config = _tensor_backing_config(0, nodes=((0, 0),))
@@ -7406,7 +8038,9 @@ def test_build_cb_descriptors_preserves_descriptor_helper_failure(monkeypatch):
 
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+        kernel_runner,
+        "get_min_remaining_l1_for_device",
+        lambda _device, **_kwargs: 4096,
     )
     monkeypatch.setattr(
         fake_ttnn,
@@ -7488,7 +8122,9 @@ def test_pipe_runtime_resources_allocate_compiler_computed_address_storage(
 ):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+        kernel_runner,
+        "get_min_remaining_l1_for_device",
+        lambda _device, **_kwargs: 4096,
     )
     backing_tensor = _FakeTensor(object(), address=0x6000)
     allocated_core_ranges = []
@@ -7587,7 +8223,9 @@ def test_pipe_runtime_resources_reject_mixed_computed_address_storage(
 def test_build_cb_descriptors_rejects_aliased_partial_tensor_ranges(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+        kernel_runner,
+        "get_min_remaining_l1_for_device",
+        lambda _device, **_kwargs: 4096,
     )
     expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
     tensors = [
@@ -7612,7 +8250,9 @@ def test_build_cb_descriptors_rejects_aliased_range_with_distinct_indices(
 ):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+        kernel_runner,
+        "get_min_remaining_l1_for_device",
+        lambda _device, **_kwargs: 4096,
     )
     expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
     tensors = [
@@ -7635,7 +8275,9 @@ def test_build_cb_descriptors_rejects_aliased_range_with_distinct_indices(
 def test_build_cb_descriptors_allows_same_address_on_disjoint_nodes(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 4096
+        kernel_runner,
+        "get_min_remaining_l1_for_device",
+        lambda _device, **_kwargs: 4096,
     )
     expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
     tensors = [
@@ -7659,7 +8301,7 @@ def test_build_cb_descriptors_allows_same_address_on_disjoint_nodes(monkeypatch)
 def test_build_cb_descriptors_excludes_tensor_backing_from_static_budget(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 1
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device, **_kwargs: 1
     )
     expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
     tensor = _FakeTensor(object(), dtype=expected_dtype)
@@ -7676,7 +8318,9 @@ def test_build_cb_descriptors_excludes_tensor_backing_from_static_budget(monkeyp
 def test_build_cb_descriptors_charges_mixed_storage_once(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 1024
+        kernel_runner,
+        "get_min_remaining_l1_for_device",
+        lambda _device, **_kwargs: 1024,
     )
     expected_dtype = kernel_runner.format_name_to_ttnn_dtype("bfloat16")
     tensor = _FakeTensor(object(), dtype=expected_dtype)
@@ -8062,7 +8706,7 @@ def test_emit_runner_source_uses_shared_pipe_resource_helpers(monkeypatch):
     assert "build_kernel_descriptors(" not in source
     assert "KERNEL_EXTRA_COMMON_RUNTIME_ARGS = [" in source
     assert "    [7, 9],  # noc" in source
-    assert "    0,  # noc" in source
+    assert "    ('reader',),  # noc" in source
     assert (
         "extra_common_runtime_args=KERNEL_EXTRA_COMMON_RUNTIME_ARGS[kernel_idx]"
         in source
@@ -8249,7 +8893,7 @@ def test_emitted_runner_replaces_global_semaphore_owners(monkeypatch):
     fake_ttnn = _LifetimeTrackingTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device, **_kwargs: 0
     )
     monkeypatch.setitem(sys.modules, "ttnn", fake_ttnn)
     source = kernel_runner.emit_runner_source(
@@ -8299,7 +8943,7 @@ def test_emitted_runner_synchronizes_before_owner_destruction(monkeypatch):
     fake_ttnn = _LifetimeTrackingTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     monkeypatch.setattr(
-        kernel_runner, "get_min_remaining_l1_for_device", lambda _device: 0
+        kernel_runner, "get_min_remaining_l1_for_device", lambda _device, **_kwargs: 0
     )
     monkeypatch.setitem(sys.modules, "ttnn", fake_ttnn)
     source = kernel_runner.emit_runner_source(
@@ -8501,6 +9145,35 @@ def test_emit_runner_source_omits_program_hash_by_default():
     )
 
     assert "PROGRAM_HASH = None" in source
+
+
+def test_emit_runner_source_preserves_explicit_data_movement_config(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    config = fake_ttnn.DataMovementConfigDescriptor(
+        processor=fake_ttnn.DataMovementProcessor.RISCV_1,
+        noc=fake_ttnn.NOC.RISCV_0_default,
+        noc_mode=fake_ttnn.NOC_MODE.DM_DYNAMIC_NOC,
+    )
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[],
+        config=config,
+    )
+
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[spec],
+        cb_configs=[],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+    )
+
+    assert "('data_movement', 'RISCV_1', 'RISCV_0_default', 'DM_DYNAMIC_NOC')" in source
+    assert "processor=getattr(ttnn.DataMovementProcessor, processor)" in source
+    assert "noc=getattr(ttnn.NOC, noc)" in source
+    assert "noc_mode=getattr(ttnn.NOC_MODE, noc_mode)" in source
 
 
 def test_emit_runner_source_preserves_specialized_dfb_use(monkeypatch):
