@@ -25,7 +25,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<quas
 
 // -----
 
-// Tensor-backed storage has external ownership and cannot use arena offsets.
+// Partially overlapping tensor-backed ranges cannot have independent owners.
 module attributes {ttl.launch_grid = [1, 1]} {
   func.func @partial_tensor_backing_overlap() attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement>, ttl.noc_index = 0 : i32} {
     %first = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index, tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4096>}
