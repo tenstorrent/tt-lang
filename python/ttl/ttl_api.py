@@ -85,7 +85,6 @@ from ._src.tensor_registry import (
 from ._src.global_semaphore import is_ttnn_global_semaphore
 from ._src.ttl_ast import TTLGenericCompiler
 from .dataflow_buffer import (
-    _COMPILER_SRAM_CONTROL_RECORD_BYTES,
     CircularBuffer,
     DataflowBuffer,
     DFBConfigurationEpoch,
@@ -131,6 +130,7 @@ from .kernel_runner import (
     _FabricRouteCache,
     _detect_device_arch,
     _device_identity,
+    _get_compiler_l1_arena_bytes,
     _same_device,
     attach_runtime_resource_finalizer,
     FabricManagerIntervalKind,
@@ -870,6 +870,7 @@ class CompiledTTNNKernel:
         runtime_resource_cache=None,
         kernel_used_dfb_indices=None,
         kernel_local_tensor_indices=None,
+        memory_model: Optional[str] = None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -939,6 +940,7 @@ class CompiledTTNNKernel:
             )
         self.kernel_core_ranges = kernel_core_ranges or [None] * len(kernel_paths)
         self.cb_configs = cb_configs or []
+        self.memory_model = memory_model
         self.dfb_reconfiguration_plan = dfb_reconfiguration_plan
         self.program_hash = program_hash
         self.source_lines = source_lines
@@ -1082,6 +1084,7 @@ class CompiledTTNNKernel:
             operation_name=self.operation_name,
             runtime_resource_cache=self._runtime_resource_cache,
             device=device,
+            memory_model=self.memory_model,
         )
 
 
@@ -2146,9 +2149,8 @@ def _compile_ttnn_kernel(
     grouped_kernel_logical_selectors = []
     # Profiling reports use the representative source name for each RISC.
     thread_to_kernel = {}
-    compiler_l1 = any(
-        storage_config.l1_offset is not None for storage_config in (cb_configs or [])
-    )
+    memory_model = _module_memory_model(module)
+    compiler_l1 = memory_model == "compiler-sram"
 
     for kernel_group in kernel_groups:
         representative = kernel_group[0]
@@ -2267,6 +2269,7 @@ def _compile_ttnn_kernel(
         runtime_resource_factory=runtime_resource_factory,
         runtime_resource_cache=runtime_resource_cache,
         kernel_used_dfb_indices=kernel_used_dfb_indices,
+        memory_model=memory_model,
     )
 
     if verbose:
@@ -2323,6 +2326,7 @@ def _compile_ttnn_kernel(
             kernel_fabric_routes=kernel_fabric_routes,
             requires_runtime_resource_factory=runtime_resource_factory is not None,
             dfb_reconfiguration_plan=dfb_reconfiguration_plan,
+            memory_model=memory_model,
         )
 
     return compiled_kernel
@@ -2738,25 +2742,7 @@ def _extract_dfb_allocations(module):
             f"{attribute_name} must contain a dense physical index range "
             f"{expected_indices}, got {indices}"
         )
-    compiler_sram_configs = [
-        config for config in configs if config.l1_offset is not None
-    ]
-    if compiler_sram_configs and len(compiler_sram_configs) == len(configs):
-        control_starts = sorted(config.l1_offset for config in configs)
-        if any(start % 4 for start in control_starts):
-            raise ValueError(f"{attribute_name} has an unaligned control record")
-        if any(
-            current < previous + _COMPILER_SRAM_CONTROL_RECORD_BYTES
-            for previous, current in zip(control_starts, control_starts[1:])
-        ):
-            raise ValueError(f"{attribute_name} control records overlap")
-        control_end = control_starts[-1] + _COMPILER_SRAM_CONTROL_RECORD_BYTES
-        for config in configs:
-            if config.l1_payload_offset < control_end:
-                raise ValueError(
-                    f"{attribute_name}[{config.dfb_index}] payload must follow all "
-                    "control records"
-                )
+    _get_compiler_l1_arena_bytes(configs)
     return configs
 
 
@@ -2887,6 +2873,16 @@ def _extract_pipe_global_semaphore_count(module) -> int:
     return int(attr)
 
 
+def _module_memory_model(module):
+    memory_model_attr = module.operation.attributes.get("ttl.memory_model", None)
+    if memory_model_attr is None:
+        return "metal-cb"
+    memory_model = getattr(memory_model_attr, "value", None)
+    if memory_model not in ("metal-cb", "compiler-sram"):
+        raise ValueError(f"invalid ttl.memory_model {memory_model_attr}")
+    return memory_model
+
+
 def _resolve_dfb_configs(module):
     """Return finalized physical DFB configurations from required metadata."""
     physical_allocations = _extract_dfb_allocations(module)
@@ -2895,6 +2891,12 @@ def _resolve_dfb_configs(module):
             "compiled module is missing ttl.dfb_allocations; "
             "ttl-finalize-dfb-indices must run before runtime construction"
         )
+    memory_model = _module_memory_model(module)
+    arena_bytes = _get_compiler_l1_arena_bytes(physical_allocations, memory_model)
+    if memory_model == "compiler-sram":
+        arena_attr = module.operation.attributes.get("ttl.l1_arena_bytes", None)
+        if arena_attr is None or int(arena_attr) < arena_bytes:
+            raise ValueError("compiler-sram allocation exceeds ttl.l1_arena_bytes")
     return physical_allocations
 
 

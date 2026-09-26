@@ -204,7 +204,7 @@ Common allocation and lowering contain no architecture branches. `compiler_l1_ta
 
 The runtime allocates and clears the arena for each invocation as a row-major, height-sharded TTNN L1 tensor with one equal-length row per participating worker node. Height sharding directly represents one arena row per node. Width sharding provides no capacity benefit, and block sharding introduces an unused partition dimension.
 
-The arena is passed as an auxiliary `generic_op` input so TTNN retains it through device execution while preserving the user output position. The arena is zero-initialized. Runtime resource caching includes the allocation metadata, so incompatible layouts do not share resources.
+The runtime zero-initializes the arena and passes it as an auxiliary `generic_op` input without changing the user output position. It retains the owning tensor until device synchronization succeeds, including when descriptor preparation or dispatch fails. If synchronization fails, it retains the tensor for later cleanup. A nonempty allocation plan uses a fresh arena for each invocation.
 
 Finalization records `ttl.memory_model`, `ttl.l1_arena_bytes`, and one entry per logical DFB in `ttl.dfb_allocations`. Each entry gives the arena-relative control-record offset (`l1_offset`), arena-relative payload offset (`l1_payload_offset`), and aligned payload extent (`l1_allocation_bytes`). A generated kernel's compile-time argument 0 identifies the common runtime argument containing its local arena base; subsequent DFB compile-time arguments identify allocation entries. The C++ `PayloadOffset` template parameter is relative to the control record: `l1_payload_offset - l1_offset`.
 

@@ -2,7 +2,7 @@
 // RUN: ttlang-opt %s --convert-ttkernel-to-emitc --verify-diagnostics --split-input-file
 
 // A small tile is outside the address-based compute contract.
-module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{cb_index = 0 : i64, page_size = 2048 : i64, num_tiles = 1 : i64, block_count = 1 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64}]} {
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.dfb_allocations = [{cb_index = 0 : i64, page_size = 2048 : i64, num_tiles = 1 : i64, block_count = 1 : i64, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64}]} {
   func.func @small_tile() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
     %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<16x32, bf16>>
     %zero = arith.constant 0 : index
@@ -15,7 +15,7 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{c
 // -----
 
 // Storage metadata queries require a tile element type before conversion.
-module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{cb_index = 0 : i64, page_size = 4 : i64, num_tiles = 1 : i64, block_count = 1 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64}]} {
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.dfb_allocations = [{cb_index = 0 : i64, page_size = 4 : i64, num_tiles = 1 : i64, block_count = 1 : i64, l1_allocation_bytes = 4 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64}]} {
   func.func @scalar_tile_size() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
     %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, f32>
     // expected-error @below {{'ttkernel.get_tile_size' op compiler-sram requires tiled storage metadata}}
@@ -27,7 +27,7 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{c
 // -----
 
 // Data-format queries use the same tile metadata contract.
-module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{cb_index = 0 : i64, page_size = 4 : i64, num_tiles = 1 : i64, block_count = 1 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64}]} {
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.dfb_allocations = [{cb_index = 0 : i64, page_size = 4 : i64, num_tiles = 1 : i64, block_count = 1 : i64, l1_allocation_bytes = 4 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64}]} {
   func.func @scalar_data_format() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
     %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, f32>
     // expected-error @below {{'ttkernel.get_dataformat' op compiler-sram requires tiled storage metadata}}
@@ -39,8 +39,8 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{c
 // -----
 
 // Every allocation entry must contain the geometry and ordered offsets used by generated address types.
-// expected-error @below {{'builtin.module' op compiler-sram allocation entry 0 must define positive uint32 page_size, num_tiles, and block_count values and representable ordered L1 offsets}}
-module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{block_count = 1 : i64, l1_offset = 64 : i64, l1_payload_offset = 32 : i64, num_tiles = 1 : i64, page_size = 2048 : i64}]} {
+// expected-error @below {{'builtin.module' op compiler-sram allocation entry 0 must define positive uint32 page_size, num_tiles, block_count, and l1_allocation_bytes values with representable ordered SRAM offsets}}
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.dfb_allocations = [{block_count = 1 : i64, l1_allocation_bytes = 2048 : i64, l1_offset = 64 : i64, l1_payload_offset = 32 : i64, num_tiles = 1 : i64, page_size = 2048 : i64}]} {
   func.func @invalid_allocation_offsets() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
     %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
     return
@@ -51,9 +51,9 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{b
 
 // Two logical DFBs cannot share any word of their control records.
 // expected-error @below {{'builtin.module' op compiler-sram control records overlap}}
-module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
-  {block_count = 1 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i64, page_size = 2048 : i64},
-  {block_count = 1 : i64, l1_offset = 4 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i64, page_size = 2048 : i64}
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.dfb_allocations = [
+  {block_count = 1 : i64, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i64, page_size = 2048 : i64},
+  {block_count = 1 : i64, l1_allocation_bytes = 2048 : i64, l1_offset = 4 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i64, page_size = 2048 : i64}
 ]} {
   func.func @overlapping_control_records() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
     %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
@@ -65,8 +65,8 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
 
 // A payload cannot begin in its own 8-byte control record.
 // expected-error @below {{'builtin.module' op compiler-sram allocation entry 0 payload must follow all control records at a 64-byte-aligned offset}}
-module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
-  {block_count = 1 : i64, l1_offset = 64 : i64, l1_payload_offset = 68 : i64, num_tiles = 1 : i64, page_size = 2048 : i64}
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.dfb_allocations = [
+  {block_count = 1 : i64, l1_allocation_bytes = 2048 : i64, l1_offset = 64 : i64, l1_payload_offset = 68 : i64, num_tiles = 1 : i64, page_size = 2048 : i64}
 ]} {
   func.func @payload_overlaps_own_control() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
     %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
@@ -78,9 +78,9 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
 
 // A payload cannot begin in another DFB's control record.
 // expected-error @below {{'builtin.module' op compiler-sram allocation entry 0 payload must follow all control records at a 64-byte-aligned offset}}
-module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
-  {block_count = 1 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i64, page_size = 2048 : i64},
-  {block_count = 1 : i64, l1_offset = 64 : i64, l1_payload_offset = 128 : i64, num_tiles = 1 : i64, page_size = 2048 : i64}
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.dfb_allocations = [
+  {block_count = 1 : i64, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i64, page_size = 2048 : i64},
+  {block_count = 1 : i64, l1_allocation_bytes = 2048 : i64, l1_offset = 64 : i64, l1_payload_offset = 128 : i64, num_tiles = 1 : i64, page_size = 2048 : i64}
 ]} {
   func.func @payload_overlaps_other_control() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
     %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
@@ -92,8 +92,8 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
 
 // Blackhole payloads require 64-byte alignment for DRAM-to-SRAM reads.
 // expected-error @below {{'builtin.module' op compiler-sram allocation entry 0 payload must follow all control records at a 64-byte-aligned offset}}
-module attributes {ttl.memory_model = "compiler-sram", ttl.target_arch = #ttcore.arch<blackhole>, ttl.dfb_allocations = [
-  {block_count = 1 : i64, l1_offset = 0 : i64, l1_payload_offset = 32 : i64, num_tiles = 1 : i64, page_size = 2048 : i64}
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.target_arch = #ttcore.arch<blackhole>, ttl.dfb_allocations = [
+  {block_count = 1 : i64, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 32 : i64, num_tiles = 1 : i64, page_size = 2048 : i64}
 ]} {
   func.func @blackhole_payload_alignment() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
     %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
@@ -104,7 +104,7 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.target_arch = #ttcore
 // -----
 
 // An external descriptor must agree with the finalized allocation geometry.
-module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{block_count = 1 : i64, element_type = !ttcore.tile<32x32, bf16>, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i64, page_size = 2048 : i64}]} {
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.dfb_allocations = [{block_count = 1 : i64, element_type = !ttcore.tile<32x32, bf16>, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i64, page_size = 2048 : i64}]} {
   func.func @descriptor_geometry_mismatch() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
     // expected-error @below {{'ttkernel.opaque_call' op compiler-sram descriptor geometry differs from its allocation metadata}}
     ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<0, 2, 1, 2048>] () {dfb_resource_indices = array<i32: 0>, header = "describe.hpp"} : () -> ()
@@ -115,7 +115,7 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{b
 // -----
 
 // Compute descriptors require a supported tile type in the allocation table.
-module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{block_count = 1 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i64, page_size = 2048 : i64}]} {
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.dfb_allocations = [{block_count = 1 : i64, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i64, page_size = 2048 : i64}]} {
   func.func @descriptor_missing_element_type() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
     // expected-error @below {{'ttkernel.opaque_call' op compiler-sram compute descriptors require 32x32 BF16 or FP32 tiles}}
     ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<0, 1, 1, 2048>] () {dfb_resource_indices = array<i32: 0>, header = "describe.hpp"} : () -> ()
@@ -126,7 +126,7 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{b
 // -----
 
 // Descriptor indices must identify an allocation-table entry.
-module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{block_count = 1 : i64, element_type = !ttcore.tile<32x32, bf16>, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i64, page_size = 2048 : i64}]} {
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.dfb_allocations = [{block_count = 1 : i64, element_type = !ttcore.tile<32x32, bf16>, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i64, page_size = 2048 : i64}]} {
   func.func @descriptor_index_out_of_range() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
     // expected-error @below {{'ttkernel.opaque_call' op compiler-sram descriptor index is absent from allocation metadata}}
     ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<1, 1, 1, 2048>] () {dfb_resource_indices = array<i32: 1>, header = "describe.hpp"} : () -> ()
@@ -137,7 +137,7 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{b
 // -----
 
 // Packing without an explicit output index would use Metal descriptor state.
-module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{cb_index = 0 : i64, page_size = 2048 : i64, num_tiles = 1 : i64, block_count = 1 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64}]} {
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.dfb_allocations = [{cb_index = 0 : i64, page_size = 2048 : i64, num_tiles = 1 : i64, block_count = 1 : i64, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64}]} {
   func.func @implicit_pack_index() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
     %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
     %zero = arith.constant 0 : index
@@ -150,7 +150,7 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{c
 // -----
 
 // Synchronization must cover one complete block.
-module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{cb_index = 0 : i64, page_size = 2048 : i64, num_tiles = 2 : i64, block_count = 1 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64}]} {
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.dfb_allocations = [{cb_index = 0 : i64, page_size = 2048 : i64, num_tiles = 2 : i64, block_count = 1 : i64, l1_allocation_bytes = 4096 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64}]} {
   func.func @partial_block() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
     %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
     %one = arith.constant 1 : i32
@@ -163,7 +163,7 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{c
 // -----
 
 // Runtime page counts cannot establish the fixed-size transaction contract.
-module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{cb_index = 0 : i64, page_size = 2048 : i64, num_tiles = 1 : i64, block_count = 1 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64}]} {
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.dfb_allocations = [{cb_index = 0 : i64, page_size = 2048 : i64, num_tiles = 1 : i64, block_count = 1 : i64, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64}]} {
   func.func @dynamic_page_count(%pages : i32) attributes {ttkernel.thread = #ttkernel.thread<compute>} {
     %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
     // expected-error @below {{compiler-sram requires a static storage identity and page count}}
@@ -175,7 +175,7 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{c
 // -----
 
 // Pre-lowered C++ can contain storage effects that the validator cannot classify.
-module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = []} {
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.dfb_allocations = []} {
   func.func @prelowered_effect() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
     %unused = ttkernel.get_compile_time_arg_val(0) : () -> i32
     // expected-error @below {{compiler-sram cannot validate pre-lowered C++ effects}}
@@ -188,7 +188,7 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = []}
 
 // The backend requires the finalized allocation table before conversion.
 // expected-error @below {{compiler-sram requires finalized allocation metadata}}
-module attributes {ttl.memory_model = "compiler-sram"} {
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64} {
   func.func @missing_allocation_metadata() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
     %unused = ttkernel.get_compile_time_arg_val(0) : () -> i32
     return
@@ -199,7 +199,7 @@ module attributes {ttl.memory_model = "compiler-sram"} {
 
 // Allocation metadata must use the finalized array representation.
 // expected-error @below {{compiler-sram requires finalized allocation metadata}}
-module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = 0 : i64} {
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.dfb_allocations = 0 : i64} {
   func.func @malformed_metadata() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
     ttkernel.tile_regs_acquire() : () -> ()
     return
@@ -209,7 +209,7 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = 0 :
 // -----
 
 // An integer tile is outside the address-based compute contract.
-module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{cb_index = 0 : i64, page_size = 2048 : i64, num_tiles = 1 : i64, block_count = 1 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64}]} {
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.dfb_allocations = [{cb_index = 0 : i64, page_size = 2048 : i64, num_tiles = 1 : i64, block_count = 1 : i64, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64}]} {
   func.func @integer_tile() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
     %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, si32>>
     %zero = arith.constant 0 : index
@@ -222,12 +222,78 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{c
 // -----
 
 // Consumer replacement is outside the address-based compute contract.
-module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{cb_index = 0 : i64, page_size = 2048 : i64, num_tiles = 1 : i64, block_count = 1 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64}]} {
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.dfb_allocations = [{cb_index = 0 : i64, page_size = 2048 : i64, num_tiles = 1 : i64, block_count = 1 : i64, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64}]} {
   func.func @consumer_replacement() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
     %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
     %zero = arith.constant 0 : index
     // expected-error @below {{has no compiler-sram lowering for ttkernel.pack_waited_tile; Metal DFB fallback is disabled}}
     ttkernel.pack_waited_tile(%zero, %storage, %zero, true) {acquired_tiles = 1 : i64} : (index, !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>, index) -> ()
+    return
+  }
+}
+
+// -----
+
+// The declared allocation must cover every page in the payload.
+// expected-error @below {{'builtin.module' op compiler-sram allocation entry 0 payload extent exceeds its allocation or arena}}
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 4160 : i64, ttl.dfb_allocations = [{page_size = 2048 : i64, num_tiles = 1 : i64, block_count = 2 : i64, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64}]} {
+  func.func @payload_exceeds_allocation() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+    %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>
+    return
+  }
+}
+
+// -----
+
+// The complete allocation must fit in the declared arena.
+// expected-error @below {{'builtin.module' op compiler-sram allocation entry 0 payload extent exceeds its allocation or arena}}
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 4159 : i64, ttl.dfb_allocations = [{page_size = 2048 : i64, num_tiles = 1 : i64, block_count = 2 : i64, l1_allocation_bytes = 4096 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64}]} {
+  func.func @payload_exceeds_arena() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+    %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<2, !ttcore.tile<32x32, bf16>>
+    return
+  }
+}
+
+// -----
+
+// Control records must also fit in the declared arena.
+// expected-error @below {{'builtin.module' op compiler-sram control records exceed the arena}}
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 4 : i64, ttl.dfb_allocations = [{page_size = 2048 : i64, num_tiles = 1 : i64, block_count = 1 : i64, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64}]} {
+  func.func @control_record_exceeds_arena() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+    %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
+    return
+  }
+}
+
+// -----
+
+// An address-based kernel requires a declared arena size.
+// expected-error @below {{'builtin.module' op compiler-sram requires a representable arena size}}
+module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = []} {
+  func.func @missing_arena_size() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+    %unused = ttkernel.get_compile_time_arg_val(0) : () -> i32
+    return
+  }
+}
+
+// -----
+
+// The arena size must fit the device address type.
+// expected-error @below {{'builtin.module' op compiler-sram requires a representable arena size}}
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 4294967296 : i64, ttl.dfb_allocations = []} {
+  func.func @unrepresentable_arena_size() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+    %unused = ttkernel.get_compile_time_arg_val(0) : () -> i32
+    return
+  }
+}
+
+// -----
+
+// Individually representable geometry fields can overflow the payload product.
+// expected-error @below {{'builtin.module' op compiler-sram allocation entry 0 payload extent exceeds its allocation or arena}}
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 4294967295 : i64, ttl.dfb_allocations = [{page_size = 4294967295 : i64, num_tiles = 4294967295 : i64, block_count = 2 : i64, l1_allocation_bytes = 4294967295 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64}]} {
+  func.func @payload_product_overflow() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+    %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<4294967295, !ttcore.tile<32x32, bf16>>
     return
   }
 }
