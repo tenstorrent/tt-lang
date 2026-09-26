@@ -1,6 +1,19 @@
 // Unsupported compute contracts fail before C++ conversion.
 // RUN: ttlang-opt %s --convert-ttkernel-to-emitc --verify-diagnostics --split-input-file
 
+// Oversized tensor argument indices fail before integer conversion.
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 8 : i64, ttl.dfb_allocations = [
+  {dfb_index = 0 : i64, element_type = !ttcore.tile<32x32, bf16>, page_size = 2048 : i64, num_tiles = 1 : i64, block_count = 1 : i64, storage_capacity_pages = 1 : i64, l1_offset = 0 : i64, storage_segments = [{nodes = [[0, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 2048>}]}
+]} {
+  func.func @oversized_tensor_argument() attributes {ttkernel.thread = #ttkernel.thread<noc>, ttl.crta_indices = [18446744073709551616 : i128]} {
+    // expected-error @below {{'ttkernel.get_compile_time_arg_val' op compiler-sram tensor backing requires a non-negative 32-bit ttl.crta_indices entry for tensor 0}}
+    %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
+    return
+  }
+}
+
+// -----
+
 // A small tile is outside the address-based compute contract.
 module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.dfb_allocations = [{dfb_index = 0 : i64, element_type = !ttcore.tile<16x32, bf16>, page_size = 1024 : i64, num_tiles = 1 : i64, block_count = 1 : i64, l1_allocation_bytes = 1024 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, storage_capacity_pages = 1 : i64}]} {
   func.func @small_tile() attributes {ttkernel.thread = #ttkernel.thread<compute>} {

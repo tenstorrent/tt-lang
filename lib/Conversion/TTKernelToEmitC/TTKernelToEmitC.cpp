@@ -159,8 +159,9 @@ parseCompilerL1Allocation(Attribute attribute) {
   auto allocationBytes =
       dictionary ? dictionary.getAs<IntegerAttr>(ttl::kDFBAllocationBytesField)
                  : IntegerAttr();
-  auto storageSegments =
-      dictionary ? dictionary.getAs<ArrayAttr>("storage_segments") : ArrayAttr();
+  auto storageSegments = dictionary
+                             ? dictionary.getAs<ArrayAttr>("storage_segments")
+                             : ArrayAttr();
   auto elementType =
       dictionary
           ? dictionary.getAs<TypeAttr>(ttl::kDFBAllocationElementTypeField)
@@ -169,12 +170,12 @@ parseCompilerL1Allocation(Attribute attribute) {
       !isRepresentableMetadataInteger(pagesPerBlock) ||
       !isRepresentableMetadataInteger(blockCount) ||
       !isRepresentableMetadataInteger(storageCapacity) ||
-      !isRepresentableMetadataInteger(stateOffset) ||
-      !elementType) {
+      !isRepresentableMetadataInteger(stateOffset) || !elementType) {
     return failure();
   }
   bool hasArenaPayload = payloadAddress && allocationBytes && !storageSegments;
-  bool hasTensorPayload = storageSegments && !payloadAddress && !allocationBytes;
+  bool hasTensorPayload =
+      storageSegments && !payloadAddress && !allocationBytes;
   if (!hasArenaPayload && !hasTensorPayload) {
     return failure();
   }
@@ -256,7 +257,12 @@ getCompilerL1TensorCommonArgIndex(Operation *operation,
   }
   for (auto [commonArgIndex, attribute] : llvm::enumerate(tensorIndices)) {
     auto tensorIndex = dyn_cast<IntegerAttr>(attribute);
-    if (tensorIndex && tensorIndex.getInt() == allocation.tensorIndex) {
+    if (!isRepresentableMetadataInteger(tensorIndex) ||
+        tensorIndex.getInt() < 0 ||
+        tensorIndex.getInt() > std::numeric_limits<int32_t>::max()) {
+      return failure();
+    }
+    if (tensorIndex.getInt() == allocation.tensorIndex) {
       return static_cast<int64_t>(commonArgIndex);
     }
   }
@@ -3640,7 +3646,8 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
             << index
             << " must define element_type, positive uint32 page_size, "
                "num_tiles, block_count, storage_capacity_pages, and either "
-               "an arena payload or tensor backing with representable SRAM offsets";
+               "an arena payload or tensor backing with representable SRAM "
+               "offsets";
         return failure();
       }
       auto identity = cast<DictionaryAttr>(attribute).getAs<IntegerAttr>(
@@ -3672,11 +3679,10 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
         return failure();
       }
       auto dictionary = cast<DictionaryAttr>(attribute);
-      auto storageIndex = dictionary.getAs<IntegerAttr>(
-          ttl::kDFBAllocationStorageIndexField);
-      if (storageIndex &&
-          (!isRepresentableMetadataInteger(storageIndex) ||
-           storageIndex.getInt() < 0)) {
+      auto storageIndex =
+          dictionary.getAs<IntegerAttr>(ttl::kDFBAllocationStorageIndexField);
+      if (storageIndex && (!isRepresentableMetadataInteger(storageIndex) ||
+                           storageIndex.getInt() < 0)) {
         module.emitOpError("compiler-sram allocation entry ")
             << index << " has an invalid storage_index";
         return failure();
@@ -3696,7 +3702,8 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
                (allocation->payloadOffset != first.payloadOffset ||
                 allocation->allocationBytes != first.allocationBytes))) {
             module.emitOpError("compiler-sram storage owner ")
-                << storageIndex.getInt() << " has inconsistent allocation metadata";
+                << storageIndex.getInt()
+                << " has inconsistent allocation metadata";
             return failure();
           }
         }
@@ -3804,8 +3811,9 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
         if (failed(getCompilerL1TensorCommonArgIndex(
                 operation, parsedAllocations[index]))) {
           operation->emitOpError(
-              "compiler-sram tensor backing is absent from the kernel's "
-              "common tensor arguments");
+              "compiler-sram tensor backing requires a non-negative 32-bit "
+              "ttl.crta_indices entry for tensor ")
+              << parsedAllocations[index].tensorIndex;
           return WalkResult::interrupt();
         }
       }
@@ -3863,10 +3871,12 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
           }
           CompilerL1Allocation allocation =
               getCompilerL1Allocation(operation, index);
-          if (failed(getCompilerL1TensorCommonArgIndex(operation, allocation))) {
+          if (failed(
+                  getCompilerL1TensorCommonArgIndex(operation, allocation))) {
             operation->emitOpError(
-                "compiler-sram tensor backing is absent from the kernel's "
-                "common tensor arguments");
+                "compiler-sram tensor backing requires a non-negative 32-bit "
+                "ttl.crta_indices entry for tensor ")
+                << allocation.tensorIndex;
             return WalkResult::interrupt();
           }
           if (descriptor.getPageSizeBytes() != allocation.pageSizeBytes ||
