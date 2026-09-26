@@ -534,3 +534,33 @@ func.func @prior_iteration_multiple_updates() {
 }
 
 // CHECK: temporal_order = [temporal_base, temporal_first, temporal_second]
+
+// A write index selected by an induction-dependent `scf.if` (3 for the first
+// iteration, then the previous index) covers every element, so the reads see
+// only the inserted values.
+func.func @if_index_origins() {
+  %zero = arith.constant 0 : index
+  %one = arith.constant 1 : index
+  %three = arith.constant 3 : index
+  %four = arith.constant 4 : index
+  %base = "test.tensor_source"() {test.label = "if_index_base"} : () -> tensor<4xi32>
+  %updated = scf.for %write = %zero to %four step %one iter_args(%tensor = %base) -> tensor<4xi32> {
+    %first = arith.cmpi eq, %write, %zero : index
+    %index = scf.if %first -> index {
+      scf.yield %three : index
+    } else {
+      %previous = arith.subi %write, %one : index
+      scf.yield %previous : index
+    }
+    %inserted = "test.source"() {test.label = "if_index_insert"} : () -> i32
+    %next = tensor.insert %inserted into %tensor[%index] : tensor<4xi32>
+    scf.yield %next : tensor<4xi32>
+  }
+  scf.for %read = %zero to %four step %one {
+    %value = tensor.extract %updated[%read] : tensor<4xi32>
+    "test.query"(%value) {test.expected_origins = ["if_index_insert"], test.label = "if_index"} : (i32) -> ()
+  }
+  return
+}
+
+// CHECK: if_index = [if_index_insert]

@@ -1895,6 +1895,7 @@ at the construction source location.
     -> ttl-finalize-dfb-indices
     -> ttl-annotate-cb-associations
     -> ttl-verify-dfb-spsc                       (read-only analysis)
+    -> ttl-verify-dfb-lifecycle                  (read-only analysis)
     -> ttl-erase-pipenet-scopes                  (transform)
     -> ttl-validate-cb-budget                    (read-only analysis)
     -> convert-ttl-to-ttkernel
