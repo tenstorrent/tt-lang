@@ -74,12 +74,24 @@ struct DFBAcquireInterval {
   Operation *kindBoundary = nullptr;
 };
 
+/// The protocol effect that opens an interval of `kind`.
+inline DFBProtocolEffectKind
+getDFBAcquireEffectKind(DFBAcquireReleaseKind kind) {
+  return kind == DFBAcquireReleaseKind::Producer
+             ? DFBProtocolEffectKind::Reserve
+             : DFBProtocolEffectKind::Wait;
+}
+
 /// The protocol effect that closes an interval of `kind`.
 inline DFBProtocolEffectKind
 getDFBReleaseEffectKind(DFBAcquireReleaseKind kind) {
   return kind == DFBAcquireReleaseKind::Producer ? DFBProtocolEffectKind::Push
                                                  : DFBProtocolEffectKind::Pop;
 }
+
+/// Whether `operation` declares a protocol effect of `kind` on `dfb`.
+bool hasDFBProtocolEffectOn(mlir::Operation *operation, mlir::Value dfb,
+                            DFBProtocolEffectKind kind);
 
 /// Push or pop actions that close one acquire interval.
 struct DFBReleaseSearch {
