@@ -1220,91 +1220,234 @@ static std::optional<llvm::APInt> getIntegerConstant(Value value) {
   return integer.getValue();
 }
 
-// Prove equality between expressions rooted in typed dispatch conditions.
-// Polarity tracks whether the caller observes zero or nonzero as true.
-static bool proveEquivalentDispatchConditionExpressions(Value lhsValue,
-                                                        bool lhsNonzeroIsTrue,
-                                                        Value rhsValue,
-                                                        bool rhsNonzeroIsTrue) {
-  std::optional<llvm::APInt> lhsConstant = getIntegerConstant(lhsValue);
-  std::optional<llvm::APInt> rhsConstant = getIntegerConstant(rhsValue);
-  if (lhsConstant || rhsConstant) {
-    return lhsConstant && rhsConstant &&
-           (lhsConstant->isZero() != lhsNonzeroIsTrue) ==
-               (rhsConstant->isZero() != rhsNonzeroIsTrue);
-  }
+} // namespace
 
-  auto lhsComparison = lhsValue.getDefiningOp<arith::CmpIOp>();
-  auto rhsComparison = rhsValue.getDefiningOp<arith::CmpIOp>();
-  if (lhsComparison || rhsComparison) {
-    if (!lhsComparison || !rhsComparison) {
-      return false;
+DispatchConditionFormulas::DispatchConditionFormulas() {
+  nodes.push_back(Node{kNoVariable, kFalse, kFalse});
+  nodes.push_back(Node{kNoVariable, kTrue, kTrue});
+  nodes.push_back(Node{kNoVariable, kUnknown, kUnknown});
+}
+
+unsigned DispatchConditionFormulas::getVariable(Attribute condition,
+                                                Value opaque) {
+  // Entries hold the variable index plus one, so a fresh entry reads zero.
+  unsigned &entry =
+      condition ? conditionVariables[condition] : opaqueVariables[opaque];
+  if (entry == 0) {
+    variables.push_back(Variable{condition, opaque});
+    entry = variables.size();
+  }
+  return entry - 1;
+}
+
+DispatchConditionFormulas::FormulaId
+DispatchConditionFormulas::makeNode(unsigned variable, FormulaId low,
+                                    FormulaId high) {
+  // An unknown cofactor makes the whole formula unknown, so `kUnknown` never
+  // appears inside a node and equal ids still mean equal formulas.
+  if (low == kUnknown || high == kUnknown) {
+    return kUnknown;
+  }
+  if (low == high) {
+    return low;
+  }
+  auto key = std::make_tuple(variable, low, high);
+  auto existing = uniqueNodes.find(key);
+  if (existing != uniqueNodes.end()) {
+    return existing->second;
+  }
+  if (nodes.size() >= kMaxNodes) {
+    return kUnknown;
+  }
+  auto id = static_cast<FormulaId>(nodes.size());
+  nodes.push_back(Node{variable, low, high});
+  uniqueNodes[key] = id;
+  return id;
+}
+
+DispatchConditionFormulas::FormulaId
+DispatchConditionFormulas::negate(FormulaId formula) {
+  if (formula == kUnknown) {
+    return kUnknown;
+  }
+  if (formula <= kTrue) {
+    return formula == kTrue ? kFalse : kTrue;
+  }
+  auto cached = negations.find(formula);
+  if (cached != negations.end()) {
+    return cached->second;
+  }
+  Node node = nodes[formula];
+  FormulaId result =
+      makeNode(node.variable, negate(node.low), negate(node.high));
+  negations[formula] = result;
+  negations[result] = formula;
+  return result;
+}
+
+DispatchConditionFormulas::FormulaId
+DispatchConditionFormulas::apply(Connective connective, FormulaId lhs,
+                                 FormulaId rhs) {
+  // An absorbing constant decides the result even next to an unknown operand;
+  // otherwise an unknown operand makes the result unknown, and two unknown
+  // operands are not known to be equal.
+  if (connective == Connective::And && (lhs == kFalse || rhs == kFalse)) {
+    return kFalse;
+  }
+  if (connective == Connective::Or && (lhs == kTrue || rhs == kTrue)) {
+    return kTrue;
+  }
+  if (lhs == kUnknown || rhs == kUnknown) {
+    return kUnknown;
+  }
+  switch (connective) {
+  case Connective::And:
+    if (lhs == kTrue || lhs == rhs) {
+      return rhs;
     }
-    auto stripZeroComparison =
-        [](arith::CmpIOp comparison) -> std::optional<std::pair<Value, bool>> {
-      arith::CmpIPredicate predicate = comparison.getPredicate();
-      if (predicate != arith::CmpIPredicate::eq &&
-          predicate != arith::CmpIPredicate::ne) {
-        return std::nullopt;
-      }
-      if (std::optional<llvm::APInt> lhs =
-              getIntegerConstant(comparison.getLhs());
-          lhs && lhs->isZero()) {
-        return std::pair<Value, bool>{comparison.getRhs(),
-                                      predicate == arith::CmpIPredicate::ne};
-      }
-      if (std::optional<llvm::APInt> rhs =
-              getIntegerConstant(comparison.getRhs());
-          rhs && rhs->isZero()) {
-        return std::pair<Value, bool>{comparison.getLhs(),
-                                      predicate == arith::CmpIPredicate::ne};
-      }
-      return std::nullopt;
-    };
-    std::optional<std::pair<Value, bool>> lhsExpression =
-        stripZeroComparison(lhsComparison);
-    std::optional<std::pair<Value, bool>> rhsExpression =
-        stripZeroComparison(rhsComparison);
-    if (!lhsExpression || !rhsExpression) {
-      return false;
+    if (rhs == kTrue) {
+      return lhs;
     }
-    return proveEquivalentDispatchConditionExpressions(
-        lhsExpression->first, lhsNonzeroIsTrue == lhsExpression->second,
-        rhsExpression->first, rhsNonzeroIsTrue == rhsExpression->second);
+    break;
+  case Connective::Or:
+    if (lhs == kFalse || lhs == rhs) {
+      return rhs;
+    }
+    if (rhs == kFalse) {
+      return lhs;
+    }
+    break;
+  case Connective::Xor:
+    if (lhs == rhs) {
+      return kFalse;
+    }
+    if (lhs == kFalse) {
+      return rhs;
+    }
+    if (rhs == kFalse) {
+      return lhs;
+    }
+    if (lhs == kTrue) {
+      return negate(rhs);
+    }
+    if (rhs == kTrue) {
+      return negate(lhs);
+    }
+    break;
   }
-
-  auto lhsCall = lhsValue.getDefiningOp<OpaqueCallOp>();
-  auto rhsCall = rhsValue.getDefiningOp<OpaqueCallOp>();
-  if (lhsCall || rhsCall) {
-    return lhsCall && rhsCall && lhsNonzeroIsTrue == rhsNonzeroIsTrue &&
-           lhsCall.getResult() == lhsValue && rhsCall.getResult() == rhsValue &&
-           lhsCall.getConditionResultAttr() &&
-           lhsCall.getConditionResultAttr() == rhsCall.getConditionResultAttr();
+  if (lhs > rhs) {
+    std::swap(lhs, rhs);
   }
-
-  if (lhsNonzeroIsTrue != rhsNonzeroIsTrue) {
-    return false;
+  auto key = std::make_tuple(static_cast<int>(connective), lhs, rhs);
+  auto cached = applyCache.find(key);
+  if (cached != applyCache.end()) {
+    return cached->second;
   }
-  auto proveBinaryOperands = [&](auto lhsOperation, auto rhsOperation) {
-    return lhsOperation && rhsOperation &&
-           lhsOperation.getType().isInteger(1) &&
-           rhsOperation.getType().isInteger(1) &&
-           proveEquivalentDispatchConditionExpressions(
-               lhsOperation.getLhs(), true, rhsOperation.getLhs(), true) &&
-           proveEquivalentDispatchConditionExpressions(
-               lhsOperation.getRhs(), true, rhsOperation.getRhs(), true);
+  Node lhsNode = nodes[lhs];
+  Node rhsNode = nodes[rhs];
+  unsigned variable = std::min(lhsNode.variable, rhsNode.variable);
+  auto cofactor = [&](const Node &node, FormulaId formula, bool high) {
+    if (node.variable != variable) {
+      return formula;
+    }
+    return high ? node.high : node.low;
   };
-  if (auto lhsAnd = lhsValue.getDefiningOp<arith::AndIOp>()) {
-    return proveBinaryOperands(lhsAnd, rhsValue.getDefiningOp<arith::AndIOp>());
+  FormulaId low = apply(connective, cofactor(lhsNode, lhs, false),
+                        cofactor(rhsNode, rhs, false));
+  FormulaId high = apply(connective, cofactor(lhsNode, lhs, true),
+                         cofactor(rhsNode, rhs, true));
+  FormulaId result = makeNode(variable, low, high);
+  applyCache[key] = result;
+  return result;
+}
+
+DispatchConditionFormulas::FormulaId
+DispatchConditionFormulas::get(Value condition) {
+  auto cached = valueFormulas.find(condition);
+  if (cached != valueFormulas.end()) {
+    return cached->second;
   }
-  if (auto lhsOr = lhsValue.getDefiningOp<arith::OrIOp>()) {
-    return proveBinaryOperands(lhsOr, rhsValue.getDefiningOp<arith::OrIOp>());
+  auto isZeroConstant = [](Value value) {
+    std::optional<llvm::APInt> constant = getIntegerConstant(value);
+    return constant && constant->isZero();
+  };
+  FormulaId formula;
+  if (std::optional<llvm::APInt> constant = getIntegerConstant(condition)) {
+    formula = constant->isZero() ? kFalse : kTrue;
+  } else if (auto comparison = condition.getDefiningOp<arith::CmpIOp>();
+             comparison &&
+             (comparison.getPredicate() == arith::CmpIPredicate::eq ||
+              comparison.getPredicate() == arith::CmpIPredicate::ne) &&
+             (isZeroConstant(comparison.getLhs()) ||
+              isZeroConstant(comparison.getRhs()))) {
+    Value other = isZeroConstant(comparison.getLhs()) ? comparison.getRhs()
+                                                      : comparison.getLhs();
+    formula = get(other);
+    if (comparison.getPredicate() == arith::CmpIPredicate::eq) {
+      formula = negate(formula);
+    }
+  } else if (auto call = condition.getDefiningOp<OpaqueCallOp>();
+             call && call->getNumResults() == 1 &&
+             call.getConditionResultAttr()) {
+    formula =
+        makeNode(getVariable(call.getConditionResultAttr(), {}), kFalse, kTrue);
+  } else if (auto andOp = condition.getDefiningOp<arith::AndIOp>();
+             andOp && andOp.getType().isInteger(1)) {
+    formula = apply(Connective::And, get(andOp.getLhs()), get(andOp.getRhs()));
+  } else if (auto orOp = condition.getDefiningOp<arith::OrIOp>();
+             orOp && orOp.getType().isInteger(1)) {
+    formula = apply(Connective::Or, get(orOp.getLhs()), get(orOp.getRhs()));
+  } else if (auto xorOp = condition.getDefiningOp<arith::XOrIOp>();
+             xorOp && xorOp.getType().isInteger(1)) {
+    formula = apply(Connective::Xor, get(xorOp.getLhs()), get(xorOp.getRhs()));
+  } else {
+    formula = makeNode(getVariable({}, condition), kFalse, kTrue);
   }
-  if (auto lhsXor = lhsValue.getDefiningOp<arith::XOrIOp>()) {
-    return proveBinaryOperands(lhsXor, rhsValue.getDefiningOp<arith::XOrIOp>());
+  valueFormulas[condition] = formula;
+  return formula;
+}
+
+bool DispatchConditionFormulas::hasOpaqueLeaf(FormulaId formula) const {
+  if (formula == kUnknown) {
+    return true;
+  }
+  llvm::SmallDenseSet<FormulaId, 16> visited;
+  SmallVector<FormulaId, 16> pending{formula};
+  while (!pending.empty()) {
+    FormulaId current = pending.pop_back_val();
+    if (current <= kTrue || !visited.insert(current).second) {
+      continue;
+    }
+    const Node &node = nodes[current];
+    if (variables[node.variable].opaque) {
+      return true;
+    }
+    pending.push_back(node.low);
+    pending.push_back(node.high);
   }
   return false;
 }
+
+bool proveEquivalentDispatchConditionExpressions(
+    Value lhsValue, bool lhsNonzeroIsTrue, Value rhsValue,
+    bool rhsNonzeroIsTrue, DispatchConditionFormulas &formulas) {
+  DispatchConditionFormulas::FormulaId lhs = formulas.get(lhsValue);
+  DispatchConditionFormulas::FormulaId rhs = formulas.get(rhsValue);
+  if (!lhsNonzeroIsTrue) {
+    lhs = formulas.negate(lhs);
+  }
+  if (!rhsNonzeroIsTrue) {
+    rhs = formulas.negate(rhs);
+  }
+  // A value outside the dispatch-condition language proves nothing, not even
+  // against itself: a helper argument names different values per call site.
+  if (formulas.hasOpaqueLeaf(lhs) || formulas.hasOpaqueLeaf(rhs)) {
+    return false;
+  }
+  return formulas.equivalent(lhs, rhs);
+}
+
+namespace {
 
 static bool proveEquivalentUnresolvedExecutionContexts(
     const UnresolvedExecutionCountContext &lhsContext,
@@ -1351,7 +1494,7 @@ static bool proveEquivalentUnresolvedExecutionContexts(
           requireConditionalExecution &&
           lhsFrame.kind == UnresolvedControlFrameKind::ScfIf) {
         equalValue = proveEquivalentDispatchConditionExpressions(
-            lhsValue, true, rhsValue, true);
+            lhsValue, true, rhsValue, true, state.conditionFormulas);
       }
       if (!equalValue) {
         return false;

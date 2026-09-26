@@ -27,8 +27,10 @@
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLFunctionalExtras.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
@@ -38,6 +40,7 @@
 #include <optional>
 #include <set>
 #include <string>
+#include <tuple>
 #include <utility>
 
 namespace mlir::tt::ttl {
@@ -175,6 +178,62 @@ struct PipeNetScopeLaunchNodeDomains {
   SmallVector<std::pair<int64_t, PipeRole>> roles;
 };
 
+/// Boolean formulas over typed dispatch-condition results, as reduced ordered
+/// binary decision diagrams. A formula is built from integer constants,
+/// comparisons with zero, dispatch-condition results, and `i1` and/or/xor;
+/// any other value is an opaque variable equal only to itself. Equal formulas
+/// have equal ids, so equivalence is identity. The table holds at most
+/// `kMaxNodes` decision nodes; a formula that would need more is `kUnknown`,
+/// which is equivalent to nothing, not even itself.
+class DispatchConditionFormulas {
+public:
+  using FormulaId = unsigned;
+  static constexpr FormulaId kFalse = 0;
+  static constexpr FormulaId kTrue = 1;
+  static constexpr FormulaId kUnknown = 2;
+  static constexpr std::size_t kMaxNodes = 1 << 16;
+
+  DispatchConditionFormulas();
+
+  /// The formula of `condition`, read as true when nonzero.
+  FormulaId get(Value condition);
+  FormulaId negate(FormulaId formula);
+  static bool equivalent(FormulaId lhs, FormulaId rhs) {
+    return lhs == rhs && lhs != kUnknown;
+  }
+  /// Whether `formula` is `kUnknown` or depends on a value that is not a
+  /// dispatch-condition expression.
+  bool hasOpaqueLeaf(FormulaId formula) const;
+
+private:
+  enum class Connective { And, Or, Xor };
+  /// A decision node; the three terminals carry `kNoVariable`.
+  struct Node {
+    unsigned variable = 0;
+    FormulaId low = kFalse;
+    FormulaId high = kFalse;
+  };
+  struct Variable {
+    Attribute condition;
+    Value opaque;
+  };
+  static constexpr unsigned kNoVariable = ~0u;
+
+  unsigned getVariable(Attribute condition, Value opaque);
+  FormulaId makeNode(unsigned variable, FormulaId low, FormulaId high);
+  FormulaId apply(Connective connective, FormulaId lhs, FormulaId rhs);
+
+  SmallVector<Node> nodes;
+  SmallVector<Variable> variables;
+  llvm::DenseMap<std::tuple<unsigned, FormulaId, FormulaId>, FormulaId>
+      uniqueNodes;
+  llvm::DenseMap<std::tuple<int, FormulaId, FormulaId>, FormulaId> applyCache;
+  llvm::DenseMap<FormulaId, FormulaId> negations;
+  llvm::DenseMap<Attribute, unsigned> conditionVariables;
+  llvm::DenseMap<Value, unsigned> opaqueVariables;
+  llvm::DenseMap<Value, FormulaId> valueFormulas;
+};
+
 /// Module-wide launch-grid and PipeNet role domains used by the analysis.
 ///
 /// `initialize` records PipeNet source and destination domains from static pipe
@@ -204,6 +263,9 @@ struct LaunchNodeDomainState {
   /// queried after a transformation mutates the function.
   mutable llvm::DenseMap<Operation *, ExecutionCountAnalysisFunctionCache>
       executionCountAnalysesByFunction;
+  /// Formulas of the dispatch conditions compared during one pass run; shared
+  /// so each comparison reuses the decision nodes built before it.
+  mutable DispatchConditionFormulas conditionFormulas;
   bool sawError = false;
   bool hasLaunchGrid = false;
   Operation *errorOperation = nullptr;
@@ -322,6 +384,14 @@ bool proveEqualUnresolvedExecutionCountWithinScopesAtLaunchLocations(
 bool proveEquivalentConditionalExecutionAtLaunchNodes(
     Operation *lhs, LaunchNodeCoord lhsCoord, Operation *rhs,
     LaunchNodeCoord rhsCoord, const LaunchNodeDomainState &state);
+
+/// Prove that two expressions over typed dispatch conditions are equivalent,
+/// each read as true when nonzero (`*NonzeroIsTrue`) or when zero, building
+/// their formulas in `formulas`. An expression with an opaque leaf, or one
+/// beyond the table's node budget, is never proven.
+bool proveEquivalentDispatchConditionExpressions(
+    Value lhs, bool lhsNonzeroIsTrue, Value rhs, bool rhsNonzeroIsTrue,
+    DispatchConditionFormulas &formulas);
 
 /// Prove that two operations execute equally often at their launch nodes.
 /// Exact counts prove equality directly. Otherwise, the operations must share
