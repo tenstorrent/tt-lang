@@ -29,6 +29,7 @@
 #include "mlir/Target/Cpp/CppEmitter.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
@@ -129,6 +130,31 @@ static bool isRepresentableMetadataInteger(IntegerAttr value) {
          value.getValue().isSignedIntN(64);
 }
 
+static bool hasValidLaunchNodes(ArrayAttr nodes) {
+  if (!nodes || nodes.empty()) {
+    return false;
+  }
+  llvm::SmallDenseSet<std::pair<int64_t, int64_t>, 8> coordinates;
+  for (Attribute node : nodes) {
+    auto coordinatePair = dyn_cast<ArrayAttr>(node);
+    if (!coordinatePair || coordinatePair.size() != 2) {
+      return false;
+    }
+    auto nodeX = dyn_cast<IntegerAttr>(coordinatePair[0]);
+    auto nodeY = dyn_cast<IntegerAttr>(coordinatePair[1]);
+    if (!isRepresentableMetadataInteger(nodeX) ||
+        !isRepresentableMetadataInteger(nodeY) || nodeX.getInt() < 0 ||
+        nodeY.getInt() < 0) {
+      return false;
+    }
+    std::pair<int64_t, int64_t> coordinate{nodeX.getInt(), nodeY.getInt()};
+    if (!coordinates.insert(coordinate).second) {
+      return false;
+    }
+  }
+  return true;
+}
+
 static FailureOr<CompilerL1Allocation>
 parseCompilerL1Allocation(Attribute attribute) {
   auto dictionary = dyn_cast<DictionaryAttr>(attribute);
@@ -193,7 +219,9 @@ parseCompilerL1Allocation(Attribute attribute) {
     tensorBacking =
         segment ? segment.getAs<ttl::TensorBackingAttr>("tensor_backing")
                 : ttl::TensorBackingAttr();
-    if (!tensorBacking) {
+    auto segmentNodes =
+        segment ? segment.getAs<ArrayAttr>("nodes") : ArrayAttr();
+    if (!tensorBacking || !hasValidLaunchNodes(segmentNodes)) {
       return failure();
     }
   }
@@ -3646,8 +3674,8 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
             << index
             << " must define element_type, positive uint32 page_size, "
                "num_tiles, block_count, storage_capacity_pages, and either "
-               "an arena payload or tensor backing with representable SRAM "
-               "offsets";
+               "an arena payload or tensor backing with valid launch "
+               "nodes and representable SRAM offsets";
         return failure();
       }
       auto identity = cast<DictionaryAttr>(attribute).getAs<IntegerAttr>(

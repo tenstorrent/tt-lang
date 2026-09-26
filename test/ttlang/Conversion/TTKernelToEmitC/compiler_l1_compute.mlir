@@ -34,11 +34,16 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 2464
   // CPP: ttlang::l1::target::ComputeContext l1_compute_context;
   // CPP: ttlang::l1::Buffer<4096, 1, 3, 3, 64, -1> cb_ctarg_0(ttlang::l1::target::arenaBase() + 0);
   // CPP-NEXT: ttlang::l1::Buffer<4096, 1, 3, 3, 12344, -1> cb_ctarg_1(ttlang::l1::target::arenaBase() + 8);
+  // CPP: int32_t [[PAGES:v[0-9]+]] = 1;
+  // CPP-NEXT: cb_ctarg_0.wait_front([[PAGES]]);
+  // CPP-NEXT: cb_ctarg_1.reserve_back([[PAGES]]);
   // CPP: ttlang::l1::Operand<static_cast<uint32_t>(DataFormat::Float32), 4096, 1, 3, 3, 64, -1, true>
   // CPP: ttlang::l1::target::copy_tile
   // CPP: abs_tile_init();
   // CPP-NEXT: abs_tile(v1);
   // CPP: ttlang::l1::target::pack_tile
+  // CPP: cb_ctarg_1.push_back([[PAGES]]);
+  // CPP-NEXT: cb_ctarg_0.pop_front([[PAGES]]);
   // CPP-NOT: CircularBuffer
   // CPP-NOT: cb_wait_front
   // CPP-NOT: cb_reserve_back
