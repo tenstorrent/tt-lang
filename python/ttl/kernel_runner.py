@@ -444,6 +444,11 @@ class KernelRuntimeResourceCache:
     portable_resource_device: Optional[Any] = None
 
 
+@dataclass
+class _ArenaCompletionState:
+    synchronization_attempted: bool = False
+
+
 def _release_portable_runtime_resources_impl(
     cache: KernelRuntimeResourceCache,
 ) -> None:
@@ -2080,7 +2085,7 @@ def build_pipe_sram_scratch_tensors(
     *,
     zero_initialize: bool = False,
 ) -> List[Any]:
-    """Allocate per-core SRAM scratch tensors used by PipeNet metadata."""
+    """Allocate per-node SRAM scratch used by PipeNet and DFB lifecycle state."""
     if scratch_bytes <= 0:
         return []
 
@@ -2404,6 +2409,7 @@ def _runtime_resource_compatibility_key(
     num_dfb_resets: int,
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan],
     device: Optional[Any],
+    compiler_sram: bool,
 ) -> Tuple[Tuple[Any, ...], Optional[Any]]:
     requires_device = (
         pipe_sram_scratch_bytes > 0
@@ -2442,6 +2448,7 @@ def _runtime_resource_compatibility_key(
         _device_identity(resource_device),
         core_key,
         tuple(cb_configs),
+        compiler_sram,
         pipe_sram_scratch_bytes,
         num_pipe_global_semaphores,
         pipe_computed_address_dfb_indices,
@@ -2465,8 +2472,10 @@ def _get_cached_runtime_resources_impl(
     device: Optional[Any],
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
     kernel_specs: Optional[List[KernelSpec]] = None,
+    memory_model: Optional[str] = None,
 ) -> Tuple[PipeRuntimeResources, DFBReconfigurationRuntimeResources]:
     pipe_computed_address_dfb_indices = tuple(pipe_computed_address_dfb_indices)
+    compiler_sram = _get_compiler_l1_arena_bytes(cb_configs, memory_model) is not None
     compatibility_key, resource_device = _runtime_resource_compatibility_key(
         tensors,
         cb_configs,
@@ -2477,6 +2486,7 @@ def _get_cached_runtime_resources_impl(
         num_dfb_resets,
         dfb_reconfiguration_plan,
         device,
+        compiler_sram,
     )
     if (
         cache is not None
@@ -2499,7 +2509,9 @@ def _get_cached_runtime_resources_impl(
         num_pipe_global_semaphores=num_pipe_global_semaphores,
         pipe_computed_address_dfb_indices=list(pipe_computed_address_dfb_indices),
         device=resource_device,
-        initialize_sram_scratch=num_dfb_resets > 0,
+        initialize_sram_scratch=(
+            num_dfb_resets > 0 or (pipe_sram_scratch_bytes > 0 and compiler_sram)
+        ),
         kernel_specs=kernel_specs,
         dfb_reconfiguration_plan=dfb_reconfiguration_plan,
     )
@@ -2551,6 +2563,7 @@ def get_cached_runtime_resources(
     device: Optional[Any],
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
     kernel_specs: Optional[List[KernelSpec]] = None,
+    memory_model: Optional[str] = None,
 ) -> Tuple[PipeRuntimeResources, DFBReconfigurationRuntimeResources]:
     """Return one compatible resource generation from a synchronized cache."""
     arguments = {
@@ -2564,6 +2577,7 @@ def get_cached_runtime_resources(
         "dfb_reconfiguration_plan": dfb_reconfiguration_plan,
         "device": device,
         "kernel_specs": kernel_specs,
+        "memory_model": memory_model,
     }
     if cache is None:
         return _get_cached_runtime_resources_impl(None, **arguments)
@@ -4080,6 +4094,7 @@ def _run_kernel_on_device_impl(
     core_ranges: Any,
     compiler_l1_arena_bytes: Optional[int],
     compiler_l1_arena: Optional[Any],
+    arena_completion_state: Optional[_ArenaCompletionState],
     pipe_computed_address_dfb_indices: Tuple[int, ...],
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
     program_hash: Optional[int] = None,
@@ -4117,7 +4132,7 @@ def _run_kernel_on_device_impl(
         num_pipe_sync_semaphores: Number of pipe synchronization semaphores
             allocated by the compiler.
         pipe_sram_scratch_bytes: Per-node SRAM scratch bytes required by
-            PipeNet metadata.
+            PipeNet metadata and DFB lifecycle synchronization.
         num_pipe_global_semaphores: Number of GlobalSemaphore-backed PipeNet
             counters allocated by the compiler.
         mesh_program_placements: Optional mesh device ranges. When present,
@@ -4218,6 +4233,7 @@ def _run_kernel_on_device_impl(
         device=device,
         kernel_specs=kernel_specs,
         dfb_reconfiguration_plan=dfb_reconfiguration_plan,
+        memory_model="compiler-sram" if compiler_l1 else "metal-cb",
     )
 
     compiler_l1_base_address = (
@@ -4393,6 +4409,9 @@ def _run_kernel_on_device_impl(
     uncached_portable_resource_lifetimes = (
         portable_resource_lifetimes if runtime_resource_cache is None else ()
     )
+    completion_lifetimes = uncached_portable_resource_lifetimes + (
+        (compiler_l1_arena,) if compiler_l1_arena is not None else ()
+    )
     owns_hidden_runtime_resources = bool(
         pipe_runtime_resources.scratch_tensors
         or pipe_runtime_resources.global_semaphores
@@ -4400,8 +4419,9 @@ def _run_kernel_on_device_impl(
         or reconfiguration_resources.scratch_tensors
         or reconfiguration_resources.configuration_tensors
     )
-    synchronize_after_success = runtime_resource_cache is None and bool(
-        owns_hidden_runtime_resources or uncached_portable_resource_lifetimes
+    synchronize_after_success = compiler_l1_arena is not None or (
+        runtime_resource_cache is None
+        and bool(owns_hidden_runtime_resources or uncached_portable_resource_lifetimes)
     )
     synchronize_after_dispatch_error = bool(
         owns_hidden_runtime_resources or portable_resource_lifetimes
@@ -4441,12 +4461,19 @@ def _run_kernel_on_device_impl(
                     pass
         raise
     if synchronize_after_success:
-        _synchronize_or_retain_runtime_resources(
-            resource_device,
-            pipe_runtime_resources,
-            reconfiguration_resources,
-            uncached_portable_resource_lifetimes,
-        )
+        if arena_completion_state is not None:
+            arena_completion_state.synchronization_attempted = True
+        try:
+            _synchronize_or_retain_runtime_resources(
+                resource_device,
+                pipe_runtime_resources if runtime_resource_cache is None else None,
+                (reconfiguration_resources if runtime_resource_cache is None else None),
+                completion_lifetimes,
+            )
+        except BaseException:
+            if runtime_resource_cache is not None:
+                _detach_cached_runtime_resources(runtime_resource_cache)
+            raise
     return result
 
 
@@ -4494,20 +4521,10 @@ def run_kernel_on_device(
     )
     if compiler_l1_arena_bytes is not None:
         if (
-            device_domain is not None
-            or mesh_program_placements is not None
-            or runtime_resource_factory is not None
-        ):
-            raise ValueError(
-                "compiler-sram requires one device and no external runtime resources"
-            )
-        if (
             dfb_reconfiguration_plan
             or pipe_computed_address_dfb_indices
             or num_pipe_sync_semaphores
-            or pipe_sram_scratch_bytes
             or num_pipe_global_semaphores
-            or num_dfb_resets
             or any(kernel_fabric_routes or ())
         ):
             raise ValueError(
@@ -4521,6 +4538,7 @@ def run_kernel_on_device(
         "core_ranges": core_ranges,
         "compiler_l1_arena_bytes": compiler_l1_arena_bytes,
         "compiler_l1_arena": None,
+        "arena_completion_state": None,
         "pipe_computed_address_dfb_indices": pipe_computed_address_dfb_indices,
         "dfb_reconfiguration_plan": dfb_reconfiguration_plan,
         "program_hash": program_hash,
@@ -4553,23 +4571,25 @@ def run_kernel_on_device(
             zero_initialize=True,
         )
         arguments["compiler_l1_arena"] = arena
+        arena_completion_state = _ArenaCompletionState()
+        arguments["arena_completion_state"] = arena_completion_state
         try:
             result = _run_kernel_on_device_impl(**arguments)
         except BaseException as execution_error:
-            try:
-                _synchronize_or_retain_runtime_resources(
-                    resource_device, None, None, (arena,)
-                )
-            except BaseException as synchronization_error:
+            if not arena_completion_state.synchronization_attempted:
                 try:
-                    execution_error.add_note(
-                        "device synchronization also failed: "
-                        f"{synchronization_error}"
+                    _synchronize_or_retain_runtime_resources(
+                        resource_device, None, None, (arena,)
                     )
-                except BaseException:
-                    pass
+                except BaseException as synchronization_error:
+                    try:
+                        execution_error.add_note(
+                            "device synchronization also failed: "
+                            f"{synchronization_error}"
+                        )
+                    except BaseException:
+                        pass
             raise
-        _synchronize_or_retain_runtime_resources(resource_device, None, None, (arena,))
         return result
 
     if runtime_resource_cache is None:
