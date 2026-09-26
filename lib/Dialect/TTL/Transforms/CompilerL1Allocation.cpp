@@ -262,9 +262,9 @@ allocateCompilerL1(ModuleOp module,
   assert(reconfigurationResets.size() == resetsByReconfiguration.size() &&
          "every terminal epoch must reference a known reconfiguration");
   if (reconfigurationResets.empty()) {
-    module->removeAttr(kCompilerL1ReconfigurationResetsAttrName);
+    module->removeAttr(kCompilerSRAMReconfigurationResetsAttrName);
   } else {
-    module->setAttr(kCompilerL1ReconfigurationResetsAttrName,
+    module->setAttr(kCompilerSRAMReconfigurationResetsAttrName,
                     builder.getArrayAttr(reconfigurationResets));
   }
   module->setAttr(kL1ArenaBytesAttrName,

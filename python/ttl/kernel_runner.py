@@ -444,6 +444,11 @@ class KernelRuntimeResourceCache:
     portable_resource_device: Optional[Any] = None
 
 
+@dataclass
+class _ArenaCompletionState:
+    synchronization_attempted: bool = False
+
+
 def _release_portable_runtime_resources_impl(
     cache: KernelRuntimeResourceCache,
 ) -> None:
@@ -4086,6 +4091,7 @@ def _run_kernel_on_device_impl(
     core_ranges: Any,
     compiler_l1_arena_bytes: Optional[int],
     compiler_l1_arena: Optional[Any],
+    arena_completion_state: Optional[_ArenaCompletionState],
     pipe_computed_address_dfb_indices: Tuple[int, ...],
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
     program_hash: Optional[int] = None,
@@ -4399,6 +4405,9 @@ def _run_kernel_on_device_impl(
     uncached_portable_resource_lifetimes = (
         portable_resource_lifetimes if runtime_resource_cache is None else ()
     )
+    completion_lifetimes = uncached_portable_resource_lifetimes + (
+        (compiler_l1_arena,) if compiler_l1_arena is not None else ()
+    )
     owns_hidden_runtime_resources = bool(
         pipe_runtime_resources.scratch_tensors
         or pipe_runtime_resources.global_semaphores
@@ -4406,8 +4415,9 @@ def _run_kernel_on_device_impl(
         or reconfiguration_resources.scratch_tensors
         or reconfiguration_resources.configuration_tensors
     )
-    synchronize_after_success = runtime_resource_cache is None and bool(
-        owns_hidden_runtime_resources or uncached_portable_resource_lifetimes
+    synchronize_after_success = compiler_l1_arena is not None or (
+        runtime_resource_cache is None
+        and bool(owns_hidden_runtime_resources or uncached_portable_resource_lifetimes)
     )
     synchronize_after_dispatch_error = bool(
         owns_hidden_runtime_resources or portable_resource_lifetimes
@@ -4447,11 +4457,13 @@ def _run_kernel_on_device_impl(
                     pass
         raise
     if synchronize_after_success:
+        if arena_completion_state is not None:
+            arena_completion_state.synchronization_attempted = True
         _synchronize_or_retain_runtime_resources(
             resource_device,
             pipe_runtime_resources,
             reconfiguration_resources,
-            uncached_portable_resource_lifetimes,
+            completion_lifetimes,
         )
     return result
 
@@ -4503,9 +4515,7 @@ def run_kernel_on_device(
             dfb_reconfiguration_plan
             or pipe_computed_address_dfb_indices
             or num_pipe_sync_semaphores
-            or pipe_sram_scratch_bytes
             or num_pipe_global_semaphores
-            or num_dfb_resets
             or any(kernel_fabric_routes or ())
         ):
             raise ValueError(
@@ -4519,6 +4529,7 @@ def run_kernel_on_device(
         "core_ranges": core_ranges,
         "compiler_l1_arena_bytes": compiler_l1_arena_bytes,
         "compiler_l1_arena": None,
+        "arena_completion_state": None,
         "pipe_computed_address_dfb_indices": pipe_computed_address_dfb_indices,
         "dfb_reconfiguration_plan": dfb_reconfiguration_plan,
         "program_hash": program_hash,
@@ -4551,23 +4562,25 @@ def run_kernel_on_device(
             zero_initialize=True,
         )
         arguments["compiler_l1_arena"] = arena
+        arena_completion_state = _ArenaCompletionState()
+        arguments["arena_completion_state"] = arena_completion_state
         try:
             result = _run_kernel_on_device_impl(**arguments)
         except BaseException as execution_error:
-            try:
-                _synchronize_or_retain_runtime_resources(
-                    resource_device, None, None, (arena,)
-                )
-            except BaseException as synchronization_error:
+            if not arena_completion_state.synchronization_attempted:
                 try:
-                    execution_error.add_note(
-                        "device synchronization also failed: "
-                        f"{synchronization_error}"
+                    _synchronize_or_retain_runtime_resources(
+                        resource_device, None, None, (arena,)
                     )
-                except BaseException:
-                    pass
+                except BaseException as synchronization_error:
+                    try:
+                        execution_error.add_note(
+                            "device synchronization also failed: "
+                            f"{synchronization_error}"
+                        )
+                    except BaseException:
+                        pass
             raise
-        _synchronize_or_retain_runtime_resources(resource_device, None, None, (arena,))
         return result
 
     if runtime_resource_cache is None:

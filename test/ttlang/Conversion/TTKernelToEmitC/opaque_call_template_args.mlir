@@ -24,13 +24,13 @@ func.func @typed_literals_to_emitc() attributes {ttkernel.thread = #ttkernel.thr
 // EMITC-SAME: ttlang.requires_dfb_descriptor
 
 // Compute kernels preprocess out the data-movement-only handle method.
-// CPP-LABEL: #include "api/compute/common.h"
-// CPP-NOT: #include "api/dataflow/circular_buffer.h"
-// CPP: namespace ttlang {
+// CPP-LABEL: namespace ttlang {
 // CPP: struct DFBDescriptor {
 // CPP: #if defined(COMPILE_FOR_BRISC)
 // CPP: static CircularBuffer bind() { return CircularBuffer(Index); }
 // CPP: } // namespace ttlang
+// CPP: #include "api/compute/common.h"
+// CPP-NOT: #include "api/dataflow/circular_buffer.h"
 // CPP: #include "describe.hpp"
 // CPP: describe<11, ttlang::DFBDescriptor<3, 2, 4, 4096>>();
 func.func @dfb_descriptor_template_to_emitc() attributes {ttkernel.thread = #ttkernel.thread<compute>} {

@@ -9,7 +9,7 @@
 
 
 
-// CHECK-LABEL: module attributes {ttl.compiler_l1_reconfiguration_resets = [{dfb_indices = array<i32: 0>, ordinal = 0 : i64}], ttl.dfb_allocations = [
+// CHECK-LABEL: module attributes {ttl.compiler_sram_reconfiguration_resets = [{dfb_indices = array<i32: 0>, ordinal = 0 : i64}], ttl.dfb_allocations = [
 // CHECK-SAME: l1_offset = 0 : i64, l1_payload_offset = 64 : i64
 // CHECK-SAME: l1_offset = 8 : i64, l1_payload_offset = 64 : i64
 // CHECK-SAME: ttl.l1_arena_bytes = 4160 : i64

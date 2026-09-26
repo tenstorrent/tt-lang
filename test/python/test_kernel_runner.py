@@ -2258,8 +2258,6 @@ def test_compiler_l1_resource_rejection_preserves_cache(monkeypatch):
 
     for resources, message in (
         ({"num_pipe_sync_semaphores": 1}, "cannot combine with PipeNet"),
-        ({"pipe_sram_scratch_bytes": 32}, "cannot combine with PipeNet"),
-        ({"num_dfb_resets": 1}, "cannot combine with PipeNet"),
         ({"dfb_reconfiguration_plan": object()}, "cannot combine with PipeNet"),
     ):
         with pytest.raises(ValueError, match=message):
@@ -2762,8 +2760,38 @@ def test_run_kernel_composes_compiler_l1_with_runtime_resources(monkeypatch):
     assert fake_ttnn.synchronize_calls == [device]
 
 
-# Compiler-managed reset state uses the shared compiler scratch allocation.
-def test_compiler_l1_composes_with_lifecycle_scratch(monkeypatch):
+def test_compiler_sram_external_owner_retained_when_completion_unknown(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    retained = []
+    monkeypatch.setattr(kernel_runner, "_RETAINED_RUNTIME_RESOURCE_CACHES", retained)
+    device = object()
+    core_ranges, arena, _ = _install_compiler_l1_arena(monkeypatch, device)
+    external_owner = object()
+
+    def fail_synchronization(_device):
+        raise RuntimeError("completion unknown")
+
+    fake_ttnn.synchronize_device = fail_synchronization
+    with pytest.raises(RuntimeError, match="completion unknown"):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[_kernel_spec(KernelKind.COMPUTE)],
+            tensors=[_FakeTensorWithoutDevice()],
+            cb_configs=[_compiler_l1_config()],
+            core_ranges=core_ranges,
+            runtime_resource_factory=lambda **_kwargs: ProgramRuntimeResources(
+                lifetimes=(external_owner,)
+            ),
+            device=device,
+        )
+
+    assert len(retained) == 1
+    assert retained[0].portable_resource_lifetimes == (external_owner, arena)
+
+
+# Compiler-managed reset and reconfiguration state uses compiler scratch.
+@pytest.mark.parametrize("reset_count", [0, 1])
+def test_compiler_l1_composes_with_lifecycle_scratch(monkeypatch, reset_count):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     device = object()
@@ -2786,15 +2814,16 @@ def test_compiler_l1_composes_with_lifecycle_scratch(monkeypatch):
         cb_configs=[_compiler_l1_config()],
         core_ranges=core_ranges,
         pipe_sram_scratch_bytes=16,
-        num_dfb_resets=1,
+        num_dfb_resets=reset_count,
         device=device,
     )
 
     assert allocation_calls == [
-        (core_ranges, 16, device, True),
         (core_ranges, 2112, device, True),
+        (core_ranges, 16, device, True),
     ]
     assert result["tensors"] == [scratch, arena, tensor]
+    assert fake_ttnn.synchronize_calls == [device]
 
 
 # PipeNet and Metal reconfiguration remain separate from this composition.

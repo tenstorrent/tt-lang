@@ -222,8 +222,8 @@ constexpr llvm::StringLiteral
     kDFBAllocationPayloadOffsetField("l1_payload_offset");
 constexpr llvm::StringLiteral kDFBAllocationBytesField("l1_allocation_bytes");
 /// Allocation indices whose state ends at each DFB reconfiguration ordinal.
-constexpr llvm::StringLiteral kCompilerL1ReconfigurationResetsAttrName(
-    "ttl.compiler_l1_reconfiguration_resets");
+constexpr llvm::StringLiteral kCompilerSRAMReconfigurationResetsAttrName(
+    "ttl.compiler_sram_reconfiguration_resets");
 
 /// Module attribute identifying allocation groups accepted by an unsafe
 /// user-supplied handoff assumption.
