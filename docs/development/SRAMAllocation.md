@@ -24,7 +24,7 @@ Shared terminology is defined in the [TT-Lang specification glossary](../sphinx/
 
 ## Allocation Model
 
-One compiler-managed arena exists on each participating worker node for each invocation of a compiled Python `ttl.operation`. Every arena uses the same relative layout. Kernels receive the node-local arena base as one common runtime argument, so the argument count does not depend on the number of logical DFBs.
+An invocation of a compiled Python `ttl.operation` with a nonempty allocation plan owns one compiler-managed arena on each participating worker node. Every arena uses the same relative layout. Kernels receive the node-local arena base as one common runtime argument, so the argument count does not depend on the number of logical DFBs.
 
 The arena has two sections:
 
@@ -51,7 +51,7 @@ For compiler-owned storage with page size `P`, pages per block `T`, and block co
 extent = roundUp(P * T * B, A)
 ```
 
-Packed-format metadata is included in `P`. An allocation group reserves the largest payload extent required by any member. Tensor-backed storage uses the tensor's existing node-local SRAM address and adds no payload bytes to the arena. Its control record remains in the arena. The complete arena size is the maximum of the control section end and every compiler-owned payload end. Empty programs allocate no arena.
+Packed-format metadata is included in `P`. An allocation group reserves the largest compiler-owned payload extent required by any member. Tensor-backed storage uses the tensor's existing node-local SRAM address and adds no payload bytes to the arena. Its control record remains in the arena. The complete arena size is the maximum of the control section end and every compiler-owned payload end. An empty allocation plan needs no arena; lifecycle synchronization scratch remains a separate runtime allocation.
 
 ## Conflict Analysis
 
@@ -308,7 +308,6 @@ PipeNet transfers and computed-address DFBs are outside this contract and are re
 ## Extensions
 
 - Per-node arena layouts require node-specific allocation metadata and ownership. Multicast receivers additionally require a shared payload address.
-- Tensor-backed DFBs and allocation groups require fixed external byte ranges and explicit alias/ownership constraints in the allocation problem.
 - PipeNet transfers require completion evidence through destination consumption before scratch ranges can be reused.
 - Sub-tile and row-major operations require matching geometry, stride, and capacity rules in the address-based compute interface.
 - Wormhole reset and reconfiguration require a target synchronization protocol validated on device.

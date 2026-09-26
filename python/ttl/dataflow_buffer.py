@@ -292,16 +292,15 @@ CircularBuffer = DataflowBuffer
 
 @dataclass(frozen=True)
 class PhysicalDFBConfig:
-    """Runtime configuration for one physical dataflow buffer allocation.
+    """Runtime configuration for one finalized dataflow buffer entry.
 
-    The final DFB index assignment determines this configuration. It is
-    independent of whether the allocation serves user-declared,
-    compiler-created, or multiple non-overlapping logical DFBs.
+    `dfb_index` names a Metal descriptor in `metal-cb` mode and a compiler
+    allocation entry in `compiler-sram` mode.
     `tile` is present only when the DFB element type is a TTCore tile.
     `allocation_nodes` distinguishes an unknown domain (`None`) from an exact,
     possibly empty, launch-node set.
-    `storage_index` identifies the backing L1 allocation and may be shared by
-    physical DFBs that are never used concurrently on the same launch node.
+    `storage_index` identifies a shared storage owner, including an explicit
+    compiler-managed allocation group.
     `storage_capacity_pages` records that allocation's shared ring capacity.
     """
 

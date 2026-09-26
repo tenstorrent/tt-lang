@@ -2727,8 +2727,8 @@ bf16.
 [Compiler-managed allocation](SRAMAllocation.md) reserves an 8-byte SRAM control
 record per storage owner. Device code updates its two 32-bit sequence numbers:
 the producer writes the published-page sequence, and the consumer writes the
-consumed-page sequence. The runtime initializes both words to zero before the
-first dispatch; compiler metadata records their SRAM offsets. For `C`
+consumed-page sequence. The runtime initializes both words to zero before each
+operation dispatch; compiler metadata records their SRAM offsets. For `C`
 pages of physical capacity, sequences wrap explicitly modulo `2C`.
 
 This representation encodes both position and occupancy:
