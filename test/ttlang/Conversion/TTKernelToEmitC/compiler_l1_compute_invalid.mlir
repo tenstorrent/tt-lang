@@ -49,6 +49,60 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{b
 
 // -----
 
+// Two logical DFBs cannot share any word of their control records.
+// expected-error @below {{'builtin.module' op compiler-sram control records overlap}}
+module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
+  {block_count = 1 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i64, page_size = 2048 : i64},
+  {block_count = 1 : i64, l1_offset = 4 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i64, page_size = 2048 : i64}
+]} {
+  func.func @overlapping_control_records() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+    %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
+    return
+  }
+}
+
+// -----
+
+// A payload cannot begin in its own 8-byte control record.
+// expected-error @below {{'builtin.module' op compiler-sram allocation entry 0 payload must follow all control records at a 64-byte-aligned offset}}
+module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
+  {block_count = 1 : i64, l1_offset = 64 : i64, l1_payload_offset = 68 : i64, num_tiles = 1 : i64, page_size = 2048 : i64}
+]} {
+  func.func @payload_overlaps_own_control() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+    %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
+    return
+  }
+}
+
+// -----
+
+// A payload cannot begin in another DFB's control record.
+// expected-error @below {{'builtin.module' op compiler-sram allocation entry 0 payload must follow all control records at a 64-byte-aligned offset}}
+module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
+  {block_count = 1 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i64, page_size = 2048 : i64},
+  {block_count = 1 : i64, l1_offset = 64 : i64, l1_payload_offset = 128 : i64, num_tiles = 1 : i64, page_size = 2048 : i64}
+]} {
+  func.func @payload_overlaps_other_control() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+    %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
+    return
+  }
+}
+
+// -----
+
+// Blackhole payloads require 64-byte alignment for DRAM-to-SRAM reads.
+// expected-error @below {{'builtin.module' op compiler-sram allocation entry 0 payload must follow all control records at a 64-byte-aligned offset}}
+module attributes {ttl.memory_model = "compiler-sram", ttl.target_arch = #ttcore.arch<blackhole>, ttl.dfb_allocations = [
+  {block_count = 1 : i64, l1_offset = 0 : i64, l1_payload_offset = 32 : i64, num_tiles = 1 : i64, page_size = 2048 : i64}
+]} {
+  func.func @blackhole_payload_alignment() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+    %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
+    return
+  }
+}
+
+// -----
+
 // An external descriptor must agree with the finalized allocation geometry.
 module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [{block_count = 1 : i64, element_type = !ttcore.tile<32x32, bf16>, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i64, page_size = 2048 : i64}]} {
   func.func @descriptor_geometry_mismatch() attributes {ttkernel.thread = #ttkernel.thread<noc>} {

@@ -25,6 +25,7 @@ from .dtype_utils import normalize_tile_dimensions
 from ttl.dialects import ttl
 
 _DFB_DESCRIPTOR_UINT32_MAX = (1 << 32) - 1
+_COMPILER_SRAM_CONTROL_RECORD_BYTES = 8
 
 
 @dataclass(frozen=True)

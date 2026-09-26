@@ -113,6 +113,29 @@ def test_compiler_l1_offsets_are_preserved():
         ]
 
 
+def test_compiler_sram_payload_at_control_boundary_is_accepted():
+    with Context():
+        module = _module(
+            [
+                _entry(
+                    0,
+                    l1_offset=0,
+                    l1_payload_offset=64,
+                    l1_allocation_bytes=4096,
+                ),
+                _entry(
+                    1,
+                    l1_offset=8,
+                    l1_payload_offset=64,
+                    l1_allocation_bytes=4096,
+                ),
+            ]
+        )
+
+        configs = _resolve_dfb_configs(module)
+        assert [config.l1_payload_offset for config in configs] == [64, 64]
+
+
 def test_tensor_backing_segments_preserve_nodes_and_tensor_range():
     with Context():
         module = Module.parse(
@@ -279,6 +302,25 @@ def test_missing_complete_allocations_are_rejected():
                 )
             ],
             "l1_payload_offset must not precede l1_offset",
+        ),
+        (
+            [_entry(0, l1_offset=64, l1_payload_offset=68, l1_allocation_bytes=4096)],
+            "payload must follow all control records",
+        ),
+        (
+            [
+                _entry(0, l1_offset=0, l1_payload_offset=16, l1_allocation_bytes=4096),
+                _entry(1, l1_offset=8, l1_payload_offset=32, l1_allocation_bytes=4096),
+                _entry(2, l1_offset=16, l1_payload_offset=32, l1_allocation_bytes=4096),
+            ],
+            "payload must follow all control records",
+        ),
+        (
+            [
+                _entry(0, l1_offset=0, l1_payload_offset=32, l1_allocation_bytes=4096),
+                _entry(1, l1_offset=4, l1_payload_offset=32, l1_allocation_bytes=4096),
+            ],
+            "control records overlap",
         ),
         (
             [

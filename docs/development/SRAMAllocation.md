@@ -33,11 +33,13 @@ The arena has two sections:
 +----------------------+----------------------------------+
 ```
 
+Payload offsets and the start of the payload section are aligned to 32 bytes on Wormhole B0 and 64 bytes on Blackhole. A tensor-to-DFB copy can read from DRAM into these addresses. The pinned TT-Metal revision specifies these [Wormhole B0](https://github.com/tenstorrent/tt-metal/blob/0e9d200db976120c129ab0deb13aa3f6d972b723/tt_metal/hw/inc/internal/tt-1xx/wormhole/noc/noc_parameters.h#L291-L310) and [Blackhole](https://github.com/tenstorrent/tt-metal/blob/0e9d200db976120c129ab0deb13aa3f6d972b723/tt_metal/hw/inc/internal/tt-1xx/blackhole/noc/noc_parameters.h#L374-L394) DRAM-read alignments; its [NoC sanitizer](https://github.com/tenstorrent/tt-metal/blob/0e9d200db976120c129ab0deb13aa3f6d972b723/tt_metal/hw/inc/internal/debug/sanitize.h#L513-L538) applies the source alignment to the local L1 destination. The arena base is allocated by TT-Metal's [DRAM-aligned L1 allocator](https://github.com/tenstorrent/tt-metal/blob/0e9d200db976120c129ab0deb13aa3f6d972b723/tt_metal/impl/allocator/bank_manager.cpp#L140-L159). A 16-byte L1 alignment alone does not satisfy DRAM-to-L1 reads.
+
 Each logical DFB owns one 8-byte record for the duration of the operation execution. The first 32-bit word is the published-block sequence and the second is the consumed-block sequence. Separate words allow the producer and consumer to update state without an atomic read-modify-write operation.
 
 Payload storage can overlap when the compiler proves that the corresponding lifetimes cannot be active concurrently. Control records do not overlap because payload completion does not prove that sequence state can change ownership.
 
-For `N` logical DFBs and target alignment `A`, the payload section begins at:
+For `N` logical DFBs and target DRAM-read alignment `A`, the payload section begins at:
 
 ```text
 controlEnd = roundUp(8 * N, A)

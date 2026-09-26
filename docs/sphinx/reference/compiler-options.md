@@ -43,15 +43,14 @@ or 64 Blackhole descriptor indices. The backend currently supports one device,
 compiler-owned DFB storage, full-block transactions, and 32x32 BF16/FP32
 transfer, elementwise, matmul, reduction, broadcast, transpose, and L1 packer
 accumulation operations. It also supports typed external calls with declared
-DFB effects and scalar device printing. Blackhole
-supports DFB reset and reconfiguration. The arena is allocated and cleared for
+DFB effects and scalar device printing. The arena is allocated and cleared for
 each operation invocation.
 
 The compiler rejects tensor-backed DFBs, allocation groups, PipeNet transfers,
 raw NoC and semaphore operations, multicast, numeric DFB ids, non-scalar
 device printing, and unsupported tile operations before device execution.
-Wormhole rejects reset and
-reconfiguration. An error naming an unsupported operation requires `metal-cb`
+Reset and reconfiguration are unsupported on both Wormhole and Blackhole in
+this backend. An error naming an unsupported operation requires `metal-cb`
 or a supported address-based operation; a storage ownership error requires a
 compiler-owned DFB. A capacity error reports the required bytes and target
 budget, so the operation must reduce simultaneous storage demand or use a

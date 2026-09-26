@@ -37,9 +37,6 @@ LogicalResult validateCompilerSRAMLifecycle(ModuleOp module) {
 }
 
 namespace {
-constexpr uint64_t kControlWordCount = 2;
-constexpr uint64_t kControlRecordBytes = kControlWordCount * sizeof(uint32_t);
-
 struct L1Region {
   int64_t logicalId;
   CircularBufferType type;
@@ -140,7 +137,7 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
   }
   // Payload liveness does not prove that counter state can change ownership.
   std::optional<uint64_t> unalignedControlBytes = llvm::checkedMulUnsigned(
-      static_cast<uint64_t>(plan.size()), kControlRecordBytes);
+      static_cast<uint64_t>(plan.size()), kCompilerSRAMControlRecordBytes);
   FailureOr<uint64_t> controlBytes =
       unalignedControlBytes
           ? getL1AllocationSizeBytes(module, *unalignedControlBytes)
@@ -157,7 +154,7 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
   problem.conflicts.assign(plan.size(), llvm::BitVector(plan.size()));
   for (unsigned regionIndex = 0; regionIndex < plan.size(); ++regionIndex) {
     L1Region &region = plan[regionIndex];
-    region.stateOffset = regionIndex * kControlRecordBytes;
+    region.stateOffset = regionIndex * kCompilerSRAMControlRecordBytes;
     problem.regionBytes.push_back(region.allocationBytes);
     assert(lifecycleIndices.contains(region.logicalId));
     for (unsigned previousIndex = 0; previousIndex < regionIndex;

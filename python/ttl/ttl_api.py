@@ -85,6 +85,7 @@ from ._src.tensor_registry import (
 from ._src.global_semaphore import is_ttnn_global_semaphore
 from ._src.ttl_ast import TTLGenericCompiler
 from .dataflow_buffer import (
+    _COMPILER_SRAM_CONTROL_RECORD_BYTES,
     CircularBuffer,
     DataflowBuffer,
     DFBConfigurationEpoch,
@@ -2737,6 +2738,25 @@ def _extract_dfb_allocations(module):
             f"{attribute_name} must contain a dense physical index range "
             f"{expected_indices}, got {indices}"
         )
+    compiler_sram_configs = [
+        config for config in configs if config.l1_offset is not None
+    ]
+    if compiler_sram_configs and len(compiler_sram_configs) == len(configs):
+        control_starts = sorted(config.l1_offset for config in configs)
+        if any(start % 4 for start in control_starts):
+            raise ValueError(f"{attribute_name} has an unaligned control record")
+        if any(
+            current < previous + _COMPILER_SRAM_CONTROL_RECORD_BYTES
+            for previous, current in zip(control_starts, control_starts[1:])
+        ):
+            raise ValueError(f"{attribute_name} control records overlap")
+        control_end = control_starts[-1] + _COMPILER_SRAM_CONTROL_RECORD_BYTES
+        for config in configs:
+            if config.l1_payload_offset < control_end:
+                raise ValueError(
+                    f"{attribute_name}[{config.dfb_index}] payload must follow all "
+                    "control records"
+                )
     return configs
 
 

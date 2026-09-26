@@ -36,6 +36,7 @@
 #include "llvm/ADT/bit.h"
 #include "llvm/Support/xxhash.h"
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <functional>
@@ -154,9 +155,9 @@ parseCompilerL1Allocation(Attribute attribute) {
       static_cast<uint64_t>(pageSize.getInt()) > maxAddress ||
       static_cast<uint64_t>(pagesPerBlock.getInt()) > maxAddress ||
       static_cast<uint64_t>(blockCount.getInt()) > maxAddress ||
-      static_cast<uint64_t>(stateOffsetValue) > maxAddress ||
-      static_cast<uint64_t>(payloadAddressValue - stateOffsetValue) >
-          maxAddress) {
+      static_cast<uint64_t>(stateOffsetValue) >
+          maxAddress - ttl::kCompilerSRAMControlRecordBytes + 1 ||
+      static_cast<uint64_t>(payloadAddressValue) > maxAddress) {
     return failure();
   }
 
@@ -3479,12 +3480,53 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
           "compiler-sram requires finalized allocation metadata");
       return failure();
     }
+    std::string targetFailure;
+    FailureOr<uint64_t> payloadAlignment =
+        resolveTargetL1AllocationQuantumBytes(module, targetFailure);
+    if (failed(payloadAlignment)) {
+      module.emitOpError(targetFailure);
+      return failure();
+    }
+    SmallVector<CompilerL1Allocation> parsedAllocations;
+    SmallVector<uint64_t> controlStarts;
+    uint64_t controlEnd = 0;
     for (auto [index, attribute] : llvm::enumerate(allocations)) {
-      if (failed(parseCompilerL1Allocation(attribute))) {
+      FailureOr<CompilerL1Allocation> allocation =
+          parseCompilerL1Allocation(attribute);
+      if (failed(allocation)) {
         module.emitOpError("compiler-sram allocation entry ")
             << index
             << " must define positive uint32 page_size, num_tiles, and "
                "block_count values and representable ordered L1 offsets";
+        return failure();
+      }
+      if (allocation->stateOffset % sizeof(uint32_t) != 0) {
+        module.emitOpError("compiler-sram allocation entry ")
+            << index << " has an unaligned control record";
+        return failure();
+      }
+      controlStarts.push_back(allocation->stateOffset);
+      controlEnd =
+          std::max(controlEnd, static_cast<uint64_t>(allocation->stateOffset) +
+                                   ttl::kCompilerSRAMControlRecordBytes);
+      parsedAllocations.push_back(*allocation);
+    }
+    llvm::sort(controlStarts);
+    for (size_t index = 1; index < controlStarts.size(); ++index) {
+      if (controlStarts[index] <
+          controlStarts[index - 1] + ttl::kCompilerSRAMControlRecordBytes) {
+        module.emitOpError("compiler-sram control records overlap");
+        return failure();
+      }
+    }
+    for (auto [index, allocation] : llvm::enumerate(parsedAllocations)) {
+      uint64_t payloadAddress =
+          allocation.stateOffset + allocation.payloadOffset;
+      if (payloadAddress < controlEnd ||
+          payloadAddress % *payloadAlignment != 0) {
+        module.emitOpError("compiler-sram allocation entry ")
+            << index << " payload must follow all control records at a "
+            << *payloadAlignment << "-byte-aligned offset";
         return failure();
       }
     }
