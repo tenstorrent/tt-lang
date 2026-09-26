@@ -3695,6 +3695,8 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
         } else {
           const CompilerL1Allocation &first =
               parsedAllocations[firstEntry->second];
+          // One storage index uses a node-local record; disjoint nodes can
+          // bind that index to different tensors.
           if (allocation->stateOffset != first.stateOffset ||
               allocation->storageCapacityPages != first.storageCapacityPages ||
               allocation->pageSizeBytes != first.pageSizeBytes ||
