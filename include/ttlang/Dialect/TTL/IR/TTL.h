@@ -217,8 +217,8 @@ constexpr llvm::StringLiteral kDFBAllocationElementTypeField("element_type");
 inline constexpr uint64_t kCompilerSRAMControlRecordBytes =
     2 * sizeof(uint32_t);
 /// Fields present only in compiler-managed SRAM allocation entries.
-constexpr llvm::StringLiteral kDFBAllocationCapacityPagesField(
-    "storage_capacity_pages");
+constexpr llvm::StringLiteral
+    kDFBAllocationCapacityPagesField("storage_capacity_pages");
 constexpr llvm::StringLiteral kDFBAllocationStateOffsetField("l1_offset");
 constexpr llvm::StringLiteral
     kDFBAllocationPayloadOffsetField("l1_payload_offset");

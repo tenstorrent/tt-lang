@@ -97,7 +97,8 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
       return failure();
     }
     if (failed(pages) || failed(pageBytes)) {
-      declaration.emitOpError("compiler-sram storage size is not representable");
+      declaration.emitOpError(
+          "compiler-sram storage size is not representable");
       return failure();
     }
     std::optional<uint64_t> capacityPages = llvm::checkedMulUnsigned(
@@ -286,8 +287,8 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
   if (failed(solution)) {
     auto diagnostic =
         placementFailure.regionIndex
-            ? plan[storage[storageIndexByAllocationRegion[
-                               *placementFailure.regionIndex]]
+            ? plan[storage[storageIndexByAllocationRegion[*placementFailure
+                                                               .regionIndex]]
                        .members.front()]
                   .declarations.front()
                   .emitOpError()
@@ -367,8 +368,9 @@ LogicalResult allocateCompilerL1(
                              builder.getI32IntegerAttr(region.pages)),
         builder.getNamedAttr(kDFBAllocationPageSizeField,
                              builder.getI32IntegerAttr(region.pageBytes)),
-        builder.getNamedAttr(kDFBAllocationBlockCountField,
-                             builder.getI32IntegerAttr(region.type.getBlockCount())),
+        builder.getNamedAttr(
+            kDFBAllocationBlockCountField,
+            builder.getI32IntegerAttr(region.type.getBlockCount())),
         builder.getNamedAttr(kDFBAllocationCapacityPagesField,
                              builder.getI32IntegerAttr(storage.capacityPages)),
         builder.getNamedAttr(kDFBAllocationElementTypeField,
@@ -392,9 +394,9 @@ LogicalResult allocateCompilerL1(
       entryAttributes.push_back(builder.getNamedAttr(
           "storage_segments", builder.getArrayAttr({storageSegment})));
     } else {
-      entryAttributes.push_back(builder.getNamedAttr(
-          kDFBAllocationPayloadOffsetField,
-          builder.getI64IntegerAttr(storage.offset)));
+      entryAttributes.push_back(
+          builder.getNamedAttr(kDFBAllocationPayloadOffsetField,
+                               builder.getI64IntegerAttr(storage.offset)));
       entryAttributes.push_back(builder.getNamedAttr(
           kDFBAllocationBytesField,
           builder.getI64IntegerAttr(storage.allocationBytes)));
