@@ -25,6 +25,7 @@ from .dtype_utils import normalize_tile_dimensions
 from ttl.dialects import ttl
 
 _DFB_DESCRIPTOR_UINT32_MAX = (1 << 32) - 1
+_COMPILER_SRAM_CONTROL_RECORD_BYTES = 8
 
 
 @dataclass(frozen=True)
@@ -312,6 +313,9 @@ class PhysicalDFBConfig:
     storage_segments: Tuple["DFBStorageSegment", ...] = ()
     allocation_nodes: Optional[Tuple[Tuple[int, int], ...]] = None
     storage_index: Optional[int] = None
+    l1_offset: Optional[int] = None
+    l1_payload_offset: Optional[int] = None
+    l1_allocation_bytes: Optional[int] = None
 
 
 @dataclass(frozen=True)

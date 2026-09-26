@@ -2148,6 +2148,294 @@ def test_build_kernel_descriptors_materializes_planned_resources(monkeypatch):
     assert descriptors[0].runtime_args[1][0] == [4, 5]
 
 
+def test_build_kernel_descriptors_binds_compiler_l1_arena(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    tensor = _FakeTensor(object(), address=0x2000)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/reader.cpp",
+        thread_type="noc",
+        tensor_indices=[0],
+        config=object(),
+        extra_common_runtime_args=[0x3000],
+    )
+
+    descriptors = kernel_runner.build_kernel_descriptors(
+        kernel_specs=[spec],
+        tensors=[tensor],
+        tensor_accessor_args=[0x44, 0x55],
+        core_ranges=object(),
+        grid_cols=1,
+        grid_rows=1,
+        num_cbs=3,
+        compiler_l1_base_address=0x4000,
+    )
+
+    assert descriptors[0].common_runtime_args == [0x2000, 0x3000, 0x4000]
+    assert descriptors[0].compile_time_args == [2, 0x44, 0x55]
+
+
+def test_compiler_l1_arena_size_uses_all_regions():
+    configs = [
+        PhysicalDFBConfig(
+            0,
+            1,
+            "bfloat16",
+            1,
+            2048,
+            None,
+            l1_offset=0,
+            l1_payload_offset=64,
+            l1_allocation_bytes=2048,
+        ),
+        PhysicalDFBConfig(
+            1,
+            1,
+            "float32",
+            1,
+            4096,
+            None,
+            l1_offset=8,
+            l1_payload_offset=2112,
+            l1_allocation_bytes=4096,
+        ),
+    ]
+
+    assert kernel_runner._get_compiler_l1_arena_bytes(configs) == 6208
+
+
+def test_compiler_l1_arena_size_rejects_partial_metadata():
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        l1_payload_offset=64,
+        l1_allocation_bytes=2048,
+    )
+
+    with pytest.raises(ValueError, match="mixed compiler-sram and Metal"):
+        kernel_runner._get_compiler_l1_arena_bytes([config])
+
+
+def test_compiler_sram_mode_rejects_legacy_metadata_and_accepts_empty_plan():
+    legacy = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, None)
+
+    with pytest.raises(ValueError, match="requires complete allocation metadata"):
+        kernel_runner._get_compiler_l1_arena_bytes([legacy], "compiler-sram")
+    assert kernel_runner._get_compiler_l1_arena_bytes([], "compiler-sram") == 0
+
+
+# Unsupported resources must be rejected before a cached owner is released.
+def test_compiler_l1_resource_rejection_preserves_cache(monkeypatch):
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        l1_offset=0,
+        l1_payload_offset=64,
+        l1_allocation_bytes=2048,
+    )
+    cache = kernel_runner.KernelRuntimeResourceCache()
+    release_calls = []
+    monkeypatch.setattr(
+        kernel_runner,
+        "_release_cached_runtime_resources_impl",
+        lambda *_args: release_calls.append("cached"),
+    )
+    monkeypatch.setattr(
+        kernel_runner,
+        "_release_portable_runtime_resources_impl",
+        lambda *_args: release_calls.append("portable"),
+    )
+
+    for resources, message in (
+        ({"num_pipe_sync_semaphores": 1}, "cannot combine with PipeNet"),
+        ({"pipe_sram_scratch_bytes": 32}, "cannot combine with PipeNet"),
+        ({"num_dfb_resets": 1}, "cannot combine with PipeNet"),
+        ({"dfb_reconfiguration_plan": object()}, "cannot combine with PipeNet"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            kernel_runner.run_kernel_on_device(
+                kernel_specs=[],
+                tensors=[],
+                cb_configs=[config],
+                core_ranges=_FakeCoreRanges(),
+                runtime_resource_cache=cache,
+                **resources,
+            )
+
+    assert release_calls == []
+
+
+@pytest.mark.parametrize("dispatch_fails", [False, True], ids=["success", "error"])
+def test_compiler_sram_arena_survives_until_device_completion(
+    monkeypatch, dispatch_fails
+):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    device = object()
+    arena_references = []
+    events = []
+
+    class Arena:
+        def buffer_address(self):
+            return 0x4000
+
+    def allocate_arena(*_args, **_kwargs):
+        arena = Arena()
+        arena_references.append(weakref.ref(arena))
+        return arena
+
+    def dispatch(io_tensors, _program):
+        assert arena_references[0]() is io_tensors[0]
+        events.append("dispatch")
+        if dispatch_fails:
+            raise RuntimeError("dispatch failed")
+        return "completed"
+
+    def synchronize(_device):
+        assert arena_references[0]() is not None
+        events.append("synchronize")
+
+    monkeypatch.setattr(
+        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_arena
+    )
+    fake_ttnn.generic_op = dispatch
+    fake_ttnn.synchronize_device = synchronize
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        l1_offset=0,
+        l1_payload_offset=64,
+        l1_allocation_bytes=2048,
+    )
+    arguments = dict(
+        kernel_specs=[],
+        tensors=[_FakeTensor(device)],
+        cb_configs=[config],
+        core_ranges=_FakeCoreRanges(),
+        memory_model="compiler-sram",
+        device=device,
+    )
+    if dispatch_fails:
+        with pytest.raises(RuntimeError, match="dispatch failed"):
+            kernel_runner.run_kernel_on_device(**arguments)
+    else:
+        assert kernel_runner.run_kernel_on_device(**arguments) == "completed"
+    assert events == ["dispatch", "synchronize"]
+
+
+def test_compiler_sram_arena_is_retained_when_completion_is_unknown(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    retained = []
+    monkeypatch.setattr(kernel_runner, "_RETAINED_RUNTIME_RESOURCE_CACHES", retained)
+
+    class Arena:
+        def buffer_address(self):
+            return 0x4000
+
+    arena = Arena()
+    monkeypatch.setattr(
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        lambda *_args, **_kwargs: arena,
+    )
+    fake_ttnn.generic_op = lambda _tensors, _program: "dispatched"
+
+    def fail_synchronization(_device):
+        raise RuntimeError("completion unknown")
+
+    fake_ttnn.synchronize_device = fail_synchronization
+    device = object()
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        l1_offset=0,
+        l1_payload_offset=64,
+        l1_allocation_bytes=2048,
+    )
+    with pytest.raises(RuntimeError, match="completion unknown"):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[_FakeTensor(device)],
+            cb_configs=[config],
+            core_ranges=_FakeCoreRanges(),
+            memory_model="compiler-sram",
+            device=device,
+        )
+    assert len(retained) == 1
+    assert retained[0].portable_resource_lifetimes == (arena,)
+
+
+@pytest.mark.parametrize("synchronization_fails", [False, True])
+def test_compiler_sram_preparation_error_retains_arena_until_completion(
+    monkeypatch, synchronization_fails
+):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    retained = []
+    monkeypatch.setattr(kernel_runner, "_RETAINED_RUNTIME_RESOURCE_CACHES", retained)
+    device = object()
+    arena = _FakeTensor(device)
+    arena.buffer_address = lambda: 0x4000
+    monkeypatch.setattr(
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        lambda *_args, **_kwargs: arena,
+    )
+    synchronization_calls = []
+
+    def fail_preparation(**_kwargs):
+        raise RuntimeError("descriptor construction failed")
+
+    def synchronize(_device):
+        synchronization_calls.append(_device)
+        if synchronization_fails:
+            raise RuntimeError("completion unknown")
+
+    monkeypatch.setattr(kernel_runner, "build_kernel_descriptors", fail_preparation)
+    fake_ttnn.synchronize_device = synchronize
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        l1_offset=0,
+        l1_payload_offset=64,
+        l1_allocation_bytes=2048,
+    )
+    with pytest.raises(RuntimeError, match="descriptor construction failed") as error:
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[_FakeTensor(device)],
+            cb_configs=[config],
+            core_ranges=_FakeCoreRanges(),
+            memory_model="compiler-sram",
+            device=device,
+        )
+    assert synchronization_calls == [device]
+    assert len(retained) == int(synchronization_fails)
+    if synchronization_fails:
+        assert retained[0].portable_resource_lifetimes == (arena,)
+        assert "completion unknown" in str(error.value.__notes__)
+
+
 def _local_tensor_test_environment():
     fake_ttnn = _FakeTTNN()
     fake_ttnn.TensorMemoryLayout = SimpleNamespace(
@@ -4980,13 +5268,18 @@ def test_run_kernel_reuses_structural_hash_while_updating_invocation_values(
     assert kernel_runner.ttnn.synchronize_calls == [device, device]
 
 
-def test_build_generic_op_io_tensors_duplicates_single_output():
+# The compiler-L1 arena supplies the required input without replacing the output.
+def test_build_generic_op_io_tensors_handles_single_output():
     tensor = _FakeTensorWithoutDevice()
+    arena = object()
 
     assert kernel_runner.build_generic_op_io_tensors([tensor], []) == [
         tensor,
         tensor,
     ]
+    assert kernel_runner.build_generic_op_io_tensors(
+        [tensor], [], compiler_l1_arena=arena
+    ) == [arena, tensor]
 
 
 def test_build_generic_op_io_tensors_keeps_user_output_last():
@@ -4995,14 +5288,23 @@ def test_build_generic_op_io_tensors_keeps_user_output_last():
     scratch = object()
     computed_dfb_1 = object()
     computed_dfb_3 = object()
+    compiler_l1_arena = object()
 
     io_tensors = kernel_runner.build_generic_op_io_tensors(
         [inp, output],
         [scratch],
         {3: computed_dfb_3, 1: computed_dfb_1},
+        compiler_l1_arena=compiler_l1_arena,
     )
 
-    assert io_tensors == [scratch, computed_dfb_1, computed_dfb_3, inp, output]
+    assert io_tensors == [
+        scratch,
+        computed_dfb_1,
+        computed_dfb_3,
+        compiler_l1_arena,
+        inp,
+        output,
+    ]
     assert io_tensors[-1] is output
 
 
@@ -6586,18 +6888,27 @@ def test_computed_address_backing_uses_allocation_nodes(monkeypatch):
 
 def test_l1_sharded_storage_counts_sparse_cores(monkeypatch):
     fake_ttnn = _FakeTTNN()
+    row_major_orientation = object()
+    height_sharded_layout = object()
+    l1_buffer_type = object()
     fake_ttnn.ShardSpec = lambda *args: args
     fake_ttnn.MemoryConfig = lambda *args: args
-    fake_ttnn.ShardOrientation = type("ShardOrientation", (), {"ROW_MAJOR": object()})
-    fake_ttnn.TensorMemoryLayout = type(
-        "TensorMemoryLayout", (), {"HEIGHT_SHARDED": object()}
+    fake_ttnn.ShardOrientation = type(
+        "ShardOrientation", (), {"ROW_MAJOR": row_major_orientation}
     )
-    fake_ttnn.BufferType = type("BufferType", (), {"L1": object()})
+    fake_ttnn.TensorMemoryLayout = type(
+        "TensorMemoryLayout", (), {"HEIGHT_SHARDED": height_sharded_layout}
+    )
+    fake_ttnn.BufferType = type("BufferType", (), {"L1": l1_buffer_type})
     fake_ttnn.float32 = object()
     fake_ttnn.ROW_MAJOR_LAYOUT = object()
     empty_calls = []
+    zero_calls = []
     fake_ttnn.empty = (
         lambda shape, **kwargs: empty_calls.append((shape, kwargs)) or object()
+    )
+    fake_ttnn.zeros = (
+        lambda shape, **kwargs: zero_calls.append((shape, kwargs)) or object()
     )
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
     sparse_ranges = _FakeTTNN.CoreRangeSet(
@@ -6610,8 +6921,18 @@ def test_l1_sharded_storage_counts_sparse_cores(monkeypatch):
     kernel_runner._allocate_l1_sharded_storage_tensor(
         sparse_ranges, num_bytes=2048, device=object()
     )
+    kernel_runner._allocate_l1_sharded_storage_tensor(
+        sparse_ranges, num_bytes=2048, device=object(), zero_initialize=True
+    )
 
     assert empty_calls[0][0] == (2, 512)
+    assert zero_calls[0][0] == (2, 512)
+    shard_spec = empty_calls[0][1]["memory_config"][2]
+    assert shard_spec == (sparse_ranges, (1, 512), row_major_orientation)
+    assert empty_calls[0][1]["memory_config"][:2] == (
+        height_sharded_layout,
+        l1_buffer_type,
+    )
 
 
 def test_specialized_dfb_use_intersects_storage_segments(monkeypatch):
@@ -7468,6 +7789,35 @@ def test_emit_runner_source_preserves_subtile_geometry(monkeypatch):
     assert "tile=(16, 16)" in source
 
 
+def test_emitted_runner_preserves_compiler_sram_mode(monkeypatch):
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        l1_offset=0,
+        l1_payload_offset=64,
+        l1_allocation_bytes=2048,
+    )
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[],
+        cb_configs=[config],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+    )
+    calls = []
+    runner = _load_emitted_runner(
+        monkeypatch, source, lambda **kwargs: calls.append(kwargs)
+    )
+
+    runner["run"]([object()], device=object())
+
+    assert calls[0]["memory_model"] == "compiler-sram"
+
+
 def test_emit_runner_source_preserves_tensor_backing_segments(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     config = _tensor_backing_config(
@@ -7822,6 +8172,21 @@ def test_emitted_runner_synchronizes_before_owner_destruction(monkeypatch):
         ("release", 0),
     ]
     assert semaphore_reference() is None
+
+
+def test_emit_runner_source_preserves_empty_compiler_sram_mode(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[],
+        cb_configs=[],
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+        memory_model="compiler-sram",
+    )
+
+    assert "MEMORY_MODEL = 'compiler-sram'" in source
+    assert "memory_model=MEMORY_MODEL" in source
 
 
 def test_emit_runner_source_accepts_physical_dfb_configs(monkeypatch):

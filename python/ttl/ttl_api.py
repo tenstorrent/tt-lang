@@ -130,6 +130,7 @@ from .kernel_runner import (
     _FabricRouteCache,
     _detect_device_arch,
     _device_identity,
+    _get_compiler_l1_arena_bytes,
     _same_device,
     attach_runtime_resource_finalizer,
     FabricManagerIntervalKind,
@@ -869,6 +870,7 @@ class CompiledTTNNKernel:
         runtime_resource_cache=None,
         kernel_used_dfb_indices=None,
         kernel_local_tensor_indices=None,
+        memory_model: Optional[str] = None,
     ):
         """
         Initialize with pre-compiled kernel artifacts.
@@ -938,6 +940,7 @@ class CompiledTTNNKernel:
             )
         self.kernel_core_ranges = kernel_core_ranges or [None] * len(kernel_paths)
         self.cb_configs = cb_configs or []
+        self.memory_model = memory_model
         self.dfb_reconfiguration_plan = dfb_reconfiguration_plan
         self.program_hash = program_hash
         self.source_lines = source_lines
@@ -1081,6 +1084,7 @@ class CompiledTTNNKernel:
             operation_name=self.operation_name,
             runtime_resource_cache=self._runtime_resource_cache,
             device=device,
+            memory_model=self.memory_model,
         )
 
 
@@ -2145,6 +2149,8 @@ def _compile_ttnn_kernel(
     grouped_kernel_logical_selectors = []
     # Profiling reports use the representative source name for each RISC.
     thread_to_kernel = {}
+    memory_model = _module_memory_model(module)
+    compiler_l1 = memory_model == "compiler-sram"
 
     for kernel_group in kernel_groups:
         representative = kernel_group[0]
@@ -2186,7 +2192,7 @@ def _compile_ttnn_kernel(
             if configuration.dst_full_sync_en:
                 config.dst_full_sync_en = True
             unpack_fp32_cbs = configuration.unpack_to_dest_fp32
-            if unpack_fp32_cbs:
+            if unpack_fp32_cbs and not compiler_l1:
                 _set_unpack_to_dest_fp32(config, ttnn, unpack_fp32_cbs)
             thread_to_kernel["TRISC_0"] = name
             thread_to_kernel["TRISC_1"] = name
@@ -2263,6 +2269,7 @@ def _compile_ttnn_kernel(
         runtime_resource_factory=runtime_resource_factory,
         runtime_resource_cache=runtime_resource_cache,
         kernel_used_dfb_indices=kernel_used_dfb_indices,
+        memory_model=memory_model,
     )
 
     if verbose:
@@ -2319,6 +2326,7 @@ def _compile_ttnn_kernel(
             kernel_fabric_routes=kernel_fabric_routes,
             requires_runtime_resource_factory=runtime_resource_factory is not None,
             dfb_reconfiguration_plan=dfb_reconfiguration_plan,
+            memory_model=memory_model,
         )
 
     return compiled_kernel
@@ -2650,6 +2658,41 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
                 f"{context}.storage_index must be a nonnegative integer, "
                 f"got {storage_index!r}"
             )
+    l1_field_names = (
+        "l1_offset",
+        "l1_payload_offset",
+        "l1_allocation_bytes",
+    )
+    present_l1_fields = [field in entry for field in l1_field_names]
+    if any(present_l1_fields) and not all(present_l1_fields):
+        raise ValueError(f"{context} must contain all compiler-sram allocation fields")
+    l1_offset = None
+    l1_payload_offset = None
+    l1_allocation_bytes = None
+    if all(present_l1_fields):
+        try:
+            l1_offset = int(entry["l1_offset"])
+            l1_payload_offset = int(entry["l1_payload_offset"])
+            l1_allocation_bytes = int(entry["l1_allocation_bytes"])
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"Invalid {context} compiler-sram metadata: {error}"
+            ) from None
+        if l1_offset < 0 or l1_payload_offset < 0:
+            raise ValueError(f"{context} compiler-sram offsets must be nonnegative")
+        if l1_payload_offset < l1_offset:
+            raise ValueError(f"{context}.l1_payload_offset must not precede l1_offset")
+        if l1_allocation_bytes <= 0:
+            raise ValueError(
+                f"{context}.l1_allocation_bytes must be positive, "
+                f"got {l1_allocation_bytes}"
+            )
+        payload_bytes = num_tiles * block_count * page_size
+        if l1_allocation_bytes < payload_bytes:
+            raise ValueError(
+                f"{context}.l1_allocation_bytes must cover the "
+                f"{payload_bytes}-byte payload"
+            )
     return PhysicalDFBConfig(
         dfb_index=dfb_index,
         num_tiles=num_tiles,
@@ -2660,6 +2703,9 @@ def _parse_physical_dfb_config(entry, *, dfb_index: int, context: str):
         storage_segments=tuple(storage_segments),
         allocation_nodes=allocation_nodes,
         storage_index=storage_index,
+        l1_offset=l1_offset,
+        l1_payload_offset=l1_payload_offset,
+        l1_allocation_bytes=l1_allocation_bytes,
     )
 
 
@@ -2826,6 +2872,16 @@ def _extract_pipe_global_semaphore_count(module) -> int:
     return int(attr)
 
 
+def _module_memory_model(module):
+    memory_model_attr = module.operation.attributes.get("ttl.memory_model", None)
+    if memory_model_attr is None:
+        return "metal-cb"
+    memory_model = getattr(memory_model_attr, "value", None)
+    if memory_model not in ("metal-cb", "compiler-sram"):
+        raise ValueError(f"invalid ttl.memory_model {memory_model_attr}")
+    return memory_model
+
+
 def _resolve_dfb_configs(module):
     """Return finalized physical DFB configurations from required metadata."""
     physical_allocations = _extract_dfb_allocations(module)
@@ -2834,6 +2890,12 @@ def _resolve_dfb_configs(module):
             "compiled module is missing ttl.dfb_allocations; "
             "ttl-finalize-dfb-indices must run before runtime construction"
         )
+    memory_model = _module_memory_model(module)
+    arena_bytes = _get_compiler_l1_arena_bytes(physical_allocations, memory_model)
+    if memory_model == "compiler-sram":
+        arena_attr = module.operation.attributes.get("ttl.l1_arena_bytes", None)
+        if arena_attr is None or int(arena_attr) < arena_bytes:
+            raise ValueError("compiler-sram allocation exceeds ttl.l1_arena_bytes")
     return physical_allocations
 
 
@@ -3454,6 +3516,9 @@ def _lower_program_to_kernel(
             pipe_transport_pass,
             "func.func(ttl-coalesce-dfb-acquires)",
             "ttl-finalize-dfb-indices{"
+            f"memory-model={compiler_options.memory_model} "
+            "sram-allocation-strategy="
+            f"{compiler_options.sram_allocation_strategy} "
             f"reuse-user-dfbs={reuse_user_dfbs_flag} "
             "unsafe-assume-allocation-groups="
             f"{unsafe_assume_allocation_groups_flag} "

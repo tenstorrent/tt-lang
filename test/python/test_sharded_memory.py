@@ -172,23 +172,25 @@ def _get_single_core_kernel():
     MIXED_MEMORY_CONFIGS,
     ids=[f"{l}+{r}->{o}" for l, r, o in MIXED_MEMORY_CONFIGS],
 )
-def test_mixed_memory_add(device, lhs_mem, rhs_mem, out_mem):
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-sram"])
+def test_mixed_memory_add(device, lhs_mem, rhs_mem, out_mem, dtype, memory_model):
     """Test add with mixed memory configurations (sharded + interleaved)."""
     kernel = _get_single_core_kernel()
 
-    lhs_torch = torch.full((32, 32), 2.0, dtype=torch.bfloat16)
-    rhs_torch = torch.full((32, 32), 3.0, dtype=torch.bfloat16)
-    out_torch = torch.zeros((32, 32), dtype=torch.bfloat16)
+    lhs_torch = torch.full((32, 32), 2.0, dtype=dtype)
+    rhs_torch = torch.full((32, 32), 3.0, dtype=dtype)
+    out_torch = torch.zeros((32, 32), dtype=dtype)
     expected = lhs_torch + rhs_torch
 
     lhs = _make_tensor(lhs_torch, device, lhs_mem)
     rhs = _make_tensor(rhs_torch, device, rhs_mem)
     out = _make_tensor(out_torch, device, out_mem)
 
-    kernel(lhs, rhs, out)
+    kernel(lhs, rhs, out, options=f"--ttl-memory-model={memory_model}")
     result = ttnn.to_torch(out)
 
-    assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
+    assert_allclose(result.float(), expected.float(), rtol=0, atol=0)
 
 
 # =============================================================================
@@ -248,7 +250,9 @@ def _get_multicore_add_kernel():
     return _multicore_kernel
 
 
-def test_multicore_height_sharded_add(device):
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
+@pytest.mark.parametrize("memory_model", ["metal-cb", "compiler-sram"])
+def test_multicore_height_sharded_add(device, dtype, memory_model):
     """Test add with height-sharded tensors across 4 cores (1x4 grid).
 
     Tensor is 128x32 (4 tile rows), height-sharded so each of the 4 cores
@@ -256,19 +260,19 @@ def test_multicore_height_sharded_add(device):
     """
     kernel = _get_multicore_add_kernel()
 
-    lhs_torch = torch.full((128, 32), 2.0, dtype=torch.bfloat16)
-    rhs_torch = torch.full((128, 32), 3.0, dtype=torch.bfloat16)
-    out_torch = torch.zeros((128, 32), dtype=torch.bfloat16)
+    lhs_torch = torch.full((128, 32), 2.0, dtype=dtype)
+    rhs_torch = torch.full((128, 32), 3.0, dtype=dtype)
+    out_torch = torch.zeros((128, 32), dtype=dtype)
     expected = lhs_torch + rhs_torch
 
     lhs = _to_sharded_multicore(lhs_torch, device, 4)
     rhs = _to_sharded_multicore(rhs_torch, device, 4)
     out = _to_sharded_multicore(out_torch, device, 4)
 
-    kernel(lhs, rhs, out)
+    kernel(lhs, rhs, out, options=f"--ttl-memory-model={memory_model}")
     result = ttnn.to_torch(out)
 
-    assert_allclose(result.float(), expected.float(), rtol=1e-2, atol=1e-2)
+    assert_allclose(result.float(), expected.float(), rtol=0, atol=0)
 
 
 if __name__ == "__main__":

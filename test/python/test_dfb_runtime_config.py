@@ -20,27 +20,43 @@ def _entry(
     block_count=2,
     page_size=2048,
     storage_index=None,
+    l1_offset=None,
+    l1_payload_offset=None,
+    l1_allocation_bytes=None,
 ):
     """Build one textual physical-allocation metadata entry."""
 
     storage_field = (
         "" if storage_index is None else f"storage_index = {storage_index} : i32, "
     )
+    l1_fields = ""
+    for field_name, field_value in (
+        ("l1_offset", l1_offset),
+        ("l1_payload_offset", l1_payload_offset),
+        ("l1_allocation_bytes", l1_allocation_bytes),
+    ):
+        if field_value is not None:
+            l1_fields += f"{field_name} = {field_value} : i64, "
     return (
-        f"{{dfb_index = {dfb_index} : i32, {storage_field}"
+        f"{{dfb_index = {dfb_index} : i32, {storage_field}{l1_fields}"
         f"num_tiles = {num_tiles} : i32, "
         f"element_type = {element_type}, block_count = {block_count} : i32, "
         f"page_size = {page_size} : i32}}"
     )
 
 
-def _module(allocations=None):
+def _module(allocations=None, *, memory_model=None, arena_bytes=None):
     """Parse a module with optional physical-allocation metadata."""
 
     if allocations is None:
         return Module.parse("module {}")
     entries = ", ".join(allocations)
-    return Module.parse(f"module attributes {{ttl.dfb_allocations = [{entries}]}} {{}}")
+    attributes = [f"ttl.dfb_allocations = [{entries}]"]
+    if memory_model is not None:
+        attributes.append(f'ttl.memory_model = "{memory_model}"')
+    if arena_bytes is not None:
+        attributes.append(f"ttl.l1_arena_bytes = {arena_bytes} : i64")
+    return Module.parse(f"module attributes {{{', '.join(attributes)}}} {{}}")
 
 
 def test_complete_physical_allocations_are_sorted():
@@ -72,6 +88,99 @@ def test_storage_indices_are_preserved():
             PhysicalDFBConfig(0, 1, "bfloat16", 2, 2048, None, storage_index=3),
             PhysicalDFBConfig(1, 1, "bfloat16", 2, 2048, None, storage_index=3),
         ]
+
+
+def test_compiler_l1_offsets_are_preserved():
+    with Context():
+        module = _module(
+            [
+                _entry(
+                    0,
+                    l1_offset=8,
+                    l1_payload_offset=64,
+                    l1_allocation_bytes=4096,
+                )
+            ],
+            memory_model="compiler-sram",
+            arena_bytes=4160,
+        )
+
+        assert _resolve_dfb_configs(module) == [
+            PhysicalDFBConfig(
+                0,
+                1,
+                "bfloat16",
+                2,
+                2048,
+                None,
+                l1_offset=8,
+                l1_payload_offset=64,
+                l1_allocation_bytes=4096,
+            )
+        ]
+
+
+def test_compiler_sram_payload_at_control_boundary_is_accepted():
+    with Context():
+        module = _module(
+            [
+                _entry(
+                    0,
+                    l1_offset=0,
+                    l1_payload_offset=64,
+                    l1_allocation_bytes=4096,
+                ),
+                _entry(
+                    1,
+                    l1_offset=8,
+                    l1_payload_offset=64,
+                    l1_allocation_bytes=4096,
+                ),
+            ],
+            memory_model="compiler-sram",
+            arena_bytes=4160,
+        )
+
+        configs = _resolve_dfb_configs(module)
+        assert [config.l1_payload_offset for config in configs] == [64, 64]
+
+
+def test_compiler_sram_module_rejects_legacy_allocation_metadata():
+    with Context():
+        module = _module([_entry(0)], memory_model="compiler-sram", arena_bytes=4160)
+
+        with pytest.raises(ValueError, match="requires complete allocation metadata"):
+            _resolve_dfb_configs(module)
+
+
+def test_metal_module_rejects_compiler_sram_allocation_metadata():
+    with Context():
+        module = _module(
+            [_entry(0, l1_offset=0, l1_payload_offset=64, l1_allocation_bytes=4096)],
+            memory_model="metal-cb",
+        )
+
+        with pytest.raises(ValueError, match="metal-cb cannot use compiler-sram"):
+            _resolve_dfb_configs(module)
+
+
+def test_compiler_sram_module_accepts_empty_allocation_plan():
+    with Context():
+        module = _module([], memory_model="compiler-sram", arena_bytes=0)
+
+        assert _resolve_dfb_configs(module) == []
+
+
+def test_compiler_sram_module_rejects_payload_past_arena():
+    with Context():
+        module = _module(
+            [_entry(0, l1_offset=0, l1_payload_offset=64, l1_allocation_bytes=4096)],
+            memory_model="compiler-sram",
+            arena_bytes=128,
+        )
+
+        with pytest.raises(ValueError, match="exceeds ttl.l1_arena_bytes"):
+            _resolve_dfb_configs(module)
 
 
 def test_tensor_backing_segments_preserve_nodes_and_tensor_range():
@@ -215,6 +324,62 @@ def test_missing_complete_allocations_are_rejected():
         ([_entry(0, page_size=0)], "page_size must be positive"),
         ([_entry(0, storage_index=-1)], "storage_index must be a nonnegative"),
         ([_entry(0, element_type="i1")], "Unrecognized MLIR scalar element type"),
+        (
+            [_entry(0, l1_offset=0)],
+            "must contain all compiler-sram allocation fields",
+        ),
+        (
+            [
+                _entry(
+                    0,
+                    l1_offset=-1,
+                    l1_payload_offset=64,
+                    l1_allocation_bytes=4096,
+                )
+            ],
+            "compiler-sram offsets must be nonnegative",
+        ),
+        (
+            [
+                _entry(
+                    0,
+                    l1_offset=64,
+                    l1_payload_offset=32,
+                    l1_allocation_bytes=4096,
+                )
+            ],
+            "l1_payload_offset must not precede l1_offset",
+        ),
+        (
+            [_entry(0, l1_offset=64, l1_payload_offset=68, l1_allocation_bytes=4096)],
+            "payload must follow all control records",
+        ),
+        (
+            [
+                _entry(0, l1_offset=0, l1_payload_offset=16, l1_allocation_bytes=4096),
+                _entry(1, l1_offset=8, l1_payload_offset=32, l1_allocation_bytes=4096),
+                _entry(2, l1_offset=16, l1_payload_offset=32, l1_allocation_bytes=4096),
+            ],
+            "payload must follow all control records",
+        ),
+        (
+            [
+                _entry(0, l1_offset=0, l1_payload_offset=32, l1_allocation_bytes=4096),
+                _entry(1, l1_offset=4, l1_payload_offset=32, l1_allocation_bytes=4096),
+            ],
+            "control records overlap",
+        ),
+        (
+            [
+                _entry(
+                    0,
+                    l1_offset=0,
+                    l1_payload_offset=64,
+                    l1_allocation_bytes=1024,
+                )
+            ],
+            "l1_allocation_bytes must cover the 4096-byte payload",
+        ),
         ([_entry(0), _entry(0)], "duplicate dfb_index 0"),
         ([_entry(1)], "dense physical index range"),
         (
@@ -235,7 +400,12 @@ def test_missing_complete_allocations_are_rejected():
 )
 def test_invalid_complete_physical_allocations_are_rejected(allocations, message):
     with Context():
-        module = _module(allocations)
+        memory_model = (
+            "compiler-sram"
+            if any("l1_offset" in entry for entry in allocations)
+            else None
+        )
+        module = _module(allocations, memory_model=memory_model)
 
         with pytest.raises(ValueError, match=message):
             _resolve_dfb_configs(module)

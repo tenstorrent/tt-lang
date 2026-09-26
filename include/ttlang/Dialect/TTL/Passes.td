@@ -1069,12 +1069,23 @@ def TTLLowerSignpostToEmitC
 
 def TTLFinalizeDFBIndices
     : Pass<"ttl-finalize-dfb-indices", "::mlir::ModuleOp"> {
-  let summary = "Assign physical DFB indices and emit allocation metadata";
+  let summary = "Assign DFB storage identities and emit allocation metadata";
   let description = [{
     Module-level pass that runs after all DFB-creating and synchronization
     passes. Must precede `ttl-set-compute-kernel-config` and
     `ttl-annotate-cb-associations`, which copy DFB indices into attributes and
     would otherwise capture provisional indices.
+
+    `memory-model=compiler-sram` assigns explicit byte ranges instead of Metal
+    descriptor slots. Logical identities retain independent 8-byte control
+    records. The selected SRAM allocation strategy places payloads over the
+    concurrent-kernel storage conflict graph; unknown completion prohibits reuse.
+    The complete plan is validated before mutation. Runtime metadata supplies
+    state and payload offsets within one allocator-owned SRAM arena. The arena
+    high-water mark includes alignment and state. A greedy budget failure does
+    not prove that a feasible placement is impossible. Unsupported storage forms
+    and PipeNet transfers are diagnosed; this mode never falls back to Metal descriptors.
+    `reuse-user-dfbs=false` disables payload aliasing in this mode.
 
     User-declared DFBs enter this pass with module-wide logical `dfb_id`
     attributes. Compiler-created DFB declarations receive unique logical IDs.
@@ -1245,9 +1256,15 @@ def TTLFinalizeDFBIndices
   }];
 
   let options = [
+    Option<"memoryModel", "memory-model", "std::string", "\"metal-cb\"",
+           "Select metal-cb or experimental compiler-sram storage.">,
     Option<"reuseUserDFBs", "reuse-user-dfbs", "bool", "true",
            "Reuse physical DFB indices and compiler-managed storage for "
            "lifetimes proven not to overlap across concurrent kernels.">,
+    Option<"sramAllocationStrategy", "sram-allocation-strategy", "std::string",
+           "\"first-fit-decreasing\"",
+           "Select first-fit-decreasing or best-fit-decreasing compiler-sram "
+           "payload placement.">,
     Option<"unsafeAssumeAllocationGroups", "unsafe-assume-allocation-groups",
            "bool", "false",
            "Trust explicit DFB allocation groups when runtime handoff cannot "
@@ -1267,7 +1284,10 @@ def TTLValidateCBBudget
   let summary = "Validate total DFB allocation fits within per-core L1 budget";
   let description = [{
     Module-level pass that runs after `ttl-finalize-dfb-indices`, before
-    `convert-ttl-to-ttkernel`. It sums one target-allocation-aligned maximum
+    `convert-ttl-to-ttkernel`. For `compiler-sram`, it validates the finalized
+    arena size after synchronized DFB reset and reconfiguration have been
+    rejected during finalization. For `metal-cb`, it sums one
+    target-allocation-aligned maximum
     static backing-store size per compiler-selected DFB storage index on each
     launch node, allocator-rounded synchronized-reset state, and one
     target-aligned configuration tensor per synchronized reconfiguration
@@ -1615,11 +1635,11 @@ def TTKernelUnrollStaticPipeNetRecordLoops
 
 def TTKernelAnnotateDFBUse
     : Pass<"ttkernel-annotate-dfb-use", "::mlir::ModuleOp"> {
-  let summary = "Record physical DFB indices used by each TTKernel function";
+  let summary = "Record DFB allocation indices used by each TTKernel function";
   let description = [{
     Runs after per-core specialization and canonicalization.
     For each `ttkernel.thread` function, records the
-    sorted physical DFB indices reached through surviving
+    sorted DFB allocation indices reached through surviving
     `ttkernel.get_compile_time_arg_val` operations below
     `ttl.base_cta_index` and `dfb_resource_indices` metadata on surviving
     `ttkernel.opaque_call` operations in `ttl.used_dfb_indices`. The metadata
@@ -1628,7 +1648,8 @@ def TTKernelAnnotateDFBUse
     propagate to kernel entries.
     Declarations are not annotated. The compile-time ABI places
     every DFB before tensor-accessor arguments, including DFB ids passed to
-    opaque externs as scalar values.
+    opaque externs as scalar values. In compiler-managed SRAM mode, these are
+    compiler allocation indices; in Metal mode, they are physical indices.
 
     Resource indices must be within the enclosing function's DFB compile-time
     argument range.
@@ -1682,8 +1703,10 @@ def TTKernelCombinePackTiles
   let description = [{
     Scans for consecutive `ttkernel.pack_tile` ops targeting the same dataflow
     buffer with contiguous DST and CB tile indices, and replaces each run with
-    a single `ttkernel.pack_tile_block`. This reduces the number of hardware
-    pack operations after loop unrolling.
+    a single `ttkernel.pack_tile_block` for the Metal DFB backend. This reduces
+    generated calls after loop unrolling. Compiler-owned storage retains the
+    individual operations because `pack_tile_block` cannot represent their
+    explicit output tile indices.
 
     Only combines runs where both DST indices and CB tile indices step by 1,
     and the first CB tile index is 0 (pack_tile_block always writes to the CB
