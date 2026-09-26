@@ -38,9 +38,19 @@ func.func @local_accessor_index_out_of_range()
 // -----
 
 // Tensor metadata contains global tensor indices only.
-// expected-error @below {{'func.func' op ttl.crta_indices must contain non-negative integer values}}
+// expected-error @below {{'func.func' op ttl.crta_indices must contain non-negative 64-bit integers}}
 func.func @negative_global_tensor_index()
     attributes {ttl.crta_indices = [-1],
+                ttl.kernel_thread = #ttkernel.thread<noc>} {
+  return
+}
+
+// -----
+
+// Oversized serialized tensor indices must not reach integer conversion.
+// expected-error @below {{'func.func' op ttl.crta_indices must contain non-negative 64-bit integers}}
+func.func @oversized_global_tensor_index()
+    attributes {ttl.crta_indices = [18446744073709551616 : i128],
                 ttl.kernel_thread = #ttkernel.thread<noc>} {
   return
 }

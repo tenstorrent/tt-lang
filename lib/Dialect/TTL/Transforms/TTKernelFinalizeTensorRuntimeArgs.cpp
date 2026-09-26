@@ -57,9 +57,10 @@ readGlobalTensorIndices(func::FuncOp function, ArrayAttr indicesAttr,
                         SmallVectorImpl<int64_t> &indices) {
   for (Attribute attribute : indicesAttr) {
     auto integer = dyn_cast<IntegerAttr>(attribute);
-    if (!integer || integer.getInt() < 0) {
+    if (!integer || !integer.getValue().isSignedIntN(64) ||
+        integer.getInt() < 0) {
       function.emitOpError() << kCRTAIndicesAttrName
-                             << " must contain non-negative integer values";
+                             << " must contain non-negative 64-bit integers";
       return failure();
     }
     indices.push_back(integer.getInt());
