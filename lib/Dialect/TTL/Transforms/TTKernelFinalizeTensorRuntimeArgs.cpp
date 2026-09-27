@@ -106,40 +106,25 @@ static LogicalResult classifyCommonArgIndices(
   return walkResult.wasInterrupted() ? failure() : success();
 }
 
-// LocalTensorAccessor lowering derives its bank base directly from one tensor
-// common runtime argument.
-static std::optional<int64_t> getConstantTensorSlot(Value bankBaseIn,
-                                                    int64_t tensorCount) {
-  auto get =
-      traceUnrealizedCasts(bankBaseIn).getDefiningOp<ttk::GetCommonArgValOp>();
-  APInt constantIndex;
-  if (!get || !matchPattern(traceUnrealizedCasts(get.getArgIndex()),
-                            m_ConstantInt(&constantIndex))) {
-    return std::nullopt;
-  }
-  int64_t slot = constantIndex.getSExtValue();
-  if (slot < 0 || slot >= tensorCount) {
-    return std::nullopt;
-  }
-  return slot;
-}
-
-static FailureOr<int64_t>
-getLocalTensorSlot(ttk::LocalTensorAccessorOp accessor, int64_t tensorCount) {
-  Value bankBase = traceUnrealizedCasts(accessor.getBankBaseAddressIn());
+// Accessor lowering derives the bank base directly from one tensor common
+// runtime argument.
+static FailureOr<int64_t> getAccessorTensorSlot(Operation *accessor,
+                                                Value bankBaseIn,
+                                                int64_t tensorCount) {
+  Value bankBase = traceUnrealizedCasts(bankBaseIn);
   auto get = bankBase.getDefiningOp<ttk::GetCommonArgValOp>();
   if (!get) {
-    return accessor.emitOpError(
+    return accessor->emitOpError(
         "requires a structurally visible common runtime argument");
   }
   APInt constantIndex;
   if (!matchPattern(traceUnrealizedCasts(get.getArgIndex()),
                     m_ConstantInt(&constantIndex))) {
-    return accessor.emitOpError("requires a constant tensor-address index");
+    return accessor->emitOpError("requires a constant tensor-address index");
   }
   int64_t slot = constantIndex.getSExtValue();
   if (slot < 0 || slot >= tensorCount) {
-    return accessor.emitOpError("tensor-address index ")
+    return accessor->emitOpError("tensor-address index ")
            << slot << " is outside [0, " << tensorCount << ")";
   }
   return slot;
@@ -220,7 +205,8 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
   BitVector localTensorSlots(tensorCount);
   WalkResult localWalk =
       function.walk([&](ttk::LocalTensorAccessorOp accessor) {
-        FailureOr<int64_t> slot = getLocalTensorSlot(accessor, tensorCount);
+        FailureOr<int64_t> slot = getAccessorTensorSlot(
+            accessor, accessor.getBankBaseAddressIn(), tensorCount);
         if (failed(slot)) {
           return WalkResult::interrupt();
         }
@@ -231,16 +217,19 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
     return failure();
   }
 
-  // A bank base that is not a constant tensor-address slot identifies no
-  // tensor, so it adds no entry.
   BitVector tensorAccessorSlots(tensorCount);
-  function.walk([&](ttk::TensorAccessorOp accessor) {
-    std::optional<int64_t> slot =
-        getConstantTensorSlot(accessor.getBankBaseAddressIn(), tensorCount);
-    if (slot) {
-      tensorAccessorSlots.set(*slot);
+  WalkResult accessorWalk = function.walk([&](ttk::TensorAccessorOp accessor) {
+    FailureOr<int64_t> slot = getAccessorTensorSlot(
+        accessor, accessor.getBankBaseAddressIn(), tensorCount);
+    if (failed(slot)) {
+      return WalkResult::interrupt();
     }
+    tensorAccessorSlots.set(*slot);
+    return WalkResult::advance();
   });
+  if (accessorWalk.wasInterrupted()) {
+    return failure();
+  }
 
   bool preserveTensorPrefix =
       hasUnresolvedIndex || containsHiddenCommonArgAccess(function);
