@@ -101,7 +101,7 @@ void attachCommonNotes(InFlightDiagnostic &diag, Operation *bindSite,
   } else {
     diag.attachNote()
         << "only one kernel may advance a DFB read pointer on each launched "
-           "node; declare one DFB per consumer kernel";
+           "node; declare one DFB per read-pointer owner kernel";
   }
   if (bindSite) {
     diag.attachNote(bindSite->getLoc()) << "dataflow buffer declared here";
