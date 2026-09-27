@@ -1006,6 +1006,27 @@ def test_nested_parameter_does_not_capture_shadowed_global():
     )
 
 
+shadowed_attribute_name = _UnsupportedCapture()
+
+
+def test_attribute_name_does_not_capture_shadowed_global():
+    """An attribute sharing a global's name does not make it a capture."""
+
+    @ttl.operation()
+    def attribute_operation():
+        base = ttl.shadowed_attribute_name
+        offsets = [
+            shadowed_attribute_name * base for shadowed_attribute_name in range(2)
+        ]
+        ttl.call_extern_func(
+            "live.hpp", "live", template_args=offsets, kernel=KernelKind.COMPUTE
+        )
+
+    assert "shadowed_attribute_name" not in (
+        attribute_operation._spec.compile_time_captures
+    )
+
+
 def test_comprehension_variable_does_not_bind_shadowed_kernel():
     """A comprehension variable does not bind a global kernel of the same name."""
 

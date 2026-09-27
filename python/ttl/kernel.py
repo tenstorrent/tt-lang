@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import dis
 import hashlib
 import inspect
 from dataclasses import dataclass, field
@@ -362,15 +363,29 @@ def _encode_identity_capture(
     )
 
 
+_GLOBAL_LOAD_OPNAMES = frozenset({"LOAD_GLOBAL", "LOAD_NAME"})
+_CLOSURE_LOAD_OPNAMES = frozenset(
+    {"LOAD_DEREF", "LOAD_CLASSDEREF", "LOAD_FROM_DICT_OR_DEREF"}
+)
+
+
 def _referenced_operation_values(function: Callable) -> dict[str, object]:
     """Return outer-scope values referenced by an operation or nested code."""
 
+    # co_names also holds attribute names, and nested code objects dereference
+    # the operation's own locals, so only global loads and loads of the
+    # operation's free variables name outer-scope values.
+    closure_names = set(function.__code__.co_freevars)
     referenced_names = set()
     code_objects = [function.__code__]
     while code_objects:
         code = code_objects.pop()
-        referenced_names.update(code.co_names)
-        referenced_names.update(code.co_freevars)
+        for instruction in dis.get_instructions(code):
+            if instruction.opname in _GLOBAL_LOAD_OPNAMES or (
+                instruction.opname in _CLOSURE_LOAD_OPNAMES
+                and instruction.argval in closure_names
+            ):
+                referenced_names.add(instruction.argval)
         code_objects.extend(
             constant for constant in code.co_consts if inspect.iscode(constant)
         )
