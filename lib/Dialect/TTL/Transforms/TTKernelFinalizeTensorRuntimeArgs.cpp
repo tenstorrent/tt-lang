@@ -106,25 +106,24 @@ static LogicalResult classifyCommonArgIndices(
   return walkResult.wasInterrupted() ? failure() : success();
 }
 
-// Accessor lowering derives the bank base directly from one tensor common
-// runtime argument.
-static FailureOr<int64_t> getAccessorTensorSlot(Operation *accessor,
-                                                Value bankBaseIn,
-                                                int64_t tensorCount) {
-  Value bankBase = traceUnrealizedCasts(bankBaseIn);
+// LocalTensorAccessor lowering derives its bank base directly from one tensor
+// common runtime argument.
+static FailureOr<int64_t>
+getLocalTensorSlot(ttk::LocalTensorAccessorOp accessor, int64_t tensorCount) {
+  Value bankBase = traceUnrealizedCasts(accessor.getBankBaseAddressIn());
   auto get = bankBase.getDefiningOp<ttk::GetCommonArgValOp>();
   if (!get) {
-    return accessor->emitOpError(
+    return accessor.emitOpError(
         "requires a structurally visible common runtime argument");
   }
   APInt constantIndex;
   if (!matchPattern(traceUnrealizedCasts(get.getArgIndex()),
                     m_ConstantInt(&constantIndex))) {
-    return accessor->emitOpError("requires a constant tensor-address index");
+    return accessor.emitOpError("requires a constant tensor-address index");
   }
   int64_t slot = constantIndex.getSExtValue();
   if (slot < 0 || slot >= tensorCount) {
-    return accessor->emitOpError("tensor-address index ")
+    return accessor.emitOpError("tensor-address index ")
            << slot << " is outside [0, " << tensorCount << ")";
   }
   return slot;
@@ -205,8 +204,7 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
   BitVector localTensorSlots(tensorCount);
   WalkResult localWalk =
       function.walk([&](ttk::LocalTensorAccessorOp accessor) {
-        FailureOr<int64_t> slot = getAccessorTensorSlot(
-            accessor, accessor.getBankBaseAddressIn(), tensorCount);
+        FailureOr<int64_t> slot = getLocalTensorSlot(accessor, tensorCount);
         if (failed(slot)) {
           return WalkResult::interrupt();
         }
@@ -214,20 +212,6 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
         return WalkResult::advance();
       });
   if (localWalk.wasInterrupted()) {
-    return failure();
-  }
-
-  BitVector tensorAccessorSlots(tensorCount);
-  WalkResult accessorWalk = function.walk([&](ttk::TensorAccessorOp accessor) {
-    FailureOr<int64_t> slot = getAccessorTensorSlot(
-        accessor, accessor.getBankBaseAddressIn(), tensorCount);
-    if (failed(slot)) {
-      return WalkResult::interrupt();
-    }
-    tensorAccessorSlots.set(*slot);
-    return WalkResult::advance();
-  });
-  if (accessorWalk.wasInterrupted()) {
     return failure();
   }
 
@@ -240,7 +224,6 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
   SmallVector<std::optional<int64_t>> tensorSlotMap(tensorCount);
   SmallVector<Attribute> retainedGlobalIndices;
   SmallVector<Attribute> localGlobalIndices;
-  SmallVector<Attribute> tensorAccessorGlobalIndices;
   OpBuilder builder(function.getContext());
   for (int64_t slot = 0; slot < tensorCount; ++slot) {
     if (liveTensorSlots.test(slot)) {
@@ -252,10 +235,6 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
       localGlobalIndices.push_back(
           builder.getI32IntegerAttr(globalTensorIndices[slot]));
     }
-    if (tensorAccessorSlots.test(slot)) {
-      tensorAccessorGlobalIndices.push_back(
-          builder.getI32IntegerAttr(globalTensorIndices[slot]));
-    }
   }
   function->setAttr(kCRTAIndicesAttrName,
                     builder.getArrayAttr(retainedGlobalIndices));
@@ -264,12 +243,6 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
   } else {
     function->setAttr(kLocalTensorIndicesAttrName,
                       builder.getArrayAttr(localGlobalIndices));
-  }
-  if (tensorAccessorGlobalIndices.empty()) {
-    function->removeAttr(kTensorAccessorIndicesAttrName);
-  } else {
-    function->setAttr(kTensorAccessorIndicesAttrName,
-                      builder.getArrayAttr(tensorAccessorGlobalIndices));
   }
 
   if (preserveTensorPrefix) {

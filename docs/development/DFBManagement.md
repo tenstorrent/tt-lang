@@ -231,13 +231,14 @@ different physical DFB index because that sharing would make its address depend
 on the other index's node domain.
 
 Operation tensors allocated per core bind each executing core's own shard
-address in its kernel descriptor, so a kernel given only that address must
-access its own shard. Remote access needs the one address every owner core
-holds, as a lockstep allocation would provide. A core outside the shard grid
-receives that address, and so does a kernel that addresses the tensor through
-a `TensorAccessor`; descriptor construction fails when the owner addresses
-differ. Local access to a per-core tensor still requires a
-shard on every executing core.
+address in its kernel descriptor, including the base address of a
+`TensorAccessor`. A kernel on an owner core may therefore access only its own
+shard of such a tensor unless every owner holds the same address; the runtime
+cannot check which shards a kernel reads. A core outside the shard grid
+addresses the tensor remotely and receives the one address every owner core
+holds, as a lockstep allocation would provide; descriptor construction fails
+when the owner addresses differ. Local access to a per-core tensor still
+requires a shard on every executing core.
 
 TT-Metal allocates static descriptor storage in descriptor order. It maintains
 one allocation frontier per core, and a descriptor shared by several cores
