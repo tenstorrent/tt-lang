@@ -128,7 +128,6 @@ class _DFBDescriptorPlan:
     nodes: Tuple[Tuple[int, int], ...]
     has_static_storage: bool
     format_descriptors: Tuple[Any, ...] = ()
-    uniform_address_group: int = 0
 
 
 @dataclass(frozen=True)
@@ -3620,10 +3619,10 @@ def _order_static_dfb_descriptor_plans(
     """Order static descriptors to fit TT-Metal's per-core L1 allocators.
 
     Plans of ``uniform_physical_indices`` (remote-uniform DFBs) are placed
-    first, widest node set first, and are never split by the fallback. Plans
-    sharing a nonzero ``uniform_address_group`` are placed together at one
-    simulated address while reserving each member's capacity on its own nodes.
-    Ordering and fallback splitting apply to local-scope plans only.
+    first, widest node set first, and are never split: while every frontier
+    is still equal they cost no padding, and one descriptor is what gives
+    the DFB one L1 address on every node. Ordering and splitting apply to
+    the remaining local-scope plans only.
 
     ``split_overflow_cores`` is UNSAFE and TEMPORARY, removed once the
     compiler-managed SRAM allocator is merged: when no order fits, it
@@ -3696,36 +3695,8 @@ def _order_static_dfb_descriptor_plans(
     def place_plans(
         order: Tuple[int, ...], allocator_frontiers: List[int]
     ) -> List[int]:
-        placed_uniform_groups = set()
         for plan_index in order:
             plan = descriptor_plans[plan_index]
-            if plan.uniform_address_group:
-                if plan.uniform_address_group in placed_uniform_groups:
-                    continue
-                placed_uniform_groups.add(plan.uniform_address_group)
-                group_plan_indices = tuple(
-                    candidate_index
-                    for candidate_index in order
-                    if descriptor_plans[candidate_index].uniform_address_group
-                    == plan.uniform_address_group
-                )
-                group_allocator_indices = {
-                    allocator_index
-                    for candidate_index in group_plan_indices
-                    for allocator_index in allocator_indices_by_plan[candidate_index]
-                }
-                address = _align_up(
-                    max(
-                        allocator_frontiers[index] for index in group_allocator_indices
-                    ),
-                    address_alignment,
-                )
-                for candidate_index in group_plan_indices:
-                    candidate = descriptor_plans[candidate_index]
-                    end_address = address + candidate.total_size
-                    for allocator_index in allocator_indices_by_plan[candidate_index]:
-                        allocator_frontiers[allocator_index] = end_address
-                continue
             allocator_indices = allocator_indices_by_plan[plan_index]
             address = _align_up(
                 max(allocator_frontiers[index] for index in allocator_indices),
@@ -4139,6 +4110,24 @@ def _static_storage_bytes_by_core(
                     _get_dfb_allocation(cb_configs[dfb_index]),
                 )
 
+    remote_uniform_storage_indices = {
+        _physical_dfb_storage_index(config)
+        for config in cb_configs
+        if config.address_scope == DFBAddressScope.REMOTE_UNIFORM
+    }
+    for storage_index in remote_uniform_storage_indices:
+        layouts_by_core = layouts_by_storage_by_core.get(storage_index)
+        if not layouts_by_core:
+            continue
+        # Per-core sizes would split the descriptor and allow TT-Metal's L1
+        # allocators to select different addresses for different nodes.
+        uniform_size = max(size for size, _alignment in layouts_by_core.values())
+        uniform_alignment = math.lcm(
+            *(alignment for _size, alignment in layouts_by_core.values())
+        )
+        for core in layouts_by_core:
+            layouts_by_core[core] = (uniform_size, uniform_alignment)
+
     return {
         storage_index: {
             core: _align_up(required_size, required_alignment)
@@ -4160,7 +4149,6 @@ def _build_dfb_descriptors(
     remaining_bytes_by_core: Dict[Tuple[int, int], int],
     reconfiguration_plan: Optional[DFBReconfigurationPlan],
     split_overflow_cores: bool,
-    program_l1_layout: str,
 ) -> List[Any]:
     """Build exact-source descriptors and order their static L1 storage."""
 
@@ -4295,18 +4283,6 @@ def _build_dfb_descriptors(
     static_bytes_by_core_by_storage = _static_storage_bytes_by_core(
         cb_configs, static_members_by_storage_by_core, reconfiguration_plan
     )
-    remote_uniform_storage_indices = {
-        _physical_dfb_storage_index(config)
-        for config in cb_configs
-        if config.address_scope == DFBAddressScope.REMOTE_UNIFORM
-    }
-    uniform_address_group_by_storage = {
-        storage_index: group_id
-        for group_id, storage_index in enumerate(
-            sorted(remote_uniform_storage_indices), start=1
-        )
-    }
-    layouts_by_storage = {}
     for storage_index, members_by_core in sorted(
         static_members_by_storage_by_core.items()
     ):
@@ -4315,49 +4291,29 @@ def _build_dfb_descriptors(
             member_indices = tuple(sorted(member_set))
             total_size = static_bytes_by_core_by_storage[storage_index][core]
             cores_by_layout.setdefault((member_indices, total_size), set()).add(core)
-        layouts_by_storage[storage_index] = sorted(cores_by_layout.items())
-    has_uniform_address_groups = any(
-        storage_index in remote_uniform_storage_indices and len(layouts) > 1
-        for storage_index, layouts in layouts_by_storage.items()
-    )
-    use_per_core_local_descriptors = (
-        program_l1_layout == "per_core" or has_uniform_address_groups
-    )
-    for storage_index, layouts in layouts_by_storage.items():
-        is_remote_uniform = storage_index in remote_uniform_storage_indices
-        uniform_address_group = (
-            uniform_address_group_by_storage[storage_index]
-            if is_remote_uniform and len(layouts) > 1
-            else 0
-        )
-        for (member_indices, total_size), source_core_set in layouts:
+        for (member_indices, total_size), source_core_set in sorted(
+            cores_by_layout.items()
+        ):
+            source_cores = tuple(sorted(source_core_set))
             format_descriptors = tuple(
                 _cb_format_descriptor(index, allocations[index])
                 for index in member_indices
             )
-            descriptor_node_sets = (
-                (tuple(sorted(source_core_set)),)
-                if is_remote_uniform or not use_per_core_local_descriptors
-                else tuple((core,) for core in sorted(source_core_set))
+            descriptor = ttnn.CBDescriptor(
+                total_size=total_size,
+                core_ranges=_make_singleton_core_ranges(source_cores),
+                format_descriptors=list(format_descriptors),
             )
-            for source_cores in descriptor_node_sets:
-                descriptor = ttnn.CBDescriptor(
+            descriptor_plans.append(
+                _DFBDescriptorPlan(
+                    descriptor=descriptor,
+                    physical_index=min(member_indices),
                     total_size=total_size,
-                    core_ranges=_make_singleton_core_ranges(source_cores),
-                    format_descriptors=list(format_descriptors),
+                    nodes=source_cores,
+                    has_static_storage=True,
+                    format_descriptors=format_descriptors,
                 )
-                descriptor.uniform_address_group = uniform_address_group
-                descriptor_plans.append(
-                    _DFBDescriptorPlan(
-                        descriptor=descriptor,
-                        physical_index=min(member_indices),
-                        total_size=total_size,
-                        nodes=source_cores,
-                        has_static_storage=True,
-                        format_descriptors=format_descriptors,
-                        uniform_address_group=uniform_address_group,
-                    )
-                )
+            )
 
     uniform_physical_indices = frozenset(
         dfb_index
@@ -4377,27 +4333,11 @@ def _build_dfb_descriptors(
             plan for plan in descriptor_plans if plan.physical_index == dfb_index
         ]
         required_nodes = set(placements[dfb_index])
-        if (
-            not matching_plans
-            or set().union(*(set(plan.nodes) for plan in matching_plans))
-            != required_nodes
-            or any(
-                set(plan.nodes).intersection(other.nodes)
-                for plan_index, plan in enumerate(matching_plans)
-                for other in matching_plans[:plan_index]
-            )
-            or (
-                len(matching_plans) > 1
-                and (
-                    any(not plan.uniform_address_group for plan in matching_plans)
-                    or len({plan.uniform_address_group for plan in matching_plans}) != 1
-                )
-            )
-        ):
+        if len(matching_plans) != 1 or set(matching_plans[0].nodes) != required_nodes:
             raise ValueError(
                 f"DFB[{dfb_index}] address_scope="
                 f"{cb_configs[dfb_index].address_scope.value!r} requires one "
-                "uniform address over every allocated node"
+                "descriptor over every allocated node"
             )
     return [plan.descriptor for plan in descriptor_plans]
 
@@ -4486,7 +4426,6 @@ def build_cb_descriptors(
     ] = None,
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
     unsafe_split_static_dfb_descriptors: bool = False,
-    program_l1_layout: str = "uniform",
     runtime_l1_tensors: Sequence[Any] = (),
 ) -> List[Any]:
     """
@@ -4509,8 +4448,6 @@ def build_cb_descriptors(
             the compiler-managed SRAM allocator is merged). Split static
             descriptors per core when no order fits a core's L1 budget; see
             ``_order_static_dfb_descriptor_plans``.
-        program_l1_layout: Static program-image layout contract. Per-core
-            layouts require singleton descriptors for local-scope DFBs.
         runtime_l1_tensors: Runtime-resource L1 tensors that stay live during
             the launch, such as reconfiguration scratch and configuration
             tensors. Their per-core allocations and those of ``tensors`` bound
@@ -4634,7 +4571,6 @@ def build_cb_descriptors(
             remaining_bytes_by_core,
             dfb_reconfiguration_plan,
             unsafe_split_static_dfb_descriptors,
-            program_l1_layout,
         )
 
     remaining_bytes = (

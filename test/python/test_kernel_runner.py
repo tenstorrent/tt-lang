@@ -432,7 +432,6 @@ class _FakeTTNN:
             self.core_ranges = core_ranges
             self.format_descriptors = format_descriptors
             self.backing_desc = None
-            self.uniform_address_group = 0
 
         def set_buffer_from_cb(self, backing_desc):
             self.backing_desc = backing_desc
@@ -3297,7 +3296,7 @@ def test_reconfiguration_static_storage_uses_per_core_epoch_capacity(monkeypatch
     ) == [(2048, {(0, 0), (2, 0)}), (4096, {(1, 0)})]
 
 
-def test_remote_uniform_reconfiguration_groups_per_core_capacities(monkeypatch):
+def test_remote_uniform_reconfiguration_uses_maximum_epoch_capacity(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     initial = PhysicalDFBConfig(
         0,
@@ -3338,17 +3337,9 @@ def test_remote_uniform_reconfiguration_groups_per_core_capacities(monkeypatch):
         dfb_reconfiguration_plan=plan,
     )
 
-    assert sorted(
-        (
-            descriptor.total_size,
-            _descriptor_cores(descriptor),
-            descriptor.uniform_address_group,
-        )
-        for descriptor in descriptors
-    ) == [
-        (2048, {(0, 0), (2, 0)}, 1),
-        (4096, {(1, 0)}, 1),
-    ]
+    assert len(descriptors) == 1
+    assert descriptors[0].total_size == 4096
+    assert _descriptor_cores(descriptors[0]) == {(0, 0), (1, 0), (2, 0)}
 
 
 def test_reconfiguration_shared_storage_uses_available_epoch_capacity(monkeypatch):
@@ -6423,24 +6414,6 @@ def test_specialized_dfb_descriptors_group_overlapping_use_by_index(monkeypatch)
     }
 
 
-def test_per_core_program_layout_uses_singleton_local_descriptors(monkeypatch):
-    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
-    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
-
-    descriptors = kernel_runner.build_cb_descriptors(
-        tensors=[_FakeTensorWithoutDevice()],
-        cb_configs=[PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32))],
-        core_ranges=full_grid,
-        kernel_specs=[_specialized_spec(full_grid, [0])],
-        program_l1_layout="per_core",
-    )
-
-    assert {_descriptor_placement(descriptor) for descriptor in descriptors} == {
-        (0, frozenset({(0, 0)})),
-        (0, frozenset({(1, 0)})),
-    }
-
-
 def test_specialized_dfb_descriptor_follows_active_kernel_core(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
@@ -6593,7 +6566,7 @@ def test_remote_uniform_dfb_rejects_partitioned_storage_group(monkeypatch):
 
     with pytest.raises(
         ValueError,
-        match="requires one uniform address over every allocated node",
+        match="requires one descriptor over every allocated node",
     ):
         kernel_runner.build_cb_descriptors(
             tensors=[_FakeTensorWithoutDevice()],
