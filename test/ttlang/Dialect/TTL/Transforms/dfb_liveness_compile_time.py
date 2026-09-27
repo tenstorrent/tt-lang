@@ -6,24 +6,19 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # Bounds protocol-graph and structural-order construction time, and the
-# lifecycle verifier's handling of many resets under unresolved dispatch
-# conditions, in optimized builds.
+# lifecycle verifier's handling of resets repeated in a long generation loop,
+# in optimized builds.
 
 import os
 import subprocess
 
 PROTOCOL_GRAPH_TIMEOUT_SECONDS = 10
 STRUCTURAL_ORDER_TIMEOUT_SECONDS = 5
-CONDITIONAL_RESET_TIMEOUT_SECONDS = 5
-CONDITIONAL_RESET_COUNT = 24
-GRID_CONDITIONAL_RESET_TIMEOUT_SECONDS = 10
-GRID_CONDITIONAL_RESET_COUNT = 6
-GRID_CONDITIONAL_RESET_GRID = (4, 4)
-GRID_CONDITIONAL_RESET_DFB_COUNT = 4
-WIDE_CONDITION_RESET_TIMEOUT_SECONDS = 10
-WIDE_CONDITION_RESET_GRID = (13, 10)
-WIDE_CONDITION_RESET_DFB_COUNT = 8
-WIDE_CONDITION_LEAVES = 16
+GENERATION_RESET_TIMEOUT_SECONDS = 10
+GENERATION_COUNT = 4096
+GENERATION_RESET_COUNT = 6
+GENERATION_RESET_GRID = (13, 10)
+GENERATION_RESET_DFB_COUNT = 8
 TRANSACTION_COUNT = 500
 RESET_COUNT_PER_BRANCH = 128
 RESET_NESTING_DEPTH = 8
@@ -111,29 +106,26 @@ def build_structural_order_stress_module() -> str:
     return "\n".join(lines)
 
 
-def build_conditional_reset_module(
-    reset_count: int = CONDITIONAL_RESET_COUNT,
-    grid: tuple[int, int] = (1, 1),
-    dfb_count: int = 1,
-    condition_leaves: int = 1,
+def build_generation_reset_module(
+    generations: int = GENERATION_COUNT,
+    resets_per_generation: int = GENERATION_RESET_COUNT,
+    grid: tuple[int, int] = GENERATION_RESET_GRID,
+    dfb_count: int = GENERATION_RESET_DFB_COUNT,
 ) -> str:
-    """Every participant resets the DFBs under each of many dispatch conditions.
+    """Every participant runs one generation loop with several resets.
 
-    The lifecycle verifier keeps an executed and a skipped alternative per
-    unresolved reset; the number of alternatives is bounded, so the resets
-    must not multiply into an exponential sequence set, and the per-node
-    sequences must stay cheap across the grid and the DFBs. Each condition is
-    the conjunction of `condition_leaves` dispatch conditions, so path
-    conditions with many variables must stay cheap as well.
+    Before each reset the reader pushes a block into every DFB and the writer
+    pops it. Each reset restores only the first DFB, so the others carry their
+    state across it, and generation 0 pushes and pops one extra block. The
+    lifecycle verifier must not grow with the number of generations.
     """
-    operation_identity = "dfb_conditional_reset_compile_time"
+    operation_identity = "dfb_generation_reset_compile_time"
     participant_list = (
         f'<kind = compute, identity = "compute", operation = "{operation_identity}">, '
         f'<kind = data_movement, identity = "reader", operation = "{operation_identity}">, '
         f'<kind = data_movement, identity = "writer", operation = "{operation_identity}">'
     )
     dfb_names = [f"%dfb{dfb_index}" for dfb_index in range(dfb_count)]
-    dfb_operands = ", ".join(dfb_names) + " : " + ", ".join([DFB_TYPE] * dfb_count)
     lines = [
         f"module attributes {{ttl.launch_grid = [{grid[0]}, {grid[1]}], "
         "ttl.target_arch = #ttcore.arch<blackhole>} {"
@@ -157,54 +149,46 @@ def build_conditional_reset_module(
                 f"    {dfb_name} = ttl.bind_cb {{cb_index = {dfb_index}, block_count = 2}} "
                 f"{{dfb_id = {dfb_index} : index}} : {DFB_TYPE}"
             )
-        lines.append("    %zero = arith.constant 0 : i32")
-        for reset_index in range(reset_count):
+        lines.extend(
+            [
+                "    %c0 = arith.constant 0 : index",
+                "    %c1 = arith.constant 1 : index",
+                f"    %generations = arith.constant {generations} : index",
+                "    scf.for %generation = %c0 to %generations step %c1 {",
+                "      %first = arith.cmpi eq, %generation, %c0 : index",
+            ]
+        )
+
+        def transfer(dfb_name, suffix):
+            if name == "reader":
+                return [
+                    f"        %reserved{suffix} = ttl.cb_reserve {dfb_name} : "
+                    f"{PROTOCOL_TYPE} -> {TENSOR_TYPE}",
+                    f"        ttl.cb_push {dfb_name} : {PROTOCOL_TYPE}",
+                ]
+            if name == "writer":
+                return [
+                    f"        %waited{suffix} = ttl.cb_wait {dfb_name} : "
+                    f"{PROTOCOL_TYPE} -> {TENSOR_TYPE}",
+                    f"        ttl.cb_pop {dfb_name} : {PROTOCOL_TYPE}",
+                ]
+            return []
+
+        if name != "compute":
+            lines.append("      scf.if %first {")
+            lines.extend(transfer(dfb_names[0], "_first"))
+            lines.append("      }")
+        for reset_index in range(resets_per_generation):
             for dfb_index, dfb_name in enumerate(dfb_names):
-                if name == "reader":
-                    lines.extend(
-                        [
-                            f"    %reserved{reset_index}_{dfb_index} = ttl.cb_reserve "
-                            f"{dfb_name} : {PROTOCOL_TYPE} -> {TENSOR_TYPE}",
-                            f"    ttl.cb_push {dfb_name} : {PROTOCOL_TYPE}",
-                        ]
-                    )
-                elif name == "writer":
-                    lines.extend(
-                        [
-                            f"    %waited{reset_index}_{dfb_index} = ttl.cb_wait "
-                            f"{dfb_name} : {PROTOCOL_TYPE} -> {TENSOR_TYPE}",
-                            f"    ttl.cb_pop {dfb_name} : {PROTOCOL_TYPE}",
-                        ]
-                    )
-            for leaf in range(condition_leaves):
-                condition_index = reset_index * condition_leaves + leaf
                 lines.extend(
-                    [
-                        f'    %flag{reset_index}_{leaf} = ttl.opaque_call "scalar_predicate" '
-                        "template_args [#ttl.external_template_arg<signed_integer, 1>] () "
-                        f"{{condition_result = #ttl.dispatch_condition<{condition_index}, i32>, "
-                        'header = "predicate.hpp"} : () -> i32',
-                        f"    %leaf{reset_index}_{leaf} = arith.cmpi ne, "
-                        f"%flag{reset_index}_{leaf}, %zero : i32",
-                    ]
+                    line[2:]
+                    for line in transfer(dfb_name, f"{reset_index}_{dfb_index}")
                 )
             lines.append(
-                f"    %active{reset_index}_0 = arith.andi %leaf{reset_index}_0, %leaf{reset_index}_0 : i1"
+                f"      ttl.reset_dfbs <{reset_index}, participants[{participant_list}]>"
+                f"({dfb_names[0]} : {DFB_TYPE})"
             )
-            for leaf in range(1, condition_leaves):
-                lines.append(
-                    f"    %active{reset_index}_{leaf} = arith.andi "
-                    f"%active{reset_index}_{leaf - 1}, %leaf{reset_index}_{leaf} : i1"
-                )
-            lines.extend(
-                [
-                    f"    scf.if %active{reset_index}_{condition_leaves - 1} {{",
-                    f"      ttl.reset_dfbs <{reset_index}, participants[{participant_list}]>"
-                    f"({dfb_operands})",
-                    "    }",
-                ]
-            )
-        lines.extend(["    return", "  }"])
+        lines.extend(["    }", "    return", "  }"])
     lines.append("}")
     return "\n".join(lines)
 
@@ -223,30 +207,9 @@ for workload_name, module, timeout_seconds, pipeline in (
         "ttl-finalize-dfb-indices",
     ),
     (
-        "conditional reset",
-        build_conditional_reset_module(),
-        CONDITIONAL_RESET_TIMEOUT_SECONDS,
-        "ttl-finalize-dfb-indices,ttl-verify-dfb-spsc,ttl-verify-dfb-lifecycle",
-    ),
-    (
-        "grid conditional reset",
-        build_conditional_reset_module(
-            GRID_CONDITIONAL_RESET_COUNT,
-            GRID_CONDITIONAL_RESET_GRID,
-            GRID_CONDITIONAL_RESET_DFB_COUNT,
-        ),
-        GRID_CONDITIONAL_RESET_TIMEOUT_SECONDS,
-        "ttl-finalize-dfb-indices,ttl-verify-dfb-spsc,ttl-verify-dfb-lifecycle",
-    ),
-    (
-        "wide condition reset",
-        build_conditional_reset_module(
-            GRID_CONDITIONAL_RESET_COUNT,
-            WIDE_CONDITION_RESET_GRID,
-            WIDE_CONDITION_RESET_DFB_COUNT,
-            WIDE_CONDITION_LEAVES,
-        ),
-        WIDE_CONDITION_RESET_TIMEOUT_SECONDS,
+        "generation loop resets",
+        build_generation_reset_module(),
+        GENERATION_RESET_TIMEOUT_SECONDS,
         "ttl-finalize-dfb-indices,ttl-verify-dfb-spsc,ttl-verify-dfb-lifecycle",
     ),
 ):
