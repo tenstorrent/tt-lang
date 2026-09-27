@@ -103,17 +103,22 @@ def test_kernel_headers_missing_resources_preserve_caller_paths(tmp_path: Path):
         (
             "experimental_dfb_reset.h",
             "void reset_dfb_interfaces(uint32_t, uint32_t, uint32_t)",
-            "experimental::reset_dfb_interfaces(0, 0, 0)",
+            "::experimental::reset_dfb_interfaces(0, 0, 0)",
         ),
         (
             "experimental_dfb_reconfiguration.h",
             "void reconfigure_dfb_interfaces(uint32_t)",
-            "experimental::reconfigure_dfb_interfaces(0)",
+            "::experimental::reconfigure_dfb_interfaces(0)",
         ),
     ],
 )
+@pytest.mark.parametrize("conflicting_namespace", [False, True])
 def test_kernel_headers_allow_cpp_overrides(
-    tmp_path: Path, header: str, declaration: str, call: str
+    tmp_path: Path,
+    header: str,
+    declaration: str,
+    call: str,
+    conflicting_namespace: bool,
 ):
     compiler = shutil.which("c++")
     if compiler is None:
@@ -131,9 +136,18 @@ def test_kernel_headers_allow_cpp_overrides(
         for root in module.kernel_include_paths([str(override_root)])
         for flag in ("-I", root)
     ]
+    namespace_import = (
+        "namespace ckernel { namespace experimental {} }\n" "using namespace ckernel;\n"
+        if conflicting_namespace
+        else ""
+    )
     result = subprocess.run(
         [compiler, "-std=c++17", "-fsyntax-only", "-x", "c++", "-", *include_flags],
-        input=f'#include "{HEADER_DIRECTORY / header}"\nvoid kernel() {{ {call}; }}\n',
+        input=(
+            namespace_import
+            + f'#include "{HEADER_DIRECTORY / header}"\n'
+            + f"void kernel() {{ {call}; }}\n"
+        ),
         capture_output=True,
         text=True,
         check=False,

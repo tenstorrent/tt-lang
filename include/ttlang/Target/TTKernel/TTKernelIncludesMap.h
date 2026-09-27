@@ -33,9 +33,9 @@ inline const llvm::StringMap<HeaderRequirement> &getCalleeToHeadersMap() {
         {"get_compile_time_arg_val",                       {"api/compile_time_args.h", "api/compile_time_args.h"}},
 
         // DFB helpers shared by compute and data-movement kernels.
-        {"experimental::reset_dfb_interfaces",             {"ttlang/Target/TTKernel/LLKs/experimental_dfb_reset.h",
+        {"::experimental::reset_dfb_interfaces",           {"ttlang/Target/TTKernel/LLKs/experimental_dfb_reset.h",
                                                              "ttlang/Target/TTKernel/LLKs/experimental_dfb_reset.h"}},
-        {"experimental::reconfigure_dfb_interfaces",       {"ttlang/Target/TTKernel/LLKs/experimental_dfb_reconfiguration.h",
+        {"::experimental::reconfigure_dfb_interfaces",     {"ttlang/Target/TTKernel/LLKs/experimental_dfb_reconfiguration.h",
                                                              "ttlang/Target/TTKernel/LLKs/experimental_dfb_reconfiguration.h"}},
 
         // NoC.

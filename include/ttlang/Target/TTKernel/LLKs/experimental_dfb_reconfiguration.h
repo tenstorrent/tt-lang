@@ -83,28 +83,61 @@ participantsHaveState(volatile uint32_t tt_l1_ptr *synchronizationState,
 // prevents arrival before retirement; TMP0 is temporary across LLK calls.
 FORCE_INLINE void drainComputeEngine() {
 #if defined(TTL_DFB_RECONFIGURATION_UNPACK)
-  constexpr uint32_t waitResources = p_stall::UNPACK;
-  constexpr uint32_t completionGpr = p_gpr_unpack::TMP0;
-#elif defined(TTL_DFB_RECONFIGURATION_PACK)
-  constexpr uint32_t waitResources = p_stall::PACK;
-  constexpr uint32_t completionGpr = p_gpr_pack::TMP0;
+  {
+    constexpr uint32_t waitResources = p_stall::UNPACK;
+    constexpr uint32_t completionGpr = p_gpr_unpack::TMP0;
+    TTI_STALLWAIT(p_stall::STALL_TDMA, waitResources);
+    TTI_SETDMAREG(0, completionMarker, 0, LO_16(completionGpr));
+    sync_regfile_write(completionGpr);
+  }
 #endif
-#if defined(TTL_DFB_RECONFIGURATION_UNPACK) ||                                 \
-    defined(TTL_DFB_RECONFIGURATION_PACK)
-  TTI_STALLWAIT(p_stall::STALL_TDMA, waitResources);
-  TTI_SETDMAREG(0, completionMarker, 0, LO_16(completionGpr));
-  sync_regfile_write(completionGpr);
+#if defined(TTL_DFB_RECONFIGURATION_PACK)
+  {
+    constexpr uint32_t waitResources = p_stall::PACK;
+    constexpr uint32_t completionGpr = p_gpr_pack::TMP0;
+    TTI_STALLWAIT(p_stall::STALL_TDMA, waitResources);
+    TTI_SETDMAREG(0, completionMarker, 0, LO_16(completionGpr));
+    sync_regfile_write(completionGpr);
+  }
 #endif
 }
 
-FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState) {
+// A combined compute kernel owns both arrival words.
+FORCE_INLINE void
+publishState(volatile uint32_t tt_l1_ptr *synchronizationState,
+             uint32_t state) {
 #if defined(TTL_DFB_RECONFIGURATION_DM0)
-  constexpr uint32_t arrivalWord = dm0StateWord;
-#elif defined(TTL_DFB_RECONFIGURATION_UNPACK)
-  constexpr uint32_t arrivalWord = unpackStateWord;
-#elif defined(TTL_DFB_RECONFIGURATION_PACK)
-  constexpr uint32_t arrivalWord = packStateWord;
+  storeSynchronizationWord(&synchronizationState[dm0StateWord], state);
 #endif
+#if defined(TTL_DFB_RECONFIGURATION_UNPACK)
+  storeSynchronizationWord(&synchronizationState[unpackStateWord], state);
+#endif
+#if defined(TTL_DFB_RECONFIGURATION_PACK)
+  storeSynchronizationWord(&synchronizationState[packStateWord], state);
+#endif
+}
+
+#if defined(TT_EMULE_USE_L1_POOL) && defined(TTL_DFB_RECONFIGURATION_DM1)
+// The emulator keeps shared geometry separately from each RISC's interface.
+FORCE_INLINE void rebindSharedGeometry(uint32_t tt_l1_ptr *configuration,
+                                       uint32_t activeMask,
+                                       uint32_t firstDfbIndex) {
+  uint32_t dfbIndex = firstDfbIndex;
+  while (activeMask != 0) {
+    if ((activeMask & 1U) != 0) {
+      uint32_t offset = dfbIndex * 4;
+      ::__emule_cb_rebind_geometry(dfbIndex, configuration[offset],
+                                   configuration[offset + 3],
+                                   configuration[offset + 2]);
+    }
+    activeMask >>= 1;
+    ++dfbIndex;
+  }
+}
+#endif
+
+FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState,
+                        uint32_t tt_l1_ptr *configuration) {
 #if defined(TTL_DFB_RECONFIGURATION_DM0)
   noc_async_full_barrier();
 #elif defined(TTL_DFB_RECONFIGURATION_UNPACK) ||                               \
@@ -114,7 +147,7 @@ FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState) {
 #if defined(TTL_DFB_RECONFIGURATION_DM0) ||                                    \
     defined(TTL_DFB_RECONFIGURATION_UNPACK) ||                                 \
     defined(TTL_DFB_RECONFIGURATION_PACK)
-  storeSynchronizationWord(&synchronizationState[arrivalWord], entryComplete);
+  publishState(synchronizationState, entryComplete);
   while (loadSynchronizationWord(&synchronizationState[releaseWord]) !=
          entryComplete) {
   }
@@ -122,6 +155,11 @@ FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState) {
   noc_async_full_barrier();
   while (!participantsHaveState(synchronizationState, entryComplete)) {
   }
+#if defined(TT_EMULE_USE_L1_POOL)
+  // Peers must remain at entry while shared geometry changes.
+  rebindSharedGeometry(configuration, configuration[lowMaskWord], 0);
+  rebindSharedGeometry(configuration, configuration[highMaskWord], 32);
+#endif
   storeSynchronizationWord(&synchronizationState[releaseWord], entryComplete);
 #endif
 }
@@ -129,21 +167,14 @@ FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState) {
 // DM1 cannot begin next-epoch work until every other RISC has completed its
 // interface updates.
 FORCE_INLINE void exit(volatile uint32_t tt_l1_ptr *synchronizationState) {
-#if defined(TTL_DFB_RECONFIGURATION_DM0)
-  constexpr uint32_t arrivalWord = dm0StateWord;
-#elif defined(TTL_DFB_RECONFIGURATION_UNPACK)
-  constexpr uint32_t arrivalWord = unpackStateWord;
-#elif defined(TTL_DFB_RECONFIGURATION_PACK)
-  constexpr uint32_t arrivalWord = packStateWord;
-#endif
 #if defined(TTL_DFB_RECONFIGURATION_DM0) ||                                    \
     defined(TTL_DFB_RECONFIGURATION_UNPACK) ||                                 \
     defined(TTL_DFB_RECONFIGURATION_PACK)
-  storeSynchronizationWord(&synchronizationState[arrivalWord], exitComplete);
+  publishState(synchronizationState, exitComplete);
   while (loadSynchronizationWord(&synchronizationState[releaseWord]) !=
          exitComplete) {
   }
-  storeSynchronizationWord(&synchronizationState[arrivalWord], 0);
+  publishState(synchronizationState, 0);
   while (loadSynchronizationWord(&synchronizationState[releaseWord]) != 0) {
   }
 #elif defined(TTL_DFB_RECONFIGURATION_DM1)
@@ -215,6 +246,12 @@ FORCE_INLINE void reconfigure_dfb_interfaces(uint32_t configurationAddress) {
   constexpr bool updateWritePointer = true;
   constexpr bool updateWriteTilePointer = false;
   constexpr bool resetStreamCounters = false;
+#elif defined(TTL_DFB_RECONFIGURATION_UNPACK) &&                               \
+    defined(TTL_DFB_RECONFIGURATION_PACK)
+  constexpr bool updateReadPointer = true;
+  constexpr bool updateWritePointer = true;
+  constexpr bool updateWriteTilePointer = true;
+  constexpr bool resetStreamCounters = false;
 #elif defined(TTL_DFB_RECONFIGURATION_UNPACK)
   constexpr bool updateReadPointer = true;
   constexpr bool updateWritePointer = false;
@@ -231,7 +268,7 @@ FORCE_INLINE void reconfigure_dfb_interfaces(uint32_t configurationAddress) {
       reinterpret_cast<uint32_t tt_l1_ptr *>(configurationAddress);
   auto *synchronizationState = reinterpret_cast<volatile uint32_t tt_l1_ptr *>(
       &configuration[dfb_reconfiguration_detail::synchronizationWord]);
-  dfb_reconfiguration_detail::enter(synchronizationState);
+  dfb_reconfiguration_detail::enter(synchronizationState, configuration);
   dfb_reconfiguration_detail::applyMask<updateReadPointer, updateWritePointer,
                                         updateWriteTilePointer,
                                         resetStreamCounters>(

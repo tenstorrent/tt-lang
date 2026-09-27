@@ -11,20 +11,29 @@
 // HEADER: TTI_STALLWAIT(p_stall::STALL_TDMA, waitResources);
 // HEADER-NEXT: TTI_SETDMAREG(0, completionMarker, 0, LO_16(completionGpr));
 // HEADER-NEXT: sync_regfile_write(completionGpr);
-// HEADER: FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState) {
-// HEADER: storeSynchronizationWord(&synchronizationState[arrivalWord], entryComplete);
+// HEADER: TTI_STALLWAIT(p_stall::STALL_TDMA, waitResources);
+// HEADER-NEXT: TTI_SETDMAREG(0, completionMarker, 0, LO_16(completionGpr));
+// HEADER-NEXT: sync_regfile_write(completionGpr);
+// HEADER: publishState(volatile uint32_t tt_l1_ptr *synchronizationState,
+// HEADER: storeSynchronizationWord(&synchronizationState[dm0StateWord], state);
+// HEADER: storeSynchronizationWord(&synchronizationState[unpackStateWord], state);
+// HEADER: storeSynchronizationWord(&synchronizationState[packStateWord], state);
+// HEADER: FORCE_INLINE void enter(volatile uint32_t tt_l1_ptr *synchronizationState,
+// HEADER-NEXT: uint32_t tt_l1_ptr *configuration) {
+// HEADER: publishState(synchronizationState, entryComplete);
 // HEADER: while (!participantsHaveState(synchronizationState, entryComplete)) {
 // HEADER: FORCE_INLINE void exit(volatile uint32_t tt_l1_ptr *synchronizationState) {
-// HEADER: storeSynchronizationWord(&synchronizationState[arrivalWord], exitComplete);
+// HEADER: publishState(synchronizationState, exitComplete);
+// HEADER: publishState(synchronizationState, 0);
 // HEADER: while (!participantsHaveState(synchronizationState, exitComplete)) {
-// HEADER: dfb_reconfiguration_detail::enter(synchronizationState);
+// HEADER: dfb_reconfiguration_detail::enter(synchronizationState, configuration);
 // HEADER: dfb_reconfiguration_detail::exit(synchronizationState);
 // CHECK: #include "api/compute/common.h"
 // CHECK: #include "ttlang/Target/TTKernel/LLKs/experimental_dfb_reconfiguration.h"
 // CHECK-NOT: experimental_dfb_reconfiguration.h
 // CHECK-NOT: experimental_dfb_reset.h
 // CHECK: get_arg_val<uint32_t>(get_compile_time_arg_val(0))
-// CHECK: experimental::reconfigure_dfb_interfaces({{.*}});
+// CHECK: ::experimental::reconfigure_dfb_interfaces({{.*}});
 
 module attributes {
   ttl.target_arch = #ttcore.arch<blackhole>,
