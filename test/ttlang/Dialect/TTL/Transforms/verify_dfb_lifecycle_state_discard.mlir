@@ -215,9 +215,9 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
     %c1 = arith.constant 1 : index
     %c4 = arith.constant 4 : index
     scf.for %iteration = %c0 to %c4 step %c1 {
-      // expected-warning @+3 {{logical DFB 0 is waited on without a pop on core_x=0, core_y=0, and no synchronized reset or state-discarding reconfiguration restores it}}
-      // expected-note @+2 {{the wait executes 4 times per launch; published pages remain in the DFB until a pop or a reset, so a producer that publishes again blocks once the DFB is full}}
-      // expected-note @+1 {{a state-discarding reconfiguration restores a DFB only where the finalized allocation reinstalls its descriptor, which requires a bounded lifecycle; declare the DFB effects of external calls that access it, or pop the waited pages}}
+      // expected-warning @+3 {{logical DFB 0 is never popped on core_x=0, core_y=0, but its producer can push 4 block(s) into capacity 1 before a synchronized reset or reconfiguration restores it}}
+      // expected-note @+2 {{published blocks stay in the DFB until a pop or a reset or reconfiguration that restores it, so the producer blocks once the DFB is full}}
+      // expected-note @+1 {{a reconfiguration restores a DFB only where the finalized allocation reinstalls its descriptor, which requires a bounded lifecycle; declare the DFB effects of external calls that access it, or pop the published blocks}}
       ttl.opaque_call "read_partial" dfb_dependencies(
           %partial : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
           dfb_effects [#ttl.dfb_protocol_effect<wait, 0, 1>]
