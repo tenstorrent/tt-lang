@@ -2979,7 +2979,7 @@ def build_dfb_reconfiguration_runtime_resources(
     # The launch descriptor is built from the same backing tensor as the epochs.
     if len(cb_configs) != len(plan.dfb_epochs):
         raise ValueError(
-            "launch DFB configuration count does not match the " "reconfiguration plan"
+            "launch DFB configuration count does not match the reconfiguration plan"
         )
     for dfb_index, config in enumerate(cb_configs):
         storage_index = storage_index_by_dfb[dfb_index]
@@ -3087,7 +3087,7 @@ def build_dfb_reconfiguration_runtime_resources(
         set(required_bytes_by_core_by_storage).difference(
             remote_uniform_storage_indices
         )
-        if _per_core_l1_allocation_enabled()
+        if hybrid_allocation
         else set()
     )
 
@@ -3371,7 +3371,7 @@ def build_dfb_reconfiguration_runtime_resources(
         # Each core reads only its own configuration record, so the tensor
         # follows the scratch allocation mode; a lockstep allocation would need
         # one address free on every core and could fragment per-core L1.
-        if _per_core_l1_allocation_enabled():
+        if hybrid_allocation:
             memory_config.experimental_set_per_core_allocation(True)
         configuration_tensor = ttnn.from_torch(
             host_configuration,
