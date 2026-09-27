@@ -14,7 +14,7 @@ from typing import Any
 import types
 from . import ttnnsim as ttnn
 from .dfb import DFBStats
-from .constants import TILE_SHAPE
+from .constants import BACKEND_EMULE, TILE_SHAPE
 from .copy import (
     CopyTransaction,
     GroupTransfer,
@@ -140,6 +140,13 @@ class _TTLNamespace:
     def _make_tensor_backed_dfb(tensor, shape, *, block_count=1, byte_offset=0):
         raise NotImplementedError(
             "the simulator does not model tensor-backed DFB storage"
+        )
+
+    @staticmethod
+    def call_extern_func(*args: Any, **kwargs: Any) -> None:
+        raise NotImplementedError(
+            "ttl.call_extern_func is not supported by the Python simulator; "
+            f"use tt-lang-sim --backend={BACKEND_EMULE} to execute external C++ functions"
         )
 
     @staticmethod
