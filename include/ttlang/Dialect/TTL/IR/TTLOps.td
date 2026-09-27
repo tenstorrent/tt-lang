@@ -2303,7 +2303,9 @@ def TTL_ResetDFBsOp : TTL_Op<"reset_dfbs", [MemoryEffects<[MemWrite]>]> {
     instance per iteration of an equivalent immutable sequential loop nest.
     Before any participant returns, the operation completes prior DFB-interface
     work and restores the listed DFBs to canonical empty protocol state without
-    changing descriptor configuration or payload storage.
+    changing descriptor configuration or payload storage. Listing one member of
+    a DFB allocation group resets every member because the group shares one L1
+    allocation.
 
     The operation resets read and write pointers, the packer write-tile
     pointer, initialization state, and stream occupancy counters. It does not
