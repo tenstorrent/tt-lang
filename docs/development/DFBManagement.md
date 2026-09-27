@@ -726,9 +726,9 @@ observer:                    wait -> read -> signal complete
 pop owner:                   wait -> read -> wait for observer -> pop
 ```
 
-Kimi reduce-to-all uses the second form: compute and data movement both read
-published chunks, while one data-movement kernel owns the pop. The protocol
-orders that pop after the compute read. The liveness analysis includes every
+For example, a reduction in which compute and data movement both read each
+published chunk uses the second form: one data-movement kernel owns the pop, and
+the protocol orders that pop after the compute read. The liveness analysis includes every
 wait and read when it proves that a pop or state-discarding reconfiguration ends
 the DFB lifecycle.
 

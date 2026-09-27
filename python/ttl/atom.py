@@ -304,6 +304,7 @@ def _build_atom_spec(
         )
     fn_def: ast.FunctionDef = module.body[0]
     scope = function_scope(fn)
+    enclosing_scope = dict(scope)
     captured_values = _referenced_operation_values(fn)
 
     # Inline statement-level calls to other unified operations, then keep
@@ -325,18 +326,20 @@ def _build_atom_spec(
     for node in ast.walk(fn_def):
         if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
             loaded_names.add(node.id)
-    captured_values.update(
-        {
-            capture_name: scope[capture_name]
-            for capture_name in loaded_names & scope.keys()
-        }
-    )
-
+    # Code-object names exclude nested-scope locals; inlining adds the names it
+    # binds into scope, which the original function's code does not reference.
+    inlined_names = {
+        capture_name
+        for capture_name, value in scope.items()
+        if capture_name not in enclosing_scope
+        or enclosing_scope[capture_name] is not value
+    }
     params = _classify_params(fn)
     local_names = _collect_local_names(fn_def) | {param.name for param in params}
     captured_values = {
         capture_name: scope[capture_name]
-        for capture_name in (loaded_names - local_names) & scope.keys()
+        for capture_name in ((captured_values.keys() | inlined_names) & loaded_names)
+        - local_names
     }
     external_pipenets = dict(inlined_pipenets)
     compile_time_captures: Dict[str, Any] = {}
