@@ -1064,20 +1064,20 @@ def TTLVerifyDFBLifecycle
     and `ttl.cb_wait`/`ttl.cb_pop` sequences of all kernels are well formed:
     a release never exceeds the preceding acquisitions of its kind, open
     acquisitions never exceed the DFB capacity, no acquisition is open when
-    the kernel returns, and across kernels the blocks popped never exceed the
-    blocks pushed while the unpopped blocks fit the capacity. Synchronized
-    resets and state-discarding reconfigurations discard the open state of
-    the DFBs whose interfaces the runtime resets, so each such DFB's sequence
-    between two of them is checked on its own. A reset restores the physical
-    interfaces of its lowered mask; a reconfiguration restores the descriptors
-    that `ttl.dfb_reconfiguration_plan` installs at its boundary on the node.
-    Every other DFB keeps its state, and its sequence continues across the
-    operation.
+    the kernel returns, and across kernels the blocks waited for or popped
+    never exceed the blocks pushed while the unpopped blocks fit the capacity.
+    Every kernel on a node waits at a synchronized reset or reconfiguration
+    until all of them arrive, so the waits and reserves before one must be
+    satisfied by the pushes and pops before it. A reset restores the physical
+    interfaces of its lowered mask and a reconfiguration the descriptors that
+    `ttl.dfb_reconfiguration_plan` installs at its boundary on the node; a
+    restored DFB's sequence between two restorations is checked on its own,
+    and every other DFB's sequence continues across the operation.
 
     Nodes where an external call may perform undeclared protocol actions on a
-    DFB are not checked for it. There the pass warns when the DFB is waited on
-    repeatedly, never popped, and never restored, because pages published
-    before the wait stay in the DFB.
+    DFB are not checked for it. There the pass warns when the DFB is waited
+    on, never popped, and its producer can push more blocks than its capacity
+    before a restoration, because published blocks stay in the DFB.
 
     ```mlir
     // Rejected: four blocks are pushed into a capacity-1 DFB that no
@@ -1091,9 +1091,10 @@ def TTLVerifyDFBLifecycle
 
     Region execution per node comes from the launch-node domain and
     execution-count analyses; sequences they cannot resolve are accepted.
-    Requires the finalized DFB indices, `ttl.dfb_allocations`, and
-    `ttl.dfb_reconfiguration_plan` metadata emitted by
-    `ttl-finalize-dfb-indices` and a valid `ttl.launch_grid`.
+    Requires the finalized DFB indices and `ttl.dfb_allocations` metadata
+    emitted by `ttl-finalize-dfb-indices`, the `ttl.dfb_reconfiguration_plan`
+    it emits for a module with reconfigurations, and a valid
+    `ttl.launch_grid`.
   }];
 
   let dependentDialects = [];

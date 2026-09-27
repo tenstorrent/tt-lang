@@ -229,48 +229,85 @@ struct TransactionSequenceSummary {
   }
 };
 
-/// The summaries of one DFB in one thread, one per interval between
-/// synchronized resets (or state-discarding reconfigurations) in program
-/// order. A reset restores the empty state, so each interval starts at zero.
-using TransactionSegments = SmallVector<TransactionSequenceSummary, 1>;
-
-/// A synchronized reset or state-discarding reconfiguration, by declaration
-/// ordinal. The two kinds have separate ordinal spaces.
-struct ExecutedStateDiscard {
+/// A synchronized reset or reconfiguration, by declaration ordinal; the two
+/// kinds have separate ordinal spaces. Every participant kernel on a node
+/// waits there until all of them arrive.
+struct ExecutedBarrier {
   bool reconfiguration = false;
   int64_t ordinal = 0;
 
-  bool operator==(const ExecutedStateDiscard &other) const {
+  bool operator==(const ExecutedBarrier &other) const {
     return reconfiguration == other.reconfiguration && ordinal == other.ordinal;
-  }
-  bool operator<(const ExecutedStateDiscard &other) const {
-    return std::tie(reconfiguration, ordinal) <
-           std::tie(other.reconfiguration, other.ordinal);
   }
 };
 
-/// The value an unresolved `scf.if` condition took on the way to a sequence.
-using ConditionDecision = DispatchConditionFormulas::Literal;
+/// The effects on one DFB in one thread between two consecutive barriers.
+struct TransactionSegment {
+  TransactionSequenceSummary summary;
+  /// The barrier that starts the segment; absent for the first segment, which
+  /// starts at launch.
+  std::optional<ExecutedBarrier> barrier;
+  /// Whether the DFB starts the segment empty: at launch, or after a barrier
+  /// that restores it. Otherwise its state continues from the segment before.
+  bool restored = true;
 
-/// One possible sequence of a DFB: its segments, the state discards executed
-/// on it, and the path condition over dispatch conditions under which it
-/// executes. Sequences of one kernel or of different kernels belong to the
-/// same execution only when the conjunction of their path conditions is
-/// satisfiable.
+  bool operator==(const TransactionSegment &other) const {
+    return summary == other.summary && barrier == other.barrier &&
+           restored == other.restored;
+  }
+};
+
+/// The segments of one DFB in one thread in program order.
+using TransactionSegments = SmallVector<TransactionSegment, 1>;
+
+/// The summaries between restorations of the DFB: segments separated by a
+/// barrier that does not restore it join. Absent when a joined summary
+/// overflows.
+std::optional<SmallVector<TransactionSequenceSummary, 1>>
+getRestoredIntervals(const TransactionSegments &segments) {
+  SmallVector<TransactionSequenceSummary, 1> intervals;
+  for (const TransactionSegment &segment : segments) {
+    if (intervals.empty() || segment.restored) {
+      intervals.push_back(segment.summary);
+    } else if (!intervals.back().append(segment.summary)) {
+      return std::nullopt;
+    }
+  }
+  return intervals;
+}
+
+/// The value an unresolved `scf.if` condition took on the way to a sequence.
+struct ConditionDecision {
+  DispatchConditionFormulas::FormulaId formula =
+      DispatchConditionFormulas::kFalse;
+  bool value = false;
+};
+
+/// One possible sequence of a DFB: its segments and the path condition over
+/// dispatch conditions under which it executes. Sequences of one kernel or of
+/// different kernels belong to the same execution only when the conjunction
+/// of their path conditions is satisfiable.
 struct TransactionAlternative {
   TransactionSegments segments;
-  SmallVector<ExecutedStateDiscard, 2> executedDiscards;
   DispatchConditionFormulas::FormulaId pathCondition =
       DispatchConditionFormulas::kTrue;
 
   bool sameSequence(const TransactionAlternative &other) const {
-    return segments == other.segments &&
-           executedDiscards == other.executedDiscards;
+    return segments == other.segments;
+  }
+
+  /// Whether both sequences pass the same barriers in the same order.
+  bool sameBarriers(const TransactionAlternative &other) const {
+    return llvm::equal(
+        segments, other.segments,
+        [](const TransactionSegment &lhs, const TransactionSegment &rhs) {
+          return lhs.barrier == rhs.barrier;
+        });
   }
 };
 
-/// The possible sequences of one DFB: one entry unless a reset under an
-/// unresolved condition makes both its execution and its omission possible.
+/// The possible sequences of one DFB: one entry unless an unresolved
+/// condition selects between effects or barriers.
 using TransactionAlternatives = SmallVector<TransactionAlternative, 1>;
 
 /// Ordered segment summaries and conservative failures for every DFB in one
@@ -330,8 +367,7 @@ struct TransactionSequenceResult {
   TransactionAlternatives &getOrCreate(int64_t logicalId) {
     TransactionAlternatives &own = alternatives[logicalId];
     if (own.empty()) {
-      own.push_back({TransactionSegments{TransactionSequenceSummary()},
-                     {},
+      own.push_back({TransactionSegments{TransactionSegment()},
                      DispatchConditionFormulas::kTrue});
     }
     return own;
@@ -355,26 +391,19 @@ struct TransactionSequenceResult {
     return into.size() <= kMaxAlternatives;
   }
 
-  /// Start a new segment for `logicalId`: the reset boundary. A DFB without
-  /// a sequence yet gets the empty segment that precedes the boundary.
-  void startSegment(int64_t logicalId) {
-    TransactionAlternatives &own = alternatives[logicalId];
-    if (own.empty()) {
-      own.push_back({TransactionSegments{TransactionSequenceSummary()},
-                     {},
-                     DispatchConditionFormulas::kTrue});
-      return;
-    }
-    for (TransactionAlternative &alternative : own) {
-      alternative.segments.emplace_back();
+  /// Start a new segment of `logicalId` at `barrier`, which restores the
+  /// DFB when `restored`.
+  void startSegment(int64_t logicalId, ExecutedBarrier barrier, bool restored) {
+    for (TransactionAlternative &alternative : getOrCreate(logicalId)) {
+      alternative.segments.push_back(
+          {TransactionSequenceSummary(), barrier, restored});
     }
   }
 
   enum class JoinResult { Joined, Contradiction, Overflow };
 
   /// Continue `own` with `next`: the last segment of `own` joins the first
-  /// segment of `next`, the discards accumulate, and the path conditions
-  /// conjoin.
+  /// segment of `next`, and the path conditions conjoin.
   static JoinResult join(TransactionAlternative &own,
                          const TransactionAlternative &next,
                          DispatchConditionFormulas &formulas) {
@@ -384,23 +413,58 @@ struct TransactionSequenceResult {
       return JoinResult::Contradiction;
     }
     own.pathCondition = pathCondition;
-    if (!own.segments.back().append(next.segments.front())) {
+    if (!own.segments.back().summary.append(next.segments.front().summary)) {
       return JoinResult::Overflow;
     }
     own.segments.append(std::next(next.segments.begin()), next.segments.end());
-    own.executedDiscards.append(next.executedDiscards.begin(),
-                                next.executedDiscards.end());
-    llvm::sort(own.executedDiscards);
     return own.segments.size() <= kMaxSegments ? JoinResult::Joined
                                                : JoinResult::Overflow;
   }
 
-  /// Record that every sequence of `logicalId` executed `discard`.
-  void recordDiscard(int64_t logicalId, ExecutedStateDiscard discard) {
-    for (TransactionAlternative &alternative : getOrCreate(logicalId)) {
-      alternative.executedDiscards.push_back(discard);
-      llvm::sort(alternative.executedDiscards);
+  /// Replace `own` with one sequence that executes under the disjunction of
+  /// their path conditions; `differing` receives the counters on which the
+  /// alternatives differ. Returns false when they pass different barriers.
+  static bool
+  collapseAlternatives(TransactionAlternatives &own,
+                       TransactionSequenceSummary::CounterMask &differing,
+                       DispatchConditionFormulas &formulas) {
+    TransactionAlternative merged = own.front();
+    for (const TransactionAlternative &alternative : llvm::drop_begin(own)) {
+      if (alternative.segments.size() != merged.segments.size()) {
+        return false;
+      }
+      for (auto [lhs, rhs] :
+           llvm::zip_equal(merged.segments, alternative.segments)) {
+        if (!(lhs.barrier == rhs.barrier) || lhs.restored != rhs.restored) {
+          return false;
+        }
+        for (std::size_t counter = 0;
+             counter < TransactionSequenceSummary::Count; ++counter) {
+          if (lhs.summary.net[counter] != rhs.summary.net[counter] ||
+              lhs.summary.minimum[counter] != rhs.summary.minimum[counter] ||
+              lhs.summary.maximum[counter] != rhs.summary.maximum[counter]) {
+            differing |= TransactionSequenceSummary::getCounterMask(
+                static_cast<TransactionSequenceSummary::Counter>(counter));
+          }
+        }
+      }
+      merged.pathCondition =
+          formulas.disjoin(merged.pathCondition, alternative.pathCondition);
     }
+    own.assign(1, std::move(merged));
+    return true;
+  }
+
+  /// Keep one sequence of `logicalId` with the counters on which its
+  /// alternatives differ unknown, or give up on the DFB when they pass
+  /// different barriers.
+  void collapse(int64_t logicalId, DispatchConditionFormulas &formulas) {
+    TransactionSequenceSummary::CounterMask differing = 0;
+    if (!collapseAlternatives(alternatives[logicalId], differing, formulas)) {
+      abandon(logicalId);
+      return;
+    }
+    markUnknown(logicalId, differing);
   }
 
   void append(const TransactionSequenceResult &next,
@@ -439,31 +503,50 @@ struct TransactionSequenceResult {
       }
       // Every combination contradicting itself means the decisions were
       // recorded inconsistently; nothing is known then.
-      if (overflow || combined.empty()) {
+      if (combined.empty()) {
         abandon(logicalId);
         continue;
       }
-      ownIt->second = std::move(combined);
+      if (!overflow) {
+        ownIt->second = std::move(combined);
+        continue;
+      }
+      // Too many combinations: continue each side's collapsed sequence.
+      TransactionAlternatives following = nextAlternatives;
+      TransactionSequenceSummary::CounterMask differing = 0;
+      if (!collapseAlternatives(ownIt->second, differing, formulas) ||
+          !collapseAlternatives(following, differing, formulas) ||
+          join(ownIt->second.front(), following.front(), formulas) !=
+              JoinResult::Joined) {
+        abandon(logicalId);
+        continue;
+      }
+      markUnknown(logicalId, differing);
     }
   }
 
   /// Replace every DFB's sequence with `count` consecutive copies. The last
   /// segment of one copy continues into the first segment of the next. A DFB
-  /// with several alternatives could choose differently per copy; it becomes
-  /// unknown.
-  void repeat(std::uint64_t count) {
+  /// with several alternatives could choose differently per copy, so its
+  /// alternatives collapse first.
+  void repeat(std::uint64_t count, DispatchConditionFormulas &formulas) {
     if (count == 1) {
       return;
     }
-    SmallVector<int64_t> abandoned;
+    SmallVector<int64_t> multiple;
     for (auto &[logicalId, own] : alternatives) {
       if (own.size() != 1) {
-        abandoned.push_back(logicalId);
-        continue;
+        multiple.push_back(logicalId);
       }
+    }
+    for (int64_t logicalId : multiple) {
+      collapse(logicalId, formulas);
+    }
+    SmallVector<int64_t> abandoned;
+    for (auto &[logicalId, own] : alternatives) {
       TransactionSegments &segments = own.front().segments;
       if (segments.size() == 1) {
-        if (!segments.front().repeat(count)) {
+        if (!segments.front().summary.repeat(count)) {
           abandoned.push_back(logicalId);
         }
         continue;
@@ -477,9 +560,9 @@ struct TransactionSequenceResult {
       expanded.push_back(segments.front());
       for (std::uint64_t copy = 1; copy <= count; ++copy) {
         expanded.append(std::next(segments.begin()), std::prev(segments.end()));
-        TransactionSequenceSummary joined = segments.back();
+        TransactionSegment joined = segments.back();
         if (copy < count) {
-          if (!joined.append(segments.front())) {
+          if (!joined.summary.append(segments.front().summary)) {
             abandoned.push_back(logicalId);
           }
         }
@@ -493,16 +576,8 @@ struct TransactionSequenceResult {
   }
 };
 
-/// The DFBs whose protocol state a reset or reconfiguration discards at one
-/// launch node: every DFB, or the listed ones.
-struct StateDiscardTargets {
-  bool all = false;
-  SmallVector<int64_t> logicalIds;
-  ExecutedStateDiscard discard;
-};
-
-/// The logical DFBs whose protocol state each synchronized reset and
-/// state-discarding reconfiguration restores, per launch node.
+/// The logical DFBs each synchronized reset and reconfiguration restores, per
+/// launch node.
 ///
 /// Targets follow the physical interfaces the runtime resets, not the
 /// operation's syntax: a reset restores the interfaces of its lowered mask,
@@ -514,37 +589,25 @@ struct StateDiscardTargets {
 class DFBStateDiscardModel {
 public:
   static FailureOr<DFBStateDiscardModel>
-  build(ModuleOp module, const llvm::DenseMap<int64_t, BindCBOp> &bindSites) {
+  build(ModuleOp module, const llvm::DenseMap<int64_t, BindCBOp> &bindSites,
+        const LaunchNodeDomain &launchDomain) {
     DFBStateDiscardModel model;
     FailureOr<uint64_t> allocatedMask = getAllocatedDFBMask(module);
     if (failed(allocatedMask)) {
       return failure();
     }
-    model.allocatedMask = *allocatedMask;
-    FailureOr<DFBReconfigurationInstalls> installs =
-        DFBReconfigurationInstalls::build(module);
-    if (failed(installs)) {
-      return failure();
-    }
-    model.installs = std::move(*installs);
+    model.installs = DFBReconfigurationInstalls::build(module, launchDomain);
     for (auto [logicalId, bindSite] : bindSites) {
-      FailureOr<int32_t> physicalIndex =
-          getValidatedDFBIndex(bindSite.getResult(), bindSite);
-      if (failed(physicalIndex)) {
-        return failure();
-      }
-      model.physicalIndexByLogicalId[logicalId] = *physicalIndex;
+      std::optional<int64_t> physicalIndex = getCBIndex(bindSite.getResult());
+      assert(physicalIndex && "getAllocatedDFBMask validated every index");
       model.logicalIdsByPhysicalIndex[*physicalIndex].push_back(logicalId);
-    }
-    for (auto &[physicalIndex, logicalIds] : model.logicalIdsByPhysicalIndex) {
-      llvm::sort(logicalIds);
     }
     WalkResult result = module.walk([&](Operation *op) {
       if (!isa<ResetDFBsOp, ResetAllDFBsOp>(op)) {
         return WalkResult::advance();
       }
       FailureOr<uint64_t> resetMask =
-          getSynchronizedResetDFBMask(op, model.allocatedMask);
+          getSynchronizedResetDFBMask(op, *allocatedMask);
       if (failed(resetMask)) {
         return WalkResult::interrupt();
       }
@@ -557,80 +620,35 @@ public:
     return model;
   }
 
-  /// The discard `op` executes, or absent when `op` is not a synchronized
-  /// reset or a state-discarding reconfiguration.
-  static std::optional<ExecutedStateDiscard> getDiscard(Operation *op) {
+  /// The barrier `op` executes, or absent when `op` is not a synchronized
+  /// reset or reconfiguration.
+  static std::optional<ExecutedBarrier> getBarrier(Operation *op) {
     if (auto resetAll = dyn_cast<ResetAllDFBsOp>(op)) {
-      return ExecutedStateDiscard{false, resetAll.getReset().getOrdinal()};
+      return ExecutedBarrier{false, resetAll.getReset().getOrdinal()};
     }
     if (auto reset = dyn_cast<ResetDFBsOp>(op)) {
-      return ExecutedStateDiscard{false, reset.getReset().getOrdinal()};
+      return ExecutedBarrier{false, reset.getReset().getOrdinal()};
     }
-    if (auto reconfiguration = dyn_cast<DFBReconfigurationOp>(op);
-        reconfiguration && reconfiguration.getBoundary().getDiscardDfbState()) {
-      return ExecutedStateDiscard{true,
-                                  reconfiguration.getBoundary().getOrdinal()};
+    if (auto reconfiguration = dyn_cast<DFBReconfigurationOp>(op)) {
+      return ExecutedBarrier{true, reconfiguration.getBoundary().getOrdinal()};
     }
     return std::nullopt;
   }
 
-  /// The physical interfaces `op` restores at `coord`, or on some node when
-  /// `coord` is absent; zero when `op` restores none.
-  uint64_t getRestoredMask(Operation *op,
-                           std::optional<LaunchNodeCoord> coord) const {
-    std::optional<ExecutedStateDiscard> discard = getDiscard(op);
-    if (!discard) {
-      return 0;
-    }
-    if (!discard->reconfiguration) {
-      return resetMasks.lookup(op);
-    }
-    return coord ? installs.getInstalledDFBMask(discard->ordinal, *coord)
-                 : installs.getInstalledDFBMask(discard->ordinal);
-  }
-
-  /// The logical DFBs `op` restores at `coord`, or absent when `op` is not a
-  /// state discard.
-  std::optional<StateDiscardTargets> getTargets(Operation *op,
-                                                LaunchNodeCoord coord) const {
-    std::optional<ExecutedStateDiscard> discard = getDiscard(op);
-    if (!discard) {
-      return std::nullopt;
-    }
-    uint64_t restoredMask = getRestoredMask(op, coord);
-    StateDiscardTargets targets;
-    targets.discard = *discard;
-    targets.all = restoredMask != 0 && restoredMask == allocatedMask;
-    if (!targets.all) {
-      targets.logicalIds = getLogicalIds(restoredMask);
-    }
-    return targets;
-  }
-
-  /// Whether some reset or state-discarding reconfiguration in `discards`
-  /// restores `logicalId` at `coord`.
-  bool isRestoredAt(int64_t logicalId, LaunchNodeCoord coord,
-                    ArrayRef<Operation *> discards) const {
-    auto physicalIt = physicalIndexByLogicalId.find(logicalId);
-    if (physicalIt == physicalIndexByLogicalId.end()) {
-      return false;
-    }
-    uint64_t bit = uint64_t{1} << static_cast<unsigned>(physicalIt->second);
-    return llvm::any_of(discards, [&](Operation *op) {
-      return (getRestoredMask(op, coord) & bit) != 0;
-    });
-  }
-
-  /// The logical DFBs any node's execution of `op` restores.
-  SmallVector<int64_t> getLogicalIdsRestoredAnywhere(Operation *op) const {
-    return getLogicalIds(getRestoredMask(op, std::nullopt));
-  }
-
-private:
-  SmallVector<int64_t> getLogicalIds(uint64_t physicalMask) const {
+  /// The logical DFBs the barrier `op` restores at `coord`, or on some node
+  /// when `coord` is absent, in ascending order.
+  SmallVector<int64_t>
+  getRestoredLogicalIds(Operation *op,
+                        std::optional<LaunchNodeCoord> coord) const {
+    std::optional<ExecutedBarrier> barrier = getBarrier(op);
+    assert(barrier && "expected a synchronized reset or reconfiguration");
+    uint64_t restoredMask =
+        barrier->reconfiguration
+            ? installs.getInstalledDFBMask(barrier->ordinal, coord)
+            : resetMasks.lookup(op);
     SmallVector<int64_t> logicalIds;
     for (const auto &[physicalIndex, members] : logicalIdsByPhysicalIndex) {
-      if ((physicalMask &
+      if ((restoredMask &
            (uint64_t{1} << static_cast<unsigned>(physicalIndex))) != 0) {
         llvm::append_range(logicalIds, members);
       }
@@ -639,11 +657,10 @@ private:
     return logicalIds;
   }
 
-  uint64_t allocatedMask = 0;
+private:
   DFBReconfigurationInstalls installs;
   llvm::DenseMap<Operation *, uint64_t> resetMasks;
-  llvm::DenseMap<int64_t, int32_t> physicalIndexByLogicalId;
-  std::map<int32_t, SmallVector<int64_t>> logicalIdsByPhysicalIndex;
+  llvm::DenseMap<int64_t, SmallVector<int64_t>> logicalIdsByPhysicalIndex;
 };
 
 /// Summarizes one kernel's visible transactions at one launch node in program
@@ -661,16 +678,16 @@ public:
     thread.walk([&](Operation *op) {
       SmallVector<int64_t> touched;
       SmallVector<TransactionSequenceSummary::CounterMask> touchedCounters;
-      if (std::optional<StateDiscardTargets> targets =
-              discardModel.getTargets(op, coord)) {
-        if (targets->all) {
-          discardsEveryDFB.insert(op);
+      if (std::optional<ExecutedBarrier> barrier =
+              DFBStateDiscardModel::getBarrier(op)) {
+        barriers[op] = *barrier;
+        restoredIds[op] = discardModel.getRestoredLogicalIds(op, coord);
+        // A barrier starts a segment of every DFB of the kernel.
+        for (Operation *ancestor = op->getParentOp();
+             ancestor != thread.getOperation();
+             ancestor = ancestor->getParentOp()) {
+          nestedBarriers.insert(ancestor);
         }
-        discardTargetIds[op] = targets->logicalIds;
-        discards[op] = targets->discard;
-        touched = targets->logicalIds;
-        touchedCounters.assign(touched.size(),
-                               TransactionSequenceSummary::getAllCounterMask());
       } else if (auto access = dyn_cast<DFBAccessOpInterface>(op)) {
         SmallVector<DFBProtocolEffect> effects = access.getDFBProtocolEffects();
         if (effects.empty()) {
@@ -685,7 +702,11 @@ public:
               getEffectCounterMask(effect.kind, isa<OpaqueCallOp>(op)));
           if (isa<OpaqueCallOp>(op) &&
               effect.kind == DFBProtocolEffectKind::Pop) {
-            opaquePopDFBIds.insert(*logicalId);
+            LaunchNodeDomain domain =
+                state.getProtocolActionDomain(access).domain;
+            if (!domain.known || knownLaunchNodeDomainContains(domain, coord)) {
+              opaquePopDFBIds.insert(*logicalId);
+            }
           }
         }
       } else {
@@ -702,17 +723,6 @@ public:
             ids.push_back(logicalId);
           }
           counters[logicalId] |= mask;
-        }
-        if (discardsEveryDFB.contains(op)) {
-          nestedEveryDFBDiscard.insert(ancestor);
-        }
-        if (discardTargetIds.contains(op)) {
-          auto &resetIds = nestedDiscardIds[ancestor];
-          for (int64_t logicalId : touched) {
-            if (!llvm::is_contained(resetIds, logicalId)) {
-              resetIds.push_back(logicalId);
-            }
-          }
         }
       }
       for (Region *region = op->getParentRegion(); region != &thread.getBody();
@@ -751,11 +761,11 @@ private:
     return result;
   }
 
-  /// Every DFB an operation nested in `op` touches; an operation discarding
-  /// every DFB's state touches every DFB of the kernel.
+  /// Every DFB an operation nested in `op` touches; a nested barrier touches
+  /// every DFB of the kernel.
   DFBIdRange getNestedDFBIds(Operation *op) const {
     DFBIdRange logicalIds;
-    if (nestedEveryDFBDiscard.contains(op)) {
+    if (nestedBarriers.contains(op)) {
       logicalIds.insert(allDFBIds.begin(), allDFBIds.end());
       return logicalIds;
     }
@@ -797,7 +807,7 @@ private:
   /// a counter no nested effect changes stays exact, so exact wait totals
   /// survive conditional pops.
   TransactionSequenceResult unknown(Operation *op) const {
-    if (nestedEveryDFBDiscard.contains(op)) {
+    if (nestedBarriers.contains(op)) {
       return unknown(allDFBIds);
     }
     TransactionSequenceResult result;
@@ -831,9 +841,9 @@ private:
     for (Operation &op : block) {
       if (protocolOps.contains(&op)) {
         appendProtocolOp(&op, result);
-      } else if (discardTargetIds.contains(&op)) {
-        result.append(summarizeStateDiscard(&op), conditionFormulas);
-      } else if (nestedDFBIds.contains(&op)) {
+      } else if (barriers.contains(&op)) {
+        result.append(summarizeBarrier(&op), conditionFormulas);
+      } else if (nestedDFBIds.contains(&op) || nestedBarriers.contains(&op)) {
         result.append(summarizeRegionOp(&op, executions), conditionFormulas);
       }
     }
@@ -848,25 +858,15 @@ private:
     return summarizeBlock(region.front(), executions);
   }
 
-  /// A reset ends the current segment of each DFB it restores and labels the
-  /// DFB's sequences with itself.
-  TransactionSequenceResult summarizeStateDiscard(Operation *op) {
+  /// A barrier ends the current segment of every DFB of the kernel. The
+  /// result has two segments per DFB: the empty tail before the barrier, which
+  /// `append` joins to the preceding summary, and the empty start after it.
+  TransactionSequenceResult summarizeBarrier(Operation *op) {
     TransactionSequenceResult result;
-    DFBIdRange logicalIds;
-    if (discardsEveryDFB.contains(op)) {
-      logicalIds.insert(allDFBIds.begin(), allDFBIds.end());
-    } else {
-      const SmallVector<int64_t> &targets = discardTargetIds.lookup(op);
-      logicalIds.insert(targets.begin(), targets.end());
-    }
-    // Two segments: the empty tail of the interval before the reset, which
-    // `append` joins to the preceding summary, and the empty start of the
-    // interval after it.
-    ExecutedStateDiscard discard = discards.lookup(op);
-    for (int64_t logicalId : logicalIds) {
-      result.startSegment(logicalId);
-      result.startSegment(logicalId);
-      result.recordDiscard(logicalId, discard);
+    const SmallVector<int64_t> &restored = restoredIds.find(op)->second;
+    for (int64_t logicalId : allDFBIds) {
+      result.startSegment(logicalId, barriers.lookup(op),
+                          llvm::is_contained(restored, logicalId));
     }
     return result;
   }
@@ -930,7 +930,8 @@ private:
       if (!opaque) {
         TransactionSequenceResult single;
         single.getOrCreate(*logicalId).front().segments =
-            TransactionSegments{makeEvent(effect.kind, *blocks)};
+            TransactionSegments{TransactionSegment{
+                makeEvent(effect.kind, *blocks), std::nullopt, true}};
         result.append(single, conditionFormulas);
         continue;
       }
@@ -945,7 +946,7 @@ private:
       bool overflow = false;
       for (TransactionAlternative &alternative :
            result.getOrCreate(*logicalId)) {
-        TransactionSequenceSummary &last = alternative.segments.back();
+        TransactionSequenceSummary &last = alternative.segments.back().summary;
         // The release closes the open user acquisition first; only the
         // remainder is a self-contained transfer.
         std::int64_t open = std::max<std::int64_t>(0, last.net[openCounter]);
@@ -1004,18 +1005,33 @@ private:
         loop, LoopInductionBindings(), getValueEvaluator());
     if (!tripCount) {
       // A counter with zero net change per iteration has the same extrema for
-      // every nonnegative trip count; a reset inside the body does not.
+      // every nonnegative trip count. A barrier that does not restore a DFB
+      // leaves its state unchanged, so the body's segments join; a barrier
+      // that restores it leaves the DFB unknown. Every participant repeats the
+      // same barriers, so joining the segments loses no alignment.
       TransactionSequenceResult oneIteration =
           summarizeRegion(body, std::nullopt);
-      for (const auto &[logicalId, own] : oneIteration.alternatives) {
-        if (own.size() != 1 || own.front().segments.size() != 1) {
+      SmallVector<int64_t> multiple;
+      for (auto &[logicalId, own] : oneIteration.alternatives) {
+        if (own.size() != 1) {
+          multiple.push_back(logicalId);
+        }
+      }
+      for (int64_t logicalId : multiple) {
+        oneIteration.collapse(logicalId, conditionFormulas);
+      }
+      for (auto &[logicalId, own] : oneIteration.alternatives) {
+        std::optional<SmallVector<TransactionSequenceSummary, 1>> intervals =
+            getRestoredIntervals(own.front().segments);
+        if (!intervals || intervals->size() != 1) {
           oneIteration.markUnknown(logicalId);
           continue;
         }
-        const TransactionSegments &segments = own.front().segments;
+        own.front().segments = TransactionSegments{
+            TransactionSegment{intervals->front(), std::nullopt, true}};
         for (std::size_t counter = 0;
              counter < TransactionSequenceSummary::Count; ++counter) {
-          if (segments.front().net[counter] != 0) {
+          if (intervals->front().net[counter] != 0) {
             oneIteration.markUnknown(
                 logicalId,
                 static_cast<TransactionSequenceSummary::Counter>(counter));
@@ -1029,7 +1045,7 @@ private:
     }
     TransactionSequenceResult result =
         summarizeRegion(body, multiplyExecutions(executions, *tripCount));
-    result.repeat(*tripCount);
+    result.repeat(*tripCount, conditionFormulas);
     return result;
   }
 
@@ -1071,22 +1087,26 @@ private:
     return true;
   }
 
-  /// An at-most-once operation whose region activity is unproven and that
-  /// resets a DFB: the DFB's sequence is one of the regions' sequences or,
-  /// when no region covers the remaining executions, the empty sequence. The
-  /// regions' sequences already carry the discards they execute; each gains
-  /// the decision that selects it, and a sequence whose decisions exclude it
-  /// is dead. DFBs the operation does not reset stay unknown.
-  TransactionSequenceResult summarizeUnprovenResetOp(Operation *op) {
+  /// An at-most-once operation whose region activity is unproven: each DFB's
+  /// sequence is one of the regions' sequences or, when no region covers the
+  /// remaining executions, the empty sequence. Each gains the decision that
+  /// selects it, and a sequence whose decisions exclude it is dead. This
+  /// applies to every DFB when the operation contains a barrier, and to the
+  /// DFBs it touches when it is an `scf.if` on dispatch conditions, which
+  /// every kernel evaluates alike. Other DFBs stay unknown: a condition on any
+  /// other value may be correlated with conditions in other kernels in ways
+  /// the formulas do not state.
+  TransactionSequenceResult summarizeUnprovenConditionalOp(Operation *op) {
     TransactionSequenceResult result = unknown(op);
-    DFBIdRange resetIds;
-    if (nestedEveryDFBDiscard.contains(op)) {
-      resetIds.insert(allDFBIds.begin(), allDFBIds.end());
-    } else if (auto resetIt = nestedDiscardIds.find(op);
-               resetIt != nestedDiscardIds.end()) {
-      resetIds.insert(resetIt->second.begin(), resetIt->second.end());
+    DFBIdRange alternativeIds;
+    if (nestedBarriers.contains(op)) {
+      alternativeIds = getNestedDFBIds(op);
+    } else if (auto ifOp = dyn_cast<scf::IfOp>(op);
+               ifOp && !conditionFormulas.hasOpaqueLeaf(
+                           conditionFormulas.get(ifOp.getCondition()))) {
+      alternativeIds = getNestedDFBIds(op);
     }
-    if (resetIds.empty()) {
+    if (alternativeIds.empty()) {
       return result;
     }
     // The empty sequence of a region (or of skipping every region); absent
@@ -1094,8 +1114,7 @@ private:
     auto emptyAlternative =
         [&](Region *region) -> std::optional<TransactionAlternative> {
       TransactionAlternative alternative{
-          TransactionSegments{TransactionSequenceSummary()},
-          {},
+          TransactionSegments{TransactionSegment()},
           DispatchConditionFormulas::kTrue};
       if (!decide(alternative, getDecision(op, region))) {
         return std::nullopt;
@@ -1108,7 +1127,7 @@ private:
         branches.push_back({summarizeRegion(region, std::nullopt), &region});
       }
     }
-    for (int64_t logicalId : resetIds) {
+    for (int64_t logicalId : alternativeIds) {
       TransactionAlternatives own;
       bool unknownBranch = false;
       for (auto &[branch, region] : branches) {
@@ -1171,8 +1190,9 @@ private:
       std::optional<std::uint64_t> count =
           getRegionInvocationsPerExecution(region, executions);
       if (!count) {
-        return executesRegionsAtMostOnce(op) ? summarizeUnprovenResetOp(op)
-                                             : unknown(op);
+        return executesRegionsAtMostOnce(op)
+                   ? summarizeUnprovenConditionalOp(op)
+                   : unknown(op);
       }
       if (*count == 0) {
         continue;
@@ -1189,7 +1209,7 @@ private:
     }
     TransactionSequenceResult result = summarizeRegion(
         *activeRegion, multiplyExecutions(executions, activeCount));
-    result.repeat(activeCount);
+    result.repeat(activeCount, conditionFormulas);
     return result;
   }
 
@@ -1197,17 +1217,15 @@ private:
   LaunchNodeCoord coord;
   const DFBProtocolDomainState &state;
   llvm::DenseSet<Operation *> protocolOps;
-  llvm::DenseMap<Operation *, SmallVector<int64_t>> discardTargetIds;
-  llvm::DenseMap<Operation *, ExecutedStateDiscard> discards;
-  llvm::DenseSet<Operation *> discardsEveryDFB;
-  llvm::DenseSet<Operation *> nestedEveryDFBDiscard;
+  llvm::DenseMap<Operation *, ExecutedBarrier> barriers;
+  llvm::DenseMap<Operation *, SmallVector<int64_t>> restoredIds;
+  llvm::DenseSet<Operation *> nestedBarriers;
   llvm::DenseMap<Operation *, SmallVector<int64_t>> nestedDFBIds;
   llvm::DenseMap<
       Operation *,
       llvm::DenseMap<int64_t, TransactionSequenceSummary::CounterMask>>
       nestedCounters;
   llvm::DenseSet<int64_t> opaquePopDFBIds;
-  llvm::DenseMap<Operation *, SmallVector<int64_t>> nestedDiscardIds;
   llvm::DenseSet<Region *> regionsWithProtocolOps;
   DFBIdRange allDFBIds;
   DispatchConditionFormulas &conditionFormulas;
@@ -1228,21 +1246,20 @@ public:
       resultIt = resultsByCoord
                      .emplace(coord, DFBTransactionSequenceAnalysis(
                                          thread, coord, state, discardModel,
-                                         conditionFormulas)
+                                         state.conditionFormulas)
                                          .run())
                      .first;
     }
     return resultIt->second;
   }
 
-  DispatchConditionFormulas &getConditionFormulas() {
-    return conditionFormulas;
+  DispatchConditionFormulas &getConditionFormulas() const {
+    return state.conditionFormulas;
   }
 
 private:
   const DFBProtocolDomainState &state;
   const DFBStateDiscardModel &discardModel;
-  DispatchConditionFormulas conditionFormulas;
   llvm::DenseMap<Operation *,
                  std::map<LaunchNodeCoord, TransactionSequenceResult>>
       results;
@@ -1259,10 +1276,8 @@ std::optional<TransactionAlternatives> getTransactionAlternatives(
   }
   auto alternativesIt = sequence.alternatives.find(logicalId);
   if (alternativesIt == sequence.alternatives.end()) {
-    return TransactionAlternatives{
-        {TransactionSegments{TransactionSequenceSummary()},
-         {},
-         DispatchConditionFormulas::kTrue}};
+    return TransactionAlternatives{{TransactionSegments{TransactionSegment()},
+                                    DispatchConditionFormulas::kTrue}};
   }
   return alternativesIt->second;
 }
@@ -1300,8 +1315,8 @@ bool isSequentialKernel(func::FuncOp thread) {
   return getKernelThreadType(thread) != ttkernel::ThreadType::Compute;
 }
 
-/// Verify one role of one kernel at one launch node: within every reset
-/// interval the releases may not exceed the acquisitions and the open
+/// Verify one role of one kernel at one launch node: between restorations of
+/// the DFB the releases may not exceed the acquisitions and the open
 /// acquisitions may not exceed capacity, and the last interval must close.
 /// Returns true when a violation was reported.
 bool verifyEndpointTransactionSequence(
@@ -1319,11 +1334,15 @@ bool verifyEndpointTransactionSequence(
     return false;
   }
   for (const TransactionAlternative &alternative : *maybeAlternatives) {
-    const TransactionSegments &segments = alternative.segments;
-    for (const auto &[index, summary] : llvm::enumerate(segments)) {
+    std::optional<SmallVector<TransactionSequenceSummary, 1>> intervals =
+        getRestoredIntervals(alternative.segments);
+    if (!intervals) {
+      continue;
+    }
+    for (const auto &[index, summary] : llvm::enumerate(*intervals)) {
       bool ordered = summary.minimum[openCounter] >= 0;
       bool closed =
-          index + 1 < segments.size() || summary.net[openCounter] == 0;
+          index + 1 < intervals->size() || summary.net[openCounter] == 0;
       bool capacitySafe = static_cast<std::uint64_t>(
                               summary.maximum[openCounter]) <= capacityBlocks;
       if (ordered && closed && capacitySafe) {
@@ -1392,12 +1411,16 @@ bool verifyCombinedTransactionSequence(
     return false;
   }
   for (const TransactionAlternative &alternative : *maybeAlternatives) {
-    const TransactionSegments &segments = alternative.segments;
-    for (const auto &[index, summary] : llvm::enumerate(segments)) {
+    std::optional<SmallVector<TransactionSequenceSummary, 1>> intervals =
+        getRestoredIntervals(alternative.segments);
+    if (!intervals) {
+      continue;
+    }
+    for (const auto &[index, summary] : llvm::enumerate(*intervals)) {
       bool prefixesValid = llvm::all_of(
           summary.minimum, [](std::int64_t value) { return value >= 0; });
       bool lifecyclesClosed =
-          index + 1 < segments.size() ||
+          index + 1 < intervals->size() ||
           (summary.net[TransactionSequenceSummary::ProducerOpen] == 0 &&
            summary.net[TransactionSequenceSummary::ConsumerOpen] == 0);
       bool capacitySafe =
@@ -1481,10 +1504,27 @@ std::optional<RoleTotal> getRoleTotal(ArrayRef<DFBTransaction> transactions,
   return std::nullopt;
 }
 
+/// The operation of `thread` that executes `barrier`.
+Operation *findBarrierOp(func::FuncOp thread, ExecutedBarrier barrier) {
+  Operation *found = nullptr;
+  thread.walk([&](Operation *op) {
+    if (DFBStateDiscardModel::getBarrier(op) == barrier) {
+      found = op;
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+  assert(found && "a segment's barrier executes in its kernel");
+  return found;
+}
+
+/// `intervalEnd` is the restoring barrier that ends the compared interval and
+/// `intervalStart` the one that starts it; either is null at launch
+/// boundaries.
 void reportCountsMismatch(int64_t logicalId, Operation *transactionOp,
                           LaunchNodeCoord coord, RoleTotal producer,
                           RoleTotal consumer, std::uint64_t capacityBlocks,
-                          std::optional<std::size_t> interval,
+                          Operation *intervalStart, Operation *intervalEnd,
                           Operation *bindSite) {
   InFlightDiagnostic diagnostic = transactionOp->emitError()
                                   << "logical DFB " << logicalId
@@ -1504,12 +1544,14 @@ void reportCountsMismatch(int64_t logicalId, Operation *transactionOp,
         << consumer.blocks << ", leaving " << producer.blocks - consumer.blocks
         << " outstanding block(s) for capacity " << capacityBlocks;
   }
-  if (interval && *interval == 0) {
-    diagnostic.attachNote()
-        << "in the interval before the first synchronized reset";
-  } else if (interval) {
-    diagnostic.attachNote()
-        << "in the interval after synchronized reset " << *interval;
+  if (intervalEnd) {
+    diagnostic.attachNote(intervalEnd->getLoc())
+        << "in the interval that ends at this synchronized reset or "
+           "reconfiguration, which restores the DFB";
+  } else if (intervalStart) {
+    diagnostic.attachNote(intervalStart->getLoc())
+        << "in the interval that starts at this synchronized reset or "
+           "reconfiguration, which restores the DFB";
   }
   diagnostic.attachNote()
       << "keep pops within pushes and unpopped blocks within DFB capacity "
@@ -1517,43 +1559,62 @@ void reportCountsMismatch(int64_t logicalId, Operation *transactionOp,
   attachDeclarationNote(diagnostic, bindSite);
 }
 
-/// Compare the pushed and popped totals of the kernels at one node, per
-/// interval between synchronized resets when the DFB is reset anywhere and
-/// otherwise over the launch. Returns true when a violation was reported.
-bool verifyCrossKernelTransactionCounts(
+/// Report a wait or reserve that cannot complete before a barrier: no kernel
+/// passes the barrier until every kernel reaches it, so only the transactions
+/// before it can satisfy it. `waited` and `pushed` are the blocks waited for
+/// and pushed before the barrier, `held` the reserved blocks not yet popped.
+void reportBarrierDeadlock(
+    int64_t logicalId, Operation *transactionOp, LaunchNodeCoord coord,
+    Operation *barrierOp,
+    std::optional<std::pair<std::int64_t, std::int64_t>> waitedAndPushed,
+    std::int64_t held, std::uint64_t capacityBlocks, Operation *bindSite) {
+  InFlightDiagnostic diagnostic =
+      transactionOp->emitError()
+      << "logical DFB " << logicalId
+      << " has transactions that cannot complete before a synchronized reset "
+         "or reconfiguration on core_x="
+      << coord.x << ", core_y=" << coord.y;
+  if (waitedAndPushed) {
+    diagnostic.attachNote()
+        << "before it, the consumer waits for " << waitedAndPushed->first
+        << " block(s) but the producer pushes " << waitedAndPushed->second;
+  } else {
+    diagnostic.attachNote()
+        << "before it, the producer holds " << held
+        << " reserved block(s) that are not popped, exceeding capacity "
+        << capacityBlocks;
+  }
+  diagnostic.attachNote(barrierOp->getLoc())
+      << "every kernel on the node waits here until all of them arrive";
+  diagnostic.attachNote()
+      << "place each wait after the push it needs and each reserve after the "
+         "pop that frees its slot, on the same side of the barrier";
+  attachDeclarationNote(diagnostic, bindSite);
+}
+
+/// Compare the kernels' sequences at one node. Every participant executes the
+/// same barriers and decides the same dispatch conditions, so alternatives of
+/// different kernels belong to one execution when they pass the same barriers
+/// and their decisions are jointly satisfiable; a kernel with one alternative
+/// matches every choice. At each barrier the waits before it may not exceed
+/// the pushes before it and the reserved blocks not popped before it may not
+/// exceed capacity. Between restorations of the DFB the pops may not exceed
+/// the pushes and the unpopped blocks must fit capacity; a kernel whose pops
+/// are conditional contributes its exact wait total instead. More consistent
+/// combinations than `kMaxAlternatives` leave the DFB unchecked at this node.
+/// Returns true when a violation was reported.
+bool verifyCrossKernelSequences(
     int64_t logicalId, ArrayRef<DFBTransaction> producers,
     ArrayRef<DFBTransaction> consumers, ArrayRef<func::FuncOp> threads,
-    LaunchNodeCoord coord, std::uint64_t capacityBlocks, bool segmented,
-    Operation *bindSite, const DFBProtocolDomainState &state,
+    LaunchNodeCoord coord, std::uint64_t capacityBlocks, Operation *bindSite,
     DFBTransactionSequenceCache &sequenceCache) {
-  if (!segmented) {
-    std::optional<RoleTotal> producer =
-        getRoleTotal(producers, coord, state, /*allowAcquisitions=*/false);
-    std::optional<RoleTotal> consumer =
-        getRoleTotal(consumers, coord, state, /*allowAcquisitions=*/true);
-    if (!producer || !consumer ||
-        countsFitCapacity(producer->blocks, consumer->blocks, capacityBlocks)) {
-      return false;
-    }
-    reportCountsMismatch(
-        logicalId, getTransactionAtNode(producers, consumers, coord), coord,
-        *producer, *consumer, capacityBlocks, std::nullopt, bindSite);
-    return true;
-  }
-
-  // Every participant executes the same discards and decides the same
-  // dispatch conditions, so alternatives of different kernels belong to one
-  // execution when their discards are equal and their decisions are jointly
-  // satisfiable. A kernel with one alternative matches every choice. Every
-  // consistent combination is checked; more of them than `kMaxAlternatives`
-  // leaves the DFB unchecked at this node.
-  // A kernel whose pops are conditional contributes its exact wait total
-  // instead, as in the unsegmented comparison.
   using Summary = TransactionSequenceSummary;
   constexpr Summary::CounterMask pushedMask =
       Summary::getCounterMask(Summary::Pushed);
   SmallVector<TransactionAlternatives, 4> perThread;
   SmallVector<bool, 4> waitsStandIn;
+  bool publishedKnown = true;
+  bool heldKnown = true;
   for (func::FuncOp thread : threads) {
     const TransactionSequenceResult &sequence =
         sequenceCache.get(thread, coord);
@@ -1573,6 +1634,10 @@ bool verifyCrossKernelTransactionCounts(
     }
     perThread.push_back(std::move(*alternatives));
     waitsStandIn.push_back(waits);
+    publishedKnown &= !sequence.isUnknown(
+        logicalId, Summary::getCounterMask(Summary::Published));
+    heldKnown &= !sequence.isUnknown(
+        logicalId, Summary::getCounterMask(Summary::Capacity));
   }
 
   DispatchConditionFormulas &formulas = sequenceCache.getConditionFormulas();
@@ -1584,61 +1649,105 @@ bool verifyCrossKernelTransactionCounts(
     for (auto [index, earlier] : llvm::enumerate(chosen)) {
       bool earlierAlone = perThread[index].size() == 1;
       if (!earlierAlone && !candidateAlone &&
-          earlier->executedDiscards != candidate.executedDiscards) {
+          !earlier->sameBarriers(candidate)) {
         return false;
       }
     }
     return formulas.satisfiable(
         formulas.conjoin(pathConditions.back(), candidate.pathCondition));
   };
-  // Every participant executes the same resets; a kernel that touches the
-  // DFB without resetting it keeps one segment and is left out. Returns true
-  // when a violation was reported.
+  // Returns true when a violation was reported.
   auto checkCombination = [&]() {
-    std::size_t intervals = 0;
-    for (const TransactionAlternative *alternative : chosen) {
-      intervals = std::max(intervals, alternative->segments.size());
-    }
+    const TransactionSegments &reference = chosen.front()->segments;
     bool aligned =
         llvm::all_of(chosen, [&](const TransactionAlternative *alternative) {
-          return alternative->segments.size() == 1 ||
-                 alternative->segments.size() == intervals;
+          return alternative->sameBarriers(*chosen.front()) &&
+                 llvm::equal(alternative->segments, reference,
+                             [](const TransactionSegment &lhs,
+                                const TransactionSegment &rhs) {
+                               return lhs.restored == rhs.restored;
+                             });
         });
     if (!aligned) {
       return false;
     }
-    for (std::size_t interval = 0; interval < intervals; ++interval) {
-      std::optional<std::uint64_t> pushed = 0;
-      std::optional<std::uint64_t> popped = 0;
-      bool anyWaits = false;
-      for (auto [index, alternative] : llvm::enumerate(chosen)) {
-        const TransactionSegments &segments = alternative->segments;
-        if (segments.size() != intervals || !pushed || !popped) {
-          continue;
+    func::FuncOp referenceThread = threads.front();
+    Operation *restoringBarrier = nullptr;
+    std::uint64_t pushed = 0;
+    std::uint64_t consumed = 0;
+    std::int64_t published = 0;
+    std::int64_t held = 0;
+    bool anyWaits = false;
+    for (std::size_t index = 0; index < reference.size(); ++index) {
+      if (index > 0 && reference[index].restored) {
+        restoringBarrier =
+            findBarrierOp(referenceThread, *reference[index].barrier);
+        pushed = consumed = 0;
+        published = held = 0;
+        anyWaits = false;
+      }
+      for (auto [thread, alternative] : llvm::enumerate(chosen)) {
+        const Summary &summary = alternative->segments[index].summary;
+        Summary::Counter consumedCounter =
+            waitsStandIn[thread] ? Summary::Waited : Summary::Popped;
+        anyWaits |= waitsStandIn[thread] && summary.net[Summary::Waited] != 0;
+        std::optional<std::uint64_t> nextPushed = llvm::checkedAddUnsigned(
+            pushed, static_cast<std::uint64_t>(summary.net[Summary::Pushed]));
+        std::optional<std::uint64_t> nextConsumed = llvm::checkedAddUnsigned(
+            consumed, static_cast<std::uint64_t>(summary.net[consumedCounter]));
+        std::optional<std::int64_t> nextPublished =
+            llvm::checkedAdd(published, summary.net[Summary::Published]);
+        std::optional<std::int64_t> nextHeld =
+            llvm::checkedAdd(held, summary.net[Summary::Capacity]);
+        // Totals beyond the representable range are not compared.
+        if (!nextPushed || !nextConsumed || !nextPublished || !nextHeld) {
+          return false;
         }
-        pushed = llvm::checkedAddUnsigned(
-            *pushed, static_cast<std::uint64_t>(
-                         segments[interval].net[Summary::Pushed]));
-        Summary::Counter consumed =
-            waitsStandIn[index] ? Summary::Waited : Summary::Popped;
-        anyWaits |=
-            waitsStandIn[index] && segments[interval].net[Summary::Waited] != 0;
-        popped = llvm::checkedAddUnsigned(
-            *popped,
-            static_cast<std::uint64_t>(segments[interval].net[consumed]));
+        pushed = *nextPushed;
+        consumed = *nextConsumed;
+        published = *nextPublished;
+        held = *nextHeld;
       }
-      // A total beyond the representable range is not compared.
-      if (!pushed || !popped) {
-        continue;
+      bool last = index + 1 == reference.size();
+      Operation *nextBarrier =
+          last ? nullptr
+               : findBarrierOp(referenceThread, *reference[index + 1].barrier);
+      if ((last || reference[index + 1].restored) &&
+          !countsFitCapacity(pushed, consumed, capacityBlocks)) {
+        reportCountsMismatch(
+            logicalId, getTransactionAtNode(producers, consumers, coord), coord,
+            RoleTotal{pushed, false}, RoleTotal{consumed, anyWaits},
+            capacityBlocks, last ? restoringBarrier : nullptr,
+            last ? nullptr : nextBarrier, bindSite);
+        return true;
       }
-      if (countsFitCapacity(*pushed, *popped, capacityBlocks)) {
-        continue;
+      // A wait beyond the pushes never completes, whether or not the pops
+      // are known.
+      if (last && publishedKnown && published < 0) {
+        std::int64_t pushedBlocks = static_cast<std::int64_t>(pushed);
+        reportCountsMismatch(
+            logicalId, getTransactionAtNode(producers, consumers, coord), coord,
+            RoleTotal{pushed, false},
+            RoleTotal{static_cast<std::uint64_t>(pushedBlocks - published),
+                      true},
+            capacityBlocks, restoringBarrier, nullptr, bindSite);
+        return true;
       }
-      reportCountsMismatch(
-          logicalId, getTransactionAtNode(producers, consumers, coord), coord,
-          RoleTotal{*pushed, false}, RoleTotal{*popped, anyWaits},
-          capacityBlocks, interval, bindSite);
-      return true;
+      if (nextBarrier && publishedKnown && published < 0) {
+        std::int64_t pushedBlocks = static_cast<std::int64_t>(pushed);
+        reportBarrierDeadlock(
+            logicalId, getTransactionAtNode(producers, consumers, coord), coord,
+            nextBarrier, std::make_pair(pushedBlocks - published, pushedBlocks),
+            held, capacityBlocks, bindSite);
+        return true;
+      }
+      if (nextBarrier && heldKnown &&
+          held > static_cast<std::int64_t>(capacityBlocks)) {
+        reportBarrierDeadlock(
+            logicalId, getTransactionAtNode(producers, consumers, coord), coord,
+            nextBarrier, std::nullopt, held, capacityBlocks, bindSite);
+        return true;
+      }
     }
     return false;
   };
@@ -1674,26 +1783,125 @@ bool verifyCrossKernelTransactionCounts(
   return violation;
 }
 
-/// Warn when the consumers of a DFB wait on it but never pop it at `coord`
-/// and no synchronized reset or state-discarding reconfiguration restores it
-/// there. Pages published before such a wait stay in the DFB until a pop or a
-/// reset, so a producer that publishes on every repetition blocks once the DFB
-/// is full. A program that relies on a state-discarding reconfiguration to
-/// release waited pages fails this way when the allocation cannot bound the
-/// DFB's lifecycle and therefore does not reinstall its descriptor at the
-/// boundary. Only nodes whose external calls may perform undeclared protocol
-/// actions reach this check; elsewhere the visible transactions are verified
-/// exactly. Returns true when a warning was emitted.
-bool warnUndrainedWaitOnlyDFB(int64_t logicalId,
-                              ArrayRef<DFBTransaction> consumers,
-                              LaunchNodeCoord coord,
-                              ArrayRef<OpaqueCallOp> externalCalls,
-                              ArrayRef<Operation *> stateDiscards,
-                              const DFBStateDiscardModel &discardModel,
-                              Operation *bindSite,
-                              const DFBProtocolDomainState &state) {
-  Operation *repeatedWait = nullptr;
-  std::uint64_t repeatedExecutions = 0;
+/// Compare the kernels' transactions at one node: the launch totals of exact
+/// execution counts when no barrier restores the DFB, then the sequences.
+/// Returns true when a violation was reported.
+bool verifyCrossKernelTransactionCounts(
+    int64_t logicalId, ArrayRef<DFBTransaction> producers,
+    ArrayRef<DFBTransaction> consumers, ArrayRef<func::FuncOp> threads,
+    LaunchNodeCoord coord, std::uint64_t capacityBlocks, bool restoredAnywhere,
+    Operation *bindSite, const DFBProtocolDomainState &state,
+    DFBTransactionSequenceCache &sequenceCache) {
+  if (!restoredAnywhere) {
+    std::optional<RoleTotal> producer =
+        getRoleTotal(producers, coord, state, /*allowAcquisitions=*/false);
+    std::optional<RoleTotal> consumer =
+        getRoleTotal(consumers, coord, state, /*allowAcquisitions=*/true);
+    if (producer && consumer &&
+        !countsFitCapacity(producer->blocks, consumer->blocks,
+                           capacityBlocks)) {
+      reportCountsMismatch(
+          logicalId, getTransactionAtNode(producers, consumers, coord), coord,
+          *producer, *consumer, capacityBlocks, nullptr, nullptr, bindSite);
+      return true;
+    }
+  }
+  return verifyCrossKernelSequences(logicalId, producers, consumers, threads,
+                                    coord, capacityBlocks, bindSite,
+                                    sequenceCache);
+}
+
+/// Executions of `op` at `coord` at most: the exact count of `op` or of the
+/// nearest ancestor reached through operations that execute their regions at
+/// most once. Absent when no such count is proven.
+std::optional<std::uint64_t>
+getExecutionUpperBound(Operation *op, LaunchNodeCoord coord,
+                       const DFBProtocolDomainState &state) {
+  for (Operation *current = op; current && !isa<func::FuncOp>(current);
+       current = current->getParentOp()) {
+    if (std::optional<std::uint64_t> exact =
+            getExactExecutionCountAtLaunchNode(current, coord, state)) {
+      return exact;
+    }
+    Operation *parent = current->getParentOp();
+    if (!parent || !executesRegionsAtMostOnce(parent)) {
+      return std::nullopt;
+    }
+  }
+  return std::nullopt;
+}
+
+/// The most blocks a producer pushes at `coord` between two restorations of
+/// the DFB, or absent when unproven. Without a restoring barrier on the node
+/// this bounds the launch total by each push's execution bound; otherwise the
+/// producers' sequences give the pushes of each restored interval.
+std::optional<std::uint64_t> getMaximumPushesBetweenRestorations(
+    int64_t logicalId, ArrayRef<DFBTransaction> producers,
+    LaunchNodeCoord coord, bool restoredAtNode,
+    const DFBProtocolDomainState &state,
+    DFBTransactionSequenceCache &sequenceCache) {
+  std::optional<std::uint64_t> maximum;
+  if (!restoredAtNode) {
+    std::uint64_t total = 0;
+    for (const DFBTransaction &transaction : producers) {
+      if (transaction.acquisition ||
+          !transactionMayExecuteAt(transaction, coord)) {
+        continue;
+      }
+      std::optional<std::uint64_t> executions =
+          getExecutionUpperBound(transaction.op, coord, state);
+      if (!transaction.blocks || !executions) {
+        return std::nullopt;
+      }
+      std::optional<std::uint64_t> blocks = llvm::checkedMulUnsigned(
+          static_cast<std::uint64_t>(*transaction.blocks), *executions);
+      std::optional<std::uint64_t> nextTotal =
+          blocks ? llvm::checkedAddUnsigned(total, *blocks) : std::nullopt;
+      if (!nextTotal) {
+        return std::nullopt;
+      }
+      total = *nextTotal;
+    }
+    return total;
+  }
+  for (func::FuncOp thread : getTransactionThreadsAtNode(producers, coord)) {
+    std::optional<TransactionAlternatives> alternatives =
+        getTransactionAlternatives(sequenceCache.get(thread, coord), logicalId,
+                                   TransactionSequenceSummary::getCounterMask(
+                                       TransactionSequenceSummary::Pushed));
+    if (!alternatives) {
+      continue;
+    }
+    for (const TransactionAlternative &alternative : *alternatives) {
+      std::optional<SmallVector<TransactionSequenceSummary, 1>> intervals =
+          getRestoredIntervals(alternative.segments);
+      if (!intervals) {
+        continue;
+      }
+      for (const TransactionSequenceSummary &interval : *intervals) {
+        auto pushed = static_cast<std::uint64_t>(
+            interval.net[TransactionSequenceSummary::Pushed]);
+        maximum = std::max(maximum.value_or(0), pushed);
+      }
+    }
+  }
+  return maximum;
+}
+
+/// Warn when a kernel waits on a DFB at `coord`, no kernel pops it, and the
+/// producer can push more blocks than its capacity between restorations of
+/// the DFB: published blocks stay until a pop or a restoring barrier, so the
+/// producer blocks once the DFB is full. Only nodes whose external calls may
+/// perform undeclared protocol actions reach this check; elsewhere the visible
+/// transactions are verified exactly. Returns true when a warning was
+/// emitted.
+bool warnUndrainedDFB(int64_t logicalId, ArrayRef<DFBTransaction> producers,
+                      ArrayRef<DFBTransaction> consumers, LaunchNodeCoord coord,
+                      std::uint64_t capacityBlocks, bool restoredAtNode,
+                      ArrayRef<OpaqueCallOp> externalCalls, Operation *bindSite,
+                      const DFBProtocolDomainState &state,
+                      DFBTransactionSequenceCache &sequenceCache) {
+  Operation *wait = nullptr;
   for (const DFBTransaction &transaction : consumers) {
     if (!transactionMayExecuteAt(transaction, coord)) {
       continue;
@@ -1702,29 +1910,26 @@ bool warnUndrainedWaitOnlyDFB(int64_t logicalId,
     if (!transaction.acquisition) {
       return false;
     }
-    std::optional<std::uint64_t> executions =
-        getExactExecutionCountAtLaunchNode(transaction.op, coord, state);
-    if (executions && *executions > 1 && *executions > repeatedExecutions) {
-      repeatedWait = transaction.op;
-      repeatedExecutions = *executions;
-    }
+    wait = pickEarlierBySourceLoc(wait, transaction.op);
   }
-  if (!repeatedWait ||
-      discardModel.isRestoredAt(logicalId, coord, stateDiscards)) {
+  if (!wait) {
+    return false;
+  }
+  std::optional<std::uint64_t> pushed = getMaximumPushesBetweenRestorations(
+      logicalId, producers, coord, restoredAtNode, state, sequenceCache);
+  if (!pushed || *pushed <= capacityBlocks) {
     return false;
   }
   InFlightDiagnostic diagnostic =
-      repeatedWait->emitWarning()
-      << "logical DFB " << logicalId
-      << " is waited on without a pop on core_x=" << coord.x
-      << ", core_y=" << coord.y
-      << ", and no synchronized reset or state-discarding reconfiguration "
-         "restores it";
+      wait->emitWarning()
+      << "logical DFB " << logicalId << " is never popped on core_x=" << coord.x
+      << ", core_y=" << coord.y << ", but its producer can push " << *pushed
+      << " block(s) into capacity " << capacityBlocks
+      << " before a synchronized reset or reconfiguration restores it";
   diagnostic.attachNote()
-      << "the wait executes " << repeatedExecutions
-      << " times per launch; published pages remain in the DFB until a pop "
-         "or a reset, so a producer that publishes again blocks once the DFB "
-         "is full";
+      << "published blocks stay in the DFB until a pop or a reset or "
+         "reconfiguration that restores it, so the producer blocks once the "
+         "DFB is full";
   auto *externalCall = llvm::find_if(externalCalls, [&](OpaqueCallOp call) {
     LaunchNodeDomain callDomain = state.getExternalCallDomain(call);
     const std::set<LaunchNodeCoord> *nodes = callDomain.getUpperBoundNodes();
@@ -1737,24 +1942,24 @@ bool warnUndrainedWaitOnlyDFB(int64_t logicalId,
            "it does not declare";
   }
   diagnostic.attachNote()
-      << "a state-discarding reconfiguration restores a DFB only where the "
-         "finalized allocation reinstalls its descriptor, which requires a "
-         "bounded lifecycle; declare the DFB effects of external calls that "
-         "access it, or pop the waited pages";
+      << "a reconfiguration restores a DFB only where the finalized "
+         "allocation reinstalls its descriptor, which requires a bounded "
+         "lifecycle; declare the DFB effects of external calls that access "
+         "it, or pop the published blocks";
   attachDeclarationNote(diagnostic, bindSite);
   return true;
 }
 
 /// Verify one logical DFB on every launch node where a transaction may
 /// execute. Nodes where an opaque call may perform protocol actions the IR
-/// does not represent are skipped, apart from the warning for a waited DFB
-/// that nothing drains. Returns true when a violation was reported.
+/// does not represent are skipped, apart from the warning for a DFB that
+/// nothing drains. Returns true when a violation was reported.
 bool verifyDFBTransactions(
     int64_t logicalId, ArrayRef<DFBTransaction> producers,
     ArrayRef<DFBTransaction> consumers, std::uint64_t capacityBlocks,
     const LaunchNodeDomain &externalProtocolDomain,
-    ArrayRef<OpaqueCallOp> externalCalls, ArrayRef<Operation *> stateDiscards,
-    const DFBStateDiscardModel &discardModel, bool resetAnywhere,
+    ArrayRef<OpaqueCallOp> externalCalls, bool restoredAnywhere,
+    ArrayRef<Operation *> barrierOps, const DFBStateDiscardModel &discardModel,
     Operation *bindSite, const DFBProtocolDomainState &state,
     DFBTransactionSequenceCache &sequenceCache) {
   assert((!producers.empty() || !consumers.empty()) &&
@@ -1775,9 +1980,13 @@ bool verifyDFBTransactions(
   for (LaunchNodeCoord coord : verificationDomain.nodes) {
     if (!externalNodes || externalNodes->count(coord) != 0) {
       if (!warnedUndrained) {
-        warnedUndrained = warnUndrainedWaitOnlyDFB(
-            logicalId, consumers, coord, externalCalls, stateDiscards,
-            discardModel, bindSite, state);
+        bool restoredAtNode = llvm::any_of(barrierOps, [&](Operation *op) {
+          return llvm::is_contained(
+              discardModel.getRestoredLogicalIds(op, coord), logicalId);
+        });
+        warnedUndrained = warnUndrainedDFB(
+            logicalId, producers, consumers, coord, capacityBlocks,
+            restoredAtNode, externalCalls, bindSite, state, sequenceCache);
       }
       continue;
     }
@@ -1823,7 +2032,7 @@ bool verifyDFBTransactions(
     // totals are compared regardless of ownership relaxation.
     if (verifyCrossKernelTransactionCounts(
             logicalId, producers, consumers, threads, coord, capacityBlocks,
-            resetAnywhere, bindSite, state, sequenceCache)) {
+            restoredAnywhere, bindSite, state, sequenceCache)) {
       return true;
     }
   }
@@ -1891,21 +2100,21 @@ struct TTLVerifyDFBLifecyclePass
     }
 
     FailureOr<DFBStateDiscardModel> discardModel =
-        DFBStateDiscardModel::build(module, *bindSites);
+        DFBStateDiscardModel::build(module, *bindSites, state.baseDomain);
     if (failed(discardModel)) {
       signalPassFailure();
       return;
     }
-    SmallVector<Operation *> stateDiscards;
-    llvm::DenseSet<int64_t> resetDFBIds;
+    llvm::DenseSet<int64_t> restoredDFBIds;
+    SmallVector<Operation *> barrierOps;
     module.walk([&](Operation *op) {
-      if (!DFBStateDiscardModel::getDiscard(op)) {
+      if (!DFBStateDiscardModel::getBarrier(op)) {
         return;
       }
-      stateDiscards.push_back(op);
+      barrierOps.push_back(op);
       for (int64_t logicalId :
-           discardModel->getLogicalIdsRestoredAnywhere(op)) {
-        resetDFBIds.insert(logicalId);
+           discardModel->getRestoredLogicalIds(op, std::nullopt)) {
+        restoredDFBIds.insert(logicalId);
       }
     });
 
@@ -1925,7 +2134,7 @@ struct TTLVerifyDFBLifecyclePass
           getDFBTransactions(consumersByDFB, logicalId),
           static_cast<std::uint64_t>(dfbType.getBlockCount()),
           externalProtocolDomainsByDFB.lookup(logicalId), externalCalls,
-          stateDiscards, *discardModel, resetDFBIds.contains(logicalId),
+          restoredDFBIds.contains(logicalId), barrierOps, *discardModel,
           bindSite, state, sequenceCache);
     }
     if (sawError) {

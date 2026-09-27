@@ -325,37 +325,6 @@ Every producer must issue its required transfers before its local boundary
 occurrence; the participating data movement RISC then completes its own
 outstanding commands. Runtime lowering is currently restricted to Blackhole.
 
-### Kimi K3 examples
-
-The Kimi K3 decode layers in tt-lang-ops-and-models reset or reconfigure DFBs
-for two reasons.
-
-A DFB that several kernels read without popping keeps its pages until a reset.
-The flash MLA partial-decode kernel publishes each worker's partial attention
-output and softmax statistics, and SDPA reduce-scatter reads both DFBs in its
-compute kernel and in its pipe-source sender. Neither kernel pops them: one pop
-could release the pages only after both readers finish, which needs
-synchronization the two kernels do not otherwise perform. The resident MLA
-attention and SDPA reduce-scatter loops
-(`test/model/kimi/resident_mla_attention.py`,
-`test/model/kimi/resident_sdpa_reduce_scatter.py`) therefore end every decode
-generation with `ttl.reset_all_dfbs`. The resident MLA attention program
-declares 48 logical DFBs, within the 64 physical indices, so this reset
-releases pages rather than enabling index reuse. Without it, the next
-generation's flash producer blocks once the statistics DFB is full. The
-composed MLA+MoE layer ends the same lifecycles at a state-discarding
-reconfiguration instead. When allocation could not bound them, it did not
-reinstall their descriptors at that boundary, and the layer hung this way at
-its second generation.
-
-A composed layer needs more DFBs than the target has physical indices. The
-MLA+MoE layer (`models/kimi/mla_moe.py`) declares 152 logical DFBs; with DFB
-index reuse disabled, compilation fails because it needs 152 of Blackhole's 64
-indices. Its attention, MoE, residual and collective phases therefore share
-physical indices, and its six reconfiguration boundaries per decode generation
-let one index serve lifecycles with different geometries and ring positions in
-consecutive phases.
-
 ## Synchronized reconfiguration epochs
 
 A `DFBReconfiguration` declares one compute kernel and two data-movement
@@ -754,43 +723,59 @@ role is its own endpoint and `wait cur; reserve next; pop cur; push next`
 fits one slot; the UNPACK-side wait is not checked against later PACK-side
 publications, so a wait that only its own later publication can satisfy
 deadlocks without a diagnostic (the simulator reports it). Across kernels,
-pops cannot exceed pushes and unpopped pushes must fit capacity, in every
-interval; exact wait counts stand in for conditional pops. A region whose
-execution the counts do not resolve makes unknown only the counters its
-effects change, so the other counters of that DFB stay checked.
+waits and pops cannot exceed pushes and unpopped pushes must fit capacity, in
+every interval between restorations of the DFB; where the pops are
+conditional on a value other than a dispatch condition, the exact wait counts
+stand in for them. A region whose execution the counts do not resolve makes
+unknown only the counters its effects change, so the other counters of that
+DFB stay checked.
 
 Opaque-call summaries count only their pushes and pops, since their reserve
 and wait amounts are readiness thresholds; such a release first closes the
 open user acquisition of its kind in the current interval of each alternative,
-and its remainder is a self-contained transfer. Waits stand in for conditional
-pops only where every pop is a user pop. A synchronized reset or
-state-discarding reconfiguration splits the sequence of each DFB it restores
-into intervals: each is checked on its own, only the last must close, and the
-cross-kernel totals are compared per interval because the participants
-execute the same resets. The restored DFBs are those whose physical index the
-runtime resets on the node, not those the operation names. A reset restores
-the interfaces of its lowered mask, which reset lowering and the verifier
-compute with the same function (`getSynchronizedResetDFBMask`), and a logical
-DFB that shares a physical index with a reset target is restored with it. A
-reconfiguration restores the descriptors that `ttl.dfb_reconfiguration_plan`
-installs at its boundary on the node. The plan does not install a DFB whose
-state is live across the boundary, or whose lifecycle allocation cannot bound;
-such a DFB keeps its pointers and counters although the boundary declares
-`discard_dfb_state`, and its sequence continues across the boundary. A reset under a dispatch condition the counts do not resolve yields two
-alternatives for its DFBs, executed and skipped. An alternative records the
-resets and reconfigurations it executed and its path condition, a Boolean
-formula over dispatch-condition results kept as a binary decision diagram
-(`DispatchConditionFormulas`), so equivalence and satisfiability are exact;
-alternatives with the same sequence merge under the disjunction of their path
+and its remainder is a self-contained transfer. Waits stand in for pops only
+where every pop is a user pop.
+
+Every participant kernel waits at a synchronized reset or reconfiguration
+until all of them arrive, so each such barrier splits the sequence of every
+DFB of the kernel into segments. The transactions before a barrier must
+complete among themselves: across kernels, the waits before it cannot exceed
+the pushes before it, and the reserved blocks not popped before it cannot
+exceed capacity. A barrier restores only some DFBs, and a DFB's state
+continues across a barrier that does not restore it. Between restorations the
+checks above apply, and only the last interval must close. The restored DFBs
+are those whose physical index the runtime resets on the node, not those the
+operation names. A reset restores the interfaces of its lowered mask, which
+reset lowering and the verifier compute with the same function
+(`getSynchronizedResetDFBMask`), and a logical DFB that shares a physical
+index with a reset target is restored with it. A reconfiguration restores the
+descriptors that `ttl.dfb_reconfiguration_plan` installs at its boundary on
+the node. The plan does not install a DFB whose state is live across the
+boundary, or whose lifecycle allocation cannot bound; such a DFB keeps its
+pointers and counters although the boundary declares `discard_dfb_state`, and
+its sequence continues across the boundary.
+
+An `scf.if` the counts do not resolve yields one alternative per branch, and
+one for skipping it when it has no `else` region, for every DFB when it
+contains a barrier and for the DFBs it touches when its condition is a
+dispatch-condition formula. A condition on any other value may be correlated
+with conditions in other kernels in ways the formulas do not state, so those
+DFBs stay unknown instead. An alternative records its segments and its path
+condition, a Boolean formula over dispatch-condition results kept as a reduced
+ordered binary decision diagram (`DispatchConditionFormulas`), so equivalence
+and satisfiability are exact within the diagram's node budget; a formula
+beyond the budget is never proven equivalent and is treated as satisfiable.
+Alternatives with the same sequence merge under the disjunction of their path
 conditions, and two alternatives combine, within a kernel or across kernels,
 only when the conjunction of their path conditions is satisfiable. Every
 alternative must pass, and every satisfiable combination of the kernels'
-alternatives with equal discards is checked. The budgets `kMaxAlternatives`
-and `kMaxSegments` in `TTLVerifyDFBLifecycle.cpp` bound the alternatives and
-the intervals; beyond them, or when an unresolved loop contains a reset, the
-DFB is unknown in that kernel and the cross-kernel totals of that DFB are not
-compared on the node. More cross-kernel combinations than `kMaxAlternatives`
-leave only that comparison undone.
+alternatives that pass the same barriers is checked. The budgets
+`kMaxAlternatives` and `kMaxSegments` in `TTLVerifyDFBLifecycle.cpp` bound
+the alternatives and the segments; beyond them, or when an unresolved loop
+contains a barrier that restores the DFB, the DFB is unknown in that kernel
+and the cross-kernel conditions of that DFB are not checked on the node. More
+cross-kernel combinations than `kMaxAlternatives` leave only that comparison
+undone.
 
 The pass reuses the existing analyses rather than interpreting control flow
 itself: `LaunchNodeDomainAnalysis` supplies the nodes where each effect and
@@ -807,14 +792,17 @@ runs rather than an ordered counter summary. Nodes where an opaque call may
 perform unrepresented protocol actions on a DFB (an uncontracted dependency
 or `unknown_dfb_access`) are not checked for it; the excluded nodes are the
 upper bound of the call's launch domain. An `inspect` contract excludes
-nothing. On such a node the pass warns when the consumers wait on the DFB
-repeatedly, no kernel pops it there, and no reset or reconfiguration restores
-it: pages published before the wait then stay in the DFB, so a producer that
-publishes again blocks once the DFB is full. This is how the pattern that
-releases waited pages at a state-discarding reconfiguration fails when
-allocation cannot bound the DFB's lifecycle; declaring the external calls'
-DFB effects lets allocation end the lifecycle at the boundary. The warning is
-not an error because an undeclared external action may pop the pages.
+nothing. On such a node the pass warns when a kernel waits on the DFB, no
+kernel pops it there, and the producer can push more blocks than its capacity
+between restorations of the DFB: published blocks then stay in the DFB, so
+the producer blocks once it is full. Without a restoring barrier on the node,
+each push counts with the execution count of its nearest ancestor that has
+one, through operations that execute their regions at most once. This is how
+the pattern that releases waited pages at a state-discarding reconfiguration
+fails when allocation cannot bound the DFB's lifecycle; declaring the external
+calls' DFB effects lets allocation end the lifecycle at the boundary. The
+warning is not an error because an undeclared external action may pop the
+pages.
 
 The two finalized-DFB verifiers share their inputs through
 `DFBProtocolDomainAnalysis`: the launch-node domain of every protocol action

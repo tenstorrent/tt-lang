@@ -494,7 +494,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttco
     scf.for %iteration = %zero to %four step %one {
       // expected-error @below {{logical DFB 0 has capacity-unsafe producer and consumer transactions on core_x=0, core_y=0}}
       // expected-note @below {{the producer pushes 4 block(s) per launch and the consumer pops 0, leaving 4 outstanding block(s) for capacity 1}}
-      // expected-note @below {{in the interval before the first synchronized reset}}
+      // expected-note @+5 {{in the interval that ends at this synchronized reset or reconfiguration, which restores the DFB}}
       // expected-note @below {{keep pops within pushes and unpopped blocks within DFB capacity on every active node}}
       %slot = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
@@ -540,7 +540,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttco
     scf.for %iteration = %zero to %four step %one {
       // expected-error @below {{logical DFB 0 has capacity-unsafe producer and consumer transactions on core_x=0, core_y=0}}
       // expected-note @below {{the producer pushes 4 block(s) per launch and the consumer pops 0, leaving 4 outstanding block(s) for capacity 1}}
-      // expected-note @below {{in the interval after synchronized reset 1}}
+      // expected-note @-7 {{in the interval that starts at this synchronized reset or reconfiguration, which restores the DFB}}
       // expected-note @below {{keep pops within pushes and unpopped blocks within DFB capacity on every active node}}
       %slot = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
@@ -666,7 +666,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttco
     scf.for %iteration = %zero to %four step %one {
       // expected-error @below {{logical DFB 0 has capacity-unsafe producer and consumer transactions on core_x=0, core_y=0}}
       // expected-note @below {{the producer pushes 4 block(s) per launch and the consumer pops 0, leaving 4 outstanding block(s) for capacity 1}}
-      // expected-note @below {{in the interval before the first synchronized reset}}
+      // expected-note @+6 {{in the interval that ends at this synchronized reset or reconfiguration, which restores the DFB}}
       // expected-note @below {{keep pops within pushes and unpopped blocks within DFB capacity on every active node}}
       %slot = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
@@ -731,7 +731,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttco
     scf.for %iteration = %zero to %four step %one {
       // expected-error @below {{logical DFB 0 has capacity-unsafe producer and consumer transactions on core_x=0, core_y=0}}
       // expected-note @below {{the producer pushes 4 block(s) per launch and the consumer pops 0, leaving 4 outstanding block(s) for capacity 1}}
-      // expected-note @below {{in the interval after synchronized reset 1}}
+      // expected-note @-8 {{in the interval that starts at this synchronized reset or reconfiguration, which restores the DFB}}
       // expected-note @below {{keep pops within pushes and unpopped blocks within DFB capacity on every active node}}
       %slot = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
@@ -814,7 +814,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttco
     %active1 = arith.cmpi ne, %flag1, %zero_i32 : i32
     // expected-error @below {{logical DFB 0 has capacity-unsafe producer and consumer transactions on core_x=0, core_y=0}}
     // expected-note @below {{the producer pushes 3 block(s) per launch and the consumer pops 1, leaving 2 outstanding block(s) for capacity 1}}
-    // expected-note @below {{in the interval before the first synchronized reset}}
+    // expected-note @+9 {{in the interval that ends at this synchronized reset or reconfiguration, which restores the DFB}}
     // expected-note @below {{keep pops within pushes and unpopped blocks within DFB capacity on every active node}}
     %slot0 = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
@@ -875,8 +875,8 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttco
 // -----
 
 // A reset and a state-discarding reconfiguration share ordinal 0. Their
-// alternatives stay distinct, so the two pushes with neither executed are
-// checked.
+// alternatives stay distinct: without the reset, the two pushes exceed the
+// capacity before the reconfiguration, which installs nothing here.
 #recon = #ttl.dfb_reconfiguration<0, participants[#ttl.logical_kernel<kind = compute, identity = "compute", operation = "reset_test">, #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">, #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "reset_test">], discard_dfb_state = true>
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @collision_reader()
@@ -891,10 +891,10 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttco
     %reset_active = arith.cmpi ne, %flag0, %zero_i32 : i32
     %flag1 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<1, i32>, header = "predicate.hpp"} : () -> i32
     %reconfigure_active = arith.cmpi ne, %flag1, %zero_i32 : i32
-    // expected-error @below {{logical DFB 0 has capacity-unsafe producer and consumer transactions on core_x=0, core_y=0}}
-    // expected-note @below {{the producer pushes 2 block(s) per launch and the consumer pops 0, leaving 2 outstanding block(s) for capacity 1}}
-    // expected-note @below {{in the interval before the first synchronized reset}}
-    // expected-note @below {{keep pops within pushes and unpopped blocks within DFB capacity on every active node}}
+    // expected-error @below {{logical DFB 0 has transactions that cannot complete before a synchronized reset or reconfiguration on core_x=0, core_y=0}}
+    // expected-note @below {{before it, the producer holds 2 reserved block(s) that are not popped, exceeding capacity 1}}
+    // expected-note @+10 {{every kernel on the node waits here until all of them arrive}}
+    // expected-note @below {{place each wait after the push it needs and each reserve after the pop that frees its slot, on the same side of the barrier}}
     %first = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
     scf.if %reset_active {
@@ -979,7 +979,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttco
     %active7 = arith.cmpi ne, %flag7, %zero_i32 : i32
     // expected-error @below {{logical DFB 0 has capacity-unsafe producer and consumer transactions on core_x=0, core_y=0}}
     // expected-note @below {{the producer pushes 3 block(s) per launch and the consumer pops 0, leaving 3 outstanding block(s) for capacity 1}}
-    // expected-note @below {{in the interval before the first synchronized reset}}
+    // expected-note @+10 {{in the interval that ends at this synchronized reset or reconfiguration, which restores the DFB}}
     // expected-note @below {{keep pops within pushes and unpopped blocks within DFB capacity on every active node}}
     %first = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
@@ -1118,7 +1118,6 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttco
     %flag0 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
     // expected-error @below {{logical DFB 0 has capacity-unsafe producer and consumer transactions on core_x=0, core_y=0}}
     // expected-note @below {{the producer pushes 2 block(s) per launch and the consumer pops 0, leaving 2 outstanding block(s) for capacity 1}}
-    // expected-note @below {{in the interval before the first synchronized reset}}
     // expected-note @below {{keep pops within pushes and unpopped blocks within DFB capacity on every active node}}
     %first = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
@@ -1197,7 +1196,6 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttco
     scf.if %outer {
       // expected-error @below {{logical DFB 0 has capacity-unsafe producer and consumer transactions on core_x=0, core_y=0}}
       // expected-note @below {{the producer pushes 3 block(s) per launch and the consumer pops 1, leaving 2 outstanding block(s) for capacity 1}}
-      // expected-note @below {{in the interval before the first synchronized reset}}
       // expected-note @below {{keep pops within pushes and unpopped blocks within DFB capacity on every active node}}
       %first = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
       ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
@@ -1254,9 +1252,9 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttco
 
 // -----
 
-// The pops are conditional, so the unconditional waits are compared with
-// the pushes in the interval before the reset: the third wait never
-// completes.
+// The pops are conditional on a value other than a dispatch condition, so the
+// unconditional waits are compared with the pushes in the interval before the
+// reset: the third wait never completes.
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @segmented_waits_reader()
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
@@ -1270,7 +1268,7 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttco
     %pop_active = arith.cmpi ne, %flag0, %zero_i32 : i32
     // expected-error @below {{logical DFB 0 has capacity-unsafe producer and consumer transactions on core_x=0, core_y=0}}
     // expected-note @below {{the consumer waits for 3 block(s) per launch, but the producer pushes 2 block(s) per launch}}
-    // expected-note @below {{in the interval before the first synchronized reset}}
+    // expected-note @+6 {{in the interval that ends at this synchronized reset or reconfiguration, which restores the DFB}}
     // expected-note @below {{keep pops within pushes and unpopped blocks within DFB capacity on every active node}}
     %first = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 4> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 4>
@@ -1292,15 +1290,12 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttco
     return
   }
 
-  func.func @segmented_waits_writer()
+  func.func @segmented_waits_writer(%pop_active: i1)
       attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
                   ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "reset_test">,
                   ttl.noc_index = 1 : i32, ttl.base_cta_index = 2 : i32,
                   ttl.crta_indices = []} {
     %stale = ttl.bind_cb {cb_index = 0, block_count = 4} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 4>
-    %zero_i32 = arith.constant 0 : i32
-    %flag0 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
-    %pop_active = arith.cmpi ne, %flag0, %zero_i32 : i32
     %block0 = ttl.cb_wait %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 4> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     scf.if %pop_active {
       ttl.cb_pop %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 4>
@@ -1339,7 +1334,6 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttco
     %both = arith.andi %first, %second : i1
     // expected-error @below {{logical DFB 0 has capacity-unsafe producer and consumer transactions on core_x=0, core_y=0}}
     // expected-note @below {{the producer pushes 2 block(s) per launch and the consumer pops 0, leaving 2 outstanding block(s) for capacity 1}}
-    // expected-note @below {{in the interval before the first synchronized reset}}
     // expected-note @below {{keep pops within pushes and unpopped blocks within DFB capacity on every active node}}
     %first_block = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
@@ -1382,6 +1376,36 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttco
     %both = arith.andi %second, %first : i1
     scf.if %both {
       ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+    }
+    return
+  }
+}
+
+// -----
+
+// An external call pops the first block only when a dispatch condition holds.
+// Each branch of the condition is an alternative, so the skipped pop leaves
+// two blocks for capacity 1.
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
+  func.func @conditional_opaque_pop_reader() attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "pops">, ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    // expected-note @+4 {{dataflow buffer declared here}}
+    // expected-error @+4 {{logical DFB 0 has capacity-unsafe producer and consumer transactions on core_x=0, core_y=0}}
+    // expected-note @+3 {{the producer pushes 2 block(s) per launch and the consumer pops 0, leaving 2 outstanding block(s) for capacity 1}}
+    // expected-note @+2 {{keep pops within pushes and unpopped blocks within DFB capacity on every active node}}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %first = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %second = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    return
+  }
+  func.func @conditional_opaque_pop_writer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "pops">, ttl.noc_index = 1 : i32, ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %zero = arith.constant 0 : i32
+    %flag = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
+    %pop_active = arith.cmpi ne, %flag, %zero : i32
+    scf.if %pop_active {
+      ttl.opaque_call "consume" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_effects [#ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "consume.hpp"} : () -> ()
     }
     return
   }
