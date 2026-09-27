@@ -1019,7 +1019,9 @@ def test_operation_cache_uses_l1_budget_without_owned_resources(monkeypatch):
     monkeypatch.setattr(
         ttl_api,
         "get_min_remaining_l1_excluding_cached_resources",
-        lambda resource_cache, selected_device: next(remaining_budgets),
+        lambda resource_cache, selected_device, per_core_l1_tensors: next(
+            remaining_budgets
+        ),
     )
 
     @ttl_api.operation(grid=(1, 1))

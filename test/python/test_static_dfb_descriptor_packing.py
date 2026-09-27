@@ -170,7 +170,9 @@ def test_static_dfb_descriptor_packing_fits_budget(
     monkeypatch.setattr(
         kernel_runner,
         "_get_remaining_l1_by_core_for_device",
-        lambda _device, cores: {core: (17 * dfb_page_size) // 2 for core in cores},
+        lambda _device, cores, per_core_l1_tensors: {
+            core: (17 * dfb_page_size) // 2 for core in cores
+        },
     )
     monkeypatch.setattr(
         kernel_runner,
