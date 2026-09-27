@@ -3666,8 +3666,14 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
     using BackingHandoff = std::tuple<unsigned, unsigned, int64_t, int64_t>;
     std::set<BackingHandoff> backingHandoffs;
     llvm::SmallDenseSet<int64_t, 8> resetOrdinals;
-    if (auto resetEntries = module->getAttrOfType<ArrayAttr>(
-            ttl::kCompilerSRAMReconfigurationResetsAttrName)) {
+    Attribute resetMetadata =
+        module->getAttr(ttl::kCompilerSRAMReconfigurationResetsAttrName);
+    if (resetMetadata && !isa<ArrayAttr>(resetMetadata)) {
+      module.emitOpError(
+          "contains malformed compiler-sram reconfiguration reset metadata");
+      return failure();
+    }
+    if (auto resetEntries = dyn_cast_if_present<ArrayAttr>(resetMetadata)) {
       for (Attribute resetAttribute : resetEntries) {
         auto reset = dyn_cast<DictionaryAttr>(resetAttribute);
         auto ordinal =
@@ -3795,6 +3801,12 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
       auto dictionary = cast<DictionaryAttr>(attribute);
       auto storageIndex =
           dictionary.getAs<IntegerAttr>(ttl::kDFBAllocationStorageIndexField);
+      if (dictionary.get(ttl::kDFBAllocationStorageIndexField) &&
+          !storageIndex) {
+        module.emitOpError("compiler-sram allocation entry ")
+            << index << " has an invalid storage_index";
+        return failure();
+      }
       if (storageIndex && (!isRepresentableMetadataInteger(storageIndex) ||
                            storageIndex.getInt() < 0)) {
         module.emitOpError("compiler-sram allocation entry ")
