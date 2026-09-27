@@ -205,6 +205,12 @@ parseCompilerL1Allocation(Attribute attribute) {
       !isRepresentableMetadataInteger(stateOffset) || !elementType) {
     return failure();
   }
+  if ((dictionary.get(ttl::kDFBAllocationPayloadOffsetField) &&
+       !payloadAddress) ||
+      (dictionary.get(ttl::kDFBAllocationBytesField) && !allocationBytes) ||
+      (dictionary.get("storage_segments") && !storageSegments)) {
+    return failure();
+  }
   bool hasArenaPayload = payloadAddress && allocationBytes && !storageSegments;
   bool hasTensorPayload =
       storageSegments && !payloadAddress && !allocationBytes;
