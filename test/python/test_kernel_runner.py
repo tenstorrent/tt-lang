@@ -3077,7 +3077,9 @@ def test_reconfiguration_runtime_storage_backs_unreconfigured_local_storage(
     fake_ttnn.TensorMemoryLayout = type("TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0})
     fake_ttnn.BufferType = type("BufferType", (), {"L1": 0})
     fake_ttnn.ShardSpec = lambda *args: args
-    fake_ttnn.MemoryConfig = lambda *args: args
+    fake_ttnn.MemoryConfig = lambda *args: SimpleNamespace(
+        experimental_set_per_core_allocation=lambda _value: None
+    )
     device = object()
     host_configurations = []
     scratch_tensor = _FakeTensor(device, address=0x8000)
@@ -3392,7 +3394,9 @@ def test_reconfiguration_runtime_storage_offsets_packed_backing(monkeypatch):
     fake_ttnn.TensorMemoryLayout = type("TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0})
     fake_ttnn.BufferType = type("BufferType", (), {"L1": 0})
     fake_ttnn.ShardSpec = lambda *args: args
-    fake_ttnn.MemoryConfig = lambda *args: args
+    fake_ttnn.MemoryConfig = lambda *args: SimpleNamespace(
+        experimental_set_per_core_allocation=lambda _value: None
+    )
     device = object()
     scratch_tensor = _FakeTensor(device, address=0x8000)
     scratch_allocations = []
@@ -3570,7 +3574,9 @@ def test_reconfiguration_runtime_storage_splits_local_storage_per_core(
     fake_ttnn.TensorMemoryLayout = type("TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0})
     fake_ttnn.BufferType = type("BufferType", (), {"L1": 0})
     fake_ttnn.ShardSpec = lambda *args: args
-    fake_ttnn.MemoryConfig = lambda *args: args
+    fake_ttnn.MemoryConfig = lambda *args: SimpleNamespace(
+        experimental_set_per_core_allocation=lambda _value: None
+    )
     device = object()
     configuration_tensor = _FakeTensor(device, address=0xA000)
     scratch_allocations = []
@@ -3684,7 +3690,9 @@ def test_reconfiguration_runtime_storage_locks_uniform_ranges_after_local_storag
     fake_ttnn.TensorMemoryLayout = type("TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0})
     fake_ttnn.BufferType = type("BufferType", (), {"L1": 0})
     fake_ttnn.ShardSpec = lambda *args: args
-    fake_ttnn.MemoryConfig = lambda *args: args
+    fake_ttnn.MemoryConfig = lambda *args: SimpleNamespace(
+        experimental_set_per_core_allocation=lambda _value: None
+    )
     device = object()
     scratch_allocations = []
     fake_ttnn.from_torch = lambda *_args, **_kwargs: _FakeTensor(device, address=0xA000)
@@ -7969,10 +7977,15 @@ def test_run_kernel_forwards_runtime_l1_tensors_to_budget(monkeypatch):
 
     fake_ttnn.from_torch = allocate_configuration
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    scratch_allocations = []
+
+    def allocate_scratch(*_args, **_kwargs):
+        tensor = _FakeTensor(device, address=0x8000)
+        scratch_allocations.append(tensor)
+        return tensor
+
     monkeypatch.setattr(
-        kernel_runner,
-        "_allocate_l1_sharded_storage_tensor",
-        lambda *_args, **_kwargs: pytest.fail("unexpected scratch allocation"),
+        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_scratch
     )
     monkeypatch.setattr(
         kernel_runner,
@@ -8016,7 +8029,9 @@ def test_run_kernel_forwards_runtime_l1_tensors_to_budget(monkeypatch):
         runtime_resource_cache=cache,
     )
 
-    assert forwarded_runtime_tensors == [[configuration_allocations[0]]]
+    assert forwarded_runtime_tensors == [
+        [*scratch_allocations, configuration_allocations[0]]
+    ]
 
 
 # Configuration tensors follow the reconfiguration scratch allocation mode.
@@ -8062,7 +8077,7 @@ def test_reconfiguration_configuration_tensor_follows_allocator_mode(
     monkeypatch.setattr(
         kernel_runner,
         "_allocate_l1_sharded_storage_tensor",
-        lambda *_args, **_kwargs: pytest.fail("unexpected scratch allocation"),
+        lambda *_args, **_kwargs: _FakeTensor(device, address=0xA000),
     )
     monkeypatch.setattr(
         kernel_runner,
