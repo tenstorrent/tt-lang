@@ -225,19 +225,13 @@ buildStaticReconfiguration(ArrayAttr dfbEntries, int64_t ordinal,
 // of the launch grid, so one static form serves it only when every grid node
 // selects the same configurations.
 static FailureOr<std::optional<StaticReconfiguration>>
-buildGridInvariantReconfiguration(ModuleOp module, ArrayAttr dfbEntries,
-                                  int64_t ordinal, Builder &builder,
+buildGridInvariantReconfiguration(std::pair<int64_t, int64_t> grid,
+                                  ArrayAttr dfbEntries, int64_t ordinal,
+                                  Builder &builder,
                                   std::string &failureReason) {
-  FailureOr<std::pair<int64_t, int64_t>> grid = ttk::readLaunchGrid(
-      module->getAttrOfType<ArrayAttr>(kLaunchGridAttrName));
-  if (failed(grid)) {
-    llvm::raw_string_ostream(failureReason)
-        << "the module has no valid `" << kLaunchGridAttrName << "`";
-    return failure();
-  }
   std::optional<StaticReconfiguration> invariant;
-  for (int64_t coreY = 0; coreY < grid->second; ++coreY) {
-    for (int64_t coreX = 0; coreX < grid->first; ++coreX) {
+  for (int64_t coreY = 0; coreY < grid.second; ++coreY) {
+    for (int64_t coreX = 0; coreX < grid.first; ++coreX) {
       FailureOr<StaticReconfiguration> nodeReconfiguration =
           buildStaticReconfiguration(dfbEntries, ordinal, {coreX, coreY},
                                      builder, failureReason);
@@ -298,9 +292,18 @@ struct TTKernelSpecializeDFBReconfigurationPass
       }
       std::string failureReason;
       if (!*coreCoordinate) {
+        FailureOr<std::pair<int64_t, int64_t>> grid = ttk::readLaunchGrid(
+            module->getAttrOfType<ArrayAttr>(kLaunchGridAttrName));
+        if (failed(grid)) {
+          call.emitOpError("requires a valid `")
+              << kLaunchGridAttrName
+              << "` module attribute in a kernel without `"
+              << kCoreCoordAttrName << "`";
+          return WalkResult::interrupt();
+        }
         FailureOr<std::optional<StaticReconfiguration>> invariant =
             buildGridInvariantReconfiguration(
-                module, dfbEntries, ordinal.getInt(), builder, failureReason);
+                *grid, dfbEntries, ordinal.getInt(), builder, failureReason);
         if (failed(invariant)) {
           call.emitOpError("contains malformed DFB reconfiguration metadata: ")
               << failureReason;
