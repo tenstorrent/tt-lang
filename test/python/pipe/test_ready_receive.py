@@ -124,13 +124,13 @@ def _to_height_sharded(torch_tensor, device):
     "torch_dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"]
 )
 @pytest.mark.parametrize(
-    "memory_model", ["metal-cb", "compiler-l1"], ids=["metal", "compiler-l1"]
+    "memory_model", ["metal-cb", "compiler-sram"], ids=["metal", "compiler-sram"]
 )
 def test_ready_receive_ascending_tie(
     device, torch_dtype, memory_model, reject_metal_dfb_descriptor_creation
 ):
     """Selection scans upward from index two when one and three are complete."""
-    if memory_model == "compiler-l1":
+    if memory_model == "compiler-sram":
         reject_metal_dfb_descriptor_creation()
     torch.manual_seed(0)
     input_torch = torch.rand((32, 128), dtype=torch_dtype)

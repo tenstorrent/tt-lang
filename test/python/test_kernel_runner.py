@@ -2746,11 +2746,18 @@ def test_compiler_l1_resource_rejection_preserves_cache(monkeypatch):
         lambda *_args: release_calls.append("portable"),
     )
 
-    for resources, message in (
-        ({"num_pipe_sync_semaphores": 1}, "cannot combine with PipeNet"),
-        ({"dfb_reconfiguration_plan": object()}, "cannot combine with PipeNet"),
+    for resources in (
+        {
+            "kernel_fabric_routes": [
+                [kernel_runner.FabricRouteSpec((0, 0), (0, 1), ((0, 0),), 0)]
+            ]
+        },
+        {"dfb_reconfiguration_plan": object()},
     ):
-        with pytest.raises(ValueError, match=message):
+        with pytest.raises(
+            ValueError,
+            match="cannot combine with Metal DFB reconfiguration or generated fabric routes",
+        ):
             kernel_runner.run_kernel_on_device(
                 kernel_specs=[],
                 tensors=[],
@@ -3208,7 +3215,7 @@ def test_run_kernel_composes_compiler_l1_with_runtime_resources(monkeypatch):
     core_ranges = _FakeCoreRanges((((0, 0), (1, 0)),))
     arena = _FakeTensor(device, address=0x8000)
     pipe_scratch = _FakeTensor(device, address=0x9000)
-    allocation_results = iter((pipe_scratch, arena))
+    allocation_results = iter((arena, pipe_scratch))
     allocation_calls = []
 
     def allocate_storage(ranges, num_bytes, allocation_device, *, zero_initialize):
@@ -3254,8 +3261,8 @@ def test_run_kernel_composes_compiler_l1_with_runtime_resources(monkeypatch):
 
     program = result["program"]
     assert allocation_calls == [
-        (core_ranges, 32, device, True),
         (core_ranges, 2112, device, True),
+        (core_ranges, 32, device, True),
     ]
     assert result["tensors"] == [pipe_scratch, arena, tensor]
     assert program.cbs == []

@@ -145,7 +145,7 @@ def test_unicast_dataflow_capacity_loop(
     ],
 )
 @pytest.mark.parametrize(
-    "memory_model", ["metal-cb", "compiler-l1"], ids=["metal", "compiler-l1"]
+    "memory_model", ["metal-cb", "compiler-sram"], ids=["metal", "compiler-sram"]
 )
 def test_unicast_grouped_transport_storage(
     device,
@@ -155,7 +155,7 @@ def test_unicast_grouped_transport_storage(
     memory_model,
     reject_metal_dfb_descriptor_creation,
 ):
-    if memory_model == "compiler-l1":
+    if memory_model == "compiler-sram":
         reject_metal_dfb_descriptor_creation()
     input_torch = torch.randn(TILE, GROUPED_TRANSFERS * TILE, dtype=dtype)
     output_torch = torch.zeros_like(input_torch)

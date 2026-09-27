@@ -18,7 +18,7 @@
 // CHECK-LABEL: func.func @read
 // CHECK-SAME: ttl.crta_indices = [0 : i32]
 module attributes {
-  ttl.compiler_l1_reconfiguration_resets = [{dfb_indices = array<i32: 0>, ordinal = 0 : i64}],
+  ttl.compiler_sram_reconfiguration_resets = [{dfb_indices = array<i32: 0>, ordinal = 0 : i64}],
   ttl.dfb_allocations = [{
     allocation_nodes = [[0, 0]],
     block_count = 1 : i32,
@@ -33,7 +33,7 @@ module attributes {
   }],
   ttl.l1_arena_bytes = 64 : i64,
   ttl.launch_grid = [1, 1],
-  ttl.memory_model = "compiler-l1",
+  ttl.memory_model = "compiler-sram",
   ttl.target_arch = #ttcore.arch<blackhole>
 } {
   func.func @compute() attributes {

@@ -19,6 +19,7 @@ An *arena* is the node-local SRAM reservation for one operation execution. A *co
 | Allocation groups | Reuse a physical descriptor and its storage contract | Share one validated storage owner and control record |
 | Reset and reconfiguration | Blackhole TT-Metal interface reset and runtime descriptor reconfiguration | Blackhole address-based state reset with compiler-fixed geometry |
 | External C++ DFB access | Numeric index or typed descriptor bound to a TT-Metal DFB | Typed descriptor bound to compiler-assigned storage |
+| Local PipeNet receiver | TT-Metal DFB descriptor or tensor-backed address | Finalized arena or tensor-backed address; no TT-Metal DFB descriptor |
 
 Shared terminology is defined in the [TT-Lang specification glossary](../sphinx/specs/TTLangSpecification.md#appendix-a-glossary). The DFB protocol and lifecycle rules are defined in [DFB Management](DFBManagement.md).
 
@@ -229,6 +230,8 @@ The first synchronization completes earlier asynchronous work before state chang
 
 Reconfiguration uses the same algorithm. Lifetime analysis records which logical DFB lifecycles terminate at each boundary. Only those control records are cleared. A logical DFB that remains live across the boundary retains its record and payload. When no lifecycle terminates, the boundary requires only the first synchronization.
 
+Reset calls carry DFB identities for node selection but use only arena control addresses. A kernel that only synchronizes DFB state therefore does not require tensor payload arguments.
+
 Wormhole continues to support ordinary compiler-managed allocation, transfer, and compute. Synchronized reset and reconfiguration remain Blackhole-only because their current LLK protocol depends on Blackhole processor synchronization behavior. Wormhole compilation rejects those operations with a target-specific diagnostic before allocation.
 
 ## External C++ Interface
@@ -246,6 +249,26 @@ bind(descriptor):
 ```
 
 External calls can declare `DFBEffect` entries for protocol operations. These effects participate in lifetime and conflict analysis; a DFB dependency without effects remains live until completion is proved. Compiler-managed storage rejects unknown DFB access, numeric DFB template arguments, and DFB function arguments. External C++ code uses `ttl.dfb_descriptor(dfb)` as a template argument to bind compiler-managed storage.
+
+## Local PipeNet Transfers
+
+Local PipeNets use the existing transfer schedule, transport, capacity, and synchronization protocols. Finalized DFB storage determines a receiver's address: compiler-owned payloads use the arena base plus `l1_payload_offset`; tensor-backed payloads use the retained tensor base plus their declared byte offset. Neither requires a TT-Metal DFB descriptor. Producer and wait launch domains include explicit DFB operations and external-call `DFBEffect` declarations through the shared DFB access interface.
+
+```text
+bindLocalPipeReceivers(allocation, computedReceivers):
+    arena = reserveZeroedArena(allocation.arenaBytes)
+    pipeResources = allocatePipeScratchAndSynchronization()
+    for each receiver in computedReceivers:
+        if receiver has tensor backing:
+            address[receiver] = retainedTensorBase(receiver) + receiver.byteOffset
+        else:
+            address[receiver] = arena.base + receiver.l1_payload_offset
+        require address[receiver] fits the device address type
+    append tensor addresses, receiver addresses, pipe resource addresses, arena.base
+    retain arena and pipeResources until device completion
+```
+
+The finalized `ttl.crta_indices` list determines the tensor-address prefix even when a tensor-backed DFB outlives its original function operand. Cache identity includes tensor-backed receiver addresses, while ownership accounting excludes caller-owned tensors. The 32- or 64-index TT-Metal DFB limit does not apply to these logical DFBs; PipeNet transport and semaphore limits are unchanged.
 
 ## Target Interfaces
 
@@ -292,9 +315,8 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 - Typed external C++ calls with explicit DFB effects and either compiler-owned or tensor-backed payloads.
 - Device-domain and mesh program placement with declarative external runtime resources.
 - Blackhole selected reset, reset-all, and reconfiguration.
-- Wormhole allocation, transfer, compute, and external descriptors without reset or reconfiguration.
-
-PipeNet transfers and computed-address DFBs are outside this contract and are rejected before runtime-resource construction. The compiler does not fall back to Metal descriptors.
+- Local intra-device PipeNet transfers with compiler-owned or tensor-backed receivers.
+- Wormhole allocation, transfer, compute, external descriptors, and local PipeNet compilation without reset or reconfiguration.
 
 ## Validation
 
@@ -304,25 +326,25 @@ PipeNet transfers and computed-address DFBs are outside this contract and are re
 | External calls and lifecycle boundaries | 20 Blackhole device cases across BF16/FP32 and DRAM/TTNN L1, including repeated selected reset, reset-all, reconfiguration, live state preservation, payload reuse, and reset of allocation index 65 |
 | Tensor-backed storage | 46 Blackhole BF16/FP32 device cases cover compiler-owned and tensor-backed storage, height/width/block sharding, shard orientation, byte offsets, replacement, and repeated execution. |
 | Allocation groups | Four Blackhole BF16/FP32 device cases cover shared-state handoff and different member capacities. |
+| Local PipeNet | 46 Blackhole BF16/FP32 device cases cover DRAM/SRAM tensors, transfer protocols, reset and reconfiguration, repeated invocation, typed external calls, and receiver indices above the Metal descriptor limit; Wormhole support is compile-only. |
 | Allocation | 20,888 compile-only generated placements covering both strategies, conflicts, alignment, reuse enabled and disabled, determinism, and exact budget boundaries; a focused fragmented graph verifies distinct strategy results |
 | Wormhole | Compile-only allocation, typed external descriptor, and UNPACK/MATH/PACK target compilation; negative reset and reconfiguration diagnostics |
-| Runtime placement and resources | Runtime-unit evidence for one-device and device-domain descriptors, replicated mesh placement, lockstep arena binding, external fabric bindings, resource lifetimes, program hashes, and retained PipeNet rejection; 18 Blackhole device-correctness cases for typed external calls with semaphores, runtime arguments, defines, repeated invocations, BF16/FP32, DRAM/SRAM, generic/specialized kernels, and both memory models |
+| Runtime placement and resources | Runtime-unit evidence for one-device and device-domain descriptors, replicated mesh placement, lockstep arena binding, external fabric bindings, PipeNet resource composition, resource lifetimes, and program hashes; 18 Blackhole device-correctness cases for typed external calls with semaphores, runtime arguments, defines, repeated invocations, BF16/FP32, DRAM/SRAM, generic/specialized kernels, and both memory models |
 | Invalid contracts | Compiler diagnostics for malformed metadata, unsupported transactions and tile forms, unknown external effects, numeric external DFB indices, storage ownership, and budget overflow |
 
 ## Extensions
 
 - Per-node arena layouts require node-specific allocation metadata and ownership. Multicast receivers additionally require a shared payload address.
-- PipeNet transfers require completion evidence through destination consumption before scratch ranges can be reused.
+- Cross-operation reuse of PipeNet scratch requires enforced completion through destination consumption.
 - Sub-tile and row-major operations require matching geometry, stride, and capacity rules in the address-based compute interface.
 - Wormhole reset and reconfiguration require a target synchronization protocol validated on device.
 
-The intended dependency order after tensor-backed storage and allocation groups is:
+The intended dependency order after local PipeNet support is:
 
-1. Add PipeNet and computed-address transfers. Represent compiler-managed endpoint addresses in the immutable transport plan, validate the complete graph before allocation, and extend lifetime completion through remote transfer and destination consumption.
-2. Add multi-device fabric execution. Resolve source and destination device domains, allocate per-device resources through the runtime placement interface, and verify inter-device completion before storage reuse.
-3. Qualify representative external C++ kernels against the typed descriptor interface and add common adapters for required address, geometry, and completion operations.
-4. Add sub-tile and row-major metadata, partial-block and general contiguous multi-block transactions, and the corresponding address, stride, capacity, and wrap rules.
-5. Add Wormhole reset and reconfiguration after defining and device-qualifying a Wormhole synchronization protocol behind the existing target interface.
-6. Qualify complete model layers, then measure device cycles, arena high-water usage, initialization cost, compile time, and generated code size against `metal-cb`.
+1. Add generated inter-device fabric transfers. Resolve source and destination device domains, bind each device's runtime resources, and prove remote completion before storage reuse.
+2. Qualify representative external C++ kernels against the typed descriptor interface and add common adapters for required address, geometry, and completion operations.
+3. Add sub-tile and row-major metadata, partial-block and general contiguous multi-block transactions, and the corresponding address, stride, capacity, and wrap rules.
+4. Add Wormhole reset and reconfiguration after defining and device-qualifying a Wormhole synchronization protocol behind the existing target interface.
+5. Qualify complete model layers, then measure device cycles, arena high-water usage, initialization cost, compile time, and generated code size against `metal-cb`.
 
 Each extension must preserve the fail-before-mutation rule, architecture isolation, explicit ownership, and compiler-managed descriptor independence.

@@ -269,7 +269,7 @@ def test_pipe_protocols_match(device, dtype, recv_block_count):
         pytest.param("--ttl-pipe-global-semaphores-only", id="global-counters"),
     ],
 )
-def test_compiler_l1_pipe_protocols(
+def test_compiler_sram_pipe_protocols(
     device,
     dtype,
     storage_kind,
@@ -279,7 +279,7 @@ def test_compiler_l1_pipe_protocols(
 ):
     del storage_kind
     reject_metal_dfb_descriptor_creation()
-    options = "--ttl-memory-model=compiler-l1"
+    options = "--ttl-memory-model=compiler-sram"
     if protocol_options:
         options += f" {protocol_options}"
     pipe_operation = _make_point_to_point(recv_block_count=2, options=options)
@@ -366,7 +366,7 @@ def test_pipe_resources_coexist_with_reset(
     [("dram", to_dram), ("l1", to_l1)],
     ids=["dram", "l1"],
 )
-def test_compiler_l1_pipe_resources_coexist_with_reset(
+def test_compiler_sram_pipe_resources_coexist_with_reset(
     device,
     dtype,
     storage_kind,
@@ -380,7 +380,7 @@ def test_compiler_l1_pipe_resources_coexist_with_reset(
         pytest.skip("requires Blackhole synchronized DFB reset support")
     reject_metal_dfb_descriptor_creation()
     operation = _make_point_to_point_with_reset()
-    final_mlir_path = tmp_path / "compiler_l1_pipe_with_reset.mlir"
+    final_mlir_path = tmp_path / "compiler_sram_pipe_with_reset.mlir"
     monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
 
     for invocation_index in range(2):
@@ -393,12 +393,12 @@ def test_compiler_l1_pipe_resources_coexist_with_reset(
         operation(
             input_tensor,
             output_tensor,
-            options="--ttl-memory-model=compiler-l1 --ttl-reuse-user-dfbs",
+            options="--ttl-memory-model=compiler-sram --ttl-reuse-user-dfbs",
         )
         assert_pcc(input_host.float(), ttnn.to_torch(output_tensor).float())
 
     final_mlir = final_mlir_path.read_text()
-    assert 'ttl.memory_model = "compiler-l1"' in final_mlir
+    assert 'ttl.memory_model = "compiler-sram"' in final_mlir
     assert "ttl.dfb_reset_count = 1 : i64" in final_mlir
     assert "ttlang::l1::resetState" in final_mlir
     assert "experimental::reset_dfb_interfaces" in final_mlir

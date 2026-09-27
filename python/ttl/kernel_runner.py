@@ -2478,7 +2478,7 @@ def _get_tensor_backed_computed_address_bases(
     return bases
 
 
-def _get_compiler_l1_computed_address_bases(
+def _get_compiler_sram_computed_address_bases(
     cb_configs: List[PhysicalDFBConfig],
     dfb_indices: Sequence[int],
     arena_base_address: int,
@@ -2498,13 +2498,13 @@ def _get_compiler_l1_computed_address_bases(
             ):
                 continue
             raise ValueError(
-                f"compiler-l1 computed-address receiver DFB {dfb_index} "
+                f"compiler-sram computed-address receiver DFB {dfb_index} "
                 "has no arena payload offset or tensor backing"
             )
         base_address = arena_base_address + config.l1_payload_offset
         if base_address < 0 or base_address > 0xFFFFFFFF:
             raise ValueError(
-                f"compiler-l1 computed-address receiver DFB {dfb_index} "
+                f"compiler-sram computed-address receiver DFB {dfb_index} "
                 "has an unrepresentable L1 address"
             )
         bases[dfb_index] = base_address
@@ -4525,7 +4525,7 @@ def _run_kernel_on_device_impl(
     )
     if compiler_l1:
         pipe_computed_address_base_addresses.update(
-            _get_compiler_l1_computed_address_bases(
+            _get_compiler_sram_computed_address_bases(
                 cb_configs,
                 pipe_computed_address_dfb_indices,
                 compiler_l1_base_address,

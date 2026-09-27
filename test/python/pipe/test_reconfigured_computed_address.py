@@ -127,7 +127,7 @@ def test_reconfigured_receiver_uses_published_address(
 # deriving the compiler-owned receiver base from the arena.
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
 @pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
-def test_compiler_l1_reconfigured_receiver_uses_published_address(
+def test_compiler_sram_reconfigured_receiver_uses_published_address(
     device,
     dtype,
     to_device,
@@ -146,7 +146,7 @@ def test_compiler_l1_reconfigured_receiver_uses_published_address(
     operation = _make_reconfigured_receiver_operation(
         "bf16" if dtype == torch.bfloat16 else "float32"
     )
-    final_mlir_path = tmp_path / "compiler_l1_reconfigured_pipe_receiver.mlir"
+    final_mlir_path = tmp_path / "compiler_sram_reconfigured_pipe_receiver.mlir"
     monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
 
     for _invocation_index in range(2):
@@ -154,7 +154,7 @@ def test_compiler_l1_reconfigured_receiver_uses_published_address(
             to_device(host_input, device),
             tensor_backed_output,
             scratch_output,
-            options="--ttl-memory-model=compiler-l1 --ttl-reuse-user-dfbs",
+            options="--ttl-memory-model=compiler-sram --ttl-reuse-user-dfbs",
         )
         threshold = 0.999 if dtype == torch.bfloat16 else 0.99999
         assert_pcc(
@@ -169,7 +169,7 @@ def test_compiler_l1_reconfigured_receiver_uses_published_address(
         )
 
     final_mlir = final_mlir_path.read_text()
-    assert 'ttl.memory_model = "compiler-l1"' in final_mlir
-    assert "ttl.compiler_l1_reconfiguration_resets" in final_mlir
+    assert 'ttl.memory_model = "compiler-sram"' in final_mlir
+    assert "ttl.compiler_sram_reconfiguration_resets" in final_mlir
     assert "ttl.dfb_reconfiguration_plan" not in final_mlir
-    assert "ttl.pipe_computed_address_dfb_indices = array<i32: 0>" in final_mlir
+    assert "ttl.pipe_computed_address_dfb_indices = array<i32: 0, 2>" in final_mlir

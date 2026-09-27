@@ -28,7 +28,7 @@ COMPILER_L1_EXTERNAL_HEADER = os.path.join(
 
 
 @ttl.operation(grid=(GRID_SIZE, GRID_SIZE))
-def compiler_l1_pipe_matmul(lhs, rhs, output):
+def compiler_sram_pipe_matmul(lhs, rhs, output):
     lhs_net = ttl.PipeNet(
         [
             ttl.Pipe(
@@ -109,7 +109,7 @@ def compiler_l1_pipe_matmul(lhs, rhs, output):
 )
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
-def test_compiler_l1_pipe_matmul(
+def test_compiler_sram_pipe_matmul(
     device,
     dtype,
     to_device,
@@ -123,13 +123,13 @@ def test_compiler_l1_pipe_matmul(
         torch.zeros(GRID_SIZE * TILE, GRID_SIZE * TILE, dtype=dtype), device
     )
 
-    compiler_l1_pipe_matmul(
+    compiler_sram_pipe_matmul(
         to_device(lhs_host, device),
         to_device(rhs_host, device),
         output_tensor,
         options=(
-            "--ttl-memory-model=compiler-l1 "
-            f"--ttl-l1-allocation-strategy={allocation_strategy}"
+            "--ttl-memory-model=compiler-sram "
+            f"--ttl-sram-allocation-strategy={allocation_strategy}"
         ),
     )
 
@@ -196,7 +196,7 @@ def _make_external_pipe_copy(data_format):
 # PipeNet receiver addresses must also bind correctly in typed external DFB calls.
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
-def test_compiler_l1_pipe_receiver_external_copy(
+def test_compiler_sram_pipe_receiver_external_copy(
     device, dtype, to_device, reject_metal_dfb_descriptor_creation
 ):
     reject_metal_dfb_descriptor_creation()
@@ -207,7 +207,7 @@ def test_compiler_l1_pipe_receiver_external_copy(
     _make_external_pipe_copy("bf16" if dtype == torch.bfloat16 else "float32")(
         input_tensor,
         output_tensor,
-        options="--ttl-memory-model=compiler-l1",
+        options="--ttl-memory-model=compiler-sram",
     )
 
     assert_allclose(
@@ -261,10 +261,10 @@ def _make_high_index_pipe(tmp_path, preceding_dfb_count):
         "    def unused_transfer():",
         "        pass",
     ]
-    source_file = tmp_path / "compiler_l1_high_index_pipe.py"
+    source_file = tmp_path / "compiler_sram_high_index_pipe.py"
     source_file.write_text("\n".join(source_lines) + "\n")
     module_spec = importlib.util.spec_from_file_location(
-        "compiler_l1_high_index_pipe", source_file
+        "compiler_sram_high_index_pipe", source_file
     )
     source_module = importlib.util.module_from_spec(module_spec)
     module_spec.loader.exec_module(source_module)
@@ -274,7 +274,7 @@ def _make_high_index_pipe(tmp_path, preceding_dfb_count):
 # A receiver above the Metal descriptor limit must execute without constructing
 # any TT-Metal DFB descriptor.
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
-def test_compiler_l1_pipe_receiver_above_metal_index_limit(
+def test_compiler_sram_pipe_receiver_above_metal_index_limit(
     device, dtype, monkeypatch, tmp_path, reject_metal_dfb_descriptor_creation
 ):
     reject_metal_dfb_descriptor_creation()
@@ -284,7 +284,7 @@ def test_compiler_l1_pipe_receiver_above_metal_index_limit(
     }[ttl_api._detect_device_arch(device)]
     preceding_dfb_count = physical_dfb_index_count
     operation = _make_high_index_pipe(tmp_path, preceding_dfb_count)
-    final_mlir_path = tmp_path / "compiler_l1_high_index_pipe.mlir"
+    final_mlir_path = tmp_path / "compiler_sram_high_index_pipe.mlir"
     monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_mlir_path))
     input_host = torch.randn(TILE, TILE, dtype=dtype)
     output_tensor = to_dram(torch.zeros_like(input_host), device)
@@ -293,7 +293,7 @@ def test_compiler_l1_pipe_receiver_above_metal_index_limit(
         operation(
             to_dram(input_host, device),
             output_tensor,
-            options="--ttl-memory-model=compiler-l1",
+            options="--ttl-memory-model=compiler-sram",
         )
         assert_pcc(input_host.float(), ttnn.to_torch(output_tensor).float())
 
