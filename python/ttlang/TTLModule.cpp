@@ -69,9 +69,6 @@ void populateTTLModule(nb::module_ &m) {
       nb::str(kCRTAIndicesAttrName.data(), kCRTAIndicesAttrName.size());
   m.attr("LOCAL_TENSOR_INDICES_ATTR") = nb::str(
       kLocalTensorIndicesAttrName.data(), kLocalTensorIndicesAttrName.size());
-  m.attr("TENSOR_ACCESSOR_INDICES_ATTR") =
-      nb::str(kTensorAccessorIndicesAttrName.data(),
-              kTensorAccessorIndicesAttrName.size());
 
   nb::enum_<LogicalKernelKind>(m, "LogicalKernelKind")
       .value("Compute", LogicalKernelKind::Compute)

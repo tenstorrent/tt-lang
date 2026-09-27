@@ -109,11 +109,6 @@ constexpr llvm::StringLiteral kCRTAIndicesAttrName("ttl.crta_indices");
 constexpr llvm::StringLiteral
     kLocalTensorIndicesAttrName("ttl.local_tensor_indices");
 
-/// Global tensor indices this function addresses through a TensorAccessor,
-/// which can reach shards on other cores.
-constexpr llvm::StringLiteral
-    kTensorAccessorIndicesAttrName("ttl.tensor_accessor_indices");
-
 /// Number of tiles per DST sync region.
 constexpr llvm::StringLiteral kUnrollFactorAttrName("ttl.unroll_factor");
 

@@ -873,7 +873,6 @@ class CompiledTTNNKernel:
         runtime_resource_cache=None,
         kernel_used_dfb_indices=None,
         kernel_local_tensor_indices=None,
-        kernel_tensor_accessor_indices=None,
         unsafe_split_static_dfb_descriptors=False,
     ):
         """
@@ -924,8 +923,6 @@ class CompiledTTNNKernel:
                 final specialized kernel. None entries are conservative.
             kernel_local_tensor_indices: Global tensor indices whose local L1
                 shards are accessed directly by each kernel.
-            kernel_tensor_accessor_indices: Global tensor indices each kernel
-                addresses through a TensorAccessor.
         """
         self.kernel_paths = kernel_paths
         self.kernel_configs = kernel_configs
@@ -945,15 +942,6 @@ class CompiledTTNNKernel:
         if len(self.kernel_local_tensor_indices) != len(kernel_paths):
             raise ValueError(
                 "kernel local-tensor metadata count must match kernel count"
-            )
-        self.kernel_tensor_accessor_indices = (
-            [[] for _ in kernel_paths]
-            if kernel_tensor_accessor_indices is None
-            else list(kernel_tensor_accessor_indices)
-        )
-        if len(self.kernel_tensor_accessor_indices) != len(kernel_paths):
-            raise ValueError(
-                "kernel tensor-accessor metadata count must match kernel count"
             )
         self.kernel_core_ranges = kernel_core_ranges or [None] * len(kernel_paths)
         self.cb_configs = cb_configs or []
@@ -1078,7 +1066,6 @@ class CompiledTTNNKernel:
                 ],
                 used_dfb_indices=self.kernel_used_dfb_indices[kernel_idx],
                 local_tensor_indices=self.kernel_local_tensor_indices[kernel_idx],
-                tensor_accessor_indices=self.kernel_tensor_accessor_indices[kernel_idx],
             )
             kernel_specs.append(spec)
 
@@ -1571,18 +1558,6 @@ def _get_kernel_local_tensor_indices(
     )
 
 
-def _get_kernel_tensor_accessor_indices(
-    module, kernel_name: str, *, kernel_operation=None
-):
-    """Read global tensor indices addressed through a TensorAccessor."""
-    return _get_kernel_index_array_attribute(
-        module,
-        kernel_name,
-        _ttl_ir.TENSOR_ACCESSOR_INDICES_ATTR,
-        kernel_operation=kernel_operation,
-    )
-
-
 def _get_kernel_fabric_routes(module, kernel_name: str, *, kernel_operation=None):
     """Return runtime fabric routes recorded on a kernel function."""
     attr = _get_kernel_attributes(module, kernel_name, kernel_operation).get(
@@ -1744,7 +1719,6 @@ class _KernelDescriptorMetadata:
         used_dfb_indices: Referenced DFBs, or ``None`` when this set is unknown.
         tensor_indices: Global tensor arguments.
         local_tensor_indices: Tensors accessed through core-local L1 addresses.
-        tensor_accessor_indices: Tensors addressed through a TensorAccessor.
         fabric_routes: Fabric routes used by the kernel.
         fabric_runtime_arg_base_common_index: Common runtime-argument index for
             compiler-managed fabric arguments.
@@ -1760,7 +1734,6 @@ class _KernelDescriptorMetadata:
     used_dfb_indices: Optional[tuple[int, ...]]
     tensor_indices: tuple[int, ...]
     local_tensor_indices: tuple[int, ...]
-    tensor_accessor_indices: tuple[int, ...]
     fabric_routes: tuple
     fabric_runtime_arg_base_common_index: Optional[int]
     fabric_manager_intervals: tuple
@@ -1864,11 +1837,6 @@ def _snapshot_kernel_descriptor_metadata(
         ),
         local_tensor_indices=tuple(
             _get_kernel_local_tensor_indices(
-                module, kernel_name, kernel_operation=kernel_operation
-            )
-        ),
-        tensor_accessor_indices=tuple(
-            _get_kernel_tensor_accessor_indices(
                 module, kernel_name, kernel_operation=kernel_operation
             )
         ),
@@ -2204,7 +2172,6 @@ def _compile_ttnn_kernel(
     kernel_used_dfb_indices = []
     kernel_tensor_indices = []
     kernel_local_tensor_indices = []
-    kernel_tensor_accessor_indices = []
     kernel_core_ranges = []
     kernel_fabric_routes = []
     kernel_fabric_runtime_arg_base_common_indices = []
@@ -2240,9 +2207,6 @@ def _compile_ttnn_kernel(
         kernel_tensor_indices.append(list(descriptor_metadata.tensor_indices))
         kernel_local_tensor_indices.append(
             list(descriptor_metadata.local_tensor_indices)
-        )
-        kernel_tensor_accessor_indices.append(
-            list(descriptor_metadata.tensor_accessor_indices)
         )
         kernel_arg_specs.append(list(descriptor_metadata.runtime_arg_spec))
         grouped_kernel_logical_selectors.append(descriptor_metadata.logical_selector)
@@ -2306,7 +2270,6 @@ def _compile_ttnn_kernel(
         core_ranges=core_ranges,
         kernel_tensor_indices=kernel_tensor_indices,
         kernel_local_tensor_indices=kernel_local_tensor_indices,
-        kernel_tensor_accessor_indices=kernel_tensor_accessor_indices,
         kernel_core_ranges=kernel_core_ranges,
         cb_configs=cb_configs,
         dfb_reconfiguration_plan=dfb_reconfiguration_plan,
@@ -2362,7 +2325,6 @@ def _compile_ttnn_kernel(
                 fabric_manager_intervals=kernel_fabric_manager_intervals[kernel_idx],
                 used_dfb_indices=kernel_used_dfb_indices[kernel_idx],
                 local_tensor_indices=kernel_local_tensor_indices[kernel_idx],
-                tensor_accessor_indices=kernel_tensor_accessor_indices[kernel_idx],
             )
             kernel_specs_for_emit.append(spec)
 
