@@ -3100,6 +3100,15 @@ def build_dfb_reconfiguration_runtime_resources(
                     (storage_index, required_bytes)
                 )
         else:
+            # Remote writers address remote-uniform storage with one base, so a
+            # PipeNet backing on only some of its cores would split its address.
+            if storage_index in remote_uniform_storage_indices and any(
+                index == storage_index for (index, _core) in backing_by_storage_and_core
+            ):
+                raise ValueError(
+                    f"storage[{storage_index}] address_scope='remote_uniform' "
+                    "has PipeNet backing on only some of its launch nodes"
+                )
             # A uniformly addressed storage index must remain one TT-Metal
             # allocation; splitting it by per-core capacity fragments the
             # dependency-constrained L1 ranges the allocator searches.
@@ -4565,6 +4574,48 @@ def _validate_dfb_reconfiguration_plan(
         )
 
 
+def _validate_remote_uniform_tensor_backing(
+    tensors: List[Any],
+    cb_configs: List[PhysicalDFBConfig],
+    reconfiguration_plan: Optional[DFBReconfigurationPlan],
+) -> None:
+    """Require one owner address for per-core tensors backing remote-uniform DFBs.
+
+    A per-core backing tensor binds each node to its own shard address, while
+    remote writers address a remote-uniform DFB with one base.
+    """
+    configs = list(cb_configs)
+    if reconfiguration_plan is not None:
+        configs.extend(
+            epoch.config
+            for epochs in reconfiguration_plan.dfb_epochs
+            for epoch in epochs
+        )
+    for config in configs:
+        if config.address_scope != DFBAddressScope.REMOTE_UNIFORM:
+            continue
+        for segment in config.storage_segments:
+            if not segment.is_tensor_backed:
+                continue
+            backing_tensor = tensors[segment.tensor_index]
+            if not _is_per_core_allocated(backing_tensor):
+                continue
+            shard_addresses = _per_core_shard_addresses(
+                backing_tensor, f"DFB[{config.dfb_index}] backing tensor", None
+            )
+            owner_addresses = {
+                tuple(shard_addresses[node])
+                for node in segment.nodes
+                if node in shard_addresses
+            }
+            if len(owner_addresses) > 1:
+                raise ValueError(
+                    f"DFB[{config.dfb_index}] address_scope='remote_uniform' is "
+                    f"backed by per-core tensor {segment.tensor_index}, whose "
+                    "owner addresses differ"
+                )
+
+
 def build_cb_descriptors(
     tensors: List[Any],
     cb_configs: List[PhysicalDFBConfig],
@@ -4610,6 +4661,9 @@ def build_cb_descriptors(
     _ensure_ttnn()
     if ttnn is None:
         raise RuntimeError("ttnn is not available")
+    _validate_remote_uniform_tensor_backing(
+        tensors, cb_configs, dfb_reconfiguration_plan
+    )
 
     pipe_backing_tensors = dict(pipe_computed_address_backing_tensors or {})
     invalid_pipe_backing_indices = sorted(
