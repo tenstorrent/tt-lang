@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "compiler": {
+    "repository": "https://github.com/tenstorrent/tt-lang.git",
+    "base_commit": "88cb759d416e7df617ee043c6cd7e139701163bc"
+  },
+  "emulator": {
+    "commit": "7292395ce55a208a8ede0a4635a9f2167c8c4939"
+  },
+  "metal": {
+    "repository": "https://github.com/tenstorrent/tt-metal.git",
+    "commit": "b6c508c4790fac0a11597e43a5421624cb461553"
+  },
+  "runtime": {
+    "base_image": "ghcr.io/tenstorrent/tt-lang/tt-lang-ird-ubuntu-24-04@sha256:c64126d459afd77bf1b8c5cf68c5941c1561515d28b1b125d33fc57f950e09c7"
+  },
+  "target": {
+    "name": "blackhole-p150",
+    "cluster_descriptor": "cluster_descriptors/blackhole_P150_unharvested.yaml",
+    "mesh_device": "P150"
+  }
+}

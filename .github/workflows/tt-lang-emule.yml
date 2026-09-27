@@ -1,0 +1,64 @@
+# SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
+# SPDX-License-Identifier: Apache-2.0
+
+name: Test compiler-backed emulation integration
+
+on:
+  pull_request:
+    paths:
+      - ".github/containers/Dockerfile.emule"
+      - ".github/workflows/tt-lang-emule.yml"
+      - ".github/scripts/tests/test_ttlang_sim.bats"
+      - ".github/scripts/tests/test_ttlang_emule_container.bats"
+      - "bin/tt-lang-sim"
+      - "config/tt-lang-emule-*.json"
+      - "scripts/*tt-lang-emule*"
+      - "test/packaging/test_ttlang_emule_*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tt-lang-emule-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  unit:
+    name: Stack validation and launcher tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout tt-lang
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: python -m pip install pytest
+
+      - name: Run stack validation tests
+        run: |
+          python -m pytest -q \
+            test/packaging/test_ttlang_emule_stack.py
+
+      - name: Install BATS and helpers
+        uses: bats-core/bats-action@2.0.0
+        with:
+          bats-version: 1.11.0
+          support-install: true
+          assert-install: true
+          detik-install: false
+          file-install: false
+
+      - name: Run launcher tests
+        env:
+          BATS_LIB_PATH: /usr/lib
+        run: |
+          bats --print-output-on-failure \
+            .github/scripts/tests/test_ttlang_sim.bats \
+            .github/scripts/tests/test_ttlang_emule_container.bats
