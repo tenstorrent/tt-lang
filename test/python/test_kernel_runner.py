@@ -6731,7 +6731,6 @@ def test_static_dfb_descriptor_exact_search_finds_nonlocal_reordering(monkeypatc
     )
 
 
-# Splitting descriptors removes allocation coupling between sparse core sets.
 def _coupled_static_dfb_configs():
     return [
         PhysicalDFBConfig(
@@ -6770,6 +6769,7 @@ def test_static_dfb_descriptor_splitting_is_disabled_by_default(monkeypatch):
         )
 
 
+# Splitting descriptors removes allocation coupling between sparse core sets.
 def test_static_dfb_descriptors_split_over_budget_core_when_enabled(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 10240)
