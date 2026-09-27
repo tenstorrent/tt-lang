@@ -1275,3 +1275,32 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
     return
   }
 }
+
+// -----
+
+// The external pop executes in both branches of a dispatch condition, so both
+// alternatives pop one block and the other fits the capacity.
+// CHECK-LABEL: func.func @opaque_pop_in_both_branches_reader
+// CHECK-LABEL: func.func @opaque_pop_in_both_branches_writer
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
+  func.func @opaque_pop_in_both_branches_reader() attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "pops">, ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %first = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %second = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    return
+  }
+  func.func @opaque_pop_in_both_branches_writer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "pops">, ttl.noc_index = 1 : i32, ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %zero = arith.constant 0 : i32
+    %flag = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
+    %pop_active = arith.cmpi ne, %flag, %zero : i32
+    scf.if %pop_active {
+      ttl.opaque_call "consume" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_effects [#ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "consume.hpp"} : () -> ()
+    } else {
+      ttl.opaque_call "consume" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_effects [#ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "consume.hpp"} : () -> ()
+    }
+    return
+  }
+}

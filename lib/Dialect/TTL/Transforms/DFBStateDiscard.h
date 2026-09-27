@@ -15,7 +15,6 @@
 
 #include <cstdint>
 #include <optional>
-#include <set>
 
 namespace mlir::tt::ttl {
 
@@ -26,10 +25,7 @@ namespace mlir::tt::ttl {
 FailureOr<int32_t> getValidatedDFBIndex(Value dfb, Operation *op);
 
 /// Returns one bit per physical DFB index that a finalized `ttl.bind_cb` in
-/// `module` declares.
-///
-/// Emits an error on the declaration and fails when an index is unresolved or
-/// outside the target's physical DFB index range.
+/// `module` declares; fails as `getValidatedDFBIndex` does.
 FailureOr<uint64_t> getAllocatedDFBMask(ModuleOp module);
 
 /// Returns the physical DFB interfaces whose protocol state the synchronized
@@ -51,24 +47,22 @@ FailureOr<uint64_t> getSynchronizedResetDFBMask(Operation *reset,
 /// boundary, including a boundary that declares `discard_dfb_state`.
 class DFBReconfigurationInstalls {
 public:
-  /// Parses the finalized plan of `module`. A module without the plan
-  /// installs nothing. Emits an error on `module` and fails for malformed
-  /// metadata.
-  static FailureOr<DFBReconfigurationInstalls> build(ModuleOp module);
+  /// Reads the plan `ttl-finalize-dfb-indices` attaches to a module with
+  /// reconfigurations; a module without reconfigurations installs nothing. A
+  /// configuration without storage segments covers every node of
+  /// `launchDomain`.
+  static DFBReconfigurationInstalls build(ModuleOp module,
+                                          const LaunchNodeDomain &launchDomain);
 
   /// Returns the physical DFB indices installed at boundary `ordinal` on
-  /// `node`.
-  uint64_t getInstalledDFBMask(int64_t ordinal, LaunchNodeCoord node) const;
-
-  /// Returns the physical DFB indices installed at boundary `ordinal` on at
-  /// least one node.
-  uint64_t getInstalledDFBMask(int64_t ordinal) const;
+  /// `node`, or on at least one node when `node` is absent.
+  uint64_t getInstalledDFBMask(int64_t ordinal,
+                               std::optional<LaunchNodeCoord> node) const;
 
 private:
   struct Install {
     int32_t physicalIndex = 0;
-    /// Nodes the configuration covers; absent when it covers every node.
-    std::optional<std::set<LaunchNodeCoord>> nodes;
+    LaunchNodeDomain nodes;
   };
 
   llvm::DenseMap<int64_t, SmallVector<Install>> installsByOrdinal;
