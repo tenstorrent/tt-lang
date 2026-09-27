@@ -70,6 +70,10 @@ def test_dfb_reconfiguration_abi_constants_match_sources():
     preserve_fifo_address = _extract_unsigned_constant(
         llk_source, "preserveFifoAddress"
     )
+    record_capacity = _extract_unsigned_constant(
+        llk_source, "configurationRecordCapacity"
+    )
+    words_per_dfb = _extract_unsigned_constant(llk_source, "configurationWordsPerDFB")
     compiler_words_per_core = _extract_unsigned_constant(
         allocation_source, "kDFBReconfigurationWordsPerCore"
     )
@@ -81,6 +85,8 @@ def test_dfb_reconfiguration_abi_constants_match_sources():
     )
     assert compiler_words_per_core == kernel_runner._DFB_RECONFIGURATION_WORDS_PER_CORE
     assert preserve_fifo_address == kernel_runner._DFB_RECONFIGURATION_PRESERVE_ADDRESS
+    assert record_capacity == kernel_runner._DFB_RECONFIGURATION_MAX_INDICES
+    assert words_per_dfb == kernel_runner._DFB_RECONFIGURATION_WORDS_PER_DFB
 
 
 class _FakeTensor:
@@ -2249,7 +2255,7 @@ def test_build_kernel_descriptors_accepts_complete_local_tensor_shards(monkeypat
 @pytest.mark.parametrize(
     ("thread_type", "local_tensor_indices"),
     [("compute", [0]), ("noc", [])],
-    ids=["compute-local-accessor", "data-movement-tensor-accessor"],
+    ids=["compute-local-accessor", "data-movement-base-address"],
 )
 def test_build_kernel_descriptors_binds_per_core_tensor_addresses(
     monkeypatch, thread_type, local_tensor_indices
@@ -2294,6 +2300,42 @@ def test_build_kernel_descriptors_binds_per_core_tensor_addresses(
     ] == [[(0, 0)], [(1, 0)]]
     assert descriptors[0].runtime_args[0][0] == [0x1000]
     assert descriptors[1].runtime_args[1][0] == [0x2000]
+
+
+# A TensorAccessor addresses every owner's shard with one base address.
+def test_build_kernel_descriptors_rejects_tensor_accessor_over_per_core_addresses(
+    monkeypatch,
+):
+    fake_ttnn = _local_tensor_test_environment()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    tensor = _PerCoreLocalTensorTestDouble("l1-small", "block", full_grid)
+    spec = kernel_runner.KernelSpec(
+        path="/tmp/kernel.cpp",
+        thread_type="noc",
+        tensor_indices=[0],
+        tensor_accessor_indices=[0],
+        config=object(),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"per-core tensor 0 is addressed through a TensorAccessor, which "
+            r"needs one address on every owner core, but its owner addresses "
+            r"differ: \[8960, 8976\]"
+        ),
+    ):
+        kernel_runner.build_kernel_descriptors(
+            kernel_specs=[spec],
+            tensors=[tensor],
+            tensor_accessor_args=[],
+            core_ranges=full_grid,
+            grid_cols=2,
+            grid_rows=1,
+            num_cbs=0,
+            device_coordinates=[0, 3],
+        )
 
 
 class _UniformPerCoreTensorTestDouble(_PerCoreLocalTensorTestDouble):
@@ -7544,7 +7586,6 @@ def test_static_dfb_descriptor_exact_search_finds_nonlocal_reordering(monkeypatc
     )
 
 
-# Splitting descriptors removes allocation coupling between sparse core sets.
 def _coupled_static_dfb_configs():
     return [
         PhysicalDFBConfig(
@@ -7583,6 +7624,7 @@ def test_static_dfb_descriptor_splitting_is_disabled_by_default(monkeypatch):
         )
 
 
+# Splitting descriptors removes allocation coupling between sparse core sets.
 def test_static_dfb_descriptors_split_over_budget_core_when_enabled(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 10240)

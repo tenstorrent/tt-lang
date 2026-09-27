@@ -345,9 +345,8 @@ def _per_core_l1_lowest_addresses(
     across device shards, as TT-Metal's circular-buffer validation does across
     physical allocators.
 
-    TODO(bnorris, https://github.com/tenstorrent/tt-lang/issues/1106): Temporary
-    stand-in for a TT-Metal capability. TT-Metal's hybrid allocator tracks the
-    lowest occupied L1 address of every core
+    TODO(#1106): Temporary stand-in for a TT-Metal capability. TT-Metal's hybrid
+    allocator tracks the lowest occupied L1 address of every core
     (``AllocatorImpl::get_lowest_occupied_l1_address``) but exposes neither it
     nor per-core buffers to Python, so the runtime reconstructs the frontier
     from the tensors it is given. Per-core buffers it is not given remain
@@ -422,10 +421,10 @@ def get_min_remaining_l1_for_device(
     configured L1 allocator base. The usable interval therefore ends at the
     lowest live tensor page address, not at the total allocated byte count.
 
-    For a MeshDevice, ``get_buffer_pages`` reports the reference allocator.
-    TT-Lang's multi-device tensors and runtime resources use common L1
-    addresses across their mesh, so its lowest live page is also a safe lower
-    bound for every physical device.
+    For a MeshDevice, ``get_buffer_pages`` reports the reference allocator,
+    whose lockstep allocations hold one L1 address on every physical device.
+    Per-core allocations are placed independently on each device, so
+    ``per_core_l1_tensors`` contribute the minimum address across devices.
 
     ``excluded_l1_buffer_addresses`` omits retained compiler-owned buffers when
     finding the lowest live page. This reconstructs the compilation budget
@@ -482,6 +481,8 @@ class KernelSpec:
             an empty list means this kernel uses no DFBs.
         local_tensor_indices: Global tensor indices whose local SRAM shards are
             accessed directly by this kernel.
+        tensor_accessor_indices: Global tensor indices this kernel addresses
+            through a TensorAccessor, which can reach shards on other cores.
     """
 
     path: str
@@ -497,6 +498,7 @@ class KernelSpec:
     fabric_manager_intervals: Tuple[FabricManagerIntervalSpec, ...] = ()
     used_dfb_indices: Optional[List[int]] = None
     local_tensor_indices: List[int] = field(default_factory=list)
+    tensor_accessor_indices: List[int] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -1972,14 +1974,21 @@ def _partition_descriptor_by_tensor_addresses(
             )
         ]
 
-    # A core outside a tensor's shard grid addresses it remotely, which needs
-    # the one address every owner holds, as a lockstep allocation provides.
-    # Local access is validated separately by _validate_local_tensor_access.
+    # Remote access needs the one address every owner holds, as a lockstep
+    # allocation provides: a core outside the shard grid, and a TensorAccessor,
+    # which addresses every owner's shard with one base address. Local access is
+    # validated separately by _validate_local_tensor_access.
     uniform_owner_addresses = {}
     for _argument_index, tensor_index in per_core_argument_indices:
         owner_addresses = set(per_core_addresses[tensor_index].values())
         if len(owner_addresses) == 1:
             uniform_owner_addresses[tensor_index] = owner_addresses.pop()
+        elif tensor_index in spec.tensor_accessor_indices:
+            raise ValueError(
+                f"per-core tensor {tensor_index} is addressed through a "
+                "TensorAccessor, which needs one address on every owner core, "
+                f"but its owner addresses differ: {sorted(owner_addresses)}"
+            )
 
     coordinates_by_addresses = {}
     for core_coordinate in _core_range_coordinates(
@@ -2258,12 +2267,11 @@ def _per_core_l1_allocation_enabled() -> bool:
     TT-Metal selects the hybrid allocator from this environment variable before
     device initialization, so the runtime follows the same setting.
 
-    TODO(bnorris, https://github.com/tenstorrent/tt-lang/issues/1106): Temporary
-    stand-in for a TT-Metal capability. TT-Metal does not expose the active
-    allocator mode to Python; replace this probe with a device query once it
-    does.
+    TODO(#1106): Temporary stand-in for a TT-Metal capability. TT-Metal does not
+    expose the active allocator mode to Python; replace this probe with a device
+    query once it does.
     """
-    return os.environ.get("TT_METAL_ALLOCATOR_MODE_HYBRID", "0") == "1"
+    return os.environ.get("TT_METAL_ALLOCATOR_MODE_HYBRID", "").startswith("1")
 
 
 def _allocate_l1_sharded_storage_tensor(
@@ -5765,6 +5773,12 @@ def emit_runner_source(
     lines.append("]")
     lines.append("")
 
+    lines.append("KERNEL_TENSOR_ACCESSOR_INDICES = [")
+    for spec in kernel_specs:
+        lines.append(f"    {spec.tensor_accessor_indices!r},  # {spec.thread_type}")
+    lines.append("]")
+    lines.append("")
+
     lines.append("KERNEL_PIPE_COMPUTED_ADDRESS_DFB_INDICES = [")
     for spec in kernel_specs:
         lines.append(
@@ -5920,6 +5934,10 @@ def emit_runner_source(
     lines.append("                tensor_indices=KERNEL_TENSOR_INDICES[kernel_idx],")
     lines.append(
         "                local_tensor_indices=KERNEL_LOCAL_TENSOR_INDICES[kernel_idx],"
+    )
+    lines.append(
+        "                tensor_accessor_indices="
+        "KERNEL_TENSOR_ACCESSOR_INDICES[kernel_idx],"
     )
     lines.append("                config=config,")
     lines.append(

@@ -30,8 +30,11 @@ namespace dfb_reconfiguration_detail {
 
 // Each core stores 64 four-word interface records, two active masks, three
 // arrival words, one release word, and two padding words in shared L1.
+constexpr uint32_t configurationRecordCapacity = 64;
 constexpr uint32_t configurationWordsPerDFB = 4;
 constexpr uint32_t lowMaskWord = 256;
+static_assert(lowMaskWord ==
+              configurationRecordCapacity * configurationWordsPerDFB);
 constexpr uint32_t highMaskWord = 257;
 constexpr uint32_t synchronizationWord = 258;
 constexpr uint32_t dm0StateWord = 0;

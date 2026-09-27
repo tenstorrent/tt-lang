@@ -108,6 +108,22 @@ static LogicalResult classifyCommonArgIndices(
 
 // LocalTensorAccessor lowering derives its bank base directly from one tensor
 // common runtime argument.
+static std::optional<int64_t> getConstantTensorSlot(Value bankBaseIn,
+                                                    int64_t tensorCount) {
+  auto get =
+      traceUnrealizedCasts(bankBaseIn).getDefiningOp<ttk::GetCommonArgValOp>();
+  APInt constantIndex;
+  if (!get || !matchPattern(traceUnrealizedCasts(get.getArgIndex()),
+                            m_ConstantInt(&constantIndex))) {
+    return std::nullopt;
+  }
+  int64_t slot = constantIndex.getSExtValue();
+  if (slot < 0 || slot >= tensorCount) {
+    return std::nullopt;
+  }
+  return slot;
+}
+
 static FailureOr<int64_t>
 getLocalTensorSlot(ttk::LocalTensorAccessorOp accessor, int64_t tensorCount) {
   Value bankBase = traceUnrealizedCasts(accessor.getBankBaseAddressIn());
@@ -215,6 +231,17 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
     return failure();
   }
 
+  // A bank base that is not a constant tensor-address slot identifies no
+  // tensor, so it adds no entry.
+  BitVector tensorAccessorSlots(tensorCount);
+  function.walk([&](ttk::TensorAccessorOp accessor) {
+    std::optional<int64_t> slot =
+        getConstantTensorSlot(accessor.getBankBaseAddressIn(), tensorCount);
+    if (slot) {
+      tensorAccessorSlots.set(*slot);
+    }
+  });
+
   bool preserveTensorPrefix =
       hasUnresolvedIndex || containsHiddenCommonArgAccess(function);
   if (preserveTensorPrefix) {
@@ -224,6 +251,7 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
   SmallVector<std::optional<int64_t>> tensorSlotMap(tensorCount);
   SmallVector<Attribute> retainedGlobalIndices;
   SmallVector<Attribute> localGlobalIndices;
+  SmallVector<Attribute> tensorAccessorGlobalIndices;
   OpBuilder builder(function.getContext());
   for (int64_t slot = 0; slot < tensorCount; ++slot) {
     if (liveTensorSlots.test(slot)) {
@@ -235,6 +263,10 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
       localGlobalIndices.push_back(
           builder.getI32IntegerAttr(globalTensorIndices[slot]));
     }
+    if (tensorAccessorSlots.test(slot)) {
+      tensorAccessorGlobalIndices.push_back(
+          builder.getI32IntegerAttr(globalTensorIndices[slot]));
+    }
   }
   function->setAttr(kCRTAIndicesAttrName,
                     builder.getArrayAttr(retainedGlobalIndices));
@@ -243,6 +275,12 @@ static LogicalResult finalizeFunction(func::FuncOp function) {
   } else {
     function->setAttr(kLocalTensorIndicesAttrName,
                       builder.getArrayAttr(localGlobalIndices));
+  }
+  if (tensorAccessorGlobalIndices.empty()) {
+    function->removeAttr(kTensorAccessorIndicesAttrName);
+  } else {
+    function->setAttr(kTensorAccessorIndicesAttrName,
+                      builder.getArrayAttr(tensorAccessorGlobalIndices));
   }
 
   if (preserveTensorPrefix) {

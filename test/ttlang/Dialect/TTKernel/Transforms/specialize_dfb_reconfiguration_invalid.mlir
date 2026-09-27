@@ -61,7 +61,7 @@ module attributes {
   func.func @missing_configurations(%configuration_address: ui32) attributes {
     ttl.core_coord = [[0, 0]]
   } {
-    // expected-error @below {{contains malformed DFB reconfiguration metadata}}
+    // expected-error @below {{contains malformed DFB reconfiguration metadata: a plan entry lacks `dfb_index` or `configurations`}}
     ttkernel.opaque_call "experimental::reconfigure_dfb_interfaces"(%configuration_address) {
       header = "<cstdint>", ttl.dfb_reconfiguration_ordinal = 0 : i64
     } : (ui32) -> ()
@@ -82,7 +82,7 @@ module attributes {
   func.func @dfb_index_beyond_record_capacity(%configuration_address: ui32) attributes {
     ttl.core_coord = [[0, 0]]
   } {
-    // expected-error @below {{contains malformed DFB reconfiguration metadata}}
+    // expected-error @below {{contains malformed DFB reconfiguration metadata: dfb_index 64 is not ascending, unique, and below the 64-record capacity}}
     ttkernel.opaque_call "experimental::reconfigure_dfb_interfaces"(%configuration_address) {
       header = "<cstdint>", ttl.dfb_reconfiguration_ordinal = 0 : i64
     } : (ui32) -> ()
@@ -105,7 +105,7 @@ module attributes {
   func.func @ambiguous_configuration(%configuration_address: ui32) attributes {
     ttl.core_coord = [[0, 0]]
   } {
-    // expected-error @below {{contains malformed DFB reconfiguration metadata}}
+    // expected-error @below {{contains malformed DFB reconfiguration metadata: two configurations of dfb_index 0 enter at ordinal 0 on core (0, 0)}}
     ttkernel.opaque_call "experimental::reconfigure_dfb_interfaces"(%configuration_address) {
       header = "<cstdint>", ttl.dfb_reconfiguration_ordinal = 0 : i64
     } : (ui32) -> ()
@@ -126,7 +126,7 @@ module attributes {
   func.func @empty_configuration(%configuration_address: ui32) attributes {
     ttl.core_coord = [[0, 0]]
   } {
-    // expected-error @below {{contains malformed DFB reconfiguration metadata}}
+    // expected-error @below {{contains malformed DFB reconfiguration metadata: the selected configuration of dfb_index 0 lacks a positive `num_tiles`, `page_size`, or `block_count`}}
     ttkernel.opaque_call "experimental::reconfigure_dfb_interfaces"(%configuration_address) {
       header = "<cstdint>", ttl.dfb_reconfiguration_ordinal = 0 : i64
     } : (ui32) -> ()
