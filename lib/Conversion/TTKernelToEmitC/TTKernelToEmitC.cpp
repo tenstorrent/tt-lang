@@ -681,17 +681,18 @@ public:
         getVolatileL1PtrOpaqueTypeName(elementWidth);
     auto elementType = emitc::OpaqueType::get(op.getContext(), elementTypeName);
 
-    rewriter.create<emitc::CallOpaqueOp>(loc, TypeRange{},
-                                         "invalidate_l1_cache", ValueRange{});
-    auto volatilePointer = rewriter.create<emitc::CallOpaqueOp>(
-        loc, TypeRange{emitc::PointerType::get(elementType)},
+    emitc::CallOpaqueOp::create(rewriter, loc, TypeRange{},
+                                "invalidate_l1_cache", ValueRange{});
+    auto volatilePointer = emitc::CallOpaqueOp::create(
+        rewriter, loc, TypeRange{emitc::PointerType::get(elementType)},
         "reinterpret_cast<" + elementTypeName + "*>",
         ValueRange{adaptor.getL1Ptr()});
-    auto subscriptOp = rewriter.create<emitc::SubscriptOp>(
-        loc, emitc::LValueType::get(op.getContext(), elementType),
+    auto subscriptOp = emitc::SubscriptOp::create(
+        rewriter, loc, emitc::LValueType::get(op.getContext(), elementType),
         volatilePointer.getResult(0), adaptor.getOffset());
 
-    auto loaded = rewriter.create<emitc::LoadOp>(loc, elementType, subscriptOp);
+    auto loaded =
+        emitc::LoadOp::create(rewriter, loc, elementType, subscriptOp);
     rewriter.replaceOpWithNewOp<emitc::CastOp>(
         op, getTypeConverter()->convertType(op.getValue().getType()), loaded);
     return success();
