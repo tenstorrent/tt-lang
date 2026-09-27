@@ -1615,6 +1615,7 @@ struct DFBSynchronizationLoweringPlan {
   DenseMap<int64_t, int64_t> stateOffsetByReconfiguration;
   DenseMap<int64_t, SmallVector<int32_t>> resetDFBsByReconfiguration;
   DenseMap<int32_t, Type> dfbTypesByIndex;
+  DenseMap<int32_t, uint32_t> dfbStateOffsetsByIndex;
   SmallVector<int32_t> allDFBIndices;
   int64_t scratchBaseOffset = 0;
   int64_t scratchBytes = 0;
@@ -1753,6 +1754,27 @@ buildDFBSynchronizationLoweringPlan(ModuleOp module) {
     if (inserted) {
       plan.allDFBIndices.push_back(index);
     }
+    if (plan.compilerSRAM) {
+      auto allocations =
+          module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName);
+      auto allocation =
+          allocations && static_cast<uint64_t>(index) < allocations.size()
+              ? dyn_cast<DictionaryAttr>(allocations[index])
+              : DictionaryAttr();
+      auto stateOffset =
+          allocation
+              ? allocation.getAs<IntegerAttr>(kDFBAllocationStateOffsetField)
+              : IntegerAttr();
+      if (!stateOffset ||
+          (!stateOffset.getType().isIndex() &&
+           !stateOffset.getType().isSignlessInteger()) ||
+          !stateOffset.getValue().isIntN(32)) {
+        bind.emitOpError("requires a representable compiler-sram state offset");
+        return WalkResult::interrupt();
+      }
+      plan.dfbStateOffsetsByIndex.try_emplace(
+          index, static_cast<uint32_t>(stateOffset.getValue().getZExtValue()));
+    }
     if (!plan.compilerSRAM) {
       int32_t targetMaxDFBIndices = getTargetMaxDFBIndices(bind);
       if (index >= targetMaxDFBIndices) {
@@ -1822,6 +1844,22 @@ static void emitDFBSynchronizationBarrier(Operation *operation,
       getRequiredDFBIndicesAttr(requiredDFBIndices, rewriter));
 }
 
+static Value
+buildCompilerSRAMStateAddress(Operation *operation, uint32_t stateOffset,
+                              ConversionPatternRewriter &rewriter) {
+  Location location = operation->getLoc();
+  Value arenaCommonArgIndex = ttk::GetCompileArgValOp::create(
+      rewriter, location, rewriter.getI32Type(), 0);
+  Value arenaBase = ttk::GetCommonArgValOp::create(
+      rewriter, location, rewriter.getI32Type(), arenaCommonArgIndex);
+  if (stateOffset == 0) {
+    return arenaBase;
+  }
+  Value offset =
+      arith::ConstantIntOp::create(rewriter, location, stateOffset, 32);
+  return arith::AddIOp::create(rewriter, location, arenaBase, offset);
+}
+
 static LogicalResult
 lowerCompilerSRAMSynchronization(Operation *operation, int64_t stateOffset,
                                  ArrayRef<int32_t> resetDFBIndices,
@@ -1832,11 +1870,11 @@ lowerCompilerSRAMSynchronization(Operation *operation, int64_t stateOffset,
   emitDFBSynchronizationBarrier(operation, synchronizationAddress,
                                 resetDFBIndices, rewriter);
   for (int32_t index : resetDFBIndices) {
-    auto typeIt = plan.dfbTypesByIndex.find(index);
-    assert(typeIt != plan.dfbTypesByIndex.end() &&
+    auto stateOffsetIt = plan.dfbStateOffsetsByIndex.find(index);
+    assert(stateOffsetIt != plan.dfbStateOffsetsByIndex.end() &&
            "planned compiler-sram synchronization must reference known DFBs");
-    Value stateAddress = ttk::GetCompileArgValOp::create(
-        rewriter, operation->getLoc(), typeIt->second, index);
+    Value stateAddress = buildCompilerSRAMStateAddress(
+        operation, stateOffsetIt->second, rewriter);
     ttk::OpaqueCallOp::create(
         rewriter, operation->getLoc(), TypeRange{},
         rewriter.getStringAttr("ttlang::l1::resetState"),

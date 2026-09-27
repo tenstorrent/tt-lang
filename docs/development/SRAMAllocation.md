@@ -245,7 +245,7 @@ bind(descriptor):
     return AddressDFB(stateAddress, payloadAddress, descriptor.geometry, descriptor.storageCapacity)
 ```
 
-External calls that access DFBs must provide explicit `DFBEffect` entries. These effects participate in lifetime and conflict analysis. Unknown DFB access and numeric `dfb_index` template arguments are rejected for compiler-managed storage.
+External calls can declare `DFBEffect` entries for protocol operations. These effects participate in lifetime and conflict analysis; a DFB dependency without effects remains live until completion is proved. Compiler-managed storage rejects unknown DFB access, numeric DFB template arguments, and DFB function arguments. External C++ code uses `ttl.dfb_descriptor(dfb)` as a template argument to bind compiler-managed storage.
 
 ## Target Interfaces
 
