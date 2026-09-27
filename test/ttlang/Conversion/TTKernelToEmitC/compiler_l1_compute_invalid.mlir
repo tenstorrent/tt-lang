@@ -353,3 +353,17 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 4160
 module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 8 : i64, ttl.dfb_allocations = [
   {dfb_index = 0 : i64, element_type = !ttcore.tile<32x32, bf16>, page_size = 2048 : i64, num_tiles = 1 : i64, block_count = 1 : i64, storage_capacity_pages = 2 : i64, l1_offset = 0 : i64, storage_segments = [{nodes = [[0, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 2048>}]}
 ]} {}
+
+// -----
+
+// Numeric DFB operands cannot be passed through external C++ calls.
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 2112 : i64, ttl.dfb_allocations = [
+  {dfb_index = 0 : i64, element_type = !ttcore.tile<32x32, bf16>, page_size = 2048 : i64, num_tiles = 1 : i64, block_count = 1 : i64, storage_capacity_pages = 1 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, l1_allocation_bytes = 2048 : i64}
+]} {
+  func.func @numeric_dfb_external_argument() attributes {ttkernel.thread = #ttkernel.thread<noc>} {
+    %dfb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
+    // expected-error @below {{compiler-sram external calls cannot pass or return DFB values}}
+    ttkernel.opaque_call "consume"(%dfb) {header = "consume.hpp"} : (!ttkernel.cb<1, !ttcore.tile<32x32, bf16>>) -> ()
+    return
+  }
+}

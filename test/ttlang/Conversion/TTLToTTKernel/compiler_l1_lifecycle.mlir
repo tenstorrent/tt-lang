@@ -15,16 +15,20 @@
 // CHECK: %[[ZERO:.*]] = arith.constant 0 : i32
 // CHECK: %[[SCRATCH0:.*]] = ttkernel.get_common_arg_val
 // CHECK-NEXT: ttkernel.opaque_call "experimental::reset_dfb_interfaces"(%[[SCRATCH0]], %[[ZERO]], %[[ZERO]]) {{.*}}dfb_resource_indices = array<i32: 0>
-// CHECK-NEXT: %[[SELECTED:.*]] = ttkernel.get_compile_time_arg_val(0)
-// CHECK-NEXT: ttkernel.opaque_call "ttlang::l1::resetState"(%[[SELECTED]]) {{.*}}dfb_resource_indices = array<i32: 0>
+// CHECK-NEXT: %[[SELECTED_ARG:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> i32
+// CHECK-NEXT: %[[SELECTED_ADDR:.*]] = ttkernel.get_common_arg_val(%[[SELECTED_ARG]]) : (i32) -> i32
+// CHECK-NEXT: ttkernel.opaque_call "ttlang::l1::resetState"(%[[SELECTED_ADDR]]) {{.*}}dfb_resource_indices = array<i32: 0>
 // CHECK-NEXT: ttkernel.opaque_call "experimental::reset_dfb_interfaces"(%[[SCRATCH0]], %[[ZERO]], %[[ZERO]]) {{.*}}dfb_resource_indices = array<i32: 0>
 // CHECK: %[[SCRATCH_BASE:.*]] = ttkernel.get_common_arg_val
 // CHECK-NEXT: %[[SCRATCH1:.*]] = arith.addi %[[SCRATCH_BASE]], %{{.*}} : i32
 // CHECK-NEXT: ttkernel.opaque_call "experimental::reset_dfb_interfaces"(%[[SCRATCH1]], %[[ZERO]], %[[ZERO]]) {{.*}}dfb_resource_indices = array<i32: 0, 1>
-// CHECK-NEXT: %[[ALL0:.*]] = ttkernel.get_compile_time_arg_val(0)
-// CHECK-NEXT: ttkernel.opaque_call "ttlang::l1::resetState"(%[[ALL0]]) {{.*}}dfb_resource_indices = array<i32: 0>
-// CHECK-NEXT: %[[ALL1:.*]] = ttkernel.get_compile_time_arg_val(1)
-// CHECK-NEXT: ttkernel.opaque_call "ttlang::l1::resetState"(%[[ALL1]]) {{.*}}dfb_resource_indices = array<i32: 1>
+// CHECK-NEXT: %[[ALL0_ARG:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> i32
+// CHECK-NEXT: %[[ALL0_ADDR:.*]] = ttkernel.get_common_arg_val(%[[ALL0_ARG]]) : (i32) -> i32
+// CHECK-NEXT: ttkernel.opaque_call "ttlang::l1::resetState"(%[[ALL0_ADDR]]) {{.*}}dfb_resource_indices = array<i32: 0>
+// CHECK-NEXT: %[[ALL1_ARG:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> i32
+// CHECK-NEXT: %[[ALL1_BASE:.*]] = ttkernel.get_common_arg_val(%[[ALL1_ARG]]) : (i32) -> i32
+// CHECK-NEXT: %[[ALL1_ADDR:.*]] = arith.addi %[[ALL1_BASE]], %{{.*}} : i32
+// CHECK-NEXT: ttkernel.opaque_call "ttlang::l1::resetState"(%[[ALL1_ADDR]]) {{.*}}dfb_resource_indices = array<i32: 1>
 // CHECK-NEXT: ttkernel.opaque_call "experimental::reset_dfb_interfaces"(%[[SCRATCH1]], %[[ZERO]], %[[ZERO]]) {{.*}}dfb_resource_indices = array<i32: 0, 1>
 // CHECK-NOT: ttl.reset
 module attributes {ttl.dfb_allocations = [{block_count = 1 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i32, page_size = 2048 : i32, storage_index = 0 : i32}, {block_count = 1 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<32x32, bf16>, l1_allocation_bytes = 2048 : i64, l1_offset = 8 : i64, l1_payload_offset = 2112 : i64, num_tiles = 1 : i32, page_size = 2048 : i32, storage_index = 1 : i32}], ttl.l1_arena_bytes = 4160 : i64, ttl.launch_grid = [1, 1], ttl.memory_model = "compiler-sram", ttl.target_arch = #ttcore.arch<blackhole>} {
@@ -65,8 +69,9 @@ module attributes {ttl.dfb_allocations = [{block_count = 1 : i32, dfb_index = 0 
 // CHECK: %[[RECONFIG_ZERO:.*]] = arith.constant 0 : i32
 // CHECK: %[[RECONFIG_SCRATCH:.*]] = ttkernel.get_common_arg_val
 // CHECK-NEXT: ttkernel.opaque_call "experimental::reset_dfb_interfaces"(%[[RECONFIG_SCRATCH]], %[[RECONFIG_ZERO]], %[[RECONFIG_ZERO]]) {{.*}}dfb_resource_indices = array<i32: 0>
-// CHECK-NEXT: %[[ENDED:.*]] = ttkernel.get_compile_time_arg_val(0)
-// CHECK-NEXT: ttkernel.opaque_call "ttlang::l1::resetState"(%[[ENDED]]) {{.*}}dfb_resource_indices = array<i32: 0>
+// CHECK-NEXT: %[[ENDED_ARG:.*]] = ttkernel.get_compile_time_arg_val(0) : () -> i32
+// CHECK-NEXT: %[[ENDED_ADDR:.*]] = ttkernel.get_common_arg_val(%[[ENDED_ARG]]) : (i32) -> i32
+// CHECK-NEXT: ttkernel.opaque_call "ttlang::l1::resetState"(%[[ENDED_ADDR]]) {{.*}}dfb_resource_indices = array<i32: 0>
 // CHECK-NEXT: ttkernel.opaque_call "experimental::reset_dfb_interfaces"(%[[RECONFIG_SCRATCH]], %[[RECONFIG_ZERO]], %[[RECONFIG_ZERO]]) {{.*}}dfb_resource_indices = array<i32: 0>
 // CHECK-NOT: ttl.dfb_reconfiguration
 module attributes {ttl.compiler_sram_reconfiguration_resets = [{dfb_indices = array<i32: 0>, ordinal = 0 : i64}], ttl.dfb_allocations = [{block_count = 1 : i32, dfb_index = 0 : i32, element_type = !ttcore.tile<32x32, bf16>, l1_allocation_bytes = 2048 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i32, page_size = 2048 : i32, storage_index = 0 : i32}, {block_count = 1 : i32, dfb_index = 1 : i32, element_type = !ttcore.tile<32x32, bf16>, l1_allocation_bytes = 2048 : i64, l1_offset = 8 : i64, l1_payload_offset = 2112 : i64, num_tiles = 1 : i32, page_size = 2048 : i32, storage_index = 1 : i32}], ttl.l1_arena_bytes = 4160 : i64, ttl.launch_grid = [1, 1], ttl.memory_model = "compiler-sram", ttl.target_arch = #ttcore.arch<blackhole>} {

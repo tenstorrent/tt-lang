@@ -1754,7 +1754,7 @@ buildDFBSynchronizationLoweringPlan(ModuleOp module) {
     if (inserted) {
       plan.allDFBIndices.push_back(index);
     }
-    if (plan.compilerSRAM) {
+    if (plan.compilerSRAM && plan.synchronizationRecordCount != 0) {
       auto allocations =
           module->getAttrOfType<ArrayAttr>(kDFBAllocationsAttrName);
       auto allocation =
