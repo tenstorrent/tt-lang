@@ -3081,6 +3081,131 @@ def test_reconfiguration_runtime_storage_uses_exact_node_union(monkeypatch):
     )
 
 
+def _backing_tensor(device):
+    return _FakeTensor(
+        device,
+        address=0xC000,
+        dtype=kernel_runner.format_name_to_ttnn_dtype("bfloat16"),
+    )
+
+
+def _remote_uniform_scratch_environment(monkeypatch, backed_addresses):
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.uint32 = "uint32"
+    fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
+    fake_ttnn.ShardOrientation = type("ShardOrientation", (), {"ROW_MAJOR": 0})
+    fake_ttnn.TensorMemoryLayout = type("TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0})
+    fake_ttnn.BufferType = type("BufferType", (), {"L1": 0})
+    fake_ttnn.ShardSpec = lambda *args: args
+    fake_ttnn.MemoryConfig = lambda *args: args
+    device = object()
+    fake_ttnn.from_torch = lambda *_args, **_kwargs: _FakeTensor(device, address=0x9000)
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    allocations = []
+
+    def allocate_scratch(core_ranges, num_bytes, _device, **_kwargs):
+        cores = tuple(
+            sorted(
+                (int(core.x), int(core.y))
+                for core in fake_ttnn.corerange_to_cores(core_ranges)
+            )
+        )
+        tensor = _FakeTensor(device, address=0x8000)
+        allocations.append((cores, num_bytes, tensor))
+        return tensor
+
+    def l1_addresses(tensor, _device):
+        for cores, _num_bytes, scratch in allocations:
+            if tensor is scratch:
+                return {core: tensor.buffer_address() for core in cores}
+        if tensor.buffer_address() == 0x9000:
+            return {(0, 0): 0x9000, (1, 0): 0x9000}
+        return dict(backed_addresses)
+
+    monkeypatch.setattr(
+        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_scratch
+    )
+    monkeypatch.setattr(kernel_runner, "_l1_buffer_addresses_by_core", l1_addresses)
+    initial = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (DFBStorageSegment(nodes=((0, 0),), tensor_index=0, byte_size=2048),),
+        storage_index=4,
+        address_scope="remote_uniform",
+    )
+    smaller_scratch = replace(
+        initial, storage_segments=(DFBStorageSegment(nodes=((0, 0),)),)
+    )
+    larger_scratch = replace(
+        initial,
+        data_format="float32",
+        page_size=4096,
+        storage_segments=(DFBStorageSegment(nodes=((1, 0),)),),
+    )
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7, 8),
+        dfb_epochs=(
+            (
+                DFBConfigurationEpoch(None, initial),
+                DFBConfigurationEpoch(7, smaller_scratch),
+                DFBConfigurationEpoch(8, larger_scratch),
+            ),
+        ),
+    )
+    return device, allocations, plan
+
+
+# Remote writers address remote-uniform scratch with one base, so storage whose
+# cores need different capacities receives one allocation at the largest.
+def test_reconfiguration_remote_uniform_scratch_uses_one_allocation(monkeypatch):
+    device, allocations, plan = _remote_uniform_scratch_environment(
+        monkeypatch, {(0, 0): 0xC000}
+    )
+
+    kernel_runner.build_dfb_reconfiguration_runtime_resources(
+        tensors=[_backing_tensor(device)],
+        core_ranges=_FakeExplicitCoreRanges((0, 0), (1, 0)),
+        plan=plan,
+        device=device,
+        cb_configs=_launch_configs(plan),
+    )
+
+    assert [(cores, num_bytes) for cores, num_bytes, _ in allocations] == [
+        (((0, 0), (1, 0)), 4096)
+    ]
+
+
+# PipeNet backing that covers only some cores of remote-uniform storage would
+# give the remaining cores a different base.
+def test_reconfiguration_remote_uniform_scratch_rejects_partial_pipe_backing(
+    monkeypatch,
+):
+    device, _allocations, plan = _remote_uniform_scratch_environment(
+        monkeypatch, {(0, 0): 0xC000}
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"storage\[4\] address_scope='remote_uniform' has PipeNet backing on "
+            "only some of its launch nodes"
+        ),
+    ):
+        kernel_runner.build_dfb_reconfiguration_runtime_resources(
+            tensors=[_backing_tensor(device)],
+            core_ranges=_FakeExplicitCoreRanges((0, 0), (1, 0)),
+            plan=plan,
+            cb_configs=_launch_configs(plan),
+            existing_backing_tensors={0: _FakeTensor(device, address=0xC000)},
+            existing_backing_allocation_bytes={0: 4096},
+            device=device,
+        )
+
+
 @pytest.mark.parametrize(
     "hybrid_allocation", [False, True], ids=["reconfigured-only", "local"]
 )
@@ -7314,6 +7439,50 @@ def test_remote_uniform_dfb_uses_one_descriptor_across_nodes(monkeypatch):
     }
     assert _descriptor_cores(descriptors_by_index[0]) == {(0, 0)}
     assert _descriptor_cores(descriptors_by_index[1]) == {(0, 0), (1, 0)}
+
+
+# A per-core backing tensor binds each node to its own shard, which a
+# remote-uniform DFB allows only when every owner holds the same address.
+def test_remote_uniform_dfb_rejects_non_uniform_per_core_backing(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
+    tensor = _FakeTensor(
+        None, dtype=kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    )
+    monkeypatch.setattr(
+        kernel_runner, "_is_per_core_allocated", lambda candidate: candidate is tensor
+    )
+    monkeypatch.setattr(
+        kernel_runner,
+        "_per_core_shard_addresses",
+        lambda _tensor, _label, _mesh_coordinate: {
+            (0, 0): [0x2300],
+            (1, 0): [0x2310],
+        },
+    )
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (DFBStorageSegment(nodes=((0, 0), (1, 0)), tensor_index=0, byte_size=2048),),
+        address_scope="remote_uniform",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"DFB\[0\] address_scope='remote_uniform' is backed by per-core "
+            "tensor 0, whose owner addresses differ"
+        ),
+    ):
+        kernel_runner.build_cb_descriptors(
+            tensors=[tensor],
+            cb_configs=[config],
+            core_ranges=full_grid,
+        )
 
 
 def test_remote_uniform_dfb_rejects_partitioned_storage_group(monkeypatch):
