@@ -10,6 +10,7 @@
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOpsTypes.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOps.h"
+#include "ttlang/Dialect/TTL/Transforms/ComputeTarget.h"
 
 #include "mlir/Conversion/ArithToEmitC/ArithToEmitC.h"
 #include "mlir/Conversion/MemRefToEmitC/MemRefToEmitC.h"
@@ -44,6 +45,7 @@
 #include <cmath>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <set>
 #include <string>
@@ -769,7 +771,8 @@ getCompilerL1GeometryTemplateArguments(const CompilerL1Allocation &allocation,
                                        ttcore::TileType tile) {
   return (Twine("static_cast<uint32_t>(") +
           datatypeToDataformatStr(tile.getDataType()) + "), " +
-          Twine(allocation.pageSizeBytes) + ", " +
+          Twine(allocation.pageSizeBytes) + ", " + Twine(tile.getHeight()) +
+          ", " + Twine(tile.getWidth()) + ", " +
           Twine(allocation.pagesPerBlock) + ", " +
           Twine(allocation.blockCount) + ", " +
           Twine(allocation.storageCapacityPages))
@@ -3622,11 +3625,17 @@ public:
 } // namespace
 
 namespace {
-static bool isSupportedCompilerSRAMComputeTile(Type elementType) {
+static LogicalResult
+validateCompilerSRAMComputeTileType(const ttl::ComputeTargetEnvironment &target,
+                                    Type elementType,
+                                    std::string &failureReason) {
   auto tile = dyn_cast_if_present<ttcore::TileType>(elementType);
-  return tile && tile.getHeight() == 32 && tile.getWidth() == 32 &&
-         (tile.getDataType() == ttcore::DataType::Float32 ||
-          tile.getDataType() == ttcore::DataType::BFloat16);
+  if (!tile || (tile.getDataType() != ttcore::DataType::Float32 &&
+                tile.getDataType() != ttcore::DataType::BFloat16)) {
+    failureReason = "requires BF16 or FP32 tiles";
+    return failure();
+  }
+  return target.validateKernelTileType(tile, failureReason);
 }
 
 static LogicalResult
@@ -3961,6 +3970,14 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
     if (!sourceOperations.wasInterrupted()) {
       return success();
     }
+    std::string computeTargetFailureReason;
+    FailureOr<std::unique_ptr<ttl::ComputeTargetEnvironment>> computeTarget =
+        ttl::ComputeTargetEnvironment::get(module, computeTargetFailureReason);
+    if (failed(computeTarget)) {
+      module.emitOpError("compiler-sram compute target is invalid: ")
+          << computeTargetFailureReason;
+      return failure();
+    }
     WalkResult validation = module.walk([&](Operation *operation) {
       if (operation->getName().getDialectNamespace() == "emitc") {
         if (!operation->hasAttr(ttl::kDPrintGeneratedAttrName)) {
@@ -4067,11 +4084,15 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
             return WalkResult::interrupt();
           }
           if (threadType &&
-              threadType.getValue() == ttkernel::ThreadType::Compute &&
-              !isSupportedCompilerSRAMComputeTile(allocation.elementType)) {
-            operation->emitOpError("compiler-sram compute descriptors "
-                                   "require 32x32 BF16 or FP32 tiles");
-            return WalkResult::interrupt();
+              threadType.getValue() == ttkernel::ThreadType::Compute) {
+            computeTargetFailureReason.clear();
+            if (failed(validateCompilerSRAMComputeTileType(
+                    **computeTarget, allocation.elementType,
+                    computeTargetFailureReason))) {
+              operation->emitOpError("compiler-sram compute descriptor ")
+                  << computeTargetFailureReason;
+              return WalkResult::interrupt();
+            }
           }
         }
       }
@@ -4097,9 +4118,12 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
           if (!buffer) {
             continue;
           }
-          if (!isSupportedCompilerSRAMComputeTile(buffer.getElementType())) {
-            operation->emitOpError(
-                "compiler-sram compute requires 32x32 BF16 or FP32 tiles");
+          computeTargetFailureReason.clear();
+          if (failed(validateCompilerSRAMComputeTileType(
+                  **computeTarget, buffer.getElementType(),
+                  computeTargetFailureReason))) {
+            operation->emitOpError("compiler-sram compute ")
+                << computeTargetFailureReason;
             return WalkResult::interrupt();
           }
         }

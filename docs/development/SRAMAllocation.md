@@ -114,7 +114,7 @@ The interface is declared in [CompilerL1Allocator.h](../../lib/Dialect/TTL/Trans
 
 | Type | Fields and meaning |
 | --- | --- |
-| `CompilerL1AllocationProblem` | `regionBytes`: aligned, nonzero payload extents; `conflicts`: symmetric matrix of pairs that must not overlap; `alignmentBytes`: target alignment; `payloadBaseOffset`: first usable payload byte after control records; `budgetBytes`: usable L1 capacity. |
+| `CompilerL1AllocationProblem` | `regionBytes`: aligned, nonzero payload extents; `conflicts`: symmetric matrix of pairs that must not overlap; `alignmentBytes`: target alignment; `payloadBaseOffset`: first usable payload byte after control records; `budgetBytes`: usable SRAM capacity. |
 | `CompilerL1AllocationSolution` | `offsets`: one arena-relative byte offset per input region; `arenaBytes`: exact maximum payload end, or zero for empty input. |
 | `SRAMPlacementFailure` | `kind`: invalid problem, strategy failure, invalid solution, or exhausted budget; `regionIndex`: optional failing region; `reason`: diagnostic text. |
 
@@ -234,9 +234,31 @@ Reset calls carry DFB identities for node selection but use only arena control a
 
 Wormhole continues to support ordinary compiler-managed allocation, transfer, and compute. Synchronized reset and reconfiguration remain Blackhole-only because their current LLK protocol depends on Blackhole processor synchronization behavior. Wormhole compilation rejects those operations with a target-specific diagnostic before allocation.
 
+## Compute Tile Dimensions
+
+Metal compute uses DFB descriptors to configure tile formats and dimensions. Address-based compute has no descriptor, so each operand type carries its format, byte size, height, width, and direct-to-destination choice. BF16 and FP32 support 1x32, 2x32, 4x32, 8x32, 16x16, 16x32, 32x16, and 32x32 tiles on Blackhole and Wormhole. The shared compute-target interface validates these dimensions; the target adapter supplies architecture-specific LLK arguments.
+
+A kernel may use different tile dimensions in successive operations. The compute context tracks input formats, page sizes, face row heights, and face counts, plus output format and dimensions. An output dimension change requires PACK reconfiguration even when two tiles occupy the same number of bytes.
+
+```text
+configureCompute(inputA, inputB, output):
+    if no configuration exists:
+        initialize UNPACK, MATH, and PACK
+    else:
+        reconfigure each changed input format, page size, face row height, or face count
+        reconfigure PACK if its format, page size, or tile dimensions changed
+        if output tile dimensions changed:
+            initialize PACK while preserving address modifiers
+    record the active configuration
+```
+
+Shared compute helpers depend on tile properties, not SRAM offsets, capacities, or runtime-argument indices. This allows multiple DFBs with the same tile properties to use one helper implementation and bounds generated program size as the number of logical DFBs grows.
+
 ## External C++ Interface
 
 `ttl.dfb_descriptor(dfb)` lowers to a C++ template type containing page size, pages per block, block count, shared storage capacity, state offset, payload offset, and an optional tensor common-argument index. Its `bind()` method obtains the state address from the arena. The payload address comes from either the arena or the tensor's existing common runtime argument. External functions therefore require no Metal DFB index and no additional runtime argument per DFB.
+
+On a compute thread, the generated `ComputeDFBDescriptor` also carries the tile format, height, width, and direct-to-destination choice. Its storage offsets remain fixed compile-time values; compute helpers specialize only on tile properties. In finalized allocation metadata, `l1_payload_offset` is absolute within the arena. The generated descriptor stores the difference between that address and its control-record address.
 
 An external compute adapter selects Metal numeric-index operations or address-based target operations using `TTLANG_DFB_STORAGE_COMPILER_SRAM` (0 for Metal, 1 for compiler-managed SRAM). Generated device code defines the marker before including the external header; architecture-specific operations remain behind `ttlang::l1::target`. Opaque C++ bodies are outside compiler compute analysis, so the enclosing operation declares any required compute configuration. [External functions](../sphinx/reference/external-functions.md#template-arguments) specifies the C++ interface.
 
@@ -325,7 +347,7 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 - Validated allocation groups with one shared state record and the largest required compiler-owned payload envelope.
 - One-block transactions and complete-capacity tensor publication or consumption, with positive capacity below `2^31` pages.
 - Consumer-owned replacement writes into the acquired read window without changing occupancy or sequence state.
-- Full 32x32 BF16 and FP32 tiles for address-based compute.
+- BF16 and FP32 address-based compute for 1x32, 2x32, 4x32, 8x32, 16x16, 16x32, 32x16, and 32x32 tiles.
 - Address-based tensor transfer, elementwise compute, matmul, reductions, broadcast, transpose, and selected activation operations covered by the implementation tests.
 - Typed external C++ calls with explicit DFB effects, compiler-owned or tensor-backed payloads, and BF16/FP32 elementwise multiplication and block matmul.
 - Device-domain and mesh program placement with declarative external runtime resources.
@@ -337,6 +359,7 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 
 | Scenario | Evidence |
 | --- | --- |
+| [Sub-tile compute](../../test/python/test_subtile_compute.py) | 424 Blackhole device-correctness cases cover BF16/FP32, DRAM/SRAM tensors, both storage backends, both compiler allocation strategies, tensor-backed multi-page expressions, geometry changes within one kernel, and typed external descriptors. |
 | Blackhole transfer and compute | Device correctness across BF16/FP32, DRAM/TTNN L1 tensors, repeated executions, counter wraparound, 96 live DFBs, arithmetic with 66 allocated DFBs, matmul, reductions, residual, MLP, attention, and expert merge |
 | External calls and lifecycle boundaries | 20 Blackhole device cases across BF16/FP32 and DRAM/TTNN L1, including repeated selected reset, reset-all, reconfiguration, live state preservation, payload reuse, and reset of allocation index 65 |
 | External C++ compute | [Elementwise](../../test/python/test_external_dfb_reuse.py) passes 98 Blackhole BF16/FP32 cases, including a 70-DFB composition. [Block matmul](../../test/python/test_external_matmul.py) passes 118 cases across 1x1, 1x2, and 2x2 tile blocks, both storage backends, tensor backing, reset/reconfiguration, and native gated-MLP composition. |
@@ -352,13 +375,13 @@ Monotonic allocation with explicit execution-phase overlays was considered. It c
 
 - Per-node arena layouts require node-specific allocation metadata and ownership. Multicast receivers additionally require a shared payload address.
 - Cross-operation reuse of PipeNet scratch requires enforced completion through destination consumption.
-- Sub-tile and row-major operations require matching geometry, stride, and capacity rules in the address-based compute interface.
+- Row-major operations require matching geometry, stride, and capacity rules in the address-based interface.
 - Wormhole reset and reconfiguration require a target synchronization protocol validated on device.
 
 The intended dependency order after generated fabric support is:
 
 1. Qualify additional external C++ kernels against the typed descriptor interface. Extend the target interface only for operations whose address, geometry, or completion requirements it does not yet express.
-2. Add sub-tile and row-major metadata, partial-block and general contiguous multi-block transactions, and the corresponding address, stride, capacity, and wrap rules.
+2. Add row-major metadata, partial-block and general contiguous multi-block transactions, and the corresponding address, stride, capacity, and wrap rules.
 3. Add Wormhole reset and reconfiguration after defining and device-qualifying a Wormhole synchronization protocol behind the existing target interface.
 4. Qualify complete model layers, then measure device cycles, arena high-water usage, initialization cost, compile time, and generated code size against `metal-cb`.
 
