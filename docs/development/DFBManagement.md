@@ -259,8 +259,12 @@ allocator gaps and could overestimate the available range.
 Tensor-backed and already allocated computed-address storage do not advance the
 static frontiers. For a multi-device mesh, tensor and runtime-resource
 allocations can constrain the usable interval differently on each logical
-core. The runtime applies the reference allocator's global minimum remaining
-interval to every logical core when a descriptor requires a common address.
+core. When no per-core DFB placement is resolved, because the program carries
+neither per-core DFB use metadata, allocation domains, nor reconfiguration
+scratch segments, the runtime applies the reference allocator's global minimum
+remaining interval to every logical core. The compile-time budget is always
+this device-wide minimum, so a per-core tensor on a core the operation does not
+launch on can still lower it.
 The correctness invariant is that every surviving DFB access has one compatible
 descriptor on its launch core; conservative metadata preserves the
 whole-program descriptor behavior when this cannot be proved.

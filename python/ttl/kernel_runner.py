@@ -345,9 +345,8 @@ def _per_core_l1_lowest_addresses(
     across device shards, as TT-Metal's circular-buffer validation does across
     physical allocators.
 
-    TODO(bnorris, https://github.com/tenstorrent/tt-lang/issues/1106): Temporary
-    stand-in for a TT-Metal capability. TT-Metal's hybrid allocator tracks the
-    lowest occupied L1 address of every core
+    TODO(#1106): Temporary stand-in for a TT-Metal capability. TT-Metal's hybrid
+    allocator tracks the lowest occupied L1 address of every core
     (``AllocatorImpl::get_lowest_occupied_l1_address``) but exposes neither it
     nor per-core buffers to Python, so the runtime reconstructs the frontier
     from the tensors it is given. Per-core buffers it is not given remain
@@ -422,10 +421,10 @@ def get_min_remaining_l1_for_device(
     configured L1 allocator base. The usable interval therefore ends at the
     lowest live tensor page address, not at the total allocated byte count.
 
-    For a MeshDevice, ``get_buffer_pages`` reports the reference allocator.
-    TT-Lang's multi-device tensors and runtime resources use common L1
-    addresses across their mesh, so its lowest live page is also a safe lower
-    bound for every physical device.
+    For a MeshDevice, ``get_buffer_pages`` reports the reference allocator,
+    whose lockstep allocations hold one L1 address on every physical device.
+    Per-core allocations are placed independently on each device, so
+    ``per_core_l1_tensors`` contribute the minimum address across devices.
 
     ``excluded_l1_buffer_addresses`` omits retained compiler-owned buffers when
     finding the lowest live page. This reconstructs the compilation budget
@@ -2267,12 +2266,11 @@ def _per_core_l1_allocation_enabled() -> bool:
     TT-Metal selects the hybrid allocator from this environment variable before
     device initialization, so the runtime follows the same setting.
 
-    TODO(bnorris, https://github.com/tenstorrent/tt-lang/issues/1106): Temporary
-    stand-in for a TT-Metal capability. TT-Metal does not expose the active
-    allocator mode to Python; replace this probe with a device query once it
-    does.
+    TODO(#1106): Temporary stand-in for a TT-Metal capability. TT-Metal does not
+    expose the active allocator mode to Python; replace this probe with a device
+    query once it does.
     """
-    return os.environ.get("TT_METAL_ALLOCATOR_MODE_HYBRID", "0") == "1"
+    return os.environ.get("TT_METAL_ALLOCATOR_MODE_HYBRID", "").startswith("1")
 
 
 def _allocate_l1_sharded_storage_tensor(
