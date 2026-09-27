@@ -547,13 +547,16 @@ launch configuration adds its non-tensor-backed nodes, so a core that holds the
 DFB only at launch also receives storage.
 
 When `TT_METAL_ALLOCATOR_MODE_HYBRID` enables TT-Metal's hybrid allocator
-before device initialization, local storage is backed at runtime as well, even
-when it is not reconfigured. Each core then receives one per-core arena that
-packs its local storage indices at DFB address alignment, and configuration
-tensors are allocated per core. Remote-uniform storage is never per core: each
-such storage index is one range-lockstep allocation over the cores that hold
-it, which gives it one address on those cores without reserving that interval
-on the rest of the grid. In the default allocator mode every runtime-backed
+before device initialization, a program with a reconfiguration plan also backs
+its local storage at runtime, even when that storage is not reconfigured. Each
+core then receives one per-core arena that packs its local storage indices at
+TT-Metal's DRAM alignment (32 bytes on Wormhole, 64 bytes on Blackhole), the
+alignment static DFB placement uses, and configuration tensors are allocated
+per core. Remote-uniform storage is never per core: each such storage index is
+one range-lockstep allocation over the cores that hold it, which gives it one
+address on those cores. Its placement need not avoid per-core allocations on
+other cores, but the lockstep allocator still reserves the interval across the
+grid. In the default allocator mode every runtime-backed
 storage index is one range-lockstep allocation sized to its largest per-core
 requirement.
 

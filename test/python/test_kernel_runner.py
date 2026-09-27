@@ -3571,21 +3571,130 @@ def test_reconfiguration_runtime_storage_skips_tensor_backed_launch_nodes(
     ]
 
 
+# A launch configuration without segments reserves storage on its allocation
+# nodes, including a node absent from every epoch.
+def test_reconfiguration_runtime_storage_covers_launch_allocation_nodes(monkeypatch):
+    device, allocations = _hybrid_runtime_storage_environment(monkeypatch)
+    epoch = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (DFBStorageSegment(nodes=((0, 0),)),),
+        storage_index=0,
+    )
+    launch = PhysicalDFBConfig(
+        0, 1, "bfloat16", 1, 2048, (32, 32), allocation_nodes=((0, 0), (1, 0))
+    )
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (DFBConfigurationEpoch(None, epoch), DFBConfigurationEpoch(7, epoch)),
+        ),
+    )
+
+    kernel_runner.build_dfb_reconfiguration_runtime_resources(
+        tensors=[],
+        core_ranges=_FakeExplicitCoreRanges((0, 0), (1, 0)),
+        plan=plan,
+        device=device,
+        cb_configs=[launch],
+    )
+
+    assert sorted(cores for cores, _num_bytes, _tensor in allocations) == [
+        ((0, 0),),
+        ((1, 0),),
+    ]
+
+
+# An unknown launch domain reserves no launch-only core. A local DFB keeps a
+# static descriptor there; a remote_uniform DFB needs one descriptor and fails.
+@pytest.mark.parametrize(
+    "address_scope",
+    [DFBAddressScope.LOCAL, DFBAddressScope.REMOTE_UNIFORM],
+    ids=["local", "remote-uniform"],
+)
+def test_reconfiguration_runtime_storage_unknown_launch_domain(
+    monkeypatch, address_scope
+):
+    device, _allocations = _hybrid_runtime_storage_environment(monkeypatch)
+    epoch = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (DFBStorageSegment(nodes=((0, 0),)),),
+        storage_index=0,
+        address_scope=address_scope,
+    )
+    launch = PhysicalDFBConfig(
+        0, 1, "bfloat16", 1, 2048, (32, 32), address_scope=address_scope
+    )
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (DFBConfigurationEpoch(None, epoch), DFBConfigurationEpoch(7, epoch)),
+        ),
+    )
+    resources = kernel_runner.build_dfb_reconfiguration_runtime_resources(
+        tensors=[],
+        core_ranges=_FakeExplicitCoreRanges((0, 0), (1, 0)),
+        plan=plan,
+        device=device,
+        cb_configs=[launch],
+    )
+
+    def build_descriptors():
+        return kernel_runner.build_cb_descriptors(
+            tensors=[],
+            cb_configs=[launch],
+            core_ranges=_FakeExplicitCoreRanges((0, 0), (1, 0)),
+            dfb_reconfiguration_scratch_segments=resources.scratch_segments_by_index,
+            dfb_reconfiguration_plan=plan,
+        )
+
+    if address_scope == DFBAddressScope.LOCAL:
+        descriptors = build_descriptors()
+        assert [descriptor.backing_desc is not None for descriptor in descriptors] == [
+            True,
+            False,
+        ]
+    else:
+        with pytest.raises(
+            ValueError, match="requires one descriptor over every allocated node"
+        ):
+            build_descriptors()
+
+
 # Arena members start at the DFB address alignment; page sizes of different
 # members do not add padding between them.
+@pytest.mark.parametrize(
+    ("alignment", "third_offset", "arena_bytes"),
+    [(64, 5184, 6272), (128, 5248, 6336)],
+    ids=["64B", "128B"],
+)
 def test_reconfiguration_runtime_storage_aligns_arena_members_to_address_alignment(
-    monkeypatch,
+    monkeypatch, alignment, third_offset, arena_bytes
 ):
     device, allocations = _hybrid_runtime_storage_environment(monkeypatch)
+    kernel_runner.ttnn.get_dram_alignment = lambda: alignment
     wide = PhysicalDFBConfig(0, 2, "bfloat16", 1, 2048, (32, 32), storage_index=0)
-    block_float = PhysicalDFBConfig(
+    first_block_float = PhysicalDFBConfig(
         1, 1, "bfloat8_b", 1, 1088, (32, 32), storage_index=1
     )
+    second_block_float = PhysicalDFBConfig(
+        2, 1, "bfloat8_b", 1, 1088, (32, 32), storage_index=2
+    )
+    configs = [wide, first_block_float, second_block_float]
     plan = DFBReconfigurationPlan(
         boundary_ordinals=(7,),
         dfb_epochs=tuple(
             (DFBConfigurationEpoch(None, config), DFBConfigurationEpoch(7, config))
-            for config in (wide, block_float)
+            for config in configs
         ),
     )
 
@@ -3594,18 +3703,18 @@ def test_reconfiguration_runtime_storage_aligns_arena_members_to_address_alignme
         core_ranges=_FakeExplicitCoreRanges((0, 0), (0, 0)),
         plan=plan,
         device=device,
-        cb_configs=[wide, block_float],
+        cb_configs=configs,
     )
 
     assert [(cores, num_bytes) for cores, num_bytes, _ in allocations] == [
-        (((0, 0),), 5184)
+        (((0, 0),), arena_bytes)
     ]
     assert {
         storage_index: [
             (segment.byte_offset, segment.allocation_bytes) for segment in segments
         ]
         for storage_index, segments in resources.scratch_segments_by_index.items()
-    } == {0: [(0, 4096)], 1: [(4096, 1088)]}
+    } == {0: [(0, 4096)], 1: [(4096, 1088)], 2: [(third_offset, 1088)]}
 
 
 def test_reconfiguration_rejects_launch_formats_outside_the_plan(monkeypatch):
