@@ -1768,6 +1768,7 @@ buildDFBSynchronizationLoweringPlan(ModuleOp module) {
       if (!stateOffset ||
           (!stateOffset.getType().isIndex() &&
            !stateOffset.getType().isSignlessInteger()) ||
+          stateOffset.getValue().isNegative() ||
           !stateOffset.getValue().isIntN(32)) {
         bind.emitOpError("requires a representable compiler-sram state offset");
         return WalkResult::interrupt();

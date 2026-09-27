@@ -188,10 +188,16 @@ static FailureOr<int64_t> getCompilerSRAMTensorIndex(ModuleOp module,
     return failure();
   }
   auto allocation = dyn_cast<DictionaryAttr>(allocations[dfbIndex]);
-  auto segments = allocation ? allocation.getAs<ArrayAttr>("storage_segments")
-                             : ArrayAttr();
-  if (!segments) {
+  if (!allocation) {
+    return failure();
+  }
+  Attribute segmentsAttribute = allocation.get("storage_segments");
+  if (!segmentsAttribute) {
     return int64_t{-1};
+  }
+  auto segments = dyn_cast<ArrayAttr>(segmentsAttribute);
+  if (!segments) {
+    return failure();
   }
   if (segments.size() != 1) {
     return failure();
