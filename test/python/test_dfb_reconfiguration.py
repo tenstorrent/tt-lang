@@ -929,7 +929,12 @@ def test_reconfiguration_composes_varying_caller_runtime_args(device):
 
 
 # Repeated boundaries preserve a live payload, reuse physical indices, and
-# restore the initial descriptors for the next iteration.
+# restore the initial descriptors for the next iteration. With core
+# specialization, kernels that are not cloned per core receive the static
+# reconfiguration form because every grid node selects the same descriptors.
+@pytest.mark.parametrize(
+    "specialize_cores", [False, True], ids=["generic-cores", "specialized-cores"]
+)
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
 @pytest.mark.parametrize("grid_cols", [1, 2], ids=["one-core", "two-core"])
 @pytest.mark.parametrize(
@@ -938,7 +943,7 @@ def test_reconfiguration_composes_varying_caller_runtime_args(device):
     ids=["dram", "l1"],
 )
 def test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution(
-    device, dtype, grid_cols, to_device, monkeypatch, tmp_path
+    device, dtype, grid_cols, to_device, specialize_cores, monkeypatch, tmp_path
 ):
     if ttl_api._detect_device_arch(device) != "blackhole":
         pytest.skip("requires Blackhole DFB reconfiguration support")
@@ -946,6 +951,9 @@ def test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution
     data_format = "bf16" if dtype == torch.bfloat16 else "float32"
     operation = _make_reconfiguration_operation(data_format, grid_cols)
     monkeypatch.setenv("TTLANG_FINAL_MLIR", str(tmp_path / "reconfiguration.mlir"))
+    options = "--ttl-reuse-user-dfbs " + (
+        "--ttl-specialize-cores" if specialize_cores else "--no-ttl-specialize-cores"
+    )
 
     first_host = (
         torch.arange(32 * 32 * grid_cols, dtype=torch.float32)
@@ -972,7 +980,7 @@ def test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution
         second_output,
         to_device(third_host, device),
         third_output,
-        options="--ttl-reuse-user-dfbs",
+        options=options,
     )
 
     final_mlir = (tmp_path / "reconfiguration.mlir").read_text()
@@ -982,7 +990,19 @@ def test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution
     assert final_mlir.count("entry_reconfiguration = 1 : i64") == 2
     assert final_mlir.count("block_count = 4 : i32") == 2
     assert final_mlir.count("num_tiles = 2 : i32") == 4
-    assert final_mlir.count("experimental::reconfigure_dfb_interfaces") == 6
+    reconfiguration_calls = [
+        line
+        for line in final_mlir.splitlines()
+        if "experimental::reconfigure_dfb_interfaces" in line
+    ]
+    if specialize_cores:
+        assert reconfiguration_calls
+        # A one-core grid clones no kernel, so every call is uncloned.
+        if grid_cols == 1:
+            assert all("template_args" in line for line in reconfiguration_calls)
+    else:
+        assert len(reconfiguration_calls) == 6
+        assert not any("template_args" in line for line in reconfiguration_calls)
 
     cached_first_host = (first_host.float() + 3).to(dtype)
     cached_second_host = (second_host.float() - 5).to(dtype)
@@ -997,7 +1017,7 @@ def test_reconfiguration_reuses_ids_with_different_capacity_and_cached_execution
         cached_second_output,
         to_device(cached_third_host, device),
         cached_third_output,
-        options="--ttl-reuse-user-dfbs",
+        options=options,
     )
 
     for actual, expected in (
