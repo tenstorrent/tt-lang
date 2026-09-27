@@ -2042,6 +2042,14 @@ static LogicalResult validateCompilerL1ExternalCalls(ModuleOp module) {
           "compiler-sram requires typed DFB effects for external calls");
       return WalkResult::interrupt();
     }
+    if (llvm::any_of(call.getArgOperands(), [](Value argument) {
+          return isa<CircularBufferType>(argument.getType());
+        })) {
+      call.emitOpError("compiler-sram external calls cannot pass DFB function "
+                       "arguments; use ttl.dfb_descriptor() as a template "
+                       "argument");
+      return WalkResult::interrupt();
+    }
     if (std::optional<ArrayAttr> templateArgs = call.getTemplateArgs()) {
       for (Attribute attribute : *templateArgs) {
         auto templateArg = cast<ExternalTemplateArgAttr>(attribute);

@@ -4092,6 +4092,18 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
           return WalkResult::interrupt();
         }
       }
+      if (isa<ttkernel::OpaqueCallOp>(operation) &&
+          (llvm::any_of(operation->getOperands(),
+                        [](Value value) {
+                          return isa<ttkernel::CBType>(value.getType());
+                        }) ||
+           llvm::any_of(operation->getResults(), [](Value value) {
+             return isa<ttkernel::CBType>(value.getType());
+           }))) {
+        operation->emitOpError(
+            "compiler-sram external calls cannot pass or return DFB values");
+        return WalkResult::interrupt();
+      }
       if (!supported) {
         operation->emitOpError()
             << "has no compiler-sram lowering for " << operation->getName()
