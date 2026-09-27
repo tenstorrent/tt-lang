@@ -1066,8 +1066,18 @@ def TTLVerifyDFBLifecycle
     acquisitions never exceed the DFB capacity, no acquisition is open when
     the kernel returns, and across kernels the blocks popped never exceed the
     blocks pushed while the unpopped blocks fit the capacity. Synchronized
-    resets and state-discarding reconfigurations discard the open state, so
-    the sequence between two of them is checked on its own.
+    resets and state-discarding reconfigurations discard the open state of
+    the DFBs whose interfaces the runtime resets, so each such DFB's sequence
+    between two of them is checked on its own. A reset restores the physical
+    interfaces of its lowered mask; a reconfiguration restores the descriptors
+    that `ttl.dfb_reconfiguration_plan` installs at its boundary on the node.
+    Every other DFB keeps its state, and its sequence continues across the
+    operation.
+
+    Nodes where an external call may perform undeclared protocol actions on a
+    DFB are not checked for it. There the pass warns when the DFB is waited on
+    repeatedly, never popped, and never restored, because pages published
+    before the wait stay in the DFB.
 
     ```mlir
     // Rejected: four blocks are pushed into a capacity-1 DFB that no
@@ -1081,7 +1091,8 @@ def TTLVerifyDFBLifecycle
 
     Region execution per node comes from the launch-node domain and
     execution-count analyses; sequences they cannot resolve are accepted.
-    Requires the `ttl.dfb_allocations` metadata emitted by
+    Requires the finalized DFB indices, `ttl.dfb_allocations`, and
+    `ttl.dfb_reconfiguration_plan` metadata emitted by
     `ttl-finalize-dfb-indices` and a valid `ttl.launch_grid`.
   }];
 

@@ -15,6 +15,7 @@
 
 #include "DFBAcquireReleaseAnalysis.h"
 #include "DFBProtocolDomainAnalysis.h"
+#include "DFBStateDiscard.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "ttlang/Analysis/LoopIterationUtils.h"
@@ -492,39 +493,158 @@ struct TransactionSequenceResult {
   }
 };
 
-/// The DFBs whose protocol state a reset or reconfiguration discards: every
-/// DFB, or the listed ones.
+/// The DFBs whose protocol state a reset or reconfiguration discards at one
+/// launch node: every DFB, or the listed ones.
 struct StateDiscardTargets {
   bool all = false;
   SmallVector<int64_t> logicalIds;
   ExecutedStateDiscard discard;
 };
 
-std::optional<StateDiscardTargets> getStateDiscardTargets(Operation *op) {
-  if (auto resetAll = dyn_cast<ResetAllDFBsOp>(op)) {
-    return StateDiscardTargets{
-        true, {}, {false, resetAll.getReset().getOrdinal()}};
-  }
-  if (auto reconfiguration = dyn_cast<DFBReconfigurationOp>(op)) {
-    if (!reconfiguration.getBoundary().getDiscardDfbState()) {
-      return std::nullopt;
+/// The logical DFBs whose protocol state each synchronized reset and
+/// state-discarding reconfiguration restores, per launch node.
+///
+/// Targets follow the physical interfaces the runtime resets, not the
+/// operation's syntax: a reset restores the interfaces of its lowered mask,
+/// computed by the function reset lowering uses, and a reconfiguration
+/// restores the descriptors the finalized plan installs at its boundary on the
+/// node. A DFB outside those sets keeps its queue state across the operation,
+/// so its sequence continues. A logical DFB is restored when its physical
+/// index is, including a DFB that shares the index with a listed one.
+class DFBStateDiscardModel {
+public:
+  static FailureOr<DFBStateDiscardModel>
+  build(ModuleOp module, const llvm::DenseMap<int64_t, BindCBOp> &bindSites) {
+    DFBStateDiscardModel model;
+    FailureOr<uint64_t> allocatedMask = getAllocatedDFBMask(module);
+    if (failed(allocatedMask)) {
+      return failure();
     }
-    return StateDiscardTargets{
-        true, {}, {true, reconfiguration.getBoundary().getOrdinal()}};
+    model.allocatedMask = *allocatedMask;
+    FailureOr<DFBReconfigurationInstalls> installs =
+        DFBReconfigurationInstalls::build(module);
+    if (failed(installs)) {
+      return failure();
+    }
+    model.installs = std::move(*installs);
+    for (auto [logicalId, bindSite] : bindSites) {
+      FailureOr<int32_t> physicalIndex =
+          getValidatedDFBIndex(bindSite.getResult(), bindSite);
+      if (failed(physicalIndex)) {
+        return failure();
+      }
+      model.physicalIndexByLogicalId[logicalId] = *physicalIndex;
+      model.logicalIdsByPhysicalIndex[*physicalIndex].push_back(logicalId);
+    }
+    for (auto &[physicalIndex, logicalIds] : model.logicalIdsByPhysicalIndex) {
+      llvm::sort(logicalIds);
+    }
+    WalkResult result = module.walk([&](Operation *op) {
+      if (!isa<ResetDFBsOp, ResetAllDFBsOp>(op)) {
+        return WalkResult::advance();
+      }
+      FailureOr<uint64_t> resetMask =
+          getSynchronizedResetDFBMask(op, model.allocatedMask);
+      if (failed(resetMask)) {
+        return WalkResult::interrupt();
+      }
+      model.resetMasks[op] = *resetMask;
+      return WalkResult::advance();
+    });
+    if (result.wasInterrupted()) {
+      return failure();
+    }
+    return model;
   }
-  auto reset = dyn_cast<ResetDFBsOp>(op);
-  if (!reset) {
+
+  /// The discard `op` executes, or absent when `op` is not a synchronized
+  /// reset or a state-discarding reconfiguration.
+  static std::optional<ExecutedStateDiscard> getDiscard(Operation *op) {
+    if (auto resetAll = dyn_cast<ResetAllDFBsOp>(op)) {
+      return ExecutedStateDiscard{false, resetAll.getReset().getOrdinal()};
+    }
+    if (auto reset = dyn_cast<ResetDFBsOp>(op)) {
+      return ExecutedStateDiscard{false, reset.getReset().getOrdinal()};
+    }
+    if (auto reconfiguration = dyn_cast<DFBReconfigurationOp>(op);
+        reconfiguration && reconfiguration.getBoundary().getDiscardDfbState()) {
+      return ExecutedStateDiscard{true,
+                                  reconfiguration.getBoundary().getOrdinal()};
+    }
     return std::nullopt;
   }
-  StateDiscardTargets targets;
-  targets.discard = {false, reset.getReset().getOrdinal()};
-  for (Value dfb : reset.getDfbs()) {
-    FailureOr<int64_t> logicalId = getDFBId(dfb);
-    assert(succeeded(logicalId) && "DFB identities were verified");
-    targets.logicalIds.push_back(*logicalId);
+
+  /// The physical interfaces `op` restores at `coord`, or on some node when
+  /// `coord` is absent; zero when `op` restores none.
+  uint64_t getRestoredMask(Operation *op,
+                           std::optional<LaunchNodeCoord> coord) const {
+    std::optional<ExecutedStateDiscard> discard = getDiscard(op);
+    if (!discard) {
+      return 0;
+    }
+    if (!discard->reconfiguration) {
+      return resetMasks.lookup(op);
+    }
+    return coord ? installs.getInstalledDFBMask(discard->ordinal, *coord)
+                 : installs.getInstalledDFBMask(discard->ordinal);
   }
-  return targets;
-}
+
+  /// The logical DFBs `op` restores at `coord`, or absent when `op` is not a
+  /// state discard.
+  std::optional<StateDiscardTargets> getTargets(Operation *op,
+                                                LaunchNodeCoord coord) const {
+    std::optional<ExecutedStateDiscard> discard = getDiscard(op);
+    if (!discard) {
+      return std::nullopt;
+    }
+    uint64_t restoredMask = getRestoredMask(op, coord);
+    StateDiscardTargets targets;
+    targets.discard = *discard;
+    targets.all = restoredMask != 0 && restoredMask == allocatedMask;
+    if (!targets.all) {
+      targets.logicalIds = getLogicalIds(restoredMask);
+    }
+    return targets;
+  }
+
+  /// Whether some reset or state-discarding reconfiguration in `discards`
+  /// restores `logicalId` at `coord`.
+  bool isRestoredAt(int64_t logicalId, LaunchNodeCoord coord,
+                    ArrayRef<Operation *> discards) const {
+    auto physicalIt = physicalIndexByLogicalId.find(logicalId);
+    if (physicalIt == physicalIndexByLogicalId.end()) {
+      return false;
+    }
+    uint64_t bit = uint64_t{1} << static_cast<unsigned>(physicalIt->second);
+    return llvm::any_of(discards, [&](Operation *op) {
+      return (getRestoredMask(op, coord) & bit) != 0;
+    });
+  }
+
+  /// The logical DFBs any node's execution of `op` restores.
+  SmallVector<int64_t> getLogicalIdsRestoredAnywhere(Operation *op) const {
+    return getLogicalIds(getRestoredMask(op, std::nullopt));
+  }
+
+private:
+  SmallVector<int64_t> getLogicalIds(uint64_t physicalMask) const {
+    SmallVector<int64_t> logicalIds;
+    for (const auto &[physicalIndex, members] : logicalIdsByPhysicalIndex) {
+      if ((physicalMask &
+           (uint64_t{1} << static_cast<unsigned>(physicalIndex))) != 0) {
+        llvm::append_range(logicalIds, members);
+      }
+    }
+    llvm::sort(logicalIds);
+    return logicalIds;
+  }
+
+  uint64_t allocatedMask = 0;
+  DFBReconfigurationInstalls installs;
+  llvm::DenseMap<Operation *, uint64_t> resetMasks;
+  llvm::DenseMap<int64_t, int32_t> physicalIndexByLogicalId;
+  std::map<int32_t, SmallVector<int64_t>> logicalIdsByPhysicalIndex;
+};
 
 /// Summarizes one kernel's visible transactions at one launch node in program
 /// order. Whether and how often a nested region executes comes from the shared
@@ -534,6 +654,7 @@ class DFBTransactionSequenceAnalysis {
 public:
   DFBTransactionSequenceAnalysis(func::FuncOp thread, LaunchNodeCoord coord,
                                  const DFBProtocolDomainState &state,
+                                 const DFBStateDiscardModel &discardModel,
                                  DispatchConditionFormulas &conditionFormulas)
       : thread(thread), coord(coord), state(state),
         conditionFormulas(conditionFormulas) {
@@ -541,7 +662,7 @@ public:
       SmallVector<int64_t> touched;
       SmallVector<TransactionSequenceSummary::CounterMask> touchedCounters;
       if (std::optional<StateDiscardTargets> targets =
-              getStateDiscardTargets(op)) {
+              discardModel.getTargets(op, coord)) {
         if (targets->all) {
           discardsEveryDFB.insert(op);
         }
@@ -1095,20 +1216,21 @@ private:
 /// Reuse the structured sequence analysis across DFB queries in one thread.
 class DFBTransactionSequenceCache {
 public:
-  explicit DFBTransactionSequenceCache(const DFBProtocolDomainState &state)
-      : state(state) {}
+  DFBTransactionSequenceCache(const DFBProtocolDomainState &state,
+                              const DFBStateDiscardModel &discardModel)
+      : state(state), discardModel(discardModel) {}
 
   const TransactionSequenceResult &get(func::FuncOp thread,
                                        LaunchNodeCoord coord) {
     auto &resultsByCoord = results[thread.getOperation()];
     auto resultIt = resultsByCoord.find(coord);
     if (resultIt == resultsByCoord.end()) {
-      resultIt =
-          resultsByCoord
-              .emplace(coord, DFBTransactionSequenceAnalysis(
-                                  thread, coord, state, conditionFormulas)
-                                  .run())
-              .first;
+      resultIt = resultsByCoord
+                     .emplace(coord, DFBTransactionSequenceAnalysis(
+                                         thread, coord, state, discardModel,
+                                         conditionFormulas)
+                                         .run())
+                     .first;
     }
     return resultIt->second;
   }
@@ -1119,6 +1241,7 @@ public:
 
 private:
   const DFBProtocolDomainState &state;
+  const DFBStateDiscardModel &discardModel;
   DispatchConditionFormulas conditionFormulas;
   llvm::DenseMap<Operation *,
                  std::map<LaunchNodeCoord, TransactionSequenceResult>>
@@ -1551,17 +1674,89 @@ bool verifyCrossKernelTransactionCounts(
   return violation;
 }
 
+/// Warn when the consumers of a DFB wait on it but never pop it at `coord`
+/// and no synchronized reset or state-discarding reconfiguration restores it
+/// there. Pages published before such a wait stay in the DFB until a pop or a
+/// reset, so a producer that publishes on every repetition blocks once the DFB
+/// is full. A program that relies on a state-discarding reconfiguration to
+/// release waited pages fails this way when the allocation cannot bound the
+/// DFB's lifecycle and therefore does not reinstall its descriptor at the
+/// boundary. Only nodes whose external calls may perform undeclared protocol
+/// actions reach this check; elsewhere the visible transactions are verified
+/// exactly. Returns true when a warning was emitted.
+bool warnUndrainedWaitOnlyDFB(int64_t logicalId,
+                              ArrayRef<DFBTransaction> consumers,
+                              LaunchNodeCoord coord,
+                              ArrayRef<OpaqueCallOp> externalCalls,
+                              ArrayRef<Operation *> stateDiscards,
+                              const DFBStateDiscardModel &discardModel,
+                              Operation *bindSite,
+                              const DFBProtocolDomainState &state) {
+  Operation *repeatedWait = nullptr;
+  std::uint64_t repeatedExecutions = 0;
+  for (const DFBTransaction &transaction : consumers) {
+    if (!transactionMayExecuteAt(transaction, coord)) {
+      continue;
+    }
+    // A pop, visible or declared by an external call, may drain the DFB.
+    if (!transaction.acquisition) {
+      return false;
+    }
+    std::optional<std::uint64_t> executions =
+        getExactExecutionCountAtLaunchNode(transaction.op, coord, state);
+    if (executions && *executions > 1 && *executions > repeatedExecutions) {
+      repeatedWait = transaction.op;
+      repeatedExecutions = *executions;
+    }
+  }
+  if (!repeatedWait ||
+      discardModel.isRestoredAt(logicalId, coord, stateDiscards)) {
+    return false;
+  }
+  InFlightDiagnostic diagnostic =
+      repeatedWait->emitWarning()
+      << "logical DFB " << logicalId
+      << " is waited on without a pop on core_x=" << coord.x
+      << ", core_y=" << coord.y
+      << ", and no synchronized reset or state-discarding reconfiguration "
+         "restores it";
+  diagnostic.attachNote()
+      << "the wait executes " << repeatedExecutions
+      << " times per launch; published pages remain in the DFB until a pop "
+         "or a reset, so a producer that publishes again blocks once the DFB "
+         "is full";
+  auto *externalCall = llvm::find_if(externalCalls, [&](OpaqueCallOp call) {
+    LaunchNodeDomain callDomain = state.getExternalCallDomain(call);
+    const std::set<LaunchNodeCoord> *nodes = callDomain.getUpperBoundNodes();
+    return !nodes || nodes->count(coord) != 0;
+  });
+  if (externalCall != externalCalls.end()) {
+    OpaqueCallOp call = *externalCall;
+    diagnostic.attachNote(call.getLoc())
+        << "this external call may perform protocol actions on the DFB that "
+           "it does not declare";
+  }
+  diagnostic.attachNote()
+      << "a state-discarding reconfiguration restores a DFB only where the "
+         "finalized allocation reinstalls its descriptor, which requires a "
+         "bounded lifecycle; declare the DFB effects of external calls that "
+         "access it, or pop the waited pages";
+  attachDeclarationNote(diagnostic, bindSite);
+  return true;
+}
+
 /// Verify one logical DFB on every launch node where a transaction may
 /// execute. Nodes where an opaque call may perform protocol actions the IR
-/// does not represent are skipped. Returns true when a violation was reported.
-bool verifyDFBTransactions(int64_t logicalId,
-                           ArrayRef<DFBTransaction> producers,
-                           ArrayRef<DFBTransaction> consumers,
-                           std::uint64_t capacityBlocks,
-                           const LaunchNodeDomain &externalProtocolDomain,
-                           bool resetAnywhere, Operation *bindSite,
-                           const DFBProtocolDomainState &state,
-                           DFBTransactionSequenceCache &sequenceCache) {
+/// does not represent are skipped, apart from the warning for a waited DFB
+/// that nothing drains. Returns true when a violation was reported.
+bool verifyDFBTransactions(
+    int64_t logicalId, ArrayRef<DFBTransaction> producers,
+    ArrayRef<DFBTransaction> consumers, std::uint64_t capacityBlocks,
+    const LaunchNodeDomain &externalProtocolDomain,
+    ArrayRef<OpaqueCallOp> externalCalls, ArrayRef<Operation *> stateDiscards,
+    const DFBStateDiscardModel &discardModel, bool resetAnywhere,
+    Operation *bindSite, const DFBProtocolDomainState &state,
+    DFBTransactionSequenceCache &sequenceCache) {
   assert((!producers.empty() || !consumers.empty()) &&
          "transaction verification requires a protocol effect");
   LaunchNodeDomain transactionDomain;
@@ -1576,8 +1771,14 @@ bool verifyDFBTransactions(int64_t logicalId,
 
   const std::set<LaunchNodeCoord> *externalNodes =
       externalProtocolDomain.getUpperBoundNodes();
+  bool warnedUndrained = false;
   for (LaunchNodeCoord coord : verificationDomain.nodes) {
     if (!externalNodes || externalNodes->count(coord) != 0) {
+      if (!warnedUndrained) {
+        warnedUndrained = warnUndrainedWaitOnlyDFB(
+            logicalId, consumers, coord, externalCalls, stateDiscards,
+            discardModel, bindSite, state);
+      }
       continue;
     }
     SmallVector<func::FuncOp> producerThreads =
@@ -1678,39 +1879,54 @@ struct TTLVerifyDFBLifecyclePass
     });
 
     llvm::DenseMap<int64_t, LaunchNodeDomain> externalProtocolDomainsByDFB;
+    llvm::DenseMap<int64_t, SmallVector<OpaqueCallOp>> externalCallsByDFB;
     for (const auto &[dfbId, calls] :
          collectDFBsWithOpaqueProtocolActions(module, *bindSites)) {
       LaunchNodeDomain domain;
       for (OpaqueCallOp call : calls) {
         domain = domain.unionWith(state.getExternalCallDomain(call));
+        externalCallsByDFB[dfbId].push_back(call);
       }
       externalProtocolDomainsByDFB[dfbId] = domain;
     }
 
-    bool everyDFBReset = false;
+    FailureOr<DFBStateDiscardModel> discardModel =
+        DFBStateDiscardModel::build(module, *bindSites);
+    if (failed(discardModel)) {
+      signalPassFailure();
+      return;
+    }
+    SmallVector<Operation *> stateDiscards;
     llvm::DenseSet<int64_t> resetDFBIds;
     module.walk([&](Operation *op) {
-      if (std::optional<StateDiscardTargets> targets =
-              getStateDiscardTargets(op)) {
-        everyDFBReset |= targets->all;
-        resetDFBIds.insert(targets->logicalIds.begin(),
-                           targets->logicalIds.end());
+      if (!DFBStateDiscardModel::getDiscard(op)) {
+        return;
+      }
+      stateDiscards.push_back(op);
+      for (int64_t logicalId :
+           discardModel->getLogicalIdsRestoredAnywhere(op)) {
+        resetDFBIds.insert(logicalId);
       }
     });
 
-    DFBTransactionSequenceCache sequenceCache(state);
+    DFBTransactionSequenceCache sequenceCache(state, *discardModel);
     bool sawError = false;
     for (int64_t logicalId : transactionDFBIds) {
       BindCBOp bindSite = bindSites->lookup(logicalId);
       assert(bindSite && "every transaction must have a DFB declaration");
       auto dfbType = cast<CircularBufferType>(bindSite.getResult().getType());
+      auto externalCallsIt = externalCallsByDFB.find(logicalId);
+      ArrayRef<OpaqueCallOp> externalCalls =
+          externalCallsIt == externalCallsByDFB.end()
+              ? ArrayRef<OpaqueCallOp>()
+              : ArrayRef<OpaqueCallOp>(externalCallsIt->second);
       sawError |= verifyDFBTransactions(
           logicalId, getDFBTransactions(producersByDFB, logicalId),
           getDFBTransactions(consumersByDFB, logicalId),
           static_cast<std::uint64_t>(dfbType.getBlockCount()),
-          externalProtocolDomainsByDFB.lookup(logicalId),
-          everyDFBReset || resetDFBIds.contains(logicalId), bindSite, state,
-          sequenceCache);
+          externalProtocolDomainsByDFB.lookup(logicalId), externalCalls,
+          stateDiscards, *discardModel, resetDFBIds.contains(logicalId),
+          bindSite, state, sequenceCache);
     }
     if (sawError) {
       signalPassFailure();
