@@ -15,6 +15,7 @@
 #include "ttlang/Analysis/ValueOriginAnalysis.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernel.h"
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
+#include "ttlang/Dialect/TTKernel/Transforms/LaunchGrid.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
@@ -44,27 +45,6 @@ namespace mlir::tt::ttl {
 #include "ttlang/Dialect/TTL/Passes.h.inc"
 
 namespace {
-
-/// Parse the launch extent from an i64 array attribute into (gridX, gridY).
-///
-/// NOTE: operations.py specifies that only dims=2 is supported for now.
-///       this should be updated once operations.py is updated
-static FailureOr<std::pair<int64_t, int64_t>> readGrid(ArrayAttr attr) {
-  if (!attr || attr.size() != 2) {
-    return failure();
-  }
-  auto gridXAttr = llvm::dyn_cast<IntegerAttr>(attr[0]);
-  auto gridYAttr = llvm::dyn_cast<IntegerAttr>(attr[1]);
-  if (!gridXAttr || !gridYAttr) {
-    return failure();
-  }
-  int64_t gridX = gridXAttr.getInt();
-  int64_t gridY = gridYAttr.getInt();
-  if (gridX <= 0 || gridY <= 0) {
-    return failure();
-  }
-  return std::pair<int64_t, int64_t>{gridX, gridY};
-}
 
 // Determine whether `rootValue` depends on a logical core-coordinate read,
 // following block arguments through `originAnalysis`. `visitedValues` prevents
@@ -267,7 +247,7 @@ struct TTKernelSpecializeCoresPass
       signalPassFailure();
       return;
     }
-    FailureOr<std::pair<int64_t, int64_t>> grid = readGrid(gridAttr);
+    FailureOr<std::pair<int64_t, int64_t>> grid = ttk::readLaunchGrid(gridAttr);
     if (failed(grid)) {
       module.emitOpError() << "`" << kLaunchGridAttrName
                            << "` must be a length-2 array of positive i64 "

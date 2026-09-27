@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "ttlang/Dialect/TTKernel/IR/TTKernelOps.h"
+#include "ttlang/Dialect/TTKernel/Transforms/LaunchGrid.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/Passes.h"
 
@@ -12,10 +13,12 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/CheckedArithmetic.h"
+#include "llvm/Support/raw_ostream.h"
 
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <string>
 #include <utility>
 
 namespace ttk = mlir::tt::ttkernel;
@@ -32,7 +35,6 @@ constexpr int64_t kReconfigurationRecordCapacity = 64;
 
 struct StaticReconfiguration {
   SmallVector<Attribute> templateArguments;
-  SmallVector<int32_t> dfbIndices;
 };
 
 using CoreCoordinate = std::pair<int64_t, int64_t>;
@@ -122,9 +124,12 @@ configurationAppliesToCore(DictionaryAttr configuration,
 
 static FailureOr<StaticReconfiguration>
 buildStaticReconfiguration(ArrayAttr dfbEntries, int64_t ordinal,
-                           CoreCoordinate coreCoordinate, Builder &builder) {
+                           CoreCoordinate coreCoordinate, Builder &builder,
+                           std::string &failureReason) {
+  llvm::raw_string_ostream reason(failureReason);
   StaticReconfiguration result;
   result.templateArguments.push_back(builder.getUI32IntegerAttr(0));
+  uint32_t recordCount = 0;
   int64_t previousDFBIndex = -1;
   for (Attribute dfbEntryAttribute : dfbEntries) {
     auto dfbEntry = dyn_cast<DictionaryAttr>(dfbEntryAttribute);
@@ -132,8 +137,15 @@ buildStaticReconfiguration(ArrayAttr dfbEntries, int64_t ordinal,
         dfbEntry ? dfbEntry.getAs<IntegerAttr>("dfb_index") : IntegerAttr();
     auto configurations =
         dfbEntry ? dfbEntry.getAs<ArrayAttr>("configurations") : ArrayAttr();
-    if (!dfbIndex || !configurations || dfbIndex.getInt() <= previousDFBIndex ||
+    if (!dfbIndex || !configurations) {
+      reason << "a plan entry lacks `dfb_index` or `configurations`";
+      return failure();
+    }
+    if (dfbIndex.getInt() <= previousDFBIndex ||
         dfbIndex.getInt() >= kReconfigurationRecordCapacity) {
+      reason << "dfb_index " << dfbIndex.getInt()
+             << " is not ascending, unique, and below the "
+             << kReconfigurationRecordCapacity << "-record capacity";
       return failure();
     }
     previousDFBIndex = dfbIndex.getInt();
@@ -142,16 +154,25 @@ buildStaticReconfiguration(ArrayAttr dfbEntries, int64_t ordinal,
     for (Attribute configurationAttribute : configurations) {
       auto configuration = dyn_cast<DictionaryAttr>(configurationAttribute);
       if (!configuration) {
+        reason << "a configuration of dfb_index " << dfbIndex.getInt()
+               << " is not a dictionary";
         return failure();
       }
       FailureOr<bool> appliesToCore =
           configurationAppliesToCore(configuration, coreCoordinate);
       if (failed(appliesToCore)) {
+        reason << "a configuration of dfb_index " << dfbIndex.getInt()
+               << " has malformed or overlapping `storage_segments` at core ("
+               << coreCoordinate.first << ", " << coreCoordinate.second << ")";
         return failure();
       }
       auto entry = configuration.getAs<IntegerAttr>("entry_reconfiguration");
       if (entry && entry.getInt() == ordinal && *appliesToCore) {
         if (selectedConfiguration) {
+          reason << "two configurations of dfb_index " << dfbIndex.getInt()
+                 << " enter at ordinal " << ordinal << " on core ("
+                 << coreCoordinate.first << ", " << coreCoordinate.second
+                 << ")";
           return failure();
         }
         selectedConfiguration = configuration;
@@ -166,6 +187,8 @@ buildStaticReconfiguration(ArrayAttr dfbEntries, int64_t ordinal,
     auto blockCount = selectedConfiguration.getAs<IntegerAttr>("block_count");
     if (!numTiles || !pageSize || !blockCount || numTiles.getInt() <= 0 ||
         pageSize.getInt() <= 0 || blockCount.getInt() <= 0) {
+      reason << "the selected configuration of dfb_index " << dfbIndex.getInt()
+             << " lacks a positive `num_tiles`, `page_size`, or `block_count`";
       return failure();
     }
     std::optional<uint64_t> numPages =
@@ -178,10 +201,12 @@ buildStaticReconfiguration(ArrayAttr dfbEntries, int64_t ordinal,
     if (!numPages || !totalBytes ||
         *numPages > std::numeric_limits<uint32_t>::max() ||
         *totalBytes > std::numeric_limits<uint32_t>::max()) {
+      reason << "the selected configuration of dfb_index " << dfbIndex.getInt()
+             << " exceeds 32-bit page or byte counts";
       return failure();
     }
 
-    result.dfbIndices.push_back(static_cast<int32_t>(dfbIndex.getInt()));
+    ++recordCount;
     result.templateArguments.push_back(
         builder.getUI32IntegerAttr(static_cast<uint32_t>(dfbIndex.getInt())));
     result.templateArguments.push_back(
@@ -191,9 +216,42 @@ buildStaticReconfiguration(ArrayAttr dfbEntries, int64_t ordinal,
     result.templateArguments.push_back(
         builder.getUI32IntegerAttr(static_cast<uint32_t>(pageSize.getInt())));
   }
-  result.templateArguments.front() = builder.getUI32IntegerAttr(
-      static_cast<uint32_t>(result.dfbIndices.size()));
+  result.templateArguments.front() = builder.getUI32IntegerAttr(recordCount);
   return result;
+}
+
+// A function that core specialization did not clone runs on an unknown subset
+// of the launch grid, so one static form serves it only when every grid node
+// selects the same configurations.
+static FailureOr<std::optional<StaticReconfiguration>>
+buildGridInvariantReconfiguration(ModuleOp module, ArrayAttr dfbEntries,
+                                  int64_t ordinal, Builder &builder,
+                                  std::string &failureReason) {
+  FailureOr<std::pair<int64_t, int64_t>> grid = ttk::readLaunchGrid(
+      module->getAttrOfType<ArrayAttr>(kLaunchGridAttrName));
+  if (failed(grid)) {
+    llvm::raw_string_ostream(failureReason)
+        << "the module has no valid `" << kLaunchGridAttrName << "`";
+    return failure();
+  }
+  std::optional<StaticReconfiguration> invariant;
+  for (int64_t coreY = 0; coreY < grid->second; ++coreY) {
+    for (int64_t coreX = 0; coreX < grid->first; ++coreX) {
+      FailureOr<StaticReconfiguration> nodeReconfiguration =
+          buildStaticReconfiguration(dfbEntries, ordinal, {coreX, coreY},
+                                     builder, failureReason);
+      if (failed(nodeReconfiguration)) {
+        return failure();
+      }
+      if (!invariant) {
+        invariant = std::move(*nodeReconfiguration);
+      } else if (invariant->templateArguments !=
+                 nodeReconfiguration->templateArguments) {
+        return std::optional<StaticReconfiguration>{};
+      }
+    }
+  }
+  return invariant;
 }
 
 struct TTKernelSpecializeDFBReconfigurationPass
@@ -237,15 +295,25 @@ struct TTKernelSpecializeDFBReconfigurationPass
             << kCoreCoordAttrName << "` attribute";
         return WalkResult::interrupt();
       }
+      std::string failureReason;
       if (!*coreCoordinate) {
-        updates.push_back(ReconfigurationUpdate{call, std::nullopt});
+        FailureOr<std::optional<StaticReconfiguration>> invariant =
+            buildGridInvariantReconfiguration(
+                module, dfbEntries, ordinal.getInt(), builder, failureReason);
+        if (failed(invariant)) {
+          call.emitOpError("contains malformed DFB reconfiguration metadata: ")
+              << failureReason;
+          return WalkResult::interrupt();
+        }
+        updates.push_back(ReconfigurationUpdate{call, std::move(*invariant)});
         return WalkResult::advance();
       }
       FailureOr<StaticReconfiguration> staticReconfiguration =
           buildStaticReconfiguration(dfbEntries, ordinal.getInt(),
-                                     **coreCoordinate, builder);
+                                     **coreCoordinate, builder, failureReason);
       if (failed(staticReconfiguration)) {
-        call.emitOpError("contains malformed DFB reconfiguration metadata");
+        call.emitOpError("contains malformed DFB reconfiguration metadata: ")
+            << failureReason;
         return WalkResult::interrupt();
       }
       updates.push_back(
@@ -262,10 +330,6 @@ struct TTKernelSpecializeDFBReconfigurationPass
       if (update.staticReconfiguration) {
         call.setTemplateArgsAttr(builder.getArrayAttr(
             update.staticReconfiguration->templateArguments));
-        if (!update.staticReconfiguration->dfbIndices.empty()) {
-          call.setDfbResourceIndicesAttr(builder.getDenseI32ArrayAttr(
-              update.staticReconfiguration->dfbIndices));
-        }
       }
       call->removeAttr(kDFBReconfigurationOrdinalAttrName);
     }

@@ -411,6 +411,13 @@ Downstream `canonicalize` and `cse` remove unreachable control flow and fold
 table lookups. Static local PipeNet callback loops are then fully unrolled so
 each iteration's table lookup can also become constant.
 
+`ttkernel-specialize-dfb-reconfiguration` then replaces each DFB
+reconfiguration boundary's runtime mask scan with the descriptor sizes and
+indices the plan selects. A specialized function uses the selection for its
+coordinate; a function that was not cloned uses the static form only when every
+launch-grid node selects the same configurations, and otherwise keeps the
+runtime form. L1 addresses are still read from the runtime record.
+
 `ttkernel-annotate-dfb-use` then records surviving DFB compile-time arguments,
 synchronized resets, and external-call dependencies on each specialized
 function. Debug prints of a DFB remain only on cores that still have a
