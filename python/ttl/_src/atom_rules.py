@@ -394,6 +394,6 @@ def validate_resource_declarations(
             f"@ttl.operation {operation_name!r}: resource declaration "
             f"{unhoistable.factory!r} must be a simple top-level assignment in the "
             "operation body; declarations inside loops, callbacks, nested "
-            "scopes, or branches whose condition is not a boolean literal or "
-            "captured boolean are not supported"
+            "scopes, or branches whose condition is not a static boolean "
+            "expression over literals and captured booleans are not supported"
         )

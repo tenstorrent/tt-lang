@@ -315,6 +315,13 @@ class _StaticBooleanBranchSpecializer(ast.NodeTransformer):
         body = getattr(transformed, "body", None)
         if isinstance(body, list) and not body:
             transformed.body = [ast.copy_location(ast.Pass(), transformed)]
+        # A try statement needs a handler or a nonempty finally block.
+        if (
+            isinstance(transformed, ast.Try)
+            and not transformed.handlers
+            and not transformed.finalbody
+        ):
+            transformed.finalbody = [ast.copy_location(ast.Pass(), transformed)]
         return transformed
 
     def visit_FunctionDef(self, node):

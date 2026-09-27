@@ -726,12 +726,10 @@ def _resolve_l1_budget(
         return compiler_options.l1_budget
     if not any(is_ttnn_tensor(arg) for arg in args):
         return 0
-    # Host tensors have no device budget; failures of the budget queries
-    # themselves propagate.
-    try:
-        device = _require_device(args)
-    except ValueError:
+    # Host tensors have no device budget; every other failure propagates.
+    if all(arg.device() is None for arg in args if is_ttnn_tensor(arg)):
         return 0
+    device = _require_device(args)
     per_core_l1_tensors = [arg for arg in args if is_ttnn_tensor(arg)]
     if runtime_resource_cache is not None:
         return get_min_remaining_l1_excluding_cached_resources(
