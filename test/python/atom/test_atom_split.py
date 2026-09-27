@@ -947,6 +947,61 @@ def test_composition_preserves_captured_kernel_kind():
     assert result.kernels == (KernelKind.DATA_MOVEMENT,)
 
 
+class _UnsupportedCapture:
+    pass
+
+
+shadowed_capture_value = _UnsupportedCapture()
+shadowed_capture_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
+
+
+def test_comprehension_variable_does_not_capture_shadowed_global():
+    """A comprehension variable is local even when a global has its name."""
+
+    @ttl.operation()
+    def comprehension_operation():
+        offsets = [shadowed_capture_value * 2 for shadowed_capture_value in range(2)]
+        ttl.call_extern_func(
+            "live.hpp", "live", template_args=offsets, kernel=KernelKind.COMPUTE
+        )
+
+    assert "shadowed_capture_value" not in (
+        comprehension_operation._spec.compile_time_captures
+    )
+
+
+def test_nested_parameter_does_not_capture_shadowed_global():
+    """A nested function parameter is local even when a global has its name."""
+
+    @ttl.operation()
+    def nested_operation():
+        def offset(shadowed_capture_value):
+            return shadowed_capture_value * 2
+
+        ttl.call_extern_func(
+            "live.hpp", "live", template_args=[offset(1)], kernel=KernelKind.COMPUTE
+        )
+
+    assert "shadowed_capture_value" not in (
+        nested_operation._spec.compile_time_captures
+    )
+
+
+def test_comprehension_variable_does_not_bind_shadowed_kernel():
+    """A comprehension variable does not bind a global kernel of the same name."""
+
+    @ttl.operation()
+    def comprehension_operation():
+        offsets = [shadowed_capture_kernel * 2 for shadowed_capture_kernel in range(2)]
+        ttl.call_extern_func(
+            "live.hpp", "live", template_args=offsets, kernel=KernelKind.COMPUTE
+        )
+
+    assert "shadowed_capture_kernel" not in (
+        comprehension_operation._spec.logical_kernels
+    )
+
+
 def test_factory_instances_with_different_captures_keep_distinct_kernels():
     """Different immutable captures distinguish factory-created operations."""
 
