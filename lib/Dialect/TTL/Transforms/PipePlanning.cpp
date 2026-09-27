@@ -624,8 +624,8 @@ FailureOr<PipeModulePlan> buildPipeModulePlan(
             pipeGraph.getPipeReceiverEndpoint(
                 transferNode.receiverEndpoints.front());
         diagnostic.attachNote(endpoint.receiverDFBInfo.loc)
-            << "receiver address sequences are not proven equal for every "
-               "transfer occurrence";
+            << "receiver storage base or address sequence is not proven "
+               "stable across receiver nodes and transfer occurrences";
       }
       return failure();
     }

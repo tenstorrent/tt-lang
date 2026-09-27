@@ -998,3 +998,73 @@ module attributes {ttl.launch_grid = array<i64: 2, 2>} {
     func.return
   }
 }
+
+// -----
+
+// Generated fabric rejects tensor-backed receivers whose node segments use
+// different tensor bases before transfer lowering.
+
+#fabric_domain = #ttl.device_domain<components = <name = "device", extent = [2]>>
+#fabric_transfer = #ttl.device_transfer<
+    domain = #fabric_domain,
+    edge = <source = <coordinates = [0]>, destination = <coordinates = [1]>>>
+
+module attributes {
+  ttl.dfb_allocations = [
+    {allocation_nodes = [[0, 0]], block_count = 1 : i32,
+     dfb_index = 0 : i32, storage_index = 0 : i32,
+     element_type = !ttcore.tile<32x32, f32>, num_tiles = 1 : i32,
+     page_size = 4096 : i32, l1_offset = 0 : i64,
+     l1_payload_offset = 32 : i64, l1_allocation_bytes = 4096 : i64,
+     storage_capacity_pages = 1 : i32},
+    {allocation_nodes = [[1, 0], [2, 0]], block_count = 1 : i32,
+     dfb_index = 1 : i32, storage_index = 1 : i32,
+     element_type = !ttcore.tile<32x32, f32>, num_tiles = 1 : i32,
+     page_size = 4096 : i32, l1_offset = 8 : i64,
+     storage_capacity_pages = 1 : i32,
+     storage_segments = [
+       {nodes = [[1, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4096>},
+       {nodes = [[2, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 1, byte_offset = 0, byte_size = 4096>}]}],
+  ttl.l1_arena_bytes = 4128 : i64,
+  ttl.launch_grid = array<i64: 3, 1>,
+  ttl.memory_model = "compiler-sram",
+  ttl.target_arch = #ttcore.arch<blackhole>
+} {
+  func.func @different_tensor_bases(
+      %first_tensor: tensor<1x1x!ttcore.tile<32x32, f32>>,
+      %second_tensor: tensor<1x1x!ttcore.tile<32x32, f32>>)
+      attributes {"ttl.kernel_thread" = #ttkernel.thread<noc>,
+                  ttl.crta_indices = [0 : i32, 1 : i32]} {
+    %source_dfb = ttl.bind_cb {cb_index = 0, block_count = 1}
+        {dfb_id = 0 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %receiver_dfb = ttl.bind_cb {cb_index = 1, block_count = 1}
+        {dfb_id = 1 : index,
+         tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4096>}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>
+    %pipe = ttl.create_pipe src(0, 0) dst(1, 0) to(1, 0) net 1
+        {deviceTransfer = #fabric_transfer}
+        : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1>
+    ttl.if_dst %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1> {
+      %reserved = ttl.cb_reserve %receiver_dfb
+          : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+          -> tensor<1x1x!ttcore.tile<32x32, f32>>
+      // expected-note @below {{receiver storage base or address sequence is not proven stable across receiver nodes and transfer occurrences}}
+      %receive = ttl.copy %pipe, %reserved
+          : (!ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1>,
+             tensor<1x1x!ttcore.tile<32x32, f32>>)
+          -> !ttl.receive_request
+      ttl.wait %receive : !ttl.receive_request
+      ttl.cb_push %receiver_dfb : <[1, 1], !ttcore.tile<32x32, f32>, 1>
+    }
+    ttl.if_src %pipe : !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1> {
+      // expected-error @below {{fabric pipe transfer requires computed receiver DFB addresses}}
+      %send = ttl.copy %source_dfb, %pipe
+          : (!ttl.cb<[1, 1], !ttcore.tile<32x32, f32>, 1>,
+             !ttl.pipe<src(0, 0) dst(1, 0) to(1, 0) net 1>)
+          -> !ttl.transfer_handle<write>
+      ttl.wait %send : !ttl.transfer_handle<write>
+    }
+    func.return
+  }
+}
