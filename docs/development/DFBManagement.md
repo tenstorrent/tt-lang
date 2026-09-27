@@ -325,6 +325,37 @@ Every producer must issue its required transfers before its local boundary
 occurrence; the participating data movement RISC then completes its own
 outstanding commands. Runtime lowering is currently restricted to Blackhole.
 
+### Kimi K3 examples
+
+The Kimi K3 decode layers in tt-lang-ops-and-models reset or reconfigure DFBs
+for two reasons.
+
+A DFB that several kernels read without popping keeps its pages until a reset.
+The flash MLA partial-decode kernel publishes each worker's partial attention
+output and softmax statistics, and SDPA reduce-scatter reads both DFBs in its
+compute kernel and in its pipe-source sender. Neither kernel pops them: one pop
+could release the pages only after both readers finish, which needs
+synchronization the two kernels do not otherwise perform. The resident MLA
+attention and SDPA reduce-scatter loops
+(`test/model/kimi/resident_mla_attention.py`,
+`test/model/kimi/resident_sdpa_reduce_scatter.py`) therefore end every decode
+generation with `ttl.reset_all_dfbs`. The resident MLA attention program
+declares 48 logical DFBs, within the 64 physical indices, so this reset
+releases pages rather than enabling index reuse. Without it, the next
+generation's flash producer blocks once the statistics DFB is full. The
+composed MLA+MoE layer ends the same lifecycles at a state-discarding
+reconfiguration instead. When allocation could not bound them, it did not
+reinstall their descriptors at that boundary, and the layer hung this way at
+its second generation.
+
+A composed layer needs more DFBs than the target has physical indices. The
+MLA+MoE layer (`models/kimi/mla_moe.py`) declares 152 logical DFBs; with DFB
+index reuse disabled, compilation fails because it needs 152 of Blackhole's 64
+indices. Its attention, MoE, residual and collective phases therefore share
+physical indices, and its six reconfiguration boundaries per decode generation
+let one index serve lifecycles with different geometries and ring positions in
+consecutive phases.
+
 ## Synchronized reconfiguration epochs
 
 A `DFBReconfiguration` declares one compute kernel and two data-movement
