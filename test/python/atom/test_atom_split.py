@@ -795,6 +795,25 @@ def test_factory_boolean_specialization_preserves_empty_loop_syntax():
     assert source.endswith("        pass")
 
 
+def test_factory_boolean_specialization_preserves_try_syntax():
+    """A try statement whose finally block held only a disabled branch stays valid."""
+    enabled = False
+
+    @ttl.operation()
+    def disabled_finally_operation():
+        try:
+            ttl.call_extern_func("live.hpp", "live", kernel=ttl.KernelKind.COMPUTE)
+        finally:
+            if enabled:
+                ttl.call_extern_func(
+                    "dead.hpp",
+                    "dead",
+                    kernel=ttl.KernelKind.COMPUTE,
+                )
+
+    compile(disabled_finally_operation._spec.source, "<operation>", "exec")
+
+
 @pytest.mark.parametrize(
     "coordinates",
     [((1, 2), (3, 4)), [[1, 2], [3, 4]]],
@@ -1003,6 +1022,27 @@ def test_nested_parameter_does_not_capture_shadowed_global():
 
     assert "shadowed_capture_value" not in (
         nested_operation._spec.compile_time_captures
+    )
+
+
+shadowed_attribute_name = _UnsupportedCapture()
+
+
+def test_attribute_name_does_not_capture_shadowed_global():
+    """An attribute sharing a global's name does not make it a capture."""
+
+    @ttl.operation()
+    def attribute_operation():
+        base = ttl.shadowed_attribute_name
+        offsets = [
+            shadowed_attribute_name * base for shadowed_attribute_name in range(2)
+        ]
+        ttl.call_extern_func(
+            "live.hpp", "live", template_args=offsets, kernel=KernelKind.COMPUTE
+        )
+
+    assert "shadowed_attribute_name" not in (
+        attribute_operation._spec.compile_time_captures
     )
 
 

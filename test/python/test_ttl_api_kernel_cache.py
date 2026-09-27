@@ -1077,6 +1077,19 @@ def test_l1_budget_propagates_budget_query_errors(monkeypatch):
         ttl_api._resolve_l1_budget((_FakeTensor(device=device),), CompilerOptions())
 
 
+def test_l1_budget_rejects_tensors_on_different_devices(monkeypatch):
+    monkeypatch.setattr(
+        ttl_api, "is_ttnn_tensor", lambda arg: isinstance(arg, _FakeTensor)
+    )
+    monkeypatch.setattr(ttl_api, "_same_device", lambda first, second: False)
+
+    with pytest.raises(ValueError, match="different devices"):
+        ttl_api._resolve_l1_budget(
+            (_FakeTensor(device=_FakeDevice()), _FakeTensor(device=_FakeDevice())),
+            CompilerOptions(),
+        )
+
+
 def test_operation_cache_separates_device_derived_budget_contracts(monkeypatch):
     compile_calls = _install_recording_compile(monkeypatch)
     budgets = iter((98304, 73760))

@@ -85,7 +85,7 @@ def external_dfb_capture():
 
 # Runtime-dependent branches cannot determine operation-owned resources.
 def nested_resource_declaration():
-    # NESTED: ValueError: @ttl.operation 'invalid': resource declaration 'make_dfb' must be a simple top-level assignment in the operation body; declarations inside loops, callbacks, nested scopes, or branches whose condition is not a boolean literal or captured boolean are not supported
+    # NESTED: ValueError: @ttl.operation 'invalid': resource declaration 'make_dfb' must be a simple top-level assignment in the operation body; declarations inside loops, callbacks, nested scopes, or branches whose condition is not a static boolean expression over literals and captured booleans are not supported
     @ttl.operation(grid=(1, 1))
     def invalid():
         if ttl.node(dims=2)[0] == 0:
