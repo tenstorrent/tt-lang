@@ -6,10 +6,79 @@
 
 import pytest
 
-from ttl.dataflow_buffer import DFBStorageSegment, PhysicalDFBConfig
+from ttl.dataflow_buffer import (
+    DFBStorageSegment,
+    PhysicalDFBConfig,
+    SRAMBackingHandoff,
+    SRAMReconfigurationReset,
+)
 from ttl.dialects import ttcore  # noqa: F401
 from ttl.ir import Context, Module
-from ttl.ttl_api import _resolve_dfb_configs
+from ttl.ttl_api import _extract_sram_reconfiguration_resets, _resolve_dfb_configs
+
+
+def test_sram_backing_handoff_metadata_is_preserved():
+    with Context():
+        module = Module.parse(
+            "module attributes {ttl.compiler_sram_reconfiguration_resets = "
+            "[{ordinal = 2 : i64, dfb_indices = array<i32: 0>, "
+            "backing_handoffs = [{from_dfb_index = 0 : i32, "
+            "to_dfb_index = 1 : i32, node = [0, 1]}]}]} {}"
+        )
+
+        assert _extract_sram_reconfiguration_resets(module) == (
+            SRAMReconfigurationReset(2, (0,), (SRAMBackingHandoff(0, 1, (0, 1)),)),
+        )
+
+
+def test_sram_backing_handoff_metadata_requires_pair_and_node():
+    with Context():
+        module = Module.parse(
+            "module attributes {ttl.compiler_sram_reconfiguration_resets = "
+            "[{ordinal = 0 : i64, dfb_indices = array<i32: 0>, "
+            "backing_handoffs = [{from_dfb_index = 0 : i32, "
+            "to_dfb_index = 1 : i32}]}]} {}"
+        )
+
+        with pytest.raises(ValueError, match="is missing 'node'"):
+            _extract_sram_reconfiguration_resets(module)
+
+
+def test_sram_shared_owner_resolution_uses_matching_handoff():
+    source = """module attributes {
+      ttl.memory_model = "compiler-sram",
+      ttl.l1_arena_bytes = 2112 : i64,
+      ttl.compiler_sram_reconfiguration_resets = [{
+        ordinal = 0 : i64, dfb_indices = array<i32: 0>,
+        backing_handoffs = [{from_dfb_index = 0 : i32,
+                             to_dfb_index = 1 : i32, node = [0, 0]}]
+      }],
+      ttl.dfb_allocations = [
+        {dfb_index = 0 : i32, storage_index = 3 : i32,
+         element_type = !ttcore.tile<32x32, bf16>, page_size = 2048 : i32,
+         num_tiles = 1 : i32, block_count = 1 : i32,
+         storage_capacity_pages = 1 : i32, l1_offset = 0 : i64,
+         storage_segments = [{nodes = [[0, 0]], tensor_backing =
+           #ttl.tensor_backing<tensor_index = 0, byte_offset = 0,
+                               byte_size = 2048>}]},
+        {dfb_index = 1 : i32, storage_index = 3 : i32,
+         element_type = !ttcore.tile<32x32, bf16>, page_size = 2048 : i32,
+         num_tiles = 1 : i32, block_count = 1 : i32,
+         storage_capacity_pages = 1 : i32, l1_offset = 0 : i64,
+         allocation_nodes = [[0, 0]], l1_payload_offset = 64 : i64,
+         l1_allocation_bytes = 2048 : i64}
+      ]
+    } {}"""
+    with Context():
+        assert len(_resolve_dfb_configs(Module.parse(source))) == 2
+        without_handoff = source.replace(
+            "dfb_indices = array<i32: 0>,\n"
+            "        backing_handoffs = [{from_dfb_index = 0 : i32,\n"
+            "                             to_dfb_index = 1 : i32, node = [0, 0]}]",
+            "dfb_indices = array<i32: 0>",
+        )
+        with pytest.raises(ValueError, match="matching reconfiguration handoff"):
+            _resolve_dfb_configs(Module.parse(without_handoff))
 
 
 def _entry(

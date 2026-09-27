@@ -17,6 +17,8 @@
 #include "llvm/Support/CheckedArithmetic.h"
 
 #include <limits>
+#include <set>
+#include <tuple>
 
 namespace mlir::tt::ttl {
 
@@ -308,6 +310,130 @@ planRegions(ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
   uint64_t arenaBytes = std::max(*controlBytes, solution->arenaBytes);
   return L1AllocationPlan{std::move(plan), std::move(storage), arenaBytes};
 }
+
+using BackingHandoffsByOrdinal = DenseMap<int64_t, SmallVector<Attribute>>;
+
+static FailureOr<BackingHandoffsByOrdinal>
+buildBackingHandoffs(const L1AllocationPlan &plan,
+                     const DFBConcurrentKernelLivenessAnalysis &liveness,
+                     OpBuilder &builder) {
+  DenseMap<int64_t, unsigned> lifecycleIndexByLogicalId;
+  for (auto [index, lifecycle] :
+       llvm::enumerate(liveness.getLogicalDFBLifecycles())) {
+    lifecycleIndexByLogicalId.try_emplace(lifecycle.logicalId, index);
+  }
+  BackingHandoffsByOrdinal handoffs;
+  std::set<std::tuple<int64_t, unsigned, unsigned, int64_t, int64_t>> seen;
+  for (const L1Storage &storage : plan.storage) {
+    for (auto [memberPosition, firstIndex] : llvm::enumerate(storage.members)) {
+      const L1Region &first = plan.regions[firstIndex];
+      for (unsigned secondIndex :
+           ArrayRef<unsigned>(storage.members).drop_front(memberPosition + 1)) {
+        const L1Region &second = plan.regions[secondIndex];
+        if (first.tensorBacking == second.tensorBacking) {
+          continue;
+        }
+        if (!first.launchDomain.known || first.launchDomain.nodes.empty() ||
+            !second.launchDomain.known || second.launchDomain.nodes.empty()) {
+          second.declarations.front()->emitOpError(
+              "compiler-sram changed payload backing requires exact, "
+              "non-empty launch domains");
+          return failure();
+        }
+        const L1Region &exactDomain = first.tensorBacking ? first : second;
+        for (LaunchNodeCoord node : exactDomain.launchDomain.nodes) {
+          const L1Region &other = first.tensorBacking ? second : first;
+          if (other.launchDomain.known && other.launchDomain.nodes.find(node) ==
+                                              other.launchDomain.nodes.end()) {
+            continue;
+          }
+          assert(lifecycleIndexByLogicalId.contains(first.logicalId) &&
+                 lifecycleIndexByLogicalId.contains(second.logicalId));
+          unsigned firstLifecycleIndex =
+              lifecycleIndexByLogicalId.lookup(first.logicalId);
+          unsigned secondLifecycleIndex =
+              lifecycleIndexByLogicalId.lookup(second.logicalId);
+          const DFBLogicalLifecycle &firstLifecycle =
+              liveness.getLogicalDFBLifecycles()[firstLifecycleIndex];
+          const DFBLogicalLifecycle &secondLifecycle =
+              liveness.getLogicalDFBLifecycles()[secondLifecycleIndex];
+          const DFBPerNodeLifetime *firstLifetime =
+              firstLifecycle.findNodeLifetime(node);
+          const DFBPerNodeLifetime *secondLifetime =
+              secondLifecycle.findNodeLifetime(node);
+          bool possibleDomain = !firstLifetime || !secondLifetime;
+          if (!firstLifetime) {
+            firstLifetime = firstLifecycle.findPossibleNodeLifetime(node);
+          }
+          if (!secondLifetime) {
+            secondLifetime = secondLifecycle.findPossibleNodeLifetime(node);
+          }
+          if (!firstLifetime || !secondLifetime ||
+              !firstLifetime->mayBeActive || !secondLifetime->mayBeActive) {
+            continue;
+          }
+          bool hasHandoff = false;
+          for (auto [firstEpochIndex, firstEpoch] :
+               llvm::enumerate(firstLifetime->epochs)) {
+            for (auto [secondEpochIndex, secondEpoch] :
+                 llvm::enumerate(secondLifetime->epochs)) {
+              bool firstBeforeSecond =
+                  possibleDomain
+                      ? liveness.isConditionallyEpochOrderedBefore(
+                            firstLifecycleIndex, firstEpochIndex,
+                            secondLifecycleIndex, secondEpochIndex, node)
+                      : liveness.isEpochOrderedBefore(
+                            firstLifecycleIndex, firstEpochIndex,
+                            secondLifecycleIndex, secondEpochIndex, node);
+              bool secondBeforeFirst =
+                  possibleDomain
+                      ? liveness.isConditionallyEpochOrderedBefore(
+                            secondLifecycleIndex, secondEpochIndex,
+                            firstLifecycleIndex, firstEpochIndex, node)
+                      : liveness.isEpochOrderedBefore(
+                            secondLifecycleIndex, secondEpochIndex,
+                            firstLifecycleIndex, firstEpochIndex, node);
+              const DFBLifecycleEpoch &earlierEpoch =
+                  firstBeforeSecond ? firstEpoch : secondEpoch;
+              if (firstBeforeSecond == secondBeforeFirst ||
+                  !earlierEpoch.terminalReconfigurationOrdinal) {
+                second.declarations.front()->emitOpError(
+                    "compiler-sram changed payload backing requires a "
+                    "proved terminal reconfiguration on each shared node");
+                return failure();
+              }
+              unsigned fromIndex = firstBeforeSecond ? firstIndex : secondIndex;
+              unsigned toIndex = firstBeforeSecond ? secondIndex : firstIndex;
+              int64_t ordinal = *earlierEpoch.terminalReconfigurationOrdinal;
+              hasHandoff = true;
+              if (!seen.insert({ordinal, fromIndex, toIndex, node.x, node.y})
+                       .second) {
+                continue;
+              }
+              handoffs[ordinal].push_back(builder.getDictionaryAttr({
+                  builder.getNamedAttr("from_dfb_index",
+                                       builder.getI32IntegerAttr(fromIndex)),
+                  builder.getNamedAttr("to_dfb_index",
+                                       builder.getI32IntegerAttr(toIndex)),
+                  builder.getNamedAttr(
+                      "node", builder.getArrayAttr(
+                                  {builder.getI64IntegerAttr(node.x),
+                                   builder.getI64IntegerAttr(node.y)})),
+              }));
+            }
+          }
+          if (!hasHandoff) {
+            second.declarations.front()->emitOpError(
+                "compiler-sram changed payload backing requires an active "
+                "reconfiguration epoch on each shared node");
+            return failure();
+          }
+        }
+      }
+    }
+  }
+  return handoffs;
+}
 } // namespace
 
 LogicalResult allocateCompilerL1(
@@ -378,15 +504,19 @@ LogicalResult allocateCompilerL1(
         builder.getNamedAttr(kDFBAllocationStateOffsetField,
                              builder.getI64IntegerAttr(storage.stateOffset)),
     };
-    if (region.tensorBacking) {
-      SmallVector<Attribute> nodes;
+    SmallVector<Attribute> nodes;
+    if (region.launchDomain.known) {
       for (LaunchNodeCoord node : region.launchDomain.nodes) {
         nodes.push_back(
             builder.getArrayAttr({builder.getI64IntegerAttr(node.x),
                                   builder.getI64IntegerAttr(node.y)}));
       }
+    }
+    if (!nodes.empty()) {
       entryAttributes.push_back(builder.getNamedAttr(
           "allocation_nodes", builder.getArrayAttr(nodes)));
+    }
+    if (region.tensorBacking) {
       auto storageSegment = builder.getDictionaryAttr({
           builder.getNamedAttr("nodes", builder.getArrayAttr(nodes)),
           builder.getNamedAttr("tensor_backing", region.tensorBacking),
@@ -424,6 +554,11 @@ LogicalResult allocateCompilerL1(
       collectTerminalReconfigurations(node);
     }
   }
+  FailureOr<BackingHandoffsByOrdinal> handoffs =
+      buildBackingHandoffs(plan, liveness, builder);
+  if (failed(handoffs)) {
+    return failure();
+  }
   SmallVector<Attribute> reconfigurationResets;
   for (int64_t ordinal : liveness.getReconfigurationBoundaryOrdinals()) {
     auto resetIt = resetsByReconfiguration.find(ordinal);
@@ -433,14 +568,37 @@ LogicalResult allocateCompilerL1(
     SmallVector<int32_t> &indices = resetIt->second;
     llvm::sort(indices);
     indices.erase(llvm::unique(indices), indices.end());
-    reconfigurationResets.push_back(builder.getDictionaryAttr({
+    SmallVector<NamedAttribute> resetAttributes{
         builder.getNamedAttr("ordinal", builder.getI64IntegerAttr(ordinal)),
         builder.getNamedAttr("dfb_indices",
                              builder.getDenseI32ArrayAttr(indices)),
-    }));
+    };
+    if (auto handoffIt = handoffs->find(ordinal);
+        handoffIt != handoffs->end()) {
+      resetAttributes.push_back(builder.getNamedAttr(
+          "backing_handoffs", builder.getArrayAttr(handoffIt->second)));
+    }
+    reconfigurationResets.push_back(builder.getDictionaryAttr(resetAttributes));
   }
   assert(reconfigurationResets.size() == resetsByReconfiguration.size() &&
          "every terminal epoch must reference a known reconfiguration");
+  for (const auto &[ordinal, records] : *handoffs) {
+    auto resetIt = resetsByReconfiguration.find(ordinal);
+    if (resetIt == resetsByReconfiguration.end()) {
+      module.emitOpError(
+          "compiler-sram backing handoff has no terminal reset boundary");
+      return failure();
+    }
+    for (Attribute record : records) {
+      auto from =
+          cast<DictionaryAttr>(record).getAs<IntegerAttr>("from_dfb_index");
+      if (!llvm::is_contained(resetIt->second, from.getInt())) {
+        module.emitOpError(
+            "compiler-sram backing handoff must reset its earlier DFB");
+        return failure();
+      }
+    }
+  }
   if (reconfigurationResets.empty()) {
     module->removeAttr(kCompilerSRAMReconfigurationResetsAttrName);
   } else {

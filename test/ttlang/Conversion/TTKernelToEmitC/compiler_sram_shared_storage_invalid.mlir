@@ -28,7 +28,7 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 68 :
 // -----
 
 // One node cannot bind a shared owner to two different tensor arguments.
-// expected-error @below {{'builtin.module' op compiler-sram storage owner 3 has different tensor backing on a shared launch node without a reconfiguration reset}}
+// expected-error @below {{'builtin.module' op compiler-sram storage owner 3 has different payload backing on a shared launch node without a matching reconfiguration handoff}}
 module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 8 : i64, ttl.dfb_allocations = [
   {dfb_index = 0 : i64, storage_index = 3 : i64, element_type = f32, page_size = 4 : i64, num_tiles = 1 : i64, block_count = 1 : i64, storage_capacity_pages = 1 : i64, l1_offset = 0 : i64, storage_segments = [{nodes = [[0, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4>}]},
   {dfb_index = 1 : i64, storage_index = 3 : i64, element_type = f32, page_size = 4 : i64, num_tiles = 1 : i64, block_count = 1 : i64, storage_capacity_pages = 1 : i64, l1_offset = 0 : i64, storage_segments = [{nodes = [[0, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 1, byte_offset = 0, byte_size = 4>}]}
@@ -37,7 +37,7 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 8 : 
 // -----
 
 // A different offset within one tensor is also a different payload address.
-// expected-error @below {{'builtin.module' op compiler-sram storage owner 3 has different tensor backing on a shared launch node without a reconfiguration reset}}
+// expected-error @below {{'builtin.module' op compiler-sram storage owner 3 has different payload backing on a shared launch node without a matching reconfiguration handoff}}
 module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 8 : i64, ttl.dfb_allocations = [
   {dfb_index = 0 : i64, storage_index = 3 : i64, element_type = f32, page_size = 4 : i64, num_tiles = 1 : i64, block_count = 1 : i64, storage_capacity_pages = 1 : i64, l1_offset = 0 : i64, storage_segments = [{nodes = [[0, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4>}]},
   {dfb_index = 1 : i64, storage_index = 3 : i64, element_type = f32, page_size = 4 : i64, num_tiles = 1 : i64, block_count = 1 : i64, storage_capacity_pages = 1 : i64, l1_offset = 0 : i64, storage_segments = [{nodes = [[0, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 4, byte_size = 4>}]}
@@ -46,7 +46,7 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 8 : 
 // -----
 
 // Compare every owner member; the first member has no node in common here.
-// expected-error @below {{'builtin.module' op compiler-sram storage owner 3 has different tensor backing on a shared launch node without a reconfiguration reset}}
+// expected-error @below {{'builtin.module' op compiler-sram storage owner 3 has different payload backing on a shared launch node without a matching reconfiguration handoff}}
 module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 8 : i64, ttl.dfb_allocations = [
   {dfb_index = 0 : i64, storage_index = 3 : i64, element_type = f32, page_size = 4 : i64, num_tiles = 1 : i64, block_count = 1 : i64, storage_capacity_pages = 1 : i64, l1_offset = 0 : i64, storage_segments = [{nodes = [[1, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4>}]},
   {dfb_index = 1 : i64, storage_index = 3 : i64, element_type = f32, page_size = 4 : i64, num_tiles = 1 : i64, block_count = 1 : i64, storage_capacity_pages = 1 : i64, l1_offset = 0 : i64, storage_segments = [{nodes = [[0, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 1, byte_offset = 0, byte_size = 4>}]},
@@ -56,7 +56,7 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 8 : 
 // -----
 
 // A reset of a different DFB does not establish this owner's handoff.
-// expected-error @below {{'builtin.module' op compiler-sram storage owner 3 has different tensor backing on a shared launch node without a reconfiguration reset}}
+// expected-error @below {{'builtin.module' op compiler-sram storage owner 3 has different payload backing on a shared launch node without a matching reconfiguration handoff}}
 module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 16 : i64, ttl.compiler_sram_reconfiguration_resets = [{dfb_indices = array<i32: 2>, ordinal = 0 : i64}], ttl.dfb_allocations = [
   {dfb_index = 0 : i64, storage_index = 3 : i64, element_type = f32, page_size = 4 : i64, num_tiles = 1 : i64, block_count = 1 : i64, storage_capacity_pages = 1 : i64, l1_offset = 0 : i64, storage_segments = [{nodes = [[0, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4>}]},
   {dfb_index = 1 : i64, storage_index = 3 : i64, element_type = f32, page_size = 4 : i64, num_tiles = 1 : i64, block_count = 1 : i64, storage_capacity_pages = 1 : i64, l1_offset = 0 : i64, storage_segments = [{nodes = [[0, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 1, byte_offset = 0, byte_size = 4>}]},
@@ -77,4 +77,49 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 8 : 
 // expected-error @below {{'builtin.module' op contains malformed compiler-sram reconfiguration reset metadata}}
 module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 8 : i64, ttl.compiler_sram_reconfiguration_resets = [{dfb_indices = array<i32: 0>, ordinal = -1 : i64}], ttl.dfb_allocations = [
   {dfb_index = 0 : i64, storage_index = 3 : i64, element_type = f32, page_size = 4 : i64, num_tiles = 1 : i64, block_count = 1 : i64, storage_capacity_pages = 1 : i64, l1_offset = 0 : i64, storage_segments = [{nodes = [[0, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4>}]}
+]} {}
+
+// -----
+
+// A tensor and arena cannot share control state on one node without handoff.
+// expected-error @below {{'builtin.module' op compiler-sram storage owner 3 has different payload backing on a shared launch node without a matching reconfiguration handoff}}
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 68 : i64, ttl.dfb_allocations = [
+  {dfb_index = 0 : i64, storage_index = 3 : i64, element_type = f32, page_size = 4 : i64, num_tiles = 1 : i64, block_count = 1 : i64, storage_capacity_pages = 1 : i64, l1_offset = 0 : i64, storage_segments = [{nodes = [[0, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4>}]},
+  {dfb_index = 1 : i64, storage_index = 3 : i64, element_type = f32, page_size = 4 : i64, num_tiles = 1 : i64, block_count = 1 : i64, storage_capacity_pages = 1 : i64, l1_offset = 0 : i64, allocation_nodes = [[0, 0]], l1_payload_offset = 64 : i64, l1_allocation_bytes = 4 : i64}
+]} {}
+
+// -----
+
+// Resetting the earlier member alone does not authorize an unrelated backing change.
+// expected-error @below {{'builtin.module' op compiler-sram storage owner 3 has different payload backing on a shared launch node without a matching reconfiguration handoff}}
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 68 : i64, ttl.compiler_sram_reconfiguration_resets = [{dfb_indices = array<i32: 0>, ordinal = 0 : i64}], ttl.dfb_allocations = [
+  {dfb_index = 0 : i64, storage_index = 3 : i64, element_type = f32, page_size = 4 : i64, num_tiles = 1 : i64, block_count = 1 : i64, storage_capacity_pages = 1 : i64, l1_offset = 0 : i64, storage_segments = [{nodes = [[0, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4>}]},
+  {dfb_index = 1 : i64, storage_index = 3 : i64, element_type = f32, page_size = 4 : i64, num_tiles = 1 : i64, block_count = 1 : i64, storage_capacity_pages = 1 : i64, l1_offset = 0 : i64, allocation_nodes = [[0, 0]], l1_payload_offset = 64 : i64, l1_allocation_bytes = 4 : i64}
+]} {}
+
+// -----
+
+// A handoff must belong to the reset of its previous DFB.
+// expected-error @below {{'builtin.module' op contains invalid compiler-sram backing handoff}}
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 68 : i64, ttl.compiler_sram_reconfiguration_resets = [{dfb_indices = array<i32: 1>, ordinal = 0 : i64, backing_handoffs = [{from_dfb_index = 0 : i32, to_dfb_index = 1 : i32, node = [0, 0]}]}], ttl.dfb_allocations = [
+  {dfb_index = 0 : i64, storage_index = 3 : i64, element_type = f32, page_size = 4 : i64, num_tiles = 1 : i64, block_count = 1 : i64, storage_capacity_pages = 1 : i64, l1_offset = 0 : i64, storage_segments = [{nodes = [[0, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4>}]},
+  {dfb_index = 1 : i64, storage_index = 3 : i64, element_type = f32, page_size = 4 : i64, num_tiles = 1 : i64, block_count = 1 : i64, storage_capacity_pages = 1 : i64, l1_offset = 0 : i64, allocation_nodes = [[0, 0]], l1_payload_offset = 64 : i64, l1_allocation_bytes = 4 : i64}
+]} {}
+
+// -----
+
+// Handoff coordinates identify one launch node.
+// expected-error @below {{'builtin.module' op contains malformed compiler-sram backing handoff}}
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 8 : i64, ttl.compiler_sram_reconfiguration_resets = [{dfb_indices = array<i32: 0>, ordinal = 0 : i64, backing_handoffs = [{from_dfb_index = 0 : i32, to_dfb_index = 1 : i32, node = [0]}]}], ttl.dfb_allocations = [
+  {dfb_index = 0 : i64, storage_index = 3 : i64, element_type = f32, page_size = 4 : i64, num_tiles = 1 : i64, block_count = 1 : i64, storage_capacity_pages = 1 : i64, l1_offset = 0 : i64, storage_segments = [{nodes = [[0, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4>}]},
+  {dfb_index = 1 : i64, storage_index = 3 : i64, element_type = f32, page_size = 4 : i64, num_tiles = 1 : i64, block_count = 1 : i64, storage_capacity_pages = 1 : i64, l1_offset = 0 : i64, storage_segments = [{nodes = [[0, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 1, byte_offset = 0, byte_size = 4>}]}
+]} {}
+
+// -----
+
+// Missing arena-node metadata cannot establish disjoint node ownership.
+// expected-error @below {{'builtin.module' op compiler-sram storage owner 3 changes payload backing without exact launch nodes}}
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 68 : i64, ttl.dfb_allocations = [
+  {dfb_index = 0 : i64, storage_index = 3 : i64, element_type = f32, page_size = 4 : i64, num_tiles = 1 : i64, block_count = 1 : i64, storage_capacity_pages = 1 : i64, l1_offset = 0 : i64, storage_segments = [{nodes = [[0, 0]], tensor_backing = #ttl.tensor_backing<tensor_index = 0, byte_offset = 0, byte_size = 4>}]},
+  {dfb_index = 1 : i64, storage_index = 3 : i64, element_type = f32, page_size = 4 : i64, num_tiles = 1 : i64, block_count = 1 : i64, storage_capacity_pages = 1 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, l1_allocation_bytes = 4 : i64}
 ]} {}

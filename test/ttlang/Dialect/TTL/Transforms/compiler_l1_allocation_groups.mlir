@@ -5,9 +5,9 @@
 // Sequential scratch members share one control record and the largest payload
 // envelope while retaining their logical descriptor geometry.
 
-// CHECK: module attributes {ttl.dfb_allocations = [{block_count = 1 : i32, dfb_index = 0 : i32
+// CHECK: module attributes {ttl.dfb_allocations = [{allocation_nodes = {{\[\[0, 0\]\]}}, block_count = 1 : i32, dfb_index = 0 : i32
 // CHECK-SAME: l1_allocation_bytes = 8192 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64
-// CHECK-SAME: storage_capacity_pages = 4 : i32, storage_index = 0 : i32}, {block_count = 4 : i32, dfb_index = 1 : i32
+// CHECK-SAME: storage_capacity_pages = 4 : i32, storage_index = 0 : i32}, {allocation_nodes = {{\[\[0, 0\]\]}}, block_count = 4 : i32, dfb_index = 1 : i32
 // CHECK-SAME: l1_allocation_bytes = 8192 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64
 // CHECK-SAME: storage_capacity_pages = 4 : i32, storage_index = 0 : i32}], ttl.l1_arena_bytes = 8256 : i64
 // CHECK-LABEL: func.func @scratch_capacity_envelope

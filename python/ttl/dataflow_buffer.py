@@ -291,6 +291,24 @@ CircularBuffer = DataflowBuffer
 
 
 @dataclass(frozen=True)
+class SRAMBackingHandoff:
+    """A DFB backing change on one launch node at a synchronized reset."""
+
+    from_dfb_index: int
+    to_dfb_index: int
+    node: Tuple[int, int]
+
+
+@dataclass(frozen=True)
+class SRAMReconfigurationReset:
+    """A finalized reset and its proven per-node backing handoffs."""
+
+    ordinal: int
+    dfb_indices: Tuple[int, ...]
+    backing_handoffs: Tuple[SRAMBackingHandoff, ...] = ()
+
+
+@dataclass(frozen=True)
 class PhysicalDFBConfig:
     """Runtime configuration for one finalized dataflow buffer entry.
 

@@ -5,9 +5,9 @@
 // The assumption preserves distinct logical identities while assigning one
 // storage owner and recording every unproven handoff property.
 
-// CHECK: module attributes {ttl.assumed_dfb_allocation_groups = [{allocation_group = #ttl.dfb_allocation_group<0>, assumptions = [{lhs = 0 : i64, reason = "access-completion-not-proven", rhs = 1 : i64}, {lhs = 0 : i64, reason = "unproven-cursor-order", rhs = 1 : i64}], members = [0, 1]}], ttl.dfb_allocations = [{block_count = 2 : i32, dfb_index = 0 : i32
+// CHECK: module attributes {ttl.assumed_dfb_allocation_groups = [{allocation_group = #ttl.dfb_allocation_group<0>, assumptions = [{lhs = 0 : i64, reason = "access-completion-not-proven", rhs = 1 : i64}, {lhs = 0 : i64, reason = "unproven-cursor-order", rhs = 1 : i64}], members = [0, 1]}], ttl.dfb_allocations = [{allocation_nodes = {{\[\[0, 0\]\]}}, block_count = 2 : i32, dfb_index = 0 : i32
 // CHECK-SAME: l1_offset = 0 : i64
-// CHECK-SAME: storage_index = 0 : i32}, {block_count = 2 : i32, dfb_index = 1 : i32
+// CHECK-SAME: storage_index = 0 : i32}, {allocation_nodes = {{\[\[0, 0\]\]}}, block_count = 2 : i32, dfb_index = 1 : i32
 // CHECK-SAME: l1_offset = 0 : i64
 // CHECK-SAME: storage_index = 0 : i32}]
 // CHECK-LABEL: func.func @assumed_handoff

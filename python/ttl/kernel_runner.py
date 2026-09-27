@@ -49,6 +49,8 @@ from .dataflow_buffer import (
     DFBReconfigurationPlan,
     DFBStorageSegment,
     PhysicalDFBConfig,
+    SRAMBackingHandoff,
+    SRAMReconfigurationReset,
     _COMPILER_SRAM_CONTROL_RECORD_BYTES,
     _validate_tensor_backed_dfb_range,
     _validate_tensor_backed_dfb_tensor,
@@ -2026,9 +2028,27 @@ def _allocate_l1_sharded_storage_tensor(
     )
 
 
+def _compiler_sram_backing_by_node(
+    config: PhysicalDFBConfig,
+) -> Optional[Dict[Tuple[int, int], Tuple[str, Optional[int], int]]]:
+    if config.l1_payload_offset is not None:
+        if config.allocation_nodes is None:
+            return None
+        return {
+            node: ("arena", None, config.l1_payload_offset)
+            for node in config.allocation_nodes
+        }
+    return {
+        node: ("tensor", segment.tensor_index, segment.byte_offset)
+        for segment in config.storage_segments
+        for node in segment.nodes
+    }
+
+
 def _get_compiler_l1_arena_bytes(
     cb_configs: Sequence[PhysicalDFBConfig],
     memory_model: Optional[str] = None,
+    reconfiguration_resets: Sequence[SRAMReconfigurationReset] = (),
 ) -> Optional[int]:
     if memory_model not in (None, "metal-cb", "compiler-sram"):
         raise ValueError(f"unknown DFB memory model {memory_model!r}")
@@ -2039,6 +2059,10 @@ def _get_compiler_l1_arena_bytes(
         for config in cb_configs
     )
     if not has_compiler_sram_metadata:
+        if reconfiguration_resets:
+            raise ValueError(
+                "compiler-sram reconfiguration resets require allocation metadata"
+            )
         if memory_model == "compiler-sram":
             if cb_configs:
                 raise ValueError("compiler-sram requires complete allocation metadata")
@@ -2049,12 +2073,66 @@ def _get_compiler_l1_arena_bytes(
     if not all(config.l1_offset is not None for config in cb_configs):
         raise ValueError("mixed compiler-sram and Metal storage metadata")
 
+    handoffs = set()
+    seen_ordinals = set()
+    for reset in reconfiguration_resets:
+        if not isinstance(reset, SRAMReconfigurationReset):
+            raise ValueError("invalid compiler-sram reconfiguration reset")
+        if (
+            not isinstance(reset.ordinal, int)
+            or reset.ordinal < 0
+            or reset.ordinal in seen_ordinals
+        ):
+            raise ValueError("invalid compiler-sram reconfiguration ordinal")
+        seen_ordinals.add(reset.ordinal)
+        if not isinstance(reset.dfb_indices, tuple) or not isinstance(
+            reset.backing_handoffs, tuple
+        ):
+            raise ValueError("invalid compiler-sram reconfiguration reset")
+        if any(not isinstance(index, int) for index in reset.dfb_indices):
+            raise ValueError("invalid compiler-sram reconfiguration reset index")
+        reset_indices = set(reset.dfb_indices)
+        if len(reset_indices) != len(reset.dfb_indices) or any(
+            not isinstance(index, int) or index < 0 or index >= len(cb_configs)
+            for index in reset_indices
+        ):
+            raise ValueError("invalid compiler-sram reconfiguration reset index")
+        handoffs_in_reset = set()
+        for handoff in reset.backing_handoffs:
+            if not isinstance(handoff, SRAMBackingHandoff):
+                raise ValueError("invalid compiler-sram backing handoff")
+            from_index = handoff.from_dfb_index
+            to_index = handoff.to_dfb_index
+            node = handoff.node
+            if (
+                not isinstance(from_index, int)
+                or from_index not in reset_indices
+                or not isinstance(to_index, int)
+                or to_index < 0
+                or to_index >= len(cb_configs)
+                or from_index == to_index
+                or not isinstance(node, tuple)
+                or len(node) != 2
+                or any(
+                    not isinstance(coordinate, int) or coordinate < 0
+                    for coordinate in node
+                )
+            ):
+                raise ValueError("invalid compiler-sram backing handoff")
+            identity = (from_index, to_index, node)
+            if identity in handoffs_in_reset:
+                raise ValueError("duplicate compiler-sram backing handoff")
+            handoffs_in_reset.add(identity)
+            handoffs.add(identity)
+
     control_offsets_by_owner = {}
     capacities_by_owner = {}
     formats_by_owner = {}
     payloads_by_owner = {}
+    configs_by_owner = {}
     for config in cb_configs:
         owner = _compiler_sram_storage_owner(config)
+        configs_by_owner.setdefault(owner, []).append(config)
         previous_offset = control_offsets_by_owner.setdefault(owner, config.l1_offset)
         if previous_offset != config.l1_offset:
             raise ValueError(
@@ -2084,6 +2162,39 @@ def _get_compiler_l1_arena_bytes(
         previous_capacity = capacities_by_owner.setdefault(owner, capacity_pages)
         if previous_capacity != capacity_pages:
             raise ValueError("compiler-sram storage owner has inconsistent capacity")
+    for owner_configs in configs_by_owner.values():
+        for current_position, current in enumerate(owner_configs):
+            for previous in owner_configs[:current_position]:
+                if (
+                    current.l1_payload_offset is not None
+                    and previous.l1_payload_offset is not None
+                ):
+                    continue
+                current_nodes = _compiler_sram_backing_by_node(current)
+                previous_nodes = _compiler_sram_backing_by_node(previous)
+                if current_nodes is None or previous_nodes is None:
+                    raise ValueError(
+                        "compiler-sram changed payload backing requires exact "
+                        "launch nodes"
+                    )
+                for node in current_nodes.keys() & previous_nodes.keys():
+                    if current_nodes[node] == previous_nodes[node]:
+                        continue
+                    if (
+                        previous.dfb_index,
+                        current.dfb_index,
+                        node,
+                    ) in handoffs or (
+                        current.dfb_index,
+                        previous.dfb_index,
+                        node,
+                    ) in handoffs:
+                        continue
+                    raise ValueError(
+                        "compiler-sram storage owner has different payload "
+                        "backing on a shared launch node without a matching "
+                        "reconfiguration handoff"
+                    )
     control_starts = sorted(control_offsets_by_owner.values())
     if any(start < 0 or start % 4 for start in control_starts):
         raise ValueError("compiler-sram has an unaligned control record")
@@ -4589,6 +4700,7 @@ def run_kernel_on_device(
     cb_configs: List[PhysicalDFBConfig],
     core_ranges: Any,
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
+    sram_reconfiguration_resets: Sequence[SRAMReconfigurationReset] = (),
     program_hash: Optional[int] = None,
     num_pipe_sync_semaphores: int = 0,
     pipe_sram_scratch_bytes: int = 0,
@@ -4615,7 +4727,9 @@ def run_kernel_on_device(
         extent=(None if device_domain is None else device_domain.flattened_extent),
         extent_name="device domain",
     )
-    compiler_l1_arena_bytes = _get_compiler_l1_arena_bytes(cb_configs, memory_model)
+    compiler_l1_arena_bytes = _get_compiler_l1_arena_bytes(
+        cb_configs, memory_model, sram_reconfiguration_resets
+    )
     pipe_computed_address_dfb_indices = tuple(
         sorted(
             {
@@ -4927,6 +5041,7 @@ def emit_runner_source(
     kernel_fabric_routes: Optional[List[List[FabricRouteSpec]]] = None,
     requires_runtime_resource_factory: bool = False,
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
+    sram_reconfiguration_resets: Sequence[SRAMReconfigurationReset] = (),
     tensor_configurations: Optional[Sequence[tuple]] = None,
     memory_model: Optional[str] = None,
 ) -> str:
@@ -4952,7 +5067,9 @@ def emit_runner_source(
     for physical_index, config in enumerate(cb_configs):
         _get_dfb_allocation(config)
         _validate_physical_dfb_config(config, physical_index)
-    arena_bytes = _get_compiler_l1_arena_bytes(cb_configs, memory_model)
+    arena_bytes = _get_compiler_l1_arena_bytes(
+        cb_configs, memory_model, sram_reconfiguration_resets
+    )
     memory_model = memory_model or (
         "compiler-sram" if arena_bytes is not None else "metal-cb"
     )
@@ -4970,6 +5087,8 @@ def emit_runner_source(
     lines.append("from ttl.dataflow_buffer import DFBConfigurationEpoch")
     lines.append("from ttl.dataflow_buffer import DFBReconfigurationPlan")
     lines.append("from ttl.dataflow_buffer import PhysicalDFBConfig")
+    lines.append("from ttl.dataflow_buffer import SRAMBackingHandoff")
+    lines.append("from ttl.dataflow_buffer import SRAMReconfigurationReset")
     lines.append("from ttl.domains import DeviceDomain")
     lines.append("from ttl.kernel import Kernel, KernelKind")
     lines.append("from ttl.layouts import get_tensor_configuration")
@@ -4990,6 +5109,9 @@ def emit_runner_source(
     lines.append(f"NUM_TENSORS = {num_tensors}")
     lines.append(f"OPERATION_NAME = {kernel_name!r}")
     lines.append(f"MEMORY_MODEL = {memory_model!r}")
+    lines.append(
+        f"SRAM_RECONFIGURATION_RESETS = {tuple(sram_reconfiguration_resets)!r}"
+    )
     lines.append(f"PROGRAM_HASH = {normalize_program_hash(program_hash)!r}")
     lines.append(f"TENSOR_CONFIGURATIONS = {tensor_configurations!r}")
     lines.append(f"NUM_PIPE_SYNC_SEMAPHORES = {num_pipe_sync_semaphores}")
@@ -5223,6 +5345,7 @@ def emit_runner_source(
     lines.append("        tensors=tensors,")
     lines.append("        cb_configs=CB_CONFIGS,")
     lines.append("        dfb_reconfiguration_plan=DFB_RECONFIGURATION_PLAN,")
+    lines.append("        sram_reconfiguration_resets=SRAM_RECONFIGURATION_RESETS,")
     lines.append("        core_ranges=core_ranges,")
     lines.append("        program_hash=PROGRAM_HASH,")
     lines.append("        num_pipe_sync_semaphores=NUM_PIPE_SYNC_SEMAPHORES,")
@@ -5266,6 +5389,7 @@ def emit_runner_file(
     kernel_fabric_routes: Optional[List[List[FabricRouteSpec]]] = None,
     requires_runtime_resource_factory: bool = False,
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
+    sram_reconfiguration_resets: Sequence[SRAMReconfigurationReset] = (),
     tensor_configurations: Optional[Sequence[tuple]] = None,
     memory_model: Optional[str] = None,
 ) -> str:
@@ -5301,6 +5425,7 @@ def emit_runner_file(
         kernel_fabric_routes=kernel_fabric_routes,
         requires_runtime_resource_factory=requires_runtime_resource_factory,
         dfb_reconfiguration_plan=dfb_reconfiguration_plan,
+        sram_reconfiguration_resets=sram_reconfiguration_resets,
         memory_model=memory_model,
     )
 

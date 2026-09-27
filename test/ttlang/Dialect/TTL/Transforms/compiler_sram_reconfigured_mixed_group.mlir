@@ -1,5 +1,5 @@
 // Verify that a completed reconfiguration permits one SRAM storage owner to
-// use different tensor backing on the same node.
+// switch from tensor backing to an arena payload on the same node.
 // RUN: ttlang-opt %s -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-sram reuse-user-dfbs=true})' | FileCheck %s
 // RUN: ttlang-opt %s --ttl-to-ttkernel-pipeline='memory-model=compiler-sram reuse-user-dfbs=true' --convert-ttkernel-to-emitc -o /dev/null
 
@@ -11,8 +11,9 @@
 // CHECK: ttl.compiler_sram_reconfiguration_resets = [{backing_handoffs = [{from_dfb_index = 0 : i32, node = [0, 0], to_dfb_index = 1 : i32}], dfb_indices = array<i32: 0>, ordinal = 0 : i64}]
 // CHECK-SAME: storage_index = 0 : i32
 // CHECK-SAME: tensor_backing = #ttl.tensor_backing<tensor_index = 0
+// CHECK-SAME: allocation_nodes = {{\[\[0, 0\]\]}}
+// CHECK-SAME: l1_payload_offset = 64 : i64
 // CHECK-SAME: storage_index = 0 : i32
-// CHECK-SAME: tensor_backing = #ttl.tensor_backing<tensor_index = 1
 
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
   func.func @compute() attributes {
@@ -28,7 +29,7 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
     ttl.dfb_reconfiguration #boundary
 
     %second = ttl.bind_cb {cb_index = 1, block_count = 2}
-        {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 1 : index, tensor_backing = #ttl.tensor_backing<tensor_index = 1, byte_offset = 0, byte_size = 4096>}
+        {allocation_group = #ttl.dfb_allocation_group<0>, dfb_id = 1 : index}
         : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
     ttl.opaque_call "second" dfb_dependencies(%second : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<reserve, 0, 1>, #ttl.dfb_protocol_effect<push, 0, 1>, #ttl.dfb_protocol_effect<wait, 0, 1>, #ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "effects.hpp"} : () -> ()
     return

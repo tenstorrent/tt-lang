@@ -40,6 +40,8 @@ from ttl.dataflow_buffer import (
     DFBReconfigurationPlan,
     DFBStorageSegment,
     PhysicalDFBConfig,
+    SRAMBackingHandoff,
+    SRAMReconfigurationReset,
 )
 from ttl.domains import DeviceDomain
 from ttl.ttl import ProgramRuntimeResources as TTLProgramRuntimeResources
@@ -2423,6 +2425,149 @@ def test_compiler_l1_arena_size_combines_tensor_and_static_storage():
     ]
 
     assert kernel_runner._get_compiler_l1_arena_bytes(configs) == 2112
+
+
+def _shared_sram_backing_configs(*, second_is_tensor, second_node=(0, 0)):
+    first = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        storage_segments=(
+            DFBStorageSegment(
+                nodes=((0, 0),), tensor_index=0, byte_offset=0, byte_size=2048
+            ),
+        ),
+        storage_index=3,
+        storage_capacity_pages=1,
+        l1_offset=0,
+    )
+    if second_is_tensor:
+        second = replace(
+            first,
+            dfb_index=1,
+            storage_segments=(
+                DFBStorageSegment(
+                    nodes=(second_node,),
+                    tensor_index=1,
+                    byte_offset=0,
+                    byte_size=2048,
+                ),
+            ),
+        )
+    else:
+        second = replace(
+            first,
+            dfb_index=1,
+            storage_segments=(),
+            allocation_nodes=(second_node,),
+            l1_payload_offset=64,
+            l1_allocation_bytes=2048,
+        )
+    return [first, second]
+
+
+@pytest.mark.parametrize("second_is_tensor", [True, False], ids=["tensor", "arena"])
+def test_shared_sram_backing_requires_matching_node_handoff(second_is_tensor):
+    configs = _shared_sram_backing_configs(second_is_tensor=second_is_tensor)
+    unrelated_reset = SRAMReconfigurationReset(0, (1,))
+    with pytest.raises(ValueError, match="matching reconfiguration handoff"):
+        kernel_runner._get_compiler_l1_arena_bytes(configs)
+    with pytest.raises(ValueError, match="matching reconfiguration handoff"):
+        kernel_runner._get_compiler_l1_arena_bytes(
+            configs, reconfiguration_resets=(unrelated_reset,)
+        )
+
+    handoff = SRAMBackingHandoff(0, 1, (0, 0))
+    reset = SRAMReconfigurationReset(0, (0,), (handoff,))
+    expected_bytes = 8 if second_is_tensor else 2112
+    assert (
+        kernel_runner._get_compiler_l1_arena_bytes(
+            configs, reconfiguration_resets=(reset,)
+        )
+        == expected_bytes
+    )
+    disjoint_configs = _shared_sram_backing_configs(
+        second_is_tensor=second_is_tensor, second_node=(1, 0)
+    )
+    assert (
+        kernel_runner._get_compiler_l1_arena_bytes(disjoint_configs) == expected_bytes
+    )
+
+
+def test_shared_sram_backing_rejects_wrong_reset_owner_and_unknown_nodes():
+    configs = _shared_sram_backing_configs(second_is_tensor=False)
+    handoff = SRAMBackingHandoff(0, 1, (0, 0))
+    with pytest.raises(ValueError, match="invalid compiler-sram backing handoff"):
+        kernel_runner._get_compiler_l1_arena_bytes(
+            configs,
+            reconfiguration_resets=(SRAMReconfigurationReset(0, (1,), (handoff,)),),
+        )
+    configs[1] = replace(configs[1], allocation_nodes=None)
+    with pytest.raises(ValueError, match="requires exact launch nodes"):
+        kernel_runner._get_compiler_l1_arena_bytes(configs)
+
+
+def test_shared_sram_backing_requires_handoff_on_the_shared_node():
+    configs = _shared_sram_backing_configs(second_is_tensor=True)
+    wrong_node = SRAMReconfigurationReset(0, (0,), (SRAMBackingHandoff(0, 1, (1, 0)),))
+    with pytest.raises(ValueError, match="matching reconfiguration handoff"):
+        kernel_runner._get_compiler_l1_arena_bytes(
+            configs, reconfiguration_resets=(wrong_node,)
+        )
+
+
+def test_shared_sram_backing_accepts_identical_tensor_source():
+    configs = _shared_sram_backing_configs(second_is_tensor=True)
+    configs[1] = replace(
+        configs[1],
+        storage_segments=(replace(configs[1].storage_segments[0], tensor_index=0),),
+    )
+    assert kernel_runner._get_compiler_l1_arena_bytes(configs) == 8
+
+
+def test_shared_sram_backing_distinguishes_offsets_within_one_tensor():
+    configs = _shared_sram_backing_configs(second_is_tensor=True)
+    configs[1] = replace(
+        configs[1],
+        storage_segments=(
+            replace(configs[1].storage_segments[0], tensor_index=0, byte_offset=2048),
+        ),
+    )
+    with pytest.raises(ValueError, match="matching reconfiguration handoff"):
+        kernel_runner._get_compiler_l1_arena_bytes(configs)
+
+
+def test_shared_sram_backing_rejects_duplicate_handoff_in_one_reset():
+    configs = _shared_sram_backing_configs(second_is_tensor=True)
+    handoff = SRAMBackingHandoff(0, 1, (0, 0))
+    with pytest.raises(ValueError, match="duplicate compiler-sram backing handoff"):
+        kernel_runner._get_compiler_l1_arena_bytes(
+            configs,
+            reconfiguration_resets=(
+                SRAMReconfigurationReset(0, (0,), (handoff, handoff)),
+            ),
+        )
+
+
+def test_shared_sram_backing_fails_before_arena_allocation(monkeypatch):
+    monkeypatch.setattr(
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        lambda *_args, **_kwargs: pytest.fail(
+            "SRAM allocated before metadata validation"
+        ),
+    )
+    with pytest.raises(ValueError, match="matching reconfiguration handoff"):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[],
+            cb_configs=_shared_sram_backing_configs(second_is_tensor=False),
+            core_ranges=_FakeCoreRanges(),
+            memory_model="compiler-sram",
+        )
 
 
 def test_compiler_l1_arena_size_rejects_storage_without_payload_or_tensor():
@@ -9126,6 +9271,24 @@ def test_emit_runner_source_preserves_empty_compiler_sram_mode(monkeypatch):
 
     assert "MEMORY_MODEL = 'compiler-sram'" in source
     assert "memory_model=MEMORY_MODEL" in source
+
+
+def test_emit_runner_source_preserves_sram_backing_handoff(monkeypatch):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    reset = SRAMReconfigurationReset(0, (0,), (SRAMBackingHandoff(0, 1, (0, 0)),))
+    source = kernel_runner.emit_runner_source(
+        kernel_specs=[],
+        cb_configs=_shared_sram_backing_configs(second_is_tensor=False),
+        grid_cols=1,
+        grid_rows=1,
+        num_tensors=1,
+        memory_model="compiler-sram",
+        sram_reconfiguration_resets=(reset,),
+    )
+
+    compile(source, "<generated-runner>", "exec")
+    assert repr(reset) in source
+    assert "sram_reconfiguration_resets=SRAM_RECONFIGURATION_RESETS" in source
 
 
 def test_emit_runner_source_accepts_physical_dfb_configs(monkeypatch):

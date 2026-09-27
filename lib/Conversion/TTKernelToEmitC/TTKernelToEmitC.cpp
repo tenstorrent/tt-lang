@@ -45,7 +45,9 @@
 #include <functional>
 #include <limits>
 #include <optional>
+#include <set>
 #include <string>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 
@@ -156,24 +158,6 @@ static bool hasValidLaunchNodes(ArrayAttr nodes) {
   return true;
 }
 
-static bool launchNodesOverlap(ArrayAttr firstNodes, ArrayAttr secondNodes) {
-  llvm::SmallDenseSet<std::pair<int64_t, int64_t>, 8> firstCoordinates;
-  for (Attribute node : firstNodes) {
-    auto coordinates = cast<ArrayAttr>(node);
-    firstCoordinates.insert({cast<IntegerAttr>(coordinates[0]).getInt(),
-                             cast<IntegerAttr>(coordinates[1]).getInt()});
-  }
-  for (Attribute node : secondNodes) {
-    auto coordinates = cast<ArrayAttr>(node);
-    if (firstCoordinates.contains(
-            {cast<IntegerAttr>(coordinates[0]).getInt(),
-             cast<IntegerAttr>(coordinates[1]).getInt()})) {
-      return true;
-    }
-  }
-  return false;
-}
-
 static FailureOr<CompilerL1Allocation>
 parseCompilerL1Allocation(Attribute attribute) {
   auto dictionary = dyn_cast<DictionaryAttr>(attribute);
@@ -207,6 +191,9 @@ parseCompilerL1Allocation(Attribute attribute) {
   auto storageSegments = dictionary
                              ? dictionary.getAs<ArrayAttr>("storage_segments")
                              : ArrayAttr();
+  auto allocationNodes = dictionary
+                             ? dictionary.getAs<ArrayAttr>("allocation_nodes")
+                             : ArrayAttr();
   auto elementType =
       dictionary
           ? dictionary.getAs<TypeAttr>(ttl::kDFBAllocationElementTypeField)
@@ -224,8 +211,12 @@ parseCompilerL1Allocation(Attribute attribute) {
   if (!hasArenaPayload && !hasTensorPayload) {
     return failure();
   }
+  if (dictionary.get("allocation_nodes") &&
+      !hasValidLaunchNodes(allocationNodes)) {
+    return failure();
+  }
   ttl::TensorBackingAttr tensorBacking;
-  ArrayAttr launchNodes;
+  ArrayAttr launchNodes = allocationNodes;
   if (hasArenaPayload) {
     if (!isRepresentableMetadataInteger(payloadAddress) ||
         !isRepresentableMetadataInteger(allocationBytes)) {
@@ -3666,7 +3657,9 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
           "compiler-sram requires finalized allocation metadata");
       return failure();
     }
-    llvm::SmallDenseSet<unsigned, 8> reconfiguredDFBs;
+    using BackingHandoff = std::tuple<unsigned, unsigned, int64_t, int64_t>;
+    std::set<BackingHandoff> backingHandoffs;
+    llvm::SmallDenseSet<int64_t, 8> resetOrdinals;
     if (auto resetEntries = module->getAttrOfType<ArrayAttr>(
             ttl::kCompilerSRAMReconfigurationResetsAttrName)) {
       for (Attribute resetAttribute : resetEntries) {
@@ -3676,7 +3669,7 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
         auto indices = reset ? reset.getAs<DenseI32ArrayAttr>("dfb_indices")
                              : DenseI32ArrayAttr();
         if (!isRepresentableMetadataInteger(ordinal) || ordinal.getInt() < 0 ||
-            !indices) {
+            !indices || !resetOrdinals.insert(ordinal.getInt()).second) {
           module.emitOpError("contains malformed compiler-sram reconfiguration "
                              "reset metadata");
           return failure();
@@ -3687,7 +3680,49 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
                 "contains invalid compiler-sram reconfiguration reset index");
             return failure();
           }
-          reconfiguredDFBs.insert(index);
+        }
+        auto handoffs = reset.get("backing_handoffs");
+        if (handoffs && !isa<ArrayAttr>(handoffs)) {
+          module.emitOpError(
+              "contains malformed compiler-sram backing handoff");
+          return failure();
+        }
+        ArrayAttr handoffArray =
+            handoffs ? cast<ArrayAttr>(handoffs) : ArrayAttr();
+        std::set<BackingHandoff> handoffsInReset;
+        for (Attribute handoffAttribute :
+             handoffArray ? handoffArray.getValue() : ArrayRef<Attribute>()) {
+          auto handoff = dyn_cast<DictionaryAttr>(handoffAttribute);
+          auto from = handoff ? handoff.getAs<IntegerAttr>("from_dfb_index")
+                              : IntegerAttr();
+          auto to = handoff ? handoff.getAs<IntegerAttr>("to_dfb_index")
+                            : IntegerAttr();
+          auto node = handoff ? handoff.getAs<ArrayAttr>("node") : ArrayAttr();
+          if (!isRepresentableMetadataInteger(from) ||
+              !isRepresentableMetadataInteger(to) || from.getInt() < 0 ||
+              to.getInt() < 0 || from.getInt() == to.getInt() ||
+              static_cast<uint64_t>(from.getInt()) >= allocations.size() ||
+              static_cast<uint64_t>(to.getInt()) >= allocations.size() ||
+              !node || node.size() != 2 ||
+              !isRepresentableMetadataInteger(dyn_cast<IntegerAttr>(node[0])) ||
+              !isRepresentableMetadataInteger(dyn_cast<IntegerAttr>(node[1]))) {
+            module.emitOpError(
+                "contains malformed compiler-sram backing handoff");
+            return failure();
+          }
+          int64_t nodeX = cast<IntegerAttr>(node[0]).getInt();
+          int64_t nodeY = cast<IntegerAttr>(node[1]).getInt();
+          BackingHandoff identity{static_cast<unsigned>(from.getInt()),
+                                  static_cast<unsigned>(to.getInt()), nodeX,
+                                  nodeY};
+          if (nodeX < 0 || nodeY < 0 ||
+              !llvm::is_contained(indices.asArrayRef(), from.getInt()) ||
+              !handoffsInReset.insert(identity).second) {
+            module.emitOpError(
+                "contains invalid compiler-sram backing handoff");
+            return failure();
+          }
+          backingHandoffs.insert(identity);
         }
       }
     }
@@ -3766,19 +3801,43 @@ static LogicalResult validateCompilerSRAMModule(ModuleOp module) {
         for (unsigned previousIndex : ownerAllocations) {
           const CompilerL1Allocation &previous =
               parsedAllocations[previousIndex];
-          // On one node, a changed backing requires a finalized terminal reset.
-          if (allocation->tensorIndex >= 0 && previous.tensorIndex >= 0 &&
+          if ((allocation->tensorIndex >= 0 || previous.tensorIndex >= 0) &&
               (allocation->tensorIndex != previous.tensorIndex ||
-               allocation->payloadOffset != previous.payloadOffset) &&
-              launchNodesOverlap(allocation->launchNodes,
-                                 previous.launchNodes) &&
-              !reconfiguredDFBs.contains(index) &&
-              !reconfiguredDFBs.contains(previousIndex)) {
-            module.emitOpError("compiler-sram storage owner ")
-                << storageIndex.getInt()
-                << " has different tensor backing on a shared launch node "
-                   "without a reconfiguration reset";
-            return failure();
+               allocation->payloadOffset != previous.payloadOffset)) {
+            if (!allocation->launchNodes || !previous.launchNodes) {
+              module.emitOpError("compiler-sram storage owner ")
+                  << storageIndex.getInt()
+                  << " changes payload backing without exact launch nodes";
+              return failure();
+            }
+            llvm::SmallDenseSet<std::pair<int64_t, int64_t>, 8> previousNodes;
+            for (Attribute node : previous.launchNodes) {
+              auto coordinates = cast<ArrayAttr>(node);
+              previousNodes.insert(
+                  {cast<IntegerAttr>(coordinates[0]).getInt(),
+                   cast<IntegerAttr>(coordinates[1]).getInt()});
+            }
+            for (Attribute node : allocation->launchNodes) {
+              auto coordinates = cast<ArrayAttr>(node);
+              int64_t nodeX = cast<IntegerAttr>(coordinates[0]).getInt();
+              int64_t nodeY = cast<IntegerAttr>(coordinates[1]).getInt();
+              if (!previousNodes.contains({nodeX, nodeY})) {
+                continue;
+              }
+              if (backingHandoffs.find({previousIndex,
+                                        static_cast<unsigned>(index), nodeX,
+                                        nodeY}) != backingHandoffs.end() ||
+                  backingHandoffs.find({static_cast<unsigned>(index),
+                                        previousIndex, nodeX, nodeY}) !=
+                      backingHandoffs.end()) {
+                continue;
+              }
+              module.emitOpError("compiler-sram storage owner ")
+                  << storageIndex.getInt()
+                  << " has different payload backing on a shared launch "
+                     "node without a matching reconfiguration handoff";
+              return failure();
+            }
           }
         }
         if (ownerAllocations.empty()) {

@@ -91,6 +91,8 @@ from .dataflow_buffer import (
     DFBReconfigurationPlan,
     DFBStorageSegment,
     PhysicalDFBConfig,
+    SRAMBackingHandoff,
+    SRAMReconfigurationReset,
     get_cb_count,
 )
 from .domains import DeviceDomain
@@ -846,6 +848,7 @@ class CompiledTTNNKernel:
         kernel_core_ranges=None,
         cb_configs=None,
         dfb_reconfiguration_plan=None,
+        sram_reconfiguration_resets=(),
         program_hash=None,
         source_lines=None,
         all_source_lines=None,
@@ -942,6 +945,7 @@ class CompiledTTNNKernel:
         self.cb_configs = cb_configs or []
         self.memory_model = memory_model
         self.dfb_reconfiguration_plan = dfb_reconfiguration_plan
+        self.sram_reconfiguration_resets = tuple(sram_reconfiguration_resets)
         self.program_hash = program_hash
         self.source_lines = source_lines
         self.all_source_lines = all_source_lines or {}
@@ -1070,6 +1074,7 @@ class CompiledTTNNKernel:
             tensors=list(args),
             cb_configs=self.cb_configs,
             dfb_reconfiguration_plan=self.dfb_reconfiguration_plan,
+            sram_reconfiguration_resets=self.sram_reconfiguration_resets,
             core_ranges=self.core_ranges,
             program_hash=self.program_hash,
             num_pipe_sync_semaphores=self.num_pipe_sync_semaphores,
@@ -1943,6 +1948,7 @@ def _compile_ttnn_kernel(
     num_outs,
     cb_configs=None,
     dfb_reconfiguration_plan=None,
+    sram_reconfiguration_resets=(),
     program_hash=None,
     fp32_dest_acc_en: Optional[bool] = None,
     dst_full_sync_en: Optional[bool] = None,
@@ -2246,6 +2252,7 @@ def _compile_ttnn_kernel(
         kernel_core_ranges=kernel_core_ranges,
         cb_configs=cb_configs,
         dfb_reconfiguration_plan=dfb_reconfiguration_plan,
+        sram_reconfiguration_resets=sram_reconfiguration_resets,
         program_hash=program_hash,
         source_lines=source_lines,
         all_source_lines=all_source_lines,
@@ -2326,6 +2333,7 @@ def _compile_ttnn_kernel(
             kernel_fabric_routes=kernel_fabric_routes,
             requires_runtime_resource_factory=runtime_resource_factory is not None,
             dfb_reconfiguration_plan=dfb_reconfiguration_plan,
+            sram_reconfiguration_resets=sram_reconfiguration_resets,
             memory_model=memory_model,
         )
 
@@ -2915,6 +2923,48 @@ def _module_memory_model(module):
     return memory_model
 
 
+def _extract_sram_reconfiguration_resets(module):
+    """Read finalized reset metadata used to validate backing changes."""
+    attribute_name = "ttl.compiler_sram_reconfiguration_resets"
+    entries = module.operation.attributes.get(attribute_name, None)
+    if entries is None:
+        return ()
+    resets = []
+    for position, entry in enumerate(entries):
+        context = f"{attribute_name}[{position}]"
+        if "ordinal" not in entry or "dfb_indices" not in entry:
+            raise ValueError(f"{context} requires ordinal and dfb_indices")
+        ordinal = int(entry["ordinal"])
+        indices = tuple(int(index) for index in entry["dfb_indices"])
+        handoffs = []
+        handoff_entries = (
+            entry["backing_handoffs"] if "backing_handoffs" in entry else ()
+        )
+        for handoff_position, handoff in enumerate(handoff_entries):
+            handoff_context = f"{context}.backing_handoffs[{handoff_position}]"
+            for field in ("from_dfb_index", "to_dfb_index", "node"):
+                if field not in handoff:
+                    raise ValueError(f"{handoff_context} is missing '{field}'")
+            node = _extract_dfb_node_coordinates(
+                [handoff["node"]], context=f"{handoff_context}.node", allow_empty=False
+            )[0]
+            handoffs.append(
+                SRAMBackingHandoff(
+                    from_dfb_index=int(handoff["from_dfb_index"]),
+                    to_dfb_index=int(handoff["to_dfb_index"]),
+                    node=node,
+                )
+            )
+        resets.append(
+            SRAMReconfigurationReset(
+                ordinal=ordinal,
+                dfb_indices=indices,
+                backing_handoffs=tuple(handoffs),
+            )
+        )
+    return tuple(resets)
+
+
 def _resolve_dfb_configs(module):
     """Return finalized physical DFB configurations from required metadata."""
     physical_allocations = _extract_dfb_allocations(module)
@@ -2924,7 +2974,11 @@ def _resolve_dfb_configs(module):
             "ttl-finalize-dfb-indices must run before runtime construction"
         )
     memory_model = _module_memory_model(module)
-    arena_bytes = _get_compiler_l1_arena_bytes(physical_allocations, memory_model)
+    arena_bytes = _get_compiler_l1_arena_bytes(
+        physical_allocations,
+        memory_model,
+        _extract_sram_reconfiguration_resets(module),
+    )
     if memory_model == "compiler-sram":
         arena_attr = module.operation.attributes.get("ttl.l1_arena_bytes", None)
         if arena_attr is None or int(arena_attr) < arena_bytes:
@@ -3706,6 +3760,7 @@ def _lower_program_to_kernel(
             profile_source_lines = all_source_lines[first_thread]
 
         cb_configs = _resolve_dfb_configs(module)
+        sram_reconfiguration_resets = _extract_sram_reconfiguration_resets(module)
         dfb_reconfiguration_plan = _extract_dfb_reconfiguration_plan(module, cb_configs)
         pipe_sync_semaphore_count = _extract_pipe_sync_semaphore_count(module)
         if pipe_sync_semaphore_count is None:
@@ -3727,6 +3782,7 @@ def _lower_program_to_kernel(
             num_outs,
             cb_configs,
             dfb_reconfiguration_plan=dfb_reconfiguration_plan,
+            sram_reconfiguration_resets=sram_reconfiguration_resets,
             program_hash=program_hash,
             fp32_dest_acc_en=fp32_dest_acc_en,
             dst_full_sync_en=dst_full_sync_en,
