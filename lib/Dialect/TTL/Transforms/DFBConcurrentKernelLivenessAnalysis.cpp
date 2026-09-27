@@ -686,6 +686,31 @@ static bool hasFixedAccessCountForReconfiguration(
                             *participant->domain, accessRuns);
 }
 
+// A non-protocol use may execute in fewer iterations without changing the
+// DFB transaction count or the descriptor installed in each iteration.
+static bool isBoundedOptionalUseAtReconfiguration(
+    const DFBAccessOccurrence &access,
+    const ValidatedDFBReconfiguration &reconfiguration,
+    const AccessRuns &accessRuns) {
+  if (access.getProtocolEffect() || access.opaqueExternalAccess) {
+    return false;
+  }
+  auto runIt = accessRuns.find(&access);
+  std::optional<BoundaryParticipantIteration> participant =
+      getBoundaryParticipantIteration(reconfiguration, access.operation);
+  if (runIt == accessRuns.end() || !participant ||
+      runIt->second.conditionalExecution ||
+      runIt->second.executionCount == 0 ||
+      runIt->second.executionCount > reconfiguration.executionCount) {
+    return false;
+  }
+  std::optional<AccessRunUpperBound> useBound =
+      getAccessRunUpperBound(access.operation);
+  return useBound &&
+         useBound->maximumExecutionCount == reconfiguration.executionCount &&
+         useBound->iterationDomain == *participant->domain;
+}
+
 // This predicate establishes event placement for each reconfiguration
 // execution; protocol completion requires separate effect-specific checks.
 static bool hasPartitionableExternalAccessBound(
@@ -3070,16 +3095,71 @@ static bool proveAlignedAcquireReleaseRuns(
 }
 
 static bool
+isSubsetOfUnconditionalIterations(const AccessRun &use,
+                                  const AccessRun &unconditional) {
+  if (use.conditionalExecution || unconditional.conditionalExecution ||
+      use.executionCount == 0 ||
+      unconditional.executionCount <= 1 ||
+      use.executionCount > unconditional.executionCount) {
+    return false;
+  }
+  std::optional<AccessRunUpperBound> useBound =
+      getAccessRunUpperBound(use.access->operation);
+  return useBound &&
+         useBound->maximumExecutionCount == unconditional.executionCount &&
+         useBound->iterationDomain == unconditional.iterationDomain;
+}
+
+static bool
 runIsInsideInterval(const AccessRun &use, const AccessRun &acquire,
                     const AccessRun &release, const HappensBeforeGraph &graph,
                     const StructuralOperationOrder &structuralOrder,
                     const DenseMap<Operation *, EventPair> &operationEvents,
                     const DenseMap<const DFBAccessOccurrence *, AccessEventSpan>
                         &accessEvents) {
-  return proveRunBeforeWithinEachIteration(acquire, use, graph, structuralOrder,
-                                           operationEvents, accessEvents) &&
-         proveRunBeforeWithinEachIteration(use, release, graph, structuralOrder,
-                                           operationEvents, accessEvents);
+  if (proveRunBeforeWithinEachIteration(acquire, use, graph, structuralOrder,
+                                        operationEvents, accessEvents) &&
+      proveRunBeforeWithinEachIteration(use, release, graph, structuralOrder,
+                                        operationEvents, accessEvents)) {
+    return true;
+  }
+  if (release.conditionalExecution ||
+      acquire.executionCount != release.executionCount ||
+      !(acquire.iterationDomain == release.iterationDomain)) {
+    return false;
+  }
+  if (!isSubsetOfUnconditionalIterations(use, acquire)) {
+    return false;
+  }
+  // The use may execute in fewer iterations, but its enclosing loop and
+  // structural order place every execution between the unconditional pair.
+  return accessOccurrencePrecedes(*acquire.access, *use.access,
+                                  structuralOrder) &&
+         accessOccurrencePrecedes(*use.access, *release.access,
+                                  structuralOrder);
+}
+
+static bool completesBeforeLastRelease(
+    const AccessRun &use, const AccessRun &release,
+    const StructuralOperationOrder &structuralOrder) {
+  if (use.executionCount >= release.executionCount ||
+      !isSubsetOfUnconditionalIterations(use, release) ||
+      !isa<CBPushOp, CBPopOp>(release.access->operation) ||
+      !accessOccurrencePrecedes(*use.access, *release.access,
+                                structuralOrder)) {
+    return false;
+  }
+  if (auto copy = dyn_cast<CopyOp>(use.access->operation)) {
+    return llvm::any_of(copy.getXf().getUsers(), [&](Operation *user) {
+      auto wait = dyn_cast<WaitOp>(user);
+      return wait && wait->getBlock() == copy->getBlock() &&
+             copy->isBeforeInBlock(wait) &&
+             structuralOrder.precedes(wait, release.access->operation);
+    });
+  }
+  const DFBNonTransactionalAccessKind *access =
+      use.access->getNonTransactionalAccess();
+  return access && *access == DFBNonTransactionalAccessKind::Inspect;
 }
 
 static void appendTransactionRun(SmallVectorImpl<DFBTransactionRun> &runs,
@@ -4454,7 +4534,10 @@ static DFBLifecycleCompletionProof computeProtocolLifetime(
     if (!useEvents ||
         (useEvents->last.completion != terminalEvents->last.completion &&
          !graph.strictlyPrecedes(useEvents->last.completion,
-                                 terminalEvents->last.completion))) {
+                                 terminalEvents->last.completion) &&
+         !completesBeforeLastRelease(accessRuns.at(activeAccess),
+                                     accessRuns.at(terminalAccess),
+                                     structuralOrder))) {
       return {DFBLifecycleCompletionFailureReason::IncompleteUseOrder,
               activeAccess->operation};
     }
@@ -4920,6 +5003,19 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
           repeatedReconfigurationCount ? boundary.events.first.completion
                                        : boundary.events.last.completion,
           events->first.entry);
+      if (beforeBoundary == afterBoundary && repeatedReconfigurationCount &&
+          boundary.reconfiguration &&
+          isBoundedOptionalUseAtReconfiguration(
+              access, *boundary.reconfiguration, accessRuns)) {
+        std::optional<BoundaryParticipantIteration> participant =
+            getBoundaryParticipantIteration(*boundary.reconfiguration,
+                                            access.operation);
+        assert(participant && "bounded use must have a local participant");
+        beforeBoundary =
+            structuralOrder.precedes(access.operation, participant->operation);
+        afterBoundary =
+            structuralOrder.precedes(participant->operation, access.operation);
+      }
       if (beforeBoundary == afterBoundary) {
         return {DFBLifecycleCompletionFailureReason::IncompleteUseOrder,
                 access.operation};
@@ -4927,6 +5023,29 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
       epochIndex += afterBoundary;
     }
     epochAccesses[epochIndex].push_back(&access);
+  }
+
+  bool mayRetainState = false;
+  std::optional<int64_t> configurationOrdinal;
+  for (unsigned intervalIndex = 0; intervalIndex < epochAccesses.size();
+       ++intervalIndex) {
+    mayRetainState |= !epochAccesses[intervalIndex].empty();
+    if (mayRetainState &&
+        !llvm::is_contained(lifetime.conservativeConfigurationEpochs,
+                            configurationOrdinal)) {
+      lifetime.conservativeConfigurationEpochs.push_back(
+          configurationOrdinal);
+    }
+    if (intervalIndex == boundaries.size()) {
+      break;
+    }
+    if (boundaries[intervalIndex].discardsDFBState()) {
+      mayRetainState = false;
+    }
+    if (const ValidatedDFBReconfiguration *reconfiguration =
+            boundaries[intervalIndex].reconfiguration) {
+      configurationOrdinal = reconfiguration->boundary.getOrdinal();
+    }
   }
 
   if (repeatedReconfigurationCount && !epochAccesses.back().empty()) {
@@ -4958,8 +5077,11 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
         if (executionCountIt->second && *executionCountIt->second == 0) {
           continue;
         }
-        bool exactRunMatches = hasFixedAccessCountForReconfiguration(
-            access, reconfigurations.front(), accessRuns);
+        bool exactRunMatches =
+            hasFixedAccessCountForReconfiguration(
+                access, reconfigurations.front(), accessRuns) ||
+            isBoundedOptionalUseAtReconfiguration(
+                access, reconfigurations.front(), accessRuns);
         bool terminatedExternalRunMatchesForOrdering =
             finalBoundaryDiscardsState && isExternalCallAccess(access) &&
             hasPartitionableExternalAccessBound(

@@ -2590,9 +2590,21 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
                "every assignment must have a logical lifecycle");
         if (!canUseCapacityEnvelope(*representativeLifecycle,
                                     *candidateLifecycle)) {
-          analysisFailure.set(
-              candidate.declarations.front(),
-              "one physical DFB has inconsistent configurations in one epoch");
+          std::string message;
+          llvm::raw_string_ostream messageStream(message);
+          messageStream
+              << "one physical DFB has inconsistent configurations in one "
+                 "epoch (physical index "
+              << physicalIndex << ", logical DFB " << representative->logicalId
+              << " and " << candidate.logicalId << ", configuration ";
+          if (entryReconfigurationOrdinal) {
+            messageStream << *entryReconfigurationOrdinal;
+          } else {
+            messageStream << "initial";
+          }
+          messageStream << ')';
+          analysisFailure.set(candidate.declarations.front(),
+                              messageStream.str());
           return failure();
         }
         std::string failureReason;
@@ -2640,6 +2652,22 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
     auto assignmentsIt = assignmentsByIndex.find(physicalIndex);
     assert(assignmentsIt != assignmentsByIndex.end() &&
            "every physical index must have an assignment");
+    bool hasSelectedEpoch = llvm::any_of(
+        assignmentsIt->second,
+        [&](const DFBPhysicalIndexAssignment *indexedCandidate) {
+          const DFBLogicalLifecycle *lifecycle =
+              lifecycleByLogicalId.lookup(indexedCandidate->logicalId);
+          assert(lifecycle && "every assignment must have a logical lifecycle");
+          return llvm::any_of(lifecycle->nodeLifetimes,
+                              [](const DFBPerNodeLifetime &lifetime) {
+                                return !lifetime.epochs.empty();
+                              }) ||
+                 llvm::any_of(lifecycle->possibleNodeLifetimes,
+                              [](const DFBPerNodeLifetime &lifetime) {
+                                return lifetime.mayBeActive &&
+                                       !lifetime.epochs.empty();
+                              });
+        });
     for (const DFBPhysicalIndexAssignment *indexedCandidate :
          assignmentsIt->second) {
       const DFBPhysicalIndexAssignment &candidate = *indexedCandidate;
@@ -2671,6 +2699,62 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
            lifecycle->possibleNodeLifetimes) {
         if (!lifetime.mayBeActive || failed(addLifetimeEpochs(lifetime))) {
           if (lifetime.mayBeActive) {
+            return failure();
+          }
+        }
+      }
+      // Selected epochs suppress the full-domain fallback. Unproved nodes
+      // retain their descriptor in every configuration where state may remain.
+      if (hasSelectedEpoch) {
+        auto addConservativeNodeConfigurations =
+            [&](const DFBPerNodeLifetime &lifetime) -> LogicalResult {
+          if (!lifetime.mayBeActive ||
+              (lifetime.completionProof.proven() &&
+               !lifetime.epochs.empty())) {
+            return success();
+          }
+          if (!liveness.hasExactLaunchGrid()) {
+            BindCBOp declaration = candidate.declarations.front();
+            analysisFailure.set(
+                lifetime.completionProof.evidence
+                    ? lifetime.completionProof.evidence
+                    : declaration.getOperation(),
+                "unproved per-node DFB lifetime requires an exact launch "
+                "grid for conservative configuration coverage");
+            return failure();
+          }
+          LaunchNodeDomain nodeDomain;
+          nodeDomain.nodes.insert(lifetime.node);
+          if (!lifetime.conservativeConfigurationEpochs.empty()) {
+            for (std::optional<int64_t> ordinal :
+                 lifetime.conservativeConfigurationEpochs) {
+              if (failed(addConfiguration(candidate, ordinal, nodeDomain))) {
+                return failure();
+              }
+            }
+          } else {
+            if (failed(addConfiguration(candidate, std::nullopt,
+                                        nodeDomain))) {
+              return failure();
+            }
+            for (int64_t ordinal :
+                 liveness.getReconfigurationBoundaryOrdinals()) {
+              if (failed(addConfiguration(candidate, ordinal, nodeDomain))) {
+                return failure();
+              }
+            }
+          }
+          addedConfigurationEpoch = true;
+          return success();
+        };
+        for (const DFBPerNodeLifetime &lifetime : lifecycle->nodeLifetimes) {
+          if (failed(addConservativeNodeConfigurations(lifetime))) {
+            return failure();
+          }
+        }
+        for (const DFBPerNodeLifetime &lifetime :
+             lifecycle->possibleNodeLifetimes) {
+          if (failed(addConservativeNodeConfigurations(lifetime))) {
             return failure();
           }
         }
