@@ -10,6 +10,8 @@
 # RUN: env TTLANG_COMPILE_ONLY=1 not %python %s wait-first 2>&1 | FileCheck %s --check-prefix=WAIT-FIRST
 # RUN: env TTLANG_COMPILE_ONLY=1 %python %s single-publish 2>&1 | FileCheck %s --check-prefix=SINGLE-PUBLISH
 # RUN: env TTLANG_COMPILE_ONLY=1 %python %s repeated-publish 2>&1 | FileCheck %s --check-prefix=REPEATED-PUBLISH
+# RUN: env TTLANG_COMPILE_ONLY=1 %python %s generations 2>&1 | FileCheck %s --check-prefix=GENERATIONS
+# RUN: env TTLANG_COMPILE_ONLY=1 not %python %s growing-generations 2>&1 | FileCheck %s --check-prefix=GROWING-GENERATIONS
 
 # SUBSET-INSTALL-NOT: {{error|warning}}:
 # SUBSET-INSTALL: COMPILED
@@ -26,6 +28,10 @@
 # REPEATED-PUBLISH: note: published blocks stay in the DFB until a pop or a reset or reconfiguration that restores it
 # REPEATED-PUBLISH: note: this external call may perform protocol actions on the DFB that it does not declare
 # REPEATED-PUBLISH: COMPILED
+# GENERATIONS-NOT: {{error|warning}}:
+# GENERATIONS: COMPILED
+# GROWING-GENERATIONS: error: logical DFB {{[0-9]+}} has transactions that cannot complete before a synchronized reset or reconfiguration on core_x=0, core_y=0
+# GROWING-GENERATIONS: note: before it, the producer holds 3 reserved block(s) that are not popped, exceeding capacity 2
 
 """Verify DFB lifecycles across synchronized resets and reconfigurations.
 
@@ -212,6 +218,53 @@ def make_waited_publications(publications):
     return waited_publications
 
 
+def make_generations(pushes_per_generation):
+    # A generation loop with one reset per generation. The reader pushes into
+    # `handoff` before the reset and the writer pops after it, so the block
+    # crosses the reset, which restores only `scratch`; generation 0 also
+    # passes one extra block. With two pushes per generation, the writer pops
+    # the second block of every generation after the loop, and `handoff` holds
+    # one more block at each reset than at the one before.
+    compute_kernel, reader_kernel, writer_kernel = _participants()
+    reset = ttl.DFBReset(participants=(compute_kernel, reader_kernel, writer_kernel))
+
+    @ttl.operation(grid=(1, 1))
+    def generations(inp, out):
+        handoff = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
+        scratch = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=1)
+
+        @ttl.compute(kernel=compute_kernel)
+        def compute():
+            for generation in range(64):
+                ttl.reset_dfbs(reset, dfbs=[scratch])
+
+        @ttl.datamovement(kernel=reader_kernel)
+        def reader():
+            for generation in range(64):
+                if generation == 0:
+                    with handoff.reserve() as blk:
+                        ttl.copy(inp[0, 0], blk).wait()
+                for index in range(pushes_per_generation):
+                    with handoff.reserve() as blk:
+                        ttl.copy(inp[0, index], blk).wait()
+                ttl.reset_dfbs(reset, dfbs=[scratch])
+
+        @ttl.datamovement(kernel=writer_kernel)
+        def writer():
+            for generation in range(64):
+                if generation == 0:
+                    with handoff.wait() as blk:
+                        ttl.copy(blk, out[0, 0]).wait()
+                ttl.reset_dfbs(reset, dfbs=[scratch])
+                with handoff.wait() as blk:
+                    ttl.copy(blk, out[0, 1]).wait()
+            for generation in range(64 * (pushes_per_generation - 1)):
+                with handoff.wait() as blk:
+                    ttl.copy(blk, out[0, 2]).wait()
+
+    return generations
+
+
 FACTORIES = {
     "subset-install": make_subset_install,
     "filled": lambda: make_fill(pushes=2, discard_dfb_state=True),
@@ -220,6 +273,8 @@ FACTORIES = {
     "wait-first": make_wait_first,
     "single-publish": lambda: make_waited_publications(publications=1),
     "repeated-publish": lambda: make_waited_publications(publications=4),
+    "generations": lambda: make_generations(pushes_per_generation=1),
+    "growing-generations": lambda: make_generations(pushes_per_generation=2),
 }
 operation = FACTORIES[MODE]()
 

@@ -1169,6 +1169,14 @@ def TTLFinalizeDFBIndices
     reconfiguration unchanged and remains active in every epoch it spans, so
     its physical index cannot be reassigned at those boundaries.
 
+    Every participant must execute a synchronized reset or reconfiguration the
+    same compile-time-known number of times on each launch node: at most once,
+    or once per iteration of one sequential loop with a compile-time-known
+    trip count. The count may depend on the launch node. A reset or
+    reconfiguration under a condition on a runtime value, or in nested loops,
+    is rejected because the DFB lifecycle checks do not cover transactions
+    across it.
+
     Physical-index coloring and storage coloring enforce different contracts.
     A physical index identifies one active hardware descriptor and therefore
     requires compatible page format and protocol state. After selecting the

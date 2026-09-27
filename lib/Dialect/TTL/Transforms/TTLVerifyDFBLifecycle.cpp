@@ -16,6 +16,7 @@
 #include "DFBAcquireReleaseAnalysis.h"
 #include "DFBProtocolDomainAnalysis.h"
 #include "DFBStateDiscard.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "ttlang/Analysis/LoopIterationUtils.h"
@@ -34,7 +35,6 @@
 
 #include <array>
 #include <cstdint>
-#include <functional>
 #include <map>
 #include <optional>
 #include <set>
@@ -250,6 +250,9 @@ struct TransactionSegment {
   /// Whether the DFB starts the segment empty: at launch, or after a barrier
   /// that restores it. Otherwise its state continues from the segment before.
   bool restored = true;
+  /// The operation of this kernel that executes `barrier`, for diagnostics;
+  /// not part of the sequence's identity.
+  Operation *barrierOp = nullptr;
 
   bool operator==(const TransactionSegment &other) const {
     return summary == other.summary && barrier == other.barrier &&
@@ -276,52 +279,25 @@ getRestoredIntervals(const TransactionSegments &segments) {
   return intervals;
 }
 
-/// The value an unresolved `scf.if` condition took on the way to a sequence.
-struct ConditionDecision {
-  DispatchConditionFormulas::FormulaId formula =
-      DispatchConditionFormulas::kFalse;
-  bool value = false;
-};
-
-/// One possible sequence of a DFB: its segments and the path condition over
-/// dispatch conditions under which it executes. Sequences of one kernel or of
-/// different kernels belong to the same execution only when the conjunction
-/// of their path conditions is satisfiable.
-struct TransactionAlternative {
-  TransactionSegments segments;
-  DispatchConditionFormulas::FormulaId pathCondition =
-      DispatchConditionFormulas::kTrue;
-
-  bool sameSequence(const TransactionAlternative &other) const {
-    return segments == other.segments;
-  }
-
-  /// Whether both sequences pass the same barriers in the same order.
-  bool sameBarriers(const TransactionAlternative &other) const {
-    return llvm::equal(
-        segments, other.segments,
-        [](const TransactionSegment &lhs, const TransactionSegment &rhs) {
-          return lhs.barrier == rhs.barrier;
-        });
-  }
-};
-
-/// The possible sequences of one DFB: one entry unless an unresolved
-/// condition selects between effects or barriers.
-using TransactionAlternatives = SmallVector<TransactionAlternative, 1>;
+/// Whether both sequences pass the same barriers in the same order, each
+/// restoring the same DFBs.
+bool haveSameBarriers(const TransactionSegments &lhs,
+                      const TransactionSegments &rhs) {
+  return llvm::equal(
+      lhs, rhs,
+      [](const TransactionSegment &left, const TransactionSegment &right) {
+        return left.barrier == right.barrier && left.restored == right.restored;
+      });
+}
 
 /// Ordered segment summaries and conservative failures for every DFB in one
 /// thread.
 struct TransactionSequenceResult {
-  /// Segments per sequence beyond this many are not expanded; the DFB
-  /// becomes unknown instead.
+  /// Segments per sequence beyond this many are not kept; the DFB becomes
+  /// unknown instead.
   static constexpr std::size_t kMaxSegments = 1024;
-  /// Alternatives per DFB beyond this many are not combined; the DFB becomes
-  /// unknown instead. Also bounds the cross-kernel combinations checked at a
-  /// node.
-  static constexpr std::size_t kMaxAlternatives = 64;
 
-  llvm::DenseMap<int64_t, TransactionAlternatives> alternatives;
+  llvm::DenseMap<int64_t, TransactionSegments> sequences;
   llvm::DenseMap<int64_t, TransactionSequenceSummary::CounterMask>
       unknownCounters;
 
@@ -360,215 +336,82 @@ struct TransactionSequenceResult {
   /// appends and repeats do not combine what can no longer be checked.
   void abandon(int64_t logicalId) {
     markUnknown(logicalId);
-    alternatives.erase(logicalId);
+    sequences.erase(logicalId);
   }
 
-  /// The alternatives of `logicalId`, creating the single empty sequence.
-  TransactionAlternatives &getOrCreate(int64_t logicalId) {
-    TransactionAlternatives &own = alternatives[logicalId];
+  /// The sequence of `logicalId`, creating the empty one.
+  TransactionSegments &getOrCreate(int64_t logicalId) {
+    TransactionSegments &own = sequences[logicalId];
     if (own.empty()) {
-      own.push_back({TransactionSegments{TransactionSegment()},
-                     DispatchConditionFormulas::kTrue});
+      own.push_back(TransactionSegment());
     }
     return own;
   }
 
-  /// Add `alternative`, or merge it into the entry with the same sequence,
-  /// which then executes under either path condition. Returns false when the
-  /// budget is exceeded.
-  static bool insertAlternative(TransactionAlternatives &into,
-                                TransactionAlternative alternative,
-                                DispatchConditionFormulas &formulas) {
-    auto *existing = llvm::find_if(into, [&](const TransactionAlternative &e) {
-      return e.sameSequence(alternative);
-    });
-    if (existing == into.end()) {
-      into.push_back(std::move(alternative));
-    } else {
-      existing->pathCondition =
-          formulas.disjoin(existing->pathCondition, alternative.pathCondition);
-    }
-    return into.size() <= kMaxAlternatives;
+  /// Start a new segment of `logicalId` at the barrier `barrierOp`, which
+  /// restores the DFB when `restored`.
+  void startSegment(int64_t logicalId, Operation *barrierOp,
+                    ExecutedBarrier barrier, bool restored) {
+    getOrCreate(logicalId).push_back(
+        {TransactionSequenceSummary(), barrier, restored, barrierOp});
   }
 
-  /// Start a new segment of `logicalId` at `barrier`, which restores the
-  /// DFB when `restored`.
-  void startSegment(int64_t logicalId, ExecutedBarrier barrier, bool restored) {
-    for (TransactionAlternative &alternative : getOrCreate(logicalId)) {
-      alternative.segments.push_back(
-          {TransactionSequenceSummary(), barrier, restored});
-    }
-  }
-
-  enum class JoinResult { Joined, Contradiction, Overflow };
-
-  /// Continue `own` with `next`: the last segment of `own` joins the first
-  /// segment of `next`, and the path conditions conjoin.
-  static JoinResult join(TransactionAlternative &own,
-                         const TransactionAlternative &next,
-                         DispatchConditionFormulas &formulas) {
-    DispatchConditionFormulas::FormulaId pathCondition =
-        formulas.conjoin(own.pathCondition, next.pathCondition);
-    if (!formulas.satisfiable(pathCondition)) {
-      return JoinResult::Contradiction;
-    }
-    own.pathCondition = pathCondition;
-    if (!own.segments.back().summary.append(next.segments.front().summary)) {
-      return JoinResult::Overflow;
-    }
-    own.segments.append(std::next(next.segments.begin()), next.segments.end());
-    return own.segments.size() <= kMaxSegments ? JoinResult::Joined
-                                               : JoinResult::Overflow;
-  }
-
-  /// Replace `own` with one sequence that executes under the disjunction of
-  /// their path conditions; `differing` receives the counters on which the
-  /// alternatives differ. Returns false when they pass different barriers.
-  static bool
-  collapseAlternatives(TransactionAlternatives &own,
-                       TransactionSequenceSummary::CounterMask &differing,
-                       DispatchConditionFormulas &formulas) {
-    TransactionAlternative merged = own.front();
-    for (const TransactionAlternative &alternative : llvm::drop_begin(own)) {
-      if (alternative.segments.size() != merged.segments.size()) {
-        return false;
+  /// The sequences and unknown counters of the DFBs `keep` selects.
+  TransactionSequenceResult
+  select(llvm::function_ref<bool(int64_t)> keep) const {
+    TransactionSequenceResult selected;
+    for (const auto &[logicalId, own] : sequences) {
+      if (keep(logicalId)) {
+        selected.sequences[logicalId] = own;
       }
-      for (auto [lhs, rhs] :
-           llvm::zip_equal(merged.segments, alternative.segments)) {
-        if (!(lhs.barrier == rhs.barrier) || lhs.restored != rhs.restored) {
-          return false;
-        }
-        for (std::size_t counter = 0;
-             counter < TransactionSequenceSummary::Count; ++counter) {
-          if (lhs.summary.net[counter] != rhs.summary.net[counter] ||
-              lhs.summary.minimum[counter] != rhs.summary.minimum[counter] ||
-              lhs.summary.maximum[counter] != rhs.summary.maximum[counter]) {
-            differing |= TransactionSequenceSummary::getCounterMask(
-                static_cast<TransactionSequenceSummary::Counter>(counter));
-          }
-        }
+    }
+    for (const auto &[logicalId, mask] : unknownCounters) {
+      if (keep(logicalId)) {
+        selected.unknownCounters[logicalId] = mask;
       }
-      merged.pathCondition =
-          formulas.disjoin(merged.pathCondition, alternative.pathCondition);
     }
-    own.assign(1, std::move(merged));
-    return true;
+    return selected;
   }
 
-  /// Keep one sequence of `logicalId` with the counters on which its
-  /// alternatives differ unknown, or give up on the DFB when they pass
-  /// different barriers.
-  void collapse(int64_t logicalId, DispatchConditionFormulas &formulas) {
-    TransactionSequenceSummary::CounterMask differing = 0;
-    if (!collapseAlternatives(alternatives[logicalId], differing, formulas)) {
-      abandon(logicalId);
-      return;
-    }
-    markUnknown(logicalId, differing);
-  }
-
-  void append(const TransactionSequenceResult &next,
-              DispatchConditionFormulas &formulas) {
+  /// Continue every sequence with `next`: the last segment joins the first
+  /// segment of `next`.
+  void append(const TransactionSequenceResult &next) {
     for (const auto &[logicalId, unknownMask] : next.unknownCounters) {
       unknownCounters[logicalId] |= unknownMask;
     }
-    for (const auto &[logicalId, nextAlternatives] : next.alternatives) {
+    for (const auto &[logicalId, following] : next.sequences) {
       if (isAbandoned(logicalId)) {
-        alternatives.erase(logicalId);
+        sequences.erase(logicalId);
         continue;
       }
-      auto [ownIt, inserted] =
-          alternatives.try_emplace(logicalId, nextAlternatives);
+      auto [ownIt, inserted] = sequences.try_emplace(logicalId, following);
       if (inserted) {
         continue;
       }
-      TransactionAlternatives combined;
-      bool overflow = false;
-      for (const TransactionAlternative &own : ownIt->second) {
-        for (const TransactionAlternative &following : nextAlternatives) {
-          TransactionAlternative joined = own;
-          JoinResult joinResult = join(joined, following, formulas);
-          if (joinResult == JoinResult::Contradiction) {
-            continue;
-          }
-          if (joinResult == JoinResult::Overflow ||
-              !insertAlternative(combined, std::move(joined), formulas)) {
-            overflow = true;
-            break;
-          }
-        }
-        if (overflow) {
-          break;
-        }
-      }
-      // Every combination contradicting itself means the decisions were
-      // recorded inconsistently; nothing is known then.
-      if (combined.empty()) {
+      TransactionSegments &own = ownIt->second;
+      if (!own.back().summary.append(following.front().summary)) {
         abandon(logicalId);
         continue;
       }
-      if (!overflow) {
-        ownIt->second = std::move(combined);
-        continue;
-      }
-      // Too many combinations: continue each side's collapsed sequence.
-      TransactionAlternatives following = nextAlternatives;
-      TransactionSequenceSummary::CounterMask differing = 0;
-      if (!collapseAlternatives(ownIt->second, differing, formulas) ||
-          !collapseAlternatives(following, differing, formulas) ||
-          join(ownIt->second.front(), following.front(), formulas) !=
-              JoinResult::Joined) {
+      own.append(std::next(following.begin()), following.end());
+      if (own.size() > kMaxSegments) {
         abandon(logicalId);
-        continue;
       }
-      markUnknown(logicalId, differing);
     }
   }
 
-  /// Replace every DFB's sequence with `count` consecutive copies. The last
-  /// segment of one copy continues into the first segment of the next. A DFB
-  /// with several alternatives could choose differently per copy, so its
-  /// alternatives collapse first.
-  void repeat(std::uint64_t count, DispatchConditionFormulas &formulas) {
+  /// Replace every DFB's sequence with `count` consecutive copies. A repeated
+  /// sequence containing a barrier leaves the DFB unknown; loops with barriers
+  /// go through `summarizeBarrierLoop` instead.
+  void repeat(std::uint64_t count) {
     if (count == 1) {
       return;
     }
-    SmallVector<int64_t> multiple;
-    for (auto &[logicalId, own] : alternatives) {
-      if (own.size() != 1) {
-        multiple.push_back(logicalId);
-      }
-    }
-    for (int64_t logicalId : multiple) {
-      collapse(logicalId, formulas);
-    }
     SmallVector<int64_t> abandoned;
-    for (auto &[logicalId, own] : alternatives) {
-      TransactionSegments &segments = own.front().segments;
-      if (segments.size() == 1) {
-        if (!segments.front().summary.repeat(count)) {
-          abandoned.push_back(logicalId);
-        }
-        continue;
-      }
-      std::size_t inner = segments.size() - 1;
-      if (count > kMaxSegments || inner * count + 1 > kMaxSegments) {
+    for (auto &[logicalId, own] : sequences) {
+      if (own.size() != 1 || !own.front().summary.repeat(count)) {
         abandoned.push_back(logicalId);
-        continue;
       }
-      TransactionSegments expanded;
-      expanded.push_back(segments.front());
-      for (std::uint64_t copy = 1; copy <= count; ++copy) {
-        expanded.append(std::next(segments.begin()), std::prev(segments.end()));
-        TransactionSegment joined = segments.back();
-        if (copy < count) {
-          if (!joined.summary.append(segments.front().summary)) {
-            abandoned.push_back(logicalId);
-          }
-        }
-        expanded.push_back(joined);
-      }
-      segments = std::move(expanded);
     }
     for (int64_t logicalId : abandoned) {
       abandon(logicalId);
@@ -671,10 +514,8 @@ class DFBTransactionSequenceAnalysis {
 public:
   DFBTransactionSequenceAnalysis(func::FuncOp thread, LaunchNodeCoord coord,
                                  const DFBProtocolDomainState &state,
-                                 const DFBStateDiscardModel &discardModel,
-                                 DispatchConditionFormulas &conditionFormulas)
-      : thread(thread), coord(coord), state(state),
-        conditionFormulas(conditionFormulas) {
+                                 const DFBStateDiscardModel &discardModel)
+      : thread(thread), coord(coord), state(state) {
     thread.walk([&](Operation *op) {
       SmallVector<int64_t> touched;
       SmallVector<TransactionSequenceSummary::CounterMask> touchedCounters;
@@ -716,12 +557,8 @@ public:
       for (Operation *ancestor = op->getParentOp();
            ancestor != thread.getOperation();
            ancestor = ancestor->getParentOp()) {
-        auto &ids = nestedDFBIds[ancestor];
         auto &counters = nestedCounters[ancestor];
         for (auto [logicalId, mask] : llvm::zip(touched, touchedCounters)) {
-          if (!llvm::is_contained(ids, logicalId)) {
-            ids.push_back(logicalId);
-          }
           counters[logicalId] |= mask;
         }
       }
@@ -759,21 +596,6 @@ private:
       result.markUnknown(logicalId);
     }
     return result;
-  }
-
-  /// Every DFB an operation nested in `op` touches; a nested barrier touches
-  /// every DFB of the kernel.
-  DFBIdRange getNestedDFBIds(Operation *op) const {
-    DFBIdRange logicalIds;
-    if (nestedBarriers.contains(op)) {
-      logicalIds.insert(allDFBIds.begin(), allDFBIds.end());
-      return logicalIds;
-    }
-    auto idsIt = nestedDFBIds.find(op);
-    if (idsIt != nestedDFBIds.end()) {
-      logicalIds.insert(idsIt->second.begin(), idsIt->second.end());
-    }
-    return logicalIds;
   }
 
   /// The counters a user effect of `kind` changes; an opaque call's reserve
@@ -828,8 +650,13 @@ private:
     return llvm::checkedMulUnsigned(*executions, count);
   }
 
+  /// Evaluates at this node, with the loop index of the generation being
+  /// summarized bound when there is one.
   IntegerExpressionEvaluator::ValueEvaluator getValueEvaluator() const {
-    return [this](Value value) {
+    return [this](Value value) -> std::optional<llvm::APInt> {
+      if (generation && value == generation->inductionVar) {
+        return generation->index;
+      }
       return evaluateIntegerAtLaunchLocation(
           value, LaunchExecutionLocation(coord), state);
     };
@@ -842,9 +669,9 @@ private:
       if (protocolOps.contains(&op)) {
         appendProtocolOp(&op, result);
       } else if (barriers.contains(&op)) {
-        result.append(summarizeBarrier(&op), conditionFormulas);
-      } else if (nestedDFBIds.contains(&op) || nestedBarriers.contains(&op)) {
-        result.append(summarizeRegionOp(&op, executions), conditionFormulas);
+        result.append(summarizeBarrier(&op));
+      } else if (nestedCounters.contains(&op) || nestedBarriers.contains(&op)) {
+        result.append(summarizeRegionOp(&op, executions));
       }
     }
     return result;
@@ -865,7 +692,7 @@ private:
     TransactionSequenceResult result;
     const SmallVector<int64_t> &restored = restoredIds.find(op)->second;
     for (int64_t logicalId : allDFBIds) {
-      result.startSegment(logicalId, barriers.lookup(op),
+      result.startSegment(logicalId, op, barriers.lookup(op),
                           llvm::is_contained(restored, logicalId));
     }
     return result;
@@ -929,10 +756,9 @@ private:
       }
       if (!opaque) {
         TransactionSequenceResult single;
-        single.getOrCreate(*logicalId).front().segments =
-            TransactionSegments{TransactionSegment{
-                makeEvent(effect.kind, *blocks), std::nullopt, true}};
-        result.append(single, conditionFormulas);
+        single.sequences[*logicalId] = TransactionSegments{TransactionSegment{
+            makeEvent(effect.kind, *blocks), std::nullopt, true}};
+        result.append(single);
         continue;
       }
       if (effect.kind != DFBProtocolEffectKind::Push &&
@@ -943,24 +769,17 @@ private:
       TransactionSequenceSummary::Counter openCounter =
           push ? TransactionSequenceSummary::ProducerOpen
                : TransactionSequenceSummary::ConsumerOpen;
-      bool overflow = false;
-      for (TransactionAlternative &alternative :
-           result.getOrCreate(*logicalId)) {
-        TransactionSequenceSummary &last = alternative.segments.back().summary;
-        // The release closes the open user acquisition first; only the
-        // remainder is a self-contained transfer.
-        std::int64_t open = std::max<std::int64_t>(0, last.net[openCounter]);
-        if (open < *blocks &&
-            !last.append(makeEvent(push ? DFBProtocolEffectKind::Reserve
-                                        : DFBProtocolEffectKind::Wait,
-                                   *blocks - open, /*counted=*/false))) {
-          overflow = true;
-        }
-        if (!last.append(makeEvent(effect.kind, *blocks))) {
-          overflow = true;
-        }
-      }
-      if (overflow) {
+      TransactionSequenceSummary &last =
+          result.getOrCreate(*logicalId).back().summary;
+      // The release closes the open user acquisition first; only the
+      // remainder is a self-contained transfer.
+      std::int64_t open = std::max<std::int64_t>(0, last.net[openCounter]);
+      bool overflow =
+          open < *blocks &&
+          !last.append(makeEvent(push ? DFBProtocolEffectKind::Reserve
+                                      : DFBProtocolEffectKind::Wait,
+                                 *blocks - open, /*counted=*/false));
+      if (overflow || !last.append(makeEvent(effect.kind, *blocks))) {
         result.abandon(*logicalId);
       }
     }
@@ -1004,34 +823,18 @@ private:
     std::optional<std::uint64_t> tripCount = tt::getLoopTripCount(
         loop, LoopInductionBindings(), getValueEvaluator());
     if (!tripCount) {
+      if (nestedBarriers.contains(op)) {
+        return unknown(op);
+      }
       // A counter with zero net change per iteration has the same extrema for
-      // every nonnegative trip count. A barrier that does not restore a DFB
-      // leaves its state unchanged, so the body's segments join; a barrier
-      // that restores it leaves the DFB unknown. Every participant repeats the
-      // same barriers, so joining the segments loses no alignment.
+      // every nonnegative trip count.
       TransactionSequenceResult oneIteration =
           summarizeRegion(body, std::nullopt);
-      SmallVector<int64_t> multiple;
-      for (auto &[logicalId, own] : oneIteration.alternatives) {
-        if (own.size() != 1) {
-          multiple.push_back(logicalId);
-        }
-      }
-      for (int64_t logicalId : multiple) {
-        oneIteration.collapse(logicalId, conditionFormulas);
-      }
-      for (auto &[logicalId, own] : oneIteration.alternatives) {
-        std::optional<SmallVector<TransactionSequenceSummary, 1>> intervals =
-            getRestoredIntervals(own.front().segments);
-        if (!intervals || intervals->size() != 1) {
-          oneIteration.markUnknown(logicalId);
-          continue;
-        }
-        own.front().segments = TransactionSegments{
-            TransactionSegment{intervals->front(), std::nullopt, true}};
+      for (auto &[logicalId, segments] : oneIteration.sequences) {
         for (std::size_t counter = 0;
              counter < TransactionSequenceSummary::Count; ++counter) {
-          if (intervals->front().net[counter] != 0) {
+          if (segments.size() != 1 ||
+              segments.front().summary.net[counter] != 0) {
             oneIteration.markUnknown(
                 logicalId,
                 static_cast<TransactionSequenceSummary::Counter>(counter));
@@ -1043,143 +846,305 @@ private:
     if (*tripCount == 0) {
       return TransactionSequenceResult();
     }
+    if (nestedBarriers.contains(op)) {
+      return summarizeBarrierLoop(loop, *tripCount, executions);
+    }
     TransactionSequenceResult result =
         summarizeRegion(body, multiplyExecutions(executions, *tripCount));
-    result.repeat(*tripCount, conditionFormulas);
+    result.repeat(*tripCount);
     return result;
   }
 
-  /// Whether every execution of `op` enters one of its regions.
-  static bool coversEveryPath(Operation *op) {
-    if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
-      return !ifOp.getElseRegion().empty();
+  /// A loop whose body contains barriers. Generation 0 and the later
+  /// generations are summarized once each, with the loop index bound; the
+  /// later generations share one summary only when every condition on the
+  /// index is constant over them. Only the generations that decide a check
+  /// are laid out:
+  /// - a DFB that a barrier in the body restores: generations 0, 1 and 2,
+  ///   since every later generation repeats generation 2 from the same state;
+  /// - any other DFB: generations 0, 1 and N - 1, with generations 2 to N - 2
+  ///   folded into one summary. Its totals at a barrier grow linearly from
+  ///   generation 1, so their extremes are at generation 1 or N - 1.
+  /// Every participant runs the same loop, so the layouts align across
+  /// kernels.
+  TransactionSequenceResult summarizeBarrierLoop(LoopLikeOpInterface loop,
+                                                 std::uint64_t tripCount,
+                                                 Executions executions) {
+    Operation *op = loop.getOperation();
+    std::optional<Value> inductionVar = loop.getSingleInductionVar();
+    std::optional<OpFoldResult> lowerBound = loop.getSingleLowerBound();
+    std::optional<OpFoldResult> step = loop.getSingleStep();
+    std::optional<std::int64_t> first =
+        lowerBound
+            ? evaluateIndexExpression(*lowerBound, LoopInductionBindings(),
+                                      getValueEvaluator())
+            : std::nullopt;
+    std::optional<std::int64_t> stride =
+        step ? evaluateIndexExpression(*step, LoopInductionBindings(),
+                                       getValueEvaluator())
+             : std::nullopt;
+    if (!inductionVar || !first || !stride || *stride <= 0 || generation) {
+      return unknown(op);
     }
-    return isa<scf::IndexSwitchOp, scf::ExecuteRegionOp>(op);
-  }
-
-  /// The decision an `scf.if` makes by entering `region`, or by entering no
-  /// region when `region` is null. Other operations decide nothing.
-  std::optional<ConditionDecision> getDecision(Operation *op, Region *region) {
-    auto ifOp = dyn_cast<scf::IfOp>(op);
-    if (!ifOp) {
-      return std::nullopt;
+    GenerationRange range{*inductionVar, *first, *stride, tripCount};
+    if (!hasUniformLaterGenerations(op->getRegion(0), range)) {
+      return unknown(op);
     }
-    return ConditionDecision{conditionFormulas.get(ifOp.getCondition()),
-                             region == &ifOp.getThenRegion()};
-  }
-
-  /// Restricts `alternative` to executions taking `decision`. Returns false
-  /// when none of its executions does, so the path is dead.
-  bool decide(TransactionAlternative &alternative,
-              std::optional<ConditionDecision> decision) {
-    if (!decision) {
-      return true;
-    }
-    DispatchConditionFormulas::FormulaId literal =
-        decision->value ? decision->formula
-                        : conditionFormulas.negate(decision->formula);
-    DispatchConditionFormulas::FormulaId pathCondition =
-        conditionFormulas.conjoin(alternative.pathCondition, literal);
-    if (!conditionFormulas.satisfiable(pathCondition)) {
-      return false;
-    }
-    alternative.pathCondition = pathCondition;
-    return true;
-  }
-
-  /// An at-most-once operation whose region activity is unproven: each DFB's
-  /// sequence is one of the regions' sequences or, when no region covers the
-  /// remaining executions, the empty sequence. Each gains the decision that
-  /// selects it, and a sequence whose decisions exclude it is dead. This
-  /// applies to every DFB when the operation contains a barrier, and to the
-  /// DFBs it touches when it is an `scf.if` on dispatch conditions, which
-  /// every kernel evaluates alike. Other DFBs stay unknown: a condition on any
-  /// other value may be correlated with conditions in other kernels in ways
-  /// the formulas do not state.
-  TransactionSequenceResult summarizeUnprovenConditionalOp(Operation *op) {
-    TransactionSequenceResult result = unknown(op);
-    DFBIdRange alternativeIds;
-    if (nestedBarriers.contains(op)) {
-      alternativeIds = getNestedDFBIds(op);
-    } else if (auto ifOp = dyn_cast<scf::IfOp>(op);
-               ifOp && !conditionFormulas.hasOpaqueLeaf(
-                           conditionFormulas.get(ifOp.getCondition()))) {
-      alternativeIds = getNestedDFBIds(op);
-    }
-    if (alternativeIds.empty()) {
+    Region &body = op->getRegion(0);
+    Executions bodyExecutions = multiplyExecutions(executions, tripCount);
+    TransactionSequenceResult result =
+        summarizeGeneration(body, range, 0, bodyExecutions);
+    if (tripCount == 1) {
       return result;
     }
-    // The empty sequence of a region (or of skipping every region); absent
-    // when the decision selecting it is dead.
-    auto emptyAlternative =
-        [&](Region *region) -> std::optional<TransactionAlternative> {
-      TransactionAlternative alternative{
-          TransactionSegments{TransactionSegment()},
-          DispatchConditionFormulas::kTrue};
-      if (!decide(alternative, getDecision(op, region))) {
-        return std::nullopt;
-      }
-      return alternative;
+    TransactionSequenceResult later =
+        summarizeGeneration(body, range, 1, bodyExecutions);
+    auto restoredInBody = [&](int64_t logicalId) {
+      auto laterIt = later.sequences.find(logicalId);
+      return laterIt != later.sequences.end() &&
+             llvm::any_of(laterIt->second,
+                          [](const TransactionSegment &segment) {
+                            return segment.barrier && segment.restored;
+                          });
     };
-    SmallVector<std::pair<TransactionSequenceResult, Region *>> branches;
-    for (Region &region : op->getRegions()) {
-      if (!region.empty()) {
-        branches.push_back({summarizeRegion(region, std::nullopt), &region});
-      }
+    TransactionSequenceResult restored = later.select(restoredInBody);
+    TransactionSequenceResult carried = later.select(
+        [&](int64_t logicalId) { return !restoredInBody(logicalId); });
+    result.append(later);
+    if (tripCount == 2) {
+      return result;
     }
-    for (int64_t logicalId : alternativeIds) {
-      TransactionAlternatives own;
-      bool unknownBranch = false;
-      for (auto &[branch, region] : branches) {
-        if (branch.isUnknown(logicalId,
-                             TransactionSequenceSummary::getAllCounterMask())) {
-          unknownBranch = true;
+    result.append(restored);
+    if (tripCount > 3) {
+      TransactionSequenceResult middle;
+      for (auto &[logicalId, segments] : carried.sequences) {
+        std::optional<SmallVector<TransactionSequenceSummary, 1>> intervals =
+            getRestoredIntervals(segments);
+        TransactionSequenceSummary folded;
+        if (!intervals || intervals->size() != 1 ||
+            !(folded = intervals->front()).repeat(tripCount - 3)) {
+          middle.abandon(logicalId);
+          continue;
+        }
+        middle.getOrCreate(logicalId).front().summary = folded;
+      }
+      result.append(middle);
+    }
+    result.append(carried);
+    return result;
+  }
+
+  /// The loop index of generations first + j * stride for j in [0, count).
+  struct GenerationRange {
+    Value inductionVar;
+    std::int64_t first = 0;
+    std::int64_t stride = 1;
+    std::uint64_t count = 0;
+  };
+
+  /// The loop index bound while one generation of a barrier loop is
+  /// summarized, and the loop's generations.
+  struct BoundGeneration {
+    Value inductionVar;
+    llvm::APInt index;
+    GenerationRange range;
+  };
+
+  TransactionSequenceResult summarizeGeneration(Region &body,
+                                                const GenerationRange &range,
+                                                std::uint64_t which,
+                                                Executions bodyExecutions) {
+    unsigned width = range.inductionVar.getType().isIndex()
+                         ? IndexType::kInternalStorageBitWidth
+                         : range.inductionVar.getType().getIntOrFloatBitWidth();
+    generation = BoundGeneration{
+        range.inductionVar,
+        llvm::APInt(
+            width,
+            static_cast<std::uint64_t>(
+                range.first + static_cast<std::int64_t>(which) * range.stride),
+            /*isSigned=*/true),
+        range};
+    TransactionSequenceResult result = summarizeRegion(body, bodyExecutions);
+    generation.reset();
+    return result;
+  }
+
+  /// Whether `value` depends on `target` through its defining operations.
+  static bool dependsOn(Value value, Value target,
+                        llvm::DenseMap<Value, bool> &cache) {
+    if (value == target) {
+      return true;
+    }
+    if (auto cached = cache.find(value); cached != cache.end()) {
+      return cached->second;
+    }
+    cache[value] = false;
+    Operation *definingOp = value.getDefiningOp();
+    bool result = definingOp &&
+                  llvm::any_of(definingOp->getOperands(), [&](Value operand) {
+                    return dependsOn(operand, target, cache);
+                  });
+    cache[value] = result;
+    return result;
+  }
+
+  /// Whether `condition` has one value in every generation after the first:
+  /// a comparison of the loop index, through integer casts, with a value
+  /// constant at this node. Equality with c is constant when c is not the
+  /// index of a later generation; an ordered comparison is monotone in the
+  /// index, so it is constant when the second and last generations agree.
+  bool isUniformAfterFirstGeneration(Value condition,
+                                     const GenerationRange &range) const {
+    auto comparison = condition.getDefiningOp<arith::CmpIOp>();
+    if (!comparison) {
+      return false;
+    }
+    auto stripCasts = [](Value value) {
+      while (Operation *definingOp = value.getDefiningOp()) {
+        if (!isa<arith::IndexCastOp, arith::IndexCastUIOp, arith::ExtSIOp,
+                 arith::ExtUIOp>(definingOp)) {
           break;
         }
-        auto branchIt = branch.alternatives.find(logicalId);
-        if (branchIt == branch.alternatives.end()) {
-          if (std::optional<TransactionAlternative> empty =
-                  emptyAlternative(region)) {
-            unknownBranch = !TransactionSequenceResult::insertAlternative(
-                own, std::move(*empty), conditionFormulas);
-          }
-        } else {
-          for (const TransactionAlternative &alternative : branchIt->second) {
-            TransactionAlternative decided = alternative;
-            if (!decide(decided, getDecision(op, region))) {
-              continue;
-            }
-            if (!TransactionSequenceResult::insertAlternative(
-                    own, std::move(decided), conditionFormulas)) {
-              unknownBranch = true;
-              break;
-            }
-          }
+        value = definingOp->getOperand(0);
+      }
+      return value;
+    };
+    bool indexOnLeft = stripCasts(comparison.getLhs()) == range.inductionVar;
+    bool indexOnRight = stripCasts(comparison.getRhs()) == range.inductionVar;
+    if (indexOnLeft == indexOnRight) {
+      return false;
+    }
+    std::optional<llvm::APInt> other =
+        IntegerExpressionEvaluator(getValueEvaluator())
+            .evaluate(indexOnLeft ? comparison.getRhs() : comparison.getLhs());
+    if (!other || other->getBitWidth() > 64) {
+      return false;
+    }
+    std::int64_t constant = other->getSExtValue();
+    std::int64_t second = range.first + range.stride;
+    std::int64_t last =
+        range.first + static_cast<std::int64_t>(range.count - 1) * range.stride;
+    switch (comparison.getPredicate()) {
+    case arith::CmpIPredicate::eq:
+    case arith::CmpIPredicate::ne:
+      return constant < second || constant > last ||
+             (constant - second) % range.stride != 0;
+    default: {
+      auto compare = [&](std::int64_t index) {
+        llvm::APInt indexValue(other->getBitWidth(),
+                               static_cast<std::uint64_t>(index),
+                               /*isSigned=*/true);
+        return indexOnLeft ? arith::applyCmpPredicate(comparison.getPredicate(),
+                                                      indexValue, *other)
+                           : arith::applyCmpPredicate(comparison.getPredicate(),
+                                                      *other, indexValue);
+      };
+      return second >= 0 && compare(second) == compare(last);
+    }
+    }
+  }
+
+  /// Whether every operation in `body` that decides where protocol effects or
+  /// barriers execute has the same outcome in every generation after the
+  /// first. Only `scf.if` conditions of the form above may depend on the loop
+  /// index.
+  // TODO: evaluate other conditions on the loop index over the index range
+  // of the later generations, instead of leaving every DFB of the kernel
+  // unknown.
+  bool hasUniformLaterGenerations(Region &body,
+                                  const GenerationRange &range) const {
+    if (range.count <= 2) {
+      return true;
+    }
+    llvm::DenseMap<Value, bool> dependence;
+    WalkResult walk = body.walk([&](Operation *nested) {
+      if (nested->getNumRegions() == 0 || (!nestedCounters.contains(nested) &&
+                                           !nestedBarriers.contains(nested))) {
+        return WalkResult::advance();
+      }
+      auto ifOp = dyn_cast<scf::IfOp>(nested);
+      for (Value operand : nested->getOperands()) {
+        if (!dependsOn(operand, range.inductionVar, dependence)) {
+          continue;
         }
-        if (unknownBranch) {
-          break;
+        if (!ifOp || operand != ifOp.getCondition() ||
+            !isUniformAfterFirstGeneration(operand, range)) {
+          return WalkResult::interrupt();
         }
       }
-      if (!unknownBranch && !coversEveryPath(op)) {
-        if (std::optional<TransactionAlternative> empty =
-                emptyAlternative(nullptr)) {
-          unknownBranch = !TransactionSequenceResult::insertAlternative(
-              own, std::move(*empty), conditionFormulas);
-        }
-      }
-      if (unknownBranch) {
+      return WalkResult::advance();
+    });
+    return !walk.wasInterrupted();
+  }
+
+  /// Executions of a region of `ifOp` whose condition depends on the loop
+  /// index of the generation being summarized: the region runs in that
+  /// generation, and `executions` counts the `scf.if` over every generation.
+  std::optional<TransactionSequenceResult>
+  summarizeGenerationDependentIf(scf::IfOp ifOp, Executions executions) {
+    if (!generation) {
+      return std::nullopt;
+    }
+    llvm::DenseMap<Value, bool> dependence;
+    if (!dependsOn(ifOp.getCondition(), generation->inductionVar, dependence)) {
+      return std::nullopt;
+    }
+    std::optional<llvm::APInt> taken =
+        IntegerExpressionEvaluator(getValueEvaluator())
+            .evaluate(ifOp.getCondition());
+    if (!taken) {
+      return std::nullopt;
+    }
+    Region &region =
+        taken->getBoolValue() ? ifOp.getThenRegion() : ifOp.getElseRegion();
+    if (region.empty() || !regionsWithProtocolOps.contains(&region)) {
+      return TransactionSequenceResult();
+    }
+    // The region runs in the generations whose index selects it: generation
+    // 0 alone, the later generations, or all of them.
+    const GenerationRange &range = generation->range;
+    BoundGeneration saved = *generation;
+    std::uint64_t takenGenerations = 0;
+    for (bool firstGeneration : {true, false}) {
+      if (!firstGeneration && range.count < 2) {
         continue;
       }
-      result.unknownCounters.erase(logicalId);
-      result.alternatives[logicalId] = std::move(own);
+      generation->index =
+          llvm::APInt(saved.index.getBitWidth(),
+                      static_cast<std::uint64_t>(
+                          range.first + (firstGeneration ? 0 : range.stride)),
+                      /*isSigned=*/true);
+      std::optional<llvm::APInt> value =
+          IntegerExpressionEvaluator(getValueEvaluator())
+              .evaluate(ifOp.getCondition());
+      if (!value) {
+        generation = saved;
+        return std::nullopt;
+      }
+      if (value->getBoolValue() == taken->getBoolValue()) {
+        takenGenerations += firstGeneration ? 1 : range.count - 1;
+      }
     }
-    return result;
+    generation = saved;
+    Executions regionExecutions;
+    if (executions && *executions % range.count == 0) {
+      regionExecutions =
+          multiplyExecutions(*executions / range.count, takenGenerations);
+    }
+    return summarizeRegion(region, regionExecutions);
   }
 
   TransactionSequenceResult summarizeRegionOp(Operation *op,
                                               Executions executions) {
     if (auto loop = dyn_cast<LoopLikeOpInterface>(op)) {
       return summarizeLoop(loop, executions);
+    }
+    if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
+      if (std::optional<TransactionSequenceResult> result =
+              summarizeGenerationDependentIf(ifOp, executions)) {
+        return std::move(*result);
+      }
     }
     Region *activeRegion = nullptr;
     std::uint64_t activeCount = 0;
@@ -1189,10 +1154,11 @@ private:
       }
       std::optional<std::uint64_t> count =
           getRegionInvocationsPerExecution(region, executions);
+      // TODO: check the effects under a condition on dispatch-condition
+      // results branch by branch, with path conditions over those results,
+      // instead of leaving the DFBs they touch unknown.
       if (!count) {
-        return executesRegionsAtMostOnce(op)
-                   ? summarizeUnprovenConditionalOp(op)
-                   : unknown(op);
+        return unknown(op);
       }
       if (*count == 0) {
         continue;
@@ -1209,7 +1175,7 @@ private:
     }
     TransactionSequenceResult result = summarizeRegion(
         *activeRegion, multiplyExecutions(executions, activeCount));
-    result.repeat(activeCount, conditionFormulas);
+    result.repeat(activeCount);
     return result;
   }
 
@@ -1220,7 +1186,6 @@ private:
   llvm::DenseMap<Operation *, ExecutedBarrier> barriers;
   llvm::DenseMap<Operation *, SmallVector<int64_t>> restoredIds;
   llvm::DenseSet<Operation *> nestedBarriers;
-  llvm::DenseMap<Operation *, SmallVector<int64_t>> nestedDFBIds;
   llvm::DenseMap<
       Operation *,
       llvm::DenseMap<int64_t, TransactionSequenceSummary::CounterMask>>
@@ -1228,7 +1193,8 @@ private:
   llvm::DenseSet<int64_t> opaquePopDFBIds;
   llvm::DenseSet<Region *> regionsWithProtocolOps;
   DFBIdRange allDFBIds;
-  DispatchConditionFormulas &conditionFormulas;
+  /// Set while one generation of a barrier loop is summarized.
+  std::optional<BoundGeneration> generation;
 };
 
 /// Reuse the structured sequence analysis across DFB queries in one thread.
@@ -1238,6 +1204,9 @@ public:
                               const DFBStateDiscardModel &discardModel)
       : state(state), discardModel(discardModel) {}
 
+  // TODO: share one summary among the launch nodes where a kernel has the
+  // same execution counts and restored DFBs, instead of summarizing the
+  // kernel on every node.
   const TransactionSequenceResult &get(func::FuncOp thread,
                                        LaunchNodeCoord coord) {
     auto &resultsByCoord = results[thread.getOperation()];
@@ -1245,16 +1214,11 @@ public:
     if (resultIt == resultsByCoord.end()) {
       resultIt = resultsByCoord
                      .emplace(coord, DFBTransactionSequenceAnalysis(
-                                         thread, coord, state, discardModel,
-                                         state.conditionFormulas)
+                                         thread, coord, state, discardModel)
                                          .run())
                      .first;
     }
     return resultIt->second;
-  }
-
-  DispatchConditionFormulas &getConditionFormulas() const {
-    return state.conditionFormulas;
   }
 
 private:
@@ -1265,21 +1229,19 @@ private:
       results;
 };
 
-/// The alternative sequences of `logicalId` in `sequence`, or absent when a
-/// required counter is unknown. A DFB without transactions has one empty
-/// segment.
-std::optional<TransactionAlternatives> getTransactionAlternatives(
+/// The sequence of `logicalId` in `sequence`, or absent when a required
+/// counter is unknown. A DFB without transactions has one empty segment.
+std::optional<TransactionSegments> getTransactionSegments(
     const TransactionSequenceResult &sequence, int64_t logicalId,
     TransactionSequenceSummary::CounterMask requiredCounters) {
   if (sequence.isUnknown(logicalId, requiredCounters)) {
     return std::nullopt;
   }
-  auto alternativesIt = sequence.alternatives.find(logicalId);
-  if (alternativesIt == sequence.alternatives.end()) {
-    return TransactionAlternatives{{TransactionSegments{TransactionSegment()},
-                                    DispatchConditionFormulas::kTrue}};
+  auto sequenceIt = sequence.sequences.find(logicalId);
+  if (sequenceIt == sequence.sequences.end()) {
+    return TransactionSegments{TransactionSegment()};
   }
-  return alternativesIt->second;
+  return sequenceIt->second;
 }
 
 SmallVector<func::FuncOp>
@@ -1326,18 +1288,17 @@ bool verifyEndpointTransactionSequence(
     llvm::StringRef acquireName, llvm::StringRef releaseName,
     Operation *bindSite, DFBTransactionSequenceCache &sequenceCache) {
   const TransactionSequenceResult &sequence = sequenceCache.get(thread, coord);
-  std::optional<TransactionAlternatives> maybeAlternatives =
-      getTransactionAlternatives(
-          sequence, logicalId,
-          TransactionSequenceSummary::getCounterMask(openCounter));
-  if (!maybeAlternatives) {
+  std::optional<TransactionSegments> segments = getTransactionSegments(
+      sequence, logicalId,
+      TransactionSequenceSummary::getCounterMask(openCounter));
+  if (!segments) {
     return false;
   }
-  for (const TransactionAlternative &alternative : *maybeAlternatives) {
+  {
     std::optional<SmallVector<TransactionSequenceSummary, 1>> intervals =
-        getRestoredIntervals(alternative.segments);
+        getRestoredIntervals(*segments);
     if (!intervals) {
-      continue;
+      return false;
     }
     for (const auto &[index, summary] : llvm::enumerate(*intervals)) {
       bool ordered = summary.minimum[openCounter] >= 0;
@@ -1396,25 +1357,24 @@ bool verifyCombinedTransactionSequence(
     LaunchNodeCoord coord, std::uint64_t capacityBlocks, Operation *bindSite,
     DFBTransactionSequenceCache &sequenceCache) {
   const TransactionSequenceResult &sequence = sequenceCache.get(thread, coord);
-  std::optional<TransactionAlternatives> maybeAlternatives =
-      getTransactionAlternatives(
-          sequence, logicalId,
-          TransactionSequenceSummary::getCounterMask(
-              TransactionSequenceSummary::ProducerOpen) |
-              TransactionSequenceSummary::getCounterMask(
-                  TransactionSequenceSummary::ConsumerOpen) |
-              TransactionSequenceSummary::getCounterMask(
-                  TransactionSequenceSummary::Capacity) |
-              TransactionSequenceSummary::getCounterMask(
-                  TransactionSequenceSummary::Published));
-  if (!maybeAlternatives) {
+  std::optional<TransactionSegments> segments =
+      getTransactionSegments(sequence, logicalId,
+                             TransactionSequenceSummary::getCounterMask(
+                                 TransactionSequenceSummary::ProducerOpen) |
+                                 TransactionSequenceSummary::getCounterMask(
+                                     TransactionSequenceSummary::ConsumerOpen) |
+                                 TransactionSequenceSummary::getCounterMask(
+                                     TransactionSequenceSummary::Capacity) |
+                                 TransactionSequenceSummary::getCounterMask(
+                                     TransactionSequenceSummary::Published));
+  if (!segments) {
     return false;
   }
-  for (const TransactionAlternative &alternative : *maybeAlternatives) {
+  {
     std::optional<SmallVector<TransactionSequenceSummary, 1>> intervals =
-        getRestoredIntervals(alternative.segments);
+        getRestoredIntervals(*segments);
     if (!intervals) {
-      continue;
+      return false;
     }
     for (const auto &[index, summary] : llvm::enumerate(*intervals)) {
       bool prefixesValid = llvm::all_of(
@@ -1504,20 +1464,6 @@ std::optional<RoleTotal> getRoleTotal(ArrayRef<DFBTransaction> transactions,
   return std::nullopt;
 }
 
-/// The operation of `thread` that executes `barrier`.
-Operation *findBarrierOp(func::FuncOp thread, ExecutedBarrier barrier) {
-  Operation *found = nullptr;
-  thread.walk([&](Operation *op) {
-    if (DFBStateDiscardModel::getBarrier(op) == barrier) {
-      found = op;
-      return WalkResult::interrupt();
-    }
-    return WalkResult::advance();
-  });
-  assert(found && "a segment's barrier executes in its kernel");
-  return found;
-}
-
 /// `intervalEnd` is the restoring barrier that ends the compared interval and
 /// `intervalStart` the one that starts it; either is null at launch
 /// boundaries.
@@ -1593,16 +1539,12 @@ void reportBarrierDeadlock(
 }
 
 /// Compare the kernels' sequences at one node. Every participant executes the
-/// same barriers and decides the same dispatch conditions, so alternatives of
-/// different kernels belong to one execution when they pass the same barriers
-/// and their decisions are jointly satisfiable; a kernel with one alternative
-/// matches every choice. At each barrier the waits before it may not exceed
-/// the pushes before it and the reserved blocks not popped before it may not
-/// exceed capacity. Between restorations of the DFB the pops may not exceed
-/// the pushes and the unpopped blocks must fit capacity; a kernel whose pops
-/// are conditional contributes its exact wait total instead. More consistent
-/// combinations than `kMaxAlternatives` leave the DFB unchecked at this node.
-/// Returns true when a violation was reported.
+/// same barriers, so the kernels' segments align. At each barrier the waits
+/// before it may not exceed the pushes before it and the reserved blocks not
+/// popped before it may not exceed capacity. Between restorations of the DFB
+/// the pops may not exceed the pushes and the unpopped blocks must fit
+/// capacity; a kernel whose pops are unknown contributes its exact wait total
+/// instead. Returns true when a violation was reported.
 bool verifyCrossKernelSequences(
     int64_t logicalId, ArrayRef<DFBTransaction> producers,
     ArrayRef<DFBTransaction> consumers, ArrayRef<func::FuncOp> threads,
@@ -1611,7 +1553,7 @@ bool verifyCrossKernelSequences(
   using Summary = TransactionSequenceSummary;
   constexpr Summary::CounterMask pushedMask =
       Summary::getCounterMask(Summary::Pushed);
-  SmallVector<TransactionAlternatives, 4> perThread;
+  SmallVector<TransactionSegments, 4> perThread;
   SmallVector<bool, 4> waitsStandIn;
   bool publishedKnown = true;
   bool heldKnown = true;
@@ -1619,20 +1561,19 @@ bool verifyCrossKernelSequences(
     const TransactionSequenceResult &sequence =
         sequenceCache.get(thread, coord);
     bool waits = false;
-    std::optional<TransactionAlternatives> alternatives =
-        getTransactionAlternatives(
-            sequence, logicalId,
-            pushedMask | Summary::getCounterMask(Summary::Popped));
-    if (!alternatives) {
-      alternatives = getTransactionAlternatives(
+    std::optional<TransactionSegments> segments = getTransactionSegments(
+        sequence, logicalId,
+        pushedMask | Summary::getCounterMask(Summary::Popped));
+    if (!segments) {
+      segments = getTransactionSegments(
           sequence, logicalId,
           pushedMask | Summary::getCounterMask(Summary::Waited));
       waits = true;
     }
-    if (!alternatives) {
+    if (!segments) {
       return false;
     }
-    perThread.push_back(std::move(*alternatives));
+    perThread.push_back(std::move(*segments));
     waitsStandIn.push_back(waits);
     publishedKnown &= !sequence.isUnknown(
         logicalId, Summary::getCounterMask(Summary::Published));
@@ -1640,147 +1581,86 @@ bool verifyCrossKernelSequences(
         logicalId, Summary::getCounterMask(Summary::Capacity));
   }
 
-  DispatchConditionFormulas &formulas = sequenceCache.getConditionFormulas();
-  SmallVector<const TransactionAlternative *> chosen;
-  SmallVector<DispatchConditionFormulas::FormulaId> pathConditions{
-      DispatchConditionFormulas::kTrue};
-  auto isConsistent = [&](const TransactionAlternative &candidate,
-                          bool candidateAlone) {
-    for (auto [index, earlier] : llvm::enumerate(chosen)) {
-      bool earlierAlone = perThread[index].size() == 1;
-      if (!earlierAlone && !candidateAlone &&
-          !earlier->sameBarriers(candidate)) {
+  const TransactionSegments &reference = perThread.front();
+  if (!llvm::all_of(perThread, [&](const TransactionSegments &segments) {
+        return haveSameBarriers(segments, reference);
+      })) {
+    return false;
+  }
+  Operation *restoringBarrier = nullptr;
+  std::uint64_t pushed = 0;
+  std::uint64_t consumed = 0;
+  std::int64_t published = 0;
+  std::int64_t held = 0;
+  bool anyWaits = false;
+  for (std::size_t index = 0; index < reference.size(); ++index) {
+    if (index > 0 && reference[index].restored) {
+      restoringBarrier = reference[index].barrierOp;
+      pushed = consumed = 0;
+      published = held = 0;
+      anyWaits = false;
+    }
+    for (auto [thread, segments] : llvm::enumerate(perThread)) {
+      const Summary &summary = segments[index].summary;
+      Summary::Counter consumedCounter =
+          waitsStandIn[thread] ? Summary::Waited : Summary::Popped;
+      anyWaits |= waitsStandIn[thread] && summary.net[Summary::Waited] != 0;
+      std::optional<std::uint64_t> nextPushed = llvm::checkedAddUnsigned(
+          pushed, static_cast<std::uint64_t>(summary.net[Summary::Pushed]));
+      std::optional<std::uint64_t> nextConsumed = llvm::checkedAddUnsigned(
+          consumed, static_cast<std::uint64_t>(summary.net[consumedCounter]));
+      std::optional<std::int64_t> nextPublished =
+          llvm::checkedAdd(published, summary.net[Summary::Published]);
+      std::optional<std::int64_t> nextHeld =
+          llvm::checkedAdd(held, summary.net[Summary::Capacity]);
+      // Totals beyond the representable range are not compared.
+      if (!nextPushed || !nextConsumed || !nextPublished || !nextHeld) {
         return false;
       }
+      pushed = *nextPushed;
+      consumed = *nextConsumed;
+      published = *nextPublished;
+      held = *nextHeld;
     }
-    return formulas.satisfiable(
-        formulas.conjoin(pathConditions.back(), candidate.pathCondition));
-  };
-  // Returns true when a violation was reported.
-  auto checkCombination = [&]() {
-    const TransactionSegments &reference = chosen.front()->segments;
-    bool aligned =
-        llvm::all_of(chosen, [&](const TransactionAlternative *alternative) {
-          return alternative->sameBarriers(*chosen.front()) &&
-                 llvm::equal(alternative->segments, reference,
-                             [](const TransactionSegment &lhs,
-                                const TransactionSegment &rhs) {
-                               return lhs.restored == rhs.restored;
-                             });
-        });
-    if (!aligned) {
-      return false;
+    bool last = index + 1 == reference.size();
+    Operation *nextBarrier = last ? nullptr : reference[index + 1].barrierOp;
+    if ((last || reference[index + 1].restored) &&
+        !countsFitCapacity(pushed, consumed, capacityBlocks)) {
+      reportCountsMismatch(
+          logicalId, getTransactionAtNode(producers, consumers, coord), coord,
+          RoleTotal{pushed, false}, RoleTotal{consumed, anyWaits},
+          capacityBlocks, last ? restoringBarrier : nullptr,
+          last ? nullptr : nextBarrier, bindSite);
+      return true;
     }
-    func::FuncOp referenceThread = threads.front();
-    Operation *restoringBarrier = nullptr;
-    std::uint64_t pushed = 0;
-    std::uint64_t consumed = 0;
-    std::int64_t published = 0;
-    std::int64_t held = 0;
-    bool anyWaits = false;
-    for (std::size_t index = 0; index < reference.size(); ++index) {
-      if (index > 0 && reference[index].restored) {
-        restoringBarrier =
-            findBarrierOp(referenceThread, *reference[index].barrier);
-        pushed = consumed = 0;
-        published = held = 0;
-        anyWaits = false;
-      }
-      for (auto [thread, alternative] : llvm::enumerate(chosen)) {
-        const Summary &summary = alternative->segments[index].summary;
-        Summary::Counter consumedCounter =
-            waitsStandIn[thread] ? Summary::Waited : Summary::Popped;
-        anyWaits |= waitsStandIn[thread] && summary.net[Summary::Waited] != 0;
-        std::optional<std::uint64_t> nextPushed = llvm::checkedAddUnsigned(
-            pushed, static_cast<std::uint64_t>(summary.net[Summary::Pushed]));
-        std::optional<std::uint64_t> nextConsumed = llvm::checkedAddUnsigned(
-            consumed, static_cast<std::uint64_t>(summary.net[consumedCounter]));
-        std::optional<std::int64_t> nextPublished =
-            llvm::checkedAdd(published, summary.net[Summary::Published]);
-        std::optional<std::int64_t> nextHeld =
-            llvm::checkedAdd(held, summary.net[Summary::Capacity]);
-        // Totals beyond the representable range are not compared.
-        if (!nextPushed || !nextConsumed || !nextPublished || !nextHeld) {
-          return false;
-        }
-        pushed = *nextPushed;
-        consumed = *nextConsumed;
-        published = *nextPublished;
-        held = *nextHeld;
-      }
-      bool last = index + 1 == reference.size();
-      Operation *nextBarrier =
-          last ? nullptr
-               : findBarrierOp(referenceThread, *reference[index + 1].barrier);
-      if ((last || reference[index + 1].restored) &&
-          !countsFitCapacity(pushed, consumed, capacityBlocks)) {
-        reportCountsMismatch(
-            logicalId, getTransactionAtNode(producers, consumers, coord), coord,
-            RoleTotal{pushed, false}, RoleTotal{consumed, anyWaits},
-            capacityBlocks, last ? restoringBarrier : nullptr,
-            last ? nullptr : nextBarrier, bindSite);
-        return true;
-      }
-      // A wait beyond the pushes never completes, whether or not the pops
-      // are known.
-      if (last && publishedKnown && published < 0) {
-        std::int64_t pushedBlocks = static_cast<std::int64_t>(pushed);
-        reportCountsMismatch(
-            logicalId, getTransactionAtNode(producers, consumers, coord), coord,
-            RoleTotal{pushed, false},
-            RoleTotal{static_cast<std::uint64_t>(pushedBlocks - published),
-                      true},
-            capacityBlocks, restoringBarrier, nullptr, bindSite);
-        return true;
-      }
-      if (nextBarrier && publishedKnown && published < 0) {
-        std::int64_t pushedBlocks = static_cast<std::int64_t>(pushed);
-        reportBarrierDeadlock(
-            logicalId, getTransactionAtNode(producers, consumers, coord), coord,
-            nextBarrier, std::make_pair(pushedBlocks - published, pushedBlocks),
-            held, capacityBlocks, bindSite);
-        return true;
-      }
-      if (nextBarrier && heldKnown &&
-          held > static_cast<std::int64_t>(capacityBlocks)) {
-        reportBarrierDeadlock(
-            logicalId, getTransactionAtNode(producers, consumers, coord), coord,
-            nextBarrier, std::nullopt, held, capacityBlocks, bindSite);
-        return true;
-      }
+    // A wait beyond the pushes never completes, whether or not the pops
+    // are known.
+    if (last && publishedKnown && published < 0) {
+      std::int64_t pushedBlocks = static_cast<std::int64_t>(pushed);
+      reportCountsMismatch(
+          logicalId, getTransactionAtNode(producers, consumers, coord), coord,
+          RoleTotal{pushed, false},
+          RoleTotal{static_cast<std::uint64_t>(pushedBlocks - published), true},
+          capacityBlocks, restoringBarrier, nullptr, bindSite);
+      return true;
     }
-    return false;
-  };
-  std::size_t combinations = 0;
-  bool overflow = false;
-  bool violation = false;
-  std::function<void(std::size_t)> visit = [&](std::size_t index) {
-    if (overflow || violation) {
-      return;
+    if (nextBarrier && publishedKnown && published < 0) {
+      std::int64_t pushedBlocks = static_cast<std::int64_t>(pushed);
+      reportBarrierDeadlock(
+          logicalId, getTransactionAtNode(producers, consumers, coord), coord,
+          nextBarrier, std::make_pair(pushedBlocks - published, pushedBlocks),
+          held, capacityBlocks, bindSite);
+      return true;
     }
-    if (index == perThread.size()) {
-      if (++combinations > TransactionSequenceResult::kMaxAlternatives) {
-        overflow = true;
-        return;
-      }
-      violation = checkCombination();
-      return;
+    if (nextBarrier && heldKnown &&
+        held > static_cast<std::int64_t>(capacityBlocks)) {
+      reportBarrierDeadlock(
+          logicalId, getTransactionAtNode(producers, consumers, coord), coord,
+          nextBarrier, std::nullopt, held, capacityBlocks, bindSite);
+      return true;
     }
-    bool alone = perThread[index].size() == 1;
-    for (const TransactionAlternative &candidate : perThread[index]) {
-      if (!isConsistent(candidate, alone)) {
-        continue;
-      }
-      chosen.push_back(&candidate);
-      pathConditions.push_back(
-          formulas.conjoin(pathConditions.back(), candidate.pathCondition));
-      visit(index + 1);
-      pathConditions.pop_back();
-      chosen.pop_back();
-    }
-  };
-  visit(0);
-  return violation;
+  }
+  return false;
 }
 
 /// Compare the kernels' transactions at one node: the launch totals of exact
@@ -1865,24 +1745,19 @@ std::optional<std::uint64_t> getMaximumPushesBetweenRestorations(
     return total;
   }
   for (func::FuncOp thread : getTransactionThreadsAtNode(producers, coord)) {
-    std::optional<TransactionAlternatives> alternatives =
-        getTransactionAlternatives(sequenceCache.get(thread, coord), logicalId,
-                                   TransactionSequenceSummary::getCounterMask(
-                                       TransactionSequenceSummary::Pushed));
-    if (!alternatives) {
+    std::optional<TransactionSegments> segments =
+        getTransactionSegments(sequenceCache.get(thread, coord), logicalId,
+                               TransactionSequenceSummary::getCounterMask(
+                                   TransactionSequenceSummary::Pushed));
+    std::optional<SmallVector<TransactionSequenceSummary, 1>> intervals =
+        segments ? getRestoredIntervals(*segments) : std::nullopt;
+    if (!intervals) {
       continue;
     }
-    for (const TransactionAlternative &alternative : *alternatives) {
-      std::optional<SmallVector<TransactionSequenceSummary, 1>> intervals =
-          getRestoredIntervals(alternative.segments);
-      if (!intervals) {
-        continue;
-      }
-      for (const TransactionSequenceSummary &interval : *intervals) {
-        auto pushed = static_cast<std::uint64_t>(
-            interval.net[TransactionSequenceSummary::Pushed]);
-        maximum = std::max(maximum.value_or(0), pushed);
-      }
+    for (const TransactionSequenceSummary &interval : *intervals) {
+      auto pushed = static_cast<std::uint64_t>(
+          interval.net[TransactionSequenceSummary::Pushed]);
+      maximum = std::max(maximum.value_or(0), pushed);
     }
   }
   return maximum;
