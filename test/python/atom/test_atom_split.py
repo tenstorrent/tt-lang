@@ -846,6 +846,51 @@ def test_composition_expands_captured_sequence_loop(coordinates):
     assert "core_y == 4" in source
 
 
+def _make_loop_control_helper(loop_control):
+    coordinates = ((1, 2), (3, 4))
+    if loop_control == "break":
+
+        @ttl.operation()
+        def coordinate_helper(core_x):
+            for coordinate_x, _coordinate_y in coordinates:
+                if core_x == coordinate_x:
+                    break
+
+    elif loop_control == "continue":
+
+        @ttl.operation()
+        def coordinate_helper(core_x):
+            for coordinate_x, _coordinate_y in coordinates:
+                if core_x == coordinate_x:
+                    continue
+
+    else:
+
+        @ttl.operation()
+        def coordinate_helper(core_x):
+            for _coordinate_x, _coordinate_y in coordinates:
+                pass
+            else:
+                pass
+
+    return coordinate_helper
+
+
+@pytest.mark.parametrize("loop_control", ["break", "continue", "else"])
+def test_composition_rejects_loop_control_over_captured_sequence(loop_control):
+    """Unrolling a captured sequence cannot keep break, continue, or else."""
+    coordinate_helper = _make_loop_control_helper(loop_control)
+
+    with pytest.raises(
+        ValueError,
+        match="a loop over a captured sequence cannot use break, continue, or else",
+    ):
+
+        @ttl.operation(grid=(1, 1))
+        def composed_coordinates(core_x):
+            coordinate_helper(core_x)
+
+
 def test_composition_folds_captured_sequence_subscript():
     """Composition resolves nested indexing into a captured sequence."""
     coordinates = ((1, 2), (3, 4))

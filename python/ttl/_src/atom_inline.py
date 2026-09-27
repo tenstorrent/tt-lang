@@ -103,6 +103,25 @@ class _NestedBindingCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
 
+def _contains_loop_control(statements) -> bool:
+    """Return whether break or continue in ``statements`` targets their loop."""
+    pending = list(statements)
+    while pending:
+        node = pending.pop()
+        if isinstance(node, (ast.Break, ast.Continue)):
+            return True
+        if isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+            # Only a nested loop's else clause still belongs to the outer loop.
+            pending.extend(node.orelse)
+            continue
+        if isinstance(
+            node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
+        ):
+            continue
+        pending.extend(ast.iter_child_nodes(node))
+    return False
+
+
 class _SubstituteTransformer(ast.NodeTransformer):
     def __init__(
         self,
@@ -174,6 +193,12 @@ class _SubstituteTransformer(ast.NodeTransformer):
         transformed_node = self.generic_visit(node)
         if not isinstance(transformed_node.iter, (ast.Tuple, ast.List)):
             return transformed_node
+        # Unrolling removes the loop that break, continue, and else refer to.
+        if transformed_node.orelse or _contains_loop_control(transformed_node.body):
+            raise ValueError(
+                f"@ttl.operation {self.caller_name!r}: a loop over a captured "
+                "sequence cannot use break, continue, or else"
+            )
 
         unrolled_body = []
         for element in transformed_node.iter.elts:
@@ -193,7 +218,6 @@ class _SubstituteTransformer(ast.NodeTransformer):
                     unrolled_body.extend(transformed_statement)
                 else:
                     unrolled_body.append(transformed_statement)
-        unrolled_body.extend(transformed_node.orelse)
         return unrolled_body
 
     def _bind_loop_target(self, target, value, bindings):
