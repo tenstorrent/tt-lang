@@ -37,7 +37,7 @@ python my_kernel.py --no-ttl-maximize-dst
 
 ### Compiler-managed SRAM
 
-Set `options="--ttl-memory-model=compiler-sram"` on a `ttl.operation` call to allocate its DFB control records and compiler-owned payloads without TT-Metal DFB descriptors. The backend removes the 32-index Wormhole B0 and 64-index Blackhole descriptor limits for supported operations while retaining their SRAM capacity limits. It supports compiler-owned and tensor-backed storage, validated allocation groups, typed external calls, and supported PipeNet transfers. Blackhole supports synchronized reset and reconfiguration; Wormhole rejects them. See [Compiler-Managed SRAM Allocation](../../development/SRAMAllocation.md) for the current storage and operation contract.
+Set `options="--ttl-memory-model=compiler-sram"` on a `ttl.operation` call to allocate its DFB control records and compiler-owned payloads without TT-Metal DFB descriptors. The backend removes the 32-index Wormhole B0 and 64-index Blackhole descriptor limits for supported operations while retaining their SRAM capacity limits. It supports compiler-owned and tensor-backed storage, validated allocation groups, typed external calls, and supported PipeNet transfers. Blackhole supports synchronized reset and reconfiguration; Wormhole rejects them. See [Compiler-Managed SRAM Allocation](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/SRAMAllocation.md) for the current storage and operation contract.
 
 `multi-order-decreasing` is the default placement strategy. It compares two first-fit orders and keeps the smaller arena. `minimum-arena` proves the smallest arena when its bounded search completes; reaching the search limit reports an inconclusive result rather than silently selecting a heuristic allocation.
 
@@ -260,7 +260,7 @@ ttlang-opt input.mlir -p 'func.func(ttl-insert-intermediate-dfbs{enable=false})'
 
 #### `ttl-finalize-dfb-indices`
 
-`memory-model=compiler-sram` assigns payload byte offsets and independent DFB control records. Unknown access completion prevents payload reuse. `reuse-user-dfbs=false` gives every payload separate storage. The arena includes control and alignment bytes. Greedy placement failure does not establish infeasibility; `minimum-arena` distinguishes proven infeasibility from an exhausted search limit. The [backend contract](../../development/SRAMAllocation.md#implemented-contract) defines supported execution and storage forms.
+`memory-model=compiler-sram` assigns payload byte offsets and independent DFB control records. Unknown access completion prevents payload reuse. `reuse-user-dfbs=false` gives every payload separate storage. The arena includes control and alignment bytes. Greedy placement failure does not establish infeasibility; `minimum-arena` distinguishes proven infeasibility from an exhausted search limit. The [backend contract](https://github.com/tenstorrent/tt-lang/blob/main/docs/development/SRAMAllocation.md#implemented-contract) defines supported execution and storage forms.
 
 Assign DFB storage identities and emit the runtime allocation table.
 
