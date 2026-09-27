@@ -321,10 +321,6 @@ class _FakeTTNN:
             self.semaphores = semaphores
             self.custom_program_hash = None
 
-    class ProgramL1Layout(Enum):
-        UNIFORM = "uniform"
-        PER_CORE = "per_core"
-
     class MeshCoordinate:
         def __init__(self, *coords):
             if len(coords) == 1 and isinstance(coords[0], (tuple, list)):
@@ -689,28 +685,6 @@ class _LifetimeTrackingTTNN(_FakeTTNN):
 
     def synchronize_device(self, device):
         self.events.append(("synchronize", device))
-
-
-@pytest.mark.parametrize(
-    ("layout", "expected"),
-    [
-        ("uniform", _FakeTTNN.ProgramL1Layout.UNIFORM),
-        ("per_core", _FakeTTNN.ProgramL1Layout.PER_CORE),
-    ],
-)
-def test_build_program_descriptor_sets_l1_layout(monkeypatch, layout, expected):
-    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
-
-    descriptor = kernel_runner.build_program_descriptor([], [], [], layout)
-
-    assert descriptor.program_l1_layout == expected
-
-
-def test_build_program_descriptor_rejects_unknown_l1_layout(monkeypatch):
-    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
-
-    with pytest.raises(ValueError, match="program_l1_layout"):
-        kernel_runner.build_program_descriptor([], [], [], "unknown")
 
 
 @pytest.mark.parametrize(
@@ -7122,8 +7096,8 @@ def _remote_uniform_config(physical_index, num_tiles, allocation_nodes):
     )
 
 
-# A uniform-capacity remote DFB stays one descriptor, is placed before every
-# local descriptor, and is never split by the unsafe fallback.
+# A remote-uniform descriptor is placed before every local descriptor, so it
+# costs no padding, and it is never split even when splitting is enabled.
 def test_remote_uniform_static_dfb_is_placed_first_and_never_split(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     monkeypatch.setattr(kernel_runner, "DEFAULT_L1_CB_BUDGET_BYTES", 12288)
@@ -8801,7 +8775,6 @@ def test_emit_runner_source_uses_shared_pipe_resource_helpers(monkeypatch):
     assert "NUM_PIPE_GLOBAL_SEMAPHORES = 3" in source
     assert "NUM_DFB_RESETS = 2" in source
     assert "PROGRAM_HASH = 18446744073709551614" in source
-    assert "PROGRAM_L1_LAYOUT = 'uniform'" in source
     assert "MESH_PROGRAM_PLACEMENTS = None" in source
     assert "return run_kernel_on_device(" in source
     assert "build_pipe_runtime_resources(" not in source
@@ -9247,19 +9220,6 @@ def test_emit_runner_source_omits_program_hash_by_default():
     )
 
     assert "PROGRAM_HASH = None" in source
-
-
-def test_emit_runner_source_preserves_per_core_program_layout():
-    source = kernel_runner.emit_runner_source(
-        kernel_specs=[],
-        cb_configs=[],
-        grid_cols=1,
-        grid_rows=1,
-        num_tensors=1,
-        program_l1_layout="per_core",
-    )
-
-    assert "PROGRAM_L1_LAYOUT = 'per_core'" in source
 
 
 def test_emit_runner_source_preserves_explicit_data_movement_config(monkeypatch):
