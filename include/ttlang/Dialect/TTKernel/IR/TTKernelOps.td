@@ -4402,8 +4402,8 @@ def TTKernel_LoadFromL1Op : TTKernel_Op<"load_from_l1"> {
     let description = [{
       Reads the element at index `$offset` from `$l1_ptr` and returns it as an
       integer of the pointer's element width. The read observes data delivered
-      by the NoC: it invalidates the local L1 cache and is not reordered before
-      preceding synchronization.
+      by the NoC: on targets with an L1 data cache it invalidates that cache
+      first, and it is not reordered before preceding synchronization.
     }];
 
     let arguments = (ins TTKernel_L1AddrPtr:$l1_ptr, I32:$offset);
