@@ -1262,9 +1262,14 @@ def TTLFinalizeDFBIndices
            "Reuse physical DFB indices and compiler-managed storage for "
            "lifetimes proven not to overlap across concurrent kernels.">,
     Option<"sramAllocationStrategy", "sram-allocation-strategy", "std::string",
-           "\"first-fit-decreasing\"",
-           "Select first-fit-decreasing or best-fit-decreasing compiler-sram "
-           "payload placement.">,
+           "\"multi-order-decreasing\"",
+           "Select multi-order-decreasing, first-fit-decreasing, "
+           "best-fit-decreasing, or minimum-arena compiler-sram placement.">,
+    Option<"sramMinimumArenaSearchLimit", "sram-minimum-arena-search-limit",
+           "uint64_t", "1000000",
+           "Maximum subset-sum candidates and partial placements examined by "
+           "minimum-arena SRAM placement before reporting an inconclusive "
+           "result.">,
     Option<"unsafeAssumeAllocationGroups", "unsafe-assume-allocation-groups",
            "bool", "false",
            "Trust explicit DFB allocation groups when runtime handoff cannot "

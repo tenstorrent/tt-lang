@@ -57,6 +57,10 @@ private:
   llvm::SmallVector<llvm::BitVector> adjacency;
 };
 
+/// Returns deterministic vertex groups with no interference between groups.
+llvm::SmallVector<llvm::SmallVector<unsigned>>
+getInterferenceGraphConnectedComponents(const InterferenceGraph &graph);
+
 /// Assigns each candidate the lowest-numbered slot not used by a conflict.
 ///
 /// Candidates are processed in `priorityOrder`, so the result is deterministic

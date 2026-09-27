@@ -10,11 +10,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "CompilerL1Allocation.h"
-#include "CompilerL1Allocator.h"
 #include "DFBAllocationLimits.h"
 #include "DFBConcurrentKernelLivenessAnalysis.h"
 #include "DFBPhysicalAllocationPlan.h"
+#include "SRAMAllocation.h"
+#include "SRAMAllocator.h"
 #include "ttlang/Dialect/TTL/IR/TTL.h"
 #include "ttlang/Dialect/TTL/IR/TTLOpsUtils.h"
 #include "ttlang/Dialect/TTL/Passes.h"
@@ -303,8 +303,10 @@ struct TTLFinalizeDFBIndicesPass
       return;
     }
     std::string strategyFailure;
-    FailureOr<std::unique_ptr<CompilerL1Allocator>> sramAllocator =
-        createCompilerL1Allocator(sramAllocationStrategy, strategyFailure);
+    SRAMAllocatorOptions allocatorOptions{sramMinimumArenaSearchLimit};
+    FailureOr<std::unique_ptr<SRAMAllocator>> sramAllocator =
+        createSRAMAllocator(sramAllocationStrategy, allocatorOptions,
+                            strategyFailure);
     if (failed(sramAllocator)) {
       moduleOp.emitOpError() << strategyFailure;
       signalPassFailure();
@@ -356,11 +358,11 @@ struct TTLFinalizeDFBIndicesPass
             std::move(*maybeStaticConfigurationConflicts);
       }
       SmallVector<DFBAssumedAllocationGroup> assumedAllocationGroups;
-      if (failed(allocateCompilerL1(
-              moduleOp, logicalIdentityAnalysis, l1BudgetOverride,
-              reuseUserDFBs, **sramAllocator, liveness,
-              staticConfigurationConflicts, unsafeAssumeAllocationGroups,
-              assumedAllocationGroups))) {
+      if (failed(allocateSRAM(moduleOp, logicalIdentityAnalysis,
+                              l1BudgetOverride, reuseUserDFBs, **sramAllocator,
+                              liveness, staticConfigurationConflicts,
+                              unsafeAssumeAllocationGroups,
+                              assumedAllocationGroups))) {
         signalPassFailure();
         return;
       }

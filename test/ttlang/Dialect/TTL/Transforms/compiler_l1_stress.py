@@ -1,8 +1,9 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
-# Exhaustive three-region schedules and every four-region conflict graph check
-# byte-placement safety independently of the compiler conflict analysis.
+# Exhaustive three-region schedules and one schedule for each of 61 distinct
+# four-region lifetime conflict graphs check byte placement independently.
+# Minimum-arena placement is compared with an independent exhaustive oracle.
 # A nine-region case checks control-prefix alignment across target quanta.
 # RUN: %python %s
 
@@ -117,7 +118,52 @@ def validate_control_prefix_alignment():
         assert arena_bytes == control_bytes + 2048
 
 
-def validate(output, events, architecture, reuse, unknown):
+def minimum_payload_bytes(sizes, conflicts):
+    candidate_offsets = {0}
+    for subset_size in range(1, len(sizes)):
+        candidate_offsets.update(
+            sum(sizes[region] for region in regions)
+            for regions in itertools.combinations(range(len(sizes)), subset_size)
+        )
+    candidate_offsets = sorted(candidate_offsets)
+    region_order = sorted(
+        range(len(sizes)),
+        key=lambda region: (
+            -sum(region in conflict for conflict in conflicts),
+            -sizes[region],
+            region,
+        ),
+    )
+    offsets = [None] * len(sizes)
+    minimum_bytes = sum(sizes)
+
+    def search(position, high_water):
+        nonlocal minimum_bytes
+        if position == len(region_order):
+            minimum_bytes = min(minimum_bytes, high_water)
+            return
+        region = region_order[position]
+        for candidate_offset in candidate_offsets:
+            region_end = candidate_offset + sizes[region]
+            if region_end >= minimum_bytes:
+                break
+            if any(
+                other_offset is not None
+                and tuple(sorted((region, other_region))) in conflicts
+                and region_end > other_offset
+                and other_offset + sizes[other_region] > candidate_offset
+                for other_region, other_offset in enumerate(offsets)
+            ):
+                continue
+            offsets[region] = candidate_offset
+            search(position + 1, max(high_water, region_end))
+            offsets[region] = None
+
+    search(0, 0)
+    return minimum_bytes
+
+
+def validate(output, events, architecture, reuse, unknown, allocation_strategy):
     count = len(events) // 2
     quantum = 32 if architecture == "wormhole_b0" else 64
     control_bytes = (count * 8 + quantum - 1) // quantum * quantum
@@ -161,6 +207,8 @@ def validate(output, events, architecture, reuse, unknown):
         assert arena_bytes < control_bytes + sum(sizes)
     if not reuse:
         assert arena_bytes == control_bytes + sum(sizes)
+    if allocation_strategy == "minimum-arena":
+        assert arena_bytes == control_bytes + minimum_payload_bytes(sizes, conflicts)
 
 
 def main():
@@ -195,7 +243,13 @@ def main():
         for architecture in ("wormhole_b0", "blackhole")
     ]
     modules = [make_module(*case) for case in cases]
-    strategies = ("first-fit-decreasing", "best-fit-decreasing")
+    strategies = (
+        "first-fit-decreasing",
+        "best-fit-decreasing",
+        "multi-order-decreasing",
+        "minimum-arena",
+    )
+    first_fit_arenas = {}
     for allocation_strategy in strategies:
         for reuse in (False, True):
             output = run_compiler(modules, reuse, allocation_strategy)
@@ -207,7 +261,20 @@ def main():
             ]
             assert len(results) == len(cases)
             for result, (events, architecture, unknown) in zip(results, cases):
-                validate(result, events, architecture, reuse, unknown)
+                validate(
+                    result, events, architecture, reuse, unknown, allocation_strategy
+                )
+            arenas = [
+                int(re.search(r"ttl.l1_arena_bytes = (\d+)", result).group(1))
+                for result in results
+            ]
+            if allocation_strategy == "first-fit-decreasing":
+                first_fit_arenas[reuse] = arenas
+            elif allocation_strategy == "multi-order-decreasing":
+                assert all(
+                    multi_order <= first_fit
+                    for multi_order, first_fit in zip(arenas, first_fit_arenas[reuse])
+                )
     placement_count = len(cases) * 2 * len(strategies)
     print(f"Verified {placement_count} placements and deterministic repetition.")
 

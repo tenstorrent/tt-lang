@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 // SPDX-License-Identifier: Apache-2.0
-#ifndef TTLANG_DIALECT_TTL_TRANSFORMS_COMPILERL1ALLOCATION_H
-#define TTLANG_DIALECT_TTL_TRANSFORMS_COMPILERL1ALLOCATION_H
+#ifndef TTLANG_DIALECT_TTL_TRANSFORMS_SRAMALLOCATION_H
+#define TTLANG_DIALECT_TTL_TRANSFORMS_SRAMALLOCATION_H
 
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Support/LogicalResult.h"
@@ -16,16 +16,15 @@ namespace mlir::tt::ttl {
 
 class DFBConcurrentKernelLivenessAnalysis;
 class DFBLogicalIdentityAnalysis;
-class CompilerL1Allocator;
+class SRAMAllocator;
 struct DFBAssumedAllocationGroup;
 struct DFBStaticConfigurationConflict;
 
-/// Plans and materializes compiler-managed L1 offsets. Failure leaves IR
+/// Plans and materializes compiler-managed SRAM offsets. Failure leaves IR
 /// unchanged.
-LogicalResult allocateCompilerL1(
+LogicalResult allocateSRAM(
     ModuleOp module, const DFBLogicalIdentityAnalysis &identities,
-    uint64_t budgetOverride, bool reuseStorage,
-    const CompilerL1Allocator &allocator,
+    uint64_t budgetOverride, bool reuseStorage, const SRAMAllocator &allocator,
     const DFBConcurrentKernelLivenessAnalysis &liveness,
     llvm::ArrayRef<DFBStaticConfigurationConflict> staticConfigurationConflicts,
     bool unsafeAssumeAllocationGroups,

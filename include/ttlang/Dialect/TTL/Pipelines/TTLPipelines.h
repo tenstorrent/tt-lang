@@ -107,9 +107,15 @@ struct TTLToTTKernelPipelineOptions
       llvm::cl::init(true)};
   Option<std::string> sramAllocationStrategy{
       *this, "sram-allocation-strategy",
-      llvm::cl::desc("Select first-fit-decreasing or best-fit-decreasing "
-                     "compiler-sram payload placement."),
-      llvm::cl::init("first-fit-decreasing")};
+      llvm::cl::desc("Select multi-order-decreasing, first-fit-decreasing, "
+                     "best-fit-decreasing, or minimum-arena compiler-sram "
+                     "placement."),
+      llvm::cl::init("multi-order-decreasing")};
+  Option<uint64_t> sramMinimumArenaSearchLimit{
+      *this, "sram-minimum-arena-search-limit",
+      llvm::cl::desc("Maximum subset-sum candidates and partial placements "
+                     "examined by minimum-arena SRAM placement."),
+      llvm::cl::init(1000000)};
   Option<bool> unsafeAssumeAllocationGroups{
       *this, "unsafe-assume-allocation-groups",
       llvm::cl::desc("Trust explicit DFB allocation groups when runtime "

@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: (c) 2026 Tenstorrent AI ULC
 # SPDX-License-Identifier: Apache-2.0
 
-"""Compiler-owned L1 transfer correctness and descriptor independence."""
+"""Compiler-managed SRAM transfer correctness and descriptor independence."""
+
 import importlib.util
 import re
 
@@ -42,10 +43,20 @@ def l1_copy(source, destination):
     "memory_model,sram_allocation_strategy",
     [
         ("metal-cb", None),
+        ("compiler-sram", None),
+        ("compiler-sram", "multi-order-decreasing"),
         ("compiler-sram", "first-fit-decreasing"),
         ("compiler-sram", "best-fit-decreasing"),
+        ("compiler-sram", "minimum-arena"),
     ],
-    ids=["metal", "compiler-sram-first-fit", "compiler-sram-best-fit"],
+    ids=[
+        "metal",
+        "compiler-sram-default",
+        "compiler-sram-multi-order",
+        "compiler-sram-first-fit",
+        "compiler-sram-best-fit",
+        "compiler-sram-minimum-arena",
+    ],
 )
 def test_l1_copy(
     device, dtype, memory_model, sram_allocation_strategy, allocator, monkeypatch
@@ -138,7 +149,20 @@ def _make_many_buffers(tmp_path, count, simultaneous):
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 @pytest.mark.parametrize("simultaneous", [False, True], ids=["reuse", "96_live"])
 @pytest.mark.parametrize("specialize", [False, True], ids=["generic", "specialized"])
-def test_many_buffers(device, dtype, simultaneous, specialize, tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "sram_allocation_strategy",
+    ["first-fit-decreasing", "multi-order-decreasing", "minimum-arena"],
+    ids=["first-fit", "multi-order", "minimum-arena"],
+)
+def test_many_buffers(
+    device,
+    dtype,
+    simultaneous,
+    specialize,
+    sram_allocation_strategy,
+    tmp_path,
+    monkeypatch,
+):
     count = 96
     operation = _make_many_buffers(tmp_path, count, simultaneous)
     expected = torch.randn(count * 32, 32, dtype=dtype)
@@ -147,7 +171,10 @@ def test_many_buffers(device, dtype, simultaneous, specialize, tmp_path, monkeyp
     final_ir = tmp_path / "final.mlir"
     monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_ir))
     for invocation in range(2):
-        options = "--ttl-memory-model=compiler-sram"
+        options = (
+            "--ttl-memory-model=compiler-sram "
+            f"--ttl-sram-allocation-strategy={sram_allocation_strategy}"
+        )
         if specialize:
             options += " --ttl-specialize-cores"
         operation(source, destination, options=options)

@@ -7,6 +7,9 @@ set_target_properties(ttlang-dfb-allocation-oracle-test PROPERTIES
   EXCLUDE_FROM_ALL ON
   FOLDER "Tests"
 )
+target_include_directories(ttlang-dfb-allocation-oracle-test PRIVATE
+  ${TTLANG_SOURCE_DIR}/lib/Dialect/TTL/Transforms
+)
 
 target_link_libraries(ttlang-dfb-allocation-oracle-test PRIVATE
   TTLangTTLTransforms
