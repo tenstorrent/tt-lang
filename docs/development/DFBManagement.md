@@ -733,10 +733,19 @@ and wait amounts are readiness thresholds; such a release first closes the
 open user acquisition of its kind in the current interval of each alternative,
 and its remainder is a self-contained transfer. Waits stand in for conditional
 pops only where every pop is a user pop. A synchronized reset or
-state-discarding reconfiguration splits the kernel's sequence into intervals:
-each is checked on its own, only the last must close, and the cross-kernel
-totals are compared per interval because the participants execute the same
-resets. A reset under a dispatch condition the counts do not resolve yields two
+state-discarding reconfiguration splits the sequence of each DFB it restores
+into intervals: each is checked on its own, only the last must close, and the
+cross-kernel totals are compared per interval because the participants
+execute the same resets. The restored DFBs are those whose physical index the
+runtime resets on the node, not those the operation names. A reset restores
+the interfaces of its lowered mask, which reset lowering and the verifier
+compute with the same function (`getSynchronizedResetDFBMask`), and a logical
+DFB that shares a physical index with a reset target is restored with it. A
+reconfiguration restores the descriptors that `ttl.dfb_reconfiguration_plan`
+installs at its boundary on the node. The plan does not install a DFB whose
+state is live across the boundary, or whose lifecycle allocation cannot bound;
+such a DFB keeps its pointers and counters although the boundary declares
+`discard_dfb_state`, and its sequence continues across the boundary. A reset under a dispatch condition the counts do not resolve yields two
 alternatives for its DFBs, executed and skipped. An alternative records the
 resets and reconfigurations it executed and its path condition, a Boolean
 formula over dispatch-condition results kept as a binary decision diagram
@@ -767,7 +776,14 @@ runs rather than an ordered counter summary. Nodes where an opaque call may
 perform unrepresented protocol actions on a DFB (an uncontracted dependency
 or `unknown_dfb_access`) are not checked for it; the excluded nodes are the
 upper bound of the call's launch domain. An `inspect` contract excludes
-nothing.
+nothing. On such a node the pass warns when the consumers wait on the DFB
+repeatedly, no kernel pops it there, and no reset or reconfiguration restores
+it: pages published before the wait then stay in the DFB, so a producer that
+publishes again blocks once the DFB is full. This is how the pattern that
+releases waited pages at a state-discarding reconfiguration fails when
+allocation cannot bound the DFB's lifecycle; declaring the external calls'
+DFB effects lets allocation end the lifecycle at the boundary. The warning is
+not an error because an undeclared external action may pop the pages.
 
 The two finalized-DFB verifiers share their inputs through
 `DFBProtocolDomainAnalysis`: the launch-node domain of every protocol action
