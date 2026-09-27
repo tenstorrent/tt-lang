@@ -481,8 +481,6 @@ class KernelSpec:
             an empty list means this kernel uses no DFBs.
         local_tensor_indices: Global tensor indices whose local SRAM shards are
             accessed directly by this kernel.
-        tensor_accessor_indices: Global tensor indices this kernel addresses
-            through a TensorAccessor, which can reach shards on other cores.
     """
 
     path: str
@@ -498,7 +496,6 @@ class KernelSpec:
     fabric_manager_intervals: Tuple[FabricManagerIntervalSpec, ...] = ()
     used_dfb_indices: Optional[List[int]] = None
     local_tensor_indices: List[int] = field(default_factory=list)
-    tensor_accessor_indices: List[int] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -1974,21 +1971,14 @@ def _partition_descriptor_by_tensor_addresses(
             )
         ]
 
-    # Remote access needs the one address every owner holds, as a lockstep
-    # allocation provides: a core outside the shard grid, and a TensorAccessor,
-    # which addresses every owner's shard with one base address. Local access is
-    # validated separately by _validate_local_tensor_access.
+    # A core outside a tensor's shard grid addresses it remotely, which needs
+    # the one address every owner holds, as a lockstep allocation provides.
+    # Local access is validated separately by _validate_local_tensor_access.
     uniform_owner_addresses = {}
     for _argument_index, tensor_index in per_core_argument_indices:
         owner_addresses = set(per_core_addresses[tensor_index].values())
         if len(owner_addresses) == 1:
             uniform_owner_addresses[tensor_index] = owner_addresses.pop()
-        elif tensor_index in spec.tensor_accessor_indices:
-            raise ValueError(
-                f"per-core tensor {tensor_index} is addressed through a "
-                "TensorAccessor, which needs one address on every owner core, "
-                f"but its owner addresses differ: {sorted(owner_addresses)}"
-            )
 
     coordinates_by_addresses = {}
     for core_coordinate in _core_range_coordinates(
@@ -5770,12 +5760,6 @@ def emit_runner_source(
     lines.append("]")
     lines.append("")
 
-    lines.append("KERNEL_TENSOR_ACCESSOR_INDICES = [")
-    for spec in kernel_specs:
-        lines.append(f"    {spec.tensor_accessor_indices!r},  # {spec.thread_type}")
-    lines.append("]")
-    lines.append("")
-
     lines.append("KERNEL_PIPE_COMPUTED_ADDRESS_DFB_INDICES = [")
     for spec in kernel_specs:
         lines.append(
@@ -5931,10 +5915,6 @@ def emit_runner_source(
     lines.append("                tensor_indices=KERNEL_TENSOR_INDICES[kernel_idx],")
     lines.append(
         "                local_tensor_indices=KERNEL_LOCAL_TENSOR_INDICES[kernel_idx],"
-    )
-    lines.append(
-        "                tensor_accessor_indices="
-        "KERNEL_TENSOR_ACCESSOR_INDICES[kernel_idx],"
     )
     lines.append("                config=config,")
     lines.append(
