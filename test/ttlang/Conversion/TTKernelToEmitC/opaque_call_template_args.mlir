@@ -24,6 +24,7 @@ func.func @typed_literals_to_emitc() attributes {ttkernel.thread = #ttkernel.thr
 // EMITC-SAME: ttlang.requires_dfb_descriptor
 
 // Compute kernels preprocess out the data-movement-only handle method.
+// CPP: #define TTLANG_DFB_STORAGE_COMPILER_SRAM 0
 // CPP-LABEL: namespace ttlang {
 // CPP: struct DFBDescriptor {
 // CPP: #if defined(COMPILE_FOR_BRISC)
@@ -48,6 +49,7 @@ func.func @dfb_descriptor_template_to_emitc() attributes {ttkernel.thread = #ttk
 // EMITC: emitc.call_opaque "describe"
 // EMITC-SAME: template_args = [#emitc.opaque<"ttlang::l1::DFBDescriptor<2048, 1, 2, 2, 8, 12344, -1>">]
 // CPP: #ifndef TTLANG_COMPILER_L1_TARGET_H
+// CPP: #define TTLANG_DFB_STORAGE_COMPILER_SRAM 1
 // CPP: inline void resetState(uint32_t state) {
 // CPP-NEXT: if constexpr (!target::ownsDFBInterface) {
 // CPP: class DFBDescriptor
@@ -70,6 +72,7 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 1644
 // Compute descriptors preserve direct-to-destination format selection.
 // EMITC-LABEL: func.func @compiler_l1_compute_descriptor
 // EMITC: #emitc.opaque<"ttlang::l1::ComputeDFBDescriptor<static_cast<uint32_t>(DataFormat::Float32), 4096, 1, 1, 1, 0, 64, -1, true>">
+// CPP: #define TTLANG_DFB_STORAGE_COMPILER_SRAM 1
 // CPP: #ifndef TTLANG_COMPILER_L1_COMPUTE_H
 // CPP: class ComputeDFBDescriptor
 // CPP: #include "describe.hpp"

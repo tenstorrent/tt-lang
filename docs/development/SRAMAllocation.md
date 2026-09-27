@@ -238,6 +238,8 @@ Wormhole continues to support ordinary compiler-managed allocation, transfer, an
 
 `ttl.dfb_descriptor(dfb)` lowers to a C++ template type containing page size, pages per block, block count, shared storage capacity, state offset, payload offset, and an optional tensor common-argument index. Its `bind()` method obtains the state address from the arena. The payload address comes from either the arena or the tensor's existing common runtime argument. External functions therefore require no Metal DFB index and no additional runtime argument per DFB.
 
+An external compute adapter selects Metal numeric-index operations or address-based target operations using `TTLANG_DFB_STORAGE_COMPILER_SRAM` (0 for Metal, 1 for compiler-managed SRAM). Generated device code defines the marker before including the external header; architecture-specific operations remain behind `ttlang::l1::target`. Opaque C++ bodies are outside compiler compute analysis, so the enclosing operation declares any required compute configuration. [External functions](../sphinx/reference/external-functions.md#template-arguments) specifies the C++ interface.
+
 ```text
 bind(descriptor):
     stateAddress = target.arenaBase() + descriptor.stateOffset
