@@ -2942,7 +2942,7 @@ def build_dfb_reconfiguration_runtime_resources(
         ):
             reconfigured_storage_indices.add(storage_index)
 
-    hybrid_allocation = os.environ.get("TT_METAL_ALLOCATOR_MODE_HYBRID", "0") == "1"
+    hybrid_allocation = _per_core_l1_allocation_enabled()
 
     # Runtime backing removes reconfigured scratch from the static program
     # allocation, which cannot hold every epoch's capacity on every core. Local
@@ -2992,23 +2992,22 @@ def build_dfb_reconfiguration_runtime_resources(
             # A core can carry the DFB at launch without appearing in any
             # epoch, so the launch nodes join the epoch nodes rather than
             # filtering against them; storage is reserved per core over both.
-            if config.storage_segments and all(
-                segment.is_tensor_backed for segment in config.storage_segments
-            ):
-                launch_cores = set()
-            elif config.allocation_nodes is not None:
-                launch_cores = set(config.allocation_nodes)
-            elif config.storage_segments:
+            # Segments name each launch node's storage source, so only
+            # non-tensor-backed segment nodes need this storage.
+            if config.storage_segments:
                 launch_cores = {
                     node
                     for segment in config.storage_segments
                     if not segment.is_tensor_backed
                     for node in segment.nodes
                 }
+            elif config.allocation_nodes is not None:
+                launch_cores = set(config.allocation_nodes)
             else:
-                # A launch configuration that names no node carries no evidence
-                # of a core beyond the epochs, and reserving the whole grid for
-                # it exhausts L1 on programs that reconfigure wide buffers.
+                # An unknown launch domain adds no core. A core that uses the
+                # DFB outside the epochs keeps a static descriptor for it,
+                # which local storage permits and a remote_uniform DFB rejects
+                # at descriptor construction.
                 launch_cores = set()
             outside_nodes = launch_cores.difference(core_rows)
             if outside_nodes:
@@ -3111,11 +3110,8 @@ def build_dfb_reconfiguration_runtime_resources(
             continue
         if storage_index in per_core_storage_indices:
             for core, required_bytes in unbacked_required_bytes_by_core.items():
-                required_alignment = required_layout_by_core_by_storage[storage_index][
-                    core
-                ][1]
                 pending_local_members_by_core.setdefault(core, []).append(
-                    (storage_index, required_bytes, required_alignment)
+                    (storage_index, required_bytes)
                 )
         else:
             # A uniformly addressed storage index must remain one TT-Metal
@@ -3136,21 +3132,26 @@ def build_dfb_reconfiguration_runtime_resources(
 
     scratch_tensors = []
     owned_l1_buffer_addresses = set()
+    # DFB starts need the allocator's address alignment, as static placement
+    # uses; member sizes are already rounded to their page sizes.
+    address_alignment = int(ttnn.get_dram_alignment())
+    if address_alignment <= 0:
+        raise ValueError("TT-Metal reported an invalid DFB address alignment")
+    # One arena per core keeps a core's local storage in a single allocation, so
+    # an earlier storage index cannot fragment the intervals a later one needs.
+    # Each core's arena comes from that core's own allocator, so arenas are
+    # allocated in core order only for determinism.
     pending_local_arenas = []
-    for core, members in pending_local_members_by_core.items():
+    for core, members in sorted(pending_local_members_by_core.items()):
         next_offset = 0
         packed_members = []
-        for storage_index, required_bytes, required_alignment in sorted(
-            members, key=lambda member: (-member[2], -member[1], member[0])
+        for storage_index, required_bytes in sorted(
+            members, key=lambda member: (-member[1], member[0])
         ):
-            byte_offset = _align_up(next_offset, required_alignment)
+            byte_offset = _align_up(next_offset, address_alignment)
             packed_members.append((storage_index, required_bytes, byte_offset))
             next_offset = byte_offset + required_bytes
         pending_local_arenas.append((core, next_offset, packed_members))
-
-    # One arena per core keeps a core's local storage in a single allocation, so
-    # an earlier storage index cannot fragment the intervals a later one needs.
-    pending_local_arenas.sort(key=lambda arena: (-arena[1], arena[0]))
     for core, arena_bytes, packed_members in pending_local_arenas:
         scratch_tensor = _allocate_l1_sharded_storage_tensor(
             _make_singleton_core_ranges((core,)),

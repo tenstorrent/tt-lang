@@ -3505,6 +3505,146 @@ def test_reconfiguration_runtime_storage_offsets_packed_backing(monkeypatch):
     assert launch_offset_by_index == {0: 4096, 1: 0}
 
 
+def _hybrid_runtime_storage_environment(monkeypatch):
+    monkeypatch.setenv("TT_METAL_ALLOCATOR_MODE_HYBRID", "1")
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.uint32 = "uint32"
+    fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
+    fake_ttnn.ShardOrientation = type("ShardOrientation", (), {"ROW_MAJOR": 0})
+    fake_ttnn.TensorMemoryLayout = type("TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0})
+    fake_ttnn.BufferType = type("BufferType", (), {"L1": 0})
+    fake_ttnn.ShardSpec = lambda *args: args
+    fake_ttnn.MemoryConfig = lambda *args: SimpleNamespace(
+        experimental_set_per_core_allocation=lambda _value: None
+    )
+    device = object()
+    fake_ttnn.from_torch = lambda *_args, **_kwargs: _FakeTensor(device, address=0xA000)
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    allocations = []
+
+    def allocate_scratch(core_ranges, num_bytes, allocation_device, **_kwargs):
+        tensor = _FakeTensor(
+            allocation_device, address=0x8000 + 0x1000 * len(allocations)
+        )
+        cores = tuple(
+            sorted(
+                (int(core.x), int(core.y))
+                for core in fake_ttnn.corerange_to_cores(core_ranges)
+            )
+        )
+        allocations.append((cores, num_bytes, tensor))
+        return tensor
+
+    def l1_addresses(tensor, _device):
+        for cores, _num_bytes, scratch in allocations:
+            if tensor is scratch:
+                return {core: tensor.buffer_address() for core in cores}
+        return {(0, 0): 0xA000, (1, 0): 0xA000}
+
+    monkeypatch.setattr(
+        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_scratch
+    )
+    monkeypatch.setattr(kernel_runner, "_l1_buffer_addresses_by_core", l1_addresses)
+    return device, allocations
+
+
+# A launch node backed by a tensor needs no scratch even though the launch
+# configuration's allocation nodes include it.
+def test_reconfiguration_runtime_storage_skips_tensor_backed_launch_nodes(
+    monkeypatch,
+):
+    device, allocations = _hybrid_runtime_storage_environment(monkeypatch)
+    tensor_segment = DFBStorageSegment(nodes=((0, 0),), tensor_index=0, byte_size=2048)
+    launch = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (tensor_segment, DFBStorageSegment(nodes=((1, 0),))),
+        allocation_nodes=((0, 0), (1, 0)),
+        storage_index=0,
+    )
+    initial = PhysicalDFBConfig(
+        0, 1, "bfloat16", 1, 2048, (32, 32), (tensor_segment,), storage_index=0
+    )
+    scratch_epoch = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        (32, 32),
+        (DFBStorageSegment(nodes=((1, 0),)),),
+        storage_index=0,
+    )
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7, 8),
+        dfb_epochs=(
+            (
+                DFBConfigurationEpoch(None, initial),
+                DFBConfigurationEpoch(7, scratch_epoch),
+                DFBConfigurationEpoch(8, initial),
+            ),
+        ),
+    )
+    tensor = _FakeTensor(
+        device,
+        address=0xC000,
+        dtype=kernel_runner.format_name_to_ttnn_dtype("bfloat16"),
+    )
+
+    kernel_runner.build_dfb_reconfiguration_runtime_resources(
+        tensors=[tensor],
+        core_ranges=_FakeExplicitCoreRanges((0, 0), (1, 0)),
+        plan=plan,
+        device=device,
+        cb_configs=[launch],
+    )
+
+    assert [(cores, num_bytes) for cores, num_bytes, _ in allocations] == [
+        (((1, 0),), 2048)
+    ]
+
+
+# Arena members start at the DFB address alignment; page sizes of different
+# members do not add padding between them.
+def test_reconfiguration_runtime_storage_aligns_arena_members_to_address_alignment(
+    monkeypatch,
+):
+    device, allocations = _hybrid_runtime_storage_environment(monkeypatch)
+    wide = PhysicalDFBConfig(0, 2, "bfloat16", 1, 2048, (32, 32), storage_index=0)
+    block_float = PhysicalDFBConfig(
+        1, 1, "bfloat8_b", 1, 1088, (32, 32), storage_index=1
+    )
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=tuple(
+            (DFBConfigurationEpoch(None, config), DFBConfigurationEpoch(7, config))
+            for config in (wide, block_float)
+        ),
+    )
+
+    resources = kernel_runner.build_dfb_reconfiguration_runtime_resources(
+        tensors=[],
+        core_ranges=_FakeExplicitCoreRanges((0, 0), (0, 0)),
+        plan=plan,
+        device=device,
+        cb_configs=[wide, block_float],
+    )
+
+    assert [(cores, num_bytes) for cores, num_bytes, _ in allocations] == [
+        (((0, 0),), 5184)
+    ]
+    assert {
+        storage_index: [
+            (segment.byte_offset, segment.allocation_bytes) for segment in segments
+        ]
+        for storage_index, segments in resources.scratch_segments_by_index.items()
+    } == {0: [(0, 4096)], 1: [(4096, 1088)]}
+
+
 def test_reconfiguration_rejects_launch_formats_outside_the_plan(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     config = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32))
@@ -3702,7 +3842,7 @@ def test_reconfiguration_runtime_storage_splits_local_storage_per_core(
         dfb_reconfiguration_plan=plan,
     )
 
-    expected_allocations = [4096, 2048] if hybrid_allocation else [4096]
+    expected_allocations = [2048, 4096] if hybrid_allocation else [4096]
     expected_small_bytes = 2048 if hybrid_allocation else 4096
     assert [allocation[1] for allocation in scratch_allocations] == expected_allocations
     assert len(resources.scratch_tensors) == len(expected_allocations)
