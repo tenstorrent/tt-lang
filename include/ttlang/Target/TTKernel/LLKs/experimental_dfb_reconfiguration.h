@@ -30,6 +30,7 @@ namespace dfb_reconfiguration_detail {
 
 // Each core stores 64 four-word interface records, two active masks, three
 // arrival words, one release word, and two padding words in shared L1.
+constexpr uint32_t configurationWordsPerDFB = 4;
 constexpr uint32_t lowMaskWord = 256;
 constexpr uint32_t highMaskWord = 257;
 constexpr uint32_t synchronizationWord = 258;
@@ -203,7 +204,7 @@ FORCE_INLINE void applyMask(uint32_t tt_l1_ptr *configuration,
   uint32_t dfbIndex = firstDfbIndex;
   while (activeMask != 0) {
     if ((activeMask & 1U) != 0) {
-      uint32_t configurationOffset = dfbIndex * 4;
+      uint32_t configurationOffset = dfbIndex * configurationWordsPerDFB;
       uint32_t fifoAddress =
           resolveFifoAddress(dfbIndex, configuration[configurationOffset]);
       uint32_t fifoSize =
@@ -242,8 +243,8 @@ struct ApplyStaticConfigurations<updateReadPointer, updateWritePointer,
                                  dfbIndex, totalBytes, numPages, pageBytes,
                                  remaining...> {
   static FORCE_INLINE void run(uint32_t tt_l1_ptr *configuration) {
-    uint32_t fifoAddress =
-        resolveFifoAddress(dfbIndex, configuration[dfbIndex * 4]);
+    uint32_t fifoAddress = resolveFifoAddress(
+        dfbIndex, configuration[dfbIndex * configurationWordsPerDFB]);
     applyInterfaceConfiguration<updateReadPointer, updateWritePointer,
                                 updateWriteTilePointer, resetStreamCounters>(
         dfbIndex, fifoAddress, totalBytes >> cb_addr_shift, numPages,

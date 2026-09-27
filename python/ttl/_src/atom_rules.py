@@ -393,6 +393,6 @@ def validate_resource_declarations(
         raise ValueError(
             f"@ttl.operation {operation_name!r}: resource declaration "
             f"{unhoistable.factory!r} must be a simple top-level assignment in the "
-            "operation body; declarations inside control flow, callbacks, or "
-            "nested scopes are not supported"
+            "operation body; declarations inside loops, runtime-dependent "
+            "branches, callbacks, or nested scopes are not supported"
         )

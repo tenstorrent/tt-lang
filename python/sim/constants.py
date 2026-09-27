@@ -3,10 +3,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 """
-Constants for the dfbsim module.
+Constants for the simulator.
 """
 
 from .typedefs import Shape
+
+BACKEND_PYTHON = "python"
+BACKEND_EMULE = "emule"
 
 # Private tile size - use TILE_SHAPE in external code
 _TILE_SIZE = 32  # Standard tile dimensions (32x32)

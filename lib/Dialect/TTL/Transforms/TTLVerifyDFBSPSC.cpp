@@ -96,11 +96,12 @@ void attachCommonNotes(InFlightDiagnostic &diag, Operation *bindSite,
                        llvm::StringRef role) {
   if (role == "producer") {
     diag.attachNote()
-        << "only one kernel may produce a DFB on each launched node";
+        << "only one kernel may produce a DFB on each launched node; declare "
+           "one DFB per producer kernel";
   } else {
     diag.attachNote()
         << "only one kernel may advance a DFB read pointer on each launched "
-           "node";
+           "node; declare one DFB per consumer kernel";
   }
   if (bindSite) {
     diag.attachNote(bindSite->getLoc()) << "dataflow buffer declared here";
