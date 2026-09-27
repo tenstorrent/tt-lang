@@ -398,8 +398,8 @@ struct TTLVerifyDFBSPSCPass
     }
     for (auto &entry : readPointerOwnersByDFB) {
       sawError |= verifyParticipantSet(
-          entry.first, entry.second, bindSites.lookup(entry.first), "consumer",
-          "performed a consumer action");
+          entry.first, entry.second, bindSites.lookup(entry.first),
+          "read-pointer owner", "advanced the read pointer");
     }
 
     if (sawError) {

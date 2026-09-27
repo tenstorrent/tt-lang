@@ -231,10 +231,12 @@ different physical DFB index because that sharing would make its address depend
 on the other index's node domain.
 
 Operation tensors allocated per core bind each executing core's own shard
-address in its kernel descriptor. A core outside the shard grid addresses such
-a tensor remotely and receives the one address every owner core holds, as a
-lockstep allocation would provide; descriptor construction fails when the
-owner addresses differ. Local access to a per-core tensor still requires a
+address in its kernel descriptor, so a kernel given only that address must
+access its own shard. Remote access needs the one address every owner core
+holds, as a lockstep allocation would provide. A core outside the shard grid
+receives that address, and so does a kernel that addresses the tensor through
+a `TensorAccessor`; descriptor construction fails when the owner addresses
+differ. Local access to a per-core tensor still requires a
 shard on every executing core.
 
 TT-Metal allocates static descriptor storage in descriptor order. It maintains
@@ -260,8 +262,12 @@ allocator gaps and could overestimate the available range.
 Tensor-backed and already allocated computed-address storage do not advance the
 static frontiers. For a multi-device mesh, tensor and runtime-resource
 allocations can constrain the usable interval differently on each logical
-core. The runtime applies the reference allocator's global minimum remaining
-interval to every logical core when a descriptor requires a common address.
+core. When no per-core DFB placement is resolved, because the program carries
+neither per-core DFB use metadata, allocation domains, nor reconfiguration
+scratch segments, the runtime applies the reference allocator's global minimum
+remaining interval to every logical core. The compile-time budget is always
+this device-wide minimum, so a per-core tensor on a core the operation does not
+launch on can still lower it.
 The correctness invariant is that every surviving DFB access has one compatible
 descriptor on its launch core; conservative metadata preserves the
 whole-program descriptor behavior when this cannot be proved.
@@ -729,9 +735,9 @@ observer:                    wait -> read -> signal complete
 pop owner:                   wait -> read -> wait for observer -> pop
 ```
 
-Kimi reduce-to-all uses the second form: compute and data movement both read
-published chunks, while one data-movement kernel owns the pop. The protocol
-orders that pop after the compute read. The liveness analysis includes every
+For example, a reduction in which compute and data movement both read each
+published chunk uses the second form: one data-movement kernel owns the pop, and
+the protocol orders that pop after the compute read. The liveness analysis includes every
 wait and read when it proves that a pop or state-discarding reconfiguration ends
 the DFB lifecycle.
 
