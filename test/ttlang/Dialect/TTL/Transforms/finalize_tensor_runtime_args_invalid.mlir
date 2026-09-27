@@ -1,3 +1,4 @@
+// Invalid runtime tensor indices and compiler-SRAM metadata fail before argument compaction.
 // RUN: ttlang-opt %s --ttkernel-finalize-tensor-runtime-args --verify-diagnostics --split-input-file
 
 // A local accessor must retain structural tensor identity.
@@ -103,6 +104,34 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
       attributes {ttl.crta_indices = [0],
                   ttl.kernel_thread = #ttkernel.thread<noc>} {
     // expected-error @below {{'ttkernel.get_compile_time_arg_val' op compiler-sram tensor backing references tensor 7 which is absent from the kernel's common tensor arguments}}
+    %dfb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
+    return
+  }
+}
+
+// -----
+
+// An external descriptor cannot classify a non-dictionary allocation as compiler-owned.
+module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [42 : i32]} {
+  func.func @opaque_call_non_dictionary_allocation()
+      attributes {ttl.crta_indices = [7],
+                  ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{'ttkernel.opaque_call' op has invalid compiler-sram tensor-backing metadata}}
+    ttkernel.opaque_call "consume" template_args [#ttkernel.dfb_descriptor<0, 1, 1, 2048>] () {dfb_resource_indices = array<i32: 0>, header = "consume.hpp"} : () -> ()
+    return
+  }
+}
+
+// -----
+
+// A present storage-segment field must have the array type used by tensor backing.
+module attributes {ttl.memory_model = "compiler-sram", ttl.dfb_allocations = [
+  {storage_segments = 7 : i32}
+]} {
+  func.func @invalid_storage_segments_type()
+      attributes {ttl.crta_indices = [7],
+                  ttl.kernel_thread = #ttkernel.thread<noc>} {
+    // expected-error @below {{'ttkernel.get_compile_time_arg_val' op has invalid compiler-sram tensor-backing metadata}}
     %dfb = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bf16>>
     return
   }
