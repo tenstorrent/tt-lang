@@ -2865,7 +2865,8 @@ def build_dfb_reconfiguration_runtime_resources(
     existing_backing_tensors: Optional[Dict[int, Any]] = None,
     existing_backing_allocation_bytes: Optional[Dict[int, int]] = None,
     device: Optional[Any] = None,
-    cb_configs: Optional[List[PhysicalDFBConfig]] = None,
+    *,
+    cb_configs: List[PhysicalDFBConfig],
 ) -> DFBReconfigurationRuntimeResources:
     """Build storage and configuration resources for DFB reconfiguration."""
     if plan is None:
@@ -2975,61 +2976,56 @@ def build_dfb_reconfiguration_runtime_resources(
                 math.lcm(current_alignment, scratch_alignment),
             )
 
-    # The launch configuration can exceed every epoch's capacity, and its
-    # descriptor is built from the same backing tensor.
-    if cb_configs is not None:
-        if len(cb_configs) != len(plan.dfb_epochs):
+    # The launch descriptor is built from the same backing tensor as the epochs.
+    if len(cb_configs) != len(plan.dfb_epochs):
+        raise ValueError(
+            "launch DFB configuration count does not match the " "reconfiguration plan"
+        )
+    for dfb_index, config in enumerate(cb_configs):
+        storage_index = storage_index_by_dfb[dfb_index]
+        if storage_index not in runtime_backed_storage_indices:
+            continue
+        allocation = _get_dfb_allocation(config)
+        required_layout_by_core = required_layout_by_core_by_storage[storage_index]
+        # A core can carry the DFB at launch without appearing in any
+        # epoch, so the launch nodes join the epoch nodes rather than
+        # filtering against them; storage is reserved per core over both.
+        # Segments name each launch node's storage source, so only
+        # non-tensor-backed segment nodes need this storage.
+        if config.storage_segments:
+            launch_cores = {
+                node
+                for segment in config.storage_segments
+                if not segment.is_tensor_backed
+                for node in segment.nodes
+            }
+        elif config.allocation_nodes is not None:
+            launch_cores = set(config.allocation_nodes)
+        else:
+            # An unknown launch domain adds no core. A core that uses the
+            # DFB outside the epochs keeps a static descriptor for it,
+            # which local storage permits and a remote_uniform DFB rejects
+            # at descriptor construction.
+            launch_cores = set()
+        outside_nodes = launch_cores.difference(core_rows)
+        if outside_nodes:
+            outside_node = min(outside_nodes)
             raise ValueError(
-                "launch DFB configuration count does not match the "
-                "reconfiguration plan"
+                f"DFB[{dfb_index}] configuration references launch node "
+                f"{outside_node} outside the kernel grid"
             )
-        for dfb_index, config in enumerate(cb_configs):
-            storage_index = storage_index_by_dfb[dfb_index]
-            if storage_index not in runtime_backed_storage_indices:
-                continue
-            allocation = _get_dfb_allocation(config)
-            required_layout_by_core = required_layout_by_core_by_storage[storage_index]
-            # A core can carry the DFB at launch without appearing in any
-            # epoch, so the launch nodes join the epoch nodes rather than
-            # filtering against them; storage is reserved per core over both.
-            # Segments name each launch node's storage source, so only
-            # non-tensor-backed segment nodes need this storage.
-            if config.storage_segments:
-                launch_cores = {
-                    node
-                    for segment in config.storage_segments
-                    if not segment.is_tensor_backed
-                    for node in segment.nodes
-                }
-            elif config.allocation_nodes is not None:
-                launch_cores = set(config.allocation_nodes)
-            else:
-                # An unknown launch domain adds no core. A core that uses the
-                # DFB outside the epochs keeps a static descriptor for it,
-                # which local storage permits and a remote_uniform DFB rejects
-                # at descriptor construction.
-                launch_cores = set()
-            outside_nodes = launch_cores.difference(core_rows)
-            if outside_nodes:
-                outside_node = min(outside_nodes)
-                raise ValueError(
-                    f"DFB[{dfb_index}] configuration references launch node "
-                    f"{outside_node} outside the kernel grid"
+        scratch_layout_by_core = scratch_layout_by_core_by_dfb[dfb_index]
+        for core in launch_cores.union(scratch_layout_by_core):
+            current_size, current_alignment = required_layout_by_core.get(core, (0, 1))
+            required_layout_by_core[core] = (
+                max(current_size, allocation.total_size),
+                math.lcm(current_alignment, allocation.page_size),
+            )
+            if core not in scratch_layout_by_core:
+                scratch_layout_by_core[core] = (
+                    allocation.total_size,
+                    allocation.page_size,
                 )
-            scratch_layout_by_core = scratch_layout_by_core_by_dfb[dfb_index]
-            for core in launch_cores.union(scratch_layout_by_core):
-                current_size, current_alignment = required_layout_by_core.get(
-                    core, (0, 1)
-                )
-                required_layout_by_core[core] = (
-                    max(current_size, allocation.total_size),
-                    math.lcm(current_alignment, allocation.page_size),
-                )
-                if core not in scratch_layout_by_core:
-                    scratch_layout_by_core[core] = (
-                        allocation.total_size,
-                        allocation.page_size,
-                    )
 
     required_bytes_by_core_by_storage = {
         storage_index: {
