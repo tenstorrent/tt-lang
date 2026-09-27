@@ -2709,8 +2709,7 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
         auto addConservativeNodeConfigurations =
             [&](const DFBPerNodeLifetime &lifetime) -> LogicalResult {
           if (!lifetime.mayBeActive ||
-              (lifetime.completionProof.proven() &&
-               !lifetime.epochs.empty())) {
+              (lifetime.completionProof.proven() && !lifetime.epochs.empty())) {
             return success();
           }
           if (!liveness.hasExactLaunchGrid()) {
@@ -2725,16 +2724,15 @@ buildDescriptors(ArrayRef<DFBPhysicalIndexAssignment> assignments,
           }
           LaunchNodeDomain nodeDomain;
           nodeDomain.nodes.insert(lifetime.node);
-          if (!lifetime.conservativeConfigurationEpochs.empty()) {
+          if (lifetime.conservativeConfigurationEpochs) {
             for (std::optional<int64_t> ordinal :
-                 lifetime.conservativeConfigurationEpochs) {
+                 *lifetime.conservativeConfigurationEpochs) {
               if (failed(addConfiguration(candidate, ordinal, nodeDomain))) {
                 return failure();
               }
             }
           } else {
-            if (failed(addConfiguration(candidate, std::nullopt,
-                                        nodeDomain))) {
+            if (failed(addConfiguration(candidate, std::nullopt, nodeDomain))) {
               return failure();
             }
             for (int64_t ordinal :

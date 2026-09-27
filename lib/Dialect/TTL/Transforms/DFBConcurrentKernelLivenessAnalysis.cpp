@@ -699,8 +699,7 @@ static bool isBoundedOptionalUseAtReconfiguration(
   std::optional<BoundaryParticipantIteration> participant =
       getBoundaryParticipantIteration(reconfiguration, access.operation);
   if (runIt == accessRuns.end() || !participant ||
-      runIt->second.conditionalExecution ||
-      runIt->second.executionCount == 0 ||
+      runIt->second.conditionalExecution || runIt->second.executionCount == 0 ||
       runIt->second.executionCount > reconfiguration.executionCount) {
     return false;
   }
@@ -3094,12 +3093,10 @@ static bool proveAlignedAcquireReleaseRuns(
   return true;
 }
 
-static bool
-isSubsetOfUnconditionalIterations(const AccessRun &use,
-                                  const AccessRun &unconditional) {
+static bool isSubsetOfUnconditionalIterations(const AccessRun &use,
+                                              const AccessRun &unconditional) {
   if (use.conditionalExecution || unconditional.conditionalExecution ||
-      use.executionCount == 0 ||
-      unconditional.executionCount <= 1 ||
+      use.executionCount == 0 || unconditional.executionCount <= 1 ||
       use.executionCount > unconditional.executionCount) {
     return false;
   }
@@ -3139,9 +3136,9 @@ runIsInsideInterval(const AccessRun &use, const AccessRun &acquire,
                                   structuralOrder);
 }
 
-static bool completesBeforeLastRelease(
-    const AccessRun &use, const AccessRun &release,
-    const StructuralOperationOrder &structuralOrder) {
+static bool
+completesBeforeLastRelease(const AccessRun &use, const AccessRun &release,
+                           const StructuralOperationOrder &structuralOrder) {
   if (use.executionCount >= release.executionCount ||
       !isSubsetOfUnconditionalIterations(use, release) ||
       !isa<CBPushOp, CBPopOp>(release.access->operation) ||
@@ -5025,16 +5022,20 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
     epochAccesses[epochIndex].push_back(&access);
   }
 
+  SmallVector<std::optional<int64_t>> &conservativeEpochs =
+      lifetime.conservativeConfigurationEpochs.emplace();
+  auto addConservativeEpoch = [&](std::optional<int64_t> ordinal) {
+    if (!llvm::is_contained(conservativeEpochs, ordinal)) {
+      conservativeEpochs.push_back(ordinal);
+    }
+  };
   bool mayRetainState = false;
   std::optional<int64_t> configurationOrdinal;
   for (unsigned intervalIndex = 0; intervalIndex < epochAccesses.size();
        ++intervalIndex) {
     mayRetainState |= !epochAccesses[intervalIndex].empty();
-    if (mayRetainState &&
-        !llvm::is_contained(lifetime.conservativeConfigurationEpochs,
-                            configurationOrdinal)) {
-      lifetime.conservativeConfigurationEpochs.push_back(
-          configurationOrdinal);
+    if (mayRetainState) {
+      addConservativeEpoch(configurationOrdinal);
     }
     if (intervalIndex == boundaries.size()) {
       break;
@@ -5046,6 +5047,12 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
             boundaries[intervalIndex].reconfiguration) {
       configurationOrdinal = reconfiguration->boundary.getOrdinal();
     }
+  }
+
+  // After the first iteration, accesses before the first boundary run under the
+  // configuration that the last boundary installs.
+  if (repeatedReconfigurationCount && !epochAccesses.front().empty()) {
+    addConservativeEpoch(configurationOrdinal);
   }
 
   if (repeatedReconfigurationCount && !epochAccesses.back().empty()) {
