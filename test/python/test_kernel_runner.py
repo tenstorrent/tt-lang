@@ -2570,6 +2570,37 @@ def test_shared_sram_backing_fails_before_arena_allocation(monkeypatch):
         )
 
 
+def test_compiler_sram_validates_capacity_before_arena_sizing(monkeypatch):
+    monkeypatch.setattr(
+        kernel_runner,
+        "_allocate_l1_sharded_storage_tensor",
+        lambda *_args, **_kwargs: pytest.fail(
+            "SRAM allocated before metadata validation"
+        ),
+    )
+    config = PhysicalDFBConfig(
+        0,
+        1,
+        "bfloat16",
+        1,
+        2048,
+        None,
+        l1_offset=0,
+        l1_payload_offset=64,
+        l1_allocation_bytes=2048,
+        storage_capacity_pages="invalid",
+    )
+
+    with pytest.raises(ValueError, match="storage_capacity_pages must be an integer"):
+        kernel_runner.run_kernel_on_device(
+            kernel_specs=[],
+            tensors=[],
+            cb_configs=[config],
+            core_ranges=_FakeCoreRanges(),
+            memory_model="compiler-sram",
+        )
+
+
 def test_cached_resources_preserve_sram_backing_handoffs(monkeypatch):
     fake_ttnn = _FakeTTNN()
     monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)

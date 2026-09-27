@@ -4740,6 +4740,8 @@ def run_kernel_on_device(
         extent=(None if device_domain is None else device_domain.flattened_extent),
         extent_name="device domain",
     )
+    for physical_index, config in enumerate(cb_configs):
+        _validate_physical_dfb_config(config, physical_index)
     compiler_l1_arena_bytes = _get_compiler_l1_arena_bytes(
         cb_configs, memory_model, sram_reconfiguration_resets
     )
@@ -4764,8 +4766,6 @@ def run_kernel_on_device(
                 "compiler-sram cannot combine with PipeNet or Metal DFB "
                 "reconfiguration resources"
             )
-        for physical_index, config in enumerate(cb_configs):
-            _validate_physical_dfb_config(config, physical_index)
         _validate_tensor_backing_aliases(tensors, cb_configs, compiler_sram=True)
     arguments = {
         "kernel_specs": kernel_specs,
