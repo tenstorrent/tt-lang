@@ -284,10 +284,13 @@ reset_operation = make_reset_operation()
 The same `DFBReset` value identifies the three occurrences as one dynamic
 boundary. `ttl.reset_all_dfbs(reset_boundary)` provides the same boundary for
 every allocated physical DFB index. A declaration contains exactly one compute
-kernel and two data movement kernels. It executes once per dispatch and launch
-node, or once per iteration of the same immutable sequential loop nest in all
-participants. Conditional occurrences must use equivalent structured conditions
-on all participants and cannot form a repeated reset run.
+kernel and two data movement kernels. On each launch node, every participant
+executes it the same compile-time-known number of times: at most once, or once
+per iteration of one sequential loop with a compile-time-known trip count. The
+count may depend on the launch node but not on runtime values. A reset under a
+condition on a runtime value, such as a dispatch-condition result, or in nested
+loops is a compilation error because the lifecycle checks in
+[Verification](#verification) do not cover DFB transactions across it.
 
 The compiler treats the interval before the first reset, each interval between
 resets, and the interval after the last reset as separate allocation epochs.
@@ -301,8 +304,8 @@ occupancy or opaque external state and terminates the old lifecycle with zero
 occupancy and ring pointers at the descriptor base. A later lifecycle can then
 reuse the physical index when its launch-node domain, storage, element type, and
 other allocation constraints are compatible. Missing participants, nonuniform
-or mismatched repeated sequences, mismatched conditions or target sets, other
-incomplete protocols, and unordered boundaries are compilation errors.
+or mismatched repeated sequences, mismatched execution counts or target sets,
+other incomplete protocols, and unordered boundaries are compilation errors.
 
 On Blackhole, `convert-ttl-to-ttkernel` lowers each occurrence to
 `experimental::reset_dfb_interfaces(state_address, low_mask, high_mask)` from
@@ -329,14 +332,14 @@ outstanding commands. Runtime lowering is currently restricted to Blackhole.
 
 A `DFBReconfiguration` declares one compute kernel and two data-movement
 kernels that must execute the same worker-local descriptor update. Each
-participant calls `ttl.reconfigure_dfbs` for that declaration. A call may
-execute at most once per dispatch and launch node. Repeated execution is
-supported inside nested sequential loops with compile-time-known trip counts
-when each iteration contains at least two ordered reconfiguration calls. The
-corresponding calls in every participant must use equivalent loop nests and
-appear in the same order. All declarations in one module use the same
-participant set. Conditional execution is supported only for non-repeated
-calls whose participant conditions are equivalent. Runtime execution is
+participant calls `ttl.reconfigure_dfbs` for that declaration. On each launch
+node, a call executes at most once, or once per iteration of one sequential
+loop with a compile-time-known trip count when each iteration contains at least
+two ordered reconfiguration calls. The count may depend on the launch node but
+not on runtime values. The corresponding calls in every participant must use
+equivalent loops and appear in the same order. All declarations in one module
+use the same participant set. A call under a condition on a runtime value or in
+nested loops is a compilation error, as for resets. Runtime execution is
 restricted to Blackhole.
 
 The declaration captures the participating logical kernels. Each participant
@@ -430,10 +433,7 @@ loop bounds may locate a conditional external call between the same two
 reconfiguration calls in every iteration. The bounds contribute access ordering
 and maximum execution counts; the normal capacity, wait-progress, pointer
 ownership, and operation-order checks still apply. Every reconfiguration in the
-repeated sequence must permit state discard. A lifecycle that begins after a
-conditional non-repeated reconfiguration call must use the same condition so it
-cannot access a descriptor that was not configured. Accesses ended by a
-conditional state-discarding call must use that condition as well.
+repeated sequence must permit state discard.
 
 The allocation conflict graph permits two lifecycle epochs to share a physical
 index only when their per-node active epochs are disjoint and their static
@@ -725,25 +725,26 @@ publications, so a wait that only its own later publication can satisfy
 deadlocks without a diagnostic (the simulator reports it). Across kernels,
 waits and pops cannot exceed pushes and unpopped pushes must fit capacity, in
 every interval between restorations of the DFB; where the pops are
-conditional on a value other than a dispatch condition, the exact wait counts
-stand in for them. A region whose execution the counts do not resolve makes
-unknown only the counters its effects change, so the other counters of that
-DFB stay checked.
+conditional, the exact wait counts stand in for them. A region whose execution
+the counts do not resolve makes unknown only the counters its effects change,
+so the other counters of that DFB stay checked.
 
 Opaque-call summaries count only their pushes and pops, since their reserve
 and wait amounts are readiness thresholds; such a release first closes the
-open user acquisition of its kind in the current interval of each alternative,
-and its remainder is a self-contained transfer. Waits stand in for pops only
-where every pop is a user pop.
+open user acquisition of its kind in the current interval, and its remainder
+is a self-contained transfer. Waits stand in for pops only where every pop is a
+user pop.
 
 Every participant kernel waits at a synchronized reset or reconfiguration
-until all of them arrive, so each such barrier splits the sequence of every
-DFB of the kernel into segments. The transactions before a barrier must
-complete among themselves: across kernels, the waits before it cannot exceed
-the pushes before it, and the reserved blocks not popped before it cannot
-exceed capacity. A barrier restores only some DFBs, and a DFB's state
-continues across a barrier that does not restore it. Between restorations the
-checks above apply, and only the last interval must close. The restored DFBs
+until all of them arrive, so the transactions before a barrier must complete
+among themselves, for every DFB and whether or not the barrier restores it:
+across kernels, the waits before the barrier cannot exceed the pushes before
+it, and the reserved blocks not popped before it cannot exceed capacity, both
+counted from the DFB's last restoration. The verifier records each kernel's
+effects on a DFB between consecutive barriers as one segment, marked with
+whether the barrier that starts it restores the DFB. A DFB's state continues
+across a barrier that does not restore it. Between restorations the checks
+above apply, and only the last interval must close. The restored DFBs
 are those whose physical index the runtime resets on the node, not those the
 operation names. A reset restores the interfaces of its lowered mask, which
 reset lowering and the verifier compute with the same function
@@ -755,27 +756,27 @@ boundary, or whose lifecycle allocation cannot bound; such a DFB keeps its
 pointers and counters although the boundary declares `discard_dfb_state`, and
 its sequence continues across the boundary.
 
-An `scf.if` the counts do not resolve yields one alternative per branch, and
-one for skipping it when it has no `else` region, for every DFB when it
-contains a barrier and for the DFBs it touches when its condition is a
-dispatch-condition formula. A condition on any other value may be correlated
-with conditions in other kernels in ways the formulas do not state, so those
-DFBs stay unknown instead. An alternative records its segments and its path
-condition, a Boolean formula over dispatch-condition results kept as a reduced
-ordered binary decision diagram (`DispatchConditionFormulas`), so equivalence
-and satisfiability are exact within the diagram's node budget; a formula
-beyond the budget is never proven equivalent and is treated as satisfiable.
-Alternatives with the same sequence merge under the disjunction of their path
-conditions, and two alternatives combine, within a kernel or across kernels,
-only when the conjunction of their path conditions is satisfiable. Every
-alternative must pass, and every satisfiable combination of the kernels'
-alternatives that pass the same barriers is checked. The budgets
-`kMaxAlternatives` and `kMaxSegments` in `TTLVerifyDFBLifecycle.cpp` bound
-the alternatives and the segments; beyond them, or when an unresolved loop
-contains a barrier that restores the DFB, the DFB is unknown in that kernel
-and the cross-kernel conditions of that DFB are not checked on the node. More
-cross-kernel combinations than `kMaxAlternatives` leave only that comparison
-undone.
+A kernel has one sequence per DFB. A region containing a barrier whose
+execution the counts do not resolve makes every DFB of the kernel unknown. A
+loop whose body contains a barrier has a compile-time-known trip count `N`,
+because the liveness analysis rejects other barrier loops. The pass summarizes
+the first iteration and one later iteration with the loop index bound, and lays
+out only the iterations that decide a check. For a DFB that a barrier in the body
+restores, these are iterations 0, 1, and 2, because every later iteration
+repeats iteration 2 from the same state. For any other DFB, they are
+iterations 0, 1, and `N - 1`, with iterations 2 through `N - 2` folded into
+one summary: its totals at each barrier change linearly from iteration 1, so
+they reach their extremes at iteration 1 or `N - 1`. The later iterations share
+one summary only when every condition on the loop index that controls effects
+or barriers has one outcome in all of them, which the pass proves for a
+comparison of the index with a value that is constant on the node; otherwise
+every DFB of the kernel is unknown. Every participant executes the same loop,
+so the layouts align across kernels, and the cost does not depend on `N`.
+`kMaxSegments` in `TTLVerifyDFBLifecycle.cpp` bounds the segments of one
+sequence; beyond it the DFB is unknown in that kernel. A DFB is not compared
+across kernels on a node when a kernel's pushes, or both its pops and its
+waits, are unknown there, or when the kernels' sequences do not pass the same
+barriers.
 
 The pass reuses the existing analyses rather than interpreting control flow
 itself: `LaunchNodeDomainAnalysis` supplies the nodes where each effect and
@@ -1819,10 +1820,10 @@ otherwise the receiver publishes its TT-Metal-assigned address.
 A synchronized reset declaration in an immutable sequential `scf.for` or
 `affine.for` loop denotes one collective reset instance per iteration. Every
 participant must execute once in each iteration on the same launch node and
-must have the same nested trip-count sequence. Unknown counts, conditional
-iterations, non-sequential loops, participant-count differences, and target-set
-differences are rejected because they cannot establish corresponding collective
-instances.
+must have the same trip count. Unknown counts, conditional iterations,
+non-sequential loops, participant-count differences, and target-set differences
+are rejected because they cannot establish corresponding collective instances.
+Nested loops are rejected because the lifecycle checks do not cover them.
 
 The liveness analysis represents the first and last reset instances without
 expanding the happens-before graph by the trip count. A DFB receives a repeated
@@ -2821,6 +2822,18 @@ with releases before finalization.
   allocation only when acceptance requires the search result; proven
   infeasibility reports a capacity failure. DRAM spilling is tracked by
   [#809](https://github.com/tenstorrent/tt-lang/issues/809).
+
+- **Barrier placement.** A synchronized reset or reconfiguration must execute
+  a compile-time-known number of times on each launch node, in at most one
+  loop. Checking DFB transactions across a barrier under a condition on a
+  runtime value, or in nested loops, requires per-condition sequences or
+  per-iteration layouts that the lifecycle verifier does not build; this is
+  tracked by [#1113](https://github.com/tenstorrent/tt-lang/issues/1113).
+  Within one kernel, the verifier also leaves a DFB unknown under a condition
+  on a dispatch-condition result
+  ([#1115](https://github.com/tenstorrent/tt-lang/issues/1115)) and under a
+  condition on the index of a barrier loop whose outcome changes after the
+  first iteration ([#1116](https://github.com/tenstorrent/tt-lang/issues/1116)).
 
 - **Reachability cost.** Each launch node runs one graph traversal from every
   modeled entry, completion, and external-effect event. For `V` events and `E`

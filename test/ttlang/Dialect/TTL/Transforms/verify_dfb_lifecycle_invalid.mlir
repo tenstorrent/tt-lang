@@ -27,7 +27,6 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 }
 
 // -----
-
 // A published block is not reusable until its consumer pops it.
 
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
@@ -56,7 +55,6 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 }
 
 // -----
-
 // Endpoint surplus can fit the DFB while the ordered producer prefix exceeds
 // capacity before the consumer transaction executes.
 
@@ -89,7 +87,6 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 }
 
 // -----
-
 // Equal endpoint counts do not make a sequential producer prefix safe.
 
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
@@ -120,7 +117,6 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 }
 
 // -----
-
 // A wait does not release capacity until its matching pop executes.
 
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
@@ -152,7 +148,6 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 }
 
 // -----
-
 // Repeated producer-side Pipe sends exceed capacity when no consumer returns a
 // slot.
 
@@ -186,7 +181,6 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 }
 
 // -----
-
 // A distinct consumer cannot release capacity when the producer opens more
 // reserve transactions than capacity before publishing any of them.
 
@@ -225,7 +219,6 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 }
 
 // -----
-
 // A distinct producer cannot publish more data when the consumer opens more
 // wait transactions than capacity before releasing any of them.
 
@@ -264,7 +257,6 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 }
 
 // -----
-
 // Equal launch-node domains do not prove capacity safety. Five producer
 // acquisitions and one consumer acquisition exceed capacity on core (0, 0).
 
@@ -312,7 +304,6 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 }
 
 // -----
-
 // Multiple producer sites are checked in order when a wait separates them.
 
 module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
@@ -352,7 +343,6 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 }
 
 // -----
-
 // An `inspect` contract declares that the callee performs no protocol
 // actions, so it does not exempt the node from verification.
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
@@ -394,7 +384,6 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 }
 
 // -----
-
 // A release without a preceding acquisition is rejected even when the DFB has
 // no acquisition anywhere in the module.
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
@@ -411,7 +400,6 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 }
 
 // -----
-
 // The nodes an opaque call may execute on are its domain's upper bound. A call
 // under a node predicate and a runtime condition excludes only the predicate's
 // nodes; the other node is still verified.
@@ -445,7 +433,6 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
 }
 
 // -----
-
 // Opaque-call pushes count toward the totals: three pushed blocks against one
 // pop leave two blocks outstanding in a one-block DFB.
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
@@ -477,7 +464,6 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 }
 
 // -----
-
 // A synchronized reset starts a new interval; the surplus before it is still
 // checked against capacity.
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttcore.arch<blackhole>} {
@@ -522,7 +508,6 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttco
 }
 
 // -----
-
 // A synchronized reset at the start of the launch does not exempt the
 // interval after it.
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttcore.arch<blackhole>} {
@@ -569,7 +554,6 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttco
 }
 
 // -----
-
 // An opaque summary on the same DFB does not hide the kernel's own held
 // waits; the totals balance (four pushes, three user pops and one opaque pop).
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
@@ -608,7 +592,6 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 }
 
 // -----
-
 // Unconditional waits are compared with the pushes when the pops are
 // conditional: the third wait never completes.
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
@@ -646,131 +629,6 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 }
 
 // -----
-
-// A reset under a dispatch condition may or may not execute; the surplus
-// before it is checked in the alternative where it does.
-module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttcore.arch<blackhole>} {
-  func.func @reader()
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">,
-                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
-                  ttl.crta_indices = []} {
-    // expected-note @+1 {{dataflow buffer declared here}}
-    %stale = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %flag = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
-    %zero_i32 = arith.constant 0 : i32
-    %active = arith.cmpi ne, %flag, %zero_i32 : i32
-    %zero = arith.constant 0 : index
-    %one = arith.constant 1 : index
-    %four = arith.constant 4 : index
-    scf.for %iteration = %zero to %four step %one {
-      // expected-error @below {{logical DFB 0 has capacity-unsafe producer and consumer transactions on core_x=0, core_y=0}}
-      // expected-note @below {{the producer pushes 4 block(s) per launch and the consumer pops 0, leaving 4 outstanding block(s) for capacity 1}}
-      // expected-note @+6 {{in the interval that ends at this synchronized reset or reconfiguration, which restores the DFB}}
-      // expected-note @below {{keep pops within pushes and unpopped blocks within DFB capacity on every active node}}
-      %slot = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-      ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    }
-    scf.if %active {
-      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-    }
-    return
-  }
-
-  func.func @compute()
-      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "reset_test">,
-                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-    %stale = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %flag = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
-    %zero_i32 = arith.constant 0 : i32
-    %active = arith.cmpi ne, %flag, %zero_i32 : i32
-    scf.if %active {
-      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-    }
-    return
-  }
-
-  func.func @writer()
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "reset_test">,
-                  ttl.noc_index = 1 : i32, ttl.base_cta_index = 2 : i32,
-                  ttl.crta_indices = []} {
-    %stale = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %flag = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
-    %zero_i32 = arith.constant 0 : i32
-    %active = arith.cmpi ne, %flag, %zero_i32 : i32
-    scf.if %active {
-      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-    }
-    return
-  }
-}
-
-// -----
-
-// A reset under a dispatch condition at the start of the launch does not
-// exempt the surplus after it.
-module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttcore.arch<blackhole>} {
-  func.func @reader()
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">,
-                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
-                  ttl.crta_indices = []} {
-    // expected-note @+1 {{dataflow buffer declared here}}
-    %stale = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %flag = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
-    %zero_i32 = arith.constant 0 : i32
-    %active = arith.cmpi ne, %flag, %zero_i32 : i32
-    scf.if %active {
-      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-    }
-    %zero = arith.constant 0 : index
-    %one = arith.constant 1 : index
-    %four = arith.constant 4 : index
-    scf.for %iteration = %zero to %four step %one {
-      // expected-error @below {{logical DFB 0 has capacity-unsafe producer and consumer transactions on core_x=0, core_y=0}}
-      // expected-note @below {{the producer pushes 4 block(s) per launch and the consumer pops 0, leaving 4 outstanding block(s) for capacity 1}}
-      // expected-note @-8 {{in the interval that starts at this synchronized reset or reconfiguration, which restores the DFB}}
-      // expected-note @below {{keep pops within pushes and unpopped blocks within DFB capacity on every active node}}
-      %slot = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-      ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    }
-    return
-  }
-
-  func.func @compute()
-      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "reset_test">,
-                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-    %stale = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %flag = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
-    %zero_i32 = arith.constant 0 : i32
-    %active = arith.cmpi ne, %flag, %zero_i32 : i32
-    scf.if %active {
-      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-    }
-    return
-  }
-
-  func.func @writer()
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "reset_test">,
-                  ttl.noc_index = 1 : i32, ttl.base_cta_index = 2 : i32,
-                  ttl.crta_indices = []} {
-    %stale = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %flag = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
-    %zero_i32 = arith.constant 0 : i32
-    %active = arith.cmpi ne, %flag, %zero_i32 : i32
-    scf.if %active {
-      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-    }
-    return
-  }
-}
-
-// -----
-
 // A loop with an unresolved trip count leaves only the counters it changes
 // unknown; the double pop after it is still a pop before a matching wait.
 module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
@@ -795,463 +653,6 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
 }
 
 // -----
-
-// Two resets under different dispatch conditions: the alternatives that
-// executed the same resets correspond across kernels, so the reader's
-// surplus before the first reset is compared with the writer's pop before
-// it, whatever the writer's second pop does.
-module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttcore.arch<blackhole>} {
-  func.func @reader()
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">,
-                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-    // expected-note @+1 {{dataflow buffer declared here}}
-    %stale = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %zero_i32 = arith.constant 0 : i32
-    %flag0 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
-    %active0 = arith.cmpi ne, %flag0, %zero_i32 : i32
-    %flag1 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<1, i32>, header = "predicate.hpp"} : () -> i32
-    %active1 = arith.cmpi ne, %flag1, %zero_i32 : i32
-    // expected-error @below {{logical DFB 0 has capacity-unsafe producer and consumer transactions on core_x=0, core_y=0}}
-    // expected-note @below {{the producer pushes 3 block(s) per launch and the consumer pops 1, leaving 2 outstanding block(s) for capacity 1}}
-    // expected-note @+9 {{in the interval that ends at this synchronized reset or reconfiguration, which restores the DFB}}
-    // expected-note @below {{keep pops within pushes and unpopped blocks within DFB capacity on every active node}}
-    %slot0 = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %slot1 = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %slot2 = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    scf.if %active0 {
-      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-    }
-    scf.if %active1 {
-      ttl.reset_dfbs <1, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-    }
-    return
-  }
-  func.func @compute()
-      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "reset_test">,
-                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-    %stale = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %zero_i32 = arith.constant 0 : i32
-    %flag0 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
-    %active0 = arith.cmpi ne, %flag0, %zero_i32 : i32
-    %flag1 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<1, i32>, header = "predicate.hpp"} : () -> i32
-    %active1 = arith.cmpi ne, %flag1, %zero_i32 : i32
-    scf.if %active0 {
-      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-    }
-    scf.if %active1 {
-      ttl.reset_dfbs <1, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-    }
-    return
-  }
-  func.func @writer()
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "reset_test">,
-                  ttl.noc_index = 1 : i32, ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-    %stale = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %zero_i32 = arith.constant 0 : i32
-    %flag0 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
-    %active0 = arith.cmpi ne, %flag0, %zero_i32 : i32
-    %flag1 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<1, i32>, header = "predicate.hpp"} : () -> i32
-    %active1 = arith.cmpi ne, %flag1, %zero_i32 : i32
-    %block0 = ttl.cb_wait %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_pop %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    scf.if %active0 {
-      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-    }
-    %block1 = ttl.cb_wait %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_pop %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    scf.if %active1 {
-      ttl.reset_dfbs <1, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-    }
-    return
-  }
-}
-
-// -----
-
-// A reset and a state-discarding reconfiguration share ordinal 0. Their
-// alternatives stay distinct: without the reset, the two pushes exceed the
-// capacity before the reconfiguration, which installs nothing here.
-#recon = #ttl.dfb_reconfiguration<0, participants[#ttl.logical_kernel<kind = compute, identity = "compute", operation = "reset_test">, #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">, #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "reset_test">], discard_dfb_state = true>
-module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttcore.arch<blackhole>} {
-  func.func @collision_reader()
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">,
-                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
-                  ttl.crta_indices = []} {
-    // expected-note @+1 {{dataflow buffer declared here}}
-    %stale = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %zero_i32 = arith.constant 0 : i32
-    %flag0 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
-    %reset_active = arith.cmpi ne, %flag0, %zero_i32 : i32
-    %flag1 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<1, i32>, header = "predicate.hpp"} : () -> i32
-    %reconfigure_active = arith.cmpi ne, %flag1, %zero_i32 : i32
-    // expected-error @below {{logical DFB 0 has transactions that cannot complete before a synchronized reset or reconfiguration on core_x=0, core_y=0}}
-    // expected-note @below {{before it, the producer holds 2 reserved block(s) that are not popped, exceeding capacity 1}}
-    // expected-note @+10 {{every kernel on the node waits here until all of them arrive}}
-    // expected-note @below {{place each wait after the push it needs and each reserve after the pop that frees its slot, on the same side of the barrier}}
-    %first = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    scf.if %reset_active {
-      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-    }
-    %second = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    scf.if %reconfigure_active {
-      ttl.dfb_reconfiguration #recon
-    }
-    return
-  }
-
-  func.func @collision_compute()
-      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "reset_test">,
-                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-    %stale = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %zero_i32 = arith.constant 0 : i32
-    %flag0 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
-    %reset_active = arith.cmpi ne, %flag0, %zero_i32 : i32
-    %flag1 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<1, i32>, header = "predicate.hpp"} : () -> i32
-    %reconfigure_active = arith.cmpi ne, %flag1, %zero_i32 : i32
-    scf.if %reset_active {
-      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-    }
-    scf.if %reconfigure_active {
-      ttl.dfb_reconfiguration #recon
-    }
-    return
-  }
-
-  func.func @collision_writer()
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "reset_test">,
-                  ttl.noc_index = 1 : i32, ttl.base_cta_index = 2 : i32,
-                  ttl.crta_indices = []} {
-    %stale = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %zero_i32 = arith.constant 0 : i32
-    %flag0 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
-    %reset_active = arith.cmpi ne, %flag0, %zero_i32 : i32
-    %flag1 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<1, i32>, header = "predicate.hpp"} : () -> i32
-    %reconfigure_active = arith.cmpi ne, %flag1, %zero_i32 : i32
-    scf.if %reset_active {
-      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-    }
-    scf.if %reconfigure_active {
-      ttl.dfb_reconfiguration #recon
-    }
-    return
-  }
-}
-
-// -----
-
-// Four resets under nested conditions yield sixteen alternatives, so the
-// surplus before them is checked.
-module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttcore.arch<blackhole>} {
-  func.func @nested_reader()
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">,
-                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
-                  ttl.crta_indices = []} {
-    // expected-note @+1 {{dataflow buffer declared here}}
-    %stale = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %zero_i32 = arith.constant 0 : i32
-    %flag0 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
-    %active0 = arith.cmpi ne, %flag0, %zero_i32 : i32
-    %flag1 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<1, i32>, header = "predicate.hpp"} : () -> i32
-    %active1 = arith.cmpi ne, %flag1, %zero_i32 : i32
-    %flag2 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<2, i32>, header = "predicate.hpp"} : () -> i32
-    %active2 = arith.cmpi ne, %flag2, %zero_i32 : i32
-    %flag3 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<3, i32>, header = "predicate.hpp"} : () -> i32
-    %active3 = arith.cmpi ne, %flag3, %zero_i32 : i32
-    %flag4 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<4, i32>, header = "predicate.hpp"} : () -> i32
-    %active4 = arith.cmpi ne, %flag4, %zero_i32 : i32
-    %flag5 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<5, i32>, header = "predicate.hpp"} : () -> i32
-    %active5 = arith.cmpi ne, %flag5, %zero_i32 : i32
-    %flag6 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<6, i32>, header = "predicate.hpp"} : () -> i32
-    %active6 = arith.cmpi ne, %flag6, %zero_i32 : i32
-    %flag7 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<7, i32>, header = "predicate.hpp"} : () -> i32
-    %active7 = arith.cmpi ne, %flag7, %zero_i32 : i32
-    // expected-error @below {{logical DFB 0 has capacity-unsafe producer and consumer transactions on core_x=0, core_y=0}}
-    // expected-note @below {{the producer pushes 3 block(s) per launch and the consumer pops 0, leaving 3 outstanding block(s) for capacity 1}}
-    // expected-note @+10 {{in the interval that ends at this synchronized reset or reconfiguration, which restores the DFB}}
-    // expected-note @below {{keep pops within pushes and unpopped blocks within DFB capacity on every active node}}
-    %first = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %second = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %third = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    scf.if %active0 {
-      scf.if %active1 {
-        ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-      }
-    }
-    scf.if %active2 {
-      scf.if %active3 {
-        ttl.reset_dfbs <1, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-      }
-    }
-    scf.if %active4 {
-      scf.if %active5 {
-        ttl.reset_dfbs <2, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-      }
-    }
-    scf.if %active6 {
-      scf.if %active7 {
-        ttl.reset_dfbs <3, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-      }
-    }
-    return
-  }
-
-  func.func @nested_compute()
-      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "reset_test">,
-                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-    %stale = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %zero_i32 = arith.constant 0 : i32
-    %flag0 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
-    %active0 = arith.cmpi ne, %flag0, %zero_i32 : i32
-    %flag1 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<1, i32>, header = "predicate.hpp"} : () -> i32
-    %active1 = arith.cmpi ne, %flag1, %zero_i32 : i32
-    %flag2 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<2, i32>, header = "predicate.hpp"} : () -> i32
-    %active2 = arith.cmpi ne, %flag2, %zero_i32 : i32
-    %flag3 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<3, i32>, header = "predicate.hpp"} : () -> i32
-    %active3 = arith.cmpi ne, %flag3, %zero_i32 : i32
-    %flag4 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<4, i32>, header = "predicate.hpp"} : () -> i32
-    %active4 = arith.cmpi ne, %flag4, %zero_i32 : i32
-    %flag5 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<5, i32>, header = "predicate.hpp"} : () -> i32
-    %active5 = arith.cmpi ne, %flag5, %zero_i32 : i32
-    %flag6 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<6, i32>, header = "predicate.hpp"} : () -> i32
-    %active6 = arith.cmpi ne, %flag6, %zero_i32 : i32
-    %flag7 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<7, i32>, header = "predicate.hpp"} : () -> i32
-    %active7 = arith.cmpi ne, %flag7, %zero_i32 : i32
-    scf.if %active0 {
-      scf.if %active1 {
-        ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-      }
-    }
-    scf.if %active2 {
-      scf.if %active3 {
-        ttl.reset_dfbs <1, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-      }
-    }
-    scf.if %active4 {
-      scf.if %active5 {
-        ttl.reset_dfbs <2, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-      }
-    }
-    scf.if %active6 {
-      scf.if %active7 {
-        ttl.reset_dfbs <3, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-      }
-    }
-    return
-  }
-
-  func.func @nested_writer()
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "reset_test">,
-                  ttl.noc_index = 1 : i32, ttl.base_cta_index = 2 : i32,
-                  ttl.crta_indices = []} {
-    %stale = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %zero_i32 = arith.constant 0 : i32
-    %flag0 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
-    %active0 = arith.cmpi ne, %flag0, %zero_i32 : i32
-    %flag1 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<1, i32>, header = "predicate.hpp"} : () -> i32
-    %active1 = arith.cmpi ne, %flag1, %zero_i32 : i32
-    %flag2 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<2, i32>, header = "predicate.hpp"} : () -> i32
-    %active2 = arith.cmpi ne, %flag2, %zero_i32 : i32
-    %flag3 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<3, i32>, header = "predicate.hpp"} : () -> i32
-    %active3 = arith.cmpi ne, %flag3, %zero_i32 : i32
-    %flag4 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<4, i32>, header = "predicate.hpp"} : () -> i32
-    %active4 = arith.cmpi ne, %flag4, %zero_i32 : i32
-    %flag5 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<5, i32>, header = "predicate.hpp"} : () -> i32
-    %active5 = arith.cmpi ne, %flag5, %zero_i32 : i32
-    %flag6 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<6, i32>, header = "predicate.hpp"} : () -> i32
-    %active6 = arith.cmpi ne, %flag6, %zero_i32 : i32
-    %flag7 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<7, i32>, header = "predicate.hpp"} : () -> i32
-    %active7 = arith.cmpi ne, %flag7, %zero_i32 : i32
-    scf.if %active0 {
-      scf.if %active1 {
-        ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-      }
-    }
-    scf.if %active2 {
-      scf.if %active3 {
-        ttl.reset_dfbs <1, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-      }
-    }
-    scf.if %active4 {
-      scf.if %active5 {
-        ttl.reset_dfbs <2, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-      }
-    }
-    scf.if %active6 {
-      scf.if %active7 {
-        ttl.reset_dfbs <3, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-      }
-    }
-    return
-  }
-}
-
-// -----
-
-// Two resets under one dispatch condition: when it is false neither
-// executes and the reader's two pushes exceed the capacity.
-module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttcore.arch<blackhole>} {
-  func.func @same_condition_leak_reader()
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">,
-                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
-                  ttl.crta_indices = []} {
-    // expected-note @+1 {{dataflow buffer declared here}}
-    %stale = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %zero_i32 = arith.constant 0 : i32
-    %flag0 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
-    // expected-error @below {{logical DFB 0 has capacity-unsafe producer and consumer transactions on core_x=0, core_y=0}}
-    // expected-note @below {{the producer pushes 2 block(s) per launch and the consumer pops 0, leaving 2 outstanding block(s) for capacity 1}}
-    // expected-note @below {{keep pops within pushes and unpopped blocks within DFB capacity on every active node}}
-    %first = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %first_active = arith.cmpi ne, %flag0, %zero_i32 : i32
-    scf.if %first_active {
-      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-    }
-    %second = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %zero_again = arith.constant 0 : i32
-    %second_active = arith.cmpi ne, %flag0, %zero_again : i32
-    scf.if %second_active {
-      ttl.reset_dfbs <1, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-    }
-    return
-  }
-
-  func.func @same_condition_leak_compute()
-      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "reset_test">,
-                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-    %stale = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %zero_i32 = arith.constant 0 : i32
-    %flag0 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
-    %first_active = arith.cmpi ne, %flag0, %zero_i32 : i32
-    scf.if %first_active {
-      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-    }
-    %zero_again = arith.constant 0 : i32
-    %second_active = arith.cmpi ne, %flag0, %zero_again : i32
-    scf.if %second_active {
-      ttl.reset_dfbs <1, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-    }
-    return
-  }
-
-  func.func @same_condition_leak_writer()
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "reset_test">,
-                  ttl.noc_index = 1 : i32, ttl.base_cta_index = 2 : i32,
-                  ttl.crta_indices = []} {
-    %stale = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %zero_i32 = arith.constant 0 : i32
-    %flag0 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
-    %first_active = arith.cmpi ne, %flag0, %zero_i32 : i32
-    scf.if %first_active {
-      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-    }
-    %zero_again = arith.constant 0 : i32
-    %second_active = arith.cmpi ne, %flag0, %zero_again : i32
-    scf.if %second_active {
-      ttl.reset_dfbs <1, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-    }
-    return
-  }
-}
-
-// -----
-
-// The reader pushes inside the outer branch and twice after it; when the
-// inner reset is skipped the pushes exceed the capacity, which only the
-// combination of both kernels' alternatives for that decision shows.
-module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttcore.arch<blackhole>} {
-  func.func @nested_leak_reader()
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">,
-                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
-                  ttl.crta_indices = []} {
-    // expected-note @+1 {{dataflow buffer declared here}}
-    %stale = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %zero_i32 = arith.constant 0 : i32
-    %flag0 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
-    %outer = arith.cmpi ne, %flag0, %zero_i32 : i32
-    %flag1 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<1, i32>, header = "predicate.hpp"} : () -> i32
-    %inner = arith.cmpi ne, %flag1, %zero_i32 : i32
-    scf.if %outer {
-      // expected-error @below {{logical DFB 0 has capacity-unsafe producer and consumer transactions on core_x=0, core_y=0}}
-      // expected-note @below {{the producer pushes 3 block(s) per launch and the consumer pops 1, leaving 2 outstanding block(s) for capacity 1}}
-      // expected-note @below {{keep pops within pushes and unpopped blocks within DFB capacity on every active node}}
-      %first = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-      ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
-      scf.if %inner {
-        ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-      }
-    }
-    %second = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %third = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    return
-  }
-
-  func.func @nested_leak_compute()
-      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "reset_test">,
-                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-    %stale = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %zero_i32 = arith.constant 0 : i32
-    %flag0 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
-    %outer = arith.cmpi ne, %flag0, %zero_i32 : i32
-    %flag1 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<1, i32>, header = "predicate.hpp"} : () -> i32
-    %inner = arith.cmpi ne, %flag1, %zero_i32 : i32
-    scf.if %outer {
-      scf.if %inner {
-        ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-      }
-    }
-    return
-  }
-
-  func.func @nested_leak_writer()
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "reset_test">,
-                  ttl.noc_index = 1 : i32, ttl.base_cta_index = 2 : i32,
-                  ttl.crta_indices = []} {
-    %stale = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %zero_i32 = arith.constant 0 : i32
-    %flag0 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
-    %outer = arith.cmpi ne, %flag0, %zero_i32 : i32
-    %flag1 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<1, i32>, header = "predicate.hpp"} : () -> i32
-    %inner = arith.cmpi ne, %flag1, %zero_i32 : i32
-    scf.if %outer {
-      scf.if %inner {
-        ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-      }
-    }
-    %block = ttl.cb_wait %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_pop %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    return
-  }
-}
-
-// -----
-
 // The pops are conditional on a value other than a dispatch condition, so the
 // unconditional waits are compared with the pushes in the interval before the
 // reset: the third wait never completes.
@@ -1315,67 +716,59 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttco
 
 // -----
 
-// The reset executes only when both conditions hold; when either fails the
-// reader's two pushes exceed the capacity. The writer names the conjunction
-// with its operands swapped.
-module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttcore.arch<blackhole>} {
-  func.func @compound_leak_reader()
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "reset_test">,
-                  ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32,
-                  ttl.crta_indices = []} {
+// A DFB that the reset does not restore gains one block per generation:
+// two pushes before the reset and one pop after it, with the rest popped
+// after the loop. Generation 1 holds three blocks at the reset, more than
+// the capacity of two.
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
+  func.func @growing_reader() attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "gen">, ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
     // expected-note @+1 {{dataflow buffer declared here}}
-    %stale = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %zero_i32 = arith.constant 0 : i32
-    %flag0 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
-    %first = arith.cmpi ne, %flag0, %zero_i32 : i32
-    %flag1 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<1, i32>, header = "predicate.hpp"} : () -> i32
-    %second = arith.cmpi ne, %flag1, %zero_i32 : i32
-    %both = arith.andi %first, %second : i1
-    // expected-error @below {{logical DFB 0 has capacity-unsafe producer and consumer transactions on core_x=0, core_y=0}}
-    // expected-note @below {{the producer pushes 2 block(s) per launch and the consumer pops 0, leaving 2 outstanding block(s) for capacity 1}}
-    // expected-note @below {{keep pops within pushes and unpopped blocks within DFB capacity on every active node}}
-    %first_block = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    scf.if %both {
-      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
-    }
-    %second_block = ttl.cb_reserve %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_push %stale : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    return
-  }
-
-  func.func @compound_leak_compute()
-      attributes {ttl.kernel_thread = #ttkernel.thread<compute>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "reset_test">,
-                  ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-    %stale = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %zero_i32 = arith.constant 0 : i32
-    %flag0 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
-    %first = arith.cmpi ne, %flag0, %zero_i32 : i32
-    %flag1 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<1, i32>, header = "predicate.hpp"} : () -> i32
-    %second = arith.cmpi ne, %flag1, %zero_i32 : i32
-    %both = arith.andi %first, %second : i1
-    scf.if %both {
-      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+    %carried = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %other = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %n = arith.constant 8 : index
+    scf.for %g = %c0 to %n step %c1 {
+      %first = arith.cmpi eq, %g, %c0 : index
+      // expected-error @+3 {{logical DFB 0 has transactions that cannot complete before a synchronized reset or reconfiguration on core_x=0, core_y=0}}
+      // expected-note @+2 {{before it, the producer holds 3 reserved block(s) that are not popped, exceeding capacity 2}}
+      // expected-note @+1 {{place each wait after the push it needs and each reserve after the pop that frees its slot, on the same side of the barrier}}
+      %p0 = ttl.cb_reserve %carried : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_push %carried : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      %p1 = ttl.cb_reserve %carried : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_push %carried : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      // expected-note @+1 {{every kernel on the node waits here until all of them arrive}}
+      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "gen">, <kind = data_movement, identity = "reader", operation = "gen">, <kind = data_movement, identity = "writer", operation = "gen">]>(%other : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
     }
     return
   }
-
-  func.func @compound_leak_writer()
-      attributes {ttl.kernel_thread = #ttkernel.thread<noc>,
-                  ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "reset_test">,
-                  ttl.noc_index = 1 : i32, ttl.base_cta_index = 2 : i32,
-                  ttl.crta_indices = []} {
-    %stale = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %zero_i32 = arith.constant 0 : i32
-    %flag0 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
-    %first = arith.cmpi ne, %flag0, %zero_i32 : i32
-    %flag1 = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<1, i32>, header = "predicate.hpp"} : () -> i32
-    %second = arith.cmpi ne, %flag1, %zero_i32 : i32
-    %both = arith.andi %second, %first : i1
-    scf.if %both {
-      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "reset_test">, <kind = data_movement, identity = "reader", operation = "reset_test">, <kind = data_movement, identity = "writer", operation = "reset_test">]>(%stale : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+  func.func @growing_writer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "gen">, ttl.noc_index = 1 : i32, ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %carried = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %other = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %n = arith.constant 8 : index
+    scf.for %g = %c0 to %n step %c1 {
+      %first = arith.cmpi eq, %g, %c0 : index
+      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "gen">, <kind = data_movement, identity = "reader", operation = "gen">, <kind = data_movement, identity = "writer", operation = "gen">]>(%other : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+      %w0 = ttl.cb_wait %carried : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_pop %carried : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+    scf.for %rest = %c0 to %n step %c1 {
+      %w1 = ttl.cb_wait %carried : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_pop %carried : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+    return
+  }
+  func.func @growing_compute() attributes {ttl.kernel_thread = #ttkernel.thread<compute>, ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "gen">, ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %carried = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %other = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %n = arith.constant 8 : index
+    scf.for %g = %c0 to %n step %c1 {
+      %first = arith.cmpi eq, %g, %c0 : index
+      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "gen">, <kind = data_movement, identity = "reader", operation = "gen">, <kind = data_movement, identity = "writer", operation = "gen">]>(%other : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
     }
     return
   }
@@ -1383,29 +776,109 @@ module attributes {ttl.launch_grid = [1 : i64, 1 : i64], ttl.target_arch = #ttco
 
 // -----
 
-// An external call pops the first block only when a dispatch condition holds.
-// Each branch of the condition is an alternative, so the skipped pop leaves
-// two blocks for capacity 1.
+// Generation 0 pushes one extra block before the reset, which the capacity
+// of one cannot hold until the writer pops after the reset.
 module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
-  func.func @conditional_opaque_pop_reader() attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "pops">, ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-    // expected-note @+4 {{dataflow buffer declared here}}
-    // expected-error @+4 {{logical DFB 0 has capacity-unsafe producer and consumer transactions on core_x=0, core_y=0}}
-    // expected-note @+3 {{the producer pushes 2 block(s) per launch and the consumer pops 0, leaving 2 outstanding block(s) for capacity 1}}
-    // expected-note @+2 {{keep pops within pushes and unpopped blocks within DFB capacity on every active node}}
-    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %first = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %second = ttl.cb_reserve %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
-    ttl.cb_push %dfb : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+  func.func @first_generation_reader() attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "gen">, ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    // expected-note @+1 {{dataflow buffer declared here}}
+    %carried = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %other = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %n = arith.constant 4096 : index
+    scf.for %g = %c0 to %n step %c1 {
+      %first = arith.cmpi eq, %g, %c0 : index
+      scf.if %first {
+        // expected-error @+3 {{logical DFB 0 has transactions that cannot complete before a synchronized reset or reconfiguration on core_x=0, core_y=0}}
+        // expected-note @+2 {{before it, the producer holds 2 reserved block(s) that are not popped, exceeding capacity 1}}
+        // expected-note @+1 {{place each wait after the push it needs and each reserve after the pop that frees its slot, on the same side of the barrier}}
+        %p0 = ttl.cb_reserve %carried : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+        ttl.cb_push %carried : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+      }
+      %p1 = ttl.cb_reserve %carried : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_push %carried : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+      // expected-note @+1 {{every kernel on the node waits here until all of them arrive}}
+      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "gen">, <kind = data_movement, identity = "reader", operation = "gen">, <kind = data_movement, identity = "writer", operation = "gen">]>(%other : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+    }
     return
   }
-  func.func @conditional_opaque_pop_writer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "pops">, ttl.noc_index = 1 : i32, ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
-    %dfb = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
-    %zero = arith.constant 0 : i32
-    %flag = ttl.opaque_call "scalar_predicate" template_args [#ttl.external_template_arg<signed_integer, 1>] () {condition_result = #ttl.dispatch_condition<0, i32>, header = "predicate.hpp"} : () -> i32
-    %pop_active = arith.cmpi ne, %flag, %zero : i32
-    scf.if %pop_active {
-      ttl.opaque_call "consume" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>) dfb_effects [#ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "consume.hpp"} : () -> ()
+  func.func @first_generation_writer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "gen">, ttl.noc_index = 1 : i32, ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %carried = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %other = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %n = arith.constant 4096 : index
+    scf.for %g = %c0 to %n step %c1 {
+      %first = arith.cmpi eq, %g, %c0 : index
+      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "gen">, <kind = data_movement, identity = "reader", operation = "gen">, <kind = data_movement, identity = "writer", operation = "gen">]>(%other : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+      %w0 = ttl.cb_wait %carried : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_pop %carried : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    }
+    %w1 = ttl.cb_wait %carried : <[1, 1], !ttcore.tile<32x32, bf16>, 1> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+    ttl.cb_pop %carried : <[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    return
+  }
+  func.func @first_generation_compute() attributes {ttl.kernel_thread = #ttkernel.thread<compute>, ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "gen">, ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %carried = ttl.bind_cb {cb_index = 0, block_count = 1} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %other = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %n = arith.constant 4096 : index
+    scf.for %g = %c0 to %n step %c1 {
+      %first = arith.cmpi eq, %g, %c0 : index
+      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "gen">, <kind = data_movement, identity = "reader", operation = "gen">, <kind = data_movement, identity = "writer", operation = "gen">]>(%other : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+    }
+    return
+  }
+}
+
+// -----
+
+// The writer waits in every generation before the reset for the block the
+// reader pushes after it.
+module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blackhole>} {
+  func.func @early_wait_reader() attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "reader", operation = "gen">, ttl.noc_index = 0 : i32, ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    // expected-note @+1 {{dataflow buffer declared here}}
+    %carried = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %other = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %n = arith.constant 16 : index
+    scf.for %g = %c0 to %n step %c1 {
+      %first = arith.cmpi eq, %g, %c0 : index
+      // expected-note @+1 {{every kernel on the node waits here until all of them arrive}}
+      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "gen">, <kind = data_movement, identity = "reader", operation = "gen">, <kind = data_movement, identity = "writer", operation = "gen">]>(%other : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+      // expected-error @+3 {{logical DFB 0 has transactions that cannot complete before a synchronized reset or reconfiguration on core_x=0, core_y=0}}
+      // expected-note @+2 {{before it, the consumer waits for 1 block(s) but the producer pushes 0}}
+      // expected-note @+1 {{place each wait after the push it needs and each reserve after the pop that frees its slot, on the same side of the barrier}}
+      %p0 = ttl.cb_reserve %carried : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_push %carried : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    }
+    return
+  }
+  func.func @early_wait_writer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>, ttl.logical_kernel = #ttl.logical_kernel<kind = data_movement, identity = "writer", operation = "gen">, ttl.noc_index = 1 : i32, ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %carried = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %other = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %n = arith.constant 16 : index
+    scf.for %g = %c0 to %n step %c1 {
+      %first = arith.cmpi eq, %g, %c0 : index
+      %w0 = ttl.cb_wait %carried : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
+      ttl.cb_pop %carried : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
+      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "gen">, <kind = data_movement, identity = "reader", operation = "gen">, <kind = data_movement, identity = "writer", operation = "gen">]>(%other : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
+    }
+    return
+  }
+  func.func @early_wait_compute() attributes {ttl.kernel_thread = #ttkernel.thread<compute>, ttl.logical_kernel = #ttl.logical_kernel<kind = compute, identity = "compute", operation = "gen">, ttl.base_cta_index = 2 : i32, ttl.crta_indices = []} {
+    %carried = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 0 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    %other = ttl.bind_cb {cb_index = 1, block_count = 1} {dfb_id = 1 : index} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %n = arith.constant 16 : index
+    scf.for %g = %c0 to %n step %c1 {
+      %first = arith.cmpi eq, %g, %c0 : index
+      ttl.reset_dfbs <0, participants[<kind = compute, identity = "compute", operation = "gen">, <kind = data_movement, identity = "reader", operation = "gen">, <kind = data_movement, identity = "writer", operation = "gen">]>(%other : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
     }
     return
   }
