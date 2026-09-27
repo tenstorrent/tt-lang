@@ -6,6 +6,7 @@
 
 #include "CommonRuntimeArgLayout.h"
 #include "DFBAllocationLimits.h"
+#include "DFBStateDiscard.h"
 #include "FabricManagerLifetimeAnalysis.h"
 #include "PipeGraph.h"
 #include "PipeLowering.h"
@@ -421,21 +422,6 @@ static FailureOr<unsigned> getTensorFuncArgIndex(Value tensor) {
     return failure();
   }
   return blockArg.getArgNumber();
-}
-
-// Resolves a TTL DFB SSA value to its finalized physical descriptor index.
-static FailureOr<int32_t> getValidatedDFBIndex(Value dfb, Operation *op) {
-  std::optional<int64_t> dfbIndex = getCBIndex(dfb);
-  if (!dfbIndex) {
-    return op->emitError("cannot resolve finalized DFB index");
-  }
-  int32_t targetMaxDFBIndices = getTargetMaxDFBIndices(op);
-  if (*dfbIndex < 0 || *dfbIndex >= targetMaxDFBIndices) {
-    return op->emitError("finalized DFB index ")
-           << *dfbIndex << " is outside [0, " << targetMaxDFBIndices - 1
-           << "] for " << getTargetDFBIndexCapacityDescription(op);
-  }
-  return static_cast<int32_t>(*dfbIndex);
 }
 
 // Canonicalizes index sets for TTKernel's strict attribute-ordering invariant.
@@ -1633,25 +1619,11 @@ buildDFBResetLoweringPlan(ModuleOp module) {
   }
   plan.scratchBytes = static_cast<int64_t>(*scratchBytes);
 
-  WalkResult allocationResult = module.walk([&](BindCBOp bind) -> WalkResult {
-    std::optional<int64_t> dfbIndex = getCBIndex(bind.getResult());
-    if (!dfbIndex) {
-      bind.emitOpError("requires a finalized DFB index before reset lowering");
-      return WalkResult::interrupt();
-    }
-    int32_t targetMaxDFBIndices = getTargetMaxDFBIndices(bind);
-    if (*dfbIndex < 0 || *dfbIndex >= targetMaxDFBIndices) {
-      bind.emitOpError("finalized DFB index ")
-          << *dfbIndex << " is outside [0, " << targetMaxDFBIndices - 1
-          << "] for " << getTargetDFBIndexCapacityDescription(bind);
-      return WalkResult::interrupt();
-    }
-    plan.allDFBMask |= uint64_t{1} << static_cast<unsigned>(*dfbIndex);
-    return WalkResult::advance();
-  });
-  if (allocationResult.wasInterrupted()) {
+  FailureOr<uint64_t> allocatedMask = getAllocatedDFBMask(module);
+  if (failed(allocatedMask)) {
     return failure();
   }
+  plan.allDFBMask = *allocatedMask;
 
   if (!orderedResets.empty()) {
     Builder builder(module.getContext());
@@ -1704,15 +1676,12 @@ struct ResetDFBsLowering : OpConversionPattern<ResetDFBsOp> {
   LogicalResult
   matchAndRewrite(ResetDFBsOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    uint64_t dfbMask = 0;
-    for (Value dfb : op.getDfbs()) {
-      FailureOr<int32_t> dfbIndex = getValidatedDFBIndex(dfb, op);
-      if (failed(dfbIndex)) {
-        return failure();
-      }
-      dfbMask |= uint64_t{1} << static_cast<unsigned>(*dfbIndex);
+    FailureOr<uint64_t> dfbMask =
+        getSynchronizedResetDFBMask(op, plan.allDFBMask);
+    if (failed(dfbMask)) {
+      return failure();
     }
-    return lowerDFBReset(op, op.getReset(), dfbMask, plan, rewriter);
+    return lowerDFBReset(op, op.getReset(), *dfbMask, plan, rewriter);
   }
 
 private:
@@ -1727,7 +1696,12 @@ struct ResetAllDFBsLowering : OpConversionPattern<ResetAllDFBsOp> {
   LogicalResult
   matchAndRewrite(ResetAllDFBsOp op, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    return lowerDFBReset(op, op.getReset(), plan.allDFBMask, plan, rewriter);
+    FailureOr<uint64_t> dfbMask =
+        getSynchronizedResetDFBMask(op, plan.allDFBMask);
+    if (failed(dfbMask)) {
+      return failure();
+    }
+    return lowerDFBReset(op, op.getReset(), *dfbMask, plan, rewriter);
   }
 
 private:
