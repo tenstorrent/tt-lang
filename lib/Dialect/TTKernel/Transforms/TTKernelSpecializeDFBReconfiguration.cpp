@@ -30,7 +30,8 @@ namespace mlir::tt::ttl {
 
 namespace {
 
-// The runtime configuration area holds one four-word record per physical DFB.
+// Matches configurationRecordCapacity in experimental_dfb_reconfiguration.h and
+// _DFB_RECONFIGURATION_MAX_INDICES in kernel_runner.py.
 constexpr int64_t kReconfigurationRecordCapacity = 64;
 
 struct StaticReconfiguration {
