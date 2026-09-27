@@ -2570,6 +2570,83 @@ def test_shared_sram_backing_fails_before_arena_allocation(monkeypatch):
         )
 
 
+def test_cached_resources_preserve_sram_backing_handoffs(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    cache = kernel_runner.KernelRuntimeResourceCache()
+    device = object()
+    handoff = SRAMBackingHandoff(0, 1, (0, 0))
+    first_reset = SRAMReconfigurationReset(0, (0,), (handoff,))
+    second_reset = SRAMReconfigurationReset(1, (0,), (handoff,))
+    arguments = {
+        "tensors": [],
+        "cb_configs": _shared_sram_backing_configs(second_is_tensor=False),
+        "core_ranges": _FakeCoreRanges(),
+        "pipe_sram_scratch_bytes": 0,
+        "num_pipe_global_semaphores": 0,
+        "pipe_computed_address_dfb_indices": (),
+        "num_dfb_resets": 1,
+        "device": device,
+        "memory_model": "compiler-sram",
+    }
+
+    first = kernel_runner.get_cached_runtime_resources(
+        cache, sram_reconfiguration_resets=(first_reset,), **arguments
+    )
+    repeated = kernel_runner.get_cached_runtime_resources(
+        cache, sram_reconfiguration_resets=(first_reset,), **arguments
+    )
+    changed = kernel_runner.get_cached_runtime_resources(
+        cache, sram_reconfiguration_resets=(second_reset,), **arguments
+    )
+
+    assert first[0] is repeated[0]
+    assert changed[0] is not first[0]
+    with pytest.raises(ValueError, match="matching reconfiguration handoff"):
+        kernel_runner.get_cached_runtime_resources(cache, **arguments)
+    assert cache.pipe_resources is changed[0]
+
+
+def test_sram_handoff_reaches_cached_resource_construction(monkeypatch):
+    fake_ttnn = _FakeTTNN()
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    device = object()
+    allocations = []
+
+    def allocate_storage(_ranges, num_bytes, allocation_device, *, zero_initialize):
+        assert allocation_device is device
+        assert zero_initialize
+        allocations.append(num_bytes)
+        return _FakeTensor(device, address=0x8000 + 0x1000 * len(allocations))
+
+    monkeypatch.setattr(
+        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_storage
+    )
+    input_tensor = _FakeTensor(
+        device, dtype=kernel_runner.format_name_to_ttnn_dtype("bfloat16")
+    )
+    reset = SRAMReconfigurationReset(0, (0,), (SRAMBackingHandoff(0, 1, (0, 0)),))
+
+    result = kernel_runner.run_kernel_on_device(
+        kernel_specs=[],
+        tensors=[input_tensor],
+        cb_configs=[
+            replace(config, tile=(32, 32))
+            for config in _shared_sram_backing_configs(second_is_tensor=False)
+        ],
+        core_ranges=_FakeCoreRanges(),
+        sram_reconfiguration_resets=(reset,),
+        num_dfb_resets=1,
+        pipe_sram_scratch_bytes=16,
+        device=device,
+        memory_model="compiler-sram",
+    )
+
+    assert result["program"].cbs == []
+    assert allocations == [2112, 16]
+    assert fake_ttnn.synchronize_calls == [device]
+
+
 def test_compiler_l1_arena_size_rejects_storage_without_payload_or_tensor():
     config = PhysicalDFBConfig(
         0,

@@ -2596,6 +2596,7 @@ def _runtime_resource_compatibility_key(
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan],
     device: Optional[Any],
     compiler_sram: bool,
+    sram_reconfiguration_resets: Sequence[SRAMReconfigurationReset],
 ) -> Tuple[Tuple[Any, ...], Optional[Any]]:
     requires_device = (
         pipe_sram_scratch_bytes > 0
@@ -2640,6 +2641,7 @@ def _runtime_resource_compatibility_key(
         pipe_computed_address_dfb_indices,
         num_dfb_resets,
         dfb_reconfiguration_plan,
+        tuple(sram_reconfiguration_resets),
         tuple(tensor_address_key),
     )
     return compatibility_key, resource_device
@@ -2659,9 +2661,15 @@ def _get_cached_runtime_resources_impl(
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
     kernel_specs: Optional[List[KernelSpec]] = None,
     memory_model: Optional[str] = None,
+    sram_reconfiguration_resets: Sequence[SRAMReconfigurationReset] = (),
 ) -> Tuple[PipeRuntimeResources, DFBReconfigurationRuntimeResources]:
     pipe_computed_address_dfb_indices = tuple(pipe_computed_address_dfb_indices)
-    compiler_sram = _get_compiler_l1_arena_bytes(cb_configs, memory_model) is not None
+    compiler_sram = (
+        _get_compiler_l1_arena_bytes(
+            cb_configs, memory_model, sram_reconfiguration_resets
+        )
+        is not None
+    )
     compatibility_key, resource_device = _runtime_resource_compatibility_key(
         tensors,
         cb_configs,
@@ -2673,6 +2681,7 @@ def _get_cached_runtime_resources_impl(
         dfb_reconfiguration_plan,
         device,
         compiler_sram,
+        sram_reconfiguration_resets,
     )
     if (
         cache is not None
@@ -2750,6 +2759,7 @@ def get_cached_runtime_resources(
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
     kernel_specs: Optional[List[KernelSpec]] = None,
     memory_model: Optional[str] = None,
+    sram_reconfiguration_resets: Sequence[SRAMReconfigurationReset] = (),
 ) -> Tuple[PipeRuntimeResources, DFBReconfigurationRuntimeResources]:
     """Return one compatible resource generation from a synchronized cache."""
     arguments = {
@@ -2764,6 +2774,7 @@ def get_cached_runtime_resources(
         "device": device,
         "kernel_specs": kernel_specs,
         "memory_model": memory_model,
+        "sram_reconfiguration_resets": sram_reconfiguration_resets,
     }
     if cache is None:
         return _get_cached_runtime_resources_impl(None, **arguments)
@@ -4314,6 +4325,7 @@ def _run_kernel_on_device_impl(
     arena_completion_state: Optional[_ArenaCompletionState],
     pipe_computed_address_dfb_indices: Tuple[int, ...],
     dfb_reconfiguration_plan: Optional[DFBReconfigurationPlan] = None,
+    sram_reconfiguration_resets: Sequence[SRAMReconfigurationReset] = (),
     program_hash: Optional[int] = None,
     num_pipe_sync_semaphores: int = 0,
     pipe_sram_scratch_bytes: int = 0,
@@ -4450,6 +4462,7 @@ def _run_kernel_on_device_impl(
         device=device,
         kernel_specs=kernel_specs,
         dfb_reconfiguration_plan=dfb_reconfiguration_plan,
+        sram_reconfiguration_resets=sram_reconfiguration_resets,
         memory_model="compiler-sram" if compiler_l1 else "metal-cb",
     )
 
@@ -4764,6 +4777,7 @@ def run_kernel_on_device(
         "arena_completion_state": None,
         "pipe_computed_address_dfb_indices": pipe_computed_address_dfb_indices,
         "dfb_reconfiguration_plan": dfb_reconfiguration_plan,
+        "sram_reconfiguration_resets": sram_reconfiguration_resets,
         "program_hash": program_hash,
         "num_pipe_sync_semaphores": num_pipe_sync_semaphores,
         "pipe_sram_scratch_bytes": pipe_sram_scratch_bytes,

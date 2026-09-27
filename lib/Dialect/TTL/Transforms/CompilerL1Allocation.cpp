@@ -481,10 +481,6 @@ LogicalResult allocateCompilerL1(
     const L1Storage &storage = plan.storage[region.storageIndex];
     allocationIndexByLogicalId.try_emplace(region.logicalId,
                                            static_cast<int32_t>(regionIndex));
-    for (BindCBOp declaration : region.declarations) {
-      declaration.setDfbIdAttr(builder.getIndexAttr(region.logicalId));
-      declaration.setCbIndexAttr(builder.getIndexAttr(regionIndex));
-    }
     SmallVector<NamedAttribute> entryAttributes{
         builder.getNamedAttr(kDFBAllocationIndexField,
                              builder.getI32IntegerAttr(regionIndex)),
@@ -597,6 +593,12 @@ LogicalResult allocateCompilerL1(
             "compiler-sram backing handoff must reset its earlier DFB");
         return failure();
       }
+    }
+  }
+  for (auto [regionIndex, region] : llvm::enumerate(plan.regions)) {
+    for (BindCBOp declaration : region.declarations) {
+      declaration.setDfbIdAttr(builder.getIndexAttr(region.logicalId));
+      declaration.setCbIndexAttr(builder.getIndexAttr(regionIndex));
     }
   }
   if (reconfigurationResets.empty()) {
