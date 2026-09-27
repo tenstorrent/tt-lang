@@ -776,6 +776,25 @@ def test_factory_boolean_specialization_preserves_empty_function_syntax():
     assert result.kernels == ()
 
 
+def test_factory_boolean_specialization_preserves_empty_loop_syntax():
+    """A loop whose only statement is a disabled branch retains a valid body."""
+    enabled = False
+
+    @ttl.operation()
+    def disabled_loop_operation():
+        for _index in range(2):
+            if enabled:
+                ttl.call_extern_func(
+                    "dead.hpp",
+                    "dead",
+                    kernel=ttl.KernelKind.COMPUTE,
+                )
+
+    source = disabled_loop_operation._spec.source
+    compile(source, "<operation>", "exec")
+    assert source.endswith("        pass")
+
+
 @pytest.mark.parametrize(
     "coordinates",
     [((1, 2), (3, 4)), [[1, 2], [3, 4]]],

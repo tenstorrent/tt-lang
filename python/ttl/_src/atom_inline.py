@@ -304,12 +304,17 @@ class _StaticBooleanBranchSpecializer(ast.NodeTransformer):
             if name not in _nested_binding_names(node)
         }
         try:
-            transformed = self.generic_visit(node)
-            if not transformed.body:
-                transformed.body = [ast.copy_location(ast.Pass(), transformed)]
-            return transformed
+            return self.generic_visit(node)
         finally:
             self.static_booleans = enclosing_booleans
+
+    def generic_visit(self, node):
+        # Removing a branch can empty the body of an enclosing statement.
+        transformed = super().generic_visit(node)
+        body = getattr(transformed, "body", None)
+        if isinstance(body, list) and not body:
+            transformed.body = [ast.copy_location(ast.Pass(), transformed)]
+        return transformed
 
     def visit_FunctionDef(self, node):
         return self._visit_function(node)
