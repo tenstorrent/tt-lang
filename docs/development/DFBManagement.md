@@ -230,6 +230,13 @@ synchronization. A `remote_uniform` DFB cannot share backing storage with a
 different physical DFB index because that sharing would make its address depend
 on the other index's node domain.
 
+Operation tensors allocated per core bind each executing core's own shard
+address in its kernel descriptor. A core outside the shard grid addresses such
+a tensor remotely and receives the one address every owner core holds, as a
+lockstep allocation would provide; descriptor construction fails when the
+owner addresses differ. Local access to a per-core tensor still requires a
+shard on every executing core.
+
 TT-Metal allocates static descriptor storage in descriptor order. It maintains
 one allocation frontier per core, and a descriptor shared by several cores
 starts at the greatest frontier among those cores. The runtime simulates these
@@ -243,8 +250,13 @@ exhaustion proves that no order fits; reaching the state limit reports a
 conservative failure and the best candidate's overflow.
 
 The usable interval for each core begins at the configured DFB allocator base
-and ends at the lowest live L1 tensor page. Subtracting only allocated page
-sizes would ignore allocator gaps and could overestimate the available range.
+and ends at the lowest live L1 tensor page. TT-Metal reports only lockstep
+allocations, so the runtime also bounds each core by the lowest per-core
+address of the per-core allocated operation and runtime-resource tensors it
+holds, taking the minimum across mesh devices as TT-Metal's circular-buffer
+validation does. Per-core allocations the runtime is not given remain visible
+only to that validation. Subtracting only allocated page sizes would ignore
+allocator gaps and could overestimate the available range.
 Tensor-backed and already allocated computed-address storage do not advance the
 static frontiers. For a multi-device mesh, tensor and runtime-resource
 allocations can constrain the usable interval differently on each logical
@@ -523,9 +535,10 @@ replacement and owner destruction synchronize the device before releasing it;
 failed synchronization retains ownership.
 
 When `TT_METAL_ALLOCATOR_MODE_HYBRID=1` is set before device initialization,
-reconfiguration scratch uses independent per-core L1 addresses to avoid
-cross-core free-space fragmentation. The default Metal allocator mode retains
-lockstep scratch allocation for compatibility.
+reconfiguration scratch and configuration tensors use independent per-core L1
+addresses to avoid cross-core free-space fragmentation; remote-uniform scratch
+keeps one address on every core. The default Metal allocator mode retains
+lockstep allocation for compatibility.
 
 Per-core L1 accounting uses target allocation quanta rather than logical byte
 counts. On each launch node it includes one aligned maximum allocation per
