@@ -129,8 +129,42 @@ module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 6553
 // Compute descriptors require a supported tile type in the allocation table.
 module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 65536 : i64, ttl.dfb_allocations = [{dfb_index = 0 : i64, block_count = 1 : i64, l1_allocation_bytes = 4096 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i64, element_type = !ttcore.tile<32x32, si32>, page_size = 4096 : i64, storage_capacity_pages = 1 : i64}]} {
   func.func @descriptor_unsupported_element_type() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
-    // expected-error @below {{'ttkernel.opaque_call' op compiler-sram compute descriptor requires BF16 or FP32 tiles}}
+    // expected-error @below {{'ttkernel.opaque_call' op compiler-sram compute descriptor requires BF16, FP32, BFP4_B, or BFP8_B tiles}}
     ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<0, 1, 1, 4096>] () {dfb_resource_indices = array<i32: 0>, header = "describe.hpp"} : () -> ()
+    return
+  }
+}
+
+// -----
+
+// External compute descriptors reject unqualified block-float formats.
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 384 : i64, ttl.target_arch = #ttcore.arch<blackhole>, ttl.dfb_allocations = [{dfb_index = 0 : i32, block_count = 1 : i32, element_type = !ttcore.tile<32x32, bfp_bf2>, l1_allocation_bytes = 320 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i32, page_size = 320 : i32, storage_index = 0 : i32, storage_capacity_pages = 1 : i32}]} {
+  func.func @descriptor_bfp2() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+    // expected-error @below {{'ttkernel.opaque_call' op compiler-sram compute descriptor requires BF16, FP32, BFP4_B, or BFP8_B tiles}}
+    ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<0, 1, 1, 320>] () {dfb_resource_indices = array<i32: 0>, header = "describe.hpp"} : () -> ()
+    return
+  }
+}
+
+// -----
+
+// Block-float external compute descriptors require complete 32x32 tiles.
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 256 : i64, ttl.target_arch = #ttcore.arch<blackhole>, ttl.dfb_allocations = [{dfb_index = 0 : i32, block_count = 1 : i32, element_type = !ttcore.tile<8x32, bfp_bf4>, l1_allocation_bytes = 192 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i32, page_size = 144 : i32, storage_index = 0 : i32, storage_capacity_pages = 1 : i32}]} {
+  func.func @descriptor_bfp_subtile() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+    // expected-error @below {{'ttkernel.opaque_call' op compiler-sram compute descriptor BFP compute tiles require 32x32 dimensions, got 8x32}}
+    ttkernel.opaque_call "describe" template_args [#ttkernel.dfb_descriptor<0, 1, 1, 144>] () {dfb_resource_indices = array<i32: 0>, header = "describe.hpp"} : () -> ()
+    return
+  }
+}
+
+// -----
+
+// Native compiler-managed compute remains restricted to BF16 and FP32.
+module attributes {ttl.memory_model = "compiler-sram", ttl.l1_arena_bytes = 640 : i64, ttl.target_arch = #ttcore.arch<blackhole>, ttl.dfb_allocations = [{dfb_index = 0 : i32, block_count = 1 : i32, element_type = !ttcore.tile<32x32, bfp_bf4>, l1_allocation_bytes = 576 : i64, l1_offset = 0 : i64, l1_payload_offset = 64 : i64, num_tiles = 1 : i32, page_size = 576 : i32, storage_index = 0 : i32, storage_capacity_pages = 1 : i32}]} {
+  func.func @native_bfp_compute() attributes {ttkernel.thread = #ttkernel.thread<compute>} {
+    %storage = ttkernel.get_compile_time_arg_val(0) : () -> !ttkernel.cb<1, !ttcore.tile<32x32, bfp_bf4>>
+    // expected-error @below {{compiler-sram compute requires BF16 or FP32 tiles}}
+    ttkernel.copy_tile_init(%storage) : (!ttkernel.cb<1, !ttcore.tile<32x32, bfp_bf4>>) -> ()
     return
   }
 }
