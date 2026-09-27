@@ -16,6 +16,7 @@ import pytest
 import ttl.atom as atom_module
 import ttl.kernel_runner as kernel_runner
 import ttl.ttl_api as ttl_api
+from ttl.compiler_options import CompilerOptions
 
 
 @pytest.fixture(autouse=True)
@@ -1041,6 +1042,39 @@ def test_operation_cache_uses_l1_budget_without_owned_resources(monkeypatch):
     assert [
         call["compile_options"]["l1_budget_override"] for call in compile_calls
     ] == [98304, 98240]
+
+
+def test_l1_budget_forwards_operation_tensors(monkeypatch):
+    monkeypatch.setattr(
+        ttl_api, "is_ttnn_tensor", lambda arg: isinstance(arg, _FakeTensor)
+    )
+    device = _FakeDevice()
+    tensors = (_FakeTensor(device=device), _FakeTensor(device=device))
+    budget_calls = []
+
+    def record_budget(selected_device, *, per_core_l1_tensors):
+        budget_calls.append((selected_device, list(per_core_l1_tensors)))
+        return 98304
+
+    monkeypatch.setattr(ttl_api, "get_min_remaining_l1_for_device", record_budget)
+
+    assert ttl_api._resolve_l1_budget(tensors, CompilerOptions()) == 98304
+    assert budget_calls == [(device, list(tensors))]
+
+
+def test_l1_budget_propagates_budget_query_errors(monkeypatch):
+    monkeypatch.setattr(
+        ttl_api, "is_ttnn_tensor", lambda arg: isinstance(arg, _FakeTensor)
+    )
+    device = _FakeDevice()
+
+    def fail_budget(_device, *, per_core_l1_tensors):
+        raise ValueError("failed to query tensor per-core allocation")
+
+    monkeypatch.setattr(ttl_api, "get_min_remaining_l1_for_device", fail_budget)
+
+    with pytest.raises(ValueError, match="failed to query tensor per-core"):
+        ttl_api._resolve_l1_budget((_FakeTensor(device=device),), CompilerOptions())
 
 
 def test_operation_cache_separates_device_derived_budget_contracts(monkeypatch):

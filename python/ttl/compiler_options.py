@@ -191,7 +191,8 @@ def _make_parser() -> argparse.ArgumentParser:
             "allocator is merged): let the runtime split a static DFB descriptor "
             "per core when a core's L1 budget overflows. Split descriptors give "
             "one DFB different addresses on different cores, which breaks "
-            "kernels that write a DFB on another core by its local address "
+            "kernels that write a DFB on another core by its local address. "
+            "Descriptors of remote_uniform DFBs are never split "
             "(default: disabled)."
         ),
     )

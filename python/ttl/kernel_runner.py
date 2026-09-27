@@ -345,9 +345,8 @@ def _per_core_l1_lowest_addresses(
     across device shards, as TT-Metal's circular-buffer validation does across
     physical allocators.
 
-    TODO(bnorris, https://github.com/tenstorrent/tt-lang/issues/1106): Temporary
-    stand-in for a TT-Metal capability. TT-Metal's hybrid allocator tracks the
-    lowest occupied L1 address of every core
+    TODO(#1106): Temporary stand-in for a TT-Metal capability. TT-Metal's hybrid
+    allocator tracks the lowest occupied L1 address of every core
     (``AllocatorImpl::get_lowest_occupied_l1_address``) but exposes neither it
     nor per-core buffers to Python, so the runtime reconstructs the frontier
     from the tensors it is given. Per-core buffers it is not given remain
@@ -422,10 +421,10 @@ def get_min_remaining_l1_for_device(
     configured L1 allocator base. The usable interval therefore ends at the
     lowest live tensor page address, not at the total allocated byte count.
 
-    For a MeshDevice, ``get_buffer_pages`` reports the reference allocator.
-    TT-Lang's multi-device tensors and runtime resources use common L1
-    addresses across their mesh, so its lowest live page is also a safe lower
-    bound for every physical device.
+    For a MeshDevice, ``get_buffer_pages`` reports the reference allocator,
+    whose lockstep allocations hold one L1 address on every physical device.
+    Per-core allocations are placed independently on each device, so
+    ``per_core_l1_tensors`` contribute the minimum address across devices.
 
     ``excluded_l1_buffer_addresses`` omits retained compiler-owned buffers when
     finding the lowest live page. This reconstructs the compilation budget
@@ -482,6 +481,8 @@ class KernelSpec:
             an empty list means this kernel uses no DFBs.
         local_tensor_indices: Global tensor indices whose local SRAM shards are
             accessed directly by this kernel.
+        tensor_accessor_indices: Global tensor indices this kernel addresses
+            through a TensorAccessor, which can reach shards on other cores.
     """
 
     path: str
@@ -497,6 +498,7 @@ class KernelSpec:
     fabric_manager_intervals: Tuple[FabricManagerIntervalSpec, ...] = ()
     used_dfb_indices: Optional[List[int]] = None
     local_tensor_indices: List[int] = field(default_factory=list)
+    tensor_accessor_indices: List[int] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -1972,14 +1974,21 @@ def _partition_descriptor_by_tensor_addresses(
             )
         ]
 
-    # A core outside a tensor's shard grid addresses it remotely, which needs
-    # the one address every owner holds, as a lockstep allocation provides.
-    # Local access is validated separately by _validate_local_tensor_access.
+    # Remote access needs the one address every owner holds, as a lockstep
+    # allocation provides: a core outside the shard grid, and a TensorAccessor,
+    # which addresses every owner's shard with one base address. Local access is
+    # validated separately by _validate_local_tensor_access.
     uniform_owner_addresses = {}
     for _argument_index, tensor_index in per_core_argument_indices:
         owner_addresses = set(per_core_addresses[tensor_index].values())
         if len(owner_addresses) == 1:
             uniform_owner_addresses[tensor_index] = owner_addresses.pop()
+        elif tensor_index in spec.tensor_accessor_indices:
+            raise ValueError(
+                f"per-core tensor {tensor_index} is addressed through a "
+                "TensorAccessor, which needs one address on every owner core, "
+                f"but its owner addresses differ: {sorted(owner_addresses)}"
+            )
 
     coordinates_by_addresses = {}
     for core_coordinate in _core_range_coordinates(
@@ -2258,12 +2267,11 @@ def _per_core_l1_allocation_enabled() -> bool:
     TT-Metal selects the hybrid allocator from this environment variable before
     device initialization, so the runtime follows the same setting.
 
-    TODO(bnorris, https://github.com/tenstorrent/tt-lang/issues/1106): Temporary
-    stand-in for a TT-Metal capability. TT-Metal does not expose the active
-    allocator mode to Python; replace this probe with a device query once it
-    does.
+    TODO(#1106): Temporary stand-in for a TT-Metal capability. TT-Metal does not
+    expose the active allocator mode to Python; replace this probe with a device
+    query once it does.
     """
-    return os.environ.get("TT_METAL_ALLOCATOR_MODE_HYBRID", "0") == "1"
+    return os.environ.get("TT_METAL_ALLOCATOR_MODE_HYBRID", "").startswith("1")
 
 
 def _allocate_l1_sharded_storage_tensor(
@@ -2857,7 +2865,8 @@ def build_dfb_reconfiguration_runtime_resources(
     existing_backing_tensors: Optional[Dict[int, Any]] = None,
     existing_backing_allocation_bytes: Optional[Dict[int, int]] = None,
     device: Optional[Any] = None,
-    cb_configs: Optional[List[PhysicalDFBConfig]] = None,
+    *,
+    cb_configs: List[PhysicalDFBConfig],
 ) -> DFBReconfigurationRuntimeResources:
     """Build storage and configuration resources for DFB reconfiguration."""
     if plan is None:
@@ -2934,7 +2943,7 @@ def build_dfb_reconfiguration_runtime_resources(
         ):
             reconfigured_storage_indices.add(storage_index)
 
-    hybrid_allocation = os.environ.get("TT_METAL_ALLOCATOR_MODE_HYBRID", "0") == "1"
+    hybrid_allocation = _per_core_l1_allocation_enabled()
 
     # Runtime backing removes reconfigured scratch from the static program
     # allocation, which cannot hold every epoch's capacity on every core. Local
@@ -2967,62 +2976,56 @@ def build_dfb_reconfiguration_runtime_resources(
                 math.lcm(current_alignment, scratch_alignment),
             )
 
-    # The launch configuration can exceed every epoch's capacity, and its
-    # descriptor is built from the same backing tensor.
-    if cb_configs is not None:
-        if len(cb_configs) != len(plan.dfb_epochs):
+    # The launch descriptor is built from the same backing tensor as the epochs.
+    if len(cb_configs) != len(plan.dfb_epochs):
+        raise ValueError(
+            "launch DFB configuration count does not match the " "reconfiguration plan"
+        )
+    for dfb_index, config in enumerate(cb_configs):
+        storage_index = storage_index_by_dfb[dfb_index]
+        if storage_index not in runtime_backed_storage_indices:
+            continue
+        allocation = _get_dfb_allocation(config)
+        required_layout_by_core = required_layout_by_core_by_storage[storage_index]
+        # A core can carry the DFB at launch without appearing in any
+        # epoch, so the launch nodes join the epoch nodes rather than
+        # filtering against them; storage is reserved per core over both.
+        # Segments name each launch node's storage source, so only
+        # non-tensor-backed segment nodes need this storage.
+        if config.storage_segments:
+            launch_cores = {
+                node
+                for segment in config.storage_segments
+                if not segment.is_tensor_backed
+                for node in segment.nodes
+            }
+        elif config.allocation_nodes is not None:
+            launch_cores = set(config.allocation_nodes)
+        else:
+            # An unknown launch domain adds no core. A core that uses the
+            # DFB outside the epochs keeps a static descriptor for it,
+            # which local storage permits and a remote_uniform DFB rejects
+            # at descriptor construction.
+            launch_cores = set()
+        outside_nodes = launch_cores.difference(core_rows)
+        if outside_nodes:
+            outside_node = min(outside_nodes)
             raise ValueError(
-                "launch DFB configuration count does not match the "
-                "reconfiguration plan"
+                f"DFB[{dfb_index}] configuration references launch node "
+                f"{outside_node} outside the kernel grid"
             )
-        for dfb_index, config in enumerate(cb_configs):
-            storage_index = storage_index_by_dfb[dfb_index]
-            if storage_index not in runtime_backed_storage_indices:
-                continue
-            allocation = _get_dfb_allocation(config)
-            required_layout_by_core = required_layout_by_core_by_storage[storage_index]
-            # A core can carry the DFB at launch without appearing in any
-            # epoch, so the launch nodes join the epoch nodes rather than
-            # filtering against them; storage is reserved per core over both.
-            if config.storage_segments and all(
-                segment.is_tensor_backed for segment in config.storage_segments
-            ):
-                launch_cores = set()
-            elif config.allocation_nodes is not None:
-                launch_cores = set(config.allocation_nodes)
-            elif config.storage_segments:
-                launch_cores = {
-                    node
-                    for segment in config.storage_segments
-                    if not segment.is_tensor_backed
-                    for node in segment.nodes
-                }
-            else:
-                # A launch configuration that names no node carries no evidence
-                # of a core beyond the epochs, and reserving the whole grid for
-                # it exhausts L1 on programs that reconfigure wide buffers.
-                launch_cores = set()
-            outside_nodes = launch_cores.difference(core_rows)
-            if outside_nodes:
-                outside_node = min(outside_nodes)
-                raise ValueError(
-                    f"DFB[{dfb_index}] configuration references launch node "
-                    f"{outside_node} outside the kernel grid"
+        scratch_layout_by_core = scratch_layout_by_core_by_dfb[dfb_index]
+        for core in launch_cores.union(scratch_layout_by_core):
+            current_size, current_alignment = required_layout_by_core.get(core, (0, 1))
+            required_layout_by_core[core] = (
+                max(current_size, allocation.total_size),
+                math.lcm(current_alignment, allocation.page_size),
+            )
+            if core not in scratch_layout_by_core:
+                scratch_layout_by_core[core] = (
+                    allocation.total_size,
+                    allocation.page_size,
                 )
-            scratch_layout_by_core = scratch_layout_by_core_by_dfb[dfb_index]
-            for core in launch_cores.union(scratch_layout_by_core):
-                current_size, current_alignment = required_layout_by_core.get(
-                    core, (0, 1)
-                )
-                required_layout_by_core[core] = (
-                    max(current_size, allocation.total_size),
-                    math.lcm(current_alignment, allocation.page_size),
-                )
-                if core not in scratch_layout_by_core:
-                    scratch_layout_by_core[core] = (
-                        allocation.total_size,
-                        allocation.page_size,
-                    )
 
     required_bytes_by_core_by_storage = {
         storage_index: {
@@ -3103,11 +3106,8 @@ def build_dfb_reconfiguration_runtime_resources(
             continue
         if storage_index in per_core_storage_indices:
             for core, required_bytes in unbacked_required_bytes_by_core.items():
-                required_alignment = required_layout_by_core_by_storage[storage_index][
-                    core
-                ][1]
                 pending_local_members_by_core.setdefault(core, []).append(
-                    (storage_index, required_bytes, required_alignment)
+                    (storage_index, required_bytes)
                 )
         else:
             # A uniformly addressed storage index must remain one TT-Metal
@@ -3128,21 +3128,26 @@ def build_dfb_reconfiguration_runtime_resources(
 
     scratch_tensors = []
     owned_l1_buffer_addresses = set()
+    # DFB starts need the allocator's address alignment, as static placement
+    # uses; member sizes are already rounded to their page sizes.
+    address_alignment = int(ttnn.get_dram_alignment())
+    if address_alignment <= 0:
+        raise ValueError("TT-Metal reported an invalid DFB address alignment")
+    # One arena per core keeps a core's local storage in a single allocation, so
+    # an earlier storage index cannot fragment the intervals a later one needs.
+    # Each core's arena comes from that core's own allocator, so arenas are
+    # allocated in core order only for determinism.
     pending_local_arenas = []
-    for core, members in pending_local_members_by_core.items():
+    for core, members in sorted(pending_local_members_by_core.items()):
         next_offset = 0
         packed_members = []
-        for storage_index, required_bytes, required_alignment in sorted(
-            members, key=lambda member: (-member[2], -member[1], member[0])
+        for storage_index, required_bytes in sorted(
+            members, key=lambda member: (-member[1], member[0])
         ):
-            byte_offset = _align_up(next_offset, required_alignment)
+            byte_offset = _align_up(next_offset, address_alignment)
             packed_members.append((storage_index, required_bytes, byte_offset))
             next_offset = byte_offset + required_bytes
         pending_local_arenas.append((core, next_offset, packed_members))
-
-    # One arena per core keeps a core's local storage in a single allocation, so
-    # an earlier storage index cannot fragment the intervals a later one needs.
-    pending_local_arenas.sort(key=lambda arena: (-arena[1], arena[0]))
     for core, arena_bytes, packed_members in pending_local_arenas:
         scratch_tensor = _allocate_l1_sharded_storage_tensor(
             _make_singleton_core_ranges((core,)),
@@ -5765,6 +5770,12 @@ def emit_runner_source(
     lines.append("]")
     lines.append("")
 
+    lines.append("KERNEL_TENSOR_ACCESSOR_INDICES = [")
+    for spec in kernel_specs:
+        lines.append(f"    {spec.tensor_accessor_indices!r},  # {spec.thread_type}")
+    lines.append("]")
+    lines.append("")
+
     lines.append("KERNEL_PIPE_COMPUTED_ADDRESS_DFB_INDICES = [")
     for spec in kernel_specs:
         lines.append(
@@ -5920,6 +5931,10 @@ def emit_runner_source(
     lines.append("                tensor_indices=KERNEL_TENSOR_INDICES[kernel_idx],")
     lines.append(
         "                local_tensor_indices=KERNEL_LOCAL_TENSOR_INDICES[kernel_idx],"
+    )
+    lines.append(
+        "                tensor_accessor_indices="
+        "KERNEL_TENSOR_ACCESSOR_INDICES[kernel_idx],"
     )
     lines.append("                config=config,")
     lines.append(

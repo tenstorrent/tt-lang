@@ -28,6 +28,27 @@ func.func @compact_direct_indices()
 
 // -----
 
+// A TensorAccessor built from a tensor-address slot records that tensor; one
+// built from another value records none.
+// CHECK-LABEL: func.func @record_tensor_accessor_indices
+// CHECK-SAME: ttl.crta_indices = [50 : i32, 52 : i32]
+// CHECK-NOT: ttl.local_tensor_indices
+// CHECK-SAME: ttl.tensor_accessor_indices = [52 : i32]
+func.func @record_tensor_accessor_indices(%computed_base: i32)
+    attributes {ttl.crta_indices = [50, 51, 52],
+                ttl.kernel_thread = #ttkernel.thread<noc>} {
+  %cta_base = arith.constant 0 : i32
+  %crta_base = arith.constant 0 : i32
+  %args = ttkernel.TensorAccessorArgs(%cta_base, %crta_base)
+  %tensor_index = arith.constant 2 : index
+  %bank_base = ttkernel.get_common_arg_val(%tensor_index) : (index) -> i32
+  %accessor = ttkernel.TensorAccessor(%args, %bank_base) : (!ttkernel.TensorAccessorArgs, i32) -> !ttkernel.TensorAccessor
+  %computed = ttkernel.TensorAccessor(%args, %computed_base) : (!ttkernel.TensorAccessorArgs, i32) -> !ttkernel.TensorAccessor
+  return
+}
+
+// -----
+
 // Dynamic tables remap tensor and compiler-managed indices together.
 // CHECK-LABEL: func.func @compact_constant_table
 // CHECK-SAME: ttl.crta_indices = [20 : i32]
