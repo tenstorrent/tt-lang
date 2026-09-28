@@ -444,7 +444,15 @@ def _get_remaining_l1_by_core_for_device(
     cores: set[tuple[int, int]],
     per_core_l1_tensors: Sequence[Any] = (),
 ) -> dict[tuple[int, int], int]:
-    """Return the lowest reported L1 limit for each logical worker core."""
+    """Return the lowest reported L1 limit for each logical worker core.
+
+    A mesh device reports only its reference allocator's lockstep pages, so
+    those limits are exact for every device only if each device holds them
+    at the same addresses on the same logical cores. Per-core tensors the
+    runtime is given are bounded across devices separately.
+    """
+    # TODO: query per-device buffer pages once TT-Metal reports them for a
+    # mesh, and take the minimum over devices per logical core.
     _, remaining_bytes = _get_l1_remaining_bytes(
         device, cores, per_core_l1_tensors=per_core_l1_tensors
     )
@@ -4006,12 +4014,6 @@ def _order_static_dfb_descriptor_plans(
             f"exceeds the L1 budget by {required_bytes - available_bytes} bytes"
         )
 
-    if current_score[0] > 0 and (
-        not search_unsplit_orders
-        or len(local_plan_indices) > _STATIC_DFB_PACKING_EXACT_PLAN_LIMIT
-    ):
-        return split_overflow_core_or_raise(current_result, current_order)
-
     while current_score[0] > 0:
         next_candidate = None
         for first_position in range(len(current_order)):
@@ -4062,6 +4064,13 @@ def _order_static_dfb_descriptor_plans(
 
     if current_score[0] == 0:
         return apply_order(current_order)
+
+    # The local searches above run for any plan count; only the exact subset
+    # search is skipped beyond the plan limit.
+    if not search_unsplit_orders or (
+        len(static_plan_indices) > _STATIC_DFB_PACKING_EXACT_PLAN_LIMIT
+    ):
+        return split_overflow_core_or_raise(current_result, current_order)
 
     search_state_count = 0
     search_limit_reached = False
