@@ -222,10 +222,11 @@ The usable interval for each core begins at the configured DFB allocator base
 and ends at the lowest live L1 tensor page. Subtracting only allocated page
 sizes would ignore allocator gaps and could overestimate the available range.
 Tensor-backed and already allocated computed-address storage do not advance the
-static frontiers. For a multi-device mesh, tensor and runtime-resource
-allocations use common L1 addresses, while harvested worker mappings can
-differ. The runtime therefore applies the reference allocator's global minimum
-remaining interval to every logical core.
+static frontiers. The runtime reads the reference allocator's live pages and
+applies each logical core's own lowest page as that core's limit, also for a
+multi-device mesh. This assumes that every device holds its L1 pages at the
+same addresses on the same logical cores as the reference device, which
+lockstep mesh allocations guarantee.
 The correctness invariant is that every surviving DFB access has one compatible
 descriptor on its launch core; conservative metadata preserves the
 whole-program descriptor behavior when this cannot be proved.
