@@ -7,25 +7,26 @@
 # RUN: env TTLANG_COMPILE_ONLY=1 not %python %s receive-and-copy 2>&1 | FileCheck %s --check-prefix=RECEIVE-AND-COPY
 # RUN: env TTLANG_COMPILE_ONLY=1 not %python %s unmerged-shape 2>&1 | FileCheck %s --check-prefix=UNMERGED-SHAPE
 # RUN: env TTLANG_COMPILE_ONLY=1 not %python %s raw-writes 2>&1 | FileCheck %s --check-prefix=RAW-WRITES
-# RUN: env TTLANG_COMPILE_ONLY=1 not %python %s unused 2>&1 | FileCheck %s --check-prefix=UNUSED
 # RUN: env TTLANG_COMPILE_ONLY=1 not %python %s held-waits 2>&1 | FileCheck %s --check-prefix=HELD-WAITS
 # RUN: env TTLANG_COMPILE_ONLY=1 not %python %s held-send 2>&1 | FileCheck %s --check-prefix=HELD-SEND
 
 # GUARDED: error: a data-movement kernel cannot hold two acquired blocks of one dataflow buffer; the earlier block has no use before this acquisition, so use and push it before this acquisition or drop it
-# RECEIVE-AND-COPY: error: a data-movement kernel cannot hold several acquired blocks of one dataflow buffer unless each is written only by pipe receives into its own view; this operation addresses the dataflow buffer pointer, which names the first acquired block, so push each block before the next acquisition
+# RECEIVE-AND-COPY: error: a data-movement kernel addresses a dataflow buffer through one write pointer, which names the first of the blocks it holds; this operation accesses a later block through it, so push each block before the next acquisition
 # UNMERGED-SHAPE: error: a data-movement kernel cannot hold two acquired blocks of one dataflow buffer; this operation accesses the earlier block after the next acquisition returned the same slot, so push the earlier block before that acquisition
-# RAW-WRITES: error: a data-movement kernel cannot hold several acquired blocks of one dataflow buffer unless each is written only by pipe receives into its own view; this operation addresses the dataflow buffer pointer, which names the first acquired block, so push each block before the next acquisition
-# UNUSED: error: a data-movement kernel cannot hold several acquired blocks of one dataflow buffer unless each is written only by pipe receives into its own view; this block has none, so use and push it before the next acquisition or drop it
-# HELD-WAITS: error: a data-movement kernel reads a dataflow buffer through one read pointer, so it cannot hold several waited blocks of it; pop each block before the next wait
-# HELD-SEND: error: a data-movement kernel cannot hold several acquired blocks of one dataflow buffer unless each is written only by pipe receives into its own view; this operation addresses the dataflow buffer pointer, which names the first acquired block, so push each block before the next acquisition
+# RAW-WRITES: error: a data-movement kernel addresses a dataflow buffer through one write pointer, which names the first of the blocks it holds; this operation accesses a later block through it, so push each block before the next acquisition
+# RAW-WRITES: ttl.raw_element_write(second, 0, 0, 2.0)
+# HELD-WAITS: error: a data-movement kernel addresses a dataflow buffer through one read pointer, which names the first of the blocks it holds; this operation accesses a later block through it, so pop each block before the next acquisition
+# HELD-WAITS: ttl.copy(second, out[0, 1])
+# HELD-SEND: error: a data-movement kernel addresses a dataflow buffer through one write pointer, which names the first of the blocks it holds; this operation accesses a later block through it, so push each block before the next acquisition
 
 """Reject data-movement kernels that hold several blocks of one DFB and
-address them through the DFB pointer.
+address a later block through the DFB pointer.
 
 A data-movement kernel reaches a DFB through one read or write pointer, so two
 acquisitions held together alias unless `ttl-coalesce-dfb-acquires` merges them
-into one multi-block acquisition and every access goes through a pipe receive
-into each block's own view.
+into one multi-block acquisition. The pointer then names the first merged
+block, so a later block may be written only by a pipe receive into its own
+view.
 """
 
 import os
@@ -169,32 +170,6 @@ def make_raw_writes():
     return raw_writes
 
 
-def make_unused():
-    @ttl.operation(grid=(1, 1))
-    def unused(inp, out):
-        dfb = ttl.make_dataflow_buffer_like(inp, shape=(1, 1), block_count=2)
-
-        @ttl.compute()
-        def compute():
-            pass
-
-        @ttl.datamovement()
-        def reader():
-            first = dfb.reserve()
-            second = dfb.reserve()
-            first.push()
-            second.push()
-
-        @ttl.datamovement()
-        def writer():
-            with dfb.wait() as blk:
-                ttl.copy(blk, out[0, 0]).wait()
-            with dfb.wait() as blk:
-                ttl.copy(blk, out[0, 1]).wait()
-
-    return unused
-
-
 def make_held_waits():
     @ttl.operation(grid=(1, 1))
     def held_waits(inp, out):
@@ -287,7 +262,6 @@ FACTORIES = {
     "unmerged-shape": lambda: make_gather(receive_second=True, block_rows=2),
     # Element writes ignore the view's block offset and land in the first slot.
     "raw-writes": make_raw_writes,
-    "unused": make_unused,
     "held-waits": make_held_waits,
     "held-send": make_held_send,
 }

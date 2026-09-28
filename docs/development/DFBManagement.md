@@ -1301,9 +1301,17 @@ consecutive direct uses on the same DFB. Unifying would require changing every
 direct storage-accessing operation to take the attached tensor instead of the
 DFB.
 
-### Rejected acquisition shapes
+### Rejected held DFB blocks
 
-Two shapes are rejected instead of completed with a release.
+A block is held from its acquisition until its release. A later acquisition of
+the same DFB and kind can alias a held block, and the pass rejects the program
+instead of inserting a release in three cases, described below in order:
+
+- a nested region acquires the DFB again while the block is held;
+- a data-movement kernel, which reaches a DFB through one read or write
+  pointer, acquires it again while it holds an unmerged block;
+- a data-movement kernel holds acquisitions that `TTLCoalesceDFBAcquires`
+  merges into one and reaches a later merged block through that pointer.
 
 A block still acquired when a nested region acquires the same DFB with the same
 kind would alias that acquisition, since `cb_wait_front` and `cb_reserve_back`
@@ -1338,12 +1346,14 @@ acquisition, or when an operation other than a view or a transfer completion
 uses the earlier block after the next acquisition.
 
 Acquisitions that `TTLCoalesceDFBAcquires` merges into one multi-block
-acquisition (`planCoalescedAcquireGroups`) become slices of it, but only a
-pipe receive addresses a slice through its block offset: element accesses and
-copies go through the DFB pointer, which names the first slot. Merged
-reservations may therefore stay acquired together only while each block is
-written by pipe receives into its own view and by nothing else, and merged
-waits may not be held together at all. The decision is taken before the
+acquisition (`planCoalescedAcquireGroups`) become slices of it. The DFB pointer
+names the first slice, so every access to the first merged block is correct,
+but only a pipe receive addresses a later slice through its block offset:
+element accesses, copies, and sends through the pointer reach the first slot.
+A later merged reservation may therefore be written only by pipe receives into
+its own view, and a later merged wait may not be read at all. A merged block
+without uses needs no release of its own, because the group's releases, one
+per member, become the merged release. The decision is taken before the
 coalescer runs from the same plan the coalescer applies, so it depends on the
 releases the program states; held reservations whose releases the pass would
 insert are treated as unmerged. Compute kernels may hold several blocks
