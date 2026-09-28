@@ -218,6 +218,7 @@ class FabricTargetBindingPlan:
 
 
 _WORKER_SEMAPHORE_CAPACITY = 16
+# TT-Metal mux buffer pointers are uint8 and count over twice the buffer count.
 _FABRIC_MUX_MAX_BUFFERS_PER_CHANNEL = ((1 << 8) - 1) // 2
 _FABRIC_TARGET_PLAN_SCHEMA_VERSION = 1
 _FABRIC_TARGET_PLAN_PERSONALIZATION = b"ttlang-fb-plan"

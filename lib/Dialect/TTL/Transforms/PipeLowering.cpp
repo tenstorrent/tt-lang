@@ -511,7 +511,9 @@ static void coalesceFabricRuntimeCandidates(
 
 static void coalesceUnserializedFabricRuntimeIntervals(FabricRoutePlan &plan) {
   // Each function has one host-specialized connection record set. Unserialized
-  // intervals in one block must share a manager or they reopen that set.
+  // intervals in one block must share a manager or they reopen that set, and a
+  // single interval is widened to its function-level enclosing operations so a
+  // loop does not reopen the set on every iteration.
   llvm::MapVector<Block *, SmallVector<FabricRuntimeCoalescingCandidate>>
       candidatesByBlock;
   for (auto [intervalIndex, interval] :

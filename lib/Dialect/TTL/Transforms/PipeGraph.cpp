@@ -2448,9 +2448,8 @@ static std::optional<std::uint64_t> getConcreteTransferExecutionCount(
              : std::nullopt;
 }
 
-/// Return the one device domain used by selected PipeNet records. Target
-/// lowering imposes the same constraint per kernel before materializing fabric
-/// routes; multiple domains retain node-only conservative analysis here.
+/// Return the one device domain used by selected PipeNet records. Multiple
+/// domains retain node-only conservative analysis.
 static DeviceDomainAttr
 getAggregateLocalPipeDeviceDomain(const PipeGraphAnalysisState &analysisState) {
   DeviceDomainAttr deviceDomain;
