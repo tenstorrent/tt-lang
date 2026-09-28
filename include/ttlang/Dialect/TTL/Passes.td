@@ -1086,6 +1086,11 @@ def TTLFinalizeDFBIndices
     not prove that a feasible placement is impossible. Unsupported storage forms
     and PipeNet transfers are diagnosed; this mode never falls back to Metal descriptors.
     `reuse-user-dfbs=false` disables payload aliasing in this mode.
+    `sram-allocation-report` emits a schema-versioned JSON record to stderr
+    after allocation validation and before IR mutation. It reports storage
+    owners, tensor references, reused ranges, lifetime and conflict evidence,
+    and planned per-node arena bytes. It does not report hardware reservations
+    or change allocation. The option is inactive for `metal-cb`.
 
     User-declared DFBs enter this pass with module-wide logical `dfb_id`
     attributes. Compiler-created DFB declarations receive unique logical IDs.
@@ -1261,6 +1266,9 @@ def TTLFinalizeDFBIndices
     Option<"reuseUserDFBs", "reuse-user-dfbs", "bool", "true",
            "Reuse physical DFB indices and compiler-managed storage for "
            "lifetimes proven not to overlap across concurrent kernels.">,
+    Option<"sramAllocationReport", "sram-allocation-report", "bool", "false",
+           "Emit a versioned JSON report of compiler-managed SRAM ownership, "
+           "reuse, conflicts, and planned arena bytes.">,
     Option<"sramAllocationStrategy", "sram-allocation-strategy", "std::string",
            "\"multi-order-decreasing\"",
            "Select multi-order-decreasing, first-fit-decreasing, "

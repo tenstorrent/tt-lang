@@ -287,6 +287,31 @@ Finalization records `ttl.memory_model`, `ttl.l1_arena_bytes`, and one entry per
 
 Uniform allocation reserves the largest required arena on every participating worker node. This can waste capacity when activity is sparse. Per-node layouts require node-specific allocation metadata and are an extension of this design.
 
+## Allocation Report
+
+`--ttl-sram-allocation-report` emits schema-versioned JSON records to stderr with the prefix `ttlang-sram-report: `. It is disabled by default and emits nothing for `metal-cb`. The compiler record is emitted after allocation validation and before IR mutation. A runtime record is emitted for each arena reservation, including calls that reuse a compiled operation. Reporting does not change placement.
+
+The compiler record identifies storage `owners`, logical DFB `regions`, overlapping owner pairs in `reused_ranges`, and the existing `logical_conflicts` and `lifetimes` analysis evidence. Conflict reasons are recorded before allocation-group ownership is applied. Lifetime event IDs identify partial-order events, not elapsed time or a total execution order. Overlap byte counts are not additive when more than two owners share the same range.
+
+| Compiler field | Meaning |
+| --- | --- |
+| `arena_bytes_per_node` | Planned control prefix and payload high-water mark. |
+| `control_record_bytes`, `control_padding_bytes` | Control state and alignment padding. |
+| `payload_extent_sum_bytes` | Sum of distinct compiler-owned storage-owner extents after allocation-group consolidation. |
+| `payload_union_bytes` | Number of distinct payload addresses occupied by those extents. |
+| `payload_reuse_bytes` | Extent sum minus union; excludes sharing within an allocation group. |
+| `payload_gap_bytes` | Payload high-water mark minus union; an unused address gap, not distance from optimal placement. |
+
+The runtime record has `phase: "runtime"` and `scope: "arena-reference-device"`. It reports the requested arena bytes per node and the actual reserved bytes derived from the arena buffer's aligned page size and uniform page count. `node_count` and `reserved_bytes_on_reference_device` describe only the participating nodes on the reference device. Existing tensor payloads, PipeNet scratch, external resources, and program storage are outside this measurement. A control-only arena may omit trailing compiler alignment padding from the runtime request.
+
+A compiler-only report can be inspected with:
+
+```sh
+ttlang-opt test/ttlang/Dialect/TTL/Transforms/compiler_sram_multi_order.mlir \
+  -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{memory-model=compiler-sram sram-allocation-report=true})' \
+  > /tmp/allocated.mlir 2> /tmp/sram-report.log
+```
+
 ## Memory Utilization
 
 Storage efficiency comes from six decisions:

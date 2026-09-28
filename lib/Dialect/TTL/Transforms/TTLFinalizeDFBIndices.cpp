@@ -358,11 +358,11 @@ struct TTLFinalizeDFBIndicesPass
             std::move(*maybeStaticConfigurationConflicts);
       }
       SmallVector<DFBAssumedAllocationGroup> assumedAllocationGroups;
-      if (failed(allocateSRAM(moduleOp, logicalIdentityAnalysis,
-                              l1BudgetOverride, reuseUserDFBs, **sramAllocator,
-                              liveness, staticConfigurationConflicts,
-                              unsafeAssumeAllocationGroups,
-                              assumedAllocationGroups))) {
+      if (failed(allocateSRAM(
+              moduleOp, logicalIdentityAnalysis, l1BudgetOverride,
+              reuseUserDFBs, **sramAllocator, sramAllocationReport, liveness,
+              staticConfigurationConflicts, unsafeAssumeAllocationGroups,
+              assumedAllocationGroups))) {
         signalPassFailure();
         return;
       }
