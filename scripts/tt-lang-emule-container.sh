@@ -420,6 +420,26 @@ if [ "$_BUILD_IMAGE" -eq 1 ]; then
         "${_REPO_ROOT}/scripts"
 fi
 
+if _IMAGE_INSPECTION="$("$_DOCKER" image inspect -- "$_IMAGE")"; then
+    :
+else
+    _IMAGE_INSPECT_STATUS=$?
+    echo "tt-lang-sim: cannot verify image provenance for ${_IMAGE}." >&2
+    exit "$_IMAGE_INSPECT_STATUS"
+fi
+if ! _VERIFIED_IMAGE="$(
+    "$_PYTHON" "$_STACK_TOOL" --manifest "$_STACK_MANIFEST" validate-image \
+        --emulator-commit "$_TT_EMULE_COMMIT" \
+        --metal-commit "$_TT_METAL_COMMIT" \
+        --metal-repository "$_TT_METAL_SOURCE_URL" \
+        --base-image "$_BASE_IMAGE" --platform "$_PLATFORM" \
+        <<< "$_IMAGE_INSPECTION"
+)"; then
+    echo "tt-lang-sim: image ${_IMAGE} does not match the selected emulator stack." >&2
+    echo "Select a matching image or reinstall with TTLANG_EMULE_REBUILD=1 scripts/install-tt-lang-emule.sh." >&2
+    exit 1
+fi
+
 cleanup
 if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ]; then
     printf 'Runtime image: %s\n' "$_IMAGE"
@@ -428,6 +448,6 @@ if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ]; then
 fi
 if [ "${TTLANG_EMULE_INSTALL:-0}" = "1" ] || \
    [ "${TTLANG_EMULE_SHELL:-0}" = "1" ]; then
-    exec "$_DOCKER" "${_RUN_ARGS[@]}" "$_IMAGE"
+    exec "$_DOCKER" "${_RUN_ARGS[@]}" "$_VERIFIED_IMAGE"
 fi
-exec "$_DOCKER" "${_RUN_ARGS[@]}" "$_IMAGE" "$_CONTAINER_SCRIPT" "$@"
+exec "$_DOCKER" "${_RUN_ARGS[@]}" "$_VERIFIED_IMAGE" "$_CONTAINER_SCRIPT" "$@"

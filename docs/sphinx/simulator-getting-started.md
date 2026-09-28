@@ -180,8 +180,15 @@ Every built image records its resolved inputs as OCI labels and in
 `/opt/tt-emule-runtime/stack.json`. The original supported-stack manifest is
 stored beside it as `source-manifest.json`, and its SHA-256 is verified while
 the image is built. These records identify the supported manifest and exact
-runtime inputs used to build the image. Inspect an artifact without running a
-workload with:
+runtime inputs used to build the image. Before installation, program execution,
+or shell access, the launcher checks the image's provenance labels against the
+selected manifest and runtime inputs. This check also applies to images selected
+with `TTLANG_EMULE_IMAGE`. The container runs by its verified immutable image ID,
+so changing an image tag after validation does not select a different runtime.
+An image with missing or mismatched provenance requires a matching image or a
+rebuild with `TTLANG_EMULE_REBUILD=1 ./scripts/install-tt-lang-emule.sh`.
+
+Inspect an artifact without running a workload with:
 
 ```bash
 docker image inspect tt-lang-emule:TAG \
