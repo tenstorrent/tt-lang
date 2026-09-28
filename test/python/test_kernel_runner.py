@@ -3386,6 +3386,75 @@ def test_reconfiguration_shares_sufficient_pipe_backing(monkeypatch):
     assert descriptors[0].backing_desc["tensor"] is backing_tensor
 
 
+# A reused PipeNet backing covers only its shard cores; a core that needs
+# reconfiguration scratch without a shard gets separate scratch there.
+def test_reconfiguration_allocates_scratch_where_pipe_backing_has_no_shard(
+    monkeypatch,
+):
+    fake_ttnn = _FakeTTNN()
+    fake_ttnn.uint32 = "uint32"
+    fake_ttnn.ROW_MAJOR_LAYOUT = "row-major"
+    fake_ttnn.ShardOrientation = type("ShardOrientation", (), {"ROW_MAJOR": 0})
+    fake_ttnn.TensorMemoryLayout = type("TensorMemoryLayout", (), {"HEIGHT_SHARDED": 0})
+    fake_ttnn.BufferType = type("BufferType", (), {"L1": 0})
+    fake_ttnn.ShardSpec = lambda *args: args
+    fake_ttnn.MemoryConfig = lambda *args: args
+    device = object()
+    backing_tensor = _FakeTensor(device, address=0x8000)
+    scratch_tensor = _FakeTensor(device, address=0xC000)
+    scratch_allocations = []
+
+    def allocate_scratch(core_ranges, num_bytes, _device):
+        scratch_allocations.append((core_ranges, num_bytes))
+        return scratch_tensor
+
+    fake_ttnn.from_torch = lambda *_args, **_kwargs: _FakeTensor(device, address=0x9000)
+    monkeypatch.setattr(kernel_runner, "ttnn", fake_ttnn)
+    monkeypatch.setattr(
+        kernel_runner, "_allocate_l1_sharded_storage_tensor", allocate_scratch
+    )
+
+    def l1_addresses(tensor, _device):
+        if tensor is backing_tensor:
+            return {(0, 0): 0x8000}
+        if tensor is scratch_tensor:
+            return {(1, 0): 0xC000}
+        return {(0, 0): 0x9000, (1, 0): 0x9000}
+
+    monkeypatch.setattr(kernel_runner, "_l1_buffer_addresses_by_core", l1_addresses)
+    config = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32), storage_index=4)
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (DFBConfigurationEpoch(None, config), DFBConfigurationEpoch(7, config)),
+        ),
+    )
+
+    resources = kernel_runner.build_dfb_reconfiguration_runtime_resources(
+        tensors=[],
+        core_ranges=_FakeExplicitCoreRanges((0, 0), (1, 0)),
+        plan=plan,
+        existing_backing_tensors={0: backing_tensor},
+        existing_backing_allocation_bytes={0: 2048},
+        device=device,
+    )
+
+    assert len(scratch_allocations) == 1
+    assert {
+        (int(core.x), int(core.y))
+        for core in fake_ttnn.corerange_to_cores(scratch_allocations[0][0])
+    } == {(1, 0)}
+    assert scratch_allocations[0][1] == 2048
+    assert resources.scratch_tensors == [scratch_tensor]
+    assert [
+        (segment.tensor, segment.nodes)
+        for segment in resources.scratch_segments_by_index[0]
+    ] == [(backing_tensor, ((0, 0),)), (scratch_tensor, ((1, 0),))]
+    # Owned addresses: the new scratch and the configuration tensor, not the
+    # reused backing.
+    assert resources.l1_buffer_addresses == frozenset((0x9000, 0xC000))
+
+
 def test_build_kernel_descriptors_checks_pipe_runtime_arg_count(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     spec = kernel_runner.KernelSpec(
@@ -6712,6 +6781,74 @@ def test_static_dfb_descriptor_exact_search_finds_nonlocal_reordering(monkeypatc
         (1, 0): 544,
         (2, 0): 216,
         (3, 0): 272,
+    }
+
+    ordered_plans = kernel_runner._order_static_dfb_descriptor_plans(
+        descriptor_plans, remaining_bytes_by_core
+    )
+
+    frontiers = {core: 0 for core in remaining_bytes_by_core}
+    for plan in ordered_plans:
+        address = kernel_runner._align_up(
+            max(frontiers[core] for core in plan.nodes), 64
+        )
+        for core in plan.nodes:
+            frontiers[core] = address + plan.total_size
+    assert all(
+        frontiers[core] <= remaining_bytes
+        for core, remaining_bytes in remaining_bytes_by_core.items()
+    )
+
+
+# Beyond the exact-search plan limit, the local search still runs: a greedy
+# order overflows one core, and a pairwise swap or relocation fits.
+def test_static_dfb_descriptor_local_search_runs_beyond_exact_plan_limit(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    plan_nodes = (
+        ((0, 0), (3, 0)),
+        ((1, 0), (2, 0), (3, 0)),
+        ((1, 0), (2, 0)),
+        ((0, 0), (1, 0)),
+        ((1, 0), (3, 0)),
+        ((2, 0),),
+        ((0, 0), (1, 0), (2, 0)),
+        ((1, 0), (2, 0), (3, 0)),
+        ((0, 0), (2, 0), (3, 0)),
+        ((0, 0), (2, 0)),
+        ((1, 0), (2, 0)),
+        ((1, 0),),
+        ((1, 0),),
+        ((0, 0), (2, 0), (3, 0)),
+        ((0, 0), (1, 0), (3, 0)),
+        ((0, 0), (2, 0)),
+        ((1, 0), (2, 0), (3, 0)),
+        ((3, 0),),
+        ((0, 0), (1, 0), (3, 0)),
+        ((0, 0),),
+        ((0, 0), (3, 0)),
+    )
+    plan_sizes = (
+        192, 256, 128, 320, 64, 256, 192, 256, 64, 256, 192,
+        320, 128, 192, 320, 192, 256, 192, 128, 320, 64,
+    )
+    assert len(plan_nodes) > kernel_runner._STATIC_DFB_PACKING_EXACT_PLAN_LIMIT
+    descriptor_plans = [
+        kernel_runner._DFBDescriptorPlan(
+            descriptor=object(),
+            physical_index=physical_index,
+            total_size=plan_sizes[physical_index],
+            nodes=plan_nodes[physical_index],
+            has_static_storage=True,
+        )
+        for physical_index in range(len(plan_nodes))
+    ]
+    remaining_bytes_by_core = {
+        (0, 0): 2880,
+        (1, 0): 3136,
+        (2, 0): 3136,
+        (3, 0): 3136,
     }
 
     ordered_plans = kernel_runner._order_static_dfb_descriptor_plans(
