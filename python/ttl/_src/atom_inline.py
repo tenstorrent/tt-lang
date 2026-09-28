@@ -22,7 +22,7 @@ from ttl.scalar import ScalarType
 
 _INLINED_OPERATION_STATEMENT = "_ttl_inlined_operation_statement"
 _DFB_SOURCE_OCCURRENCE = "_ttl_dfb_source_occurrence"
-_LOOP_TARGET_USED_OUTSIDE = "_ttl_loop_target_used_outside"
+_LOOP_TARGETS_READ_AFTER = "_ttl_loop_targets_read_after"
 
 _NESTED_SCOPES = (
     ast.FunctionDef,
@@ -103,38 +103,84 @@ class _NestedBindingCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def _mark_loop_targets_used_outside(statements: List[ast.stmt]) -> None:
-    """Record on each ``For`` whether code outside it names its target.
+def _loop_target_paths(target: ast.expr, path: Tuple[int, ...] = ()):
+    if isinstance(target, ast.Name):
+        yield path, target.id
+    elif isinstance(target, (ast.Tuple, ast.List)):
+        for index, element in enumerate(target.elts):
+            yield from _loop_target_paths(element, path + (index,))
 
-    Nodes are compared by identity before renaming: renamed targets no longer
-    match their source names, and inlined helpers reuse source positions.
+
+def _mark_loop_targets_read_after(statements: List[ast.stmt]) -> None:
+    """Record on each ``For`` which target names code after it may read.
+
+    The mark maps each such name's position in the target to its source name.
+    A read counts unless it is inside the loop body, or inside the body of
+    another loop that rebinds the name and does not enclose this loop. Nodes
+    are compared by identity before renaming: renamed targets no longer match
+    their source names, and inlined helpers reuse source positions.
     """
-    names = [
-        node
-        for statement in statements
-        for node in ast.walk(statement)
-        if isinstance(node, ast.Name)
-    ]
+    loops: List[Tuple[ast.For, Tuple[ast.For, ...]]] = []
+    reads_by_name: Dict[str, List[Tuple[ast.For, ...]]] = {}
+
+    def record_read(name: str, enclosing_loops: Tuple[ast.For, ...]) -> None:
+        reads_by_name.setdefault(name, []).append(enclosing_loops)
+
+    def visit(node: ast.AST, enclosing_loops: Tuple[ast.For, ...]) -> None:
+        if isinstance(node, ast.For):
+            loops.append((node, enclosing_loops))
+            visit(node.target, enclosing_loops)
+            visit(node.iter, enclosing_loops)
+            for statement in node.body:
+                visit(statement, enclosing_loops + (node,))
+            for statement in node.orelse:
+                visit(statement, enclosing_loops)
+            return
+        if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Name):
+            record_read(node.target.id, enclosing_loops)
+        elif isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Load, ast.Del)):
+            record_read(node.id, enclosing_loops)
+        for child in ast.iter_child_nodes(node):
+            visit(child, enclosing_loops)
+
     for statement in statements:
-        for loop in ast.walk(statement):
-            if not isinstance(loop, ast.For):
-                continue
-            target_names = {
-                name.id for name in ast.walk(loop.target) if isinstance(name, ast.Name)
-            }
-            loop_nodes = {
-                id(inner)
-                for part in (loop.target, *loop.body)
-                for inner in ast.walk(part)
-            }
-            setattr(
-                loop,
-                _LOOP_TARGET_USED_OUTSIDE,
-                any(
-                    name.id in target_names and id(name) not in loop_nodes
-                    for name in names
-                ),
-            )
+        visit(statement, ())
+
+    target_names_by_loop = {
+        id(loop): {name for _, name in _loop_target_paths(loop.target)}
+        for loop, _ in loops
+    }
+
+    def reads_loop_value(
+        loop: ast.For,
+        ancestor_ids: Set[int],
+        name: str,
+        read_loops: Tuple[ast.For, ...],
+    ) -> bool:
+        for read_loop in read_loops:
+            if read_loop is loop:
+                return False
+            if (
+                id(read_loop) not in ancestor_ids
+                and name in target_names_by_loop[id(read_loop)]
+            ):
+                return False
+        return True
+
+    for loop, ancestors in loops:
+        ancestor_ids = {id(ancestor) for ancestor in ancestors}
+        setattr(
+            loop,
+            _LOOP_TARGETS_READ_AFTER,
+            {
+                path: name
+                for path, name in _loop_target_paths(loop.target)
+                if any(
+                    reads_loop_value(loop, ancestor_ids, name, read_loops)
+                    for read_loops in reads_by_name.get(name, ())
+                )
+            },
+        )
 
 
 def _is_constant_structure(node: ast.expr) -> bool:
@@ -241,8 +287,8 @@ class _SubstituteTransformer(ast.NodeTransformer):
                 f"@ttl.operation {self.caller_name!r}: a loop over a captured "
                 "sequence cannot use break or continue"
             )
-        target_used_outside_loop = getattr(transformed_node, _LOOP_TARGET_USED_OUTSIDE)
-        if target_used_outside_loop and not transformed_node.iter.elts:
+        targets_read_after = getattr(transformed_node, _LOOP_TARGETS_READ_AFTER)
+        if targets_read_after and not transformed_node.iter.elts:
             raise ValueError(
                 f"@ttl.operation {self.caller_name!r}: a loop over an empty "
                 "captured sequence leaves its target unbound for code outside "
@@ -268,30 +314,29 @@ class _SubstituteTransformer(ast.NodeTransformer):
                 else:
                     unrolled_body.append(transformed_statement)
         # As in Python, the target keeps the last element after the loop; code
-        # outside the loop that uses it needs that binding.
-        if target_used_outside_loop:
-            final_bindings = {}
-            self._bind_loop_target(
-                transformed_node.target,
-                transformed_node.iter.elts[-1],
-                final_bindings,
-            )
-            for name, value in final_bindings.items():
-                if not _is_constant_structure(value):
-                    raise ValueError(
-                        f"@ttl.operation {self.caller_name!r}: target {name!r} "
-                        "of a loop over a captured sequence can be used outside "
-                        "the loop only when the sequence elements are literals"
-                    )
-                unrolled_body.append(
-                    ast.copy_location(
-                        ast.Assign(
-                            targets=[ast.Name(id=name, ctx=ast.Store())],
-                            value=copy.deepcopy(value),
-                        ),
-                        transformed_node,
-                    )
+        # after the loop that reads a target name needs that binding.
+        for path, source_name in sorted(targets_read_after.items()):
+            target = transformed_node.target
+            value = transformed_node.iter.elts[-1]
+            for index in path:
+                target = target.elts[index]
+                value = value.elts[index]
+            if not _is_constant_structure(value):
+                raise ValueError(
+                    f"@ttl.operation {self.callee_name!r}: loop target "
+                    f"{source_name!r} is read after its loop over a captured "
+                    "sequence, which requires elements that are constants or "
+                    "tuples of constants"
                 )
+            unrolled_body.append(
+                ast.copy_location(
+                    ast.Assign(
+                        targets=[ast.Name(id=target.id, ctx=ast.Store())],
+                        value=copy.deepcopy(value),
+                    ),
+                    transformed_node,
+                )
+            )
         # Without break, the else suite runs once after the last element.
         unrolled_body.extend(transformed_node.orelse)
         return unrolled_body
@@ -729,7 +774,7 @@ def _expand_call(
     )
 
     cloned_body = copy.deepcopy(spec.fn_ast.body)
-    _mark_loop_targets_used_outside(cloned_body)
+    _mark_loop_targets_read_after(cloned_body)
     result: List[ast.stmt] = []
     for cloned_statement in cloned_body:
         transformed_statement = transformer.visit(cloned_statement)

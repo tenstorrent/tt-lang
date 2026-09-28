@@ -932,7 +932,67 @@ def test_composition_binds_captured_sequence_target_after_loop():
     assert re.search(
         r"coordinate_x\w* = 3\n.*coordinate_x\w* \+= 1\n", source, re.DOTALL
     )
-    assert re.search(r"_coordinate_y\w* = 4\n", source)
+    assert "_coordinate_y" not in source
+
+
+def test_composition_binds_captured_sequence_target_read_by_augmented_assignment():
+    """An augmented assignment after the loop reads the target."""
+    values = (1, 2)
+
+    @ttl.operation()
+    def value_helper(core_x):
+        for value in values:
+            pass
+        value += core_x
+
+    source = _composed_source(value_helper)
+    assert re.search(r"(value\w*) = 2\n\s*\1 \+= core_x$", source, re.MULTILINE)
+
+
+def test_composition_binds_only_captured_sequence_targets_read_after_loop():
+    """Only target names read after the loop need a literal element."""
+    pairs = ((ttl.KernelKind.DATA_MOVEMENT, 1), (ttl.KernelKind.COMPUTE, 2))
+
+    @ttl.operation()
+    def pair_helper(core_x):
+        for kind, count in pairs:
+            ttl.call_extern_func("each.hpp", "each", kernel=kind)
+        if core_x == count:
+            ttl.call_extern_func("last.hpp", "last", kernel=ttl.KernelKind.COMPUTE)
+
+    source = _composed_source(pair_helper)
+    assert re.search(r"count\w* = 2\n", source)
+    assert not re.search(r"^\s*kind\w* = ", source, re.MULTILINE)
+
+
+def test_composition_accepts_reused_captured_sequence_target_name():
+    """A later loop that rebinds the target reads its own element."""
+    kinds = (ttl.KernelKind.DATA_MOVEMENT, ttl.KernelKind.COMPUTE)
+
+    @ttl.operation()
+    def captured_first(core_x):
+        for kind in kinds:
+            ttl.call_extern_func("first.hpp", "first", kernel=kind)
+        for kind in kinds:
+            ttl.call_extern_func("second.hpp", "second", kernel=kind)
+
+    @ttl.operation()
+    def range_first(core_x):
+        for kind in range(2):
+            pass
+        for kind in kinds:
+            ttl.call_extern_func("second.hpp", "second", kernel=kind)
+
+    @ttl.operation()
+    def empty_first(core_x):
+        for kind in ():
+            pass
+        for kind in kinds:
+            ttl.call_extern_func("second.hpp", "second", kernel=kind)
+
+    for helper in (captured_first, range_first, empty_first):
+        source = _composed_source(helper)
+        assert not re.search(r"^\s*kind\w* = ", source, re.MULTILINE)
 
 
 def test_composition_binds_nested_captured_sequence_target_per_outer_element():
@@ -991,7 +1051,7 @@ def test_composition_rejects_non_literal_captured_sequence_target_after_loop():
 
     with pytest.raises(
         ValueError,
-        match="can be used outside the loop only when the sequence elements are literals",
+        match="loop target 'kind' is read after its loop over a captured sequence",
     ):
         _composed_source(kind_helper)
 
@@ -1011,7 +1071,7 @@ def test_composition_rebinds_captured_sequence_target_in_enclosing_loop():
 
     source = _composed_source(coordinate_helper)
     loop_body = source.split("for _iteration", 1)[1]
-    assert re.search(r"coordinate_x\w* = 3\n", loop_body)
+    assert re.search(r"coordinate_x\w* = 3$", loop_body, re.MULTILINE)
 
 
 def test_composition_keeps_body_only_captured_sequence_target_unassigned():
