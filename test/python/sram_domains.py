@@ -13,6 +13,7 @@ import ttl
 from ttlang_test_utils import to_dram, to_l1
 from utils.correctness import assert_allclose, assert_pcc
 from test_compiler_l1 import l1_copy, _make_allocation_stress, ALLOCATION_SCHEDULES
+from test_external_tensor_accessor import _get_local_tensor_accessor_copy
 
 import ttnn
 
@@ -39,11 +40,20 @@ def test_per_node_copy(device, dtype, allocator):
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "fp32"])
 def test_per_node_copy_to_independently_allocated_output(device, dtype):
     expected = torch.randn(32, 32, dtype=dtype)
-    source = to_dram(expected, device)
     shard_spec = ttnn.ShardSpec(
         ttnn.CoreRangeSet({ttnn.CoreRange(ttnn.CoreCoord(0, 0), ttnn.CoreCoord(0, 0))}),
         (32, 32),
         ttnn.ShardOrientation.ROW_MAJOR,
+    )
+    source_config = ttnn.MemoryConfig(
+        ttnn.TensorMemoryLayout.HEIGHT_SHARDED, ttnn.BufferType.L1, shard_spec
+    )
+    source = ttnn.from_torch(
+        expected,
+        dtype=ttnn.bfloat16 if dtype == torch.bfloat16 else ttnn.float32,
+        layout=ttnn.TILE_LAYOUT,
+        device=device,
+        memory_config=source_config,
     )
     memory_config = ttnn.MemoryConfig(
         ttnn.TensorMemoryLayout.HEIGHT_SHARDED, ttnn.BufferType.L1, shard_spec
@@ -57,10 +67,21 @@ def test_per_node_copy_to_independently_allocated_output(device, dtype):
         memory_config=memory_config,
     )
     assert destination.is_per_core_allocated()
-    l1_copy(
+    operation = _get_local_tensor_accessor_copy(
+        expected.numel() * expected.element_size()
+    )
+    result = operation(
         source,
         destination,
         options="--ttl-memory-model=compiler-sram --ttl-sram-allocation-mode=per-node",
+    )
+    assert result.is_per_core_allocated()
+    device_coordinate = ttnn.MeshCoordinate((0, 0))
+    core_coordinate = ttnn.CoreCoord(0, 0)
+    assert result.experimental_per_core_buffer_address(
+        device_coordinate, core_coordinate
+    ) == destination.experimental_per_core_buffer_address(
+        device_coordinate, core_coordinate
     )
     assert_allclose(
         ttnn.to_torch(destination).float(), expected.float(), rtol=0, atol=0
