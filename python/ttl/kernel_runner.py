@@ -3467,12 +3467,6 @@ def _order_static_dfb_descriptor_plans(
             f"exceeds the L1 budget by {required_bytes - available_bytes} bytes"
         )
 
-    if current_score[0] > 0 and (
-        not search_unsplit_orders
-        or len(static_plan_indices) > _STATIC_DFB_PACKING_EXACT_PLAN_LIMIT
-    ):
-        return split_overflow_core_or_raise(current_result, current_order)
-
     while current_score[0] > 0:
         next_candidate = None
         for first_position in range(len(current_order)):
@@ -3523,6 +3517,13 @@ def _order_static_dfb_descriptor_plans(
 
     if current_score[0] == 0:
         return apply_order(current_order)
+
+    # The local searches above run for any plan count; only the exact subset
+    # search is skipped beyond the plan limit.
+    if not search_unsplit_orders or (
+        len(static_plan_indices) > _STATIC_DFB_PACKING_EXACT_PLAN_LIMIT
+    ):
+        return split_overflow_core_or_raise(current_result, current_order)
 
     search_state_count = 0
     search_limit_reached = False

@@ -6731,6 +6731,74 @@ def test_static_dfb_descriptor_exact_search_finds_nonlocal_reordering(monkeypatc
     )
 
 
+# Beyond the exact-search plan limit, the local search still runs: a greedy
+# order overflows one core, and a pairwise swap or relocation fits.
+def test_static_dfb_descriptor_local_search_runs_beyond_exact_plan_limit(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    plan_nodes = (
+        ((0, 0), (3, 0)),
+        ((1, 0), (2, 0), (3, 0)),
+        ((1, 0), (2, 0)),
+        ((0, 0), (1, 0)),
+        ((1, 0), (3, 0)),
+        ((2, 0),),
+        ((0, 0), (1, 0), (2, 0)),
+        ((1, 0), (2, 0), (3, 0)),
+        ((0, 0), (2, 0), (3, 0)),
+        ((0, 0), (2, 0)),
+        ((1, 0), (2, 0)),
+        ((1, 0),),
+        ((1, 0),),
+        ((0, 0), (2, 0), (3, 0)),
+        ((0, 0), (1, 0), (3, 0)),
+        ((0, 0), (2, 0)),
+        ((1, 0), (2, 0), (3, 0)),
+        ((3, 0),),
+        ((0, 0), (1, 0), (3, 0)),
+        ((0, 0),),
+        ((0, 0), (3, 0)),
+    )
+    plan_sizes = (
+        192, 256, 128, 320, 64, 256, 192, 256, 64, 256, 192,
+        320, 128, 192, 320, 192, 256, 192, 128, 320, 64,
+    )
+    assert len(plan_nodes) > kernel_runner._STATIC_DFB_PACKING_EXACT_PLAN_LIMIT
+    descriptor_plans = [
+        kernel_runner._DFBDescriptorPlan(
+            descriptor=object(),
+            physical_index=physical_index,
+            total_size=plan_sizes[physical_index],
+            nodes=plan_nodes[physical_index],
+            has_static_storage=True,
+        )
+        for physical_index in range(len(plan_nodes))
+    ]
+    remaining_bytes_by_core = {
+        (0, 0): 2880,
+        (1, 0): 3136,
+        (2, 0): 3136,
+        (3, 0): 3136,
+    }
+
+    ordered_plans = kernel_runner._order_static_dfb_descriptor_plans(
+        descriptor_plans, remaining_bytes_by_core
+    )
+
+    frontiers = {core: 0 for core in remaining_bytes_by_core}
+    for plan in ordered_plans:
+        address = kernel_runner._align_up(
+            max(frontiers[core] for core in plan.nodes), 64
+        )
+        for core in plan.nodes:
+            frontiers[core] = address + plan.total_size
+    assert all(
+        frontiers[core] <= remaining_bytes
+        for core, remaining_bytes in remaining_bytes_by_core.items()
+    )
+
+
 def _coupled_static_dfb_configs():
     return [
         PhysicalDFBConfig(
