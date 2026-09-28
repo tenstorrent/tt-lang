@@ -1245,6 +1245,9 @@ static std::optional<llvm::APInt> getIntegerConstant(Value value) {
 
 // Prove equality between expressions rooted in typed dispatch conditions.
 // Polarity tracks whether the caller observes zero or nonzero as true.
+// TODO: prove equivalent expressions written differently (commuted operands,
+// De Morgan forms) with a bounded decision procedure that never proves less
+// than this structural comparison.
 static bool proveEquivalentDispatchConditionExpressions(Value lhsValue,
                                                         bool lhsNonzeroIsTrue,
                                                         Value rhsValue,
