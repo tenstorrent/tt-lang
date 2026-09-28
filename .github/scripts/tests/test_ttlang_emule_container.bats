@@ -25,7 +25,9 @@ make_runner_fixture() {
     mkdir -p "$root/.github/containers" "$root/config" \
         "$root/examples" "$root/scripts" "$root/lib" "$root/cmake/modules"
     cp "$SOURCE_REPO_ROOT/.github/containers/Dockerfile.emule" \
-        "$root/.github/containers/Dockerfile.emule"
+        "$SOURCE_REPO_ROOT/.github/containers/package-emule-runtime.sh" \
+        "$SOURCE_REPO_ROOT/.github/containers/trim-emule-venv.sh" \
+        "$root/.github/containers/"
     cp "$SOURCE_REPO_ROOT/scripts/tt-lang-emule-entrypoint.sh" \
         "$SOURCE_REPO_ROOT/scripts/tt-lang-emule-container.sh" \
         "$SOURCE_REPO_ROOT/scripts/tt-lang-emule-stack.py" \
@@ -495,6 +497,30 @@ EOF
     run -1 grep -F -- 'COPY tt-lang-emule-entrypoint.sh' "$DOCKERFILE"
 }
 
+@test "runtime packaging edits change the image and installed compiler identities" {
+    local first_image
+    local first_fingerprint
+    local recipe_input
+    for recipe_input in package-emule-runtime.sh trim-emule-venv.sh; do
+        : > "$MOCK_DOCKER_LOG"
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$RUNNER" \
+            "$TTLANG_REPO_ROOT/examples/program.py"
+        first_image="$(awk '/^tt-lang-emule:/{print; exit}' "$MOCK_DOCKER_LOG")"
+        first_fingerprint="$(grep '^TTLANG_EMULE_SOURCE_FINGERPRINT=' "$MOCK_DOCKER_LOG")"
+        [ -n "$first_image" ]
+        [ -n "$first_fingerprint" ]
+
+        printf '\n# changed packaging input\n' >> \
+            "$TTLANG_REPO_ROOT/.github/containers/$recipe_input"
+        : > "$MOCK_DOCKER_LOG"
+        TTLANG_EMULE_DOCKER="$MOCK_DOCKER" run -0 "$RUNNER" \
+            "$TTLANG_REPO_ROOT/examples/program.py"
+
+        refute_log_line "$first_image"
+        refute_log_line "$first_fingerprint"
+    done
+}
+
 @test "shallow checkout accepts its pinned HEAD but rejects an unavailable baseline" {
     local source_root="$BATS_TEST_TMPDIR/source"
     local shallow_root="$BATS_TEST_TMPDIR/shallow"
@@ -625,7 +651,7 @@ PY
         refute_log_contains "TT_EMULE_SOURCE_URL="
         refute_log_contains "source-token"
         refute_log_contains "example.invalid/private.git"
-        assert_log_line "${TTLANG_REPO_ROOT}/scripts"
+        assert_log_line "$TTLANG_REPO_ROOT"
         assert_log_line "run"
         if [ "$source_mode" = rebuild ]; then
             refute_log_line "image"
@@ -945,6 +971,8 @@ PY
     run -0 grep -F -x -- \
         "cmake=-DTTLANG_EXTERNAL_TT_METAL_DIR=/opt/tt-emule-runtime/tt-metal" \
         "$MOCK_ENTRYPOINT_LOG"
+    run -0 grep -F -x -- \
+        "cmake=-DTTLANG_INSTALL_DEV_REQUIREMENTS=OFF" "$MOCK_ENTRYPOINT_LOG"
     run -0 grep -F -x -- "$source_fingerprint" \
         "$build_dir/.ttlang-emule-source-fingerprint"
 }

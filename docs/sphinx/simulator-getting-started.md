@@ -80,6 +80,21 @@ environment. The launcher checks the installation before executing a program
 and reports when reinstallation is needed. The compiler build and the tt-metal
 and tt-emule JIT caches live in named Docker volumes.
 
+### Image contents and disk usage
+
+The image uses a separate build stage to prepare tt-metal and tt-emule. Its
+final stage contains one toolchain Python environment, the LLVM SDK, Clang,
+and the emulator runtime's shared libraries, headers, JIT sources, and firmware.
+The LLVM development libraries support compiling the current TT-Lang checkout;
+pytest and lit support the existing compiler test commands. Documentation,
+lint, and hardware-management tools remain available in the development images.
+
+Disk budgeting includes the final image, compiler build volume, and JIT cache
+volume. Building the image locally also requires space for the larger build
+stage and Docker's build cache. CI workers can consume a prebuilt image to avoid
+that build-stage cost. Docker's compressed download size and unpacked image
+size measure different parts of this budget.
+
 ## Run a program
 
 After installation:

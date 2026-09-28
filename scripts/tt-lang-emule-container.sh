@@ -44,11 +44,16 @@ readonly _TT_METAL_SOURCE_URL="$_MANIFEST_METAL_REPOSITORY"
 readonly _BASE_IMAGE="$_MANIFEST_BASE_IMAGE"
 readonly _REQUIRED_EMULE_FILE="$_MANIFEST_CLUSTER_DESCRIPTOR"
 readonly _PLATFORM="linux/amd64"
+readonly _IMAGE_INPUTS=(
+    .github/containers/Dockerfile.emule
+    .github/containers/package-emule-runtime.sh
+    .github/containers/trim-emule-venv.sh
+)
 
 _IMAGE_INPUT_ID="$(
     {
-        cksum "$_STACK_MANIFEST" \
-            "${_REPO_ROOT}/.github/containers/Dockerfile.emule" |
+        cd "$_REPO_ROOT"
+        cksum "$_STACK_MANIFEST" "${_IMAGE_INPUTS[@]}" |
             awk '{print $1, $2}'
         printf '%s\n' "$_BASE_IMAGE" "$_PLATFORM"
     } |
@@ -78,7 +83,7 @@ _COMPILER_INPUTS=(
     setup.py pyproject.toml packaging
     requirements.txt requirements-runtime.txt dev-requirements.txt
     docs/requirements.txt scripts config
-    .github/containers/Dockerfile.emule
+    "${_IMAGE_INPUTS[@]}"
     test/CMakeLists.txt test/lib test/pytest.ini.in
     test/lit.cfg.py test/lit.site.cfg.py.in
 )
@@ -388,7 +393,7 @@ if [ "$_BUILD_IMAGE" -eq 1 ]; then
         --build-arg "TARGET_CLUSTER_DESCRIPTOR=${_MANIFEST_CLUSTER_DESCRIPTOR}" \
         --build-arg "TARGET_MESH_DEVICE=${_MANIFEST_MESH_DEVICE}" \
         --tag "$_IMAGE" \
-        "${_REPO_ROOT}/scripts"
+        "$_REPO_ROOT"
 fi
 
 cleanup
