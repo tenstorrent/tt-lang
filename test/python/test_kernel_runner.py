@@ -6660,8 +6660,6 @@ def test_remote_uniform_dfb_uses_one_descriptor_across_nodes(monkeypatch):
     assert _descriptor_cores(descriptors_by_index[1]) == {(0, 0), (1, 0)}
 
 
-# A per-core backing tensor binds each node to its own shard, which a
-# remote-uniform DFB allows only when every owner holds the same address.
 @pytest.mark.parametrize("tensor_index", [1, -1], ids=["past-end", "negative"])
 def test_remote_uniform_dfb_validates_backing_index(monkeypatch, tensor_index):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
@@ -6686,13 +6684,11 @@ def test_remote_uniform_dfb_validates_backing_index(monkeypatch, tensor_index):
     with pytest.raises(
         ValueError, match=r"DFB\[0\] tensor backing index .* is outside \[0, 1\)"
     ):
-        kernel_runner.build_cb_descriptors(
-            tensors=[tensor],
-            cb_configs=[config],
-            core_ranges=_FakeExplicitCoreRanges((0, 0), (0, 0)),
-        )
+        kernel_runner._validate_remote_uniform_tensor_backing([tensor], [config], None)
 
 
+# A per-core backing tensor binds each node to its own shard, which a
+# remote-uniform DFB allows only when every owner holds the same address.
 def test_remote_uniform_dfb_rejects_non_uniform_per_core_backing(monkeypatch):
     monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
     full_grid = _FakeExplicitCoreRanges((0, 0), (1, 0))
