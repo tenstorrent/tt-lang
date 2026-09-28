@@ -57,7 +57,10 @@ def TTLInsertCBSync
     The pass emits an error when the held block is used in or after the
     region without a release on every branch, and, in data-movement kernels,
     when a held block is not used before the next same-kind acquisition
-    unless the two acquisitions coalesce into one.
+    unless the two acquisitions coalesce into one. The DFB pointer names the
+    first block of a coalesced acquisition, so in a data-movement kernel an
+    access to a later block is an error unless it is a pipe receive into that
+    block's view.
   }];
 
   let dependentDialects = [];

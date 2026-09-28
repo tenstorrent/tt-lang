@@ -339,21 +339,21 @@ func.func @wait_held_across_nested_wait()
 
 // A data-movement kernel addresses the DFB through one write pointer. Two
 // consecutive reserves coalesce into one two-block reservation, but the copies
-// go through the DFB rather than through each block's view, so the first block
-// has no access of its own.
+// go through the DFB rather than through each block's view, so the copy meant
+// for the second block writes the first slot.
 
 func.func @dm_two_open_reserves(%arg0: tensor<2x8x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [64, 256], element_type = !ttcore.tile<32x32, bf16>, buffer = system_memory, grid = [1, 1], memory = interleaved>>)
     attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
   %c0 = arith.constant 0 : index
   %c1 = arith.constant 1 : index
   %cb = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
-  // expected-error @below {{a data-movement kernel cannot hold several acquired blocks of one dataflow buffer unless each is written only by pipe receives into its own view; this block has none, so use and push it before the next acquisition or drop it}}
   %first = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   %second = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
   %s0 = ttl.tensor_slice %arg0[%c0, %c0] : tensor<2x8x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [64, 256], element_type = !ttcore.tile<32x32, bf16>, buffer = system_memory, grid = [1, 1], memory = interleaved>> -> tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [64, 256], element_type = !ttcore.tile<32x32, bf16>, buffer = system_memory, grid = [1, 1], memory = interleaved>>
   %x0 = ttl.copy %s0, %cb : (tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [64, 256], element_type = !ttcore.tile<32x32, bf16>, buffer = system_memory, grid = [1, 1], memory = interleaved>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> !ttl.transfer_handle<read>
   ttl.wait %x0 : !ttl.transfer_handle<read>
   %s1 = ttl.tensor_slice %arg0[%c0, %c1] : tensor<2x8x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [64, 256], element_type = !ttcore.tile<32x32, bf16>, buffer = system_memory, grid = [1, 1], memory = interleaved>> -> tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [64, 256], element_type = !ttcore.tile<32x32, bf16>, buffer = system_memory, grid = [1, 1], memory = interleaved>>
+  // expected-error @below {{a data-movement kernel addresses a dataflow buffer through one write pointer, which names the first of the blocks it holds; this operation accesses a later block through it, so push each block before the next acquisition}}
   %x1 = ttl.copy %s1, %cb : (tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [64, 256], element_type = !ttcore.tile<32x32, bf16>, buffer = system_memory, grid = [1, 1], memory = interleaved>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> !ttl.transfer_handle<read>
   ttl.wait %x1 : !ttl.transfer_handle<read>
   ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -609,13 +609,13 @@ func.func @dm_two_open_reserves_in_branch(
   %c1 = arith.constant 1 : index
   %cb = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   scf.if %condition {
-    // expected-error @below {{a data-movement kernel cannot hold several acquired blocks of one dataflow buffer unless each is written only by pipe receives into its own view; this block has none, so use and push it before the next acquisition or drop it}}
     %first = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     %second = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     %s0 = ttl.tensor_slice %arg0[%c0, %c0] : tensor<2x8x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [64, 256], element_type = !ttcore.tile<32x32, bf16>, buffer = system_memory, grid = [1, 1], memory = interleaved>> -> tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [64, 256], element_type = !ttcore.tile<32x32, bf16>, buffer = system_memory, grid = [1, 1], memory = interleaved>>
     %x0 = ttl.copy %s0, %cb : (tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [64, 256], element_type = !ttcore.tile<32x32, bf16>, buffer = system_memory, grid = [1, 1], memory = interleaved>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %x0 : !ttl.transfer_handle<read>
     %s1 = ttl.tensor_slice %arg0[%c0, %c1] : tensor<2x8x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [64, 256], element_type = !ttcore.tile<32x32, bf16>, buffer = system_memory, grid = [1, 1], memory = interleaved>> -> tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [64, 256], element_type = !ttcore.tile<32x32, bf16>, buffer = system_memory, grid = [1, 1], memory = interleaved>>
+    // expected-error @below {{a data-movement kernel addresses a dataflow buffer through one write pointer, which names the first of the blocks it holds; this operation accesses a later block through it, so push each block before the next acquisition}}
     %x1 = ttl.copy %s1, %cb : (tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [64, 256], element_type = !ttcore.tile<32x32, bf16>, buffer = system_memory, grid = [1, 1], memory = interleaved>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %x1 : !ttl.transfer_handle<read>
     ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>
@@ -958,7 +958,7 @@ func.func @dm_raw_read_of_earlier_block_after_second_wait(
 
 // Two consecutive reserves coalesce into one two-block reservation inside a
 // loop, but the copies address the dataflow buffer rather than each block's
-// view, so both would write through the pointer of the first slot.
+// view, so the copy meant for the second block writes the first slot.
 
 func.func @dm_coalesced_reserves_copied_through_dfb(
     %arg0: tensor<2x8x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [64, 256], element_type = !ttcore.tile<32x32, bf16>, buffer = system_memory, grid = [1, 1], memory = interleaved>>)
@@ -968,13 +968,13 @@ func.func @dm_coalesced_reserves_copied_through_dfb(
   %c2 = arith.constant 2 : index
   %cb = ttl.bind_cb{cb_index = 0, block_count = 2} : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
   scf.for %iv = %c0 to %c2 step %c1 {
-    // expected-error @below {{a data-movement kernel cannot hold several acquired blocks of one dataflow buffer unless each is written only by pipe receives into its own view; this block has none, so use and push it before the next acquisition or drop it}}
     %first = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     %second = ttl.cb_reserve %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2> -> tensor<1x1x!ttcore.tile<32x32, bf16>>
     %s0 = ttl.tensor_slice %arg0[%c0, %c0] : tensor<2x8x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [64, 256], element_type = !ttcore.tile<32x32, bf16>, buffer = system_memory, grid = [1, 1], memory = interleaved>> -> tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [64, 256], element_type = !ttcore.tile<32x32, bf16>, buffer = system_memory, grid = [1, 1], memory = interleaved>>
     %x0 = ttl.copy %s0, %cb : (tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [64, 256], element_type = !ttcore.tile<32x32, bf16>, buffer = system_memory, grid = [1, 1], memory = interleaved>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %x0 : !ttl.transfer_handle<read>
     %s1 = ttl.tensor_slice %arg0[%c0, %c1] : tensor<2x8x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [64, 256], element_type = !ttcore.tile<32x32, bf16>, buffer = system_memory, grid = [1, 1], memory = interleaved>> -> tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [64, 256], element_type = !ttcore.tile<32x32, bf16>, buffer = system_memory, grid = [1, 1], memory = interleaved>>
+    // expected-error @below {{a data-movement kernel addresses a dataflow buffer through one write pointer, which names the first of the blocks it holds; this operation accesses a later block through it, so push each block before the next acquisition}}
     %x1 = ttl.copy %s1, %cb : (tensor<1x1x!ttcore.tile<32x32, bf16>, #ttl.layout<shape = [64, 256], element_type = !ttcore.tile<32x32, bf16>, buffer = system_memory, grid = [1, 1], memory = interleaved>>, !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) -> !ttl.transfer_handle<read>
     ttl.wait %x1 : !ttl.transfer_handle<read>
     ttl.cb_push %cb : <[1, 1], !ttcore.tile<32x32, bf16>, 2>

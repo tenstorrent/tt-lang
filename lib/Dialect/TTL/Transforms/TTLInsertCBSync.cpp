@@ -925,54 +925,40 @@ static PlanningResult<GuardedLocalReleaseInfo> analyzeGuardedLocalReleases(
 }
 
 // A block of a data-movement acquisition that `ttl-coalesce-dfb-acquires`
-// merges with others is a slice of one multi-block acquisition. Only a pipe
-// receive addresses such a slice through its offset; every other access goes
-// through the DFB pointer, which names the first slot of the merged
-// acquisition. A reserved block must therefore be written only by pipe
-// receives into its view, and it must have one, or its release would be
-// placed as if the block were unused.
+// merges with others is a slice of one multi-block acquisition. The DFB
+// pointer names the first slice, so every access to the first block is
+// correct; a later block is addressed through its offset only by a pipe
+// receive into its view. The group's releases, one per member, become the
+// merged release, so a block without uses needs no release of its own.
 static std::optional<PlanningDiagnostic>
 checkCoalescedDataMovementBlock(DFBAcquireInterval interval,
+                                const CoalescedAcquireGroup &group,
                                 llvm::StringRef effectName) {
-  // Reads never go through a view offset, so waited blocks cannot be held
-  // together at all.
-  if (interval.kind == DFBAcquireReleaseKind::Consumer) {
-    return PlanningDiagnostic(
-        interval.acquire,
-        "a data-movement kernel reads a dataflow buffer through one read "
-        "pointer, so it cannot hold several waited blocks of it; pop each "
-        "block before the next wait");
+  if (interval.acquire == group.acquires.front()) {
+    return std::nullopt;
   }
   SmallVector<Operation *> ownedUses;
   collectDFBAcquireOwnedUses(interval, ownedUses);
-  bool received = false;
   for (Operation *use : ownedUses) {
     if (isa<TensorSliceOp, tensor::ExtractSliceOp, WaitOp, WaitAnyOp,
             ReadyReceiveIndexOp>(use)) {
       continue;
     }
     auto copy = dyn_cast<CopyOp>(use);
-    if (copy && copy.getDst() != interval.dfb &&
+    if (interval.kind == DFBAcquireReleaseKind::Producer && copy &&
+        copy.getDst() != interval.dfb &&
         isa<ReceiveRequestType>(copy.getXf().getType())) {
-      received = true;
       continue;
     }
     return PlanningDiagnostic(
         use,
-        ("a data-movement kernel cannot hold several acquired blocks of one "
-         "dataflow buffer unless each is written only by pipe receives into "
-         "its own view; this operation addresses the dataflow buffer "
-         "pointer, which names the first acquired block, so " +
+        ("a data-movement kernel addresses a dataflow buffer through one " +
+         llvm::Twine(interval.kind == DFBAcquireReleaseKind::Producer
+                         ? "write"
+                         : "read") +
+         " pointer, which names the first of the blocks it holds; this "
+         "operation accesses a later block through it, so " +
          effectName + " each block before the next acquisition")
-            .str());
-  }
-  if (!received) {
-    return PlanningDiagnostic(
-        interval.acquire,
-        ("a data-movement kernel cannot hold several acquired blocks of one "
-         "dataflow buffer unless each is written only by pipe receives into "
-         "its own view; this block has none, so use and " +
-         effectName + " it before the next acquisition or drop it")
             .str());
   }
   return std::nullopt;
@@ -1006,12 +992,17 @@ static PlanningResult<SmallVector<MissingReleasePlan>> planMissingReleases(
         getKernelThreadType(acquire->getParentOfType<func::FuncOp>()) !=
         ttkernel::ThreadType::Compute;
     Operation *localBoundary = findLocalKindBoundary(interval);
-    if (dataMovement && findCoalescedAcquireGroup(acquire)) {
+    std::optional<CoalescedAcquireGroup> coalescedGroup =
+        dataMovement ? findCoalescedAcquireGroup(acquire) : std::nullopt;
+    bool unusedCoalescedBlock = false;
+    if (coalescedGroup) {
       if (std::optional<PlanningDiagnostic> rejected =
-              checkCoalescedDataMovementBlock(interval, effectName)) {
+              checkCoalescedDataMovementBlock(interval, *coalescedGroup,
+                                              effectName)) {
         return PlanningResult<SmallVector<MissingReleasePlan>>::invalidIR(
             rejected->operation, rejected->message);
       }
+      unusedCoalescedBlock = last == acquire;
     } else if (dataMovement && localBoundary &&
                !hasReleaseBefore(interval, localBoundary)) {
       // Direct uses after the next acquisition in the acquiring block belong
@@ -1189,6 +1180,10 @@ static PlanningResult<SmallVector<MissingReleasePlan>> planMissingReleases(
     }
 
     if (releaseSearch.hasSameLevelRelease()) {
+      continue;
+    }
+
+    if (unusedCoalescedBlock) {
       continue;
     }
 
