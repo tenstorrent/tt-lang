@@ -185,7 +185,7 @@ ENV TT_METAL_SOURCE_DIR=/opt/tt-emule-runtime/tt-metal
 ENV TT_METAL_BUILD_DIR=/opt/tt-emule-runtime/tt-metal/build_emule
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        binutils ca-certificates cmake g++ gcc git ninja-build pkg-config \
+        binutils ca-certificates cmake g++ gcc git make ninja-build pkg-config \
         python3 python3.12-dev python3.12-venv \
         libedit2 libffi8 libhwloc15 libnuma1 libtinfo6 libxml2-dev \
         libzstd-dev zlib1g-dev \
@@ -202,8 +202,11 @@ COPY --from=build /opt/ttlang-toolchain/venv /opt/ttlang-toolchain/venv/
 COPY --from=build /runtime/ /opt/tt-emule-runtime/
 COPY --from=build /opt/tt-emule /opt/tt-emule/
 
+# Refresh the copied venv's base-interpreter paths for the final OS.
 RUN ldconfig \
     && clang-20 --version && ld.lld-20 --version \
+    && python3 -m venv --upgrade --without-pip --copies --prompt ttlang \
+        /opt/ttlang-toolchain/venv \
     && /opt/ttlang-toolchain/venv/bin/python -m pip check \
     && TT_METAL_HOME="$TT_METAL_SOURCE_DIR" \
        TT_METAL_RUNTIME_ROOT="$TT_METAL_SOURCE_DIR" \

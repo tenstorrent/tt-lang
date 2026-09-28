@@ -5,6 +5,7 @@
 """Check the emulator image's native runtime artifact layout."""
 
 from pathlib import Path
+import os
 import subprocess
 
 import pytest
@@ -186,10 +187,23 @@ def test_rejects_destination_inside_source(runtime):
     assert not (source / "packaged").exists()
 
 
-def test_rejects_missing_destination_parent_without_creating_it(runtime):
+def test_rejects_missing_destination_parent_without_creating_it(
+    runtime, tmp_path, monkeypatch
+):
     source, destination = runtime
+    mkdir_log = tmp_path / "mkdir.log"
+    mkdir_spy = write(
+        tmp_path,
+        "bin/mkdir",
+        '#!/bin/sh\nprintf "%s\\n" "$*" > "$EMULE_MKDIR_LOG"\nexit 1\n',
+    )
+    mkdir_spy.chmod(0o755)
+    monkeypatch.setenv("PATH", str(mkdir_spy.parent), prepend=os.pathsep)
+    monkeypatch.setenv("EMULE_MKDIR_LOG", str(mkdir_log))
+
     result = package(source, destination / "nested")
     assert result.returncode != 0
+    assert not mkdir_log.exists(), "Invalid destination reached directory creation"
     assert not destination.exists()
 
 

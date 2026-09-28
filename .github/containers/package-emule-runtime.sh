@@ -15,7 +15,8 @@ if [ -e "$2" ] || [ -L "$2" ]; then
     echo "Runtime destination must not already exist: $2" >&2
     exit 1
 fi
-DESTINATION="$(cd "$(dirname "$2")" && pwd -P)/$(basename "$2")"
+DESTINATION_PARENT="$(cd "$(dirname "$2")" && pwd -P)"
+DESTINATION="$DESTINATION_PARENT/$(basename "$2")"
 case "$DESTINATION/" in
     "$SOURCE/"*)
         echo "Runtime destination must be outside the source tree." >&2
