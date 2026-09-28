@@ -1,4 +1,4 @@
-// Conditional non-protocol uses that the DFB lifetime proof must reject.
+// Conditional non-protocol uses whose DFB lifetime stays unproven.
 // RUN: ttlang-opt %s --split-input-file -pass-pipeline='builtin.module(ttl-finalize-dfb-indices{reuse-user-dfbs=true})' -debug-only=ttl-finalize-dfb-indices -o /dev/null 2>&1 | FileCheck %s
 
 // A conditional final-iteration copy after the pop runs outside the DFB

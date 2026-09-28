@@ -5010,6 +5010,7 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
 
   SmallVector<std::optional<int64_t>> &conservativeEpochs =
       lifetime.conservativeConfigurationEpochs;
+  lifetime.conservativeConfigurationEpochsClassified = true;
   bool mayRetainState = false;
   std::optional<int64_t> configurationOrdinal;
   // A later iteration of repeated boundaries starts in the configuration the

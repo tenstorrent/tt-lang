@@ -918,6 +918,46 @@ def test_composition_unrolls_captured_sequence_loop_else():
     assert source.index("core_x == 3") < source.index("'after'")
 
 
+def test_composition_rejects_captured_sequence_target_read_after_loop():
+    """Unrolling leaves the loop target unbound after the loop."""
+    coordinates = ((1, 2), (3, 4))
+
+    @ttl.operation()
+    def coordinate_helper(core_x):
+        for coordinate_x, _coordinate_y in coordinates:
+            pass
+        if core_x == coordinate_x:
+            ttl.call_extern_func("last.hpp", "last", kernel=ttl.KernelKind.COMPUTE)
+
+    with pytest.raises(ValueError, match="cannot be read after the loop"):
+
+        @ttl.operation(grid=(1, 1))
+        def composed_coordinates(core_x):
+            coordinate_helper(core_x)
+
+
+def test_composition_allows_captured_sequence_target_assignment_in_else():
+    """An else suite may assign a name that the loop target also uses."""
+    coordinates = ((1, 2), (3, 4))
+
+    @ttl.operation()
+    def coordinate_helper(core_x):
+        for coordinate_x, _coordinate_y in coordinates:
+            pass
+        else:
+            coordinate_x = 7
+        if core_x == coordinate_x:
+            ttl.call_extern_func("last.hpp", "last", kernel=ttl.KernelKind.COMPUTE)
+
+    @ttl.operation(grid=(1, 1))
+    def composed_coordinates(core_x):
+        coordinate_helper(core_x)
+
+    source = composed_coordinates._spec.source
+    compile(source, "<operation>", "exec")
+    assert "= 7" in source
+
+
 def test_composition_folds_captured_sequence_subscript():
     """Composition resolves nested indexing into a captured sequence."""
     coordinates = ((1, 2), (3, 4))
