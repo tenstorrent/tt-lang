@@ -89,6 +89,33 @@ def test_dfb_reconfiguration_abi_constants_match_sources():
     assert words_per_dfb == kernel_runner._DFB_RECONFIGURATION_WORDS_PER_DFB
 
 
+def test_reconfiguration_runtime_resources_without_plan_need_no_launch_configs():
+    resources = kernel_runner.build_dfb_reconfiguration_runtime_resources(
+        tensors=[], core_ranges=_FakeCoreRanges(), plan=None
+    )
+
+    assert resources.scratch_tensors == []
+    assert resources.configuration_tensors == []
+
+
+def test_reconfiguration_runtime_resources_with_plan_require_launch_configs(
+    monkeypatch,
+):
+    monkeypatch.setattr(kernel_runner, "ttnn", _FakeTTNN())
+    config = PhysicalDFBConfig(0, 1, "bfloat16", 1, 2048, (32, 32))
+    plan = DFBReconfigurationPlan(
+        boundary_ordinals=(7,),
+        dfb_epochs=(
+            (DFBConfigurationEpoch(None, config), DFBConfigurationEpoch(7, config)),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="require the launch DFB configurations"):
+        kernel_runner.build_dfb_reconfiguration_runtime_resources(
+            tensors=[], core_ranges=_FakeCoreRanges(), plan=plan, device=object()
+        )
+
+
 @pytest.fixture(autouse=True)
 def _lockstep_allocator_by_default(monkeypatch):
     # Hybrid-mode tests set the allocator mode explicitly; an exported setting
