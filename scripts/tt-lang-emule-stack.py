@@ -79,7 +79,8 @@ def load_stack(path, target_id=None):
                 f"targets.{name}.cluster_descriptor must be a safe relative path"
             )
         require_string(profile, "name", f"targets.{name}")
-        require_string(profile, "mesh_device", f"targets.{name}")
+        if "mesh_device" in profile:
+            require_string(profile, "mesh_device", f"targets.{name}")
     if default_target not in targets:
         raise StackError("default_target must name a target in targets")
     if target_id is None:
@@ -104,7 +105,7 @@ def load_stack(path, target_id=None):
         "TTLANG_EMULE_TARGET_ID": target_id,
         "TTLANG_EMULE_TARGET": target["name"],
         "TTLANG_EMULE_CLUSTER_DESCRIPTOR": target["cluster_descriptor"],
-        "TTLANG_EMULE_MESH_DEVICE": target["mesh_device"],
+        "TTLANG_EMULE_MESH_DEVICE": target.get("mesh_device", ""),
     }
     return values
 

@@ -88,7 +88,11 @@ Install the pinned environment first:
 Run a program:
   ./bin/tt-lang-sim --backend=emule examples/eltwise_add.py
 
-Select emulated hardware with --target=p150 (default) or --target=p100.
+Select emulated hardware with --target=NAME (default: p150):
+  p150, p100, p150-harvested, p300, p150x4, p150x8,
+  p150x8-unharvested, galaxy, n150, n300, q1.
+These select bundled emulator profiles; workload support varies by target.
+Q1 requires compiler support that is not yet available in TT-Lang.
 Pass program arguments after --. Use --backend=python for Python simulation.
 EOF
             if [ "$#" -eq 0 ]; then

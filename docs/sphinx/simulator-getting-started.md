@@ -72,8 +72,8 @@ CPU, memory, and disk space on its first run. The installer prints the runtime
 image, compiler build volume, and runtime cache volume names. On success it also
 prints the compiler commit for which the environment was installed.
 
-Installation prepares the compiler for both supported targets before the first
-program run. Selecting another target reuses the runtime image and compiler
+Installation prepares the compiler and runtime before the first program run.
+Selecting another target reuses the runtime image and compiler
 build. Default runtime cache volumes are separate for each target. Subsequent
 `tt-lang-sim` runs reuse the installed environment, which Docker retains in its
 image and volume caches. Run the installer again after changing compiler
@@ -99,10 +99,23 @@ default emulated P150 target.
 The emule backend accepts `--target=NAME` or `--target NAME` before the program
 argument separator (`--`). Available profiles are recorded in the stack manifest:
 
-| Target | Emulated hardware | Compute grid |
+| Target | Emulated hardware | Devices |
 | --- | --- | --- |
-| `p150` (default) | One unharvested Blackhole P150 | 13 x 10 |
-| `p100` | One Blackhole P100 with the descriptor's harvested resources | 11 x 10 |
+| `p150` (default) | Blackhole P150, unharvested (13 x 10 compute grid) | 1 |
+| `p100` | Blackhole P100 (11 x 10 compute grid) | 1 |
+| `p150-harvested` | Blackhole P150, harvested (11 x 10 compute grid) | 1 |
+| `p300` | Blackhole P300, both chips accessible over PCIe | 2 |
+| `p150x4` | Blackhole 4 x P150 mesh | 4 |
+| `p150x8` | Blackhole LoudBox, harvested | 8 |
+| `p150x8-unharvested` | Blackhole LoudBox, unharvested | 8 |
+| `galaxy` | Blackhole Galaxy, unharvested single-tray torus | 32 |
+| `n150` | Wormhole N150 | 1 |
+| `n300` | Wormhole N300 | 2 |
+| `q1` | Quasar Q1 (runtime experiments; TT-Lang compiler support pending) | 1 |
+
+These entries cover all 11 YAML descriptors shipped in the pinned emulator's
+`cluster_descriptors` directory. Harvesting disables a subset of chip resources;
+the harvested and unharvested entries select the corresponding resource layouts.
 
 For example, run the same program on P100:
 
@@ -110,10 +123,21 @@ For example, run the same program on P100:
 ./bin/tt-lang-sim --backend=emule --target=p100 examples/eltwise_add.py
 ```
 
-Target selection configures the cluster descriptor and mesh-device setting
-together. Compiler, tt-metal, and tt-emule revisions remain pinned. Programs
-must fit the selected device's resources. This option selects hardware for the
+Target selection configures the cluster descriptor and, where defined, the
+mesh-device setting together. Q1 uses the descriptor without a mesh-device
+override. Compiler, tt-metal, and tt-emule revisions remain pinned. Programs
+must fit the selected devices' resources and open the devices required by the
+workload; selecting a multi-device profile does not distribute a single-device
+program automatically. This option selects hardware for the
 emule backend; Python simulation uses its existing grid and memory options.
+
+Profile selection and workload support are separate. The `p150`, `p100`,
+`p150-harvested`, and `n150` profiles have passed device-open and representative
+TT-Lang execution checks. P300 has passed a two-device mesh-open check; this does
+not qualify collective operations. The remaining profiles have descriptor and
+launcher-setting checks and are available for experimentation. The current
+compiler supports Blackhole and Wormhole targets. Quasar Q1 requires additional
+TT-Lang compiler support before running TT-Lang kernels.
 
 Arguments belonging to the program follow `--`:
 
@@ -157,7 +181,8 @@ working directory used by the emulator launcher:
 ./scripts/shell-tt-lang-emule.sh
 ```
 
-Pass `--target=p100` to this helper to test in the P100 environment. Omitting
+Pass `--target=NAME` to this helper to select any profile in the table above.
+For example, `--target=n150` selects the Wormhole N150 environment. Omitting
 the option selects P150, matching the simulator launcher.
 
 The helper verifies the installed compiler and activates its environment before
@@ -214,10 +239,11 @@ docker run --rm --entrypoint cat tt-lang-emule:TAG \
 
 ## Known limitations
 
-The supported profiles represent a single emulated Blackhole P150 or P100. The
-launcher selects the profile's descriptor and configures tt-metal's hybrid
-allocator before opening the device. Complete models and multi-device workloads
-require further validation.
+The launcher selects the profile's descriptor and configures tt-metal's hybrid
+allocator before opening devices. Selecting a profile establishes the requested
+hardware configuration, not workload compatibility. Complete models and
+multi-device workloads require further validation, and Quasar kernels require
+compiler support beyond this change.
 
 Known compiler-suite failures with the pinned runtime include RISC-V inline
 assembly rejected by the x86 JIT, a missing RMSNorm SFPU header, incorrect results

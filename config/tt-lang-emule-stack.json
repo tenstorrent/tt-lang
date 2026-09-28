@@ -25,6 +25,50 @@
       "name": "blackhole-p100",
       "cluster_descriptor": "cluster_descriptors/blackhole_P100.yaml",
       "mesh_device": "P100"
+    },
+    "p150-harvested": {
+      "name": "blackhole-p150-harvested",
+      "cluster_descriptor": "cluster_descriptors/blackhole_P150.yaml",
+      "mesh_device": "P150"
+    },
+    "p300": {
+      "name": "blackhole-p300",
+      "cluster_descriptor": "cluster_descriptors/blackhole_P300_both_mmio.yaml",
+      "mesh_device": "P300"
+    },
+    "p150x4": {
+      "name": "blackhole-p150x4",
+      "cluster_descriptor": "cluster_descriptors/blackhole_4xP150.yaml",
+      "mesh_device": "P150x4"
+    },
+    "p150x8": {
+      "name": "blackhole-p150x8",
+      "cluster_descriptor": "cluster_descriptors/blackhole_8xP150.yaml",
+      "mesh_device": "P150x8"
+    },
+    "p150x8-unharvested": {
+      "name": "blackhole-p150x8-unharvested",
+      "cluster_descriptor": "cluster_descriptors/blackhole_8xP150_unharvested.yaml",
+      "mesh_device": "P150x8"
+    },
+    "galaxy": {
+      "name": "blackhole-galaxy",
+      "cluster_descriptor": "cluster_descriptors/blackhole_galaxy.yaml",
+      "mesh_device": "BHGLX"
+    },
+    "n150": {
+      "name": "wormhole-n150",
+      "cluster_descriptor": "cluster_descriptors/wormhole_N150.yaml",
+      "mesh_device": "N150"
+    },
+    "n300": {
+      "name": "wormhole-n300",
+      "cluster_descriptor": "cluster_descriptors/wormhole_N300.yaml",
+      "mesh_device": "N300"
+    },
+    "q1": {
+      "name": "quasar-q1",
+      "cluster_descriptor": "cluster_descriptors/quasar_Q1.yaml"
     }
   }
 }

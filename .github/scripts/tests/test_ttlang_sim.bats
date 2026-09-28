@@ -181,7 +181,8 @@ EOF
     local runner="$ROOT/emule-runner"
     local target
     make_mock_emule_runner "$runner"
-    for target in p150 p100; do
+    for target in p150 p100 p150-harvested p300 p150x4 p150x8 \
+        p150x8-unharvested galaxy n150 n300 q1; do
         TTLANG_EMULE_RUNNER="$runner" run -0 "$ROOT/bin/tt-lang-sim" \
             --backend=emule "--target=$target" "two words.py" --script-option
         assert_output "target=$target
@@ -262,11 +263,16 @@ argv=--target=p150"
 @test "explicit emule help does not require host Python or a runner" {
     make_layout "$ROOT" source
     local option
+    local target
     for option in -h --help; do
         TTLANG_EMULE_RUNNER=/bin/false PYTHON=/bin/false \
             run -0 "$ROOT/bin/tt-lang-sim" --backend=emule "$option"
         assert_output --partial "Usage: tt-lang-sim --backend=emule"
         assert_output --partial "SCRIPT.py"
+        for target in p150 p100 p150-harvested p300 p150x4 p150x8 \
+            p150x8-unharvested galaxy n150 n300 q1; do
+            assert_output --partial "$target"
+        done
     done
 }
 

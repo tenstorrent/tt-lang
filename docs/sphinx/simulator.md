@@ -84,7 +84,9 @@ and [supported workloads](simulator-getting-started.md#known-limitations).
 
 Use the Python backend for simulator options such as `--grid`, `--trace`, and
 `--no-float32-promotion`. The emule backend selects a hardware profile with
-`--target=p150` (default) or `--target=p100`. Pass program arguments after `--`:
+`--target=NAME` (default: `p150`). The
+[profile table](simulator-getting-started.md#select-emulated-hardware) lists all
+bundled targets and their validation scope. Pass program arguments after `--`:
 
 ```bash
 ./bin/tt-lang-sim --backend=emule program.py -- --program-option value
