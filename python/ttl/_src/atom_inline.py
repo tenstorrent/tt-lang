@@ -165,7 +165,8 @@ class _LoopExitLiveness:
     finishes, before its ``else`` suite. Unknown control flow is
     over-approximated: any loop may run zero times, an exception may leave a
     ``try`` or ``with`` body at any statement or a ``for`` loop at any
-    iteration, and a ``finally`` suite continues to every exit of its ``try``.
+    iteration, and a ``finally`` suite continues to every exit of its ``try``
+    whichever way it was entered.
     """
 
     def __init__(self):
@@ -206,12 +207,20 @@ class _LoopExitLiveness:
         return _read_names(node.iter) | head
 
     def _try(self, node, live_out: Set[str], jumps: _Jumps) -> Set[str]:
-        final_live = self.block(
-            node.finalbody,
-            live_out | jumps.break_live | jumps.continue_live | jumps.exception_live,
-            jumps,
-        )
-        final_jumps = jumps._replace(exception_live=jumps.exception_live | final_live)
+        final_live = set(live_out)
+        final_jumps = jumps
+        if node.finalbody:
+            final_live = self.block(
+                node.finalbody,
+                live_out
+                | jumps.break_live
+                | jumps.continue_live
+                | jumps.exception_live,
+                jumps,
+            )
+            final_jumps = jumps._replace(
+                exception_live=jumps.exception_live | final_live
+            )
         # Every matching ``except*`` handler runs, so each one continues into
         # the handlers after it.
         chains_handlers = not isinstance(node, ast.Try)
