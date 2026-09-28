@@ -5023,36 +5023,32 @@ static DFBLifecycleCompletionProof computePerNodeLifetime(
   }
 
   SmallVector<std::optional<int64_t>> &conservativeEpochs =
-      lifetime.conservativeConfigurationEpochs.emplace();
-  auto addConservativeEpoch = [&](std::optional<int64_t> ordinal) {
-    if (!llvm::is_contained(conservativeEpochs, ordinal)) {
-      conservativeEpochs.push_back(ordinal);
-    }
-  };
+      lifetime.conservativeConfigurationEpochs;
   bool mayRetainState = false;
   std::optional<int64_t> configurationOrdinal;
-  for (unsigned intervalIndex = 0; intervalIndex < epochAccesses.size();
-       ++intervalIndex) {
-    mayRetainState |= !epochAccesses[intervalIndex].empty();
-    if (mayRetainState) {
-      addConservativeEpoch(configurationOrdinal);
+  // A later iteration of repeated boundaries starts in the configuration the
+  // last boundary installs, with the state the previous iteration retained; a
+  // second pass reaches every configuration that state or its accesses use.
+  unsigned passCount = repeatedReconfigurationCount ? 2 : 1;
+  for (unsigned pass = 0; pass < passCount; ++pass) {
+    for (unsigned intervalIndex = 0; intervalIndex < epochAccesses.size();
+         ++intervalIndex) {
+      mayRetainState |= !epochAccesses[intervalIndex].empty();
+      if (mayRetainState &&
+          !llvm::is_contained(conservativeEpochs, configurationOrdinal)) {
+        conservativeEpochs.push_back(configurationOrdinal);
+      }
+      if (intervalIndex == boundaries.size()) {
+        break;
+      }
+      if (boundaries[intervalIndex].discardsDFBState()) {
+        mayRetainState = false;
+      }
+      if (const ValidatedDFBReconfiguration *reconfiguration =
+              boundaries[intervalIndex].reconfiguration) {
+        configurationOrdinal = reconfiguration->boundary.getOrdinal();
+      }
     }
-    if (intervalIndex == boundaries.size()) {
-      break;
-    }
-    if (boundaries[intervalIndex].discardsDFBState()) {
-      mayRetainState = false;
-    }
-    if (const ValidatedDFBReconfiguration *reconfiguration =
-            boundaries[intervalIndex].reconfiguration) {
-      configurationOrdinal = reconfiguration->boundary.getOrdinal();
-    }
-  }
-
-  // After the first iteration, accesses before the first boundary run under the
-  // configuration that the last boundary installs.
-  if (repeatedReconfigurationCount && !epochAccesses.front().empty()) {
-    addConservativeEpoch(configurationOrdinal);
   }
 
   if (repeatedReconfigurationCount && !epochAccesses.back().empty()) {
