@@ -352,3 +352,51 @@ module attributes {ttl.launch_grid = [2 : i64, 1 : i64]} {
     func.return
   }
 }
+
+// -----
+
+// Push-only producer effects in two overlapping kernels violate SPSC.
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @first_push_only_producer() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    // expected-note @+1 {{dataflow buffer declared here}}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 43 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{logical DFB 43 has multiple producer kernels active on the same launched node}}
+    // expected-note @below {{example overlapping node: core_x=0, core_y=0}}
+    // expected-note @below {{only one kernel may produce a DFB on each launched node}}
+    ttl.opaque_call "first_push_only_producer" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<push, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    func.return
+  }
+
+  func.func @second_push_only_producer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 43 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-note @below {{also performed a producer action here}}
+    ttl.opaque_call "second_push_only_producer" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<push, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    func.return
+  }
+}
+
+// -----
+
+// Pop-only effects in two overlapping kernels violate SPSC.
+module attributes {ttl.launch_grid = [1 : i64, 1 : i64]} {
+  func.func @first_pop_only_consumer() attributes {ttl.kernel_thread = #ttkernel.thread<compute>} {
+    // expected-note @+1 {{dataflow buffer declared here}}
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 44 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-error @below {{logical DFB 44 has multiple read-pointer owner kernels active on the same launched node}}
+    // expected-note @below {{example overlapping node: core_x=0, core_y=0}}
+    // expected-note @below {{only one kernel may advance a DFB read pointer on each launched node}}
+    ttl.opaque_call "first_pop_only_consumer" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    func.return
+  }
+
+  func.func @second_pop_only_consumer() attributes {ttl.kernel_thread = #ttkernel.thread<noc>} {
+    %dfb = ttl.bind_cb {cb_index = 0, block_count = 2} {dfb_id = 44 : index}
+        : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>
+    // expected-note @below {{also advanced the read pointer here}}
+    ttl.opaque_call "second_pop_only_consumer" dfb_dependencies(%dfb : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 2>) dfb_effects [#ttl.dfb_protocol_effect<pop, 0, 1>] () {header = "effects.hpp"} : () -> ()
+    func.return
+  }
+}

@@ -109,6 +109,7 @@ void attachCommonNotes(InFlightDiagnostic &diag, Operation *bindSite,
 }
 
 struct DFBProtocolPresence {
+  bool hasProtocolAction = false;
   bool hasAcquisitionAction = false;
   bool hasUnknownUserDFBAccess = false;
   llvm::DenseSet<int64_t> pushedDFBs;
@@ -141,6 +142,7 @@ collectDFBProtocolPresence(ModuleOp module,
     for (const DFBProtocolEffect &effect : access.getDFBProtocolEffects()) {
       FailureOr<int64_t> dfbId = getDFBId(effect.dfb);
       assert(succeeded(dfbId) && "DFB identities were verified");
+      presence.hasProtocolAction = true;
       switch (effect.kind) {
       case DFBProtocolEffectKind::Reserve:
         presence.hasAcquisitionAction = true;
@@ -301,13 +303,18 @@ struct TTLVerifyDFBSPSCPass
     }
 
     DFBProtocolPresence unrefinedPresence = collectDFBProtocolPresence(module);
-    if (!unrefinedPresence.hasAcquisitionAction) {
+    if (!unrefinedPresence.hasProtocolAction) {
       return;
     }
 
     ModuleState state;
     state.initialize(module);
     if (!state.hasLaunchGrid) {
+      // Release-only protocol actions do not require launch-domain analysis;
+      // with a launch grid their ownership is still verified.
+      if (!unrefinedPresence.hasAcquisitionAction) {
+        return;
+      }
       module.emitError()
           << "ttl-verify-dfb-spsc requires a `ttl.launch_grid` module "
              "attribute (an i64 array of length 2 with positive entries) "
@@ -337,7 +344,7 @@ struct TTLVerifyDFBSPSCPass
 
     DFBProtocolPresence protocolPresence =
         collectDFBProtocolPresence(module, &state);
-    if (!protocolPresence.hasAcquisitionAction) {
+    if (!protocolPresence.hasProtocolAction) {
       return;
     }
     if (failed(verifyDFBWaitsHavePushes(protocolPresence, bindSites))) {

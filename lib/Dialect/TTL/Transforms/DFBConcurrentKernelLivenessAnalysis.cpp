@@ -363,6 +363,7 @@ struct SynchronizedResetOccurrence {
   SynchronizedDFBResetAttr reset;
   LogicalKernelAttr participant;
   SmallVector<unsigned> targetLogicalIndices;
+  SmallVector<unsigned> preservedLogicalIndices;
   bool allDFBs = false;
   LaunchNodeDomain launchDomain = LaunchNodeDomain::unknown();
 };
@@ -1252,7 +1253,7 @@ verifyPhysicalIndexUses(GetDfbIdOp getId,
   return success();
 }
 
-static LogicalResult expandSelectedResetAllocationGroups(
+static LogicalResult expandResetAllocationGroups(
     ArrayRef<DFBLogicalLifecycle> logicalDFBs,
     MutableArrayRef<SynchronizedResetOccurrence> resetOccurrences,
     DFBAnalysisFailure &analysisFailure) {
@@ -1265,11 +1266,11 @@ static LogicalResult expandSelectedResetAllocationGroups(
   }
 
   for (SynchronizedResetOccurrence &reset : resetOccurrences) {
-    if (reset.allDFBs) {
-      continue;
-    }
-    SmallVector<unsigned> expandedTargets = reset.targetLogicalIndices;
-    for (unsigned logicalIndex : reset.targetLogicalIndices) {
+    SmallVector<unsigned> &selectedLogicalIndices =
+        reset.allDFBs ? reset.preservedLogicalIndices
+                      : reset.targetLogicalIndices;
+    SmallVector<unsigned> expandedIndices = selectedLogicalIndices;
+    for (unsigned logicalIndex : selectedLogicalIndices) {
       DFBAllocationGroupAttr allocationGroup =
           logicalDFBs[logicalIndex].allocationGroup;
       if (!allocationGroup) {
@@ -1279,24 +1280,26 @@ static LogicalResult expandSelectedResetAllocationGroups(
           membersByAllocationGroup.find(allocationGroup.getOrdinal());
       assert(groupIt != membersByAllocationGroup.end() &&
              "allocation group must contain its reset target");
-      for (unsigned member : groupIt->second) {
-        if (logicalDFBs[member].tensorBacking) {
-          std::string message;
-          llvm::raw_string_ostream messageStream(message);
-          messageStream
-              << "selected synchronized DFB reset targeting allocation group "
-              << allocationGroup
-              << " requires scratch-backed members; logical DFB "
-              << logicalDFBs[member].logicalId << " is tensor-backed";
-          analysisFailure.set(reset.operation, messageStream.str());
-          return failure();
+      if (!reset.allDFBs) {
+        for (unsigned member : groupIt->second) {
+          if (logicalDFBs[member].tensorBacking) {
+            std::string message;
+            llvm::raw_string_ostream messageStream(message);
+            messageStream
+                << "selected synchronized DFB reset targeting allocation group "
+                << allocationGroup
+                << " requires scratch-backed members; logical DFB "
+                << logicalDFBs[member].logicalId << " is tensor-backed";
+            analysisFailure.set(reset.operation, messageStream.str());
+            return failure();
+          }
         }
       }
-      llvm::append_range(expandedTargets, groupIt->second);
+      llvm::append_range(expandedIndices, groupIt->second);
     }
-    llvm::sort(expandedTargets);
-    expandedTargets.erase(llvm::unique(expandedTargets), expandedTargets.end());
-    reset.targetLogicalIndices = std::move(expandedTargets);
+    llvm::sort(expandedIndices);
+    expandedIndices.erase(llvm::unique(expandedIndices), expandedIndices.end());
+    selectedLogicalIndices = std::move(expandedIndices);
   }
   return success();
 }
@@ -1403,10 +1406,15 @@ static LogicalResult collectLogicalDFBs(
       occurrence.reset = reset;
       occurrence.participant = logicalKernel;
       occurrence.allDFBs = static_cast<bool>(allDFBsReset);
-      ValueRange resetDFBs =
-          selectedReset ? selectedReset.getDfbs() : ValueRange();
-      for (Value target : resetDFBs) {
-        FailureOr<int64_t> logicalId = identityAnalysis.getLogicalId(target);
+      ValueRange referencedDFBs = selectedReset
+                                      ? selectedReset.getDfbs()
+                                      : allDFBsReset.getPreservedDfbs();
+      SmallVector<unsigned> &referencedLogicalIndices =
+          selectedReset ? occurrence.targetLogicalIndices
+                        : occurrence.preservedLogicalIndices;
+      for (Value referencedDFB : referencedDFBs) {
+        FailureOr<int64_t> logicalId =
+            identityAnalysis.getLogicalId(referencedDFB);
         if (failed(logicalId)) {
           analysisFailure.set(
               operation,
@@ -1418,9 +1426,9 @@ static LogicalResult collectLogicalDFBs(
         assert(logicalIt != logicalIndexById.end() &&
                "resolved reset target must have a logical lifecycle");
         unsigned logicalIndex = logicalIt->second;
-        occurrence.targetLogicalIndices.push_back(logicalIndex);
+        referencedLogicalIndices.push_back(logicalIndex);
       }
-      llvm::sort(occurrence.targetLogicalIndices);
+      llvm::sort(referencedLogicalIndices);
       resetOccurrences.push_back(std::move(occurrence));
       return WalkResult::advance();
     }
@@ -1561,8 +1569,8 @@ static LogicalResult collectLogicalDFBs(
     return failure();
   }
 
-  if (failed(expandSelectedResetAllocationGroups(logicalDFBs, resetOccurrences,
-                                                 analysisFailure))) {
+  if (failed(expandResetAllocationGroups(logicalDFBs, resetOccurrences,
+                                         analysisFailure))) {
     return failure();
   }
 
@@ -1570,9 +1578,15 @@ static LogicalResult collectLogicalDFBs(
     if (!reset.allDFBs) {
       continue;
     }
+    llvm::BitVector preserved(logicalDFBs.size());
+    for (unsigned logicalIndex : reset.preservedLogicalIndices) {
+      preserved.set(logicalIndex);
+    }
     for (unsigned logicalIndex = 0; logicalIndex < logicalDFBs.size();
          ++logicalIndex) {
-      reset.targetLogicalIndices.push_back(logicalIndex);
+      if (!preserved.test(logicalIndex)) {
+        reset.targetLogicalIndices.push_back(logicalIndex);
+      }
     }
   }
 
