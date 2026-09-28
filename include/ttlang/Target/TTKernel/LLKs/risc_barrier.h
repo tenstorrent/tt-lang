@@ -4,6 +4,12 @@
 
 #pragma once
 
+// Barrier among the five Tensix worker RISCs of one core. DM1 coordinates;
+// DM0, UNPACK, MATH and PACK arrive at their own state words. Every barrier
+// must execute on all five RISCs, so a compute-side call covers UNPACK, MATH
+// and PACK. Entry alternates 1/2 and exit 3/4, so the words need no reset
+// between barriers.
+
 #include <cstdint>
 
 #if defined(COMPILE_FOR_BRISC) || defined(COMPILE_FOR_NCRISC) ||               \
@@ -39,6 +45,12 @@
 
 #if defined(UCK_CHLKC_PACK) || defined(TRISC_PACK)
 #define TTLANG_RISC_BARRIER_PACK
+#endif
+
+#if !defined(TTLANG_RISC_BARRIER_DM0) && !defined(TTLANG_RISC_BARRIER_DM1) && \
+    !defined(TTLANG_RISC_BARRIER_UNPACK) &&                                   \
+    !defined(TTLANG_RISC_BARRIER_MATH) && !defined(TTLANG_RISC_BARRIER_PACK)
+#error "risc_barrier supports only the Tensix worker RISCs (DM0, DM1, UNPACK, MATH, PACK)"
 #endif
 
 namespace ttlang::detail {

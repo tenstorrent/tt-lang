@@ -41,6 +41,12 @@ constexpr uint32_t participantCount = 3;
 constexpr uint32_t entryComplete = 1;
 constexpr uint32_t exitComplete = 2;
 constexpr uint32_t completionMarker = 0xD1FB;
+// A record address of 0 keeps the interface's current FIFO base. The host
+// writes it for static descriptor storage, whose L1 address only TT-Metal
+// knows. It is correct only while a physical index uses static storage in
+// every epoch it executes on a launch node: an earlier tensor-backed or scratch
+// epoch on that node would leave its base in the interface. Static segments
+// carry no byte offset; the host rejects one.
 constexpr uint32_t preserveFifoAddress = 0;
 
 FORCE_INLINE uint32_t

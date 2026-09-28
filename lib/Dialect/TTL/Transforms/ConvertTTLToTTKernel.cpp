@@ -1723,8 +1723,10 @@ getExpandedDFBMask(ValueRange dfbs, Operation *operation,
     }
     auto groupMask =
         plan.dfbMaskByAllocationGroup.find(allocationGroup.getOrdinal());
-    assert(groupMask != plan.dfbMaskByAllocationGroup.end() &&
-           "finalized allocation group must be present in reset plan");
+    if (groupMask == plan.dfbMaskByAllocationGroup.end()) {
+      return operation->emitError("allocation group ")
+             << allocationGroup << " is absent from the DFB reset lowering plan";
+    }
     dfbMask |= groupMask->second;
   }
   return dfbMask;
