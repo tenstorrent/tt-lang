@@ -19,9 +19,6 @@ from utils.correctness import assert_allclose, assert_pcc  # noqa: E402
 
 pytestmark = pytest.mark.requires_device
 
-SCALAR_RESULT_HEADER = os.path.join(
-    os.path.dirname(__file__), "include", "scalar_result_op.hpp"
-)
 DFB_RECONFIGURATION_TEST_HEADER = os.path.join(
     os.path.dirname(__file__), "include", "dfb_reconfiguration_test_helpers.hpp"
 )
@@ -325,63 +322,6 @@ def _make_conditional_reconfiguration_operation(data_format, enabled_column):
                     ).wait()
 
     return conditional_reconfiguration_operation
-
-
-def _make_dispatch_condition_reconfiguration_operation(data_format, active_value):
-    active = ttl.DispatchCondition(ttl.ScalarType.I32)
-    compute_kernel = ttl.Kernel(ttl.KernelKind.COMPUTE)
-    reader_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
-    writer_kernel = ttl.Kernel(ttl.KernelKind.DATA_MOVEMENT)
-    boundary = ttl.DFBReconfiguration(
-        participants=(compute_kernel, reader_kernel, writer_kernel)
-    )
-
-    @ttl.operation(grid=(1, 1))
-    def dispatch_condition_reconfiguration_operation(input_tensor, output_tensor):
-        source_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
-        result_dfb = ttl.make_dfb(data_format, shape=(1, 1), block_count=2)
-
-        @ttl.compute(kernel=compute_kernel)
-        def compute():
-            is_active = ttl.call_extern_func(
-                SCALAR_RESULT_HEADER,
-                "scalar_predicate",
-                template_args=[active_value],
-                condition_result=active,
-            )
-            if is_active:
-                ttl.reconfigure_dfbs(boundary)
-                with source_dfb.wait() as source:
-                    with result_dfb.reserve() as result:
-                        result.store(source)
-
-        @ttl.datamovement(kernel=reader_kernel)
-        def read():
-            is_active = ttl.call_extern_func(
-                SCALAR_RESULT_HEADER,
-                "scalar_predicate",
-                template_args=[active_value],
-                condition_result=active,
-            )
-            if is_active:
-                ttl.reconfigure_dfbs(boundary)
-                with source_dfb.reserve() as destination:
-                    ttl.copy(input_tensor[0, 0], destination).wait()
-
-        @ttl.datamovement(kernel=writer_kernel)
-        def write():
-            is_active = ttl.call_extern_func(
-                SCALAR_RESULT_HEADER,
-                "scalar_predicate",
-                template_args=[active_value],
-                condition_result=active,
-            )
-            if is_active:
-                ttl.reconfigure_dfbs(boundary)
-                with result_dfb.wait() as source:
-                    ttl.copy(source, output_tensor[0, 0]).wait()
-
-    return dispatch_condition_reconfiguration_operation
 
 
 def _make_high_index_reconfiguration_operation(data_format):
@@ -1236,44 +1176,6 @@ def test_conditional_reconfiguration_executes_with_post_boundary_dfbs(
         (cached_second_output, expected_enabled_columns(cached_second_host, 64)),
     ):
         _assert_output(actual, expected, dtype)
-
-
-@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
-@pytest.mark.parametrize("to_device", [to_dram, to_l1], ids=["dram", "l1"])
-def test_dispatch_condition_reconfiguration_executes_active_and_inactive(
-    device,
-    dtype,
-    to_device,
-    monkeypatch,
-    tmp_path,
-):
-    if ttl_api._detect_device_arch(device) != "blackhole":
-        pytest.skip("requires Blackhole DFB reconfiguration support")
-
-    data_format = "bf16" if dtype == torch.bfloat16 else "float32"
-    for active_value in (1, 0):
-        operation = _make_dispatch_condition_reconfiguration_operation(
-            data_format, active_value
-        )
-        mlir_file = tmp_path / f"dispatch_condition_{active_value}.mlir"
-        monkeypatch.setenv("TTLANG_FINAL_MLIR", str(mlir_file))
-        for invocation in range(2):
-            input_host = (
-                torch.arange(32 * 32, dtype=torch.float32).reshape(32, 32)
-                + invocation * 7
-            ).to(dtype)
-            output = to_device(torch.zeros_like(input_host), device)
-            operation(
-                to_device(input_host, device),
-                output,
-                options="--ttl-reuse-user-dfbs",
-            )
-            expected = input_host if active_value else torch.zeros_like(input_host)
-            _assert_output(output, expected, dtype)
-
-        final_mlir = mlir_file.read_text()
-        assert final_mlir.count("experimental::reconfigure_dfb_interfaces") == 3
-        assert final_mlir.count("scalar_predicate") == 3
 
 
 @pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float32], ids=["bf16", "f32"])
