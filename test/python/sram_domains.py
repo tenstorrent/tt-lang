@@ -29,7 +29,7 @@ def test_per_node_copy(device, dtype, allocator):
         l1_copy(
             source,
             destination,
-            options="--ttl-memory-model=compiler-l1 --ttl-sram-allocation-mode=per-node",
+            options="--ttl-memory-model=compiler-sram --ttl-sram-allocation-mode=per-node",
         )
         assert_allclose(
             ttnn.to_torch(destination).float(), expected.float(), rtol=0, atol=0
@@ -78,7 +78,7 @@ def test_per_node_mixed_extents(device, dtype, tmp_path):
     operation(
         source,
         destination,
-        options="--ttl-memory-model=compiler-l1 --ttl-sram-allocation-mode=per-node",
+        options="--ttl-memory-model=compiler-sram --ttl-sram-allocation-mode=per-node",
     )
     assert_allclose(
         ttnn.to_torch(destination).float(), expected.float(), rtol=0, atol=0
@@ -142,7 +142,7 @@ def test_per_node_uneven_reservation(device, dtype, allocator, monkeypatch, capf
         uneven_core_copy(
             source,
             destination,
-            options=f"--ttl-memory-model=compiler-l1 --ttl-sram-allocation-mode={mode} --ttl-sram-allocation-report",
+            options=f"--ttl-memory-model=compiler-sram --ttl-sram-allocation-mode={mode} --ttl-sram-allocation-report",
         )
         assert_allclose(
             ttnn.to_torch(destination).float(), expected.float(), rtol=0, atol=0
@@ -178,7 +178,7 @@ def test_per_node_uneven_reservation(device, dtype, allocator, monkeypatch, capf
 def test_per_node_receiver_order_is_deterministic(
     device, dtype, allocator, monkeypatch, tmp_path
 ):
-    from pipe.test_compiler_l1_pipenet import compiler_l1_pipe_matmul
+    from pipe.test_compiler_sram_pipenet import compiler_sram_pipe_matmul
 
     lhs_host = torch.randn(64, 64, dtype=dtype)
     rhs_host = torch.randn(64, 64, dtype=dtype)
@@ -188,13 +188,13 @@ def test_per_node_receiver_order_is_deterministic(
     monkeypatch.setenv("TTLANG_FINAL_MLIR", str(final_ir))
     layouts = []
     for compilation in range(3):
-        operation = ttl.operation(grid=(2, 2))(compiler_l1_pipe_matmul.__wrapped__)
+        operation = ttl.operation(grid=(2, 2))(compiler_sram_pipe_matmul.__wrapped__)
         output = allocator(torch.zeros_like(lhs_host), device)
         operation(
             lhs,
             rhs,
             output,
-            options="--ttl-memory-model=compiler-l1 --ttl-sram-allocation-mode=per-node",
+            options="--ttl-memory-model=compiler-sram --ttl-sram-allocation-mode=per-node",
         )
         assert_pcc(
             lhs_host.float() @ rhs_host.float(),

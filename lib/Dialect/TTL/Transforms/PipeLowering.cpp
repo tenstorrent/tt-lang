@@ -5007,7 +5007,7 @@ buildComputedAddressPlan(MutableArrayRef<PipeTransferAllocationUnit> units,
   auto allocationMode =
       module->getAttrOfType<StringAttr>("ttl.sram_allocation_mode");
   const bool independentStorage =
-      allocationMode && allocationMode.getValue() == "per-core";
+      allocationMode && allocationMode.getValue() == "per-node";
   Builder targetBuilder(module.getContext());
   /// One transfer whose recurrence can be materialized by its sender.
   struct Candidate {
