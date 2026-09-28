@@ -327,9 +327,12 @@ reset_operation = make_reset_operation()
 
 The same `DFBReset` value identifies the three occurrences as one synchronized
 reset. `ttl.reset_all_dfbs(reset_boundary)` resets every allocated DFB
-interface. `ttl.reset_dfbs(reset_boundary, dfbs=[...])` resets only the listed
-DFBs; listing one member of an allocation group resets every member because the
-group shares one L1 allocation.
+interface. `ttl.reset_all_dfbs(reset_boundary, preserve=[live_dfb])` leaves
+`live_dfb` unchanged while resetting the other interfaces. This form is useful
+when an operation retains one input or output across an internal reset but
+abandons temporary DFB state. `ttl.reset_dfbs(reset_boundary, dfbs=[...])`
+resets only the listed DFBs. Listing or preserving one member of an allocation
+group applies to every member because the group shares one L1 allocation.
 
 A declaration contains exactly one compute kernel and two data movement
 kernels. It executes once per dispatch and launch node, or once per iteration
