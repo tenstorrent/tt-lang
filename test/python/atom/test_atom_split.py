@@ -12,9 +12,9 @@ split-time error paths for ambiguous kernel ownership and the basic
 compute/data-movement routing."""
 
 import ast
-import re
 import copy
 import inspect
+import re
 import textwrap
 
 import pytest
@@ -929,8 +929,71 @@ def test_composition_binds_captured_sequence_target_after_loop():
             ttl.call_extern_func("last.hpp", "last", kernel=ttl.KernelKind.COMPUTE)
 
     source = _composed_source(coordinate_helper)
-    assert re.search(r"coordinate_x\w* = 3\n", source)
+    assert re.search(
+        r"coordinate_x\w* = 3\n.*coordinate_x\w* \+= 1\n", source, re.DOTALL
+    )
     assert re.search(r"_coordinate_y\w* = 4\n", source)
+
+
+def test_composition_binds_nested_captured_sequence_target_per_outer_element():
+    """An inner loop over the outer target binds its last element per iteration."""
+    rows = ((1, 2), (3, 4))
+
+    @ttl.operation()
+    def row_helper(core_x):
+        value = 0
+        for row in rows:
+            for value in row:
+                pass
+            if core_x == value:
+                ttl.call_extern_func("hit.hpp", "hit", kernel=ttl.KernelKind.COMPUTE)
+
+    source = _composed_source(row_helper)
+    assert re.search(
+        r"(value\w*) = 2\n\s*if core_x == \1:.*\1 = 4\n\s*if core_x == \1:",
+        source,
+        re.DOTALL,
+    )
+
+
+def test_composition_binds_captured_sequence_target_passed_to_nested_helper():
+    """A target passed to an inlined helper gets its binding.
+
+    The substituted argument takes the parameter's source position, which here
+    equals the loop target's position in the caller.
+    """
+    coordinates = ((2, 1), (4, 3))
+
+    @ttl.operation()
+    def compare_helper(core_x, coordinate_q):
+        if core_x == coordinate_q:
+            ttl.call_extern_func("hit.hpp", "hit", kernel=ttl.KernelKind.COMPUTE)
+
+    @ttl.operation()
+    def coordinate_helper(core_x):
+        for _second, coordinate_x in coordinates:
+            pass
+        compare_helper(core_x, coordinate_x)
+
+    source = _composed_source(coordinate_helper)
+    assert re.search(r"(coordinate_x\w*) = 3\n.*if core_x == \1:", source, re.DOTALL)
+
+
+def test_composition_rejects_non_literal_captured_sequence_target_after_loop():
+    """A target bound to a non-literal element cannot be used after the loop."""
+    kinds = (ttl.KernelKind.DATA_MOVEMENT, ttl.KernelKind.COMPUTE)
+
+    @ttl.operation()
+    def kind_helper(core_x):
+        for kind in kinds:
+            ttl.call_extern_func("each.hpp", "each", kernel=kind)
+        ttl.call_extern_func("last.hpp", "last", kernel=kind)
+
+    with pytest.raises(
+        ValueError,
+        match="can be used outside the loop only when the sequence elements are literals",
+    ):
+        _composed_source(kind_helper)
 
 
 def test_composition_rebinds_captured_sequence_target_in_enclosing_loop():

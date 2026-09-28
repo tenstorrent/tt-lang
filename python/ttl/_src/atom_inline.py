@@ -23,6 +23,7 @@ from ttl.template_argument import UInt32TemplateArgument
 
 _INLINED_OPERATION_STATEMENT = "_ttl_inlined_operation_statement"
 _DFB_SOURCE_OCCURRENCE = "_ttl_dfb_source_occurrence"
+_LOOP_TARGET_USED_OUTSIDE = "_ttl_loop_target_used_outside"
 
 _NESTED_SCOPES = (
     ast.FunctionDef,
@@ -103,13 +104,46 @@ class _NestedBindingCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def _source_position(node: ast.AST):
-    return (
-        getattr(node, "lineno", None),
-        getattr(node, "col_offset", None),
-        getattr(node, "end_lineno", None),
-        getattr(node, "end_col_offset", None),
-    )
+def _mark_loop_targets_used_outside(statements: List[ast.stmt]) -> None:
+    """Record on each ``For`` whether code outside it names its target.
+
+    Nodes are compared by identity before renaming: renamed targets no longer
+    match their source names, and inlined helpers reuse source positions.
+    """
+    names = [
+        node
+        for statement in statements
+        for node in ast.walk(statement)
+        if isinstance(node, ast.Name)
+    ]
+    for statement in statements:
+        for loop in ast.walk(statement):
+            if not isinstance(loop, ast.For):
+                continue
+            target_names = {
+                name.id for name in ast.walk(loop.target) if isinstance(name, ast.Name)
+            }
+            loop_nodes = {
+                id(inner)
+                for part in (loop.target, *loop.body)
+                for inner in ast.walk(part)
+            }
+            setattr(
+                loop,
+                _LOOP_TARGET_USED_OUTSIDE,
+                any(
+                    name.id in target_names and id(name) not in loop_nodes
+                    for name in names
+                ),
+            )
+
+
+def _is_constant_structure(node: ast.expr) -> bool:
+    if isinstance(node, ast.Constant):
+        return True
+    if isinstance(node, (ast.Tuple, ast.List)):
+        return all(_is_constant_structure(element) for element in node.elts)
+    return False
 
 
 def _contains_loop_control(statements) -> bool:
@@ -140,10 +174,8 @@ class _SubstituteTransformer(ast.NodeTransformer):
         caller_name: str,
         dfb_parameter_names: Set[str],
         inline_suffix: str,
-        callee_root: ast.AST,
     ):
         self.bindings = bindings
-        self.callee_root = callee_root
         self.rename_map = rename_map
         self.callee_name = callee_name
         self.caller_name = caller_name
@@ -183,24 +215,6 @@ class _SubstituteTransformer(ast.NodeTransformer):
         _copy_dfb_source_occurrence(node, replacement)
         return ast.copy_location(replacement, node)
 
-    def _target_used_outside_loop(self, node: ast.For) -> bool:
-        """Return whether the callee uses the loop's target names elsewhere."""
-        target_names = {
-            name.id for name in ast.walk(node.target) if isinstance(name, ast.Name)
-        }
-        loop_positions = {
-            _source_position(inner)
-            for part in (node.target, *node.body)
-            for inner in ast.walk(part)
-            if isinstance(inner, ast.Name)
-        }
-        return any(
-            isinstance(name, ast.Name)
-            and name.id in target_names
-            and _source_position(name) not in loop_positions
-            for name in ast.walk(self.callee_root)
-        )
-
     def visit_Subscript(self, node):
         transformed_node = self.generic_visit(node)
         if not isinstance(transformed_node.value, (ast.Tuple, ast.List)):
@@ -219,7 +233,6 @@ class _SubstituteTransformer(ast.NodeTransformer):
         return ast.copy_location(element, transformed_node)
 
     def visit_For(self, node):
-        target_used_outside_loop = self._target_used_outside_loop(node)
         transformed_node = self.generic_visit(node)
         if not isinstance(transformed_node.iter, (ast.Tuple, ast.List)):
             return transformed_node
@@ -229,6 +242,7 @@ class _SubstituteTransformer(ast.NodeTransformer):
                 f"@ttl.operation {self.caller_name!r}: a loop over a captured "
                 "sequence cannot use break or continue"
             )
+        target_used_outside_loop = getattr(transformed_node, _LOOP_TARGET_USED_OUTSIDE)
         if target_used_outside_loop and not transformed_node.iter.elts:
             raise ValueError(
                 f"@ttl.operation {self.caller_name!r}: a loop over an empty "
@@ -247,7 +261,6 @@ class _SubstituteTransformer(ast.NodeTransformer):
                 self.caller_name,
                 set(),
                 self.inline_suffix,
-                self.callee_root,
             )
             for statement in transformed_node.body:
                 transformed_statement = loop_transformer.visit(copy.deepcopy(statement))
@@ -265,6 +278,12 @@ class _SubstituteTransformer(ast.NodeTransformer):
                 final_bindings,
             )
             for name, value in final_bindings.items():
+                if not _is_constant_structure(value):
+                    raise ValueError(
+                        f"@ttl.operation {self.caller_name!r}: target {name!r} "
+                        "of a loop over a captured sequence can be used outside "
+                        "the loop only when the sequence elements are literals"
+                    )
                 unrolled_body.append(
                     ast.copy_location(
                         ast.Assign(
@@ -708,12 +727,12 @@ def _expand_call(
         caller_name,
         set(spec.dfb_param_names),
         suffix,
-        spec.fn_ast,
     )
 
+    cloned_body = copy.deepcopy(spec.fn_ast.body)
+    _mark_loop_targets_used_outside(cloned_body)
     result: List[ast.stmt] = []
-    for statement in spec.fn_ast.body:
-        cloned_statement = copy.deepcopy(statement)
+    for cloned_statement in cloned_body:
         transformed_statement = transformer.visit(cloned_statement)
         inlined_statements = (
             transformed_statement
