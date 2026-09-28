@@ -10,7 +10,16 @@ import ast
 import copy
 import hashlib
 import inspect
-from typing import Dict, Iterable, List, Optional, Set, Tuple
+from typing import (
+    Dict,
+    FrozenSet,
+    Iterable,
+    List,
+    NamedTuple,
+    Optional,
+    Set,
+    Tuple,
+)
 
 from ttl.condition import DispatchCondition
 from ttl.dfb_allocation_group import DFBAllocationGroup
@@ -141,14 +150,23 @@ def _stored_names(target: Optional[ast.expr]) -> Set[str]:
     return set()
 
 
+class _Jumps(NamedTuple):
+    """Names live where a ``break``, ``continue``, or exception transfers."""
+
+    break_live: FrozenSet[str] = frozenset()
+    continue_live: FrozenSet[str] = frozenset()
+    exception_live: FrozenSet[str] = frozenset()
+
+
 class _LoopExitLiveness:
     """Backward live-name analysis that records each ``For`` loop's exit.
 
     A name is live at a point when some path from that point reads it before
     storing it. The set recorded for a loop is the one live where the loop
     finishes, before its ``else`` suite. Unknown control flow is
-    over-approximated: an exception may leave a ``try`` or ``with`` body at any
-    statement, and ``return`` and ``raise`` keep only the reads they make.
+    over-approximated: any loop may run zero times, an exception may leave a
+    ``try`` or ``with`` body at any statement or a ``for`` loop at any
+    iteration, and a ``finally`` suite continues to every exit of its ``try``.
     """
 
     def __init__(self):
@@ -157,26 +175,27 @@ class _LoopExitLiveness:
         # so each loop resumes from its previous fixed point.
         self.head_live_by_loop: Dict[int, Set[str]] = {}
 
-    def block(self, statements, live_out: Set[str], jumps) -> Set[str]:
+    def block(self, statements, live_out: Set[str], jumps: _Jumps) -> Set[str]:
         live = set(live_out)
         for statement in reversed(statements):
-            # jumps = (break target, continue target, exception target)
-            live = self._statement(statement, live, jumps) | jumps[2]
+            live = self._statement(statement, live, jumps) | jumps.exception_live
         return live
 
-    def _loop(self, node, live_out: Set[str], jumps) -> Set[str]:
+    def _loop(self, node, live_out: Set[str], jumps: _Jumps) -> Set[str]:
+        exit_live = self.block(node.orelse, live_out, jumps)
         head = set(self.head_live_by_loop.get(id(node), ()))
         while True:
-            exit_live = self.block(node.orelse, live_out, jumps)
-            body_live = self.block(node.body, head, (live_out, head, jumps[2]))
+            body_jumps = _Jumps(
+                frozenset(live_out), frozenset(head), jumps.exception_live
+            )
+            body_live = self.block(node.body, head, body_jumps)
             if isinstance(node, ast.While):
-                new_head = _read_names(node.test) | exit_live | body_live
+                new_head = _read_names(node.test) | body_live
             else:
-                new_head = (
-                    exit_live
-                    | (body_live - _stored_names(node.target))
-                    | _read_names(node.target)
+                new_head = (body_live - _stored_names(node.target)) | _read_names(
+                    node.target
                 )
+            new_head |= exit_live | jumps.exception_live
             if new_head == head:
                 break
             head = new_head
@@ -187,9 +206,41 @@ class _LoopExitLiveness:
             return head
         return _read_names(node.iter) | head
 
-    def _statement(self, node, live_out: Set[str], jumps) -> Set[str]:
+    def _try(self, node, live_out: Set[str], jumps: _Jumps) -> Set[str]:
+        final_live = self.block(
+            node.finalbody,
+            live_out | jumps.break_live | jumps.continue_live | jumps.exception_live,
+            jumps,
+        )
+        final_jumps = jumps._replace(exception_live=jumps.exception_live | final_live)
+        # Every matching ``except*`` handler runs, so each one continues into
+        # the handlers after it.
+        chains_handlers = not isinstance(node, ast.Try)
+        handler_live: Set[str] = set()
+        for handler in reversed(node.handlers):
+            later_live = handler_live if chains_handlers else set()
+            handler_jumps = final_jumps._replace(
+                exception_live=final_jumps.exception_live | later_live
+            )
+            handler_body_live = self.block(
+                handler.body, final_live | later_live, handler_jumps
+            )
+            handler_live = (
+                handler_live
+                | _read_names(handler.type)
+                | (handler_body_live - {handler.name})
+            )
+        orelse_live = self.block(node.orelse, final_live, final_jumps)
+        body_jumps = final_jumps._replace(
+            exception_live=final_jumps.exception_live | handler_live
+        )
+        return self.block(node.body, orelse_live, body_jumps)
+
+    def _statement(self, node, live_out: Set[str], jumps: _Jumps) -> Set[str]:
         if isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
             return self._loop(node, live_out, jumps)
+        if isinstance(node, _TRY_STATEMENTS):
+            return self._try(node, live_out, jumps)
         if isinstance(node, ast.If):
             return (
                 _read_names(node.test)
@@ -198,7 +249,7 @@ class _LoopExitLiveness:
             )
         if isinstance(node, (ast.With, ast.AsyncWith)):
             # The context manager may suppress an exception from the body.
-            body_jumps = (jumps[0], jumps[1], jumps[2] | live_out)
+            body_jumps = jumps._replace(exception_live=jumps.exception_live | live_out)
             stored: Set[str] = set()
             reads: Set[str] = set()
             for item in node.items:
@@ -206,34 +257,19 @@ class _LoopExitLiveness:
                 reads |= _read_names(item.context_expr)
                 reads |= _read_names(item.optional_vars)
             return reads | (self.block(node.body, live_out, body_jumps) - stored)
-        if isinstance(node, _TRY_STATEMENTS):
-            final_live = self.block(node.finalbody, live_out, jumps)
-            final_jumps = (jumps[0], jumps[1], jumps[2] | final_live)
-            handler_live: Set[str] = set()
-            for handler in node.handlers:
-                handler_body_live = self.block(handler.body, final_live, final_jumps)
-                handler_live |= _read_names(handler.type)
-                handler_live |= handler_body_live - {handler.name}
-            orelse_live = self.block(node.orelse, final_live, final_jumps)
-            body_jumps = (jumps[0], jumps[1], final_jumps[2] | handler_live)
-            return (
-                self.block(node.body, orelse_live, body_jumps)
-                | handler_live
-                | final_live
-            )
-        if isinstance(node, getattr(ast, "Match", ())):
+        if isinstance(node, ast.Match):
             live = _read_names(node.subject) | live_out
             for case in node.cases:
                 live |= _read_names(case.pattern) | _read_names(case.guard)
                 live |= self.block(case.body, live_out, jumps)
             return live
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            self.block(node.body, set(), (set(), set(), set()))
+            self.block(node.body, set(), _Jumps())
             return (live_out - {node.name}) | _read_names(node)
         if isinstance(node, ast.Break):
-            return set(jumps[0])
+            return set(jumps.break_live)
         if isinstance(node, ast.Continue):
-            return set(jumps[1])
+            return set(jumps.continue_live)
         if isinstance(node, (ast.Return, ast.Raise)):
             return _read_names(node)
         if isinstance(node, ast.Assign):
@@ -259,23 +295,32 @@ class _LoopExitLiveness:
 def _mark_loop_targets_read_after(statements: List[ast.stmt]) -> None:
     """Record on each ``For`` which target names code after it may read.
 
-    The mark maps each such name's position in the target to its name. A name
-    counts when it is live where the loop finishes, or when a nested function,
-    lambda, or generator reads it, since those run at a point the analysis does
-    not know.
+    The mark is read only when the loop is unrolled. It maps each such name's
+    position in the target to its name. A name counts when it is live where the
+    loop finishes, or when a nested function, lambda, or generator outside the
+    loop body reads it, since those run at a point the analysis does not know.
+    Unrolling substitutes the element into scopes inside the loop body, so they
+    never read the name.
     """
     liveness = _LoopExitLiveness()
-    liveness.block(statements, set(), (set(), set(), set()))
-    closure_reads: Set[str] = set()
-    for statement in statements:
-        for scope in ast.walk(statement):
-            if isinstance(scope, _DEFERRED_SCOPES):
-                closure_reads |= _read_names(scope) - _nested_binding_names(scope)
+    liveness.block(statements, set(), _Jumps())
+    closure_reads_by_scope = {
+        id(scope): _read_names(scope) - _nested_binding_names(scope)
+        for statement in statements
+        for scope in ast.walk(statement)
+        if isinstance(scope, _DEFERRED_SCOPES)
+    }
     for statement in statements:
         for loop in ast.walk(statement):
             if not isinstance(loop, ast.For):
                 continue
-            used_names = liveness.exit_live_by_loop[id(loop)] | closure_reads
+            body_node_ids = {
+                id(node) for inner in loop.body for node in ast.walk(inner)
+            }
+            used_names = set(liveness.exit_live_by_loop[id(loop)])
+            for scope_id, reads in closure_reads_by_scope.items():
+                if scope_id not in body_node_ids:
+                    used_names |= reads
             setattr(
                 loop,
                 _LOOP_TARGETS_READ_AFTER,
