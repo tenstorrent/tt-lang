@@ -215,8 +215,8 @@ module attributes {ttl.launch_grid = [1, 1], ttl.target_arch = #ttcore.arch<blac
     %c1 = arith.constant 1 : index
     %c4 = arith.constant 4 : index
     scf.for %iteration = %c0 to %c4 step %c1 {
-      // expected-warning @+3 {{logical DFB 0 is never popped on core_x=0, core_y=0, but its producer can push 4 block(s) into capacity 1 before a synchronized reset or reconfiguration restores it}}
-      // expected-note @+2 {{published blocks stay in the DFB until a pop or a reset or reconfiguration that restores it, so the producer blocks once the DFB is full}}
+      // expected-warning @+3 {{logical DFB 0 is never popped on core_x=0, core_y=0, but its producer can push 4 block(s) into capacity 1 during the launch}}
+      // expected-note @+2 {{published blocks stay in the DFB until a pop, so the producer blocks once the DFB is full}}
       // expected-note @+1 {{a reconfiguration restores a DFB only where the finalized allocation reinstalls its descriptor, which requires a bounded lifecycle; declare the DFB effects of external calls that access it, or pop the published blocks}}
       ttl.opaque_call "read_partial" dfb_dependencies(
           %partial : !ttl.cb<[1, 1], !ttcore.tile<32x32, bf16>, 1>)
